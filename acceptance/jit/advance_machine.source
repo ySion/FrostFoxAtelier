@@ -1,0 +1,12 @@
+// This source controls the business body; snapshot/root handling belongs to
+// the checked host entry, not to an implicit language object-copy rule.
+void advance_machine(float amount, uint steps) {
+    uint index = 0;
+    while (index < steps) {
+        if (amount > 0.0) {
+            self.advance(amount);
+            self.state.cycles = self.state.cycles + 1;
+        }
+        index = index + 1;
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "llvm": "23.1.1",
+  "cmake": "4.2.3-msvc3",
+  "ninja": "1.12.1",
+  "msvc": "14.50.35717",
+  "windowsSdk": "10.0.26100.0",
+  "llvmArchiveUrl": "https://api.github.com/repos/llvm/llvm-project/releases/assets/550474890?download=1",
+  "llvmArchiveRoot": "clang+llvm-23.1.1-x86_64-pc-windows-msvc",
+  "llvmArchiveSha256": "c8a12d754b5050c5668b56a5425c806792d46c70f7244b1216046164aa4b6462"
+}
