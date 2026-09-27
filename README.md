@@ -1,6 +1,8 @@
 # FrostFoxAtelier
 
-面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点和单入口兼容方法体热更新。完整语言、通用方法分派/布局迁移、编辑器及渲染尚未实现。
+面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点和单入口兼容方法体热更新。完整语言、通用方法分派/布局迁移、编辑器及完整渲染器尚未实现。
+
+另已实现独立的 UI 布局核心首增量：稳定局部节点身份、结构编辑、行列/父框锚定、真实叶测量、事务发布和几何快照；它不是控件、渲染或完整编辑器系统。详见 [布局模块](docs/modules/ui-layout/README.md)。
 
 项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。
 
@@ -19,7 +21,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`，以及 `Runtime acceptance: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`，返回码为 0。RHI 作为依赖先执行。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行 JIT 平台及业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先执行 RHI 依赖，再执行 Runtime、JIT 业务与布局消费者。成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`、`Runtime acceptance: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`、`UI layout minimal consumer: PASS` 和 `UI layout acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行 JIT 平台及业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 首次配置新机器：先按工具链锁文件安装所需 MSVC 工具集、Windows SDK、CMake/Ninja 的 Visual Studio C++ 开发工具，再执行：
 
@@ -31,15 +33,28 @@ cmake --build --preset release --target acceptance
 
 唯一版本清单位于 [cmake/toolchain-lock.json](cmake/toolchain-lock.json)，版本升级同时更新锁文件并验证构建环境，不在文档中维护第二份版本表。
 
-第三方源码依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置下载 mimalloc，以及 LLVM SDK 所需的 zlib/zstd 官方源码发行包；压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。不要求编译 LLVM 或 compiler-rt 全量源码。
+第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX；压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。不要求编译 LLVM 或 compiler-rt 全量源码。
 
 原生代码使用 C++23，警告视为错误；编译使用 clang-cl，静态归档使用 llvm-lib，链接使用 lld-link。只维护 CMake 构建定义。IDE 应使用相同 preset 和准备好的工具链环境。
 
-### RHI 图形验收
+## RHI 图形验收
 
 RHI 采用固定 gfx 与局部补丁，提供 Compute、Mesh、Vertex 管线和有界执行域。单独构建并运行图形矩阵：`cmake --build --preset dev --target rhi_acceptance`，发布配置替换为 `release`；命令要求支持 Mesh Shader 的真实硬件及 D3D12 debug/GBV，不自动降级为软件或跳过场景。当前实测与边界见 [RHI 模块](docs/modules/rhi/README.md) 和 [验收证据](docs/modules/rhi/acceptance.md)。
 
 构建输出同时部署锁定的 DXC、Agility 与 PIX DLL，并保留 `licenses/rhi`。`atelier_rhi` 不链接业务 Runtime/JIT；顶层 CMake 配置仍需要完整工具链。
+
+## UI 布局核心
+
+正式静态目标 `atelier_ui_layout` 公开 `ui_layout/layout.hpp`，与 Runtime/JIT/RHI 无链接关系。窗口、真实内容和绘制由调用者负责；DirectWrite 只在布局验收的 Adapter 中使用。`atelier_ui_layout_minimal` 不依赖文字库，`atelier_ui_layout_acceptance` 验证真实文字和完整首增量合同。
+
+环境准备和配置仍使用上方正式 presets；仅运行布局验收：
+
+```powershell
+cmake --build --preset dev --target ui_layout_acceptance
+cmake --build --preset release --target ui_layout_acceptance
+```
+
+总体 `acceptance` 也包含这两个消费者。当前几何在输入改变后仍全树计算，稳定叶缓存不等于局部调度；共享轨道、换行、虚拟化及渲染尚未由此模块实现。行为、限制和本次实际执行范围分别见 [合同](docs/modules/ui-layout/contract.md) / [验收记录](docs/modules/ui-layout/acceptance.md)。
 
 ## 默认内存分配
 
