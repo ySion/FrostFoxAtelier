@@ -23,6 +23,8 @@ cmake --build --preset release --target acceptance
 
 总入口先执行 RHI 依赖，再执行 Runtime、JIT 业务与布局消费者。成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`、`Runtime acceptance: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`、`UI layout minimal consumer: PASS` 和 `UI layout acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行 JIT 平台及业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
+2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
+
 首次配置新机器：先按工具链锁文件安装所需 MSVC 工具集、Windows SDK、CMake/Ninja 的 Visual Studio C++ 开发工具，再执行：
 
 ```powershell
