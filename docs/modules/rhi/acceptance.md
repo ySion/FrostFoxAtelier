@@ -1,55 +1,87 @@
 # RHI 验收与证据
 
-状态：SDK路径已有Main实测；生产Module尚未实现。当前会议reviewer没有执行构建或GPU工作。未来模块必须从公开Interface进入，不拿直接SDK探针替代wrapper验收。
+当前 gfx 方案已在 dev/release 编译并通过真实 GPU 执行。这里记录正式 Interface 的当次结果，不把此前 SDK 探针当作本模块验收。
 
-## 已有平台证据
+## 命令与环境
 
-| 项目 | 已观察结果 | 原始证据 |
-| --- | --- | --- |
-| 首次硬件debug探针 | `--require-debug`，exitCode=0，stderr空 | [rhi-path-probe-hardware-debug.json](../../../out/review/wave1-meeting/rhi-path-probe-hardware-debug.json) |
-| 独立最小链接 | 正式release host编译标志，Clang C++23；移除Runtime/JIT静态/导入库，保留global_new_delete对象、共享mimalloc与Windows/D3D12/DXGI库 | [rhi-minimal-build.json](../../../out/review/wave1-meeting/rhi-minimal-build.json)、[build.log](../../../out/review/wave1-meeting/rhi-minimal-build.log) |
-| 最小链接后的真实执行 | `--require-debug`，exitCode=0，stderr空；同样两轮正确 | [rhi-minimal-hardware-debug.json](../../../out/review/wave1-meeting/rhi-minimal-hardware-debug.json) |
-| 实际adapter | AMD Radeon RX 6800 XT，vendor=0x1002、device=0x73BF、software=0；当次LUID=00000000:0001088E | 两份run JSON；LUID不是持久设备ID |
-| 验证层 | debug_requested=1、debug_enabled=1、gpu_validation=0；messages/errors/warnings均0 | 仅D3D12 debug layer，不含GPU-based validation |
-| 像素/布局 | 两次37×19；row_bytes=148、row_pitch=256、footprint_bytes=4756；mismatches=0 | 非紧致行布局确实被使用 |
-| 提交/完成 | ticket=1/2分别completed=1/2；caller CPU owner在submit前撤销，submission_hold在fence后释放 | SDK COM持有演示，不是生产retirement manager |
+在 worktree 根目录执行 `. ./tools/enter-dev.ps1`，分别 `cmake --preset dev`、`cmake --preset release`，再运行：
 
-探针源码：[rhi-path-probe.cpp](../../../out/review/wave1-meeting/rhi-path-probe.cpp)。两轮颜色为RGBA(255,0,255,255)和(0,255,0,255)，每轮703像素、2812有效颜色字节。上述数据归Main实跑，本目录作者只读证据，不重新运行已报告结果。
+```powershell
+cmake --build --preset dev --target acceptance
+cmake --build --preset release --target acceptance
+```
 
-**不外推**：该证据不覆盖WARP、其他GPU/驱动、device-loss注入/恢复、性能、shader/draw/Present、尚不存在的Record取消/丢Ticket/陈旧句柄规则。JSON中的进程elapsed包含启动、驱动和同步，不是性能基线。最小链接仍使用来自既有正式target的global-new对象，因此证明路径级独立链接，不代表已建立独立Module target。
+以上是完整重现命令。2026-09-27 修正后，release 的完整 `acceptance` 退出 0；dev 先运行 `rhi_acceptance`，随后构建并分别运行 `atelier_runtime_acceptance`、`atelier_jit_acceptance`，各自退出 0，避免重复已经通过的 GPU 矩阵。两种配置的 RHI、Runtime、Business execution、JIT 均 PASS。执行器给主消费者 180 秒、每个后端回归 60 秒的进程上限；这不是 GPU 单次 wait budget。
 
-## 未来模块验收矩阵
+| 环境 | 实测 |
+| --- | --- |
+| OS | Windows 11 Pro，10.0.26200，x64 |
+| Adapter | AMD Radeon RX 6800 XT，vendor 0x1002 |
+| Driver | 32.0.21045.5002 |
+| gfx 帧槽 | 3 |
+| 主消费者 / Mesh PS 回归 | D3D12 debug layer + GPU-based validation |
+| null-list / timeout 回归 | D3D12 debug layer |
+| 工具链 | 从 `cmake/toolchain-lock.json` 加载；构建日志保留实际版本 |
+| 来源身份 | gfx 与运行库归档由 `cmake/dependencies-lock.json` 固定；补丁与当前源文件 SHA-256 保存在 `out/rhi-verification.json` |
 
-在Main批准的正式dev/release目标上使用真实D3D12后端。行A01–A12均是首里程碑门槛；能力/环境不足时记录blocked/unsupported并由Main限制支持范围，不能计作PASS。
+## 两种配置的结果
 
-| ID | 真实入口/触发 | 必须观察 | 可捕获的错误 |
-| --- | --- | --- | --- |
-| A01 | Device创建，明确hardware选择；另可显式WARP | 记录adapter/debug/能力；硬件失败不自动软件回退；非法格式/尺寸在副作用前拒绝 | 静默fallback、溢出/不支持usage |
-| A02 | Texture+Readback→record clear/copy→submit→wait→map | 37×19两颜色mismatch=0，按真实pitch取行；ticket匹配，Map在完成后 | 只创建device、读旧数据、忽略padding |
-| A03 | 录制引用texture后释放CPU owner，再submit | 外部ID已不允许新record，但既有Recording仍成功读回；native资源保持至完成 | 只按CPU作用域保活、submit重验owner导致错误拒绝 |
-| A04 | 录制引用后释放owner，再取消；另测Recording析构取消 | 未提交命令不执行；内部持有撤销；无其他持有时资源恰好释放；最后已提交状态不变 | 未提交泄漏、取消污染state tracker |
-| A05 | submit后销毁Recording外壳、丢弃Ticket、释放CPU owner，继续驱动Device | in-flight由Device持有；完成前不释放，完成后回收到基线；无需保留用户Ticket | 将完成查询凭证误当唯一所有者 |
-| A06 | 两批使用同一texture/先后不同readback，早期ticket完成 | 较晚批次仍在飞时resource不退休；其余已完成allocator可合法复用 | 以最早fence当last-use或全局stall |
-| A07 | slot复用、generation改变、跨device/种类错误ID与ticket | 明确拒绝；不绑定新资源；失效检查不误撤内部record持有 | ABA、跨域误解析 |
-| A08 | Map借用期间释放CPU owner/尝试复写；以错误或旧copy-ticket查询 | Mapping保持存储至Unmap；复写/close busy；错误ticket拒绝 | 已完成旧ticket读取新/未完成数据 |
-| A09 | 真pending工作→poll、零/有限deadline wait→稍后放行 | pending/timeout不退休；后续正常完成；事件唤醒后仍校验真实fence | timeout当完成、stale event假完成 |
-| A10 | Close/录制失败、Execute前分配失败；Execute后Signal故障路径 | 不发成功ticket；未提交失败可撤持有，可能已提交则保留/停止新工作；旧有效数据不伪标新结果 | 部分提交被当作无副作用回滚 |
-| A11 | 显式正常close；仍有Recording/Mapping/owner；有在飞timeout | busy类别明确；释放孩子后可关闭；timeout保留Device；违规销毁有明确诊断 | 析构无限wait、Device先死悬空孩子 |
-| A12 | 独立进程真实device removal；owner/Recording释放与关停 | lost而非complete，fence最大值不授权Map/复用，新提交拒绝，有界退出 | `UINT64_MAX >= ticket`误判成功 |
+以下结果在 dev 与 release 各自通过，检查不依赖 C++ assert：
 
-计数诊断应覆盖逻辑live资源、未提交持有、in-flight批次/资源、pending退休与native释放，足够证明恰好一次和归零即可；不是新生产telemetry服务。不能用“没有崩溃”或COM::Release返回值替代整个所有权断言。验收从Module Interface进入，诊断只观察真实实现，不另写mock资源世界。
+| 场景 | 观察结果 |
+| --- | --- |
+| Compute → Mesh → Vertex | 6 帧真实执行；Compute 生成数据、Mesh 间接参数和 Vertex draw 参数；Mesh PS 先读 Compute 输出，随后 Vertex 绘制 |
+| 完整颜色/深度回读 | 24,576 个颜色像素、12,288 个深度像素、90 个 GPU 参数字，mismatches=0 |
+| 常量与绑定 | 同帧两次不同 seed/不同 buffer；超过 root-constant 阈值的 globals；跨帧变化均匹配 |
+| 在飞生命周期 | 每帧已编码临时资源在提交前释放 CPU 句柄；跨帧回读仍正确；在飞旧管线被成功候选替换 |
+| 准备失败 | 26 个错误候选拒绝；原 13 项加 11/12/128/8192 字节 model、非法后缀、空指针和显式空文件路径；新增项返回 invalid_argument，旧 Program/Kernel 身份不变 |
+| 可选文件阶段 | GS/AS 不存在时 Vertex/Mesh 文件管线成功；存在但编译错误时拒绝 |
+| owner 与 close | 异线程执行拒绝，borrow 不可用；Pipeline 存活时 close busy；重复 close 成功 |
+| 共享执行域 | Context 外壳退出后 Pipeline 保持原生 PSO 有效；最后释放 Pipeline 后安全清理 |
+| 创建输入 | 零宽度、零等待、INFINITE 等待、无效验证枚举，共 4 项在创建前拒绝 |
+| null-list | 合法 interop device、不设置 command list、CPU 创建 pipeline，context 清理成功 |
+| Mesh PS 状态 | 独立回归检查 2,048 像素；GPU validation 无资源状态错误 |
+| 真超时 / 严格一次 | 原生 queue 等待独立 CPU gate fence；finish 与未放行 close 超时；新录制/frame/finish/execute/reset 拒绝；放行后 close 只 drain；计数器回读严格为 1 |
+| D3D12 调试消息 | 主消费者及后端回归的 InfoQueue 检查无 warning/error |
+| 间接大常量 | 冷常量池下单次/多次间接 compute，连续 64 次 finish，每次 GPU 值匹配；另验证 Vertex、Indexed Vertex、Mesh 间接绘制各 2,048 像素 |
+| range 上传与回读 | 64×32 RGBA8；源 range 偏移 256，目标 range 偏移 512；8,192 图像字节匹配，512 字节前缀/尾部哨兵保持不变 |
 
-## 有界负向实验
+主消费者只经正式 `Context` 与 gfx 借用许可录制、推进和关闭。专用后端回归的 native queue gate、外部 committed readback 和 interop device 是明确隔离的诊断场景，不是普通业务的逃生 Interface。
 
-**确定性pending**：不能用大量GPU负载或假fence强行撞时序。需要A05/A06/A09确定覆盖未完成分支时，可在仅验收可访问的窄后端入口用真实queue::Wait等待一个独立gate fence；仍经真实Module submit。在CPU释放gate后用真实完成fence核对。gate与生产completion fence严格分开；不得CPU Signal生产completion fence。实验设有限退出期限，不交付一般native逃生Interface或永久测试分支。
+## 审计修正的生命周期观察
 
-**提交故障**：参数/句柄失败走真实输入；native Signal/设备失败优先使用独立进程中的真实RemoveDevice场景，而非替换driver返回值。不同设备可能在不同调用首先报告lost，应以实际失败阶段记录，不硬编码期待某一个HRESULT。暂时无法安全触发的内存准备/驱动故障，明确保留其源级事务审查证据与动态覆盖缺口，由Main裁决验收边界；不能另写mock backend、伪造fence或将未经触发的分支计作实测PASS。
+[审计发现](audit-2026-09-27.md)的九项修正已进入正式宿主/CMake 或可重放 gfx 补丁。以下观察另在 dev/release 各运行一次，均退出 0：
 
-**设备丢失**：官方`ID3D12Device5::RemoveDevice()`可用于隔离负向进程；先QueryInterface，官方页面列最低Windows Build20348。预期GetDeviceRemovedReason失败、fence变UINT64_MAX、wrapper返回device_lost而非normal-complete。它验证失效分类/清理，不证明物理GPU故障全集、DRED全功能或自动恢复。禁止故意挂死GPU、修改TDR或影响其他运行中session。
+| 观察 | 两种配置的结果 |
+| --- | --- |
+| 连续 finish 的存储复用 | 各三轮、每轮 64 次真实大常量 GPU dispatch/回读；完成后游标均为 0，池容量保持 65,536 字节 |
+| buffer 参数分配/释放 | 每轮反复切换 2 个/1 个绑定；实际 gfxFree 配平旧数组，Program/Context 退出后跟踪的参数数组为 0 |
+| DXGI 拥有引用 | 三轮正常 close，释放观察者最后一份引用后均返回 0；初始化失败路径也为 0 |
+| 部分初始化清理 | 隔离源码令第二个 CreateCommandAllocator 使用真实无效 list type，由 D3D12 原生拒绝；Context 返回 creation_failed，清理成功 |
 
-## 执行与记录规则
+观察副本由当次正式生成的 gfx.cpp 派生，只增加计数、只读游标/池大小观察及上述原生错误输入；编译/链接使用对应配置的真实命令。它们位于 `out/review/rhi-fixes/`，没有向生产 API 加入测试钩子，也没有伪造 HRESULT 或驱动返回值。证据覆盖列出的拥有引用与参数数组，不等于全部原生对象或完整 OOM 故障普查。
 
-现有probe已验证，不在文档任务中修改或重跑。实现session建立正式Module target后，Main按既有presets统一构建dev/release、执行矩阵并保留命令、源码/依赖hash、配置、exit code、debug状态、adapter/OS/驱动与逐场景结果。缺debug层的functional结果单列；`--require-debug`缺层失败不能被忽略。
+此外，独立 CMake object 消费者只 `target_link_libraries(... atelier_rhi)`，没有调用 `atelier_target` 或指定标准，实际以 C++23 编译公开头文件成功；临时配置入口已移除。Mesh 的成功硬件路径已运行，不支持 Mesh 的硬件和多卡选择仍为源码校验范围。
 
-最终报告分三栏：既有SDK证据、当次Module真实Interface证据、未覆盖/unsupported。只有Module门槛全部满足且没有把unsupported算成功，才能标记本里程碑完成。性能和自动设备恢复没有本轮验收承诺。
+修正汇总、当前源文件 hash、补丁重放身份与日志：[rhi-verification.json](../../../out/rhi-verification.json)。观察脚本：[run-lifetime-probe.ps1](../../../out/review/rhi-fixes/run-lifetime-probe.ps1)；[dev 日志](../../../out/review/rhi-fixes/rhi_lifetime_dev.log)、[release 日志](../../../out/review/rhi-fixes/rhi_lifetime_release.log)、[公开 target 消费者编译命令](../../../out/review/rhi-fixes/public-consumer-command.json)。
 
+## 日志与诊断解释
+
+每个配置的 `out/<preset>/` 保留：
+
+- `aggregate-acceptance.log`：release 当前聚合结果；dev 同名文件保留此前执行，当前 dev 的补充结果使用下述日志。
+- `rhi-acceptance.log`：正式消费者，包含逐场景结果与 `exit=0`。
+- `rhi-regression-null-list.log`、`rhi-regression-mesh-pixel-state.log`、`rhi-regression-timeout.log`：独立子进程结果与 `exit=0`。
+- `licenses/rhi/`：gfx、DXC、Agility、D3D12MA、PIX、AMD 扩展 notice/source 与项目补丁。
+
+汇总及源码 hash：[rhi-verification.json](../../../out/rhi-verification.json)。这些 `out` 文件是本机证据，不是已提交仓库内容。
+
+本轮 dev 的 `out/review/rhi-fixes/dev-rhi.log`、`dev-core-build.log`、`dev-runtime.log`、`dev-jit.log` 记录分开执行的完整组件结果。
+
+坏 shader、等待超时和失败后录制拒绝会按预期打印错误；不能用全日志出现单词 error 判定失败。null-list 场景刻意让一个原始 Program/Kernel 存活到 context 清理，上游打印两个句柄未显式释放的诊断；它不是正式消费者退出路径，也不构成完整原生 live-object census。主消费者没有这两项诊断。固定 D3D12MA 源码在当前 Clang 下有一项 `TYPE_COUNT` 未在 switch 显式列出的编译 warning；项目自身目标仍启用 warnings-as-errors，没有为此关闭项目检查。
+
+## 未覆盖，不计作 PASS
+
+真实 device removal、Signal/事件/Reset 的驱动故障注入、native OOM、fence/back-buffer 创建失败、多卡及不支持 Mesh 的硬件、设备恢复、所有原生对象计数归零、其他 GPU/驱动或 WARP、并发录制、多 queue、Present/resize/HDR/多窗口、ray tracing、RDG/renderer、业务语言绑定与性能基线均未获得本轮动态证明。没有修改 TDR、挂死 shader、伪造 fence 完成值或替换 driver 返回值。
+
+旧 Main SDK 探针曾验证两轮 37×19 clear/copy/readback、row pitch=256 与 debug=0 errors（当时未开 GBV），属于历史路径证据；本次不重跑或改写该结果，也不宣称当前 gfx 消费者验证了任意非对齐 texture pitch。历史依据见 [research.md](research.md)。

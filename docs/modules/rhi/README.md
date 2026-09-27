@@ -1,41 +1,37 @@
-# RHI：Windows x64 单队列离屏资源提交
+# RHI：gfx 主体与窄宿主 Interface
 
-状态：2026-09-25，Main 已选入独立推进模块。**SDK 平台路径已验证；生产 RHI Module 尚未实现。** 本目录定义下一 session 的可实施首里程碑，不宣称完整 renderer 或未来 wrapper 已通过验收。
+当前实现位于 [src/rhi](../../../src/rhi/rhi.hpp)，采用固定 gfx 及可重放补丁。资源、反射绑定、descriptor、barrier、命令与退休继续由 gfx 负责；`atelier::rhi` 只承担硬件/验证门禁、execution owner、管线准备与生命周期。
 
-## 目的
+这是 Compute、Mesh、Vertex 三类管线的真实离屏实现，不是旧 SDK clear/copy 探针，也不是完整 renderer。现行行为以 [contract.md](contract.md) 为准，逐项运行证据以 [acceptance.md](acceptance.md) 为准。
 
-提供小而完整的 C++ Interface，封装资源创建、录制持有、提交、完成、回读和安全退休。调用者不重复处理 D3D12 状态、行间距、allocator 复用或在飞生命。
+2026-09-27 的[模块审计](audit-2026-09-27.md)所列九项缺陷已修正，新增间接大常量、range 复制及输入边界回归通过 dev/release；生命周期观察与覆盖边界见[验收证据](acceptance.md#审计修正的生命周期观察)。
 
-首里程碑称为 **RHI 资源提交闭环**：Windows x64、单 device/owner thread、单 DIRECT queue、RGBA8_UNORM 2D 单采样/单 mip 纹理、readback buffer、clear/copy 和有界等待。无需窗口、swapchain 或 shader 即可验收该子集。
+## 入口
 
-## 阅读入口
+- [公开头文件](../../../src/rhi/rhi.hpp)：`Context::open / prepare / frame / finish / close`，move-only `Pipeline`。
+- [生产实现](../../../src/rhi/rhi.cpp)：选择硬件 adapter，不自动回退 WARP；统一 owner 线程和错误终态。
+- [正式消费者](../../../acceptance/rhi/main.cpp)：同一 Interface 上的六帧 Compute → Mesh → Vertex、间接参数、颜色/深度回读、提前释放与管线替换。
+- [后端回归](../../../acceptance/rhi/upstream_regression.cpp)：无 list 的 interop 清理、Mesh PS 资源状态、真实 fence gate 超时与严格一次执行。
+- [实施裁决](../../research/rhi-reassessment/gfx-decision.md)、[决策记录](decisions.md)、[回交说明](session-handoff.md)。
 
-- 实现或消费 Interface：先读 [contract.md](contract.md)，它是所有权、错误、失效、关停与线程规则的权威。
-- 后端、依赖或范围变更：读 [decisions.md](decisions.md)，了解裁决与重开条件。
-- 编写/执行验收：读 [acceptance.md](acceptance.md)，区分已有路径证据与尚需通过的模块行为。
-- 核对机制、版本或许可：读 [research.md](research.md)，回到固定一手来源。
-- 下一 session 开工：读 [session-handoff.md](session-handoff.md)，落实实施顺序、文件所有权与集成门槛。
+## 构建与运行
 
-## 当前证据
+在仓库根目录的 PowerShell 中执行；各 preset 首次使用先配置：
 
-Main 的真实硬件探针使用 AMD Radeon RX 6800 XT，实际启用 D3D12 debug layer；两次 37×19 clear/copy/readback，票据/完成值 1/2，mismatches=0，debug error/warning=0。[原始结果](../../../out/review/wave1-meeting/rhi-path-probe-hardware-debug.json)
+```powershell
+. ./tools/enter-dev.ps1
+cmake --preset dev
+cmake --build --preset dev --target rhi_acceptance
+cmake --preset release
+cmake --build --preset release --target rhi_acceptance
+```
 
-Main 另报告去除 Runtime/JIT 链接依赖的最小独立链接与同一路径通过，证据见 acceptance。它们只证明指定机器的 SDK 路径与路径级链接独立，不证明其他 GPU、WARP、设备恢复、性能或未来 wrapper。GPU-based validation 未启用。正式 Module 必须通过自己的 Interface 重新验收。
+`atelier_rhi` 是静态库；`atelier_rhi_acceptance` 和 `atelier_gfx_regression` 是正式可执行目标。`rhi_acceptance` 编译并运行主场景与三个有超时保护的回归进程。只编译主消费者使用 `--target atelier_rhi_acceptance`。
 
-## 首里程碑完成条件
+依赖版本/下载与 hash 的唯一权威是 [dependencies-lock.json](../../../cmake/dependencies-lock.json)，工具链是 [toolchain-lock.json](../../../cmake/toolchain-lock.json)。[cmake/rhi.cmake](../../../cmake/rhi.cmake) 部署 DXC、Agility、PIX 运行库及 `licenses/rhi`；[atelier.patch](../../../third_party/gfx/atelier.patch) 可从固定上游源码重新应用。普通 CPU 分配沿项目 mimalloc 接入，GPU 内存由 gfx/D3D12MA 管理。
 
-1. 真实 offscreen clear→copy→queue completion→逐像素回读，正确处理非紧致 row pitch及两次不同颜色。
-2. 未提交录制持有资源；取消撤销持有；提交移交给 device；释放 CPU owner 或丢弃 ticket 不导致 GPU 资源提前死亡。
-3. 完成前不复用 allocator/slot，完成后退休；陈旧/跨设备标识拒绝；timeout/device_lost 不伪装成功。
-4. single-owner thread、有限等待、正常关停与 lost-device 清理明确，通过 acceptance 的模块矩阵后才宣布完成。
+## 当前边界
 
-## 依赖与非目标
+验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
 
-源码层依赖 C++ 标准设施及现有 Windows SDK 的 D3D12/DXGI/Win32/WRL；正式目标沿现有 native 分配和 CMake 规则。版本权威为 [toolchain-lock.json](../../../cmake/toolchain-lock.json)。GPU 专用内存不由 mimalloc/GC 管理。
-
-RHI 不依赖业务 Runtime、GC、LLVM、语言、UI 树、字体、窗口/输入或 scheduler；现有顶层 CMake 仍含 JIT 验收，不能把源码隔离误说成顶层配置无需 LLVM。根 CMake/依赖锁由 Main 串行集成。
-
-非目标：renderer、scene/material、frame graph、shader编译/PSO/draw/compute、swapchain/Present/HDR/多窗口、第二后端/其他平台、多queue/multi-GPU、bindless/ray tracing、GPU内存别名/驻留、render线程、自动设备恢复、文字/UI绘制、通用语言绑定或GC重构。
-
-UI composition 以后按目标/DPI处理逻辑布局，RHI 不持 Node/业务根、不规定像素snap。未来语言包装沿既有共享类型体系，析构只撤 CPU owner，不在 GC 内等 GPU。
-
+没有实现或未验收：通用 RDG/renderer、业务语言绑定、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、Present/resize/HDR/多窗口、ray tracing 与性能基线。`window` 输入复用 gfx 的窗口路线，但本轮 PASS 仅覆盖离屏。旧 Recording/Ticket/ResourceId 方案已经被 gfx 实施裁决替代，不作为当前 Interface 的能力声明。

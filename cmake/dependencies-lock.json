@@ -13,5 +13,35 @@
     "version": "1.5.7",
     "url": "https://api.github.com/repos/facebook/zstd/releases/assets/230758919?download=1",
     "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+  },
+  "gfx": {
+    "version": "e039b255efb327994d30b187caee400ca60110e0",
+    "url": "https://api.github.com/repos/gboisse/gfx/tarball/e039b255efb327994d30b187caee400ca60110e0",
+    "sha256": "498c32963532d78ab2697db0ed7a8d709b276970c6fcc049a57f9e7e1a680433",
+    "filename": "gfx-e039b255.tar.gz"
+  },
+  "gfx_dxc": {
+    "version": "1.9.2602",
+    "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip",
+    "sha256": "a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e",
+    "filename": "dxc-1.9.2602.zip"
+  },
+  "gfx_agility": {
+    "version": "1.619.1",
+    "url": "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.619.1",
+    "sha256": "9073a264301e93183844026239c9081717d52d13fb71aae68a0555c576b8de44",
+    "filename": "agility-1.619.1.nupkg"
+  },
+  "gfx_d3d12ma": {
+    "version": "3.0.1",
+    "url": "https://api.github.com/repos/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator/tarball/v3.0.1",
+    "sha256": "3f223abeafd4328b9e11d43517030f84cdff9a4eec56d3f091533e14c8d0d779",
+    "filename": "d3d12ma-v3.0.1.tar.gz"
+  },
+  "gfx_pix": {
+    "version": "1.0.240308001",
+    "url": "https://www.nuget.org/api/v2/package/WinPixEventRuntime/1.0.240308001",
+    "sha256": "726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4",
+    "filename": "pix-1.0.240308001.nupkg"
   }
 }

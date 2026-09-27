@@ -1,0 +1,20 @@
+set(_root "$<TARGET_FILE_DIR:atelier_rhi_acceptance>")
+execute_process(COMMAND "$<TARGET_FILE:atelier_rhi_acceptance>"
+    WORKING_DIRECTORY "${_root}" TIMEOUT 180
+    RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+file(WRITE "${_root}/rhi-acceptance.log" "${_out}\n${_err}\nexit=${_result}\n")
+message("${_out}${_err}")
+if(NOT "${_result}" STREQUAL "0")
+    message(FATAL_ERROR "RHI acceptance failed: ${_result}")
+endif()
+foreach(_case null-list mesh-pixel-state timeout)
+    execute_process(COMMAND "$<TARGET_FILE:atelier_gfx_regression>" "--${_case}"
+        WORKING_DIRECTORY "${_root}" TIMEOUT 60
+        RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+    file(WRITE "${_root}/rhi-regression-${_case}.log" "${_out}\n${_err}\nexit=${_result}\n")
+    message("${_out}${_err}")
+    if(NOT "${_result}" STREQUAL "0")
+        message(FATAL_ERROR "RHI regression ${_case} failed: ${_result}")
+    endif()
+endforeach()
+message("RHI regression acceptance: PASS")

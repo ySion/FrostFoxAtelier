@@ -19,7 +19,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-成功依次输出 `Runtime acceptance: PASS`、`Business execution acceptance: PASS` 和 `JIT acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行 JIT 平台及业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`，以及 `Runtime acceptance: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`，返回码为 0。RHI 作为依赖先执行。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行 JIT 平台及业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 首次配置新机器：先按工具链锁文件安装所需 MSVC 工具集、Windows SDK、CMake/Ninja 的 Visual Studio C++ 开发工具，再执行：
 
@@ -34,6 +34,12 @@ cmake --build --preset release --target acceptance
 第三方源码依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置下载 mimalloc，以及 LLVM SDK 所需的 zlib/zstd 官方源码发行包；压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。不要求编译 LLVM 或 compiler-rt 全量源码。
 
 原生代码使用 C++23，警告视为错误；编译使用 clang-cl，静态归档使用 llvm-lib，链接使用 lld-link。只维护 CMake 构建定义。IDE 应使用相同 preset 和准备好的工具链环境。
+
+### RHI 图形验收
+
+RHI 采用固定 gfx 与局部补丁，提供 Compute、Mesh、Vertex 管线和有界执行域。单独构建并运行图形矩阵：`cmake --build --preset dev --target rhi_acceptance`，发布配置替换为 `release`；命令要求支持 Mesh Shader 的真实硬件及 D3D12 debug/GBV，不自动降级为软件或跳过场景。当前实测与边界见 [RHI 模块](docs/modules/rhi/README.md) 和 [验收证据](docs/modules/rhi/acceptance.md)。
+
+构建输出同时部署锁定的 DXC、Agility 与 PIX DLL，并保留 `licenses/rhi`。`atelier_rhi` 不链接业务 Runtime/JIT；顶层 CMake 配置仍需要完整工具链。
 
 ## 默认内存分配
 

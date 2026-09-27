@@ -1,45 +1,31 @@
-# RHI 决策记录
+# RHI 实施决策
 
-2026-09-25；Main已选入窄离屏RHI。具体C++名称可调整，行为以[contract](contract.md)为准；此处记录选择理由与重开条件，而非生产实现已完成。
+当前架构依据是 [gfx 实施裁决](../../research/rhi-reassessment/gfx-decision.md)。原先的 SDK-only clear/copy 与自建 Recording/Ticket 设计已被替代；历史研究保留为取舍证据，不再约束当前实现形状。
 
-## 已选实施基线
+## 已落地选择
 
-| 决策 | 理由与证据 | 重开条件 |
+| 选择 | 理由 | 维护入口 |
 | --- | --- | --- |
-| Windows x64、现有SDK原生D3D12、单DIRECT queue | 符合当前产品与工具链，Main真实硬件debug路径和最小独立链接通过 | 目标设备或近期工具功能使D3D11更合适时重审；不暗建fallback |
-| 完整资源提交子集，不称完整RHI覆盖 | Clear/copy/readback不需shader/window，仍能覆盖GPU使用期 | 产品必须Present/draw时单独批准增量，不扩大现有PASS含义 |
-| 一个owner thread、最多一个未提交Recording | 资源状态、取消和提交次序直接可验证 | 确有并行录制/多queue负载后再设计完成关系 |
-| Device拥有在飞记录；Ticket不拥有资源 | 丢查询凭证不撤GPU持有，首引用Recording持有覆盖未提交期间 | 内部容器可变，但可观察所有权不变 |
-| 关停显式有界；timeout保留Device | 析构无限wait拖垮宿主/GC，timeout不是完成证明 | 如需故障转交，必须引入明确新owner，不能永久孤儿泄漏 |
-| Device lost与正常完成分开 | fence最大值表示设备丢失，不能用简单大于比较判成功 | runtime/后端更换时重新核对 |
-| presentation为独立Adapter | 离屏不需要HWND；swapchain与窗口生命另有协议 | 窗口增量入选时定义resize/close/surface世代 |
-| C++核心独立、未来绑定共享Runtime | GPU资源不是业务对象，当前语言子集未覆盖一般RHI | 实际绑定需求出现后独立实现，不倒置依赖 |
+| 固定 gfx 作为 RHI 主体 | 复用完整资源、反射、绑定、descriptor、barrier、命令、退休实现，不建设第二套浅包装或状态世界 | 依赖锁与 `third_party/gfx/atelier.patch` |
+| 宿主只保留 Context 与 Pipeline | 集中真实硬件/验证门禁、execution owner、完整准备与存活规则；不增加 profile 对象、Publisher、ticket 或逐函数代理 | `src/rhi/rhi.hpp` |
+| 一个 owner 串行驱动 owned context | 与固定 gfx 的实际帧槽、常量池及状态模型一致；内部 GPU 仍异步在飞 | 当前 contract |
+| 候选成功后移动替换 | 准备失败不伤及已使用的 Pipeline；不自动继承参数或引入双份绑定表 | `Context::prepare`、Pipeline 移动赋值 |
+| 不靠 PSO 非空掩盖阶段错误 | 任一明确阶段编译失败阻止 Ready；缺失主阶段在原生 PSO 创建前拒绝 | gfx 编译补丁与准备矩阵 |
+| 保留提交事实与错误终态 | 超时、Signal 等执行失败不能被当成未提交，destroy 只 drain 已提交工作 | gfx execution 补丁 |
+| 真实 GPU 场景验收 | 同一正式 Interface 测试业务链；后端专门回归仅用于 native failure seam | `acceptance/rhi` |
 
-## 未同时建设的真实备选
+## 补丁范围
 
-**D3D11**：传统工具UI/首个绘制可能更小。基础immediate context、staging Map/query可正确回读；较新Device5/Context4有fence接口，不能说它“没有fence”。本轮选D3D12为显式提交/退休闭环，不是性能或通用优越性结论。若改选，仅保一个后端、重验相同契约。
+补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`：Mesh PS 资源状态、shader/主阶段失败传播、null-list 清理、有限等待与错误字符串、Recording/Closed/Submitted 状态、失败录制门禁、间接 finish/sync 错误传播。补丁从锁定原始归档生成；CMake 保留生成源码的 pristine 副本，补丁更新先还原再重放，不在旧修改上叠加。
 
-**Vulkan**：核心device/queue与WSI分离，offscreen不需surface/swapchain；Windows-only目标下新增headers/loader/ICD/validation的固定和验证成本，暂无相应产品收益。没有本机Vulkan可用性证据，不默认timeline semaphore/扩展支持。
+2026-09-27 审计修正继续进入同一补丁：间接命令在 shader 安装后按句柄取 Buffer，纹理上传只保留由活句柄保护的原生资源及 range 基址，纹理复制计入 range 偏移；配平 DXGI 和 buffer 参数数组的拥有存储，原生拥有指针数组先清零；成功 finish 后复用当前常量池。宿主同时落实 Mesh 候选筛选和 PipelineDesc 输入边界，公开 target 传递 C++23。没有增加资源镜像、发布器或第二套执行入口。
 
-**NVRHI**：固定提交`d0c8e30d5f8d58c3b838b06aa1d8d0a912bea076`有真实资源追踪、barrier与延后销毁；应用仍建native device/queue。其DX12 CMake要求DirectX-Headers/Guids，默认`v1.717.0-preview`；Vulkan-Headers默认`v1.4.352`。不是现有SDK零新增依赖；本轮不接入、不升级。以后若受控pin可显著减少维护可重审，不据此否定所有历史提交。[来源](research.md#成熟实现与依赖)
+gfx 的库编译选项取消 AVX2 baseline 要求，保持项目的 x64 基线。没有因此宣称 gfx 全部可选能力在该基线上得到验证。DXC、Agility、D3D12MA、PIX 均固定实际归档 hash；license/notice 与补丁随构建输出保留。
 
-## 支线对抗的实际修正
+## 明确排除
 
-- WaveModuleMap接受“RHI资源提交首里程碑”的命名，补上未提交Recording持有、取消、丢Ticket不丢在飞持有；本席接受其反问：SDK probe不验证未来wrapper。
-- WaveUi接受双DPI/离屏反例：布局输出未舍入逻辑值，composition按target/DPI/policy派生像素视图。Viewport FLOAT与scissor整数各遵原生规则，RHI不round child.width或保持Node/业务root。
-- 两模块不互为前置；文字shaping、glyph/clip/hit-test留到composition/text实际需求。
+不同时维护原生自建后端、NVRHI 或 Diligent；不自动加入 OMM 新提交。暂不做并发录制、多 queue、外部原生互操作生产契约、设备自动恢复、通用 RDG、renderer、语言绑定或 UI。
 
-完整争议、证据和证伪条件见[会议报告](../../research/wave1-meeting/parallel-modules/rhi.md#13-已完成支线质询与修正)。
+Present/resize 路线只保留 gfx 能力并贯通失败传播，本轮证据是离屏，不把源码存在当验收。未来加入这些能力、升级 gfx 或变更执行模式时，须重新核对原生所有权与同步，并运行现有行为矩阵。
 
-## 实现者可决定但不阻塞的细节
-
-C++类型/方法拼写、局部错误表示、资源表/空槽管理和批次容器可选最直接方案；无跨语言ABI冻结。首版关停采用contract中明确生命周期与违规销毁诊断，不引入通用孤儿回收框架。内部若选共享control也必须维持相同所有权和有界关停契约。
-
-正式目录/target以handoff为建议，Main完成CMake集成后成为权威。硬件支持列表、最低驱动、性能预算尚无全面证据；第二后端、suballocation、并行、自动设备恢复和shader路线均另需需求与验收授权。
-
-## 集成与版本权威
-
-准确工具链由现有toolchain-lock.json唯一维护；系统graphics runtime/OS/驱动另记录实测。新增源码依赖只由Main更新dependencies-lock.json：固定版本/commit、下载URL、实际归档SHA-256、构建选项、license/notice与patch；禁止虚构hash或moving main。当前SDK路线不增加第三方源码依赖。
-
-Module生产target沿atelier_target接入默认native分配；GPU内存仍由D3D管理。升级或换后端后重跑同一Interface行为矩阵，不能以编译/CreateDevice成功代替。
-
+历史原生路线研究见 [research.md](research.md)；实际支持与未覆盖项以 [acceptance.md](acceptance.md) 为准。
