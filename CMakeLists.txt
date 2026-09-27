@@ -69,7 +69,10 @@ target_link_libraries(atelier_runtime_acceptance PRIVATE atelier_runtime atelier
 include(cmake/jit.cmake)
 atelier_add_jit_acceptance()
 
+include(cmake/rhi.cmake)
+atelier_add_rhi()
+
 add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
     COMMAND $<TARGET_FILE:atelier_jit_acceptance>
-    DEPENDS atelier_runtime_acceptance atelier_jit_acceptance USES_TERMINAL VERBATIM)
+    DEPENDS atelier_runtime_acceptance atelier_jit_acceptance rhi_acceptance USES_TERMINAL VERBATIM)

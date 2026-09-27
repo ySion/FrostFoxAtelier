@@ -1,6 +1,8 @@
-# RHI 一手依据与证据边界
+# RHI 历史 SDK 路线依据
 
 访问/记录日期：2026-09-25。外部新检索使用Exa，事实回到Microsoft/Khronos/NVRHI原文。以下区分源码、本机运行和设计判断；不把外部文档当本机设备能力证明。
+
+本页是 gfx 路线确定之前的研究快照，不是当前实现契约。现行入口见 [README](README.md)、[contract](contract.md) 与 [gfx 实施裁决](../../research/rhi-reassessment/gfx-decision.md)。本页“当前”“未来 Module”等用语仅指记录当时；正式目标与运行结果见 [acceptance](acceptance.md)。
 
 ## 当前项目与本机证据
 
@@ -9,7 +11,7 @@
 - [runtime.hpp](../../../src/runtime/runtime.hpp):322–333：根不阻止显式销毁；[runtime.cpp](../../../src/runtime/runtime.cpp):663–668、766–771、792–826、1259–1272：native析构、发布准入、GC预算与显式销毁均没有GPU完成含义。
 - [工具链锁](../../../cmake/toolchain-lock.json)是准确版本唯一权威。会议时SDK为10.0.26100.0、LLVM23.1.1、MSVC14.50.35717；这是日期化研究快照，不是第二份升级清单。
 - [首次硬件debug结果](../../../out/review/wave1-meeting/rhi-path-probe-hardware-debug.json)、[最小链接命令](../../../out/review/wave1-meeting/rhi-minimal-build.json)、[最小链接硬件执行](../../../out/review/wave1-meeting/rhi-minimal-hardware-debug.json)：Main实测RX6800XT、两次像素一致、debug0错误、GPU-based validation关闭。精确数值与不覆盖项只维护于[acceptance](acceptance.md)。
-- 会议[固定baseline](../../research/wave1-meeting/baseline.json)是当前源码hash依据，无Git diff。当前Module尚无生产target；最小链接只证明路径不依赖Runtime/JIT库。
+- 会议[固定 baseline](../../research/wave1-meeting/baseline.json)记录当时的源码依据；当时尚无生产 target。如今已有 gfx 正式目标，不再用旧最小链接证据替代模块验收。
 
 ## D3D12 资源与提交
 
