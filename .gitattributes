@@ -1,0 +1,2 @@
+# Keep source patches byte-stable across Windows checkouts.
+*.patch text eol=lf
