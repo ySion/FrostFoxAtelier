@@ -66,10 +66,30 @@ atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)
 target_link_libraries(atelier_runtime_acceptance PRIVATE atelier_runtime atelier_allocator_client)
 
+add_library(atelier_ui_layout STATIC src/ui_layout/layout.cpp)
+target_include_directories(atelier_ui_layout PUBLIC src)
+target_compile_features(atelier_ui_layout PUBLIC cxx_std_23)
+atelier_target(atelier_ui_layout)
+
+add_executable(atelier_ui_layout_minimal acceptance/ui_layout/minimal.cpp)
+atelier_target(atelier_ui_layout_minimal)
+target_link_libraries(atelier_ui_layout_minimal PRIVATE atelier_ui_layout)
+
+add_executable(atelier_ui_layout_acceptance acceptance/ui_layout/main.cpp)
+atelier_target(atelier_ui_layout_acceptance)
+target_link_libraries(atelier_ui_layout_acceptance PRIVATE atelier_ui_layout dwrite)
+add_custom_target(ui_layout_acceptance
+    COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
+    COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
+    DEPENDS atelier_ui_layout_minimal atelier_ui_layout_acceptance USES_TERMINAL VERBATIM)
+
 include(cmake/jit.cmake)
 atelier_add_jit_acceptance()
 
 add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
     COMMAND $<TARGET_FILE:atelier_jit_acceptance>
-    DEPENDS atelier_runtime_acceptance atelier_jit_acceptance USES_TERMINAL VERBATIM)
+    COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
+    COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
+    DEPENDS atelier_runtime_acceptance atelier_jit_acceptance
+        atelier_ui_layout_minimal atelier_ui_layout_acceptance USES_TERMINAL VERBATIM)
