@@ -14,8 +14,13 @@ namespace atelier::language {
 // Compiler classifications, not a separate registry of business types.
 // A predicate is internal to conditions, not a new Runtime value type.
 enum class ValueType { f32, u32, predicate, void_value, strong_reference, weak_reference, null_reference };
-struct FieldBinding { std::string_view name; ValueType type; std::uint32_t selector; };
-struct MethodBinding { std::string_view name; ValueType parameter; std::uint32_t selector; };
+struct FieldBinding { std::string_view name; ValueType type; };
+struct MethodBinding {
+    std::string_view name;
+    std::span<const ValueType> parameters;
+    ValueType result{ValueType::void_value};
+    bool receiver_read_only{};
+};
 struct Environment {
     std::span<const FieldBinding> fields;
     std::span<const MethodBinding> methods;
@@ -36,9 +41,10 @@ struct Expression {
     ValueType type;
     SourcePosition position;
     NodeId left{no_node}, right{no_node};
-    std::uint32_t value{}; // literal bits, local index, or host member selector
+    std::uint32_t value{}; // literal bits, local index, or host catalog index
     Operation operation{Operation::add};
-    NodeId receiver{no_node}; // field/call owner; call.left remains the argument
+    NodeId receiver{no_node}; // field/call owner
+    std::vector<NodeId> arguments{}; // native call operands, evaluated left to right
 };
 struct Statement {
     enum class Kind { block, declare, assign, call, condition, loop, return_value };
@@ -51,12 +57,14 @@ struct Statement {
 struct Local {
     std::string name;
     ValueType type;
-    // First two locals are the checked float/uint parameters; others initialize
-    // at their declaration. All storage remains private to generated execution.
+    // The first Program::parameters.size() locals are scalar parameters;
+    // all remaining locals initialize at their declaration.
 };
 struct Program {
     std::string source_name;
     std::string function_name;
+    std::vector<ValueType> parameters;
+    ValueType result{ValueType::void_value};
     std::vector<Local> locals;
     std::vector<Expression> expressions;
     std::vector<Statement> statements;
@@ -64,7 +72,8 @@ struct Program {
     std::string object_type_name;
 };
 
-// One host-bound void function with float/uint parameters and an implicit self.
+// One host-bound function: zero or more float/uint parameters, void/float/uint
+// result, and an optional implicit self. No implicit numeric conversions.
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.

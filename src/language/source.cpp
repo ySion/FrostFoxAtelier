@@ -124,16 +124,22 @@ public:
     Program parse() {
         validate_environment();
         program_.object_type_name = environment_.object_type_name;
-        expect("void");
+        program_.result = accept("void") ? ValueType::void_value : scalar_type();
         program_.function_name = identifier().text;
         expect("(");
-        parameter(ValueType::f32, "float");
-        expect(",");
-        parameter(ValueType::u32, "uint");
-        expect(")");
+        if (!accept(")")) {
+            do {
+                const auto type = scalar_type();
+                local(identifier(), type);
+                program_.parameters.push_back(type);
+            } while (accept(","));
+            expect(")");
+        }
         program_.body = block();
         if (token_.kind != Token::Kind::end)
             reject(token_.position, "Only one host-bound entry function is supported.");
+        if (program_.result != ValueType::void_value && !returns(program_.body))
+            reject(token_.position, "Non-void entry can reach the end without a return value.");
         return std::move(program_);
     }
 private:
@@ -144,24 +150,30 @@ private:
         }
         ~Depth() { --value; }
     };
-    void validate_environment() const {
-        const auto type_name = environment_.object_type_name;
-        for (std::size_t start = 0; start < type_name.size();) {
-            auto end = type_name.find('.', start);
-            if (end == std::string_view::npos) end = type_name.size();
-            const auto segment = type_name.substr(start, end - start);
+    void validate_name(std::string_view name, bool optional) const {
+        if (name.empty() && !optional) reject({}, "Host member name cannot be empty.");
+        for (std::size_t start = 0; start < name.size();) {
+            auto end = name.find('.', start);
+            if (end == std::string_view::npos) end = name.size();
+            const auto segment = name.substr(start, end - start);
             if (segment.empty() || !letter(segment.front()) || reserved(segment))
-                reject({}, "Host object type name requires non-reserved identifier segments.");
+                reject({}, "Host binding name requires non-reserved identifier segments.");
             for (const auto character : segment)
                 if (!letter(character) && !digit(character))
-                    reject({}, "Host object type name requires non-reserved identifier segments.");
-            if (end == type_name.size()) break;
+                    reject({}, "Host binding name requires non-reserved identifier segments.");
+            if (end == name.size()) break;
             start = end + 1;
-            if (start == type_name.size())
-                reject({}, "Host object type name cannot end with '.'.");
+            if (start == name.size()) reject({}, "Host binding name cannot end with '.'.");
         }
+    }
+    void validate_environment() const {
+        validate_name(environment_.object_type_name, true);
+        if (environment_.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
+            environment_.methods.size() > std::numeric_limits<std::uint32_t>::max())
+            reject({}, "Host member catalog exceeds its index range.");
         for (std::size_t i = 0; i < environment_.fields.size(); ++i) {
             const auto& field = environment_.fields[i];
+            validate_name(field.name, false);
             if (field.type != ValueType::f32 && field.type != ValueType::u32)
                 reject({}, "Host field has an unsupported scalar type.");
             for (std::size_t j = 0; j < i; ++j)
@@ -169,8 +181,14 @@ private:
         }
         for (std::size_t i = 0; i < environment_.methods.size(); ++i) {
             const auto& method = environment_.methods[i];
-            if (method.parameter != ValueType::f32 && method.parameter != ValueType::u32)
-                reject({}, "Host method has an unsupported parameter type.");
+            validate_name(method.name, false);
+            if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
+                reject({}, "Host parameter list exceeds its index range.");
+            for (const auto type : method.parameters)
+                if (type != ValueType::f32 && type != ValueType::u32)
+                    reject({}, "Host method has an unsupported parameter type.");
+            if (method.result != ValueType::void_value && method.result != ValueType::f32 && method.result != ValueType::u32)
+                reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.methods[j].name == method.name) reject({}, "Ambiguous host method binding.");
         }
@@ -219,6 +237,8 @@ private:
         for (const auto child : {expression.left, expression.right, expression.receiver})
             if (child != no_node && expression_heights_[child] + 1 > height)
                 height = expression_heights_[child] + 1;
+        for (const auto argument : expression.arguments)
+            if (expression_heights_[argument] + 1 > height) height = expression_heights_[argument] + 1;
         if (height > 128) reject(expression.position, "Expression tree exceeds the compiler limit of 128.");
         program_.expressions.push_back(std::move(expression));
         expression_heights_.push_back(height);
@@ -242,9 +262,22 @@ private:
         visible_.push_back(index);
         return index;
     }
-    void parameter(ValueType type, const char* spelling) {
-        expect(spelling);
-        local(identifier(), type);
+    ValueType scalar_type() {
+        if (accept("float")) return ValueType::f32;
+        if (accept("uint")) return ValueType::u32;
+        reject(token_.position, "Expected 'float' or 'uint' scalar type.");
+    }
+    bool returns(NodeId id) const {
+        const auto& statement = program_.statements[id];
+        switch (statement.kind) {
+        case Statement::Kind::return_value: return true;
+        case Statement::Kind::block:
+            for (const auto child : statement.children) if (returns(child)) return true;
+            return false;
+        case Statement::Kind::condition:
+            return statement.alternative != no_node && returns(statement.body) && returns(statement.alternative);
+        default: return false; // A loop may execute zero times.
+        }
     }
     void same_type(NodeId expression, ValueType required) const {
         const auto actual = program_.expressions[expression].type;
@@ -312,9 +345,16 @@ private:
             return add(Statement{Statement::Kind::loop, position, no_node, condition, body, no_node, {}});
         }
         if (accept("return")) {
-            if (token_.text != ";") reject(token_.position, "This void entry cannot return a value.");
-            consume();
-            return add(Statement{Statement::Kind::return_value, position, no_node, no_node, no_node, no_node, {}});
+            NodeId value = no_node;
+            if (program_.result == ValueType::void_value) {
+                if (token_.text != ";") reject(token_.position, "This void entry cannot return a value.");
+            } else {
+                if (token_.text == ";") reject(token_.position, "Non-void entry requires a return value.");
+                value = expression();
+                same_type(value, program_.result);
+            }
+            expect(";");
+            return add(Statement{Statement::Kind::return_value, position, no_node, value, no_node, no_node, {}});
         }
         const auto target = expression();
         if (accept("=")) {
@@ -378,19 +418,29 @@ private:
                 const MethodBinding* method{};
                 for (const auto& candidate : environment_.methods) if (candidate.name == member) method = &candidate;
                 if (!method) reject(position, "Unknown native method '" + member + "'.");
-                if (token_.text == ")") reject(token_.position, "Native method requires one argument.");
-                const auto argument = expression();
-                same_type(argument, method->parameter);
-                if (token_.text == ",") reject(token_.position, "Native method requires exactly one argument.");
-                expect(")");
-                receiver = add(Expression{Expression::Kind::call, ValueType::void_value, position,
-                    argument, no_node, method->selector, Operation::add, receiver});
+                std::vector<NodeId> arguments;
+                if (!accept(")")) {
+                    do {
+                        if (arguments.size() >= method->parameters.size())
+                            reject(token_.position, "Native method argument count mismatch.");
+                        const auto argument = expression();
+                        same_type(argument, method->parameters[arguments.size()]);
+                        arguments.push_back(argument);
+                    } while (accept(","));
+                    expect(")");
+                }
+                if (arguments.size() != method->parameters.size())
+                    reject(position, "Native method argument count mismatch.");
+                Expression call{Expression::Kind::call, method->result, position,
+                    no_node, no_node, static_cast<std::uint32_t>(method - environment_.methods.data()), Operation::add, receiver};
+                call.arguments = std::move(arguments);
+                receiver = add(std::move(call));
             } else {
                 const FieldBinding* field{};
                 for (const auto& candidate : environment_.fields) if (candidate.name == member) field = &candidate;
                 if (!field) reject(position, "Unknown receiver field '" + member + "'.");
                 receiver = add(Expression{Expression::Kind::field, field->type, position,
-                    no_node, no_node, field->selector, Operation::add, receiver});
+                    no_node, no_node, static_cast<std::uint32_t>(field - environment_.fields.data()), Operation::add, receiver});
             }
         }
         return receiver;

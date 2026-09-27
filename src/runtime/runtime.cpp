@@ -495,6 +495,54 @@ struct Runtime::Impl {
         return types[id.index_].get();
     }
 
+    const Type* lookup(const TypeReference& reference,
+        std::span<const std::unique_ptr<Type>> staged = {}) const {
+        // Even inside a transaction, explicit IDs name only published types.
+        if (const auto* id = std::get_if<TypeId>(&reference.target_)) return lookup(*id);
+        const auto matches = [&](const auto& type) {
+            if (const auto* name = std::get_if<std::string>(&reference.target_)) return type->info.name == *name;
+            return type->native.representation == std::get<const void*>(reference.target_);
+        };
+        for (const auto& type : staged) if (matches(type)) return type.get();
+        for (const auto& type : types) if (matches(type)) return type.get();
+        return nullptr;
+    }
+
+    Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition,
+        std::optional<TypeId> owner = std::nullopt,
+        std::span<const std::unique_ptr<Type>> staged = {}) const {
+        const auto resolve_value = [&](const ValueDefinition& value) -> Result<ValueDescription> {
+            const auto* type = lookup(value.type, staged);
+            if (!type) return failure(ErrorCode::invalid_definition, "Signature contains an unresolved value type.");
+            if (type->info.kind != TypeKind::scalar || value.form != ValueForm::inline_value)
+                return failure(ErrorCode::invalid_definition, "Signature parameters and result must be inline scalars.");
+            return ValueDescription{type->info.id, value.form};
+        };
+        FunctionSignature signature;
+        signature.parameters.reserve(definition.parameters.size());
+        for (const auto& parameter : definition.parameters) {
+            auto value = resolve_value(parameter);
+            if (!value) return std::unexpected(std::move(value.error()));
+            signature.parameters.push_back(*value);
+        }
+        if (definition.result) {
+            auto value = resolve_value(*definition.result);
+            if (!value) return std::unexpected(std::move(value.error()));
+            signature.result = *value;
+        }
+        if (definition.receiver) {
+            const auto* type = lookup(definition.receiver->type, staged);
+            if (!type || type->info.kind != TypeKind::object)
+                return failure(ErrorCode::invalid_definition, "Signature receiver must name an object type.");
+            if (owner && type->info.id != *owner)
+                return failure(ErrorCode::invalid_definition, "Method receiver must match its owning object type.");
+            signature.receiver = ReceiverDescription{type->info.id, definition.receiver->read_only};
+        } else if (owner) {
+            signature.receiver = ReceiverDescription{*owner, false};
+        }
+        return signature;
+    }
+
     const Slot* lookup(ObjectId id) const noexcept {
         if (id.context_ != context || id.index_ >= slots.size()) return nullptr;
         const auto& slot = slots[id.index_];
@@ -833,6 +881,10 @@ Result<TypeId> Runtime::register_type(TypeDefinition definition) {
     return published->front();
 }
 
+Result<FunctionSignature> Runtime::resolve_signature(const SignatureDefinition& definition) const {
+    return impl_->resolve_signature(definition);
+}
+
 Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> definitions) {
     if (impl_->phase != CollectionPhase::idle) return failure(ErrorCode::busy, "Cannot publish types during collection.");
     if (impl_->sealed || impl_->callbacks != 0) {
@@ -891,16 +943,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
     }
 
     // Only this transaction sees staged identities. Published TypeId inputs cannot name them.
-    const auto resolve = [&](const TypeReference& reference) -> const Impl::Type* {
-        if (const auto* id = std::get_if<TypeId>(&reference.target_)) return impl_->lookup(*id);
-        const auto matches = [&](const auto& type) {
-            if (const auto* name = std::get_if<std::string>(&reference.target_)) return type->info.name == *name;
-            return type->native.representation == std::get<const void*>(reference.target_);
-        };
-        for (const auto& type : staged) if (matches(type)) return type.get();
-        for (const auto& type : impl_->types) if (matches(type)) return type.get();
-        return nullptr;
-    };
+    const auto resolve = [&](const TypeReference& reference) { return impl_->lookup(reference, staged); };
     const auto resolved_type = [&](TypeId id) -> const Impl::Type* {
         return id.index_ < first_index ? impl_->types[id.index_].get() : staged[id.index_ - first_index].get();
     };
@@ -966,16 +1009,10 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             if (method.name.empty() || !method.invoke) {
                 return failure(ErrorCode::invalid_definition, "Methods require a name and implementation.");
             }
-            MethodInfo info{MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())}, std::move(method.name), {}};
-            info.parameters.reserve(method.parameters.size());
-            for (const auto& parameter : method.parameters) {
-                const auto* target = resolve(parameter.type);
-                if (!target || target->info.kind != TypeKind::scalar || parameter.form != ValueForm::inline_value) {
-                    return failure(ErrorCode::invalid_definition, "Method parameters must be inline scalars.");
-                }
-                info.parameters.push_back({target->info.id, parameter.form});
-            }
-            type.info.methods.push_back(std::move(info));
+            auto signature = impl_->resolve_signature(method.signature, id, staged);
+            if (!signature) return std::unexpected(std::move(signature.error()));
+            type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
+                std::move(method.name), std::move(*signature)});
             type.methods.push_back(method.invoke);
         }
     }
@@ -1501,7 +1538,7 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
     return {};
 }
 
-Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments) {
+Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output) {
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Method execution is not allowed during reference traversal.");
     const auto index = resolve_object(object);
     if (!index) return std::unexpected(index.error());
@@ -1510,7 +1547,7 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
     if (method.owner_ != slot.type || method.index_ >= type->methods.size()) {
         return failure(ErrorCode::invalid_member, "Method does not belong to the receiver type.");
     }
-    const auto& signature = type->info.methods[method.index_];
+    const auto& signature = type->info.methods[method.index_].signature;
     if (arguments.size() != signature.parameters.size()) {
         return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
     }
@@ -1519,10 +1556,21 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
             return failure(ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i));
         }
     }
+    if (signature.result && !output)
+        return failure(ErrorCode::invalid_storage, "Non-void method requires result storage.");
     CallbackScope scope{impl_->callbacks};
     CallContext context{*this, object, slot.storage, arguments};
     try {
-        return type->methods[method.index_](context);
+        auto invoked = type->methods[method.index_](context);
+        if (!invoked) return invoked;
+        if (signature.result) {
+            if (!context.result || impl_->scalar_type(*context.result) != signature.result->type)
+                return failure(ErrorCode::invocation_failed, "Method did not produce its declared result type.");
+            *output = *context.result;
+        } else if (context.result) {
+            return failure(ErrorCode::invocation_failed, "Void method produced an undeclared result.");
+        }
+        return {};
     } catch (const std::exception& error) {
         return failure(ErrorCode::invocation_failed, error.what());
     } catch (...) {

@@ -86,6 +86,22 @@ struct ValueDescription {
     bool operator==(const ValueDescription&) const = default;
 };
 
+// Receiver access is independent of object-reference ownership and parameter passing.
+struct ReceiverDescription {
+    TypeId type;
+    bool read_only{};
+    bool operator==(const ReceiverDescription&) const = default;
+};
+
+// Owns its descriptions, not the Runtime, callable identity or executable code.
+// An absent result means void; an absent receiver describes a free function.
+struct FunctionSignature {
+    std::vector<ValueDescription> parameters;
+    std::optional<ValueDescription> result;
+    std::optional<ReceiverDescription> receiver;
+    bool operator==(const FunctionSignature&) const = default;
+};
+
 // Only the scalar values needed by the first slice; no boxed object/value universe.
 using Scalar = std::variant<float, std::uint32_t>;
 
@@ -97,6 +113,8 @@ struct CallContext {
     // Borrowed for this synchronous invocation only. Native bindings are trusted code.
     void* storage;
     std::span<const Scalar> arguments;
+    // Staged business value. Runtime commits it only after successful validation.
+    std::optional<Scalar> result{};
 };
 
 using Invoker = Result<void> (*)(CallContext&);
@@ -199,6 +217,17 @@ struct ValueDefinition {
     ValueForm form{ValueForm::inline_value};
 };
 
+struct ReceiverDefinition {
+    TypeReference type;
+    bool read_only{};
+};
+
+struct SignatureDefinition {
+    std::vector<ValueDefinition> parameters;
+    std::optional<ValueDefinition> result{};
+    std::optional<ReceiverDefinition> receiver{};
+};
+
 struct NativeLayout {
     std::size_t size{};
     std::size_t alignment{};
@@ -225,7 +254,7 @@ struct FieldDefinition {
 
 struct MethodDefinition {
     std::string name;
-    std::vector<ValueDefinition> parameters;
+    SignatureDefinition signature;
     Invoker invoke{};
 };
 
@@ -246,7 +275,7 @@ struct FieldInfo {
 struct MethodInfo {
     MethodId id;
     std::string name;
-    std::vector<ValueDescription> parameters;
+    FunctionSignature signature;
 };
 
 struct TypeInfo {
@@ -295,6 +324,11 @@ public:
     // Resolve the entire batch, including forward references, before publishing anything.
     // Results follow input order. Empty batches are invalid. No provisional IDs escape.
     [[nodiscard]] Result<std::vector<TypeId>> register_types(std::vector<TypeDefinition> definitions);
+    // Resolves published types without changing registration or code publication state.
+    // This slice accepts inline scalar parameters/results and an optional object receiver.
+    // Invalid/unsupported definitions fail with invalid_definition. The returned value
+    // owns its arrays; its TypeIds remain scoped to this Runtime, which it does not own.
+    [[nodiscard]] Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition) const;
     [[nodiscard]] Result<TypeId> find_type(std::string_view name) const;
     [[nodiscard]] Result<const TypeInfo*> describe(TypeId type) const;
     [[nodiscard]] Result<FieldId> find_field(TypeId type, std::string_view name) const;
@@ -370,8 +404,12 @@ public:
     [[nodiscard]] Result<void> check_execution_entry() const;
     // Publication needs a quiescent Runtime, not completion of a paused GC cycle.
     [[nodiscard]] Result<void> check_code_publication() const;
-    // Checks every parameter before entering user code. User-code side effects are not rolled back.
-    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments);
+    // Checks every parameter and required result storage before entering user code.
+    // Non-void methods require output; void permits null and never writes output.
+    // Failure preserves output, including a callback's missing/wrong/fabricated result.
+    // User-code side effects are not rolled back. Native borrows still forbid source entry.
+    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments,
+                                    Scalar* output = nullptr);
     [[nodiscard]] std::size_t live_objects() const noexcept;
     // Explicit host safe points only. Starting a cycle reserves its traversal
     // cursor before changing state. Step budgets require positive max_work.

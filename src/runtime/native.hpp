@@ -23,15 +23,19 @@ template<class R, class C, class... A>
 struct Method<R (C::*)(A...)> {
     using Owner = C;
     using Arguments = std::tuple<A...>;
-    static_assert(std::same_as<R, void>, "This slice supports void methods only.");
+    using Return = R;
+    static constexpr bool receiver_read_only = false;
+    static_assert(std::same_as<R, void> || ScalarType<R>, "Method results must be void or supported scalars returned by value.");
     static_assert((ScalarType<A> && ...), "Method arguments must be supported scalars passed by value.");
 };
 template<class R, class C, class... A>
-struct Method<R (C::*)(A...) const> : Method<R (C::*)(A...)> {};
+struct Method<R (C::*)(A...) const> : Method<R (C::*)(A...)> {
+    static constexpr bool receiver_read_only = true;
+};
 template<class R, class C, class... A>
 struct Method<R (C::*)(A...) noexcept> : Method<R (C::*)(A...)> {};
 template<class R, class C, class... A>
-struct Method<R (C::*)(A...) const noexcept> : Method<R (C::*)(A...)> {};
+struct Method<R (C::*)(A...) const noexcept> : Method<R (C::*)(A...) const> {};
 
 }
 
@@ -100,16 +104,23 @@ public:
         using Traits = detail::Method<decltype(Pointer)>;
         static_assert(std::same_as<typename Traits::Owner, T>);
         using Args = typename Traits::Arguments;
+        using Return = typename Traits::Return;
+        using Receiver = std::conditional_t<Traits::receiver_read_only, const T, T>;
         MethodDefinition method;
         method.name = std::move(name);
+        method.signature.receiver = ReceiverDefinition{TypeReference::native<T>(), Traits::receiver_read_only};
+        if constexpr (!std::same_as<Return, void>)
+            method.signature.result = ValueDefinition{TypeReference::native<Return>()};
         [&]<std::size_t... I>(std::index_sequence<I...>) {
-            (method.parameters.push_back({TypeReference::native<std::tuple_element_t<I, Args>>()}), ...);
+            (method.signature.parameters.push_back({TypeReference::native<std::tuple_element_t<I, Args>>()}), ...);
         }(std::make_index_sequence<std::tuple_size_v<Args>>{});
         method.invoke = [](CallContext& call) -> Result<void> {
-            [&]<std::size_t... I>(std::index_sequence<I...>) {
-                std::invoke(Pointer, *static_cast<T*>(call.storage),
+            const auto invoke = [&]<std::size_t... I>(std::index_sequence<I...>) -> Return {
+                return std::invoke(Pointer, *static_cast<Receiver*>(call.storage),
                     std::get<std::tuple_element_t<I, Args>>(call.arguments[I])...);
-            }(std::make_index_sequence<std::tuple_size_v<Args>>{});
+            };
+            if constexpr (std::same_as<Return, void>) invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
+            else call.result = invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
             return {};
         };
         definition_.methods.push_back(std::move(method));

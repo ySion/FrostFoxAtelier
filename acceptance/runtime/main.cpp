@@ -323,7 +323,7 @@ Types register_types(Runtime& runtime) {
     machine.name = "acceptance.DescribedMachine";
     machine.fields = {{"state", {described_state}}, {"progress", {f32}}};
     machine.methods = {
-        {"advance", {{f32}}, advance_described},
+        {"advance", {{{f32}}}, advance_described},
         {"attempt_self_destruction", {}, attempt_self_destruction},
         {"raise_native_error", {}, raise_native_error}
     };
@@ -450,6 +450,316 @@ void verify_runtime() {
     std::cout << "[pass] Runtime shutdown releases remaining native objects exactly once\n";
 }
 
+struct SignatureNative {
+    static inline std::size_t calls{};
+    std::uint32_t value{};
+    float total{};
+
+    std::uint32_t increment(std::uint32_t amount) { ++calls; return value += amount; }
+    std::uint32_t read() const noexcept { ++calls; return value; }
+    float add(float amount) noexcept { ++calls; return total += amount; }
+    float sample(float amount) const { ++calls; return total + amount; }
+    void note(std::uint32_t amount) { ++calls; value += amount; }
+    std::uint32_t fail(std::uint32_t amount) {
+        ++calls;
+        value += amount;
+        throw std::runtime_error("Native scalar result failure.");
+    }
+};
+
+TypeId register_signature_native(Runtime& runtime) {
+    return take(NativeRegistration<SignatureNative>{runtime, "signature.Native", TypeKind::object}
+        .field<&SignatureNative::value>("value")
+        .field<&SignatureNative::total>("total")
+        .method<&SignatureNative::increment>("increment")
+        .method<&SignatureNative::read>("read")
+        .method<&SignatureNative::add>("add")
+        .method<&SignatureNative::sample>("sample")
+        .method<&SignatureNative::note>("note")
+        .method<&SignatureNative::fail>("fail").publish());
+}
+
+const FunctionSignature& method_signature(const TypeInfo& type, std::string_view name) {
+    const auto method = std::ranges::find_if(type.methods, [&](const auto& value) { return value.name == name; });
+    require(method != type.methods.end(), "Expected method signature is missing.");
+    return method->signature;
+}
+
+void verify_signature_publication() {
+    Runtime runtime;
+    Runtime other;
+    const auto f32 = take(runtime.native_type<float>());
+    const auto u32 = take(runtime.native_type<std::uint32_t>());
+    const auto native = register_signature_native(runtime);
+    const auto foreign = register_signature_native(other);
+    const auto* info = take(runtime.describe(native));
+    const auto record = take(runtime.register_type({"signature.Record", TypeKind::record, {}, {}, {}}));
+
+    SignatureDefinition definition;
+    definition.parameters = {{TypeReference{"core.u32"}}};
+    definition.result = ValueDefinition{TypeReference::native<std::uint32_t>()};
+    definition.receiver = ReceiverDefinition{native, false};
+    const auto resolved = take(runtime.resolve_signature(definition));
+    require(resolved == method_signature(*info, "increment"), "Native and public signature resolution disagree.");
+    definition.parameters.clear();
+    definition.result.reset();
+    definition.receiver.reset();
+    require(resolved.parameters == std::vector<ValueDescription>{{u32}} &&
+        resolved.result == std::optional{ValueDescription{u32}} &&
+        resolved.receiver == std::optional{ReceiverDescription{native, false}},
+        "Resolved signature borrowed mutable producer storage.");
+    const auto empty = take(runtime.resolve_signature({}));
+    require(empty.parameters.empty() && !empty.result && !empty.receiver, "Free void signature acquired a receiver or value.");
+    for (const auto* name : {"read", "sample"}) {
+        const auto& signature = method_signature(*info, name);
+        require(signature.receiver == std::optional{ReceiverDescription{native, true}},
+            "Native const receiver information was lost.");
+    }
+    require(method_signature(*info, "sample").result == std::optional{ValueDescription{f32}} &&
+        method_signature(*info, "add").result == std::optional{ValueDescription{f32}} &&
+        !method_signature(*info, "add").receiver->read_only && !method_signature(*info, "note").result,
+        "Native scalar/void results or mutable receiver information were misinferred.");
+
+    const std::vector<ValueDefinition> invalid_values{
+        {record}, {native}, {native, ValueForm::strong_reference}, {native, ValueForm::weak_reference},
+        {u32, ValueForm::strong_reference}, {u32, static_cast<ValueForm>(99)},
+        {take(other.native_type<std::uint32_t>())}, {TypeReference{"signature.Missing"}}
+    };
+    for (const auto& value : invalid_values) {
+        SignatureDefinition invalid;
+        invalid.parameters = {value};
+        reject(runtime.resolve_signature(invalid), ErrorCode::invalid_definition, "Invalid signature parameter was resolved.");
+        invalid.parameters.clear();
+        invalid.result = value;
+        reject(runtime.resolve_signature(invalid), ErrorCode::invalid_definition, "Invalid signature result was resolved.");
+    }
+    const std::array<TypeReference, 4> invalid_receivers{
+        TypeReference{f32}, TypeReference{record}, TypeReference{foreign}, TypeReference{"signature.Missing"}
+    };
+    for (const auto& receiver : invalid_receivers) {
+        SignatureDefinition invalid;
+        invalid.receiver = ReceiverDefinition{receiver, true};
+        reject(runtime.resolve_signature(invalid), ErrorCode::invalid_definition, "Invalid signature receiver was resolved.");
+    }
+
+    SignatureDefinition staged;
+    staged.result = ValueDefinition{u32};
+    staged.receiver = ReceiverDefinition{TypeReference{"signature.Pending"}, true};
+    reject(runtime.resolve_signature(staged), ErrorCode::invalid_definition, "Public resolver accepted an unpublished receiver.");
+    TypeDefinition pending;
+    pending.name = "signature.Pending";
+    pending.methods = {{"read", staged, [](CallContext& call) -> Result<void> {
+        call.result = std::uint32_t{41};
+        return {};
+    }}};
+    TypeDefinition later = pending;
+    later.name = "signature.Later";
+    later.methods[0].signature.receiver.reset();
+    later.methods[0].signature.result = ValueDefinition{record};
+    reject(runtime.register_types({pending, later}), ErrorCode::invalid_definition,
+        "Batch accepted an unsupported result after resolving an earlier receiver.");
+    for (const auto* name : {"signature.Pending", "signature.Later"})
+        reject(runtime.find_type(name), ErrorCode::invalid_type, "Failed signature batch leaked a provisional type.");
+    reject(runtime.resolve_signature(staged), ErrorCode::invalid_definition, "Failed batch left a resolvable provisional receiver.");
+    require(take(runtime.describe(native)) == info && take(runtime.native_type<SignatureNative>()) == native,
+        "Failed signature batch changed existing metadata or native mapping.");
+    later.methods[0].signature.result = ValueDefinition{u32};
+    const auto ids = take(runtime.register_types({pending, later}));
+    const auto published = take(runtime.resolve_signature(staged));
+    require(published == method_signature(*take(runtime.describe(ids[0])), "read") &&
+        published.receiver == std::optional{ReceiverDescription{ids[0], true}} &&
+        method_signature(*take(runtime.describe(ids[1])), "read").receiver ==
+            std::optional{ReceiverDescription{ids[1], false}},
+        "Staged explicit or inferred member receiver did not resolve to its owner.");
+    pending.name = "signature.WrongOwner";
+    pending.methods[0].signature.receiver = ReceiverDefinition{native, false};
+    reject(runtime.register_type(std::move(pending)), ErrorCode::invalid_definition, "Explicit method receiver named another owner.");
+    reject(runtime.find_type("signature.WrongOwner"), ErrorCode::invalid_type, "Receiver mismatch leaked a type.");
+
+    auto object = take(runtime.create(ids[0]));
+    require(take(runtime.resolve_signature(staged)) == published,
+        "Read-only signature resolution stopped after object creation sealed registration.");
+    reject(runtime.register_type({"signature.TooLate", TypeKind::object, {}, {}, {}}), ErrorCode::busy,
+        "Read-only signature resolution reopened registration.");
+    Scalar output{0.0f};
+    take(runtime.call(object.id(), take(runtime.find_method(ids[0], "read")), {}, &output));
+    require(output == Scalar{std::uint32_t{41}}, "Published staged result method was not executable.");
+    std::cout << "[pass] Shared signatures own resolved metadata, infer receivers and preserve atomic sealed registration\n";
+}
+
+Result<void> read_signature_value(CallContext& call) {
+    auto type = call.runtime.type_of(call.self);
+    if (!type) return std::unexpected(std::move(type.error()));
+    auto field = call.runtime.find_field(*type, "value");
+    if (!field) return std::unexpected(std::move(field.error()));
+    auto value = call.runtime.read(call.self, *field);
+    if (!value) return std::unexpected(std::move(value.error()));
+    call.result = *value;
+    return {};
+}
+
+Result<void> increment_signature_value(CallContext& call) {
+    auto type = call.runtime.type_of(call.self);
+    if (!type) return std::unexpected(std::move(type.error()));
+    auto field = call.runtime.find_field(*type, "value");
+    if (!field) return std::unexpected(std::move(field.error()));
+    auto value = call.runtime.read(call.self, *field);
+    if (!value) return std::unexpected(std::move(value.error()));
+    const auto next = std::get<std::uint32_t>(*value) + std::get<std::uint32_t>(call.arguments[0]);
+    auto written = call.runtime.write(call.self, *field, next);
+    if (!written) return written;
+    call.result = next;
+    return {};
+}
+
+void verify_method_results() {
+    Runtime runtime;
+    SignatureNative::calls = 0;
+    const auto f32 = take(runtime.native_type<float>());
+    const auto u32 = take(runtime.native_type<std::uint32_t>());
+    const auto native = register_signature_native(runtime);
+    SignatureDefinition increment;
+    increment.parameters = {{u32}};
+    increment.result = ValueDefinition{u32};
+    SignatureDefinition read;
+    read.result = ValueDefinition{u32};
+    read.receiver = ReceiverDefinition{TypeReference{"signature.Described"}, true};
+    auto echo = read;
+    echo.parameters = {{f32}};
+    echo.result = ValueDefinition{f32};
+    auto void_signature = increment;
+    void_signature.result.reset();
+    TypeDefinition definition;
+    definition.name = "signature.Described";
+    definition.fields = {{"value", {u32}}};
+    definition.methods = {
+        {"increment", increment, increment_signature_value},
+        {"read", read, read_signature_value},
+        {"echo", echo, [](CallContext& call) -> Result<void> {
+            call.result = call.arguments[0];
+            return {};
+        }},
+        {"missing", increment, [](CallContext& call) -> Result<void> {
+            auto result = increment_signature_value(call);
+            call.result.reset();
+            return result;
+        }},
+        {"wrong", increment, [](CallContext& call) -> Result<void> {
+            auto result = increment_signature_value(call);
+            call.result = 1.0f;
+            return result;
+        }},
+        {"failure", increment, [](CallContext& call) -> Result<void> {
+            auto result = increment_signature_value(call);
+            if (!result) return result;
+            call.result = 1.0f; // The declared failure must win over a bad staged result.
+            return std::unexpected(Error{ErrorCode::assignment_failed, "Declared result failure wins."});
+        }},
+        {"raises", increment, [](CallContext& call) -> Result<void> {
+            auto result = increment_signature_value(call);
+            if (!result) return result;
+            throw std::runtime_error("Described scalar result failure.");
+        }},
+        {"unknown", increment, [](CallContext& call) -> Result<void> {
+            auto result = increment_signature_value(call);
+            if (!result) return result;
+            throw 17;
+        }},
+        {"fabricated_void", void_signature, increment_signature_value},
+        {"clean_void", void_signature, [](CallContext& call) -> Result<void> {
+            auto result = increment_signature_value(call);
+            call.result.reset();
+            return result;
+        }},
+        {"forbid_source", {}, [](CallContext& call) -> Result<void> { return call.runtime.check_execution_entry(); }}
+    };
+    const auto described = take(runtime.register_type(std::move(definition)));
+    const auto* info = take(runtime.describe(described));
+    require(method_signature(*info, "increment").receiver == std::optional{ReceiverDescription{described, false}} &&
+        method_signature(*info, "read").receiver == std::optional{ReceiverDescription{described, true}},
+        "Described inferred/explicit const receiver metadata disagrees with native semantics.");
+    auto native_object = take(runtime.create(native));
+    auto described_object = take(runtime.create(described));
+    const std::array<Scalar, 1> arguments{std::uint32_t{3}};
+    const std::array<Scalar, 1> floats{2.5f};
+    const Scalar sentinel{-731.25f};
+    Scalar output = sentinel;
+    const auto native_increment = take(runtime.find_method(native, "increment"));
+    take(runtime.call(native_object.id(), native_increment, arguments, &output));
+    require(output == Scalar{std::uint32_t{3}}, "Native uint result was not committed.");
+    take(runtime.call(native_object.id(), take(runtime.find_method(native, "read")), {}, &output));
+    require(output == Scalar{std::uint32_t{3}}, "Const noexcept native method returned the wrong uint.");
+    take(runtime.call(native_object.id(), take(runtime.find_method(native, "add")), floats, &output));
+    require(output == Scalar{2.5f}, "Native float result was not committed.");
+    take(runtime.call(native_object.id(), take(runtime.find_method(native, "sample")), floats, &output));
+    require(output == Scalar{5.0f}, "Const throwing-capable native float method was not invoked correctly.");
+    output = sentinel;
+    take(runtime.call(native_object.id(), take(runtime.find_method(native, "note")), arguments, &output));
+    require(output == sentinel, "Successful void native method wrote result storage.");
+    const auto calls = SignatureNative::calls;
+    reject(runtime.call(native_object.id(), native_increment, arguments), ErrorCode::invalid_storage,
+        "Non-void native method accepted missing result storage.");
+    reject(runtime.call(native_object.id(), native_increment, floats, &output), ErrorCode::argument_mismatch,
+        "Non-void native method accepted wrong argument kinds.");
+    reject(runtime.call(native_object.id(), native_increment, {}, &output), ErrorCode::argument_mismatch,
+        "Non-void native method accepted wrong argument count.");
+    require(SignatureNative::calls == calls && output == sentinel, "Rejected native call ran code or changed output.");
+    auto failed_native = runtime.call(native_object.id(), take(runtime.find_method(native, "fail")), arguments, &output);
+    reject(failed_native, ErrorCode::invocation_failed, "Native scalar exception escaped.");
+    require(output == sentinel && failed_native.error().message == "Native scalar result failure." &&
+        std::get<std::uint32_t>(take(runtime.read(native_object.id(), take(runtime.find_field(native, "value"))))) == 9,
+        "Native failure changed output, lost its cause or rolled back prior side effects.");
+
+    const auto described_increment = take(runtime.find_method(described, "increment"));
+    const auto value_field = take(runtime.find_field(described, "value"));
+    reject(runtime.call(described_object.id(), described_increment, arguments), ErrorCode::invalid_storage,
+        "Described non-void method accepted missing result storage.");
+    require(std::get<std::uint32_t>(take(runtime.read(described_object.id(), value_field))) == 0,
+        "Missing result storage was rejected after described side effects.");
+    take(runtime.call(described_object.id(), described_increment, arguments, &output));
+    require(output == Scalar{std::uint32_t{3}}, "Described uint result did not share native result semantics.");
+    take(runtime.call(described_object.id(), take(runtime.find_method(described, "read")), {}, &output));
+    require(output == Scalar{std::uint32_t{3}}, "Described const result metadata was not executable.");
+    take(runtime.call(described_object.id(), take(runtime.find_method(described, "echo")), floats, &output));
+    require(output == Scalar{2.5f}, "Described float result did not share native result semantics.");
+    struct FailureCase { const char* name; ErrorCode code; const char* diagnostic; };
+    const std::array failures{
+        FailureCase{"missing", ErrorCode::invocation_failed, nullptr},
+        FailureCase{"wrong", ErrorCode::invocation_failed, nullptr},
+        FailureCase{"failure", ErrorCode::assignment_failed, "Declared result failure wins."},
+        FailureCase{"raises", ErrorCode::invocation_failed, "Described scalar result failure."},
+        FailureCase{"unknown", ErrorCode::invocation_failed, "Native method raised an unknown exception."},
+        FailureCase{"fabricated_void", ErrorCode::invocation_failed, nullptr}
+    };
+    for (const auto& failure : failures) {
+        const auto before = std::get<std::uint32_t>(take(runtime.read(described_object.id(), value_field)));
+        output = sentinel;
+        const auto result = runtime.call(described_object.id(), take(runtime.find_method(described, failure.name)), arguments, &output);
+        reject(result, failure.code, "Invalid callback result or failure was accepted.");
+        require(output == sentinel &&
+            std::get<std::uint32_t>(take(runtime.read(described_object.id(), value_field))) == before + 3,
+            "Failed result validation committed output or rolled back callback side effects.");
+        if (failure.diagnostic) require(result.error().message == failure.diagnostic, "First callback error was replaced by result validation.");
+    }
+    take(runtime.call(described_object.id(), take(runtime.find_method(described, "clean_void")), arguments, &output));
+    require(output == sentinel, "Successful void described method wrote result storage.");
+    reject(runtime.call(described_object.id(), take(runtime.find_method(described, "forbid_source")), {}, &output), ErrorCode::busy,
+        "Native CallbackScope stopped rejecting generated-code reentry.");
+    reject(runtime.call(described_object.id(), native_increment, arguments, &output), ErrorCode::invalid_member,
+        "Result-bearing method accepted another receiver type.");
+    auto doomed = take(runtime.create(described));
+    const auto stale = doomed.id();
+    take(runtime.destroy(stale));
+    reject(runtime.call(stale, described_increment, arguments, &output), ErrorCode::invalid_object,
+        "Result-bearing method accepted a stale receiver.");
+    Runtime other;
+    auto foreign = take(other.create(register_signature_native(other)));
+    reject(runtime.call(foreign.id(), native_increment, arguments, &output), ErrorCode::invalid_object,
+        "Result-bearing method accepted a foreign Runtime receiver.");
+    require(output == sentinel, "Rejected receiver or source reentry changed result storage.");
+    std::cout << "[pass] Native/described scalar results commit only success, preserve errors and retain callback lifetime guards\n";
+}
+
 void verify_forward_publication() {
     Runtime runtime;
     const auto f32 = take(runtime.native_type<float>());
@@ -462,7 +772,7 @@ void verify_forward_publication() {
         .method<&NativeMachine::advance>("advance").build());
     definitions.push_back({"batch.DescribedMachine", TypeKind::object,
         {{"state", {TypeReference{"batch.State"}}}, {"progress", {f32}}},
-        {{"advance", {{TypeReference{"core.f32"}}}, advance_described}}, {}});
+        {{"advance", {{{TypeReference{"core.f32"}}}}, advance_described}}, {}});
     definitions.push_back({"batch.AlignedOwner", TypeKind::object,
         {{"value", {TypeReference{"batch.AlignedValue"}}}}, {}, {}});
     definitions.push_back({"batch.AlignedValue", TypeKind::record,
@@ -492,7 +802,7 @@ void verify_forward_publication() {
     const auto* machine = take(runtime.describe(ids[1]));
     require(machine->fields.front().value.type == ids[5] &&
         machine->fields.front().value.form == ValueForm::inline_value &&
-        machine->methods.front().parameters.front().type == f32,
+        machine->methods.front().signature.parameters.front().type == f32,
         "Published fields or parameters retained unresolved selectors.");
 
     exercise_machine(runtime, ids[0]);
@@ -1284,7 +1594,7 @@ void verify_publication_failures() {
     rejected(std::move(definitions), ErrorCode::invalid_definition);
     definitions = batch();
     definitions[0].kind = TypeKind::object;
-    definitions[0].methods = {{"bad_parameter", {{TypeReference{"transaction.B"}}}, advance_described}};
+    definitions[0].methods = {{"bad_parameter", {{{TypeReference{"transaction.B"}}}}, advance_described}};
     rejected(std::move(definitions), ErrorCode::invalid_definition);
     definitions = batch();
     definitions[0].kind = TypeKind::object;
@@ -1766,6 +2076,8 @@ int main() {
     try {
         atelier::acceptance::verify_default_allocator();
         verify_runtime();
+        verify_signature_publication();
+        verify_method_results();
         verify_forward_publication();
         verify_reference_definitions();
         verify_root_handles();
