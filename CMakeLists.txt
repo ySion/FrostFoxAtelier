@@ -85,6 +85,11 @@ atelier_add_source()
 include(cmake/rhi.cmake)
 atelier_add_rhi()
 
+include(cmake/ui.cmake)
+
+include(cmake/editor.cmake)
+atelier_add_editor()
+
 set(_jit_acceptance_commands)
 set(_jit_acceptance_dependencies)
 if(ATELIER_BUILD_JIT_ACCEPTANCE)
