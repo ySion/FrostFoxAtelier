@@ -51,13 +51,13 @@ Inspector冷启动一次为71.14ms，内部缓冲分配325次、累计申请1,28
 
 - `buffer_*`只统计内部节点池、孩子数组、工作/发布/索引缓冲；不含NodeInput列描述复制、provider、快照、拥有者本身及进程其他分配。这里没有全进程内存或字体缓存上限结论。
 - `node_visits`仅统计三次可见节点尺寸/定位遍历，不能当全部工作量。单项内容更新仍遍历全树。
-- 本机原始输出：[release-performance.jsonl](../../../out/review/ui-layout-practical/release-performance.jsonl)。源码、二进制哈希和环境：[environment.json](../../../out/review/ui-layout-practical/environment.json)。输出不随Git源码交付，复现命令与场景源码随模块交付。
+- 本机原始输出：`out/review/ui-layout-practical/release-performance.jsonl`。源码、二进制哈希和环境：`out/review/ui-layout-practical/environment.json`。输出不随Git源码交付，复现命令与场景源码随模块交付。
 
 ## 27项版本：文字与可见列表
 
 （2026-09-28）
 
-AMD Ryzen 9 3950X，工具链沿用项目锁。文字对照每种64段、40次resize；默认中文回退的warm GetMetrics总计526446.7μs，宽度setter总计111.9μs，格式/段落重建均0。显式中文字体的warm GetMetrics总计12567.6μs。原始文件：[text-costs.jsonl](../../../out/review/ui-layout-scaling/text-costs.jsonl)。
+AMD Ryzen 9 3950X，工具链沿用项目锁。文字对照每种64段、40次resize；默认中文回退的warm GetMetrics总计526446.7μs，宽度setter总计111.9μs，格式/段落重建均0。显式中文字体的warm GetMetrics总计12567.6μs。原始文件：`out/review/ui-layout-scaling/text-costs.jsonl`。
 
 10万行消费者使用显式中文字体、固定120px标签列和480px viewport、80px overscan。预热8次；普通动态场景采120次，跳转/提交宽度采40次，静态采1000次。每个样本包含范围协调、必要内容创建/测量、几何和最终可见快照消费。以下单位为微秒：
 
@@ -72,7 +72,7 @@ AMD Ryzen 9 3950X，工具链沿用项目锁。文字对照每种64段、40次re
 
 冷初始化与首次可见输出一次为2.407ms。逻辑高度索引1,600,008字节；采样中最多实例化21行，最终保留40个段落对象，Document内部缓冲峰值67,192字节。这些不含provider/字体缓存、std::map、最终快照、业务文本或全进程内存，不能相加后称为整个UI内存。这里的extent含未测行估计。
 
-原始输出：[virtual-performance.jsonl](../../../out/review/ui-layout-scaling/virtual-performance.jsonl)。本轮源码与四个可执行文件哈希：[environment.json](../../../out/review/ui-layout-scaling/environment.json)。这些是本机测量，不是硬帧预算或跨机器保证。
+原始输出：`out/review/ui-layout-scaling/virtual-performance.jsonl`。本轮源码与四个可执行文件哈希：`out/review/ui-layout-scaling/environment.json`。这些是本机测量，不是硬帧预算或跨机器保证。
 
 ## 29项版本：拥有完整文字帧的编辑器消费
 
@@ -95,7 +95,7 @@ AMD Ryzen 9 3950X，项目锁定工具链，显式Microsoft YaHei UI，外壳120
 
 本次最多实例化22行；最终当前缓存42个段落、可见帧引用42个段落，两者可能指向同一资源，不能相加当作原生对象数。逻辑高度索引1,600,008字节，示例业务key数组800,000字节；两个Document内部缓冲峰值合计87,008字节，均不是整个UI进程内存。正式验收另验证旧帧释放后的段落回收。
 
-原始输出：[editor-performance.jsonl](../../../out/review/ui-layout-editor/editor-performance.jsonl)。本轮证据目录为`out/review/ui-layout-editor/`。此前单列表与文字微场景结果保留在[scaling](../../modules/ui-layout/virtual-list.md)，其数据/消费工作不同，不据此宣称等价提速。计时是本机样本，不是跨机器硬帧预算。
+原始输出：`out/review/ui-layout-editor/editor-performance.jsonl`。本轮证据目录为`out/review/ui-layout-editor/`。此前单列表与文字微场景结果保留在[scaling](../../modules/ui-layout/virtual-list.md)，其数据/消费工作不同，不据此宣称等价提速。计时是本机样本，不是跨机器硬帧预算。
 
 复现：正式开发环境下构建`ui_layout_acceptance`目标，两配置命令见[README](../../modules/ui-layout/README.md)；随后运行`./out/release/atelier_ui_layout_acceptance.exe --editor-performance`。
 
@@ -122,4 +122,4 @@ Release复合场景43节点，显式Microsoft YaHei UI，真实DirectWrite和拥
 
 同一个旧10万行编辑器场景也在最终二进制重新采样：改宽中位451.9μs、p95 730.4μs，compute内非测量均值26.110μs；旧记录分别为446.0、926.2、25.812μs。测量次数1560、节点访问30480保持一致；这些非交错单机样本不用于宣称提速。最终仍最多22行、逻辑索引1,600,008字节、业务key数组800,000字节；Document缓冲峰值151,544字节，较旧87,008字节增加64,536字节，来自扩展描述和测量/工作状态，不能声称功能增加没有内存成本。
 
-原始数据：[flex-grid-performance.jsonl](../../../out/review/ui-layout-flex-grid/flex-grid-performance.jsonl)、[旧编辑器同场景重采样](../../../out/review/ui-layout-flex-grid/editor-performance.jsonl)。使用--flex-grid-performance和--editor-performance复现；该历史版本哈希见[原environment.json](../../../out/review/ui-layout-flex-grid/environment.json)。没有测试浏览器CSS兼容、GPU绘制或无限制自动放置，支持范围以[当前合同](../../modules/ui-layout/flex-grid.md)为准。
+原始数据：`out/review/ui-layout-flex-grid/flex-grid-performance.jsonl`、`out/review/ui-layout-flex-grid/editor-performance.jsonl`。使用--flex-grid-performance和--editor-performance复现；该历史版本哈希见`out/review/ui-layout-flex-grid/environment.json`。没有测试浏览器CSS兼容、GPU绘制或无限制自动放置，支持范围以[当前合同](../../modules/ui-layout/flex-grid.md)为准。

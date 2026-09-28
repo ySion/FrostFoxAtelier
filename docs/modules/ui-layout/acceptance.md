@@ -7,9 +7,9 @@
 - 生产：`src/ui_layout/layout.hpp`、`layout.cpp`及其私有`flex.inl`、`grid.inl`。
 - 正式消费者：`acceptance/ui_layout/main.cpp`、`practical.inl`、`scaling.inl`、`editor.inl`、`flex_grid.inl`、`audit.inl`和`minimal.cpp`；inl仅由现有正式消费者包含，没有第二个目标。
 - 构建与运行仍使用README中的`cmake --build --preset dev --target ui_layout_acceptance`及release对应命令，先按正式工具脚本准备环境和配置。
-- 本轮验收源码以`c644ba5692fe2d67d1dda93953e227a50ba64f9f`为基线。最终源码/构建输入、四个程序及保留的修改前程序SHA-256记录于[environment.json](../../../out/review/ui-layout-audit/environment.json)，不沿用历史二进制证明新代码。
-- 日志：[dev-acceptance.log](../../../out/review/ui-layout-audit/dev-acceptance.log)、[release-acceptance.log](../../../out/review/ui-layout-audit/release-acceptance.log)。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
-- 退役两套旧探针和整理文档后，两配置再次各39/39及minimal通过，exit 0：[清理后dev](../../../out/review/ui-layout-audit/cleanup-dev-acceptance.log)、[清理后release](../../../out/review/ui-layout-audit/cleanup-release-acceptance.log)。正式源码与上述哈希记录一致。
+- 本轮验收源码以`c644ba5692fe2d67d1dda93953e227a50ba64f9f`为基线。最终源码/构建输入、四个程序及保留的修改前程序SHA-256记录于`out/review/ui-layout-audit/environment.json`，不沿用历史二进制证明新代码。
+- 日志：`out/review/ui-layout-audit/dev-acceptance.log`、`out/review/ui-layout-audit/release-acceptance.log`。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
+- 退役两套旧探针和整理文档后，两配置再次各39/39及minimal通过，exit 0：`out/review/ui-layout-audit/cleanup-dev-acceptance.log`、`out/review/ui-layout-audit/cleanup-release-acceptance.log`。正式源码与上述哈希记录一致。
 - retained_text_frames和editor_session_end_to_end覆盖同内容不同宽度、固定文字的几何复用、旧资源保有/回收、批量编辑、稳定业务key、ghost取消/提交、字体失效及多面板失败保旧。消费链见[composition](composition.md)，最新成本分项见[审计](audit.md)。
 
 ## 容器与消费覆盖

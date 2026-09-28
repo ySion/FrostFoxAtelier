@@ -14,7 +14,7 @@
 | 已确定高度的 Grid 提前计算无人消费的行轨道 | 自底向上阶段和最终排列输入重复 | 只在自然高度确有消费者时提前求行高，其余统一在排列阶段求解 |
 | 确定高度的纵向 Flex 重复分配同一空间 | 高度阶段和排列阶段再次进入同一求解 | 每行只在分配空间改变时重新求解，缓存随本次计算的行计划销毁 |
 
-旧二进制在新增复现后得到 36 PASS / 2 FAIL；失败分别是基线传播和 sparse 放置。失败日志保存在 [before-acceptance.log](../../../out/review/ui-layout-audit/before-acceptance.log)。
+旧二进制在新增复现后得到 36 PASS / 2 FAIL；失败分别是基线传播和 sparse 放置。失败日志保存在 `out/review/ui-layout-audit/before-acceptance.log`。
 
 交叉二审又发现比例快路径的触界舍入问题：大权重项目计算值舍入到 max，可能吞掉小权重项目原本应获得的剩余量。真实行布局把该差异放大到约 0.5 逻辑单位并复现；最终仅严格位于边界内部的候选进入快路径，触及 min/max 时回到原断点求解。新增 `allocation_rounded_saturation` 已通过两配置。
 
@@ -24,7 +24,7 @@
 
 Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Grid 跳跃与索引。二审发现的数值问题已复现并关闭，未留下已知阻塞项。没有逐个核心分配点的失败注入、全进程内存分析或一般并发证明。
 
-最终日志与源码、构建输入、二进制哈希：[dev](../../../out/review/ui-layout-audit/dev-acceptance.log)、[release](../../../out/review/ui-layout-audit/release-acceptance.log)、[environment.json](../../../out/review/ui-layout-audit/environment.json)。
+最终日志与源码、构建输入、二进制哈希：`out/review/ui-layout-audit/dev-acceptance.log`、`out/review/ui-layout-audit/release-acceptance.log`、`out/review/ui-layout-audit/environment.json`。
 
 ## 同场景性能
 
@@ -44,7 +44,7 @@ Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Gr
 
 行向大跨度 Grid 内部缓冲峰值从 257,232 降至 216,272 字节，列向从 322,768 降至 306,384 字节。十万折叠树的整个文档峰值仍为 140,498,456 字节，节点描述的保留与创建峰值没有被折叠优化消除。43 节点复合场景仍为 64,064 字节；旧虚拟编辑器从 151,544 增至 152,364 字节（增加 820 字节），最多实例化 22 行及资源引用数量保持。统计口径仍排除 provider、拥有式快照和部分公开描述内存。
 
-使用正式消费者的 `--audit-performance`、`--flex-grid-performance` 和 `--editor-performance` 复现。各轮原始数据在 `out/review/ui-layout-audit/{before,after}-{audit,flex-grid,editor}-{1,2,3}.jsonl`，摘要见 [performance-summary.json](../../../out/review/ui-layout-audit/performance-summary.json)。
+使用正式消费者的 `--audit-performance`、`--flex-grid-performance` 和 `--editor-performance` 复现。各轮原始数据在 `out/review/ui-layout-audit/{before,after}-{audit,flex-grid,editor}-{1,2,3}.jsonl`，摘要见 `out/review/ui-layout-audit/performance-summary.json`。
 
 ## 研究核对
 

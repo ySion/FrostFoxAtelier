@@ -77,9 +77,9 @@
 
 原始材料在 `out/review/ui-layout-step1/`：
 
-- [environment.json](../../../out/review/ui-layout-step1/environment.json)：实验源码 SHA-256、正式工具链/依赖锁内容、运行环境和启动时间。
-- [runs.json](../../../out/review/ui-layout-step1/runs.json)：最终双配置原始 stdout/stderr、退出码、超时标志和程序哈希；单配置副本为 `dev-run.json`、`release-run.json`。
-- [initial-failure.json](../../../out/review/ui-layout-step1/initial-failure.json)：修复前双配置失败输出及对应源码环境记录；没有被最终 PASS 覆盖。
+- `out/review/ui-layout-step1/environment.json`：实验源码 SHA-256、正式工具链/依赖锁内容、运行环境和启动时间。
+- `out/review/ui-layout-step1/runs.json`：最终双配置原始 stdout/stderr、退出码、超时标志和程序哈希；单配置副本为 `dev-run.json`、`release-run.json`。
+- `out/review/ui-layout-step1/initial-failure.json`：修复前双配置失败输出及对应源码环境记录；没有被最终 PASS 覆盖。
 - `dev-configure.log` / `release-configure.log`、`dev-build.log` / `release-build.log`：实际配置和构建输出；初次完整反馈记录保留在 `initial-console.log`。
 
 `out/` 是本地生成证据，不保证随源码交付。缺失时仅可从上述历史提交恢复实验源码重新运行，不声称对方已有本机二进制/日志；源码未提交时以记录的文件哈希对应证据，不虚构提交 revision。

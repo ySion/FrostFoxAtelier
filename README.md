@@ -2,9 +2,9 @@
 
 面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点、显式协程和单入口兼容方法体热更新。完整语言、通用方法分派/布局迁移、编辑器及完整渲染器尚未实现。
 
-另已实现独立的 UI 布局核心首增量：稳定局部节点身份、结构编辑、行列/父框锚定、真实叶测量、事务发布和几何快照；它不是控件、渲染或完整编辑器系统。详见 [布局模块](docs/modules/ui-layout/README.md)。
+另已实现独立的原生 UI 布局核心：稳定局部身份、共享列与换行、Flex/Grid、虚拟列表、真实内容测量、事务几何发布，以及完整内容版本消费的验收。窗口、输入、绘制和生产业务绑定仍待接入，详见[布局模块](docs/modules/ui-layout/README.md)。
 
-项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。Runtime、源码与 JIT 的模块归属、调用链、所有权和技术债集中在[执行结构说明](docs/runtime-structure.md)。
+项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。Runtime、源码与 JIT 的模块归属、调用链、所有权和已知边界集中在[执行结构说明](docs/runtime-structure.md)。现行源码语法统一由 [LANGUAGE.md](LANGUAGE.md) 维护。
 
 ## 构建与端到端验收
 
@@ -47,7 +47,12 @@ RHI 采用固定 gfx 与局部补丁，提供 Compute、Mesh、Vertex 管线和�
 
 ## UI 布局核心
 
-正式静态目标 `atelier_ui_layout` 公开 `ui_layout/layout.hpp`，与 Runtime/JIT/RHI 无链接关系。窗口、真实内容和绘制由调用者负责；DirectWrite 只在布局验收的 Adapter 中使用。`atelier_ui_layout_minimal` 不依赖文字库，`atelier_ui_layout_acceptance` 验证真实文字和完整首增量合同。
+正式静态目标 `atelier_ui_layout` 的唯一公开入口是 `ui_layout/layout.hpp`。`LayoutDocument` 统一管理节点身份、结构编辑、测量缓存和事务几何发布；核心不链接 Runtime/JIT/RHI/DirectWrite。DirectWrite 只在验收的文字 Adapter 中使用；正式验收包含最小消费者和 39 个场景。
+
+- 尺寸与排布：Fixed/Content/Expand、数值 min/max、对齐/锚定、table 共享列、wrap 自然换行与自适应重复槽、collapsed；原生 Flex 支持 basis/grow/shrink、分行/分布/reverse 和首基线，二维 Grid 支持轨道、跨度及显式或 sparse 自动放置。
+- `VirtualList` 管理逻辑行高、可见范围与滚动锚点；10 万逻辑行的真实消费者只实例化窗口中的行。滚动控件本身仍由上层实现。
+- `LayoutView::find` 按完整身份提供常数时间查询。编辑和失败保留当前借用，下次成功发布终止借用；跨发布使用 `LayoutSnapshot` 保有几何。
+- 几何快照不拥有内容资源。真实 `TextFrame` 消费者固定相应内容版本，包括未参与测量的固定尺寸叶，完整帧成功后才替换；headless 编辑命令、ghost 取消/提交、失败恢复及旧资源寿命已有验收。
 
 环境准备和配置仍使用上方正式 presets；仅运行布局验收：
 
@@ -56,7 +61,11 @@ cmake --build --preset dev --target ui_layout_acceptance
 cmake --build --preset release --target ui_layout_acceptance
 ```
 
-总体 `acceptance` 也包含这两个消费者。当前几何在输入改变后仍全树计算，稳定叶缓存不等于局部调度；共享轨道、换行、虚拟化及渲染尚未由此模块实现。行为、限制和本次实际执行范围分别见 [合同](docs/modules/ui-layout/contract.md) / [验收记录](docs/modules/ui-layout/acceptance.md)。
+总体 `acceptance` 也包含这些消费者。几何变化仍求解参与布局的实例树；不承诺 CSS 全量、一般循环约束、通用局部调度、异步布局或硬帧预算。窗口/输入/绘制、生产图片 composition 及业务语言 UI 接线尚未实施。现行行为和测量边界见[合同](docs/modules/ui-layout/contract.md)、[验收](docs/modules/ui-layout/acceptance.md)和[审计与性能](docs/modules/ui-layout/audit.md)。
+
+## 引擎资源连接方案
+
+[图片资源首例](docs/modules/resources/design-proposal.md)目前是设计提案：宿主建立共享 Runtime Texture 对象，业务引用共享，布局和绘制消费固定内容版本。正式源码宿主已可用；跨类型源码目录、引用字段编译、受保护原生载荷访问及生产图片接线仍未实现。此次合入文档不代表这条跨模块业务链已通过验收。
 
 ## 默认内存分配
 

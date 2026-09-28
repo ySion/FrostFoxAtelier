@@ -30,7 +30,7 @@
 | 图片测量与几何 | `content_key/content_revision/provider_revision`、同步 `Measure`、完整布局发布 | UI 内容绑定拥有者；把确定的内容版本与逻辑尺寸政策交给测量函数 |
 | 设备表示与绘制 | gfx texture/buffer、管线准备、单 owner、离屏执行和退休 | 具体图片设备表示、最小图片绘制与 CPU 消费持有；保持整个呈现结果版本一致 |
 
-本地依据：[Runtime 公开入口](../../../src/runtime/runtime.hpp)、[原生注册](../../../src/runtime/native.hpp)、[语言当前子集](../../../LANGUAGE-v0.0.2.md)、[布局入口](../../../src/ui_layout/layout.hpp)、[RHI 契约](../rhi/contract.md)。正式宿主的新增文件以运行时负责人确认的 `2b2d348` 为准；它们尚不在本工作树中，不建立指向缺失文件的本地链接。
+本地依据：[Runtime 公开入口](../../../src/runtime/runtime.hpp)、[原生注册](../../../src/runtime/native.hpp)、[语言当前子集](../../../LANGUAGE.md)、[布局入口](../../../src/ui_layout/layout.hpp)、[RHI 契约](../rhi/contract.md)。正式宿主的新增文件以运行时负责人确认的 `2b2d348` 为准；它们尚不在本工作树中，不建立指向缺失文件的本地链接。
 
 两个不能被笼统“语言绑定”掩盖的事实：
 

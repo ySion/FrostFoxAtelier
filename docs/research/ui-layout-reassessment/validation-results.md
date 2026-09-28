@@ -17,17 +17,17 @@
 历史探针原位于acceptance/ui_layout_probe，使用真实DirectWrite和三个真实候选。现已由正式原生布局消费者替代并退役；其源码、runner和Cargo锁可从Git提交`c644ba5692fe2d67d1dda93953e227a50ba64f9f`恢复。当前运行入口见[正式验收](../../modules/ui-layout/acceptance.md)。
 
 - 来源与哈希唯一清单：[sources.json](sources.json)。Yoga `042f501...`；Taffy `77f3856...`；Clay M `e6cc369...`，不是 Clay v0.14 的实测。
-- 构建：Windows x64；Clang 23.1.1；Windows SDK 10.0.26100.0；VC tools 14.50.35717；Rust 1.97.1 / x86_64-pc-windows-msvc，panic=unwind；mimalloc 3.5.3。具体版本、CPU、源码哈希、字体和 DWrite 文件哈希见 [environment.json](../../../out/review/ui-layout-validation/environment.json)。
+- 构建：Windows x64；Clang 23.1.1；Windows SDK 10.0.26100.0；VC tools 14.50.35717；Rust 1.97.1 / x86_64-pc-windows-msvc，panic=unwind；mimalloc 3.5.3。具体版本、CPU、源码哈希、字体和 DWrite 文件哈希见 `out/review/ui-layout-validation/environment.json`。
 - 实机：Windows 10.0.26200、Ryzen 9 3950X，16 核/32 逻辑处理器。只用 Release 作性能对照；构建结束后串行运行。没有设置产品帧预算，没有将 1k 节点定义为产品上限。
 - `Segoe UI`、en-US；字体缩放/版本变更通过真实提供者验证。记录可用字体文件哈希不等于已经跟踪每个 CJK glyph 的实际 fallback face。
 - C++ 通用分配与 Rust GlobalAlloc 使用同一配置的 mimalloc DLL；入口验证 CRT redirect、头文件/DLL版本及 engine 指针来自共享 heap。DWrite 的内部资源仍遵循其系统拥有者。
-- 原始许可未改动：[Yoga MIT](../../../out/review/ui-layout-validation/vendor/yoga/LICENSE)、[Taffy MIT](../../../out/review/ui-layout-validation/vendor/taffy/LICENSE)，以及 [Clay 头文件末尾的 zlib/libpng 公告](../../../out/review/ui-layout-validation/vendor/clay/clay.h)。这只是来源记录，不替代将来实际发行方案的许可核对。
+- 原始许可未改动：`out/review/ui-layout-validation/vendor/yoga/LICENSE`、`out/review/ui-layout-validation/vendor/taffy/LICENSE`，以及 `out/review/ui-layout-validation/vendor/clay/clay.h`。这只是来源记录，不替代将来实际发行方案的许可核对。
 
-最终批次 [runs.json](../../../out/review/ui-layout-validation/runs.json) 包含 **36 次子进程运行：27 次退出 0、9 次非零、0 次超时**。非零为两配置 Clay 行为组、Clay 文本基准，以及 6 次深度栈溢出；runner 返回 2 是诚实汇报已记录的失败，不是全绿。
+最终批次 `out/review/ui-layout-validation/runs.json` 包含 **36 次子进程运行：27 次退出 0、9 次非零、0 次超时**。非零为两配置 Clay 行为组、Clay 文本基准，以及 6 次深度栈溢出；runner 返回 2 是诚实汇报已记录的失败，不是全绿。
 
-[可读构建日志](../../../out/review/ui-layout-validation/final-validation-utf8.log) 从原始混合编码日志逐行无替换转码；原始 `final-validation.log` 保留。每次运行记录 EXE SHA-256；最终源码的 11 个哈希已核对一致。初始失败及修正前样本保留在 `runs-initial.json` / `environment-initial.json`，不混入下方最终表。
+`out/review/ui-layout-validation/final-validation-utf8.log` 从原始混合编码日志逐行无替换转码；原始 `final-validation.log` 保留。每次运行记录 EXE SHA-256；最终源码的 11 个哈希已核对一致。初始失败及修正前样本保留在 `runs-initial.json` / `environment-initial.json`，不混入下方最终表。
 
-运行后的 EXE/DLL 指纹另见 [binary-provenance.json](../../../out/review/ui-layout-validation/binary-provenance.json)。out 是本机证据目录，不能假定其他 worktree 已带有这些原始文件；缺失时只能恢复对应历史源码重新生成实验批次，本页保留本轮摘要，不冒称日志已随源码提交。
+运行后的 EXE/DLL 指纹另见 `out/review/ui-layout-validation/binary-provenance.json`。out 是本机证据目录，不能假定其他 worktree 已带有这些原始文件；缺失时只能恢复对应历史源码重新生成实验批次，本页保留本轮摘要，不冒称日志已随源码提交。
 
 ## 3. 行为矩阵
 
@@ -132,7 +132,7 @@ P4 为 10,000 个逻辑项，三轮分别只实例化 24/20/18 个布局输入�
 | Clay Debug | PASS | PASS | 栈溢出 |
 | Clay Release | PASS | PASS | PASS |
 
-失败码为 `0xC00000FD`（有符号 -1073741571）。直接检查 Taffy 两配置及 Yoga/Clay Release 的 PE header，栈 reserve 1,048,576 字节、初始 commit 4,096 字节；例如 [Taffy Debug 原始 header](../../../out/review/ui-layout-validation/dev-layout_probe_taffy.exe-headers.txt)。结果属于**本探针的完整适配调用链和此构建/线程栈**；Clay adapter 自身也有递归 emit，不归因于纯库内核。不修改栈大小掩盖失败，不承诺任意深度，也不把通过的 depth64 当作所有树形都安全的产品上限。
+失败码为 `0xC00000FD`（有符号 -1073741571）。直接检查 Taffy 两配置及 Yoga/Clay Release 的 PE header，栈 reserve 1,048,576 字节、初始 commit 4,096 字节；例如 `out/review/ui-layout-validation/dev-layout_probe_taffy.exe-headers.txt`。结果属于**本探针的完整适配调用链和此构建/线程栈**；Clay adapter 自身也有递归 emit，不归因于纯库内核。不修改栈大小掩盖失败，不承诺任意深度，也不把通过的 depth64 当作所有树形都安全的产品上限。
 
 本轮失败恢复、旧 publication 与 callback 重入是返回错误路径；栈溢出/分配器 abort 不属于可恢复错误。生产必须在进入不可中断求解前规定并检查资源限额。
 
