@@ -145,7 +145,7 @@ struct Event {
     float wheel{}; // Positive scrolls toward the beginning, measured in wheel notches.
     PointerButton button{PointerButton::primary};
     Key key{Key::none};
-    InputData data; // Text is an owned, complete UTF-16 string, separate from key commands.
+    InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
     bool shift{}, control{}, alt{};
 };
 struct Statistics {
