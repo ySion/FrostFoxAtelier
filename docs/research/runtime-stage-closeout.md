@@ -2,7 +2,7 @@
 
 日期：2026-09-28。本阶段完成共享 Runtime 上的源码执行、`async/yield` 协程、单入口兼容方法体发布、正式模块归属，以及宿主关停和资源成本验证。当前语义以[运行时协议](../runtime-model.md)、[语言契约](../language-contract.md)为准；模块边界见[执行结构](../runtime-structure.md)。
 
-阶段状态：最后一项连续运行补充验收已落地；实现、文档与证据完成收尾，后续由维护者进行分支同步。新增验收没有修改生产 Runtime、源码接口或 GC 语义。
+历史阶段：实现与最后一项连续运行验收已于 `2b2d348` 提交。以下日志与快照对应当时的源码，不是后续集成后的重新验收；现行语法和运行时合同分别由 LANGUAGE.md、runtime-model.md 维护。
 
 ## 收尾产出
 
@@ -26,9 +26,9 @@
 | release `ATELIER_BUILD_JIT_ACCEPTANCE=OFF` 的 `source_acceptance` | PASS，退出 0；正式构建也通过相同公共关停消费者 |
 | release OFF `atelier_source_measure --batches 7 --calls 20000 --max-tasks 1024` | PASS，退出 0；分配器计数自检、所有结果/资源检查完成 |
 
-上表是连续运行补充前的完整阶段验收，证据入口：[首次收尾 verification.json](../../out/review/runtime-stage-closeout/verification.json)。dev 保存最终验收输出片段，release/正式配置保存完整构建与验收日志；日志中的负向输入和故障注入诊断不表示验收失败。此次只对新增消费者和构建依赖运行受影响的 `source_acceptance`，没有重跑未改动的图形、UI 或完整 JIT 矩阵。
+上表是连续运行补充前的完整阶段验收，证据入口：`out/review/runtime-stage-closeout/verification.json`。dev 保存最终验收输出片段，release/正式配置保存完整构建与验收日志；日志中的负向输入和故障注入诊断不表示验收失败。此次只对新增消费者和构建依赖运行受影响的 `source_acceptance`，没有重跑未改动的图形、UI 或完整 JIT 矩阵。
 
-最终工作区及补充验收见[连续运行 verification.json](../../out/review/runtime-continuous-session/verification.json)。两轮各保留独立 `source-snapshot.zip` 和含删除路径的 SHA-256 清单，后一次归档没有覆盖历史证据。原始日志和快照位于忽略的 `out/`；源码、验收入口和本页结果随项目文件同步。
+最终工作区及补充验收见`out/review/runtime-continuous-session/verification.json`。两轮各保留独立 `source-snapshot.zip` 和含删除路径的 SHA-256 清单，后一次归档没有覆盖历史证据。原始日志和快照位于忽略的 `out/`；源码、验收入口和本页结果随项目文件同步。
 
 测量结束后将 release 配置恢复为默认 `ATELIER_BUILD_JIT_ACCEPTANCE=ON`，并重新构建对应目标；生产测量对应 OFF 的原始可执行文件哈希单独保留。此次没有自动附加 Git 提交、合并或推送。
 
@@ -85,6 +85,23 @@
 集中退休时间包含释放四个最后租约；tick 时间包含任务创建、恢复/取消、结果核验及一个宿主 GC 步，不含编译、checkpoint 强制收集或集中退休。两者仅记录观察值，不用耗时阈值使正常验收依赖机器速度。最大值是本次样本最大值，不是 P99；进程内存快照不能当作未干预的内存峰值。
 
 这是有限轮次、几秒到十几秒的组合运行，用来检查反复更新与任务清理的闭环；长时间真实业务运行仍由后续消费者验证。本阶段没有新增阻塞项。
+
+## 源码模块迁移的历史证据
+
+`2b2d348` 将原验收内部的源码宿主移入 `src/source`，后端移入 `src/jit`；公共消费者链接 `atelier_source`。机器快照与统计归消费者，生成帧只保留必要执行槽；当前模块分工和调用链由[结构说明](../runtime-structure.md)维护，迁移计划不再作为第二份规范。
+
+迁移当轮发现的“finish 已移交快照后生成清理失败”路径已统一在执行清理阶段撤销外部快照，保持清理失败、失败输出、宿主首因的原有优先级。`verify_reference_returns` 保留这一真实源码场景。迁移验收、配置边界和源码哈希见`out/review/source-module-migration/verification.json`；本页前述后续关停/连续会话证据另行保留。
+
+## 已关闭的历史缺陷
+
+以下问题均已在 `2b2d348` 中关闭，不能继续列为当前阻塞：
+
+| 问题 | 修复与正式验收 | 历史证据 |
+| --- | --- | --- |
+| `ABI-RESULT-DIAGNOSTIC`：成功原生 ABI 回调漏写结果或返回错种类时，失败诊断为空 | `src/jit/source_backend.cpp` 将 `EntryFailure::invalid_call_result` 与服务状态分离，经过共用清理后在同步/协程出口写出明确契约诊断。`typed_business.inl` 覆盖漏写/错种类、原生/描述型对象、调用方结果不提交、RAII 前清根，以及后续成功调用和服务错误首因 | 修复前复现仅属历史：`out/review/call-performance-planning/review-evidence.json`。修复后 dev/release 总验收日志见本页首次收尾证据，均含 `Native result ABI violations retain diagnostics` 的 PASS |
+| async 宿主绑定无法表达执行种类期望 | `bind<R, Args...>(FunctionExecution)` 沿同一签名核验；默认同步、协程显式选择，双向误绑定及参数/结果不匹配均拒绝，正确入口执行真实 async 源码 | `out/review/async-bind-fix/verification.json`，修复前`out/review/async-coroutine-review/review-evidence.json` |
+
+初次协程专家审查和源码模块迁移的有效协议已经并入现行语言/运行时文档；工业来源集中于[协程研究](coroutine-runtime-research.md)。旧调用测量候选不再作为待办，正式时间和资源口径由[实测报告](runtime-stage-measurements.md)维护。历史输入、日志与复现文件位于忽略的 `out/review/`；重放旧探针须使用对应输入快照，不将旧 ABI 文件接入当前构建。
 
 ## 后续阶段边界
 

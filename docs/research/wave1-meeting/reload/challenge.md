@@ -1,5 +1,7 @@
 # E 独立反方：请求、发布与退休的反证审查
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 状态：完成当前源码审查及与 WaveReloadExplore 的双向证据质询；Main 已以当前正式 Release 参数编译并执行 E1/E2，8+4 个变体全部 PASS、退出 0、stderr 为空，原始证据与构建配方见“Main 返回的本机证据”。基准为会议 baseline.json 的当前实现哈希（含正式链接的 third_party/llvm/JITLinkMemoryManager.cpp），不存在 Git diff。本席位没有执行构建、测试、验收或压力负载，也未重跑 Main 的实验；历史同哈希验收和此次 Release 增补实测分别列证，不声称此次增补已覆盖 Dev。
 
 ## 问题与边界

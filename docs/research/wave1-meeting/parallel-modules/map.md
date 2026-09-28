@@ -1,5 +1,7 @@
 # 并行模块候选：实际依赖图与组合建议
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 作者：WaveModuleMap。日期：2026-09-25。状态：双向质询完成，Main已裁决入选并完成两条本机路径验证。**路线已证实，两个生产Module尚未实现。** 本席位只读生产代码与Main生成的结果，未自行构建、运行或测试。
 
 ## 1. 意图与已确认结论
@@ -152,11 +154,9 @@ Main进一步删除Runtime/JIT库后重新链接并运行相同真实探针；�
 
 **证据限制**：这不是从空目录配置正式新target的验收。清单复用了既有release宿主标志、include路径和全局new/delete对象（对象存于现有atelier_jit_acceptance目标的输出目录），因此只证明该探针的链接/运行不依赖Runtime/JIT库，不抹去第2节“当前根CMake仍无条件配置LLVM”的事实。生产Module/正式CMake targets仍未实现，今后必须由Main把共同分配器接入与局部target组织到唯一构建定义，不能复制一套永久构建系统。原先未覆盖的局部ID/失败快照、录制取消/丢ticket/复用、GPU-based validation与设备恢复边界保持不变；单次elapsed_ms仍不用作性能比较。
 
-## 8. 已确认独立文档交付与所有权
+## 8. 后续模块归属
 
-Main已预建docs/modules/ui-layout/和docs/modules/rhi/，分别交WaveUi、WaveRhi独占完成；本席位仅只读目录名称，不编辑这两个目录。每个目录六份handoff文件：README.md（目的/非目标/里程碑）、contract.md（依赖/所有权/错误/失效/线程）、decisions.md（选型/拒绝/未决）、acceptance.md（真实入口/输入/观测/失败）、research.md（版本/日期/来源/限制）、session-handoff.md（下一session具体启动入口与未完成合同）。目录和文档不等于生产Module实现。
-
-下一session先读对应session-handoff.md、本报告、对应rhi.md/ui-layout.md、engineering.md和唯一依赖锁，只推进入选第一里程碑；不复写Runtime契约、不把未决Interface伪装冻结。根CMakeLists.txt、cmake/dependencies-lock.json、正式验收接线继续由Main单点集成；两个模块session不得各自并行修改共享文件或各造一套权威构建入口。
+当轮评估后，布局与 RHI 已分别建立正式模块；现行合同和验收入口见[布局](../../../modules/ui-layout/README.md)与[RHI](../../../modules/rhi/README.md)。原六份交接文件及下一任务启动说明已被模块现行文档取代，本报告只保留当轮独立链接实验和质询依据。
 
 ## 9. 支线质询记录（已完成至少一轮双向回应）
 
@@ -214,4 +214,3 @@ README、docs/engineering.md、CONTEXT.md、docs/language-contract.md为现状�
 - **设计取舍/仅推断**：定性成本收益与未来Module Interface；没有虚构性能数值。组合与两个独立handoff目录已经由Main确认，不再标作未决选型。
 - **本机实验通过（Main执行）**：7.1/7.2的四份运行JSON与两份精简build.json已只读核对；真实Yoga/DirectWrite和RX 6800 XT硬件D3D12 debug路径均exitCode=0，显式删除Runtime/JIT/LLVM链接库后仍通过。该证据支持链接独立性，不代表干净配置/正式targets完成；不把WARP、GPU-based validation或未覆盖的Module合同混入结论。本席位没有执行或复跑。
 - **当前状态**：报告、双向质询、候选裁决与路线可行性证据均已完成，无本席位阻塞。两个生产Module尚未实现，其局部ID/失败快照、录制取消/丢ticket/资源复用等合同由后续各自session履行；Main已把六份handoff文档分别交WaveUi/WaveRhi，本席位不编辑那两个目录。
-

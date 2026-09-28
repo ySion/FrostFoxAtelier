@@ -1,8 +1,10 @@
 # Wave 1 双线研讨：主持裁决与推进顺序
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](README.md)。
+
 日期：2026-09-25。对象是 [固定内容基线](baseline.json)，不是 Git diff。会议只做审查、研究、对抗、隔离实验和实施交接；**没有修生产代码，也没有实现两个新模块。** 实际实验与复现入口集中在 [证据表](evidence.md)。
 
-**后续状态（用户授权修复后）**：A-F1成员取址与C-D1长源名诊断已修复，正式开发/发布验收及两个原始反例复跑均通过，证据见[verification.json](../../../out/review/wave1-fixes/verification.json)。下文“生产未修”等表述保留为会议当时的裁决记录；当前行为以[README](../../../README.md)为准。
+**后续状态（用户授权修复后）**：A-F1成员取址与C-D1长源名诊断已修复，正式开发/发布验收及两个原始反例复跑均通过，证据见`out/review/wave1-fixes/verification.json`。下文“生产未修”等表述保留为会议当时的裁决记录；当前行为以[README](../../../README.md)为准。
 
 ## 1. 结论先行
 
@@ -109,13 +111,10 @@
 
 B历史索引、类型注册冷路径索引、共享LLJIT、全引擎任务调度和泛资产管线均保留为有真实负载后再启动的事项。本轮没有为它们虚构提速或工期。
 
-## 6. 独立交接入口
+## 6. 现行模块入口
 
-- [UI布局session交接](../../modules/ui-layout/session-handoff.md)：同目录README、contract、decisions、acceptance、research组成完整资料集。
-- [RHI session交接](../../modules/rhi/session-handoff.md)：同样六文件，第一里程碑明确是资源提交闭环，不是完整renderer。
-- 主线继续时先读本报告和 [证据表](evidence.md)，再读对应探索/反方报告；不用从旧会话猜未决语义。
-- 各席位的争论、修正和被否决反例保留原稿；尤其保留词法根/poll条款误读撤回、GC稠密索引漏扫反例、名字索引小输入回退和退休成本移动，不把全体意见相同当作证明。
-
+- [UI 布局](../../modules/ui-layout/README.md)与[RHI](../../modules/rhi/README.md)维护各自已实现合同和正式验收。
+- 本会议的旧开工顺序和交接清单已经失效；原争论、反证及测量仍作为历史依据保留，见[证据表](evidence.md)。
 ## 7. 不声称的能力
 
 没有新生产修复/模块target，没有新的dev配置实验，没有真实allocator OOM全覆盖、任意系统调用恢复、任意C++异常穿JIT、并发Runtime/发布、布局迁移、硬实时GC、跨平台RHI、GPU-based validation或device-loss恢复。局部探针PASS、进程退出0、源码机制、外部文档与尚待实现的合同始终分开。

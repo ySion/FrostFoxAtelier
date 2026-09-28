@@ -1,5 +1,7 @@
 # 支线候选 RHI：单队列无窗口 GPU 资源闭环
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 作者 WaveRhi；2026-09-25。状态：独立初稿与两方质询完成后，Main已运行硬件debug SDK探针并裁决入选窄离屏RHI。原初稿的候选比较保留为决策过程；下一session文档见[模块目录](../../../modules/rhi/README.md)。本席未执行构建、测试或GPU实验；Main本机证据与尚未完成的wrapper验收明确分开，详见第15节。
 
 ## 1. 当前裁决建议
@@ -114,7 +116,7 @@ GPU 提交不能保留 JIT 裸函数地址或业务对象回调。未来读回�
 
 ### 本轮SDK路线
 
-只使用现有 Windows SDK 10.0.26100.0 的D3D12/DXGI/Win32/WRL头与d3d12.lib、dxgi.lib；运行使用系统D3D12/DXGI及实际显示驱动，不下载Agility、Vulkan、DXC或新allocator。SDK头库由现有toolchain-lock.json唯一锁定；驱动/OS runtime不因SDK版本锁定，验收证据必须记录实际OS、adapter/LUID、驱动版本及debug状态（probe打印adapter/LUID；OS/CPU/实际GPU驱动记录见Main的[machine-environment.json](../../../../out/review/wave1-meeting/machine-environment.json)）。
+只使用现有 Windows SDK 10.0.26100.0 的D3D12/DXGI/Win32/WRL头与d3d12.lib、dxgi.lib；运行使用系统D3D12/DXGI及实际显示驱动，不下载Agility、Vulkan、DXC或新allocator。SDK头库由现有toolchain-lock.json唯一锁定；驱动/OS runtime不因SDK版本锁定，验收证据必须记录实际OS、adapter/LUID、驱动版本及debug状态（probe打印adapter/LUID；OS/CPU/实际GPU驱动记录见Main的`out/review/wave1-meeting/machine-environment.json`）。
 
 SDK非本仓开源依赖包；本机 `C:/Program Files (x86)/Windows Kits/10/Licenses/10.0.26100.0/` 提供 sdk_license.rtf / sdk_third_party_notices.rtf。这里仅确认许可文件所在，不作额外再分发许可推断；不把系统DLL拷进产物冒充vendor bundle。任何新增可再分发组件须按其具体许可审查。
 
@@ -192,19 +194,17 @@ Vulkan比较机制采用核心1.0 API；研究许可证样本固定Vulkan-Header
 
 ## 15. Main裁决、实测与独立模块交接
 
-Main已裁决入选Windows x64窄离屏RHI，并授权本席独占完成`docs/modules/rhi/`六份文档；它们是下一session的实施契约，不是已建生产模块。目录入口：[README](../../../modules/rhi/README.md)、[contract](../../../modules/rhi/contract.md)、[decisions](../../../modules/rhi/decisions.md)、[acceptance](../../../modules/rhi/acceptance.md)、[research](../../../modules/rhi/research.md)、[session-handoff](../../../modules/rhi/session-handoff.md)。
+当轮裁决选择了 Windows x64 离屏 RHI，以下保留实际实验范围。后续已经完成正式模块；现行入口为 [RHI README](../../../modules/rhi/README.md)，旧交接清单不再指导开工。
 
 ### Main本机证据，不是本席运行
 
-- [rhi-path-probe-hardware-debug.json](../../../../out/review/wave1-meeting/rhi-path-probe-hardware-debug.json)：参数`--require-debug`，exitCode=0；AMD Radeon RX6800XT，vendor0x1002/device0x73BF、software=0；debug_enabled=1、gpu_validation=0。
+- `out/review/wave1-meeting/rhi-path-probe-hardware-debug.json`：参数`--require-debug`，exitCode=0；AMD Radeon RX6800XT，vendor0x1002/device0x73BF、software=0；debug_enabled=1、gpu_validation=0。
 - 两轮37×19颜色回读，row_bytes=148、row_pitch=256、footprint_bytes=4756；ticket/completed分别1/1与2/2，mismatches=0；caller owner提交前释放，submission_hold于fence后释放；debug messages/errors/warnings均0。
-- [rhi-minimal-build.json](../../../../out/review/wave1-meeting/rhi-minimal-build.json)及[build.log](../../../../out/review/wave1-meeting/rhi-minimal-build.log)：使用正式release host标志和Clang C++23，删除Runtime/JIT静态与导入库，仅保留global_new_delete对象、共享mimalloc及Windows/D3D12/DXGI库。
-- [rhi-minimal-hardware-debug.json](../../../../out/review/wave1-meeting/rhi-minimal-hardware-debug.json)：最小链接结果在同硬件上`--require-debug`运行exitCode=0，两轮mismatches=0/debug0错误。证明路径级独立链接可行，不等于已经建立正式RHI target。
+- `out/review/wave1-meeting/rhi-minimal-build.json`及`out/review/wave1-meeting/rhi-minimal-build.log`：使用正式release host标志和Clang C++23，删除Runtime/JIT静态与导入库，仅保留global_new_delete对象、共享mimalloc及Windows/D3D12/DXGI库。
+- `out/review/wave1-meeting/rhi-minimal-hardware-debug.json`：最小链接结果在同硬件上`--require-debug`运行exitCode=0，两轮mismatches=0/debug0错误。证明路径级独立链接可行，不等于已经建立正式RHI target。
 
 ### 证据限制与交接结果
 
 没有WARP或其他设备支持证据；没有GPU-based validation、device-loss注入/恢复、性能验证。进程elapsed不是稳态GPU/CPU性能基线。本机SDK hold示例不证明尚未实现wrapper的未提交取消、丢ticket、slot代际、Mapping与显式关停规则。
 
 六文档已定义下一session可独立实施的真实依赖、ResourceOwner/ResourceId与Ticket区别、record→device in-flight→fence退休链、取消/失败/timeout/lost、无分配/无wait资源析构、明确Device关停、验收矩阵和Main独占集成锁。全程未更改src/acceptance/cmake/语言规范，未改Main已验证探针，未运行构建、测试或GPU工作。
-
-

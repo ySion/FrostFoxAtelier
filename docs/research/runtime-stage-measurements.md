@@ -4,7 +4,7 @@
 
 状态：**已完成 Release 正式构建实测**，`ATELIER_BUILD_JIT_ACCEPTANCE=OFF`。程序退出码为 0，336 个时间样本、48 组汇总及 37 条资源记录均完成校验，末尾有 `complete` 记录，stderr 为空。
 
-证据：[原始 JSONL](../../out/review/runtime-stage-measurements/release.jsonl)、[stderr](../../out/review/runtime-stage-measurements/release.stderr.log)。JSONL SHA-256 为 `746DDB416D04E7D3665ACCA485E0CAABA9FFA816E6C351AAC97F6384052DC2B4`；测量源码 SHA-256 为 `11EF9881D72A38EFE1FEF7CFC7954BFEABE29E51DDC898A01C33A040A0C4DE42`。这份结果对应本次源码快照；后续重跑应另存证据，不能覆盖后仍沿用本页数字。
+证据：`out/review/runtime-stage-measurements/release.jsonl`、`out/review/runtime-stage-measurements/release.stderr.log`。JSONL SHA-256 为 `746DDB416D04E7D3665ACCA485E0CAABA9FFA816E6C351AAC97F6384052DC2B4`；测量源码 SHA-256 为 `11EF9881D72A38EFE1FEF7CFC7954BFEABE29E51DDC898A01C33A040A0C4DE42`。这份结果对应本次源码快照；后续重跑应另存证据，不能覆盖后仍沿用本页数字。
 
 ## 实测结论
 
@@ -139,6 +139,8 @@ cmake --build --preset release --target atelier_source_measure
 任务资源采样基线已经持有 Runtime、Program、已发布代码、热身后的内部容量以及宿主 vector。各阶段差值不包含这些固定基座。取消只释放帧与根；尚未经过 Runtime GC 的对象仍可占用存储，仍被保留的 Coroutine 外壳也可能继续持有终态控制块。最后阶段同时释放外壳并完成 GC，和单纯取消阶段不能混为一谈。
 
 ## 解释限制
+
+测量方法的原始参考：[Microsoft 高精度计时](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)、[QueryThreadCycleTime](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime)、[Google Benchmark 方法说明](https://google.github.io/benchmark/user_guide.html)。它们提供方法背景，不表示本驱动采用了全部 API 或引入了 Benchmark 依赖。
 
 - 本轮是单机、同线程、短时微型工作负载基线，不覆盖持续热更、帧时间竞争、异步 I/O、跨线程调度或长时内存保留。
 - 每任务均摊创建/恢复成本有助于定位下一步，但不能直接推出游戏帧预算或最大承载量。

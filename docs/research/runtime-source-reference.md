@@ -118,4 +118,4 @@
 | [LLVM 的 CMake 接入](https://llvm.org/docs/CMake.html#embedding-llvm-in-your-project) | 嵌入 LLVM 依赖开发头文件、库及对应构建配置，不只是 clang 可执行程序。已补齐 SDK，并用隔离 DLL 验证开发/发布 CRT 兼容性；版本继续以现有锁文件为权威，不在本文再维护版本号。 |
 | [Debugging JIT-ed Code](https://llvm.org/docs/DebuggingJITedCode.html) | 动态生成代码需要调试信息交接；文中展示的是 MCJIT/ELF 路径，不能据此声称 Windows ORC 调试已经接通，也不能据此断言不支持。应单独验证选定平台的调试和栈回溯路径。 |
 
-后续锁定源码核查、工业实现与论文见[JIT 工业研究](jit-industrial-research.md)及[执行与热重载候选设计](jit-execution-design.md)。这些材料记录通用 debugger helper 的 COFF 支持边界、特定异常桥与完整 COFF 平台移除路径的限制；已通过的独立平台探针不能证明语言源码调试或热重载已经接通。
+后续锁定源码核查、工业实现与论文见[JIT 工业研究](jit-industrial-research.md)及[现行执行结构](../runtime-structure.md)。这些材料记录通用 debugger helper 的 COFF 支持边界、特定异常桥与完整 COFF 平台移除路径的限制；平台探针本身不证明源码调试或通用热重载；后续已经落地的单入口兼容发布范围以现行运行时协议为准。

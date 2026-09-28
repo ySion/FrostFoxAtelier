@@ -1,5 +1,7 @@
 # E 意图探索：请求、发布与退休
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 日期：2026-09-25。作者：WaveReloadExplore。独立初稿在读取搭档稿前形成，首次文件写入受路径/权限阻碍，改用独占文件精确替换。生产源码只读，未执行构建/测试/探针。已完整读取会议章程及 baseline.json，依据当前固定源码而非不存在的 Git diff。范围限单入口兼容方法体，不扩展一般依赖失效、布局迁移或后台编译。
 
 ## 意图与结论
@@ -190,4 +192,3 @@ A1已完成当前连续更新/历史/退休基线，结果支持保留清楚的�
 ## 来源与状态
 
 源码审查与Main本机新实验分别标记，见实测补录；本席位没有运行任何实验。已读：会议 README/baseline；engineering.md；CONTEXT.md；runtime-model 单入口段；language-contract；jit-execution-design:241–259。实现：business.cpp:349–630、1715–1840、1919–2355；business_backend.hpp:39–116；business_backend.cpp:26–35、404–549；runtime.cpp:745–799；execution.cpp:12–27；runtime.hpp:240–265。旧开发/发布 PASS 仍只按 baseline 哈希一致声明复用；本次性能数字只来自Main生成的八份E-reload-probe原始JSON。
-

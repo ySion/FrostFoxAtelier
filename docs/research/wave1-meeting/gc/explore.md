@@ -1,5 +1,7 @@
 # B / GC 与根协议：探索席
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 状态：独立初稿、互读与带证据质询已完成；Main 已统一执行七组真实 Runtime 探针，每组三轮，原始 JSON 与确定工作量结论已吸收（见第7节补记）。固定源码审查，不是 Git diff 审查，基线为 baseline.json 当前实现。本席没有自行编译或运行；只分析 Main 本次原始结果，不沿用旧版本数字。
 
 ## 1. 意图与证据等级
@@ -179,4 +181,3 @@ max_time=1ns、max_work=512 不保证每次 poll 恰好一个 work：本次 poll
 本地来源：会议 README/baseline；CONTEXT.md；docs/engineering.md、language-contract.md、runtime-model.md；runtime.cpp:65–216、226–510、624–816、1020–1082、1156–1482；runtime.hpp:113–179、267–282；execution.cpp:23–102；business.cpp:89–111、215–308、1141–1265；business_backend.cpp:145–186；acceptance/runtime/main.cpp:595–674、991–1227。
 
 交付两个独占文件：本报告与 gc-explore-probe.cpp。互读与一轮质询完成，Spec/Standards 分列，最多三条路径。本席未改生产/规范/CMake，也未自行编译或执行；Main 已统一运行七组、每组三轮并返回成功，本席吸收其原始 JSON（第7节）。无研究阻塞。确定工作量与预算组合行为已得到这些入口场景的本机支持；稳定尾延迟、内存占用和生产Tick表现仍未证实。
-

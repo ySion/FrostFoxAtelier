@@ -1,5 +1,7 @@
 # D 独立反方：执行安全与成本边界
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 日期：2026-09-25。席位：WaveExecChallenge。审查对象为会议 baseline.json 固定的当前实现，不是不存在的 Git diff。生产只读；本席位没有编译、运行、测试、格式化或施加压力负载。所有新探针交 Main 统一执行。
 
 ## 1. 裁决摘要与证据等级
@@ -147,5 +149,3 @@ Main 后续已确认 mixed slab 的预期低层结果（见§8），该项不再
 退出码0、stderr为空、末行 `Execution resource boundary: CONFIRMED`。mixed 返回两条 `Attempt to access invalid address.`；源码链是首次释放内部Finalize基址失败、abandon再次尝试同一内部地址仍失败，再释放Standard原基址成功，不能把两个错误文本计成两份页泄漏。
 
 **最终边界**：已证实真实内存管理器组合的能力限制及该分支资源释放，不是业务COFF触发证明；该探针没有.pdata/展开action，不能冒充真实unwind回退，也不证明任意系统失败/OOM恢复。当前业务泄漏和优化收益均没有新结论。D席位所交探针的统一执行已完成，无待运行阻塞；剩余问题是明确列出的范围限制，不能由已有PASS扩张。
-
-

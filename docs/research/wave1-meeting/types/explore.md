@@ -1,5 +1,7 @@
 # A 意图独立复核：共享类型、布局、值与对象生命周期
 
+> 历史快照：本文依据当轮 baseline.json；旧接口、文件名、行号与未实现判断仅描述当时状态，不是现行规则或待执行任务。后续结果与现行入口见[历史索引](../README.md)。
+
 审查者：WaveTypesExplore。日期：2026-09-25。依据会议 baseline.json 当前内容哈希（含36项补充版），无 Git diff。生产代码只读，本席位未自行编译、运行或测量；Main统一执行的两份默认基线JSON、addressof隔离对照JSON及对应构建出处已只读核对，结果见§6。初稿内容在收到搭档结论前形成；写入曾受权限/编辑模式阻碍，成功落盘后才交换。
 
 ## 1. 独立初稿结论与边界
@@ -185,4 +187,3 @@ Main后续输出 `out/review/wave1-meeting/types-addressof-probe-default.json`�
 完整读取会议README、baseline.json；遵循engineering.md、CONTEXT.md、runtime-model.md、language-contract.md。源码和acceptance为主证据，位置逐项列出。旧开发/发布通过仅来自baseline，不是本轮实测。初稿无需外部机制研究；互审F1后使用Exa fetch直接读取已知一手URL，核对C++工作草案20.2.11 [specialized.addressof] p1（访问2026-09-25，滚动草案）：`https://eel.is/c++draft/specialized.addressof`。该条明确std::addressof取得真实对象地址，即使重载operator&。只支撑机制，不冒充固定编译器/ABI或本机证据。搭档另核对固定N4950版本，本报告不把未由本人读取的固定PDF当本席位证据。
 
 不搬外部运行时语义、不宣称未测吞吐。事务/工作栈/消费链属源码证实；F1默认误址及漏强边为Main本机复现，addressof隔离候选为Main本机通过，F3选定组合为Main本机通过；F2仅源码复杂度证据，性能收益未测。所有执行由Main负责，生产未修复。
-

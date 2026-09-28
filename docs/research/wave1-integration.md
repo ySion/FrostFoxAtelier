@@ -1,6 +1,6 @@
 # Wave 1 三线集成验收
 
-日期：2026-09-27。状态：运行时、RHI 与自研布局首增量已在同一工作区完成集成，正式 dev/release 配置及总 `acceptance` 均退出 0。
+日期：2026-09-27。历史状态：运行时、RHI 与自研布局首增量在下述基点完成集成，正式 dev/release 配置及总 `acceptance` 均退出 0。本页保留当轮输入和发现，不代表后续提交的当前缺陷清单。
 
 本记录证明三个模块在共同构建入口下的共存与各自正式行为。业务状态到布局再到 GPU 的跨模块消费链尚未实现，不计入本次结果。
 
@@ -61,16 +61,16 @@ cmake --build --preset release --target acceptance
 
 本机证据保留在 `out/review/wave1-integration/`：
 
-- [verification.json](../../out/review/wave1-integration/verification.json)：实际验收提交、51 个源码/构建文件哈希、日志哈希、双配置结果及生成 gfx 身份。
-- [dev 总验收](../../out/review/wave1-integration/dev-acceptance.log)、[release 总验收](../../out/review/wave1-integration/release-acceptance.log)，以及对应的 configure 日志。
-- [补丁反例](../../out/review/wave1-integration/patch-reproduction.json)、初次配置失败日志和新签出补丁副本。
+- `out/review/wave1-integration/verification.json`：实际验收提交、51 个源码/构建文件哈希、日志哈希、双配置结果及生成 gfx 身份。
+- `out/review/wave1-integration/dev-acceptance.log`、`out/review/wave1-integration/release-acceptance.log`，以及对应的 configure 日志。
+- `out/review/wave1-integration/patch-reproduction.json`、初次配置失败日志和新签出补丁副本。
 - 各配置 `out/<preset>/rhi-acceptance.log` 与三个 `rhi-regression-*.log` 保留独立 GPU 场景输出。
 
 这些 `out` 文件不提交；缺失时按正式入口重新运行，不把文档中的历史 PASS 当成本机已有结果。
 
-## 已知问题与后续边界
+## 当轮问题与能力边界
 
-- 运行时防御性 ABI 回调违反结果契约时仍可能得到空错误文字，见[现有 P2 记录](call-performance-plan.md)。失败状态、输出保留和显式清根仍有效，标准 `Runtime::call` 路径保留首因。本次没有修复该问题，也不以总验收通过宣称它消失。
+- 当轮仍存在防御性 ABI 回调结果违约的空诊断 P2；之后已在 `2b2d348` 修复，并经正式 dev/release 端到端验收关闭，见[缺陷关闭证据](runtime-stage-closeout.md#已关闭的历史缺陷)。不得将此历史问题继续列为当前阻塞。
 - RHI 结果仍限于已测硬件和现行离屏路径；Present、多 queue、设备恢复和完整 renderer 等不由本次合流补齐。
 - 布局输入变化后仍全树计算；共享列、换行/重复格、局部调度、虚拟化、绘制与业务绑定仍属于后续增量。
 - 本轮没有性能采样或性能收益结论。RHI 与布局的独立开发分支保持原提交；运行时所在的 `main` 已快进到集成基线。

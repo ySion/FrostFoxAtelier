@@ -96,15 +96,20 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 这两层恢复保活服务不同接口：核心拥有者和原始 DLL 外壳都可能在回调中失效，不能仅按 shared_ptr 数量判断重复。Runtime、回调用户数据及 DLL 的外部寿命要求仍由宿主承担。
 
-## 技术债与处理时机
+## 当前取舍
+
+- 显式根槽接入已有 GC、引用屏障和撤销协议；当前语言尚无通用记录值帧，不预先引入 statepoint 或另一个根表。
+- 每个发布 Version 独立拥有编译单元，活动调用、协程与租约保持该版本的恢复/清理入口及展开信息。共享 LLJIT 会改变符号空间、错误归属和独立退休责任，目前没有采用。
+- 发布检查 Runtime 静止，挂起帧保留旧版本；安全点推进 GC，不在轮询中暗中换代码。一般调用图、内联依赖和结构迁移需由具体增量另行定义。
+- 原生异常在受控边界转成状态，生成代码显式清理后提交结果。Windows 展开表服务当前栈回溯与代码寿命，不授权 C++ 异常穿越任意生成帧。
+
+工业来源及历史对照见[JIT 研究](research/jit-industrial-research.md)、[协程研究](research/coroutine-runtime-research.md)和[早退清理实验](research/jit-cleanup-experiment.md)。这些材料不另维护执行合同。
+
+## 已知成本与能力边界
 
 | 项目 | 现状与实际影响 | 处理时机与最小方向 |
 | --- | --- | --- |
-| 源码适配器的正式模块归属 | 已迁入 `atelier_source` 与 `atelier_source_backend`，公共消费者无需验收定义 | 本项已关闭；后续消费者沿同一 Program 接入 |
-| 通用 Invocation 混入场景状态 | 快照、统计与具体故障模式已移至验收；编译器中快照固定槽已删除 | 本项已关闭；内部观察配置仍是借用，状态须覆盖调用/帧寿命 |
-| 编译表示间的契约核对 | 参数、结果、接收者及执行种类需穿过 Runtime/AST/ABI；曾遗漏 bind 的执行种类，现已修复 | 新增真实语义时同时检查声明生产、宿主期望与版本兼容；复用现有解析入口和端到端链路，不为几个枚举建立全局框架 |
-| 关停责任缺少完整消费者 | 已有 public close 和集中拥有任务的真实消费者，复用 Runtime 静止检查后完成释放 | 本项已关闭；长期宿主沿[相同关停协议](runtime-model.md#宿主关停闭环)接入，任务作用域是否进入核心由实际消费者需求决定 |
-| 当前正式接口缺少资源基线 | 已增加显式测量入口，覆盖编译/发布、同步调用、协程、根槽高水位和最后代码拥有者释放 | 数据与限制以[阶段测量](research/runtime-stage-measurements.md)为准；仅按实际预算决定后续优化，不预先加入对象池、退休队列或专用根表 |
+| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 以[阶段测量](research/runtime-stage-measurements.md)及连续运行证据评估消费者预算；当前没有已证明需要池化、根表替换或退休队列的负载 |
 | 诊断与源码调试未贯通 | 编译有源名/行列，平台有动态展开信息；尚无协程挂起源码位置、源码断点和局部变量查看 | 编辑器消费者需要定位挂起/错误时，再贯通 source position、代码版本和运行状态 |
 
 `await`、一般函数调用、多类型环境、引用/记录参数和布局迁移属于尚未实现的能力。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
@@ -115,7 +120,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 ## 证据与维护入口
 
-- 模块迁移的计划、实际验收和边界见[正式化记录](research/source-module-migration.md)。[上一轮结构整理验收](../out/review/runtime-structure/verification.json)保留迁移前的历史快照，不代表当前路径。
+- 模块迁移的历史验收见[阶段记录](research/runtime-stage-closeout.md#源码模块迁移的历史证据)。`out/review/runtime-structure/verification.json`保留迁移前的历史快照，不代表当前路径。
 - 当前阶段的关停、资源基线和结束条件见[阶段收尾](research/runtime-stage-closeout.md)；可重跑的测量代码随源码维护，原始日志保存在本机 `out/review/`。
-- [专家团审查](research/async-coroutine-panel-review.md)保存工业与正确性审查的历史结论；[绑定修复证据](../out/review/async-bind-fix/verification.json)保存上一增量的快照，不随本次修改重写。
-- 当前行为更新 `runtime-model.md`，语法更新版本化语言规范，本页只维护结构与债务。研究文件的阶段建议不作为另一份当前实现清单。
+- ABI 结果诊断与 async 绑定的[关闭记录](research/runtime-stage-closeout.md#已关闭的历史缺陷)保留原始证据；它们不再是现行缺陷。
+- 当前行为更新 `runtime-model.md`，语法统一更新根目录 `LANGUAGE.md`，本页维护结构与已知边界。研究文件不作为另一份当前实现清单。
