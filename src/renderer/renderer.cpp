@@ -133,6 +133,7 @@ struct Renderer::State {
     GfxTexture depth;
     ui::PixelExtent depth_extent;
     std::unordered_map<CoverageKey, CachedCoverage, CoverageHash> images;
+    FrameStats stats;
     std::vector<Instance> instances;
     std::vector<std::uint8_t> upload_pixels;
     std::optional<Error> failure;
@@ -254,6 +255,9 @@ struct Renderer::State {
         image.owner = owner;
         image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height, DXGI_FORMAT_R8_UNORM);
         allocation(bool(image.texture));
+        ++stats.cached_coverage_count;
+        stats.cached_coverage_texel_bytes += std::uint64_t(owner->width) * owner->height;
+        stats.cached_coverage_cpu_bytes += owner->pixels.size();
         // The protocol permits padded CPU rows; gfx's upload contract is tight.
         upload_pixels.resize(std::size_t(owner->width) * owner->height);
         for (std::uint32_t y = 0; y < owner->height; ++y)
@@ -263,6 +267,8 @@ struct Renderer::State {
             gfx, gfxCreateBuffer(gfx, upload_pixels.size(), upload_pixels.data(), kGfxCpuAccess_Write)};
         allocation(bool(upload.buffer));
         require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI coverage");
+        ++stats.coverage_upload_count;
+        stats.coverage_upload_bytes += upload_pixels.size();
         return image.texture;
     }
     void draw(const Frame &frame, const ui::PixelExtent extent, Capture *capture) {
@@ -299,6 +305,7 @@ struct Renderer::State {
             require(gfxCommandBindKernel(gfx, scene.kernel()), "Bind scene pipeline");
             require(gfxCommandDraw(gfx, 36, static_cast<std::uint32_t>(instances.size())),
                     "Draw scene cubes");
+            ++stats.scene_draw_calls;
         }
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");
         require(gfxCommandSetViewport(gfx, 0, 0, static_cast<float>(extent.width),
@@ -331,6 +338,7 @@ struct Renderer::State {
             require(gfxCommandSetScissorRect(gfx, left, top, right - left, bottom - top), "Set UI scissor");
             require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind UI pipeline");
             require(gfxCommandDraw(gfx, 6), "Draw UI quad");
+            ++stats.ui_draw_calls;
         }
         for (auto it = images.begin(); it != images.end();) {
             if (it->second.used) {
@@ -338,6 +346,10 @@ struct Renderer::State {
                 continue;
             }
             require(gfxDestroyTexture(gfx, it->second.texture), "Retire unused coverage");
+            const auto &owner = *it->second.owner;
+            --stats.cached_coverage_count;
+            stats.cached_coverage_texel_bytes -= std::uint64_t(owner.width) * owner.height;
+            stats.cached_coverage_cpu_bytes -= owner.pixels.size();
             it = images.erase(it);
         }
         if (capture) {
@@ -420,13 +432,17 @@ Result<Target> Renderer::target() const {
 Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     const auto destination = target();
     if (!destination) return std::unexpected(destination.error());
+    auto &s = *state_;
+    s.stats.ui_draw_calls = 0;
+    s.stats.scene_draw_calls = 0;
+    s.stats.coverage_upload_count = 0;
+    s.stats.coverage_upload_bytes = 0;
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)
-        return FrameResult{.accepted_extent = {}, .next_extent = extent};
+        return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     try {
         validate(frame);
-        auto &s = *state_;
         s.instances.clear();
         s.instances.reserve(frame.cubes.size());
         for (const auto &cube : frame.cubes)
@@ -444,7 +460,8 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         const auto presented = s.context.frame(s.options.vsync, &details);
         if (!presented) throw Error{presented.error(), true};
         s.check_debug();
-        FrameResult result{.accepted_extent = {}, .next_extent = {details.next.width, details.next.height}};
+        FrameResult result{.accepted_extent = {}, .next_extent = {details.next.width, details.next.height},
+                           .stats = s.stats};
         if (!details.occluded) {
             result.status = FrameStatus::accepted;
             result.accepted_id = frame.ui_frame.id;

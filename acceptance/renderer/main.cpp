@@ -111,6 +111,11 @@ int main() {
     check(result.status == render::FrameStatus::accepted && result.accepted_id == 1 &&
               result.accepted_extent == target.extent,
           "accepted metadata");
+    check(result.stats.ui_draw_calls == 3 && result.stats.scene_draw_calls == 1 &&
+              result.stats.coverage_upload_count == 1 && result.stats.coverage_upload_bytes == 6 &&
+              result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
+              result.stats.cached_coverage_cpu_bytes == 10,
+          "first frame reports actual draws, tight R8 upload and padded CPU cache bytes");
     const auto *blend = pixel(capture, 30, 40);
     check(std::abs(int(blend[0]) - 188) < 3 && std::abs(int(blend[1]) - 188) < 3 && blend[2] == 0,
           "linear premultiplied blend into sRGB target");
@@ -127,6 +132,10 @@ int main() {
     ui_frame.id++;
     result = take(renderer.render(frame, &capture));
     check(pixel(capture, 360, 200)[1] > pixel(initial, 360, 200)[1] + 70, "selection highlight");
+    check(result.stats.ui_draw_calls == 3 && result.stats.scene_draw_calls == 1 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_cpu_bytes == 10,
+          "unchanged coverage reuses cache without accumulating per-frame activity");
     ui_frame.draws.push_back({{350, 190, 20, 20}, full, {1, 1, 1, .5f}, {0, 0, 1, 1}, {}});
     ui_frame.id++;
     result = take(renderer.render(frame, &capture));
@@ -156,13 +165,28 @@ int main() {
     replacement.reset();
     for (int i = 0; i < 12; ++i) {
         ++ui_frame.id;
-        take(renderer.render(frame));
+        result = take(renderer.render(frame));
+        check(result.stats.ui_draw_calls == 4 && result.stats.scene_draw_calls == 1 &&
+                  result.stats.coverage_upload_count == (i == 0 ? 1u : 0u) &&
+                  result.stats.coverage_upload_bytes == (i == 0 ? 6u : 0u) &&
+                  result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
+                  result.stats.cached_coverage_cpu_bytes == 6,
+              "revision upload counted once, retired old version removed from cache totals");
     }
     check(old_coverage.expired(), "unused coverage owner released");
     ++ui_frame.id;
     take(renderer.render(frame, &capture));
     check(pixel(capture, 20, 120)[0] < 20 && pixel(capture, 60, 120)[0] > 245,
           "revision upload replaces cached pixels");
+    auto hidden = std::make_shared<ui::Coverage>(*ui_frame.draws[2].coverage);
+    hidden->identity = 2;
+    ui_frame.draws.push_back({{0, 0, 30, 20}, {}, {1, 1, 1, 1}, {0, 0, 1, 1}, hidden});
+    ++ui_frame.id;
+    result = take(renderer.render(frame));
+    check(result.stats.ui_draw_calls == 4 && result.stats.scene_draw_calls == 1 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_count == 1,
+          "empty-clipped input is not counted as a draw or upload");
     window.resize(703, 427);
     result = take(renderer.render(frame, &capture));
     check(result.accepted_extent == ui::PixelExtent{641, 385} && capture.extent == result.accepted_extent &&
@@ -172,6 +196,11 @@ int main() {
     result = take(renderer.render(frame, &capture));
     check(result.status == render::FrameStatus::skipped && capture.frame_id == accepted,
           "stale extent skips without publishing capture");
+    check(result.stats.ui_draw_calls == 0 && result.stats.scene_draw_calls == 0 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
+              result.stats.cached_coverage_cpu_bytes == 6,
+          "pre-encoding skip reports zero activity and unchanged current cache ownership");
     ui_frame.extent = result.next_extent;
     ++ui_frame.id;
     result = take(renderer.render(frame, &capture));
@@ -201,6 +230,15 @@ int main() {
     take(renderer.render(frame, &capture));
     check(std::abs(depth(capture, 360, 200) - (10.0f / 9.9f - 1.0f / (9.9f * 3.5f))) < .0001f,
           "left-handed row-major view and perspective projection");
+    ui_frame.draws.erase(ui_frame.draws.begin() + 2);
+    frame.cubes = {};
+    ++ui_frame.id;
+    result = take(renderer.render(frame));
+    check(result.stats.ui_draw_calls == 3 && result.stats.scene_draw_calls == 0 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&
+              result.stats.cached_coverage_cpu_bytes == 0,
+          "unused coverage leaves cache totals and empty scene emits no draw");
     auto closed = renderer.close();
     check(bool(closed), "drain and close before HWND destruction");
     check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");

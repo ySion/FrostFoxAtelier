@@ -44,11 +44,25 @@ struct Frame {
     std::span<const Cube> cubes; // Unit cubes [-0.5,0.5], translation only.
 };
 enum class FrameStatus { accepted, skipped };
+// Activity from this successful render return (accepted or skipped). Counts
+// encoded commands, including an occluded Present; pre-encoding skips have zero
+// activity. These are not GPU timings. Errors provide no complete statistics.
+struct FrameStats {
+    std::uint64_t ui_draw_calls{};
+    std::uint64_t scene_draw_calls{};
+    std::uint64_t coverage_upload_count{};
+    std::uint64_t coverage_upload_bytes{}; // Tight R8 payload; excludes copy padding/scratch.
+    // Current renderer cache only, excluding gfx's in-flight retirement queue.
+    std::uint64_t cached_coverage_count{};
+    std::uint64_t cached_coverage_texel_bytes{}; // Logical R8 texels, not physical VRAM.
+    std::uint64_t cached_coverage_cpu_bytes{};   // Owned pixels.size(), including CPU row padding.
+};
 struct FrameResult {
     FrameStatus status{FrameStatus::skipped};
     std::uint64_t accepted_id{};
     ui::PixelExtent accepted_extent; // Actual target BEFORE recording/Present.
     ui::PixelExtent next_extent;     // Resize during Present applies to NEXT frame.
+    FrameStats stats{};
 };
 // Explicit diagnostic capture stalls the GPU once; normal rendering does not.
 // Color is tightly packed sRGB RGBA8, depth tightly packed float32, top-left.

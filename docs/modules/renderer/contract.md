@@ -31,6 +31,26 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 诊断捕获
 
+### 每帧计数
+
+`FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照，七项均为 `uint64_t`。它不持有额外资源，也不增加 GPU 查询、等待或动态分配。
+
+| 字段 | 统计边界 |
+| --- | --- |
+| `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
+| `scene_draw_calls` | 实际成功编码的场景 draw 次数；多个方块共享一次 instanced draw，空场景为 0 |
+| `coverage_upload_count` | 本次新建内容版本后成功编码的 R8 上传次数；命中已有版本为 0 |
+| `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含方块实例上传 |
+| `cached_coverage_count` | 返回时 renderer 缓存持有的 Coverage/GPU texture 项数 |
+| `cached_coverage_texel_bytes` | 缓存项宽×高的逻辑 R8 字节总量，不是物理显存占用 |
+| `cached_coverage_cpu_bytes` | 缓存持有的 Coverage 的 `pixels.size()` 总量，包含 CPU 行 padding；不是 vector capacity 或整个 UI 的 CPU 内存 |
+
+编码前 skipped 的前四项为 0，后三项反映仍被持有的缓存。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存量不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧计数重置，缓存总量随现有插入/退休动作更新，未改变淘汰策略。
+
+应用可在正式交互中测量 prepare/render 的 CPU 墙钟时间；render 时间包含 Present 或必要等待，不能称为 GPU 时长。使用同一 `FrameResult` 关联活动计数，显式 Capture 另行记录，避免把它的同步成本混入普通交互样本。
+
+### 显式图像读回
+
 `render(frame, &capture)` 显式请求 GPU 同步，返回本帧目标的紧密 sRGB RGBA8 和 float32 深度，行自上向下。仅在 accepted 时替换输出。UI 不写场景深度，背景深度为 1。普通 render 不调用 finish；诊断捕获不应放入交互帧热路径。
 
 捕获命令经现有 gfx 录制，使用 256 字节对齐的 GPU 行距，完成后拆成紧密 CPU 行。读回源是 resize 前真正绘制的目标。没有原生队列逃生口，也不改变原有紧密 texture copy 入口。
