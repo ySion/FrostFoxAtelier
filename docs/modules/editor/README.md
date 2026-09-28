@@ -17,7 +17,7 @@ Win32 窗口消息 → Window 复制拥有的事件 → 每条消息后顺序排
  → renderer 最终 accepted → UI 接受对应命中帧
 ```
 
-WndProc 只复制和排队，不重入 UI/业务；同步平台回调也在同一泵中依序消费。UTF-16 代理项在顺序投递时组装，组合流绑定独立 composition_id 与原编辑身份。候选位置只使用与当前 token 相匹配的 accepted caret。IME 终止键的首次按下、重复和抬起保持同一归属，避免确认组合后又提交字段。
+WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入回调也在同一泵中依序消费。UTF-16 代理项在顺序投递时组装，组合流绑定独立 composition_id 与原编辑身份。候选位置只使用与当前 token 相匹配的 accepted caret。同步 IMR_QUERYCHARPOSITION 只读对应帧的插入/组合起点快照，将客户区物理坐标转为屏幕坐标；仅支持偏移 0，无有效快照或其他偏移明确拒绝。快照在原生组合/失焦/Surface 变化时立即撤下，不用旧显示 caret 冒充组合起点。IME 终止键的首次按下、重复和抬起保持同一归属，避免确认组合后又提交字段。
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
 [Scene](../../../src/scene/scene.hpp)批量注册 Vec3、Transform 和 SceneObject，缓存 `transform.position.x/y/z` 字段路径。
@@ -74,7 +74,9 @@ DPI 验收覆盖当前显示器上的 WM_DPICHANGED 过渡政策，不据此声�
 
 ### S2 集成状态与输入法验收
 
-2026-09-29：共享 UI 提交 `60472ed` 已集成为 `0e45c6a`；同一集成树 dev/release 的 UI 12/12 通过，实际文字服务报告 ICU 72.1 / Unicode 15.1。`afb2286` 的应用平台接线与最终验收驱动在 dev/release 编译通过，顺序运行 `editor_acceptance` 均通过：Scene PASS、窗口各接受 709 帧，含原有场景/窗口链及 S2 非 IME 操作。原始报告和截图位于 `out/{dev,release}/editor-evidence/`。
+2026-09-29：共享 UI 提交 `60472ed` 已集成为 `0e45c6a`；当时 dev/release 的 UI 12/12 通过，实际文字服务报告 ICU 72.1 / Unicode 15.1。`afb2286` 的应用平台接线与验收驱动在 dev/release 编译通过，顺序运行 `editor_acceptance` 均通过：Scene PASS、窗口各接受 709 帧，含原有场景/窗口链及 S2 非 IME 操作。该版本原始报告和截图另存于 `out/{dev,release}/editor-evidence-afb2286/`，与后续 IME 工作目录分开保留。
+
+随后组合起点快照 `4de055a` 已集成为 `7cd9c28`，同一集成树 dev/release UI **13/13** 通过。Window 已补 IMR_QUERYCHARPOSITION 单起点应答、原生边界立即失效；验收入口可临时选择本线程已启用搜狗并恢复原 profile。新增代码在两种配置编译通过，**最终普通窗口及真实搜狗链尚未完成**；前述旧 709 帧记录不能代替这批新产品代码的验收。
 
 此前窗口重跑中确认前台切至 `PioneerGame.exe`，真实 WM_KILLFOCUS 按合同取消了草稿；同时发现消息验收 helper 会继承线程修饰位。驱动已显式设置本次 Ctrl/Shift 并清除未请求修饰位、增加修饰位继承场景和意外失焦中断检查；生产失焦取消语义保留。原始诊断为 `out/dev/s2-flow.log`、`out/dev/s2-focus-owner.log`，临时生产日志已移除。最终双配置运行在稳定前台时段完成，未干预其他进程。
 
@@ -85,9 +87,15 @@ cmake --build --preset dev --target editor_ime_acceptance
 cmake --build --preset release --target editor_ime_acceptance
 ```
 
-这两个目标须依次运行，并保持编辑器前台且无物理修饰键按住。驱动只读核对当前搜狗 profile 的完整身份，开始与结束保持一致；不切换、启用输入法或修改默认设置。实际输入使用 SendInput 扫描码，系统生成的 IMM32 快照进入正式共享编辑路径。GPU 截图保存应用预编辑文字，`s2-ime-native-candidate.png` 保存编辑器所在桌面区域的原生候选窗；`ime-acceptance.txt` 记录系统组合/结果/候选通知及结果。
+这两个目标须依次运行，并保持编辑器前台且无物理修饰键按住。驱动保存原线程 profile，必要时仅在本线程选择已启用搜狗，退出时恢复并核对原文本服务或键盘布局；不修改用户默认、输入列表或启用状态。实际输入使用 SendInput 扫描码，系统生成的 IMM32 快照进入正式共享编辑路径。GPU 截图保存应用预编辑文字，`s2-ime-native-candidate.png` 保存编辑器所在桌面区域的原生候选窗；`ime-acceptance.txt` 记录系统组合/结果/候选通知及结果。
 
-用户已指定使用现有搜狗实测，当前模块为 SogouTSF.ime 16.8.0.5415。精确系统/profile 信息、此前 Pinyin 设置撤回证据与完整收口要求见[共同合同](../../ui-foundation-plan.md#95-本机环境与真实输入证据)。最新 dev 尝试在初始前台等待 20 秒后停止：即时记录显示前台为 `PioneerGame.exe`，线程内 focus 虽属于编辑器，系统 foreground 仍属于游戏；没有发送物理键，release 未运行。`ime-platform.txt` 保存失败瞬间的前台/编辑器/焦点 HWND、进程与窗口类。驱动只请求一次前台，等待用户切换，随后失焦即停止；不反复抢焦点。系统 IME、失败协议注入、静态环境检查分别记录；真实搜狗链尚未通过，S2 保持未完成，S3 未启动。
+用户已指定使用现有搜狗实测，当前模块为 SogouTSF.ime 16.8.0.5415。精确系统/profile 信息、此前 Pinyin 设置撤回证据与完整收口要求见[共同合同](../../ui-foundation-plan.md#95-本机环境与真实输入证据)。本轮证据必须分别看待：
+
+- 一次真实 dev 运行通过新位置应答的屏幕坐标/非法请求检查，并送出 WEIZHI 六组扫描码。`s2-ime-native-candidate.png` 清楚显示搜索框旁的 `wei'zhi / 1 位置`；但验收驱动未匹配当前原生候选页，因此尚未发送确认键。截图证明候选及位置，不证明文字已填入或完整组合语义通过。候选枚举已补官方允许的 `dwPageSize=0` 边界，修正后尚未实际验收。
+- 原生跟踪曾记录 VK_PROCESSKEY、IMN_CHANGECANDIDATE 和 IMR_QUERYCHARPOSITION(offset0)，当时没有 START/COMPOSITION。原始跟踪位于 `out/dev/sogou-native-diagnostic.log`、`sogou-translate-diagnostic.log`；仍需实际确认后判断结果消息路径，不能由候选出现推断系统会发送特定组合消息。
+- 最新一次后续尝试在初始前台等待 20 秒后停止，系统前台为 `PioneerGame.exe`，物理键发送数为 0；release 真实 IME 未运行。`ime-platform.txt` 保存即时前台/编辑器/焦点 HWND、进程与窗口类，`ime-acceptance.txt` 为 INTERRUPTED。
+
+驱动只请求一次前台并等待用户切换，随后失焦即停止，不反复抢焦点。用户已再次要求“稍后再测”，当前所有弹窗/真实输入/普通窗口验收暂停，无自动重试或提醒。源码临时 DEBUG 已移除，仅保留必要失败分类和原始文件。系统 IME、协议注入、静态环境检查分别记录；S2 保持未完成，S3 未启动。
 
 ### S1 真实负载采样
 

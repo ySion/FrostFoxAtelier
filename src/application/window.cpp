@@ -128,7 +128,7 @@ LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPA
 }
 LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
-    case WM_CLOSE: closing_ = true; return 0;
+    case WM_CLOSE: input_anchor_.reset(); closing_ = true; return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT paint; BeginPaint(handle_, &paint); EndPaint(handle_, &paint); return 0; }
     case WM_GETMINMAXINFO: {
@@ -138,6 +138,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_DPICHANGED: {
+        input_anchor_.reset();
         const auto bounds = *reinterpret_cast<RECT*>(lparam);
         SetWindowPos(handle_, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
             SWP_NOACTIVATE | SWP_NOZORDER);
@@ -146,6 +147,23 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_IME_SETCONTEXT:
         return DefWindowProcW(handle_, message, wparam, lparam & ~ISC_SHOWUICOMPOSITIONWINDOW);
+    case WM_IME_REQUEST:
+        if (wparam == IMR_QUERYCHARPOSITION) {
+            auto* position = reinterpret_cast<IMECHARPOSITION*>(lparam);
+            if (!position || position->dwSize != sizeof(IMECHARPOSITION) || position->dwCharPos != 0 ||
+                !input_anchor_ || !input_token_ || input_anchor_->token != *input_token_ || GetFocus() != handle_) return 0;
+            const auto& origin = input_anchor_->bounds;
+            const auto& document = input_anchor_->clip;
+            POINT point{static_cast<LONG>(std::floor(origin.x)), static_cast<LONG>(std::floor(origin.y))};
+            if (!ClientToScreen(handle_, &point)) return 0;
+            POINT corners[2]{{document.left, document.top}, {document.right, document.bottom}};
+            if (!ClientToScreen(handle_, &corners[0]) || !ClientToScreen(handle_, &corners[1])) return 0;
+            position->pt = point;
+            position->cLineHeight = static_cast<UINT>(std::ceil(origin.height));
+            position->rcDocument = {corners[0].x, corners[0].y, corners[1].x, corners[1].y};
+            return TRUE;
+        }
+        return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_IME_STARTCOMPOSITION: case WM_IME_COMPOSITION: case WM_IME_ENDCOMPOSITION:
         composition(message, lparam); return 0;
     case WM_IME_CHAR: return 0; // Confirmed strings have one owner: GCS_RESULTSTR.
@@ -153,6 +171,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam == IMN_OPENCANDIDATE) ++input_statistics_.candidate_opens;
         return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_INPUTLANGCHANGE:
+        input_anchor_.reset();
         candidate_rect_.reset();
         return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_CHAR: {
@@ -175,12 +194,15 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         events_.push_back(std::move(value)); return 0;
     }
     case WM_KILLFOCUS:
+        input_anchor_.reset();
         high_surrogate_ = 0; key_owner_.fill(0);
         events_.push_back(event(message, wparam, lparam)); return 0;
     case WM_CAPTURECHANGED:
         if (releasing_capture_) return 0;
         [[fallthrough]];
-    case WM_SIZE: case WM_SETFOCUS:
+    case WM_SIZE:
+        input_anchor_.reset(); events_.push_back(event(message, wparam, lparam)); return 0;
+    case WM_SETFOCUS:
     case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_MOUSEWHEEL:
@@ -190,6 +212,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     }
 }
 void Window::composition(UINT message, LPARAM flags) {
+    input_anchor_.reset(); // Native changes invalidate the previously displayed composition before UI delivery.
     auto record = event(message, 0, flags);
     if (message == WM_IME_STARTCOMPOSITION) {
         candidate_rect_.reset();
@@ -287,6 +310,7 @@ ui::ImeResult Window::ime(const ui::ImeRequest& request) {
     return result;
 }
 std::uint32_t Window::text_input(const std::optional<ui::TextInputState>& input) {
+    input_anchor_ = input ? input->accepted_anchor : std::nullopt; // Publish/clear before any synchronous IMM callback.
     const auto token = input ? std::optional{input->token} : std::nullopt;
     if (input_token_ != token) high_surrogate_ = 0;
     if (composition_id_ && (!input || !input->composing || input->token.key != composition_token_.key ||

@@ -47,6 +47,7 @@ private:
     std::vector<NativeEvent> events_;
     std::exception_ptr callback_failure_;
     std::optional<ui::EditToken> input_token_;
+    std::optional<ui::TextInputAnchor> input_anchor_;
     ui::EditToken composition_token_;
     std::uint64_t composition_id_{}, native_composition_id_{}, next_composition_{1};
     wchar_t high_surrogate_{};

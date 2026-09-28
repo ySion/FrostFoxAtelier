@@ -20,7 +20,7 @@ cmake --build --preset dev --target atelier_editor
 首版包含方块视口、对象列表、位置 XYZ 参数、可拖分隔、增删与撤销/重做，以及相机观察/缩放/聚焦/重置。数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除场景对象。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
 本轮对应[方案](docs/first-editor-plan.md)的 M0 与 M1 核心操作。旋转缩放编辑、保存重开、JIT 单步、节点图、视口拾取和 gizmo 尚未接入；不宣称 M2 已完成。
-原生 UI 的 S1 已收口。S2 已接入共享 Unicode 单行编辑、参数搜索、剪贴板与 IMM32 平台往返；dev/release UI 12/12、应用编译和最终非 IME 窗口链均通过，本机搜狗真实输入实测尚待完成。数值非法 Enter 保留草稿，提交/取消后保留焦点；无本地事务时 Ctrl+Z/Y 进入场景历史。[原生 UI 方案](docs/ui-foundation-plan.md)维护唯一排期，S3 未启动。
+原生 UI 的 S1 已收口。S2 已接入共享 Unicode 单行编辑、参数搜索、剪贴板与 IMM32 平台往返；新增组合起点几何的 dev/release UI 13/13 已通过。Window 原生位置应答和验收线程输入源选择已接入，两种配置编译通过；这批新增改动的最终普通窗口链及本机搜狗真实输入实测尚待完成，窗口验收按用户要求暂停。数值非法 Enter 保留草稿，提交/取消后保留焦点；无本地事务时 Ctrl+Z/Y 进入场景历史。[原生 UI 方案](docs/ui-foundation-plan.md)维护唯一排期，S3 未启动。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 
@@ -48,7 +48,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (12/12)`、`Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (13/13)`、`Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 

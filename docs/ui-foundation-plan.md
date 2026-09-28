@@ -1,6 +1,6 @@
 # 原生 UI 下一增量：研究与实施方案
 
-状态：**S1 主持已收口（`ec6a118`）；S2 已集成共享编辑与应用平台接线，UI 双配置 12/12 和最终非 IME 窗口链各 709 帧通过，本机搜狗真实输入验收尚待完成；S3 未启动。**
+状态：**S1 主持已收口（`ec6a118`）；S2 新增组合起点几何的 UI 双配置 13/13 通过，Window 位置应答与验收线程输入源选择双配置编译通过。新增代码的最终普通窗口及本机搜狗真实链尚待完成，按用户要求暂停窗口验收；S3 未启动。旧 `afb2286` 双配置各 709 帧仍是该旧版本的证据。**
 
 日期：2026-09-28，更新于 2026-09-29。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；唯一集成分支：`codex/ui-foundation`。
 本页是编辑器当前排期的唯一入口。[首版记录](first-editor-plan.md)保留已交付的 M0/M1 与尚未完成的 M2 目标；保存重开、JIT 单步暂不进入本轮。
@@ -163,24 +163,25 @@ UI 维护 `src/ui/session.hpp` 的唯一合同，以下形状在共享头提交�
 
 ### 9.4 原生消息、组合与 accepted caret
 
-1. 原地调整 `Window::poll`：逐条 Dispatch 后，将复制拥有的 NativeEvent 交 Application 依序处理及应用 effects，再接下一条消息。WndProc 只复制/排队；平台调用引发的同步 Win32 回调也排队，不能重入 Session/业务，不另建输入泵。普通文字按当前合法上下文依序应用，不给整个 poll 盖同一旧 revision。
+1. 原地调整 `Window::poll`：逐条 Dispatch 后，将复制拥有的 NativeEvent 交 Application 依序处理及应用 effects，再接下一条消息。WndProc 的输入事件只复制/排队；平台调用引发的同步输入回调也排队，不能重入 Session/业务，不另建输入泵。同步几何查询只读已拥有的 accepted 快照作答。普通文字按当前合法上下文依序应用，不给整个 poll 盖同一旧 revision。
 2. [WM_IME_COMPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-composition) 的 result/preedit/cursor/属性当场复制。start 分配 composition_id，绑定当前 token/base revision 和原替换选区；后续沿该组合流，不按最新 focus 重新盖标签。取消使流失效，迟到结果丢弃，真正新 start 才可重绑。
 3. 组合 result 进入统一文字插入及本地历史；数值解析/搜索只消费确认文字。同条事件 result 后仍有新 preedit 时，后者基于刚更新的草稿/revision 开始下一段，不能因旧标签拒掉，也不能丢弃。普通选区/目标变化先取消当前组合；取消恢复组合前选区，保留之前已确认的 Edit 草稿。
 4. 原生 IME 处理期间，终止组合的 Enter/Esc 的 keydown/repeat/keyup 均保持 IME 归属，不能结果先到后把 keyup/重复 down 当字段命令；Ctrl+Z/Y 也不落本地或业务历史。普通输入仅由拥有的文字事件插入，不能 keydown 与 WM_CHAR 各插一遍。消费 result 后按 [Microsoft 样例](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Win7Samples/winui/input/tsf/tsfapps/tsfpad-step1/TextInputCtrl.cpp) 避免默认处理再产生重复文字。
 5. 候选位置只用匹配 accepted caret，经 [ImmSetCandidateWindow](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immsetcandidatewindow) 给系统客户区位置/排除矩形；没有匹配 caret 时等下一接受帧，不用未呈现的候选几何。字体、横滚、DPI 同时更新文字与 caret；失焦/失效立即撤销可用锚点，旧帧仍可持有但不能作为新目标的输入位置。
+6. [IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition) 同步查询只支持本轮实际使用的组合 UTF-16 偏移 0。UI 随帧发布单值 `TextInputAnchor{token,composition_id,composition_revision,bounds,clip}`；`TextInputState::accepted_anchor` 只有当前身份及组合显示版本相符时可用。无组合时取插入/替换选区起点，组合时取组合起点，同一 DWrite 布局提供字符左上位置与行高；不能把显示 caret 当作任意组合偏移。Window 在所有 IMM 调用前复制或清空快照，并在原生组合/失焦/Surface 变化时立即撤下；WndProc 用 ClientToScreen 将物理 bounds 左上及字段 text_clip 转成屏幕坐标，填写 IMECHARPOSITION，不再次乘 DPI。无有效快照、无焦点、结构尺寸错误、空指针或非零偏移返回 0，不保留系统输出指针。该快照是小型 optional 值，不增加每帧共享对象或字符位置数组。
 
 ### 9.5 本机环境与真实输入证据
 
 用户已明确指定“微软拼音被我移除了，测搜狗就可以”。S2 的真实 IME 收口目标改为本机现有搜狗，不要求恢复微软拼音，不据此宣称其他输入法通过。
 2026-09-29 实机系统 build **26200.9457 / 25H2**；用户输入列表为 zh-Hans-CN 搜狗拼音与 en-US 美式键盘，默认覆盖为搜狗。实际搜狗模块 `C:\Windows\System32\SogouTSF.ime` 的 FileVersion/ProductVersion 均为 **16.8.0.5415**。搜狗 TIP 为 `{E7EA138E-69F8-11D7-A6EA-00065B844310}`，profile 为 `{E7EA138F-69F8-11D7-A6EA-00065B844311}`，语言为 `0804`。
 
-`atelier_editor --acceptance-ime` 只读检查当前活动 profile 的完整 type/lang/CLSID/GUID，`GetActiveProfile` 必须返回 S_OK；S_FALSE 表示无活动 profile，不当作成功。入口不选择、启用或修改默认输入法。产品只有 IMM32 接线；TSF profile 查询只用于验收环境辨认。
+`atelier_editor --acceptance-ime` 检查并保存当前活动 profile 的完整 type/lang/CLSID/GUID/HKL，`GetActiveProfile` 必须返回 S_OK；S_FALSE 表示无活动 profile，不当作成功。若线程当前是美式键盘等其他 profile，仅在本验收线程选择已启用搜狗；成功或失败退出都恢复原 type1 文本服务或 type2 键盘布局。入口不启用输入法、不改用户默认或输入列表。产品只有 IMM32 接线；TSF profile API 只用于验收环境选择与核对。
 
 此前按启用授权写入的 Microsoft Pinyin 用户 enable 位及追加可选项，在收到用户改用搜狗的指令后，已通过原受支持 API 精确撤回；未覆盖用户整份设置。`out/pinyin-profile-reverted.txt` 与 `out/pinyin-environment-reverted.json` 记录 enable=0、原列表/顺序及搜狗默认与操作前一致。这段记录不代表微软拼音验收通过。
 
 真实搜狗验收要求：
 
-- 同一 `atelier_editor`、同一消息泵与 TextEdit。开始与结束只读核对活动搜狗 profile；保持原输入法设置。
+- 同一 `atelier_editor`、同一消息泵与 TextEdit。发送物理键前核对完整搜狗 profile，结束恢复并核对原线程 profile；保持用户默认、列表和启用状态。
 - 确认窗口前台、交互桌面与输入权限后，使用真实硬件输入或 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 的物理键/扫描码键序列输入拼音并选候选。按系统实际候选文本定位“位置”，不假定它始终是第一个候选。失去目标前台即停止送键，记录实际前台窗口身份；不得把文字直接灌入替代组合。
 - 搜索中实际拼出“位置”，检查候选窗、确认/取消、组合 Enter 不提交字段、结果只插入一次；再覆盖数字 invalid 草稿、焦点/Surface/目标变化、横滚与 caret 定位。原生候选窗在 OS 层，须原生窗口区域证据或人工观察记录，renderer readback 只证明应用绘制。
 - 报告分别列出 **系统 IME 驱动**（实际版本/profile、键序列、系统组合流及可视候选）、**故障消息/结果注入**（过期/重复 token、剪贴板失败、迟到组合、业务失败回滚等）和 **静态环境检查**。SendMessage/合成 WM_IME 只算注入；搜狗结果不代表微软拼音或所有 IME 通过。真实链未通过时 S2 未完成。
@@ -198,4 +199,4 @@ UI 维护 `src/ui/session.hpp` 的唯一合同，以下形状在共享头提交�
 
 ## 会审结论入口
 
-主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。第 9 节已通过，是应用/UI 的唯一 S2 实施交接依据；共享编辑与平台接线已集成，UI 双配置 12/12 及应用编译通过。最终双配置非 IME 窗口链各 709 帧已通过，本机搜狗真实输入链尚待完成；[当前集成状态](modules/editor/README.md#s2-集成状态与输入法验收)记录失败原因与证据边界。S3 未启动，不推送或合并主线。
+主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。第 9 节是应用/UI 的唯一 S2 实施交接依据。新增组合起点几何已按 `4de055a` → `7cd9c28` 集成，UI 双配置 13/13 与应用编译通过；新增 Window 接线仍待最终普通窗口及真实搜狗验收，旧 `afb2286` 的各 709 帧记录不覆盖新增产品代码。用户已要求稍后再测，当前不弹窗/送键/自动重试；[当前集成状态](modules/editor/README.md#s2-集成状态与输入法验收)分别记录已见候选、尚未确认以及最新前台中断的证据。S3 未启动，不推送或合并主线。

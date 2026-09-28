@@ -644,6 +644,52 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     click(app, control::parameter_search);
     ComPtr<ITfInputProcessorProfileMgr> manager;
     require(SUCCEEDED(languages.As(&manager)), "Cannot inspect active input profile.");
+    TF_INPUTPROCESSORPROFILE original_profile{};
+    const auto original_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &original_profile);
+    record_profile("Original thread profile", original_result, original_profile);
+    require(original_result == S_OK, "Cannot preserve original input profile (S_FALSE means no active profile).");
+    struct ProfileScope {
+        ITfInputProcessorProfiles* languages;
+        ITfInputProcessorProfileMgr* manager;
+        TF_INPUTPROCESSORPROFILE original;
+        std::ofstream& evidence;
+        bool restored{};
+        bool restore() {
+            if (restored) return true;
+            TF_INPUTPROCESSORPROFILE current{};
+            const auto matches = [&] {
+                return manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &current) == S_OK &&
+                    current.dwProfileType == original.dwProfileType && current.langid == original.langid &&
+                    IsEqualGUID(current.clsid, original.clsid) && IsEqualGUID(current.guidProfile, original.guidProfile) && current.hkl == original.hkl;
+            };
+            if (!matches()) {
+                if (languages->ChangeCurrentLanguage(original.langid) != S_OK) return false;
+                if (!matches() && manager->ActivateProfile(original.dwProfileType, original.langid, original.clsid, original.guidProfile,
+                    original.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR ? nullptr : original.hkl, 0) != S_OK) return false;
+            }
+            restored = matches();
+            evidence << "Original thread profile restore verified=" << restored << "; type=" << current.dwProfileType
+                     << "; language=" << std::hex << current.langid << "; HKL=" << current.hkl << '\n'; evidence.flush();
+            return restored;
+        }
+        ~ProfileScope() { if (!restore()) std::fputs("IME acceptance: restoring the original thread profile failed.\n", stderr); }
+    } restore{languages.Get(), manager.Get(), original_profile, setup};
+    if (original_profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR || original_profile.langid != 0x0804 ||
+        !IsEqualGUID(original_profile.clsid, sogou) || !IsEqualGUID(original_profile.guidProfile, profile)) {
+        const auto language_result = languages->ChangeCurrentLanguage(0x0804);
+        setup << "ChangeCurrentLanguage(0804): HRESULT=" << std::hex << language_result << '\n'; setup.flush();
+        require(language_result == S_OK, "Cannot select Chinese on the acceptance thread.");
+        TF_INPUTPROCESSORPROFILE after_language{};
+        const auto after_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &after_language);
+        record_profile("After language selection", after_result, after_language);
+        if (after_result != S_OK || after_language.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR ||
+            after_language.langid != 0x0804 || !IsEqualGUID(after_language.clsid, sogou) || !IsEqualGUID(after_language.guidProfile, profile)) {
+            const auto activated = manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, 0x0804, sogou, profile, nullptr, 0);
+            setup << "ActivateProfile(Sogou,flags=0): HRESULT=" << std::hex << activated << '\n'; setup.flush();
+            require(activated == S_OK, "Cannot select the enabled Sogou profile on the acceptance thread.");
+        }
+        tick(app, 2);
+    }
     const auto check_active_profile = [&] {
         TF_INPUTPROCESSORPROFILE current{};
         const auto result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &current);
@@ -651,66 +697,45 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         require(result == S_OK && current.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR && current.langid == 0x0804 &&
             IsEqualGUID(current.clsid, sogou) && IsEqualGUID(current.guidProfile, profile), "Active input profile is not Sogou Pinyin.");
     };
-    check_active_profile(); // Read-only profile checks; no activation, enablement or default setters.
-    const auto physical_key = [&](WORD code) {
-        require_foreground();
-        for (const auto modifier : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN})
-            require((GetAsyncKeyState(modifier) & 0x8000) == 0, "A physical modifier is held; IME acceptance stopped.");
-        INPUT input[2]{};
-        input[0].type = input[1].type = INPUT_KEYBOARD;
-        input[0].ki.wScan = input[1].ki.wScan = static_cast<WORD>(MapVirtualKeyW(code, MAPVK_VK_TO_VSC));
-        input[0].ki.dwFlags = KEYEVENTF_SCANCODE;
-        input[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-        setup << "SendInput scan=" << std::hex << input[0].ki.wScan << " (down/up)\n"; setup.flush();
-        require(SendInput(2, input, sizeof(INPUT)) == 2, "SendInput did not insert both physical key events.");
-        tick(app, 2);
+    check_active_profile(); // Only this thread's enabled profile may change; no enablement or default setters.
+    const auto record_input = [&](const char* phase) {
+        const auto context = ImmGetContext(app.window());
+        DWORD conversion{}, sentence{};
+        const auto conversion_found = context && ImmGetConversionStatus(context, &conversion, &sentence);
+        const auto stats = app.input_statistics();
+        setup << phase << ": IMC=" << context << "; open=" << (context && ImmGetOpenStatus(context))
+              << "; conversion-valid=" << conversion_found << "; conversion=" << std::hex << conversion
+              << "; native-comp-bytes=" << std::dec << (context ? ImmGetCompositionStringW(context, GCS_COMPSTR, nullptr, 0) : -1)
+              << "; starts=" << stats.compositions << "; updates=" << stats.updates << "; results=" << stats.results
+              << "; input=" << app.text_input().has_value() << "; composing=" << (app.text_input() && app.text_input()->composing)
+              << "; query-units=" << app.query().size() << '\n';
+        setup.flush();
+        if (context) ImmReleaseContext(app.window(), context);
     };
-    const auto wait_for = [&](const auto& predicate, const char* message) {
-        const auto deadline = GetTickCount64() + 5000;
-        while (!predicate() && GetTickCount64() < deadline) {
-            require_foreground();
-            require(app.step(), "Editor closed during real IME acceptance.");
-        }
-        require(predicate(), message);
+    record_input("Before physical input");
+    const auto verify_native_origin = [&] {
+        const auto state = app.text_input();
+        require(state && state->accepted_anchor, "No accepted insertion/composition origin for native query.");
+        const auto& geometry = *state->accepted_anchor;
+        IMECHARPOSITION position{}; position.dwSize = sizeof(position);
+        require(SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&position)) != 0,
+            "Native composition-origin query was rejected.");
+        POINT expected{static_cast<LONG>(std::floor(geometry.bounds.x)), static_cast<LONG>(std::floor(geometry.bounds.y))};
+        POINT document[2]{{geometry.clip.left, geometry.clip.top}, {geometry.clip.right, geometry.clip.bottom}};
+        require(ClientToScreen(app.window(), &expected) && position.pt.x == expected.x && position.pt.y == expected.y &&
+            position.cLineHeight == static_cast<UINT>(std::ceil(geometry.bounds.height)), "Native origin is not the accepted physical position in screen coordinates.");
+        require(ClientToScreen(app.window(), &document[0]) && ClientToScreen(app.window(), &document[1]) &&
+            position.rcDocument.left == document[0].x && position.rcDocument.top == document[0].y &&
+            position.rcDocument.right == document[1].x && position.rcDocument.bottom == document[1].y,
+            "Native text document is not the accepted field clip in screen coordinates.");
+        position.dwCharPos = 1;
+        require(SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&position)) == 0,
+            "Unsupported composition offset reused the insertion origin.");
+        position.dwCharPos = 0; position.dwSize = 0;
+        require(SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&position)) == 0 &&
+            SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, 0) == 0, "Invalid native geometry request was accepted.");
     };
-    const auto compose_position = [&] {
-        for (const auto code : {'W','E','I','Z','H','I'}) physical_key(static_cast<WORD>(code));
-        wait_for([&] { return app.text_input() && app.text_input()->composing; }, "System Pinyin did not produce an active composition.");
-    };
-    const auto choose_position = [&] {
-        WORD key_code{};
-        {
-            const auto context = ImmGetContext(app.window());
-            require(context != nullptr, "No input context for candidate inspection.");
-            struct ContextScope { HWND window; HIMC context; ~ContextScope() { ImmReleaseContext(window, context); } } context_scope{app.window(), context};
-            const auto bytes = ImmGetCandidateListW(context, 0, nullptr, 0);
-            require(bytes >= sizeof(CANDIDATELIST) && bytes <= 65536, "System IME did not expose a bounded candidate list.");
-            std::vector<DWORD> storage((bytes + sizeof(DWORD) - 1) / sizeof(DWORD));
-            auto* candidates = reinterpret_cast<CANDIDATELIST*>(storage.data());
-            require(ImmGetCandidateListW(context, 0, candidates, bytes) == bytes &&
-                candidates->dwCount <= (bytes - offsetof(CANDIDATELIST, dwOffset)) / sizeof(DWORD), "Invalid native candidate list.");
-            const auto page_end = std::min(candidates->dwCount, candidates->dwPageStart + std::min(candidates->dwPageSize, DWORD{9}));
-            for (DWORD index = candidates->dwPageStart; index < page_end; ++index) {
-                const auto offset = candidates->dwOffset[index];
-                require(offset < bytes && offset % sizeof(wchar_t) == 0, "Invalid candidate text offset.");
-                const auto* text = reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(candidates) + offset);
-                const auto units = (bytes - offset) / sizeof(wchar_t);
-                const auto* end = std::find(text, text + units, L'\0');
-                require(end != text + units, "Unterminated candidate text.");
-                if (std::wstring_view(text, end) == L"位置") {
-                    key_code = static_cast<WORD>('1' + index - candidates->dwPageStart);
-                    setup << "Native position candidate index=" << std::dec << index << "; selection key=" << static_cast<char>(key_code) << '\n';
-                    break;
-                }
-            }
-        }
-        require(key_code != 0, "Position was not on the current native candidate page.");
-        physical_key(key_code);
-    };
-    const auto native_before = app.input_statistics();
-    compose_position();
-    wait_for([&] { return app.input_statistics().candidate_opens > native_before.candidate_opens; }, "No native IME candidate-open notification was observed.");
-    capture(app, output / "s2-ime-preedit.png");
+    verify_native_origin();
     const auto capture_native_candidate = [&](const char* filename) {
         // Desktop pixels inside the foreground editor include the OS candidate popup.
         RECT rect{}; require(GetWindowRect(app.window(), &rect) != FALSE, "Cannot locate IME screenshot region.");
@@ -737,6 +762,73 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         for (std::size_t i = 0; i < image.rgba.size(); i += 4) { std::swap(image.rgba[i], image.rgba[i + 2]); image.rgba[i + 3] = 255; }
         png(image, output / filename);
     };
+    const auto physical_key = [&](WORD code) {
+        require_foreground();
+        for (const auto modifier : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN})
+            require((GetAsyncKeyState(modifier) & 0x8000) == 0, "A physical modifier is held; IME acceptance stopped.");
+        INPUT input[2]{};
+        input[0].type = input[1].type = INPUT_KEYBOARD;
+        input[0].ki.wScan = input[1].ki.wScan = static_cast<WORD>(MapVirtualKeyW(code, MAPVK_VK_TO_VSC));
+        input[0].ki.dwFlags = KEYEVENTF_SCANCODE;
+        input[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+        setup << "SendInput scan=" << std::hex << input[0].ki.wScan << " (down/up)\n"; setup.flush();
+        require(SendInput(2, input, sizeof(INPUT)) == 2, "SendInput did not insert both physical key events.");
+        tick(app, 2);
+    };
+    const auto wait_for = [&](const auto& predicate, const char* message) {
+        const auto deadline = GetTickCount64() + 5000;
+        while (!predicate() && GetTickCount64() < deadline) {
+            require_foreground();
+            require(app.step(), "Editor closed during real IME acceptance.");
+        }
+        if (!predicate()) { record_input(message); capture_native_candidate("s2-ime-failure-native.png"); }
+        require(predicate(), message);
+    };
+    const auto compose_position = [&] {
+        for (const auto code : {'W','E','I','Z','H','I'}) physical_key(static_cast<WORD>(code));
+        wait_for([&] {
+            const auto context = ImmGetContext(app.window());
+            const auto bytes = context ? ImmGetCandidateListW(context, 0, nullptr, 0) : 0;
+            if (context) ImmReleaseContext(app.window(), context);
+            return bytes >= sizeof(CANDIDATELIST);
+        }, "System IME did not produce a candidate list.");
+    };
+    const auto choose_position = [&] {
+        WORD key_code{};
+        {
+            const auto context = ImmGetContext(app.window());
+            require(context != nullptr, "No input context for candidate inspection.");
+            struct ContextScope { HWND window; HIMC context; ~ContextScope() { ImmReleaseContext(window, context); } } context_scope{app.window(), context};
+            const auto bytes = ImmGetCandidateListW(context, 0, nullptr, 0);
+            require(bytes >= sizeof(CANDIDATELIST) && bytes <= 65536, "System IME did not expose a bounded candidate list.");
+            std::vector<DWORD> storage((bytes + sizeof(DWORD) - 1) / sizeof(DWORD));
+            auto* candidates = reinterpret_cast<CANDIDATELIST*>(storage.data());
+            require(ImmGetCandidateListW(context, 0, candidates, bytes) == bytes &&
+                candidates->dwCount <= (bytes - offsetof(CANDIDATELIST, dwOffset)) / sizeof(DWORD), "Invalid native candidate list.");
+            setup << "Native candidates: count=" << std::dec << candidates->dwCount << "; page-start=" << candidates->dwPageStart
+                  << "; page-size=" << candidates->dwPageSize << "; selected=" << candidates->dwSelection << '\n'; setup.flush();
+            const auto page_size = candidates->dwPageSize ? candidates->dwPageSize : DWORD{9}; // Zero lets the application choose a bounded page.
+            const auto page_end = std::min(candidates->dwCount, candidates->dwPageStart + std::min(page_size, DWORD{9}));
+            for (DWORD index = candidates->dwPageStart; index < page_end; ++index) {
+                const auto offset = candidates->dwOffset[index];
+                require(offset < bytes && offset % sizeof(wchar_t) == 0, "Invalid candidate text offset.");
+                const auto* text = reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(candidates) + offset);
+                const auto units = (bytes - offset) / sizeof(wchar_t);
+                const auto* end = std::find(text, text + units, L'\0');
+                require(end != text + units, "Unterminated candidate text.");
+                if (std::wstring_view(text, end) == L"位置") {
+                    key_code = static_cast<WORD>('1' + index - candidates->dwPageStart);
+                    setup << "Native position candidate index=" << std::dec << index << "; selection key=" << static_cast<char>(key_code) << '\n';
+                    break;
+                }
+            }
+        }
+        require(key_code != 0, "Position was not on the current native candidate page.");
+        physical_key(key_code);
+    };
+    const auto native_before = app.input_statistics();
+    compose_position();
+    capture(app, output / "s2-ime-preedit.png");
     capture_native_candidate("s2-ime-native-candidate.png");
     choose_position();
     wait_for([&] { return app.query() == L"位置" && app.text_input() && !app.text_input()->composing; }, "Pinyin candidate did not confirm exactly one position query.");
@@ -766,13 +858,19 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(x(app, object) == 0, "Numeric IME cancellation did not restore its value.");
 
     click(app, control::parameter_search); compose_position();
-    SetFocus(nullptr); tick(app, 2);
+    SetFocus(nullptr);
+    IMECHARPOSITION stale_origin{}; stale_origin.dwSize = sizeof(stale_origin);
+    require(SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&stale_origin)) == 0,
+        "Native focus loss retained an input-origin snapshot before UI delivery.");
+    tick(app, 2);
     require(!app.text_input() && app.query() == L"位置", "OS blur did not cancel the real composition and retain the committed query.");
     require_foreground(); SetFocus(app.window()); tick(app, 1);
     click(app, control::parameter_search); compose_position();
     RECT original_bounds{}; require(GetWindowRect(app.window(), &original_bounds) != FALSE, "Cannot preserve editor bounds.");
     SetWindowPos(app.window(), nullptr, 0, 0, original_bounds.right - original_bounds.left + 24,
         original_bounds.bottom - original_bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    require(SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&stale_origin)) == 0,
+        "Native surface change retained an input-origin snapshot before UI delivery.");
     tick(app, 3);
     require((!app.text_input() || !app.text_input()->composing) && app.query() == L"位置", "Surface change retained a real composition or changed the query.");
     SetWindowPos(app.window(), nullptr, 0, 0, original_bounds.right - original_bounds.left,
@@ -791,6 +889,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     const auto text_state = app.text_input();
     require(text_state && text_state->composing && text_state->accepted_caret, "Long-field composition has no accepted caret.");
     const auto& caret = *text_state->accepted_caret;
+    verify_native_origin();
     require(caret.bounds.x >= static_cast<float>(caret.clip.left) &&
         caret.bounds.x + caret.bounds.width <= static_cast<float>(caret.clip.right), "Scrolled composition caret escaped the field clip.");
     const auto input_context = ImmGetContext(app.window());
@@ -810,6 +909,9 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     const auto native_after = app.input_statistics();
     capture(app, output / "s2-ime-final.png");
     check_active_profile();
+    require(restore.restore(), "Cannot restore the original thread input profile.");
+    TF_INPUTPROCESSORPROFILE restored_profile{};
+    record_profile("Restored thread profile", manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &restored_profile), restored_profile);
     SendMessageW(app.window(), WM_CLOSE, 0, 0); require(!app.step(), "IME acceptance did not close normally.");
     std::ofstream report(output / "ime-acceptance.txt");
     report << "Sogou Pinyin acceptance: PASS\n"
@@ -818,7 +920,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
            << "Composition starts: " << native_after.compositions - native_before.compositions
            << "; result snapshots: " << native_after.results - native_before.results
            << "; candidate opens: " << native_after.candidate_opens - native_before.candidate_opens << '\n'
-           << "Candidate/confirm/cancel; IME Enter ownership; invalid numeric result; OS blur/surface/target cancellation; horizontal composition/accepted candidate anchor; original Sogou thread profile retained; no activation/enable/default setters used.\n"
+           << "Candidate/confirm/cancel; IME Enter ownership; invalid numeric result; OS blur/surface/target cancellation; horizontal composition/accepted candidate anchor; original thread profile restored; no enable/default/list setters used.\n"
            << "The long-field fixture uses owned WM_CHAR for its confirmed prefix; all IME compositions use physical SendInput and native IMM32 events.\n";
     require(report.good(), "Cannot save real IME acceptance evidence.");
     std::puts("Sogou Pinyin acceptance: PASS"); return 0;
