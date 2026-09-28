@@ -4,7 +4,7 @@
 
 当时的 A-F1/C-D1 随后已修复，证据见 `out/review/wave1-fixes/verification.json`；之后的共同构建验收见[首次三线集成](../wave1-integration.md)。ABI 结果诊断与 async 绑定问题的后续关闭见[运行时阶段记录](../runtime-stage-closeout.md#已关闭的历史缺陷)。
 
-现行能力从[项目 README](../../../README.md)、[运行时结构](../../runtime-structure.md)、[布局模块](../../modules/ui-layout/README.md)和[RHI 模块](../../modules/rhi/README.md)进入。本目录不再承担下一任务交接或实施调度。
+现行能力从[项目 README](../../../README.md)、[运行时结构](../../runtime-structure.md)、[布局模块](../../modules/ui-layout/README.md)和[RHI 模块](../../modules/rhi/README.md)进入。本目录不再承担下一任务交接或实施调度。布局旧交接已退役，现行合同与验收由模块 README 导航。
 
 ## 历史证据
 

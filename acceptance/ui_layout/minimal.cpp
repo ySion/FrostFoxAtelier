@@ -13,10 +13,10 @@ int main() {
         const auto second = document.create(document.root(), input);
         const auto result = document.compute({205, 20}, 1);
         if (!first || !second || !result || result->boxes.size() != 3) return 2;
-        const auto& a = result->boxes[1]; const auto& b = result->boxes[2];
-        if (a.node != *first || b.node != *second || a.width != 60 || b.width != 120 || a.x != 10 || b.x != 75) return 3;
+        const auto* a = result->find(*first); const auto* b = result->find(*second);
+        if (!a || !b || a->width != 60 || b->width != 120 || a->x != 10 || b->x != 75) return 3;
         const auto held = document.snapshot();
-        if (!document.remove(*first) || document.input(*first) || held.boxes[1].width != 60) return 4;
+        if (!document.remove(*first) || document.input(*first) || !held.find(*first) || held.find(*first)->width != 60) return 4;
         std::puts("UI layout minimal consumer: PASS");
         return 0;
     } catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 5; }
