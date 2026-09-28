@@ -7,11 +7,12 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <variant>
 
 namespace atelier::ui {
 
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
-enum class ControlKind { container, label, button, list, item, number, splitter, viewport };
+enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit };
 enum class DragAxis { horizontal, vertical };
 
 struct Control {
@@ -41,11 +42,27 @@ struct ControlBox {
     bool enabled{};
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
 };
+struct EditToken {
+    ControlKey key{};
+    std::uint64_t incarnation{}, generation{}, revision{};
+    bool operator==(const EditToken&) const = default;
+};
+struct TextCaret {
+    EditToken token;
+    Rect bounds; // Client physical pixels from the same accepted drawing.
+    Clip clip;
+};
+struct TextInputState {
+    EditToken token;
+    bool composing{};
+    std::optional<TextCaret> accepted_caret;
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
     std::uint64_t session_identity{};
     std::uint64_t style_revision{}, measure_provider_revision{};
+    std::optional<TextCaret> caret;
     const ControlBox* find(ControlKey) const noexcept;
 };
 
@@ -53,39 +70,84 @@ enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit,
 struct Action {
     ActionKind kind{};
     ControlKey key{};
-    double value{}; // Cancel returns the gesture's original value.
+    std::variant<std::monostate,double,std::wstring> value; // Cancel returns the original value.
 };
-enum class Capture { unchanged, acquire, release };
-enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical };
-struct Reply {
-    bool consumed{}, redraw{};
-    Capture capture{Capture::unchanged};
-    Cursor cursor{Cursor::arrow};
-    std::vector<Action> actions;
+enum class ClipboardKind { read, copy, cut };
+struct ClipboardRequest {
+    ClipboardKind kind{};
+    std::uint64_t operation_id{};
+    EditToken token;
+    std::wstring text; // Owned selected text for copy/cut.
 };
-enum class EventKind { pointer_move, pointer_down, pointer_up, wheel, key_down, key_up,
-                       text, focus_lost, capture_lost };
-enum class PointerButton { primary, secondary, middle };
-enum class Key { none, backspace, delete_key, enter, escape, tab, left, right, home, end,
-                 space, a, z, y };
-struct Event {
-    EventKind kind{};
-    float x{}, y{}; // Client physical pixels; never reinterpret using a future frame.
-    float wheel{}; // Positive scrolls toward the beginning, measured in wheel notches.
-    PointerButton button{PointerButton::primary};
-    Key key{Key::none};
-    char32_t character{}; // Text input, separate from key commands. Numeric ASCII only.
-    bool shift{}, control{}, alt{};
+struct ClipboardResult {
+    ClipboardKind kind{};
+    std::uint64_t operation_id{};
+    EditToken token;
+    bool success{};
+    std::uint32_t native_error{};
+    std::wstring text; // Owned CF_UNICODETEXT payload for read.
 };
+enum class ImeKind { complete, cancel };
+struct ImeRequest {
+    ImeKind kind{};
+    std::uint64_t composition_id{};
+    EditToken token;
+};
+struct ImeResult {
+    ImeKind kind{};
+    std::uint64_t composition_id{};
+    EditToken token;
+    bool success{};
+    std::uint32_t native_error{};
+};
+enum class CompositionKind { start, update, end, cancel };
+struct Preedit {
+    std::wstring text;
+    std::uint32_t cursor{}; // UTF-16 offset, clamped to an editing boundary by UI.
+    std::vector<std::uint8_t> attributes; // IMM attributes per UTF-16 unit; empty if absent.
+};
+struct CompositionEvent {
+    CompositionKind kind{};
+    std::uint64_t composition_id{};
+    EditToken token; // Fixed start binding; advanced only after a confirmed segment.
+    std::optional<std::wstring> result;
+    std::optional<Preedit> preedit; // Missing differs from an empty preedit.
+};
+using PlatformRequest = std::variant<ClipboardRequest,ImeRequest>;
+using Effect = std::variant<Action,PlatformRequest>;
+
 enum class ErrorCode { invalid_surface, unavailable_surface, invalid_control, layout_failed,
-                       text_failed, capacity_exceeded, invalid_style };
+                       text_failed, capacity_exceeded, invalid_style, invalid_text, platform_failed };
 struct Error {
     ErrorCode code{};
     ControlKey key{};
     std::uint32_t native_code{};
 };
 template<class T> using Result = std::expected<T, Error>;
-
+enum class Capture { unchanged, acquire, release };
+enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical };
+struct Reply {
+    bool consumed{}, redraw{};
+    Capture capture{Capture::unchanged};
+    Cursor cursor{Cursor::arrow};
+    std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
+    std::optional<Error> error; // Input/platform failure; the edit and its history remain intact.
+};
+enum class EventKind { pointer_move, pointer_down, pointer_up, wheel, key_down, key_up,
+                       text, focus_lost, capture_lost, clipboard_result, ime_result, composition };
+enum class PointerButton { primary, secondary, middle };
+enum class Key { none, backspace, delete_key, enter, escape, tab, left, right, home, end,
+                 space, a, z, y, c, x, v };
+using InputData = std::variant<std::monostate,std::wstring,ClipboardResult,ImeResult,CompositionEvent>;
+struct Event {
+    EventKind kind{};
+    float x{}, y{}; // Client physical pixels; never reinterpret using a future frame.
+    float wheel{}; // Positive scrolls toward the beginning, measured in wheel notches.
+    PointerButton button{PointerButton::primary};
+    Key key{Key::none};
+    InputData data; // Text is an owned, complete UTF-16 string, separate from key commands.
+    bool shift{}, control{}, alt{};
+};
 struct Statistics {
     // Cumulative since Session construction. prepares/rasterizations count
     // attempts; text_layouts counts successful native layout creations;
@@ -120,6 +182,8 @@ public:
     Reply input(const Event&);
     Reply cancel_interaction();
     bool wants_keyboard() const noexcept;
+    // Live binding plus matching accepted caret only; no pending-frame geometry.
+    std::optional<TextInputState> text_input() const noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
