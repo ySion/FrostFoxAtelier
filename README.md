@@ -20,6 +20,7 @@ cmake --build --preset dev --target atelier_editor
 首版包含方块视口、对象列表、位置 XYZ 参数、可拖分隔、增删与撤销/重做，以及相机观察/缩放/聚焦/重置。数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除场景对象。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
 本轮对应[方案](docs/first-editor-plan.md)的 M0 与 M1 核心操作。旋转缩放编辑、保存重开、JIT 单步、节点图、视口拾取和 gizmo 尚未接入；不宣称 M2 已完成。
+当前下一增量及会审状态见[原生 UI 方案](docs/ui-foundation-plan.md)。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 
