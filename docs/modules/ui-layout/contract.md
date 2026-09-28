@@ -1,6 +1,6 @@
 # 自研布局核心：生产合同
 
-状态：基础消费链、共享列/换行/查询、原生Flex与二维Grid均已落地。生产 Interface 为 [`src/ui_layout/layout.hpp`](../../../src/ui_layout/layout.hpp)，实现为相邻 `layout.cpp`及其私有算法文件；新增合同见[Flex/Grid](flex-grid.md)，实际运行证据见[验收记录](acceptance.md)。本页上半部分是当前行为合同，页尾旧 Yoga 文本只保留为历史。
+状态：基础消费链、共享列/换行/查询、原生Flex与二维Grid均已落地。生产 Interface 为 [`src/ui_layout/layout.hpp`](../../../src/ui_layout/layout.hpp)，实现为相邻 `layout.cpp`及其私有算法文件；新增合同见[Flex/Grid](flex-grid.md)，实际运行证据见[验收记录](acceptance.md)。本页是当前行为合同；必要的历史实测与上游来源见[研究入口](../../research/ui-layout-reassessment/README.md)。
 
 ## 1. Module、目标与依赖
 
@@ -11,7 +11,7 @@
 ## 2. 生命周期、身份与结构编辑
 
 - Document 同步、单写者，不可复制/移动。构造时传入固定 `Measure` 函数、非拥有的 context 和明确 `Limits`。Document、provider、context 以及被测内容必须在整个计算期间保持有效；内容和测量规则的版本在计算期间不得改变。
-- 根随 Document 创建，根深度0、计入节点容量。`root()` 返回稳定局部身份；根不能移除、移动或通过普通 `update/input` 操作。`set_root(RootInput)` 只设置容器种类、padding、gap；根框尺寸唯一由 `compute(viewport, provider_revision)` 给定。
+- 根随 Document 创建，根深度0、计入节点容量。`root()` 返回稳定局部身份；根不能移除、移动或通过普通 `update/input` 操作。`set_root(RootInput)` 设置根容器种类（row/column/overlay）、padding、gap及可选FlexSpec flow；flow只适用于row/column，overlay要求gap为0且不设置flow。根框尺寸唯一由 `compute(viewport, provider_revision)` 给定。
 - `LayoutNodeId` 私有表示为 Document identity＋slot/generation，不是业务对象、Runtime ObjectId、序列化ID或可持久地址。跨 Document、空ID及失效代际均返回 `invalid_node`；原生地址复用不会复活旧身份。
 - `create(parent,input,position)` 在指定容器插入节点；默认追加。`update` 更新整个纯值输入，`input` 按值读取普通节点输入。叶不能拥有孩子；有孩子的容器不能直接改成叶。
 - `move(node,parent,position)` 保留整棵子树的活身份。**position 是先移除该节点后、目标孩子序列中的插入位置**；默认追加。拒绝环、叶父、非法位置以及任一后代将超深的移动。
@@ -31,7 +31,9 @@
 | `Axis::content(min,max)` | 该容器的独立内容需求，再应用显式界限；不隐含收缩到父可用空间 |
 | `Axis::expand(weight,min,max)` | 正有限权重；主轴参与整池分配，交叉轴使用父给定的可用区域 |
 
-未给maximum就是无显式上限；不接受Inf作为上限，也不使用魔法大数模拟无界查询。`Axis.value` 对Fixed为尺寸、对Expand为权重、对Content必须为0。硬minimum至少覆盖padding。纯容器/盒不接受文字content字段，gap只用于row/column；未适用的定位字段按后文各自模式解释。
+未给maximum就是无显式上限；不接受Inf作为上限，也不使用魔法大数模拟无界查询。`Axis.value` 对Fixed为尺寸、对Expand为权重、对Content必须为0。硬minimum至少覆盖padding。
+
+只有measured节点接受文字content字段。`NodeInput.gap` 用于row/column的主轴项间距、table的行间距以及wrap的行内项间距；`cross_gap` 用于table的列间距、wrap的行间距，以及显式设置flow的row/column的Flex分行间距。`Kind::grid` 只使用 `GridSpec.column_gap/row_gap`，其 `NodeInput.gap/cross_gap` 必须为0。overlay、box和measured的gap/cross_gap也必须为0；未适用的定位字段按后文各自模式解释。
 
 ### 主轴整池分配
 

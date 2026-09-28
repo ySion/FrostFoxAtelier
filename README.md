@@ -225,6 +225,6 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 原生/描述型标量返回、const 接收者元数据、共享签名解析、嵌套实参次序、第二次 ABI 回调漏写/错种类、结果不提交与显式清根；源码首次声明、宿主期望核验、接收者要求固定及各版本实际调用存储。开发/发布完整日志见 `out/review/function-contract-meeting/dev-acceptance-corrected.log` 和 `release-acceptance.log`。
 - mimalloc 实际覆盖：C++/标准容器、对齐分配、DLL 初始化期及跨 DLL CRT 分配/扩容/释放、线程退出后的释放、分配失败的 C++ 语义。独立验收 DLL 不链接 mimalloc，用于确认 CRT 路径的实际重定向。
 
-首阶段的目标与取舍见 [第一步记录](docs/first-step.md)。[对象引用最小闭环](docs/runtime-model.md#对象引用最小闭环)、Windows JIT 平台与最小源码业务贯通均通过开发/发布配置。后续按[JIT-only 接入准备](docs/runtime-model.md#jit-only-接入准备)，按真实用例扩展源码引用局部/临时值根报告，再推进兼容方法体更新；不自动扩展为并发/分代 GC、专用堆或语言全家桶。
+首阶段的历史目标与取舍见[第一步记录](docs/first-step.md)。当前源码引用局部与临时值根、兼容方法体更新和显式协程均已贯通，实际合同与已验收范围见[运行时协议](docs/runtime-model.md#已实现的最小业务执行协议)。下一增量按真实消费者需求选择，尚未实现的范围见[阶段边界](docs/research/runtime-stage-closeout.md#后续阶段边界)。
 
-已实现源码子集、已确认的名称/赋值/引用契约与待定方案见 [业务语言契约草案](docs/language-contract.md)。其中候选建议不代表当前已实现能力。
+现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。

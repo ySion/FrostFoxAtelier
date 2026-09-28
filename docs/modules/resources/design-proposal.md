@@ -1,16 +1,6 @@
 # 引擎资源首增量：语言、UI 与 RHI 的连接方案
 
-日期：2026-09-28。状态：本节接口分析已收口，资源首增量尚未实现；具体新增接口仍待共同接入任务确认。用户已将引擎资源侧与 RHI 一并交由本线负责，并要求在落地前明确模块之间的连接。本节结束后由主持统一同步三线。
-
-### 负责人确认的源码范围
-
-| 线 | 本节确认状态 | 本文如何使用 |
-| --- | --- | --- |
-| RHI/资源 | `E:/FrostFoxAtelier-rhi`，`rhi/offscreen-resource-loop`，`c644ba5692fe2d67d1dda93953e227a50ba64f9f` | 当前本地代码依据；本轮只形成设计文档 |
-| Runtime/JIT | 负责人确认 `E:/FrostFoxAtelier`，`main`，`2b2d3484d27377694b11277fe831014d72f624a3`，工作区干净，未推送或跨线同步 | 正式语言宿主已交付，待主持纳入共同基线；不再列为待实现缺口 |
-| UI 布局 | 负责人确认 `E:/FrostFoxAtelier-ui-layout`，`ui-layout/implementation`，HEAD 同 `c644ba5`，已有未提交增量，二轮审计仍在进行 | 已确认接口方向与职责；未提交消费者验证不等于生产图片 composition 或本首例已通过 |
-
-以上来自两线负责人阅读本方案后的接口回复。未在 RHI 工作树提前同步，也未重跑他们的验收。
+日期：2026-09-28。设计依据：三线共同代码基线 `4dc4c0a` 已集成正式语言宿主与 UI 布局基础，并通过 dev/release 总验收。资源首增量仍为未实现提案；已有模块总验收不代表第 7 节资源贯通验收完成，具体新增接口仍待共同接入任务确认。
 
 ## 1. 本次要交付的可观察结果
 
@@ -26,16 +16,16 @@
 | --- | --- | --- |
 | 业务类型与身份 | 成组 `TypeDefinition`、`NativeRegistration`、对象与持有/观察引用、隐藏引用追踪、GC | Texture 的共享类型定义与原生内容载荷接入；类型须在首次创建对象前共同注册 |
 | 语言访问资源 | 已有标量成员调用、单绑定类型的引用局部、同类型其他对象的成员接收者、协作安全点 | 多个已注册类型的成员目录、源码引用字段读写、跨引用成员链，沿现有引用屏障与执行根实现 |
-| 正式语言执行入口 | Runtime 线 `2b2d348` 已交付 `src/source/program.hpp` 的 `atelier::source::Program`；消费者链接 `atelier_source`，LLVM 位于 `atelier_source_backend` DLL | 同步后直接使用同一生产实现，不再进行宿主迁移，也不复制验收程序 |
+| 正式语言执行入口 | 当前主线已包含 `src/source/program.hpp` 的 `atelier::source::Program`；消费者链接 `atelier_source`，LLVM 位于 `atelier_source_backend` DLL | 首例直接使用同一生产实现，无需再迁移宿主 |
 | 图片测量与几何 | `content_key/content_revision/provider_revision`、同步 `Measure`、完整布局发布 | UI 内容绑定拥有者；把确定的内容版本与逻辑尺寸政策交给测量函数 |
 | 设备表示与绘制 | gfx texture/buffer、管线准备、单 owner、离屏执行和退休 | 具体图片设备表示、最小图片绘制与 CPU 消费持有；保持整个呈现结果版本一致 |
 
-本地依据：[Runtime 公开入口](../../../src/runtime/runtime.hpp)、[原生注册](../../../src/runtime/native.hpp)、[语言当前子集](../../../LANGUAGE.md)、[布局入口](../../../src/ui_layout/layout.hpp)、[RHI 契约](../rhi/contract.md)。正式宿主的新增文件以运行时负责人确认的 `2b2d348` 为准；它们尚不在本工作树中，不建立指向缺失文件的本地链接。
+本地依据：[Runtime 公开入口](../../../src/runtime/runtime.hpp)、[原生注册](../../../src/runtime/native.hpp)、[现行语言规范](../../../LANGUAGE.md)、[正式源码宿主](../../../src/source/program.hpp)、[布局入口](../../../src/ui_layout/layout.hpp)、[RHI 契约](../rhi/contract.md)。这些文件均已位于当前主线。
 
 两个不能被笼统“语言绑定”掩盖的事实：
 
 - 当前源码仍一次最多绑定一个业务对象类型，且尚无引用字段访问；`UiState` 持有 `Texture` 的场景已超出当前源码子集。负责人指出新提交的 `src/source/detail/bridge.cpp::bind_type` 仍跳过非 inline 字段，语言 `Environment` 仍只有一个 `object_type_name`。
-- Runtime 的字段路径只遍历 inline 层。`UiState.texture.width` 必须读取类型化引用、检查并保持目标，再更换接收者访问；不能把它伪装成一个扁平字段路径。正式宿主迁移在 `2b2d348` 已完成，旧的“BusinessProgram 仍在验收目录”判断只适用于本工作树尚未同步的历史基线。
+- Runtime 的字段路径只遍历 inline 层。`UiState.texture.width` 必须读取类型化引用、检查并保持目标，再更换接收者访问；不能把它伪装成一个扁平字段路径。
 
 ### 原生资源载荷的初始化与访问
 
@@ -90,7 +80,7 @@ CPU 资源能力应能在不创建设备的宿主中使用。渲染表示的实�
 
 UI 负责人已确认愿负责图片绑定/测量 Adapter、逻辑尺寸和宽高比政策、revision 接线、完整呈现输入组装/失败保旧，以及跨模块验收中的 UI 部分；本线提供不可变内容捕获、设备表示和最小绘制接口。生产 composition 的模块位置与唯一拥有者由主持协调确认，不另建业务 Widget 树。
 
-UI 当前未提交的 TextFrame/VirtualInspector 已验证几何 snapshot 与内容版本共同持有、旧帧在内容变化/布局失败/节点回收后仍有效、完整帧才替换。这是可复用的验收机制，尚无生产图片 composition。布局线新增按需 first_baseline/可选基线，原有 key/revision、同步测量和几何借用契约保持；图片首例不依赖文本基线能力。
+已合入的 TextFrame/VirtualInspector 消费者验证了几何 snapshot 与内容版本共同持有、旧帧在内容变化/布局失败/节点回收后仍有效、完整帧才替换。这是可复用的验收机制，尚无生产图片 composition。已交付的布局支持按需 first_baseline/可选基线，原有 key/revision、同步测量和几何借用契约保持；图片首例不依赖文本基线能力。
 
 ### RHI 侧：单一设备资源与执行机制
 
@@ -118,7 +108,7 @@ UI 当前未提交的 TextFrame/VirtualInspector 已验证几何 snapshot 与内
 
 | 步骤 | 负责人/范围 | 完成条件 |
 | --- | --- | --- |
-| 基线同步与接线归属 | 主持、Runtime/JIT、UI、本线 | 两线接口事实与最小范围已确认；主持在本节结束后同步各线最终交付，确定 production composition 位置/唯一拥有者与共享构建接线 |
+| 共同接线归属 | 主持、Runtime/JIT、UI、本线 | 确定生产图片 composition 的位置、唯一拥有者与共享构建接线 |
 | 语言/运行时接点 | Runtime/JIT 线 | 同一生产入口上能运行所需引用字段共享，执行根、失效访问与错误行为保持 |
 | 资源与设备表示 | 本线，候选 `src/resources` 与必要的 RHI 接入 | 加载和程序生成共用内容路径；业务对象、版本、GPU 表示及退出寿命清楚 |
 | UI 图片消费 | 与 UI 线明确归属后实施 | 真实图片测量、revision 失效、几何与内容版本一起消费；复用现有布局核心 |
@@ -126,11 +116,10 @@ UI 当前未提交的 TextFrame/VirtualInspector 已验证几何 snapshot 与内
 
 上述最小接入方向及职责已由对应负责人确认，新增 Runtime API 的最终形状仍由共同接入任务确定。本方案不授权在其他线工作区实施。缺口不能通过资源专用整数句柄、复制业务宿主、在布局节点里藏 GC 根或新造全局回调总线补过去。
 
-### 交给主持的同步后决定
+### 共同实施前需确定
 
-1. 采用各线完成提交并经过其负责人验收的源码作为共同基线；UI 当前审计仍未收口，不将其未提交状态标为可直接集成交付。
-2. 确定生产图片 composition 的目录、唯一拥有者和公共构建接线；按上述分工复用各模块，避免出现两个呈现入口。
-3. 确认最小图片测量政策：固有像素尺寸到逻辑单位的换算、受限宽度下保持比例的规则、DPI 的消费位置。建议首例由明确的逻辑缩放输入提供尺寸，DPI 只在输出侧消费；实际影响度量的提供者变化才推进 provider revision。
+1. 确定生产图片 composition 的目录、唯一拥有者和公共构建接线；按上述分工复用各模块，避免出现两个呈现入口。
+2. 确认最小图片测量政策：固有像素尺寸到逻辑单位的换算、受限宽度下保持比例的规则、DPI 的消费位置。建议首例由明确的逻辑缩放输入提供尺寸，DPI 只在输出侧消费；实际影响度量的提供者变化才推进 provider revision。
 
 这些是下一共同实施任务的接入决定，不重新打开已完成的工业选型，也不要求本节提前实现。
 
