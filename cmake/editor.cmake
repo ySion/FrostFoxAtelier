@@ -17,7 +17,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/window.cpp")
     atelier_target(atelier_editor)
-    target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer user32 ole32 windowscodecs imm32)
+    target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer user32 ole32 windowscodecs imm32 uuid gdi32)
     atelier_deploy_rhi_runtime(atelier_editor)
     add_executable(atelier_editor_scene_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/scene.cpp")
     atelier_target(atelier_editor_scene_acceptance)
@@ -29,4 +29,7 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor_scene_acceptance>
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
         DEPENDS atelier_editor atelier_editor_scene_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_ime_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-ime "${CMAKE_BINARY_DIR}/editor-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
 endfunction()

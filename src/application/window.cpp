@@ -97,9 +97,10 @@ void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         if (message.message == WM_QUIT) { closing_ = true; continue; }
-        if (message.hwnd == handle_ && message.message == WM_KEYDOWN && native_composition_id_) {
+        if (message.hwnd == handle_ && message.message == WM_KEYDOWN) {
             const auto code = message.wParam == VK_PROCESSKEY ? ImmGetVirtualKey(handle_) : message.wParam;
-            if (code < ime_keys_.size()) ime_keys_[code] = true;
+            if (code < key_owner_.size() && !key_owner_[code])
+                key_owner_[code] = native_composition_id_ || message.wParam == VK_PROCESSKEY ? 2 : 1;
         }
         TranslateMessage(&message);
         DispatchMessageW(&message);
@@ -164,16 +165,17 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_KEYDOWN: case WM_KEYUP: {
         auto value = event(message, wparam, lparam);
         const auto code = wparam == VK_PROCESSKEY ? ImmGetVirtualKey(handle_) : wparam;
-        if (code < ime_keys_.size()) {
-            value.ime_owned = native_composition_id_ || ime_keys_[code];
-            if (message == WM_KEYDOWN && value.ime_owned) ime_keys_[code] = true;
-            if (message == WM_KEYUP) ime_keys_[code] = false;
+        if (code < key_owner_.size()) {
+            if (message == WM_KEYDOWN && !key_owner_[code])
+                key_owner_[code] = native_composition_id_ || wparam == VK_PROCESSKEY ? 2 : 1;
+            value.ime_owned = key_owner_[code] == 2;
+            if (message == WM_KEYUP) key_owner_[code] = 0;
         }
         if (value.ime_owned) return DefWindowProcW(handle_, message, wparam, lparam);
         events_.push_back(std::move(value)); return 0;
     }
     case WM_KILLFOCUS:
-        high_surrogate_ = 0; ime_keys_.fill(false);
+        high_surrogate_ = 0; key_owner_.fill(0);
         events_.push_back(event(message, wparam, lparam)); return 0;
     case WM_CAPTURECHANGED:
         if (releasing_capture_) return 0;

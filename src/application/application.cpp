@@ -58,8 +58,10 @@ Result<void> Application::action(const ui::Action& event) {
     if (event.key == parameter_search) {
         const auto* value = std::get_if<std::wstring>(&event.value);
         if (!value) return invalid();
-        if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit || event.kind == ui::ActionKind::edit_cancel)
+        if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit || event.kind == ui::ActionKind::edit_cancel) {
             workspace_.query = *value;
+            workspace_.status = event.kind == ui::ActionKind::edit_cancel ? L"Filter cancelled" : L"Parameters filtered";
+        }
         return {};
     }
     if (event.key == splitter) {
@@ -142,7 +144,13 @@ void Application::effects(const ui::Reply& reply) {
                 } else {
                     const auto& ime = std::get<ui::ImeRequest>(request);
                     if (cleanup && ime.kind != ui::ImeKind::cancel) continue;
-                    response.kind = ui::EventKind::ime_result; response.data = window_.ime(ime);
+                    auto result = window_.ime(ime);
+                    if (!result.success) {
+                        const auto message = L"IME operation failed (Windows " + std::to_wstring(result.native_error) + L").";
+                        if ((cleanup || ime.kind == ui::ImeKind::cancel) && !first_error.empty()) first_error += L"; " + message;
+                        else remember(message);
+                    }
+                    response.kind = ui::EventKind::ime_result; response.data = std::move(result);
                 }
                 self(self, ui_.input(response), cleanup);
             }

@@ -55,6 +55,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
     add(50, 20, ControlKind::container, parameters).role = ui::Role::panel;
     add(51, 50, ControlKind::label, heading, L"PARAMETERS").role = ui::Role::caption;
     add(52, 50, ControlKind::label, heading, session.selected() ? L"Cube " + std::to_wstring(session.selected()) : L"No selection").role = ui::Role::title;
+    auto search_label = NodeInput::box(0, 18); search_label.width = Axis::expand();
+    add(55, 50, ControlKind::label, search_label, L"Search parameters").role = ui::Role::caption;
     auto search_layout = NodeInput::box(0, 34); search_layout.width = Axis::expand();
     add(control::parameter_search, 50, ControlKind::text_edit, search_layout, query);
     auto folded = query;

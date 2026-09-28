@@ -50,7 +50,7 @@ private:
     ui::EditToken composition_token_;
     std::uint64_t composition_id_{}, native_composition_id_{}, next_composition_{1};
     wchar_t high_surrogate_{};
-    std::array<bool, 256> ime_keys_{};
+    std::array<std::uint8_t, 256> key_owner_{}; // 0 up, 1 UI, 2 IME; unchanged until key-up.
     bool input_enabled_{true};
     std::optional<RECT> candidate_rect_;
     NativeInputStatistics input_statistics_;

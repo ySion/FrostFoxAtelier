@@ -1,6 +1,8 @@
 #include "application/application.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
+#include <msctf.h>
+#include <imm.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -15,12 +17,29 @@ struct EditorAcceptanceAccess {
 };
 }
 
+
 namespace {
 using atelier::application::Application;
 using atelier::ui::ControlKey;
 namespace control = atelier::editor::control;
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 void hr(HRESULT result) { if (FAILED(result)) throw std::runtime_error("PNG encoding failed."); }
+struct KeyStateScope {
+    BYTE original[256]{};
+    explicit KeyStateScope(bool control = false, bool shift = false) {
+        require(GetKeyboardState(original) != FALSE, "Cannot preserve acceptance thread key state.");
+        BYTE state[256]{}; std::copy(std::begin(original), std::end(original), state);
+        for (const auto code : {VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_MENU, VK_LMENU, VK_RMENU})
+            state[code] = 0;
+        state[VK_CONTROL] = state[VK_LCONTROL] = control ? 0x80 : 0;
+        state[VK_SHIFT] = state[VK_LSHIFT] = shift ? 0x80 : 0;
+        require(SetKeyboardState(state) != FALSE, "Cannot set acceptance thread modifiers.");
+    }
+    ~KeyStateScope() { SetKeyboardState(original); }
+};
+void require_input_focus(Application& app) {
+    require(GetFocus() == app.window(), "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
+}
 void tick(Application& app, unsigned count = 2) {
     const auto before = app.accepted_frames();
     for (unsigned attempt = 0; app.accepted_frames() < before + count && attempt < 180; ++attempt)
@@ -39,6 +58,8 @@ POINT centre(Application& app, ControlKey key) {
     return {static_cast<LONG>((left + right) * .5f), static_cast<LONG>((top + bottom) * .5f)};
 }
 void mouse(Application& app, UINT message, POINT point) {
+    require_input_focus(app);
+    KeyStateScope modifiers;
     SendMessageW(app.window(), message, message == WM_LBUTTONUP ? 0 : MK_LBUTTON, MAKELPARAM(point.x, point.y));
     tick(app, 1);
 }
@@ -47,20 +68,18 @@ void click(Application& app, ControlKey key) {
     mouse(app, WM_MOUSEMOVE, point); mouse(app, WM_LBUTTONDOWN, point); mouse(app, WM_LBUTTONUP, point);
 }
 void key(Application& app, WPARAM code, bool ctrl = false, bool shift = false) {
-    BYTE original[256]{}; GetKeyboardState(original);
-    BYTE state[256]{}; std::copy(std::begin(original), std::end(original), state);
-    if (ctrl) state[VK_CONTROL] |= 0x80;
-    if (shift) state[VK_SHIFT] |= 0x80;
-    SetKeyboardState(state);
+    require_input_focus(app);
+    KeyStateScope modifiers(ctrl, shift);
     SendMessageW(app.window(), WM_KEYDOWN, code, 0);
-    SetKeyboardState(original);
     tick(app, 1);
     SendMessageW(app.window(), WM_KEYUP, code, 0);
     tick(app, 1);
 }
 void type(Application& app, const wchar_t* value) {
+    KeyStateScope modifiers;
     key(app, 'A', true);
     if (!*value) { key(app, VK_DELETE); return; }
+    require_input_focus(app);
     while (*value) SendMessageW(app.window(), WM_CHAR, static_cast<WPARAM>(*value++), 0);
     tick(app, 1);
 }
@@ -322,7 +341,8 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     require(app.query().empty(), "Successful native clipboard cut did not remove its selection.");
     key(app, 'V', true);
     require(app.query() == graphemes, "Native Unicode clipboard paste did not restore the exact text.");
-    key(app, 'Z', true); require(app.query().empty(), "Paste was not one local undo unit.");
+    { KeyStateScope unrelated_shift(false, true); key(app, 'Z', true); }
+    require(app.query().empty(), "Paste undo or explicit modifier normalization failed.");
     key(app, 'Z', true); require(app.query() == graphemes, "Cut was not one local undo unit.");
     key(app, VK_ESCAPE);
     require(app.query().empty() && app.document().undo_count() == original_history, "Search history escaped into scene history.");
@@ -360,7 +380,9 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     require(!app.document().editing() && x(app, object) == original_position && GetCapture() != app.window() &&
         app.document().undo_count() == failure_history && app.status_text().find(L"already active") != std::wstring::npos,
         "Failed edit_begin did not stop preview, roll back, release capture and preserve the first error.");
+    capture(app, output / "s2-failed-edit.png");
     mouse(app, WM_LBUTTONUP, drag);
+    click(app, control::reset);
 }
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
     // Real scene additions use the existing toolbar and Window/UI/Session route.
@@ -556,6 +578,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 objects/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
+           << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish Microsoft Pinyin acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
            << "Sampling environment: this acceptance application enables hardware D3D12 debug/GBV and renderer vsync, including in release; results do not represent validation-disabled production frame time.\n"
@@ -565,4 +588,144 @@ int verify_editor_window(Application& app, const char* output_directory) {
     std::puts("Editor window acceptance: PASS");
     std::fflush(stdout);
     return 0;
+}
+
+int verify_editor_ime(Application& app, const char* output_directory) {
+    using Microsoft::WRL::ComPtr;
+    require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "Cannot initialize IME acceptance COM.");
+    struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
+    const std::filesystem::path output(output_directory);
+    std::filesystem::create_directories(output);
+    std::ofstream(output / "ime-acceptance.txt") << "Microsoft Pinyin acceptance: RUNNING\n";
+    CLSID pinyin{}; GUID profile{};
+    require(SUCCEEDED(CLSIDFromString(L"{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}", &pinyin)) &&
+        SUCCEEDED(CLSIDFromString(L"{FA550B04-5AD7-411F-A5AC-CA038EC515D7}", &profile)), "Invalid Pinyin profile identity.");
+    ComPtr<ITfInputProcessorProfiles> languages;
+    require(SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&languages))), "Cannot inspect input profiles.");
+    BOOL enabled{};
+    require(SUCCEEDED(languages->IsEnabledLanguageProfile(pinyin, 0x0804, profile, &enabled)), "Cannot query Microsoft Pinyin enablement.");
+    if (!enabled) {
+        std::ofstream(output / "ime-acceptance.txt") << "Microsoft Pinyin acceptance: BLOCKED (profile is not enabled; no settings changed)\n";
+        throw std::runtime_error("Microsoft Pinyin is not enabled; real IME acceptance is blocked.");
+    }
+    SetForegroundWindow(app.window()); SetFocus(app.window()); tick(app);
+    click(app, control::parameter_search);
+    ComPtr<ITfInputProcessorProfileMgr> manager;
+    require(SUCCEEDED(languages.As(&manager)), "Cannot inspect active input profile.");
+    TF_INPUTPROCESSORPROFILE previous{};
+    require(SUCCEEDED(manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &previous)), "Cannot preserve active input profile.");
+    struct ProfileScope {
+        ITfInputProcessorProfiles* languages;
+        ITfInputProcessorProfileMgr* manager;
+        TF_INPUTPROCESSORPROFILE previous;
+        bool restored{};
+        bool restore() {
+            if (restored) return true;
+            if (FAILED(languages->ChangeCurrentLanguage(previous.langid))) return false;
+            restored = manager->ActivateProfile(previous.dwProfileType, previous.langid, previous.clsid,
+                previous.guidProfile, previous.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR ? nullptr : previous.hkl, 0) == S_OK;
+            return restored;
+        }
+        ~ProfileScope() { if (!restore()) std::fputs("IME acceptance: restoring the thread input profile failed.\n", stderr); }
+    } restore{languages.Get(), manager.Get(), previous};
+    require(languages->ChangeCurrentLanguage(0x0804) == S_OK &&
+        manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, 0x0804, pinyin, profile, nullptr, 0) == S_OK,
+        "Cannot activate the enabled Pinyin profile on the editor thread."); // Never ENABLEPROFILE/FORSESSION/default setters.
+    tick(app, 2);
+    TF_INPUTPROCESSORPROFILE active{};
+    require(SUCCEEDED(manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active)) && active.langid == 0x0804 &&
+        IsEqualGUID(active.clsid, pinyin) && IsEqualGUID(active.guidProfile, profile), "Active input profile is not Microsoft Pinyin.");
+    const auto physical_key = [&](WORD code) {
+        require(GetForegroundWindow() == app.window(), "IME acceptance lost foreground ownership; no key was sent.");
+        for (const auto modifier : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN})
+            require((GetAsyncKeyState(modifier) & 0x8000) == 0, "A physical modifier is held; IME acceptance stopped.");
+        INPUT input[2]{};
+        input[0].type = input[1].type = INPUT_KEYBOARD;
+        input[0].ki.wScan = input[1].ki.wScan = static_cast<WORD>(MapVirtualKeyW(code, MAPVK_VK_TO_VSC));
+        input[0].ki.dwFlags = KEYEVENTF_SCANCODE;
+        input[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+        require(SendInput(2, input, sizeof(INPUT)) == 2, "SendInput did not insert both physical key events.");
+        tick(app, 2);
+    };
+    const auto wait_for = [&](const auto& predicate, const char* message) {
+        const auto deadline = GetTickCount64() + 5000;
+        while (!predicate() && GetTickCount64() < deadline) {
+            require(GetForegroundWindow() == app.window(), "IME acceptance lost foreground ownership.");
+            require(app.step(), "Editor closed during real IME acceptance.");
+        }
+        require(predicate(), message);
+    };
+    const auto compose_position = [&] {
+        for (const auto code : {'W','E','I','Z','H','I'}) physical_key(static_cast<WORD>(code));
+        wait_for([&] { return app.text_input() && app.text_input()->composing; }, "System Pinyin did not produce an active composition.");
+    };
+    const auto native_before = app.input_statistics();
+    compose_position();
+    wait_for([&] { return app.input_statistics().candidate_opens > native_before.candidate_opens; }, "No native IME candidate-open notification was observed.");
+    capture(app, output / "s2-ime-preedit.png");
+    {
+        // Desktop pixels inside the foreground editor include the OS candidate popup.
+        RECT rect{}; require(GetWindowRect(app.window(), &rect) != FALSE, "Cannot locate IME screenshot region.");
+        const auto width = rect.right - rect.left, height = rect.bottom - rect.top;
+        HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+        HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
+        struct CaptureScope {
+            HDC screen, memory; HBITMAP bitmap;
+            ~CaptureScope() { DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(nullptr, screen); }
+        } resources{screen, memory, bitmap};
+        require(screen && memory && bitmap, "Cannot allocate native candidate capture.");
+        const auto old = SelectObject(memory, bitmap);
+        const auto copied = BitBlt(memory, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
+        SelectObject(memory, old);
+        require(copied != FALSE, "Cannot capture native candidate pixels.");
+        atelier::renderer::Capture image;
+        image.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
+        image.rgba.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+        BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+        require(GetDIBits(memory, bitmap, 0, static_cast<UINT>(height), image.rgba.data(), &info, DIB_RGB_COLORS) == height,
+            "Cannot read native candidate pixels.");
+        for (std::size_t i = 0; i < image.rgba.size(); i += 4) { std::swap(image.rgba[i], image.rgba[i + 2]); image.rgba[i + 3] = 255; }
+        png(image, output / "s2-ime-native-candidate.png");
+    }
+    physical_key(VK_SPACE);
+    wait_for([&] { return app.query() == L"位置" && app.text_input() && !app.text_input()->composing; }, "Pinyin candidate did not confirm exactly one position query.");
+    require(app.document().scene().members().size() == 1, "IME confirmation triggered a scene command.");
+    const auto confirmed_results = app.input_statistics().results;
+    physical_key('X');
+    wait_for([&] { return app.text_input() && app.text_input()->composing; }, "Pinyin cancel scenario did not compose.");
+    physical_key(VK_ESCAPE);
+    wait_for([&] { return app.text_input() && !app.text_input()->composing; }, "IME Escape did not finish cancellation.");
+    require(app.query() == L"位置", "Cancelling IME also cancelled confirmed field text.");
+    physical_key('A'); physical_key('B'); physical_key('C');
+    wait_for([&] { return app.text_input() && app.text_input()->composing; }, "Pinyin Enter scenario did not compose.");
+    physical_key(VK_RETURN);
+    wait_for([&] { return app.input_statistics().results > confirmed_results && app.text_input() && !app.text_input()->composing; }, "IME Enter did not produce a confirmed result.");
+    key(app, 'Z', true);
+    require(app.query() == L"位置" && app.document().scene().members().size() == 1, "IME Enter also committed the field or reached scene history.");
+    physical_key(VK_RETURN); // A new key sequence commits the search field.
+    const auto object = app.document().selected();
+    click(app, control::position(object, 0));
+    compose_position(); physical_key(VK_SPACE);
+    wait_for([&] { return app.text_input() && !app.text_input()->composing; }, "Numeric Pinyin result did not end composition.");
+    const auto history = app.document().undo_count();
+    physical_key(VK_RETURN);
+    require(x(app, object) == 0 && app.document().undo_count() == history && app.wants_keyboard(), "Invalid IME numeric draft wrote the scene or exited focus.");
+    physical_key(VK_ESCAPE);
+    require(x(app, object) == 0, "Numeric IME cancellation did not restore its value.");
+    const auto native_after = app.input_statistics();
+    capture(app, output / "s2-ime-confirmed.png");
+    require(restore.restore(), "Could not restore the original thread input profile.");
+    SendMessageW(app.window(), WM_CLOSE, 0, 0); require(!app.step(), "IME acceptance did not close normally.");
+    std::ofstream report(output / "ime-acceptance.txt");
+    report << "Microsoft Pinyin acceptance: PASS\n"
+           << "Enabled profile 0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}\n"
+           << "Physical SendInput scan codes -> system IME -> owned IMM32 snapshots -> shared TextEdit -> search/number\n"
+           << "Composition starts: " << native_after.compositions - native_before.compositions
+           << "; result snapshots: " << native_after.results - native_before.results
+           << "; candidate opens: " << native_after.candidate_opens - native_before.candidate_opens << '\n'
+           << "Candidate/confirm/cancel; IME Enter ownership; invalid numeric result; original thread profile restored; no enable/default setters used.\n";
+    require(report.good(), "Cannot save real IME acceptance evidence.");
+    std::puts("Microsoft Pinyin acceptance: PASS"); return 0;
 }
