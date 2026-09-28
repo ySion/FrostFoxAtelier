@@ -18,7 +18,7 @@ struct NativeEvent {
     std::uint32_t error{};
 };
 struct NativeInputStatistics {
-    std::uint64_t compositions{}, updates{}, results{}, cancellations{}, candidate_opens{};
+    std::uint64_t compositions{}, updates{}, results{}, cancellations{}, candidate_opens{}, candidate_changes{};
 };
 
 // Owns only the native window. WM_CLOSE requests shutdown; the application must
@@ -48,7 +48,7 @@ private:
     std::exception_ptr callback_failure_;
     std::optional<ui::EditToken> input_token_;
     std::optional<ui::TextInputAnchor> input_anchor_;
-    ui::EditToken composition_token_;
+    ui::EditToken composition_token_, native_composition_token_;
     std::uint64_t composition_id_{}, native_composition_id_{}, next_composition_{1};
     wchar_t high_surrogate_{};
     std::array<std::uint8_t, 256> key_owner_{}; // 0 up, 1 UI, 2 IME; unchanged until key-up.
@@ -56,6 +56,7 @@ private:
     std::optional<RECT> candidate_rect_;
     NativeInputStatistics input_statistics_;
     NativeEvent event(UINT, WPARAM = 0, LPARAM = 0) const;
+    std::uint32_t cancel_ime();
     void composition(UINT, LPARAM);
     static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
     LRESULT receive(UINT, WPARAM, LPARAM);

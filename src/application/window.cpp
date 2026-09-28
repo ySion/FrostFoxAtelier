@@ -79,8 +79,9 @@ void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
             if (owned.composition) {
                 auto& composition = *owned.composition;
                 if (composition.kind == ui::CompositionKind::start) {
+                    if (!input_token_ || composition.token != *input_token_) continue;
                     composition_id_ = composition.composition_id;
-                    composition_token_ = input_token_.value_or(ui::EditToken{});
+                    composition_token_ = composition.token;
                 }
                 if (composition.composition_id == composition_id_) {
                     composition.token = composition_token_;
@@ -169,6 +170,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_IME_CHAR: return 0; // Confirmed strings have one owner: GCS_RESULTSTR.
     case WM_IME_NOTIFY:
         if (wparam == IMN_OPENCANDIDATE) ++input_statistics_.candidate_opens;
+        if (wparam == IMN_CHANGECANDIDATE) ++input_statistics_.candidate_changes;
         return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_INPUTLANGCHANGE:
         input_anchor_.reset();
@@ -217,11 +219,13 @@ void Window::composition(UINT message, LPARAM flags) {
     if (message == WM_IME_STARTCOMPOSITION) {
         candidate_rect_.reset();
         native_composition_id_ = next_composition_++;
-        record.composition = ui::CompositionEvent{ui::CompositionKind::start, native_composition_id_, {}, {}, {}};
+        native_composition_token_ = input_token_.value_or(ui::EditToken{});
+        record.composition = ui::CompositionEvent{ui::CompositionKind::start, native_composition_id_, native_composition_token_, {}, {}};
         ++input_statistics_.compositions;
     } else if (native_composition_id_) {
         auto& value = record.composition.emplace();
         value.composition_id = native_composition_id_;
+        value.token = native_composition_token_;
         if (message == WM_IME_ENDCOMPOSITION) {
             value.kind = ui::CompositionKind::end; native_composition_id_ = 0;
         } else if (!flags) {
@@ -288,6 +292,20 @@ ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
     }
     return result;
 }
+std::uint32_t Window::cancel_ime() {
+    input_anchor_.reset();
+    InputContext input(handle_);
+    if (!input.context) return ERROR_INVALID_HANDLE;
+    // A reading/candidate UI can exist before WM_IME_STARTCOMPOSITION. Its
+    // lifetime still belongs to the input binding, even without a UI composition.
+    if (composition_id_ || native_composition_id_ || ImmGetOpenStatus(input.context)) {
+        if (!ImmNotifyIME(input.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0)) return native_error();
+        ++input_statistics_.cancellations;
+    }
+    composition_id_ = native_composition_id_ = 0;
+    candidate_rect_.reset();
+    return 0;
+}
 ui::ImeResult Window::ime(const ui::ImeRequest& request) {
     ui::ImeResult result{request.kind, request.composition_id, request.token, false, 0};
     if (!composition_id_ || composition_id_ != request.composition_id || composition_token_ != request.token) {
@@ -298,20 +316,28 @@ ui::ImeResult Window::ime(const ui::ImeRequest& request) {
         if (request.kind == ui::ImeKind::cancel) composition_id_ = 0;
         return result;
     }
+    if (request.kind == ui::ImeKind::cancel) {
+        result.native_error = cancel_ime();
+        result.success = !result.native_error;
+        return result;
+    }
     InputContext input(handle_);
-    if (!input.context || !ImmNotifyIME(input.context, NI_COMPOSITIONSTR,
-        request.kind == ui::ImeKind::complete ? CPS_COMPLETE : CPS_CANCEL, 0)) {
+    if (!input.context || !ImmNotifyIME(input.context, NI_COMPOSITIONSTR, CPS_COMPLETE, 0)) {
         result.native_error = native_error(); return result;
     }
     result.success = true;
-    if (request.kind == ui::ImeKind::cancel) {
-        composition_id_ = native_composition_id_ = 0; ++input_statistics_.cancellations;
-    }
     return result;
 }
 std::uint32_t Window::text_input(const std::optional<ui::TextInputState>& input) {
-    input_anchor_ = input ? input->accepted_anchor : std::nullopt; // Publish/clear before any synchronous IMM callback.
     const auto token = input ? std::optional{input->token} : std::nullopt;
+    const bool binding_changed = input_token_ && (!token || token->key != input_token_->key ||
+        token->incarnation != input_token_->incarnation || token->generation != input_token_->generation);
+    // Clear geometry and cancel against the old token before exposing the new
+    // binding. Synchronous IMM callbacks snapshot that old token into the queue.
+    input_anchor_ = binding_changed ? std::nullopt : (input ? input->accepted_anchor : std::nullopt);
+    if (binding_changed && input_enabled_) {
+        if (const auto error = cancel_ime()) return error;
+    }
     if (input_token_ != token) high_surrogate_ = 0;
     if (composition_id_ && (!input || !input->composing || input->token.key != composition_token_.key ||
         input->token.incarnation != composition_token_.incarnation || input->token.generation != composition_token_.generation)) {
@@ -321,14 +347,24 @@ std::uint32_t Window::text_input(const std::optional<ui::TextInputState>& input)
     }
     if (composition_id_ && input && input->composing) composition_token_ = input->token;
     if (native_composition_id_ && !composition_id_ && (!input || !input->composing)) {
-        InputContext context(handle_);
-        if (!context.context || !ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0)) return native_error();
-        native_composition_id_ = 0;
+        if (const auto error = cancel_ime()) return error;
+    }
+    if (input_enabled_ && (binding_changed || !input)) {
+        // Logical fields share one HWND. End the old native association before
+        // publishing a new field, including reading that has not sent a start.
+        if (!ImmAssociateContextEx(handle_, nullptr, 0)) return native_error();
+        input_enabled_ = false;
+        composition_id_ = native_composition_id_ = 0;
+        candidate_rect_.reset();
     }
     input_token_ = token;
-    if (input_enabled_ != input.has_value()) {
-        if (!ImmAssociateContextEx(handle_, nullptr, input ? IACE_DEFAULT : 0)) return native_error();
-        input_enabled_ = input.has_value();
+    input_anchor_ = input ? input->accepted_anchor : std::nullopt;
+    if (input && !input_enabled_) {
+        if (!ImmAssociateContextEx(handle_, nullptr, IACE_DEFAULT)) {
+            input_anchor_.reset();
+            return native_error();
+        }
+        input_enabled_ = true;
         candidate_rect_.reset();
     }
     if (input && input->accepted_caret) {
