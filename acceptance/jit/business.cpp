@@ -1,5 +1,8 @@
 #include "business.hpp"
-#include "business_backend.hpp"
+#include "jit/source_backend.hpp"
+#include "source/program.hpp"
+#include "source/detail/bridge.hpp"
+#include "source_backend_verification.hpp"
 #include "native_client.hpp"
 #include "machine.hpp"
 #include "runtime/execution.hpp"
@@ -29,7 +32,9 @@ namespace atelier::jit_acceptance {
 namespace {
 using atelier::acceptance::NativeMachine;
 using atelier::acceptance::NativeState;
-using CodeOwner = std::unique_ptr<BusinessCode, decltype(&atelier_destroy_business)>;
+namespace source_detail = atelier::source::detail;
+using namespace source_detail;
+using BusinessProgram = atelier::source::Program;
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
@@ -45,91 +50,6 @@ template<class T> void reject(const Result<T>& result, ErrorCode code, const cha
     require(!result && result.error().code == code, message);
 }
 
-struct BoundField {
-    std::string name;
-    std::vector<FieldId> path;
-    ScalarKind kind;
-    bool operator==(const BoundField&) const = default;
-};
-struct BoundMethod {
-    std::string name;
-    MethodId id;
-    std::vector<ScalarKind> parameters;
-    ScalarKind result{ScalarKind::void_value};
-    bool receiver_read_only{};
-    bool operator==(const BoundMethod&) const = default;
-};
-struct Binding {
-    Runtime* runtime{};
-    TypeId type;
-    std::string_view name;
-    std::vector<BoundField> fields;
-    std::vector<BoundMethod> methods;
-    std::vector<TypeId> dependencies;
-};
-
-Binding bind_type(Runtime& runtime, TypeId type) {
-    if (type == TypeId{}) {
-        Binding binding{};
-        binding.runtime = &runtime;
-        binding.dependencies = {take(runtime.native_type<float>()), take(runtime.native_type<std::uint32_t>())};
-        return binding;
-    }
-    const auto* info = take(runtime.describe(type));
-    require(info->kind == TypeKind::object, "Source receiver must be an object.");
-    const auto f32 = take(runtime.native_type<float>());
-    const auto u32 = take(runtime.native_type<std::uint32_t>());
-    Binding binding{&runtime, type, info->name, {}, {}, {}};
-    const auto remember = [&](TypeId dependency) {
-        if (std::find(binding.dependencies.begin(), binding.dependencies.end(), dependency) == binding.dependencies.end())
-            binding.dependencies.push_back(dependency);
-    };
-    struct FieldCursor { const TypeInfo* type; std::size_t next{}, depth{}, prefix_length{}; };
-    std::vector<FieldCursor> cursors{{info}};
-    std::vector<FieldId> path;
-    std::string prefix;
-    remember(type);
-    while (!cursors.empty()) {
-        auto& cursor = cursors.back();
-        if (cursor.next == cursor.type->fields.size()) { cursors.pop_back(); continue; }
-        path.resize(cursor.depth);
-        prefix.resize(cursor.prefix_length);
-        const auto& field = cursor.type->fields[cursor.next++];
-        if (field.value.form != ValueForm::inline_value) continue;
-        path.push_back(field.id);
-        prefix += field.name;
-        if (field.value.type == f32 || field.value.type == u32) {
-            binding.fields.push_back({prefix, path, field.value.type == f32 ? ScalarKind::f32 : ScalarKind::u32});
-        } else {
-            const auto* nested = take(runtime.describe(field.value.type));
-            if (nested->kind != TypeKind::record) continue;
-            remember(nested->id);
-            prefix += '.';
-            cursors.push_back({nested, 0, path.size(), prefix.size()});
-        }
-    }
-    for (const auto& method : info->methods) {
-        const auto& signature = method.signature;
-        require(signature.receiver && signature.receiver->type == type,
-            "Source host method receiver does not match its owning type.");
-        const auto kind = [&](ValueDescription value) {
-            require(value.form == ValueForm::inline_value && (value.type == f32 || value.type == u32),
-                "Source host methods require float/uint values.");
-            return value.type == f32 ? ScalarKind::f32 : ScalarKind::u32;
-        };
-        BoundMethod bound{method.name, method.id, {},
-            signature.result ? kind(*signature.result) : ScalarKind::void_value, signature.receiver->read_only};
-        for (const auto parameter : signature.parameters) bound.parameters.push_back(kind(parameter));
-        binding.methods.push_back(std::move(bound));
-    }
-    // Stable catalogs are independent of native/descriptor field declaration order.
-    std::sort(binding.fields.begin(), binding.fields.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
-    std::sort(binding.methods.begin(), binding.methods.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
-    remember(f32);
-    remember(u32);
-    return binding;
-}
-
 std::span<const FieldId> fixture_field(const Binding& binding, std::string_view name) {
     for (const auto& field : binding.fields) if (field.name == name) return field.path;
     throw std::runtime_error("Fixture field was not exposed by the Runtime.");
@@ -139,300 +59,8 @@ MethodId fixture_method(const Binding& binding, std::string_view name) {
     throw std::runtime_error("Fixture method was not exposed by the Runtime.");
 }
 
-struct EnvironmentView {
-    std::vector<BusinessFieldBinding> fields;
-    std::vector<BusinessMethodBinding> methods;
-    explicit EnvironmentView(const Binding& binding) {
-        require(binding.fields.size() <= std::numeric_limits<std::uint32_t>::max() &&
-            binding.methods.size() <= std::numeric_limits<std::uint32_t>::max(), "Source member catalog is too large.");
-        for (const auto& field : binding.fields) fields.push_back({field.name.c_str(), field.kind});
-        for (const auto& method : binding.methods) {
-            require(method.parameters.size() <= std::numeric_limits<std::uint32_t>::max(), "Host signature is too large.");
-            methods.push_back({method.name.c_str(), method.parameters.data(), static_cast<std::uint32_t>(method.parameters.size()),
-                method.result, method.receiver_read_only});
-        }
-    }
-    BusinessEnvironment view(const char* object_type_name) const {
-        return {fields.data(), static_cast<std::uint32_t>(fields.size()), methods.data(),
-            static_cast<std::uint32_t>(methods.size()), object_type_name};
-    }
-};
-
-BusinessScalar scalar(float value) { return {ScalarKind::f32, std::bit_cast<std::uint32_t>(value)}; }
-BusinessScalar scalar(std::uint32_t value) { return {ScalarKind::u32, value}; }
 std::array<BusinessScalar, 2> machine_arguments(float amount, std::uint32_t steps) { return {scalar(amount), scalar(steps)}; }
 std::array<TypeId, 2> register_machines(Runtime& runtime);
-
-struct Invocation;
-using PollHook = void (*)(void*, Invocation&, const CollectionProgress&);
-struct ExecutionStats {
-    std::size_t polls{}, completed_cycles{}, reclaimed{};
-    bool entered{}, explicit_cleanup{};
-};
-struct Invocation {
-    Runtime& runtime;
-    const Binding& binding;
-    std::array<ObjectRoot, business_root_slots> inline_roots;
-    std::vector<ObjectRoot> expanded_roots;
-    std::span<ObjectRoot> roots;
-    std::vector<ObjectReference> observations;
-    ExecutionFrame frame;
-    ObjectRoot output;
-    bool make_snapshot{};
-    std::array<std::span<const FieldId>, 3> snapshot_fields;
-    std::array<Scalar, 8> inline_arguments;
-    std::vector<Scalar> expanded_arguments;
-    std::span<Scalar> method_arguments;
-    CollectionBudget budget;
-    PollHook hook{};
-    void* hook_state{};
-    ExecutionStats stats;
-    bool failed{};
-    ErrorCode error_code{ErrorCode::invocation_failed};
-    char error[512]{};
-
-    Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout,
-        CollectionBudget work, PollHook callback, void* state)
-        : runtime(owner), binding(bound),
-          expanded_roots(layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
-          roots(expanded_roots.empty() ? std::span<ObjectRoot>{inline_roots} : std::span<ObjectRoot>{expanded_roots}),
-          observations(layout.weak_slots), frame(owner, roots),
-          expanded_arguments(layout.max_call_arguments > inline_arguments.size() ? layout.max_call_arguments : 0),
-          method_arguments(expanded_arguments.empty() ? std::span<Scalar>{inline_arguments} : std::span<Scalar>{expanded_arguments}),
-          budget(work), hook(callback), hook_state(state) {}
-
-    void fail(ErrorCode code, const char* message) noexcept {
-        if (failed) return;
-        failed = true;
-        error_code = code;
-        std::snprintf(error, sizeof(error), "%s", message);
-    }
-};
-
-template<class Operation>
-std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
-    try {
-        auto result = operation();
-        if (result) return 0;
-        invocation.fail(result.error().code, result.error().message.c_str());
-    } catch (const std::exception& error) {
-        invocation.fail(ErrorCode::invocation_failed, error.what());
-    } catch (...) {
-        invocation.fail(ErrorCode::invocation_failed, "Unknown native service failure.");
-    }
-    return 1;
-}
-
-std::uint32_t create_slot(void* context, std::uint32_t slot) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&] { return invocation.frame.create(slot, invocation.binding.type); });
-}
-
-std::span<const FieldId> field_path(const Binding& binding, std::uint32_t field, ScalarKind kind) {
-    require(field < binding.fields.size() && binding.fields[field].kind == kind, "Host field index or scalar kind is invalid.");
-    return binding.fields[field].path;
-}
-std::uint32_t read_float(void* context, std::uint32_t slot, std::uint32_t field, float* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
-        if (!object) return std::unexpected(std::move(object.error()));
-        auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ScalarKind::f32));
-        if (!value) return std::unexpected(std::move(value.error()));
-        *output = std::get<float>(*value);
-        return {};
-    });
-}
-std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field, float value) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
-        if (!object) return std::unexpected(std::move(object.error()));
-        return invocation.runtime.write(*object, field_path(invocation.binding, field, ScalarKind::f32), value);
-    });
-}
-std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
-        if (!object) return std::unexpected(std::move(object.error()));
-        auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ScalarKind::u32));
-        if (!value) return std::unexpected(std::move(value.error()));
-        *output = std::get<std::uint32_t>(*value);
-        return {};
-    });
-}
-std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
-        if (!object) return std::unexpected(std::move(object.error()));
-        return invocation.runtime.write(*object, field_path(invocation.binding, field, ScalarKind::u32), value);
-    });
-}
-std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t method,
-    const BusinessScalar* arguments, std::uint32_t count, BusinessScalar* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        require(method < invocation.binding.methods.size(), "Host method index is invalid.");
-        const auto& target = invocation.binding.methods[method];
-        require(target.result == ScalarKind::void_value || output, "Host method result storage is missing.");
-        require(count == target.parameters.size() && count <= invocation.method_arguments.size() &&
-            (count == 0 || arguments), "Host argument count or storage is invalid.");
-        for (std::uint32_t index = 0; index < count; ++index) {
-            require(arguments[index].kind == target.parameters[index], "Host argument scalar kind is invalid.");
-            invocation.method_arguments[index] = arguments[index].kind == ScalarKind::f32 ?
-                Scalar{std::bit_cast<float>(arguments[index].bits)} : Scalar{arguments[index].bits};
-        }
-        auto object = invocation.frame.object(slot);
-        if (!object) return std::unexpected(std::move(object.error()));
-        Scalar result;
-        auto invoked = invocation.runtime.call(*object, target.id, invocation.method_arguments.first(count),
-            target.result == ScalarKind::void_value ? nullptr : &result);
-        if (!invoked) return invoked;
-        if (target.result == ScalarKind::f32) *output = scalar(std::get<float>(result));
-        else if (target.result == ScalarKind::u32) *output = scalar(std::get<std::uint32_t>(result));
-        return {};
-    });
-}
-
-// The machine fixture requests snapshots. Generic scalar/UI calls do not.
-Result<void> refresh_machine_snapshot(Invocation& invocation) {
-    if (!invocation.make_snapshot) return {};
-    auto receiver = invocation.frame.object(receiver_slot);
-    if (!receiver) return std::unexpected(std::move(receiver.error()));
-    auto snapshot = invocation.frame.object(snapshot_slot);
-    if (!snapshot) return std::unexpected(std::move(snapshot.error()));
-    for (const auto path : invocation.snapshot_fields) {
-        auto value = invocation.runtime.read(*receiver, path);
-        if (!value) return std::unexpected(std::move(value.error()));
-        auto copied = invocation.runtime.write(*snapshot, path, *value);
-        if (!copied) return copied;
-    }
-    return {};
-}
-std::uint32_t begin(void* context) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return invocation.make_snapshot ? create_slot(context, snapshot_slot) : 0;
-}
-std::uint32_t poll(void* context) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        auto progress = invocation.frame.poll(invocation.budget);
-        if (!progress) return std::unexpected(std::move(progress.error()));
-        ++invocation.stats.polls;
-        invocation.stats.reclaimed += progress->reclaimed;
-        if (progress->work_done != 0 && progress->phase == CollectionPhase::idle)
-            ++invocation.stats.completed_cycles;
-        if (invocation.hook) invocation.hook(invocation.hook_state, invocation, *progress);
-        return refresh_machine_snapshot(invocation);
-    });
-}
-std::uint32_t finish(void* context) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        if (!invocation.make_snapshot) return {};
-        auto refreshed = refresh_machine_snapshot(invocation);
-        if (!refreshed) return refreshed;
-        require(!invocation.output.registered(), "Business output was published twice.");
-        auto root = invocation.frame.take(snapshot_slot);
-        if (!root) return std::unexpected(std::move(root.error()));
-        invocation.output = std::move(*root);
-        return {};
-    });
-}
-Result<ObjectReference> reference_value(Invocation& invocation, std::uint32_t slot) {
-    if (slot == null_reference_slot)
-        return invocation.runtime.null_reference(invocation.binding.type, ValueForm::strong_reference);
-    if ((slot & observation_slot_bit) == 0) return invocation.frame.reference(slot);
-    const auto index = slot & ~observation_slot_bit;
-    if (index >= invocation.observations.size())
-        return std::unexpected(Error{ErrorCode::argument_mismatch, "Observation slot is out of range."});
-    const auto value = invocation.observations[index];
-    if (value.description() != ValueDescription{invocation.binding.type, ValueForm::weak_reference})
-        return std::unexpected(Error{ErrorCode::invalid_object, "Observation slot is not initialized."});
-    return value;
-}
-
-std::uint32_t change_reference(void* context, ReferenceOperation operation,
-    std::uint32_t destination, std::uint32_t source) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        const bool weak = (destination & observation_slot_bit) != 0;
-        const auto index = destination & ~observation_slot_bit;
-        if (destination == null_reference_slot ||
-            (weak ? index >= invocation.observations.size() : index >= invocation.roots.size()))
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Reference destination is out of range."});
-        auto value = reference_value(invocation, source);
-        if (!value) return std::unexpected(std::move(value.error()));
-        if (value->description().type != invocation.binding.type)
-            return std::unexpected(Error{ErrorCode::type_mismatch, "Reference does not match the bound object type."});
-        const auto form = weak ? ValueForm::weak_reference : ValueForm::strong_reference;
-        switch (operation) {
-        case ReferenceOperation::copy:
-            if (source == null_reference_slot)
-                value = invocation.runtime.null_reference(invocation.binding.type, form);
-            else if (value->description().form != form)
-                return std::unexpected(Error{ErrorCode::type_mismatch, "Reference assignment cannot change holding form."});
-            break;
-        case ReferenceOperation::observe:
-            if (!weak || value->description().form != ValueForm::strong_reference || source == null_reference_slot)
-                return std::unexpected(Error{ErrorCode::type_mismatch, "Observation requires a holding reference."});
-            value = invocation.runtime.observe(*value);
-            break;
-        case ReferenceOperation::try_acquire: {
-            if (weak || value->description().form != ValueForm::weak_reference)
-                return std::unexpected(Error{ErrorCode::type_mismatch, "Acquisition requires an observation reference."});
-            auto acquired = invocation.runtime.try_acquire(*value);
-            if (!acquired) return std::unexpected(std::move(acquired.error()));
-            if (*acquired) {
-                invocation.roots[index] = std::move(**acquired);
-                return {};
-            }
-            value = invocation.runtime.null_reference(invocation.binding.type, ValueForm::strong_reference);
-            break;
-        }
-        default:
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Unknown reference operation."});
-        }
-        if (!value) return std::unexpected(std::move(value.error()));
-        if (weak) {
-            invocation.observations[index] = *value;
-            return {};
-        }
-        return invocation.frame.hold(index, *value);
-    });
-}
-
-std::uint32_t same_reference(void* context, std::uint32_t left, std::uint32_t right,
-    std::uint32_t* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        auto lhs = reference_value(invocation, left);
-        if (!lhs) return std::unexpected(std::move(lhs.error()));
-        auto rhs = reference_value(invocation, right);
-        if (!rhs) return std::unexpected(std::move(rhs.error()));
-        if (lhs->description().type != invocation.binding.type || rhs->description().type != invocation.binding.type)
-            return std::unexpected(Error{ErrorCode::type_mismatch, "Reference comparison crossed the bound object type."});
-        *output = lhs->id() == rhs->id() ? 1u : 0u;
-        return {};
-    });
-}
-
-void clear_slot(void* context, std::uint32_t slot) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    (void)bridge(invocation, [&]() -> Result<void> {
-        if ((slot & observation_slot_bit) == 0) return invocation.frame.clear(slot);
-        const auto index = slot & ~observation_slot_bit;
-        if (index >= invocation.observations.size())
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Observation slot is out of range."});
-        invocation.observations[index] = {};
-        return {};
-    });
-}
-
-const BusinessServices services{begin, create_slot, read_float, write_float, read_uint,
-    write_uint, call_method, poll, finish, clear_slot, change_reference, same_reference};
 
 const std::string& business_source() {
     static const std::string source = [] {
@@ -469,25 +97,6 @@ CodeOwner compile_business(std::string_view source = business_source(), const ch
     return compile_bound(binding, source, name);
 }
 
-bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
-    if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count) return false;
-    for (std::size_t i = 0; i < binding.fields.size(); ++i)
-        if (binding.fields[i].name != environment.fields[i].name || binding.fields[i].kind != environment.fields[i].kind) return false;
-    for (std::size_t i = 0; i < binding.methods.size(); ++i) {
-        const auto& actual = environment.methods[i];
-        const auto& expected = binding.methods[i];
-        if (expected.name != actual.name || expected.parameters.size() != actual.parameter_count ||
-            expected.result != actual.result || expected.receiver_read_only != actual.receiver_read_only) return false;
-        for (std::size_t j = 0; j < expected.parameters.size(); ++j)
-            if (expected.parameters[j] != actual.parameters[j]) return false;
-    }
-    return true;
-}
-struct ExecutionResult {
-    BusinessScalar value;
-    ObjectRoot snapshot;
-};
-
 std::string reference_source(std::string_view source, std::string_view type_name) {
     std::string text(source);
     for (std::size_t offset = 0; (offset = text.find("$T", offset)) != std::string::npos; offset += type_name.size())
@@ -498,434 +107,7 @@ CodeOwner compile_reference(const Binding& binding, std::string_view source, con
     return compile_bound(binding, reference_source(source, binding.name), name);
 }
 
-Result<void> check_source_arguments(const BusinessSignature& signature, std::span<const BusinessScalar> arguments) {
-    if (arguments.size() != signature.parameter_count)
-        return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument count does not match its signature."});
-    for (std::size_t i = 0; i < arguments.size(); ++i)
-        if (arguments[i].kind != signature.parameters[i])
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument kind does not match its signature."});
-    return {};
-}
-
-// Both raw and published entries hold admission through invocation/root teardown.
-// Published versions supply their checked, code-owned layout and frozen receiver contract.
-Result<ExecutionResult> execute_admitted(ExecutionScope&, Runtime& runtime, const Binding& binding,
-    BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver,
-    std::span<const BusinessScalar> arguments, bool request_collection, ExecutionStats* statistics,
-    PollHook hook, void* hook_state, CollectionBudget budget, bool make_snapshot) {
-    const bool hold_receiver = requires_receiver || make_snapshot || receiver != ObjectId{};
-    if (hold_receiver) {
-        auto type = runtime.type_of(receiver);
-        if (!type) return std::unexpected(std::move(type.error()));
-        if (*type != binding.type)
-            return std::unexpected(Error{ErrorCode::type_mismatch, "Business receiver has the wrong type."});
-    }
-    Invocation invocation(runtime, binding, layout, budget, hook, hook_state);
-    invocation.make_snapshot = make_snapshot;
-    if (make_snapshot) {
-        const std::array names{"progress", "state.heat", "state.cycles"};
-        for (std::size_t i = 0; i < names.size(); ++i)
-            invocation.snapshot_fields[i] = fixture_field(binding, names[i]);
-    }
-    if (hold_receiver) {
-        auto rooted = invocation.frame.hold(receiver_slot, receiver);
-        if (!rooted) return std::unexpected(std::move(rooted.error()));
-    }
-    if (request_collection) invocation.frame.request_collection();
-    char backend_error[512]{};
-    BusinessScalar value;
-    invocation.stats.entered = true;
-    const auto status = atelier_invoke_business(code, &invocation, arguments.data(),
-        static_cast<std::uint32_t>(arguments.size()), &value, backend_error, sizeof(backend_error));
-    // Check before the RAII fallback runs: missing generated cleanup must fail.
-    invocation.stats.explicit_cleanup = invocation.frame.empty();
-    for (const auto& observation : invocation.observations)
-        invocation.stats.explicit_cleanup = invocation.stats.explicit_cleanup && observation.description().type == TypeId{};
-    if (statistics) *statistics = invocation.stats;
-    if (!invocation.stats.explicit_cleanup)
-        return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution roots registered."});
-    if (status != 0 || invocation.failed) {
-        if (invocation.output.registered())
-            return std::unexpected(Error{ErrorCode::invocation_failed, "Failed generated code published an output."});
-        return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-            invocation.failed ? invocation.error : backend_error});
-    }
-    if (make_snapshot != invocation.output.registered())
-        return std::unexpected(Error{ErrorCode::invocation_failed, "Generated execution violated the host snapshot policy."});
-    return ExecutionResult{value, std::move(invocation.output)};
-}
-
-// Raw handles retain complete validation; they cannot claim published preparation.
-Result<ExecutionResult> execute_typed(Runtime& runtime, const Binding& binding, BusinessCode* code,
-    ObjectId receiver, std::span<const BusinessScalar> arguments, bool request_collection = false,
-    ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* hook_state = nullptr,
-    CollectionBudget budget = {1}, bool make_snapshot = false) {
-    if (statistics) *statistics = {};
-    auto activation = ExecutionScope::enter(runtime);
-    if (!activation) return std::unexpected(std::move(activation.error()));
-    if (binding.runtime != &runtime)
-        return std::unexpected(Error{ErrorCode::invalid_type, "Business binding belongs to another Runtime."});
-    if (!code)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business code has not been compiled."});
-    const auto info = atelier_business_info(code);
-    auto checked = check_source_arguments(info.signature, arguments);
-    if (!checked) return std::unexpected(std::move(checked.error()));
-    if (!same_environment(binding, info.environment))
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Compiled member catalog does not match the host binding."});
-    const auto layout = atelier_business_layout(code);
-    if (layout.strong_slots < business_root_slots || layout.strong_slots >= observation_slot_bit ||
-        layout.weak_slots >= observation_slot_bit)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business code has an invalid reference layout."});
-    if (layout.object_type_name && *layout.object_type_name && binding.name != layout.object_type_name)
-        return std::unexpected(Error{ErrorCode::type_mismatch, "Business code was compiled for a different object type."});
-    return execute_admitted(*activation, runtime, binding, code, layout, info.requires_receiver,
-        receiver, arguments, request_collection, statistics, hook, hook_state, budget, make_snapshot);
-}
-Result<ObjectRoot> execute_machine(Runtime& runtime, const Binding& binding, BusinessCode* code,
-    ObjectId receiver, float amount, std::uint32_t steps, bool request_collection = false,
-    ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* hook_state = nullptr,
-    CollectionBudget budget = {1}) {
-    const auto arguments = machine_arguments(amount, steps);
-    auto result = execute_typed(runtime, binding, code, receiver, arguments, request_collection,
-        statistics, hook, hook_state, budget, true);
-    if (!result) return std::unexpected(std::move(result.error()));
-    return std::move(result->snapshot);
-}
-
-// One complete host-bound entry/LLJIT ownership unit, not a MethodId dispatcher.
-// Runtime metadata/native callbacks are immutable. This subset has no source
-// callees/inlining; no general invalidation, background compiler, OSR or migration.
-// Runtime and the host/backend DLL must outlive all leases and invocations.
-class BusinessProgram {
-    friend void verify_reload_contract_limits(Runtime&, const Binding&);
-    struct Metadata {
-        const TypeInfo* identity;
-        TypeInfo value;
-        bool matches(const TypeInfo& actual) const {
-            if (&actual != identity || actual.id != value.id || actual.name != value.name ||
-                actual.kind != value.kind || actual.size != value.size || actual.alignment != value.alignment ||
-                actual.copy_constructible != value.copy_constructible || actual.copy_assignable != value.copy_assignable ||
-                actual.contains_references != value.contains_references || actual.fields.size() != value.fields.size() ||
-                actual.methods.size() != value.methods.size()) return false;
-            for (std::size_t i = 0; i < value.fields.size(); ++i) {
-                const auto& a = actual.fields[i];
-                const auto& b = value.fields[i];
-                if (a.id != b.id || a.name != b.name || a.value != b.value) return false;
-            }
-            for (std::size_t i = 0; i < value.methods.size(); ++i) {
-                const auto& a = actual.methods[i];
-                const auto& b = value.methods[i];
-                if (a.id != b.id || a.name != b.name || a.signature != b.signature) return false;
-            }
-            return true;
-        }
-    };
-    struct Declaration {
-        std::string name;
-        FunctionSignature signature;
-    };
-    struct Contract {
-        Binding binding;
-        std::string type_name;
-        TypeId f32, u32;
-        BusinessServices actual_services;
-        std::vector<Metadata> metadata;
-        Contract(Runtime& runtime, TypeId type)
-            : binding(bind_type(runtime, type)), type_name(binding.name),
-              f32(take(runtime.native_type<float>())), u32(take(runtime.native_type<std::uint32_t>())),
-              actual_services(services) {
-            binding.name = type_name;
-            for (const auto dependency : binding.dependencies) {
-                const auto* info = take(runtime.describe(dependency));
-                metadata.push_back({info, *info});
-            }
-        }
-        std::optional<ValueDescription> scalar_value(ScalarKind kind) const noexcept {
-            if (kind == ScalarKind::f32) return ValueDescription{f32};
-            if (kind == ScalarKind::u32) return ValueDescription{u32};
-            return std::nullopt;
-        }
-        Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info) const {
-            SignatureDefinition definition;
-            definition.parameters.reserve(info.signature.parameter_count);
-            for (std::uint32_t i = 0; i < info.signature.parameter_count; ++i) {
-                const auto value = scalar_value(info.signature.parameters[i]);
-                if (!value)
-                    return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source parameter."});
-                definition.parameters.push_back({value->type, value->form});
-            }
-            if (info.signature.result != ScalarKind::void_value) {
-                const auto value = scalar_value(info.signature.result);
-                if (!value)
-                    return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source result."});
-                definition.result = ValueDefinition{value->type, value->form};
-            }
-            if (info.requires_receiver) definition.receiver = ReceiverDefinition{binding.type};
-            return binding.runtime->resolve_signature(definition);
-        }
-        Result<void> compatible(BusinessCode* code, std::string_view source_name,
-            const Declaration* declaration = nullptr) const {
-            if (!code) return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate has no compiled code."});
-            const auto info = atelier_business_info(code);
-            const auto layout = atelier_business_layout(code);
-            if (!info.function_name || !*info.function_name ||
-                (declaration && declaration->name != info.function_name))
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate renamed the bound source entry."});
-            if (!info.source_name || source_name != info.source_name || info.entry_address == 0 ||
-                !(info.services == actual_services))
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate has a different source or actual service ABI."});
-            if (!layout.object_type_name || type_name != layout.object_type_name)
-                return std::unexpected(Error{ErrorCode::type_mismatch, "Candidate has a different compiled receiver requirement."});
-            const auto result = scalar_value(info.signature.result);
-            if ((info.signature.parameter_count != 0 && !info.signature.parameters) ||
-                (info.signature.result != ScalarKind::void_value && !result) ||
-                (declaration && (declaration->signature.parameters.size() != info.signature.parameter_count ||
-                    declaration->signature.result != result)))
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate changed its source parameter/result signature."});
-            for (std::uint32_t i = 0; i < info.signature.parameter_count; ++i) {
-                const auto value = scalar_value(info.signature.parameters[i]);
-                if (!value || (declaration && declaration->signature.parameters[i] != *value))
-                    return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate changed its source parameter/result signature."});
-            }
-            if (declaration && info.requires_receiver && !declaration->signature.receiver)
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate added a receiver to a receiverless source declaration."});
-            if (!same_environment(binding, info.environment))
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate changed its bound member catalog."});
-            if (layout.strong_slots < business_root_slots || layout.strong_slots >= observation_slot_bit ||
-                layout.weak_slots >= observation_slot_bit)
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate has an invalid invocation-slot layout."});
-            return {};
-        }
-        Result<void> unchanged() const {
-            for (const auto& dependency : metadata) {
-                auto info = binding.runtime->describe(dependency.value.id);
-                if (!info) return std::unexpected(std::move(info.error()));
-                if (!dependency.matches(**info))
-                    return std::unexpected(Error{ErrorCode::invalid_definition, "Bound Runtime metadata changed."});
-            }
-            const auto actual = bind_type(*binding.runtime, binding.type);
-            if (actual.runtime != binding.runtime || actual.type != binding.type || actual.name != type_name ||
-                actual.fields != binding.fields || actual.methods != binding.methods || actual.dependencies != binding.dependencies)
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Bound member identities changed."});
-            return {};
-        }
-    };
-    struct Version {
-        std::shared_ptr<const Contract> contract;
-        std::shared_ptr<const Declaration> declaration;
-        std::uint64_t sequence;
-        CodeOwner code;
-        BusinessCodeInfo info;
-        BusinessFrameLayout layout;
-        Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared,
-            std::uint64_t request, CodeOwner owner) noexcept
-            : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
-              info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())) {}
-        Result<ExecutionResult> invoke(ObjectId receiver, std::span<const BusinessScalar> arguments,
-            ExecutionStats* statistics, PollHook hook, void* context, bool make_snapshot) const {
-            if (statistics) *statistics = {};
-            const auto& binding = contract->binding;
-            auto activation = ExecutionScope::enter(*binding.runtime);
-            if (!activation) return std::unexpected(std::move(activation.error()));
-            auto checked = check_source_arguments(info.signature, arguments);
-            if (!checked) return std::unexpected(std::move(checked.error()));
-            return execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
-                declaration->signature.receiver.has_value(), receiver, arguments, false,
-                statistics, hook, context, {1}, make_snapshot);
-        }
-    };
-    struct State {
-        std::shared_ptr<const Contract> contract;
-        std::shared_ptr<const Declaration> declaration;
-        std::shared_ptr<const Version> current;
-        std::uint64_t latest_request{}, published_request{};
-        bool open{true};
-        explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
-    };
-    std::shared_ptr<State> state_;
-public:
-    // Requests/history own metadata snapshots and text, never executable code.
-    class SourceRequest {
-        friend class BusinessProgram;
-        const std::weak_ptr<State> owner_;
-        const std::shared_ptr<const Contract> contract_;
-        const std::shared_ptr<const Declaration> declaration_;
-    public:
-        const std::uint64_t sequence;
-        const std::string source_name;
-        const std::string source;
-        SourceRequest(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract,
-            std::shared_ptr<const Declaration> declaration, std::uint64_t number, std::string name, std::string text)
-            : owner_(std::move(owner)), contract_(std::move(contract)), declaration_(std::move(declaration)),
-              sequence(number), source_name(std::move(name)), source(std::move(text)) {}
-    };
-    using Request = std::shared_ptr<const SourceRequest>;
-    class Candidate {
-        friend class BusinessProgram;
-        std::weak_ptr<State> owner_;
-        std::shared_ptr<const Contract> contract_;
-        std::uint64_t sequence_{};
-        CodeOwner code_{nullptr, &atelier_destroy_business};
-        std::string source_name_;
-        Candidate(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract, std::uint64_t sequence,
-            CodeOwner code, std::string source_name)
-            : owner_(std::move(owner)), contract_(std::move(contract)), sequence_(sequence), code_(std::move(code)),
-              source_name_(std::move(source_name)) {}
-    public:
-        Candidate() = default;
-        Candidate(Candidate&&) noexcept = default;
-        Candidate& operator=(Candidate&&) noexcept = default;
-        Candidate(const Candidate&) = delete;
-        Candidate& operator=(const Candidate&) = delete;
-        explicit operator bool() const noexcept { return static_cast<bool>(code_); }
-        // Diagnostic only; never a durable callable handle.
-        std::uintptr_t address() const noexcept {
-            return code_ ? atelier_business_info(code_.get()).entry_address : 0;
-        }
-    };
-    class Lease {
-        friend class BusinessProgram;
-        std::shared_ptr<const Version> version_;
-        explicit Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
-    public:
-        Lease() = default;
-        std::uintptr_t address() const noexcept {
-            return version_ ? version_->info.entry_address : 0;
-        }
-        BusinessFrameLayout layout() const noexcept {
-            return version_ ? version_->layout : BusinessFrameLayout{};
-        }
-        Result<ExecutionResult> invoke(ObjectId receiver, std::span<const BusinessScalar> arguments,
-            ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* context = nullptr,
-            bool make_snapshot = false) const {
-            const auto version = version_;
-            if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-            // Callback destruction of this lease is safe: only locals follow.
-            return version->invoke(receiver, arguments, statistics, hook, context, make_snapshot);
-        }
-    };
-    class Entry {
-        friend class BusinessProgram;
-        std::weak_ptr<State> owner_;
-        explicit Entry(std::weak_ptr<State> owner) : owner_(std::move(owner)) {}
-    public:
-        Entry() = default;
-        Result<ExecutionResult> invoke(ObjectId receiver, std::span<const BusinessScalar> arguments,
-            ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* context = nullptr,
-            bool make_snapshot = false) const {
-            const auto owner = owner_.lock();
-            if (!owner || !owner->open)
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-            const auto version = owner->current;
-            if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-            // Read current once; locals pin it through execution/root teardown.
-            // Never touch this Entry or its program after callbacks start.
-            return version->invoke(receiver, arguments, statistics, hook, context, make_snapshot);
-        }
-    };
-    BusinessProgram(Runtime& runtime, TypeId type)
-        : state_(std::make_shared<State>(std::make_shared<const Contract>(runtime, type))) {}
-    BusinessProgram(const BusinessProgram&) = delete;
-    BusinessProgram& operator=(const BusinessProgram&) = delete;
-    ~BusinessProgram() { state_->open = false; state_->current.reset(); }
-    Entry entry() const { return Entry{state_}; }
-    Result<FunctionSignature> describe() const {
-        if (!state_->open || !state_->declaration)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Business source declaration has not been published."});
-        return state_->declaration->signature;
-    }
-    template<class R, class... Args>
-    Result<Entry> bind() const {
-        const auto owner = state_;
-        if (!owner->open || !owner->declaration)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Business source declaration has not been published."});
-        SignatureDefinition expected;
-        expected.parameters = {ValueDefinition{TypeReference::native<Args>()}...};
-        if constexpr (!std::is_void_v<R>) expected.result = ValueDefinition{TypeReference::native<R>()};
-        if (const auto& receiver = owner->declaration->signature.receiver)
-            expected.receiver = ReceiverDefinition{receiver->type, receiver->read_only};
-        auto resolved = owner->contract->binding.runtime->resolve_signature(expected);
-        if (!resolved) return std::unexpected(std::move(resolved.error()));
-        if (*resolved != owner->declaration->signature)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Host binding does not match the published source signature."});
-        return Entry{owner};
-    }
-    Result<Lease> pin() const {
-        if (!state_->open || !state_->current)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no version to pin."});
-        return Lease{state_->current};
-    }
-    Result<Request> request(std::string_view name, std::string_view source) {
-        if (!state_->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-        if (state_->latest_request == std::numeric_limits<std::uint64_t>::max())
-            return std::unexpected(Error{ErrorCode::capacity_exceeded, "Business request sequence exhausted."});
-        if (source.size() > std::numeric_limits<std::uint32_t>::max() || name.find('\0') != std::string_view::npos)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Business source/name exceeds its compiler contract."});
-        const auto sequence = state_->latest_request + 1;
-        Request result = std::make_shared<const SourceRequest>(state_, state_->contract, state_->declaration, sequence,
-            std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source));
-        state_->latest_request = sequence; // All snapshot allocation has succeeded.
-        return result;
-    }
-    static Result<Candidate> prepare(const Request& request, bool omit_poll_for_verification = false) {
-        if (!request) return std::unexpected(Error{ErrorCode::invalid_definition, "Source request is empty."});
-        const auto owner = request->owner_.lock();
-        if (!owner || !owner->open)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Source request belongs to a closed program."});
-        BusinessCode* output{};
-        char diagnostic[2048]{};
-        const auto& contract = *request->contract_;
-        const auto compile = omit_poll_for_verification ? atelier_compile_business_without_poll_for_verification : atelier_compile_business;
-        const EnvironmentView storage(contract.binding);
-        const auto environment = storage.view(contract.type_name.c_str());
-        const auto status = compile(&contract.actual_services, request->source_name.c_str(), request->source.data(),
-            static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic));
-        CodeOwner code{output, &atelier_destroy_business};
-        if (status != 0) return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});
-        // Compatibility reads captured metadata/declaration only, never live Runtime.
-        auto compatible = contract.compatible(code.get(), request->source_name, request->declaration_.get());
-        if (!compatible)
-            return std::unexpected(Error{compatible.error().code, request->source_name + ": " + compatible.error().message});
-        return Candidate{request->owner_, request->contract_, request->sequence, std::move(code), request->source_name};
-    }
-    Result<void> try_publish(Candidate& candidate) {
-        const auto owner = state_;
-        if (!owner->open || !candidate.code_)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Program closed or candidate already consumed."});
-        if (candidate.owner_.lock() != owner || candidate.contract_ != owner->contract)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate belongs to another program/Runtime contract."});
-        if (candidate.sequence_ != owner->latest_request || candidate.sequence_ <= owner->published_request)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate is stale or its request was already published."});
-        auto compatible = owner->contract->compatible(candidate.code_.get(), candidate.source_name_, owner->declaration.get());
-        if (!compatible) return compatible;
-        auto admission = owner->contract->binding.runtime->check_code_publication();
-        if (!admission) return admission; // Busy leaves the candidate for explicit retry.
-        auto unchanged = owner->contract->unchanged();
-        if (!unchanged) return unchanged;
-        auto declaration = owner->declaration;
-        if (!declaration) {
-            const auto info = atelier_business_info(candidate.code_.get());
-            auto signature = owner->contract->resolve_signature(info);
-            if (!signature) return std::unexpected(std::move(signature.error()));
-            declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
-        }
-        // Allocation precedes the noexcept constructor's transfer of candidate code.
-        auto version = std::make_shared<const Version>(owner->contract, declaration, candidate.sequence_, std::move(candidate.code_));
-        owner->declaration = std::move(declaration);
-        owner->published_request = candidate.sequence_;
-        owner->current = std::move(version); // No fallible work or source execution beyond this point.
-        return {};
-    }
-};
-
-template<class Entry>
-Result<ObjectRoot> invoke_machine(const Entry& entry, ObjectId receiver, float amount, std::uint32_t steps,
-    ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* context = nullptr) {
-    const auto arguments = machine_arguments(amount, steps);
-    auto result = entry.invoke(receiver, arguments, statistics, hook, context, true);
-    if (!result) return std::unexpected(std::move(result.error()));
-    return std::move(result->snapshot);
-}
+#include "source_fixture.inl"
 
 struct NativeAction {
     void* context;
@@ -1008,7 +190,7 @@ struct RootObservation {
 };
 void observe_roots(void* data, Invocation& invocation, const CollectionProgress& progress) {
     auto& observation = *static_cast<RootObservation*>(data);
-    const auto snapshot = take(invocation.frame.object(snapshot_slot));
+    const auto snapshot = fixture(invocation).snapshot.id();
     if (!observation.observed) {
         observation.snapshot = snapshot;
         observation.observed = true;
@@ -1542,7 +724,7 @@ void verify_reference_collection(Runtime& runtime, const Binding& binding) {
         snapshot = take(execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, 0, false, &stats,
             [](void* context, Invocation& invocation, const CollectionProgress&) {
                 auto& state = *static_cast<Observation*>(context);
-                const auto poll = invocation.stats.polls;
+                const auto poll = fixture(invocation).stats.polls;
                 require(poll <= 4 && invocation.runtime.root_count() == ((poll == 2 || poll == 3) ? 4u : 3u),
                         "Lexical source root or weak observation changed the expected ownership count.");
                 collect(invocation.runtime); // Finish any old work, then complete an independent new cycle.
@@ -1605,7 +787,7 @@ void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
         snapshot = take(execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, 4, false, &stats,
             [](void* context, Invocation& invocation, const CollectionProgress&) {
                 auto& state = *static_cast<Iterations*>(context);
-                require(invocation.stats.polls == state.calls + 1 && invocation.runtime.root_count() == 3,
+                require(fixture(invocation).stats.polls == state.calls + 1 && invocation.runtime.root_count() == 3,
                         "Loop block did not release its source root before the backedge poll.");
                 collect(invocation.runtime);
                 ++state.cycles;
@@ -1678,7 +860,7 @@ void verify_reference_exit(Runtime& runtime, const Binding& binding, bool fail_n
 
 void verify_reference_returns(Runtime& runtime, const Binding& binding) {
     constexpr std::uint32_t return_count = 16;
-    enum class Failure { none, native, publication };
+    enum class Failure { none, native, publication, cleanup };
     struct State {
         Failure failure;
         std::uint32_t calls{};
@@ -1704,7 +886,7 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
                 require(!invocation.roots[index].registered(), "Return kept a user root until snapshot publication.");
             for (const auto& observation : invocation.observations)
                 require(observation.description().type == TypeId{}, "Return kept a weak slot until snapshot publication.");
-            auto& state = *static_cast<State*>(invocation.hook_state);
+            auto& state = *static_cast<State*>(fixture(invocation).hook_state);
             state.publish_seen = true;
             if (state.failure == Failure::publication)
                 return std::unexpected(Error{ErrorCode::invocation_failed, "Reference-return publication failure."});
@@ -1712,9 +894,16 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
         });
         return status == 0 ? finish(context) : status;
     };
+    checked_services.clear = [](void* context, std::uint32_t slot) noexcept {
+        clear_slot(context, slot);
+        auto& invocation = *static_cast<Invocation*>(context);
+        const auto& state = *static_cast<State*>(fixture(invocation).hook_state);
+        if (state.failure == Failure::cleanup && state.publish_seen)
+            invocation.fail(ErrorCode::invocation_failed, "Reference-return cleanup failure.");
+    };
     auto code = compile_bound(binding, source, "reference-returns.source", checked_services);
     for (const auto steps : {0u, return_count / 2, return_count - 1, return_count}) {
-        for (const auto failure : {Failure::none, Failure::native, Failure::publication}) {
+        for (const auto failure : {Failure::none, Failure::native, Failure::publication, Failure::cleanup}) {
             State state{failure};
             auto receiver = take(runtime.create(binding.type));
             NativeAction callback{&state, [](void* context, CallContext& call) {
@@ -1735,8 +924,11 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
                 else {
                     reject(result, ErrorCode::invocation_failed, "Multi-return error escaped generated cleanup.");
                     require(result.error().message == (failure == Failure::native ?
-                        "Reference-return native failure." : "Reference-return publication failure."),
-                        "Multi-return path lost its first failure.");
+                        "Reference-return native failure." : failure == Failure::publication ?
+                        "Reference-return publication failure." : "Failed generated code published an output."),
+                        "Multi-return path lost its first failure or failed-output protocol check.");
+                    require(!snapshot.registered() && runtime.root_count() == 1,
+                        "Failed generated code exposed or retained a snapshot after returning.");
                 }
             }
             const auto calls = failure == Failure::native ? 1u : std::min(steps + 1, return_count);
@@ -1809,12 +1001,12 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
         auto result = execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, dereference ? 1u : 0u, false, &stats,
             [](void* context, Invocation& invocation, const CollectionProgress&) {
                 auto& state = *static_cast<Replacement*>(context);
-                if (invocation.stats.polls == 1) {
+                if (fixture(invocation).stats.polls == 1) {
                     require(!state.destroyed && state.calls == 0 && invocation.runtime.root_count() == 3,
                             "Source-owned destruction ran before initialization.");
                     return;
                 }
-                require(invocation.stats.polls == 2 && state.calls == 1 && !state.destroyed &&
+                require(fixture(invocation).stats.polls == 2 && state.calls == 1 && !state.destroyed &&
                         state.old != state.receiver && invocation.runtime.root_count() == 4,
                         "Source-owned destruction ran at the wrong safe point.");
                 take(invocation.runtime.destroy(state.old));
@@ -1899,7 +1091,7 @@ void verify_reference_temporaries(Runtime& runtime, const Binding& binding) {
         snapshot = take(execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, 0, false, &stats,
             [](void* context, Invocation& invocation, const CollectionProgress&) {
                 auto& state = *static_cast<Temporaries*>(context);
-                const auto step = invocation.stats.polls;
+                const auto step = fixture(invocation).stats.polls;
                 require(step <= 3 && state.calls == (step == 1 ? 0u : step == 2 ? 3u : 5u) &&
                         invocation.runtime.root_count() == 3,
                         "Temporary expression or inner scope retained a root at its next safe point.");
@@ -2223,7 +1415,7 @@ void verify_reload_diagnostics(Runtime& runtime, const Binding& binding) {
             previous_error = message;
         }
         const auto request = take(program.request(name, valid_source));
-        const auto result = BusinessProgram::prepare(request, true);
+        const auto result = ProgramAccess::prepare(request, atelier_compile_business_without_poll_for_verification);
         reject(result, ErrorCode::invalid_definition, "Missing-service source unexpectedly linked.");
         if (result.error().message.find("[request#" + std::to_string(request->sequence) + "]") == std::string::npos ||
             result.error().message.find("JIT materialization") == std::string::npos ||
@@ -2267,30 +1459,30 @@ void verify_reload_contract_limits(Runtime& runtime, const Binding& binding) {
     altered.poll = [](void* context) noexcept -> std::uint32_t { return poll(context); };
     require(!(altered == services), "Actual service-ABI rejection did not change a function address.");
     auto different_services = compile(altered, type_name.c_str());
-    reject(program.state_->contract->compatible(different_services.get(), "actual-contract.source"),
+    reject(ProgramAccess::compatible(program, different_services.get(), "actual-contract.source"),
            ErrorCode::invalid_definition, "Compatibility trusted a caller label rather than actual linked services.");
     auto different_type = compile(services, "business.DifferentReceiver");
-    reject(program.state_->contract->compatible(different_type.get(), "actual-contract.source"),
+    reject(ProgramAccess::compatible(program, different_type.get(), "actual-contract.source"),
            ErrorCode::type_mismatch, "Compatibility ignored the actual compiled object-type requirement.");
     auto actual = compile(services, type_name.c_str());
-    reject(program.state_->contract->compatible(actual.get(), "fabricated-source.name"),
+    reject(ProgramAccess::compatible(program, actual.get(), "fabricated-source.name"),
            ErrorCode::invalid_definition, "Compatibility accepted a fabricated compiled-source identity.");
-    take(program.state_->contract->compatible(actual.get(), "actual-contract.source"));
-    take(program.state_->contract->unchanged());
+    take(ProgramAccess::compatible(program, actual.get(), "actual-contract.source"));
+    take(ProgramAccess::unchanged(program));
     auto reordered = binding;
     std::reverse(reordered.fields.begin(), reordered.fields.end());
     auto changed_catalog = compile_bound(reordered, source, "actual-contract.source");
-    reject(program.state_->contract->compatible(changed_catalog.get(), "actual-contract.source"),
+    reject(ProgramAccess::compatible(program, changed_catalog.get(), "actual-contract.source"),
         ErrorCode::invalid_definition, "Reload ignored changed field-index bindings.");
     // Seed the exact counter boundary in this private acceptance, not a second
     // production sequencing path or a simulated compiler/link failure.
-    program.state_->latest_request = std::numeric_limits<std::uint64_t>::max() - 1;
+    ProgramAccess::set_request_sequence(program, std::numeric_limits<std::uint64_t>::max() - 1);
     auto last = take(program.request("last-sequence.source", source));
     require(last->sequence == std::numeric_limits<std::uint64_t>::max(), "Last valid request sequence was not accepted.");
     auto candidate = take(BusinessProgram::prepare(last));
     reject(program.request("overflow.source", source), ErrorCode::capacity_exceeded, "Request sequence silently wrapped.");
     take(program.try_publish(candidate));
-    require(program.state_->published_request == last->sequence && !candidate,
+    require(ProgramAccess::published_sequence(program) == last->sequence && !candidate,
             "Rejected sequence overflow invalidated the final accepted request.");
     require(runtime.root_count() == 0 && runtime.live_objects() == 0,
             "Contract checking or sequence-boundary compilation executed source initialization.");
@@ -2326,14 +1518,14 @@ void verify_reload_bootstrap(Runtime& runtime, const Binding& binding, const Bin
     take(program.try_publish(first));
     require(!first, "Publication did not consume its candidate.");
     check_machine(runtime, binding, identity, 4.0f, 6.0f, 8);
-    require(take(program.pin()).layout().strong_slots == business_root_slots, "Scalar bootstrap had a reference-local layout.");
+    require(ProgramAccess::layout(take(program.pin())).strong_slots == business_root_slots, "Scalar bootstrap had a reference-local layout.");
     (void)take(invoke_machine(tick, identity, 0.5f, 2));
     (void)take(editor.fire(0.5f, 1));
     check_machine(runtime, binding, identity, 5.5f, 8.0f, 11);
     auto second = prepare_reload(program, binding, 2, true);
     check_machine(runtime, binding, identity, 5.5f, 8.0f, 11);
     take(program.try_publish(second));
-    const auto changed = take(program.pin()).layout();
+    const auto changed = ProgramAccess::layout(take(program.pin()));
     require(changed.strong_slots > business_root_slots && changed.weak_slots != 0,
             "Body replacement did not change its actual reference-slot requirements.");
     require(receiver.id() == identity && machine_address(runtime, binding, identity) == address,
@@ -2403,7 +1595,7 @@ void verify_reload_request_order(Runtime& runtime, const Binding& binding) {
         const auto failed_text = kind == 0 ? std::string("void reload_tick(float delta, uint loops) {") :
             kind == 1 ? std::string("void reload_tick(float delta, uint loops) { float x = loops; }") : reload_source(binding, 5);
         auto newest = take(program.request("newest-failure.source", failed_text));
-        auto failed = BusinessProgram::prepare(newest, kind == 2);
+        auto failed = kind == 2 ? ProgramAccess::prepare(newest, atelier_compile_business_without_poll_for_verification) : BusinessProgram::prepare(newest);
         reject(failed, ErrorCode::invalid_definition, "Newest parse/type/real-link error was accepted.");
         require(failed.error().message.starts_with(newest->source_name + ":"), "Preparation diagnostic lost its request identity.");
         if (kind == 2)
@@ -2595,7 +1787,7 @@ void verify_reload_standalone_guards(Runtime& runtime, const Binding& binding, T
         auto& cycles = *static_cast<unsigned*>(context);
         collect(invocation.runtime);
         ++cycles;
-        require(invocation.runtime.live_objects() == (invocation.stats.polls == 1 ? 2u : 3u),
+        require(invocation.runtime.live_objects() == (fixture(invocation).stats.polls == 1 ? 2u : 3u),
                 "Published reference-slot layout lost a source-held object or retained garbage.");
         for (const auto& root : invocation.roots)
             if (root.registered() && root.id() != ObjectId{}) take(invocation.runtime.type_of(root.id()));
@@ -2909,6 +2101,7 @@ void verify_source_rejections(BusinessCode* existing) {
     std::puts("[pass] Source and real link errors retain diagnostics, reject malformed input, and leave existing machine code executable");
 }
 #include "typed_business.inl"
+#include "coroutine_business.inl"
 }
 
 void verify_business_execution() {
@@ -2926,6 +2119,7 @@ void verify_business_execution() {
     verify_source_rejections(code.get());
     verify_hot_reload();
     verify_typed_business();
+    verify_coroutines();
     require(NativeState::live == native_values, "Business acceptance leaked native state instances.");
     std::puts("Business execution acceptance: PASS");
 }

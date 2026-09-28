@@ -519,6 +519,11 @@ struct Runtime::Impl {
             return ValueDescription{type->info.id, value.form};
         };
         FunctionSignature signature;
+        if (definition.execution != FunctionExecution::synchronous && definition.execution != FunctionExecution::coroutine)
+            return failure(ErrorCode::invalid_definition, "Signature has an invalid execution kind.");
+        if (owner && definition.execution != FunctionExecution::synchronous)
+            return failure(ErrorCode::invalid_definition, "Native method invokers cannot suspend.");
+        signature.execution = definition.execution;
         signature.parameters.reserve(definition.parameters.size());
         for (const auto& parameter : definition.parameters) {
             auto value = resolve_value(parameter);

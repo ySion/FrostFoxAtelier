@@ -1,10 +1,10 @@
 # FrostFoxAtelier
 
-面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点和单入口兼容方法体热更新。完整语言、通用方法分派/布局迁移、编辑器及完整渲染器尚未实现。
+面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点、显式协程和单入口兼容方法体热更新。完整语言、通用方法分派/布局迁移、编辑器及完整渲染器尚未实现。
 
 另已实现独立的 UI 布局核心首增量：稳定局部节点身份、结构编辑、行列/父框锚定、真实叶测量、事务发布和几何快照；它不是控件、渲染或完整编辑器系统。详见 [布局模块](docs/modules/ui-layout/README.md)。
 
-项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。
+项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。Runtime、源码与 JIT 的模块归属、调用链、所有权和技术债集中在[执行结构说明](docs/runtime-structure.md)。
 
 ## 构建与端到端验收
 
@@ -21,7 +21,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先执行 RHI 依赖，再执行 Runtime、JIT 业务与布局消费者。成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`、`Runtime acceptance: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`、`UI layout minimal consumer: PASS` 和 `UI layout acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行 JIT 平台及业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务与布局消费者。默认配置成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`、`Runtime acceptance: PASS`、`Source public consumer: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`、`UI layout minimal consumer: PASS` 和 `UI layout acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
@@ -82,7 +82,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 锁定 LLVM 的 finalization 错误出口存在已复现的代码页泄漏，使用 [JITLinkMemoryManager.cpp](third_party/llvm/JITLinkMemoryManager.cpp) 的最小源级修复：失败时清理分配，已执行的动作先逆向撤销，正常分配策略不变。该完整翻译单元保留上游许可证、原始 SHA-256 与编译期版本检查，通过正式目标链接，不手改 SDK 二进制；升级 LLVM 时必须重新核查此修复。展开表安装/撤销的参数包分别为 24/8 字节，均留在 SDK 的内联缓冲内。
 
-预编译 LLVM 的 Release 静态 CRT ABI 隔离在 `atelier_jit_probe.dll`；宿主与 `atelier_jit_native_client.dll` 保留原有开发/发布 CRT 配置。LLVM/STL 对象、异常和分配所有权不跨隔离接口。运行 JIT 验收还需保留这两个 DLL，以及本配置的 mimalloc/重定向 DLL；输出目录保留 LLVM、zlib、zstd 的许可证副本。
+预编译 LLVM 的 Release 静态 CRT ABI 分别隔离在正式源码后端 `atelier_source_backend.dll` 和平台验收 `atelier_jit_probe.dll`；宿主与 `atelier_jit_native_client.dll` 保留原有开发/发布 CRT 配置。两个 LLVM DLL 共用构建中的展开支持与修复对象，LLVM/STL 对象、异常和分配所有权不跨隔离接口。运行完整 JIT 验收需保留上述 DLL 及本配置的 mimalloc/重定向 DLL；输出目录保留 LLVM、zlib、zstd 的许可证副本。
 
 已完成长会话反复物化/退休、最多 512 个同时存活单元及定型成功调用的本机测量，方法、数据与限制见[二次验收记录](docs/research/jit-industrial-research.md#二次验收记录2026-09-24)。这只是平台微型样例，不替代真实业务负载的编译延迟、稳态吞吐或行为热重载验收。
 
@@ -90,9 +90,22 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## JIT 业务执行闭环
 
-[机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](acceptance/jit/business_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定，不再由固定手写业务 IR 决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。
+正式消费者包含 [source/program.hpp](src/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。参数和返回值使用 Runtime 的 `Scalar`，不会暴露 LLVM 或私有 DLL 参数布局。[独立最小消费者](acceptance/source/main.cpp)仅依赖该公共入口，验证同步结果、兼容替换、旧版本租约和程序关闭后的挂起帧存活。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
 
-- [ExecutionFrame](src/runtime/execution.hpp)沿用 `ObjectRoot` 及共享屏障/撤销机制。原标量例仍使用接收者/快照两个栈根；源码引用局部和临时值按编译布局准备额外稳定强槽与不保活的观察存储。持有局部跨完整新 GC 周期存活，块退出后只剩观察则可回收，循环/早退/错误均显式清理。
+单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。配置时设置 `-DATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收及后端故障注入，正式源码库和该最小消费者仍可构建；默认 ON 保留既有完整验收入口。
+
+同一入口包含[连续会话验收](acceptance/source/session.cpp)：原生与描述型对象各在同一个 Runtime 中交错运行任务、取消、分步 GC 和兼容更新，核对预热后的资源变化、旧版本集中退休及最后关停。工作负载和实际结果见[阶段收尾](docs/research/runtime-stage-closeout.md#连续运行补充验收)。
+
+本阶段的正式接口性能与资源基线见[测量记录](docs/research/runtime-stage-measurements.md)。测量不随普通构建或验收执行；复跑命令：
+
+```powershell
+cmake --build --preset release --target atelier_source_measure
+./out/release/atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
+```
+
+[机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定，不再由固定手写业务 IR 决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。
+
+- [ExecutionFrame](src/runtime/execution.hpp)沿用 `ObjectRoot` 及共享屏障/撤销机制。生成帧只预留接收者槽；机器验收自行持有快照根，源码引用局部和临时值按编译布局准备额外稳定强槽与不保活的观察存储。持有局部跨完整新 GC 周期存活，块退出后只剩观察则可回收，循环/早退/错误均显式清理。
 - 顶层以 `ExecutionScope` 覆盖入场至帧清理，内部准入检查拒绝原生借用或遍历内重入；同一 Runtime 的活动调用统一计数。真正原生调用仍保留 `Runtime::call` 的保护；生成安全点按宿主请求与单步预算推进同一个 GC，不引入另一个收集器或 Tick 调度器。
 - 错误通过定型 thunk 的状态与固定诊断返回；IR 显式清根，宿主在 RAII 兜底之前验证清理完成。跨 Runtime、错类型、失效代际与槽位复用均按原身份规则拒绝，已发生的业务修改不回滚。
 - LLVM 与 C++ 所有权继续隔离。活动调用在 DLL 内持有代码；已实际验证原生回调销毁外层代码句柄后继续执行，返回后释放代码页和展开表。两条生成路径共用 [Windows 展开机制](src/jit/windows_unwind.cpp)。
@@ -104,7 +117,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。这不等于已有文件监视、机器码源码行映射或断点调试。
 
-当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不依赖 LLVM/Runtime，降低与成员桥接仍在验收目录；没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，记录/引用参数与结果尚未开放。
+当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不依赖 LLVM/Runtime，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，记录/引用参数与结果尚未开放。
 
 前端与源码执行链已完成一轮[专项审查及真实机器批量基线](docs/research/jit-industrial-research.md#v001-源码专项审查与真实机器基线)：修复业务链接根因诊断丢失，补充 owner 撤销后原生异常的组合验收，执行固定种子源码变异/数值对照，并分别测量编译、批量调用和回收。已有基线不等于完成业务吞吐优化或全面安全审计。
 
@@ -114,18 +127,24 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ### 单入口兼容方法体热更新
 
-现有业务适配器内的 `BusinessProgram` 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。后续兼容性包含函数名、参数/结果、接收者要求、成员目录及实际服务地址。它不是通用 `Runtime::MethodId` 分派器，不修改原生方法表或类型布局。
+正式 [source::Program](src/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。后续兼容性包含函数名、参数/结果、接收者要求、成员目录及实际服务地址。它不是通用 `Runtime::MethodId` 分派器，不修改原生方法表或类型布局。
 
 - 同一 Runtime 任一语言调用仍活动，或正处于原生借用、遍历/GC 回调时，发布返回 `busy`，候选保留供外层返回后重试。暂停的 GC 周期本身允许兼容发布；安全点不暗中切换版本。
 - 最新请求一经接受，旧候选不能再提交；最新源码的解析、类型检查或真实链接失败，均保留上次已发布版本，不回退发布过期候选。重复提交及不兼容入口/签名/接收者/服务表明确拒绝。
 - 模拟 Tick 与长期工具事件通过稳定弱入口选择当前版本，不保活接收者；显式 `Lease` 固定旧版本并保留其代码和展开信息。程序所有者在回调中销毁也不损坏本次调用，但后续稳定入口立即关闭；最后一个代码持有者释放后才能退休。
-- 首次声明固定接收者要求：无 self 的入口不能在兼容替换中新增 self；已有接收者即使新版不再读取，也仍需提供。`describe()` 返回共同签名，`bind<R,Args...>()` 冷端核对宿主期望并返回原入口，不增加另一套调用对象。
+- 首次声明固定接收者要求：无 self 的入口不能在兼容替换中新增 self；已有接收者即使新版不再读取，也仍需提供。`describe()` 返回共同签名，`bind<R,Args...>(expected_execution)` 冷端核对宿主期望并返回原入口；执行种类默认同步，协程传入 `FunctionExecution::coroutine` 后通过同一入口的 `start()` 创建实例。
 - Version 保存自己的已验证元数据和实际调用/引用槽需求。发布后的调用不再比较整份成员目录；原始未绑定入口仍完整检查。每次 Invocation 独占暂存空间，同目录下不用九参方法的入口不再因此扩展缓冲。0→9→1 需求变化及旧租约各自存储已通过验收，不据此宣称吞吐或帧时提升。
 - 原生/描述型对象各执行 12 个隔离场景，开发/发布配置均通过。覆盖短名、2100/8192字节及UTF-8长源名的请求诊断与失败保旧，完整源名成功发布，原对象身份、地址和存量状态保留，引用槽需求改变，乱序完成，作用域退出，暂停 GC，以及 `RtlLookupFunctionEntry` / `VirtualQuery` 观察到的旧展开表撤销和代码页释放。
 
 没有加入后台编译线程、文件监视、活动帧迁移、跨发布单元源码调用/内联失效或对象布局迁移；Runtime、宿主回调与 DLL 仍须活得比使用它们的调用/租约长。具体协议和计划验收的区别见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)与[设计范围](docs/research/jit-execution-design.md#102-单入口兼容方法体发布协议)。
 
 ## 执行链路
+
+源码请求、编译、发布、同步调用、协程恢复及代码退役的完整链路见[结构与执行链](docs/runtime-structure.md#从源码到发布)；下图说明同一类型与对象体系的定义来源和访问入口。
+
+协程首增量使用 [v0.0.3](LANGUAGE-v0.0.3.md) 的 `async` 入口和 `yield` 语句。源码仍经 LLVM/LLJIT，新增显式协程转换；核心 [Coroutine](src/runtime/execution.hpp) 管理帧状态、恢复准入、合作取消和结果。挂起帧复用共享 GC 根并持有原代码版本；宿主决定恢复时机。真实源码验收覆盖挂起期间 GC、取消、失效接收者、错误首因、活动拥有者销毁和热更新后的旧代码退休，包含在既有 `jit_acceptance` 与总 `acceptance` 中。
+
+Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前没有 `await` 组合、跨线程恢复、原生深层挂起或挂起帧迁移；LLVM 降低与宿主绑定通过正式源码模块提供。设计取舍见[工业协程研究](docs/research/coroutine-runtime-research.md)，当前行为见[核心协议](docs/runtime-model.md#协程核心协议)。
 
 ```text
 原生 NativeRegistration<T>::build() ─┐

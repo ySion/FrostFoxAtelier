@@ -55,10 +55,6 @@ add_library(atelier_allocator_client SHARED acceptance/memory/crt_client.cpp)
 target_compile_definitions(atelier_allocator_client PRIVATE ATELIER_ALLOCATOR_CLIENT_BUILD)
 atelier_target(atelier_allocator_client)
 
-add_library(atelier_jit_native_client SHARED acceptance/jit/native_client.cpp)
-target_compile_definitions(atelier_jit_native_client PRIVATE ATELIER_JIT_NATIVE_CLIENT_BUILD)
-atelier_target(atelier_jit_native_client)
-
 add_executable(atelier_runtime_acceptance
     acceptance/runtime/main.cpp
     acceptance/memory/acceptance.cpp)
@@ -84,16 +80,24 @@ add_custom_target(ui_layout_acceptance
     DEPENDS atelier_ui_layout_minimal atelier_ui_layout_acceptance USES_TERMINAL VERBATIM)
 
 include(cmake/jit.cmake)
-atelier_add_jit_acceptance()
+atelier_add_source()
 
 include(cmake/rhi.cmake)
 atelier_add_rhi()
 
+set(_jit_acceptance_commands)
+set(_jit_acceptance_dependencies)
+if(ATELIER_BUILD_JIT_ACCEPTANCE)
+    list(APPEND _jit_acceptance_commands COMMAND $<TARGET_FILE:atelier_jit_acceptance>)
+    list(APPEND _jit_acceptance_dependencies atelier_jit_acceptance)
+endif()
+
 add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
-    COMMAND $<TARGET_FILE:atelier_jit_acceptance>
+    COMMAND $<TARGET_FILE:atelier_source_minimal>
+    ${_jit_acceptance_commands}
     COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
-    DEPENDS atelier_runtime_acceptance atelier_jit_acceptance
+    DEPENDS atelier_runtime_acceptance atelier_source_minimal ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance rhi_acceptance
     USES_TERMINAL VERBATIM)

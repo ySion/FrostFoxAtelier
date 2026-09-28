@@ -133,7 +133,7 @@ BusinessServices typed_trace_services() {
     auto callbacks = services;
     callbacks.begin = [](void* context) noexcept -> std::uint32_t {
         auto& invocation = *static_cast<Invocation*>(context);
-        auto& trace = *static_cast<TypedTrace*>(invocation.hook_state);
+        auto& trace = *static_cast<TypedTrace*>(fixture(invocation).hook_state);
         ++trace.begins;
         if (trace.fail_begin) { invocation.fail(ErrorCode::invocation_failed, "Typed begin failure."); return 31; }
         return begin(context);
@@ -141,7 +141,7 @@ BusinessServices typed_trace_services() {
     callbacks.finish = [](void* context) noexcept -> std::uint32_t {
         auto& invocation = *static_cast<Invocation*>(context);
         const auto status = bridge(invocation, [&]() -> Result<void> {
-            auto& trace = *static_cast<TypedTrace*>(invocation.hook_state);
+            auto& trace = *static_cast<TypedTrace*>(fixture(invocation).hook_state);
             ++trace.finishes;
             for (std::size_t index = business_root_slots; index < invocation.roots.size(); ++index)
                 require(!invocation.roots[index].registered(), "Typed return retained a user root into finish.");
@@ -162,7 +162,7 @@ BusinessServices typed_trace_services() {
 }
 void typed_trace_poll(void* context, Invocation& invocation, const CollectionProgress&) {
     const auto& trace = *static_cast<TypedTrace*>(context);
-    if (invocation.stats.polls == 2) {
+    if (fixture(invocation).stats.polls == 2) {
         collect(invocation.runtime);
         if (trace.fail_poll) throw std::runtime_error("Typed poll failure.");
     }
@@ -172,22 +172,23 @@ TypedRawResult typed_raw(Runtime& runtime, const Binding& binding, BusinessCode*
     const BusinessScalar* arguments, std::uint32_t count, BusinessScalar* result, TypedTrace& trace) {
     auto activation = ExecutionScope::enter(runtime);
     require(static_cast<bool>(activation), "Typed raw invocation could not enter execution.");
-    Invocation invocation(runtime, binding, atelier_business_layout(code), {1}, typed_trace_poll, &trace);
+    FixtureInvocation observed{false, typed_trace_poll, &trace};
+    Invocation invocation(runtime, binding, atelier_business_layout(code), {1}, observed.observer());
     if (receiver != ObjectId{}) take(invocation.frame.hold(receiver_slot, receiver));
     char diagnostic[512]{};
     const auto status = atelier_invoke_business(code, &invocation, arguments, count, result, diagnostic, sizeof(diagnostic));
     require(invocation.frame.empty(), "Typed raw invocation relied on RAII for strong-root cleanup.");
     for (const auto& observation : invocation.observations)
         require(observation.description().type == TypeId{}, "Typed raw invocation retained weak storage.");
-    require(!invocation.output.registered(), "Typed invocation unexpectedly generated a snapshot.");
-    return {status, invocation.failed ? invocation.error : diagnostic, invocation.stats.polls};
+    require(!fixture(invocation).output.registered(), "Typed invocation unexpectedly generated a snapshot.");
+    return {status, invocation.failed ? invocation.error : diagnostic, fixture(invocation).stats.polls};
 }
 void verify_typed_scalars() {
     Runtime runtime;
     const auto binding = bind_type(runtime, {});
     auto zero = compile_bound(binding, "uint zero() { return 4294967295 + 1; }", "typed-zero.source");
     ExecutionStats stats;
-    auto result = take(execute_typed(runtime, binding, zero.get(), {}, {}, true, &stats));
+    auto result = take(execute_fixture(runtime, binding, zero.get(), {}, {}, true, &stats));
     typed_value(result.value, scalar(std::uint32_t{0}), "Zero-argument uint wrap did not produce a successful zero result.");
     require(stats.entered && stats.explicit_cleanup && stats.polls == 1 && !result.snapshot.registered() &&
         runtime.root_count() == 0 && runtime.live_objects() == 0 && !atelier_business_info(zero.get()).requires_receiver,
@@ -195,7 +196,7 @@ void verify_typed_scalars() {
     auto identity = compile_bound(binding, "float identity(float value) { return value; }", "typed-bits.source");
     for (const auto bits : {0u, 0x80000000u, 0x7fc12345u}) {
         const std::array arguments{BusinessScalar{ScalarKind::f32, bits}};
-        typed_value(take(execute_typed(runtime, binding, identity.get(), {}, arguments)).value, arguments[0],
+        typed_value(take(execute_fixture(runtime, binding, identity.get(), {}, arguments)).value, arguments[0],
             "float identity changed zero/sign/NaN payload bits.");
     }
     auto many = compile_bound(binding, R"(
@@ -207,7 +208,7 @@ void verify_typed_scalars() {
         })", "typed-many.source");
     const std::array arguments{scalar(1.0f),scalar(1u),scalar(2.0f),scalar(2u),scalar(3.0f),scalar(3u),
         scalar(4.0f),scalar(4u),scalar(5.0f),scalar(5u)};
-    typed_value(take(execute_typed(runtime, binding, many.get(), {}, arguments)).value, scalar(55.0f),
+    typed_value(take(execute_fixture(runtime, binding, many.get(), {}, arguments)).value, scalar(55.0f),
         "Mixed source parameters lost order, reassignment or their declared scalar kind.");
     auto nested = compile_bound(binding, R"(
         uint choose(uint value) {
@@ -217,7 +218,7 @@ void verify_typed_scalars() {
         })", "typed-nested.source");
     for (const auto input : {0u,1u,2u,3u}) {
         const std::array values{scalar(input)};
-        typed_value(take(execute_typed(runtime, binding, nested.get(), {}, values)).value,
+        typed_value(take(execute_fixture(runtime, binding, nested.get(), {}, values)).value,
             scalar(input == 3 ? 7u : input), "Nested branch/loop scalar return reached the wrong cleanup/result path.");
     }
     const auto callbacks = typed_trace_services();
@@ -309,7 +310,7 @@ void verify_typed_source_errors() {
         "\nuint invalid() { return 1.0; }",
         "\nvoid invalid() { uint value = 1.0; }"})
         typed_reject_source(binding, existing.get(), source);
-    typed_value(take(execute_typed(runtime, binding, existing.get(), {}, {})).value, scalar(17u),
+    typed_value(take(execute_fixture(runtime, binding, existing.get(), {}, {})).value, scalar(17u),
         "Rejected compilation damaged the old executable.");
     std::puts("[pass] Typed diagnostics: missing/wrong returns, unsupported/duplicate parameters and no implicit conversion preserve positioned errors and prior code");
 }
@@ -345,7 +346,7 @@ void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
         same_environment(binding, info.environment), "Typed metadata borrowed destroyed catalog/name/signature storage.");
     auto receiver = take(runtime.create(binding.type));
     const std::array arguments{scalar(0.5f), scalar(7u)};
-    typed_value(take(execute_typed(runtime, binding, code.get(), receiver.id(), arguments)).value, scalar(0.5f),
+    typed_value(take(execute_fixture(runtime, binding, code.get(), receiver.id(), arguments)).value, scalar(0.5f),
         "Owned typed metadata no longer supports its original Runtime binding.");
 }
 void verify_typed_catalog_errors(const Binding& binding) {
@@ -404,7 +405,7 @@ void verify_typed_ui(Runtime& runtime, const Binding& binding) {
         auto code = compile_bound(bound, source, "typed-ui.source");
         auto receiver = take(runtime.create(binding.type));
         ExecutionStats stats;
-        auto result = take(execute_typed(runtime, bound, code.get(), receiver.id(), arguments, true, &stats));
+        auto result = take(execute_fixture(runtime, bound, code.get(), receiver.id(), arguments, true, &stats));
         typed_value(result.value, scalar(9.0f), "UI controller mutation/method chain returned the wrong scalar.");
         require(stats.explicit_cleanup && !result.snapshot.registered() && runtime.root_count() == 1 &&
             std::get<float>(take(runtime.read(receiver.id(), fixture_field(binding, "opacity")))) == 1.75f &&
@@ -413,14 +414,14 @@ void verify_typed_ui(Runtime& runtime, const Binding& binding) {
             std::get<std::uint32_t>(take(runtime.read(receiver.id(), fixture_field(binding, "revisions")))) == 5u,
             "Generic UI field/method indices or nine-argument packing changed business state.");
         if (reorder) {
-            reject(execute_typed(runtime, binding, code.get(), receiver.id(), arguments, false, &stats),
+            reject(execute_fixture(runtime, binding, code.get(), receiver.id(), arguments, false, &stats),
                 ErrorCode::invalid_definition, "Mismatched binding order was silently executed.");
             require(!stats.entered, "Incompatible binding entered generated code.");
         }
         const auto stale = receiver.id();
         take(runtime.destroy(stale));
         receiver.reset();
-        reject(execute_typed(runtime, bound, code.get(), stale, arguments, false, &stats), ErrorCode::invalid_object,
+        reject(execute_fixture(runtime, bound, code.get(), stale, arguments, false, &stats), ErrorCode::invalid_object,
             "Typed UI entry accepted a destroyed receiver.");
         require(!stats.entered && runtime.root_count() == 0, "Destroyed receiver validation ran source or leaked a root.");
     }
@@ -493,7 +494,7 @@ void verify_typed_active_owner() {
         struct State { CodeOwner* owner; std::uintptr_t address; bool fail; unsigned callbacks{}; } state{&code, address, fail};
         const std::array arguments{BusinessScalar{ScalarKind::f32, 0x7fc54321u}};
         ExecutionStats stats;
-        auto result = execute_typed(runtime, binding, code.get(), {}, arguments, false, &stats,
+        auto result = execute_fixture(runtime, binding, code.get(), {}, arguments, false, &stats,
             [](void* context, Invocation&, const CollectionProgress&) {
                 auto& state = *static_cast<State*>(context);
                 ++state.callbacks;
@@ -526,14 +527,14 @@ void verify_typed_reload(Runtime& runtime, const Binding& binding) {
     ObjectRoot receiver;
     if (receiver_required) receiver = take(runtime.create(binding.type));
     const std::array arguments{scalar(1.0f), scalar(9u), scalar(0.25f)};
-    typed_value(take(entry.invoke(receiver.id(), arguments)).value, scalar(1.25f), "Typed reload initial entry returned the wrong result.");
+    typed_value(take(invoke_fixture(entry, receiver.id(), arguments)).value, scalar(1.25f), "Typed reload initial entry returned the wrong result.");
     auto second = take(BusinessProgram::prepare(take(program.request("typed-reload-second.source", second_source))));
     take(program.try_publish(second));
     const auto current_address = take(program.pin()).address();
     require(current_address != old.address(), "Typed reload reused a still-leased executable address.");
-    typed_value(take(entry.invoke(receiver.id(), arguments)).value, scalar(receiver_required ? 3.25f : 2.25f),
+    typed_value(take(invoke_fixture(entry, receiver.id(), arguments)).value, scalar(receiver_required ? 3.25f : 2.25f),
         "Same-signature typed publication did not reach the stable entry.");
-    typed_value(take(old.invoke(receiver.id(), arguments)).value, scalar(receiver_required ? 4.25f : 1.25f),
+    typed_value(take(invoke_fixture(old, receiver.id(), arguments)).value, scalar(receiver_required ? 4.25f : 1.25f),
         "Old typed lease silently redirected to the replacement.");
     for (const std::string_view incompatible : {
         "float evaluate(uint value, uint choice, float bias) { return 0.0; }",
@@ -546,9 +547,9 @@ void verify_typed_reload(Runtime& runtime, const Binding& binding) {
         reject(rejected, ErrorCode::invalid_definition, "Typed reload accepted a changed parameter/result signature.");
         require(take(program.pin()).address() == current_address, "Rejected typed reload replaced the current executable.");
     }
-    typed_value(take(entry.invoke(receiver.id(), arguments)).value, scalar(receiver_required ? 6.25f : 2.25f),
+    typed_value(take(invoke_fixture(entry, receiver.id(), arguments)).value, scalar(receiver_required ? 6.25f : 2.25f),
         "Failed typed reload damaged the last published entry.");
-    typed_value(take(old.invoke(receiver.id(), arguments)).value, scalar(receiver_required ? 7.25f : 1.25f),
+    typed_value(take(invoke_fixture(old, receiver.id(), arguments)).value, scalar(receiver_required ? 7.25f : 1.25f),
         "Signature rejection invalidated the old typed lease.");
     require(runtime.root_count() == (receiver_required ? 1u : 0u), "Typed reload calls retained invocation roots.");
 }
@@ -583,7 +584,7 @@ void verify_native_result_consumers(Runtime& runtime, const Binding& binding) {
     auto nested = compile_bound(binding,
         "uint nested() { return self.combine(self.first(), self.next(9)); }", "native-nested-results.source");
     ExecutionStats stats;
-    typed_value(take(execute_typed(runtime, binding, nested.get(), receiver.id(), {}, false, &stats)).value,
+    typed_value(take(execute_fixture(runtime, binding, nested.get(), receiver.id(), {}, false, &stats)).value,
         scalar(1129u), "Nested native argument evaluation overwrote an outer argument.");
     require(stats.explicit_cleanup && std::get<std::uint32_t>(take(runtime.read(receiver.id(), selected))) == 123,
         "Native receiver/arguments were not evaluated in left-to-right order.");
@@ -595,7 +596,7 @@ void verify_native_result_consumers(Runtime& runtime, const Binding& binding) {
         })", "native-mixed-results.source");
     take(runtime.write(receiver.id(), fixture_field(binding, "opacity"), 2.0f));
     const std::array factors{scalar(1.5f)};
-    typed_value(take(execute_typed(runtime, binding, mixed.get(), receiver.id(), factors)).value, scalar(4.0f),
+    typed_value(take(execute_fixture(runtime, binding, mixed.get(), receiver.id(), factors)).value, scalar(4.0f),
         "Discarded, conditional or float native results lost their declared meaning.");
     take(runtime.write(receiver.id(), selected, std::uint32_t{0}));
     const auto failure_source = reference_source(R"(
@@ -637,32 +638,100 @@ void verify_native_result_consumers(Runtime& runtime, const Binding& binding) {
 
 void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
     auto receiver = take(runtime.create(binding.type));
-    struct Calls { std::uint32_t count{}; bool omit{}; };
+    enum class Fault { wrong_kind, missing_result, service_failure, none };
+    struct Calls { std::uint32_t count{}; Fault fault{}; };
     auto callbacks = services;
     callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method,
         const BusinessScalar* arguments, std::uint32_t count, BusinessScalar* output) noexcept -> std::uint32_t {
         auto& invocation = *static_cast<Invocation*>(context);
-        auto& state = *static_cast<Calls*>(invocation.hook_state);
-        if (++state.count == 2 && state.omit) return 0;
+        auto& state = *static_cast<Calls*>(fixture(invocation).hook_state);
+        if (++state.count == 2 && state.fault == Fault::missing_result) return 0;
         const auto status = call_method(context, slot, method, arguments, count, output);
-        if (status == 0 && state.count == 2 && output) output->kind = ScalarKind::f32;
+        if (status != 0 && state.fault == Fault::service_failure) return 2;
+        if (status == 0 && state.count == 2 && state.fault == Fault::wrong_kind && output)
+            output->kind = ScalarKind::f32;
         return status;
     };
-    auto code = compile_bound(binding, "uint abi() { self.bump(0); return self.bump(0); }",
+    const auto source = reference_source(R"(
+        uint abi() {
+            $T held = new $T();
+            weak $T observed = observe(held);
+            self.bump(0);
+            return self.bump(0);
+        })", binding.name);
+    auto code = compile_bound(binding, source,
         "native-result-abi.source", callbacks);
-    for (const bool omit : {false, true}) {
-        Calls calls{0, omit};
+    const BusinessScalar sentinel{ScalarKind::u32, 0xcafebabe};
+    const auto check_cleanup = [&](const Invocation& invocation) {
+        require(invocation.frame.empty() && runtime.root_count() == 1,
+            "Native ABI result path relied on RAII root cleanup.");
+        for (const auto& observation : invocation.observations)
+            require(observation.description().type == TypeId{}, "Native ABI result path retained a weak slot.");
+    };
+    for (const auto fault : {Fault::wrong_kind, Fault::missing_result}) {
+        std::string backend_error;
+        {
+            Calls calls{0, fault};
+            auto activation = take(ExecutionScope::enter(runtime));
+            FixtureInvocation observed{false, nullptr, &calls};
+            Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, observed.observer());
+            take(invocation.frame.hold(receiver_slot, receiver.id()));
+            auto output = sentinel;
+            char error[512]{};
+            const auto status = atelier_invoke_business(code.get(), &invocation, nullptr, 0, &output, error, sizeof(error));
+            require(status != 0 && calls.count == 2 && !invocation.failed,
+                "Wrong or missing second native result reused scratch or lost its backend failure.");
+            check_cleanup(invocation);
+            typed_value(output, sentinel, "Native ABI result rejection committed caller output.");
+            backend_error = error;
+            require(backend_error.find("Native call result contract violation") != std::string::npos,
+                "Native ABI result rejection lost its contract-violation diagnostic.");
+        }
+        Calls calls{0, fault};
+        ExecutionStats stats;
+        const auto rejected = execute_fixture(runtime, binding, code.get(), receiver.id(), {}, false,
+            &stats, nullptr, &calls);
+        require(!rejected && rejected.error().code == ErrorCode::invocation_failed &&
+            rejected.error().message == backend_error && stats.explicit_cleanup && calls.count == 2,
+            "The host wrapper lost the generated result-contract diagnostic or explicit cleanup.");
+        collect(runtime);
+        require(runtime.live_objects() == 1 && runtime.root_count() == 1,
+            "Native ABI result rejection retained source-created objects.");
+    }
+    {
+        Calls calls{0, Fault::none};
         auto activation = take(ExecutionScope::enter(runtime));
-        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, nullptr, &calls);
+        FixtureInvocation observed{false, nullptr, &calls};
+        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, observed.observer());
         take(invocation.frame.hold(receiver_slot, receiver.id()));
-        const BusinessScalar sentinel{ScalarKind::u32, 0xcafebabe};
+        auto output = sentinel;
+        char error[512]{"Previous invocation failure."};
+        require(atelier_invoke_business(code.get(), &invocation, nullptr, 0, &output, error, sizeof(error)) == 0 &&
+            calls.count == 2 && error[0] == '\0', "A prior ABI failure contaminated a later successful invocation.");
+        typed_value(output, scalar(0u), "A later successful ABI invocation did not commit its result.");
+        check_cleanup(invocation);
+    }
+    auto native_failure = compile_bound(binding, "uint failed() { return self.fail_result(); }",
+        "native-result-status.source", callbacks);
+    {
+        Calls calls{0, Fault::service_failure};
+        auto activation = take(ExecutionScope::enter(runtime));
+        FixtureInvocation observed{false, nullptr, &calls};
+        Invocation invocation(runtime, binding, atelier_business_layout(native_failure.get()), {1}, observed.observer());
+        take(invocation.frame.hold(receiver_slot, receiver.id()));
         auto output = sentinel;
         char error[512]{};
-        const auto status = atelier_invoke_business(code.get(), &invocation, nullptr, 0, &output, error, sizeof(error));
-        require(status != 0 && calls.count == 2 && invocation.frame.empty() && runtime.root_count() == 1,
-            "Wrong or missing second native result reused scratch or relied on RAII root cleanup.");
-        typed_value(output, sentinel, "Native ABI result rejection committed caller output.");
+        require(atelier_invoke_business(native_failure.get(), &invocation, nullptr, 0, &output, error, sizeof(error)) == 2 &&
+            invocation.failed && std::string_view(invocation.error) == "Typed UI native result failure." && error[0] == '\0',
+            "A service status was changed or confused with a generated result-contract failure.");
+        typed_value(output, sentinel, "Native service failure committed caller output.");
+        check_cleanup(invocation);
     }
+    Calls calls{0, Fault::service_failure};
+    const auto rejected = execute_fixture(runtime, binding, native_failure.get(), receiver.id(), {}, false,
+        nullptr, nullptr, &calls);
+    require(!rejected && rejected.error().message == "Typed UI native result failure.",
+        "The host wrapper replaced the native service first cause with a backend diagnostic.");
 }
 
 void verify_shared_function_versions(Runtime& runtime, const Binding& binding) {
@@ -678,23 +747,25 @@ void verify_shared_function_versions(Runtime& runtime, const Binding& binding) {
         if (method.id == bump) same_signature = signature == method.signature;
     require(same_signature, "Source/native producers did not publish the same resolved function contract.");
     const auto bound = take(program.bind<std::uint32_t, std::uint32_t>());
+    reject(program.bind<std::uint32_t, std::uint32_t>(FunctionExecution::coroutine), ErrorCode::argument_mismatch,
+        "Coroutine binding accepted a synchronous declaration.");
     require(!program.bind<float, std::uint32_t>() && !program.bind<std::uint32_t, float>(),
         "Host expected types were not checked against the actual source declaration.");
     auto receiver = take(runtime.create(binding.type));
     const std::array arguments{scalar(2u)};
     auto old = take(program.pin());
-    typed_value(take(bound.invoke(receiver.id(), arguments)).value, scalar(2u), "Typed host binding did not invoke the shared declaration.");
+    typed_value(take(invoke_fixture(bound, receiver.id(), arguments)).value, scalar(2u), "Typed host binding did not invoke the shared declaration.");
     auto replacement = take(BusinessProgram::prepare(take(program.request("shared-second.source",
         "uint score(uint amount) { return self.bump(amount) + 100; }"))));
     take(program.try_publish(replacement));
-    typed_value(take(entry.invoke(receiver.id(), arguments)).value, scalar(104u), "Current entry did not select the new shared-signature body.");
-    typed_value(take(old.invoke(receiver.id(), arguments)).value, scalar(6u), "Old lease changed its function body after publication.");
+    typed_value(take(invoke_fixture(entry, receiver.id(), arguments)).value, scalar(104u), "Current entry did not select the new shared-signature body.");
+    typed_value(take(invoke_fixture(old, receiver.id(), arguments)).value, scalar(6u), "Old lease changed its function body after publication.");
     auto without_self = take(BusinessProgram::prepare(take(program.request("shared-unused-self.source",
         "uint score(uint amount) { return amount; }"))));
     take(program.try_publish(without_self));
     require(take(program.describe()) == signature, "Unused self silently weakened the published receiver contract.");
-    reject(entry.invoke({}, arguments), ErrorCode::invalid_object, "A replacement removed a required receiver from the caller contract.");
-    typed_value(take(entry.invoke(receiver.id(), arguments)).value, scalar(2u), "An unused declared receiver could not be provided.");
+    reject(invoke_fixture(entry, {}, arguments), ErrorCode::invalid_object, "A replacement removed a required receiver from the caller contract.");
+    typed_value(take(invoke_fixture(entry, receiver.id(), arguments)).value, scalar(2u), "An unused declared receiver could not be provided.");
     BusinessProgram free_function(runtime, binding.type);
     auto independent = take(BusinessProgram::prepare(take(free_function.request("shared-free.source",
         "uint free_value(uint amount) { return amount; }"))));
@@ -703,7 +774,7 @@ void verify_shared_function_versions(Runtime& runtime, const Binding& binding) {
     auto changed_receiver = BusinessProgram::prepare(take(free_function.request("shared-added-self.source",
         "uint free_value(uint amount) { return self.bump(amount); }")));
     require(!changed_receiver, "A free source contract silently acquired a required receiver.");
-    typed_value(take(free_function.entry().invoke({}, arguments)).value, scalar(2u), "Rejected receiver change damaged the current free function.");
+    typed_value(take(invoke_fixture(free_function.entry(), {}, arguments)).value, scalar(2u), "Rejected receiver change damaged the current free function.");
 }
 
 void verify_versioned_call_scratch(Runtime& runtime, const Binding& binding) {
@@ -711,7 +782,7 @@ void verify_versioned_call_scratch(Runtime& runtime, const Binding& binding) {
     auto callbacks = services;
     callbacks.begin = [](void* context) noexcept -> std::uint32_t {
         auto& invocation = *static_cast<Invocation*>(context);
-        auto& observed = *static_cast<Scratch*>(invocation.hook_state);
+        auto& observed = *static_cast<Scratch*>(fixture(invocation).hook_state);
         observed.expanded = invocation.expanded_arguments.size();
         ++observed.begins;
         return begin(context);
@@ -727,7 +798,7 @@ void verify_versioned_call_scratch(Runtime& runtime, const Binding& binding) {
         require(atelier_business_layout(code.get()).max_call_arguments == demands[index],
             "Code layout used catalog maximum instead of actual native call demand.");
         Scratch observed;
-        take(execute_typed(runtime, binding, code.get(), receiver.id(), {}, false, nullptr, nullptr, &observed));
+        take(execute_fixture(runtime, binding, code.get(), receiver.id(), {}, false, nullptr, nullptr, &observed));
         require(observed.begins == 1 && observed.expanded == (index == 1 ? 9u : 0u),
             "Unused nine-argument methods still allocated an expanded invocation buffer.");
     }
@@ -738,15 +809,15 @@ void verify_versioned_call_scratch(Runtime& runtime, const Binding& binding) {
         auto candidate = take(BusinessProgram::prepare(take(program.request("version-call-demand.source", sources[index]))));
         take(program.try_publish(candidate));
         retained[index] = take(program.pin());
-        require(retained[index].layout().max_call_arguments == demands[index], "New version retained stale call-storage requirements.");
+        require(ProgramAccess::layout(retained[index]).max_call_arguments == demands[index], "New version retained stale call-storage requirements.");
         take(runtime.write(receiver.id(), fixture_field(binding, "selected"), std::uint32_t{0}));
-        typed_value(take(entry.invoke(receiver.id(), {})).value, scalar(index == 1 ? 285u : 0u),
+        typed_value(take(invoke_fixture(entry, receiver.id(), {})).value, scalar(index == 1 ? 285u : 0u),
             "Version-specific scratch could not execute its actual native call demand.");
     }
     for (std::size_t index = 0; index < retained.size(); ++index) {
-        require(retained[index].layout().max_call_arguments == demands[index], "A current publication altered an older lease's layout.");
+        require(ProgramAccess::layout(retained[index]).max_call_arguments == demands[index], "A current publication altered an older lease's layout.");
         take(runtime.write(receiver.id(), fixture_field(binding, "selected"), std::uint32_t{0}));
-        typed_value(take(retained[index].invoke(receiver.id(), {})).value, scalar(index == 1 ? 285u : 0u),
+        typed_value(take(invoke_fixture(retained[index], receiver.id(), {})).value, scalar(index == 1 ? 285u : 0u),
             "An older lease used the current version's native call storage.");
     }
 }
@@ -765,7 +836,7 @@ void verify_typed_business() {
             const auto source = "uint sample() { return " + std::to_string(expected) + "; }";
             auto candidate = take(BusinessProgram::prepare(take(zero.request("typed-zero-reload.source", source))));
             take(zero.try_publish(candidate));
-            typed_value(take(entry.invoke({}, {})).value, scalar(expected), "Zero-argument typed reload changed its empty signature or result.");
+            typed_value(take(invoke_fixture(entry, {}, {})).value, scalar(expected), "Zero-argument typed reload changed its empty signature or result.");
         }
         require(runtime.root_count() == 0 && runtime.live_objects() == 0, "Pure scalar reload created host objects.");
     }
@@ -787,6 +858,7 @@ void verify_typed_business() {
     std::puts("[pass] Typed ownership and failures: deep-owned schema/signatures, active owner retirement, scalar strong/weak returns, native/poll/finish first-cause and explicit cleanup");
     std::puts("[pass] Typed reload: pure scalar and both UI representations accept matching signatures, reject parameter/result changes and retain old leases");
     std::puts("[pass] Shared function contracts: inferred native/source results, readonly receiver metadata, nested argument SSA, discarded results and first-cause cleanup");
+    std::puts("[pass] Native result ABI violations retain diagnostics through explicit cleanup and host propagation without changing service status or later success");
     std::puts("[pass] Bound source declarations: host signature checking, fixed receiver requirements, old leases and per-version actual native-call scratch demand");
 }
 

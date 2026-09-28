@@ -19,7 +19,8 @@ bool digit(char value) noexcept { return value >= '0' && value <= '9'; }
 bool reserved(std::string_view value) noexcept {
     return value == "void" || value == "float" || value == "uint" || value == "if" ||
         value == "else" || value == "while" || value == "return" || value == "self" ||
-        value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire";
+        value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
+        value == "async" || value == "yield";
 }
 bool reference_type(ValueType type) noexcept {
     return type == ValueType::strong_reference || type == ValueType::weak_reference ||
@@ -124,6 +125,7 @@ public:
     Program parse() {
         validate_environment();
         program_.object_type_name = environment_.object_type_name;
+        program_.is_coroutine = accept("async");
         program_.result = accept("void") ? ValueType::void_value : scalar_type();
         program_.function_name = identifier().text;
         expect("(");
@@ -343,6 +345,11 @@ private:
             expect(")");
             const auto body = block();
             return add(Statement{Statement::Kind::loop, position, no_node, condition, body, no_node, {}});
+        }
+        if (accept("yield")) {
+            if (!program_.is_coroutine) reject(position, "yield requires an async entry.");
+            expect(";");
+            return add(Statement{Statement::Kind::yield, position, no_node, no_node, no_node, no_node, {}});
         }
         if (accept("return")) {
             NodeId value = no_node;

@@ -1,6 +1,7 @@
 #include "runtime/execution.hpp"
 
 #include <utility>
+#include <exception>
 
 namespace atelier {
 namespace {
@@ -99,6 +100,86 @@ Result<CollectionProgress> ExecutionFrame::poll(CollectionBudget budget) {
     }
     collection_requested_ = false;
     return runtime_.collect_step(budget);
+}
+
+struct Coroutine::Control {
+    Runtime& runtime;
+    std::unique_ptr<CoroutineFrame> frame;
+    CoroutineState state{CoroutineState::ready};
+    bool cancel_requested{};
+    std::optional<Scalar> result;
+    std::optional<Error> error;
+    Control(Runtime& owner, std::unique_ptr<CoroutineFrame> body) : runtime(owner), frame(std::move(body)) {}
+};
+
+Result<Coroutine> Coroutine::create(Runtime& runtime, std::unique_ptr<CoroutineFrame> frame) {
+    if (!frame) return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine requires an owned frame."});
+    return Coroutine(std::make_shared<Control>(runtime, std::move(frame)));
+}
+
+Coroutine::~Coroutine() { cancel(); }
+Coroutine::Coroutine(Coroutine&& other) noexcept : control_(std::move(other.control_)) {}
+Coroutine& Coroutine::operator=(Coroutine&& other) noexcept {
+    if (this != &other) { cancel(); control_ = std::move(other.control_); }
+    return *this;
+}
+
+CoroutineState Coroutine::state() const noexcept {
+    return control_ ? control_->state : CoroutineState::cancelled;
+}
+
+void Coroutine::cancel() noexcept {
+    const auto active = control_;
+    if (!active) return;
+    if (active->state == CoroutineState::running) { active->cancel_requested = true; return; }
+    if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended) return;
+    active->state = CoroutineState::cancelled;
+    active->frame.reset();
+}
+
+Result<CoroutineState> Coroutine::resume() {
+    // A callback can destroy/move the public owner. Only this pin is used below.
+    const auto active = control_;
+    if (!active) return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine is empty."});
+    if (active->state == CoroutineState::running)
+        return std::unexpected(Error{ErrorCode::busy, "Coroutine is already running."});
+    if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended)
+        return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine has already terminated."});
+    auto scope = ExecutionScope::enter(active->runtime);
+    if (!scope) return std::unexpected(std::move(scope.error()));
+    active->state = CoroutineState::running;
+    Result<CoroutineStep> step;
+    try { step = active->frame->resume(); }
+    catch (const std::exception& error) { step = std::unexpected(Error{ErrorCode::invocation_failed, error.what()}); }
+    catch (...) { step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine raised an unknown exception."}); }
+    if (step && (step->state != CoroutineState::suspended && step->state != CoroutineState::completed))
+        step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine body returned an invalid state."});
+    if (step && step->state == CoroutineState::suspended && step->result)
+        step = std::unexpected(Error{ErrorCode::invocation_failed, "A suspended coroutine cannot publish a result."});
+    if (!step) {
+        active->state = CoroutineState::failed;
+        active->error = std::move(step.error());
+        active->frame.reset();
+        return std::unexpected(*active->error);
+    }
+    if (active->cancel_requested) {
+        active->state = CoroutineState::cancelled;
+        active->frame.reset();
+    } else {
+        active->state = step->state;
+        if (active->state == CoroutineState::completed) {
+            active->result = std::move(step->result);
+            active->frame.reset();
+        }
+    }
+    return active->state;
+}
+
+Result<std::optional<Scalar>> Coroutine::result() const {
+    if (control_ && control_->error) return std::unexpected(*control_->error);
+    if (!control_ || control_->state != CoroutineState::completed)
+        return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine has no completed result."});
+    return control_->result;
 }
 
 }

@@ -510,6 +510,18 @@ void verify_signature_publication() {
         "Resolved signature borrowed mutable producer storage.");
     const auto empty = take(runtime.resolve_signature({}));
     require(empty.parameters.empty() && !empty.result && !empty.receiver, "Free void signature acquired a receiver or value.");
+    SignatureDefinition coroutine_definition;
+    coroutine_definition.execution = FunctionExecution::coroutine;
+    require(take(runtime.resolve_signature(coroutine_definition)).execution == FunctionExecution::coroutine,
+        "Signature resolution lost coroutine execution semantics.");
+    TypeDefinition invalid_coroutine{"signature.InvalidCoroutine", TypeKind::object, {}, {}, {}};
+    MethodDefinition invalid_method;
+    invalid_method.name = "suspend";
+    invalid_method.signature.execution = FunctionExecution::coroutine;
+    invalid_method.invoke = [](CallContext&) -> Result<void> { return {}; };
+    invalid_coroutine.methods.push_back(std::move(invalid_method));
+    reject(runtime.register_type(std::move(invalid_coroutine)), ErrorCode::invalid_definition,
+        "A synchronous native Invoker accepted a coroutine method contract.");
     for (const auto* name : {"read", "sample"}) {
         const auto& signature = method_signature(*info, name);
         require(signature.receiver == std::optional{ReceiverDescription{native, true}},

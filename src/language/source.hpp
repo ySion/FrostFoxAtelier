@@ -47,7 +47,7 @@ struct Expression {
     std::vector<NodeId> arguments{}; // native call operands, evaluated left to right
 };
 struct Statement {
-    enum class Kind { block, declare, assign, call, condition, loop, return_value };
+    enum class Kind { block, declare, assign, call, condition, loop, return_value, yield };
     Kind kind;
     SourcePosition position;
     NodeId target{no_node}, expression{no_node}, body{no_node}, alternative{no_node};
@@ -70,6 +70,7 @@ struct Program {
     std::vector<Statement> statements;
     NodeId body{no_node};
     std::string object_type_name;
+    bool is_coroutine{};
 };
 
 // One host-bound function: zero or more float/uint parameters, void/float/uint

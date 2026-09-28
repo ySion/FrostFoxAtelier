@@ -20,8 +20,9 @@ private:
     Runtime* runtime_;
 };
 
-// A synchronous execution owns registrations in caller-provided, stable slots.
-// The Runtime and slot storage must outlive this frame. Slot numbers identify
+// An execution owns registrations in caller-provided, stable slots. Coroutine
+// owners keep these slots across suspension. Runtime/storage outlive the frame.
+// Slot numbers identify
 // execution storage, never a second object identity. No value-record stack ABI.
 class ExecutionFrame final {
 public:
@@ -53,6 +54,49 @@ private:
     Runtime& runtime_;
     std::span<ObjectRoot> slots_;
     bool collection_requested_{};
+};
+
+enum class CoroutineState { ready, running, suspended, completed, failed, cancelled };
+
+struct CoroutineStep {
+    // A body returns suspended (without a result) or completed. Other states
+    // belong to the owner. Empty completion means void, not a zero scalar.
+    CoroutineState state;
+    std::optional<Scalar> result{};
+};
+
+// Compiler/host-owned stable frame. Destruction releases roots, frame storage
+// and code; it must not resume user code, suspend, throw or start new work.
+class CoroutineFrame {
+public:
+    virtual ~CoroutineFrame() = default;
+    [[nodiscard]] virtual Result<CoroutineStep> resume() = 0;
+};
+
+// Same-thread cooperative execution, with no scheduler. Runtime must outlive
+// every nonterminal frame. Each resume uses the ordinary execution admission;
+// suspended frames retain their roots/code without retaining an active scope.
+class Coroutine final {
+public:
+    Coroutine() = default;
+    [[nodiscard]] static Result<Coroutine> create(Runtime& runtime, std::unique_ptr<CoroutineFrame> frame);
+    ~Coroutine();
+    Coroutine(Coroutine&& other) noexcept;
+    Coroutine& operator=(Coroutine&& other) noexcept;
+    Coroutine(const Coroutine&) = delete;
+    Coroutine& operator=(const Coroutine&) = delete;
+
+    [[nodiscard]] Result<CoroutineState> resume();
+    // Ready/suspended cancellation cleans immediately. Running cancellation
+    // is a request: an execution error wins; otherwise cancel wins over the
+    // returned step and no result commits. Does not interrupt native code.
+    void cancel() noexcept;
+    [[nodiscard]] CoroutineState state() const noexcept;
+    [[nodiscard]] Result<std::optional<Scalar>> result() const;
+private:
+    struct Control;
+    explicit Coroutine(std::shared_ptr<Control> control) noexcept : control_(std::move(control)) {}
+    std::shared_ptr<Control> control_;
 };
 
 }

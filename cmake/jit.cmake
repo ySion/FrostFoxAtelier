@@ -1,6 +1,17 @@
-# Keep the prebuilt LLVM C++ ABI private to the platform-acceptance DLL.
-# Other project targets retain atelier_target's Debug/Release CRT contract.
-function(atelier_add_jit_acceptance)
+option(ATELIER_BUILD_JIT_ACCEPTANCE "Build platform JIT probes and source fault-injection acceptance" ON)
+
+# LLVM-facing objects share the pinned SDK's ABI. This helper is private to
+# the backend DLLs; the source host and other targets retain /MD(d).
+function(atelier_llvm_target target)
+    atelier_target(${target})
+    set_target_properties(${target} PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)
+    target_compile_definitions(${target} PRIVATE NDEBUG _ITERATOR_DEBUG_LEVEL=0)
+    target_compile_options(${target} PRIVATE /GR-)
+    target_include_directories(${target} SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+endfunction()
+
+function(atelier_add_source)
     include(FetchContent)
     file(READ "${PROJECT_SOURCE_DIR}/cmake/dependencies-lock.json" _jit_dependencies)
     foreach(_dependency zlib zstd)
@@ -44,40 +55,77 @@ function(atelier_add_jit_acceptance)
        LLVM_ENABLE_ASSERTIONS OR LLVM_ENABLE_RTTI)
         message(FATAL_ERROR "Revalidate the pinned LLVM SDK ABI before changing its isolation DLL configuration.")
     endif()
-    llvm_map_components_to_libnames(_llvm_libraries Core OrcJIT native AsmParser)
+    llvm_map_components_to_libnames(_llvm_libraries Core OrcJIT native AsmParser Passes Coroutines)
     set_target_properties(zlibstatic libzstd_static PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)
     configure_file("${zlib_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.zlib.txt" COPYONLY)
     configure_file("${zstd_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.zstd.txt" COPYONLY)
     # Retain the pinned upstream license without fetching/building compiler-rt.
     configure_file("${PROJECT_SOURCE_DIR}/cmake/LICENSE.llvm.txt" "${CMAKE_BINARY_DIR}/LICENSE.llvm.txt" COPYONLY)
 
-    add_library(atelier_jit_probe SHARED
-        acceptance/jit/backend.cpp
-        acceptance/jit/business_backend.cpp
-        src/language/source.cpp
-        src/jit/windows_unwind.cpp)
-    atelier_target(atelier_jit_probe)
-    # Match the SDK, not the calling executable: no LLVM/STL object or
-    # exception crosses backend.hpp. Runtime acceptance still uses /MDd.
-    set_target_properties(atelier_jit_probe PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)
-    target_compile_definitions(atelier_jit_probe PRIVATE
-        ATELIER_JIT_PROBE_BUILD NDEBUG _ITERATOR_DEBUG_LEVEL=0)
-    target_compile_options(atelier_jit_probe PRIVATE /GR-)
-    target_include_directories(atelier_jit_probe SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
-    target_include_directories(atelier_jit_probe PRIVATE src)
-    target_link_libraries(atelier_jit_probe PRIVATE ${_llvm_libraries} mimalloc)
-    target_sources(atelier_jit_probe PRIVATE src/memory/global_new_delete.cpp)
-    # Compile the complete pinned replacement object so LLVMJITLink's unpatched
-    # archive member is not selected. See its provenance and version guard.
-    target_sources(atelier_jit_probe PRIVATE third_party/llvm/JITLinkMemoryManager.cpp)
-    configure_file("${PROJECT_SOURCE_DIR}/acceptance/jit/advance_machine.source"
-        "${CMAKE_BINARY_DIR}/advance_machine.source" COPYONLY)
+    # Direct objects ensure the pinned replacement wins over LLVMJITLink's
+    # archive member. Both DLLs use the same unwind implementation; registration
+    # belongs to each code allocation and requires no shared registry.
+    add_library(atelier_jit_llvm_support OBJECT
+        src/jit/windows_unwind.cpp
+        third_party/llvm/JITLinkMemoryManager.cpp
+        src/memory/global_new_delete.cpp)
+    atelier_llvm_target(atelier_jit_llvm_support)
+    target_link_libraries(atelier_jit_llvm_support PUBLIC ${_llvm_libraries} mimalloc)
 
-    add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp)
-    atelier_target(atelier_jit_acceptance)
-    target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
-    target_link_libraries(atelier_jit_acceptance PRIVATE atelier_runtime atelier_jit_probe atelier_jit_native_client)
-    add_custom_target(jit_acceptance
-        COMMAND $<TARGET_FILE:atelier_jit_acceptance>
-        DEPENDS atelier_jit_acceptance USES_TERMINAL VERBATIM)
+    add_library(atelier_source_backend SHARED
+        src/jit/source_backend.cpp
+        src/language/source.cpp)
+    atelier_llvm_target(atelier_source_backend)
+    target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
+    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support)
+    if(ATELIER_BUILD_JIT_ACCEPTANCE)
+        target_compile_definitions(atelier_source_backend PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
+        target_include_directories(atelier_source_backend PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
+    endif()
+
+    add_library(atelier_source STATIC src/source/program.cpp src/source/detail/bridge.cpp)
+    atelier_target(atelier_source)
+    target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
+    target_compile_features(atelier_source PUBLIC cxx_std_23)
+    target_link_libraries(atelier_source PUBLIC atelier_runtime PRIVATE atelier_source_backend)
+    if(ATELIER_BUILD_JIT_ACCEPTANCE)
+        target_compile_definitions(atelier_source PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
+    endif()
+
+    add_executable(atelier_source_minimal
+        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp)
+    atelier_target(atelier_source_minimal)
+    target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
+    add_custom_target(source_acceptance
+        COMMAND $<TARGET_FILE:atelier_source_minimal>
+        DEPENDS atelier_source_minimal USES_TERMINAL VERBATIM)
+
+    # Standalone performance sweeps; the session acceptance records only its bounded observations.
+    add_executable(atelier_source_measure EXCLUDE_FROM_ALL acceptance/source/measure.cpp)
+    atelier_target(atelier_source_measure)
+    target_link_libraries(atelier_source_measure PRIVATE atelier_source mimalloc psapi)
+
+    if(ATELIER_BUILD_JIT_ACCEPTANCE)
+        add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
+        atelier_llvm_target(atelier_jit_probe)
+        target_compile_definitions(atelier_jit_probe PRIVATE ATELIER_JIT_PROBE_BUILD)
+        target_link_libraries(atelier_jit_probe PRIVATE atelier_jit_llvm_support)
+
+        add_library(atelier_jit_native_client SHARED acceptance/jit/native_client.cpp)
+        target_compile_definitions(atelier_jit_native_client PRIVATE ATELIER_JIT_NATIVE_CLIENT_BUILD)
+        atelier_target(atelier_jit_native_client)
+
+        configure_file("${PROJECT_SOURCE_DIR}/acceptance/jit/advance_machine.source"
+            "${CMAKE_BINARY_DIR}/advance_machine.source" COPYONLY)
+        add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp)
+        atelier_target(atelier_jit_acceptance)
+        target_compile_definitions(atelier_jit_acceptance PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
+        target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
+        target_link_libraries(atelier_jit_acceptance PRIVATE
+            atelier_source atelier_source_backend atelier_jit_probe atelier_jit_native_client)
+        add_custom_target(jit_acceptance
+            COMMAND $<TARGET_FILE:atelier_source_minimal>
+            COMMAND $<TARGET_FILE:atelier_jit_acceptance>
+            DEPENDS atelier_source_minimal atelier_jit_acceptance USES_TERMINAL VERBATIM)
+    endif()
 endfunction()

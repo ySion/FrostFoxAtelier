@@ -25,8 +25,8 @@
 | --- | --- |
 | 词法、语法、名称绑定、类型检查 | [src/language/source.cpp](src/language/source.cpp) |
 | 定型语法树、源码位置、宿主绑定描述 | [src/language/source.hpp](src/language/source.hpp) |
-| LLVM 降低、JIT 编译与当前机器接口 | [acceptance/jit/business_backend.cpp](acceptance/jit/business_backend.cpp) |
-| 编译边界与代码句柄寿命 | [acceptance/jit/business_backend.hpp](acceptance/jit/business_backend.hpp) |
+| LLVM 降低、JIT 编译与当前机器接口 | [src/jit/source_backend.cpp](src/jit/source_backend.cpp) |
+| 编译边界与代码句柄寿命 | [src/jit/source_backend.hpp](src/jit/source_backend.hpp) |
 | 真实源码样例 | [acceptance/jit/advance_machine.source](acceptance/jit/advance_machine.source) |
 | 正向、错误、生命周期端到端验收 | [acceptance/jit/business.cpp](acceptance/jit/business.cpp) |
 
@@ -38,7 +38,7 @@
 
 值得保留的基础是：显式静态类型、清晰的词法块作用域、常规表达式优先级、结构化分支和循环、可定位的编译错误，以及语义检查与机器码降低分离。它们已经能表达真实业务，并没有要求另建解释器、脚本对象世界或专属 GC。
 
-仍需保持可修改的部分是：单入口及固定参数形状、`self` 的具体引入方式、当前只有两个标量类型、条件谓词是否成为可声明的布尔类型、遮蔽政策、关键字集合，以及引用、一般函数和声明体系的写法。当前机器成员目录、快照和两个根槽是验收适配器，不是未来语言的永久结构。
+仍需保持可修改的部分是：单入口及固定参数形状、`self` 的具体引入方式、当前只有两个标量类型、条件谓词是否成为可声明的布尔类型、遮蔽政策、关键字集合，以及引用、一般函数和声明体系的写法。初版机器成员目录、快照和两个根槽是验收适配，不是永久语言结构；后续[模块迁移](docs/research/source-module-migration.md)已将快照移出生成槽。
 
 因此，“适合扩展”与“保留暂定标识”不矛盾。以后增加特性时，应先明确语义、兼容性和验收，再更新版本规范，不把未来写法提前列入本版本文法。
 

@@ -95,10 +95,12 @@ struct ReceiverDescription {
 
 // Owns its descriptions, not the Runtime, callable identity or executable code.
 // An absent result means void; an absent receiver describes a free function.
+enum class FunctionExecution { synchronous, coroutine };
 struct FunctionSignature {
     std::vector<ValueDescription> parameters;
     std::optional<ValueDescription> result;
     std::optional<ReceiverDescription> receiver;
+    FunctionExecution execution{FunctionExecution::synchronous};
     bool operator==(const FunctionSignature&) const = default;
 };
 
@@ -226,6 +228,7 @@ struct SignatureDefinition {
     std::vector<ValueDefinition> parameters;
     std::optional<ValueDefinition> result{};
     std::optional<ReceiverDefinition> receiver{};
+    FunctionExecution execution{FunctionExecution::synchronous};
 };
 
 struct NativeLayout {

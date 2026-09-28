@@ -4,11 +4,10 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace atelier::jit_acceptance {
+namespace atelier::source::detail {
 
 inline constexpr std::uint32_t receiver_slot = 0;
-inline constexpr std::uint32_t snapshot_slot = 1;
-inline constexpr std::uint32_t business_root_slots = 2;
+inline constexpr std::uint32_t business_root_slots = 1;
 inline constexpr std::uint32_t observation_slot_bit = 0x80000000u;
 inline constexpr std::uint32_t null_reference_slot = 0xffffffffu;
 
@@ -39,12 +38,14 @@ struct BusinessSignature {
     const ScalarKind* parameters;
     std::uint32_t parameter_count;
     ScalarKind result;
+    bool is_coroutine;
 };
 
 enum class ReferenceOperation : std::uint32_t { copy, observe, try_acquire };
 
-// Private acceptance ABI. All semantic objects, roots and diagnostics stay in
-// the host. Slots belong to one synchronous invocation, not an object map.
+// Private source-backend ABI. All semantic objects, roots and diagnostics stay in
+// the host. Slots belong to one execution instance and remain stable across
+// coroutine suspensions; they are not an object map.
 // Strong slots are untagged; weak slots address a separate observation array.
 // The null slot is an operand only, never a destination or cleanup target.
 // Field/method operands are indices into the compiled environment's tables.
@@ -100,10 +101,11 @@ struct BusinessFrameLayout {
 static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_v<BusinessFrameLayout>);
 
 struct BusinessCode;
+struct BusinessCoroutine;
 
 }
 
-#ifdef ATELIER_JIT_PROBE_BUILD
+#ifdef ATELIER_SOURCE_BACKEND_BUILD
 #define ATELIER_BUSINESS_BACKEND __declspec(dllexport)
 #else
 #define ATELIER_BUSINESS_BACKEND __declspec(dllimport)
@@ -120,30 +122,20 @@ struct BusinessCode;
 // Failure leaves *output unchanged, including an existing executable handle.
 // Host callback code and this DLL must outlive all code owners and invocations.
 extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business(
-    const atelier::jit_acceptance::BusinessServices* services,
+    const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,
-    const atelier::jit_acceptance::BusinessEnvironment* environment,
-    atelier::jit_acceptance::BusinessCode** output,
-    char* error, std::uint32_t error_capacity) noexcept;
-
-// Acceptance-only: the same source compiler and real linker, but business_poll
-// is deliberately left unbound. Failure preserves *output, including existing
-// code; its diagnostic identifies the supplied source, phase and missing symbol.
-extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business_without_poll_for_verification(
-    const atelier::jit_acceptance::BusinessServices* services,
-    const char* source_name, const char* source, std::uint32_t source_size,
-    const atelier::jit_acceptance::BusinessEnvironment* environment,
-    atelier::jit_acceptance::BusinessCode** output,
+    const atelier::source::detail::BusinessEnvironment* environment,
+    atelier::source::detail::BusinessCode** output,
     char* error, std::uint32_t error_capacity) noexcept;
 
 // Actual compiled metadata, not caller-provided claims. Null code returns null
 // names/tables, a zero address and null callbacks. Querying acquires no owner.
-extern "C" ATELIER_BUSINESS_BACKEND atelier::jit_acceptance::BusinessCodeInfo atelier_business_info(
-    atelier::jit_acceptance::BusinessCode* code) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessCodeInfo atelier_business_info(
+    atelier::source::detail::BusinessCode* code) noexcept;
 
 // Query before allocating invocation storage. Null code returns zero counts.
-extern "C" ATELIER_BUSINESS_BACKEND atelier::jit_acceptance::BusinessFrameLayout atelier_business_layout(
-    atelier::jit_acceptance::BusinessCode* code) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessFrameLayout atelier_business_layout(
+    atelier::source::detail::BusinessCode* code) noexcept;
 
 // One invocation pins its compiled state before entering generated code.
 // Destroying its outer handle in a synchronous callback does not free active
@@ -152,18 +144,29 @@ extern "C" ATELIER_BUSINESS_BACKEND atelier::jit_acceptance::BusinessFrameLayout
 // Arity, kinds and required storage are checked before invoking any callbacks.
 // A non-void result requires storage; void permits null. Only full success
 // commits {declared kind, bits}; failure leaves result entirely unchanged.
+// Service failure status codes pass through unchanged; their first-cause text
+// stays with the host invocation. Generated result-contract failures instead
+// populate error after explicit cleanup, without replacing a host first cause.
 extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_invoke_business(
-    atelier::jit_acceptance::BusinessCode* code, void* invocation,
-    const atelier::jit_acceptance::BusinessScalar* arguments, std::uint32_t argument_count,
-    atelier::jit_acceptance::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept;
+    atelier::source::detail::BusinessCode* code, void* invocation,
+    const atelier::source::detail::BusinessScalar* arguments, std::uint32_t argument_count,
+    atelier::source::detail::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept;
 
 extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_business(
-    atelier::jit_acceptance::BusinessCode* code) noexcept;
+    atelier::source::detail::BusinessCode* code) noexcept;
 
-// Acceptance-only fault injection: exercise the real compiler/linker with an
-// omitted required service. Normal compilation never enables this path.
-extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_verify_business_link_failure(
-    const atelier::jit_acceptance::BusinessServices* services,
-    char* error, std::uint32_t error_capacity) noexcept;
+// Private same-thread coroutine ABI. Creation copies arguments and owns its
+// code version without executing the body. invocation must remain stable until
+// destruction. resume commits result only on completion; suspended is separate
+// from error status. Destruction cancels without running the source continuation.
+extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_create_business_coroutine(
+    atelier::source::detail::BusinessCode* code, void* invocation,
+    const atelier::source::detail::BusinessScalar* arguments, std::uint32_t argument_count,
+    atelier::source::detail::BusinessCoroutine** output, char* error, std::uint32_t error_capacity) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_resume_business_coroutine(
+    atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
+    atelier::source::detail::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_business_coroutine(
+    atelier::source::detail::BusinessCoroutine* coroutine) noexcept;
 
 #undef ATELIER_BUSINESS_BACKEND

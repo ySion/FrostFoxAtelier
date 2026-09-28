@@ -1,26 +1,42 @@
-#include "business_backend.hpp"
+#include "jit/source_backend.hpp"
 #include "jit/windows_unwind.hpp"
 #include "language/source.hpp"
+
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+#include "jit/source_backend_verification.hpp"
+#endif
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Transforms/Coroutines/CoroEarly.h>
+#include <llvm/Transforms/Coroutines/CoroSplit.h>
+#include <llvm/Transforms/Coroutines/CoroCleanup.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <bit>
 #include <cstdio>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-namespace atelier::jit_acceptance {
+namespace atelier::source::detail {
 namespace {
-using Entry = std::uint32_t (*)(void*, const BusinessScalar*, std::uint32_t*) noexcept;
+enum class EntryFailure : std::uint32_t { none, invalid_call_result };
+// Keep generated failure reasons separate from opaque host service status codes.
+// This entry is private to the DLL; the exported invocation ABI stays unchanged.
+using Entry = std::uint32_t (*)(void*, const BusinessScalar*, std::uint32_t*, EntryFailure*) noexcept;
+using CoroutineEntry = void* (*)(void*, const BusinessScalar*, std::uint32_t*, EntryFailure*,
+    std::uint32_t*, std::uint32_t*) noexcept;
+using CoroutineAction = void (*)(void*) noexcept;
 using llvm::orc::LLJIT;
 using llvm::orc::ExecutorAddr;
 
@@ -42,7 +58,21 @@ struct CompiledBusiness {
     BusinessFrameLayout layout{};
     std::unique_ptr<LLJIT> jit;
     Entry entry{};
+    CoroutineEntry coroutine_entry{};
+    CoroutineAction resume{}, destroy{};
 };
+
+void* allocate_coroutine(std::uint64_t size, std::uint32_t alignment) noexcept {
+    // coro.id(0) promises at least twice pointer alignment, even if the
+    // computed frame layout itself needs less. Match this in deallocation.
+    constexpr std::uint32_t minimum = 2 * sizeof(void*);
+    return ::operator new(static_cast<std::size_t>(size),
+        std::align_val_t{alignment < minimum ? minimum : alignment}, std::nothrow);
+}
+void free_coroutine(void* storage, std::uint32_t alignment) noexcept {
+    constexpr std::uint32_t minimum = 2 * sizeof(void*);
+    ::operator delete(storage, std::align_val_t{alignment < minimum ? minimum : alignment});
+}
 
 ScalarKind scalar_kind(language::ValueType type) {
     switch (type) {
@@ -141,12 +171,15 @@ public:
         clear_ = declare("business_clear", ir_.getVoidTy(), {ptr, i32});
         reference_ = declare("business_reference", i32, {ptr, i32, i32, i32});
         same_reference_ = declare("business_same_reference", i32, {ptr, i32, i32, ptr});
-        entry_ = llvm::Function::Create(llvm::FunctionType::get(i32, {ptr, ptr, ptr}, false),
+        auto* entry_type = program_.is_coroutine ? llvm::FunctionType::get(ptr, {ptr, ptr, ptr, ptr, ptr, ptr}, false) :
+            llvm::FunctionType::get(i32, {ptr, ptr, ptr, ptr}, false);
+        entry_ = llvm::Function::Create(entry_type,
             llvm::GlobalValue::ExternalLinkage, "atelier_source_entry", *module_);
         entry_->addFnAttr(llvm::Attribute::NoInline);
         entry_->addFnAttr(llvm::Attribute::NoUnwind);
         entry_->addFnAttr("disable-tail-calls", "true");
         entry_->setUWTableKind(llvm::UWTableKind::Async);
+        if (program_.is_coroutine) entry_->addFnAttr(llvm::Attribute::PresplitCoroutine);
         invocation_ = entry_->getArg(0);
     }
 
@@ -158,9 +191,9 @@ public:
         finish_ = block("finish");
         ir_.SetInsertPoint(failure_);
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
-        clear_roots();
-        ir_.CreateRet(failure_status_);
+        failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
         ir_.SetInsertPoint(start);
+        if (program_.is_coroutine) setup_coroutine();
         float_result_ = ir_.CreateAlloca(ir_.getFloatTy());
         uint_result_ = ir_.CreateAlloca(ir_.getInt32Ty());
         float_result_->setAlignment(llvm::Align(4));
@@ -202,13 +235,104 @@ public:
         ir_.SetInsertPoint(finish_);
         checked_call(finish_call_, {invocation_});
         clear_roots();
-        ir_.CreateRet(ir_.getInt32(0));
+        complete(ir_.getInt32(0));
+        ir_.SetInsertPoint(failure_);
+        clear_roots();
+        ir_.CreateStore(failure_reason_, entry_->getArg(3));
+        complete(failure_status_);
+        if (program_.is_coroutine) finish_coroutine();
         std::string diagnostics;
         llvm::raw_string_ostream stream(diagnostics);
         if (llvm::verifyModule(*module_, &stream)) throw std::runtime_error(diagnostics);
+        if (program_.is_coroutine) {
+            llvm::LoopAnalysisManager loops;
+            llvm::FunctionAnalysisManager functions;
+            llvm::CGSCCAnalysisManager graph;
+            llvm::ModuleAnalysisManager modules;
+            llvm::PassBuilder passes;
+            passes.registerModuleAnalyses(modules);
+            passes.registerCGSCCAnalyses(graph);
+            passes.registerFunctionAnalyses(functions);
+            passes.registerLoopAnalyses(loops);
+            passes.crossRegisterProxies(loops, functions, graph, modules);
+            llvm::ModulePassManager pipeline;
+            pipeline.addPass(llvm::CoroEarlyPass());
+            pipeline.addPass(llvm::createModuleToPostOrderCGSCCPassAdaptor(llvm::CoroSplitPass()));
+            pipeline.addPass(llvm::CoroCleanupPass());
+            pipeline.run(*module_, modules);
+            diagnostics.clear();
+            if (llvm::verifyModule(*module_, &stream)) throw std::runtime_error(diagnostics);
+        }
         return {std::move(module_), std::move(context_)};
     }
 private:
+    llvm::Function* intrinsic(llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> types = {}) {
+        return llvm::Intrinsic::getOrInsertDeclaration(module_.get(), id, types);
+    }
+    void suspend(bool final) {
+        auto* resume = block(final ? "coroutine.final.unreachable" : "coroutine.continue");
+        auto* state = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_suspend),
+            {llvm::ConstantTokenNone::get(*context_), ir_.getInt1(final)});
+        auto* select = ir_.CreateSwitch(state, coroutine_return_, 2);
+        select->addCase(ir_.getInt8(0), resume);
+        select->addCase(ir_.getInt8(1), final ? coroutine_free_ : coroutine_cancel_);
+        ir_.SetInsertPoint(resume);
+        if (final) ir_.CreateUnreachable();
+    }
+    void complete(llvm::Value* status) {
+        if (!program_.is_coroutine) { ir_.CreateRet(status); return; }
+        ir_.CreateStore(status, entry_->getArg(4));
+        ir_.CreateStore(ir_.getInt32(1), entry_->getArg(5));
+        ir_.CreateBr(coroutine_final_);
+    }
+    void setup_coroutine() {
+        coroutine_return_ = block("coroutine.return");
+        coroutine_final_ = block("coroutine.final");
+        coroutine_cancel_ = block("coroutine.cancel");
+        coroutine_free_ = block("coroutine.free");
+        auto* null = llvm::ConstantPointerNull::get(ir_.getPtrTy());
+        coroutine_id_ = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_id), {ir_.getInt32(0), null, null, null});
+        auto* size = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_size, {ir_.getInt64Ty()}));
+        coroutine_alignment_ = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_align, {ir_.getInt32Ty()}));
+        auto allocate = module_->getOrInsertFunction("business_coroutine_allocate",
+            llvm::FunctionType::get(ir_.getPtrTy(), {ir_.getInt64Ty(), ir_.getInt32Ty()}, false));
+        auto* memory = ir_.CreateCall(allocate, {size, coroutine_alignment_});
+        auto* allocated = block("coroutine.allocated");
+        auto* exhausted = block("coroutine.allocation_failed");
+        ir_.CreateCondBr(ir_.CreateICmpNE(memory, null), allocated, exhausted);
+        ir_.SetInsertPoint(exhausted);
+        ir_.CreateRet(null);
+        ir_.SetInsertPoint(allocated);
+        coroutine_handle_ = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_begin), {coroutine_id_, memory});
+        suspend(false); // Creation owns a frame; the first resume enters the body.
+    }
+    void finish_coroutine() {
+        ir_.SetInsertPoint(coroutine_final_);
+        suspend(true);
+        ir_.SetInsertPoint(coroutine_cancel_);
+        clear_roots();
+        ir_.CreateBr(coroutine_free_);
+        ir_.SetInsertPoint(coroutine_free_);
+        auto* memory = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_free), {coroutine_id_, coroutine_handle_});
+        auto release = module_->getOrInsertFunction("business_coroutine_free",
+            llvm::FunctionType::get(ir_.getVoidTy(), {ir_.getPtrTy(), ir_.getInt32Ty()}, false));
+        ir_.CreateCall(release, {memory, coroutine_alignment_});
+        ir_.CreateBr(coroutine_return_);
+        ir_.SetInsertPoint(coroutine_return_);
+        ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_end),
+            {coroutine_handle_, ir_.getFalse(), llvm::ConstantTokenNone::get(*context_)});
+        ir_.CreateRet(coroutine_handle_);
+        for (const auto& [name, action] : {std::pair{"atelier_source_resume", llvm::Intrinsic::coro_resume},
+                 std::pair{"atelier_source_destroy", llvm::Intrinsic::coro_destroy}}) {
+            auto* wrapper = llvm::Function::Create(llvm::FunctionType::get(ir_.getVoidTy(), {ir_.getPtrTy()}, false),
+                llvm::GlobalValue::ExternalLinkage, name, *module_);
+            wrapper->addFnAttr(llvm::Attribute::NoUnwind);
+            wrapper->setUWTableKind(llvm::UWTableKind::Async);
+            ir_.SetInsertPoint(llvm::BasicBlock::Create(*context_, "entry", wrapper));
+            ir_.CreateCall(intrinsic(action), {wrapper->getArg(0)});
+            ir_.CreateRetVoid();
+        }
+    }
     static bool is_reference(language::ValueType type) noexcept {
         return type == language::ValueType::strong_reference || type == language::ValueType::weak_reference ||
             type == language::ValueType::null_reference;
@@ -244,6 +368,7 @@ private:
     void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments) {
         auto* status = ir_.CreateCall(function, arguments);
         failure_status_->addIncoming(status, ir_.GetInsertBlock());
+        failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none)), ir_.GetInsertBlock());
         auto* next = block("service.ok");
         ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failure_);
         ir_.SetInsertPoint(next);
@@ -257,7 +382,6 @@ private:
     }
     void clear_roots() {
         clear_user_references();
-        clear_slot(snapshot_slot);
         clear_slot(receiver_slot);
     }
     void clear_temporaries() {
@@ -351,6 +475,8 @@ private:
             auto* kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, output, 0));
             auto* next = block("result.ok");
             failure_status_->addIncoming(ir_.getInt32(1), ir_.GetInsertBlock());
+            failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)),
+                ir_.GetInsertBlock());
             ir_.CreateCondBr(ir_.CreateICmpEQ(kind, ir_.getInt32(static_cast<std::uint32_t>(scalar_kind(node.type)))),
                 next, failure_);
             ir_.SetInsertPoint(next);
@@ -431,6 +557,10 @@ private:
             (void)expression(node.expression);
             clear_temporaries();
             return;
+        case Kind::yield:
+            suspend(false);
+            safe_point();
+            return;
         case Kind::return_value:
             if (node.expression != language::no_node) {
                 auto* value = expression(node.expression);
@@ -496,6 +626,9 @@ private:
     llvm::BasicBlock* finish_{};
     llvm::BasicBlock* return_cleanup_{};
     llvm::PHINode* failure_status_{};
+    llvm::PHINode* failure_reason_{};
+    llvm::BasicBlock *coroutine_return_{}, *coroutine_final_{}, *coroutine_cancel_{}, *coroutine_free_{};
+    llvm::Value *coroutine_id_{}, *coroutine_handle_{}, *coroutine_alignment_{};
     llvm::StructType* scalar_type_{};
     llvm::AllocaInst* call_arguments_{};
     llvm::AllocaInst* call_result_{};
@@ -521,7 +654,11 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
 }
 
 std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, const language::Program& program,
-    language::Environment environment, bool omit_poll_for_verification = false) {
+    language::Environment environment
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+    , bool omit_poll_for_verification = false
+#endif
+) {
     if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter())
         throw std::runtime_error("LLVM native target initialization failed.");
     auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
@@ -545,7 +682,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     state->parameters.reserve(program.parameters.size());
     for (const auto parameter : program.parameters) state->parameters.push_back(scalar_kind(parameter));
     state->signature = {state->parameters.empty() ? nullptr : state->parameters.data(),
-        static_cast<std::uint32_t>(state->parameters.size()), scalar_kind(program.result)};
+        static_cast<std::uint32_t>(state->parameters.size()), scalar_kind(program.result), program.is_coroutine};
     state->field_names.reserve(environment.fields.size());
     state->fields.reserve(environment.fields.size());
     for (const auto& field : environment.fields) {
@@ -584,11 +721,18 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     bind("business_read_uint", state->services.read_uint);
     bind("business_write_uint", state->services.write_uint);
     bind("business_call", state->services.call);
-    if (!omit_poll_for_verification) bind("business_poll", state->services.poll);
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+    if (!omit_poll_for_verification)
+#endif
+        bind("business_poll", state->services.poll);
     bind("business_finish", state->services.finish);
     bind("business_clear", state->services.clear);
     bind("business_reference", state->services.reference);
     bind("business_same_reference", state->services.same_reference);
+    if (program.is_coroutine) {
+        bind("business_coroutine_allocate", &allocate_coroutine);
+        bind("business_coroutine_free", &free_coroutine);
+    }
     check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
     check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout)));
     state->layout.object_type_name = state->object_type_name.c_str();
@@ -598,20 +742,38 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         if (!state->diagnostic.empty()) diagnostic += "\n" + state->diagnostic;
         throw std::runtime_error(diagnostic_source_name(program.source_name) + ": JIT materialization: " + diagnostic);
     }
-    state->entry = address->toPtr<Entry>();
+    if (program.is_coroutine) {
+        state->coroutine_entry = address->toPtr<CoroutineEntry>();
+        state->resume = take(state->jit->lookup("atelier_source_resume")).toPtr<CoroutineAction>();
+        state->destroy = take(state->jit->lookup("atelier_source_destroy")).toPtr<CoroutineAction>();
+    } else state->entry = address->toPtr<Entry>();
     return state;
 }
 }
 
 struct BusinessCode { std::shared_ptr<CompiledBusiness> state; };
+struct BusinessCoroutineState {
+    std::shared_ptr<CompiledBusiness> code;
+    std::vector<BusinessScalar> arguments;
+    void* handle{};
+    std::uint32_t bits{}, status{}, completed{};
+    EntryFailure failure{EntryFailure::none};
+    bool running{};
+    ~BusinessCoroutineState() { if (handle) code->destroy(handle); }
+};
+struct BusinessCoroutine { std::shared_ptr<BusinessCoroutineState> state; };
 }
 
 namespace {
-std::uint32_t compile_business_impl(const atelier::jit_acceptance::BusinessServices* services,
+std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,
-    const atelier::jit_acceptance::BusinessEnvironment* environment,
-    atelier::jit_acceptance::BusinessCode** output,
-    char* error, std::uint32_t error_capacity, bool omit_poll_for_verification) noexcept {
+    const atelier::source::detail::BusinessEnvironment* environment,
+    atelier::source::detail::BusinessCode** output,
+    char* error, std::uint32_t error_capacity
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+    , bool omit_poll_for_verification = false
+#endif
+) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     try {
@@ -621,7 +783,7 @@ std::uint32_t compile_business_impl(const atelier::jit_acceptance::BusinessServi
             !services->reference || !services->same_reference)
             throw std::runtime_error("Invalid business compiler input, callbacks or output storage.");
         using namespace atelier;
-        using namespace atelier::jit_acceptance;
+        using namespace atelier::source::detail;
         std::vector<language::FieldBinding> fields;
         std::vector<std::vector<language::ValueType>> method_parameters;
         std::vector<language::MethodBinding> methods;
@@ -660,8 +822,12 @@ std::uint32_t compile_business_impl(const atelier::jit_acceptance::BusinessServi
                 diagnostic.position.line, diagnostic.position.column, diagnostic.message.c_str());
             return 1;
         }
-        auto state = atelier::jit_acceptance::compile(*services, *program, source_environment, omit_poll_for_verification);
-        *output = new atelier::jit_acceptance::BusinessCode{std::move(state)};
+        auto state = atelier::source::detail::compile(*services, *program, source_environment
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+            , omit_poll_for_verification
+#endif
+        );
+        *output = new atelier::source::detail::BusinessCode{std::move(state)};
         return 0;
     } catch (const std::exception& failure) {
         std::snprintf(error, error_capacity, "%s", failure.what());
@@ -672,42 +838,45 @@ std::uint32_t compile_business_impl(const atelier::jit_acceptance::BusinessServi
 }
 }
 
-std::uint32_t atelier_compile_business(const atelier::jit_acceptance::BusinessServices* services,
+std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,
-    const atelier::jit_acceptance::BusinessEnvironment* environment,
-    atelier::jit_acceptance::BusinessCode** output,
+    const atelier::source::detail::BusinessEnvironment* environment,
+    atelier::source::detail::BusinessCode** output,
     char* error, std::uint32_t error_capacity) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment,
-        output, error, error_capacity, false);
+        output, error, error_capacity);
 }
 
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 std::uint32_t atelier_compile_business_without_poll_for_verification(
-    const atelier::jit_acceptance::BusinessServices* services,
+    const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,
-    const atelier::jit_acceptance::BusinessEnvironment* environment,
-    atelier::jit_acceptance::BusinessCode** output,
+    const atelier::source::detail::BusinessEnvironment* environment,
+    atelier::source::detail::BusinessCode** output,
     char* error, std::uint32_t error_capacity) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment,
         output, error, error_capacity, true);
 }
+#endif
 
-atelier::jit_acceptance::BusinessCodeInfo atelier_business_info(
-    atelier::jit_acceptance::BusinessCode* code) noexcept {
+atelier::source::detail::BusinessCodeInfo atelier_business_info(
+    atelier::source::detail::BusinessCode* code) noexcept {
     if (!code) return {};
     const auto& state = *code->state;
     return {state.function_name.c_str(), state.source_name.c_str(),
-        reinterpret_cast<std::uintptr_t>(state.entry), state.services, state.signature, state.environment,
+        state.signature.is_coroutine ? reinterpret_cast<std::uintptr_t>(state.coroutine_entry) :
+            reinterpret_cast<std::uintptr_t>(state.entry), state.services, state.signature, state.environment,
         state.requires_receiver};
 }
 
-atelier::jit_acceptance::BusinessFrameLayout atelier_business_layout(
-    atelier::jit_acceptance::BusinessCode* code) noexcept {
-    return code ? code->state->layout : atelier::jit_acceptance::BusinessFrameLayout{};
+atelier::source::detail::BusinessFrameLayout atelier_business_layout(
+    atelier::source::detail::BusinessCode* code) noexcept {
+    return code ? code->state->layout : atelier::source::detail::BusinessFrameLayout{};
 }
 
-std::uint32_t atelier_invoke_business(atelier::jit_acceptance::BusinessCode* code, void* invocation,
-    const atelier::jit_acceptance::BusinessScalar* arguments, std::uint32_t argument_count,
-    atelier::jit_acceptance::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept {
+std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* code, void* invocation,
+    const atelier::source::detail::BusinessScalar* arguments, std::uint32_t argument_count,
+    atelier::source::detail::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     if (!code || !invocation) {
@@ -717,7 +886,11 @@ std::uint32_t atelier_invoke_business(atelier::jit_acceptance::BusinessCode* cod
     // Do not read code again: a synchronous callback may destroy its handle.
     const auto active_code = code->state;
     const auto& signature = active_code->signature;
-    using atelier::jit_acceptance::ScalarKind;
+    if (signature.is_coroutine) {
+        std::snprintf(error, error_capacity, "%s", "Coroutine code requires a persistent execution instance.");
+        return 1;
+    }
+    using atelier::source::detail::ScalarKind;
     if (argument_count != signature.parameter_count || (argument_count != 0 && !arguments)) {
         std::snprintf(error, error_capacity, "%s", "Business argument count or storage does not match the compiled signature.");
         return 1;
@@ -733,15 +906,85 @@ std::uint32_t atelier_invoke_business(atelier::jit_acceptance::BusinessCode* cod
         }
     }
     std::uint32_t staged_bits{};
-    const auto status = active_code->entry(invocation, arguments, &staged_bits);
+    auto failure_reason = atelier::source::detail::EntryFailure::none;
+    const auto status = active_code->entry(invocation, arguments, &staged_bits, &failure_reason);
+    if (failure_reason == atelier::source::detail::EntryFailure::invalid_call_result)
+        std::snprintf(error, error_capacity, "%s",
+            "Native call result contract violation: successful callback omitted the result or returned the wrong scalar kind.");
     if (status == 0 && result) *result = {signature.result, staged_bits};
     return status;
 }
 
-void atelier_destroy_business(atelier::jit_acceptance::BusinessCode* code) noexcept { delete code; }
+void atelier_destroy_business(atelier::source::detail::BusinessCode* code) noexcept { delete code; }
 
+std::uint32_t atelier_create_business_coroutine(atelier::source::detail::BusinessCode* code, void* invocation,
+    const atelier::source::detail::BusinessScalar* arguments, std::uint32_t argument_count,
+    atelier::source::detail::BusinessCoroutine** output, char* error, std::uint32_t error_capacity) noexcept {
+    if (!error || error_capacity == 0) return 1;
+    error[0] = '\0';
+    using namespace atelier::source::detail;
+    if (!code || !invocation || !output || !code->state->signature.is_coroutine) {
+        std::snprintf(error, error_capacity, "%s", "Coroutine creation requires compiled coroutine code and owned invocation storage.");
+        return 1;
+    }
+    const auto active = code->state;
+    if (argument_count != active->signature.parameter_count || (argument_count && !arguments)) {
+        std::snprintf(error, error_capacity, "%s", "Coroutine arguments do not match its signature.");
+        return 1;
+    }
+    for (std::uint32_t i = 0; i < argument_count; ++i) {
+        if (arguments[i].kind != active->signature.parameters[i]) {
+            std::snprintf(error, error_capacity, "%s", "Coroutine argument has the wrong scalar kind.");
+            return 1;
+        }
+    }
+    try {
+        auto state = std::make_shared<BusinessCoroutineState>();
+        state->code = active;
+        if (argument_count) state->arguments.assign(arguments, arguments + argument_count);
+        auto owner = std::make_unique<BusinessCoroutine>();
+        owner->state = state;
+        state->handle = active->coroutine_entry(invocation, state->arguments.data(), &state->bits,
+            &state->failure, &state->status, &state->completed);
+        if (!state->handle) throw std::bad_alloc();
+        *output = owner.release();
+        return 0;
+    } catch (const std::exception& failure) {
+        std::snprintf(error, error_capacity, "%s", failure.what());
+    } catch (...) { std::snprintf(error, error_capacity, "%s", "Coroutine creation failed."); }
+    return 1;
+}
+
+std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine,
+    bool* suspended, atelier::source::detail::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept {
+    if (!error || error_capacity == 0) return 1;
+    error[0] = '\0';
+    if (!coroutine || !suspended || !result) {
+        std::snprintf(error, error_capacity, "%s", "Coroutine resume requires an instance and output storage.");
+        return 1;
+    }
+    const auto active = coroutine->state;
+    if (active->running || active->completed) {
+        std::snprintf(error, error_capacity, "%s", "Coroutine is running or has already completed.");
+        return 1;
+    }
+    active->running = true;
+    active->code->resume(active->handle);
+    active->running = false;
+    if (active->failure == atelier::source::detail::EntryFailure::invalid_call_result)
+        std::snprintf(error, error_capacity, "%s",
+            "Native call result contract violation: successful callback omitted the result or returned the wrong scalar kind.");
+    if (active->status != 0) return active->status;
+    *suspended = active->completed == 0;
+    if (active->completed) *result = {active->code->signature.result, active->bits};
+    return 0;
+}
+
+void atelier_destroy_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine) noexcept { delete coroutine; }
+
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 std::uint32_t atelier_verify_business_link_failure(
-    const atelier::jit_acceptance::BusinessServices* services, char* error, std::uint32_t error_capacity) noexcept {
+    const atelier::source::detail::BusinessServices* services, char* error, std::uint32_t error_capacity) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     try {
@@ -750,7 +993,7 @@ std::uint32_t atelier_verify_business_link_failure(
             "void candidate() {}", {});
         if (!program) throw std::runtime_error(program.error().message);
         try {
-            (void)atelier::jit_acceptance::compile(*services, *program, {}, true);
+            (void)atelier::source::detail::compile(*services, *program, {}, true);
         } catch (const std::exception& failure) {
             const std::string_view diagnostic(failure.what());
             if (diagnostic.find("business_poll") != std::string_view::npos &&
@@ -766,3 +1009,4 @@ std::uint32_t atelier_verify_business_link_failure(
     }
     return 1;
 }
+#endif
