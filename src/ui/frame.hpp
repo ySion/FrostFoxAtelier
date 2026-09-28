@@ -21,7 +21,8 @@ struct Clip {
     bool operator==(const Clip&) const = default;
 };
 // Linear, straight RGBA in [0,1]. Coverage multiplies alpha, not RGB.
-// The renderer uses SRC_ALPHA / INV_SRC_ALPHA for color blending.
+// Consumers pair shader output with matching blending: straight/SRC_ALPHA or
+// premultiplied/ONE, with INV_SRC_ALPHA for the destination in either case.
 struct Color {
     float r{}, g{}, b{}, a{1};
     bool operator==(const Color&) const = default;
