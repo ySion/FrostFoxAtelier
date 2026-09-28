@@ -33,6 +33,7 @@ public:
     ui_layout::MeasuredSize metrics(std::uint64_t key, float width);
     RasterText raster(std::uint64_t key, float width, float dpi, std::optional<Clip> viewport = {});
     Rect caret(std::uint64_t key, float width, TextPosition position);
+    Rect character(std::uint64_t key, float width, std::uint32_t position);
     TextPosition hit(std::uint64_t key, float width, float x, float y);
     TextPosition move(std::uint64_t key, float width, TextPosition position, int direction, bool edge);
     std::vector<Rect> selection(std::uint64_t key, float width, std::uint32_t first, std::uint32_t last);

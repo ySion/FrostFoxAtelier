@@ -164,6 +164,7 @@
             if (reply.error) { cancel_composition(reply); return; }
             auto& c=*edit->composition;
             c.token=edit->token; c.first=c.last=edit->buffer.current().caret.offset; c.preedit={};
+            c.revision=detail::new_identity();
         }
         if (event.preedit) {
             const auto& value=*event.preedit;
@@ -173,7 +174,10 @@
                 value.cursor>value.text.size() || (!value.attributes.empty() && value.attributes.size()!=value.text.size())) {
                 reply.error=Error{ErrorCode::invalid_text,edit->key}; cancel_composition(reply); return;
             }
-            edit->composition->preedit=value;
+            auto& current=*edit->composition;
+            if (current.preedit.text!=value.text || current.preedit.cursor!=value.cursor || current.preedit.attributes!=value.attributes) {
+                current.preedit=value; current.revision=detail::new_identity();
+            }
         }
         if (event.kind==CompositionKind::end) { edit->composition.reset(); edit->ime_request.reset(); revise(); }
     }

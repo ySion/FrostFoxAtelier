@@ -52,10 +52,17 @@ struct TextCaret {
     Rect bounds; // Client physical pixels from the same accepted drawing.
     Clip clip;
 };
+struct TextInputAnchor {
+    EditToken token;
+    std::uint64_t composition_id{}, composition_revision{};
+    Rect bounds; // Composition/replacement start; client physical pixels, height is line height.
+    Clip clip; // Effective visible editable region, in the same space.
+};
 struct TextInputState {
     EditToken token;
     bool composing{};
     std::optional<TextCaret> accepted_caret;
+    std::optional<TextInputAnchor> accepted_anchor{}; // Only IME offset zero is supported.
 };
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
@@ -63,6 +70,7 @@ struct UiFrame {
     std::uint64_t session_identity{};
     std::uint64_t style_revision{}, measure_provider_revision{};
     std::optional<TextCaret> caret;
+    std::optional<TextInputAnchor> input_anchor{};
     const ControlBox* find(ControlKey) const noexcept;
 };
 
