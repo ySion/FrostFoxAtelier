@@ -21,6 +21,10 @@ public:
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
     float parameter_width() const noexcept { return workspace_.parameter_width; }
     bool wants_keyboard() const noexcept { return ui_.wants_keyboard(); }
+    const std::wstring& query() const noexcept { return workspace_.query; }
+    const std::wstring& status_text() const noexcept { return workspace_.status; }
+    std::optional<ui::TextInputState> text_input() const noexcept { return ui_.text_input(); }
+    const NativeInputStatistics& input_statistics() const noexcept { return window_.input_statistics(); }
     std::uint64_t accepted_frames() const noexcept { return accepted_frames_; }
     // Explicit diagnostics only; capture frames are excluded because readback stalls.
     void sample_frames(bool enabled) noexcept { sampling_ = enabled; frame_timing_ = {}; }
@@ -31,13 +35,13 @@ public:
     // Most recent step's render result; zero when that step did not render.
     const renderer::FrameStats& frame_statistics() const noexcept { return frame_statistics_; }
 private:
+    friend struct EditorAcceptanceAccess; // Seeds real backend failures in the window E2E.
     Window window_;
     editor::Session document_;
     editor::Camera camera_;
     editor::Workspace workspace_;
     ui::Session ui_;
     renderer::Renderer renderer_;
-    std::vector<NativeEvent> events_;
     std::vector<renderer::Cube> cubes_;
     ui::Surface surface_;
     std::uint64_t surface_revision_{1}, accepted_frames_{};
@@ -45,9 +49,10 @@ private:
     FrameTiming frame_timing_;
     renderer::FrameStats frame_statistics_;
     float last_x_{}, last_y_{};
-    void native(const NativeEvent&);
+    void native(NativeEvent);
     void effects(const ui::Reply&);
-    void action(const ui::Action&);
+    Result<void> action(const ui::Action&);
+    void sync_text_input();
     void status(Result<void>, const wchar_t* success);
     void invalidate_surface();
     bool pointer_ready() const noexcept;

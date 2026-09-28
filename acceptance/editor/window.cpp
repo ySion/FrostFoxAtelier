@@ -9,6 +9,12 @@
 #include <numeric>
 #include <stdexcept>
 
+namespace atelier::application {
+struct EditorAcceptanceAccess {
+    static Result<void> begin_position(Application& app) { return app.document_.begin_position(); }
+};
+}
+
 namespace {
 using atelier::application::Application;
 using atelier::ui::ControlKey;
@@ -40,10 +46,11 @@ void click(Application& app, ControlKey key) {
     const auto point = centre(app, key);
     mouse(app, WM_MOUSEMOVE, point); mouse(app, WM_LBUTTONDOWN, point); mouse(app, WM_LBUTTONUP, point);
 }
-void key(Application& app, WPARAM code, bool ctrl = false) {
+void key(Application& app, WPARAM code, bool ctrl = false, bool shift = false) {
     BYTE original[256]{}; GetKeyboardState(original);
     BYTE state[256]{}; std::copy(std::begin(original), std::end(original), state);
     if (ctrl) state[VK_CONTROL] |= 0x80;
+    if (shift) state[VK_SHIFT] |= 0x80;
     SetKeyboardState(state);
     SendMessageW(app.window(), WM_KEYDOWN, code, 0);
     SetKeyboardState(original);
@@ -53,6 +60,7 @@ void key(Application& app, WPARAM code, bool ctrl = false) {
 }
 void type(Application& app, const wchar_t* value) {
     key(app, 'A', true);
+    if (!*value) { key(app, VK_DELETE); return; }
     while (*value) SendMessageW(app.window(), WM_CHAR, static_cast<WPARAM>(*value++), 0);
     tick(app, 1);
 }
@@ -263,6 +271,97 @@ struct TimingSeries {
                << total.cached_coverage_count << ',' << total.cached_coverage_texel_bytes << ',' << total.cached_coverage_cpu_bytes << '\n';
     }
 };
+void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::scene::ObjectKey object) {
+    const auto field = control::position(object, 0);
+    const auto original_position = x(app, object);
+    const auto original_history = app.document().undo_count();
+    click(app, control::parameter_search);
+    type(app, L"位置");
+    require(app.query() == L"位置" && app.presented()->find(field), "Owned Unicode search did not match real parameter aliases.");
+    capture(app, output / "s2-search-unicode.png"); // WM_CHAR coverage, not a claim of actual IME input.
+    key(app, VK_RETURN);
+    require(app.query() == L"位置" && app.wants_keyboard(), "Search Enter did not commit while retaining focus.");
+    type(app, L"x");
+    require(app.presented()->find(field) && !app.presented()->find(control::position(object, 1)), "Search did not filter actual parameter rows.");
+    key(app, 'Z', true);
+    require(app.query() == L"位置", "Local undo did not restore the committed search.");
+    key(app, 'Y', true);
+    require(app.query() == L"x", "Local redo did not restore the search draft.");
+    key(app, VK_ESCAPE);
+    require(app.query() == L"位置", "Search cancellation did not restore the transaction origin.");
+    type(app, L"z"); click(app, control::reset);
+    require(app.query() == L"z", "Ordinary blur did not commit search preview.");
+    click(app, control::parameter_search); type(app, L"x");
+    SetFocus(nullptr); tick(app, 1); SetFocus(app.window()); tick(app, 1);
+    require(app.query() == L"z", "OS blur did not roll search preview back.");
+    click(app, control::parameter_search); type(app, L""); key(app, VK_RETURN);
+    require(app.query().empty() && app.presented()->find(control::position(object, 2)), "Empty search did not restore all parameter rows.");
+
+    constexpr auto graphemes = L"a\U0001F600e\u0301\U0001F469\u200d\U0001F4BB";
+    type(app, graphemes); key(app, VK_END);
+    key(app, VK_BACK);
+    require(app.query() == L"a\U0001F600e\u0301", "Backspace split a ZWJ grapheme.");
+    key(app, VK_BACK);
+    require(app.query() == L"a\U0001F600", "Backspace split a combining sequence.");
+    key(app, VK_BACK);
+    require(app.query() == L"a", "Backspace split a surrogate pair.");
+    key(app, 'Z', true);
+    require(app.query() == graphemes, "Contiguous backspace was not one local history group.");
+    key(app, 'A', true); key(app, 'C', true);
+    {
+        const auto holder = CreateWindowExW(0, L"STATIC", L"Atelier clipboard acceptance", 0, 0, 0, 0, 0,
+            HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+        require(holder != nullptr, "Cannot create a clipboard contention holder.");
+        struct Holder { HWND window; ~Holder() { CloseClipboard(); DestroyWindow(window); } } held{holder};
+        require(OpenClipboard(holder) != FALSE, "Cannot establish clipboard contention.");
+        key(app, 'V', true);
+        require(app.query() == graphemes && app.status_text().find(L"Input operation failed") != std::wstring::npos,
+            "Failed native clipboard read changed the draft or lost its error.");
+    }
+    key(app, 'X', true);
+    require(app.query().empty(), "Successful native clipboard cut did not remove its selection.");
+    key(app, 'V', true);
+    require(app.query() == graphemes, "Native Unicode clipboard paste did not restore the exact text.");
+    key(app, 'Z', true); require(app.query().empty(), "Paste was not one local undo unit.");
+    key(app, 'Z', true); require(app.query() == graphemes, "Cut was not one local undo unit.");
+    key(app, VK_ESCAPE);
+    require(app.query().empty() && app.document().undo_count() == original_history, "Search history escaped into scene history.");
+    type(app, L"ab אבג xy"); key(app, 'A', true);
+    const auto colors = solid_colors(*app.presented(), control::parameter_search);
+    require(std::count(colors.begin(), colors.end(), app.style().palette.selection) > 1,
+        "Bidirectional selection did not produce multiple visual ranges.");
+    capture(app, output / "s2-bidi-selection.png");
+    key(app, VK_ESCAPE);
+
+    click(app, field);
+    type(app, L"42");
+    require(x(app, object) == 42 && app.document().undo_count() == original_history, "Numeric draft did not preview without business history.");
+    key(app, 'Z', true);
+    require(x(app, object) == original_position, "Numeric local undo did not restore the original preview.");
+    key(app, 'Z', true);
+    require(x(app, object) == original_position && app.document().undo_count() == original_history, "Exhausted local undo fell through to business history.");
+    key(app, 'Y', true);
+    require(x(app, object) == 42, "Local redo did not remain owned after undo returned to the origin.");
+    key(app, VK_RETURN);
+    require(app.wants_keyboard() && x(app, object) == 42, "Commit did not retain passive field focus.");
+    key(app, 'Z', true); require(x(app, object) == original_position, "Passive-focus undo did not reach scene history.");
+    key(app, 'Z', true, true); require(x(app, object) == 42, "Ctrl+Shift+Z did not redo scene history.");
+    key(app, 'Z', true); require(x(app, object) == original_position, "Text acceptance did not restore the scene value.");
+    click(app, field); key(app, VK_END);
+    auto start = centre(app, field); start.x = static_cast<LONG>(app.presented()->find(field)->bounds.x + 9 * app.presented()->drawing->dpi_scale);
+    mouse(app, WM_LBUTTONDOWN, start); start.x += 24; mouse(app, WM_MOUSEMOVE, start); mouse(app, WM_LBUTTONUP, start);
+    require(x(app, object) == original_position && !app.document().editing(), "Text-mode mouse selection started numeric dragging.");
+    capture(app, output / "s2-number-selection.png");
+    key(app, VK_ESCAPE);
+    const auto failure_history = app.document().undo_count();
+    require(atelier::application::EditorAcceptanceAccess::begin_position(app).has_value(), "Could not seed an active backend transaction.");
+    auto drag = centre(app, field);
+    mouse(app, WM_LBUTTONDOWN, drag); drag.x += 30; mouse(app, WM_MOUSEMOVE, drag);
+    require(!app.document().editing() && x(app, object) == original_position && GetCapture() != app.window() &&
+        app.document().undo_count() == failure_history && app.status_text().find(L"already active") != std::wstring::npos,
+        "Failed edit_begin did not stop preview, roll back, release capture and preserve the first error.");
+    mouse(app, WM_LBUTTONUP, drag);
+}
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
     // Real scene additions use the existing toolbar and Window/UI/Session route.
     const auto add = centre(app, control::add);
@@ -310,13 +409,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
         "Dense-scene drag did not keep the existing position/history behavior.");
     app.sample_frames(false);
     const auto after = x(app, last);
-    // Number focus owns Ctrl+Z for drafts; document shortcuts follow focus exit.
-    const auto committed_history = app.document().undo_count();
-    key(app, 'Z', true);
-    require(x(app, last) == after && app.document().undo_count() == committed_history && app.wants_keyboard(),
-        "Ctrl+Z in numeric focus escaped to scene history.");
-    key(app, VK_ESCAPE);
-    require(!app.wants_keyboard(), "Esc did not release numeric keyboard ownership.");
+    // A committed drag leaves passive focus, so document history owns Z/Y.
     key(app, 'Z', true);
     require(x(app, last) == before, "One undo did not restore the dense-scene drag.");
     key(app, 'Y', true);
@@ -387,9 +480,14 @@ int verify_editor_window(Application& app, const char* output_directory) {
     key(app, VK_ESCAPE);
     click(app, field); type(app, L"-2.5"); key(app, VK_RETURN);
     require(std::abs(x(app, object) + 2.5f) < .0001f, "Numeric text commit did not update the Runtime field.");
-    click(app, field); type(app, L"10001"); key(app, VK_RETURN);
-    require(std::abs(x(app, object) + 2.5f) < .0001f, "Out-of-range text changed the scene.");
+    click(app, field); type(app, L"10001");
+    const auto last_valid_preview = x(app, object);
+    const auto invalid_history = app.document().undo_count();
+    key(app, VK_RETURN);
+    require(x(app, object) == last_valid_preview && app.document().undo_count() == invalid_history && app.wants_keyboard(),
+        "Invalid Enter wrote the scene, recorded history or exited text focus.");
     key(app, VK_ESCAPE);
+    require(std::abs(x(app, object) + 2.5f) < .0001f, "Esc did not roll back the invalid draft's earlier preview.");
     const auto identity = app.document().scene().find(object)->id();
     click(app, control::remove);
     require(!app.document().scene().find(object), "Deleted object remained a member.");
@@ -445,6 +543,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
         "DPI transition policy did not cancel and publish matching hit data.");
     verify_control_states(app, output, object);
     verify_style_changes(app, output, object);
+    verify_shared_text(app, output, object);
     view = centre(app, control::viewport); ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)), MAKELPARAM(view.x, view.y)); tick(app, 1);
     capture(app, output / "editor.png");
@@ -455,7 +554,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
     report << "Editor window acceptance: PASS\n"
            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> Runtime -> renderer\n"
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
-           << "S1: shared normal/hover/pressed/focus/invalid/disabled states; color-only coverage reuse/zero upload; atomic invalid-style rejection; font family/weight/size metrics/caret/raster; retained old-frame geometry/pixels; 256 real objects/offscreen geometry/culling/scroll-back; numeric-focus Ctrl+Z stays local, Esc then native Ctrl+Z/Y drives dense-scene history\n"
+           << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 objects/culling/scroll-back\n"
+           << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
+           << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish Microsoft Pinyin acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
            << "Sampling environment: this acceptance application enables hardware D3D12 debug/GBV and renderer vsync, including in release; results do not represent validation-disabled production frame time.\n"
            << "s1-resources.csv: UI cumulative counters use interval differences; renderer activity sums sampled render results. Resource peaks are sampled ownership counts, not total process memory or physical VRAM; R8 upload bytes exclude transfer padding.\n"

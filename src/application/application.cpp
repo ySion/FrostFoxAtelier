@@ -24,6 +24,7 @@ ui::Key key(WPARAM value) {
     case VK_TAB: return ui::Key::tab; case VK_LEFT: return ui::Key::left; case VK_RIGHT: return ui::Key::right;
     case VK_HOME: return ui::Key::home; case VK_END: return ui::Key::end; case VK_SPACE: return ui::Key::space;
     case 'A': return ui::Key::a; case 'Z': return ui::Key::z; case 'Y': return ui::Key::y;
+    case 'C': return ui::Key::c; case 'X': return ui::Key::x; case 'V': return ui::Key::v;
     default: return ui::Key::none;
     }
 }
@@ -47,70 +48,134 @@ Application::~Application() {
 void Application::status(Result<void> result, const wchar_t* success) {
     workspace_.status = result ? success : widen(result.error().message);
 }
-void Application::action(const ui::Action& event) {
+Result<void> Application::action(const ui::Action& event) {
     using namespace editor::control;
-    if (event.key == splitter) {
+    const auto invalid = [] { return std::unexpected(Error{ErrorCode::invalid_definition, "UI action does not match its live binding or value type."}); };
+    const auto done = [&](Result<void> result, const wchar_t* message) -> Result<void> {
+        if (result) workspace_.status = message;
+        return result;
+    };
+    if (event.key == parameter_search) {
+        const auto* value = std::get_if<std::wstring>(&event.value);
+        if (!value) return invalid();
         if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit || event.kind == ui::ActionKind::edit_cancel)
-            workspace_.parameter_width = static_cast<float>(-event.value);
-        return;
+            workspace_.query = *value;
+        return {};
+    }
+    if (event.key == splitter) {
+        const auto* value = std::get_if<double>(&event.value);
+        if (!value) return invalid();
+        if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit || event.kind == ui::ActionKind::edit_cancel)
+            workspace_.parameter_width = static_cast<float>(-*value);
+        return {};
     }
     if (event.key >= position_base) {
+        if (event.kind == ui::ActionKind::edit_cancel) return done(document_.cancel_position(), L"Edit cancelled");
         const auto bound = (event.key - position_base) / 4;
         const auto axis = static_cast<std::size_t>((event.key - position_base) % 4);
-        if (bound != document_.selected() || axis >= 3) return;
+        const auto* value = std::get_if<double>(&event.value);
+        if (bound != document_.selected() || axis >= 3 || !value) return invalid();
         switch (event.kind) {
-        case ui::ActionKind::edit_begin: status(document_.begin_position(), L"Editing position / Esc cancels"); break;
+        case ui::ActionKind::edit_begin: return done(document_.begin_position(), L"Editing position / Esc cancels");
         case ui::ActionKind::edit_preview:
-            status(document_.preview_position(axis, static_cast<float>(event.value)), L"Position preview / Esc cancels"); break;
+            return done(document_.preview_position(axis, static_cast<float>(*value)), L"Position preview / Esc cancels");
         case ui::ActionKind::edit_commit: {
-            const auto preview = document_.preview_position(axis, static_cast<float>(event.value));
-            if (!preview) { status(preview, L""); status(document_.cancel_position(), L"Invalid edit cancelled"); }
-            else status(document_.commit_position(), L"Position committed");
-            break;
+            auto preview = document_.preview_position(axis, static_cast<float>(*value));
+            if (!preview) return preview;
+            return done(document_.commit_position(), L"Position committed");
         }
-        case ui::ActionKind::edit_cancel: status(document_.cancel_position(), L"Edit cancelled"); break;
-        default: break;
+        default: return {};
         }
-        return;
     }
-    if (event.kind == ui::ActionKind::select && event.key >= first_object) {
-        status(document_.select(event.key - first_object), L"Object selected"); return;
-    }
-    if (event.kind != ui::ActionKind::activate) return;
+    if (event.kind == ui::ActionKind::select && event.key >= first_object)
+        return done(document_.select(event.key - first_object), L"Object selected");
+    if (event.kind != ui::ActionKind::activate) return {};
     switch (event.key) {
     case add: {
         const auto count = document_.scene().members().size();
         const auto created = document_.add({static_cast<float>(count % 5) * 1.6f, 0, static_cast<float>(count / 5) * 1.6f});
-        workspace_.status = created ? L"Cube added" : widen(created.error().message);
-        break;
+        if (!created) return std::unexpected(created.error());
+        workspace_.status = L"Cube added"; return {};
     }
-    case remove: status(document_.erase_selected(), L"Cube deleted / Undo restores it"); break;
-    case undo: status(document_.undo(), L"Undo"); break;
-    case redo: status(document_.redo(), L"Redo"); break;
+    case remove: return done(document_.erase_selected(), L"Cube deleted / Undo restores it");
+    case undo: return done(document_.undo(), L"Undo");
+    case redo: return done(document_.redo(), L"Redo");
     case focus: {
         auto point = document_.scene().position(document_.selected());
-        if (point) { camera_.focus(*point); workspace_.status = L"Focused selection"; }
-        break;
+        if (!point) return std::unexpected(point.error());
+        camera_.focus(*point); workspace_.status = L"Focused selection"; return {};
     }
-    case reset: camera_.reset(); workspace_.status = L"Camera reset"; break;
-    default: break;
+    case reset: camera_.reset(); workspace_.status = L"Camera reset"; return {};
+    default: return {};
     }
 }
 void Application::effects(const ui::Reply& reply) {
-    for (const auto& event : reply.actions) action(event);
-    if (reply.capture == ui::Capture::acquire) window_.capture(true);
-    else if (reply.capture == ui::Capture::release) window_.capture(false);
-    const wchar_t* cursor = IDC_ARROW;
-    if (reply.cursor == ui::Cursor::text) cursor = IDC_IBEAM;
-    else if (reply.cursor == ui::Cursor::drag_horizontal || reply.cursor == ui::Cursor::resize_horizontal) cursor = IDC_SIZEWE;
-    else if (reply.cursor == ui::Cursor::resize_vertical) cursor = IDC_SIZENS;
-    SetCursor(LoadCursorW(nullptr, cursor));
+    std::wstring first_error;
+    bool business_failed = false;
+    const auto remember = [&](std::wstring message) { if (first_error.empty()) first_error = std::move(message); };
+    const auto apply = [&](auto&& self, const ui::Reply& current, bool cleanup) -> void {
+        if (current.error) {
+            const auto& error = *current.error;
+            if (error.code == ui::ErrorCode::platform_failed)
+                remember(L"Input operation failed (Windows " + std::to_wstring(error.native_code) + L").");
+            else if (error.code == ui::ErrorCode::capacity_exceeded) remember(L"Input is too long.");
+            else remember(L"Input must be valid single-line text.");
+        }
+        for (const auto& effect : current.effects) {
+            if (business_failed && !cleanup) break;
+            if (const auto* command = std::get_if<ui::Action>(&effect)) {
+                if (cleanup && command->kind != ui::ActionKind::edit_cancel) continue;
+                const auto result = action(*command);
+                if (!result) {
+                    if (cleanup) first_error += L"; rollback failed: " + widen(result.error().message);
+                    else { remember(widen(result.error().message)); business_failed = true; }
+                }
+            } else {
+                const auto& request = std::get<ui::PlatformRequest>(effect);
+                ui::Event response;
+                if (const auto* clipboard = std::get_if<ui::ClipboardRequest>(&request)) {
+                    if (cleanup) continue;
+                    response.kind = ui::EventKind::clipboard_result;
+                    const auto target = ui_.text_input();
+                    response.data = target && target->token == clipboard->token ? window_.clipboard(*clipboard) :
+                        ui::ClipboardResult{clipboard->kind, clipboard->operation_id, clipboard->token, false, ERROR_INVALID_STATE, {}};
+                } else {
+                    const auto& ime = std::get<ui::ImeRequest>(request);
+                    if (cleanup && ime.kind != ui::ImeKind::cancel) continue;
+                    response.kind = ui::EventKind::ime_result; response.data = window_.ime(ime);
+                }
+                self(self, ui_.input(response), cleanup);
+            }
+        }
+        if (current.capture == ui::Capture::release) window_.capture(false);
+        else if (current.capture == ui::Capture::acquire && !business_failed) window_.capture(true);
+        const wchar_t* cursor = IDC_ARROW;
+        if (current.cursor == ui::Cursor::text) cursor = IDC_IBEAM;
+        else if (current.cursor == ui::Cursor::drag_horizontal || current.cursor == ui::Cursor::resize_horizontal) cursor = IDC_SIZEWE;
+        else if (current.cursor == ui::Cursor::resize_vertical) cursor = IDC_SIZENS;
+        SetCursor(LoadCursorW(nullptr, cursor));
+    };
+    apply(apply, reply, false);
+    if (business_failed) {
+        apply(apply, ui_.cancel_interaction(), true);
+        const auto cancelled = document_.cancel_position();
+        if (!cancelled) first_error += L"; rollback failed: " + widen(cancelled.error().message);
+        window_.capture(false);
+    }
+    const auto native_error = window_.text_input(ui_.text_input());
+    if (native_error) remember(L"Text input unavailable (Windows " + std::to_wstring(native_error) + L").");
+    if (!first_error.empty()) workspace_.status = std::move(first_error);
+}
+void Application::sync_text_input() {
+    const auto error = window_.text_input(ui_.text_input());
+    if (error) workspace_.status = L"Text input unavailable (Windows " + std::to_wstring(error) + L").";
 }
 void Application::invalidate_surface() {
     ++surface_revision_;
     orbiting_ = false;
     effects(ui_.cancel_interaction());
-    status(document_.cancel_position(), L"Ready");
+    const auto cancelled = document_.cancel_position();
+    if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
     window_.capture(false);
 }
 bool Application::pointer_ready() const noexcept {
@@ -124,9 +189,19 @@ bool Application::over_viewport(float x, float y) const noexcept {
     return viewport && x >= viewport->bounds.x && y >= viewport->bounds.y &&
         x < viewport->bounds.x + viewport->bounds.width && y < viewport->bounds.y + viewport->bounds.height;
 }
-void Application::native(const NativeEvent& message) {
+void Application::native(NativeEvent message) {
     if (message.message == WM_SIZE || message.message == WM_DPICHANGED) { invalidate_surface(); return; }
     if (message.message == WM_SETFOCUS) return;
+    if (message.ime_owned) return;
+    if (message.composition) {
+        ui::Event composition;
+        composition.kind = ui::EventKind::composition; composition.data = std::move(*message.composition);
+        auto reply = ui_.input(composition);
+        if (message.error) reply.error = ui::Error{ui::ErrorCode::platform_failed, 0, message.error};
+        effects(reply);
+        return;
+    }
+    if (message.error) { workspace_.status = L"Invalid native text input."; return; }
     ui::Event event;
     event.shift = message.shift; event.control = message.control; event.alt = message.alt;
     event.x = static_cast<float>(GET_X_LPARAM(message.lparam)); event.y = static_cast<float>(GET_Y_LPARAM(message.lparam));
@@ -148,7 +223,7 @@ void Application::native(const NativeEvent& message) {
     }
     case WM_KEYDOWN: event.kind = ui::EventKind::key_down; event.key = key(message.wparam); break;
     case WM_KEYUP: event.kind = ui::EventKind::key_up; event.key = key(message.wparam); break;
-    case WM_CHAR: event.kind = ui::EventKind::text; event.character = static_cast<char32_t>(message.wparam); break;
+    case WM_CHAR: event.kind = ui::EventKind::text; event.data = std::move(message.text); break;
     case WM_KILLFOCUS: event.kind = ui::EventKind::focus_lost; orbiting_ = false; break;
     case WM_CAPTURECHANGED: event.kind = ui::EventKind::capture_lost; orbiting_ = false; break;
     default: return;
@@ -171,11 +246,13 @@ void Application::native(const NativeEvent& message) {
     effects(reply);
     if (event.kind == ui::EventKind::focus_lost || event.kind == ui::EventKind::capture_lost) {
         window_.capture(false); // Includes camera capture, which is owned outside UI.
-        status(document_.cancel_position(), L"Ready"); return;
+        const auto cancelled = document_.cancel_position();
+        if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
+        return;
     }
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
         if (event.key == ui::Key::delete_key) status(document_.erase_selected(), L"Cube deleted");
-        else if (event.control && event.key == ui::Key::z) status(document_.undo(), L"Undo");
+        else if (event.control && event.key == ui::Key::z) status(event.shift ? document_.redo() : document_.undo(), event.shift ? L"Redo" : L"Undo");
         else if (event.control && event.key == ui::Key::y) status(document_.redo(), L"Redo");
         else if (event.key == ui::Key::escape) status(document_.cancel_position(), L"Edit cancelled");
         else if (message.wparam == 'F' && !ui_.wants_keyboard()) {
@@ -187,8 +264,7 @@ bool Application::step(renderer::Capture* capture) {
     frame_timing_ = {};
     frame_statistics_ = {};
     if (closed_) return false;
-    window_.poll(events_);
-    for (const auto& event : events_) native(event);
+    window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
     if (window_.closing()) { close(); return false; }
     auto target = graphics(renderer_.target());
     const auto extent = target.drawable ? target.extent : ui::PixelExtent{};
@@ -237,6 +313,7 @@ bool Application::step(renderer::Capture* capture) {
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
         ++accepted_frames_;
+        sync_text_input();
         if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us};
     } else MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     return true;

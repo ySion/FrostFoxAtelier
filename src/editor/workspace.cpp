@@ -1,5 +1,6 @@
 #include "editor/workspace.hpp"
 #include <stdexcept>
+#include <algorithm>
 
 namespace atelier::editor {
 std::vector<ui::Control> Workspace::describe(const Session& session) const {
@@ -54,7 +55,18 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
     add(50, 20, ControlKind::container, parameters).role = ui::Role::panel;
     add(51, 50, ControlKind::label, heading, L"PARAMETERS").role = ui::Role::caption;
     add(52, 50, ControlKind::label, heading, session.selected() ? L"Cube " + std::to_wstring(session.selected()) : L"No selection").role = ui::Role::title;
-    add(53, 50, ControlKind::label, heading, L"Position  /  metres");
+    auto search_layout = NodeInput::box(0, 34); search_layout.width = Axis::expand();
+    add(control::parameter_search, 50, ControlKind::text_edit, search_layout, query);
+    auto folded = query;
+    std::transform(folded.begin(), folded.end(), folded.begin(), [](wchar_t c) {
+        return c >= L'A' && c <= L'Z' ? static_cast<wchar_t>(c + (L'a' - L'A')) : c;
+    });
+    constexpr std::array aliases{L"position 位置 x", L"position 位置 y", L"position 位置 z"};
+    std::array<bool, 3> matches{};
+    for (std::size_t axis = 0; axis < matches.size(); ++axis)
+        matches[axis] = std::wstring_view(aliases[axis]).find(folded) != std::wstring_view::npos;
+    const bool any = std::any_of(matches.begin(), matches.end(), [](bool match) { return match; });
+    add(53, 50, ControlKind::label, heading, any ? L"Position  /  metres" : L"No matching parameters");
     scene::Vec3 position{};
     if (session.selected()) {
         const auto value = session.scene().position(session.selected());
@@ -64,6 +76,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
     const std::array values{position.x, position.y, position.z};
     constexpr std::array names{L"X", L"Y", L"Z"};
     for (std::size_t axis = 0; axis < values.size(); ++axis) {
+        if (!matches[axis]) continue;
         auto row = NodeInput::row(8); row.height = Axis::fixed(34);
         const auto row_key = static_cast<ui::ControlKey>(70 + axis);
         add(row_key, 50, ControlKind::container, row);
