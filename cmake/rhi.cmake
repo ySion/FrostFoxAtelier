@@ -90,17 +90,8 @@ function(atelier_add_rhi)
     target_include_directories(atelier_gfx_regression SYSTEM PRIVATE
         "${_gfx}/third_party/directx12-agility/build/native/include")
 
-    foreach(_exe atelier_rhi_acceptance atelier_gfx_regression)
-        add_custom_command(TARGET ${_exe} POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${_gfx}/third_party/directx-dxc/bin/x64/dxcompiler.dll"
-                "${_gfx}/third_party/directx-dxc/bin/x64/dxil.dll"
-                "${_gfx}/third_party/directx12-agility/build/native/bin/x64/D3D12Core.dll"
-                "${_gfx}/third_party/directx12-agility/build/native/bin/x64/d3d12SDKLayers.dll"
-                "${_gfx}/third_party/WinPixEventRuntime/bin/x64/WinPixEventRuntime.dll"
-                "$<TARGET_FILE_DIR:${_exe}>"
-            VERBATIM)
-    endforeach()
+    atelier_deploy_rhi_runtime(atelier_rhi_acceptance)
+    atelier_deploy_rhi_runtime(atelier_gfx_regression)
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/licenses/rhi")
     configure_file("${_gfx}/LICENSE.md" "${CMAKE_BINARY_DIR}/licenses/rhi/LICENSE.gfx.md" COPYONLY)
@@ -128,4 +119,17 @@ function(atelier_add_rhi)
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_BINARY_DIR}/run-rhi-acceptance.cmake"
         DEPENDS atelier_rhi_acceptance atelier_gfx_regression
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" USES_TERMINAL VERBATIM)
+endfunction()
+
+function(atelier_deploy_rhi_runtime target)
+    set(_gfx "${CMAKE_BINARY_DIR}/_deps/gfx-src")
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${_gfx}/third_party/directx-dxc/bin/x64/dxcompiler.dll"
+            "${_gfx}/third_party/directx-dxc/bin/x64/dxil.dll"
+            "${_gfx}/third_party/directx12-agility/build/native/bin/x64/D3D12Core.dll"
+            "${_gfx}/third_party/directx12-agility/build/native/bin/x64/d3d12SDKLayers.dll"
+            "${_gfx}/third_party/WinPixEventRuntime/bin/x64/WinPixEventRuntime.dll"
+            "$<TARGET_FILE_DIR:${target}>"
+        VERBATIM)
 endfunction()

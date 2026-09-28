@@ -36,6 +36,7 @@ cmake --build --preset release --target rhi_acceptance
 
 验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
 
-没有实现或未验收：通用 RDG/renderer、业务语言绑定、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、Present/resize/HDR/多窗口、ray tracing 与性能基线。`window` 输入复用 gfx 的窗口路线，但已有 PASS 仅覆盖离屏。
+本轮已接入单窗口 Present/resize、显式尺寸深度与最终帧结果，并通过 dev/release 的[renderer验收](../renderer/acceptance.md)及[编辑器窗口链](../editor/README.md)。现行呈现和失败语义见[renderer合同](../renderer/contract.md)。
+尚未实现或未验收：通用RDG/完整renderer、业务语言绑定、并发RHI、多queue、透明设备恢复、WARP/其他GPU支持矩阵、HDR/多窗口、ray tracing与性能基线；驱动故障及原生DXGI遮挡状态未动态注入。
 
-引擎资源与语言/UI 的下一增量见 [资源连接提案](../resources/design-proposal.md)。该设计已完成接口分析，新增类型、原生访问接口和跨模块消费者尚未实现，不属于当前 RHI 能力。
+共享业务图片接线仍是后续备选，见[资源连接提案](../resources/design-proposal.md)。新增类型、原生访问接口和跨模块图片消费者尚未实现，不作为首个编辑器的前置。

@@ -1,0 +1,247 @@
+#include "renderer/renderer.hpp"
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <thread>
+
+namespace {
+namespace render = atelier::renderer;
+namespace ui = atelier::ui;
+void check(bool condition, const char *text) {
+    if (!condition) {
+        std::fprintf(stderr, "Renderer acceptance FAILED: %s\n", text);
+        std::exit(1);
+    }
+}
+template <class T> T take(render::Result<T> result) {
+    if (!result) {
+        std::fprintf(stderr, "Renderer error: %s (terminal=%d)\n", result.error().cause.message.c_str(),
+                     result.error().terminal);
+        std::exit(1);
+    }
+    return std::move(*result);
+}
+void pump() {
+    MSG m;
+    while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+}
+LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+struct Window {
+    HWND hwnd{};
+    Window() {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = procedure;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"AtelierRendererAcceptance";
+        check(RegisterClassW(&wc) != 0, "register fixture window");
+        hwnd = CreateWindowExW(0, wc.lpszClassName, L"Atelier renderer acceptance", WS_OVERLAPPEDWINDOW, 40,
+                               40, 680, 440, nullptr, nullptr, wc.hInstance, nullptr);
+        check(hwnd != nullptr, "create fixture window");
+        resize(641, 385);
+        ShowWindow(hwnd, SW_SHOW);
+        // CMake may start the fixture with STARTF_USESHOWWINDOW/SW_HIDE; Windows
+        // applies that override to the first ShowWindow regardless of its argument.
+        if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOW);
+        pump();
+    }
+    void resize(int width, int height) {
+        RECT r{0, 0, width, height};
+        check(AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd)) != 0,
+              "adjust fixture extent");
+        check(SetWindowPos(hwnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top,
+                           SWP_NOMOVE | SWP_NOZORDER) != 0,
+              "resize fixture");
+        pump();
+    }
+    ~Window() {
+        DestroyWindow(hwnd);
+        UnregisterClassW(L"AtelierRendererAcceptance", GetModuleHandleW(nullptr));
+    }
+};
+const std::uint8_t *pixel(const render::Capture &c, unsigned x, unsigned y) {
+    return c.rgba.data() + (std::size_t(y) * c.extent.width + x) * 4;
+}
+float depth(const render::Capture &c, unsigned x, unsigned y) {
+    return c.depth[std::size_t(y) * c.extent.width + x];
+}
+void snapshot(const render::Capture &c) {
+    std::ofstream out("renderer-acceptance.ppm", std::ios::binary);
+    out << "P6\n" << c.extent.width << ' ' << c.extent.height << "\n255\n";
+    for (std::size_t i = 0; i < c.rgba.size(); i += 4)
+        out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
+    check(out.good(), "write capture evidence");
+}
+} // namespace
+int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    Window window;
+    auto renderer = take(
+        render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    auto target = take(renderer.target());
+    check(target.drawable && target.extent == ui::PixelExtent{641, 385}, "actual initial target");
+    ui::Frame ui_frame{.id = 1, .extent = target.extent, .draws = {}};
+    const ui::Clip full{0, 0, 641, 385};
+    ui_frame.draws.push_back({{10, 20, 80, 60}, {20, 30, 50, 60}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
+    ui_frame.draws.push_back({{10, 20, 80, 60}, {20, 30, 50, 60}, {1, 0, 0, .5f}, {0, 0, 1, 1}, {}});
+    auto coverage = std::make_shared<ui::Coverage>();
+    coverage->identity = 1;
+    coverage->revision = 1;
+    coverage->width = 3;
+    coverage->height = 2;
+    coverage->row_pitch = 5;
+    coverage->pixels = {255, 128, 0, 77, 77, 255, 128, 0, 77, 77};
+    std::weak_ptr<const ui::Coverage> old_coverage = coverage;
+    ui_frame.draws.push_back({{10, 100, 60, 40}, full, {1, 1, 1, 1}, {0, 0, 1, 1}, coverage});
+    coverage.reset();
+    std::array<render::Cube, 2> cubes{{{{0, 0, 2}, {1, 0, 0, 1}, false}, {{0, 0, 5}, {0, 0, 1, 1}, false}}};
+    render::Camera camera;
+    camera.projection[10] = .1f;
+    render::Frame frame{ui_frame, camera, {120, 40, 480, 320}, cubes};
+    render::Capture capture;
+    auto result = take(renderer.render(frame, &capture));
+    check(result.status == render::FrameStatus::accepted && result.accepted_id == 1 &&
+              result.accepted_extent == target.extent,
+          "accepted metadata");
+    check(result.stats.ui_draw_calls == 3 && result.stats.scene_draw_calls == 1 &&
+              result.stats.coverage_upload_count == 1 && result.stats.coverage_upload_bytes == 6 &&
+              result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
+              result.stats.cached_coverage_cpu_bytes == 10,
+          "first frame reports actual draws, tight R8 upload and padded CPU cache bytes");
+    const auto *blend = pixel(capture, 30, 40);
+    check(std::abs(int(blend[0]) - 188) < 3 && std::abs(int(blend[1]) - 188) < 3 && blend[2] == 0,
+          "linear premultiplied blend into sRGB target");
+    check(pixel(capture, 15, 40)[0] == 0 && pixel(capture, 50, 40)[0] == 0, "half-open clipped rectangle");
+    check(pixel(capture, 20, 120)[0] > 245 && pixel(capture, 60, 120)[0] < 20,
+          "padded R8 text coverage and ordered UI");
+    check(pixel(capture, 360, 200)[0] > 180 && pixel(capture, 360, 200)[2] == 0,
+          "near cube occludes farther cube drawn later");
+    check(std::abs(depth(capture, 360, 200) - .15f) < .0001f && depth(capture, 100, 200) == 1,
+          "depth capture at unaligned window width");
+    snapshot(capture);
+    const auto initial = capture;
+    cubes[0].selected = true;
+    ui_frame.id++;
+    result = take(renderer.render(frame, &capture));
+    check(pixel(capture, 360, 200)[1] > pixel(initial, 360, 200)[1] + 70, "selection highlight");
+    check(result.stats.ui_draw_calls == 3 && result.stats.scene_draw_calls == 1 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_cpu_bytes == 10,
+          "unchanged coverage reuses cache without accumulating per-frame activity");
+    ui_frame.draws.push_back({{350, 190, 20, 20}, full, {1, 1, 1, .5f}, {0, 0, 1, 1}, {}});
+    ui_frame.id++;
+    result = take(renderer.render(frame, &capture));
+    check(pixel(capture, 360, 200)[2] > 100 && std::abs(depth(capture, 360, 200) - .15f) < .0001f,
+          "UI overlays scene without changing depth");
+    frame.camera.view[0] = std::numeric_limits<float>::quiet_NaN();
+    auto invalid = renderer.render(frame);
+    check(!invalid && !invalid.error().terminal, "invalid CPU frame is recoverable before encoding");
+    frame.camera = camera;
+    bool wrong_thread = false;
+    std::thread worker([&] {
+        const auto foreign = renderer.target();
+        wrong_thread = !foreign && foreign.error().cause.code == atelier::rhi::ErrorCode::wrong_thread;
+    });
+    worker.join();
+    check(wrong_thread, "owner thread enforcement");
+    // Same identity with a new immutable revision replaces GPU contents. Old CPU
+    // content has no owner after that frame, while GPU retirement stays fence-safe.
+    auto replacement = std::make_shared<ui::Coverage>();
+    replacement->identity = 1;
+    replacement->revision = 2;
+    replacement->width = 3;
+    replacement->height = 2;
+    replacement->row_pitch = 3;
+    replacement->pixels = {0, 0, 255, 0, 0, 255};
+    ui_frame.draws[2].coverage = replacement;
+    replacement.reset();
+    for (int i = 0; i < 12; ++i) {
+        ++ui_frame.id;
+        result = take(renderer.render(frame));
+        check(result.stats.ui_draw_calls == 4 && result.stats.scene_draw_calls == 1 &&
+                  result.stats.coverage_upload_count == (i == 0 ? 1u : 0u) &&
+                  result.stats.coverage_upload_bytes == (i == 0 ? 6u : 0u) &&
+                  result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
+                  result.stats.cached_coverage_cpu_bytes == 6,
+              "revision upload counted once, retired old version removed from cache totals");
+    }
+    check(old_coverage.expired(), "unused coverage owner released");
+    ++ui_frame.id;
+    take(renderer.render(frame, &capture));
+    check(pixel(capture, 20, 120)[0] < 20 && pixel(capture, 60, 120)[0] > 245,
+          "revision upload replaces cached pixels");
+    auto hidden = std::make_shared<ui::Coverage>(*ui_frame.draws[2].coverage);
+    hidden->identity = 2;
+    ui_frame.draws.push_back({{0, 0, 30, 20}, {}, {1, 1, 1, 1}, {0, 0, 1, 1}, hidden});
+    ++ui_frame.id;
+    result = take(renderer.render(frame));
+    check(result.stats.ui_draw_calls == 4 && result.stats.scene_draw_calls == 1 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_count == 1,
+          "empty-clipped input is not counted as a draw or upload");
+    window.resize(703, 427);
+    result = take(renderer.render(frame, &capture));
+    check(result.accepted_extent == ui::PixelExtent{641, 385} && capture.extent == result.accepted_extent &&
+              result.next_extent == ui::PixelExtent{703, 427},
+          "resize accepts old target and reports next target separately");
+    const auto accepted = capture.frame_id;
+    result = take(renderer.render(frame, &capture));
+    check(result.status == render::FrameStatus::skipped && capture.frame_id == accepted,
+          "stale extent skips without publishing capture");
+    check(result.stats.ui_draw_calls == 0 && result.stats.scene_draw_calls == 0 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
+              result.stats.cached_coverage_cpu_bytes == 6,
+          "pre-encoding skip reports zero activity and unchanged current cache ownership");
+    ui_frame.extent = result.next_extent;
+    ++ui_frame.id;
+    result = take(renderer.render(frame, &capture));
+    check(result.status == render::FrameStatus::accepted && capture.extent == ui_frame.extent,
+          "rebuild depth for resized target");
+    ShowWindow(window.hwnd, SW_MINIMIZE);
+    pump();
+    check(!take(renderer.target()).drawable, "minimized target not drawable");
+    result = take(renderer.render(frame, &capture));
+    check(result.status == render::FrameStatus::skipped, "minimized frame not accepted");
+    ShowWindow(window.hwnd, SW_RESTORE);
+    pump();
+    ++ui_frame.id;
+    check(take(renderer.render(frame)).status == render::FrameStatus::accepted, "restore rendering");
+    ShowWindow(window.hwnd, SW_HIDE);
+    pump();
+    check(take(renderer.render(frame)).status == render::FrameStatus::skipped, "hidden target skips");
+    ShowWindow(window.hwnd, SW_SHOW);
+    pump();
+    // Non-diagonal view/projection values verify the public row-vector LH ABI.
+    frame.camera = {};
+    frame.camera.view[14] = 4;
+    frame.camera.projection = {2.0f / 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 10.0f / 9.9f, 1,
+                               0, 0, -1.0f / 9.9f, 0};
+    cubes[0].position = {0, 0, 0};
+    ++ui_frame.id;
+    take(renderer.render(frame, &capture));
+    check(std::abs(depth(capture, 360, 200) - (10.0f / 9.9f - 1.0f / (9.9f * 3.5f))) < .0001f,
+          "left-handed row-major view and perspective projection");
+    ui_frame.draws.erase(ui_frame.draws.begin() + 2);
+    frame.cubes = {};
+    ++ui_frame.id;
+    result = take(renderer.render(frame));
+    check(result.stats.ui_draw_calls == 3 && result.stats.scene_draw_calls == 0 &&
+              result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
+              result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&
+              result.stats.cached_coverage_cpu_bytes == 0,
+          "unused coverage leaves cache totals and empty scene emits no draw");
+    auto closed = renderer.close();
+    check(bool(closed), "drain and close before HWND destruction");
+    check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");
+    std::puts("Renderer acceptance: PASS (GPU validation, scene/depth, UI coverage/blend/clip, revisions, "
+              "resize, minimize/restore, lifetime)");
+}

@@ -85,6 +85,15 @@ atelier_add_source()
 include(cmake/rhi.cmake)
 atelier_add_rhi()
 
+include(cmake/ui.cmake)
+atelier_add_ui()
+
+include(cmake/renderer.cmake)
+atelier_add_renderer()
+
+include(cmake/editor.cmake)
+atelier_add_editor()
+
 set(_jit_acceptance_commands)
 set(_jit_acceptance_dependencies)
 if(ATELIER_BUILD_JIT_ACCEPTANCE)
@@ -98,6 +107,10 @@ add_custom_target(acceptance
     ${_jit_acceptance_commands}
     COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
+    COMMAND $<TARGET_FILE:atelier_ui_acceptance>
+    COMMAND $<TARGET_FILE:atelier_editor_scene_acceptance>
+    COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
     DEPENDS atelier_runtime_acceptance atelier_source_minimal ${_jit_acceptance_dependencies}
-        atelier_ui_layout_minimal atelier_ui_layout_acceptance rhi_acceptance
+        atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
+        atelier_editor_scene_acceptance atelier_editor rhi_acceptance
     USES_TERMINAL VERBATIM)

@@ -1,0 +1,8 @@
+#pragma once
+namespace atelier::renderer::shaders {
+inline constexpr char scene_vs[] = R"shader(@scene_vs@)shader";
+inline constexpr char scene_ps[] = R"shader(@scene_ps@)shader";
+inline constexpr char ui_vs[] = R"shader(@ui_vs@)shader";
+inline constexpr char solid_ps[] = R"shader(@solid_ps@)shader";
+inline constexpr char coverage_ps[] = R"shader(@coverage_ps@)shader";
+}

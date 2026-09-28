@@ -30,6 +30,14 @@
 
 普通 gfx 资源由消费者显式释放，Context 不复制资源管理器，也不追踪第二份资源 owner 表。`close` 的 busy 检查针对 Pipeline；原始资源退出由消费者履行 gfx 契约。
 
+## 窗口与读回
+
+- `Context::target()` 在 owner 线程返回实际 backbuffer 尺寸和窗口可绘制状态；隐藏、最小化或零 client 尺寸不可绘制。它不执行 resize。
+- `frame(vsync, &details)` 沿唯一原入口推进；可选 details 仅在整个操作成功后更新，包含提交前目标、完成后目标和 DXGI 遮挡状态。Present 成功之后的 resize/等待/Reset 失败仍是终态，不发布部分成功。旧的 `frame(vsync)` 调用不变。
+- `ContextOptions::rgba8_window=true` 显式请求 SDR RGBA8，backbuffer 使用 sRGB RTV。默认 false 保留 gfx 按显示器选择格式的行为；10 位显示器的默认目标不保证 RGBA8。renderer 对需要的实际格式另做校验。
+- backbuffer 可与独立深度目标一起绑定：Pipeline 显式声明颜色格式等于 backbuffer 格式，并声明 depth 格式；不提供颜色声明的 depth-only 路径保留原义。
+- `gfxCommandCopyBackBufferToBuffer` 与 `gfxCommandCopyTextureToBufferPitched` 用于显式诊断读回；单采样、单平面 2D subresource 0，目标为 CPU-read buffer，行距须为 256 的倍数且不小于原生行字节数，buffer offset 为 512 的倍数，存储覆盖所有行。普通紧密 copy 入口保持不变。
+
 ## 失败与有界关停
 
 - gfx 保留 Recording/Closed/Submitted 状态与独立错误原因。Execute 已发生即记录 Submitted，后续 Signal 失败不撤销这个事实。
@@ -45,4 +53,4 @@
 
 ## 上层关系
 
-gfx 就是 RHI 的资源与执行主体。未来 RDG 在这个执行契约上组织依赖，不复制 barrier、descriptor 或资源生命周期世界。业务语言包装复用项目权威类型体系；RHI 不持有业务对象、UI Node、GC 根或 JIT 回调。新增多 queue、并行录制、native import 或 presentation 支持，须先定义并验收对应契约。
+gfx 就是 RHI 的资源与执行主体。未来 RDG 在这个执行契约上组织依赖，不复制 barrier、descriptor 或资源生命周期世界。业务语言包装复用项目权威类型体系；RHI 不持有业务对象、UI Node、GC 根或 JIT 回调。[编辑器 renderer](../renderer/contract.md) 已复用该执行域完成单窗口呈现；多 queue、并行录制、native import、HDR 或多窗口仍须定义并验收对应契约。

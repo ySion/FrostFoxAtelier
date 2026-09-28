@@ -1,10 +1,37 @@
 # FrostFoxAtelier
 
-面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点、显式协程和单入口兼容方法体热更新。完整语言、通用方法分派/布局迁移、编辑器及完整渲染器尚未实现。
+面向 Windows x64 游戏的精简工具包（引擎 kit），自有语言服务于实际游戏与工具需求。已确认只采用 JIT 执行业务语言：代码必须编译完成后才能执行，不建设解释器或字节码 VM；类型与对象语义仍由共享核心运行时负责。当前已实现共享类型/对象运行时、对象引用最小闭环与宿主显式推进的分步 GC，完成 Windows x64 JIT 平台验收，并用最小源码前端打通机器生产推进、执行根、安全点、显式协程和单入口兼容方法体热更新。首个场景编辑器的入口见下节；完整语言、通用方法分派/布局迁移及完整渲染器仍在后续范围。
 
-另已实现独立的原生 UI 布局核心：稳定局部身份、共享列与换行、Flex/Grid、虚拟列表、真实内容测量、事务几何发布，以及完整内容版本消费的验收。窗口、输入、绘制和生产业务绑定仍待接入，详见[布局模块](docs/modules/ui-layout/README.md)。
+另已实现独立的原生 UI 布局核心：稳定局部身份、共享列与换行、Flex/Grid、虚拟列表、真实内容测量、事务几何发布，以及完整内容版本消费的验收。布局核心继续保持独立；窗口、生产控件与绘制由编辑器上层接入，详见[布局模块](docs/modules/ui-layout/README.md)和[编辑器模块](docs/modules/editor/README.md)。
 
 项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。Runtime、源码与 JIT 的模块归属、调用链、所有权和已知边界集中在[执行结构说明](docs/runtime-structure.md)。现行源码语法统一由 [LANGUAGE.md](LANGUAGE.md) 维护。
+
+## 启动首个场景编辑器
+
+在仓库根目录的 PowerShell 中执行唯一产品入口：
+
+```powershell
+. ./tools/enter-dev.ps1
+cmake --preset dev
+cmake --build --preset dev --target atelier_editor
+./out/dev/atelier_editor.exe
+```
+
+首版包含方块视口、对象列表、位置 XYZ 参数、可拖分隔、增删与撤销/重做，以及相机观察/缩放/聚焦/重置。数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除场景对象。
+右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
+本轮对应[方案](docs/first-editor-plan.md)的 M0 与 M1 核心操作。旋转缩放编辑、保存重开、JIT 单步、节点图、视口拾取和 gizmo 尚未接入；不宣称 M2 已完成。
+原生 UI 的 S1 已收口。S2 已接入共享 Unicode 单行编辑、参数搜索、剪贴板与 IMM32 平台往返；dev/release UI 13/13、真实搜狗输入及最终普通窗口各 709 帧验收均通过。字段切换统一取消并解除旧原生输入关联，再恢复新目标，已验证旧候选不会落入新字段。数值非法 Enter 保留草稿，提交/取消后保留焦点；无本地事务时 Ctrl+Z/Y 进入场景历史。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`，[原生 UI 方案](docs/ui-foundation-plan.md)维护唯一排期，S3 未启动。
+
+真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
+
+```powershell
+cmake --build --preset dev --target editor_acceptance
+cmake --preset release
+cmake --build --preset release --target editor_acceptance
+```
+
+每种配置输出 `Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`；GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，S1 另输出状态/字体/256对象列表截图和 `s1-performance.csv`、`s1-resources.csv`。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
+窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。运行目录须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证。
 
 ## 构建与端到端验收
 
@@ -21,7 +48,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务与布局消费者。默认配置成功输出 `RHI acceptance: PASS`、`RHI regression acceptance: PASS`、`Runtime acceptance: PASS`、`Source public consumer: PASS`、`Business execution acceptance: PASS`、`JIT acceptance: PASS`、`UI layout minimal consumer: PASS` 和 `UI layout acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (13/13)`、`Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
@@ -61,7 +88,7 @@ cmake --build --preset dev --target ui_layout_acceptance
 cmake --build --preset release --target ui_layout_acceptance
 ```
 
-总体 `acceptance` 也包含这些消费者。几何变化仍求解参与布局的实例树；不承诺 CSS 全量、一般循环约束、通用局部调度、异步布局或硬帧预算。窗口/输入/绘制、生产图片 composition 及业务语言 UI 接线尚未实施。现行行为和测量边界见[合同](docs/modules/ui-layout/contract.md)、[验收](docs/modules/ui-layout/acceptance.md)和[审计与性能](docs/modules/ui-layout/audit.md)。
+总体 `acceptance` 也包含这些消费者。几何变化仍求解参与布局的实例树；不承诺 CSS 全量、一般循环约束、通用局部调度、异步布局或硬帧预算。窗口输入、生产控件与 GPU 绘制由[UI 消费模块](docs/modules/ui/README.md)和编辑器接入；生产图片 composition 及业务语言 UI 接线仍未实施。现行布局行为和测量边界见[合同](docs/modules/ui-layout/contract.md)、[验收](docs/modules/ui-layout/acceptance.md)和[审计与性能](docs/modules/ui-layout/audit.md)。
 
 ## 引擎资源连接方案
 

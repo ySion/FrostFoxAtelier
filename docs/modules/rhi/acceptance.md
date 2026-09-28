@@ -2,6 +2,8 @@
 
 本页记录 2026-09-27 的 gfx 正式 Interface 与九项审计修正验收，源码随后进入交付提交 `a1eb44b7f3e6f1363fb60e5e6357d32f3908fec7`。dev/release 已通过真实 GPU 执行；下文“本轮”均指该次运行，文档清理不构成新的运行结果。此前 SDK 探针只属于历史可行性证据。
 
+2026-09-28 更新：编辑器 renderer 新增单窗口、显式 RGBA8、backbuffer 与独立深度同时绑定、带行距读回和 Present 状态。本页原 RHI 矩阵已在 dev/release 重新通过；新增窗口验收、641/703 宽度和未覆盖范围见 [renderer 验收](../renderer/acceptance.md)。以下保留 2026-09-27 的证据边界，不将其旧的窗口“未覆盖”列表当作当前全部能力。
+
 ## 命令与环境
 
 在 worktree 根目录执行 `. ./tools/enter-dev.ps1`，分别 `cmake --preset dev`、`cmake --preset release`，再运行：
