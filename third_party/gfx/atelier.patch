@@ -1,6 +1,6 @@
 --- a/gfx.cpp
 +++ b/gfx.cpp
-@@ -113,6 +113,10 @@
+@@ -113,6 +113,11 @@
      uint32_t fence_index_ = 0;
      ID3D12Fence **fences_ = nullptr;
      uint64_t *fence_values_ = nullptr;
@@ -8,10 +8,11 @@
 +    CommandPhase command_phase_ = kCommandPhase_Recording;
 +    GfxResult execution_error_ = kGfxResult_NoError;
 +    uint32_t wait_timeout_ms_ = 10000;
++    HRESULT last_present_result_ = S_FALSE;
  
      bool debug_shaders_ = false;
      bool cache_shaders_ = false;
-@@ -633,6 +637,9 @@
+@@ -633,6 +638,9 @@
              {
                  switch(type_)
                  {
@@ -21,7 +22,20 @@
                  case kType_Image:
                      gfxFree(data_.image_.textures_);
                      gfxFree(data_.image_.mip_levels_);
-@@ -1095,6 +1102,9 @@
+@@ -1074,6 +1082,12 @@
+             output->Release();
+         }
+ 
++        if((flags & kGfxCreateContextFlag_ForceRGBA8SwapChain) != 0)
++        {
++            back_buffer_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
++            color_space_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
++        }
++
+         DXGI_SWAP_CHAIN_DESC1
+         swap_chain_desc                  = {};
+         swap_chain_desc.Width            = window_width_;
+@@ -1095,6 +1109,9 @@
          swap_chain_->SetColorSpace1(color_space_);
  
          back_buffers_ = (ID3D12Resource **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12Resource *));
@@ -31,7 +45,7 @@
          GFX_TRY(acquireSwapChainBuffers());
          back_buffer_rtvs_ = (uint32_t *)gfxMalloc(max_frames_in_flight_ * sizeof(uint32_t));
          GFX_TRY(createBackBufferRTVs());
-@@ -1135,7 +1145,13 @@
+@@ -1135,7 +1152,13 @@
          GFX_TRY(initializeCommon(context));
  
          back_buffers_ = (ID3D12Resource **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12Resource *));
@@ -45,7 +59,7 @@
          GFX_TRY(createBackBuffers());
          back_buffer_rtvs_ = (uint32_t *)gfxMalloc(max_frames_in_flight_ * sizeof(uint32_t));
          GFX_TRY(createBackBufferRTVs());
-@@ -1169,7 +1185,9 @@
+@@ -1169,7 +1192,9 @@
              IDXGIFactory4 *factory4;
              if(!SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory4))))
                  return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create DXGIFactory4");
@@ -56,7 +70,7 @@
                  return GFX_SET_ERROR(kGfxResult_InternalError, "An invalid adapter was supplied");
              if(!SUCCEEDED(D3D12CreateDevice(adapter_, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device_))))
                  return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create D3D12 device");
-@@ -1194,6 +1212,7 @@
+@@ -1194,6 +1219,7 @@
                          break;
                      adapters[i] = adapter1;
                  }
@@ -64,7 +78,7 @@
              }
              else
              {
-@@ -1301,6 +1320,9 @@
+@@ -1301,6 +1327,9 @@
          max_frames_in_flight_ = kGfxConstant_BackBufferCount;
  
          command_allocators_ = (ID3D12CommandAllocator **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12CommandAllocator *));
@@ -74,7 +88,7 @@
          for(uint32_t j = 0; j < max_frames_in_flight_; ++j)
          {
              char buffer[256];
-@@ -1323,6 +1345,9 @@
+@@ -1323,6 +1352,9 @@
          if(!fence_event_)
              return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create event handle");
          fences_ = (ID3D12Fence **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12Fence *));
@@ -84,7 +98,7 @@
          for(uint32_t j = 0; j < max_frames_in_flight_; ++j)
          {
              char buffer[256];
-@@ -1603,7 +1628,8 @@
+@@ -1603,7 +1635,8 @@
              collect(sampler_states_.data()[i]);
          for(uint32_t i = 0; i < kernels_.size(); ++i)
          {
@@ -94,7 +108,7 @@
              collect(kernels_.data()[i]);
          }
          for(uint32_t i = 0; i < programs_.size(); ++i)
-@@ -1650,7 +1676,7 @@
+@@ -1650,7 +1683,7 @@
          }
          if(command_list_ != nullptr)
          {
@@ -103,19 +117,28 @@
              command_list_->Release();
              command_list_ = nullptr;
          }
-@@ -1754,6 +1780,11 @@
-         {
+@@ -1755,6 +1788,11 @@
              draw_mesh_signature_->Release();
              draw_mesh_signature_ = nullptr;
-+        }
+         }
 +        if(adapter_ != nullptr)
 +        {
 +            adapter_->Release();
 +            adapter_ = nullptr;
-         }
++        }
  
  #ifdef PIX_AMD_EXT
-@@ -3645,8 +3676,7 @@
+         tls_pAmdExtDeviceObject = nullptr;
+@@ -1768,6 +1806,8 @@
+     {
+         return device_ != nullptr && mem_allocator_ != nullptr && device_->GetDeviceRemovedReason() == S_OK;
+     }
++
++    inline HRESULT getLastPresentResult() const { return last_present_result_; }
+ 
+     inline uint32_t getBackBufferWidth() const
+     {
+@@ -3645,8 +3685,7 @@
  
      GfxResult encodeCopyBuffer(GfxBuffer const &dst, GfxBuffer const &src)
      {
@@ -125,7 +148,7 @@
          if(!buffer_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy into an invalid buffer object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -3675,8 +3705,7 @@
+@@ -3675,8 +3714,7 @@
  
      GfxResult encodeCopyBuffer(GfxBuffer const &dst, uint64_t dst_offset, GfxBuffer const &src, uint64_t src_offset, uint64_t size)
      {
@@ -135,7 +158,7 @@
          if(!buffer_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy into an invalid buffer object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -3706,8 +3735,7 @@
+@@ -3706,8 +3744,7 @@
      GfxResult encodeClearBuffer(GfxBuffer buffer, uint32_t clear_value)
      {
          GfxResult result = kGfxResult_NoError;
@@ -145,7 +168,7 @@
          if(!buffer_handles_.has_handle(buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot clear an invalid buffer object");
          if(buffer.size == 0) return kGfxResult_NoError; // nothing to clear
-@@ -3789,8 +3817,7 @@
+@@ -3789,8 +3826,7 @@
  
      GfxResult encodeCopyTexture(GfxTexture const &dst, GfxTexture const &src)
      {
@@ -155,7 +178,7 @@
          if(!texture_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy to an invalid texture object");
          if(!texture_handles_.has_handle(src.handle))
-@@ -3827,8 +3854,7 @@
+@@ -3827,8 +3863,7 @@
  
      GfxResult encodeClearImage(GfxTexture const &texture, uint32_t mip_level, uint32_t slice)
      {
@@ -165,7 +188,7 @@
          if(!texture_handles_.has_handle(texture.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot clear an invalid texture object");
          if(mip_level >= texture.mip_levels)
-@@ -3896,8 +3922,7 @@
+@@ -3896,8 +3931,7 @@
  
      GfxResult encodeCopyBufferToTexture(GfxTexture const &dst, GfxBuffer const &src)
      {
@@ -175,7 +198,7 @@
          if(!texture_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy to an invalid texture object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -3922,6 +3947,10 @@
+@@ -3922,6 +3956,10 @@
          if(src.cpu_access == kGfxCpuAccess_None) transition |= transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, kTransitionType_Implicit);
          if(transition)
              submitPipelineBarriers();
@@ -186,7 +209,7 @@
          D3D12_FEATURE_DATA_D3D12_OPTIONS13 features = {};   // feature check
          device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &features, sizeof(features));
          bool unrestricted_pitch = features.UnrestrictedBufferTextureCopyPitchSupported;
-@@ -3938,7 +3967,7 @@
+@@ -3938,7 +3976,7 @@
              Buffer *texture_upload_buffer = nullptr;
              uint64_t const texture_row_pitch = subresource_footprints[mip_level].Footprint.RowPitch;
              if(!unrestricted_pitch && (buffer_row_pitch != texture_row_pitch || // we must respect the 256-byte pitch alignment
@@ -195,7 +218,7 @@
              {
                  uint64_t texture_upload_buffer_size = total_rows * static_cast<uint64_t>(subresource_footprints[mip_level].Footprint.RowPitch);
                  if(texture_upload_buffer_.size < texture_upload_buffer_size)
-@@ -3956,7 +3985,7 @@
+@@ -3956,7 +3994,7 @@
                  if(transitionResource(*texture_upload_buffer, D3D12_RESOURCE_STATE_COPY_DEST, kTransitionType_Implicit))
                      submitPipelineBarriers();   // transition our resources if needed
                  for(uint32_t i = 0; i < total_rows; ++i)
@@ -204,7 +227,7 @@
                  transitionResource(*texture_upload_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE);
                  submitPipelineBarriers();
              }
-@@ -3966,12 +3995,12 @@
+@@ -3966,12 +4004,12 @@
                  dst_location.pResource = gfx_texture.resource_;
                  dst_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
                  dst_location.SubresourceIndex = mip_level;  // copy to mip level
@@ -219,7 +242,7 @@
                  command_list_->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
              }
              buffer_offset += buffer_size;   // advance the buffer offset
-@@ -3981,8 +4010,7 @@
+@@ -3981,8 +4019,7 @@
  
      GfxResult encodeCopyBufferToCubeFace(GfxTexture const &dst, GfxBuffer const &src, uint32_t face)
      {
@@ -229,7 +252,7 @@
          if(!texture_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy to an invalid texture object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -4021,6 +4049,7 @@
+@@ -4021,16 +4058,68 @@
                  return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot copy to mip level %u from buffer object with insufficient storage", mip_level);
              D3D12_TEXTURE_COPY_LOCATION dst_location = {.pResource = gfx_texture.resource_, .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = subresource_index};
              D3D12_TEXTURE_COPY_LOCATION src_location = {gfx_buffer.resource_, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {subresource_footprints[mip_level]}};
@@ -237,8 +260,61 @@
              command_list_->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
              buffer_offset += buffer_size;   // advance the buffer offset
          }
-@@ -4029,8 +4058,7 @@
+         return kGfxResult_NoError;
+     }
  
++    GfxResult encodeReadbackPitched(GfxBuffer const &dst, GfxTexture const &src, uint32_t row_pitch, bool back_buffer)
++    {
++        if(command_list_ == nullptr || execution_error_ != kGfxResult_NoError || command_phase_ != kCommandPhase_Recording)
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Readback requires a recording list");
++        if(!buffer_handles_.has_handle(dst.handle) || dst.cpu_access != kGfxCpuAccess_Read)
++            return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Readback requires a CPU-read buffer");
++        if(back_buffer ? swap_chain_ == nullptr : !texture_handles_.has_handle(src.handle))
++            return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Invalid readback source");
++        Texture *texture = back_buffer ? nullptr : &textures_[src];
++        ID3D12Resource *resource = back_buffer ? back_buffers_[back_buffer_index_] : texture->resource_;
++        D3D12_RESOURCE_DESC desc = resource->GetDesc();
++        desc.Alignment = 0;
++        D3D12_FEATURE_DATA_FORMAT_INFO format_info = {desc.Format, 0};
++        if(desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.DepthOrArraySize != 1 || desc.SampleDesc.Count != 1 ||
++           FAILED(device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &format_info, sizeof(format_info))) || format_info.PlaneCount != 1)
++            return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Readback requires single-plane single-sample 2D data");
++        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
++        uint32_t rows = 0;
++        uint64_t row_bytes = 0;
++        device_->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes, nullptr);
++        Buffer &buffer = buffers_[dst];
++        if(row_pitch < row_bytes || row_pitch % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT ||
++           buffer.data_offset_ % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT || (uint64_t)row_pitch * rows > dst.size)
++            return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Invalid readback pitch, offset or storage size");
++        footprint.Footprint.RowPitch = row_pitch;
++        footprint.Offset = buffer.data_offset_;
++        if(texture) transitionResource(*texture, D3D12_RESOURCE_STATE_COPY_SOURCE);
++        submitPipelineBarriers();
++        D3D12_RESOURCE_BARRIER barrier = {};
++        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        barrier.Transition.pResource = resource;
++        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        if(back_buffer) command_list_->ResourceBarrier(1, &barrier);
++        D3D12_TEXTURE_COPY_LOCATION from = {};
++        from.pResource = resource;
++        from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        D3D12_TEXTURE_COPY_LOCATION to = {};
++        to.pResource = buffer.resource_;
++        to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++        to.PlacedFootprint = footprint;
++        command_list_->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
++        if(back_buffer)
++        {
++            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++            command_list_->ResourceBarrier(1, &barrier);
++        }
++        return kGfxResult_NoError;
++    }
++
      GfxResult encodeCopyTextureToBuffer(GfxBuffer const &dst, GfxTexture const &src)
      {
 -        if(command_list_ == nullptr)
@@ -247,7 +323,7 @@
          if(!texture_handles_.has_handle(src.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy from an invalid texture object");
          if(!buffer_handles_.has_handle(dst.handle))
-@@ -4073,7 +4101,7 @@
+@@ -4073,7 +4162,7 @@
                  dst_location.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                  dst_location.PlacedFootprint.Footprint = subresource_footprints[mip_level].Footprint;
                  dst_location.PlacedFootprint.Footprint.RowPitch = (UINT)buffer_row_pitch;
@@ -256,7 +332,7 @@
                  command_list_->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
              }
              buffer_offset += buffer_size;   // advance the buffer offset
-@@ -4084,8 +4112,7 @@
+@@ -4084,8 +4173,7 @@
      GfxResult encodeGenerateMips(GfxTexture const &texture)
      {
          GfxResult result = kGfxResult_NoError;
@@ -266,7 +342,7 @@
          if(!texture_handles_.has_handle(texture.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot generate mips of an invalid texture object");
          if(!texture.is2D() && !texture.is2DArray() && !texture.isCube())
-@@ -4159,8 +4186,7 @@
+@@ -4159,8 +4247,7 @@
  
      GfxResult encodeBindKernel(GfxKernel const &kernel)
      {
@@ -276,7 +352,7 @@
          if((kernel.isMesh() && mesh_command_list_ == nullptr))
              return kGfxResult_InvalidOperation; // avoid spamming console output
          if(!kernel_handles_.has_handle(kernel.handle))
-@@ -4190,8 +4216,7 @@
+@@ -4190,8 +4277,7 @@
  
      GfxResult encodeBindIndexBuffer(GfxBuffer const &index_buffer)
      {
@@ -286,7 +362,7 @@
          if(!buffer_handles_.has_handle(index_buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot bind index data from invalid buffer object");
          if(index_buffer.size > 0xFFFFFFFFull)
-@@ -4204,8 +4229,7 @@
+@@ -4204,8 +4290,7 @@
  
      GfxResult encodeBindVertexBuffer(GfxBuffer const &vertex_buffer)
      {
@@ -296,7 +372,7 @@
          if(!buffer_handles_.has_handle(vertex_buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot bind vertex data from invalid buffer object");
          if(vertex_buffer.size > 0xFFFFFFFFull)
-@@ -4218,8 +4242,7 @@
+@@ -4218,8 +4303,7 @@
  
      GfxResult encodeSetViewport(float x, float y, float width, float height)
      {
@@ -306,7 +382,7 @@
          if(isnan(x) || isnan(y) || isnan(width) || isnan(height))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot set viewport using invalid floating-point numbers");
          viewport_.x_ = x;
-@@ -4231,8 +4254,7 @@
+@@ -4231,8 +4315,7 @@
  
      GfxResult encodeSetScissorRect(int32_t x, int32_t y, int32_t width, int32_t height)
      {
@@ -316,7 +392,7 @@
          if(width < 0 || height < 0)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot set scissor rect using negative width/height values");
          scissor_rect_.x_ = x;
-@@ -4244,8 +4266,7 @@
+@@ -4244,8 +4327,7 @@
  
      GfxResult encodeDraw(uint32_t vertex_count, uint32_t instance_count, uint32_t base_vertex, uint32_t base_instance)
      {
@@ -326,7 +402,7 @@
          if(vertex_count == 0 || instance_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!kernel_handles_.has_handle(bound_kernel_.handle))
-@@ -4263,8 +4284,7 @@
+@@ -4263,8 +4345,7 @@
  
      GfxResult encodeDrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, uint32_t base_vertex, uint32_t base_instance)
      {
@@ -336,7 +412,7 @@
          if(index_count == 0 || instance_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!kernel_handles_.has_handle(bound_kernel_.handle))
-@@ -4282,8 +4302,7 @@
+@@ -4282,8 +4363,7 @@
  
      GfxResult encodeMultiDrawIndirect(GfxBuffer const &args_buffer, uint32_t args_count)
      {
@@ -346,7 +422,7 @@
          if(args_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4298,9 +4317,10 @@
+@@ -4298,9 +4378,10 @@
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip multi-draw call
          GFX_TRY(populateDrawIdBuffer(args_count));
@@ -358,7 +434,7 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4310,8 +4330,7 @@
+@@ -4310,8 +4391,7 @@
  
      GfxResult encodeMultiDrawIndexedIndirect(GfxBuffer const &args_buffer, uint32_t args_count)
      {
@@ -368,7 +444,7 @@
          if(args_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4326,9 +4345,10 @@
+@@ -4326,9 +4406,10 @@
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip multi-draw call
          GFX_TRY(populateDrawIdBuffer(args_count));
@@ -380,7 +456,7 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4338,8 +4358,7 @@
+@@ -4338,8 +4419,7 @@
  
      GfxResult encodeDispatch(uint32_t num_groups_x, uint32_t num_groups_y, uint32_t num_groups_z)
      {
@@ -390,7 +466,7 @@
          if(!num_groups_x || !num_groups_y || !num_groups_z)
              return kGfxResult_NoError;  // nothing to dispatch
          uint32_t const max_num_groups = D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
-@@ -4368,8 +4387,7 @@
+@@ -4368,8 +4448,7 @@
  
      GfxResult encodeDispatchIndirect(GfxBuffer args_buffer)
      {
@@ -400,7 +476,7 @@
          if(!buffer_handles_.has_handle(args_buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot dispatch using an invalid arguments buffer object");
          if(args_buffer.cpu_access == kGfxCpuAccess_Read)
-@@ -4381,9 +4399,10 @@
+@@ -4381,9 +4460,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot dispatch using a non-compute kernel object");
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip dispatch call
@@ -412,7 +488,7 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4393,8 +4412,7 @@
+@@ -4393,8 +4473,7 @@
  
      GfxResult encodeMultiDispatchIndirect(GfxBuffer args_buffer, uint32_t args_count)
      {
@@ -422,7 +498,7 @@
          if(args_count == 0)
              return kGfxResult_NoError;  // nothing to dispatch
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4408,9 +4426,10 @@
+@@ -4408,9 +4487,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot dispatch using a non-compute kernel object");
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip multi-dispatch call
@@ -434,7 +510,7 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4479,8 +4498,7 @@
+@@ -4479,8 +4559,7 @@
  
      GfxResult encodeDispatchRaysIndirect(GfxSbt const &sbt, GfxBuffer args_buffer)
      {
@@ -444,7 +520,7 @@
          if(!sbt_handles_.has_handle(sbt.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot dispatch using an invalid sbt object");
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4494,10 +4512,10 @@
+@@ -4494,10 +4573,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot dispatch rays using non-raytracing kernel object");
          if(kernel.root_signature_ == nullptr || kernel.state_object_ == nullptr)
              return kGfxResult_NoError;  // skip dispatch rays call
@@ -457,7 +533,7 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4507,8 +4525,7 @@
+@@ -4507,8 +4586,7 @@
  
      GfxResult encodeDrawMesh(uint32_t num_groups_x, uint32_t num_groups_y, uint32_t num_groups_z)
      {
@@ -467,7 +543,7 @@
          if(mesh_command_list_ == nullptr)
              return kGfxResult_InvalidOperation; // avoid spamming console output
          if(!num_groups_x || !num_groups_y || !num_groups_z)
-@@ -4528,8 +4545,7 @@
+@@ -4528,8 +4606,7 @@
  
      GfxResult encodeDrawMeshIndirect(GfxBuffer args_buffer)
      {
@@ -477,7 +553,7 @@
          if(mesh_command_list_ == nullptr)
              return kGfxResult_InvalidOperation; // avoid spamming console output
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4543,9 +4559,10 @@
+@@ -4543,9 +4620,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot draw using a non-mesh kernel object");
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip draw call
@@ -489,7 +565,7 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4654,8 +4671,7 @@
+@@ -4654,8 +4732,7 @@
      GfxResult encodeBeginEvent(uint64_t color, char const *format, va_list args)
      {
          char buffer[4096];
@@ -499,7 +575,7 @@
          vsnprintf(buffer, sizeof(buffer), format, args);
          IAmdExtD3DDevice1 *amd_ext_device = tls_pAmdExtDeviceObject;
          PIXBeginEvent(command_list_, color, buffer);
-@@ -4666,8 +4682,7 @@
+@@ -4666,8 +4743,7 @@
  
      GfxResult encodeEndEvent()
      {
@@ -509,7 +585,7 @@
          IAmdExtD3DDevice1 *amd_ext_device = tls_pAmdExtDeviceObject;
          PIXEndEvent(command_list_);
          if(amd_ext_device == nullptr && tls_pAmdExtDeviceObject != nullptr)
-@@ -4686,8 +4701,7 @@
+@@ -4686,8 +4762,7 @@
  
      GfxResult encodeScan(OpType op_type, GfxDataType data_type, GfxBuffer const &dst, GfxBuffer const &src, GfxBuffer const *count)
      {
@@ -519,7 +595,7 @@
          if(data_type < 0 || data_type >= kGfxDataType_Count)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot scan buffer object of unsupported data type `%u'", data_type);
          if(dst.size < src.size)
-@@ -4817,8 +4831,7 @@
+@@ -4817,8 +4892,7 @@
  
      GfxResult encodeReduce(OpType op_type, GfxDataType data_type, GfxBuffer const &dst, GfxBuffer const &src, GfxBuffer const *count)
      {
@@ -529,7 +605,7 @@
          if(data_type < 0 || data_type >= kGfxDataType_Count)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot reduce buffer object of unsupported data type `%u'", data_type);
          if(dst.size < 4)
-@@ -4921,8 +4934,7 @@
+@@ -4921,8 +4995,7 @@
  
      GfxResult encodeRadixSort(GfxBuffer const &keys_dst, GfxBuffer const &keys_src, GfxBuffer const *values_dst, GfxBuffer const *values_src, GfxBuffer const *count)
      {
@@ -539,7 +615,7 @@
          if(keys_dst.size != keys_src.size)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot sort if source and destination buffer objects aren't of the same size");
          if(values_dst != nullptr && keys_dst.size != values_dst->size)
-@@ -5043,8 +5055,89 @@
+@@ -5043,8 +5116,90 @@
          }
      }
  
@@ -623,13 +699,14 @@
 +
      GfxResult frame(bool vsync)
      {
++        last_present_result_ = S_FALSE;
 +        if(execution_error_ != kGfxResult_NoError) return execution_error_;
 +        if(!isInterop() && command_phase_ != kCommandPhase_Recording)
 +            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Frame requires a recording list");
          GFX_ASSERT(max_frames_in_flight_ > 0);
          if(isInterop())
          {
-@@ -5086,10 +5179,8 @@
+@@ -5086,30 +5241,25 @@
                  resource_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
                  resource_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
                  command_list_->ResourceBarrier(1, &resource_barrier);
@@ -640,9 +717,10 @@
 +                GFX_TRY(submitCurrent());
 +                GFX_TRY(signalFence(fence_index_));
                  HRESULT hr = swap_chain_->Present(vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING);
++                last_present_result_ = hr;
                  if(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG)
                  {
-@@ -5097,19 +5188,15 @@
+                     GFX_TRY(handleDeviceLost());
                  }
                  else if(FAILED(hr))
                  {
@@ -668,7 +746,7 @@
                  resource_barrier.Transition.pResource = back_buffers_[back_buffer_index_];
                  resource_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
                  resource_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-@@ -5117,19 +5204,13 @@
+@@ -5117,19 +5267,13 @@
              }
              else
              {
@@ -694,7 +772,7 @@
              }
              if(!timestamp_query_heaps_[fence_index_].timestamp_queries_.empty())
              {
-@@ -5166,12 +5247,14 @@
+@@ -5166,12 +5310,14 @@
      {
          if(isInterop())
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot synchronize commands when using an interop context");
@@ -715,7 +793,7 @@
          memset(blas_compaction_indices_.data(), blas_compaction_sentinel, blas_compaction_indices_.size() * sizeof(uint32_t));
          resetState();   // re-install state
          decayResourceState();
-@@ -5620,9 +5703,9 @@
+@@ -5620,9 +5766,9 @@
      GfxResult setSwapChain(IDXGISwapChain4 *swapchain)
      {
          if(!window_)
@@ -728,7 +806,7 @@
          // clear old resources associated with the old swapchain
          if(swap_chain_)
          {
-@@ -5634,7 +5717,7 @@
+@@ -5634,7 +5780,7 @@
              }
              swap_chain_->Release();
              swap_chain_ = nullptr;
@@ -737,7 +815,7 @@
          }
          if(swapchain)
          {
-@@ -5643,7 +5726,7 @@
+@@ -5643,7 +5789,7 @@
              // Redo window association and preferences setup
              IDXGIFactory4 *factory = nullptr;
              if(!SUCCEEDED(swap_chain_->GetParent(IID_PPV_ARGS(&factory))) || !IsWindow(window_))
@@ -746,7 +824,7 @@
              factory->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
              factory->Release();
  
-@@ -5672,16 +5755,17 @@
+@@ -5672,16 +5818,17 @@
      {
          if(isInterop())
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot synchronize commands when using an interop context");
@@ -770,7 +848,7 @@
          resetState();   // re-install state
          return kGfxResult_NoError;
      }
-@@ -6216,7 +6300,7 @@
+@@ -6216,7 +6363,7 @@
  
      static inline D3D12_RESOURCE_STATES GetShaderVisibleResourceState(Kernel const &kernel)
      {
@@ -779,7 +857,22 @@
                   ? D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE
                   : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
      }
-@@ -9320,9 +9404,10 @@
+@@ -7218,9 +7365,11 @@
+                 render_width = GFX_MIN(render_width, texture_width); render_height = GFX_MIN(render_height, texture_height);
+                 transitionResource(gfx_texture, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+             }
+-            if(color_target_count == 0 && depth_stencil_target.ptr == 0)    // special case - if no color target is supplied, draw to back buffer
+-            {
+-                render_width = window_width_; render_height = window_height_;
++            if(color_target_count == 0 && (depth_stencil_target.ptr == 0 || kernel.draw_state_.color_formats_[0] == getBackBufferFormat()))
++            {
++                // Explicit backbuffer color may be paired with a depth target.
++                if(isInterop()) return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot bind a backbuffer in an interop context");
++                render_width = GFX_MIN(render_width, window_width_); render_height = GFX_MIN(render_height, window_height_);
+                 color_targets[color_target_count++] = rtv_descriptors_.getCPUHandle(back_buffer_rtvs_[back_buffer_index_]);
+             }
+             D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)render_width, (float)render_height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+@@ -9320,9 +9469,10 @@
          if(kernel.isMesh())
          {
              kernel_type = "Mesh";
@@ -793,7 +886,7 @@
              createRootSignature(kernel);
              result = createMeshPipelineState(kernel, kernel.draw_state_);
              if(kernel.as_reflection_ != nullptr)
-@@ -9335,9 +9420,10 @@
+@@ -9335,9 +9485,10 @@
          else if(kernel.isCompute())
          {
              kernel_type = "Compute";
@@ -806,7 +899,7 @@
              if(kernel.cs_reflection_ != nullptr)
                  kernel.cs_reflection_->GetThreadGroupSize(&kernel.num_threads_[0], &kernel.num_threads_[1], &kernel.num_threads_[2]);
              else
-@@ -9346,16 +9432,17 @@
+@@ -9346,16 +9497,17 @@
          else if(kernel.isGraphics())
          {
              kernel_type = "Graphics";
@@ -828,7 +921,7 @@
              createRootSignature(kernel);
              createRaytracingPipelineState(kernel);
          }
-@@ -9420,7 +9507,7 @@
+@@ -9420,7 +9572,7 @@
      std::map<uint64_t, Shader> shaders_;
  
      template<typename REFLECTION_TYPE>
@@ -837,7 +930,7 @@
      {
          DxcBuffer shader_source = {};
          IDxcBlobEncoding *dxc_source = nullptr;
-@@ -9434,9 +9521,14 @@
+@@ -9434,9 +9586,14 @@
              wshader_file.resize(mbstowcs(nullptr, shader_file.data(), 0) + 1);
              mbstowcs(wshader_file.data(), shader_file.data(), shader_file.size());
              // Check file existence before LoadFile call. LoadFile spams hlsl::Exception messages if file not found.
@@ -854,7 +947,7 @@
              shader_source.Ptr = dxc_source->GetBufferPointer();
              shader_source.Size = dxc_source->GetBufferSize();
          }
-@@ -9470,10 +9562,10 @@
+@@ -9470,10 +9627,10 @@
                  break;
              default:
                  GFX_ASSERTMSG(0, "An unsupported shader type `%u' was supplied", (uint32_t)shader_type);
@@ -867,7 +960,7 @@
          }
  
          char shader_profiles[][16] =
-@@ -9636,7 +9728,7 @@
+@@ -9636,7 +9793,7 @@
                      reflection = (*it).second.shader_reflection_;
                      GFX_ASSERT(shader_bytecode != nullptr && reflection != nullptr);
                      if(dxc_source) dxc_source->Release();
@@ -876,7 +969,7 @@
                  }
                  std::filesystem::path file_path(program.file_path_.c_str(), std::locale("en_US.UTF-8"));
                  if(is_directory(file_path))
-@@ -9696,7 +9788,7 @@
+@@ -9696,7 +9853,7 @@
                              shader.shader_reflection_ = reflection;
                              shader_bytecode = bytecode_blob;
                              reflection_blob->Release();
@@ -885,7 +978,7 @@
                          }
                      }
                      if(bytecode_blob) bytecode_blob->Release();
-@@ -9708,7 +9800,7 @@
+@@ -9708,7 +9865,7 @@
          IDxcResult *dxc_result = nullptr;
          dxc_compiler_->Compile(&shader_source, shader_args.data(), (uint32_t)shader_args.size(), dxc_include_handler_, IID_PPV_ARGS(&dxc_result));
          if(dxc_source) dxc_source->Release();
@@ -894,7 +987,7 @@
  
          HRESULT result_code = E_FAIL;
          dxc_result->GetStatus(&result_code);
-@@ -9719,7 +9811,7 @@
+@@ -9719,7 +9876,7 @@
              bool const has_errors = (dxc_error != nullptr && dxc_error->GetBufferPointer() != nullptr);
              GFX_PRINTLN("Error: Failed to compile `%s' for entry point `%s'%s%s", shader_file.data(), kernel.entry_point_.c_str(), has_errors ? ":\r\n" : "", has_errors ? (char const *)dxc_error->GetBufferPointer() : "");
              if(dxc_error) dxc_error->Release(); dxc_result->Release();
@@ -903,7 +996,7 @@
          }
          if(dxc_error != nullptr)
          {
-@@ -9744,7 +9836,7 @@
+@@ -9744,7 +9901,7 @@
              if(dxc_pdb_name) dxc_pdb_name->Release();
              if(dxc_bytecode) dxc_bytecode->Release();
              if(dxc_reflection) dxc_reflection->Release();
@@ -912,7 +1005,7 @@
          }
          if(dxc_pdb != nullptr && dxc_pdb_name != nullptr)
          {
-@@ -9851,6 +9943,7 @@
+@@ -9851,6 +10008,7 @@
          if(dxc_pdb_name) dxc_pdb_name->Release();
          if(dxc_pdb) dxc_pdb->Release();
          dxc_reflection->Release();
@@ -920,7 +1013,7 @@
      }
  
      GfxResult createResource(D3D12MA::ALLOCATION_DESC const &allocation_desc, D3D12_RESOURCE_DESC const &resource_desc,
-@@ -10095,12 +10188,8 @@
+@@ -10095,12 +10253,8 @@
      {
          for(uint32_t i = 0; i < max_frames_in_flight_; ++i)
          {
@@ -935,7 +1028,7 @@
          }
          return forceGarbageCollection();
      }
-@@ -10115,14 +10204,14 @@
+@@ -10115,14 +10269,14 @@
              back_buffers_[i] = nullptr;
              freeRTVDescriptor(back_buffer_rtvs_[i]);
          }
@@ -952,7 +1045,7 @@
          back_buffer_index_ = swap_chain_->GetCurrentBackBufferIndex();
          GFX_TRY(acquireSwapChainBuffers());
          GFX_TRY(createBackBufferRTVs());
-@@ -10191,6 +10280,8 @@
+@@ -10191,6 +10345,8 @@
  
      GfxResult handleDeviceLost()
      {
@@ -961,7 +1054,7 @@
          HRESULT const reason = device_->GetDeviceRemovedReason();
          LPSTR error_text = nullptr;
          DWORD const result = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER, nullptr, reason,
-@@ -10266,7 +10357,9 @@
+@@ -10266,7 +10422,9 @@
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return kGfxResult_NoError; // nothing to destroy
@@ -972,7 +1065,7 @@
      return kGfxResult_NoError;
  }
  
-@@ -10275,6 +10368,12 @@
+@@ -10275,6 +10433,18 @@
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return false;
      return gfx->isValid();
@@ -982,20 +1075,71 @@
 +{
 +    GfxInternal *gfx = GfxInternal::GetGfx(context);
 +    return gfx ? gfx->setWaitTimeout(milliseconds) : kGfxResult_InvalidParameter;
++}
++
++HRESULT gfxGetLastPresentResult(GfxContext context)
++{
++    GfxInternal *gfx = GfxInternal::GetGfx(context);
++    return gfx ? gfx->getLastPresentResult() : E_INVALIDARG;
  }
  
  uint32_t gfxGetBackBufferWidth(GfxContext context)
+@@ -11058,6 +11228,18 @@
+     GfxInternal *gfx = GfxInternal::GetGfx(context);
+     if(!gfx) return kGfxResult_InvalidParameter;
+     return gfx->encodeCopyTextureToBuffer(dst, src);
++}
++
++GfxResult gfxCommandCopyTextureToBufferPitched(GfxContext context, GfxBuffer dst, GfxTexture src, uint32_t row_pitch)
++{
++    GfxInternal *gfx = GfxInternal::GetGfx(context);
++    return gfx ? gfx->encodeReadbackPitched(dst, src, row_pitch, false) : kGfxResult_InvalidParameter;
++}
++
++GfxResult gfxCommandCopyBackBufferToBuffer(GfxContext context, GfxBuffer dst, uint32_t row_pitch)
++{
++    GfxInternal *gfx = GfxInternal::GetGfx(context);
++    return gfx ? gfx->encodeReadbackPitched(dst, {}, row_pitch, true) : kGfxResult_InvalidParameter;
+ }
+ 
+ GfxResult gfxCommandGenerateMips(GfxContext context, GfxTexture texture)
 --- a/gfx.h
 +++ b/gfx.h
-@@ -60,6 +60,8 @@
+@@ -52,7 +52,8 @@
+     kGfxCreateContextFlag_EnableStablePowerState    = 1 << 3,
+     kGfxCreateContextFlag_EnableExperimentalShaders = 1 << 4,
+     kGfxCreateContextFlag_EnableHDRSwapChain        = 1 << 5,   // Creates an HDR swapchain format (requires an HDR-capable device+display to have an effect)
+-    kGfxCreateContextFlag_EnableLinearSwapChain     = 1 << 6    // Prefers a linear gamma swapchain format (uses half-precision float scRGB instead of 10b Rec2100 for HDR)
++    kGfxCreateContextFlag_EnableLinearSwapChain     = 1 << 6,    // Prefers a linear gamma swapchain format (uses half-precision float scRGB instead of 10b Rec2100 for HDR)
++    kGfxCreateContextFlag_ForceRGBA8SwapChain       = 1 << 7    // Explicit SDR RGBA8; overrides display/HDR preferences.
+ };
+ typedef uint32_t GfxCreateContextFlags;
+ 
+@@ -60,7 +61,11 @@
  GfxContext gfxCreateContext(uint32_t width, uint32_t height, GfxCreateContextFlags flags, IDXGIAdapter *adapter = nullptr);
  GfxResult gfxDestroyContext(GfxContext context);
  bool      gfxContextIsValid(GfxContext context);
+-
 +// Finite positive wait budget. Changing it never clears an execution failure.
 +GfxResult gfxSetWaitTimeout(GfxContext context, uint32_t milliseconds);
- 
++
++// Last native Present status; S_FALSE before any Present or for offscreen frames.
++HRESULT gfxGetLastPresentResult(GfxContext context);
  uint32_t gfxGetBackBufferWidth(GfxContext context);
  uint32_t gfxGetBackBufferHeight(GfxContext context);
+ uint32_t gfxGetBackBufferIndex(GfxContext context);
+@@ -428,6 +433,11 @@
+ GfxResult gfxCommandCopyBufferToTexture(GfxContext context, GfxTexture dst, GfxBuffer src);
+ GfxResult gfxCommandCopyBufferToCubeFace(GfxContext context, GfxTexture dst, GfxBuffer src, uint32_t face);
+ GfxResult gfxCommandCopyTextureToBuffer(GfxContext context, GfxBuffer dst, GfxTexture src);
++// Readback of subresource zero to a CPU-read buffer; row_pitch is a multiple of
++// 256 and at least the native row size, buffer offset a multiple of 512. Covers
++// single-plane, single-sample 2D images only. Existing packed-copy API unchanged.
++GfxResult gfxCommandCopyTextureToBufferPitched(GfxContext context, GfxBuffer dst, GfxTexture src, uint32_t row_pitch);
++GfxResult gfxCommandCopyBackBufferToBuffer(GfxContext context, GfxBuffer dst, uint32_t row_pitch);
+ GfxResult gfxCommandGenerateMips(GfxContext context, GfxTexture texture);   // expects mip level 0 to be populated, generates the others
+ 
+ GfxResult gfxCommandBindColorTarget(GfxContext context, uint32_t target_index, GfxTexture target_texture, uint32_t mip_level = 0, uint32_t slice = 0);
 --- a/gfx_core.h
 +++ b/gfx_core.h
 @@ -41,6 +41,7 @@

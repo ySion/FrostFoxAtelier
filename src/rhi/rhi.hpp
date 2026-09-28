@@ -32,6 +32,7 @@ struct ContextOptions {
     HWND window = nullptr;
     Validation validation = Validation::disabled;
     std::uint32_t wait_timeout_ms = 10000;
+    bool rgba8_window = false; // Explicit SDR RGBA8 target instead of display auto-selection.
 };
 
 struct ContextInfo {
@@ -41,6 +42,15 @@ struct ContextInfo {
     bool mesh_shader = false;
     bool debug_layer = false;
     bool gpu_validation = false;
+};
+
+struct TargetInfo {
+    std::uint32_t width{}, height{};
+    bool windowed{}, drawable{};
+};
+struct FrameInfo {
+    TargetInfo rendered, next;
+    bool occluded{};
 };
 
 // Source strings are borrowed only during prepare. For file programs, optional
@@ -95,7 +105,10 @@ public:
     [[nodiscard]] GfxContext borrow() const noexcept;
     [[nodiscard]] const ContextInfo& info() const noexcept;
     [[nodiscard]] Result<Pipeline> prepare(const PipelineDesc& desc);
-    [[nodiscard]] Result<void> frame(bool vsync = false);
+    [[nodiscard]] Result<TargetInfo> target() const;
+    // Details are published only after the entire frame succeeds. Positive DXGI
+    // occlusion status is successful execution but not an accepted visible frame.
+    [[nodiscard]] Result<void> frame(bool vsync = false, FrameInfo* details = nullptr);
     [[nodiscard]] Result<void> finish();
     // Busy while Pipeline owners remain. Failure retains the execution domain;
     // close may drain submitted work but must never resubmit it.

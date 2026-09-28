@@ -148,7 +148,8 @@ Result<Context> Context::open(const ContextOptions& options) {
         return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation,
                                      "no hardware adapter with FL12_1 and Mesh Shader support"});
     auto state = std::make_shared<detail::ContextState>();
-    const GfxCreateContextFlags flags = debug ? kGfxCreateContextFlag_EnableDebugLayer : 0;
+    const GfxCreateContextFlags flags = (debug ? kGfxCreateContextFlag_EnableDebugLayer : 0) |
+        (options.rgba8_window ? kGfxCreateContextFlag_ForceRGBA8SwapChain : 0);
     state->context = options.window ? gfxCreateContext(options.window, flags, adapter.Get())
         : gfxCreateContext(options.width, options.height, flags, adapter.Get());
     if (!state->context)
@@ -227,14 +228,32 @@ Result<Pipeline> Context::prepare(const PipelineDesc& desc) {
     }
     return Pipeline(state_, program, kernel);
 }
-Result<void> Context::frame(bool vsync) {
+Result<TargetInfo> Context::target() const {
+    if (!state_ || !state_->context)
+        return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
+    if (!state_->on_owner())
+        return std::unexpected(Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation, "target requires owner thread"});
+    if (state_->failure != kGfxResult_NoError) return std::unexpected(execution_error(state_->failure));
+    const auto context = state_->context;
+    const HWND window = gfxGetWindowHandle(context);
+    RECT client{};
+    const bool drawable = !window || (IsWindowVisible(window) && !IsIconic(window) &&
+        GetClientRect(window, &client) && client.right > 0 && client.bottom > 0);
+    return TargetInfo{gfxGetBackBufferWidth(context), gfxGetBackBufferHeight(context), window != nullptr, drawable};
+}
+Result<void> Context::frame(bool vsync, FrameInfo* details) {
     if (!state_ || !state_->context)
         return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
     if (!state_->on_owner())
         return std::unexpected(Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation, "frame requires owner thread"});
     if (state_->failure != kGfxResult_NoError) return std::unexpected(execution_error(state_->failure));
+    const auto rendered = target();
+    if (!rendered) return std::unexpected(rendered.error());
     const GfxResult result = gfxFrame(state_->context, vsync);
-    if (result == kGfxResult_NoError) return {};
+    if (result == kGfxResult_NoError) {
+        if (details) *details = {*rendered, *target(), gfxGetLastPresentResult(state_->context) == DXGI_STATUS_OCCLUDED};
+        return {};
+    }
     state_->failure = result;
     return std::unexpected(execution_error(result));
 }

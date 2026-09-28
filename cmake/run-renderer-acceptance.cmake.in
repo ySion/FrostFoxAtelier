@@ -1,0 +1,9 @@
+execute_process(COMMAND "$<TARGET_FILE:atelier_renderer_acceptance>"
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:atelier_renderer_acceptance>" TIMEOUT 120
+    RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+file(WRITE "$<TARGET_FILE_DIR:atelier_renderer_acceptance>/renderer-acceptance.log"
+    "${_out}\n${_err}\nexit=${_result}\n")
+message("${_out}${_err}")
+if(NOT "${_result}" STREQUAL "0" OR NOT _out MATCHES "Renderer acceptance: PASS")
+    message(FATAL_ERROR "Renderer acceptance failed: ${_result}")
+endif()
