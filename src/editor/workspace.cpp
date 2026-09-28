@@ -19,12 +19,17 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
     auto toolbar = NodeInput::row(6); toolbar.height = Axis::fixed(48); toolbar.padding = {12, 8, 12, 8};
     add(2, 1, ControlKind::container, toolbar).role = ui::Role::panel;
     add(3, 2, ControlKind::label, NodeInput::box(210, 32), L"FROSTFOX / Scene").role = ui::Role::title;
-    add(control::add, 2, ControlKind::button, NodeInput::box(88, 32), L"+ Add cube");
-    add(control::remove, 2, ControlKind::button, NodeInput::box(72, 32), L"Delete").enabled = session.selected() != 0;
-    add(control::undo, 2, ControlKind::button, NodeInput::box(64, 32), L"Undo").enabled = session.undo_count() != 0;
-    add(control::redo, 2, ControlKind::button, NodeInput::box(64, 32), L"Redo").enabled = session.redo_count() != 0;
-    add(control::focus, 2, ControlKind::button, NodeInput::box(64, 32), L"Focus").enabled = session.selected() != 0;
-    add(control::reset, 2, ControlKind::button, NodeInput::box(108, 32), L"Reset camera");
+    const auto command = [&](ui::ControlKey key, float minimum_width, const wchar_t* text) -> ui::Control& {
+        auto layout = NodeInput::box(0, 32);
+        layout.width = Axis::content(minimum_width);
+        return add(key, 2, ControlKind::button, layout, text);
+    };
+    command(control::add, 88, L"+ Add cube");
+    command(control::remove, 72, L"Delete").enabled = session.selected() != 0;
+    command(control::undo, 64, L"Undo").enabled = session.undo_count() != 0;
+    command(control::redo, 64, L"Redo").enabled = session.redo_count() != 0;
+    command(control::focus, 64, L"Focus").enabled = session.selected() != 0;
+    command(control::reset, 108, L"Reset camera");
     auto body = NodeInput::row(); body.height = Axis::expand();
     add(20, 1, ControlKind::container, body);
     auto left = NodeInput::column(8); left.width = Axis::fixed(192); left.height = Axis::expand(); left.padding = {10, 12, 10, 12};

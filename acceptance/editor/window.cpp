@@ -204,6 +204,16 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(current_caret.x >= original_bounds.x && current_caret.x <= original_bounds.x + original_bounds.width &&
         original->find(field)->bounds == original_bounds && original_coverage->pixels == original_pixels,
         "Font update changed old-frame geometry/content or misplaced the new caret.");
+    for (const auto command : {control::add, control::remove, control::undo, control::redo, control::focus, control::reset}) {
+        const auto* box = app.presented()->find(command);
+        const auto coverage = text_coverage(*app.presented(), command);
+        require(box && coverage && box->bounds.x + box->bounds.width <= app.presented()->drawing->extent.width,
+            "Unified font change pushed a toolbar command outside the window.");
+        for (const auto& draw : app.presented()->drawing->draws)
+            if (draw.coverage == coverage) require(draw.bounds.x >= box->bounds.x &&
+                draw.bounds.x + draw.bounds.width <= box->bounds.x + box->bounds.width,
+                "Measured toolbar width clipped the changed font's glyphs.");
+    }
     capture(app, output / "s1-font.png");
     key(app, VK_ESCAPE);
     require(app.set_style(initial_style).has_value(), "Could not restore the editor style.");
@@ -300,6 +310,13 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
         "Dense-scene drag did not keep the existing position/history behavior.");
     app.sample_frames(false);
     const auto after = x(app, last);
+    // Number focus owns Ctrl+Z for drafts; document shortcuts follow focus exit.
+    const auto committed_history = app.document().undo_count();
+    key(app, 'Z', true);
+    require(x(app, last) == after && app.document().undo_count() == committed_history && app.wants_keyboard(),
+        "Ctrl+Z in numeric focus escaped to scene history.");
+    key(app, VK_ESCAPE);
+    require(!app.wants_keyboard(), "Esc did not release numeric keyboard ownership.");
     key(app, 'Z', true);
     require(x(app, last) == before, "One undo did not restore the dense-scene drag.");
     key(app, 'Y', true);
@@ -438,8 +455,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
     report << "Editor window acceptance: PASS\n"
            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> Runtime -> renderer\n"
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
-           << "S1: shared normal/hover/pressed/focus/invalid/disabled states; color-only coverage reuse/zero upload; atomic invalid-style rejection; font family/weight/size metrics/caret/raster; retained old-frame geometry/pixels; 256 real objects/offscreen geometry/culling/scroll-back; dense-scene drag undo/redo\n"
+           << "S1: shared normal/hover/pressed/focus/invalid/disabled states; color-only coverage reuse/zero upload; atomic invalid-style rejection; font family/weight/size metrics/caret/raster; retained old-frame geometry/pixels; 256 real objects/offscreen geometry/culling/scroll-back; numeric-focus Ctrl+Z stays local, Esc then native Ctrl+Z/Y drives dense-scene history\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
+           << "Sampling environment: this acceptance application enables hardware D3D12 debug/GBV and renderer vsync, including in release; results do not represent validation-disabled production frame time.\n"
            << "s1-resources.csv: UI cumulative counters use interval differences; renderer activity sums sampled render results. Resource peaks are sampled ownership counts, not total process memory or physical VRAM; R8 upload bytes exclude transfer padding.\n"
            << "DPI coverage: WM_DPICHANGED policy at the current monitor DPI; physical multi-monitor DPI migration not exercised.\n"
            << "Accepted frames: " << app.accepted_frames() << "\n";
