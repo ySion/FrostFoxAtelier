@@ -1,8 +1,8 @@
 # 原生 UI 下一增量：研究与实施方案
 
-状态：**S1 已实施并通过 dev/release 验收，待主持收口；S2/S3 待启动。**
+状态：**S1 主持已收口（`ec6a118`）；S2 共同合同准备完成，待实施派发与真实 IME 环境条件；S3 未启动。**
 
-日期：2026-09-28。代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；方案分支：`codex/ui-foundation`。
+日期：2026-09-28，更新于 2026-09-29。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；唯一集成分支：`codex/ui-foundation`。
 本页是编辑器当前排期的唯一入口。[首版记录](first-editor-plan.md)保留已交付的 M0/M1 与尚未完成的 M2 目标；保存重开、JIT 单步暂不进入本轮。
 应用负责人汇总三席只读研究（参数、工作区、UI 结构）及 UI/RHI 负责人反馈；本轮未运行 Houdini，以下严格区分官方文档观察、仓库事实和本项目选择。
 
@@ -65,30 +65,17 @@ Pin 按钮是查看状态，菜单项是命令，均不冒充 bool/enum 业务�
 
 ### 同一套样式和文字服务
 
-UI 提供一个小型 `Style`（字体、颜色、间距、边框等 token）和语义角色，`Session::set_style(Style)` 是候选入口。统一解析 normal/hover/pressed/focus/selected/disabled/invalid，Workspace 只声明角色、语义状态及结构布局。
+S1 已通过唯一 `Session::set_style(const Style&)` 校验并应用样式，统一解析 normal/hover/pressed/focus/selected/disabled/invalid；Workspace 只声明角色、语义状态及结构布局。当前合同见 [UI 模块](modules/ui/README.md)。
 颜色变化复用 R8 覆盖数据；字体族、字重或度量变化更新文字键/内容版本及测量 provider revision，不能继续把 provider 写死为 1。最终删除 Workspace 与 `prepare` 的重复颜色、`Control::font_size/background` 临时覆盖入口；有实际需要的差异通过同一角色解析表达。
 保留 LayoutDocument 与 TextStore。文字测量、视觉命中、选择区、caret 和 raster 使用同一 DirectWrite layout；扩展现有 caret 查询为点命中、范围矩形及必要的边界信息，不增加第二套文字 renderer。
 
 ### TextEdit 与 number 共用编辑过程
 
-- 同一编辑状态管理草稿、选择、caret、水平滚动、插入/删除、剪贴板及组合文本；number 只增加解析、范围、格式化策略，沿现有位置事务发出操作。
-- S2 开工前须裁决快捷键的焦点/活动编辑边界：首版及 S1 中，number 只有焦点、没有未提交草稿时仍消费 Ctrl+Z；Esc 退出后才进入场景历史。S1 保留并验收两种上下文。共享 TextEdit 不得把该现状直接当作成熟交互，需明确何时处理草稿撤销、何时交还场景历史。
-- `Action` 的数值载荷原地迁移为初期需要的 `variant<monostate, double, wstring>`。不预建无消费者的 bool/enum 载荷。
-- 参数搜索是真实文本消费者：Workspace 保存查询，匹配参数显示名/别名（包括“位置”、Position、XYZ），非组合草稿可即时过滤；Esc 恢复本次编辑前查询，不产生业务历史。搜索框自身不被过滤。
-- Win32 UTF-16 文本先整理成拥有所有权的字符串事件，替换当前把单个 `WM_CHAR` 强转为 `char32_t` 的链路。完整替换旧 ASCII 特判，禁止 number 与 text 各保留一个缓冲。
-- 编辑边界至少保持代理对、组合重音及本轮验收的 ZWJ 序列完整；caret/选择覆盖混合方向文本的视觉位置。共享边界函数承担删除/移动规则，DirectWrite 承担排版命中。DWrite shaping cluster 不等于完整 Unicode 字素规则；不凭 UTF-16 存储宣称全 Unicode 支持，具体实现和限制随 S2 实测记录。
+S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合同定义。保留一个 TextEdit 和同一 TextStore；number 使用数值解析/范围/格式化策略，Workspace 参数搜索是实际文字消费者，不增加业务字段或第二套编辑缓冲。
 
 ### 剪贴板、IME 与错误回路
 
-平台接线归 `Window`/`Application`，UI 通过同一 Reply/Event 合同输出请求、接收结果和给出已接受帧的 caret 矩形；UI 不直接持有 HWND/HIMC。
-剪贴板采用 `CF_UNICODETEXT`，文本有界且由事件拥有。往返带 `{control_key, incarnation, edit_generation, revision}`，过期结果拒收；剪切在平台写入成功后才删选区，失败保留缓冲。按 [SetClipboardData](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setclipboarddata) 的成功所有权转移规则管理内存。
-拟采用一个 IMM32 接线与系统候选窗，保留自绘 TextEdit；不另放隐藏 EDIT 文本模型，也不同时维护 TSF 替代路径。技术选择必须通过真实 Microsoft Pinyin 验收，失败则该切片未完成，由主持评估修正或替换。
-
-- WndProc 当场复制 [WM_IME_COMPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-composition) 的组合/结果字符串与属性，不将临时指针或稍后读取的 HIMC 状态排入队列。组合只作临时显示，未确认内容不进搜索或数值解析。
-- 组合开始固定 edit_generation/基础 revision；临时组合更新不推进已提交草稿 revision。结果进入统一插入路径，取消、目标替换或选择变化结束该绑定。普通焦点转换舍弃尚未提交的组合，再按合法/非法规则处理已有草稿；OS 失焦取消整个编辑。
-- 一个 native poll 内依序应用消息；不把整批消息盖上同一旧 revision 后逐条拒收。消费 IME 结果时避免系统再生成一遍 WM_CHAR，依据 [Microsoft 官方样例](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Win7Samples/winui/input/tsf/tsfapps/tsfpad-step1/TextInputCtrl.cpp) 核对消息默认处理。
-- 通过 [候选窗定位](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immsetcandidatewindow) 使用 HWND 客户区坐标中的 caret/排除矩形；随滚动、DPI 与已接受帧更新，遵守系统可调整位置的合同。
-- `Application::effects/action` 按顺序处理编辑动作。begin/preview/commit 失败后停止该组后续动作，调用同一取消路径并同步 UI 状态，保留首个错误；回滚失败明确显示。替换当前 `status(...)` 后盲目继续、可能覆盖错误的行为，不另建事务管理器。
+平台接线归 `Window`/`Application`，UI 不持 HWND/HIMC。产品沿唯一 IMM32 接线和系统候选窗推进，真实 Microsoft Pinyin 验收是完成条件；不放隐藏 EDIT，也不并存第二种文本后端。平台接口、失败与清理顺序见第 9 节。
 
 ## 6. 文件归属与替换清单
 
@@ -100,7 +87,7 @@ UI 提供一个小型 `Style`（字体、颜色、间距、边框等 token）和
 | [TextStore::set/measure](../src/ui/text.cpp)、Session 文字更新；固定字体与 `provider_revision != 1` | 字体键、样式度量版本与同一缓存失效链 | S1，删除固定 provider 合同 |
 | `Session::prepare` 对屏外控件直接 raster/emit | 候选 bounds∩clip 可见性检查，保留布局/滚动/身份信息 | S1，替换原生成位置，无第二遍兜底绘制 |
 | `Session::input/change_text/finish_edit` 的 ASCII 专用分支、单位置 caret；[Event/Action](../src/ui/session.hpp)；[Window::receive](../src/application/window.cpp)/`Application::native/action` 与验收消费者 | 共享 TextEdit、字符串/组合事件、typed value、同一 TextStore 查询和平台往返 | S2，删除旧 `character`/纯 double 处理及专用编辑缓冲，不留兼容入口 |
-| `Application::effects/action` 失败仍继续发动作、错误被后续状态覆盖 | 有结果的顺序派发、同一取消回路 | S2，与文本/数值迁移一起完成 |
+| `Reply.actions`、`Application::effects/action` 失败仍继续发动作、错误被后续状态覆盖 | 原地迁移到有序 `effects`、有结果的顺序派发和同一取消回路 | S2，所有消费者同时删除旧 actions 入口 |
 | `Workspace::describe` 标题/字段/键全部取 selected；`Application::action` 的 selected-only guard；[Session::begin_position/replay](../src/editor/session.cpp)；[scene 验收](../acceptance/editor/scene.cpp) | 显式目标、follow/pin、默认值与单一位置回放 | S3，删除无参 begin、旧 selected guard 与位置回放的选择赋值 |
 | `Session::hit` 先过滤当前存活性、`prepare` 统一继承父 clip；`Application::native` UI 前相机抢占 | 同帧 overlay/拦截，先拦截后活性校验，已有 capture 优先、未消费事件导航 | S3，替换原路由；普通子控件仍保留正常父裁剪 |
 
@@ -108,7 +95,7 @@ UI 提供一个小型 `Style`（字体、颜色、间距、边框等 token）和
 
 ## 7. 实施切片与端到端终点
 
-主持已批准路线并启动 **S1**；S2/S3 待 S1 验收收口后另行启动。每个切片完整迁移并清除对应旧路径后再交付；UI 与应用协议变化在同一集成点一起更新消费者。各负责人从文档提交 `fcb9ddf` 开新工作分支，不复用首版遗留开发分支，统一集成至 `codex/ui-foundation`。
+主持已收口 **S1**，现只授权 S2 合同准备、只读环境核实及文档提交；生产修改等共同合同确认后派发。S2 负责人从 `ec6a118` 开新工作分支，不复用首版或 S1 开发分支，统一集成至 `codex/ui-foundation`。S3 不启动；每片迁移完全部消费者并清除旧路径后交付。
 
 | 切片/主责 | 正式应用中的可观察终点 | 必须一起完成的清除与验收 |
 | --- | --- | --- |
@@ -117,7 +104,7 @@ UI 提供一个小型 `Style`（字体、颜色、间距、边框等 token）和
 | S3 参数查看和上下文命令；应用主责，UI 提供 overlay/路由 | pin A/select B→编辑/重置/undo/redo A，B 保持选中；删除固定 A 显示无效态，undo 恢复可查看；unpin 跟随；菜单操作不驱动相机 | 删除 selected-only 参数绑定/无参 begin/位置回放选中副作用及相机抢占分支；dev/release 覆盖合法/非法草稿切目标、整向量一次 undo、无变化无历史、菜单外点击/键盘/失效/旧帧、相机捕获释放、清理事件和关闭 |
 
 端到端都从 README 的同一 `atelier_editor` 入口及现有窗口验收扩展，不建立单元/mock 框架。真实 IME 体验不能用合成 WM_IME 消息冒充；必要的故障注入只补充正式路径的失败分支证据。报告区分实机、消息注入和静态检查。
-每片交付更新对应模块的当前合同及 README 实际能力；保留原有增删、拖动/文本撤销、相机、尺寸过渡和关停行为，除本页明确裁决的位置历史选择语义。已知缺陷或遗留双路径阻止切片结项；延后的新功能不宣称完成。
+每片交付更新对应模块的当前合同及 README 实际能力；除本页明确裁决的 S2 输入政策与 S3 位置历史选择语义外，保留原有增删、拖动、相机、尺寸过渡和关停行为。已知缺陷或遗留双路径阻止切片结项；延后的新功能不宣称完成。
 
 ## 8. 性能边界与验收证据
 
@@ -126,6 +113,86 @@ S1 在 UI 生成候选内容时先检查 bounds∩clip，再 raster/emit；布�
 集成后用真实场景对象列表（现有上限 256）滚动和连续参数编辑采样 release 的 prepare/render 时间分布、栅格次数、上传字节/draw 数及持有资源量；只加完成该测量所需的计数。根据结果决定是否存在下一项优化，报告推断与实测分开。
 当前真实业务参数只有位置 XYZ，不能由此宣称已验证高密度参数面板；出现真实更密集参数消费者后再测量，不制造假字段或另建 benchmark 产品。本轮尚无性能改善测量结论。
 
+## 9. S2 共同合同（应用与 UI，2026-09-29）
+
+本节已纳入主持的交互裁决；当前授权限合同、只读环境核实与文档提交，尚未派发生产修改。S2 只交付共享单行编辑与参数搜索，不提前迁移 S3 的对象 pin、位置回放选择或菜单路由。
+
+### 9.1 焦点、文字模式与事务
+
+focus 表示控件拥有键盘位置；文字模式决定鼠标是在调数值还是选文字；Edit 事务由首次实际文字变化启动。三者分别记录。点击、移动 caret、改变选区或 Ctrl+A 不建立事务；`1` 改成 `1.0` 虽然数值相等，仍是可本地撤销的文字修改。
+number 未进入文字模式时，保留原指针阈值和拖动调值；未拖动的 click 进入文字模式并可全选，随后 down/move 用同一 DWrite 命中拖选。拖调完成后回仅聚焦，没有文字事务或本地历史。text_edit 聚焦即可选字和输入；number 仅聚焦时收到有效单行文字事件也进入文字模式并统一插入，包括不能解析成数字的草稿，不恢复 ASCII 白名单。文字导航/选择/剪贴板按键必要时先进入文字模式；仅 Z/Y 按下表决定是否交业务，字段焦点下 Delete/Backspace 仍归文字处理，不得删除场景对象。
+
+| 当前状态 | Ctrl+Z / Ctrl+Y（含 Ctrl+Shift+Z） | Enter | Esc |
+| --- | --- | --- | --- |
+| 仅聚焦；无事务、无本地历史、无组合 | `consumed=false`，交应用场景历史；不得先 lazy begin Edit | number 非文字模式只进入文字模式；clean 文字模式结束模式；text_edit 无修改不写业务 | 结束文字模式/待处理请求，无业务写入 |
+| 已有未提交草稿；当前方向无本地撤销/重做可用 | 消费但不改变值，不穿透到场景 | 合法：提交；非法：保留 invalid 草稿、焦点和文字模式 | 取消整次 Edit，恢复 original |
+| 本地 undo 或 redo 可用，含 undo 回原文但仍有 redo | 只移动本地历史；有效新草稿沿同一 preview 更新 | 同上 | 同上 |
+| IME 组合中（覆盖上述状态） | 消费，不动本地或场景历史 | 只确认组合，结果作为一次普通文字修改；不再次提交字段 | 只取消本次组合，恢复组合前草稿/选区；不取消已存在的 Edit |
+
+Enter 提交、clean Enter 或 Esc 结束字段时，清事务/本地 undo-redo/组合及 pending 请求、推进 generation，**保留控件 focus**；number 退出文字模式，text_edit 保留可输入焦点但无事务。保留 Tab 位置，下一次 Z/Y 可进入场景历史。实际换焦点则归新控件；OS 失焦或控件失效清焦点。模式转换与提交/取消只响应一次 Enter/Esc 按下序列，不能因 repeat 或对应 WM_CHAR 再走一次转换。
+数字拖动之后或仅聚焦时，场景 undo/redo 改变权威值，下一次 `set_controls` 同步被动缓冲及合法选区，并更新 revision；不能让旧缓冲覆盖新权威值。`wants_keyboard()` 表示字段文字输入能力，Z/Y 归属只依 `Reply.consumed`。
+
+**S2 有意改变 S1 的三项行为**：仅 number 焦点不再吞场景 Z/Y；非法 Enter 保留草稿而非取消退出；字段结束后保留 focus。迁移原窗口断言，不能靠绕开命令证明新行为。未提交的非法数字草稿不发业务 preview/commit；已有合法 preview 保持到后续合法修改或整次取消，取消恢复事务原值。
+
+### 9.2 搜索、选择与本地历史
+
+- Workspace.query 是真实查看投影，匹配参数名/别名（“位置”、Position、X/Y/Z）；查询控件始终存在。首次真实修改发 `edit_begin(original)` 和 `edit_preview(draft)`；后续非组合修改和本地 undo/redo 即时过滤，preedit 不过滤。查询不进入场景历史。
+- Enter 或普通换焦点提交最后查询；Esc、OS 失焦、Surface 失效、控件移除/禁用/折叠取消并恢复 original。仅聚焦无修改不发 begin/cancel，不回写外部值。数字普通失焦则合法提交、非法取消；尚未确认的组合先取消，再处理已有草稿。
+- 一个 TextEdit 共用 UTF-16 缓冲、anchor/caret（含 trailing affinity）、横向滚动、original 和本地历史。索引单位是 UTF-16 码元，编辑端点落共享字素边界；不允许孤立代理项。单行事件中的换行或超长插入整笔拒绝，不截断字符或向多个参数分发。
+- 点击/拖选使用同一 DWrite layout 点命中；Left/Right 沿视觉顺序到合法字素端点，Shift 扩选，Home/End 到行端，Ctrl+A 全选；删除/替换使用逻辑范围。双向选区用 `HitTestTextRange` 多矩形，不能用两个 x 相减。至少验收非 BMP、组合重音、variation selector、明确 ZWJ 序列和双向混排；记录边界实现/Unicode 版本及实测限制，不将 shaping cluster 宣称为完整字素规则。
+- 连续普通键入、连续 Backspace、连续 Delete 各可合组，须同类且 caret 连续；移动/选区、pointer、Ctrl 命令、焦点/模式、clipboard/IME 操作断组，无时间阈值。cut/paste/一次 IME result 各一组，preedit 不入历史；新修改清 redo。
+- 单活跃会话 undo+redo 最多 64 组，保存的 UTF-16 历史文字合计最多 64 KiB（每码元 2 字节）；任一上限淘汰最老完整组。original 和当前缓冲另受 text_edit 4096、number 64 码元上限约束。可用简单文字/选区快照，不要求差量算法；淘汰不能改变快捷键归属或破坏 Esc 恢复 original。
+
+### 9.3 唯一共享头与平台往返
+
+UI 维护 `src/ui/session.hpp` 的唯一合同，以下形状在共享头提交时一次落定，不保留旧别名：
+
+| 合同 | 最小形状与不变量 |
+| --- | --- |
+| Control / Action | `ControlKind::text_edit` 使用已有 `Control.text` 作权威投影；number 保留 value/min/max/step 策略。`Action.value = variant<monostate,double,wstring>`；activate/select 无值，number/splitter 编辑用 double，文字编辑用 wstring；保留现有 ActionKind |
+| Event | 删除 `character`；文字事件拥有完整 `wstring`。Key 增加 c/x/v，Z/Y及Shift使用现有修饰位；平台结果、组合事件都是拥有的数据，不带 HWND/HIMC/临时指针 |
+| EditToken | `{key, incarnation, generation, revision}`。generation 标识焦点编辑上下文，结束/重绑换代；普通草稿、caret、selection 改变推进 revision。preedit 的临时内容/cursor 不推进基础 revision |
+| ClipboardRequest/Result | kind=read/copy/cut，完整 token、唯一 `operation_id`；请求可带选中文字，结果带 success/native_error/拥有的 text。UI 分配 id；kind+id+完整 token 匹配且尚未结算才应用一次。同 revision 的两个请求也不得误配 |
+| ImeRequest/Result | kind=complete/cancel，完整 token、独立 `composition_id`；结果带 success/native_error。成功只表示原生调用成功，不能据此合成确认文字；确认/结束以 OS 事件为准，旧命令不得作用于新组合 |
+| CompositionEvent | start/update/end/cancel、`composition_id` 和固定绑定；可选 result 字符串与可选拥有完整 text/cursor/属性的 preedit 快照，区分缺失与空。可在同条原生事件内先含 result 再含新 preedit，两者均处理；原生取消不伪装为空文字提交 |
+| Reply | 原地删除 `actions`，唯一 `effects = vector<variant<Action,PlatformRequest>>`；PlatformRequest 为上述有限 clipboard/IME 请求，capture/cursor 沿用已有字段。无通用命令注册或第二请求队列入口 |
+| TextCaret / 查询 | `UiFrame::caret = optional<{token,Rect bounds,Clip clip}>`，为客户区物理像素；frame/surface/DPI 复用 drawing。`Session::text_input()` 返回可选当前 token/composing/accepted_caret；只有与当前身份、焦点、token、Surface 相容的 presented 帧才提供位置 |
+
+剪贴板使用 `CF_UNICODETEXT`，按 [SetClipboardData](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setclipboarddata) 管理成功时的所有权转移。cut 在匹配写入成功后才删除请求时选区；paste 读取成功后走同一插入和本地历史。过期、重复、失败结果都不改缓冲；普通剪贴板失败保留 Edit/history/selection 供重试并显示原生错误，不取消整字段。
+业务 begin/preview/commit 失败则停止该组剩余普通 effects，执行唯一 UI cancel/业务 rollback 与必要 IME/capture 清理；保留首个错误并明确报告 rollback 失败。清理不得因停止队列而遗漏，后续成功 status 不得覆盖首错。
+
+### 9.4 原生消息、组合与 accepted caret
+
+1. 原地调整 `Window::poll`：逐条 Dispatch 后，将复制拥有的 NativeEvent 交 Application 依序处理及应用 effects，再接下一条消息。WndProc 只复制/排队；平台调用引发的同步 Win32 回调也排队，不能重入 Session/业务，不另建输入泵。普通文字按当前合法上下文依序应用，不给整个 poll 盖同一旧 revision。
+2. [WM_IME_COMPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-composition) 的 result/preedit/cursor/属性当场复制。start 分配 composition_id，绑定当前 token/base revision 和原替换选区；后续沿该组合流，不按最新 focus 重新盖标签。取消使流失效，迟到结果丢弃，真正新 start 才可重绑。
+3. 组合 result 进入统一文字插入及本地历史；数值解析/搜索只消费确认文字。同条事件 result 后仍有新 preedit 时，后者基于刚更新的草稿/revision 开始下一段，不能因旧标签拒掉，也不能丢弃。普通选区/目标变化先取消当前组合；取消恢复组合前选区，保留之前已确认的 Edit 草稿。
+4. 原生 IME 处理期间，终止组合的 Enter/Esc 的 keydown/repeat/keyup 均保持 IME 归属，不能结果先到后把 keyup/重复 down 当字段命令；Ctrl+Z/Y 也不落本地或业务历史。普通输入仅由拥有的文字事件插入，不能 keydown 与 WM_CHAR 各插一遍。消费 result 后按 [Microsoft 样例](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Win7Samples/winui/input/tsf/tsfapps/tsfpad-step1/TextInputCtrl.cpp) 避免默认处理再产生重复文字。
+5. 候选位置只用匹配 accepted caret，经 [ImmSetCandidateWindow](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immsetcandidatewindow) 给系统客户区位置/排除矩形；没有匹配 caret 时等下一接受帧，不用未呈现的候选几何。字体、横滚、DPI 同时更新文字与 caret；失焦/失效立即撤销可用锚点，旧帧仍可持有但不能作为新目标的输入位置。
+
+### 9.5 本机环境与真实输入证据
+
+2026-09-29 只读检查：系统为 build **26200.9457 / 25H2**；用户输入列表为 zh-Hans-CN 搜狗拼音与 en-US 美式键盘，默认覆盖仍为搜狗。Microsoft Pinyin 的系统 profile 存在，但 `Enable=0`，未列入用户 InputMethodTips；用户 CTF 路径无对应启用记录。
+Pinyin TIP 为 `{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}`，profile 为 `{FA550B04-5AD7-411F-A5AC-CA038EC515D7}`。`C:\Windows\System32\InputMethod\CHS\ChsIME.exe` 版本 `10.0.26100.9278`，Authenticode 为 Valid / Microsoft Windows。以上证明安装与注册存在，**不证明实际组合输入已可用或已通过**。
+来源为 `Get-WinUserLanguageList`、`Get-WinDefaultInputMethodOverride`、CTF LanguageProfile 注册表、文件版本及签名；未改任何输入设置。[ActivateProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile) 的 ENABLEPROFILE 会写用户注册表，不能把它当只读探测。主持已向用户请求是否启用现有 Pinyin、保留搜狗默认且不删除/重排现有输入法；答复前不启用，此条件不阻塞合同准备。
+
+真实 IME 验收须在授权且 profile 可用后进行：
+
+- 同一 `atelier_editor`、同一消息泵与 TextEdit。记录原活动 profile，仅在验收窗口的线程选择已启用 Pinyin，结束还原；不改系统默认。配置选择/识别可用 TSF profile API，产品文字接线仍是唯一 IMM32，不成为第二种编辑后端。
+- 确认窗口前台、交互桌面与输入权限后，使用真实硬件输入或 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 的物理键/扫描码键序列输入拼音并选候选，不使用 Unicode 直接灌字。检查插入数量、修饰键状态、活动 profile，以及确由系统产生的 start/preedit/result/end；失去目标前台即停止送键，避免输入落到其他窗口。
+- 搜索中实际拼出“位置”，检查候选窗、确认/取消、组合 Enter 不提交字段、结果只插入一次；再覆盖数字 invalid 草稿、焦点/Surface/目标变化、横滚与 caret 定位。原生候选窗在 OS 层，须原生窗口/桌面区域证据或人工观察记录，renderer readback 只能证明应用绘制，不能冒充候选窗截图。
+- 报告分别列出 **系统 IME 驱动**（profile、实际键序列、系统组合流及可视候选）、**故障消息/结果注入**（过期/重复 token、剪贴板失败、迟到组合、业务失败回滚等）和 **静态环境检查**。SendMessage/合成 WM_IME 只算注入；搜狗结果也不能当作 Microsoft Pinyin 通过。真实链未通过时 S2 未完成。
+
+### 9.6 文件归属、迁移顺序与终点
+
+| 阶段 | 唯一负责文件/动作 | 交接与清除条件 |
+| --- | --- | --- |
+| 共同合同确认后：共享头提交 | UI：`src/ui/session.hpp`；TextEdit/TextStore 私有设计仍归 UI | 一次提交 ControlKind、拥有事件、Action.value、effects、tokens、caret/query；应用仅按明确 SHA 消费，不复制头、不留旧字段兼容 |
+| UI 实现与平台接线并行 | UI：`src/ui/session.cpp`、`text.hpp/.cpp`、必要私有编辑实现、`acceptance/ui`、UI CMake/文档；应用：`Window::NativeEvent/receive/poll`、`Application::native/action/effects` 及转发、Workspace 查询和 `acceptance/editor`、根接线 | UI 删除 numeric-only Edit/ASCII 分支和单 x 选区查询；应用删除 char32 WM_CHAR 强转、旧 double 访问与 `.actions` 消费。业务位置入口/回放保持 S1，RHI 不扩展 |
+| 唯一分支集成 | 应用只 cherry-pick UI 明确提交到 `codex/ui-foundation` | 同一 TextEdit、DWrite、Reply.effects 和 Win32 泵贯通全部消费者；平台失败与业务失败分别处理，清理无遗漏；中间接口提交可短暂未构建，不能带兼容入口交付 |
+| dev/release 同窗口验收 | 应用统筹，UI 提供真实文字服务验收 | 四状态键盘矩阵、number 两种指针模式、权威值同步、搜索提交/回滚、分组和有界本地历史、Unicode 选区/删除、剪贴板成功/失败/过期、业务失败清理、真实 Pinyin 及候选、原有场景/窗口链；全部通过才提交主持收口 |
+
+本轮只提交这份共同合同。未启用 Pinyin、未写生产代码、未构建；下一步由主持一次确认合同及环境条件并明确派发 S2，S3 不启动。
+
 ## 会审结论入口
 
-主持已关闭研究会审，批准三片顺序并授权 S1 生产修改、双配置真实窗口验收及本地提交/集成。S1 已完成统一样式、真实字体度量失效、屏外内容剪除及全部消费者迁移；dev/release UI 8/8、场景与各 597 帧窗口链通过，实测和证据位置见[编辑器验收](modules/editor/README.md#验收入口)。当前待主持收口；S2/S3 仍待启动，不推送或合并主线。
+主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。S2 当前仅共同合同和环境核实；第 9 节为应用/UI 的唯一实施交接依据，待主持派发生产修改。S3 未启动，不推送或合并主线。
