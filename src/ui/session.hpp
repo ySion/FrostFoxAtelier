@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ui/frame.hpp"
+#include "ui/style.hpp"
 #include "ui_layout/layout.hpp"
 #include <expected>
 #include <limits>
@@ -18,9 +19,8 @@ struct Control {
     ControlKind kind{ControlKind::container};
     ui_layout::NodeInput layout{ui_layout::NodeInput::column()};
     std::wstring text;
-    float font_size{14}; // Logical pixels (DIPs).
+    Role role{Role::normal};
     bool enabled{true}, selected{};
-    std::optional<Color> background;
     double value{}, minimum{-10000}, maximum{10000};
     double drag_step{0.01}, fine_step{0.001}; // Value per logical pointer pixel.
     DragAxis drag_axis{DragAxis::horizontal};
@@ -45,6 +45,7 @@ struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
     std::uint64_t session_identity{};
+    std::uint64_t style_revision{}, measure_provider_revision{};
     const ControlBox* find(ControlKey) const noexcept;
 };
 
@@ -77,13 +78,21 @@ struct Event {
     bool shift{}, control{}, alt{};
 };
 enum class ErrorCode { invalid_surface, unavailable_surface, invalid_control, layout_failed,
-                       text_failed, capacity_exceeded };
+                       text_failed, capacity_exceeded, invalid_style };
 struct Error {
     ErrorCode code{};
     ControlKey key{};
     std::uint32_t native_code{};
 };
 template<class T> using Result = std::expected<T, Error>;
+
+struct Statistics {
+    std::uint64_t prepares{}, measure_calls{}, text_layouts{}, rasterizations{}, raster_bytes{}, coverage_cache_hits{};
+    std::uint64_t culled_text_controls{}, provider_revision{};
+    // Unique CPU coverages produced by this Session and still retained by any
+    // owner (text cache, current/old frames or renderer). No per-frame scan.
+    std::uint64_t live_coverages{}, live_coverage_bytes{};
+};
 
 // One owner thread. Owns UI state and content versions, not scene objects or undo.
 // Keep returned frames through render(); accept only after final renderer accepted.
@@ -93,6 +102,9 @@ public:
     ~Session();
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
+    Result<void> set_style(const Style&); // Validate/copy the complete value before applying.
+    const Style& style() const noexcept;
+    Statistics statistics() const noexcept;
     // Resize/DPI transitions cancel presses/edits and gate activation until a
     // matching candidate has been accepted. Zero extent is a valid suspended state.
     Result<Reply> set_surface(Surface);
