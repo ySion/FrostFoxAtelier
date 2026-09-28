@@ -1,6 +1,6 @@
-# 自研布局首步：原生实验与落地建议
+# 历史证据：自研布局首步原生实验
 
-> 后续进展：用户已授权并完成生产首增量，当前实现与正式验收见[布局模块](../../modules/ui-layout/README.md)。下文保留首步探索结束时的阶段快照；其12项结果不代替后续生产17项验收，原先的合同提案已迁入[正式合同](../../modules/ui-layout/contract.md)。
+> 后续进展：用户已授权并完成生产首增量，当前实现与正式验收见[布局模块](../../modules/ui-layout/README.md)。下文保留首步探索结束时的阶段快照；其12项结果不代替当前正式验收，原先的合同提案已迁入[正式合同](../../modules/ui-layout/contract.md)。
 
 状态：**首步研究与隔离原生实验已完成；开发/发布配置各 12/12，通过退出码均为 0。** 这是尺寸依赖、真实测量和结果发布的探索证据，不是生产布局库验收。本页记录阶段实验，不另立永久合同；当时的合同提案已进入[当前正式合同](../../modules/ui-layout/contract.md)。
 
@@ -15,7 +15,7 @@
 
 ## 2. 实际产物与依赖
 
-实验位于 [`acceptance/ui_layout_step1_probe/`](../../../acceptance/ui_layout_step1_probe/)：
+实验原位于acceptance/ui_layout_step1_probe，现已退役。源码与runner可从Git提交`c644ba5692fe2d67d1dda93953e227a50ba64f9f`恢复。以下是当时组成：
 
 | 文件/目标 | 内容 |
 |---|---|
@@ -73,20 +73,7 @@
 
 ## 6. 复现与原始材料
 
-在布局专属 worktree 的 PowerShell 中运行：
-
-```powershell
-./acceptance/ui_layout_step1_probe/run.ps1 -Configuration both
-```
-
-本次为避免重复下载，实际使用已有 mimalloc 源目录：
-
-```powershell
-./acceptance/ui_layout_step1_probe/run.ps1 -Configuration both `
-  -ReuseMimallocSource E:/FrostFoxAtelier/out/release/_deps/mimalloc-src
-```
-
-可选本地源覆盖要求该目录已有正确依赖来源；运行中的版本检查不等于重新审计整棵依赖源码。省略覆盖参数时走项目正式 FetchContent 锁定路径。两个构建分别生成 `layout_step1_kernel.lib`、`layout_step1_probe.exe`，程序由 runner 捕获并等待退出，不以编译成功代替执行。
+实验已完成职责，当前构建只使用[正式布局验收](../../modules/ui-layout/acceptance.md)。若研究需要重现这份历史，须从上述提交恢复对应源码与runner。
 
 原始材料在 `out/review/ui-layout-step1/`：
 
@@ -95,14 +82,4 @@
 - [initial-failure.json](../../../out/review/ui-layout-step1/initial-failure.json)：修复前双配置失败输出及对应源码环境记录；没有被最终 PASS 覆盖。
 - `dev-configure.log` / `release-configure.log`、`dev-build.log` / `release-build.log`：实际配置和构建输出；初次完整反馈记录保留在 `initial-console.log`。
 
-`out/` 是本地生成证据，不保证随源码交付。缺失时以本页摘要和实验源码重新运行，不声称对方已有本机二进制/日志；源码未提交时以记录的文件哈希对应证据，不虚构提交 revision。
-
-## 7. 首个生产增量的实施清单
-
-1. 审查[首增量合同提案](../../modules/ui-layout/decisions.md)，把确定语义迁入正式 `contract.md` / `acceptance.md`，将旧 Yoga 合同保留为明确历史材料。
-2. 在 `src/ui_layout/` 实现原生拥有者、稳定局部身份、结构编辑/校验；不直接导出实验的整数ID与全量batch接口。
-3. 用同一内部测量/安排机制落地行列、覆盖/父框锚定、整池带权分配、真实叶测量、缓存及原子发布；将本次反例迁入正式消费者。
-4. 在 `acceptance/ui_layout/` 验证身份失效、结构编辑、资源/失败、快照和真实文字；沿既有工程规则完成最小目标接入及双配置运行。
-5. 共享列、换行/重复格、实际增量及虚拟视图继续按 S08 分增量实施，不由本次12个场景抵扣。
-
-结论：首步已经有可运行证据支持上述窄合同提案；目前交付的是探索程序和可审查的生产入口，**不是“生产布局库已完成”，也没有“比第三方更快”的结论。**
+`out/` 是本地生成证据，不保证随源码交付。缺失时仅可从上述历史提交恢复实验源码重新运行，不声称对方已有本机二进制/日志；源码未提交时以记录的文件哈希对应证据，不虚构提交 revision。

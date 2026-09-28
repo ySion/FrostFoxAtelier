@@ -1,6 +1,6 @@
 # 布局核心真实路径验证结果
 
-状态：**三条候选已完成本轮隔离实验。Yoga 与修正后的 Taffy 在开发/发布均通过 9 组已实现检查；Clay 为 6/9，真实失败保留。** 这不是完整产品合同验收，没有创建或接入生产布局库，也没有冻结生产 Interface。
+状态：**三条候选已完成本轮隔离实验。Yoga 与修正后的 Taffy 在开发/发布均通过 9 组已实现检查；Clay 为 6/9，真实失败保留。** 这不是完整产品合同验收，该实验当时没有创建或接入生产布局库；本页不定义当前Interface。
 
 > **后续方向更新：用户已决定自研垂直域布局库。** 当前设计见 [自研方案](../../modules/ui-layout/decisions.md)。下方裁决是实验结束时的历史判断，第三方结果继续作为比较证据，不代表当前仍待从三库中选择生产后端。
 
@@ -14,18 +14,9 @@
 
 ## 2. 实验位置与复现
 
-源码和独立构建入口位于 [acceptance/ui_layout_probe](../../../acceptance/ui_layout_probe/)。未修改主项目 CMake、正式依赖锁或工具链锁。三个真实候选共用 `main.cpp`、真实 DirectWrite 提供者与实验 C ABI；不是空回调或合成文字尺寸。
+历史探针原位于acceptance/ui_layout_probe，使用真实DirectWrite和三个真实候选。现已由正式原生布局消费者替代并退役；其源码、runner和Cargo锁可从Git提交`c644ba5692fe2d67d1dda93953e227a50ba64f9f`恢复。当前运行入口见[正式验收](../../modules/ui-layout/acceptance.md)。
 
-在 worktree 根目录运行，要求锁定 C++ 工具已就绪，Rust 1.97.1 的 rustc/cargo 已在 PATH：
-
-```powershell
-pwsh -NoProfile -File ./acceptance/ui_layout_probe/run-probes.ps1 `
-  -Configuration both -Candidates yoga,taffy,clay -RunBenchmarks -Samples 100
-```
-
-没有本地 LLVM 时可传 `-SharedToolsRoot` 指向已安装锁定工具的 `.tools`；已有匹配 mimalloc 源码时可用 `-ReuseMimallocSource`，否则沿用仓库固定 FetchContent 来源。来源下载校验 SHA-256；Cargo 使用实验自身的 Cargo.lock 和隔离 CARGO_HOME/target。
-
-- 来源与哈希唯一清单：[sources.json](../../../acceptance/ui_layout_probe/sources.json)。Yoga `042f501...`；Taffy `77f3856...`；Clay M `e6cc369...`，不是 Clay v0.14 的实测。
+- 来源与哈希唯一清单：[sources.json](sources.json)。Yoga `042f501...`；Taffy `77f3856...`；Clay M `e6cc369...`，不是 Clay v0.14 的实测。
 - 构建：Windows x64；Clang 23.1.1；Windows SDK 10.0.26100.0；VC tools 14.50.35717；Rust 1.97.1 / x86_64-pc-windows-msvc，panic=unwind；mimalloc 3.5.3。具体版本、CPU、源码哈希、字体和 DWrite 文件哈希见 [environment.json](../../../out/review/ui-layout-validation/environment.json)。
 - 实机：Windows 10.0.26200、Ryzen 9 3950X，16 核/32 逻辑处理器。只用 Release 作性能对照；构建结束后串行运行。没有设置产品帧预算，没有将 1k 节点定义为产品上限。
 - `Segoe UI`、en-US；字体缩放/版本变更通过真实提供者验证。记录可用字体文件哈希不等于已经跟踪每个 CJK glyph 的实际 fallback face。
@@ -36,11 +27,11 @@ pwsh -NoProfile -File ./acceptance/ui_layout_probe/run-probes.ps1 `
 
 [可读构建日志](../../../out/review/ui-layout-validation/final-validation-utf8.log) 从原始混合编码日志逐行无替换转码；原始 `final-validation.log` 保留。每次运行记录 EXE SHA-256；最终源码的 11 个哈希已核对一致。初始失败及修正前样本保留在 `runs-initial.json` / `environment-initial.json`，不混入下方最终表。
 
-运行后的 EXE/DLL 指纹另见 [binary-provenance.json](../../../out/review/ui-layout-validation/binary-provenance.json)。out 是本机证据目录，不能假定其他 worktree 已带有这些原始文件；缺失时按入口重建新的批次，本页保留本轮摘要，不冒称日志已随源码提交。
+运行后的 EXE/DLL 指纹另见 [binary-provenance.json](../../../out/review/ui-layout-validation/binary-provenance.json)。out 是本机证据目录，不能假定其他 worktree 已带有这些原始文件；缺失时只能恢复对应历史源码重新生成实验批次，本页保留本轮摘要，不冒称日志已随源码提交。
 
 ## 3. 行为矩阵
 
-以下是已实现 fixture，不把 [完整验证设计](probe-plan.md) 的所有设想记作通过。几何比较使用 `0.08 + 0.000002 × max(abs(a),abs(b))` 容差，非逐 bit 相同；大虚拟坐标的相对容差也不能当作像素级 clip/hit-test 证明。
+以下只记录当时实际执行的fixture；未运行设想不计入通过。几何比较使用 `0.08 + 0.000002 × max(abs(a),abs(b))` 容差，非逐 bit 相同；大虚拟坐标的相对容差也不能当作像素级 clip/hit-test 证明。
 
 | 检查 | Yoga Debug / Release | Taffy Debug / Release | Clay Debug / Release |
 |---|---|---|---|
@@ -162,7 +153,3 @@ Clay adapter 还修正了本 snapshot 的容量耦合：text hash 桶索引空�
 - 几何高度相符不代表已经逐 glyph/逐行验证 baseline、ink、bi-di 或所有 Unicode 换行；没有 renderer、完整 docking、输入/焦点、GPU在飞寿命验收。
 - 没有最终生产 NodeId/代际、发布租期或内存限额合同；实验全量拥有输出只是本轮等价消费选择，不强制未来每帧全量深拷贝。
 - 未锁定进程亲和性/电源策略，表为一次串行本机样本，不能转成跨机保证或硬帧预算；主项目全仓验收未运行，因为没有接入生产 target。
-
-## 8. 与第一阶段的关系
-
-[第一阶段裁决](synthesis.md) 保留为调研与对抗快照；“Taffy优先验证”不是预先选中。当前证据足以否定“矩形榜单能决定通用 UI 核心”以及“纯跨语言调用必然主导 Taffy 成本”，还不足以宣布某个未实现的优化或生产库已经获胜。继续沿可组合的尺寸依赖/容器协议推进，用本页的真实反例约束下一次实现，而不是回到旧合同或扩大成浏览器。

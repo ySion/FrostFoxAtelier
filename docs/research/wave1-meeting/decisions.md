@@ -111,7 +111,7 @@ B历史索引、类型注册冷路径索引、共享LLJIT、全引擎任务调�
 
 ## 6. 独立交接入口
 
-- [UI布局session交接](../../modules/ui-layout/session-handoff.md)：同目录README、contract、decisions、acceptance、research组成完整资料集。
+- [UI布局当前入口](../../modules/ui-layout/README.md)：现行合同与验收由模块README导航；旧交接已退役。
 - [RHI session交接](../../modules/rhi/session-handoff.md)：同样六文件，第一里程碑明确是资源提交闭环，不是完整renderer。
 - 主线继续时先读本报告和 [证据表](evidence.md)，再读对应探索/反方报告；不用从旧会话猜未决语义。
 - 各席位的争论、修正和被否决反例保留原稿；尤其保留词法根/poll条款误读撤回、GC稠密索引漏扫反例、名字索引小输入回退和退休成本移动，不把全体意见相同当作证明。

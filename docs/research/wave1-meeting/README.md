@@ -8,7 +8,7 @@
 
 - [主持裁决与推进顺序](decisions.md)：两个已复现缺陷、性能候选/负结果、并行边界及下一步验收门槛。
 - [本机证据与复现入口](evidence.md)：19个实验构建、46次运行、隔离A/B及明确未覆盖项。
-- [UI布局完整交接](../../modules/ui-layout/session-handoff.md)与[RHI完整交接](../../modules/rhi/session-handoff.md)：各自六份文档；路径已证实，生产模块尚未实现。
+- [UI布局当前入口](../../modules/ui-layout/README.md)与[RHI完整交接](../../modules/rhi/session-handoff.md)：本次会议时记录的是路径与设计；后续实现状态以各模块当前入口为准，布局旧交接已退役。
 - [内容基线](baseline.json)与[最终文档/证据校验](../../../out/review/wave1-meeting/validation.json)：不把历史验收、新实验和未来模块合同混为一谈。
 
 | 意图 | 探索报告 | 反方报告 |

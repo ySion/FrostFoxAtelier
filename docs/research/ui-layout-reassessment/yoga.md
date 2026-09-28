@@ -1,5 +1,7 @@
 # Yoga：固定源码审查与真实路径验证提案
 
+> 历史来源研究，保留固定版本、主源与取舍依据；文中候选/下一步措辞仅指研究当时。当前实现采用原生LayoutDocument，现行合同和39项验收见[布局模块](../../modules/ui-layout/README.md)。本页不构成待实施计划。
+
 ## 1. 身份与版本
 
 **Yoga 是持有布局树及缓存的 Flexbox 求解器，不是通用布局协议、控件框架或完整 UI 系统。** 它值得进入游戏 UI 的 flex 子域短名单，但现有证据不足以把共享轨道、虚拟化和任意自定义容器统一交给它。[事实/推断：4–8]
@@ -86,20 +88,6 @@ absolute 可表达角落定位和覆盖盒；其 containing block 通常是最�
 
 应固定源码 SHA、编译器、CRT 和异常边界，优先使用 YGNodeRef，不把内部 C++ 类暴露为跨 DLL ABI。Node 持有 Config 指针，节点存续期间 Config 和 callback context 必须有效。`extern "C"` 不代表不抛异常或跨编译器二进制兼容。[事实：4、14、19–21；推断]
 
-## 7. 最强论据与可执行 probes
-
-**最强支持：[事实/推断]** C/C++ core 可嵌入且机制可审计；Flex、文本测量、baseline、absolute 和缓存可覆盖 HUD、工具栏、弹窗、表单局部布局，避免从头编写常用分配器。此理由不依赖旧选择和上游跑分。
-
-**最强反证：[事实/推断]** 编辑器关键的共享轨道和虚拟化仍需外部协议，而 custom measure seam 不接受 Yoga 子树；这可能让大部分复杂性落到第二套布局层。两遍分配与全树后处理只是需要具体验证的风险，不能因未完整实现 CSS 直接否决。
-
-以下全部未运行，数字结果注明推演，不是实测：
-
-1. **多级 max 饱和。** root=300×10，row，无 padding/gap，scale=0；依次插入 B/C/A，均 basis=0、grow=1、height=10，B maxWidth=120、C 无上限、A maxWidth=30。若产品合同是“未达上限者继续分配余宽”，应得 B/C/A=120/150/30。固定算法推演可能为120/135/30，余15；改为 A/B/C 排列对照。断言浮点宽度总和及各项结果。**只有产品要求充分分配时，才构成反例。** [推断：8]
-2. **内容和 provider 热替换。** measure 叶先返回40×10，清 HasNewLayout；修改同一 context 为80×20，分别不 dirty 与 MarkDirty 后计算，记录调用和最终尺寸；再仅替换 measure/baseline 函数。验收字体/内容/provider 版本变化不会陈旧，不要求每帧回调。[事实导出的 probe：4、14、16]
-3. **共享轨道与 seam。** 两行 Inspector，第二行标签更长，要求统一标签列。先验证带 children 节点注册 measure 的 fatal；再以不透明叶+外部 tracks arrange。缩窗、加错误提示、隐藏最长标签，断言只有单一列宽写入权威，子矩形来自最终盒而非最后一次 measure。[事实导出的 probe：4、14、15]
-4. **增量/分配。** 以实际布局节点1k/10k构造宽树及多行wrap树，分别测完全clean、单叶dirty、祖先resize、增删；统计 solver/rounding 访问、measure 次数、临时分配、宿主同步及结果应用。scale=0/1/1.25分组。分别验证“clean缓存路径”“实际重算后全树后处理”“分行临时分配”，不得混成每次compute都全树。[事实导出的 probe：7、8、17]
-5. **containing block 与百分比。** root200×200/padding10，static中间盒100×100，绝对后代width50%/bottom10；切换中间盒relative或always-forms-containing-block，核对参照盒。另父宽auto、gap10%，记录自然宽及换行点。errata 固定，避免配置差异伪装成引擎差异。[事实导出的 probe：9、10、12]
-6. **虚拟化与失败隔离。** 十万逻辑行只实现约百行，缩宽使离屏文本换行；记录逻辑、已实现、可见、重测数量，核对extent和锚点政策。另用独立进程逐档增加树深，注入负数/NaN/Infinity measure、NaN baseline及抛异常，观察退出方式和是否误发布部分结果。档位不是产品上限。[待验证]
 
 ## 8. 未知项与本阶段判断
 

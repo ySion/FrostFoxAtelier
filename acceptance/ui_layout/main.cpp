@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <new>
@@ -22,9 +23,13 @@ namespace {
 void require(bool condition, std::string_view message) {
     if (!condition) throw std::runtime_error(std::string(message));
 }
-void accepted(Result<void> result) { require(result.has_value(), "operation unexpectedly rejected"); }
+void check_error(const Error& error) {
+    throw std::runtime_error(std::string(describe(error.code)) + ": " + std::string(describe(error.field)) +
+        "; provider=" + std::to_string(error.provider_code));
+}
+void accepted(Result<void> result) { if (!result) check_error(result.error()); }
 template<class T> T accepted(Result<T> result) {
-    require(result.has_value(), "operation unexpectedly rejected");
+    if (!result) check_error(result.error());
     return std::move(*result);
 }
 template<class T> void rejected(const Result<T>& result, ErrorCode code) {
@@ -34,8 +39,8 @@ bool close(float a, float b) {
     return std::abs(a - b) <= 0.0002f + 0.000002f * std::max(std::abs(a), std::abs(b));
 }
 const LayoutBox& box(LayoutView view, LayoutNodeId id) {
-    const auto found = std::find_if(view.boxes.begin(), view.boxes.end(), [id](const auto& value) { return value.node == id; });
-    require(found != view.boxes.end(), "published node missing");
+    const auto* found = view.find(id);
+    require(found != nullptr, "published node missing");
     return *found;
 }
 void same_geometry(LayoutView a, LayoutView b) {
@@ -62,10 +67,15 @@ void hr(HRESULT result) {
 struct TextProvider {
     struct Content { std::wstring text; float font_size{16}; std::uint64_t revision{1}; };
     struct Paragraph { ComPtr<IDWriteTextLayout> layout; std::uint64_t content_revision{}, provider_revision{}; };
+    struct Resolved { std::shared_ptr<const Paragraph> paragraph; Size size; };
     ComPtr<IDWriteFactory> factory;
     std::map<std::uint64_t, Content> content;
-    std::map<std::uint64_t, Paragraph> paragraphs;
-    std::uint64_t calls{}, creates{}, fail_at{}, epoch{1};
+    std::map<std::uint64_t, std::shared_ptr<Paragraph>> paragraphs;
+    std::vector<DWRITE_LINE_METRICS> line_metrics;
+    std::uint64_t calls{}, creates{}, fail_at{}, epoch{1}, measure_nanoseconds{};
+    struct Costs { std::uint64_t format{}, create{}, wrapping{}, width{}, metrics{}; } costs;
+    std::wstring font_family{L"Segoe UI"};
+    bool wrap_enabled{true};
     float scale{1};
     bool invalid{}, exception{}, allocation_exception{}, try_reentry{}, reentry_rejected{};
     LayoutDocument* active{};
@@ -77,22 +87,60 @@ struct TextProvider {
     }
     ComPtr<IDWriteTextLayout> create(const Content& value) {
         ComPtr<IDWriteTextFormat> format;
-        hr(factory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, value.font_size * scale, L"en-US", format.GetAddressOf()));
-        hr(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP));
+        timed(costs.format, [&] { return factory->CreateTextFormat(font_family.c_str(), nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            value.font_size * scale, L"en-US", format.GetAddressOf()); });
+        timed(costs.format, [&] { return format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); });
         ComPtr<IDWriteTextLayout> result;
-        hr(factory->CreateTextLayout(value.text.data(), static_cast<UINT32>(value.text.size()), format.Get(), 0, 0, result.GetAddressOf()));
+        timed(costs.create, [&] { return factory->CreateTextLayout(value.text.data(), static_cast<UINT32>(value.text.size()),
+            format.Get(), 0, 0, result.GetAddressOf()); });
         ++creates; return result;
     }
-    static Size metrics(IDWriteTextLayout* layout, std::optional<float> width) {
-        hr(layout->SetWordWrapping(width ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
-        hr(layout->SetMaxWidth(width.value_or(0)));
-        DWRITE_TEXT_METRICS value{}; hr(layout->GetMetrics(&value));
+    template<class Action> static void timed(std::uint64_t& total, Action action) {
+        const auto start = std::chrono::steady_clock::now(); hr(action());
+        total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count());
+    }
+    Size metrics(IDWriteTextLayout* layout, std::optional<float> width) {
+        const auto wrapping = width && wrap_enabled ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP;
+        if (layout->GetWordWrapping() != wrapping) timed(costs.wrapping, [&] { return layout->SetWordWrapping(wrapping); });
+        if (layout->GetMaxWidth() != width.value_or(0)) timed(costs.width, [&] { return layout->SetMaxWidth(width.value_or(0)); });
+        DWRITE_TEXT_METRICS value{}; timed(costs.metrics, [&] { return layout->GetMetrics(&value); });
         return {value.widthIncludingTrailingWhitespace, value.height};
     }
     Size fresh(std::uint64_t key, std::optional<float> width) { const auto layout = create(content.at(key)); return metrics(layout.Get(), width); }
+    float baseline(IDWriteTextLayout* layout) {
+        UINT32 count{};
+        const auto status = layout->GetLineMetrics(nullptr, 0, &count);
+        if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)) hr(status);
+        line_metrics.resize(count);
+        hr(layout->GetLineMetrics(line_metrics.data(), count, &count));
+        return count ? line_metrics[0].baseline : 0;
+    }
+    std::expected<Resolved, MeasureError> resolve(const MeasureQuery& query) {
+        const auto found = content.find(query.content_key);
+        if (found == content.end() || found->second.revision != query.content_revision || query.provider_revision != epoch)
+            return std::unexpected(MeasureError{91});
+        auto& paragraph = paragraphs[query.content_key];
+        const auto wrapping = query.width && wrap_enabled ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP;
+        // A frame owns its paragraph version. AddRef alone would still let a
+        // later SetMaxWidth change the old frame's text. Copy only before mutation.
+        if (!paragraph || paragraph->content_revision != query.content_revision || paragraph->provider_revision != query.provider_revision ||
+            (paragraph.use_count() > 1 && (paragraph->layout->GetMaxWidth() != query.width.value_or(0) ||
+                                          paragraph->layout->GetWordWrapping() != wrapping))) {
+            paragraph = std::make_shared<Paragraph>(Paragraph{create(found->second), query.content_revision, query.provider_revision});
+        }
+        const auto size = metrics(paragraph->layout.Get(), query.width);
+        return Resolved{paragraph, size};
+    }
     static MeasureResult measure(void* context, const MeasureQuery& query) {
         auto& self = *static_cast<TextProvider*>(context); ++self.calls;
+        struct Timer {
+            std::uint64_t& total;
+            std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
+            ~Timer() { total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count()); }
+        } timer{self.measure_nanoseconds};
         if (self.try_reentry) {
             self.try_reentry = false;
             rejected(self.active->create(self.active->root(), fixed_box(1, 1)), ErrorCode::busy);
@@ -108,15 +156,58 @@ struct TextProvider {
         if (self.exception) throw std::runtime_error("provider exception");
         if (self.invalid) return Size{0, std::numeric_limits<float>::quiet_NaN()};
         if (self.fail_at && self.calls == self.fail_at) return std::unexpected(MeasureError{77});
-        const auto found = self.content.find(query.content_key);
-        if (found == self.content.end() || found->second.revision != query.content_revision || query.provider_revision != self.epoch)
-            return std::unexpected(MeasureError{91});
-        auto& paragraph = self.paragraphs[query.content_key];
-        if (!paragraph.layout || paragraph.content_revision != query.content_revision || paragraph.provider_revision != query.provider_revision) {
-            paragraph.layout = self.create(found->second);
-            paragraph.content_revision = query.content_revision; paragraph.provider_revision = query.provider_revision;
+        auto result = self.resolve(query);
+        if (!result) return std::unexpected(result.error());
+        return MeasuredSize{result->size.width, result->size.height,
+            query.first_baseline ? std::optional<float>(self.baseline(result->paragraph->layout.Get())) : std::nullopt};
+    }
+};
+
+// Consumer-owned output: the core snapshot deliberately owns geometry only.
+struct TextFrame {
+    struct Run { LayoutNodeId node; MeasureQuery query; TextProvider::Resolved text; };
+    LayoutSnapshot geometry;
+    std::vector<Run> runs;
+    static std::shared_ptr<const TextFrame> capture(LayoutDocument& document, TextProvider& provider) {
+        auto frame = std::make_shared<TextFrame>();
+        frame->geometry = document.snapshot();
+        for (const auto& bounds : frame->geometry.boxes) {
+            if (bounds.node == document.root()) continue;
+            const auto input = accepted(document.input(bounds.node));
+            if (input.kind != Kind::measured) continue;
+            const MeasureQuery query{input.content_key, input.content_revision, frame->geometry.provider_revision,
+                std::max(0.f, bounds.width - input.padding.left - input.padding.right)};
+            // A fixed-size node may never be measured; two nodes may also share
+            // content but have different widths. Resolve each final constraint.
+            auto resolved = provider.resolve(query);
+            require(resolved.has_value(), "frame text resolution failed");
+            frame->runs.push_back({bounds.node, query, std::move(*resolved)});
         }
-        return metrics(paragraph.layout.Get(), query.width);
+        return frame;
+    }
+    void check() const {
+        for (const auto& run : runs) {
+            const auto& paragraph = *run.text.paragraph;
+            require(geometry.find(run.node) && paragraph.content_revision == run.query.content_revision &&
+                paragraph.provider_revision == geometry.provider_revision && paragraph.layout->GetMaxWidth() == *run.query.width,
+                "retained text version or width changed");
+            DWRITE_TEXT_METRICS current{}; hr(paragraph.layout->GetMetrics(&current));
+            require(close(current.widthIncludingTrailingWhitespace, run.text.size.width) && close(current.height, run.text.size.height),
+                "retained frame text metrics changed");
+        }
+    }
+};
+
+struct ComputeCosts {
+    std::uint64_t total{}, measure{};
+    LayoutView run(LayoutDocument& document, TextProvider& provider, Size viewport) {
+        const auto before = provider.measure_nanoseconds;
+        const auto start = std::chrono::steady_clock::now();
+        auto result = document.compute(viewport, provider.epoch);
+        total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count());
+        measure += provider.measure_nanoseconds - before;
+        return accepted(std::move(result));
     }
 };
 
@@ -225,7 +316,7 @@ void weight_dynamic_range() {
 void slots_padding_and_columns() {
     LayoutDocument d(nullptr, nullptr, {3, 1}); accepted(d.set_root({Kind::row, {2, 3, 2, 3}, 4}));
     auto first = fixed_box(0, 10), second = first;
-    first.width = Axis::expand(1, 20); first.fill_width = false; first.align_x = .5f; first.align_y = .5f; second.width = Axis::expand();
+    first.width = Axis::expand(1, 20); first.horizontal_alignment = Alignment::fit(.5f); first.vertical_alignment = Alignment::stretch(.5f); second.width = Axis::expand();
     const auto a = accepted(d.create(d.root(), first)), b = accepted(d.create(d.root(), second));
     auto result = accepted(d.compute({108, 40}, 1));
     require(box(result, a).width == 20 && box(result, a).x == 17 && box(result, a).y == 15 && box(result, b).x == 56 && box(result, b).width == 50, "padding/slot alignment");
@@ -367,12 +458,24 @@ void explicit_deep_tree() {
     result = accepted(d.compute({180, 40}, p.epoch)); require(result.boxes.size() == 1 && snapshot.boxes.size() == depth + 1, "deep old snapshot lost");
     std::printf("{\"kind\":\"deep\",\"depth\":%u,\"nodes\":%u,\"visits\":%llu,\"measure_calls\":1}\n", depth, depth + 1, static_cast<unsigned long long>(visits));
 }
+#include "practical.inl"
+#include "scaling.inl"
+#include "editor.inl"
+#include "flex_grid.inl"
+#include "audit.inl"
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     try {
         require(mi_version() == MI_MALLOC_VERSION && mi_is_redirected(), "shared mimalloc version/redirection");
+        if (argc == 2 && std::string_view(argv[1]) == "--performance") { performance(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--text-costs") { text_costs(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--virtual-performance") { virtual_performance(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--editor-performance") { editor_performance(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--flex-grid-performance") { flex_grid_performance(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--audit-performance") { audit_performance(); return 0; }
+        require(argc == 1, "usage: atelier_ui_layout_acceptance [--performance|--text-costs|--virtual-performance|--editor-performance|--flex-grid-performance|--audit-performance]");
         const std::pair<const char*, void (*)()> cases[]{
             {"identity_and_reuse", identity_and_reuse}, {"atomic_ordered_edits", atomic_ordered_edits},
             {"capacity_and_depth", capacity_and_depth}, {"bounded_allocation", bounded_allocation},
@@ -382,7 +485,29 @@ int main() {
             {"transactional_failure_and_reentry", transactional_failure_and_reentry}, {"geometry_failure_cache_rollback", geometry_failure_cache_rollback},
             {"local_cache_and_slot_reuse", local_cache_and_slot_reuse}, {"anchors_and_logical_precision", anchors_and_logical_precision},
             {"invalid_inputs_and_dependencies", invalid_inputs_and_dependencies}, {"owned_geometry_lifetime", owned_geometry_lifetime},
-            {"explicit_deep_tree", explicit_deep_tree}
+            {"explicit_deep_tree", explicit_deep_tree},
+            {"publication_lookup_lifetime", publication_lookup_lifetime},
+            {"descriptors_and_collapsed_subtrees", descriptors_and_collapsed_subtrees},
+            {"shared_inspector_dynamic", shared_inspector_dynamic},
+            {"shared_columns_structure_and_intrinsic", shared_columns_structure_and_intrinsic},
+            {"wrap_flow_and_repeated_grid", wrap_flow_and_repeated_grid},
+            {"nested_wrap_and_shared_columns", nested_wrap_and_shared_columns},
+            {"grid_text_and_failure_recovery", grid_text_and_failure_recovery},
+            {"content_invalidation_scope", content_invalidation_scope},
+            {"virtual_range_and_anchor", virtual_range_and_anchor},
+            {"virtual_inspector_end_to_end", virtual_inspector_end_to_end},
+            {"retained_text_frames", retained_text_frames},
+            {"editor_session_end_to_end", editor_session_end_to_end},
+            {"flex_allocation_and_distribution", flex_allocation_and_distribution},
+            {"flex_wrapping_and_alignment", flex_wrapping_and_alignment},
+            {"flex_real_text_baseline", flex_real_text_baseline},
+            {"grid_tracks_spans_and_placement", grid_tracks_spans_and_placement},
+            {"grid_limits_and_nested_content", grid_limits_and_nested_content},
+            {"flex_grid_editor_end_to_end", flex_grid_editor_end_to_end},
+            {"allocation_rounded_saturation", allocation_rounded_saturation},
+            {"grid_sparse_spans", grid_sparse_spans},
+            {"grid_collision_boundaries", grid_collision_boundaries},
+            {"collapsed_publication_indices", collapsed_publication_indices}
         };
         unsigned passed = 0, failed = 0;
         for (const auto& [name, run] : cases) {
