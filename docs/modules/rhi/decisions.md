@@ -1,31 +1,39 @@
 # RHI 实施决策
 
-当前架构依据是 [gfx 实施裁决](../../research/rhi-reassessment/gfx-decision.md)。原先的 SDK-only clear/copy 与自建 Recording/Ticket 设计已被替代；历史研究保留为取舍证据，不再约束当前实现形状。
+本文件维护当前选型及理由；行为契约以 [contract](contract.md) 为准，运行结果以 [acceptance](acceptance.md) 为准。[来源记录](../../research/rhi-reassessment/README.md)保留固定版本的研究依据，不再提供并行实施计划。
 
 ## 已落地选择
 
 | 选择 | 理由 | 维护入口 |
 | --- | --- | --- |
-| 固定 gfx 作为 RHI 主体 | 复用完整资源、反射、绑定、descriptor、barrier、命令、退休实现，不建设第二套浅包装或状态世界 | 依赖锁与 `third_party/gfx/atelier.patch` |
-| 宿主只保留 Context 与 Pipeline | 集中真实硬件/验证门禁、execution owner、完整准备与存活规则；不增加 profile 对象、Publisher、ticket 或逐函数代理 | `src/rhi/rhi.hpp` |
-| 一个 owner 串行驱动 owned context | 与固定 gfx 的实际帧槽、常量池及状态模型一致；内部 GPU 仍异步在飞 | 当前 contract |
-| 候选成功后移动替换 | 准备失败不伤及已使用的 Pipeline；不自动继承参数或引入双份绑定表 | `Context::prepare`、Pipeline 移动赋值 |
-| 不靠 PSO 非空掩盖阶段错误 | 任一明确阶段编译失败阻止 Ready；缺失主阶段在原生 PSO 创建前拒绝 | gfx 编译补丁与准备矩阵 |
-| 保留提交事实与错误终态 | 超时、Signal 等执行失败不能被当成未提交，destroy 只 drain 已提交工作 | gfx execution 补丁 |
-| 真实 GPU 场景验收 | 同一正式 Interface 测试业务链；后端专门回归仅用于 native failure seam | `acceptance/rhi` |
+| 固定 gfx 作为 RHI 主体 | 复用资源、反射、绑定、descriptor、barrier、命令和退休机制，不建立第二份状态与资源账 | [依赖锁](../../../cmake/dependencies-lock.json)、[可重放补丁](../../../third_party/gfx/atelier.patch) |
+| 宿主保留 Context 与 Pipeline | 硬件/验证门禁、执行 owner、完整管线准备和执行域寿命有明确责任；无需逐函数代理、profile 对象或 Publisher | [公开入口](../../../src/rhi/rhi.hpp) |
+| owner 串行驱动 owned context | 与固定 gfx 的帧槽、常量池和状态机制匹配，GPU 仍可异步在飞 | [执行域契约](contract.md#执行域与所有权) |
+| Vertex、Mesh、Compute 共用主体 | 实际离屏消费者覆盖三类管线和 GPU 生成的间接参数；Mesh Shader 是硬件门槛 | [正式消费者](../../../acceptance/rhi/main.cpp) |
+| 完整候选成功后移动替换 | 失败保留旧 Pipeline；新 Program 的参数由消费者绑定，不建第二份发布/绑定表 | [准备与替换](contract.md#管线准备与替换) |
+| 编译、反射、主字节码及 PSO 都参与成功判断 | 有效 handle 或某一阶段生成 PSO 不足以证明所请求管线完整可用 | [生产实现](../../../src/rhi/rhi.cpp) |
+| 保留提交事实和失败终态 | Execute 后的 Signal 等失败不能被当成未提交，清理必须区别排空与重新执行 | [失败与关停](contract.md#失败与有界关停) |
+| 普通借用限定为资源、参数和录制 | frame/finish/close 与执行域仍由 Context 管理；原生 interop 只在专门回归中使用 | [借用范围](contract.md#借用-gfx-的许可范围) |
+| 一套正式消费者与必要后端回归 | 验收经过真实 Interface；native fence gate 等诊断只验证对应原生路径 | [验收范围](acceptance.md) |
 
-## 补丁范围
+## 取舍理由
 
-补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`：Mesh PS 资源状态、shader/主阶段失败传播、null-list 清理、有限等待与错误字符串、Recording/Closed/Submitted 状态、失败录制门禁、间接 finish/sync 错误传播。补丁从锁定原始归档生成；CMake 保留生成源码的 pristine 副本，补丁更新先还原再重放，不在旧修改上叠加。
+- 原生类型与业务语言共享权威类型，不要求自行重写全部 GPU 底层机制。现有 gfx 能承担正式消费者的资源与执行职责；SDK clear/copy 路径仅留下[历史可行性证据](research.md)，自建 Recording/Ticket/ResourceId 方案不再是实施入口。
+- 整体复用仍需要履行实际契约。普通绑定、资源导入、外部队列和并发录制的责任不同，不能将某条路径的延迟退休扩展成所有使用方式都安全。
+- 宿主选择 owned context；原生 interop 会把持久 queue/list、状态恢复和同步责任交回消费者。当前业务需求没有要求承担这套额外执行模式。
+- gfx 的快速原型定位或第三方采用记录不能替代本项目验证；选型依据是所需语义、真实消费者和修正后的行为矩阵，没有性能胜出声明。
+- Renderer/RDG 将来可以组织依赖与工作，不复制 gfx 的底层状态与退休权威。业务资源的未实现设计另见[资源连接提案](../resources/design-proposal.md)。
 
-2026-09-27 审计修正继续进入同一补丁：间接命令在 shader 安装后按句柄取 Buffer，纹理上传只保留由活句柄保护的原生资源及 range 基址，纹理复制计入 range 偏移；配平 DXGI 和 buffer 参数数组的拥有存储，原生拥有指针数组先清零；成功 finish 后复用当前常量池。宿主同时落实 Mesh 候选筛选和 PipelineDesc 输入边界，公开 target 传递 C++23。没有增加资源镜像、发布器或第二套执行入口。
+## 补丁与依赖维护
 
-gfx 的库编译选项取消 AVX2 baseline 要求，保持项目的 x64 基线。没有因此宣称 gfx 全部可选能力在该基线上得到验证。DXC、Agility、D3D12MA、PIX 均固定实际归档 hash；license/notice 与补丁随构建输出保留。
+补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`：Mesh PS 可见资源状态、shader/主阶段失败传播、null-list 清理、有限等待、Recording/Closed/Submitted 状态、失败录制门禁，以及间接 finish/sync 调用的错误传播。补丁从锁定原始归档生成；配置先还原 pristine 副本再重放，不在旧修改上叠加。
 
-## 明确排除
+2026-09-27 的九项[审计修正](audit-2026-09-27.md)已进入同一生产宿主或补丁：间接命令按有效句柄重新取得 Buffer、纹理复制计入 range 偏移、DXGI 和参数数组存储配平、原生拥有数组初始化、成功 finish 后常量池复用，以及宿主 Mesh 候选筛选、输入边界和公开 C++23 要求。细项结果只维护于验收文档。
 
-不同时维护原生自建后端、NVRHI 或 Diligent；不自动加入 OMM 新提交。暂不做并发录制、多 queue、外部原生互操作生产契约、设备自动恢复、通用 RDG、renderer、语言绑定或 UI。
+gfx 的 AVX2 baseline 编译选项已移除，保持项目 x64 基线；不因此宣称全部可选路径已验证。依赖版本和实际归档 hash 只维护于依赖锁。DXC、Agility、D3D12MA、PIX 的 license/notice 与项目补丁由 [模块构建](../../../cmake/rhi.cmake)保留到 `licenses/rhi`；patch 的 LF 由仓库属性固定。
 
-Present/resize 路线只保留 gfx 能力并贯通失败传播，本轮证据是离屏，不把源码存在当验收。未来加入这些能力、升级 gfx 或变更执行模式时，须重新核对原生所有权与同步，并运行现有行为矩阵。
+## 当前范围
 
-历史原生路线研究见 [research.md](research.md)；实际支持与未覆盖项以 [acceptance.md](acceptance.md) 为准。
+不同时维护原生自建后端、NVRHI 或 Diligent。OMM 专题提交没有本阶段需求，不自动升级。窗口输入保留 gfx 路线，但 Present/resize/HDR 的源码存在不构成已验收能力。
+
+并发录制、多 queue、生产原生导入、设备恢复、完整 renderer/RDG、语言资源绑定和性能基线均不在当前交付中。将来改变执行模式或升级 gfx，应重新核对所有权、同步和现有行为矩阵；准确未覆盖项见 [acceptance](acceptance.md#未覆盖不计作-pass)。
