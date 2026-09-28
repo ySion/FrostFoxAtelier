@@ -1,0 +1,89 @@
+#pragma once
+
+#include "rhi/rhi.hpp"
+#include "ui/frame.hpp"
+
+#include <array>
+#include <memory>
+#include <span>
+#include <vector>
+
+namespace atelier::renderer {
+
+struct Error {
+    rhi::Error cause;
+    // Once encoding/uploads start, failure permits only close/destruction.
+    bool terminal{};
+};
+template<class T> using Result = std::expected<T, Error>;
+
+struct Options {
+    rhi::Validation validation{rhi::Validation::disabled};
+    std::uint32_t wait_timeout_ms{10000};
+    bool vsync{true};
+};
+struct Target {
+    ui::PixelExtent extent;
+    bool drawable{};
+};
+// Left-handed, +Y up, meters, D3D depth [0,1]. Row-major storage and row
+// vectors: p * world * view * projection (LookAtLH / PerspectiveFovLH).
+struct Camera {
+    std::array<float, 16> view{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    std::array<float, 16> projection{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+};
+struct Cube {
+    std::array<float, 3> position{};
+    ui::Color color{0.2f, 0.45f, 0.75f, 1};
+    bool selected{};
+};
+struct Frame {
+    const ui::Frame& ui_frame; // Sole authoritative id/extent; borrowed to return.
+    Camera camera;
+    ui::Rect scene_viewport; // Physical pixels, top-left origin.
+    std::span<const Cube> cubes; // Unit cubes [-0.5,0.5], translation only.
+};
+enum class FrameStatus { accepted, skipped };
+struct FrameResult {
+    FrameStatus status{FrameStatus::skipped};
+    std::uint64_t accepted_id{};
+    ui::PixelExtent accepted_extent; // Actual target BEFORE recording/Present.
+    ui::PixelExtent next_extent; // Resize during Present applies to NEXT frame.
+};
+// Explicit diagnostic capture stalls the GPU once; normal rendering does not.
+// Color is tightly packed sRGB RGBA8, depth tightly packed float32, top-left.
+// Output is replaced only for a fully accepted frame, before any end-of-frame
+// resize. UI does not modify scene depth. Acceptance is not a scanout guarantee.
+struct Capture {
+    std::uint64_t frame_id{};
+    ui::PixelExtent extent;
+    std::vector<std::uint8_t> rgba;
+    std::vector<float> depth;
+};
+
+// Single owner thread. Application owns HWND and keeps it alive through close.
+// Renderer owns GPU objects, rendering, Present, resize and GPU retirement;
+// application owns Runtime identities, camera state, input and accepted hit data.
+class Renderer {
+public:
+    Renderer();
+    ~Renderer();
+    Renderer(Renderer&&) noexcept;
+    Renderer& operator=(Renderer&&) noexcept;
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+
+    [[nodiscard]] static Result<Renderer> open(HWND window, const Options& options = {});
+    [[nodiscard]] Result<Target> target() const;
+    // Minimized/zero client size, target mismatch or occluded Present is skipped.
+    // CPU validation failure retains usability. Upload/encoding/execution failure
+    // is terminal. Switch the application's hit frame ONLY on accepted.
+    [[nodiscard]] Result<FrameResult> render(const Frame& frame, Capture* capture = nullptr);
+    [[nodiscard]] Result<void> close();
+
+private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
+
+} // namespace atelier::renderer
