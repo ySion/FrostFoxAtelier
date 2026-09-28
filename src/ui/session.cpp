@@ -84,6 +84,7 @@ struct Session::Impl {
             EditToken token;
             std::uint32_t first{}, last{};
             Preedit preedit;
+            std::uint64_t revision{detail::new_identity()};
         };
         ControlKey key;
         EditToken token;
@@ -428,6 +429,21 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     const Rect physical{x+caret.x*scale,y+caret.y*scale,self.style.caret_width*scale,std::max(1.f,caret.height*scale)};
                     quad(physical,text_clip,appearance.caret);
                     if (visible(physical,text_clip)) output->caret=TextCaret{self.edit->token,physical,text_clip};
+                    TextInputAnchor anchor{self.edit->token,0,0,{},text_clip};
+                    Rect start;
+                    if (self.edit->composition) {
+                        const auto& c=*self.edit->composition;
+                        anchor.composition_id=c.id; anchor.composition_revision=c.revision;
+                        start=c.preedit.text.empty()?self.text.caret(key,width,{c.first,false}):
+                            self.text.character(key,width,c.first);
+                    } else {
+                        const auto& selection=self.edit->buffer.current();
+                        const auto position=selection.caret.offset==selection.anchor.offset?selection.caret:
+                            detail::TextPosition{std::min(selection.caret.offset,selection.anchor.offset),false};
+                        start=self.text.caret(key,width,position);
+                    }
+                    anchor.bounds={x+start.x*scale,y+start.y*scale,start.width*scale,start.height*scale};
+                    output->input_anchor=anchor;
                 }
             }
         }
@@ -466,7 +482,14 @@ std::optional<TextInputState> Session::text_input() const noexcept {
     const auto* box=self.published->find(self.focus);
     if (!box || !self.current(*box)) return {};
     TextInputState value{self.edit->token,self.edit->composition.has_value(),{}};
-    if (self.published->caret && self.published->caret->token==value.token) value.accepted_caret=self.published->caret;
+    const auto& anchor=self.published->input_anchor;
+    const auto composition_id=self.edit->composition?self.edit->composition->id:0;
+    const auto composition_revision=self.edit->composition?self.edit->composition->revision:0;
+    if (anchor && anchor->token==value.token && anchor->composition_id==composition_id &&
+        anchor->composition_revision==composition_revision) {
+        if (anchor->bounds.height>0 && contains(anchor->clip,anchor->bounds.x,anchor->bounds.y)) value.accepted_anchor=anchor;
+        if (self.published->caret && self.published->caret->token==value.token) value.accepted_caret=self.published->caret;
+    }
     return value;
 }
 

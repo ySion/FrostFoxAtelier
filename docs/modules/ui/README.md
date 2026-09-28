@@ -65,7 +65,13 @@ Action.value为`variant<monostate,double,wstring>`：activate/select无值，num
 
 IME使用独立composition_id和固定起始token/替换范围；`CompositionEvent`的start/update/end/cancel以及可选result/preedit区分缺失、空和取消。Preedit拥有text/cursor/逐码元属性，只作暂态文字和选区/下划线显示；确认result进入普通编辑与历史。同事件可先确认一个片段，再开始新preedit；后段绑定更新后的token。UI请求complete/cancel的成功回报只代表平台调用成功，不能凭此合成文字。IME期间Enter/Esc先确认/取消组合，不同时提交/取消字段，终止键重复及keyup保持归属；普通焦点或选择变化取消未确认组合。结束/取消使旧绑定失效，迟到事件不能复活原组合。
 
-`UiFrame.caret`保存该帧的token、客户区物理Rect和clip。`Session::text_input()`给出当前输入token/是否组合，只有当前身份、焦点、token和Surface匹配时才附带已接受帧的caret；候选prepare不改变平台位置。应用据此更新系统候选位置，窗口消息逐条复制、顺序投递和执行effects，不重入UI，也不把整个poll盖上同一旧revision。
+`UiFrame.caret`保存该帧的token、客户区物理Rect和clip。`Session::text_input()`给出当前输入token/是否组合，只有当前身份、焦点、token、Surface及组合编号/显示版本匹配时才附带已接受帧的caret；候选prepare不改变平台位置。应用据此更新系统候选位置，窗口消息逐条复制、顺序投递和执行effects，不重入UI，也不把整个poll盖上同一旧revision。
+
+`UiFrame.input_anchor`在同一次prepare中记录`TextInputAnchor{token,composition_id,composition_revision,bounds,clip}`。无组合时起点为选区的逻辑最小端点，空选区保留当前插入affinity；组合中为`c.first`，不取显示光标的`c.first + preedit.cursor`。同一DirectWrite布局提供字符左上与行高，RTL使用字符矩形左上，不将其右侧leading caret当左上。bounds和有效text_clip随绘制采用相同父变换、横滚和DPI，均为客户区物理像素。
+
+`Session::text_input().accepted_anchor`只提供当前匹配的已接受快照，起点不可见、目标或Surface失效、组合更换、临时preedit/cursor已变化但尚未接受新帧时为空。临时组合显示版本独立于基础EditToken revision；旧UiFrame仍可被持有，但不能作为当前位置。平台在原生消息改变组合或坐标映射时先撤下缓存，再依UI顺序处理与accepted发布更新；WndProc只读取拥有的这个小值，不回调UI，也不创建第二文字模型。
+
+本轮只支持[IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition)实测需要的`dwCharPos=0`；Window把bounds左上和clip转换成屏幕坐标，填[IMECHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition)的pt、cLineHeight和rcDocument。其他offset或无有效快照明确返回0，不夹到offset0，也不以显示caret冒充起点；没有预建逐字符坐标数组。此合同修复本身不证明真实输入法的组合链已经通过。
 
 UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。当前真实IME验收尚未通过；验收结论只覆盖实际记录的输入法与环境。
 
@@ -89,7 +95,7 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，12组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
+正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，13组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序，以及正反向选区、RTL组合起点、横滚不可见起点拒绝、显示版本/候选/旧帧和DPI失效。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
 
 S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回累计栅格化8行。S2的4096宽字符/100 DIP字段保持完整编辑，生成的覆盖率宽度不超过100像素。正式窗口平台与搜索业务由[编辑器端到端验收](../editor/README.md)负责，S2整体是否完成以该集成记录及本机搜狗真实系统输入验收证据为准。
 

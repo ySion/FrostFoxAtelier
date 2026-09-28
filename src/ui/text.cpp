@@ -258,6 +258,14 @@ Rect TextStore::caret(std::uint64_t key, float width, TextPosition position) {
     auto& paragraph = impl_->resolve(key, width);
     return Impl::caret_box(paragraph,position);
 }
+Rect TextStore::character(std::uint64_t key, float width, std::uint32_t position) {
+    auto& paragraph=impl_->resolve(key,width);
+    FLOAT x{},y{}; DWRITE_HIT_TEST_METRICS metrics{};
+    check(paragraph.layout->HitTestTextPosition(position,FALSE,&x,&y,&metrics));
+    // The leading caret of an RTL run is its right edge. Native character
+    // position requests need the actual enclosing character's upper-left.
+    return {metrics.left,metrics.top,metrics.width,metrics.height};
+}
 TextPosition TextStore::hit(std::uint64_t key, float width, float x, float y) {
     auto& paragraph=impl_->resolve(key,width);
     BOOL trailing{},inside{}; DWRITE_HIT_TEST_METRICS metrics{};

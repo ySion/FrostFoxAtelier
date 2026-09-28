@@ -176,3 +176,68 @@ void composition_protocol_and_cleanup() {
         std::get<ui::Action>(cleanup.effects[1]).kind==ui::ActionKind::edit_cancel && c.value()==L"X" && !c.ui.text_input(),
         "surface cleanup lost IME cancellation, rollback or focus invalidation");
 }
+void accepted_input_anchor() {
+    TextConsumer c(L"ABCDE");
+    c.command(ui::Key::home); c.command(ui::Key::right,false,true); c.command(ui::Key::right,false,true); c.prepare();
+    auto input=c.ui.text_input();
+    require(input && input->accepted_anchor && input->accepted_caret,"accepted insertion geometry missing");
+    const auto initial=*input->accepted_anchor;
+    require(initial.composition_id==0 && initial.composition_revision==0 &&
+        initial.bounds.x<input->accepted_caret->bounds.x && initial.clip==input->accepted_caret->clip,
+        "forward selection used its display caret as replacement start");
+    c.command(ui::Key::home); c.command(ui::Key::right); c.command(ui::Key::right);
+    c.command(ui::Key::home,false,true); c.prepare();
+    require(c.ui.text_input()->accepted_anchor && c.ui.text_input()->accepted_anchor->bounds==initial.bounds,
+        "reverse selection changed the logical replacement start");
+
+    const auto token=c.token();
+    c.compose({ui::CompositionKind::start,41,token,{},{}});
+    require(!c.ui.text_input()->accepted_anchor && !c.ui.text_input()->accepted_caret,
+        "new composition reused unbound insertion geometry");
+    c.compose({ui::CompositionKind::update,41,token,{},ui::Preedit{L"位置",2,{0,0}}});
+    c.prepare(false);
+    require(!c.ui.text_input()->accepted_anchor,"unaccepted composition exposed geometry");
+    require(c.ui.accept(c.frame),"composition frame rejected");
+    input=c.ui.text_input();
+    require(input->accepted_anchor && input->accepted_anchor->composition_id==41 && input->accepted_caret &&
+        input->accepted_anchor->bounds.x<input->accepted_caret->bounds.x,
+        "composition origin was replaced by preedit display cursor");
+    const auto held=c.frame;
+    const auto prior=*held->input_anchor;
+    c.compose({ui::CompositionKind::update,41,token,{},ui::Preedit{L"位置",0,{0,0}}});
+    require(c.token()==token && !c.ui.text_input()->accepted_anchor && !c.ui.text_input()->accepted_caret,
+        "old preedit geometry survived a display revision change");
+    c.prepare();
+    require(c.ui.text_input()->accepted_anchor && c.frame->input_anchor->composition_revision!=prior.composition_revision &&
+        held->input_anchor->bounds==prior.bounds && held->input_anchor->composition_revision==prior.composition_revision,
+        "composition geometry did not preserve immutable frame versions");
+    c.compose({ui::CompositionKind::update,41,token,{},ui::Preedit{L"אב",0,{0,0}}}); c.prepare();
+    input=c.ui.text_input();
+    require(input->accepted_anchor && input->accepted_caret && input->accepted_anchor->bounds.width>0 &&
+        std::abs(input->accepted_anchor->bounds.x+input->accepted_anchor->bounds.width-input->accepted_caret->bounds.x)<.01f,
+        "RTL character upper-left was confused with its leading caret edge");
+
+    TextConsumer scrolled(std::wstring(100,L'W'));
+    scrolled.controls[0].layout.width=ui_layout::Axis::fixed(100);
+    scrolled.command(ui::Key::end); scrolled.prepare(); const auto scroll_token=scrolled.token();
+    scrolled.compose({ui::CompositionKind::start,42,scroll_token,{},{}});
+    scrolled.compose({ui::CompositionKind::update,42,scroll_token,{},ui::Preedit{L"位置",2,{}}}); scrolled.prepare();
+    input=scrolled.ui.text_input();
+    require(input->accepted_anchor && input->accepted_anchor->bounds.x>=input->accepted_anchor->clip.left &&
+        input->accepted_anchor->bounds.x<input->accepted_caret->bounds.x,"horizontal scroll did not transform composition origin");
+    scrolled.compose({ui::CompositionKind::update,42,scroll_token,{},ui::Preedit{std::wstring(200,L'W'),200,{}}}); scrolled.prepare();
+    require(scrolled.frame->input_anchor && scrolled.frame->input_anchor->bounds.x<scrolled.frame->input_anchor->clip.left &&
+        !scrolled.ui.text_input()->accepted_anchor && scrolled.ui.text_input()->accepted_caret,
+        "offscreen origin was clamped or replaced by a visible cursor");
+    scrolled.compose({ui::CompositionKind::update,42,scroll_token,{},ui::Preedit{std::wstring(200,L'W'),0,{}}}); scrolled.prepare();
+    require(scrolled.ui.text_input()->accepted_anchor.has_value(),"scrolling the composition start back did not restore the query");
+    scrolled.apply(scrolled.ui.input({.kind=ui::EventKind::focus_lost}));
+    require(!scrolled.ui.text_input(),"lost focus still published an input anchor");
+    c.apply(accepted(c.ui.set_surface({{640,480},1.5f,2})));
+    require(!c.ui.text_input(),"old surface retained input geometry");
+    c.prepare(); c.click(1); c.command(ui::Key::home); c.prepare();
+    input=c.ui.text_input();
+    require(input->accepted_anchor && input->accepted_anchor->composition_id==0 &&
+        std::abs(input->accepted_anchor->bounds.height-initial.bounds.height*1.5f)<.01f,
+        "input anchor did not use the accepted frame DPI");
+}
