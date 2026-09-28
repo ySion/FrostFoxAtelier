@@ -9,6 +9,7 @@
 #include <exception>
 #include <map>
 #include <string>
+#include <tuple>
 
 namespace atelier::ui::detail {
 using Microsoft::WRL::ComPtr;
@@ -16,6 +17,28 @@ namespace {
 void check(HRESULT status) { if (FAILED(status)) throw TextFailure{static_cast<std::uint32_t>(status)}; }
 std::atomic<std::uint64_t> next_coverage{1};
 constexpr std::int64_t max_bitmap_bytes = 16 * 1024 * 1024;
+struct CoverageAccounting {
+    std::atomic<std::uint64_t> count{}, bytes{};
+};
+struct TrackedCoverage final : Coverage {
+    std::shared_ptr<CoverageAccounting> accounting;
+    TrackedCoverage(std::shared_ptr<CoverageAccounting> owner, std::uint32_t w, std::uint32_t h)
+        : accounting(std::move(owner)) {
+        identity = new_identity(); revision = 1; width = row_pitch = w; height = h;
+        pixels.resize(static_cast<std::size_t>(w)*h);
+        accounting->count.fetch_add(1,std::memory_order_relaxed);
+        accounting->bytes.fetch_add(pixels.size(),std::memory_order_relaxed);
+    }
+    ~TrackedCoverage() {
+        accounting->count.fetch_sub(1,std::memory_order_relaxed);
+        accounting->bytes.fetch_sub(pixels.size(),std::memory_order_relaxed);
+    }
+};
+struct FontLess {
+    bool operator()(const Font& a, const Font& b) const {
+        return std::tie(a.family,a.locale,a.size,a.weight) < std::tie(b.family,b.locale,b.size,b.weight);
+    }
+};
 
 struct Rasterizer final : IDWriteTextRenderer {
     struct Run { RECT bounds{}; std::vector<std::uint8_t> pixels; };
@@ -85,15 +108,18 @@ struct TextStore::Impl {
     };
     struct Entry {
         std::wstring text;
-        float size{};
+        Font font;
         bool wrap{};
         std::uint64_t revision{1};
         std::array<Paragraph, 2> paragraphs;
     };
     ComPtr<IDWriteFactory2> factory;
     std::map<std::uint64_t, Entry> entries;
-    std::map<float, ComPtr<IDWriteTextFormat>> formats;
+    std::map<Font, ComPtr<IDWriteTextFormat>, FontLess> formats;
     std::vector<DWRITE_LINE_METRICS> lines;
+    std::uint64_t provider_revision{new_identity()};
+    TextStatistics statistics;
+    std::shared_ptr<CoverageAccounting> accounting{std::make_shared<CoverageAccounting>()};
     Impl() {
         check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2),
             reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
@@ -105,14 +131,15 @@ struct TextStore::Impl {
         auto& paragraph = entry.paragraphs[width ? 1 : 0];
         if (paragraph.layout && paragraph.valid && paragraph.width == width) return paragraph;
         paragraph.valid = false;
-        auto& format = formats[entry.size];
+        auto& format = formats[entry.font];
         if (!format) {
-            check(factory->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, entry.size, L"en-US", &format));
+            check(factory->CreateTextFormat(entry.font.family.c_str(), nullptr, static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
         }
         if (!paragraph.layout) {
             check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
                 width.value_or(0), 0, &paragraph.layout));
+            ++statistics.text_layouts;
             check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
         } else check(paragraph.layout->SetMaxWidth(width.value_or(0)));
         DWRITE_TEXT_METRICS metrics{};
@@ -132,26 +159,41 @@ struct TextStore::Impl {
 };
 TextStore::TextStore() : impl_(std::make_unique<Impl>()) {}
 TextStore::~TextStore() = default;
-std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, float size, bool wrap) {
+std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, float size, std::uint16_t weight, bool wrap) {
     auto& entry = impl_->entries[key];
-    if (entry.text != text || entry.size != size || entry.wrap != wrap) {
-        entry.text = text; entry.size = size; entry.wrap = wrap;
+    if (entry.text != text || entry.font.family != font.family || entry.font.locale != font.locale ||
+        entry.font.size != size || entry.font.weight != weight || entry.wrap != wrap) {
+        entry.text = text; entry.font = font; entry.font.size = size; entry.font.weight = weight; entry.wrap = wrap;
         entry.revision = new_identity(); entry.paragraphs = {};
     }
     return entry.revision;
 }
 void TextStore::erase(std::uint64_t key) { impl_->entries.erase(key); }
+std::uint64_t TextStore::provider_revision() const noexcept { return impl_->provider_revision; }
+void TextStore::set_provider_revision(std::uint64_t revision) noexcept {
+    impl_->provider_revision = revision;
+    impl_->formats.clear();
+    for (auto& [key,entry] : impl_->entries) { (void)key; entry.paragraphs = {}; }
+}
+TextStatistics TextStore::statistics() const noexcept {
+    auto result = impl_->statistics;
+    result.live_coverages = impl_->accounting->count.load(std::memory_order_relaxed);
+    result.live_coverage_bytes = impl_->accounting->bytes.load(std::memory_order_relaxed);
+    return result;
+}
 ui_layout::MeasureResult TextStore::measure(void* context, const ui_layout::MeasureQuery& query) {
     auto& impl = *static_cast<TextStore*>(context)->impl_;
+    ++impl.statistics.measure_calls;
     const auto found = impl.entries.find(query.content_key);
-    if (found == impl.entries.end() || found->second.revision != query.content_revision || query.provider_revision != 1)
+    if (found == impl.entries.end() || found->second.revision != query.content_revision || query.provider_revision != impl.provider_revision)
         return std::unexpected(ui_layout::MeasureError{static_cast<std::uint32_t>(E_INVALIDARG)});
     try { return impl.resolve(query.content_key, query.width).metrics; }
     catch (const TextFailure& failure) { return std::unexpected(ui_layout::MeasureError{failure.code}); }
 }
 RasterText TextStore::raster(std::uint64_t key, float width, float dpi) {
     auto& paragraph = impl_->resolve(key, width);
-    if (paragraph.raster_scale == dpi) return paragraph.raster;
+    if (paragraph.raster_scale == dpi) { ++impl_->statistics.coverage_cache_hits; return paragraph.raster; }
+    ++impl_->statistics.rasterizations;
     Rasterizer rasterizer(impl_->factory.Get(), dpi);
     const auto result = paragraph.layout->Draw(nullptr, &rasterizer, 0, 0);
     if (rasterizer.failure) std::rethrow_exception(rasterizer.failure);
@@ -167,12 +209,7 @@ RasterText TextStore::raster(std::uint64_t key, float width, float dpi) {
         const auto height_px = static_cast<std::int64_t>(bounds.bottom) - bounds.top;
         if (width_px > 32768 || height_px > 32768 || width_px * height_px > max_bitmap_bytes)
             throw TextFailure{static_cast<std::uint32_t>(E_OUTOFMEMORY)};
-        auto coverage = std::make_shared<Coverage>();
-        coverage->identity = new_identity();
-        coverage->revision = 1;
-        coverage->width = coverage->row_pitch = static_cast<std::uint32_t>(width_px);
-        coverage->height = static_cast<std::uint32_t>(height_px);
-        coverage->pixels.resize(static_cast<std::size_t>(width_px * height_px));
+        auto coverage = std::make_shared<TrackedCoverage>(impl_->accounting,static_cast<std::uint32_t>(width_px),static_cast<std::uint32_t>(height_px));
         for (const auto& run : rasterizer.runs) {
             const auto run_width = static_cast<std::size_t>(run.bounds.right - run.bounds.left);
             for (LONG y = run.bounds.top; y < run.bounds.bottom; ++y) {
@@ -184,6 +221,7 @@ RasterText TextStore::raster(std::uint64_t key, float width, float dpi) {
                 }
             }
         }
+        impl_->statistics.raster_bytes += coverage->pixels.size();
         output.coverage = std::move(coverage); output.left = static_cast<float>(bounds.left); output.top = static_cast<float>(bounds.top);
     }
     paragraph.raster = output; paragraph.raster_scale = dpi;

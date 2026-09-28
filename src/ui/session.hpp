@@ -87,6 +87,9 @@ struct Error {
 template<class T> using Result = std::expected<T, Error>;
 
 struct Statistics {
+    // Cumulative since Session construction. prepares/rasterizations count
+    // attempts; text_layouts counts successful native layout creations;
+    // raster_bytes sums completed R8 pixel payloads, excluding native overhead.
     std::uint64_t prepares{}, measure_calls{}, text_layouts{}, rasterizations{}, raster_bytes{}, coverage_cache_hits{};
     std::uint64_t culled_text_controls{}, provider_revision{};
     // Unique CPU coverages produced by this Session and still retained by any
