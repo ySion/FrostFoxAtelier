@@ -74,20 +74,20 @@ DPI 验收覆盖当前显示器上的 WM_DPICHANGED 过渡政策，不据此声�
 
 ### S2 集成状态与输入法验收
 
-2026-09-29：共享 UI 提交 `60472ed` 已集成为 `0e45c6a`；同一集成树 dev/release 的 UI 12/12 通过，实际文字服务报告 ICU 72.1 / Unicode 15.1。应用平台接线与最新验收驱动均已在两种配置编译通过。早期 dev 窗口链曾通过，最终修改后的双配置窗口链尚未完成，不能据此结项。
+2026-09-29：共享 UI 提交 `60472ed` 已集成为 `0e45c6a`；同一集成树 dev/release 的 UI 12/12 通过，实际文字服务报告 ICU 72.1 / Unicode 15.1。`afb2286` 的应用平台接线与最终验收驱动在 dev/release 编译通过，顺序运行 `editor_acceptance` 均通过：Scene PASS、窗口各接受 709 帧，含原有场景/窗口链及 S2 非 IME 操作。原始报告和截图位于 `out/{dev,release}/editor-evidence/`。
 
-窗口重跑中确认前台切至 `PioneerGame.exe`，真实 WM_KILLFOCUS 按合同取消了草稿；同时发现消息验收 helper 会继承线程修饰位。驱动已显式设置本次 Ctrl/Shift 并清除未请求修饰位、增加修饰位继承场景和意外失焦中断检查；生产失焦取消语义保留。原始诊断为 `out/dev/s2-flow.log`、`out/dev/s2-focus-owner.log`，临时生产日志已移除。最终窗口链等待稳定前台时段，不连续争抢焦点或干预其他进程。
+此前窗口重跑中确认前台切至 `PioneerGame.exe`，真实 WM_KILLFOCUS 按合同取消了草稿；同时发现消息验收 helper 会继承线程修饰位。驱动已显式设置本次 Ctrl/Shift 并清除未请求修饰位、增加修饰位继承场景和意外失焦中断检查；生产失焦取消语义保留。原始诊断为 `out/dev/s2-flow.log`、`out/dev/s2-focus-owner.log`，临时生产日志已移除。最终双配置运行在稳定前台时段完成，未干预其他进程。
 
-真实 Pinyin 使用同一 `atelier_editor --acceptance-ime <输出目录>`，CMake 入口为：
+本机搜狗真实输入使用同一 `atelier_editor --acceptance-ime <输出目录>`，CMake 入口为：
 
 ```powershell
 cmake --build --preset dev --target editor_ime_acceptance
 cmake --build --preset release --target editor_ime_acceptance
 ```
 
-这两个目标须依次运行，并保持编辑器前台且无物理修饰键按住。驱动检查 Microsoft Pinyin 已启用，保存原线程 profile，只激活已启用 profile 并在结束时恢复；不启用输入法或修改默认设置。实际输入使用 SendInput 扫描码，系统生成的 IMM32 快照进入正式共享编辑路径。GPU 截图保存应用预编辑文字，`s2-ime-native-candidate.png` 保存编辑器所在桌面区域的原生候选窗；`ime-acceptance.txt` 记录系统组合/结果/候选通知及结果。
+这两个目标须依次运行，并保持编辑器前台且无物理修饰键按住。驱动只读核对当前搜狗 profile 的完整身份，开始与结束保持一致；不切换、启用输入法或修改默认设置。实际输入使用 SendInput 扫描码，系统生成的 IMM32 快照进入正式共享编辑路径。GPU 截图保存应用预编辑文字，`s2-ime-native-candidate.png` 保存编辑器所在桌面区域的原生候选窗；`ime-acceptance.txt` 记录系统组合/结果/候选通知及结果。
 
-本机 Pinyin 已注册但未启用，启用仍待用户授权，真实驱动尚未运行。精确系统/profile 信息与完整收口要求见[共同合同](../../ui-foundation-plan.md#95-本机环境与真实输入证据)。系统 IME、失败协议注入、静态环境检查分别记录；真实 Pinyin 通过前 S2 保持未完成，S3 未启动。
+用户已指定使用现有搜狗实测，当前模块为 SogouTSF.ime 16.8.0.5415。精确系统/profile 信息、此前 Pinyin 设置撤回证据与完整收口要求见[共同合同](../../ui-foundation-plan.md#95-本机环境与真实输入证据)。最新 dev 尝试在初始前台等待 20 秒后停止：即时记录显示前台为 `PioneerGame.exe`，线程内 focus 虽属于编辑器，系统 foreground 仍属于游戏；没有发送物理键，release 未运行。`ime-platform.txt` 保存失败瞬间的前台/编辑器/焦点 HWND、进程与窗口类。驱动只请求一次前台，等待用户切换，随后失焦即停止；不反复抢焦点。系统 IME、失败协议注入、静态环境检查分别记录；真实搜狗链尚未通过，S2 保持未完成，S3 未启动。
 
 ### S1 真实负载采样
 

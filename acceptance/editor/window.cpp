@@ -579,7 +579,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 objects/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
-           << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish Microsoft Pinyin acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
+           << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
            << "Sampling environment: this acceptance application enables hardware D3D12 debug/GBV and renderer vsync, including in release; results do not represent validation-disabled production frame time.\n"
            << "s1-resources.csv: UI cumulative counters use interval differences; renderer activity sums sampled render results. Resource peaks are sampled ownership counts, not total process memory or physical VRAM; R8 upload bytes exclude transfer padding.\n"
@@ -590,53 +590,70 @@ int verify_editor_window(Application& app, const char* output_directory) {
     return 0;
 }
 
-int verify_editor_ime(Application& app, const char* output_directory) {
+int verify_editor_ime(Application& app, const char* output_directory) try {
     using Microsoft::WRL::ComPtr;
     require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "Cannot initialize IME acceptance COM.");
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    std::ofstream(output / "ime-acceptance.txt") << "Microsoft Pinyin acceptance: RUNNING\n";
-    CLSID pinyin{}; GUID profile{};
-    require(SUCCEEDED(CLSIDFromString(L"{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}", &pinyin)) &&
-        SUCCEEDED(CLSIDFromString(L"{FA550B04-5AD7-411F-A5AC-CA038EC515D7}", &profile)), "Invalid Pinyin profile identity.");
+    std::ofstream(output / "ime-acceptance.txt") << "Sogou Pinyin acceptance: RUNNING\n";
+    std::ofstream setup(output / "ime-platform.txt");
+    const auto record_profile = [&](const char* label, HRESULT result, const TF_INPUTPROCESSORPROFILE& value) {
+        wchar_t clsid[40]{}, profile_id[40]{};
+        StringFromGUID2(value.clsid, clsid, 40); StringFromGUID2(value.guidProfile, profile_id, 40);
+        setup << label << ": HRESULT=" << std::hex << result << "; type=" << value.dwProfileType
+              << "; language=" << value.langid << "; CLSID=" << std::string(clsid, clsid + wcslen(clsid))
+              << "; profile=" << std::string(profile_id, profile_id + wcslen(profile_id)) << "; HKL=" << value.hkl << '\n';
+        setup.flush();
+    };
+    CLSID sogou{}; GUID profile{};
+    require(SUCCEEDED(CLSIDFromString(L"{E7EA138E-69F8-11D7-A6EA-00065B844310}", &sogou)) &&
+        SUCCEEDED(CLSIDFromString(L"{E7EA138F-69F8-11D7-A6EA-00065B844311}", &profile)), "Invalid Pinyin profile identity.");
     ComPtr<ITfInputProcessorProfiles> languages;
     require(SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&languages))), "Cannot inspect input profiles.");
     BOOL enabled{};
-    require(SUCCEEDED(languages->IsEnabledLanguageProfile(pinyin, 0x0804, profile, &enabled)), "Cannot query Microsoft Pinyin enablement.");
+    require(SUCCEEDED(languages->IsEnabledLanguageProfile(sogou, 0x0804, profile, &enabled)), "Cannot query Sogou Pinyin enablement.");
     if (!enabled) {
-        std::ofstream(output / "ime-acceptance.txt") << "Microsoft Pinyin acceptance: BLOCKED (profile is not enabled; no settings changed)\n";
-        throw std::runtime_error("Microsoft Pinyin is not enabled; real IME acceptance is blocked.");
+        std::ofstream(output / "ime-acceptance.txt") << "Sogou Pinyin acceptance: BLOCKED (profile is not enabled; no settings changed)\n";
+        throw std::runtime_error("Sogou Pinyin is not enabled; real IME acceptance is blocked.");
     }
+    const auto require_foreground = [&] {
+        const auto foreground = GetForegroundWindow();
+        if (foreground == app.window()) return;
+        DWORD owner{}; GetWindowThreadProcessId(foreground, &owner);
+        wchar_t class_name[256]{}; GetClassNameW(foreground, class_name, 256);
+        setup << "Foreground interruption: HWND=" << foreground << "; editor=" << app.window()
+              << "; focus=" << GetFocus() << "; PID=" << std::dec << owner
+              << "; class=" << std::string(class_name, class_name + wcslen(class_name));
+        if (const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, owner)) {
+            wchar_t name[32768]{}; DWORD size = 32768;
+            if (QueryFullProcessImageNameW(process, 0, name, &size)) {
+                const auto filename = std::filesystem::path(name).filename().wstring();
+                setup << "; executable=" << std::string(filename.begin(), filename.end());
+            }
+            CloseHandle(process);
+        }
+        setup << '\n'; setup.flush();
+        throw std::runtime_error("IME acceptance lost foreground ownership; no further key was sent (see ime-platform.txt).");
+    };
     SetForegroundWindow(app.window()); SetFocus(app.window()); tick(app);
+    const auto foreground_deadline = GetTickCount64() + 20000;
+    while (GetForegroundWindow() != app.window() && GetTickCount64() < foreground_deadline)
+        require(app.step(), "Editor closed while waiting for initial foreground.");
+    require_foreground(); // Wait for the user once; never repeatedly seize foreground.
     click(app, control::parameter_search);
     ComPtr<ITfInputProcessorProfileMgr> manager;
     require(SUCCEEDED(languages.As(&manager)), "Cannot inspect active input profile.");
-    TF_INPUTPROCESSORPROFILE previous{};
-    require(SUCCEEDED(manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &previous)), "Cannot preserve active input profile.");
-    struct ProfileScope {
-        ITfInputProcessorProfiles* languages;
-        ITfInputProcessorProfileMgr* manager;
-        TF_INPUTPROCESSORPROFILE previous;
-        bool restored{};
-        bool restore() {
-            if (restored) return true;
-            if (FAILED(languages->ChangeCurrentLanguage(previous.langid))) return false;
-            restored = manager->ActivateProfile(previous.dwProfileType, previous.langid, previous.clsid,
-                previous.guidProfile, previous.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR ? nullptr : previous.hkl, 0) == S_OK;
-            return restored;
-        }
-        ~ProfileScope() { if (!restore()) std::fputs("IME acceptance: restoring the thread input profile failed.\n", stderr); }
-    } restore{languages.Get(), manager.Get(), previous};
-    require(languages->ChangeCurrentLanguage(0x0804) == S_OK &&
-        manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, 0x0804, pinyin, profile, nullptr, 0) == S_OK,
-        "Cannot activate the enabled Pinyin profile on the editor thread."); // Never ENABLEPROFILE/FORSESSION/default setters.
-    tick(app, 2);
-    TF_INPUTPROCESSORPROFILE active{};
-    require(SUCCEEDED(manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active)) && active.langid == 0x0804 &&
-        IsEqualGUID(active.clsid, pinyin) && IsEqualGUID(active.guidProfile, profile), "Active input profile is not Microsoft Pinyin.");
+    const auto check_active_profile = [&] {
+        TF_INPUTPROCESSORPROFILE current{};
+        const auto result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &current);
+        record_profile("Active thread profile", result, current);
+        require(result == S_OK && current.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR && current.langid == 0x0804 &&
+            IsEqualGUID(current.clsid, sogou) && IsEqualGUID(current.guidProfile, profile), "Active input profile is not Sogou Pinyin.");
+    };
+    check_active_profile(); // Read-only profile checks; no activation, enablement or default setters.
     const auto physical_key = [&](WORD code) {
-        require(GetForegroundWindow() == app.window(), "IME acceptance lost foreground ownership; no key was sent.");
+        require_foreground();
         for (const auto modifier : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN})
             require((GetAsyncKeyState(modifier) & 0x8000) == 0, "A physical modifier is held; IME acceptance stopped.");
         INPUT input[2]{};
@@ -644,13 +661,14 @@ int verify_editor_ime(Application& app, const char* output_directory) {
         input[0].ki.wScan = input[1].ki.wScan = static_cast<WORD>(MapVirtualKeyW(code, MAPVK_VK_TO_VSC));
         input[0].ki.dwFlags = KEYEVENTF_SCANCODE;
         input[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+        setup << "SendInput scan=" << std::hex << input[0].ki.wScan << " (down/up)\n"; setup.flush();
         require(SendInput(2, input, sizeof(INPUT)) == 2, "SendInput did not insert both physical key events.");
         tick(app, 2);
     };
     const auto wait_for = [&](const auto& predicate, const char* message) {
         const auto deadline = GetTickCount64() + 5000;
         while (!predicate() && GetTickCount64() < deadline) {
-            require(GetForegroundWindow() == app.window(), "IME acceptance lost foreground ownership.");
+            require_foreground();
             require(app.step(), "Editor closed during real IME acceptance.");
         }
         require(predicate(), message);
@@ -659,11 +677,41 @@ int verify_editor_ime(Application& app, const char* output_directory) {
         for (const auto code : {'W','E','I','Z','H','I'}) physical_key(static_cast<WORD>(code));
         wait_for([&] { return app.text_input() && app.text_input()->composing; }, "System Pinyin did not produce an active composition.");
     };
+    const auto choose_position = [&] {
+        WORD key_code{};
+        {
+            const auto context = ImmGetContext(app.window());
+            require(context != nullptr, "No input context for candidate inspection.");
+            struct ContextScope { HWND window; HIMC context; ~ContextScope() { ImmReleaseContext(window, context); } } context_scope{app.window(), context};
+            const auto bytes = ImmGetCandidateListW(context, 0, nullptr, 0);
+            require(bytes >= sizeof(CANDIDATELIST) && bytes <= 65536, "System IME did not expose a bounded candidate list.");
+            std::vector<DWORD> storage((bytes + sizeof(DWORD) - 1) / sizeof(DWORD));
+            auto* candidates = reinterpret_cast<CANDIDATELIST*>(storage.data());
+            require(ImmGetCandidateListW(context, 0, candidates, bytes) == bytes &&
+                candidates->dwCount <= (bytes - offsetof(CANDIDATELIST, dwOffset)) / sizeof(DWORD), "Invalid native candidate list.");
+            const auto page_end = std::min(candidates->dwCount, candidates->dwPageStart + std::min(candidates->dwPageSize, DWORD{9}));
+            for (DWORD index = candidates->dwPageStart; index < page_end; ++index) {
+                const auto offset = candidates->dwOffset[index];
+                require(offset < bytes && offset % sizeof(wchar_t) == 0, "Invalid candidate text offset.");
+                const auto* text = reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(candidates) + offset);
+                const auto units = (bytes - offset) / sizeof(wchar_t);
+                const auto* end = std::find(text, text + units, L'\0');
+                require(end != text + units, "Unterminated candidate text.");
+                if (std::wstring_view(text, end) == L"位置") {
+                    key_code = static_cast<WORD>('1' + index - candidates->dwPageStart);
+                    setup << "Native position candidate index=" << std::dec << index << "; selection key=" << static_cast<char>(key_code) << '\n';
+                    break;
+                }
+            }
+        }
+        require(key_code != 0, "Position was not on the current native candidate page.");
+        physical_key(key_code);
+    };
     const auto native_before = app.input_statistics();
     compose_position();
     wait_for([&] { return app.input_statistics().candidate_opens > native_before.candidate_opens; }, "No native IME candidate-open notification was observed.");
     capture(app, output / "s2-ime-preedit.png");
-    {
+    const auto capture_native_candidate = [&](const char* filename) {
         // Desktop pixels inside the foreground editor include the OS candidate popup.
         RECT rect{}; require(GetWindowRect(app.window(), &rect) != FALSE, "Cannot locate IME screenshot region.");
         const auto width = rect.right - rect.left, height = rect.bottom - rect.top;
@@ -687,11 +735,13 @@ int verify_editor_ime(Application& app, const char* output_directory) {
         require(GetDIBits(memory, bitmap, 0, static_cast<UINT>(height), image.rgba.data(), &info, DIB_RGB_COLORS) == height,
             "Cannot read native candidate pixels.");
         for (std::size_t i = 0; i < image.rgba.size(); i += 4) { std::swap(image.rgba[i], image.rgba[i + 2]); image.rgba[i + 3] = 255; }
-        png(image, output / "s2-ime-native-candidate.png");
-    }
-    physical_key(VK_SPACE);
+        png(image, output / filename);
+    };
+    capture_native_candidate("s2-ime-native-candidate.png");
+    choose_position();
     wait_for([&] { return app.query() == L"位置" && app.text_input() && !app.text_input()->composing; }, "Pinyin candidate did not confirm exactly one position query.");
     require(app.document().scene().members().size() == 1, "IME confirmation triggered a scene command.");
+    capture(app, output / "s2-ime-confirmed.png");
     const auto confirmed_results = app.input_statistics().results;
     physical_key('X');
     wait_for([&] { return app.text_input() && app.text_input()->composing; }, "Pinyin cancel scenario did not compose.");
@@ -707,25 +757,76 @@ int verify_editor_ime(Application& app, const char* output_directory) {
     physical_key(VK_RETURN); // A new key sequence commits the search field.
     const auto object = app.document().selected();
     click(app, control::position(object, 0));
-    compose_position(); physical_key(VK_SPACE);
+    compose_position(); choose_position();
     wait_for([&] { return app.text_input() && !app.text_input()->composing; }, "Numeric Pinyin result did not end composition.");
     const auto history = app.document().undo_count();
     physical_key(VK_RETURN);
     require(x(app, object) == 0 && app.document().undo_count() == history && app.wants_keyboard(), "Invalid IME numeric draft wrote the scene or exited focus.");
     physical_key(VK_ESCAPE);
     require(x(app, object) == 0, "Numeric IME cancellation did not restore its value.");
+
+    click(app, control::parameter_search); compose_position();
+    SetFocus(nullptr); tick(app, 2);
+    require(!app.text_input() && app.query() == L"位置", "OS blur did not cancel the real composition and retain the committed query.");
+    require_foreground(); SetFocus(app.window()); tick(app, 1);
+    click(app, control::parameter_search); compose_position();
+    RECT original_bounds{}; require(GetWindowRect(app.window(), &original_bounds) != FALSE, "Cannot preserve editor bounds.");
+    SetWindowPos(app.window(), nullptr, 0, 0, original_bounds.right - original_bounds.left + 24,
+        original_bounds.bottom - original_bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    tick(app, 3);
+    require((!app.text_input() || !app.text_input()->composing) && app.query() == L"位置", "Surface change retained a real composition or changed the query.");
+    SetWindowPos(app.window(), nullptr, 0, 0, original_bounds.right - original_bounds.left,
+        original_bounds.bottom - original_bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    tick(app, 3);
+    click(app, control::position(object, 0)); compose_position();
+    click(app, control::add);
+    require(app.document().selected() != object && !app.document().editing() && x(app, object) == 0 &&
+        x(app, app.document().selected()) == 0 && (!app.text_input() || !app.text_input()->composing),
+        "Changing the parameter target retained composition or edited either object.");
+
+    click(app, control::parameter_search);
+    const std::wstring long_query(100, L'x');
+    type(app, long_query.c_str()); key(app, VK_RETURN); // Owned WM_CHAR only seeds the horizontal-scroll fixture.
+    key(app, VK_END); compose_position();
+    const auto text_state = app.text_input();
+    require(text_state && text_state->composing && text_state->accepted_caret, "Long-field composition has no accepted caret.");
+    const auto& caret = *text_state->accepted_caret;
+    require(caret.bounds.x >= static_cast<float>(caret.clip.left) &&
+        caret.bounds.x + caret.bounds.width <= static_cast<float>(caret.clip.right), "Scrolled composition caret escaped the field clip.");
+    const auto input_context = ImmGetContext(app.window());
+    require(input_context != nullptr, "Long-field composition lost its input context.");
+    CANDIDATEFORM candidate{};
+    const auto candidate_found = ImmGetCandidateWindow(input_context, 0, &candidate);
+    ImmReleaseContext(app.window(), input_context);
+    require(candidate_found && candidate.dwStyle == CFS_EXCLUDE &&
+        candidate.rcArea.left == static_cast<LONG>(std::floor(caret.bounds.x)) &&
+        candidate.rcArea.top == static_cast<LONG>(std::floor(caret.bounds.y)) &&
+        candidate.rcArea.bottom == static_cast<LONG>(std::ceil(caret.bounds.y + caret.bounds.height)),
+        "Native candidate anchor does not match the accepted scrolled caret.");
+    capture(app, output / "s2-ime-horizontal.png"); capture_native_candidate("s2-ime-horizontal-native.png");
+    physical_key(VK_ESCAPE);
+    require(app.query() == long_query, "Cancelling scrolled composition changed confirmed text.");
+    type(app, L""); key(app, VK_RETURN);
     const auto native_after = app.input_statistics();
-    capture(app, output / "s2-ime-confirmed.png");
-    require(restore.restore(), "Could not restore the original thread input profile.");
+    capture(app, output / "s2-ime-final.png");
+    check_active_profile();
     SendMessageW(app.window(), WM_CLOSE, 0, 0); require(!app.step(), "IME acceptance did not close normally.");
     std::ofstream report(output / "ime-acceptance.txt");
-    report << "Microsoft Pinyin acceptance: PASS\n"
-           << "Enabled profile 0804:{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}{FA550B04-5AD7-411F-A5AC-CA038EC515D7}\n"
+    report << "Sogou Pinyin acceptance: PASS\n"
+           << "Enabled profile 0804:{E7EA138E-69F8-11D7-A6EA-00065B844310}{E7EA138F-69F8-11D7-A6EA-00065B844311}\n"
            << "Physical SendInput scan codes -> system IME -> owned IMM32 snapshots -> shared TextEdit -> search/number\n"
            << "Composition starts: " << native_after.compositions - native_before.compositions
            << "; result snapshots: " << native_after.results - native_before.results
            << "; candidate opens: " << native_after.candidate_opens - native_before.candidate_opens << '\n'
-           << "Candidate/confirm/cancel; IME Enter ownership; invalid numeric result; original thread profile restored; no enable/default setters used.\n";
+           << "Candidate/confirm/cancel; IME Enter ownership; invalid numeric result; OS blur/surface/target cancellation; horizontal composition/accepted candidate anchor; original Sogou thread profile retained; no activation/enable/default setters used.\n"
+           << "The long-field fixture uses owned WM_CHAR for its confirmed prefix; all IME compositions use physical SendInput and native IMM32 events.\n";
     require(report.good(), "Cannot save real IME acceptance evidence.");
-    std::puts("Microsoft Pinyin acceptance: PASS"); return 0;
+    std::puts("Sogou Pinyin acceptance: PASS"); return 0;
+} catch (const std::exception& error) {
+    const std::string_view reason(error.what());
+    const auto outcome = reason.starts_with("IME acceptance lost foreground") ? "INTERRUPTED" :
+        reason.find("not enabled") != std::string_view::npos ? "BLOCKED" : "FAIL";
+    std::ofstream(std::filesystem::path(output_directory) / "ime-acceptance.txt")
+        << "Sogou Pinyin acceptance: " << outcome << '\n' << error.what() << '\n';
+    throw;
 }

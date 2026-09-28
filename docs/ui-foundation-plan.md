@@ -1,6 +1,6 @@
 # 原生 UI 下一增量：研究与实施方案
 
-状态：**S1 主持已收口（`ec6a118`）；S2 已集成共享编辑与应用平台接线，UI 双配置 12/12 通过，最终窗口链和真实 Microsoft Pinyin 尚待完成；S3 未启动。**
+状态：**S1 主持已收口（`ec6a118`）；S2 已集成共享编辑与应用平台接线，UI 双配置 12/12 和最终非 IME 窗口链各 709 帧通过，本机搜狗真实输入验收尚待完成；S3 未启动。**
 
 日期：2026-09-28，更新于 2026-09-29。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；唯一集成分支：`codex/ui-foundation`。
 本页是编辑器当前排期的唯一入口。[首版记录](first-editor-plan.md)保留已交付的 M0/M1 与尚未完成的 M2 目标；保存重开、JIT 单步暂不进入本轮。
@@ -75,7 +75,7 @@ S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合�
 
 ### 剪贴板、IME 与错误回路
 
-平台接线归 `Window`/`Application`，UI 不持 HWND/HIMC。产品沿唯一 IMM32 接线和系统候选窗推进，真实 Microsoft Pinyin 验收是完成条件；不放隐藏 EDIT，也不并存第二种文本后端。平台接口、失败与清理顺序见第 9 节。
+平台接线归 `Window`/`Application`，UI 不持 HWND/HIMC。产品沿唯一 IMM32 接线和系统候选窗推进，本机搜狗真实输入验收是完成条件；不放隐藏 EDIT，也不并存第二种文本后端。平台接口、失败与清理顺序见第 9 节。
 
 ## 6. 文件归属与替换清单
 
@@ -171,16 +171,19 @@ UI 维护 `src/ui/session.hpp` 的唯一合同，以下形状在共享头提交�
 
 ### 9.5 本机环境与真实输入证据
 
-2026-09-29 只读检查：系统为 build **26200.9457 / 25H2**；用户输入列表为 zh-Hans-CN 搜狗拼音与 en-US 美式键盘，默认覆盖仍为搜狗。Microsoft Pinyin 的系统 profile 存在，但 `Enable=0`，未列入用户 InputMethodTips；用户 CTF 路径无对应启用记录。
-Pinyin TIP 为 `{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}`，profile 为 `{FA550B04-5AD7-411F-A5AC-CA038EC515D7}`。`C:\Windows\System32\InputMethod\CHS\ChsIME.exe` 版本 `10.0.26100.9278`，Authenticode 为 Valid / Microsoft Windows。以上证明安装与注册存在，**不证明实际组合输入已可用或已通过**。
-来源为 `Get-WinUserLanguageList`、`Get-WinDefaultInputMethodOverride`、CTF LanguageProfile 注册表、文件版本及签名；未改任何输入设置。[ActivateProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile) 的 ENABLEPROFILE 会写用户注册表，不能把它当只读探测。主持已向用户请求是否启用现有 Pinyin、保留搜狗默认且不删除/重排现有输入法；答复前不启用，此条件不阻塞合同准备。
+用户已明确指定“微软拼音被我移除了，测搜狗就可以”。S2 的真实 IME 收口目标改为本机现有搜狗，不要求恢复微软拼音，不据此宣称其他输入法通过。
+2026-09-29 实机系统 build **26200.9457 / 25H2**；用户输入列表为 zh-Hans-CN 搜狗拼音与 en-US 美式键盘，默认覆盖为搜狗。实际搜狗模块 `C:\Windows\System32\SogouTSF.ime` 的 FileVersion/ProductVersion 均为 **16.8.0.5415**。搜狗 TIP 为 `{E7EA138E-69F8-11D7-A6EA-00065B844310}`，profile 为 `{E7EA138F-69F8-11D7-A6EA-00065B844311}`，语言为 `0804`。
 
-真实 IME 验收须在授权且 profile 可用后进行：
+`atelier_editor --acceptance-ime` 只读检查当前活动 profile 的完整 type/lang/CLSID/GUID，`GetActiveProfile` 必须返回 S_OK；S_FALSE 表示无活动 profile，不当作成功。入口不选择、启用或修改默认输入法。产品只有 IMM32 接线；TSF profile 查询只用于验收环境辨认。
 
-- 同一 `atelier_editor`、同一消息泵与 TextEdit。记录原活动 profile，仅在验收窗口的线程选择已启用 Pinyin，结束还原；不改系统默认。配置选择/识别可用 TSF profile API，产品文字接线仍是唯一 IMM32，不成为第二种编辑后端。
-- 确认窗口前台、交互桌面与输入权限后，使用真实硬件输入或 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 的物理键/扫描码键序列输入拼音并选候选，不使用 Unicode 直接灌字。检查插入数量、修饰键状态、活动 profile，以及确由系统产生的 start/preedit/result/end；失去目标前台即停止送键，避免输入落到其他窗口。
-- 搜索中实际拼出“位置”，检查候选窗、确认/取消、组合 Enter 不提交字段、结果只插入一次；再覆盖数字 invalid 草稿、焦点/Surface/目标变化、横滚与 caret 定位。原生候选窗在 OS 层，须原生窗口/桌面区域证据或人工观察记录，renderer readback 只能证明应用绘制，不能冒充候选窗截图。
-- 报告分别列出 **系统 IME 驱动**（profile、实际键序列、系统组合流及可视候选）、**故障消息/结果注入**（过期/重复 token、剪贴板失败、迟到组合、业务失败回滚等）和 **静态环境检查**。SendMessage/合成 WM_IME 只算注入；搜狗结果也不能当作 Microsoft Pinyin 通过。真实链未通过时 S2 未完成。
+此前按启用授权写入的 Microsoft Pinyin 用户 enable 位及追加可选项，在收到用户改用搜狗的指令后，已通过原受支持 API 精确撤回；未覆盖用户整份设置。`out/pinyin-profile-reverted.txt` 与 `out/pinyin-environment-reverted.json` 记录 enable=0、原列表/顺序及搜狗默认与操作前一致。这段记录不代表微软拼音验收通过。
+
+真实搜狗验收要求：
+
+- 同一 `atelier_editor`、同一消息泵与 TextEdit。开始与结束只读核对活动搜狗 profile；保持原输入法设置。
+- 确认窗口前台、交互桌面与输入权限后，使用真实硬件输入或 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 的物理键/扫描码键序列输入拼音并选候选。按系统实际候选文本定位“位置”，不假定它始终是第一个候选。失去目标前台即停止送键，记录实际前台窗口身份；不得把文字直接灌入替代组合。
+- 搜索中实际拼出“位置”，检查候选窗、确认/取消、组合 Enter 不提交字段、结果只插入一次；再覆盖数字 invalid 草稿、焦点/Surface/目标变化、横滚与 caret 定位。原生候选窗在 OS 层，须原生窗口区域证据或人工观察记录，renderer readback 只证明应用绘制。
+- 报告分别列出 **系统 IME 驱动**（实际版本/profile、键序列、系统组合流及可视候选）、**故障消息/结果注入**（过期/重复 token、剪贴板失败、迟到组合、业务失败回滚等）和 **静态环境检查**。SendMessage/合成 WM_IME 只算注入；搜狗结果不代表微软拼音或所有 IME 通过。真实链未通过时 S2 未完成。
 
 ### 9.6 文件归属、迁移顺序与终点
 
@@ -189,10 +192,10 @@ Pinyin TIP 为 `{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}`，profile 为 `{FA550B04
 | 共同合同确认后：共享头提交 | UI：`src/ui/session.hpp`；TextEdit/TextStore 私有设计仍归 UI | 一次提交 ControlKind、拥有事件、Action.value、effects、tokens、caret/query；应用仅按明确 SHA 消费，不复制头、不留旧字段兼容 |
 | UI 实现与平台接线并行 | UI：`src/ui/session.cpp`、`text.hpp/.cpp`、必要私有编辑实现、`acceptance/ui`、UI CMake/文档；应用：`Window::NativeEvent/receive/poll`、`Application::native/action/effects` 及转发、Workspace 查询和 `acceptance/editor`、根接线 | UI 删除 numeric-only Edit/ASCII 分支和单 x 选区查询；应用删除 char32 WM_CHAR 强转、旧 double 访问与 `.actions` 消费。业务位置入口/回放保持 S1，RHI 不扩展 |
 | 唯一分支集成 | 应用只 cherry-pick UI 明确提交到 `codex/ui-foundation` | 同一 TextEdit、DWrite、Reply.effects 和 Win32 泵贯通全部消费者；平台失败与业务失败分别处理，清理无遗漏；中间接口提交可短暂未构建，不能带兼容入口交付 |
-| dev/release 同窗口验收 | 应用统筹，UI 提供真实文字服务验收 | 四状态键盘矩阵、number 两种指针模式、权威值同步、搜索提交/回滚、分组和有界本地历史、Unicode 选区/删除、剪贴板成功/失败/过期、业务失败清理、真实 Pinyin 及候选、原有场景/窗口链；全部通过才提交主持收口 |
+| dev/release 同窗口验收 | 应用统筹，UI 提供真实文字服务验收 | 四状态键盘矩阵、number 两种指针模式、权威值同步、搜索提交/回滚、分组和有界本地历史、Unicode 选区/删除、剪贴板成功/失败/过期、业务失败清理、真实搜狗及候选、原有场景/窗口链；全部通过才提交主持收口 |
 
-主持已批准按上述顺序实施。Microsoft Pinyin 启用仍待用户答复，不阻塞生产实现和非 IME 验收；答复前不改输入设置，真实 Pinyin 未通过则 S2 不结项。S3 不启动。
+主持已批准按上述顺序实施。用户已指定使用现有搜狗完成真实输入验收；通过前 S2 不结项，S3 不启动。
 
 ## 会审结论入口
 
-主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。第 9 节已通过，是应用/UI 的唯一 S2 实施交接依据；共享编辑与平台接线已集成，UI 双配置 12/12 及应用编译通过。最终双配置窗口链等待稳定焦点，真实 Pinyin 待启用授权和实际运行；[当前集成状态](modules/editor/README.md#s2-集成状态与输入法验收)记录失败原因与证据边界。S3 未启动，不推送或合并主线。
+主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。第 9 节已通过，是应用/UI 的唯一 S2 实施交接依据；共享编辑与平台接线已集成，UI 双配置 12/12 及应用编译通过。最终双配置非 IME 窗口链各 709 帧已通过，本机搜狗真实输入链尚待完成；[当前集成状态](modules/editor/README.md#s2-集成状态与输入法验收)记录失败原因与证据边界。S3 未启动，不推送或合并主线。
