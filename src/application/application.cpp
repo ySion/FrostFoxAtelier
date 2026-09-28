@@ -1,6 +1,7 @@
 #include "application/application.hpp"
 #include <windowsx.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -183,6 +184,8 @@ void Application::native(const NativeEvent& message) {
     }
 }
 bool Application::step(renderer::Capture* capture) {
+    frame_timing_ = {};
+    frame_statistics_ = {};
     if (closed_) return false;
     window_.poll(events_);
     for (const auto& event : events_) native(event);
@@ -200,7 +203,11 @@ bool Application::step(renderer::Capture* capture) {
     auto gc = document_.collect_step();
     if (!gc) throw std::runtime_error(gc.error().message);
     if (!target.drawable) { MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    using Clock = std::chrono::steady_clock;
+    const bool sample = sampling_ && !capture;
+    const auto prepare_start = sample ? Clock::now() : Clock::time_point{};
     auto prepared = ui_.prepare();
+    const auto prepare_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - prepare_start).count() : 0;
     if (!prepared) {
         if (!ui_.presented()) throw std::runtime_error("Initial editor frame preparation failed (UI code " + std::to_string(static_cast<int>(prepared.error().code)) + ").");
         workspace_.status = L"Frame preparation failed; previous frame retained";
@@ -217,16 +224,20 @@ bool Application::step(renderer::Capture* capture) {
     }
     const auto camera = camera_.matrices(viewport->bounds.width / std::max(viewport->bounds.height, 1.f));
     renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, viewport->bounds, cubes_};
+    const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
+    const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
     if (!rendered) {
         if (rendered.error().terminal) throw std::runtime_error("Renderer stopped: " + rendered.error().cause.message);
         workspace_.status = widen(rendered.error().cause.message); return true;
     }
+    frame_statistics_ = rendered->stats;
     if (rendered->status == renderer::FrameStatus::accepted) {
         if (rendered->accepted_id != frame.drawing->id || rendered->accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
         ++accepted_frames_;
+        if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us};
     } else MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     return true;
 }

@@ -14,12 +14,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
         result.push_back(std::move(item));
         return result.back();
     };
-    const auto panel = ui::Color{.032f, .037f, .044f, 1};
     auto root = NodeInput::column(); root.width = root.height = Axis::expand();
     add(1, 0, ControlKind::container, root);
     auto toolbar = NodeInput::row(6); toolbar.height = Axis::fixed(48); toolbar.padding = {12, 8, 12, 8};
-    add(2, 1, ControlKind::container, toolbar).background = panel;
-    add(3, 2, ControlKind::label, NodeInput::box(210, 32), L"FROSTFOX / Scene").font_size = 16;
+    add(2, 1, ControlKind::container, toolbar).role = ui::Role::panel;
+    add(3, 2, ControlKind::label, NodeInput::box(210, 32), L"FROSTFOX / Scene").role = ui::Role::title;
     add(control::add, 2, ControlKind::button, NodeInput::box(88, 32), L"+ Add cube");
     add(control::remove, 2, ControlKind::button, NodeInput::box(72, 32), L"Delete").enabled = session.selected() != 0;
     add(control::undo, 2, ControlKind::button, NodeInput::box(64, 32), L"Undo").enabled = session.undo_count() != 0;
@@ -29,9 +28,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
     auto body = NodeInput::row(); body.height = Axis::expand();
     add(20, 1, ControlKind::container, body);
     auto left = NodeInput::column(8); left.width = Axis::fixed(192); left.height = Axis::expand(); left.padding = {10, 12, 10, 12};
-    add(21, 20, ControlKind::container, left).background = panel;
+    add(21, 20, ControlKind::container, left).role = ui::Role::panel;
     auto heading = NodeInput::box(0, 28); heading.width = Axis::expand();
-    add(22, 21, ControlKind::label, heading, L"OBJECTS").font_size = 12;
+    add(22, 21, ControlKind::label, heading, L"OBJECTS").role = ui::Role::caption;
     auto list = NodeInput::column(3); list.height = Axis::expand();
     add(23, 21, ControlKind::list, list);
     for (const auto& member : session.scene().members()) {
@@ -47,9 +46,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
     divider.drag_step = divider.fine_step = 1;
     auto parameters = NodeInput::column(10); parameters.width = Axis::fixed(parameter_width); parameters.height = Axis::expand();
     parameters.padding = {16, 12, 16, 12};
-    add(50, 20, ControlKind::container, parameters).background = panel;
-    add(51, 50, ControlKind::label, heading, L"PARAMETERS").font_size = 12;
-    add(52, 50, ControlKind::label, heading, session.selected() ? L"Cube " + std::to_wstring(session.selected()) : L"No selection").font_size = 18;
+    add(50, 20, ControlKind::container, parameters).role = ui::Role::panel;
+    add(51, 50, ControlKind::label, heading, L"PARAMETERS").role = ui::Role::caption;
+    add(52, 50, ControlKind::label, heading, session.selected() ? L"Cube " + std::to_wstring(session.selected()) : L"No selection").role = ui::Role::title;
     add(53, 50, ControlKind::label, heading, L"Position  /  metres");
     scene::Vec3 position{};
     if (session.selected()) {
@@ -70,13 +69,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session) const {
         input.minimum = position_parameters[axis].minimum; input.maximum = position_parameters[axis].maximum;
         input.drag_step = position_parameters[axis].drag_step;
     }
-    add(90, 50, ControlKind::label, heading, L"Drag values to adjust").font_size = 12;
-    add(91, 50, ControlKind::label, heading, L"Click to type / Esc to cancel").font_size = 12;
-    add(92, 50, ControlKind::label, heading, L"Right drag: orbit / Wheel: zoom").font_size = 12;
+    add(90, 50, ControlKind::label, heading, L"Drag values to adjust").role = ui::Role::caption;
+    add(91, 50, ControlKind::label, heading, L"Click to type / Esc to cancel").role = ui::Role::caption;
+    add(92, 50, ControlKind::label, heading, L"Right drag: orbit / Wheel: zoom").role = ui::Role::caption;
     auto footer = NodeInput::row(); footer.height = Axis::fixed(28); footer.padding = {12, 0, 12, 0};
-    add(100, 1, ControlKind::container, footer).background = panel;
+    add(100, 1, ControlKind::container, footer).role = ui::Role::panel;
     auto status = NodeInput::box(0, 28); status.width = Axis::expand();
-    add(101, 100, ControlKind::label, status, this->status + L"  |  " + std::to_wstring(session.scene().members().size()) + L" objects").font_size = 12;
+    add(101, 100, ControlKind::label, status, this->status + L"  |  " + std::to_wstring(session.scene().members().size()) + L" objects").role = ui::Role::caption;
     return result;
 }
 }
