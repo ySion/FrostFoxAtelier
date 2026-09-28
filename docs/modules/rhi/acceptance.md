@@ -1,6 +1,6 @@
 # RHI 验收与证据
 
-当前 gfx 方案已在 dev/release 编译并通过真实 GPU 执行。这里记录正式 Interface 的当次结果，不把此前 SDK 探针当作本模块验收。
+本页记录 2026-09-27 的 gfx 正式 Interface 与九项审计修正验收，源码随后进入交付提交 `a1eb44b7f3e6f1363fb60e5e6357d32f3908fec7`。dev/release 已通过真实 GPU 执行；下文“本轮”均指该次运行，文档清理不构成新的运行结果。此前 SDK 探针只属于历史可行性证据。
 
 ## 命令与环境
 
@@ -63,18 +63,20 @@ cmake --build --preset release --target acceptance
 
 此外，独立 CMake object 消费者只 `target_link_libraries(... atelier_rhi)`，没有调用 `atelier_target` 或指定标准，实际以 C++23 编译公开头文件成功；临时配置入口已移除。Mesh 的成功硬件路径已运行，不支持 Mesh 的硬件和多卡选择仍为源码校验范围。
 
-修正汇总、当前源文件 hash、补丁重放身份与日志：[rhi-verification.json](../../../out/rhi-verification.json)。观察脚本：[run-lifetime-probe.ps1](../../../out/review/rhi-fixes/run-lifetime-probe.ps1)；[dev 日志](../../../out/review/rhi-fixes/rhi_lifetime_dev.log)、[release 日志](../../../out/review/rhi-fixes/rhi_lifetime_release.log)、[公开 target 消费者编译命令](../../../out/review/rhi-fixes/public-consumer-command.json)。
+修正汇总、当前源文件 hash、补丁重放身份与日志：rhi-verification.json（`out/rhi-verification.json`）。观察脚本：run-lifetime-probe.ps1（`out/review/rhi-fixes/run-lifetime-probe.ps1`）；dev 日志（`out/review/rhi-fixes/rhi_lifetime_dev.log`）、release 日志（`out/review/rhi-fixes/rhi_lifetime_release.log`）、公开 target 消费者编译命令（`out/review/rhi-fixes/public-consumer-command.json`）。
 
 ## 日志与诊断解释
 
-每个配置的 `out/<preset>/` 保留：
+以下为验收时本机保存的证据路径，位于忽略的 `out/`，不随仓库克隆交付；重新执行正式入口会生成相应运行日志。清理没有删除这些证据，也不将临时观察脚本当作生产目标。
+
+每个配置的 `out/<preset>/` 当时保留：
 
 - `aggregate-acceptance.log`：release 当前聚合结果；dev 同名文件保留此前执行，当前 dev 的补充结果使用下述日志。
 - `rhi-acceptance.log`：正式消费者，包含逐场景结果与 `exit=0`。
 - `rhi-regression-null-list.log`、`rhi-regression-mesh-pixel-state.log`、`rhi-regression-timeout.log`：独立子进程结果与 `exit=0`。
 - `licenses/rhi/`：gfx、DXC、Agility、D3D12MA、PIX、AMD 扩展 notice/source 与项目补丁。
 
-汇总及源码 hash：[rhi-verification.json](../../../out/rhi-verification.json)。这些 `out` 文件是本机证据，不是已提交仓库内容。
+汇总及源码 hash：rhi-verification.json（`out/rhi-verification.json`）。这些 `out` 文件是本机证据，不是已提交仓库内容。
 
 本轮 dev 的 `out/review/rhi-fixes/dev-rhi.log`、`dev-core-build.log`、`dev-runtime.log`、`dev-jit.log` 记录分开执行的完整组件结果。
 

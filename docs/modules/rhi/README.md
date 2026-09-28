@@ -12,7 +12,7 @@
 - [生产实现](../../../src/rhi/rhi.cpp)：选择硬件 adapter，不自动回退 WARP；统一 owner 线程和错误终态。
 - [正式消费者](../../../acceptance/rhi/main.cpp)：同一 Interface 上的六帧 Compute → Mesh → Vertex、间接参数、颜色/深度回读、提前释放与管线替换。
 - [后端回归](../../../acceptance/rhi/upstream_regression.cpp)：无 list 的 interop 清理、Mesh PS 资源状态、真实 fence gate 超时与严格一次执行。
-- [实施裁决](../../research/rhi-reassessment/gfx-decision.md)、[决策记录](decisions.md)、[回交说明](session-handoff.md)。
+- [决策与理由](decisions.md)、[固定来源记录](../../research/rhi-reassessment/README.md)。
 
 ## 构建与运行
 
@@ -30,8 +30,12 @@ cmake --build --preset release --target rhi_acceptance
 
 依赖版本/下载与 hash 的唯一权威是 [dependencies-lock.json](../../../cmake/dependencies-lock.json)，工具链是 [toolchain-lock.json](../../../cmake/toolchain-lock.json)。[cmake/rhi.cmake](../../../cmake/rhi.cmake) 部署 DXC、Agility、PIX 运行库及 `licenses/rhi`；[atelier.patch](../../../third_party/gfx/atelier.patch) 可从固定上游源码重新应用。普通 CPU 分配沿项目 mimalloc 接入，GPU 内存由 gfx/D3D12MA 管理。
 
+部署时保留同目录 DXC、Agility、PIX、mimalloc 运行库及许可证，不能只复制 exe。共享根构建与依赖锁的跨模块整合由主持协调；运行场景、预期诊断和限制集中在 [acceptance](acceptance.md)，不另建会话交接规则。
+
 ## 当前边界
 
 验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
 
-没有实现或未验收：通用 RDG/renderer、业务语言绑定、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、Present/resize/HDR/多窗口、ray tracing 与性能基线。`window` 输入复用 gfx 的窗口路线，但本轮 PASS 仅覆盖离屏。旧 Recording/Ticket/ResourceId 方案已经被 gfx 实施裁决替代，不作为当前 Interface 的能力声明。
+没有实现或未验收：通用 RDG/renderer、业务语言绑定、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、Present/resize/HDR/多窗口、ray tracing 与性能基线。`window` 输入复用 gfx 的窗口路线，但已有 PASS 仅覆盖离屏。
+
+引擎资源与语言/UI 的下一增量见 [资源连接提案](../resources/design-proposal.md)。该设计已完成接口分析，新增类型、原生访问接口和跨模块消费者尚未实现，不属于当前 RHI 能力。

@@ -2,15 +2,15 @@
 
 访问/记录日期：2026-09-25。外部新检索使用Exa，事实回到Microsoft/Khronos/NVRHI原文。以下区分源码、本机运行和设计判断；不把外部文档当本机设备能力证明。
 
-本页是 gfx 路线确定之前的研究快照，不是当前实现契约。现行入口见 [README](README.md)、[contract](contract.md) 与 [gfx 实施裁决](../../research/rhi-reassessment/gfx-decision.md)。本页“当前”“未来 Module”等用语仅指记录当时；正式目标与运行结果见 [acceptance](acceptance.md)。
+本页是 gfx 路线确定之前的研究快照，不是当前实现契约。现行入口见 [README](README.md)、[contract](contract.md) 与 [现行决策](decisions.md)。本页“当前”“未来 Module”等用语仅指记录当时；正式目标与运行结果见 [acceptance](acceptance.md)。
 
-## 当前项目与本机证据
+## 2026-09-25 的项目与本机证据
 
 - [工程指南](../../engineering.md)：以所有权/生命周期组织Module，C++23、CMake权威、native通用分配沿现有规则，GPU/第三方专用资源按其提供方释放。
 - [术语](../../../CONTEXT.md)、[语言契约](../../language-contract.md)：业务对象共用Runtime；私有GPU资源标识不是另一套业务类型世界。
 - [runtime.hpp](../../../src/runtime/runtime.hpp):322–333：根不阻止显式销毁；[runtime.cpp](../../../src/runtime/runtime.cpp):663–668、766–771、792–826、1259–1272：native析构、发布准入、GC预算与显式销毁均没有GPU完成含义。
 - [工具链锁](../../../cmake/toolchain-lock.json)是准确版本唯一权威。会议时SDK为10.0.26100.0、LLVM23.1.1、MSVC14.50.35717；这是日期化研究快照，不是第二份升级清单。
-- [首次硬件debug结果](../../../out/review/wave1-meeting/rhi-path-probe-hardware-debug.json)、[最小链接命令](../../../out/review/wave1-meeting/rhi-minimal-build.json)、[最小链接硬件执行](../../../out/review/wave1-meeting/rhi-minimal-hardware-debug.json)：Main实测RX6800XT、两次像素一致、debug0错误、GPU-based validation关闭。精确数值与不覆盖项只维护于[acceptance](acceptance.md)。
+- 首次硬件debug结果（`out/review/wave1-meeting/rhi-path-probe-hardware-debug.json`）、最小链接命令（`out/review/wave1-meeting/rhi-minimal-build.json`）、最小链接硬件执行（`out/review/wave1-meeting/rhi-minimal-hardware-debug.json`）：Main实测RX6800XT、两次像素一致、debug0错误、GPU-based validation关闭。精确数值与不覆盖项只维护于[acceptance](acceptance.md)。
 - 会议[固定 baseline](../../research/wave1-meeting/baseline.json)记录当时的源码依据；当时尚无生产 target。如今已有 gfx 正式目标，不再用旧最小链接证据替代模块验收。
 
 ## D3D12 资源与提交
@@ -57,6 +57,6 @@ SDK路线不新增以上源码依赖。本机SDK许可文件位于`C:/Program Fi
 - **本机实测**：Main执行的两份硬件run及精简链接路径，详见acceptance。
 - **源码/文件证据**：本仓Runtime/构建链、已安装SDK头库、固定NVRHI源码及许可。
 - **外部机制支持**：Microsoft/Khronos接口文档，不替代本机feature/debug/driver检测。
-- **设计取舍**：单后端、single-owner thread、资源Handle/Ticket表示、关停策略及模块入选理由。
-- **未证实**：性能、其他平台/设备、WARP、透明device recovery、尚未实现wrapper的行为。以上不得在handoff中升级为“已打通RHI”。
+- **历史取舍**：SDK 路径只证明当时的硬件与链接可行性；资源和执行模型已由[现行决策](decisions.md)确定。
+- **未证实**：性能、其他平台/设备、WARP、透明device recovery、尚未实现wrapper的行为。历史探针结果不能升级为当前生产能力。
 
