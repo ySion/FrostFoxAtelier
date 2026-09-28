@@ -24,6 +24,7 @@ struct Control {
     double value{}, minimum{-10000}, maximum{10000};
     double drag_step{0.01}, fine_step{0.001}; // Value per logical pointer pixel.
     DragAxis drag_axis{DragAxis::horizontal};
+    bool operator==(const Control&) const = default;
 };
 struct Surface {
     PixelExtent extent;
@@ -33,6 +34,7 @@ struct Surface {
 };
 struct ControlBox {
     ControlKey key{};
+    ControlKey parent{};
     ControlKind kind{};
     Rect bounds; // Physical pixels, including scrolling.
     Clip clip; // Effective ancestor clip, in the same space.
