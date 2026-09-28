@@ -25,7 +25,7 @@ struct Palette {
 };
 // One value owns all presentation defaults. Explicit NodeInput geometry remains
 // the only structural layout policy; control_padding adds text insets for
-// button/item/number, and does not modify containers, labels or the viewport.
+// button/item/number/text_edit, and does not modify containers, labels or the viewport.
 struct Style {
     Font font;
     float title_scale{9.f/7}, caption_scale{6.f/7};

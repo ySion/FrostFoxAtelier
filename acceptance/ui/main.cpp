@@ -1,4 +1,6 @@
 #include "ui/session.hpp"
+#include <Windows.h>
+#include <icu.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +20,17 @@ void accepted(ui::Result<void> result) { require(result.has_value(),"UI operatio
 const ui::DrawQuad& first_text(const ui::UiFrame& frame) {
     for (const auto& draw : frame.drawing->draws) if (draw.coverage) return draw;
     throw std::runtime_error("frame has no text");
+}
+std::vector<ui::Action> actions_of(const ui::Reply& reply) {
+    std::vector<ui::Action> result;
+    for (const auto& effect:reply.effects) if (const auto* action=std::get_if<ui::Action>(&effect)) result.push_back(*action);
+    return result;
+}
+double number_value(const ui::Action& action) { return std::get<double>(action.value); }
+ui::Reply key(ui::Session& session, ui::Key command, bool control=false, bool shift=false) {
+    auto reply=session.input({.kind=ui::EventKind::key_down,.key=command,.shift=shift,.control=control});
+    session.input({.kind=ui::EventKind::key_up,.key=command,.shift=shift,.control=control});
+    return reply;
 }
 ui::Control leaf(std::uint64_t key, ui::ControlKind kind, float y, std::wstring text = {}) {
     ui::Control value; value.key = key; value.kind = kind; value.text = std::move(text);
@@ -56,7 +69,7 @@ void text_and_frame_versions() {
     consumer.controls[0].text = L"Changed 文字"; consumer.prepare();
     require(held->pixels == pixels,"old frame pixels mutated");
     const auto action = consumer.click(2);
-    require(action.actions.size()==1 && action.actions[0].kind==ui::ActionKind::activate,"button did not activate");
+    require(actions_of(action).size()==1 && actions_of(action)[0].kind==ui::ActionKind::activate,"button did not activate");
     consumer.controls[0].layout.offset_x = 100; consumer.prepare(false);
     require(consumer.ui.presented()->find(1)->bounds.x==10,"prepare prematurely switched presented geometry");
     const auto presented=consumer.ui.presented();
@@ -69,7 +82,7 @@ void accepted_geometry_and_surface() {
     consumer.controls[0].layout.offset_y=100; consumer.prepare(false);
     consumer.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20});
     const auto up=consumer.ui.input({.kind=ui::EventKind::pointer_up,.x=20,.y=20});
-    require(up.actions.size()==1,"unaccepted candidate moved hit geometry");
+    require(actions_of(up).size()==1,"unaccepted candidate moved hit geometry");
     const auto transition=accepted(consumer.ui.set_surface({{800,600},1.5f,2}));
     require(transition.redraw && !consumer.ui.accept(consumer.frame),"stale surface candidate accepted");
     require(!consumer.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).consumed,"surface transition allowed stale hit");
@@ -83,37 +96,38 @@ void numeric_text_and_drag() {
     Consumer consumer; consumer.controls={leaf(1,ui::ControlKind::number,10)}; consumer.controls[0].value=2;
     consumer.prepare(); consumer.click(1);
     auto erased=consumer.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::delete_key});
-    require(erased.consumed && erased.actions.size()==1 && erased.actions[0].kind==ui::ActionKind::edit_begin,"Delete escaped numeric focus");
-    auto typed=consumer.ui.input({.kind=ui::EventKind::text,.character=U'5'});
-    require(typed.actions.size()==1 && typed.actions[0].value==5,"numeric preview missing");
-    require(consumer.ui.input({.kind=ui::EventKind::capture_lost}).actions.empty(),
+    require(erased.consumed && actions_of(erased).size()==1 && actions_of(erased)[0].kind==ui::ActionKind::edit_begin,"Delete escaped numeric focus");
+    auto typed=consumer.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"5"}});
+    require(actions_of(typed).size()==1 && number_value(actions_of(typed)[0])==5,"numeric preview missing");
+    require(actions_of(consumer.ui.input({.kind=ui::EventKind::capture_lost})).empty(),
         "normal pointer release notification cancelled keyboard editing");
     consumer.controls[0].value=5; consumer.prepare();
-    auto commit=consumer.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter});
-    require(commit.actions.size()==1 && commit.actions[0].kind==ui::ActionKind::edit_commit,"numeric text did not commit once");
+    auto commit=key(consumer.ui,ui::Key::enter);
+    require(actions_of(commit).size()==1 && actions_of(commit)[0].kind==ui::ActionKind::edit_commit,"numeric text did not commit once");
     consumer.ui.input({.kind=ui::EventKind::pointer_down,.x=30,.y=20});
     auto drag=consumer.ui.input({.kind=ui::EventKind::pointer_move,.x=130,.y=20});
-    require(drag.actions.size()==2 && std::abs(drag.actions.back().value-6)<1e-8,"drag begin/preview wrong");
+    require(actions_of(drag).size()==2 && std::abs(number_value(actions_of(drag).back())-6)<1e-8,"drag begin/preview wrong");
     auto fine=consumer.ui.input({.kind=ui::EventKind::pointer_move,.x=140,.y=20,.shift=true});
-    require(fine.actions.size()==1 && std::abs(fine.actions[0].value-6.01)<1e-8,"fine drag jumped");
-    auto cancel=consumer.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::escape});
-    require(cancel.capture==ui::Capture::release && cancel.actions.size()==1 && cancel.actions[0].kind==ui::ActionKind::edit_cancel &&
-        cancel.actions[0].value==5,"Esc did not restore gesture origin");
-    require(consumer.ui.input({.kind=ui::EventKind::pointer_up,.x=140,.y=20}).actions.empty(),"cancelled release committed again");
+    require(actions_of(fine).size()==1 && std::abs(number_value(actions_of(fine)[0])-6.01)<1e-8,"fine drag jumped");
+    auto cancel=key(consumer.ui,ui::Key::escape);
+    require(cancel.capture==ui::Capture::release && actions_of(cancel).size()==1 && actions_of(cancel)[0].kind==ui::ActionKind::edit_cancel &&
+        number_value(actions_of(cancel)[0])==5,"Esc did not restore gesture origin");
+    require(actions_of(consumer.ui.input({.kind=ui::EventKind::pointer_up,.x=140,.y=20})).empty(),"cancelled release committed again");
     consumer.ui.input({.kind=ui::EventKind::pointer_down,.x=30,.y=20});
     auto second_drag=consumer.ui.input({.kind=ui::EventKind::pointer_move,.x=80,.y=20});
-    require(second_drag.actions.size()==2 && second_drag.actions[0].kind==ui::ActionKind::edit_begin,"drag did not start a new gesture");
+    require(actions_of(second_drag).size()==2 && actions_of(second_drag)[0].kind==ui::ActionKind::edit_begin,"drag did not start a new gesture");
     auto released=consumer.ui.input({.kind=ui::EventKind::pointer_up,.x=80,.y=20});
-    require(released.actions.size()==1 && released.actions[0].kind==ui::ActionKind::edit_commit &&
-        std::abs(released.actions[0].value-5.5)<1e-8,"release did not commit exactly one gesture");
-    consumer.click(1);
-    consumer.ui.input({.kind=ui::EventKind::text,.character=U'-'});
-    auto invalid=consumer.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter});
-    require(invalid.actions.size()==1 && invalid.actions[0].kind==ui::ActionKind::edit_cancel,"invalid number committed");
-    consumer.click(1); consumer.ui.input({.kind=ui::EventKind::text,.character=U'7'});
+    require(actions_of(released).size()==1 && actions_of(released)[0].kind==ui::ActionKind::edit_commit &&
+        std::abs(number_value(actions_of(released)[0])-5.5)<1e-8,"release did not commit exactly one gesture");
+    consumer.controls[0].value=5.5; consumer.prepare(); consumer.click(1);
+    consumer.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"-"}});
+    auto invalid=key(consumer.ui,ui::Key::enter);
+    require(actions_of(invalid).empty() && consumer.ui.wants_keyboard(),"invalid Enter discarded the draft");
+    require(actions_of(key(consumer.ui,ui::Key::escape)).size()==1,"Esc did not cancel the invalid draft");
+    consumer.click(1); consumer.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"7"}});
     auto removed=accepted(consumer.ui.set_controls({}));
-    require(removed.actions.size()==1 && removed.actions[0].kind==ui::ActionKind::edit_cancel &&
-        removed.actions[0].value==5,"removed edit target did not cancel with its original value");
+    require(actions_of(removed).size()==1 && actions_of(removed)[0].kind==ui::ActionKind::edit_cancel &&
+        number_value(actions_of(removed)[0])==5.5,"removed edit target did not cancel with its original value");
 }
 void list_and_splitter() {
     Consumer consumer;
@@ -131,9 +145,9 @@ void list_and_splitter() {
     require(consumer.frame->find(20)->bounds.y<0,"list geometry did not scroll");
     consumer.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=130});
     auto drag=consumer.ui.input({.kind=ui::EventKind::pointer_move,.x=40,.y=130});
-    require(drag.actions.size()==2 && drag.actions.back().value==-260,"negative splitter values rejected");
+    require(actions_of(drag).size()==2 && number_value(actions_of(drag).back())==-260,"negative splitter values rejected");
     auto lost=consumer.ui.input({.kind=ui::EventKind::capture_lost});
-    require(lost.actions.size()==1 && lost.actions[0].value==-280,"capture loss did not cancel splitter");
+    require(actions_of(lost).size()==1 && number_value(actions_of(lost)[0])==-280,"capture loss did not cancel splitter");
     consumer.controls.erase(consumer.controls.begin()+2,consumer.controls.begin()+13); consumer.prepare();
     require(consumer.frame->find(20)->bounds.y==0,"shortened list retained out-of-range scroll");
 }
@@ -146,7 +160,7 @@ void identity_and_lifetime() {
         consumer.controls.clear(); accepted(consumer.ui.set_controls(consumer.controls));
         consumer.controls={leaf(1,ui::ControlKind::button,10,L"Reused key")};accepted(consumer.ui.set_controls(consumer.controls));
         require(!consumer.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).consumed,"reused key accepted old frame hit");
-        consumer.prepare();require(consumer.click(1).actions.size()==1,"new incarnation could not activate");
+        consumer.prepare();require(actions_of(consumer.click(1)).size()==1,"new incarnation could not activate");
     }
     require(held && held->drawing && !held->drawing->draws.empty(),"UI frame failed to outlive Session");
     for(const auto& draw:held->drawing->draws)if(draw.coverage)require(!draw.coverage->pixels.empty(),"frame lost text pixels after teardown");
@@ -247,6 +261,7 @@ void visible_range_and_accounting() {
     std::printf("UI visible range: 256 rows, first rasterized=%llu, first culled=%llu, scroll+return rasterized=8\n",
         static_cast<unsigned long long>(initial.rasterizations),static_cast<unsigned long long>(initial.culled_text_controls));
 }
+#include "text_edit.inl"
 void styled_baseline_placement() {
     for (unsigned mode=0;mode<3;++mode) {
         Consumer consumer;
@@ -282,12 +297,16 @@ void styled_baseline_placement() {
 }
 }
 int main() {
+    UVersionInfo icu{},unicode{}; u_getVersion(icu); u_getUnicodeVersion(unicode);
+    std::printf("UI system ICU %u.%u, Unicode %u.%u\n",icu[0],icu[1],unicode[0],unicode[1]);
     unsigned failures=0;
     const std::pair<const char*,void(*)()> cases[]={{"text_and_frame_versions",text_and_frame_versions},
         {"accepted_geometry_and_surface",accepted_geometry_and_surface},{"numeric_text_and_drag",numeric_text_and_drag},
         {"list_and_splitter",list_and_splitter},{"identity_and_lifetime",identity_and_lifetime},
         {"style_and_invalidation",style_and_invalidation},{"visible_range_and_accounting",visible_range_and_accounting},
-        {"styled_baseline_placement",styled_baseline_placement}};
+        {"styled_baseline_placement",styled_baseline_placement},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
+        {"unicode_visual_editing",unicode_visual_editing},{"clipboard_roundtrips",clipboard_roundtrips},
+        {"composition_protocol_and_cleanup",composition_protocol_and_cleanup}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;

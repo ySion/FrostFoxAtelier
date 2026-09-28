@@ -40,7 +40,7 @@ Appearance resolve_style(const Style& style, Role role, ControlKind kind, Visual
     if (role == Role::caption) { value.font_size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
     const bool button = kind == ControlKind::button, item = kind == ControlKind::item;
-    const bool number = kind == ControlKind::number, splitter = kind == ControlKind::splitter;
+    const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
     if (button) value.background = p.button;
     if (number) value.background = p.field;
     if (splitter) value.background = p.splitter;

@@ -174,7 +174,8 @@ public:
     // matching candidate has been accepted. Zero extent is a valid suspended state.
     Result<Reply> set_surface(Surface);
     // Descriptors are copied. Apply returned cancellation effects when controls
-    // disappear/disable. Number editing buffers survive fresh scene projections.
+    // disappear/disable. Active text drafts survive fresh model projections;
+    // passive buffers instead follow the latest authoritative value.
     Result<Reply> set_controls(std::span<const Control>);
     Result<std::shared_ptr<const UiFrame>> prepare();
     bool accept(std::shared_ptr<const UiFrame>);
