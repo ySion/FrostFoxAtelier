@@ -1,6 +1,6 @@
 # 内容绑定与完整呈现消费
 
-本页说明正式消费者中的资源持有与提交机制。它是UI接入示例；生产窗口、输入和GPU绘制尚未接入。当前39项验收见[acceptance](acceptance.md)，同场景成本见[audit](audit.md)。
+本页说明headless布局消费者中的资源持有与提交机制；该示例本身不含窗口、输入或GPU绘制。正式生产链见[UI模块](../ui/README.md)与[编辑器](../editor/README.md)。布局39项验收见[acceptance](acceptance.md)，同场景成本见[audit](audit.md)。
 
 ## 唯一消费链与资源责任
 

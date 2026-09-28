@@ -1,10 +1,12 @@
 # 首个编辑器方案
 
-状态：**首个可操作版本实施中（M0 + M1 核心操作）**  
-日期：2026-09-28  
+状态：**M0 + M1 位置编辑首版已交付，dev/release 窗口验收通过；M2 待后续**
+
+日期：2026-09-28
+
 基线：`1ddaac3`
 
-本页记录首个编辑器的实施范围、责任和验收终点。用户已启动本轮实施；后续 M2 仍保留为阶段目标。
+本页记录首个编辑器的范围、责任和验收终点。当前交付见[编辑器模块](modules/editor/README.md)；后续 M2 保留为阶段目标。
 本轮交付位置 XYZ、列表选择、增删/撤销重做、可调分隔、基本相机及窗口生命周期；旋转缩放编辑、存档、JIT、节点画布、gizmo、视口拾取、自由停靠、多窗口和完整 IME 编辑器留待后续。
 长期工程规则沿用 [AGENTS.md](../AGENTS.md) 与[工程指南](engineering.md)；启动和构建命令统一维护在 [README](../README.md)。
 
@@ -31,8 +33,8 @@ M2 的源码来自外部文件或小固定示例，通过显式编译/执行动�
 
 ## 工作包、依赖与责任
 
-现有能力是 layout 生产核心、DirectWrite 度量/CPU 帧示例和 D3D12 原语；正式 UI renderer、输入、控件与工作区仍待交付。
-下表按能力拆分实施，M0/M1/M2 仍作为产品验收；新增目录是归属提案，每份协议文件由单一负责人维护。
+会审基线只有 layout 核心、DirectWrite CPU 示例和 D3D12 原语；本轮已接通正式 UI 绘制、输入、首例控件及工作区。
+下表按能力划分当前归属，M0/M1/M2 仍作为产品验收；每份协议文件由单一负责人维护。
 
 | 工作包 | 依赖 | 责任与入口 | 可观察结果 |
 | --- | --- | --- | --- |
@@ -46,10 +48,10 @@ M2 的源码来自外部文件或小固定示例，通过显式编译/执行动�
 Runtime/JIT 线维护 [Runtime](../src/runtime/runtime.hpp)、[Program](../src/source/program.hpp)及 language/jit，提供既有接口确认和必要端到端支持，无必需前置扩展。
 应用负责人拥有主循环、完整帧和整体产品验收，维护根 CMake 总接线；其他负责人维护各自模块 CMake，main 只组装启动。
 控件直接使用生产接口并在同一应用验证，随能力交付接场景；不等待完整 UI 框架，也不复制[headless 消费场景](modules/ui-layout/composition.md)另建产品入口。
-当前 [RHI 合同](modules/rhi/contract.md)仅验收离屏执行。
-Context 现有 `Result<void>` 不足表达帧结果；M0 在既有 Context/gfx 补最小目标查询与 accepted/skipped/failed 结果，并明确处理遮挡这一非失败状态，frameId 留在 renderer 层。
+既有离屏执行与本轮窗口呈现分别见 [RHI 合同](modules/rhi/contract.md)和[renderer 合同](modules/renderer/contract.md)。
+本轮已在 Context/gfx 补齐目标查询和帧结果；renderer 表达 accepted/skipped 与终态错误，frameId 留在 renderer 层。原生驱动故障/遮挡注入仍未动态验证。
 
-## Houdini操作方向（设计参照，尚未实现）
+## Houdini操作方向（首例与后续）
 
 面板展示同一业务数据，同时可以有独立查看上下文，不把所有面板绑到唯一全局 selection。
 首例只做可调分隔；pane 标签切换、面板类型切换、跟随/固定查看对象和工作区保存是后续具体能力，不作为 M0 前置。参照 [SideFX 面板文档](https://www.sidefx.com/docs/houdini/basics/panes.html)。
@@ -77,7 +79,7 @@ UI 事件进入 Session 动作；统一的是校验、提交与历史，源码�
 可撤销期间不调用 Runtime::destroy；撤销恢复同一 ObjectId，历史淘汰时释放对应根。
 新增、删除、字段修改及恢复共用 Session 的状态变更规则，不开第二条业务操作路径。
 
-## 源码单步
+## 源码单步（M2，尚未接入编辑器）
 
 现有 source::Program 足够支持本阶段，无必需的 Runtime/JIT 前置扩展。
 首个行为只对选中且仍在场景中的对象执行一步；公开原生 methods 为空，构造/析构没有宿主外部副作用。
@@ -89,7 +91,7 @@ UI 事件进入 Session 动作；统一的是校验、提交与历史，源码�
 源码诊断与当前可执行版本状态对用户可见；行为源码的持久变更也参与 dirty 判定。
 沿用[现行语言](../LANGUAGE.md)与[正式源码执行链](runtime-structure.md)，不增加沙箱或第二套语言入口。
 
-## 保存、重开与 dirty
+## 保存、重开与 dirty（M2，尚未实现）
 
 带格式版本的场景文件保存成员、持久键、变换、几何定义及行为源码内容。
 ObjectId、FieldId、布局节点、JIT 地址和 GPU 句柄均不进入存档。
@@ -109,7 +111,7 @@ dirty 表示当前文档与保存点是否一致；保存成功才更新保存�
 UI 定义并拥有 CPU 绘制与文字内容协议；文字测量、排版与栅格使用唯一链路，输出不可变覆盖数据。
 应用提供实际 backbuffer 尺寸与 DPI；UI 据此生成物理像素 draw/clip，并保存转换与尺寸版本。
 renderer 消费这些像素数据及 CPU 资源拥有者，负责矩形、线条、纹理及文字覆盖数据的上传、混合、裁剪、绘制与 Present，不再次做 DPI 换算。
-UI/RHI 在首个实施切片共同确认数据结构、资源持有和帧结果；本方案不预设尚未实现的接口名称。
+当前共享数据结构与拥有关系以 [UI 协议](../src/ui/frame.hpp)、[控件入口](../src/ui/session.hpp)和 [renderer 入口](../src/renderer/renderer.hpp)为准。
 
 ## 完整帧、输入与生命周期
 

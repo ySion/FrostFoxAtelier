@@ -44,6 +44,6 @@ Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变�
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。数字输入缓冲最多64个ASCII字符。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，覆盖实际中文/英文灰度文字与缓存复用、旧帧寿命、候选/已接受几何、DPI/零尺寸暂停、按钮、数字文本及连续拖调/细调/取消、列表滚动、负值splitter、捕获丢失和控件key复用。检查在Dev和Release均有效；窗口输入及GPU消费由应用集成验收继续覆盖。
+正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，覆盖实际中文/英文灰度文字与缓存复用、旧帧寿命、候选/已接受几何、DPI/零尺寸暂停、按钮、数字文本及连续拖调/细调/取消、列表滚动、负值splitter、捕获丢失和控件key复用。检查在Dev和Release均有效；本轮窗口输入与GPU消费已由[编辑器端到端验收](../editor/README.md)在两种配置覆盖。
 
 当前模块验收只使用本worktree源码和项目固定工具链。根构建接线由应用负责人统一提交；未通过跨工作树绝对路径include或链接替代集成。

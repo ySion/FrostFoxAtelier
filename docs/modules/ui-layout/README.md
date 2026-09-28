@@ -1,6 +1,6 @@
 # UI 布局核心
 
-状态：**原生布局基建已完成本阶段审计与优化，可以收尾。** 支持基准尺寸与伸缩、换行/分布/首基线，以及二维轨道、跨行跨列和自动放置；既有稳定身份、共享列、重复格、虚拟列表、缓存和事务发布保持。开发/发布覆盖39个场景，见[验收记录](acceptance.md)与[交叉审计和性能](audit.md)。这是原生UI语义，CSS兼容、循环依赖与基线边界见[Flex/Grid合同](flex-grid.md)；真实窗口、输入和绘制仍在后续UI阶段接入。
+状态：**原生布局基建已完成本阶段审计与优化，可以收尾。** 支持基准尺寸与伸缩、换行/分布/首基线，以及二维轨道、跨行跨列和自动放置；既有稳定身份、共享列、重复格、虚拟列表、缓存和事务发布保持。开发/发布覆盖39个场景，见[验收记录](acceptance.md)与[交叉审计和性能](audit.md)。这是原生UI语义，CSS兼容、循环依赖与基线边界见[Flex/Grid合同](flex-grid.md)；正式控件与文字见[UI消费模块](../ui/README.md)，真实窗口与绘制接线见[编辑器](../editor/README.md)。
 
 ## 当前入口
 
@@ -53,7 +53,7 @@ cmake --preset release
 cmake --build --preset release --target ui_layout_acceptance
 ```
 
-该目标依次运行无文字依赖的 `atelier_ui_layout_minimal` 和真实DirectWrite的 `atelier_ui_layout_acceptance`；总体 `acceptance` 也包含它们。没有窗口/渲染/输入验收，也没有非Windows构建证明。
+该目标依次运行无文字依赖的 `atelier_ui_layout_minimal` 和真实DirectWrite的 `atelier_ui_layout_acceptance`；总体 `acceptance` 也包含它们。布局目标只验证CPU布局消费；窗口/渲染/输入由编辑器端到端验收覆盖，非Windows构建仍未经验证。
 
 ## 研究与历史
 
