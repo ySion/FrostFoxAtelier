@@ -4,7 +4,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number是文字叶，list是带裁剪和滚动的column，splitter/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit是文字叶，list是带裁剪和滚动的column，splitter/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数控件key应包含业务对象key与轴，切换绑定时更换控件key。控件删除再出现会获得新incarnation，旧帧命中不能误派给重用key。
 
@@ -24,9 +24,9 @@
 
 控件只选择`Role::normal/panel/title/caption`，不再单独设置字体或背景。一个私有状态解析入口处理normal、hover、pressed、focus、selected、disabled、invalid。字体配置包括family、locale、weight和DIP字号；title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
 
-label文字从内容顶部绘制，普通button/item/number在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
+label文字从内容顶部绘制，普通button/item/number/text_edit在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
 
-`Style.control_padding`只为button/item/number增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
+`Style.control_padding`只为button/item/number/text_edit增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
 
 - family、locale、weight、字号或角色字体比例改变：推进文字provider revision，清理对应格式/段落缓存，再通过正常布局入口测量。
 - 内容或角色改变：由内容revision识别实际解析后的文字与字体；旧帧保持自己的Coverage。
@@ -37,17 +37,37 @@ label文字从内容顶部绘制，普通button/item/number在内容框内垂直
 
 ## 应用与OS交接
 
-`Event`区分物理像素指针、wheel、key命令和文本字符。应用转换Win32消息，按`Reply`处理capture acquire/release、cursor和redraw，再执行actions；不要把每个keydown当文本字符。UI区域消费事件，viewport保留给应用相机操作。
+`Event`区分物理像素指针、wheel、key命令、拥有的UTF-16文字、剪贴板结果、IME命令结果和组合快照。`Event.data`只承载本次事件的数据；不把keydown当成字符，也不把孤立的WM_CHAR代理项直接传给UI。`Reply.effects`是唯一有序`variant<Action,PlatformRequest>`列表；应用执行effects并处理capture/cursor/redraw。`Reply.error`报告可恢复的输入/平台错误。
 
-Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变化取消按压和编辑、释放捕获，并暂停命中到匹配的新帧accepted；零extent表示暂停。旧帧的坐标不会按新窗口尺寸重解释。失焦/捕获丢失事件即使在暂停期间也会清理状态。
+Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变化取消手势、草稿和组合、释放捕获，并暂停命中直到匹配的新帧accepted；零extent暂停。控件移除、禁用、collapsed或改变kind取消旧编辑；旧帧不能把旧控件类型解释成新类型。失焦/捕获丢失在暂停期间也可清理状态。正常ReleaseCapture产生的通知不取消刚进入的文字编辑。
 
-应用应先将事件交给UI，只在`consumed=false`时处理场景快捷键。数字焦点消费Delete/Backspace，不能因此删场景对象。Tab按已呈现顺序移动焦点，按钮支持Enter/Space；Enter提交数字，Esc取消，Ctrl+A全选，Ctrl+Z取消本次文字编辑。鼠标点击数字选中其文本；移动超过阈值开始连续拖调，Shift切换细调步长。仅处理数值所需ASCII字符，未实现通用IME/富文本或剪贴板服务。
+## 共享单行编辑
 
-## 编辑事务
+`text_edit`以`Control.text`作为权威投影，number保留value/min/max及拖调策略；两者共用[TextEdit](../../../src/ui/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化。输入文字本身不使用ASCII白名单：非法数字可以保留为invalid草稿，不写业务preview。
 
-数字和splitter统一输出`edit_begin → edit_preview* → edit_commit`或`edit_cancel`。应用在begin固定业务目标与原值，preview实时修改同一权威对象，commit只写一条历史，cancel恢复原值。拖动使用相邻指针的逻辑像素差，切换Shift不会将整段位移重新计价。splitter也允许负value，step/fine_step须为正；应用决定如何将该值映射到面板宽度。
+focus、文字模式和编辑事务分开。number普通拖动仍在超过原指针阈值后调值，Shift细调；单击进入文字模式后，拖动用于选择文字。仅聚焦时Enter或普通文字输入可进入文字模式。text_edit聚焦即可输入。移动caret、选择文字和进入模式均不建立事务。
 
-文字可暂时为空或不构成有效数值；只有完整、有限且在范围内的值才输出preview。Enter/常规焦点切换提交有效编辑，非法值取消；Esc、失焦、按压/拖动中的捕获丢失、目标撤除和Surface变化取消。正常释放后的capture_lost通知不取消新进入的键盘编辑。list通过wheel滚动，子项输出select；滚动偏移和绘制/命中clip属于同一UIFrame。当前小场景列表实例化所提供的行，未自动接入大型逻辑集合；布局库现有VirtualList可由具体集合消费者使用。
+- 首次实际文字变化产生`edit_begin(original)`，随后有效草稿产生`edit_preview`；普通文字每次修改均可预览，IME预编辑不发预览。
+- 无事务时Ctrl+Z/Y（含Ctrl+Shift+Z）返回未消费，由应用历史处理。存在本地事务时只操作本地历史，即使undo回原文或当前方向没有历史也不穿透。
+- 合法Enter提交并结束本地事务；非法Enter保留草稿、焦点和文字模式。Esc取消整次字段编辑。结束后保留focus、清历史和待处理平台请求并换generation；number退出文字模式。按住Enter/Esc的repeat及其WM_CHAR不能重复提交或切模式。
+- 普通换焦点合法提交、非法取消；OS失焦、Surface失效、控件失效取消。数值拖调提交后回仅聚焦，下一次Ctrl+Z交业务。仅聚焦时新的权威投影更新被动缓冲，不能被旧文字覆盖。
+- 字段聚焦时Delete/Backspace由共享文字编辑消费，不能删除场景对象。Tab按可见呈现控件顺序导航，Ctrl+A全选，Left/Right按视觉方向移动或折叠选择，Shift扩选，Home/End到视觉行端。
+
+Action.value为`variant<monostate,double,wstring>`：activate/select无值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
+
+本地历史保存文字和选择快照；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
+
+索引为UTF-16码元，编辑端点来自系统ICU的extended grapheme边界。DirectWrite同一layout负责点命中、带视觉affinity的caret和`HitTestTextRange`多矩形选择，不能用两个x表示双向选区。Windows SDK的`icu.h/icu.lib`仅为UI私有依赖，不新建文字渲染器或系统控件镜像。当前实机报告ICU 72.1、Unicode 15.1；覆盖非BMP代理对、组合重音、variation selector、明确ZWJ序列和双向混排，不据此宣称所有Unicode版本与字体均已验收。一手依据：[Windows ICU](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)、[ICU边界分析](https://unicode-org.github.io/icu/userguide/boundaryanalysis/)。
+
+## 剪贴板、组合与平台位置
+
+平台由Window/Application持有，UI不持HWND/HIMC。剪贴板请求含kind、唯一operation_id及`EditToken{key,incarnation,generation,revision}`；只结算匹配的当前请求一次。文字或普通caret/selection变化推进revision；结束/重绑上下文换generation。cut仅在匹配成功结果后删除请求时选区；paste成功沿统一插入。失败、重复、过期结果不改草稿，同revision不同operation也不能误配。
+
+IME使用独立composition_id和固定起始token/替换范围；`CompositionEvent`的start/update/end/cancel以及可选result/preedit区分缺失、空和取消。Preedit拥有text/cursor/逐码元属性，只作暂态文字和选区/下划线显示；确认result进入普通编辑与历史。同事件可先确认一个片段，再开始新preedit；后段绑定更新后的token。UI请求complete/cancel的成功回报只代表平台调用成功，不能凭此合成文字。IME期间Enter/Esc先确认/取消组合，不同时提交/取消字段，终止键重复及keyup保持归属；普通焦点或选择变化取消未确认组合。结束/取消使旧绑定失效，迟到事件不能复活原组合。
+
+`UiFrame.caret`保存该帧的token、客户区物理Rect和clip。`Session::text_input()`给出当前输入token/是否组合，只有当前身份、焦点、token和Surface匹配时才附带已接受帧的caret；候选prepare不改变平台位置。应用据此更新系统候选位置，窗口消息逐条复制、顺序投递和执行effects，不重入UI，也不把整个poll盖上同一旧revision。
+
+UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、系统Microsoft Pinyin确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。
 
 ## CPU绘制与文字寿命
 
@@ -61,12 +81,16 @@ Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变�
 
 `live_coverages/live_coverage_bytes`是读取时仍被文字缓存、当前/旧帧或renderer持有的唯一CPU覆盖率数量和R8像素字节，同一像素的多个引用不重复计数，不包含DirectWrite对象、临时栅格数据、容器容量或GPU内存。已访问的屏外行可能继续被CPU缓存持有；内容移除或变化清理缓存后，旧帧仍可延长像素寿命。独立共享记账对象随最后Coverage释放，不回指Session，也不为计数保活像素。Session仍要求单拥有者访问；外部持有者释放采用原子记账。
 
+可编辑字段保持完整文字排版，灰度纹理只生成当前内容窗口内的像素。横滚偏移和可见裁剪进入该字段的raster缓存键；4096个宽字符在100 DIP字段中也不会分配整条屏外位图。选择、字素导航和caret仍针对完整原文。边界由[CreateAlphaTexture](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwriteglyphrunanalysis-createalphatexture)的指定纹理矩形实现，不在生成整张大图后裁剪。
+
 一手接口依据：[自定义文字绘制](https://learn.microsoft.com/en-us/windows/win32/directwrite/how-to-implement-a-custom-text-renderer)、[Factory2字形分析](https://learn.microsoft.com/en-us/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefactory2-createglyphrunanalysis)。核心layout保持无平台依赖；Windows/DirectWrite仅位于UI文字实现。
 
 ## 限额与验收
 
-单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。数字输入缓冲最多64个ASCII字符。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
+单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，8组场景覆盖实际中文/英文灰度文字与缓存复用、旧帧寿命、候选/已接受几何、DPI/零尺寸暂停、按钮、数字文本及连续拖调/细调/取消、列表滚动、负值splitter、捕获丢失、控件key复用，以及Style事务、失效、资源计数和真实字形基线对齐。256行/96 DIP窗口首屏栅格化4行、裁剪252行，滚到末尾再返回累计栅格化8行；嵌套屏外控件保留几何，最后像素引用释放后live计数归零。检查在Dev和Release均有效。真实窗口和GPU消费由[编辑器端到端验收](../editor/README.md)负责，模块验收不代替窗口结果。
+正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，12组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
+
+S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回累计栅格化8行。S2的4096宽字符/100 DIP字段保持完整编辑，生成的覆盖率宽度不超过100像素。正式窗口平台与搜索业务由[编辑器端到端验收](../editor/README.md)负责，S2整体是否完成以该集成记录及真实Microsoft Pinyin证据为准。
 
 当前模块验收只使用本worktree源码和项目固定工具链。根构建接线由应用负责人统一提交；未通过跨工作树绝对路径include或链接替代集成。

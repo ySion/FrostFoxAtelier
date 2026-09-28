@@ -1,6 +1,7 @@
 #pragma once
 #include "ui/frame.hpp"
 #include "ui/style.hpp"
+#include "ui/text_edit.hpp"
 #include "ui_layout/layout.hpp"
 #include <string_view>
 #include <exception>
@@ -12,7 +13,7 @@ struct TextFailure final : std::exception {
     const char* what() const noexcept override { return "UI text/resource operation failed"; }
 };
 std::uint64_t new_identity();
-struct RasterText { std::shared_ptr<const Coverage> coverage; float left{}, top{}, logical_height{}; };
+struct RasterText { std::shared_ptr<const Coverage> coverage; float left{}, top{}; };
 struct TextStatistics {
     std::uint64_t measure_calls{}, text_layouts{}, rasterizations{}, raster_bytes{}, coverage_cache_hits{};
     std::uint64_t live_coverages{}, live_coverage_bytes{};
@@ -29,8 +30,12 @@ public:
     void set_provider_revision(std::uint64_t) noexcept;
     TextStatistics statistics() const noexcept;
     void erase(std::uint64_t key);
-    RasterText raster(std::uint64_t key, float width, float dpi);
-    float caret(std::uint64_t key, float width, std::uint32_t position);
+    ui_layout::MeasuredSize metrics(std::uint64_t key, float width);
+    RasterText raster(std::uint64_t key, float width, float dpi, std::optional<Clip> viewport = {});
+    Rect caret(std::uint64_t key, float width, TextPosition position);
+    TextPosition hit(std::uint64_t key, float width, float x, float y);
+    TextPosition move(std::uint64_t key, float width, TextPosition position, int direction, bool edge);
+    std::vector<Rect> selection(std::uint64_t key, float width, std::uint32_t first, std::uint32_t last);
     static ui_layout::MeasureResult measure(void*, const ui_layout::MeasureQuery&);
 private:
     struct Impl;

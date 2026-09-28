@@ -11,8 +11,10 @@
 namespace atelier::ui {
 namespace {
 bool text_kind(ControlKind kind) {
-    return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item || kind == ControlKind::number;
+    return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item ||
+        kind == ControlKind::number || kind == ControlKind::text_edit;
 }
+bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit; }
 bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter; }
 bool focusable(ControlKind kind) { return text_kind(kind) && kind != ControlKind::label; }
 bool contains(Rect rect, float x, float y) {
@@ -74,14 +76,28 @@ struct Session::Impl {
         ControlKey key{};
         float x{}, y{}, last_x{}, last_y{};
         double original{}, value{};
-        bool dragging{};
+        bool dragging{}, selecting{};
     };
     struct Edit {
-        ControlKey key{};
-        std::wstring text;
-        std::size_t caret{}, anchor{};
-        double original{}, preview{};
-        bool begun{};
+        struct Composition {
+            std::uint64_t id{};
+            EditToken token;
+            std::uint32_t first{}, last{};
+            Preedit preedit;
+        };
+        ControlKey key;
+        EditToken token;
+        detail::TextEdit buffer;
+        double original_value{}, preview_value{};
+        bool text_mode{};
+        float scroll{};
+        std::optional<Composition> composition;
+        std::optional<ClipboardRequest> clipboard;
+        std::optional<ImeRequest> ime_request;
+        Edit(const State& state, std::wstring value, double numeric, bool mode, bool select_all)
+            : key(state.control.key),token{key,state.incarnation,detail::new_identity(),detail::new_identity()},
+              buffer(std::move(value),state.control.kind==ControlKind::number?64:4096,select_all),
+              original_value(numeric),preview_value(numeric),text_mode(mode) {}
     };
     std::uint64_t identity{detail::new_identity()};
     Style style;
@@ -99,6 +115,7 @@ struct Session::Impl {
     ControlKey focus{}, hover{};
     ControlKey keyboard_pressed{};
     Key keyboard_key{Key::none};
+    Key terminal_key{Key::none};
 
     Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
     bool active() const {
@@ -109,7 +126,8 @@ struct Session::Impl {
     State* live(ControlKey key) { const auto it = states.find(key); return it == states.end() ? nullptr : &it->second; }
     bool current(const ControlBox& box) const {
         const auto found = states.find(box.key);
-        if (found == states.end() || found->second.incarnation != box.incarnation || !box.enabled) return false;
+        if (found == states.end() || found->second.incarnation != box.incarnation ||
+            found->second.control.kind != box.kind || !box.enabled) return false;
         auto key = box.key;
         while (key) {
             const auto& control = states.at(key).control;
@@ -124,46 +142,7 @@ struct Session::Impl {
             if (contains(it->bounds,x,y) && contains(it->clip,x,y) && current(*it)) return &*it;
         return nullptr;
     }
-    void begin_edit(ControlKey key) {
-        const auto& control = states.at(key).control;
-        edit = Edit{key, format(control.value), 0, 0, control.value, control.value, false};
-        edit->caret = edit->text.size(); // Initial click/select focuses the complete number.
-    }
-    void finish_edit(Reply& reply, bool commit) {
-        if (!edit) return;
-        const auto* state = live(edit->key);
-        const auto parsed = state ? number(edit->text, state->control) : std::nullopt;
-        if (edit->begun) reply.actions.push_back({commit && parsed ? ActionKind::edit_commit : ActionKind::edit_cancel,
-            edit->key, commit && parsed ? *parsed : edit->original});
-        edit.reset(); reply.redraw = true;
-    }
-    Reply cancel() {
-        Reply reply;
-        if (press) {
-            if (press->dragging) reply.actions.push_back({ActionKind::edit_cancel, press->key, press->original});
-            press.reset(); reply.capture = Capture::release; reply.redraw = true;
-        }
-        finish_edit(reply, false); keyboard_pressed = false; hover = 0;
-        return reply;
-    }
-    void change_text(Reply& reply, std::wstring replacement) {
-        if (!edit || replacement == edit->text) return;
-        if (!edit->begun) {
-            reply.actions.push_back({ActionKind::edit_begin, edit->key, edit->original}); edit->begun = true;
-        }
-        edit->text = std::move(replacement);
-        const auto parsed = number(edit->text, states.at(edit->key).control);
-        if (parsed && *parsed != edit->preview) {
-            reply.actions.push_back({ActionKind::edit_preview, edit->key, *parsed}); edit->preview = *parsed;
-        }
-        reply.redraw = true;
-    }
-    std::wstring display(const State& state) const {
-        if (state.control.kind != ControlKind::number) return state.control.text;
-        if (press && press->key == state.control.key && press->dragging) return format(press->value);
-        if (edit && edit->key == state.control.key) return edit->text;
-        return format(state.control.value);
-    }
+#include "ui/session_edit.inl"
     ui_layout::NodeInput input_for(State& state) {
         auto input = state.control.layout;
         auto alignment = input.vertical_alignment;
@@ -181,7 +160,7 @@ struct Session::Impl {
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
-            input.content_revision = state.control.kind == ControlKind::number ?
+            input.content_revision = text_field(state.control.kind) ?
                 text.set(state.control.key, display(state), style.font,appearance.font_size,appearance.font_weight,false) :
                 text.set(state.control.key, state.control.text, style.font,appearance.font_size,appearance.font_weight,state.control.kind == ControlKind::label);
         } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter) {
@@ -250,7 +229,7 @@ Result<Reply> Session::set_surface(Surface surface) {
         !surface.revision || surface.extent.width > 32768 || surface.extent.height > 32768)
         return std::unexpected(Error{ErrorCode::invalid_surface});
     Reply reply;
-    if (impl_->surface != surface) { reply = impl_->cancel(); impl_->focus = 0; impl_->surface = surface; reply.redraw = true; }
+    if (impl_->surface != surface) { reply = impl_->cancel(); impl_->edit.reset(); impl_->focus = 0; impl_->surface = surface; reply.redraw = true; }
     return reply;
 }
 Result<Reply> Session::set_controls(std::span<const Control> controls) {
@@ -264,11 +243,13 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     std::vector<ControlKey> order; order.reserve(controls.size());
     for (const auto& control : controls) {
         if (!control.key || validated.contains(control.key) || (control.parent && !validated.contains(control.parent)) ||
-            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::viewport) ||
+            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::text_edit) ||
             static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 || !std::isfinite(control.value) ||
             !std::isfinite(control.minimum) || !std::isfinite(control.maximum) || control.minimum > control.maximum ||
             !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
             static_cast<unsigned>(control.drag_axis) > static_cast<unsigned>(DragAxis::vertical))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.parent) {
             const auto kind = validated.at(control.parent)->kind;
@@ -289,7 +270,7 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
         }
         return false;
     };
-    if ((self.press && absent(self.press->key)) || (self.edit && absent(self.edit->key))) reply = self.cancel();
+    if ((self.press && absent(self.press->key)) || (self.edit && absent(self.edit->key))) { reply = self.cancel(); self.edit.reset(); }
     if (absent(self.focus)) self.focus = 0;
     self.structure_dirty |= order != self.order;
     for (auto it = self.states.begin(); it != self.states.end();) {
@@ -305,7 +286,13 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
         self.structure_dirty |= added || state.control.parent != control.parent || state.control.kind != control.kind;
         if (text_kind(state.control.kind) && !text_kind(control.kind)) self.text.erase(control.key);
         state.control = control;
-        if (self.edit && self.edit->key == control.key && !self.edit->begun && self.edit->original != control.value) self.begin_edit(control.key);
+        if (self.edit && self.edit->key == control.key && !self.edit->buffer.active() && !self.edit->composition &&
+            (control.kind==ControlKind::number?self.edit->original_value!=control.value:self.edit->buffer.original()!=control.text)) {
+            const auto caret=self.edit->buffer.current().caret, anchor=self.edit->buffer.current().anchor;
+            const auto mode=self.edit->text_mode;
+            self.begin_edit(control.key,mode);
+            self.edit->buffer.select(anchor,false); self.edit->buffer.select(caret,true);
+        }
     }
     self.order = std::move(order);
     return reply;
@@ -380,7 +367,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             }
             const auto appearance = resolve_style(self.style,state.control.role,kind,{enabled,self.hover == key,
                 (self.press && self.press->key == key) || self.keyboard_pressed == key,self.focus == key,state.control.selected,
-                self.edit && self.edit->key == key && !number(self.edit->text,state.control)});
+                self.edit && self.edit->key == key && !self.valid_edit()});
             if (appearance.background) quad(bounds,clip,*appearance.background);
             const float border = std::min({appearance.border_width*scale,bounds.width*.5f,bounds.height*.5f});
             if (border > 0) {
@@ -392,28 +379,55 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (text_kind(kind)) {
                 const auto padding = effective_padding(state.control,appearance);
                 const float width = std::max(0.f, box->width - (padding.left + padding.right));
-                auto raster = self.text.raster(key,width,scale);
-                const float x = bounds.x + padding.left*scale;
+                const auto metrics = self.text.metrics(key,width);
+                float x = bounds.x + padding.left*scale;
                 float y = bounds.y + padding.top*scale;
                 const float content_height = std::max(0.f,box->height-(padding.top+padding.bottom));
                 // Baseline contexts use the same top origin as layout measurement,
                 // including text contributing a nested container's first baseline.
                 if (kind != ControlKind::label && !state.baseline_content)
-                    y += std::max(0.f,(content_height-raster.logical_height)*.5f)*scale;
-                const auto text_clip = intersect(clip,clip_rect(bounds));
-                if (self.edit && self.edit->key == key) {
-                    const auto first = std::min(self.edit->caret,self.edit->anchor), last = std::max(self.edit->caret,self.edit->anchor);
-                    if (first != last) {
-                        const auto begin = self.text.caret(key,width,static_cast<std::uint32_t>(first))*scale;
-                        const auto end = self.text.caret(key,width,static_cast<std::uint32_t>(last))*scale;
-                        quad({x+begin,y,end-begin,raster.logical_height*scale},text_clip,appearance.selection);
+                    y += std::max(0.f,(content_height-metrics.height)*.5f)*scale;
+                const auto text_clip = intersect(clip,clip_rect(text_field(kind)?
+                    Rect{bounds.x+padding.left*scale,bounds.y+padding.top*scale,width*scale,content_height*scale}:bounds));
+                const bool editing=self.edit && self.edit->key==key && self.edit->text_mode;
+                Rect caret;
+                if (editing) {
+                    caret=self.text.caret(key,width,self.display_caret());
+                    auto& scroll=self.edit->scroll;
+                    scroll=std::clamp(scroll,0.f,std::max(0.f,metrics.width+self.style.caret_width-width));
+                    if (caret.x<scroll) scroll=caret.x;
+                    if (caret.x+self.style.caret_width>scroll+width) scroll=std::max(0.f,caret.x+self.style.caret_width-width);
+                    x-=scroll*scale;
+                    if (!self.edit->composition) {
+                        const auto& s=self.edit->buffer.current();
+                        for (auto range:self.text.selection(key,width,std::min(s.caret.offset,s.anchor.offset),std::max(s.caret.offset,s.anchor.offset)))
+                            quad({x+range.x*scale,y+range.y*scale,range.width*scale,range.height*scale},text_clip,appearance.selection);
+                    } else {
+                        const auto& c=*self.edit->composition;
+                        for (std::size_t first=0;first<c.preedit.attributes.size();) {
+                            auto last=first+1;
+                            while (last<c.preedit.attributes.size() && c.preedit.attributes[last]==c.preedit.attributes[first]) ++last;
+                            if (c.preedit.attributes[first]==1 || c.preedit.attributes[first]==3)
+                                for (auto range:self.text.selection(key,width,c.first+static_cast<std::uint32_t>(first),c.first+static_cast<std::uint32_t>(last)))
+                                    quad({x+range.x*scale,y+range.y*scale,range.width*scale,range.height*scale},text_clip,appearance.selection);
+                            first=last;
+                        }
                     }
                 }
+                const auto raster=self.text.raster(key,width,scale,text_field(kind)?
+                    std::optional<Clip>{clip_rect({static_cast<float>(text_clip.left)-x,static_cast<float>(text_clip.top)-y,
+                        static_cast<float>(text_clip.right-text_clip.left),static_cast<float>(text_clip.bottom-text_clip.top)})}:std::nullopt);
                 if (raster.coverage) quad({x+raster.left,y+raster.top,static_cast<float>(raster.coverage->width),
                     static_cast<float>(raster.coverage->height)},text_clip,appearance.foreground,raster.coverage);
-                if (self.edit && self.edit->key == key) {
-                    const auto caret = self.text.caret(key,width,static_cast<std::uint32_t>(self.edit->caret))*scale;
-                    quad({x+caret,y,self.style.caret_width*scale,std::max(1.f,raster.logical_height*scale)},text_clip,appearance.caret);
+                if (editing) {
+                    if (self.edit->composition) {
+                        const auto& c=*self.edit->composition;
+                        for (auto range:self.text.selection(key,width,c.first,c.first+static_cast<std::uint32_t>(c.preedit.text.size())))
+                            quad({x+range.x*scale,y+(range.y+range.height)*scale-scale,range.width*scale,scale},text_clip,appearance.caret);
+                    }
+                    const Rect physical{x+caret.x*scale,y+caret.y*scale,self.style.caret_width*scale,std::max(1.f,caret.height*scale)};
+                    quad(physical,text_clip,appearance.caret);
+                    if (visible(physical,text_clip)) output->caret=TextCaret{self.edit->token,physical,text_clip};
                 }
             }
         }
@@ -442,150 +456,19 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }
 Reply Session::cancel_interaction() { return impl_->cancel(); }
-bool Session::wants_keyboard() const noexcept { return impl_->focus && impl_->active(); }
-
-Reply Session::input(const Event& event) {
-    auto& self = *impl_;
-    // Win32 also reports capture loss after our normal ReleaseCapture request.
-    // With no pointer press left, this must not cancel the new keyboard editor.
-    if (event.kind == EventKind::capture_lost && !self.press) return {};
-    if (event.kind == EventKind::focus_lost || event.kind == EventKind::capture_lost) {
-        auto reply = self.cancel(); if (event.kind == EventKind::focus_lost) self.focus = 0; return reply;
-    }
-    Reply reply;
-    if (!self.active()) return reply;
-    if (!std::isfinite(event.x) || !std::isfinite(event.y) || !std::isfinite(event.wheel)) return reply;
-    const auto* hit = self.hit(event.x,event.y);
-    if (event.kind == EventKind::pointer_move) {
-        const auto key = hit ? hit->key : 0;
-        reply.redraw = self.hover != key; self.hover = key;
-        if (self.press) {
-            auto& press = *self.press;
-            const auto* state = self.live(press.key);
-            if (!state) return self.cancel();
-            const auto& control = state->control;
-            if (editable(control.kind)) {
-                const auto axis_delta = control.drag_axis == DragAxis::horizontal ? event.x-press.last_x : event.y-press.last_y;
-                if (!press.dragging && (std::abs(event.x-press.x) > 3 || std::abs(event.y-press.y) > 3)) {
-                    self.finish_edit(reply,true); press.dragging = true;
-                    reply.actions.push_back({ActionKind::edit_begin,press.key,press.original});
-                }
-                if (press.dragging) {
-                    press.value = std::clamp(press.value + axis_delta/self.surface.dpi_scale*(event.shift ? control.fine_step : control.drag_step),control.minimum,control.maximum);
-                    reply.actions.push_back({ActionKind::edit_preview,press.key,press.value}); reply.redraw = true;
-                }
-            }
-            press.last_x = event.x; press.last_y = event.y; reply.consumed = true;
-        } else reply.consumed = hit && hit->kind != ControlKind::viewport;
-        if (hit) {
-            const auto& control = self.states.at(hit->key).control;
-            if (control.kind == ControlKind::number) reply.cursor = Cursor::drag_horizontal;
-            else if (control.kind == ControlKind::splitter) reply.cursor = control.drag_axis == DragAxis::horizontal ? Cursor::resize_horizontal : Cursor::resize_vertical;
-        }
-        return reply;
-    }
-    if (event.kind == EventKind::pointer_down) {
-        reply.consumed = hit && hit->kind != ControlKind::viewport;
-        if (event.button != PointerButton::primary) return reply;
-        self.keyboard_pressed = 0;
-        self.finish_edit(reply,true);
-        self.focus = hit && focusable(hit->kind) ? hit->key : 0;
-        if (!hit || (!focusable(hit->kind) && hit->kind != ControlKind::splitter)) return reply;
-        const auto& control = self.states.at(hit->key).control;
-        self.press = Impl::Press{hit->key,event.x,event.y,event.x,event.y,control.value,control.value,false};
-        reply.capture = Capture::acquire; reply.redraw = true; return reply;
-    }
-    if (event.kind == EventKind::pointer_up) {
-        if (event.button != PointerButton::primary || !self.press) return reply;
-        const auto press = *self.press; self.press.reset();
-        reply.consumed = true; reply.capture = Capture::release; reply.redraw = true;
-        if (press.dragging) reply.actions.push_back({ActionKind::edit_commit,press.key,press.value});
-        else if (hit && hit->key == press.key) {
-            if (hit->kind == ControlKind::number) self.begin_edit(hit->key);
-            else if (hit->kind == ControlKind::button || hit->kind == ControlKind::item)
-                reply.actions.push_back({hit->kind == ControlKind::item ? ActionKind::select : ActionKind::activate,hit->key,0});
-        }
-        return reply;
-    }
-    if (event.kind == EventKind::wheel) {
-        auto key = hit ? hit->key : 0;
-        while (key) {
-            auto& state = self.states.at(key);
-            if (state.control.kind == ControlKind::list) {
-                state.scroll = std::clamp(state.scroll-static_cast<double>(event.wheel)*48,0.0,state.scroll_limit);
-                reply.consumed = reply.redraw = true; return reply;
-            }
-            const auto* box = self.published->find(key); key = box ? box->parent : 0;
-        }
-        reply.consumed = hit && hit->kind != ControlKind::viewport; return reply;
-    }
-    if (event.kind == EventKind::key_down && event.key == Key::escape) {
-        const bool had_interaction = self.press.has_value() || self.edit.has_value();
-        reply = self.cancel(); reply.consumed = had_interaction; self.focus = 0; return reply;
-    }
-    if (self.press && self.press->dragging) { reply.consumed = true; return reply; }
-    if (event.kind == EventKind::key_down && event.key == Key::tab) {
-        self.finish_edit(reply,true);
-        std::vector<ControlKey> keys;
-        for (const auto& box : self.published->controls) if (self.current(box) && focusable(box.kind) &&
-            box.clip.right > box.clip.left && box.clip.bottom > box.clip.top) keys.push_back(box.key);
-        if (!keys.empty()) {
-            const auto at = std::find(keys.begin(),keys.end(),self.focus);
-            const auto index = at == keys.end() ? (event.shift ? keys.size()-1 : 0) :
-                (static_cast<std::size_t>(at-keys.begin())+keys.size()+(event.shift ? -1 : 1))%keys.size();
-            self.focus = keys[index];
-            if (self.states.at(self.focus).control.kind == ControlKind::number) self.begin_edit(self.focus);
-        }
-        reply.consumed = reply.redraw = true; return reply;
-    }
-    auto* focused = self.live(self.focus);
-    const auto* focused_box = self.published->find(self.focus);
-    if (!focused || !focused_box || !self.current(*focused_box)) return reply;
-    if (focused->control.kind == ControlKind::number) {
-        reply.consumed = true;
-        if (!self.edit) self.begin_edit(self.focus);
-        if (event.kind == EventKind::text && !event.control && !event.alt) {
-            if ((event.character >= U'0' && event.character <= U'9') || event.character == U'.' || event.character == U'-' ||
-                event.character == U'+' || event.character == U'e' || event.character == U'E') {
-                const auto first = std::min(self.edit->caret,self.edit->anchor), last = std::max(self.edit->caret,self.edit->anchor);
-                auto replacement = self.edit->text;
-                replacement.replace(first,last-first,1,static_cast<wchar_t>(event.character));
-                if (replacement.size() <= 64) { self.change_text(reply,std::move(replacement)); self.edit->caret = self.edit->anchor = first+1; }
-            }
-        } else if (event.kind == EventKind::key_down) {
-            if (event.key == Key::enter) { self.finish_edit(reply,true); self.focus = 0; }
-            else if (event.control && event.key == Key::a) { self.edit->anchor = 0; self.edit->caret = self.edit->text.size(); reply.redraw = true; }
-            else if (event.control && event.key == Key::z) { self.finish_edit(reply,false); self.begin_edit(self.focus); reply.redraw = true; }
-            else if (!event.control && (event.key == Key::delete_key || event.key == Key::backspace)) {
-                auto first = std::min(self.edit->caret,self.edit->anchor), last = std::max(self.edit->caret,self.edit->anchor);
-                if (first == last) { if (event.key == Key::backspace && first) --first; else if (event.key == Key::delete_key && last < self.edit->text.size()) ++last; }
-                auto replacement = self.edit->text; replacement.erase(first,last-first);
-                self.change_text(reply,std::move(replacement)); self.edit->caret = self.edit->anchor = first;
-            } else if (!event.control && (event.key == Key::left || event.key == Key::right || event.key == Key::home || event.key == Key::end)) {
-                auto& position = self.edit->caret;
-                if (event.key == Key::left && position) --position;
-                if (event.key == Key::right && position < self.edit->text.size()) ++position;
-                if (event.key == Key::home) position = 0;
-                if (event.key == Key::end) position = self.edit->text.size();
-                if (!event.shift) self.edit->anchor = position;
-                reply.redraw = true;
-            }
-        }
-        return reply;
-    }
-    if ((focused->control.kind == ControlKind::button || focused->control.kind == ControlKind::item) &&
-        (event.key == Key::space || event.key == Key::enter)) {
-        reply.consumed = true;
-        if (event.kind == EventKind::key_down && !self.keyboard_pressed) {
-            self.keyboard_pressed = self.focus; self.keyboard_key = event.key;
-            reply.redraw = true;
-        } else if (event.kind == EventKind::key_up) {
-            const auto pressed = std::exchange(self.keyboard_pressed,ControlKey{});
-            reply.redraw = pressed != 0;
-            if (pressed == self.focus && self.keyboard_key == event.key)
-                reply.actions.push_back({focused->control.kind == ControlKind::item ? ActionKind::select : ActionKind::activate,self.focus,0});
-        }
-    }
-    return reply;
+bool Session::wants_keyboard() const noexcept {
+    const auto* state=impl_->live(impl_->focus);
+    return state && text_field(state->control.kind) && impl_->active();
 }
+std::optional<TextInputState> Session::text_input() const noexcept {
+    const auto& self=*impl_;
+    if (!self.edit || self.focus!=self.edit->key || !self.active()) return {};
+    const auto* box=self.published->find(self.focus);
+    if (!box || !self.current(*box)) return {};
+    TextInputState value{self.edit->token,self.edit->composition.has_value(),{}};
+    if (self.published->caret && self.published->caret->token==value.token) value.accepted_caret=self.published->caret;
+    return value;
+}
+
+#include "ui/session_input.inl"
 } // namespace atelier::ui
