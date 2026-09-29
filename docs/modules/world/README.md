@@ -16,6 +16,8 @@ World借用Runtime。Runtime必须晚于World、未结束任务及相关对象�
 
 `inspect_actor(Runtime&,ObjectId)`统一返回状态和`enabled/can_edit/can_present`。它先验证上下文和身份，再访问类型与载荷；本Runtime已终结或空身份为Invalid，其他Runtime或非Actor类型是错误。`inspect_component`给出其独立启用、激活与呈现资格。
 
+`can_present`表示实际World呈现注册：Actor至少有一个已注册的呈现组件时为true，Component自身已注册时为true。空Actor可以是AttachedInactive且`can_edit=true`，同时`can_present=false`。对象列表与选择依据有效成员状态，字段编辑依据`can_edit`，聚焦还要求真实根Transform；绘制项统一取自`render_items`。是否Active不决定编辑器可见性。
+
 | 状态 | 含义 |
 | --- | --- |
 | Detached | 对象有效但不是World成员，可读取或明确终结；不能通过World编辑/运行/呈现 |
