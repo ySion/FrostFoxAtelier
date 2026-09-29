@@ -1,22 +1,22 @@
 # 游戏世界与对象模型：研究与会审方案
 
-状态：**I、II已本地验收，III已正式派发并在codex/actor-world实施，IV由应用分支接续；尚未集成main，S3未启动。本片按Actor强持组件、附属组件强owner、close退出撤根、统一对象销毁及兼容Detached重新加入的合同落地。下文早期候选比较保留为取舍依据，不再构成第二份待批准排期。**
+状态：**I、II及III已本地验收，III的dev/release均为World acceptance: PASS (4/4)；IV由应用分支接续，尚未集成main，S3未启动。当前行为以[World模块文档](../modules/world/README.md)及正式公共头为准；本稿保留取舍与历史证据，不是第二份待批准排期。**
 
 日期：2026-09-30。III实现基线为已验收的II提交`ce36a2ef71cfd31da39f98aa3c75004b69e77929`，含I提交`3985869a3c700ddddf190aae6291ea39d3616bf6`。唯一当前研究稿与实现位于`C:/Users/Arzuo/.codex/worktrees/actor-world/FrostFoxAtelier`，分支`codex/actor-world`；原共享根目录的本稿和三项词义修改已完整保全到此分支。第2节历史代码定位仍对应原main `9d33f4fc1c8a88481c93be4b166e6eb311456a1b`，不代表当前Core能力；I/II验收事实复用，不重复运行无关验收。
 
 研究由对象模型负责人汇总。首轮三席分别调查生命周期、数据与执行、消费者迁移，独立结论后进行一次聚焦交叉质询。用户进一步要求正式基础派生后，复用同三席补UE类型合同、Godot/Stride对照和本仓映射，并做一次类型问题的交叉收口；原生命周期与存储证据复用。Runtime与应用负责人提供各自的合同候选及消费者delta。未新增专家或并列研究稿。
 
-## 1. 已授权工作、生命周期候选与会审边界
+## 1. 本片采用的合同与研究边界
 
-推荐建立独立的 **World 模块**：Actor 表达可组合的游戏参与者，Component 表达可独立增删的具体能力；二者均是同一 Runtime 的真实对象，以 `ObjectId` 为唯一运行期身份。用户进一步提出基础类型派生期望：正式的 Object→Actor、Object→Component→具体业务组件层次应由共享类型系统表达，不能以“都注册为object”或角色表代替。现有Core尚无这套继承合同，见§4.2.1。World 拥有成员资格、组件归属及参与运行的规则。业务字段仍只存在 Runtime 对象中；查询索引、UI 绑定和绘制快照各有明确派生职责。
+推荐建立独立的 **World 模块**：Actor 表达可组合的游戏参与者，Component 表达可独立增删的具体能力；二者均是同一 Runtime 的真实对象，以 `ObjectId` 为唯一运行期身份。用户进一步提出基础类型派生期望：正式的 Object→Actor、Object→Component→具体业务组件层次应由共享类型系统表达，不能以“都注册为object”或角色表代替。原main研究基线缺少该合同，现已由I补齐；历史说明见§4.2.1。World 拥有成员资格、组件归属及参与运行的规则。业务字段仍只存在 Runtime 对象中；查询索引、UI 绑定和绘制快照各有明确派生职责。
 
-**待论证候选C：Actor暂时离开World、尚未被显式销毁时，普通强引用保留Actor及其当前组件组成。** 用户进一步明确原命题并非100%正确，要求中肯证实；此前按定案收敛的状态已撤回。§5比较C、World绑定寿命及显式离线对象/快照；§6、§9与III–IV中依赖C的业务细化仍是条件草案，II通用原语不以C为前提。
+**本片采用普通GC组成：Actor离场且未被明确销毁时，普通强引用保留同一Actor及当前组成。** 这项选择经过§5公平比较后进入本轮派发，不由最初提议直接证明正确，也不承诺资源驻留或历史值快照。
 
-若选择C，Actor持正式Component定型强引用序列，必要关系元数据随对象存续；Component.owner采用强边或观察边仍须单独决定。这里的“完整”只承诺身份、当前字段与组成关系，不自动保留World服务、资源注册、任务或撤销时的历史值。成员索引与管理登记不得以隐藏强根改变选定寿命。
+Actor持正式Component定型强引用序列，附属Component采用强owner，必要关系元数据随对象存续。这里的“完整”只承诺身份、当前字段与组成关系，不自动保留World服务、资源注册、任务或撤销时的历史值。成员索引与管理登记不得以隐藏强根改变选定寿命。
 
-C若获选，必要成本包括序列追踪、GC暂停时的形状变更、对象内关系寿命和窄受控访问，不能只补扫描回调。正式继承I只规定类型兼容和已声明引用边的追踪，不决定Actor/Component之间该声明哪些强边；目前没有发现I依赖C的具体耦合。
+本片组成的必要成本包括序列追踪、GC暂停时的形状变更、对象内关系寿命和窄受控访问，不能只补扫描回调。正式继承I只规定类型兼容和已声明引用边的追踪，不决定Actor/Component之间该声明哪些强边；目前没有发现I依赖C的具体耦合。
 
-**World关闭政策仍独立待审。** close终结所管对象与只终结世界参与都有成立条件，不能由C或对失效服务的担忧直接推出唯一结论。空间类型层次、完整TRS与父子/多部件首片范围仍是可审查建议，不把研究推荐写成已获实施授权。
+**本片close结束参与并撤根，明确destroy终结身份。** 析构旧World后仍可读取强持对象，并由对象协议终结整组。独立Transform和完整TRS已贯通；父子/多空间部件操作不在本片。
 
 其余推荐可以独立成立：
 
@@ -26,9 +26,9 @@ C若获选，必要成本包括序列追踪、GC暂停时的形状变更、对�
 - 编辑器的 Session 是 World 的编辑消费者；无窗口宿主直接使用同一 World，不依赖 Session、UI、窗口或 RHI。
 - 整体替换固定 `SceneObject` 和位置专用路径，删除 `ObjectKey` 业务别名。UI 保留自己的控件身份；未来持久身份由文档/资产层定义。
 
-World关闭仍在“终结所管对象”与“只结束世界参与并撤根”两种政策间待议，不能由detach或C推定。空间设计分别讨论完整TRS、Actor间空间父子关系和同Actor多空间部件，首片纳入完整TRS仍为建议。基础类型派生与组合强引用是独立合同，不能互相替代。
+close和destroy使用明确不同的合同，取舍见§5.3；World统一求S*R*T，renderer消费结果。基础类型派生与组成引用各有职责。
 
-## 2. 当前事实、复用点与缺口
+## 2. 原main研究基线的事实与缺口
 
 以下行号固定于上述基线；表中“缺口”不等于本轮全部要实现。
 
@@ -107,14 +107,14 @@ World是宿主上下文，不要求成为Runtime对象，也不为世界归属�
 
 - Actor是正式Object派生类型，承担参与者身份；可有零个组件，不内置必须存在的位置或渲染能力。无需为每种组件组合预制Actor子类；有实际类型差异时仍可沿同一Core合同派生。
 - Component是正式Object派生类型；每个具体组件有自己的ObjectId、实际TypeId和字段。基类引用兼容由§4.2.3的Core增量提供，不能在World用C++指针强转模拟。组合只使用事先注册的类型。
-- 每个已附属组件至多有一个Actor owner，不能同时属于两组。C下整体离场保留组内owner关系，单独移除组件后owner为空；owner反向边强弱见§5.3，不提前选定。
+- 每个已附属组件至多有一个Actor owner，不能同时属于两组。C下整体离场保留组内owner关系，单独移除组件后owner为空；owner反向边为强引用，保整组的代价见§5.3。
 - C下Actor对象内的Component强序列是当前组合与顺序的权威，Component保存owner关系和启用意图；其他候选同样须有唯一组成记录。双向关系由同一组合操作维护，历史旧owner/顺序不能成为第二份live真值。
 - `TypeId → 组合限制/执行或提取能力` 描述只引用现有类型元数据；它不是第二套字段、对象或语言类型定义。以 `Runtime::type_of` 校验实例，不凭 C++ RTTI 或注册字符串判断身份。
 - 普通无身份小数据继续作为 record/value 内联。并非每个数值、材料参数或计算元素都升级成 Component 对象。
 
 重复类型限制按真实能力声明：首片只安装一个根Transform；以后允许多个空间部件时，唯一的是根的指定而非所有Transform实例。其他类型若确有多实例语义可允许。不可用“查找第一个同类型组件”作为编辑目标或撤销身份。不另建角色继承、动态接口发现或任意查询语言。
 
-### 4.2.1 正式类型派生与组合是两件事
+### 4.2.1 正式类型派生与组合是两件事（原基线缺口已由I补齐）
 
 用户提出的正式类型方向为：共享基础对象类型Object之下有Actor与Component两个分支，Transform/Cube/Counter等业务组件派生自Component。这里的Object是统一业务类型系统中的基类型，不是管理上下文的C++ `Runtime`类，也不是表示持有关系的`ObjectRoot`句柄。Actor拥有组件仍是组合关系，Component不因此派生自Actor。
 
@@ -126,7 +126,7 @@ Runtime负责人的定向核对进一步定位：`Runtime::Runtime`（`runtime.c
 
 源码侧也须明确接入：`source/detail/bridge.cpp`:35起收集绑定类型标量字段，352行精确校验receiver；`source/program.cpp`:223的协程receiver也精确校验。现有类型快照没有base依赖。源码class语法可以后续，但已支持的原生/描述型类型绑定必须知道继承关系，或对尚未接通的基类receiver组合明确拒绝；不能宣称Core继承完成后JIT自然全部支持。
 
-建议以单一对象类继承为首个Core合同范围，不默认追加多继承、虚继承、接口系统、自动下转型或完整虚方法分派。这些是待Runtime定稿的边界，不能因此再次排除用户期待的正式基础派生。具体实现与端到端证据由Runtime负责人提供，未获实施授权。
+建议以单一对象类继承为首个Core合同范围，不默认追加多继承、虚继承、接口系统、自动下转型或完整虚方法分派。这些边界已在I中定稿；实现与端到端证据由Runtime负责人交付，III复用。
 
 角色描述可以声明“该组件可提取Cube”“需要空间目标”“首片唯一根”等业务能力和组合限制；类型层次、成员发现与兼容性只来自Runtime。即使正式`Component`基类引用已成立，动态组件集合仍需要独立的GC追踪和写屏障合同；继承不会自动使`vector<Component引用>`成为可追踪字段。反过来，可追踪引用集合也不自动提供继承。
 
@@ -232,7 +232,7 @@ I包含described/native这条接线，省略它不满足本稿I完成门槛。�
 
 ## 5. 生命周期：统一状态与引用合同
 
-用户已明确认可“对象有效但失活”以及World关闭时全体退出活动。本节具体化统一状态查询与转换；普通引用保组、owner方向和close后数据寿命仍保留会审边界，Actor/World尚未派发。II通用原语派发不等于批准这些业务细节。状态不能代替引用合同，也不能把未运行等同不可见。
+本节状态和转换已进入III实现与验收：有效但失活、close全体退出活动、普通引用保组、强owner和撤根后的离线存活各有明确操作。状态不替代引用合同，未运行不等于不可见。
 
 ### 5.1 权威事实、四种状态与允许转换
 
@@ -251,9 +251,9 @@ Invalid是对身份的查询结果，不是销毁前写进Actor的枚举值。�
 
 **运行与呈现分开。** 此处Actor/Component.enabled表示游戏执行启用意图。World.stop或停用对象撤下游戏任务与模拟接入，保留仍合法的编辑呈现；detach/close才撤掉相应World的全部参与，包括呈现注册。渲染提取消费成员资格、呈现通道和具体能力的就绪结果，不以Active过滤编辑对象，也不凭有效ObjectId猜资源可用。首片不额外新增visible开关；已有绘制能力决定是否产生实例。
 
-**组件有独立资格。** 组件运行激活要求其身份有效、仍附属当前Actor、Actor为Active、自身enabled及依赖满足、相应注册已成功；它不因Actor为Active便无条件tick。组件呈现资格单独按所属成员与呈现能力检查。移除组件先结束其参与，再解除Actor序列与owner边；Actor可保持原状态。强owner仍只是§5.3当前建议，不随组件激活/停用增删强边；GC始终按正式引用图追踪。
+**组件有独立资格。** 组件运行激活要求其身份有效、仍附属当前Actor、Actor为Active、自身enabled及依赖满足、相应注册已成功；它不因Actor为Active便无条件tick。组件呈现资格单独按所属成员与呈现能力检查。移除组件先结束其参与，再解除Actor序列与owner边；Actor可保持原状态。强owner已进入本片实现，不随组件激活/停用增删强边；GC始终按正式引用图追踪。
 
-下表给当前推荐合同的稳定结果；close后的保数据政策仍待会审。每项变化经§6统一入口提交，准备失败不假称已转换。
+下表给本片合同的稳定结果。每项变化经§6统一入口提交，准备失败不假称已转换。
 
 | 操作与合法起点 | 完成后的状态 | 身份、组成与参与结果 |
 | --- | --- | --- |
@@ -264,7 +264,7 @@ Invalid是对身份的查询结果，不是销毁前写进Actor的枚举值。�
 | detach/历史Delete：AttachedInactive或Active | Detached | 先收束全部World参与，再撤成员/根；组成关系保留，历史或外部强引用按选定引用合同保活 |
 | remove_component：所属Actor仍为成员 | 组件不再附属且不运行；Actor状态按剩余能力重算 | 保组件身份、清双方归属；摘边前取得调用者/历史需要的根，依赖不满足则整项拒绝 |
 | World.stop | Active成员到AttachedInactive，其他成员不变 | 保身份/组成/成员及enabled意图，结束游戏活动；可继续显示和编辑 |
-| World.close | 全体退出活动；当前建议令仍被强持的原成员为Detached | 不再接纳操作，清旧World任务及全部注册，撤成员根；若最终选择终结政策，对应身份为Invalid |
+| World.close | 全体退出活动；仍有效的原成员为Detached | 不再接纳操作，清任务/注册和成员根；对象身份由后续GC或明确destroy终结 |
 | 对象协议destroy：有效Actor，满足静止点及终结前置 | Invalid | Attached先经所在World退出，Detached不依赖旧World；随后共用当前组成清理与Runtime终结链，强引用不能否决，不可同身份undo |
 | GC：对象已无可达强路径 | 回收前保持原状态，实际终结后为Invalid | World成员根应保证成员不会被GC；不可达离场图可回收，析构不补做游戏退出。仅持弱引用不保活 |
 | Runtime结束 | 全部身份终结 | 普通根不延长Runtime自身寿命；宿主先完成World、任务及资源关闭 |
@@ -281,12 +281,12 @@ Actor序列声明元素类型Component、强形式固定，元素实际类型可
 2. 首片限对象字段（含继承），由包含对象构造/销毁，原生与描述型遵守同一序列生命周期；通用record容器复制/赋值与参数ABI暂不开放。Actor的拥有组成不允许借公开整序列赋值绕过唯一owner，须走组合入口；未来若开放普通序列复制，语义应是共享引用而非克隆对象。
 3. GC游标可能跨collect_step保存进度。扩容使地址失效，erase会左移未扫元素；形状变化必须修正/取消并重新安排追踪，逐元素计预算，不只给push加shade，不跨暂停保留元素裸地址。
 4. 只读借用明确失效边界；引用遍历回调期间拒绝修改。Actor销毁、序列替换、结构提交不能留下悬空游标或span。
-5. Actor组成/顺序、Component owner关系及author-enabled随对象自身存续，反向边强弱另定。World只读协议与受控写入口读取同一记录；“增加GC scanner但记录仍由历史拥有”不符合C。
+5. Actor组成/顺序、Component owner关系及author-enabled随对象自身存续，反向owner边为强引用。World只读协议与受控写入口读取同一记录；“增加GC scanner但记录仍由历史拥有”不符合C。
 6. 关系访问采用窄受控宿主操作，禁止公开可写owner/整个组成序列绕过World，也不暴露可长期缓存的裸地址。现行hidden字段缺少普通World可用的访问入口，这是真实配套，不假装现有exposed二值已经提供protected权限。
 7. 序列原语只负责通用引用/值/GC，不认识Actor、owner或游戏运行。双向边和生命周期由游戏对象模块的一次组合提交编排。其准备与提交所需的容量、屏障和失败保证必须在共享接口中明确，不能让Session手工串接若干可能半失败的写入。
 8. 首片由原生World使用该协议。源码容器表达式、引用返回getter与完整多类型调用另行接线，底层可追踪不等于源码语法已全部开放。
 
-### 5.3 公平比较、最强反例与证据缺口
+### 5.3 选择依据：公平比较与反例
 
 | 候选 | 适用需求与收益 | 必须接受的代价 |
 | --- | --- | --- |
@@ -309,23 +309,23 @@ Actor序列声明元素类型Component、强形式固定，元素实际类型可
 
 **已核实的当前消费者事实。** Session删除记录保存同一Member根与位置，Undo恢复成员资格；删除记录没有字段快照，只有属性编辑另存before/after。现有验收在离场期间只推进GC，没有离线写者。正式Scene写入先查活动成员，Session不开放离场写入；history之外尚无长期访问离线Actor的业务消费者。因此当前Undo不能证明C必需，也不能证明C错误。[Session](../../src/editor/session.cpp)、[Scene](../../src/scene/scene.cpp)、[现有验收](../../acceptance/editor/scene.cpp)。
 
-**当前建议，仍待会审：采用普通GC对象组成，Actor强持当前组件。** 普通Actor强引用保同身份、当前字段与组成，世界参与和资源另行结束。这复用一张权威对象图；专用离线持有协议则需另定终结权、转交及普通引用失效规则，当前收益不足以承担这些维护成本。基础合同有独立设计价值，不能仅以当前是否已有离线消费者裁决。禁用、detach、历史Delete/Undo保同身份；新用途池复用或确定终结的内容卸载可明确destroy，强引用不能否决，stream unload不一概等同detach。
+**本片选择：采用普通GC对象组成，Actor强持当前组件。** 普通Actor强引用保同身份、当前字段与组成，世界参与和资源另行结束。这复用一张权威对象图；专用离线持有协议则需另定终结权、转交及普通引用失效规则，当前收益不足以承担这些维护成本。基础合同有独立设计价值，不能仅以当前是否已有离线消费者裁决。禁用、detach、历史Delete/Undo保同身份；新用途池复用或确定终结的内容卸载可明确destroy，强引用不能否决，stream unload不一概等同detach。
 
-**附属组件的owner当前倾向强边。** 持有仍挂载的组件即可保持Actor及兄弟，避免Actor因GC消失而留下仍属组成的组件；代价是一枚组件强引用可能保住整组。追踪GC可回收无根环。组件经remove解除双向归属后可独立存活，旁观消费者用弱引用。若产品要求叶组件保数据却不保整组，弱owner仍是有效替代，须接受并定义owner失效状态。
+**附属组件owner采用强边。** 持有仍挂载的组件即可保持Actor及兄弟，避免Actor因GC消失而留下仍属组成的组件；代价是一枚组件强引用可能保住整组。追踪GC可回收无根环。组件经remove解除双向归属后可独立存活，旁观消费者用弱引用。若产品要求叶组件保数据却不保整组，弱owner仍是有效替代，须接受并定义owner失效状态。
 
-首片保留Session单写者、只编辑当前成员的边界，不新增离线多写入口、全图快照或冲突版本设施。共享Runtime的可信调用者须遵守该边界，不能假称Core提供写权限沙箱。**以上业务建议尚未生产派发，Core进度见文首。** 不再追加外部研究或假想负载设施。
+首片保留Session单写者、只编辑当前成员的边界，不新增离线多写入口、全图快照或冲突版本设施。共享Runtime的可信调用者须遵守该边界，不能假称Core提供写权限沙箱。**本片合同已进入III实现，整体进度见文首。** 不再追加外部研究或假想负载设施。
 
-### 5.4 World关闭政策：独立建议，尚待会审
+### 5.4 World关闭：结束参与并撤根
 
-**当前建议：close结束世界参与、任务与资源接入，并释放World所持根。** 外部强引用可继续保留同身份的离线数据；这是一项需要用户理解并会审的可见语义，不是已获准合同。旧World的restore失败；后续加入其他World必须作为独立attach通过兼容性预检，不能靠close自动搬迁。它也避免为关闭追踪并终结所有曾归属该World的离场对象。另一方案是明确终结所管对象：若产品要求关卡结束后相关引用一律失效，该方案更直接，但必须定义终结范围并接受无法以旧身份恢复的结果。两者均先结束旧World服务。
+**本片close结束世界参与、任务与资源接入，并释放World所持根。** 外部强引用可继续保留同身份的离线数据；这是本片已明确采用的可见语义。旧World的restore失败；后续加入其他World必须作为独立attach通过兼容性预检，不能靠close自动搬迁。它也避免为关闭追踪并终结所有曾归属该World的离场对象。另一方案是明确终结所管对象：若产品要求关卡结束后相关引用一律失效，该方案更直接，但必须定义终结范围并接受无法以旧身份恢复的结果。两者均先结束旧World服务。
 
 若采用终结政策，才需要World能找到其仍有效的离线管理对象，例如非拥有ObjectId登记；它不能成为隐藏root或第二份组件图。登记验证上下文/代际、清理陈旧项、close去重，具体范围须先确定。不能先加登记再以它存在为理由扩大World终结权。
 
 C下detach只解除成员资格、清历史只撤对应根；明确终结是另一个动作。若close仅脱离/撤根，仍被引用的数据可继续离线访问或经对象协议明确destroy，不再调用旧World资源；Runtime与对象协议须持续有效。后续独立attach按§4.1预检，若失败仍是Detached，不回滚为旧World成员；不由close政策承诺原子/无缝转移。
 
-关闭政策必须在World生命周期实施前定稿，不阻塞II通用引用原语；Core声明强弱边的能力不替业务决定边的方向。无论选哪项，Runtime最终析构都是独立的上下文终态，普通根不延长Runtime自身寿命。
+关闭与销毁已按本片合同落地；Core声明强弱边的能力不替业务决定边的方向。无论选哪项，Runtime最终析构都是独立的上下文终态，普通根不延长Runtime自身寿命。
 
-## 6. 状态转换、操作与退出协议草案
+## 6. 状态转换、操作与退出协议
 
 ### 6.1 成员操作、组合操作与对象查询
 
@@ -392,11 +392,11 @@ Runtime当前只有逐对象destroy，不能原子标死全组。对外业务查
 
 close在静止点开始后先标记World正在关闭，拒绝新操作/请求；随后在目标仍有效时受控结束冲突编辑，停止新调度，取消/完成既有任务，撤全部游戏及呈现注册；清未执行请求并给出关闭导致的失败结果；最后按§5.4获准政策清member_world、索引及成员根，或显式终结相应对象。正在关闭不再回到可运行World；清理错误须报告，但不能让强引用重新打开准入。
 
-**关闭完成条件：旧World没有未收束的任务、回调或注册，不能再被提取呈现，Actor不再通过member_world指向它。** 排队回执不是close完成；未达到该条件不得报告关闭完成或析构所需服务。World.close不结束共享Runtime，后者由宿主在所有World/执行依赖结束后决定寿命。按当前撤根建议，外部强持的数据变为Detached，可查询、经对象协议终结，或独立预检后加入兼容World；旧World的restore/start仍失败。用户已认可全体退出活动，是否在close中进一步终结数据仍是独立会审项。
+**关闭完成条件：旧World没有未收束的任务、回调或注册，不能再被提取呈现，Actor不再通过member_world指向它。** 排队回执不是close完成；未达到该条件不得报告关闭完成或析构所需服务。World.close不结束共享Runtime，后者由宿主在所有World/执行依赖结束后决定寿命。按当前撤根建议，外部强持的数据变为Detached，可查询、经对象协议终结，或独立预检后加入兼容World；旧World的restore/start仍失败。本片close不进一步终结数据，后续明确终结仍走对象协议。
 
 Session.clear_history、redo裁剪和Session析构只释放其普通根/值；不排自动销毁队列，不执行生命周期回调，不阻挡World关闭等待token归还。外部引用存在时，C组成继续存活，除非已单独执行明确destroy或整个Runtime终结。
 
-若采用close明确终结政策，close按获准管理范围执行§6.4；若采用只释放政策，close必须令保留对象不再调用旧World/资源，宿主保证Runtime服务期。两种关闭政策都不得靠隐藏强根改变普通detach的选定结果。World.stop、detach、Session关闭、World.close与Runtime销毁分别定义。
+close令保留对象不再调用旧World/资源，宿主保证Runtime服务期；明确终结单独执行§6.4。World.stop、detach、Session关闭、World.close与Runtime销毁分别定义，不以隐藏根改变存活。
 
 **三个实际轨迹与迁移落点：**
 
@@ -404,7 +404,7 @@ Session.clear_history、redo裁剪和Session析构只释放其普通根/值；�
 2. Delete→GC→undo：Session在detach前准备历史根；完成后Detached、无World执行/呈现。推进GC仍能查同一身份与组成；undo在原World开放且预检成功时恢复成员，编辑World中为AttachedInactive。Session只在提交完成后推进历史；当前无离线写者，不增加全图快照或冲突版本设施。
 3. 关闭World仍持Actor：普通强引用保目标，close完成并析构原World后，按当前撤根建议Actor仍为Detached且数据可读。通过对象协议明确destroy，同一Actor及当前组件身份均失效，外部强引用不否决；该链不得访问已析构World。另用仅释放最后强路径的样本验证普通GC回收，不能由显式destroy代证。数据跨close存续的预期以该政策获准为实施前提。
 
-**有限E2E门槛，实施时在dev/release同一正式入口完成：** 上述三轨迹；组件disabled而Actor Active仍不tick；Queued destroy提交前有效、提交后Invalid，目标已换World时原请求拒绝且B成员保留；在场A直接attach B拒绝，完全detach后兼容attach B保同id，两步失败不伪回滚；重复启停/关闭不重复副作用；跨World/类型错误不误报Invalid；退出重入及关闭期间编辑被拒绝，最终无旧World任务/注册。用现有Counter和呈现能力覆盖，不为未接入系统搭mock。§11消费本节预期，World实施尚未派发，本轮不运行验收。
+**有限E2E门槛，实施时在dev/release同一正式入口完成：** 上述三轨迹；组件disabled而Actor Active仍不tick；Queued destroy提交前有效、提交后Invalid，目标已换World时原请求拒绝且B成员保留；在场A直接attach B拒绝，完全detach后兼容attach B保同id，两步失败不伪回滚；重复启停/关闭不重复副作用；跨World/类型错误不误报Invalid；退出重入及关闭期间编辑被拒绝，最终无旧World任务/注册。用现有Counter和呈现能力覆盖，不为未接入系统搭mock。§11消费本节预期，III已在dev/release执行本节真实E2E，IV继续覆盖编辑器消费者。
 
 ## 7. 存储、查询、执行与成本
 
@@ -472,9 +472,9 @@ Runtime继续保存对象实值和地址稳定性；在C布局候选中，Actor/
 
 保留连续预览直接修改权威值、commit只记一次、cancel回 before、无变化不记历史。选择变化、组件/Actor结构动作、undo/redo前先结束活动编辑；取消失败则停止后续动作，不能先删组件再尝试经成员查询恢复它。取消也必须核对编辑token，迟到取消事件不能结束另一个新事务。
 
-### 9.2 C条件草案：普通根、恢复资料与历史值
+### 9.2 普通根、恢复资料与历史值
 
-Actor增删、组件增删与字段修改共用一个Session游标。若选择C，历史持普通ObjectRoot及恢复所需值，Actor的当前组成仍在实际对象内。根只保当前对象，不是某一时刻的值快照；下面的成员恢复不能单独承诺删除时全图恢复。
+Actor增删、组件增删与字段修改共用一个Session游标。历史持普通ObjectRoot及恢复所需值，Actor的当前组成仍在实际对象内。根只保当前对象，不是某一时刻的值快照；下面的成员恢复不能单独承诺删除时全图恢复。
 
 | 历史动作 | 持有什么 | 应用/撤销改变什么 |
 | --- | --- | --- |
@@ -511,7 +511,7 @@ UI继续使用自己的 `ControlKey` 和现有 incarnation/accepted-frame/EditTo
 
 ## 10. 消费者迁移与文件所有权
 
-以下是会审通过后的责任分配提案，不是本轮已授权的编辑清单。现有代码由相应负责人共同收口，不能各留一套兼容入口。
+以下是本轮实施的责任边界。现有代码由相应负责人共同收口，不能各留一套兼容入口。
 
 | 所有者 | 文件/模块 | 需要完成的变更与删除 |
 | --- | --- | --- |
@@ -530,7 +530,7 @@ renderer继续消费派生值快照；首片若按§4.3贯通完整TRS，则由r
 
 选择无空间/渲染组件的Actor合法。Actor Focus明确使用指定根空间目标的世界位置；组件面板检查非空间组件不改变这个策略。无根时禁用/无操作并反馈，不能暗造Transform或挑第一个组件。若后续提供独立组件Focus，再取其显式空间目标；相机只接世界点，无需认识整个类型层次。
 
-### 10.1 共享接口草案与所有权
+### 10.1 正式共享接口与所有权
 
 **III实际公共头与接线delta（本轮唯一接口）：** [world/world.hpp](../../src/world/world.hpp)与[world/math.hpp](../../src/world/math.hpp)。
 
@@ -543,7 +543,7 @@ renderer继续消费派生值快照；首片若按§4.3贯通完整TRS，则由r
 - Core批次使用实际ReferenceField定位、SequenceSplice和ReferenceWrite；隐藏关系只在with_native保护中操作。预检/容量准备先于关系提交，成员索引同步发布；不改Runtime/source。
 - 纯模块目标将由`cmake/world.cmake`中的`atelier_add_world()`建立`atelier_world`；无窗口`world_acceptance`只链接World与实际source消费者，不依赖Application/renderer。
 
-I/II接口由Runtime负责人落实到正式Core声明；World相关行仍是业务草案，不因Core已有对应能力便视作授权。最终约束进入唯一公开入口和必要内部协议，不复制到兼容包装中。
+I/II接口由Runtime负责人落实到正式Core声明；III以本节公共头实现业务合同。最终约束进入唯一公开入口和必要内部协议，不复制到兼容包装中。
 
 | 接口面 | 输入/输出与责任 | 错误与有效期 |
 | --- | --- | --- |
@@ -554,27 +554,27 @@ I/II接口由Runtime负责人落实到正式Core声明；World相关行仍是业
 | 序列只读 | size/read/visit，返回声明元素类型视图的ObjectReference或受限只读枚举；World候选以Component为元素类型 | 不暴露可变元素span；对象失效/元数据不匹配拒绝。枚举回调期间禁止结构变化，跨操作只保留ObjectId/正式引用 |
 | 同步引用批次 | `apply_reference_changes(span<ReferenceChange>)`，只含定型序列splice及受保护ReferenceSlot写；两种定位（FieldId路径/受保护native槽）共用内部内核 | 完整preflight后无分配、noexcept提交；失败或准备期OOM不改逻辑内容，允许已预留容量变化。不返回跨帧prepared handle，不做通用字段/回调事务 |
 | World活动查询 | 当前Actor成员、exact/assignable组件查询、启用/运行过滤 | 借用视图只在当前无结构提交区间有效；不为索引额外持离线对象根 |
-| Actor/Component只读协议（C条件） | 普通Actor引用查询当前组成/顺序，Component查询owner及author-enabled | 不要求当前World成员/Session；owner强弱未定。若为弱边须安全处理失效，若为强边须承认反向保组 |
+| Actor/Component只读协议 | 普通Actor引用查询当前组成/顺序，Component查询owner及author-enabled | 不要求当前World成员/Session；强owner会反向保住Actor及当前组，明确destroy仍可终结身份 |
 | 可撤销结构动作 | `detach_actor`返回Actor普通根+成员恢复资料；`remove_component`返回组件普通根+owner/位置/依赖memento；restore接收这些正式身份/资料 | World先校验并准备，成功结果可无抛出移动。Session须先准备history容量。失败关系/选择/cursor不变；恢复不得夺取对象或替换身份 |
 | 属性编辑 | 显式Actor/Component ObjectId+原声明FieldPath；完整TRS动作有已校验规范值 | Session政策要求目标在可编辑World且owner匹配；离线对象只读不受此政策封死。复合TRS修改不是若干可能半失败的独立XYZ写 |
 | 渲染提取 | World提供有效能力与统一求得的world-from-local值；应用加选择/颜色，renderer消费值快照 | renderer不持ObjectRoot、不遍历类型或owner、不重算层次。使用现行行向量`p * world * view * projection`，GPU资源寿命仍沿既有RHI |
 
 **唯一序列变更形状：** `SequenceSplice{sequence, first, erase_count, inserted_refs}`。一次范围插入、删除、替换或清空都复用此内核；一批同序列至多一个splice，同一引用slot至多一次写，不定义多点修改脚本。需恢复排序时可以准备一次完整替换，不能让history逐步拼出半个关系。
 
-“空Actor添加Transform+Cube”的C条件草案先创建两个普通有根对象，再以一个Actor序列splice插入二者、同批写两个owner引用槽，强弱按最终声明。插入值先规范化并复制到准备区，再reserve，避免输入span与原序列别名。Core校验范围/最终长度/类型/上下文；World校验同Actor不重复身份、实际增删集合与owner写集合一致。第二个create失败不先发布第一个组件，原生构造外部副作用仍不属于该引用批次回滚。
+“空Actor添加Transform+Cube”先创建两个普通有根对象，再以一个Actor序列splice插入二者、同批写两个owner引用槽，强弱按最终声明。插入值先规范化并复制到准备区，再reserve，避免输入span与原序列别名。Core校验范围/最终长度/类型/上下文；World校验同Actor不重复身份、实际增删集合与owner写集合一致。第二个create失败不先发布第一个组件，原生构造外部副作用仍不属于该引用批次回滚。
 
 Core预检还包括所有目标借用、计划/序列容量、追踪深度和结构版本溢出；提交只移动无抛引用存储、写ObjectId、失效游标并入侵入灰链。新强边分别shade，已标记未扫完owner走明确重排路径。World在调用前另备好目录/索引/history/通知空间，引用批次成功后只发布其无失败元数据，再运行通知。Core不替World理解组件owner或任意容器。
 
 ### 10.2 依赖切片与完成门槛
 
-当前进度统一见文首。I覆盖Runtime与现有source/JIT两道门槛；II只落实通用引用机制，不等待业务owner/close定案，也不以选定的验收引用图偷定业务合同。III–IV仍需单独派发。
+当前进度见文首。I覆盖Runtime/source/JIT，II落实通用引用，III已验收实际World消费者；IV按应用分支的正式接线继续。
 
 | 切片 | 唯一责任与实际产出 | 必须先有的接口 | dev/release真实E2E完成门槛 |
 | --- | --- | --- | --- |
 | I-a：Runtime正式单继承 | Runtime负责人：Object根、选定base/is-a/cast/hold视图签名、base_address适配、有效成员列表、完整GC/构析及opaque hash；三格支持、一格拒绝 | §4.2.3的确定草案经会审批准；不改类型封闭或布局热迁移政策 | native/native、described/described、described/native实际实例；非零base地址；Base声明成员访问Derived；基类强弱引用不漏派生hidden强边；相关null/陈旧转换与无关拒绝；跨视图id相同而引用值相等规则不变；构析/失败清理不重复。已有受影响Runtime消费保持正确 |
 | I-b：现有source/JIT继承接线 | 同一Runtime负责人：有效成员/祖先快照、sync/async统一receiver、ExecutionFrame显式声明视图hold及发布兼容 | I-a选定接口与Metadata.base依赖；不靠World类型标签修补 | Base绑定在原生和描述型派native对象上执行；self复制/observe/try_acquire、yield后GC、旧Lease/兼容发布完整；无关receiver副作用前拒绝；new仍构造绑定类型、纯标量环境不变。class语法、多类型目录、统一虚override不纳入 |
 | II：引用序列与窄受控操作 | Runtime负责人：声明元素类型的对象字段引用序列、with_native借用、有限同步引用批次、GC形变/预算及受保护槽 | I整体合同与§10.1通用接口边界；不依赖C、owner或close选择 | 用Core正式Holder/BaseElement/DerivedElement验证原语，不建临时World；强/弱槽按元数据，splice批次失败不半写；暂停GC与有限预算等真实边界，不据此偷定Component.owner |
-| III：World与真实无窗口对象模型（未启动） | 对象负责人：正式Actor/Component/Transform/Cube/Counter、唯一组合入口、成员/类型索引、运行阶段和生命周期 | I及实际所需II完成；寿命/owner/离线访问、组合依赖、空间范围与close已定稿 | 按选定合同验证普通外部Actor/组件引用、detach/destroy/close差异及资源退出；若选C另验普通强字段保当前组成；复合失败不半发布，同Runtime多World、真实Counter/JIT与TRS |
+| III：World与真实无窗口对象模型（双配置已通过） | 对象负责人：正式Actor/Component/Transform/Cube/Counter、唯一组合入口、成员/类型索引、运行阶段和生命周期 | I及实际所需II完成；寿命/owner/离线访问、组合依赖、空间范围与close已定稿 | 按选定合同验证普通外部Actor/组件引用、detach/destroy/close差异及资源退出；已验证普通强字段保当前组成；复合失败不半发布，同Runtime多World、真实Counter/JIT与TRS |
 | IV：编辑器与renderer完整迁移 | 应用负责人统筹Session/Workspace/Application/Camera/验收，renderer负责人只改实例变换合同；对象负责人移除旧Scene | III稳定的操作结果/memento/只读查询/值提取；已有UI帧和输入生命周期继续使用 | 同一Session无窗口history链+正式窗口增删/字段预览一次undo/恢复同id/旧输入失效；离场但被引用对象不出图；完整TRS在GPU真正改变姿态/尺寸并可undo；旧入口全部删除；既有受影响S2行为保持，两配置通过 |
 
 II使用Core正式对象图验证机制，不引入临时Actor/Composition服务。II通过只证明原语；选定产品寿命须由III正式Actor/Component与同一生产入口证明，不能用UI根或历史遮盖存活缺口。IV再验证Session裁剪/析构和实际开放的编辑边界。
@@ -587,11 +587,11 @@ I、II只扩展现有Core/执行合同，不建立游戏模型兼容层。III提
 
 IV在同一改动中迁移所有Scene/Session/Application/Camera/renderer/验收消费者，再删除src/scene旧固定类型、ObjectKey、position专用入口和控件算术编码。没有Scene→World可变包装、双写同步、第二产品启动入口或平行组件RTTI。阶段中尚未迁移的旧产品保持原样，不把同一场景复制成两个可写世界；新产品交付门槛是完整迁移及旧入口删除。
 
-文件按§10责任表单人归属，不为提前并行发布临时字段/回调/兼容层。本文作者只维护研究，Core实施与业务派发边界统一见文首。
+文件按§10责任表单人归属，不为提前并行发布临时字段/回调/兼容层。本文作者负责World实现与本稿，整体交付边界统一见文首。
 
 ## 11. 最小完整纵向验收切片
 
-只定义未来的dev/release真实端到端验收，本研究没有执行。以下World/历史案例中依赖C及owner方向的预期须按最终会审调整；不能将候选验收描述当作定案。断言在release有效，不新增单测、mock或普通改动基准框架。
+III的dev/release真实World E2E已通过，IV继续验证实际Session和正式窗口。以下保留整轮完成门槛；所有检查在release有效，不新增单测、mock或普通改动基准框架。
 
 ### 11.1 同一模型的无窗口宿主
 
@@ -601,17 +601,17 @@ IV在同一改动中迁移所有Scene/Session/Application/Camera/renderer/验收
 2. 一项明确组合动作给 A 添加 Transform+Cube：组件有各自 ObjectId、owner=A，渲染提取有1项；给 A 或另一个无空间 Actor 加 Counter，证明组件并非Cube别名。
 3. 移除 Cube：A与Transform身份不变、仍在成员列表，渲染查询变0。undo恢复原Cube身份/owner/顺序并重新出现。
 4. 经显式组件字段目标连续预览位置，多次preview→一次commit；undo/redo读真实Runtime值，cancel恢复起点且不新增历史。完整TRS路径设置非默认旋转/缩放，核对统一空间求值及提取结果；正式窗口再核对真实几何变化。重验非法值拒绝以及活动编辑先取消再结构变化。
-5. C若获选，在没有外部离线修改的样本中删除A→GC→undo，恢复同一A及组件身份/值/关系；redo再退出。另设离线改字段/换组件样本，严格按最终选定的历史恢复与冲突规则验收，不能以保活代证历史值。离场对象不再运行或提取。
+5. 在没有外部离线修改的样本中删除A→GC→undo，恢复同一A及组件身份/值/关系；redo再退出。另设离线改字段/换组件样本，严格按最终选定的历史恢复与冲突规则验收，不能以保活代证历史值。离场对象不再运行或提取。
 6. 移除 C 后添加同类型 D：旧字段目标、迟到控件动作和旧编辑token不得写 D。重复owner、将历史恢复应用到非原World、抢占另一World成员、跨Runtime恢复、缺少必需Transform、删除仍被依赖的Transform全部拒绝，目录/游标不变；不把这些错误扩成禁止兼容Detached对象普通attach。
 7. 用真实 Counter 行为推进一次运行更新，验证同一组件字段变化；disabled、离场与stop后不再更新，编辑呈现可仍存在。至少一条现有Program/JIT绑定修改同一字段，类型/对象身份不复制。
 8. 更新回调请求移除正在遍历的组件：当前视图直到边界保持有效，提交后下一查询不含它；请求状态和完成结果一致，生命周期回调内不能递归提交。
 9. 两个 World 使用同一 Runtime：互不接受对方成员操作，关闭一个不破坏另一个；两个 Runtime 间引用/组件挂载拒绝。World关闭前取消相关任务，Runtime最后结束。
 
-**仅当C获选，下列保活案例才作为交付门槛；不能由显式destroy或常驻history代证：**
+**下列保活案例是本片交付门槛，不能由显式destroy或常驻history代证：**
 
 - 在正式类型发布阶段同时注册一个宿主持有者类型，以普通Actor强引用字段保存A。随后只保该宿主持有者的正常根，撤掉测试临时Actor/组件根；detach A并清空全部历史/redo或销毁Session，推进真实GC，仍从普通强边读到同A及完整组件id、顺序、owner、author-enabled与字段值。World活动查询/tick/投影仍为空。
 - 另一个正常历史样本执行Actor detach→GC→undo，恢复相同身份与成员位置；独立remove组件→GC→undo恢复同组件/owner/顺序。Delete→undo→裁掉redo不改变live对象；错误World/owner/依赖恢复整条拒绝，cursor不动。
-- 独立移除C后，Actor不再经组成边保C；没有其他强路径时，释放历史/组件根后C可回收。只持仍附属组件的样本按owner最终强弱分别验：弱边允许Actor回收且组件安全独存；强边须保Actor整组，最后外部根释放后整环可收集。
+- 独立移除C后，Actor不再经组成边保C；没有其他强路径时，释放历史/组件根后C可回收。只持附属组件的样本必须保Actor整组，最后外部根释放后整环可收集。
 - 在没有执行destroy的独立样本中，释放最后宿主强引用后完整组最终可收集，证明World索引、管理登记及UI没有隐藏保活。随后用另一样本，对仍被宿主持有的离线Actor明确destroy，验证Actor/组件身份失效，旧历史restore拒绝；两种结果分别报告。
 - World.close按独立获准政策另列清楚预期的case，不能把close终结或Runtime析构代替上述普通detach/历史裁剪的C验证。
 
@@ -627,20 +627,12 @@ Runtime实施前置使用现有真实端到端入口覆盖：Base强/弱引用�
 
 **完成定义：** 新World同时服务两类宿主，全部旧Scene/位置专用入口已迁移，组件身份/关系/历史/运行参与的反例均满足选定语义。仅文档完成、启动成功或能摆方块均不构成对象模型实现完成。
 
-## 12. 已授权事项、会审前置与真正阻塞
+## 12. 当前交付与后续消费者
 
-**Core与业务的边界：** I提供正式继承及现有source/JIT接线，II提供通用引用序列与受控操作，实际进度见文首。Actor/Component使用共享类型体系，但组成引用方向和close政策并非Core能力的推论，不按此前撤回的C定案实施。
-
-| 尚需会审固定的事项 | 推荐与影响 | 阻塞哪个切片 |
-| --- | --- | --- |
-| 普通引用与owner方向 | 公平比较§5.3；确定普通Actor强引用是否保当前组成、组件强引用是否保Actor整组；数据存活不等于可运行 | III业务所有权，不阻塞通用II |
-| 离线访问与undo | 明确能否离线改字段/组成，undo恢复当前对象还是历史状态，冲突如何处理；普通root没有快照能力 | III离线操作合同及IV历史 |
-| World.close政策 | 终结对象或只结束世界参与/撤根均有适用条件；旧World资源访问必须结束，Runtime寿命由宿主保证 | III关闭及IV应用关停；不阻塞I |
-| Core表示与具体接口签名 | I合同见§4.2.3；II引用批次/序列由Runtime负责人落实正式声明，业务按同一Core入口接入 | Core按自身门槛验收；III另验业务语义 |
-| 空间类型与首片范围 | 推荐独立Transform+能力观察绑定、可选唯一root；首片完整TRS，正非零有限scale，父子/多部件核心已定义但操作暂后。类型树/范围是研究建议，不能冒称用户已全批准 | III类型/变换与IV绘制接线 |
-| 用户可观察结束条件 | I/II原语通过不等于World已交付；III/IV必须连续完成同一迁移，旧Scene/位置入口删除后才能交付新编辑器 | 整体实施排入现行计划前确认完成门槛 |
-
-无需新增专家、继续广搜或预建框架。语义取舍依据真实消费者需要收口；具体hash/容器内部布局、UI绑定表、既有128项history容量和面板排版由责任人按现行工程实践决定。本文作者没有生产实施、构建、验收或提交授权；Runtime负责Core实施，实际派发边界见文首。
+- I、II及最小身份归属查询由Runtime负责人验收，III复用正式Core机制，不重建类型或GC。
+- III的空Actor、组件/依赖、四态、TRS、实际JIT/任务、普通引用保组、close后统一destroy、独立GC及跨World请求边界已通过dev/release真实E2E；当前能力与限制见World模块文档。
+- IV继续通过同一公共头迁移Session、应用及renderer，移除旧Scene/位置专用入口；III完成不等于编辑器整轮完成。
+- 首片编辑仍为当前成员的单写者边界。父子/多空间部件操作、跨文档移交UI、资产/网络、通用调度与离线多写设施不纳入本轮。
 
 ## 13. 延后范围与已知约束
 

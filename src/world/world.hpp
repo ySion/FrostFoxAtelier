@@ -97,7 +97,7 @@ struct ComponentStatus {
 struct Commit {
     bool changed{};
     // A completed relation change is never reported as if it had not happened.
-    // Consumers record that change, then surface any lifecycle notification error.
+    // Consumers record that change, then surface a lifecycle/cleanup error.
     std::optional<Error> notification_error;
 };
 // The only game-object destruction entry. A detached object does not depend on
@@ -150,9 +150,9 @@ enum class RequestKind {
 inline constexpr std::size_t append = std::numeric_limits<std::size_t>::max();
 struct Request {
     RequestKind kind;
-    ObjectId target;
-    ObjectId actor;       // attach_component destination
-    ObjectId transform;   // explicit Cube binding
+    ObjectId target{};
+    ObjectId actor{};       // attach_component destination
+    ObjectId transform{};   // explicit Cube binding
     std::size_t index{append};
     bool enabled{true};
 };
@@ -220,6 +220,8 @@ public:
 
     // Request acceptance is not completion. Replay checks the original World's
     // membership/owner conditions; it never follows a target into another World.
+    // Receipts contain Commit only. Queued detach/remove do not return history
+    // mementos or retain objects; a consumer needing them must already own roots.
     [[nodiscard]] Result<std::uint64_t> request(Request);
     [[nodiscard]] Result<std::vector<RequestCompletion>> flush();
 
