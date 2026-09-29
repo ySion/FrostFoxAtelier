@@ -1576,7 +1576,7 @@ Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage
 }
 
 Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
-    if (object.context_ != impl_->context || object.index_ >= impl_->slots.size()) {
+    if (!belongs_to_context(object) || object.index_ >= impl_->slots.size()) {
         return failure(ErrorCode::invalid_object, "Object does not belong to this runtime.");
     }
     const auto& slot = impl_->slots[object.index_];
@@ -1653,6 +1653,10 @@ Result<void> Runtime::destroy(ObjectId object) {
     }
     impl_->recycle(*index);
     return {};
+}
+
+bool Runtime::belongs_to_context(ObjectId object) const noexcept {
+    return object != ObjectId{} && object.context_ == impl_->context;
 }
 
 Result<TypeId> Runtime::type_of(ObjectId object) const {

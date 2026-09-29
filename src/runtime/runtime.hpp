@@ -465,6 +465,9 @@ public:
     [[nodiscard]] Result<std::optional<ObjectRoot>> try_acquire(const ObjectReference& reference);
     [[nodiscard]] Result<ValueRoot> root_value(TypeId type, std::span<const std::byte> storage);
     [[nodiscard]] Result<void> destroy(ObjectId object);
+    // Context provenance only: true for this Runtime's live or stale identities.
+    // Null and foreign identities return false. Does not validate or root an object.
+    [[nodiscard]] bool belongs_to_context(ObjectId object) const noexcept;
     [[nodiscard]] Result<TypeId> type_of(ObjectId object) const;
 
     // A field path traverses inline records. Its final field must be a scalar.
