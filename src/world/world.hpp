@@ -1,8 +1,10 @@
 #pragma once
 
 #include "runtime/execution.hpp"
+#include "runtime/reflection.hpp"
 #include "world/math.hpp"
 #include <limits>
+#include "world/world.gen.hpp"
 
 namespace atelier::world {
 
@@ -11,45 +13,66 @@ namespace detail { struct Access; struct WorldLifetime; }
 
 // Native payloads participate in the same Runtime type hierarchy and GC graph.
 // Their relation fields are private and registered as hidden reference fields.
+ACLASS(Name="world.Actor")
 class Actor {
+    AGENERATED_BODY(Actor)
 public:
     Actor() = default;
     Actor(const Actor&) = delete;
     Actor& operator=(const Actor&) = delete;
 private:
     friend struct detail::Access;
+    AFIELD(Name="components", Hidden, Sequence="world.Component")
     ReferenceSequence components_;
     World* member_world_{};
     bool enabled_{true};
     bool transitioning_{};
 };
 
+ACLASS(Name="world.Component")
 class Component {
+    AGENERATED_BODY(Component)
 public:
     Component() = default;
     Component(const Component&) = delete;
     Component& operator=(const Component&) = delete;
 private:
     friend struct detail::Access;
+    AFIELD(Name="owner", Hidden, Strong="world.Actor")
     ReferenceSlot owner_;
     bool enabled_{true};
 };
 
+ACLASS(Name="world.Transform")
 struct Transform : Component {
+    AGENERATED_BODY(Transform)
+public:
+    AFIELD()
     Vec3 position;
+    AFIELD()
     Quaternion rotation;
+    AFIELD()
     Vec3 scale{1.f, 1.f, 1.f};
 };
+ACLASS(Name="world.Cube")
 class Cube : public Component {
+    AGENERATED_BODY(Cube)
 public:
     Cube() = default;
 private:
     friend struct detail::Access;
+    AFIELD(Name="transform", Hidden, Weak="world.Transform")
     ReferenceSlot transform_;
 };
+ACLASS(Name="world.Counter")
 struct Counter : Component {
+    AGENERATED_BODY(Counter)
+public:
+    AFIELD()
     float value{};
+    AFIELD()
     std::uint32_t steps{};
+    AFUNCTION()
     void advance(float amount) noexcept { value += amount; ++steps; }
 };
 

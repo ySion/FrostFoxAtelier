@@ -1,16 +1,36 @@
 #pragma once
 
 #include <array>
+#include "runtime/reflection.hpp"
 #include "runtime/runtime.hpp"
+#include "world/math.gen.hpp"
 
 namespace atelier::world {
 
+ASTRUCT(Name="world.Vec3")
 struct Vec3 {
-    float x{}, y{}, z{};
+    AGENERATED_BODY(Vec3)
+public:
+    AFIELD()
+    float x{};
+    AFIELD()
+    float y{};
+    AFIELD()
+    float z{};
     bool operator==(const Vec3&) const = default;
 };
+ASTRUCT(Name="world.Quaternion")
 struct Quaternion {
-    float x{}, y{}, z{}, w{1.f};
+    AGENERATED_BODY(Quaternion)
+public:
+    AFIELD()
+    float x{};
+    AFIELD()
+    float y{};
+    AFIELD()
+    float z{};
+    AFIELD()
+    float w{1.f};
     bool operator==(const Quaternion&) const = default;
 };
 struct Trs {

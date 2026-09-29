@@ -5,6 +5,7 @@
 ## 对象与引用
 
 - 宿主拥有Runtime，先调用`world::register_types`，再注册额外派生类型，最后创建对象。Types返回正式TypeId、Counter方法/字段以及Transform三组字段路径。
+- Vec3、Quaternion和五个对象类型的反射声明与字段、方法写在各自C++定义旁。构建生成`world/math.gen.hpp`、`world/world.gen.hpp`及对应实现，沿用NativeRegistration产出TypeDefinition；`world::register_types`仍是唯一成组发布入口，保留原注册顺序与字段路径绑定。生成元数据只获得所需friend访问，`detail::Access`继续负责World业务关系访问。
 - Actor和Component都是core.Object的正式派生类型，Transform、Cube、Counter正式派生于Component。Actor可有零组件；对象与语言执行共用Runtime的ObjectId、存储及GC，没有第二实体身份。
 - Actor的隐藏强引用序列是组成与顺序的权威。附属Component强持owner，**单个组件强引用会保住Actor及兄弟组件**；这个代价是明确合同。移除组件通过一次Core引用批次解除双向关系。
 - Cube以弱引用明确绑定同Actor的Transform。每个Actor至多一个Transform，包括其派生类型；移除仍被Cube依赖的Transform会失败。允许多个Cube分别产生绘制项，UI可以限制其首片创建范围。
