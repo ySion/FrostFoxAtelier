@@ -30,11 +30,11 @@ close和destroy使用明确不同的合同，取舍见§5.3；World统一求S*R*
 
 ## 2. 原main研究基线的事实与缺口
 
-以下行号固定于上述基线；表中“缺口”不等于本轮全部要实现。
+以下路径、行号和行为固定于原main基线`9d33f4fc1c8a88481c93be4b166e6eb311456a1b`，用于解释迁移动因。IV已移除旧Scene，表中旧路径不再是当前实现入口；当前World行为见[模块文档](../modules/world/README.md)。表中“缺口”不等于本轮全部要实现。
 
 | 事实与精确入口 | 可复用内容 | 新模型必须补齐或迁移的部分 |
 | --- | --- | --- |
-| [scene.hpp](../../src/scene/scene.hpp):8–45；[scene.cpp](../../src/scene/scene.cpp):17–32 | Runtime 唯一保存值，成员用根保活，字段路径冷端缓存 | 只有 `SceneObject{Transform{position}}`，单一 `object_type_`，最多 256 成员；无 Actor/组件协议 |
+| 原基线`src/scene/scene.hpp`:8–45；`src/scene/scene.cpp`:17–32（已移除） | Runtime 唯一保存值，成员用根保活，字段路径冷端缓存 | 只有 `SceneObject{Transform{position}}`，单一 `object_type_`，最多 256 成员；无 Actor/组件协议 |
 | `scene.cpp`:40–71、100–117 | 创建与目录插入分开；插入检查上下文、类型、重复身份；访问要求当前成员资格；宿主显式推进 GC | World 成员、组件 owner、启停及组合依赖；不能把现有 256 限额当引擎模型限制 |
 | [runtime.hpp](../../src/runtime/runtime.hpp):34–80、159–175、264–296、359–409；[native.hpp](../../src/runtime/native.hpp):47、78、103 | 共享类型、`ObjectId(context,index,generation)`、根、强弱引用、字段访问和执行准入 | 没有Object基类TypeId、base_type/is-a、基类引用兼容、原生base地址调整或容器追踪；原生成员指针限本T，C++继承不会自动登记；ID尚无正式哈希 |
 | [runtime.cpp](../../src/runtime/runtime.cpp):893、1249–1301 | 成组注册先完整验证再发布；成功 `create` 后封闭类型；失败创建不封闭 | 运行期新增/替换类型、对象布局迁移均未提供；添加已注册类型的组件实例不受“封闭注册”限制 |
@@ -307,7 +307,7 @@ Actor序列声明元素类型Component、强形式固定，元素实际类型可
 
 **行业证据的边界。** UE5.6分别描述EndPlay、组件注销、Destroy和GC，组件注销拆除render/physics state；在文档列出的关闭强制GC且快速重载子关卡条件下，EndPlay后的Actor可能以同一对象返回。它证明运行参与与物理回收不同步，不证明Frost应该由任意强引用保组。[Actor Lifecycle](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-actor-lifecycle?application_version=5.6)、[Components](https://dev.epicgames.com/documentation/en-us/unreal-engine/components-in-unreal-engine?application_version=5.6)。Godot4.5的remove_child不删除子树，但Node不属于RefCounted；这是非删除移除的例子，不是普通强引用保活的证据。[Node](https://docs.godotengine.org/en/4.5/classes/class_node.html#class-node-method-remove-child)、[RefCounted](https://docs.godotengine.org/en/4.5/classes/class_refcounted.html)。专有引擎未知部分不能作为C支持票。
 
-**已核实的当前消费者事实。** Session删除记录保存同一Member根与位置，Undo恢复成员资格；删除记录没有字段快照，只有属性编辑另存before/after。现有验收在离场期间只推进GC，没有离线写者。正式Scene写入先查活动成员，Session不开放离场写入；history之外尚无长期访问离线Actor的业务消费者。因此当前Undo不能证明C必需，也不能证明C错误。[Session](../../src/editor/session.cpp)、[Scene](../../src/scene/scene.cpp)、[现有验收](../../acceptance/editor/scene.cpp)。
+**原main基线的消费者事实。** 在`9d33f4fc1c8a88481c93be4b166e6eb311456a1b`中，Session删除记录保存同一Member根与位置，Undo恢复成员资格；删除记录没有字段快照，只有属性编辑另存before/after。该基线验收在离场期间只推进GC，没有离线写者。Scene写入先查活动成员，Session不开放离场写入；history之外尚无长期访问离线Actor的业务消费者。因此这组旧Undo证据不能证明C必需，也不能证明C错误。历史入口为`src/editor/session.cpp`、`src/scene/scene.cpp`和`acceptance/editor/scene.cpp`；后两者已由IV移除，当前消费者通过统一World入口工作。
 
 **本片选择：采用普通GC对象组成，Actor强持当前组件。** 普通Actor强引用保同身份、当前字段与组成，世界参与和资源另行结束。这复用一张权威对象图；专用离线持有协议则需另定终结权、转交及普通引用失效规则，当前收益不足以承担这些维护成本。基础合同有独立设计价值，不能仅以当前是否已有离线消费者裁决。禁用、detach、历史Delete/Undo保同身份；新用途池复用或确定终结的内容卸载可明确destroy，强引用不能否决，stream unload不一概等同detach。
 
