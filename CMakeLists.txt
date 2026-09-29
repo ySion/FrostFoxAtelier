@@ -84,6 +84,8 @@ add_custom_target(ui_layout_acceptance
 include(cmake/jit.cmake)
 atelier_add_source()
 
+include(cmake/reflection.cmake)
+
 include(cmake/world.cmake)
 atelier_add_world()
 
@@ -118,5 +120,5 @@ add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
     DEPENDS atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
-        atelier_editor_document_acceptance atelier_editor rhi_acceptance
+        atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance
     USES_TERMINAL VERBATIM)

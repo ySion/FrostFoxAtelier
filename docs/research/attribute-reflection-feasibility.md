@@ -1,8 +1,8 @@
-# Attribute 自动反射：首片方案与可行性
+# C++ 自动反射：选型与初始验证
 
-状态：2026-09-30 已完成官方资料与有限本机探针，尚未实施生产生成器或迁移业务类型。Core 基线为 `b272c3f`，工作分支为 `codex/attribute-reflection`。只读核对的真实消费者为 World 提交 `72859e7d`；应用集成候选 `fc9ee7f` 不由本任务修改。
+状态：2026-09-30 的选型与初始探针记录，探针基线为 Core `b272c3f`。用户随后确认 UE 风格薄宏与生成头方案，生产生成器及 World 迁移已落地；当前接口、构建及能力范围统一见[自动反射](../reflection.md)。下文探针结果不代表完整生产验收。
 
-**当前建议：** 标注使用 `clang::annotate`，可包一层薄宏；首片用锁定 SDK 的 C++ LibTooling 提取并生成 C++ 注册代码。C# + ClangSharp 的受限 C API 探针可以取到所需数据，但其包版本、一个释放函数缺陷和 clang-cl 参数适配仍需处理，暂不作为已验证的生产路线。若用户优先选择 C#，先关闭这些接入问题再定型；不同时建设两套生成器。
+**选型结论：** 使用锁定 SDK 的 C++ LibTooling。最终薄宏放在声明前，由预处理回调与 AST 配对；不能直接把类前的 `ACLASS()` 展开为 `clang::annotate`，因为该位置不符合类型属性语法。C# + ClangSharp 探针提供了对照，其包版本、释放函数缺陷和 clang-cl 参数适配成本没有进入生产链。
 
 职责边界是“标注 → AST → 生成 `NativeRegistration<T>` → `TypeDefinition` → 现有 `Runtime::register_types`”。C# 若采用，仅为构建工具；对象身份、GC、调用 ABI 与运行时类型表保持现有单一来源。首片不涉及撤销、RHI/UI 重构或新构建系统。
 
@@ -50,40 +50,10 @@ Clang 正式支持 `clang::annotate`；未知 attribute 默认警告并忽略，
 | libclang 与真实命令 | 从 `compile_commands.json` 读取完整 argv、工作目录，移除源文件与输出动作后直接 `TryParseFullArgv`：libclang 注入的 `-fno-spell-checking`、`-fallow-editor-placeholders` 在 cl 驱动模式下触发参数错误，原命令的 `-clang:-std=c++23` 也未得到期望语言模式。实验增加 `-Xclang -std=c++23` 并抑制 unknown-argument 后可以提取；这只是定位对照，不能作为生产工具的参数保持方案。 |
 | C++ tooling 对照 | 同一 SDK 的 `clang-check` 使用同源 TU 编译数据库，沿用 dev/release 的 include、宏、标准与警告参数，两配置均成功提取属性和声明，退出 0。只更换输入为探针 TU，未另配一组编译环境。 |
 
-尚未验证：完整生成器链接、生成代码到 Runtime 的端到端行为、CMake 增量/重现性，以及真实 World 类型迁移。不得把上表升级为这些项目已经完成。
+初始探针未覆盖完整生成器链接、生成代码到 Runtime 的端到端行为、CMake 增量/重现性或真实 World 迁移；这些后续生产验收由[正式说明](../reflection.md#验收与边界)及实际消费者维护，不以本表代替。
 
-## 首片实施方案
+## 决策落点
 
-### 标注与唯一生产链
+用户确认 `ACLASS/ASTRUCT/AFIELD/AFUNCTION` 与 `.gen.hpp` 的写法后，正式链路采用 Clang `PPCallbacks::MacroExpands` 记录标记，再由 AST 确认归属和类型。锁定 SDK 已提供此回调；普通编译不需要插件或未知 attribute。[官方接口](https://clang.llvm.org/doxygen/classclang_1_1PPCallbacks.html)
 
-下面是待用户收口的写法示意，底层 `annotate` 已验证，宏名称与载荷语法尚未定稿：
-
-```cpp
-struct ATELIER_OBJECT("world.Component") Component {
-    // 授权生成的元数据生产者取成员指针；不改变业务访问权限。
-    friend struct atelier::reflection::Definition<Component>;
-private:
-    ATELIER_STRONG("world.Actor", hidden) ReferenceSlot owner_;
-};
-struct ATELIER_OBJECT("world.Counter") Counter : Component {
-    ATELIER_FIELD float value{};
-    ATELIER_METHOD float advance(float delta);
-};
-```
-
-- 只显式标注需要登记的类型与成员；object/record、引用强弱、序列元素类型及隐藏性由标注明确。字段名字默认沿用 C++ 声明，需要保持现有 Runtime 名字时显式指定，例如 `owner_` 对应 `owner`。
-- 基类从 AST 取得并验证为现有正式单继承可表达的关系，生成 `.base<Base>()`。字段生成实际成员指针，构析和调整地址仍由 `NativeRegistration` 与 C++ 编译器负责，不计算或硬编码偏移。
-- 私有引用字段通过窄范围 friend 生产者处理；不使用 `#define private public`、不公开字段，也不生成绕开 Runtime 写屏障的业务访问器。已有 `world::detail::Access` 的业务访问职责保留。
-- 对反射类型中缺少标注的 `ReferenceSlot/ReferenceSequence` 报错；已反射且含引用的内联记录也不能无声漏出追踪定义。普通未标注的 bool、原生指针、ObjectId 等保持原生业务状态，不自动认作 GC 边。
-- 首片支持现有标量、已登记记录、对象单继承、strong/weak/sequence，以及当前 `void/float/uint32_t` 成员方法签名。静态方法、模板、变参、位域、不可写字段、不可构析类型和未覆盖的重载形式给出源位置错误；不静默跳过。声明收集须合并前向声明与定义，避免重复注册。
-
-### 构建接线与首个真实消费者
-
-1. 在 `tools/` 增加一个生成器目标，复用锁定 LLVM。CMake 为目标选定真实 TU 与配置，使用原有编译命令、宏/include/target 和 Windows SDK 环境。先保证准确提取，再做过滤；不以孤立头文件的默认参数替代生产编译。
-2. 生成器输出 C++ 定义和头文件依赖清单。生成内容不含时间戳、绝对路径或 AST 地址；声明顺序固定，内容不变不重写文件。CMake 使用 `OUTPUT/BYPRODUCTS/DEPFILE` 接线，包含文件或参数变化会触发重生成；首次构建不能依赖尚未生成的注册文件才能解析类型。
-3. 首个消费者为 World 的 `Vec3/Quaternion`、`Actor/Component`、`Transform/Cube/Counter` 七种现有类型。World 负责人负责业务文件迁移；本任务提供工具和接线。唯一 `world::register_types` 继续成组发布，生成定义替换相应手写定义，随后建立 `Types` 与字段路径。生成顺序变化不能改变手写下标对应，优先按原生类型身份取回发布结果。
-4. 先用一个真实注册消费者贯通 private 引用、基类、方法及析构；迁移七种类型时运行现有 dev/release World 端到端入口，覆盖注册、引用图、GC、成员调用与生命周期。增加必要失败输入验收，确认非法标注带文件/行列并让构建失败；不建立单元或 mock 框架。
-
-**交付终点：** 同一组标注稳定生成同一注册源码；真实消费者通过现有唯一入口发布，行为与手写版本一致；变更头文件会重生成，无变化构建不重写；不存在并存的旧手写描述。产出工具、CMake 接线、迁移后的真实消费者及当前文档。编译器插件、自定义 C++ 属性扩展、通用编辑器元数据和全仓迁移均不在首片。
-
-**待用户收口：** 薄宏或直接 `clang::annotate` 的写法偏好；是否优先要求 C# 承载生成工具（若要求，则先处理上文实际接入问题）。这两点在正式工具实现前确定；现有本机验证不依赖该选择。
+生成头保留轻量特化声明，生成实现构建现有 `NativeRegistration<T>`。私有成员通过 `AGENERATED_BODY(Type)` 授权，模块继续显式成组发布。World 负责人提供七种真实类型迁移，原手写描述已替换；首片没有引入另一套 Runtime 或构建系统。当前实现及验收入口见[自动反射](../reflection.md)，初始草案不再作为另一份接口规范。

@@ -10,6 +10,8 @@ Runtime 已支持以 `core.Object` 为根的正式单继承、基类引用视图
 
 对象字段已支持定型强引用序列，宿主通过 `with_native` 同步借用原生载荷，通过 `apply_reference_changes` 原子提交序列与引用槽的成组修改。序列参与同一 GC，支持暂停标记期间的扩容、移位和清空；当前仍由原生宿主操作，源码容器语法尚未开放。具体合同见[引用序列与受保护原生访问](docs/runtime-model.md#引用序列与受保护原生访问)。
 
+C++ 自动反射使用 `ACLASS/ASTRUCT/AFIELD/AFUNCTION` 与 `AGENERATED_BODY`。锁定版本的 Clang LibTooling 生成 `.gen.hpp/.gen.cpp`，继续通过现有 Runtime 发布；World 的七种真实类型已迁移。写法、构建接线、首片限制和端到端入口见[自动反射](docs/reflection.md)。
+
 ## 启动首个场景编辑器
 
 在仓库根目录的 PowerShell 中执行唯一产品入口：

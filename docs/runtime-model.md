@@ -58,7 +58,7 @@ flowchart TD
 | 描述和执行函数 | `SignatureDefinition`、`FunctionSignature`、`MethodInfo`、`Invoker`、`CallContext` | 原生与源码共用接收者/参数/结果描述及解析；当前为标量值参数和 `void/float/uint` 结果，执行实现仍分开 |
 | 执行准入与根槽 | `ExecutionScope`、`ExecutionFrame` | 活动调用计数、借用/遍历禁入与稳定根槽；挂起保留存储，但不保持活动执行作用域 |
 | 协程帧拥有者 | `Coroutine`、`CoroutineFrame` | 同线程状态、恢复、合作取消和结果；具体编译帧负责根、存储和代码版本的释放 |
-| 发布原生类型 | `NativeRegistration<T>` | `build()` 产出同一个 `TypeDefinition`，推导字段、参数、返回及原生接收者 const 信息，类型依赖延迟到发布时解析；无独立注册表 |
+| 发布原生类型 | `NativeRegistration<T>`，以及调用它的生成代码 | `build()` 产出同一个 `TypeDefinition`，推导字段、参数、返回及原生接收者 const 信息；[自动反射](reflection.md)从 C++ 声明生成这些调用，类型依赖仍在 Runtime 发布时解析 |
 | 表达对象引用 | `ObjectReference`、`ReferenceSlot` | 前者是定型传递值，后者是紧凑字段存储；二者不自动创建外部根 |
 | 登记外部持有 | `ObjectRoot`、`ValueRoot` | 对象根支持复制/移动，值根可移动且借用调用方存储；撤根不等于销毁 |
 | 枚举引用边 | `visit_roots`、`visit_references` | 区分持有/观察，递归内联记录而不递归对象图；GC 使用同一字段定义派生的持有边追踪计划 |
@@ -396,7 +396,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 | 增量编译与发布 | 已有不可变请求、最新请求优先、失败保旧和显式静止点提交；乱序完成由确定性同步场景验证，不代表已有后台调度。仍需在真实多声明/多单元需求下定义依赖闭包及发布单位。后台编译若引入，只处理安全快照；业务副作用不自动回滚。 |
 | 工具链与诊断 | 锁定 LLVM SDK、CRT 隔离、宿主互调、动态展开表和代码退休已有验收；编译诊断带源名/行列。源码断点、局部变量查看和协程挂起位置尚未接入，不能由平台展开信息推定已具备源码调试能力。 |
 
-后续增量按实际消费者需求确认；工业实现和论文依据见[JIT 研究](research/jit-industrial-research.md)。平台探针只关闭其中一部分 Windows 实现风险，不把其余语言/执行契约计作已完成，也不冻结永久 ABI。原生绑定生成仍复用 `NativeRegistration` 的定义体系；LibTooling 应在调用与暴露规则明确后对少量类型验证，不作为首次 JIT 贯通的前置工具平台。
+后续增量按实际消费者需求确认；工业实现和论文依据见[JIT 研究](research/jit-industrial-research.md)。平台探针只关闭其中一部分 Windows 实现风险，不把其余语言/执行契约计作已完成，也不冻结永久 ABI。[自动反射](reflection.md)已用 LibTooling 和薄宏生成 `NativeRegistration` 调用并接入 World 类型；它不扩大现有调用 ABI 或源码语言能力。
 
 ### 建议推进与验收次序
 
