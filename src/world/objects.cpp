@@ -1,37 +1,19 @@
 #include "world/detail.hpp"
-#include "runtime/native.hpp"
 #include <algorithm>
 
 namespace atelier::world {
 using detail::Access;
 using detail::error;
 
-TypeDefinition Access::actor_definition(Runtime& runtime) {
-    return NativeRegistration<Actor>{runtime, "world.Actor", TypeKind::object}
-        .hidden_field<&Actor::components_>("components", {TypeReference::native<Component>(), ValueForm::strong_sequence}).build();
-}
-TypeDefinition Access::component_definition(Runtime& runtime) {
-    return NativeRegistration<Component>{runtime, "world.Component", TypeKind::object}
-        .hidden_field<&Component::owner_>("owner", {TypeReference::native<Actor>(), ValueForm::strong_reference}).build();
-}
-TypeDefinition Access::cube_definition(Runtime& runtime) {
-    return NativeRegistration<Cube>{runtime, "world.Cube", TypeKind::object}.base<Component>()
-        .hidden_field<&Cube::transform_>("transform", {TypeReference::native<Transform>(), ValueForm::weak_reference}).build();
-}
-
 Result<Types> register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;
-    definitions.push_back(NativeRegistration<Vec3>{runtime, "world.Vec3", TypeKind::record}
-        .field<&Vec3::x>("x").field<&Vec3::y>("y").field<&Vec3::z>("z").build());
-    definitions.push_back(NativeRegistration<Quaternion>{runtime, "world.Quaternion", TypeKind::record}
-        .field<&Quaternion::x>("x").field<&Quaternion::y>("y").field<&Quaternion::z>("z").field<&Quaternion::w>("w").build());
-    definitions.push_back(Access::actor_definition(runtime));
-    definitions.push_back(Access::component_definition(runtime));
-    definitions.push_back(NativeRegistration<Transform>{runtime, "world.Transform", TypeKind::object}.base<Component>()
-        .field<&Transform::position>("position").field<&Transform::rotation>("rotation").field<&Transform::scale>("scale").build());
-    definitions.push_back(Access::cube_definition(runtime));
-    definitions.push_back(NativeRegistration<Counter>{runtime, "world.Counter", TypeKind::object}.base<Component>()
-        .field<&Counter::value>("value").field<&Counter::steps>("steps").method<&Counter::advance>("advance").build());
+    definitions.push_back(reflection::Definition<Vec3>::build(runtime));
+    definitions.push_back(reflection::Definition<Quaternion>::build(runtime));
+    definitions.push_back(reflection::Definition<Actor>::build(runtime));
+    definitions.push_back(reflection::Definition<Component>::build(runtime));
+    definitions.push_back(reflection::Definition<Transform>::build(runtime));
+    definitions.push_back(reflection::Definition<Cube>::build(runtime));
+    definitions.push_back(reflection::Definition<Counter>::build(runtime));
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;

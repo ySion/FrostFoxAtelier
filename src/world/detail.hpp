@@ -30,9 +30,6 @@ struct Access {
     static bool& enabled(Actor& value) noexcept { return value.enabled_; }
     static bool& enabled(Component& value) noexcept { return value.enabled_; }
     static bool& transitioning(Actor& value) noexcept { return value.transitioning_; }
-    static TypeDefinition actor_definition(Runtime&);
-    static TypeDefinition component_definition(Runtime&);
-    static TypeDefinition cube_definition(Runtime&);
 };
 
 inline std::unexpected<Error> error(ErrorCode code, std::string message) { return std::unexpected(Error{code, std::move(message)}); }
