@@ -17,7 +17,7 @@ struct Program::Metadata {
     TypeInfo value;
     bool matches(const TypeInfo& actual) const {
         if (&actual != identity || actual.id != value.id || actual.name != value.name ||
-            actual.kind != value.kind || actual.size != value.size || actual.alignment != value.alignment ||
+            actual.kind != value.kind || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
             actual.copy_constructible != value.copy_constructible || actual.copy_assignable != value.copy_assignable ||
             actual.contains_references != value.contains_references || actual.fields.size() != value.fields.size() ||
             actual.methods.size() != value.methods.size()) return false;
@@ -218,14 +218,12 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
     if (!checked) return std::unexpected(std::move(checked.error()));
     const bool hold_receiver = version->declaration->signature.receiver.has_value() || receiver != ObjectId{};
     if (hold_receiver) {
-        auto type = binding.runtime->type_of(receiver);
-        if (!type) return std::unexpected(std::move(type.error()));
-        if (*type != binding.type)
-            return std::unexpected(Error{ErrorCode::type_mismatch, "Coroutine receiver has the wrong type."});
+        auto checked_receiver = check_source_receiver(binding, receiver);
+        if (!checked_receiver) return std::unexpected(std::move(checked_receiver.error()));
     }
     auto frame = std::make_unique<Program::Frame>(std::move(version), observer, budget);
     if (hold_receiver) {
-        auto held = frame->invocation.frame.hold(receiver_slot, receiver);
+        auto held = frame->invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!held) return std::unexpected(std::move(held.error()));
     }
     BusinessCoroutine* compiled{};

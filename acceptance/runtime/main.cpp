@@ -2084,6 +2084,8 @@ void verify_native_member_address() {
 
 }
 
+void verify_runtime_inheritance();
+
 int main() {
     try {
         atelier::acceptance::verify_default_allocator();
@@ -2105,6 +2107,7 @@ int main() {
         verify_deep_value_walks();
         verify_scalar_plans();
         verify_native_member_address();
+        verify_runtime_inheritance();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

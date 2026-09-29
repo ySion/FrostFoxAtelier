@@ -37,6 +37,10 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     std::vector<FieldId> path;
     std::string prefix;
     remember(type);
+    for (auto base = info->base; base; ) {
+        remember(*base);
+        base = take(runtime.describe(*base))->base;
+    }
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) { cursors.pop_back(); continue; }
@@ -58,7 +62,7 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     }
     for (const auto& method : info->methods) {
         const auto& signature = method.signature;
-        require(signature.receiver && signature.receiver->type == type,
+        require(signature.receiver && take(runtime.is_a(type, signature.receiver->type)),
             "Source host method receiver does not match its owning type.");
         const auto kind = [&](ValueDescription value) {
             require(value.form == ValueForm::inline_value && (value.type == f32 || value.type == u32),
@@ -339,6 +343,18 @@ Result<void> check_source_arguments(const BusinessSignature& signature, std::spa
     return {};
 }
 
+Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
+    auto actual = binding.runtime->type_of(receiver);
+    if (!actual) return std::unexpected(actual.error());
+    if (binding.type == TypeId{})
+        return std::unexpected(Error{ErrorCode::type_mismatch, "Receiverless source cannot accept an object."});
+    auto compatible = binding.runtime->is_a(*actual, binding.type);
+    if (!compatible) return std::unexpected(compatible.error());
+    if (!*compatible)
+        return std::unexpected(Error{ErrorCode::type_mismatch, "Source receiver has the wrong type."});
+    return {};
+}
+
 // The caller retains admission until invocation roots and observer effects are
 // destroyed. Published versions provide checked metadata from their own code.
 Result<BusinessScalar> execute_admitted(ExecutionScope&, Runtime& runtime, const Binding& binding,
@@ -347,14 +363,12 @@ Result<BusinessScalar> execute_admitted(ExecutionScope&, Runtime& runtime, const
     CollectionBudget budget) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
-        auto type = runtime.type_of(receiver);
-        if (!type) return std::unexpected(std::move(type.error()));
-        if (*type != binding.type)
-            return std::unexpected(Error{ErrorCode::type_mismatch, "Business receiver has the wrong type."});
+        auto checked = check_source_receiver(binding, receiver);
+        if (!checked) return std::unexpected(std::move(checked.error()));
     }
     Invocation invocation(runtime, binding, layout, budget, observer);
     if (hold_receiver) {
-        auto rooted = invocation.frame.hold(receiver_slot, receiver);
+        auto rooted = invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!rooted) return std::unexpected(std::move(rooted.error()));
     }
     if (request_collection) invocation.frame.request_collection();

@@ -229,6 +229,11 @@ struct Runtime::Impl {
     struct Type {
         TypeInfo info;
         NativeLayout native;
+        const Type* base{};
+        // Own declarations, including hidden names, for inherited conflict checks.
+        std::vector<std::string> member_names;
+        // An internal leading base segment reuses layout/lifetime/trace walkers.
+        // Native constructors still own their complete C++ object themselves.
         std::vector<FieldStorage> fields;
         std::vector<Invoker> methods;
         std::vector<std::uint32_t> trace_fields;
@@ -262,6 +267,7 @@ struct Runtime::Impl {
     bool sealed{};
     TypeId f32;
     TypeId u32;
+    TypeId object;
     CollectionPhase phase{CollectionPhase::idle};
     std::uint64_t epoch{};
     std::size_t marked{};
@@ -493,6 +499,21 @@ struct Runtime::Impl {
     Type* lookup(TypeId id) const noexcept {
         if (id.context_ != context || id.index_ >= types.size()) return nullptr;
         return types[id.index_].get();
+    }
+
+    static bool derives_from(const Type& actual, const Type& expected) noexcept {
+        for (const auto* type = &actual; type; type = type->base) {
+            if (type == &expected) return true;
+        }
+        return false;
+    }
+
+    // Caller validates the ancestry and protects native address callbacks.
+    static void* base_storage(const Type& actual, const Type& expected, void* storage) noexcept {
+        for (const auto* type = &actual; type != &expected; type = type->base) {
+            if (type->native.base_address) storage = type->native.base_address(storage);
+        }
+        return storage;
     }
 
     const Type* lookup(const TypeReference& reference,
@@ -797,6 +818,10 @@ Runtime::Runtime() : impl_(std::make_unique<Impl>()) {
     if (impl_->context == 0) throw std::overflow_error("Runtime identity space exhausted.");
     impl_->f32 = impl_->add_scalar<float>("core.f32");
     impl_->u32 = impl_->add_scalar<std::uint32_t>("core.u32");
+    impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
+    auto root = std::make_unique<Impl::Type>();
+    root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
+    impl_->types.push_back(std::move(root));
 }
 
 Result<void> Runtime::check_execution_entry() const {
@@ -928,13 +953,16 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
         const bool is_native = native.size || native.alignment || native.representation || native.construct ||
-                               native.destroy || native.copy_construct || native.copy_assign;
+                               native.destroy || native.copy_construct || native.copy_assign || native.base_address;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) ||
             !native.representation || !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition, "Native layout requires valid size, alignment and lifecycle operations.");
         }
         if (definition.kind == TypeKind::record && !definition.methods.empty()) {
             return failure(ErrorCode::invalid_definition, "This slice supports methods on object types only.");
+        }
+        if (definition.kind == TypeKind::record && (definition.base || native.base_address)) {
+            return failure(ErrorCode::invalid_definition, "Records cannot declare an object base.");
         }
         const TypeId id{impl_->context, static_cast<std::uint32_t>(first_index + staged.size())};
         auto type = std::make_unique<Impl::Type>();
@@ -958,8 +986,22 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
         auto& type = *staged[i];
         const auto id = type.info.id;
         const bool is_native = type.native.construct != nullptr;
+        if (type.info.kind == TypeKind::object) {
+            type.base = definition.base ? resolve(*definition.base) : impl_->lookup(impl_->object);
+            if (!type.base || type.base->info.kind != TypeKind::object)
+                return failure(ErrorCode::invalid_definition, "Object base must resolve to an object type.");
+            type.info.base = type.base->info.id;
+            if (is_native && type.base->info.id != impl_->object &&
+                (!type.base->native.construct || !type.native.base_address)) {
+                return failure(ErrorCode::invalid_definition, "Native inheritance requires a native base and its address adapter.");
+            }
+            if (type.base->info.id == impl_->object && type.native.base_address)
+                return failure(ErrorCode::invalid_definition, "The storage-free Object root has no native base adapter.");
+            if (type.base->info.id != impl_->object)
+                type.fields.push_back({0, type.native.base_address, {*type.info.base}});
+        }
         type.info.fields.reserve(definition.fields.size());
-        type.fields.reserve(definition.fields.size());
+        type.fields.reserve(type.fields.size() + definition.fields.size());
         // Validate names before moving any strings, including non-exposed fields.
         for (std::size_t field_index = 0; field_index != definition.fields.size(); ++field_index) {
             const auto& name = definition.fields[field_index].name;
@@ -978,6 +1020,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             }
         }
         for (auto& field : definition.fields) {
+            type.member_names.push_back(field.name);
             const auto* target = resolve(field.value.type);
             if (!target) {
                 return failure(ErrorCode::invalid_definition, "Unresolved field type: " + type.info.name + "." + field.name);
@@ -1011,6 +1054,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());
         for (auto& method : definition.methods) {
+            type.member_names.push_back(method.name);
             if (method.name.empty() || !method.invoke) {
                 return failure(ErrorCode::invalid_definition, "Methods require a name and implementation.");
             }
@@ -1022,7 +1066,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
         }
     }
 
-    // Only inline edges constrain layout. An explicit stack rejects cycles without
+    // Inline values and the private base segment constrain layout. Reject cycles without
     // consuming the C++ call stack for deeply nested, but valid, definition batches.
     enum class LayoutState { unseen, active, complete };
     struct LayoutFrame { std::size_t type; std::size_t next_field; };
@@ -1052,6 +1096,16 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             }
             if (descended) continue;
             const bool is_native = type.native.construct != nullptr;
+            if (type.base) {
+                for (const auto* ancestor = type.base; ancestor; ancestor = ancestor->base) {
+                    for (const auto& name : type.member_names) {
+                        if (std::ranges::find(ancestor->member_names, name) != ancestor->member_names.end())
+                            return failure(ErrorCode::invalid_definition, "Member hides an inherited declaration: " + name);
+                    }
+                }
+                type.info.fields.insert(type.info.fields.begin(), type.base->info.fields.begin(), type.base->info.fields.end());
+                type.info.methods.insert(type.info.methods.begin(), type.base->info.methods.begin(), type.base->info.methods.end());
+            }
             type.needs_destroy = is_native;
             for (std::size_t field_index = 0; field_index != type.fields.size(); ++field_index) {
                 const auto value = type.fields[field_index].value;
@@ -1144,6 +1198,35 @@ Result<const TypeInfo*> Runtime::describe(TypeId type) const {
     const auto* found = impl_->lookup(type);
     if (!found) return failure(ErrorCode::invalid_type, "Type does not belong to this runtime.");
     return &found->info;
+}
+
+TypeId Runtime::object_type() const noexcept { return impl_->object; }
+
+Result<bool> Runtime::is_a(TypeId actual, TypeId expected) const {
+    const auto* type = impl_->lookup(actual);
+    const auto* base = impl_->lookup(expected);
+    if (!type || !base || type->info.kind != TypeKind::object || base->info.kind != TypeKind::object)
+        return failure(ErrorCode::invalid_type, "Ancestry requires object types in this Runtime.");
+    return Impl::derives_from(*type, *base);
+}
+
+Result<ObjectReference> Runtime::cast_reference(const ObjectReference& reference, TypeId target) const {
+    auto valid = validate_reference(reference);
+    if (!valid) return std::unexpected(valid.error());
+    const auto up = is_a(reference.description().type, target);
+    if (!up) return std::unexpected(up.error());
+    if (!*up) {
+        const auto down = is_a(target, reference.description().type);
+        if (!down) return std::unexpected(down.error());
+        if (!*down) return failure(ErrorCode::type_mismatch, "Reference types have no ancestor relationship.");
+        if (!reference.is_null()) {
+            const auto actual = type_of(reference.id());
+            if (!actual) return std::unexpected(actual.error());
+            if (!Impl::derives_from(*impl_->lookup(*actual), *impl_->lookup(target)))
+                return failure(ErrorCode::type_mismatch, "Object does not satisfy the reference downcast.");
+        }
+    }
+    return ObjectReference{{target, reference.description().form}, reference.id()};
 }
 
 Result<FieldId> Runtime::find_field(TypeId type, std::string_view name) const {
@@ -1333,7 +1416,7 @@ Result<void> Runtime::validate_reference(const ObjectReference& reference) const
     if (!reference.is_null()) {
         if (reference.id().context_ != impl_->context) return failure(ErrorCode::invalid_object, "Reference identity belongs to another runtime.");
         const auto* live = impl_->lookup(reference.id());
-        if (live && live->type != description.type) {
+        if (live && !Impl::derives_from(*impl_->lookup(live->type), *type)) {
             return failure(ErrorCode::type_mismatch, "Live object does not match the reference target type.");
         }
     }
@@ -1344,6 +1427,15 @@ Result<ObjectRoot> Runtime::hold(ObjectId object) {
     const auto type = type_of(object);
     if (!type) return std::unexpected(type.error());
     return hold(ObjectReference{{*type, ValueForm::strong_reference}, object});
+}
+
+Result<ObjectRoot> Runtime::hold(ObjectId object, TypeId declared_type) {
+    const auto actual = type_of(object);
+    if (!actual) return std::unexpected(actual.error());
+    const auto compatible = is_a(*actual, declared_type);
+    if (!compatible) return std::unexpected(compatible.error());
+    if (!*compatible) return failure(ErrorCode::type_mismatch, "Object does not satisfy the declared root type.");
+    return hold(ObjectReference{{declared_type, ValueForm::strong_reference}, object});
 }
 
 Result<ObjectRoot> Runtime::hold(const ObjectReference& reference) {
@@ -1450,10 +1542,12 @@ Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::
         if (result.value.form != ValueForm::inline_value) {
             return failure(ErrorCode::invalid_member, "Field paths cannot traverse object references.");
         }
-        const auto* owner = impl_->lookup(result.value.type);
-        if (field.owner_ != result.value.type || field.index_ >= owner->fields.size()) {
+        const auto* actual = impl_->lookup(result.value.type);
+        const auto* owner = impl_->lookup(field.owner_);
+        if (!owner || !Impl::derives_from(*actual, *owner) || field.index_ >= owner->fields.size()) {
             return failure(ErrorCode::invalid_member, "Field does not belong to its containing type.");
         }
+        result.data = Impl::base_storage(*actual, *owner, result.data);
         const auto& access = owner->fields[field.index_];
         result.data = access.address ? access.address(result.data) : static_cast<std::byte*>(result.data) + access.offset;
         result.value = access.value;
@@ -1472,8 +1566,10 @@ Result<ObjectReference> Runtime::read_reference_at(Address address) const {
 Result<void> Runtime::write_reference_at(Address address, const ObjectReference& reference) {
     const auto valid = validate_reference(reference);
     if (!valid) return std::unexpected(valid.error());
-    if ((address.value.form != ValueForm::strong_reference && address.value.form != ValueForm::weak_reference) ||
-        address.value.type != reference.description().type ||
+    const auto* target = impl_->lookup(address.value.type);
+    if (!target || target->info.kind != TypeKind::object ||
+        (address.value.form != ValueForm::strong_reference && address.value.form != ValueForm::weak_reference) ||
+        !Impl::derives_from(*impl_->lookup(reference.description().type), *target) ||
         (address.value.form == ValueForm::strong_reference && reference.description().form != ValueForm::strong_reference)) {
         return failure(ErrorCode::type_mismatch, "Reference target or holding form does not match the field.");
     }
@@ -1548,11 +1644,13 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
     const auto index = resolve_object(object);
     if (!index) return std::unexpected(index.error());
     const auto& slot = impl_->slots[*index];
-    const auto* type = impl_->lookup(slot.type);
-    if (method.owner_ != slot.type || method.index_ >= type->methods.size()) {
+    const auto* actual = impl_->lookup(slot.type);
+    const auto* type = impl_->lookup(method.owner_);
+    if (!type || !Impl::derives_from(*actual, *type) || method.index_ >= type->methods.size()) {
         return failure(ErrorCode::invalid_member, "Method does not belong to the receiver type.");
     }
-    const auto& signature = type->info.methods[method.index_].signature;
+    const auto inherited = type->base ? type->base->info.methods.size() : 0;
+    const auto& signature = type->info.methods[inherited + method.index_].signature;
     if (arguments.size() != signature.parameters.size()) {
         return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
     }
@@ -1564,7 +1662,7 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
     if (signature.result && !output)
         return failure(ErrorCode::invalid_storage, "Non-void method requires result storage.");
     CallbackScope scope{impl_->callbacks};
-    CallContext context{*this, object, slot.storage, arguments};
+    CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), arguments};
     try {
         auto invoked = type->methods[method.index_](context);
         if (!invoked) return invoked;

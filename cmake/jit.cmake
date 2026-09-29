@@ -93,7 +93,8 @@ function(atelier_add_source)
     endif()
 
     add_executable(atelier_source_minimal
-        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp)
+        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
+        acceptance/source/inheritance.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     add_custom_target(source_acceptance

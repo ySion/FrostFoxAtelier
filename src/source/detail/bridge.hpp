@@ -114,6 +114,7 @@ void clear_slot(void*, std::uint32_t) noexcept;
 extern const BusinessServices services;
 bool same_environment(const Binding&, const BusinessEnvironment&);
 Result<void> check_source_arguments(const BusinessSignature&, std::span<const BusinessScalar>);
+Result<void> check_source_receiver(const Binding&, ObjectId);
 Result<BusinessScalar> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
     BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessScalar>,
     bool request_collection, InvocationObserver = {}, CollectionBudget = {1});

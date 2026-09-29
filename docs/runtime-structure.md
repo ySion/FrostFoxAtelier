@@ -1,6 +1,6 @@
 # Runtime、源码与 JIT 的结构和执行链
 
-状态：2026-09-28 源码执行模块迁移后的结构，包含 `async/yield`、共享签名绑定和单入口兼容方法体发布。本页维护模块分工、调用链及结构性技术债；具体行为以[运行时协议](runtime-model.md)和[语言契约](language-contract.md)为准，构建命令见 [README](../README.md)。
+状态：正式源码执行结构，包含对象单继承、基类接收者视图、`async/yield`、共享签名绑定和单入口兼容方法体发布。本页维护模块分工、调用链及结构性技术债；具体行为以[运行时协议](runtime-model.md)和[语言契约](language-contract.md)为准，构建命令见 [README](../README.md)。
 
 ## 结构判断
 
@@ -43,7 +43,7 @@ flowchart TD
     Publish --> Current[State.current: 发布 Version]
 ```
 
-1. `Contract` 从同一 Runtime 捕获类型/成员目录、原生服务地址和依赖描述。`request` 拥有源码与声明快照，保存请求号，不运行源码。
+1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号，不运行源码。
 2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端通过服务索引降低成员访问；同步与协程共用 SourceLowering，只有协程经过协程转换。
 3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布时通过 `Runtime::resolve_signature` 建立不可变声明。
 4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。完成可能失败的工作后才替换 current。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
@@ -64,6 +64,8 @@ Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
 ```
 
 内部 `execute_typed` 执行完整目录/布局检查后也进入 `execute_admitted`，供 raw ABI 等验收使用。已发布 Version 使用自己的已验证元数据。公共入口和内部观察入口共用同一执行与清理实现；正式消费者通过程序入口或版本租约使用已发布代码。
+
+同步和协程共用 `check_source_receiver`，验证实际对象 `is_a` 绑定类型，再经 `ExecutionFrame::hold(slot, id, binding.type)` 建立声明视图。基类字段和方法继续通过同一 Runtime 访问入口调整地址；桥接不复制对象，也不保留旧的精确类型接收者路径。
 
 ### 协程
 

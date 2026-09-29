@@ -6,6 +6,8 @@
 
 项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。Runtime、源码与 JIT 的模块归属、调用链、所有权和已知边界集中在[执行结构说明](docs/runtime-structure.md)。现行源码语法统一由 [LANGUAGE.md](LANGUAGE.md) 维护。
 
+Runtime 已支持以 `core.Object` 为根的正式单继承、基类引用视图、继承成员访问，以及原生和描述型派生对象的完整 GC/构析。现有同步与协程源码入口可接受符合绑定基类的派生对象；源码类型声明、虚方法覆盖和布局迁移尚未开放。具体合同见[对象单继承](docs/runtime-model.md#正式对象单继承)。
+
 ## 启动首个场景编辑器
 
 在仓库根目录的 PowerShell 中执行唯一产品入口：

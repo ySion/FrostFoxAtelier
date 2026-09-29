@@ -1,6 +1,6 @@
 # 类型与对象运行时
 
-状态：成组类型发布、定型引用、外部根、非移动分步 GC、标量及含引用记录的值操作、同步/协程源码执行和单入口兼容方法体发布已实现。UE 部分依据官方 5.8 API，本项目部分依据当前源码。能力范围及验收入口见 [README](../README.md)，语言层语义见 [语言契约](language-contract.md)，模块分工与所有权见[执行结构说明](runtime-structure.md)。
+状态：正式对象单继承、成组类型发布、定型引用、外部根、非移动分步 GC、标量及含引用记录的值操作、同步/协程源码执行和单入口兼容方法体发布已实现。UE 部分依据官方 5.8 API，本项目部分依据当前源码。能力范围及验收入口见 [README](../README.md)，语言层语义见 [语言契约](language-contract.md)，模块分工与所有权见[执行结构说明](runtime-structure.md)。
 
 ## 当前落点
 
@@ -51,7 +51,7 @@ flowchart TD
 | 职责 | 当前实现 | 当前边界 |
 | --- | --- | --- |
 | 发布类型定义 | 一组 `TypeDefinition` → `Runtime::register_types` → `Impl::Type` | 解析全部依赖、验证并完成布局后整体发布；首次成功创建对象后封闭注册 |
-| 查询类型信息 | `TypeInfo`、`TypeId` | 标量、记录、对象共用类型表；没有继承或定义版本切换 |
+| 查询类型信息 | `TypeInfo`、`TypeId`、`is_a` | 标量、记录、对象共用类型表；对象以 `core.Object` 为根单继承；没有定义版本切换 |
 | 标识对象实例 | `ObjectId`、`Impl::Slot`、实例存储 | 运行时上下文与代际校验；显式销毁或 GC 提交死亡后拒绝访问，GC 不搬迁存活对象 |
 | 描述和定位字段 | `FieldInfo::value`、`ValueDescription`、`FieldStorage` | 内联值与 `ReferenceSlot` 均可操作；隐藏字段不暴露公共字段标识，但参与值能力和引用遍历 |
 | 操作值的生命周期与内容 | `initialize_value`、`copy_construct_value`、`assign_value`、`destroy_value` | 调用方提供存储；标量和含引用记录共用四个入口，引用复制保持目标身份 |
@@ -69,6 +69,8 @@ flowchart TD
 `TypeDefinition` 是发布输入，`TypeInfo` 是发布后元数据的查询面；它们指向同一类型身份，不能因结构体不同就判定为两套类型世界。`Runtime::call` 仍只执行原生 `Invoker`；源码编译与 JIT 经独立执行作用域使用同一 Runtime，不把机器码地址塞进原生借用通路。仅 JIT 的决定见[编译与执行契约](language-contract.md#编译与执行)。
 
 ## 共享函数签名与结果
+
+对象继承的成员查找、布局与引用规则见下面的[正式对象单继承](#正式对象单继承)。
 
 `SignatureDefinition` 使用既有 `TypeReference` / `ValueDefinition` 表达参数、可选结果和可选接收者；`Runtime::resolve_signature` 返回拥有其描述数组的 `FunctionSignature`。它只解析已发布类型，不登记函数、不拥有 Runtime 或代码，在类型注册封闭后仍可查询。成组方法发布复用同一私有验证实现，并在事务内处理暂存类型；成员接收者默认取所属对象类型，显式提供者必须匹配，不让临时身份逃逸。空结果表示 `void`，不是伪造的类型 ID 或零标量。
 
@@ -90,7 +92,36 @@ flowchart TD
 
 已确认的字段契约见下文。原生注册和未来语言编译器都要提供足以履行生命周期规则的信息，不能仅依赖编辑器公开的字段列表。
 
-**按需求扩大执行能力。** 共享签名和原生/源码标量结果已贯通；一般记录与引用参数/结果仍需真实用例驱动复制、借用、构造、根交接与清理，不把当前原生回调或私有标量桥接冻结为永久语言 ABI。继承、默认对象、序列化与包加载按实际用例逐项加入，不设计解释字节码集。
+**按需求扩大执行能力。** 共享签名和原生/源码标量结果已贯通；一般记录与引用参数/结果仍需真实用例驱动复制、借用、构造、根交接与清理，不把当前原生回调或私有标量桥接冻结为永久语言 ABI。虚方法覆盖、默认对象、序列化与包加载按实际用例逐项加入，不设计解释字节码集。
+
+## 正式对象单继承
+
+`Runtime::object_type()` 返回本 Runtime 内建的 `core.Object`。它是可创建的空对象根，不要求 C++ 对象增加公共头部。对象定义未填写 `TypeDefinition::base` 时默认派生此根；显式基类用同一 `TypeReference` 解析，允许同批前向声明。`TypeInfo::base` 保存解析后的父类型。记录和标量不参与继承；首次成功 `create` 后仍封闭注册，全部对象销毁后也不解封。
+
+`NativeRegistration<Derived>::base<Base>()` 显式登记基类，并生成 `NativeLayout::base_address` 的 C++ 地址转换。未登记的 C++ 继承不会自动成为 Runtime 祖先。循环基类、非法父类型及祖先成员重名（含隐藏字段）在整批发布前拒绝；不实现成员遮蔽或覆盖。
+
+| 派生 / 基类表示 | 布局与生命周期 |
+| --- | --- |
+| 原生 / 原生 | 完整派生对象由 C++ 构析一次，访问祖先时使用编译器生成的地址转换，不假定基段偏移为零 |
+| 描述型 / 描述型 | 基段在前，自身字段随后按对齐追加；先基后派生构造，逆序清理 |
+| 描述型 / 原生 | 实际构造原生基对象，在其完整 `sizeof` 范围外追加描述字段；不复用基类尾部填充，也不宣称具有 C++ 派生类 RTTI 或虚表 |
+| 原生 / 描述型 | 除无负载的 `core.Object` 根外拒绝；不能把描述字段臆测为 C++ 基段 |
+
+公开 `TypeInfo::fields/methods` 按祖先、本层的顺序给出有效成员；继承成员保留原 `FieldId/MethodId` 和原方法声明。`find_field/find_method` 返回这些声明身份。`read/write/call` 验证实际对象能否作为声明类型，再在 Runtime 内调整存储地址。进入内联记录后仍按记录类型访问，字段路径不跨对象引用。成员不适用返回 `invalid_member`，陈旧对象返回 `invalid_object`，失败发生在写入或方法执行前。
+
+`MethodId` 固定选择已注册 `Invoker`；`CallContext::self` 是原对象身份，`storage` 是调整后的声明基段。原生实现内部的 C++ 调用不代表已经提供语言虚方法覆盖。GC 和引用枚举从对象槽中的实际类型追踪基类及派生的全部已登记边，包括隐藏字段；基类引用视图不会截断派生对象图。内部基段复用现有布局、构析和追踪遍历，不建立另一套对象存储。
+
+### 类型关系与引用声明视图
+
+- `is_a(actual, expected)` 对有效对象类型判断自身或祖先关系；无关类型返回 `false`，无效、跨 Runtime 或非对象类型返回 `invalid_type`。
+- 对象槽的 `TypeId` 始终表示实际类型；`ObjectReference::description().type` 表示声明视图。`cast_reference` 保留 `ObjectId` 和强弱形式，不登记根。上转可保留陈旧身份；非空下转要求活对象满足目标类型，陈旧返回 `invalid_object`，不相容返回 `type_mismatch`。相关类型的空引用可转换，无关类型不能借空值绕过检查。
+- `hold(id, declared_type)` 在存活和祖先校验后登记指定视图的根。原有 `hold(id)` 仍返回实际类型视图，`hold(reference)` 仍可保留合法空/陈旧强引用。`observe/try_acquire` 保持声明类型；弱引用提升无目标时仍返回空 optional。
+- 引用字段允许派生声明视图赋给祖先目标，读取时恢复字段声明视图；下转必须显式转换。强字段不接受弱引用，弱字段可以接受兼容的强或弱引用。错误不修改原字段；所有强边写入仍经过原有屏障。
+- `ObjectReference` 默认相等比较仍包含声明视图；跨视图判断同一对象使用 `id()`。`std::hash<TypeId/ObjectId>` 与各自完整身份相等规则一致，不暴露布局，也不能作为持久 ID。
+
+源码宿主可以将基类 `Program` 绑定到派生接收者。同步与协程共用接收者检查，`ExecutionFrame::hold(slot, id, declared_type)` 直接建立绑定类型视图的 `self` 根槽；不经过额外临时根。成员目录及发布依赖包含祖先，元数据快照包含父类型。源码只能看绑定视图可见的成员，`new T()` 仍构造绑定类型，旧 `Lease` 和挂起帧继续持有各自代码版本。语法边界以 [LANGUAGE.md](../LANGUAGE.md) 为准。
+
+此处不提供多继承、源码类声明、通用虚方法覆盖、布局热迁移、动态引用容器或世界成员资格。对应真实消费者为 [Runtime 继承](../acceptance/runtime/inheritance.cpp)和[源码继承](../acceptance/source/inheritance.cpp)，沿现有 Runtime/source/JIT 验收入口执行。
 
 ## 字段契约
 
@@ -252,7 +283,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 - 外部值改写、晚登记根、复制构造以及原生赋值部分失败都维持标记保护；未登记的值和本轮保守标记不会成为永久根。
 - 暂停游标下的显式销毁、值根撤销、排队存储释放、登记项复用及任意收集阶段的 Runtime 退出均完成清理；预算错误及回调重入被拒绝。
 
-对象引用检查点之后，已以真实机器生产推进贯通受控 JIT、同一 Runtime 与对象执行根，见下面的执行协议。执行中的局部持有由生成代码和宿主共同报告，不把每个标量临时值包装成根。代码更新与对象结构迁移仍分开设计；继承、序列化、完整编辑器、专用堆和高级并发 GC 不自动加入后续任务。参考依据见[源码清单](research/runtime-source-reference.md)；CDPT、LXR、Nofl 仍仅为[机制候选](research/gc-game-engine-options.md)，不是待移植清单。
+对象引用检查点之后，已以真实机器生产推进贯通受控 JIT、同一 Runtime 与对象执行根，见下面的执行协议。执行中的局部持有由生成代码和宿主共同报告，不把每个标量临时值包装成根。代码更新与对象结构迁移仍分开设计；虚方法覆盖、序列化、完整编辑器、专用堆和高级并发 GC 不自动加入后续任务。参考依据见[源码清单](research/runtime-source-reference.md)；CDPT、LXR、Nofl 仍仅为[机制候选](research/gc-game-engine-options.md)，不是待移植清单。
 
 ## JIT-only 接入准备
 

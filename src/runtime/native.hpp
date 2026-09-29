@@ -67,6 +67,15 @@ public:
         }
     }
 
+    template<class Base> requires std::derived_from<T, Base>
+    NativeRegistration& base() {
+        definition_.base = TypeReference::native<Base>();
+        definition_.native.base_address = [](void* storage) noexcept -> void* {
+            return static_cast<Base*>(static_cast<T*>(storage));
+        };
+        return *this;
+    }
+
     template<auto Pointer>
     NativeRegistration& field(std::string name) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;

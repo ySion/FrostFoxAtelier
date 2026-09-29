@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -36,6 +37,7 @@ public:
     TypeId() = default;
     bool operator==(const TypeId&) const = default;
 private:
+    friend struct std::hash<TypeId>;
     friend class Runtime;
     TypeId(std::uint64_t context, std::uint32_t index) : context_(context), index_(index) {}
     std::uint64_t context_{};
@@ -47,6 +49,7 @@ public:
     ObjectId() = default;
     bool operator==(const ObjectId&) const = default;
 private:
+    friend struct std::hash<ObjectId>;
     friend class Runtime;
     ObjectId(std::uint64_t context, std::uint32_t index, std::uint64_t generation)
         : context_(context), index_(index), generation_(generation) {}
@@ -241,6 +244,8 @@ struct NativeLayout {
     // a destructible value and its basic invariants, but need not roll back.
     void (*copy_construct)(void*, const void*){};
     void (*copy_assign)(void*, const void*){};
+    // Complete native representation to its explicitly declared native base.
+    void* (*base_address)(void*) noexcept{};
 };
 
 struct FieldDefinition {
@@ -267,6 +272,8 @@ struct TypeDefinition {
     std::vector<FieldDefinition> fields;
     std::vector<MethodDefinition> methods;
     NativeLayout native;
+    // Objects default to core.Object. Records cannot declare a base.
+    std::optional<TypeReference> base{};
 };
 
 struct FieldInfo {
@@ -293,6 +300,8 @@ struct TypeInfo {
     bool copy_assignable{};
     // Includes declared hidden fields and references inside inline records.
     bool contains_references{};
+    // Public member lists include ancestors, preserving declaration IDs/signatures.
+    std::optional<TypeId> base{};
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };
@@ -327,6 +336,11 @@ public:
     // Resolve the entire batch, including forward references, before publishing anything.
     // Results follow input order. Empty batches are invalid. No provisional IDs escape.
     [[nodiscard]] Result<std::vector<TypeId>> register_types(std::vector<TypeDefinition> definitions);
+    [[nodiscard]] TypeId object_type() const noexcept;
+    [[nodiscard]] Result<bool> is_a(TypeId actual, TypeId expected) const;
+    // Preserves identity and strength. Upcasts preserve stale identities; a
+    // non-null downcast requires a live compatible object. Does not create a root.
+    [[nodiscard]] Result<ObjectReference> cast_reference(const ObjectReference&, TypeId target) const;
     // Resolves published types without changing registration or code publication state.
     // This slice accepts inline scalar parameters/results and an optional object receiver.
     // Invalid/unsupported definitions fail with invalid_definition. The returned value
@@ -360,6 +374,7 @@ public:
     // explicit destruction or Runtime shutdown, and releasing one never destroys an object.
     [[nodiscard]] Result<ObjectRoot> create(TypeId type);
     [[nodiscard]] Result<ObjectRoot> hold(ObjectId object);
+    [[nodiscard]] Result<ObjectRoot> hold(ObjectId object, TypeId declared_type);
     [[nodiscard]] Result<ObjectRoot> hold(const ObjectReference& reference);
     [[nodiscard]] Result<ObjectReference> observe(const ObjectReference& reference) const;
     [[nodiscard]] Result<ObjectReference> null_reference(TypeId type, ValueForm form = ValueForm::strong_reference) const;
@@ -439,3 +454,17 @@ private:
 };
 
 }
+
+template<> struct std::hash<atelier::TypeId> {
+    std::size_t operator()(atelier::TypeId id) const noexcept {
+        const auto seed = std::hash<std::uint64_t>{}(id.context_);
+        return seed ^ (std::hash<std::uint32_t>{}(id.index_) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
+    }
+};
+template<> struct std::hash<atelier::ObjectId> {
+    std::size_t operator()(atelier::ObjectId id) const noexcept {
+        auto seed = std::hash<std::uint64_t>{}(id.context_);
+        seed ^= std::hash<std::uint32_t>{}(id.index_) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+        return seed ^ (std::hash<std::uint64_t>{}(id.generation_) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
+    }
+};
