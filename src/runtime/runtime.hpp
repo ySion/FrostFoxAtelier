@@ -1,15 +1,18 @@
 #pragma once
 
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <variant>
 #include <utility>
 #include <vector>
@@ -81,7 +84,7 @@ private:
 };
 
 enum class TypeKind { scalar, record, object };
-enum class ValueForm { inline_value, strong_reference, weak_reference };
+enum class ValueForm { inline_value, strong_reference, weak_reference, strong_sequence };
 
 struct ValueDescription {
     TypeId type;
@@ -131,6 +134,14 @@ inline const char representation_token{};
 template<class T>
 constexpr const void* representation() noexcept { return &representation_token<T>; }
 struct RootState;
+template<class T> inline constexpr bool borrowed_result = std::is_pointer_v<T> || std::is_reference_v<T>;
+template<class T, std::size_t N> inline constexpr bool borrowed_result<std::span<T, N>> = true;
+template<class C, class Traits> inline constexpr bool borrowed_result<std::basic_string_view<C, Traits>> = true;
+template<class T> inline constexpr bool borrowed_result<std::reference_wrapper<T>> = true;
+template<class T> struct NativeCallbackResult { static constexpr bool supported = false; };
+template<class T> struct NativeCallbackResult<Result<T>> {
+    static constexpr bool supported = !borrowed_result<T>;
+};
 }
 
 // A typed reference value, not an external root. Copies preserve stale identities.
@@ -158,6 +169,45 @@ private:
     friend class Runtime;
     ObjectId object_;
 };
+
+// Inline storage for an object field, never an external root. All mutation and
+// access use Runtime's registered field metadata. Records cannot contain it.
+class ReferenceSequence final {
+public:
+    ReferenceSequence() = default;
+    ~ReferenceSequence() = default;
+    ReferenceSequence(const ReferenceSequence&) = delete;
+    ReferenceSequence& operator=(const ReferenceSequence&) = delete;
+    ReferenceSequence(ReferenceSequence&&) = delete;
+    ReferenceSequence& operator=(ReferenceSequence&&) = delete;
+private:
+    friend class Runtime;
+    std::vector<ObjectId> objects_;
+};
+
+// Owns the lookup path, not the object. Every access revalidates its identity.
+// Native-slot locators require an active with_native borrow for each access.
+class ReferenceField final {
+public:
+    ReferenceField() = default;
+private:
+    friend class Runtime;
+    ObjectId object_;
+    std::vector<FieldId> path_;
+    bool native_only_{};
+};
+
+struct SequenceSplice {
+    ReferenceField field;
+    std::size_t first{};
+    std::size_t erase_count{};
+    std::span<const ObjectReference> inserted;
+};
+struct ReferenceWrite {
+    ReferenceField field;
+    ObjectReference value;
+};
+using ReferenceChange = std::variant<SequenceSplice, ReferenceWrite>;
 
 class ObjectRoot {
 public:
@@ -351,6 +401,40 @@ public:
     [[nodiscard]] Result<FieldId> find_field(TypeId type, std::string_view name) const;
     [[nodiscard]] Result<MethodId> find_method(TypeId type, std::string_view name) const;
 
+    // Trusted synchronous native storage access. Callback returns Result<R>;
+    // R must own its data. Capturing/returning hidden borrowed addresses is also
+    // forbidden by contract. The scope blocks object lifecycle, GC and JIT entry.
+    template<class T, class F>
+        requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
+    [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, F&& callback) {
+        auto borrowed = borrow_native(object, detail::representation<std::remove_cv_t<T>>());
+        if (!borrowed) return std::unexpected(borrowed.error());
+        try {
+            return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
+        } catch (const std::exception& error) {
+            return std::unexpected(Error{ErrorCode::invocation_failed, error.what()});
+        } catch (...) {
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Native borrow callback raised an unknown exception."});
+        }
+    }
+
+    [[nodiscard]] Result<ReferenceField> reference_field(ObjectId, std::span<const FieldId>) const;
+    [[nodiscard]] Result<ReferenceField> reference_field(ObjectId object, FieldId field) const {
+        return reference_field(object, {&field, 1});
+    }
+    // Match the protected storage to its registered metadata, including hidden
+    // fields and native base segments. Cannot relabel a slot's strong/weak form.
+    [[nodiscard]] Result<ReferenceField> reference_field(ObjectId, const ReferenceSlot&) const;
+    [[nodiscard]] Result<ReferenceField> reference_field(ObjectId, const ReferenceSequence&) const;
+    [[nodiscard]] Result<ObjectReference> read_reference(const ReferenceField&) const;
+    [[nodiscard]] Result<std::size_t> sequence_size(const ReferenceField&) const;
+    [[nodiscard]] Result<ObjectReference> sequence_read(const ReferenceField&, std::size_t index) const;
+    [[nodiscard]] Result<void> visit_sequence(const ReferenceField&, ReferenceVisitor) const;
+    // One splice per sequence and one write per slot. All validation, input
+    // copying and capacity preparation precede any logical change. Commit has
+    // no allocations or callbacks; preparation may propagate allocation errors.
+    [[nodiscard]] Result<void> apply_reference_changes(std::span<const ReferenceChange>);
+
     template<class T>
     [[nodiscard]] Result<TypeId> native_type() const {
         return find_representation(detail::representation<T>());
@@ -443,7 +527,18 @@ private:
     void leave_execution() noexcept;
     struct Impl;
     struct Address { void* data; ValueDescription value; };
+    struct NativeBorrow {
+        Runtime* runtime;
+        void* storage;
+        NativeBorrow(Runtime&, void*) noexcept;
+        NativeBorrow(NativeBorrow&&) noexcept;
+        ~NativeBorrow();
+        NativeBorrow(const NativeBorrow&) = delete;
+    };
     std::unique_ptr<Impl> impl_;
+    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation);
+    [[nodiscard]] Result<ReferenceField> native_reference_field(ObjectId, const void*, bool sequence) const;
+    [[nodiscard]] Result<Address> resolve_reference_field(const ReferenceField&) const;
     [[nodiscard]] Result<TypeId> find_representation(const void* representation) const;
     [[nodiscard]] Result<std::uint32_t> resolve_object(ObjectId object) const;
     [[nodiscard]] Result<Address> resolve_field(ObjectId object, std::span<const FieldId> path) const;
@@ -451,6 +546,8 @@ private:
     [[nodiscard]] Result<void> validate_reference(const ObjectReference& reference) const;
     [[nodiscard]] Result<ObjectReference> read_reference_at(Address address) const;
     [[nodiscard]] Result<void> write_reference_at(Address address, const ObjectReference& reference);
+    [[nodiscard]] Result<void> validate_reference_assignment(ValueDescription, const ObjectReference&) const;
+    void commit_reference_write(Address, ObjectId) noexcept;
 };
 
 }

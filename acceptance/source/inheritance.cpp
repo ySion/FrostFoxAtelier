@@ -7,6 +7,7 @@ using namespace atelier;
 using namespace atelier::acceptance::inheritance;
 
 namespace {
+struct SequenceHost { ReferenceSequence items; float value{}; };
 void publish(source::Program& program, std::string_view name, std::string_view body) {
     auto candidate = take(source::Program::prepare(take(program.request(name, body))));
     take(program.try_publish(candidate));
@@ -20,6 +21,9 @@ float scalar(std::optional<Scalar> result) {
 void verify_source_inheritance() {
     Runtime runtime;
     const auto types = register_types(runtime);
+    const auto host_type = take(NativeRegistration<SequenceHost>{runtime, "inheritance.SequenceHost", TypeKind::object}
+        .field<&SequenceHost::items>("items", {types.base, ValueForm::strong_sequence})
+        .field<&SequenceHost::value>("value").publish());
     const auto value = take(runtime.find_field(types.base, "value"));
     source::Program base(runtime, types.base);
     publish(base, "inheritance-sync.source", R"(
@@ -62,6 +66,11 @@ void verify_source_inheritance() {
                 return acquired.bump(amount);
             })");
         auto entry = take(asynchronous.bind<float, float>(FunctionExecution::coroutine));
+        require(take(runtime.with_native<Base>(object.id(), [&](Base& borrowed) -> Result<float> {
+            reject(bound.invoke(object.id(), args), ErrorCode::busy);
+            reject(entry.start(object.id(), args), ErrorCode::busy);
+            return borrowed.value;
+        })) == 13, "Protected native base access admitted source execution or read the wrong object.");
         reject(entry.start(unrelated.id(), args), ErrorCode::type_mismatch);
         const auto id = object.id();
         auto task = take(entry.start(id, args));
@@ -99,7 +108,19 @@ void verify_source_inheritance() {
     source::Program static_view(runtime, types.base);
     auto rejected = source::Program::prepare(take(static_view.request("inheritance-hidden.source", "float read() { return self.extra; }")));
     require(!rejected, "Base source directory exposed a derived-only field.");
+    auto host = take(runtime.create(host_type));
+    const auto items = take(runtime.reference_field(host.id(), take(runtime.find_field(host_type, "items"))));
+    const std::array references{derived.reference()};
+    const std::array<ReferenceChange, 1> changes{SequenceSplice{items, 0, 0, references}};
+    take(runtime.apply_reference_changes(changes));
+    source::Program host_program(runtime, host_type);
+    publish(host_program, "sequence-host.source", "float step() { self.value = self.value + 1.0; return self.value; }");
+    require(scalar(take(host_program.entry().invoke(host.id(), {}))) == 1,
+        "Registered sequence field disrupted the existing scalar source directory.");
     derived.reset(); unrelated.reset(); collect(runtime);
+    require(take(runtime.sequence_size(items)) == 1 && runtime.type_of(take(runtime.sequence_read(items, 0)).id()),
+        "Source host lost its sequence graph across collection.");
+    host.reset(); collect(runtime);
     require(runtime.live_objects() == 0 && runtime.root_count() == 0, "Source inheritance left objects or roots.");
     std::puts("[pass] Source inheritance: shared sync/async receiver views, weak promotion, inherited methods, old code and static new");
 }

@@ -1,6 +1,6 @@
 # 类型与对象运行时
 
-状态：正式对象单继承、成组类型发布、定型引用、外部根、非移动分步 GC、标量及含引用记录的值操作、同步/协程源码执行和单入口兼容方法体发布已实现。UE 部分依据官方 5.8 API，本项目部分依据当前源码。能力范围及验收入口见 [README](../README.md)，语言层语义见 [语言契约](language-contract.md)，模块分工与所有权见[执行结构说明](runtime-structure.md)。
+状态：正式对象单继承、成组类型发布、定型引用及强引用序列、受保护原生借用、成组引用修改、外部根、非移动分步 GC、标量及含引用记录的值操作、同步/协程源码执行和单入口兼容方法体发布已实现。UE 部分依据官方 5.8 API，本项目部分依据当前源码。能力范围及验收入口见 [README](../README.md)，语言层语义见 [语言契约](language-contract.md)，模块分工与所有权见[执行结构说明](runtime-structure.md)。
 
 ## 当前落点
 
@@ -53,7 +53,7 @@ flowchart TD
 | 发布类型定义 | 一组 `TypeDefinition` → `Runtime::register_types` → `Impl::Type` | 解析全部依赖、验证并完成布局后整体发布；首次成功创建对象后封闭注册 |
 | 查询类型信息 | `TypeInfo`、`TypeId`、`is_a` | 标量、记录、对象共用类型表；对象以 `core.Object` 为根单继承；没有定义版本切换 |
 | 标识对象实例 | `ObjectId`、`Impl::Slot`、实例存储 | 运行时上下文与代际校验；显式销毁或 GC 提交死亡后拒绝访问，GC 不搬迁存活对象 |
-| 描述和定位字段 | `FieldInfo::value`、`ValueDescription`、`FieldStorage` | 内联值与 `ReferenceSlot` 均可操作；隐藏字段不暴露公共字段标识，但参与值能力和引用遍历 |
+| 描述和定位字段 | `FieldInfo::value`、`ValueDescription`、`FieldStorage`、`ReferenceField` | 内联值、`ReferenceSlot` 与对象字段中的 `ReferenceSequence` 均可操作；隐藏字段通过受保护原生访问定位，仍参与引用遍历 |
 | 操作值的生命周期与内容 | `initialize_value`、`copy_construct_value`、`assign_value`、`destroy_value` | 调用方提供存储；标量和含引用记录共用四个入口，引用复制保持目标身份 |
 | 描述和执行函数 | `SignatureDefinition`、`FunctionSignature`、`MethodInfo`、`Invoker`、`CallContext` | 原生与源码共用接收者/参数/结果描述及解析；当前为标量值参数和 `void/float/uint` 结果，执行实现仍分开 |
 | 执行准入与根槽 | `ExecutionScope`、`ExecutionFrame` | 活动调用计数、借用/遍历禁入与稳定根槽；挂起保留存储，但不保持活动执行作用域 |
@@ -121,18 +121,44 @@ flowchart TD
 
 源码宿主可以将基类 `Program` 绑定到派生接收者。同步与协程共用接收者检查，`ExecutionFrame::hold(slot, id, declared_type)` 直接建立绑定类型视图的 `self` 根槽；不经过额外临时根。成员目录及发布依赖包含祖先，元数据快照包含父类型。源码只能看绑定视图可见的成员，`new T()` 仍构造绑定类型，旧 `Lease` 和挂起帧继续持有各自代码版本。语法边界以 [LANGUAGE.md](../LANGUAGE.md) 为准。
 
-此处不提供多继承、源码类声明、通用虚方法覆盖、布局热迁移、动态引用容器或世界成员资格。对应真实消费者为 [Runtime 继承](../acceptance/runtime/inheritance.cpp)和[源码继承](../acceptance/source/inheritance.cpp)，沿现有 Runtime/source/JIT 验收入口执行。
+此处不提供多继承、源码类声明、通用虚方法覆盖、布局热迁移或世界成员资格。对应真实消费者为 [Runtime 继承](../acceptance/runtime/inheritance.cpp)和[源码继承](../acceptance/source/inheritance.cpp)，沿现有 Runtime/source/JIT 验收入口执行。
+
+## 引用序列与受保护原生访问
+
+### 存储与字段定位
+
+对象字段可用 `ValueForm::strong_sequence` 声明强引用序列，`ValueDescription::type` 是元素的声明类型，允许兼容的派生对象。原生成员使用不可复制、不可移动的 `ReferenceSequence`，通过既有 `field/hidden_field` 登记；描述型对象由 Runtime 构析同一存储。序列紧凑保存 `ObjectId`，不为每个元素登记外部根。记录字段、函数参数/结果及独立 `ObjectReference` 不接受此形式。
+
+`reference_field(object, path)` 建立公开字段定位器；`reference_field(object, native_slot_or_sequence)` 在 `with_native` 期间按实际存储匹配已登记元数据，可定位隐藏字段、内联记录及原生基段。引用强弱和元素类型来自字段定义，调用方不能重贴标签。`ReferenceField` 拥有字段路径，不保活对象或保存载荷地址；每次访问重新验证对象身份。原生存储定位器仅可在受保护借用期间使用，离开借用后返回 `busy`。
+
+`read_reference`、`sequence_size`、`sequence_read` 和 `visit_sequence` 使用同一定位器。元素读取恢复字段声明视图；空值及显式销毁后的失效身份沿用普通强引用规则。序列遍历按顺序报告每个元素（含空引用），期间禁止修改、原生借用和生命周期重入。
+
+### 同步原生借用
+
+`with_native<T>(object, callback)` 验证实际对象与已注册原生类型的继承关系，在 Runtime 内调整基段地址，再传入 `T&`。描述型对象的原生基段也可访问。回调返回 `Result<R>`；`R` 必须拥有返回数据，直接返回指针、引用、`span`、`string_view` 或 `reference_wrapper` 会被模板约束拒绝。
+
+借用期间可嵌套借用及执行合法字段修改，创建、销毁、GC、同步 JIT 进入和协程启动被拒绝。回调异常转为 `invocation_failed`，退出时释放借用保护。受信任 C++ 调用方仍须保证 Runtime 覆盖整个调用，并且不通过捕获或包装类型带出借用地址；模板约束不构成原生代码沙箱。`const T` 限制当前视图的直接写入，不承诺整个对象图不可变。
+
+### 成组修改与 GC
+
+`apply_reference_changes` 是同步成组入口，接受 `SequenceSplice`（位置、删除数量、插入引用）和 `ReferenceWrite`。同一目标序列最多一个 splice，同一引用槽最多一次写入；可在一批中修改多个对象。它先验证全部身份、字段、类型、强弱、范围及目标重复，再复制插入引用、准备全部容量，最后提交逻辑修改。非法末项也不会留下前面已生效的写入。准备阶段的分配失败可向调用方传播，逻辑内容保持不变，已准备的容量可能保留；提交阶段不分配、不调用用户代码，也没有普通失败出口。它不回滚回调中的其他业务副作用。
+
+单槽写入与成组写入共用类型/强弱校验和强边写屏障。成组操作不开放长期 prepared 句柄；原生借用保护生命周期，成组准备期间另拒绝修改重入。
+
+GC 暂停时仅保存稳定序列头和元素下标，不保存可扩容数组中的元素指针；每个元素占一个追踪工作单位。序列修改会取消所属对象的活动追踪游标，并把已标记对象显式重新加入已有灰队列，确保删除移位后未扫描的元素和后续字段仍会被访问；新增强边也执行屏障。重新排队不增加对象标记计数或分配节点。时间预算仍是既有软上限，单个原生析构和序列存储释放不因此成为可抢占操作。
+
+上述接口只提供 Runtime 引用图与借用机制。成员资格、owner 的强弱、世界关闭和离开世界后的写入规则由后续消费者确定；源码尚无容器语法。真实 [Runtime 消费者](../acceptance/runtime/reference_sequence.cpp)覆盖原生/描述型对象、隐藏字段、原子失败、强引用环及暂停 GC 中的移位、扩容、清空和销毁；[源码消费者](../acceptance/source/inheritance.cpp)覆盖借用期间同步/协程入口拒绝和持有序列的对象与现有源码绑定共存。
 
 ## 字段契约
 
-状态：`ValueDefinition`、`ValueDescription` 与 `ValueForm`、成组类型发布、引用实例和外部根均已实现。引用存储与根登记已接通，GC 回收及跨步进的修改保护留给下一检查点。
+状态：`ValueDefinition`、`ValueDescription` 与 `ValueForm`、成组类型发布、引用实例、强引用序列和外部根均已实现。引用存储、根登记、分步 GC 及跨步进的修改保护已接通。
 
 ### 类型与值的使用方式
 
 同一个对象类型可以被持有引用或观察引用指向，字段分别描述目标类型和保存方式。字段与函数参数/结果元数据复用以下值描述；当前函数执行只支持内联标量参数和可选标量结果，值形式不等同于传参借用方式：
 
 ```cpp
-enum class ValueForm { inline_value, strong_reference, weak_reference };
+enum class ValueForm { inline_value, strong_reference, weak_reference, strong_sequence };
 
 struct ValueDescription {
     TypeId type;
@@ -140,7 +166,7 @@ struct ValueDescription {
 };
 ```
 
-第一版的合法组合：标量和记录使用 `inline_value`，对象类型使用两种引用形式。这里的引用仅指对象引用，值的借用和传参方式另定。引用字段存储引用值，其大小不等于目标对象实例的大小；布局由值描述及对应的存储规则决定。
+合法组合：标量和记录使用 `inline_value`，对象目标使用两种单引用形式；对象字段还可使用 `strong_sequence` 保存定型强引用序列。这里的引用仅指对象引用，值的借用和传参方式另定。引用字段存储引用值或序列，其大小不等于目标对象实例的大小；布局由值描述及对应的存储规则决定。
 
 字段负责名称、所属类型、值描述及定位信息。值描述存于共享元数据，不要求未来每个字段值附带运行时类型标签。描述型字段保留计算偏移，原生字段保留成员地址适配。参数复用值描述，但参数布局和调用 ABI 不因此变成字段布局。
 

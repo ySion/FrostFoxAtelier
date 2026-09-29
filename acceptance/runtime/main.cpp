@@ -2085,6 +2085,7 @@ void verify_native_member_address() {
 }
 
 void verify_runtime_inheritance();
+void verify_reference_sequences();
 
 int main() {
     try {
@@ -2108,6 +2109,7 @@ int main() {
         verify_scalar_plans();
         verify_native_member_address();
         verify_runtime_inheritance();
+        verify_reference_sequences();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

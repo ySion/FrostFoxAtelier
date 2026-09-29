@@ -263,6 +263,8 @@ struct Runtime::Impl {
     std::uint32_t free_head{no_slot};
     std::size_t live{};
     std::size_t callbacks{};
+    std::size_t native_borrows{};
+    bool changing_references{};
     std::size_t active_executions{};
     bool sealed{};
     TypeId f32;
@@ -279,6 +281,8 @@ struct Runtime::Impl {
         const Type* type;
         const void* storage;
         std::size_t next_field{};
+        const ReferenceSequence* sequence{};
+        std::size_t next_element{};
     };
     std::vector<TraceFrame> trace_stack;
     std::size_t maximum_trace_depth{};
@@ -341,18 +345,31 @@ struct Runtime::Impl {
         slot.gray_queued = false;
     }
 
+    void queue_gray(std::uint32_t index) noexcept {
+        auto& slot = slots[index];
+        if (slot.gray_queued) return;
+        slot.gray_previous = gray_tail;
+        slot.gray_next = no_slot;
+        slot.gray_queued = true;
+        if (gray_tail != no_slot) slots[gray_tail].gray_next = index;
+        else gray_head = index;
+        gray_tail = index;
+    }
+
     void shade(ObjectId object) noexcept {
         if (!marking() || !lookup(object)) return;
         auto& slot = slots[object.index_];
         if (slot.mark_epoch == epoch) return;
         slot.mark_epoch = epoch;
         ++marked;
-        slot.gray_previous = gray_tail;
-        slot.gray_next = no_slot;
-        slot.gray_queued = true;
-        if (gray_tail != no_slot) slots[gray_tail].gray_next = object.index_;
-        else gray_head = object.index_;
-        gray_tail = object.index_;
+        queue_gray(object.index_);
+    }
+
+    void sequence_changed(ObjectId owner) noexcept {
+        if (!marking()) return;
+        // shade alone cannot reschedule an already marked, partially scanned object.
+        if (trace_owner == TraceOwner::object && trace_owner_index == owner.index_) cancel_cursor();
+        if (slots[owner.index_].mark_epoch == epoch) queue_gray(owner.index_);
     }
 
     void remove_root_queue(std::uint32_t index) noexcept {
@@ -405,6 +422,8 @@ struct Runtime::Impl {
             auto* address = field.address ? field.address(frame.storage) : frame.storage + field.offset;
             if (field.value.form == ValueForm::strong_reference) {
                 shade(static_cast<const ReferenceSlot*>(address)->object_);
+            } else if (field.value.form == ValueForm::strong_sequence) {
+                for (const auto object : static_cast<const ReferenceSequence*>(address)->objects_) shade(object);
             } else {
                 walk_stack.push_back({field.type, static_cast<std::byte*>(address)});
             }
@@ -421,6 +440,15 @@ struct Runtime::Impl {
 
     void trace_one() noexcept {
         auto& frame = trace_stack.back();
+        if (frame.sequence) {
+            if (frame.next_element != frame.sequence->objects_.size()) {
+                shade(frame.sequence->objects_[frame.next_element++]);
+            } else {
+                frame.sequence = nullptr;
+                frame.next_element = 0;
+            }
+            return;
+        }
         if (frame.next_field == frame.type->trace_fields.size()) {
             trace_stack.pop_back();
             if (trace_stack.empty()) cancel_cursor();
@@ -433,6 +461,9 @@ struct Runtime::Impl {
         if (trace_owner == TraceOwner::none) return;
         if (field.value.form == ValueForm::strong_reference) {
             shade(static_cast<const ReferenceSlot*>(address)->object_);
+        } else if (field.value.form == ValueForm::strong_sequence) {
+            frame.sequence = static_cast<const ReferenceSequence*>(address);
+            frame.next_element = 0;
         } else {
             trace_stack.push_back({field.type, address});
         }
@@ -658,6 +689,8 @@ struct Runtime::Impl {
                         walk_stack.push_back({field.type, destination, origin});
                         continue;
                     }
+                } else if (field.value.form == ValueForm::strong_sequence) {
+                    std::construct_at(reinterpret_cast<ReferenceSequence*>(destination));
                 } else if (origin) {
                     std::construct_at(reinterpret_cast<ReferenceSlot*>(destination),
                         *reinterpret_cast<const ReferenceSlot*>(origin));
@@ -678,6 +711,8 @@ struct Runtime::Impl {
                 const auto& field = frame.type->fields[frame.next_field - 1];
                 if (field.value.form == ValueForm::inline_value) {
                     destroy(*field.type, frame.storage + field.offset);
+                } else if (field.value.form == ValueForm::strong_sequence) {
+                    std::destroy_at(reinterpret_cast<ReferenceSequence*>(frame.storage + field.offset));
                 }
             }
             throw;
@@ -748,7 +783,8 @@ struct Runtime::Impl {
             --walk_stack[index].next_field;
             const auto& field = frame.type->fields[frame.type->destroy_fields[frame.next_field - 1]];
             auto* address = frame.storage + field.offset;
-            if (field.type->native.destroy) field.type->native.destroy(address);
+            if (field.value.form == ValueForm::strong_sequence) std::destroy_at(reinterpret_cast<ReferenceSequence*>(address));
+            else if (field.type->native.destroy) field.type->native.destroy(address);
             else walk_stack.push_back({field.type, address, nullptr, field.type->destroy_fields.size()});
         }
     }
@@ -774,6 +810,14 @@ struct Runtime::Impl {
                     walk_stack.push_back({field.type, static_cast<std::byte*>(address)});
                 }
             } else {
+                if (field.value.form == ValueForm::strong_sequence) {
+                    for (const auto object : static_cast<const ReferenceSequence*>(address)->objects_) {
+                        if (object == ObjectId{}) continue;
+                        const auto result = visitor.visit(visitor.context, ObjectReference{{field.value.type, ValueForm::strong_reference}, object});
+                        if (!result) return result;
+                    }
+                    continue;
+                }
                 const auto object = static_cast<const ReferenceSlot*>(address)->object_;
                 if (object == ObjectId{}) continue;
                 const auto result = visitor.visit(visitor.context, ObjectReference{field.value, object});
@@ -1030,16 +1074,19 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
                 if (target->info.kind == TypeKind::object) {
                     return failure(ErrorCode::invalid_definition, "Objects cannot be stored as inline values.");
                 }
-            } else if (form == ValueForm::strong_reference || form == ValueForm::weak_reference) {
+            } else if (form == ValueForm::strong_reference || form == ValueForm::weak_reference || form == ValueForm::strong_sequence) {
                 if (target->info.kind != TypeKind::object) {
                     return failure(ErrorCode::invalid_definition, "Object references require an object target type.");
                 }
+                if (form == ValueForm::strong_sequence && type.info.kind != TypeKind::object)
+                    return failure(ErrorCode::invalid_definition, "Reference sequences require an object field, not a record value.");
             } else {
                 return failure(ErrorCode::invalid_definition, "Unknown value form.");
             }
             if (is_native) {
                 const auto representation = form == ValueForm::inline_value
-                    ? target->native.representation : detail::representation<ReferenceSlot>();
+                    ? target->native.representation : form == ValueForm::strong_sequence
+                    ? detail::representation<ReferenceSequence>() : detail::representation<ReferenceSlot>();
                 if (!field.native_address || !field.native_representation || field.native_representation != representation) {
                     return failure(ErrorCode::invalid_definition, "Native member representation does not match its value description.");
                 }
@@ -1120,13 +1167,19 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
                         type.needs_destroy = true;
                     }
                 }
-                if (value.form == ValueForm::strong_reference || (!reference && !target->trace_fields.empty())) {
+                if (!is_native && value.form == ValueForm::strong_sequence) {
+                    type.destroy_fields.push_back(static_cast<std::uint32_t>(field_index));
+                    type.needs_destroy = true;
+                }
+                if (value.form == ValueForm::strong_reference || value.form == ValueForm::strong_sequence || (!reference && !target->trace_fields.empty())) {
                     type.trace_fields.push_back(static_cast<std::uint32_t>(field_index));
                     if (!reference) type.trace_depth = std::max(type.trace_depth, target->trace_depth + 1);
                 }
                 if (!is_native) {
-                    const auto alignment = reference ? alignof(ReferenceSlot) : target->info.alignment;
-                    const auto size = reference ? sizeof(ReferenceSlot) : target->info.size;
+                    const auto alignment = value.form == ValueForm::strong_sequence ? alignof(ReferenceSequence)
+                        : reference ? alignof(ReferenceSlot) : target->info.alignment;
+                    const auto size = value.form == ValueForm::strong_sequence ? sizeof(ReferenceSequence)
+                        : reference ? sizeof(ReferenceSlot) : target->info.size;
                     const auto offset = aligned_size(type.info.size, alignment);
                     if (!offset) return std::unexpected(offset.error());
                     if (size > std::numeric_limits<std::size_t>::max() - *offset) {
@@ -1247,8 +1300,212 @@ Result<MethodId> Runtime::find_method(TypeId type, std::string_view name) const 
     return failure(ErrorCode::invalid_member, "Unknown method: " + std::string{name});
 }
 
+Runtime::NativeBorrow::NativeBorrow(Runtime& owner, void* address) noexcept : runtime(&owner), storage(address) {
+    ++runtime->impl_->callbacks;
+    ++runtime->impl_->native_borrows;
+}
+Runtime::NativeBorrow::NativeBorrow(NativeBorrow&& other) noexcept
+    : runtime(std::exchange(other.runtime, nullptr)), storage(other.storage) {}
+Runtime::NativeBorrow::~NativeBorrow() {
+    if (runtime) { --runtime->impl_->native_borrows; --runtime->impl_->callbacks; }
+}
+
+Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation) {
+    if (!impl_->roots->alive || impl_->roots->traversals != 0)
+        return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
+    auto index = resolve_object(object);
+    if (!index) return std::unexpected(index.error());
+    auto target = find_representation(representation);
+    if (!target) return std::unexpected(target.error());
+    const auto* expected = impl_->lookup(*target);
+    const auto& slot = impl_->slots[*index];
+    const auto* actual = impl_->lookup(slot.type);
+    if (expected->info.kind != TypeKind::object || !expected->native.construct)
+        return failure(ErrorCode::invalid_type, "Native borrowing requires a registered native object representation.");
+    if (!Impl::derives_from(*actual, *expected))
+        return failure(ErrorCode::type_mismatch, "Object does not contain the requested native base.");
+    NativeBorrow borrow{*this, nullptr};
+    borrow.storage = Impl::base_storage(*actual, *expected, slot.storage);
+    return borrow;
+}
+
+Result<ReferenceField> Runtime::reference_field(ObjectId object, std::span<const FieldId> path) const {
+    auto address = resolve_field(object, path);
+    if (!address) return std::unexpected(address.error());
+    if (address->value.form == ValueForm::inline_value)
+        return failure(ErrorCode::type_mismatch, "Field is not an object reference or reference sequence.");
+    ReferenceField field;
+    field.object_ = object;
+    field.path_.assign(path.begin(), path.end());
+    return field;
+}
+
+Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const void* storage, bool sequence) const {
+    if (!impl_->native_borrows || impl_->roots->traversals)
+        return failure(ErrorCode::busy, "Native field lookup requires a protected native borrow.");
+    auto index = resolve_object(object);
+    if (!index) return std::unexpected(index.error());
+    CallbackScope scope{impl_->callbacks};
+    const auto& slot = impl_->slots[*index];
+    struct Cursor { const Impl::Type* type; void* storage; std::size_t next{}, depth{}; };
+    std::vector<Cursor> cursors{{impl_->lookup(slot.type), slot.storage}};
+    std::vector<FieldId> path;
+    while (!cursors.empty()) {
+        auto& cursor = cursors.back();
+        if (cursor.next == cursor.type->fields.size()) { cursors.pop_back(); continue; }
+        path.resize(cursor.depth);
+        const auto field_index = static_cast<std::uint32_t>(cursor.next++);
+        const auto& field = cursor.type->fields[field_index];
+        auto* address = field.address ? field.address(cursor.storage)
+            : static_cast<std::byte*>(cursor.storage) + field.offset;
+        // A base segment changes the declaration owner, not the public path.
+        if (field.value.form != ValueForm::inline_value || field.type->info.kind != TypeKind::object)
+            path.push_back(FieldId{cursor.type->info.id, field_index});
+        if (field.value.form == ValueForm::inline_value) {
+            if (field.type->info.contains_references) cursors.push_back({field.type, address, 0, path.size()});
+        } else if (address == storage && (field.value.form == ValueForm::strong_sequence) == sequence) {
+            ReferenceField result;
+            result.object_ = object;
+            result.path_ = std::move(path);
+            result.native_only_ = true;
+            return result;
+        }
+    }
+    return failure(ErrorCode::invalid_member, "Native slot is not a matching registered member of this object.");
+}
+
+Result<ReferenceField> Runtime::reference_field(ObjectId object, const ReferenceSlot& slot) const {
+    return native_reference_field(object, &slot, false);
+}
+Result<ReferenceField> Runtime::reference_field(ObjectId object, const ReferenceSequence& sequence) const {
+    return native_reference_field(object, &sequence, true);
+}
+Result<Runtime::Address> Runtime::resolve_reference_field(const ReferenceField& field) const {
+    if (field.native_only_ && !impl_->native_borrows)
+        return failure(ErrorCode::busy, "Native field access outlived its protected borrow.");
+    return resolve_field(field.object_, field.path_);
+}
+
+Result<ObjectReference> Runtime::read_reference(const ReferenceField& field) const {
+    auto address = resolve_reference_field(field);
+    if (!address) return std::unexpected(address.error());
+    return read_reference_at(*address);
+}
+
+Result<std::size_t> Runtime::sequence_size(const ReferenceField& field) const {
+    const auto address = resolve_reference_field(field);
+    if (!address) return std::unexpected(address.error());
+    if (address->value.form != ValueForm::strong_sequence)
+        return failure(ErrorCode::type_mismatch, "Field is not a reference sequence.");
+    return static_cast<const ReferenceSequence*>(address->data)->objects_.size();
+}
+Result<ObjectReference> Runtime::sequence_read(const ReferenceField& field, std::size_t index) const {
+    const auto address = resolve_reference_field(field);
+    if (!address) return std::unexpected(address.error());
+    if (address->value.form != ValueForm::strong_sequence)
+        return failure(ErrorCode::type_mismatch, "Field is not a reference sequence.");
+    const auto& objects = static_cast<const ReferenceSequence*>(address->data)->objects_;
+    if (index >= objects.size()) return failure(ErrorCode::argument_mismatch, "Sequence index is out of range.");
+    return ObjectReference{{address->value.type, ValueForm::strong_reference}, objects[index]};
+}
+Result<void> Runtime::visit_sequence(const ReferenceField& field, ReferenceVisitor visitor) const {
+    const auto address = resolve_reference_field(field);
+    if (!address) return std::unexpected(address.error());
+    if (address->value.form != ValueForm::strong_sequence)
+        return failure(ErrorCode::type_mismatch, "Field is not a reference sequence.");
+    return impl_->visit_guarded(visitor, [&]() -> Result<void> {
+        for (const auto object : static_cast<const ReferenceSequence*>(address->data)->objects_) {
+            const auto result = visitor.visit(visitor.context, ObjectReference{{address->value.type, ValueForm::strong_reference}, object});
+            if (!result) return result;
+        }
+        return {};
+    });
+}
+
+Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> changes) {
+    if (!impl_->roots->alive || impl_->roots->traversals || impl_->changing_references)
+        return failure(ErrorCode::busy, "Reference mutation cannot reenter traversal, another batch or shutdown.");
+    CallbackScope scope{impl_->callbacks};
+    struct MutationScope {
+        bool& active;
+        explicit MutationScope(bool& flag) : active(flag) { active = true; }
+        ~MutationScope() { active = false; }
+    } mutation{impl_->changing_references};
+    struct Prepared {
+        ObjectId owner;
+        Address address;
+        ObjectId reference;
+        std::size_t first{}, erased{}, final_size{};
+        std::vector<ObjectId> inserted;
+    };
+    std::vector<Prepared> prepared;
+    if (changes.size() > prepared.max_size()) return failure(ErrorCode::capacity_exceeded, "Reference batch is too large.");
+    prepared.reserve(changes.size());
+    for (const auto& change : changes) {
+        const auto& field = std::visit([](const auto& operation) -> const ReferenceField& { return operation.field; }, change);
+        auto address = resolve_reference_field(field);
+        if (!address) return std::unexpected(address.error());
+        for (const auto& previous : prepared) {
+            if (previous.address.data == address->data)
+                return failure(ErrorCode::argument_mismatch, "A batch cannot modify the same storage twice.");
+        }
+        Prepared plan{field.object_, *address, {}, 0, 0, 0, {}};
+        if (const auto* write = std::get_if<ReferenceWrite>(&change)) {
+            auto valid = validate_reference_assignment(address->value, write->value);
+            if (!valid) return valid;
+            plan.reference = write->value.id();
+        } else {
+            const auto& splice = std::get<SequenceSplice>(change);
+            if (address->value.form != ValueForm::strong_sequence)
+                return failure(ErrorCode::type_mismatch, "Splice requires a reference sequence.");
+            const auto& sequence = static_cast<ReferenceSequence*>(address->data)->objects_;
+            if (splice.first > sequence.size() || splice.erase_count > sequence.size() - splice.first)
+                return failure(ErrorCode::argument_mismatch, "Splice range is out of bounds.");
+            if (splice.inserted.size() > sequence.max_size() - (sequence.size() - splice.erase_count))
+                return failure(ErrorCode::capacity_exceeded, "Splice exceeds sequence capacity.");
+            plan.first = splice.first;
+            plan.erased = splice.erase_count;
+            plan.final_size = sequence.size() - splice.erase_count + splice.inserted.size();
+            plan.inserted.reserve(splice.inserted.size());
+            for (const auto& reference : splice.inserted) {
+                auto valid = validate_reference_assignment({address->value.type, ValueForm::strong_reference}, reference);
+                if (!valid) return valid;
+                plan.inserted.push_back(reference.id());
+            }
+        }
+        prepared.push_back(std::move(plan));
+    }
+    // All incoming values have been copied before any storage can move.
+    for (auto& plan : prepared) {
+        if (plan.address.value.form == ValueForm::strong_sequence)
+            static_cast<ReferenceSequence*>(plan.address.data)->objects_.reserve(plan.final_size);
+    }
+    // The intrusive queues and cursor cancellation allocate nothing. Identity
+    // storage moves are noexcept; no user callback or validation occurs here.
+    for (const auto& plan : prepared) {
+        if (plan.address.value.form != ValueForm::strong_sequence) {
+            commit_reference_write(plan.address, plan.reference);
+            continue;
+        }
+        auto& objects = static_cast<ReferenceSequence*>(plan.address.data)->objects_;
+        const auto old_size = objects.size();
+        if (plan.final_size > old_size) objects.resize(plan.final_size);
+        if (plan.inserted.size() > plan.erased) {
+            std::move_backward(objects.begin() + plan.first + plan.erased, objects.begin() + old_size, objects.end());
+        } else if (plan.inserted.size() < plan.erased) {
+            std::move(objects.begin() + plan.first + plan.erased, objects.begin() + old_size,
+                objects.begin() + plan.first + plan.inserted.size());
+        }
+        std::copy(plan.inserted.begin(), plan.inserted.end(), objects.begin() + plan.first);
+        if (plan.final_size < old_size) objects.resize(plan.final_size);
+        impl_->sequence_changed(plan.owner);
+        for (const auto object : plan.inserted) impl_->shade(object);
+    }
+    return {};
+}
+
 Result<void> Runtime::initialize_value(TypeId type_id, std::span<std::byte> destination) {
-    if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal.");
+    if (impl_->roots->traversals != 0 || impl_->changing_references) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal or batch preparation.");
     const auto type = impl_->value_type(type_id, destination);
     if (!type) return std::unexpected(type.error());
     if (impl_->roots->overlaps_storage(destination.data(), (*type)->info.size)) {
@@ -1259,7 +1516,7 @@ Result<void> Runtime::initialize_value(TypeId type_id, std::span<std::byte> dest
 
 Result<void> Runtime::copy_construct_value(TypeId type_id, std::span<std::byte> destination,
                                          std::span<const std::byte> source) {
-    if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal.");
+    if (impl_->roots->traversals != 0 || impl_->changing_references) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal or batch preparation.");
     const auto type = impl_->value_type(type_id, destination);
     if (!type) return std::unexpected(type.error());
     const auto valid = validate_storage((*type)->info, source);
@@ -1278,7 +1535,7 @@ Result<void> Runtime::copy_construct_value(TypeId type_id, std::span<std::byte> 
 
 Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destination,
                                  std::span<const std::byte> source) {
-    if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal.");
+    if (impl_->roots->traversals != 0 || impl_->changing_references) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal or batch preparation.");
     const auto type = impl_->value_type(type_id, destination);
     if (!type) return std::unexpected(type.error());
     const auto valid = validate_storage((*type)->info, source);
@@ -1306,7 +1563,7 @@ Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destinat
 }
 
 Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage) {
-    if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal.");
+    if (impl_->roots->traversals != 0 || impl_->changing_references) return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal or batch preparation.");
     const auto type = impl_->value_type(type_id, storage);
     if (!type) return std::unexpected(type.error());
     if (impl_->roots->overlaps_storage(storage.data(), (*type)->info.size)) {
@@ -1556,25 +1813,37 @@ Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::
 }
 
 Result<ObjectReference> Runtime::read_reference_at(Address address) const {
-    if (address.value.form == ValueForm::inline_value) return failure(ErrorCode::type_mismatch, "Read requires an object reference field.");
+    if (address.value.form != ValueForm::strong_reference && address.value.form != ValueForm::weak_reference)
+        return failure(ErrorCode::type_mismatch, "Read requires a single object reference field.");
     ObjectReference reference{address.value, static_cast<const ReferenceSlot*>(address.data)->object_};
     const auto valid = validate_reference(reference);
     if (!valid) return std::unexpected(valid.error());
     return reference;
 }
 
-Result<void> Runtime::write_reference_at(Address address, const ObjectReference& reference) {
+Result<void> Runtime::validate_reference_assignment(ValueDescription value, const ObjectReference& reference) const {
     const auto valid = validate_reference(reference);
     if (!valid) return std::unexpected(valid.error());
-    const auto* target = impl_->lookup(address.value.type);
+    const auto* target = impl_->lookup(value.type);
     if (!target || target->info.kind != TypeKind::object ||
-        (address.value.form != ValueForm::strong_reference && address.value.form != ValueForm::weak_reference) ||
+        (value.form != ValueForm::strong_reference && value.form != ValueForm::weak_reference) ||
         !Impl::derives_from(*impl_->lookup(reference.description().type), *target) ||
-        (address.value.form == ValueForm::strong_reference && reference.description().form != ValueForm::strong_reference)) {
+        (value.form == ValueForm::strong_reference && reference.description().form != ValueForm::strong_reference)) {
         return failure(ErrorCode::type_mismatch, "Reference target or holding form does not match the field.");
     }
-    static_cast<ReferenceSlot*>(address.data)->object_ = reference.id();
-    if (address.value.form == ValueForm::strong_reference) impl_->shade(reference.id());
+    return {};
+}
+
+void Runtime::commit_reference_write(Address address, ObjectId object) noexcept {
+    static_cast<ReferenceSlot*>(address.data)->object_ = object;
+    if (address.value.form == ValueForm::strong_reference) impl_->shade(object);
+}
+
+Result<void> Runtime::write_reference_at(Address address, const ObjectReference& reference) {
+    if (impl_->changing_references) return failure(ErrorCode::busy, "Reference write cannot reenter batch preparation.");
+    auto valid = validate_reference_assignment(address.value, reference);
+    if (!valid) return valid;
+    commit_reference_write(address, reference.id());
     return {};
 }
 
