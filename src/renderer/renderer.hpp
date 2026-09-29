@@ -36,6 +36,8 @@ struct Cube {
     // Producer-evaluated local-to-world affine matrix. Same row-major storage
     // and row-vector convention as Camera; hierarchy evaluation stays outside
     // the renderer. Local geometry remains the unit cube [-0.5,0.5].
+    // Non-finite, non-affine or singular matrices reject the entire frame before
+    // encoding. Invertible reflected transforms are supported by this boundary.
     std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     ui::Color color{0.2f, 0.45f, 0.75f, 1};
     bool selected{};
