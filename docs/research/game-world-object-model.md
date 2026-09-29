@@ -1,8 +1,8 @@
 # 游戏世界与对象模型：研究与会审方案
 
-状态：**I-a/I-b已在独立worktree本地交付验收，未集成main；II通用引用集合、受控访问与引用批次已由主持派发Runtime。Actor/World及III–IV尚未派发，S3未启动。有效但失活、close全体退出活动已获认可；组成持有方向、close数据政策等仍按当前建议会审，不由II派发推定批准。**
+状态：**I、II已本地验收，III已正式派发并在codex/actor-world实施，IV由应用分支接续；尚未集成main，S3未启动。本片按Actor强持组件、附属组件强owner、close退出撤根、统一对象销毁及兼容Detached重新加入的合同落地。下文早期候选比较保留为取舍依据，不再构成第二份待批准排期。**
 
-日期：2026-09-29。研究代码事实基线仍为`main`的`9d33f4fc1c8a88481c93be4b166e6eb311456a1b`，其代码树与已验收的`915ab72`相同，不表示main已具备继承。I交付提交为`3985869a3c700ddddf190aae6291ea39d3616bf6`，位于干净隔离树`C:/Users/Arzuo/.codex/worktrees/runtime-inheritance/FrostFoxAtelier`的`codex/runtime-inheritance`分支；主持已核对dev/release的Runtime、Source、JIT六份PASS及源19项、二进制12项hash匹配。本会话只维护本文件，未重复验收或改生产代码。研究不是另一份排期，后片由现行计划按会审结果承接。
+日期：2026-09-30。III实现基线为已验收的II提交`ce36a2ef71cfd31da39f98aa3c75004b69e77929`，含I提交`3985869a3c700ddddf190aae6291ea39d3616bf6`。唯一当前研究稿与实现位于`C:/Users/Arzuo/.codex/worktrees/actor-world/FrostFoxAtelier`，分支`codex/actor-world`；原共享根目录的本稿和三项词义修改已完整保全到此分支。第2节历史代码定位仍对应原main `9d33f4fc1c8a88481c93be4b166e6eb311456a1b`，不代表当前Core能力；I/II验收事实复用，不重复运行无关验收。
 
 研究由对象模型负责人汇总。首轮三席分别调查生命周期、数据与执行、消费者迁移，独立结论后进行一次聚焦交叉质询。用户进一步要求正式基础派生后，复用同三席补UE类型合同、Godot/Stride对照和本仓映射，并做一次类型问题的交叉收口；原生命周期与存储证据复用。Runtime与应用负责人提供各自的合同候选及消费者delta。未新增专家或并列研究稿。
 
@@ -531,6 +531,17 @@ renderer继续消费派生值快照；首片若按§4.3贯通完整TRS，则由r
 选择无空间/渲染组件的Actor合法。Actor Focus明确使用指定根空间目标的世界位置；组件面板检查非空间组件不改变这个策略。无根时禁用/无操作并反馈，不能暗造Transform或挑第一个组件。若后续提供独立组件Focus，再取其显式空间目标；相机只接世界点，无需认识整个类型层次。
 
 ### 10.1 共享接口草案与所有权
+
+**III实际公共头与接线delta（本轮唯一接口）：** [world/world.hpp](../../src/world/world.hpp)与[world/math.hpp](../../src/world/math.hpp)。
+
+- `register_types(Runtime&)`一次发布Actor/Component/Transform/Cube/Counter及数学record，返回Types；宿主在创建对象前完成额外类型注册。World借用同一Runtime，`runtime()/types()`提供持根、GC及源程序绑定所需访问；组件编辑走World.read/write/set_transform。
+- `create_actor/create_component`返回普通根；World.attach接纳Actor，attach_components一次接纳一批显式Attachment。Cube必须明确绑定同组Transform；根Transform首片唯一，没有空间的Actor合法。
+- `detach/remove_component`分别返回可移动ActorRemoval/ComponentRemoval，携带普通根、原位置及组件原owner。历史来源只保World寿命的弱凭证，既不保World也不形成Actor永久affinity；restore走同一校验/提交。Commit单列通知错误，已提交变化不能伪报为未发生。
+- `inspect_actor/inspect_component`、`components`支持离场读取；成员状态与类型查询不生成第二身份。对象协议`destroy_actor/destroy_component`是唯一终结入口，World队列只转发并重验原目标关系。
+- Types给出可缓存的position/rotation/scale字段路径；Trs使用position、xyzw四元数及正非零有限scale。Matrix4为16个float，行主序/行向量，S*R*T，平移12–14。renderer直接消费RenderItem.world。
+- World.update使用实际Counter执行注册；可提供CounterUpdate适配既有Program.Entry，调用在借用之外。World接管通过TaskStart创建的真实Coroutine，在停用/脱离/stop/close时取消并释放；渲染注册和游戏执行分开。
+- Core批次使用实际ReferenceField定位、SequenceSplice和ReferenceWrite；隐藏关系只在with_native保护中操作。预检/容量准备先于关系提交，成员索引同步发布；不改Runtime/source。
+- 纯模块目标将由`cmake/world.cmake`中的`atelier_add_world()`建立`atelier_world`；无窗口`world_acceptance`只链接World与实际source消费者，不依赖Application/renderer。
 
 I/II接口由Runtime负责人落实到正式Core声明；World相关行仍是业务草案，不因Core已有对应能力便视作授权。最终约束进入唯一公开入口和必要内部协议，不复制到兼容包装中。
 
