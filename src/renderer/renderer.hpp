@@ -33,7 +33,10 @@ struct Camera {
     std::array<float, 16> projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 };
 struct Cube {
-    std::array<float, 3> position{};
+    // Producer-evaluated local-to-world affine matrix. Same row-major storage
+    // and row-vector convention as Camera; hierarchy evaluation stays outside
+    // the renderer. Local geometry remains the unit cube [-0.5,0.5].
+    std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     ui::Color color{0.2f, 0.45f, 0.75f, 1};
     bool selected{};
 };
@@ -41,7 +44,7 @@ struct Frame {
     const ui::Frame &ui_frame; // Sole authoritative id/extent; borrowed to return.
     Camera camera;
     ui::Rect scene_viewport;     // Physical pixels, top-left origin.
-    std::span<const Cube> cubes; // Unit cubes [-0.5,0.5], translation only.
+    std::span<const Cube> cubes; // Borrowed draw snapshots; no business object ownership.
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts
