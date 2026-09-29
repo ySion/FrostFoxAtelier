@@ -118,6 +118,7 @@ flowchart TD
 - `hold(id, declared_type)` 在存活和祖先校验后登记指定视图的根。原有 `hold(id)` 仍返回实际类型视图，`hold(reference)` 仍可保留合法空/陈旧强引用。`observe/try_acquire` 保持声明类型；弱引用提升无目标时仍返回空 optional。
 - 引用字段允许派生声明视图赋给祖先目标，读取时恢复字段声明视图；下转必须显式转换。强字段不接受弱引用，弱字段可以接受兼容的强或弱引用。错误不修改原字段；所有强边写入仍经过原有屏障。
 - `ObjectReference` 默认相等比较仍包含声明视图；跨视图判断同一对象使用 `id()`。`std::hash<TypeId/ObjectId>` 与各自完整身份相等规则一致，不暴露布局，也不能作为持久 ID。
+- `belongs_to_context(id)` 只查询身份归属：本 Runtime 的存活或陈旧身份均返回 `true`，其他 Runtime 的身份及默认 `ObjectId{}` 返回 `false`。查询不分配、不保活且为 `noexcept`；存活与类型仍由 `type_of` 等访问入口验证。消费者可据此区分本地失效和跨 Runtime 输入，不读取身份私有布局或解析错误消息。
 
 源码宿主可以将基类 `Program` 绑定到派生接收者。同步与协程共用接收者检查，`ExecutionFrame::hold(slot, id, declared_type)` 直接建立绑定类型视图的 `self` 根槽；不经过额外临时根。成员目录及发布依赖包含祖先，元数据快照包含父类型。源码只能看绑定视图可见的成员，`new T()` 仍构造绑定类型，旧 `Lease` 和挂起帧继续持有各自代码版本。语法边界以 [LANGUAGE.md](../LANGUAGE.md) 为准。
 
