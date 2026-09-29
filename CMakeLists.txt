@@ -110,9 +110,9 @@ add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
     COMMAND $<TARGET_FILE:atelier_ui_acceptance>
-    COMMAND $<TARGET_FILE:atelier_editor_scene_acceptance>
+    COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
     COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
     DEPENDS atelier_runtime_acceptance atelier_source_minimal ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
-        atelier_editor_scene_acceptance atelier_editor rhi_acceptance
+        atelier_editor_document_acceptance atelier_editor rhi_acceptance
     USES_TERMINAL VERBATIM)

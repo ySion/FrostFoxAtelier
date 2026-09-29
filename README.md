@@ -21,9 +21,9 @@ cmake --build --preset dev --target atelier_editor
 ./out/dev/atelier_editor.exe
 ```
 
-首版包含方块视口、对象列表、位置 XYZ 参数、可拖分隔、增删与撤销/重做，以及相机观察/缩放/聚焦/重置。数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除场景对象。
+编辑器直接消费正式 Actor/Component/World。启动时创建一个带 Transform 和 Cube 的示例 Actor；`+ Add Actor` 创建空 Actor，右侧 `+ Transform`、`+ Cube` 添加实际组件，`− Cube` 只移除方块能力并保留 Actor。位置 XYZ 编辑实际 Transform 字段，数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Actor。列表、可拖分隔和相机观察沿用同一窗口入口。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
-本轮对应[方案](docs/first-editor-plan.md)的 M0 与 M1 核心操作。旋转缩放编辑、保存重开、JIT 单步、节点图、视口拾取和 gizmo 尚未接入；不宣称 M2 已完成。
+World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、保存重开、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[对象模型合同](docs/research/game-world-object-model.md)，不启动 S3 面板体系。
 原生 UI 的 S1 已收口。S2 已接入共享 Unicode 单行编辑、参数搜索、剪贴板与 IMM32 平台往返；dev/release UI 13/13、真实搜狗输入及最终普通窗口各 709 帧验收均通过。字段切换统一取消并解除旧原生输入关联，再恢复新目标，已验证旧候选不会落入新字段。数值非法 Enter 保留草稿，提交/取消后保留焦点；无本地事务时 Ctrl+Z/Y 进入场景历史。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`，[原生 UI 方案](docs/ui-foundation-plan.md)维护唯一排期，S3 未启动。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
@@ -34,7 +34,7 @@ cmake --preset release
 cmake --build --preset release --target editor_acceptance
 ```
 
-每种配置输出 `Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`；GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，S1 另输出状态/字体/256对象列表截图和 `s1-performance.csv`、`s1-resources.csv`。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
+每种配置输出 `Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`；只运行无窗口文档链使用 `editor_document_acceptance`。GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，包括状态/字体/256 Actor 列表、组件增删和完整 TRS 投影。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
 窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。运行目录须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证。
 
 ## 构建与端到端验收
@@ -52,7 +52,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (13/13)`、`Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (13/13)`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 

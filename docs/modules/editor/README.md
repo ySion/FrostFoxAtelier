@@ -1,38 +1,37 @@
 # 首个场景编辑器
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
-当前包含[首个编辑器方案](../../first-editor-plan.md)的 M0/M1 核心操作，以及[原生 UI 方案](../../ui-foundation-plan.md)的 S1：统一样式、真实字体度量失效与屏外内容剪除。S2 已接入共享单行编辑、真实参数搜索、Unicode 剪贴板与 IMM32；最终验收尚未收口，具体状态见下文。
-2026-09-28 在本地 S1 集成树的 dev/release 均通过 UI 8/8 与 `editor_acceptance`；每次窗口链接受597帧，Scene消费者与正常关闭检查通过。
-旋转缩放编辑、存档重开、JIT 单步、视口拾取、gizmo、节点画布和自由停靠仍在后续范围。
+当前沿[对象模型合同](../../research/game-world-object-model.md)的 IV 将正式 Actor/Component/World 接入同一编辑器；源码迁移已完成，集成验收进行中。已收口的 S1/S2 输入与视觉合同保留，历史证据见下文，不能代替本轮 World 迁移验收。
+模型与渲染消费完整 TRS；面板仍只暴露位置 XYZ。旋转/缩放控件、存档重开、JIT 单步、视口拾取、gizmo、节点画布、自由停靠及 S3 面板体系未启动。
 
 ## 正式执行链
 
 ```text
 Win32 窗口消息 → Window 复制拥有的事件 → 每条消息后顺序排空
   → UI 已接受帧命中/焦点/捕获 → Reply.effects
-  → Action → editor::Session → scene::Scene → Runtime 字段
+  → Action → editor::Session → world::World → Runtime 的真实 Actor/Component 字段
            → Workspace.query → 参数查看投影
   → PlatformRequest → Window 剪贴板/IMM32 → UI 结果事件
-  → Workspace 控件描述 + 场景数值 → UI 帧 + renderer 方块实例
+  → Workspace 控件描述 + World RenderItem 矩阵值 → UI 帧 + renderer 方块实例
  → renderer 最终 accepted → UI 接受对应命中帧
 ```
 
 WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入回调也在同一泵中依序消费。UTF-16 代理项在顺序投递时组装，组合流绑定独立 composition_id 与原编辑身份。候选位置只使用与当前 token 相匹配的 accepted caret。同步 IMR_QUERYCHARPOSITION 只读对应帧的插入/组合起点快照，将客户区物理坐标转为屏幕坐标；仅支持偏移 0，无有效快照或其他偏移明确拒绝。快照在原生组合/失焦/Surface 变化时立即撤下，不用旧显示 caret 冒充组合起点。IME 终止键的首次按下、重复和抬起保持同一归属，避免确认组合后又提交字段。
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
-[Scene](../../../src/scene/scene.hpp)批量注册 Vec3、Transform 和 SceneObject，缓存 `transform.position.x/y/z` 字段路径。
-成员目录与历史只持 ObjectKey 和 ObjectRoot；位置唯一存于 Runtime，UI 与 renderer 的数值是呈现快照。
-[Session](../../../src/editor/session.hpp)是业务编辑入口。一次拖调先保存目标根与起点，再连续修改真实字段；提交只记一次历史，取消写回起点。
-删除先取得历史根，再移出成员目录；Undo 恢复同一 ObjectId，Redo 重放值和成员变化。历史最多128项，场景最多256个成员。
-选择、渲染与编辑均验证成员资格，历史保活不表示仍属于场景。宿主在同一线程逐帧以32工作单位推进 GC。
+[World](../../../src/world/world.hpp)和 Runtime 管理唯一 Actor/Component 身份、组成与成员资格。编辑 World 保持 stopped；Actor 的 AttachedInactive 状态仍可呈现和编辑，renderer 不按 Active 状态筛除编辑内容。
+[Session](../../../src/editor/session.hpp)是文档唯一写入口，保存 Actor 选择和统一的 Actor、组件、字段历史。字段事务捕获具体组件 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。Transform 字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 继续选中记录的 owner Actor。
+Actor 删除记录保存普通 Actor 根及 World 成员位置，组件独立移除记录保存组件根及 owner/顺序/依赖恢复资料。Undo 恢复同一 ObjectId 的当前组成与成员资格，重新生成 UI 绑定。裁剪历史/redo 与关闭文档只释放持有，不隐式 destroy。历史最多128项，编辑器最多256个 Actor；只有 World 成员可编辑，没有离线写入或多写者冲突机制。
+World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notification_error 表示关系已改变。Session 先记录变化并更新选择，应用再报告通知错误并停止后续动作，不把它当成未提交或重做一次。成员 span 只在结构变化前借用，UI/renderer 不持有它。
+宿主同线程逐帧以32工作单位推进 GC；普通根保活不表示对象仍参与 World。文档关闭先结束活动编辑，再关闭 World、释放历史；World close 撤成员/参与和根，Runtime 生命周期随后由宿主管理。
 
 ## 参数和坐标
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
 范围、默认值、单位与拖调步长由[应用参数描述](../../../src/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
-每个数值控件 key 包含目标 ObjectKey 和轴；切换选择会更换控件身份，旧帧不能误改新对象。
+控件 key 独立单调分配，绑定具体 ObjectId 和 FieldId 路径；稳定控件复用其键，失效后退役且不再分配。Actor/组件恢复保留业务身份，但不会恢复旧控件会话、IME 或剪贴板请求。
 
-- 左手坐标系，+Y向上，单位米；方块各轴范围 `[-0.5, 0.5]`，本轮只做实例平移。
+- 左手坐标系，+Y向上，单位米；方块各轴范围 `[-0.5, 0.5]`。World 提供完整 `S * R * T` 矩阵，renderer 不自行重算 TRS；首片没有空间父子操作。
 - 默认相机 eye `(6,5,-8)`、target `(0,0,0)`、up `(0,1,0)`；使用 LookAtLH/PerspectiveFovLH。
 - CPU 矩阵行主存储，行向量按 `p * world * view * projection` 计算，D3D 深度为 `[0,1]`。
 - viewport 与 UI clip 使用窗口客户区左上为原点的物理像素。1280×720客户区内的 `{240,32,760,660}` 表示从 `(240,32)` 开始、宽760高660的视口。
@@ -40,7 +39,7 @@ WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入�
 
 ## 首版操作
 
-工具条提供新增、删除、撤销、重做、聚焦选择和重置相机；左侧列表负责单选，右侧参数区可拖动分隔条调整宽度。
+工具条提供空 Actor 新增、删除、撤销、重做、聚焦选择和重置相机；左侧列表负责 Actor 单选，右侧提供实际 Transform/Cube 组件增删和位置字段。首片 UI 每个 Actor 只添加一次 Transform/Cube。Actor 没有 Transform 时位置字段和 Focus 停用；移除 Cube 后 Actor 与 Transform 仍保留。右侧参数区仍可拖动分隔条调整宽度。
 数值控件普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
 文本与数值共用 Unicode 字素边界、视觉光标、双向选区、横滚及本地撤销/重做。Ctrl+A/C/X/V 提供全选、复制、剪切、粘贴。存在本地事务时 Ctrl+Z/Y 只操作本地历史，即使历史耗尽也不穿透；仅聚焦无事务时进入场景历史，Ctrl+Shift+Z 同样重做。历史合组、容量和 Unicode 覆盖见 [UI 模块](../ui/README.md#共享单行编辑)。
 参数搜索按 Position/“位置”/X/Y/Z 名称与别名过滤实际位置行。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。
@@ -64,7 +63,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 ## 验收入口
 
-`editor_scene_acceptance`消费正式Scene/Session，覆盖跨场景根拒绝、别名拒绝、根释放、拖调历史、删除跨GC后身份恢复。
+`editor_document_acceptance`消费正式 World/Session，覆盖空 Actor、实际组件增删、单次字段历史/控制会话、完整 TRS undo、成员资格、删除跨 GC 的同身份恢复、历史裁剪普通根保组/最终收集及关闭释放。旧 Scene 库和位置专用入口已删除。
 `atelier_editor --acceptance <输出目录>`运行同一正式窗口，用Win32消息和系统焦点/捕获操作驱动控件，再核对Runtime状态与GPU帧。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
 S1 覆盖正常/hover/pressed/focus/invalid/disabled、颜色改变的同Coverage/零raster/零上传、非法Style整体拒绝、字体family/weight/size及caret同步失效、旧帧几何/像素寿命。256真实成员由工具条加入，验证屏外控件几何仍在、文字不生成、滚回恢复，以及连续拖调历史。
@@ -73,6 +72,8 @@ S2 扩展覆盖本地/场景历史归属、非法 Enter/保留焦点、文本模
 DPI 验收覆盖当前显示器上的 WM_DPICHANGED 过渡政策，不据此声称已验证跨不同 DPI 显示器迁移。Unicode WM_CHAR 和 UI 组合协议注入不代表真实系统输入法通过。
 
 ### S2 集成状态与输入法验收
+
+本节是 World 迁移前的已验收记录。当前 `Window`/共享文本后端未修改，本轮不重复未受影响的真实 IME 验收；组件字段接入仍通过普通窗口的 Unicode、剪贴板和目标失效链检查。
 
 2026-09-29：共享 UI 提交 `60472ed` 已集成为 `0e45c6a`；当时 dev/release 的 UI 12/12 通过，实际文字服务报告 ICU 72.1 / Unicode 15.1。`afb2286` 的应用平台接线与验收驱动在 dev/release 编译通过，顺序运行 `editor_acceptance` 均通过：Scene PASS、窗口各接受 709 帧，含原有场景/窗口链及 S2 非 IME 操作。该版本原始报告和截图另存于 `out/{dev,release}/editor-evidence-afb2286/`，与后续 IME 工作目录分开保留。
 
