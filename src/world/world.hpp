@@ -73,6 +73,8 @@ struct ActorStatus {
     TypeId type;
     bool enabled{};
     bool can_edit{};
+    // True when this member has at least one registered presentation component.
+    // UI selection uses membership; an empty Actor can still be selected/edited.
     bool can_present{};
 };
 struct ComponentStatus {
@@ -81,6 +83,7 @@ struct ComponentStatus {
     ObjectId owner;
     bool enabled{};
     bool active{};
+    // True when this component has an actual World presentation registration.
     bool can_present{};
 };
 
