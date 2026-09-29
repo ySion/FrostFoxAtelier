@@ -74,7 +74,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     command(control::remove_actor, 72, L"Delete").enabled = actor_status.can_edit;
     command(control::undo, 64, L"Undo").enabled = session.undo_count() != 0;
     command(control::redo, 64, L"Redo").enabled = session.redo_count() != 0;
-    command(control::focus, 64, L"Focus").enabled = actor_status.can_present && transform.has_value();
+    command(control::focus, 64, L"Focus").enabled = transform.has_value() &&
+        (actor_status.state == world::ActorState::attached_inactive || actor_status.state == world::ActorState::active);
     command(control::reset, 108, L"Reset camera");
     auto body = NodeInput::row(); body.height = Axis::expand();
     add(20, 1, ControlKind::container, body);
@@ -91,7 +92,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
         auto name = L"Actor " + std::to_wstring(++ordinal);
         auto row = NodeInput::box(0, 32); row.width = Axis::expand();
         auto& item = add(bind(member.id()), 23, ControlKind::item, row, name);
-        item.enabled = state.can_present;
+        item.enabled = state.state == world::ActorState::attached_inactive || state.state == world::ActorState::active;
         item.selected = member.id() == selected;
         if (item.selected) selected_name = std::move(name);
     }

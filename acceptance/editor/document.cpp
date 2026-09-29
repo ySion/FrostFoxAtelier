@@ -33,13 +33,14 @@ int main() {
         require(take(document.world().members()).size() == 1 && take(world::components(runtime, actor)).empty() &&
             take(document.world().render_items()).empty(), "An empty Actor acquired implicit components or rendering.");
         const auto state = take(world::inspect_actor(runtime, actor));
-        require(state.state == world::ActorState::attached_inactive && state.can_edit && state.can_present,
-            "Stopped editor World did not expose an editable/presentable Actor.");
+        require(state.state == world::ActorState::attached_inactive && state.can_edit && !state.can_present,
+            "Empty Actor state confused editability with render registrations.");
         changed(document.add_component(document.types().transform));
         changed(document.add_component(document.types().cube));
         const auto transform = component(document, actor, document.types().transform);
         const auto cube = component(document, actor, document.types().cube);
-        require(take(document.world().render_items()).size() == 1, "Cube component did not create a value projection.");
+        require(take(document.world().render_items()).size() == 1 && take(world::inspect_actor(runtime, actor)).can_present,
+            "AttachedInactive Cube component did not create a value projection.");
         changed(document.remove_component(cube));
         require(take(document.world().members()).size() == 1 && take(document.world().render_items()).empty(),
             "Removing Cube removed its Actor or retained rendering.");
