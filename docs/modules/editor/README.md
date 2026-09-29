@@ -1,7 +1,7 @@
 # 首个场景编辑器
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
-当前沿[对象模型合同](../../research/game-world-object-model.md)的 IV 将正式 Actor/Component/World 接入同一编辑器；源码迁移已完成，集成验收进行中。已收口的 S1/S2 输入与视觉合同保留，历史证据见下文，不能代替本轮 World 迁移验收。
+当前沿[对象模型合同](../../research/game-world-object-model.md)的 IV 将正式 Actor/Component/World 接入同一编辑器；dev/release 程序构建与无窗口文档验收已通过，GPU/正式窗口验收等待统一前台时段。已收口的 S1/S2 输入与视觉合同保留，历史证据见下文，不能代替本轮 World 迁移验收。
 模型与渲染消费完整 TRS；面板仍只暴露位置 XYZ。旋转/缩放控件、存档重开、JIT 单步、视口拾取、gizmo、节点画布、自由停靠及 S3 面板体系未启动。
 
 ## 正式执行链

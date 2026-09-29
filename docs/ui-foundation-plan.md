@@ -2,6 +2,8 @@
 
 状态：**S1 主持已收口（`ec6a118`）；S2 UI 双配置 13/13、最终 Window 的 dev/release 本机搜狗真实输入及普通窗口各 709 帧验收均通过，主持已收口。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`；S3 未启动。**
 
+2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
+
 日期：2026-09-28，更新于 2026-09-29。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；唯一集成分支：`codex/ui-foundation`。
 本页是编辑器当前排期的唯一入口。[首版记录](first-editor-plan.md)保留已交付的 M0/M1 与尚未完成的 M2 目标；保存重开、JIT 单步暂不进入本轮。
 应用负责人汇总三席只读研究（参数、工作区、UI 结构）及 UI/RHI 负责人反馈；本轮未运行 Houdini，以下严格区分官方文档观察、仓库事实和本项目选择。
@@ -29,22 +31,22 @@ Pin 按钮是查看状态，菜单项是命令，均不冒充 bool/enum 业务�
 | [面板与固定](https://www.sidefx.com/docs/houdini/basics/panes.html#pinning)：固定查看目标，未固定时跟随；另有联动通道 | 只实施一个面板的 follow/pin；不将完整停靠、标签系统或通道框架作为前置 |
 | [节点标志](https://www.sidefx.com/docs/houdini/network/flags.html#setting-flags)、[上下文菜单](https://www.sidefx.com/docs/houdini/basics/tabmenu.html)、[快捷键上下文](https://www.sidefx.com/docs/houdini/basics/hotkeys.html)：选择、显示输出与渲染标志不同，命令依赖上下文 | 分开场景选择、面板目标、菜单打开时的目标；不建立一个包办所有用途的全局对象变量 |
 
-**本项目已获主持认可的产品选择：纯位置 undo/redo 保持当前场景选择；增删历史维持现有选择策略。** 其余具体交互合同如下，均为本项目方案，不以 Houdini 文档替代实机证据。
+**S3 的待实施选择方案：纯属性 undo/redo 保持当前场景选择；增删历史维持原策略。** 当前 World IV 尚未采用这一变化，属性历史继续选中记录的 owner Actor。以下第 3/4 节保留为 S3 方向，不以 Houdini 文档替代本项目实机证据。
 
 ## 3. 对象目标、事务与失效
 
-- `Workspace` 保存查看模式及固定的 `ObjectKey`；有效目标为固定键或 `Session::selected()`，每次使用都校验场景成员。Pin 不持有业务 root。Runtime、场景和现有编辑/历史根继续承担保活。
+- 未来 `Workspace` 查看模式以固定 Actor ObjectId 或 `Session::selected()` 定位，每次使用均校验 World 成员。Pin 不持有业务 root；Runtime、World 和历史根承担保活，UI 控件键独立分配。
 - A 固定、B 选中时，读取、标题、控件绑定、编辑和重置均指向 A。删除 A 后保留固定键，显示“固定对象已移除”，停用参数与菜单业务动作，绝不自动改绑 B。删除 undo 将同一稳定键恢复为成员后，面板自动重新显示 A；历史淘汰导致 A 无法恢复时持续显示空态，直到用户取消固定。
 - follow 模式实际切换目标，或普通焦点离开当前字段时：合法草稿先提交，非法草稿取消，然后切换。Pin A 后选择 B 不改变查看目标；点击列表造成的普通字段失焦仍遵循上述规则。OS 失焦、Surface 变化和交互取消回滚未完成编辑。
 - 正在捕获的数值/分隔拖动先完成或取消，菜单/目标切换不抢夺手势、不排队延后执行。取消必须到达已有 active 事务，不能被“现在的面板目标不同”挡住。
-- 原地替换 `Session::begin_position()` 为 `begin_position(ObjectKey target)`；开始时校验成员并取得现有事务根，preview/commit/cancel 继续使用 active 中的目标。同步迁移全部调用者并删除无参入口。
-- 默认值来自 `position_parameters`。重置 X 只改 X；重置位置以一个 before/after Vec3 事务写入 XYZ，只产生一条历史；写入失败沿现有取消路径恢复 before，无变化不记历史。modified 按实际值与默认值比较，编辑草稿与 invalid 状态另行表达。
+- IV 已由 `Session::begin_edit(component, FieldPath, control_session)` 捕获实际目标，preview/commit/cancel 沿同一活动事务；S3 继续消费它，不恢复位置专用入口。
+- 重置和 modified 的字段政策应从当前注册类型及应用参数描述取得。未来重置 XYZ 以一次明确的复合操作提交完整 Transform 前后值，写入失败沿现有回滚，无变化不记历史；编辑草稿与 invalid 状态另行表达。
 - 打开重置菜单先处理普通草稿。合法草稿提交后再执行重置属于两次操作，undo 重置返回刚提交的值；非法草稿取消后重置基于原值。非法数值粘贴不能写 Runtime。
 
 ### 位置历史的准确迁移
 
-基线 [Session::replay](../src/editor/session.cpp) 的 `Kind::position` 分支在写入成功后执行 `selected_ = change.member.key`。
-本轮删除该分支的选择赋值，保留唯一位置回放路径；后面的 add/remove 分支不改选择政策。
+当前 [Session::replay](../src/editor/session.cpp) 的字段分支在写入成功后选中记录的 owner Actor，IV 保留这一既有行为。
+S3 若正式派发上述选择变化，应只调整这一统一字段回放分支；Actor/组件结构历史的选择政策分别保持明确，不引入另一套位置回放。
 前：编辑 A 后选 B，再撤销位置会选回 A。后：固定 A、选 B，编辑/重置/undo/redo A，B 始终保持选中。删除 A 的 undo 仍按已有规则选择恢复的 A，不把位置规则扩大到增删历史。
 
 ## 4. 输入顺序与菜单
@@ -88,7 +90,7 @@ S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合�
 | `Session::prepare` 对屏外控件直接 raster/emit | 候选 bounds∩clip 可见性检查，保留布局/滚动/身份信息 | S1，替换原生成位置，无第二遍兜底绘制 |
 | `Session::input/change_text/finish_edit` 的 ASCII 专用分支、单位置 caret；[Event/Action](../src/ui/session.hpp)；[Window::receive](../src/application/window.cpp)/`Application::native/action` 与验收消费者 | 共享 TextEdit、字符串/组合事件、typed value、同一 TextStore 查询和平台往返 | S2，删除旧 `character`/纯 double 处理及专用编辑缓冲，不留兼容入口 |
 | `Reply.actions`、`Application::effects/action` 失败仍继续发动作、错误被后续状态覆盖 | 原地迁移到有序 `effects`、有结果的顺序派发和同一取消回路 | S2，所有消费者同时删除旧 actions 入口 |
-| `Workspace::describe` 标题/字段/键全部取 selected；`Application::action` 的 selected-only guard；[Session::begin_position/replay](../src/editor/session.cpp)；[scene 验收](../acceptance/editor/scene.cpp) | 显式目标、follow/pin、默认值与单一位置回放 | S3，删除无参 begin、旧 selected guard 与位置回放的选择赋值 |
+| [Workspace](../src/editor/workspace.cpp) 的当前 Actor 查看目标；[Session::begin_edit/replay](../src/editor/session.cpp)；[文档验收](../acceptance/editor/document.cpp) | IV 已使用显式组件字段目标；未来 follow/pin、默认值与重置继续复用它 | S3 未启动；不再保留旧 selected-only/位置专用兼容路径 |
 | `Session::hit` 先过滤当前存活性、`prepare` 统一继承父 clip；`Application::native` UI 前相机抢占 | 同帧 overlay/拦截，先拦截后活性校验，已有 capture 优先、未消费事件导航 | S3，替换原路由；普通子控件仍保留正常父裁剪 |
 
 数值解析器、Layout、已有焦点/capture/incarnation、DrawQuad/R8、Runtime 根和历史都是继续使用的有效机制。无需为迁移新增别名、第二种主题、备用输入后端或独立演示产品。
