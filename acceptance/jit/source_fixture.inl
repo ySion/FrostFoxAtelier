@@ -64,7 +64,7 @@ struct FixtureInvocation {
             },
             [](void* context, const Invocation& invocation, bool success) noexcept {
                 auto& state = *static_cast<FixtureInvocation*>(context);
-                state.stats.explicit_cleanup = invocation.references_cleared();
+                state.stats.explicit_cleanup = invocation.resources_cleared();
                 if (!success) {
                     state.failed_output = state.output.registered();
                     // Keep failed fixture roots inside execution teardown. A
@@ -80,10 +80,10 @@ FixtureInvocation& fixture(Invocation& invocation) {
 }
 
 struct ExecutionResult {
-    BusinessScalar value;
+    BusinessValue value;
     ObjectRoot snapshot;
 };
-Result<ExecutionResult> finish_fixture(Result<BusinessScalar> result, FixtureInvocation& state,
+Result<ExecutionResult> finish_fixture(Result<BusinessValue> result, FixtureInvocation& state,
     ExecutionStats* statistics) {
     if (statistics) *statistics = state.stats;
     if (!result) {
@@ -96,7 +96,7 @@ Result<ExecutionResult> finish_fixture(Result<BusinessScalar> result, FixtureInv
     return ExecutionResult{*result, std::move(state.output)};
 }
 Result<ExecutionResult> execute_fixture(Runtime& runtime, const Binding& binding, BusinessCode* code,
-    ObjectId receiver, std::span<const BusinessScalar> arguments, bool request_collection = false,
+    ObjectId receiver, std::span<const BusinessValue> arguments, bool request_collection = false,
     ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* hook_state = nullptr,
     CollectionBudget budget = {1}, bool make_snapshot = false) {
     if (statistics) *statistics = {};
@@ -117,7 +117,7 @@ Result<ObjectRoot> execute_machine(Runtime& runtime, const Binding& binding, Bus
 }
 template<class Entry>
 Result<ExecutionResult> invoke_fixture(const Entry& entry, ObjectId receiver,
-    std::span<const BusinessScalar> arguments, ExecutionStats* statistics = nullptr,
+    std::span<const BusinessValue> arguments, ExecutionStats* statistics = nullptr,
     PollHook hook = nullptr, void* context = nullptr, bool make_snapshot = false) {
     if (statistics) *statistics = {};
     FixtureInvocation state{make_snapshot, hook, context};
@@ -134,6 +134,6 @@ Result<ObjectRoot> invoke_machine(const Entry& entry, ObjectId receiver, float a
 }
 template<class Entry>
 Result<Coroutine> start_fixture(const Entry& entry, ObjectId receiver,
-    std::span<const BusinessScalar> arguments) {
+    std::span<const BusinessValue> arguments) {
     return ProgramAccess::start(entry, receiver, arguments);
 }

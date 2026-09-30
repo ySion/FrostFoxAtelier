@@ -12,12 +12,12 @@ inline constexpr std::uint32_t business_root_slots = 1;
 inline constexpr std::uint32_t observation_slot_bit = 0x80000000u;
 inline constexpr std::uint32_t null_reference_slot = 0xffffffffu;
 
-enum class ScalarKind : std::uint32_t { void_value, f32, u32, i32, enumeration };
+enum class ValueKind : std::uint32_t { void_value, f32, u32, i32, enumeration, record, array, string };
 struct BusinessType {
-    ScalarKind kind;
-    std::uint32_t enum_index;
+    ValueKind kind;
+    std::uint32_t type_index;
     BusinessType() = default;
-    constexpr BusinessType(ScalarKind value, std::uint32_t index = 0) : kind(value), enum_index(index) {}
+    constexpr BusinessType(ValueKind value, std::uint32_t index = 0) : kind(value), type_index(index) {}
     bool operator==(const BusinessType&) const = default;
 };
 struct BusinessParameter {
@@ -26,33 +26,49 @@ struct BusinessParameter {
     bool operator==(const BusinessParameter&) const = default;
 };
 enum class ArgumentStorage : std::uint32_t { value, read_only, reference, field };
-// Fixed-layout scalar operand. A borrowed address or field locator is only
-// valid through a synchronous call. Results always use value storage.
-struct BusinessScalar {
+// Fixed-layout operand. Native values borrow original storage; bits only carry
+// scalars. Addresses/field locators last through a synchronous call. Results
+// remain scalar values; this is not an aggregate serialization format.
+struct BusinessValue {
     BusinessType kind{};
     std::uint32_t bits{};
     ArgumentStorage storage{ArgumentStorage::value};
     const void* data{};
     std::uint32_t slot{}, field{};
 };
-static_assert(std::is_standard_layout_v<BusinessScalar> && std::is_trivially_copyable_v<BusinessScalar>);
-static_assert(sizeof(BusinessScalar) == 32 && alignof(BusinessScalar) == 8 &&
-    offsetof(BusinessScalar, bits) == 8 && offsetof(BusinessScalar, data) == 16 && offsetof(BusinessScalar, slot) == 24);
+static_assert(std::is_standard_layout_v<BusinessValue> && std::is_trivially_copyable_v<BusinessValue>);
+static_assert(sizeof(BusinessValue) == 32 && alignof(BusinessValue) == 8 &&
+    offsetof(BusinessValue, bits) == 8 && offsetof(BusinessValue, data) == 16 && offsetof(BusinessValue, slot) == 24);
 
 struct BusinessFieldBinding { const char* name; BusinessType kind; };
 struct BusinessMethodBinding {
     const char* name;
     const BusinessParameter* parameters;
     std::uint32_t parameter_count;
-    BusinessType result{ScalarKind::void_value};
+    BusinessType result{ValueKind::void_value};
     bool receiver_read_only{};
+    bool preserves_borrows{};
 };
 struct BusinessEnumItem { const char* name; std::uint32_t bits; };
 struct BusinessEnumBinding {
     const char* name;
-    ScalarKind underlying;
+    ValueKind underlying;
     const BusinessEnumItem* values;
     std::uint32_t value_count;
+};
+inline bool aggregate(BusinessType type) noexcept {
+    return type.kind == ValueKind::record || type.kind == ValueKind::array || type.kind == ValueKind::string;
+}
+struct BusinessValueField { const char* name; BusinessType type; std::uint64_t offset; };
+struct BusinessValueBinding {
+    const char* name;
+    ValueKind kind;
+    std::uint64_t size, alignment;
+    BusinessType element;
+    const BusinessValueField* fields;
+    std::uint32_t field_count;
+    void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
+    bool can_own{}, can_mutate{};
 };
 struct BusinessEnvironment {
     const BusinessFieldBinding* fields;
@@ -62,6 +78,8 @@ struct BusinessEnvironment {
     const char* object_type_name;
     const BusinessEnumBinding* enumerations{};
     std::uint32_t enumeration_count{};
+    const BusinessValueBinding* values{};
+    std::uint32_t value_count{};
 };
 struct BusinessSignature {
     const BusinessParameter* parameters;
@@ -88,8 +106,8 @@ struct BusinessServices {
     // Arguments/result borrow entry-allocated scratch through this synchronous
     // call. Non-void methods require result storage and commit its declared kind
     // and bits only on success; void methods may receive a null result pointer.
-    std::uint32_t (*call)(void*, std::uint32_t, std::uint32_t, const BusinessScalar*, std::uint32_t,
-        BusinessScalar* result) noexcept;
+    std::uint32_t (*call)(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t,
+        BusinessValue* result) noexcept;
     std::uint32_t (*poll)(void*) noexcept;
     std::uint32_t (*finish)(void*) noexcept;
     // Cannot fail for this compiler's validated strong or tagged weak slots.
@@ -99,6 +117,10 @@ struct BusinessServices {
     std::uint32_t (*same_reference)(void*, std::uint32_t left, std::uint32_t right,
         std::uint32_t* output) noexcept;
 
+    std::uint32_t (*construct_value)(void*, std::uint32_t, void*, const void*) noexcept{};
+    std::uint32_t (*assign_value)(void*, std::uint32_t, void*, const void*) noexcept{};
+    void (*destroy_value)(void*, std::uint32_t, void*) noexcept{};
+    std::uint32_t (*mutate_sequence)(void*, std::uint32_t, SequenceMutation, void*, const void*, std::uint64_t) noexcept{};
     bool operator==(const BusinessServices&) const = default;
 };
 
@@ -140,7 +162,7 @@ struct BusinessCoroutine;
 #define ATELIER_BUSINESS_BACKEND __declspec(dllimport)
 #endif
 
-// Source has scalar/enum parameters with explicit passing modes and an optional value result.
+// Source has scalar/enum values and synchronous native value borrows, with an optional scalar result.
 // Environment members describe the host's validated Runtime binding; a null
 // environment is empty. Code and LLVM state stay in their DLL; source bytes,
 // catalog names and arrays are borrowed only for compile. Compiled metadata
@@ -183,8 +205,8 @@ extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessFrameLayout
 // populate error after explicit cleanup, without replacing a host first cause.
 extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_invoke_business(
     atelier::source::detail::BusinessCode* code, void* invocation,
-    const atelier::source::detail::BusinessScalar* arguments, std::uint32_t argument_count,
-    atelier::source::detail::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept;
+    const atelier::source::detail::BusinessValue* arguments, std::uint32_t argument_count,
+    atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity) noexcept;
 
 extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_business(
     atelier::source::detail::BusinessCode* code) noexcept;
@@ -195,11 +217,11 @@ extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_business(
 // from error status. Destruction cancels without running the source continuation.
 extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_create_business_coroutine(
     atelier::source::detail::BusinessCode* code, void* invocation,
-    const atelier::source::detail::BusinessScalar* arguments, std::uint32_t argument_count,
+    const atelier::source::detail::BusinessValue* arguments, std::uint32_t argument_count,
     atelier::source::detail::BusinessCoroutine** output, char* error, std::uint32_t error_capacity) noexcept;
 extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_resume_business_coroutine(
     atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
-    atelier::source::detail::BusinessScalar* result, char* error, std::uint32_t error_capacity) noexcept;
+    atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity) noexcept;
 extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_business_coroutine(
     atelier::source::detail::BusinessCoroutine* coroutine) noexcept;
 

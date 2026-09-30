@@ -1,7 +1,8 @@
 #pragma once
 
-#include "foundation/array.hpp"
-
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
 #include <string_view>
 
 namespace atelier {
@@ -12,7 +13,7 @@ class String;
 // unvalidated bytes or a partial code point; it never promises a trailing zero.
 class StringView {
 public:
-    static constexpr std::size_t npos = Span<const char>::npos;
+    static constexpr std::size_t npos = std::string_view::npos;
     constexpr StringView() noexcept = default;
     constexpr StringView(const char* data, std::size_t size) : data_(data ? data : ""), size_(size) {
         if ((!data && size) || size > static_cast<std::size_t>(PTRDIFF_MAX))
@@ -55,34 +56,56 @@ private:
 // size(). Length and all view positions are bytes, not glyphs or code points.
 class String {
 public:
-    String() noexcept = default;
-    explicit String(StringView text) { append(text); }
-    String(const String&) = default;
-    String& operator=(const String&) = default;
-    String(String&&) noexcept = default;
-    String& operator=(String&&) noexcept = default;
+    static constexpr std::size_t inline_capacity = 15;
+    static constexpr std::size_t max_size = static_cast<std::size_t>(PTRDIFF_MAX) - 1;
 
-    [[nodiscard]] std::size_t size() const noexcept { return storage_.empty() ? 0 : storage_.size() - 1; }
-    [[nodiscard]] std::size_t capacity() const noexcept { return storage_.capacity() ? storage_.capacity() - 1 : 0; }
-    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
-    [[nodiscard]] const char* c_str() const noexcept { return storage_.empty() ? "" : storage_.data(); }
+    String() noexcept = default;
+    explicit String(StringView text) { assign(text); }
+    String(const String&);
+    String& operator=(const String&);
+    String(String&&) noexcept;
+    String& operator=(String&&) noexcept;
+    ~String() { delete[] heap_; }
+
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return heap_ ? buffer_.capacity : inline_capacity; }
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]] const char* c_str() const noexcept { return heap_ ? heap_ : buffer_.small; }
     [[nodiscard]] StringView view() const & noexcept { return {c_str(), size()}; }
     StringView view() const && = delete;
     [[nodiscard]] char operator[](std::size_t index) const { return StringView{c_str(), size()}[index]; }
     void reserve(std::size_t bytes);
-    void squeeze() { storage_.squeeze(); }
-    void clear() noexcept { storage_.clear(); }
-    void release() noexcept { storage_.release(); }
-    void swap(String& other) noexcept { storage_.swap(other.storage_); }
-    void assign(StringView text) { String copy{text}; swap(copy); }
+    void squeeze();
+    void clear() noexcept { size_ = 0; mutable_data()[0] = '\0'; }
+    void release() noexcept;
+    void swap(String& other) noexcept;
+    void assign(StringView text);
+    void assign(const String& text) { *this = text; }
     void append(StringView text);
+    // A complete owning String already satisfies the UTF-8 invariant. Byte
+    // views, including slices of this String, still use the checked overload.
+    void append(const String& text) { write_validated(text.view(), size_); }
     [[nodiscard]] bool contains(StringView text) const noexcept { return view().contains(text); }
     friend bool operator==(const String& left, const String& right) noexcept { return left.view() == right.view(); }
     friend auto operator<=>(const String& left, const String& right) noexcept { return left.view() <=> right.view(); }
 
 private:
-    Array<char> storage_;
+    [[nodiscard]] char* mutable_data() noexcept { return heap_ ? heap_ : buffer_.small; }
+    [[nodiscard]] std::size_t grown_capacity(std::size_t minimum) const noexcept;
+    void reallocate(std::size_t capacity);
+    void write_validated(StringView text, std::size_t prefix);
+    void move_from(String& other) noexcept;
+
+    char* heap_{};
+    std::size_t size_{};
+    union Buffer {
+        char small[inline_capacity + 1];
+        std::size_t capacity;
+        constexpr Buffer() noexcept : small{} {}
+    } buffer_;
 };
+
+static_assert(sizeof(String) == 32);
 
 inline StringView::StringView(const String& text) noexcept : StringView(text.view()) {}
 

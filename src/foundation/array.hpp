@@ -4,14 +4,16 @@
 
 #include <algorithm>
 #include <concepts>
+#include <cstring>
 #include <initializer_list>
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 namespace atelier {
 
-// Unique contiguous storage. Growth copies or nothrow-moves live elements;
-// arbitrary objects are never relocated with memcpy.
+// Unique contiguous storage. Byte paths require a trivially copyable type and
+// the exact selected operation to be trivial; resources retain typed lifetimes.
 template<class T>
 class Array {
     static_assert(std::is_object_v<T> && !std::is_const_v<T> && !std::is_volatile_v<T>);
@@ -29,7 +31,17 @@ public:
         : Array(Span<const T>{values.begin(), values.size()}) {}
     Array(const Array& other) requires std::is_copy_constructible_v<T> : Array(other.view()) {}
     Array& operator=(const Array& other) requires std::is_copy_constructible_v<T> {
-        if (this != &other) { Array copy{other}; swap(copy); }
+        if (this == &other) return *this;
+        if constexpr (byte_copy && std::is_trivially_copy_assignable_v<T>) {
+            if (other.size_ <= capacity_) {
+                // Live prefix assignment and raw tail construction are both
+                // trivial and cannot fail. No resource callback is bypassed.
+                if (other.size_) std::memcpy(data_, other.data_, other.size_ * sizeof(T));
+                size_ = other.size_;
+                return *this;
+            }
+        }
+        Array copy{other}; swap(copy);
         return *this;
     }
     Array(Array&& other) noexcept { swap(other); }
@@ -70,8 +82,15 @@ public:
 
     template<class... A> requires std::constructible_from<T, A...>
     T& emplace(A&&... arguments) {
-        extend(1, [&](T* destination, std::size_t) {
+        if (size_ < capacity_) {
+            auto* destination = data_ + size_;
             std::construct_at(destination, std::forward<A>(arguments)...);
+            ++size_;
+            return *destination;
+        }
+        extend(1, [&](T* destination, std::size_t, std::size_t& constructed) {
+            std::construct_at(destination, std::forward<A>(arguments)...);
+            constructed = 1;
         });
         return data_[size_ - 1];
     }
@@ -79,16 +98,25 @@ public:
     T& add(T&& value) requires std::is_move_constructible_v<T> { return emplace(std::move(value)); }
     void append(Span<const T> values) requires std::is_copy_constructible_v<T> {
         // Construct the suffix before relocating old elements, including a self-view.
-        extend(values.size(), [&](T* destination, std::size_t i) { std::construct_at(destination, values[i]); });
+        extend(values.size(), [&](T* destination, std::size_t count, std::size_t& constructed) {
+            copy_construct(destination, values.data(), count, constructed);
+        });
     }
     void resize(std::size_t size) requires std::default_initializable<T> {
         if (size < size_) { destroy(data_ + size, size_ - size); size_ = size; }
-        else extend(size - size_, [](T* destination, std::size_t) { std::construct_at(destination); });
+        else extend(size - size_, [](T* destination, std::size_t count, std::size_t& constructed) {
+            for (; constructed != count; ++constructed) std::construct_at(destination + constructed);
+        });
     }
     void remove_at(std::size_t first, std::size_t count = 1) requires std::is_move_assignable_v<T> {
         check_range(first, count);
         if (!count) return;
-        for (std::size_t i = first; i != size_ - count; ++i) data_[i] = std::move(data_[i + count]);
+        if constexpr (std::is_trivially_copyable_v<T> && std::is_trivially_move_assignable_v<T>) {
+            const auto remaining = size_ - first - count;
+            if (remaining) std::memmove(data_ + first, data_ + first + count, remaining * sizeof(T));
+        } else {
+            for (std::size_t i = first; i != size_ - count; ++i) data_[i] = std::move(data_[i + count]);
+        }
         destroy(data_ + size_ - count, count); size_ -= count;
     }
     // Constant-time erase when order is irrelevant. Never shrinks capacity.
@@ -116,7 +144,30 @@ public:
     [[nodiscard]] bool contains(const T& value) const requires std::equality_comparable<T> { return find(value) != npos; }
 
 private:
-    static void destroy(T* data, std::size_t size) noexcept { while (size) std::destroy_at(data + --size); }
+    static constexpr bool byte_copy = std::is_trivially_copyable_v<T> && std::is_trivially_copy_constructible_v<T>;
+    using RelocationSource = decltype(std::move_if_noexcept(std::declval<T&>()));
+    static constexpr bool byte_relocate = std::is_trivially_copyable_v<T> && std::is_trivially_constructible_v<T, RelocationSource>;
+
+    static void destroy(T* data, std::size_t size) noexcept {
+        if constexpr (!std::is_trivially_destructible_v<T>) while (size) std::destroy_at(data + --size);
+    }
+    static void copy_construct(T* destination, const T* source, std::size_t count, std::size_t& constructed) {
+        if constexpr (byte_copy) {
+            if (count) std::memcpy(destination, source, count * sizeof(T));
+            constructed = count;
+        } else {
+            for (; constructed != count; ++constructed) std::construct_at(destination + constructed, source[constructed]);
+        }
+    }
+    static void relocate(T* destination, T* source, std::size_t count, std::size_t& constructed) {
+        if constexpr (byte_relocate) {
+            if (count) std::memcpy(destination, source, count * sizeof(T));
+            constructed = count;
+        } else {
+            for (; constructed != count; ++constructed)
+                std::construct_at(destination + constructed, std::move_if_noexcept(source[constructed]));
+        }
+    }
     static T* allocate(std::size_t count) {
         if (count > max_size) throw std::length_error("Array exceeds addressable storage.");
         return count ? std::allocator<T>{}.allocate(count) : nullptr;
@@ -129,8 +180,7 @@ private:
         T* replacement = allocate(capacity);
         std::size_t constructed = 0;
         try {
-            for (; constructed != size_; ++constructed)
-                std::construct_at(replacement + constructed, std::move_if_noexcept(data_[constructed]));
+            relocate(replacement, data_, size_, constructed);
         } catch (...) { destroy(replacement, constructed); deallocate(replacement, capacity); throw; }
         destroy(data_, size_); deallocate(data_, capacity_);
         data_ = replacement; capacity_ = capacity;
@@ -145,10 +195,8 @@ private:
         T* destination = growing ? allocate(capacity) : data_;
         std::size_t suffix = 0, prefix = 0;
         try {
-            for (; suffix != count; ++suffix) construct(destination + size_ + suffix, suffix);
-            if (growing)
-                for (; prefix != size_; ++prefix)
-                    std::construct_at(destination + prefix, std::move_if_noexcept(data_[prefix]));
+            construct(destination + size_, count, suffix);
+            if (growing) relocate(destination, data_, size_, prefix);
         } catch (...) {
             destroy(destination + size_, suffix);
             if (growing) { destroy(destination, prefix); deallocate(destination, capacity); }

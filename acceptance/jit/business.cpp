@@ -59,7 +59,7 @@ MethodId fixture_method(const Binding& binding, std::string_view name) {
     throw std::runtime_error("Fixture method was not exposed by the Runtime.");
 }
 
-std::array<BusinessScalar, 2> machine_arguments(float amount, std::uint32_t steps) { return {scalar(amount), scalar(steps)}; }
+std::array<BusinessValue, 2> machine_arguments(float amount, std::uint32_t steps) { return {scalar(amount), scalar(steps)}; }
 std::array<TypeId, 2> register_machines(Runtime& runtime);
 
 const std::string& business_source() {
