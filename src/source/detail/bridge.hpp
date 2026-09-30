@@ -14,16 +14,23 @@ using CodeOwner = std::unique_ptr<BusinessCode, decltype(&atelier_destroy_busine
 struct BoundField {
     std::string name;
     std::vector<FieldId> path;
-    ScalarKind kind;
+    BusinessType kind;
     bool operator==(const BoundField&) const = default;
 };
 struct BoundMethod {
     std::string name;
     MethodId id;
-    std::vector<ScalarKind> parameters;
-    ScalarKind result{ScalarKind::void_value};
+    std::vector<BusinessParameter> parameters;
+    BusinessType result{ScalarKind::void_value};
     bool receiver_read_only{};
     bool operator==(const BoundMethod&) const = default;
+};
+struct BoundEnum {
+    TypeId type;
+    std::string name;
+    ScalarKind underlying;
+    std::vector<std::pair<std::string, std::uint32_t>> values;
+    bool operator==(const BoundEnum&) const = default;
 };
 struct Binding {
     Runtime* runtime{};
@@ -32,22 +39,34 @@ struct Binding {
     std::vector<BoundField> fields;
     std::vector<BoundMethod> methods;
     std::vector<TypeId> dependencies;
+    std::vector<BoundEnum> enumerations{};
+    TypeId f32{}, u32{}, i32{};
 };
 Binding bind_type(Runtime&, TypeId);
+BusinessType scalar_kind(const Binding&, TypeId);
+TypeId scalar_type(const Binding&, BusinessType);
 struct EnvironmentView {
     std::vector<BusinessFieldBinding> fields;
     std::vector<BusinessMethodBinding> methods;
+    std::vector<std::vector<BusinessEnumItem>> enum_items;
+    std::vector<BusinessEnumBinding> enumerations;
     explicit EnvironmentView(const Binding&);
     BusinessEnvironment view(const char* object_type_name) const;
 };
 inline BusinessScalar scalar(float value) { return {ScalarKind::f32, std::bit_cast<std::uint32_t>(value)}; }
 inline BusinessScalar scalar(std::uint32_t value) { return {ScalarKind::u32, value}; }
-std::optional<Scalar> scalar_value(BusinessScalar);
+inline BusinessScalar scalar(std::int32_t value) { return {ScalarKind::i32, std::bit_cast<std::uint32_t>(value)}; }
+BusinessScalar scalar(const Scalar&, const Binding&);
+std::optional<Scalar> scalar_value(BusinessScalar, const Binding* = nullptr);
 struct AbiArguments {
     std::array<BusinessScalar, 8> inline_values;
     std::vector<BusinessScalar> expanded;
     std::span<BusinessScalar> values;
-    explicit AbiArguments(std::span<const Scalar>);
+    PreparedArguments prepared;
+    Result<void> status;
+    AbiArguments(const Binding&, const FunctionSignature&, std::span<const Scalar>);
+    AbiArguments(const Binding&, const FunctionSignature&, std::span<const Argument>);
+    void initialize(const Binding&, const FunctionSignature&, std::span<const Argument>);
     AbiArguments(const AbiArguments&) = delete;
     AbiArguments& operator=(const AbiArguments&) = delete;
     AbiArguments(AbiArguments&&) = delete;
@@ -73,9 +92,9 @@ struct Invocation {
     std::span<ObjectRoot> roots;
     std::vector<ObjectReference> observations;
     ExecutionFrame frame;
-    std::array<Scalar, 8> inline_arguments;
-    std::vector<Scalar> expanded_arguments;
-    std::span<Scalar> method_arguments;
+    std::array<Argument, 8> inline_arguments;
+    std::vector<Argument> expanded_arguments;
+    std::span<Argument> method_arguments;
     CollectionBudget budget;
     InvocationObserver observer;
     bool failed{};

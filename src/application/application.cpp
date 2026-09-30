@@ -8,10 +8,21 @@
 
 namespace atelier::application {
 namespace {
+Result<void> completion(Result<void> result) { return result; }
+Result<void> completion(Result<world::Commit> result) {
+    if (!result) return std::unexpected(result.error());
+    if (result->notification_error) {
+        auto error = std::move(*result->notification_error);
+        error.message = "Operation committed; lifecycle notification failed: " + error.message;
+        return std::unexpected(std::move(error));
+    }
+    return {};
+}
 template<class T> T take(Result<T> result) {
     if (!result) throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+void take(Result<void> result) { if (!result) throw std::runtime_error(result.error().message); }
 template<class T> T graphics(renderer::Result<T> result) {
     if (!result) throw std::runtime_error(result.error().cause.message);
     return std::move(*result);
@@ -35,7 +46,9 @@ ui::PixelExtent client_extent(HWND window) {
 }
 }
 Application::Application(bool validation) {
-    take(document_.add());
+    take(completion(document_.add_actor()));
+    take(completion(document_.add_component(document_.types().transform)));
+    take(completion(document_.add_component(document_.types().cube)));
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
@@ -48,12 +61,26 @@ Application::~Application() {
 void Application::status(Result<void> result, const wchar_t* success) {
     workspace_.status = result ? success : widen(result.error().message);
 }
+void Application::status(Result<world::Commit> result, const wchar_t* success) {
+    status(completion(std::move(result)), success);
+}
+
+Result<void> Application::focus_selected() {
+    auto transform = world::root_transform(document_.world().runtime(), document_.selected());
+    if (!transform) return std::unexpected(transform.error());
+    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no Transform to focus."});
+    auto matrix = world::world_matrix(document_.world().runtime(), **transform);
+    if (!matrix) return std::unexpected(matrix.error());
+    camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
+    return {};
+}
 Result<void> Application::action(const ui::Action& event) {
     using namespace editor::control;
     const auto invalid = [] { return std::unexpected(Error{ErrorCode::invalid_definition, "UI action does not match its live binding or value type."}); };
-    const auto done = [&](Result<void> result, const wchar_t* message) -> Result<void> {
-        if (result) workspace_.status = message;
-        return result;
+    const auto done = [&](auto result, const wchar_t* message) -> Result<void> {
+        auto finished = completion(std::move(result));
+        if (finished) workspace_.status = message;
+        return finished;
     };
     if (event.key == parameter_search) {
         const auto* value = std::get_if<std::wstring>(&event.value);
@@ -71,42 +98,39 @@ Result<void> Application::action(const ui::Action& event) {
             workspace_.parameter_width = static_cast<float>(-*value);
         return {};
     }
-    if (event.key >= position_base) {
-        if (event.kind == ui::ActionKind::edit_cancel) return done(document_.cancel_position(), L"Edit cancelled");
-        const auto bound = (event.key - position_base) / 4;
-        const auto axis = static_cast<std::size_t>((event.key - position_base) % 4);
+    // A retired control's cleanup must not cancel a different live edit.
+    if (event.kind == ui::ActionKind::edit_cancel)
+        return document_.owns_edit(event.key) ? done(document_.cancel_edit(), L"Edit cancelled") : Result<void>{};
+    if (const auto* binding = workspace_.binding(event.key)) {
+        if (binding->path.empty()) {
+            if (event.kind == ui::ActionKind::select) return done(document_.select(binding->object), L"Actor selected");
+            if (event.kind == ui::ActionKind::activate) return done(document_.remove_component(binding->object), L"Component removed / Undo restores it");
+            return invalid();
+        }
         const auto* value = std::get_if<double>(&event.value);
-        if (bound != document_.selected() || axis >= 3 || !value) return invalid();
+        if (!value) return invalid();
         switch (event.kind) {
-        case ui::ActionKind::edit_begin: return done(document_.begin_position(), L"Editing position / Esc cancels");
+        case ui::ActionKind::edit_begin:
+            return done(document_.begin_edit(binding->object, binding->path, event.key), L"Editing field / Esc cancels");
         case ui::ActionKind::edit_preview:
-            return done(document_.preview_position(axis, static_cast<float>(*value)), L"Position preview / Esc cancels");
+            return done(document_.preview_edit(event.key, static_cast<float>(*value)), L"Field preview / Esc cancels");
         case ui::ActionKind::edit_commit: {
-            auto preview = document_.preview_position(axis, static_cast<float>(*value));
+            auto preview = document_.preview_edit(event.key, static_cast<float>(*value));
             if (!preview) return preview;
-            return done(document_.commit_position(), L"Position committed");
+            return done(document_.commit_edit(event.key), L"Field committed");
         }
         default: return {};
         }
     }
-    if (event.kind == ui::ActionKind::select && event.key >= first_object)
-        return done(document_.select(event.key - first_object), L"Object selected");
-    if (event.kind != ui::ActionKind::activate) return {};
+    if (event.kind != ui::ActionKind::activate) return {}; // Includes retired field/Actor bindings.
     switch (event.key) {
-    case add: {
-        const auto count = document_.scene().members().size();
-        const auto created = document_.add({static_cast<float>(count % 5) * 1.6f, 0, static_cast<float>(count / 5) * 1.6f});
-        if (!created) return std::unexpected(created.error());
-        workspace_.status = L"Cube added"; return {};
-    }
-    case remove: return done(document_.erase_selected(), L"Cube deleted / Undo restores it");
+    case add_actor: return done(document_.add_actor(), L"Empty Actor added");
+    case remove_actor: return done(document_.erase_selected(), L"Actor removed / Undo restores it");
+    case add_transform: return done(document_.add_component(document_.types().transform), L"Transform added");
+    case add_cube: return done(document_.add_component(document_.types().cube), L"Cube component added");
     case undo: return done(document_.undo(), L"Undo");
     case redo: return done(document_.redo(), L"Redo");
-    case focus: {
-        auto point = document_.scene().position(document_.selected());
-        if (!point) return std::unexpected(point.error());
-        camera_.focus(*point); workspace_.status = L"Focused selection"; return {};
-    }
+    case focus: return done(focus_selected(), L"Focused selection");
     case reset: camera_.reset(); workspace_.status = L"Camera reset"; return {};
     default: return {};
     }
@@ -166,7 +190,7 @@ void Application::effects(const ui::Reply& reply) {
     apply(apply, reply, false);
     if (business_failed) {
         apply(apply, ui_.cancel_interaction(), true);
-        const auto cancelled = document_.cancel_position();
+        const auto cancelled = document_.cancel_edit();
         if (!cancelled) first_error += L"; rollback failed: " + widen(cancelled.error().message);
         window_.capture(false);
     }
@@ -182,7 +206,7 @@ void Application::invalidate_surface() {
     ++surface_revision_;
     orbiting_ = false;
     effects(ui_.cancel_interaction());
-    const auto cancelled = document_.cancel_position();
+    const auto cancelled = document_.cancel_edit();
     if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
     window_.capture(false);
 }
@@ -254,17 +278,17 @@ void Application::native(NativeEvent message) {
     effects(reply);
     if (event.kind == ui::EventKind::focus_lost || event.kind == ui::EventKind::capture_lost) {
         window_.capture(false); // Includes camera capture, which is owned outside UI.
-        const auto cancelled = document_.cancel_position();
+        const auto cancelled = document_.cancel_edit();
         if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
         return;
     }
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
-        if (event.key == ui::Key::delete_key) status(document_.erase_selected(), L"Cube deleted");
+        if (event.key == ui::Key::delete_key) status(document_.erase_selected(), L"Actor removed");
         else if (event.control && event.key == ui::Key::z) status(event.shift ? document_.redo() : document_.undo(), event.shift ? L"Redo" : L"Undo");
         else if (event.control && event.key == ui::Key::y) status(document_.redo(), L"Redo");
-        else if (event.key == ui::Key::escape) status(document_.cancel_position(), L"Edit cancelled");
+        else if (event.key == ui::Key::escape) status(document_.cancel_edit(), L"Edit cancelled");
         else if (message.wparam == 'F' && !ui_.wants_keyboard()) {
-            const auto point = document_.scene().position(document_.selected()); if (point) camera_.focus(*point);
+            status(focus_selected(), L"Focused selection");
         }
     }
 }
@@ -302,10 +326,10 @@ bool Application::step(renderer::Capture* capture) {
     const auto* viewport = frame.find(editor::control::viewport);
     if (!viewport) throw std::runtime_error("Editor viewport is missing.");
     cubes_.clear();
-    for (const auto& member : document_.scene().members()) {
-        const auto position = take(document_.scene().position(member.key));
-        cubes_.push_back({{position.x, position.y, position.z}, {.19f, .42f, .57f, 1}, member.key == document_.selected()});
-    }
+    const auto items = take(document_.world().render_items());
+    cubes_.reserve(items.size());
+    for (const auto& item : items)
+        cubes_.push_back({item.world, {.19f, .42f, .57f, 1}, item.actor == document_.selected()});
     const auto camera = camera_.matrices(viewport->bounds.width / std::max(viewport->bounds.height, 1.f));
     renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, viewport->bounds, cubes_};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
@@ -330,9 +354,10 @@ void Application::close() {
     if (closed_) return;
     closed_ = true;
     effects(ui_.cancel_interaction());
-    const auto cancelled = document_.cancel_position();
+    const auto cancelled = document_.cancel_edit();
     if (!cancelled) throw std::runtime_error(cancelled.error().message);
     window_.capture(false);
+    take(completion(document_.close()));
     const auto stopped = renderer_.close();
     if (!stopped) throw std::runtime_error(stopped.error().cause.message);
 }

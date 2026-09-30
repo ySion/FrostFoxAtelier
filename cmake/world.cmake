@@ -7,6 +7,8 @@ function(atelier_add_world)
     atelier_target(atelier_world)
     target_link_libraries(atelier_world PUBLIC atelier_runtime)
     target_include_directories(atelier_world PUBLIC src)
+    atelier_reflect(atelier_world SOURCE src/world/objects.cpp
+        HEADERS src/world/math.hpp src/world/world.hpp)
 
     add_executable(atelier_world_acceptance acceptance/world/main.cpp)
     atelier_target(atelier_world_acceptance)

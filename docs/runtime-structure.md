@@ -6,7 +6,7 @@
 
 当前类型与对象身份、引用根和执行准入都归同一 Runtime；源码前端、LLVM 降低和宿主桥接承担不同转换职责。没有发现另建对象身份、协程 GC 或平行业务调度器的路径。
 
-完整源码执行链现在由正式宿主库 `atelier_source` 和隔离 DLL `atelier_source_backend` 提供。机器快照与统计由验收消费者持有；生成帧只预留接收者槽，不再认识机器快照。公共接口使用 Runtime Scalar，编译分类和 DLL 位表示留在实现内。
+完整源码执行链现在由正式宿主库 `atelier_source` 和隔离 DLL `atelier_source_backend` 提供。机器快照与统计由验收消费者持有；生成帧只预留接收者槽，不再认识机器快照。公共接口使用 Runtime Scalar 值与 Argument 借用，编译分类和 DLL 位表示留在实现内。
 
 ## 模块与实际构建归属
 
@@ -14,18 +14,20 @@
 | --- | --- | --- |
 | 类型与对象 Runtime | [runtime.hpp](../src/runtime/runtime.hpp)、[runtime.cpp](../src/runtime/runtime.cpp)：类型发布、对象身份、值操作、根、GC 和原生调用 | 正式静态目标 `atelier_runtime`；不依赖 LLVM、语言前端或验收代码 |
 | 执行协议 | [execution.hpp](../src/runtime/execution.hpp)、[execution.cpp](../src/runtime/execution.cpp)：ExecutionScope、根槽执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
-| 原生定义生产者 | [native.hpp](../src/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition | 头文件适配，使用同一 Runtime 定义与 Invoker 协议 |
+| 原生定义生产者 | [native.hpp](../src/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition；[自动反射工具](../tools/reflection/main.cpp)产生这些注册调用 | `atelier_reflect` 是构建期工具，薄宏入口为 [reflection.hpp](../src/runtime/reflection.hpp)；生成代码使用同一 Runtime 定义与 Invoker 协议 |
 | 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：词法、语法、类型检查和定型 AST | 源码仅依赖标准库，编入 `atelier_source_backend`。Environment 借用到编译结束，AST 拥有降低所需数据 |
 | LLVM 降低与代码资源 | [source_backend.cpp](../src/jit/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
 | Windows 展开信息 | [windows_unwind.cpp](../src/jit/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
-| 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用参数/结果使用 Scalar，使用已有 Coroutine 表达协程拥有关系 |
+| 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar，使用已有 Coroutine 表达协程拥有关系 |
 | Runtime 桥接 | [bridge.hpp](../src/source/detail/bridge.hpp)、[bridge.cpp](../src/source/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；不包含机器快照、统计或具体测试模式。内部观察点供验收组合其状态 |
 | 端到端消费者 | [公共最小消费者](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[连续会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 公共消费者使用正式接口，连续会话另读取分配器和 OS 统计；完整验收通过内部接缝检查 raw ABI 和故障路径，均使用同一正式实现 |
 | 阶段测量 | [measure.cpp](../acceptance/source/measure.cpp)：正式接口的有界时间与资源样本 | 显式目标 `atelier_source_measure`，不随普通构建或验收运行此专项目标；不向生产层加入统计状态 |
 
 构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。`ATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收与后端故障注入，正式库及 `source_acceptance` 保持可用。
 
-`ValueType`、`ScalarKind` 和 `FunctionSignature` 分别服务编译分类、私有 ABI 和 Runtime 语义描述。前两者由真实编译产物/元数据核对，不建立业务类型身份；它们的存在不等于三套类型体系。私有 ABI 尚不是永久通用调用协议。
+`ValueType`、`BusinessType/BusinessParameter` 和 `FunctionSignature` 分别服务编译分类、私有 ABI 和 Runtime 语义描述。前两者由真实编译产物/元数据核对，不建立业务类型身份；它们的存在不等于三套类型体系。枚举索引只定位捕获的 Runtime 目录；ParameterPassing 在宿主与编译链间共用。私有 ABI 尚不是永久通用调用协议。
+
+`atelier_foundation` 独立管理 Array/String 的拥有存储及 Span/StringView 的借用接口；不依赖 Runtime。`runtime/foundation.hpp` 只生产现有 TypeDefinition，数组元素元数据和受保护字段借用归 `atelier_runtime`，宏生成器复用 NativeRegistration。值构析与对象 GC 共用已有执行链；具体操作与首片边界见[基础库](foundation.md)。
 
 对象字段的 `ReferenceSequence`、`ReferenceField`、`with_native` 和 `apply_reference_changes` 均归 `atelier_runtime`。字段定位复用注册元数据和继承地址调整，单槽与批量写入共用引用校验/屏障；序列追踪使用既有 GC 灰队列，原生借用复用回调准入保护。调用链为“字段定位 → 整批验证/复制/容量准备 → 无回调提交 → 屏障与必要的重新追踪”。源码目录仍只编译已支持的字段形式，未新增语言容器或后端 ABI；完整接口边界见[引用序列与受保护原生访问](runtime-model.md#引用序列与受保护原生访问)。
 

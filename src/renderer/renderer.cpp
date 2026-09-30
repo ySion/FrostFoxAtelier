@@ -53,8 +53,9 @@ void validate(const Frame &frame) {
         good &= finite(v);
     for (const auto &cube : frame.cubes) {
         good &= valid(cube.color);
-        for (float v : cube.position)
+        for (float v : cube.world)
             good &= finite(v);
+        good &= cube.world[3] == 0 && cube.world[7] == 0 && cube.world[11] == 0 && cube.world[15] == 1;
     }
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color);
@@ -74,11 +75,40 @@ struct Vertex {
     float normal[3];
 };
 struct Instance {
-    std::array<float, 3> position;
+    std::array<float, 16> world;
+    std::array<float, 9> face_normals;
     float selected;
     ui::Color color;
 };
-static_assert(sizeof(Instance) == 32 && sizeof(Vertex) == 24);
+static_assert(sizeof(Instance) == 120 && sizeof(Vertex) == 24);
+Instance prepare_instance(const Cube &cube) {
+    const auto &m = cube.world;
+    const double a = m[0], b = m[1], c = m[2];
+    const double d = m[4], e = m[5], f = m[6];
+    const double g = m[8], h = m[9], i = m[10];
+    // Cofactor rows are inverse-transpose rows times determinant. Double
+    // intermediates avoid overflow/underflow for finite float matrix entries.
+    const std::array<double, 9> cofactors{e * i - f * h, f * g - d * i, d * h - e * g,
+                                          c * h - b * i, a * i - c * g, b * g - a * h,
+                                          b * f - c * e, c * d - a * f, a * e - b * d};
+    const double determinant = a * cofactors[0] + b * cofactors[1] + c * cofactors[2];
+    if (determinant == 0) throw error(rhi::ErrorCode::invalid_argument, "Cube world matrix is singular");
+    Instance result{cube.world, {}, cube.selected ? 1.0f : 0.0f, cube.color};
+    // Cube normals are signed basis axes. Normalize their transformed directions
+    // individually on the CPU so extreme nonuniform scales cannot underflow a
+    // normal in the shader. det's sign preserves outward normals under reflection.
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const std::size_t offset = axis * 3;
+        const double length = std::hypot(cofactors[offset], cofactors[offset + 1], cofactors[offset + 2]);
+        if (length == 0)
+            throw error(rhi::ErrorCode::invalid_argument, "Cube world matrix has a degenerate face");
+        const double sign = determinant < 0 ? -1.0 : 1.0;
+        for (std::size_t component = 0; component < 3; ++component)
+            result.face_normals[offset + component] =
+                static_cast<float>(sign * cofactors[offset + component] / length);
+    }
+    return result;
+}
 std::array<Vertex, 36> cube_vertices() {
     constexpr float p[8][3] = {{-.5f, -.5f, -.5f}, {.5f, -.5f, -.5f}, {.5f, .5f, -.5f}, {-.5f, .5f, -.5f},
                                {-.5f, -.5f, .5f},  {.5f, -.5f, .5f},  {.5f, .5f, .5f},  {-.5f, .5f, .5f}};
@@ -446,7 +476,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.instances.clear();
         s.instances.reserve(frame.cubes.size());
         for (const auto &cube : frame.cubes)
-            s.instances.push_back({cube.position, cube.selected ? 1.0f : 0.0f, cube.color});
+            s.instances.push_back(prepare_instance(cube));
         Capture pending;
         if (capture) {
             pending.frame_id = frame.ui_frame.id;

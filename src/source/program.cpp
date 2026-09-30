@@ -17,7 +17,7 @@ struct Program::Metadata {
     TypeInfo value;
     bool matches(const TypeInfo& actual) const {
         if (&actual != identity || actual.id != value.id || actual.name != value.name ||
-            actual.kind != value.kind || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
+            actual.enumeration != value.enumeration || actual.kind != value.kind || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
             actual.copy_constructible != value.copy_constructible || actual.copy_assignable != value.copy_assignable ||
             actual.contains_references != value.contains_references || actual.fields.size() != value.fields.size() ||
             actual.methods.size() != value.methods.size()) return false;
@@ -41,12 +41,10 @@ struct Program::Declaration {
 struct Program::Contract {
     Binding binding;
     std::string type_name;
-    TypeId f32, u32;
     BusinessServices actual_services;
     std::vector<Metadata> metadata;
     Contract(Runtime& runtime, TypeId type)
         : binding(bind_type(runtime, type)), type_name(binding.name),
-          f32(take(runtime.native_type<float>())), u32(take(runtime.native_type<std::uint32_t>())),
           actual_services(services) {
         binding.name = type_name;
         for (const auto dependency : binding.dependencies) {
@@ -54,9 +52,9 @@ struct Program::Contract {
             metadata.push_back({info, *info});
         }
     }
-    std::optional<ValueDescription> scalar_value(ScalarKind kind) const noexcept {
-        if (kind == ScalarKind::f32) return ValueDescription{f32};
-        if (kind == ScalarKind::u32) return ValueDescription{u32};
+    std::optional<ValueDescription> scalar_value(BusinessType kind) const noexcept {
+        const auto type = scalar_type(binding, kind);
+        if (type != TypeId{}) return ValueDescription{type};
         return std::nullopt;
     }
     Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info) const {
@@ -64,10 +62,10 @@ struct Program::Contract {
         definition.execution = info.signature.is_coroutine ? FunctionExecution::coroutine : FunctionExecution::synchronous;
         definition.parameters.reserve(info.signature.parameter_count);
         for (std::uint32_t i = 0; i < info.signature.parameter_count; ++i) {
-            const auto value = scalar_value(info.signature.parameters[i]);
+            const auto value = scalar_value(info.signature.parameters[i].type);
             if (!value)
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source parameter."});
-            definition.parameters.push_back({value->type, value->form});
+            definition.parameters.push_back({{value->type, value->form}, info.signature.parameters[i].passing});
         }
         if (info.signature.result != ScalarKind::void_value) {
             const auto value = scalar_value(info.signature.result);
@@ -100,8 +98,8 @@ struct Program::Contract {
                 declaration->signature.result != result)))
             return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate changed its source parameter/result signature."});
         for (std::uint32_t i = 0; i < info.signature.parameter_count; ++i) {
-            const auto value = scalar_value(info.signature.parameters[i]);
-            if (!value || (declaration && declaration->signature.parameters[i] != *value))
+            const auto value = scalar_value(info.signature.parameters[i].type);
+            if (!value || (declaration && declaration->signature.parameters[i] != ParameterDescription{*value, info.signature.parameters[i].passing}))
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate changed its source parameter/result signature."});
         }
         if (declaration && info.requires_receiver && !declaration->signature.receiver)
@@ -122,7 +120,7 @@ struct Program::Contract {
         }
         const auto actual = bind_type(*binding.runtime, binding.type);
         if (actual.runtime != binding.runtime || actual.type != binding.type || actual.name != type_name ||
-            actual.fields != binding.fields || actual.methods != binding.methods || actual.dependencies != binding.dependencies)
+            actual.fields != binding.fields || actual.methods != binding.methods || actual.enumerations != binding.enumerations || actual.dependencies != binding.dependencies)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Bound member identities changed."});
         return {};
     }
@@ -138,6 +136,14 @@ struct Program::Version {
         std::uint64_t request, CodeOwner owner) noexcept
         : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())) {}
+    template<class T>
+    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget) const {
+        const AbiArguments encoded(contract->binding, declaration->signature, arguments);
+        if (!encoded.status) return std::unexpected(encoded.status.error());
+        auto result = invoke(receiver, encoded.values, {}, budget);
+        if (!result) return std::unexpected(result.error());
+        return detail::scalar_value(*result, &contract->binding);
+    }
     Result<BusinessScalar> invoke(ObjectId receiver, std::span<const BusinessScalar> arguments,
         InvocationObserver observer, CollectionBudget budget) const {
         if (info.signature.is_coroutine)
@@ -196,7 +202,7 @@ struct Program::Frame final : CoroutineFrame {
             return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
                 invocation.failed ? invocation.error : diagnostic});
         if (suspended) return CoroutineStep{CoroutineState::suspended};
-        return CoroutineStep{CoroutineState::completed, scalar_value(output)};
+        return CoroutineStep{CoroutineState::completed, scalar_value(output, &version->contract->binding)};
     }
 };
 struct Program::Prepared {
@@ -286,26 +292,48 @@ BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept 
 }
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {
-    const AbiArguments encoded(arguments);
-    auto result = ProgramAccess::invoke(*this, receiver, encoded.values, {}, budget);
-    if (!result) return std::unexpected(std::move(result.error()));
-    return scalar_value(*result);
+    const auto owner = owner_.lock();
+    if (!owner || !owner->open || !owner->current)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
+    const auto version = owner->current;
+    return version->invoke_values(receiver, arguments, budget);
+}
+Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
+    CollectionBudget budget) const {
+    const auto owner = owner_.lock();
+    if (!owner || !owner->open || !owner->current)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
+    const auto version = owner->current;
+    return version->invoke_values(receiver, arguments, budget);
 }
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {
-    const AbiArguments encoded(arguments);
-    auto result = ProgramAccess::invoke(*this, receiver, encoded.values, {}, budget);
-    if (!result) return std::unexpected(std::move(result.error()));
-    return scalar_value(*result);
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    return version->invoke_values(receiver, arguments, budget);
+}
+Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
+    CollectionBudget budget) const {
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    return version->invoke_values(receiver, arguments, budget);
 }
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {
-    const AbiArguments encoded(arguments);
+    const auto owner = owner_.lock();
+    if (!owner || !owner->open || !owner->current)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
+    const auto version = owner->current;
+    const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
+    if (!encoded.status) return std::unexpected(encoded.status.error());
     return ProgramAccess::start(*this, receiver, encoded.values, {}, budget);
 }
 Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {
-    const AbiArguments encoded(arguments);
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
+    if (!encoded.status) return std::unexpected(encoded.status.error());
     return ProgramAccess::start(*this, receiver, encoded.values, {}, budget);
 }
 Program::Program(Runtime& runtime, TypeId type)

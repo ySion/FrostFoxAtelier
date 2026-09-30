@@ -11,7 +11,7 @@ void Camera::reset() noexcept {
     yaw_ = std::atan2(6.f, -8.f);
     pitch_ = std::asin(5.f / distance_);
 }
-void Camera::focus(scene::Vec3 target) noexcept { target_ = target; distance_ = 5.f; }
+void Camera::focus(world::Vec3 target) noexcept { target_ = target; distance_ = 5.f; }
 void Camera::orbit(float dx, float dy) noexcept {
     yaw_ -= dx * .006f;
     pitch_ = std::clamp(pitch_ + dy * .006f, -1.45f, 1.45f);

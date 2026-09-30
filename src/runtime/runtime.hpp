@@ -1,5 +1,9 @@
 #pragma once
 
+#include "runtime/parameter.hpp"
+#include <array>
+#include <ranges>
+
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -18,6 +22,9 @@
 #include <vector>
 
 namespace atelier {
+template<class T> class Span;
+class StringView;
+
 
 enum class ErrorCode {
     invalid_type, invalid_definition, duplicate_name, invalid_object,
@@ -83,13 +90,23 @@ private:
     std::uint32_t index_{};
 };
 
-enum class TypeKind { scalar, record, object };
+enum class TypeKind { scalar, record, object, enumeration, string, array };
 enum class ValueForm { inline_value, strong_reference, weak_reference, strong_sequence };
 
 struct ValueDescription {
     TypeId type;
     ValueForm form{ValueForm::inline_value};
     bool operator==(const ValueDescription&) const = default;
+};
+
+struct ParameterDescription : ValueDescription {
+    ParameterPassing passing{ParameterPassing::value};
+    ParameterDescription() = default;
+    ParameterDescription(TypeId type, ValueForm form = ValueForm::inline_value, ParameterPassing mode = ParameterPassing::value)
+        : ValueDescription{type, form}, passing(mode) {}
+    ParameterDescription(ValueDescription value, ParameterPassing mode = ParameterPassing::value)
+        : ValueDescription(value), passing(mode) {}
+    bool operator==(const ParameterDescription&) const = default;
 };
 
 // Receiver access is independent of object-reference ownership and parameter passing.
@@ -103,15 +120,35 @@ struct ReceiverDescription {
 // An absent result means void; an absent receiver describes a free function.
 enum class FunctionExecution { synchronous, coroutine };
 struct FunctionSignature {
-    std::vector<ValueDescription> parameters;
+    std::vector<ParameterDescription> parameters;
     std::optional<ValueDescription> result;
     std::optional<ReceiverDescription> receiver;
     FunctionExecution execution{FunctionExecution::synchronous};
     bool operator==(const FunctionSignature&) const = default;
 };
 
-// Only the scalar values needed by the first slice; no boxed object/value universe.
-using Scalar = std::variant<float, std::uint32_t>;
+// Compact scalar/enum values; no boxed object/value universe.
+struct EnumValue {
+    TypeId type;
+    std::uint32_t bits{};
+    bool operator==(const EnumValue&) const = default;
+};
+using Scalar = std::variant<float, std::uint32_t, std::int32_t, EnumValue>;
+
+// Validated, call-scoped storage. Invokers must not retain these addresses.
+struct ArgumentView {
+    TypeId type;
+    const void* data{};
+    void* writable{};
+    template<class T> decltype(auto) get() const {
+        using Value = std::remove_cvref_t<T>;
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            if constexpr (std::is_const_v<std::remove_reference_t<T>>)
+                return *static_cast<const Value*>(data);
+            else return *static_cast<Value*>(writable);
+        } else return Value(*static_cast<const Value*>(data));
+    }
+};
 
 class Runtime;
 
@@ -120,7 +157,7 @@ struct CallContext {
     ObjectId self;
     // Borrowed for this synchronous invocation only. Native bindings are trusted code.
     void* storage;
-    std::span<const Scalar> arguments;
+    std::span<const ArgumentView> arguments;
     // Staged business value. Runtime commits it only after successful validation.
     std::optional<Scalar> result{};
 };
@@ -138,6 +175,8 @@ template<class T> inline constexpr bool borrowed_result = std::is_pointer_v<T> |
 template<class T, std::size_t N> inline constexpr bool borrowed_result<std::span<T, N>> = true;
 template<class C, class Traits> inline constexpr bool borrowed_result<std::basic_string_view<C, Traits>> = true;
 template<class T> inline constexpr bool borrowed_result<std::reference_wrapper<T>> = true;
+template<class T> inline constexpr bool borrowed_result<Span<T>> = true;
+template<> inline constexpr bool borrowed_result<StringView> = true;
 template<class T> struct NativeCallbackResult { static constexpr bool supported = false; };
 template<class T> struct NativeCallbackResult<Result<T>> {
     static constexpr bool supported = !borrowed_result<T>;
@@ -272,13 +311,82 @@ struct ValueDefinition {
     ValueForm form{ValueForm::inline_value};
 };
 
+struct ParameterDefinition : ValueDefinition {
+    ParameterPassing passing{ParameterPassing::value};
+    ParameterDefinition() = default;
+    ParameterDefinition(TypeReference type, ValueForm form = ValueForm::inline_value, ParameterPassing mode = ParameterPassing::value)
+        : ValueDefinition{std::move(type), form}, passing(mode) {}
+    ParameterDefinition(ValueDefinition value, ParameterPassing mode = ParameterPassing::value)
+        : ValueDefinition(std::move(value)), passing(mode) {}
+};
+
+// Values own their scalar. References borrow live caller-owned storage until
+// return. A field operand borrows its path and resolves inside the native call.
+class Argument {
+    friend class Runtime;
+    Scalar value_{};
+    TypeReference type_;
+    bool borrowed_{};
+    const void* data_{};
+    void* writable_{};
+    ObjectId object_;
+    std::span<const FieldId> path_;
+public:
+    Argument() = default;
+    Argument(Scalar value) : value_(std::move(value)) {}
+    template<class T> requires (!std::is_volatile_v<T>)
+    static Argument borrow(T& value) {
+        Argument result;
+        result.borrowed_ = true;
+        result.type_ = TypeReference::native<std::remove_const_t<T>>();
+        result.data_ = std::addressof(value);
+        if constexpr (!std::is_const_v<T>) result.writable_ = std::addressof(value);
+        return result;
+    }
+    // Trusted typed storage, also used by generated code. Must be a live,
+    // aligned value of the exact Runtime type; writable is null or equals data.
+    static Argument borrow(TypeId type, const void* data, void* writable = nullptr) {
+        Argument result;
+        result.borrowed_ = true;
+        result.type_ = type;
+        result.data_ = data;
+        result.writable_ = writable;
+        return result;
+    }
+    static Argument field(ObjectId object, std::span<const FieldId> path) {
+        Argument result;
+        result.object_ = object;
+        result.path_ = path;
+        return result;
+    }
+};
+
+// Typed scalar scratch and validated views share the invocation lifetime.
+// Small calls need no allocation. Addresses cannot survive this owner.
+class PreparedArguments {
+    friend class Runtime;
+    struct alignas(4) Slot { std::byte bytes[4]; };
+    std::array<Slot, 8> inline_slots_{};
+    std::array<ArgumentView, 8> inline_views_{};
+    std::vector<Slot> slots_;
+    std::vector<ArgumentView> views_;
+    std::size_t size_{};
+public:
+    PreparedArguments() = default;
+    PreparedArguments(const PreparedArguments&) = delete;
+    PreparedArguments& operator=(const PreparedArguments&) = delete;
+    [[nodiscard]] std::span<const ArgumentView> values() const noexcept {
+        return {size_ > inline_views_.size() ? views_.data() : inline_views_.data(), size_};
+    }
+};
+
 struct ReceiverDefinition {
     TypeReference type;
     bool read_only{};
 };
 
 struct SignatureDefinition {
-    std::vector<ValueDefinition> parameters;
+    std::vector<ParameterDefinition> parameters;
     std::optional<ValueDefinition> result{};
     std::optional<ReceiverDefinition> receiver{};
     FunctionExecution execution{FunctionExecution::synchronous};
@@ -296,6 +404,8 @@ struct NativeLayout {
     void (*copy_assign)(void*, const void*){};
     // Complete native representation to its explicitly declared native base.
     void* (*base_address)(void*) noexcept{};
+    // Array element representation, checked against the same registered value type.
+    const void* element_representation{};
 };
 
 struct FieldDefinition {
@@ -324,6 +434,12 @@ struct TypeDefinition {
     NativeLayout native;
     // Objects default to core.Object. Records cannot declare a base.
     std::optional<TypeReference> base{};
+    struct Enumeration {
+        TypeReference underlying;
+        std::vector<std::pair<std::string, std::uint32_t>> values;
+    };
+    std::optional<Enumeration> enumeration{};
+    std::optional<TypeReference> element{};
 };
 
 struct FieldInfo {
@@ -352,6 +468,13 @@ struct TypeInfo {
     bool contains_references{};
     // Public member lists include ancestors, preserving declaration IDs/signatures.
     std::optional<TypeId> base{};
+    struct Enumeration {
+        TypeId underlying;
+        std::vector<std::pair<std::string, std::uint32_t>> values;
+        bool operator==(const Enumeration&) const = default;
+    };
+    std::optional<Enumeration> enumeration{};
+    std::optional<TypeId> element{};
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };
@@ -386,13 +509,14 @@ public:
     // Resolve the entire batch, including forward references, before publishing anything.
     // Results follow input order. Empty batches are invalid. No provisional IDs escape.
     [[nodiscard]] Result<std::vector<TypeId>> register_types(std::vector<TypeDefinition> definitions);
+    [[nodiscard]] std::vector<TypeId> types() const;
     [[nodiscard]] TypeId object_type() const noexcept;
     [[nodiscard]] Result<bool> is_a(TypeId actual, TypeId expected) const;
     // Preserves identity and strength. Upcasts preserve stale identities; a
     // non-null downcast requires a live compatible object. Does not create a root.
     [[nodiscard]] Result<ObjectReference> cast_reference(const ObjectReference&, TypeId target) const;
     // Resolves published types without changing registration or code publication state.
-    // This slice accepts inline scalar parameters/results and an optional object receiver.
+    // Scalar/enum parameters carry independent passing modes; results are values.
     // Invalid/unsupported definitions fail with invalid_definition. The returned value
     // owns its arrays; its TypeIds remain scoped to this Runtime, which it does not own.
     [[nodiscard]] Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition) const;
@@ -407,7 +531,14 @@ public:
     template<class T, class F>
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
     [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, F&& callback) {
-        auto borrowed = borrow_native(object, detail::representation<std::remove_cv_t<T>>());
+        return with_native<T>(object, {}, std::forward<F>(callback));
+    }
+
+    // The same protected borrow can target an inline field in native or described objects.
+    template<class T, class F>
+        requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
+    [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, std::span<const FieldId> path, F&& callback) {
+        auto borrowed = borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path);
         if (!borrowed) return std::unexpected(borrowed.error());
         try {
             return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
@@ -440,7 +571,7 @@ public:
         return find_representation(detail::representation<T>());
     }
 
-    // Trusted caller-owned scalar/record storage; only the first TypeInfo::size bytes are used.
+    // Trusted caller-owned value storage; only the first TypeInfo::size bytes are used.
     // Sources must be live values of this type. Initialize/copy destinations must be unconstructed;
     // assign/destroy destinations must be live. The caller owns storage and lifetime tracking,
     // and must destroy values before this Runtime ends. These calls do not validate object handles.
@@ -515,6 +646,14 @@ public:
     // User-code side effects are not rolled back. Native borrows still forbid source entry.
     [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments,
                                     Scalar* output = nullptr);
+    template<std::ranges::contiguous_range R>
+        requires std::same_as<std::ranges::range_value_t<R>, Argument>
+    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, const R& arguments, Scalar* output = nullptr) {
+        return call_arguments(object, method, std::span<const Argument>{arguments}, output);
+    }
+    // Source adapters use this before entry. Field operands are rejected here:
+    // their addresses may only be borrowed inside a protected native call.
+    [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>, PreparedArguments&) const;
     [[nodiscard]] std::size_t live_objects() const noexcept;
     // Explicit host safe points only. Starting a cycle reserves its traversal
     // cursor before changing state. Step budgets require positive max_work.
@@ -525,6 +664,8 @@ public:
     [[nodiscard]] std::size_t pending_reclamation() const noexcept;
 
 private:
+    [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*);
+    [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>, PreparedArguments&, bool fields) const;
     friend class ExecutionScope;
     [[nodiscard]] Result<void> enter_execution();
     void leave_execution() noexcept;
@@ -539,7 +680,7 @@ private:
         NativeBorrow(const NativeBorrow&) = delete;
     };
     std::unique_ptr<Impl> impl_;
-    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation);
+    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation, std::span<const FieldId>);
     [[nodiscard]] Result<ReferenceField> native_reference_field(ObjectId, const void*, bool sequence) const;
     [[nodiscard]] Result<Address> resolve_reference_field(const ReferenceField&) const;
     [[nodiscard]] Result<TypeId> find_representation(const void* representation) const;
