@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/string.hpp"
 #include "runtime/native.hpp"
 

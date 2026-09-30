@@ -12,7 +12,7 @@ Runtime 已支持以 `core.Object` 为根的正式单继承、基类引用视图
 
 C++ 自动反射使用 `ACLASS/ASTRUCT/AENUM/AFIELD/AFUNCTION` 与 `AGENERATED_BODY`。锁定版本的 Clang LibTooling 生成 `.gen.hpp/.gen.cpp`，继续通过现有 Runtime 发布；World 的七种真实类型已迁移。i32、枚举及三种参数传递方式已贯通原生、源码与 JIT，见[调用链验收](acceptance/reflection/calls.cpp)。写法、构建接线、首片限制和端到端入口见[自动反射](docs/reflection.md)。
 
-引擎 C++ 基础库已提供拥有型 `Array<T>/String` 和借用型 `Span<T>/StringView`，支持宏反射字段、同一 Runtime 类型身份及原生/描述型值构析。String 使用 UTF-8；反射数组首片限于无 GC 引用的值元素。接口、所有权、接入示例及边界见[基础库](docs/foundation.md)。
+引擎 C++ 基础库已提供拥有型 `Array<T>/String` 和借用型 `Span<T>/StringView`，支持宏反射字段、同一 Runtime 类型身份及原生/描述型值构析。String 使用 UTF-8，具备 15 字节 SSO、赋值容量复用与已验证文本追加路径；Array 对符合实际平凡操作的元素使用批量复制、扩容和保序删除，平凡复制赋值复用容量。反射数组首片限于无 GC 引用的值元素。接口、所有权、接入示例及边界见[基础库](docs/foundation.md)。
 
 ## 启动首个场景编辑器
 
