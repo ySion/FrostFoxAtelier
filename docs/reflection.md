@@ -98,6 +98,8 @@ atelier_reflect(atelier_world
 
 扫描复用 SOURCE 的宏、include、目标平台和标准选项，使用锁定 SDK 的资源头；反射头和一般公共 C++ 头一样，影响类型布局的宏须在目标与消费者之间保持一致。宏标记由 `PPCallbacks` 观察，普通 C++ 编译无需加载插件。
 
+Clang/LLVM 包在独立变量作用域中加载，SDK 的静态 CRT 默认值不会传播到后续引擎或第三方目标。`atelier_reflect` 通过 `atelier_llvm_target` 显式使用 SDK ABI，正式消费者继续使用各自配置的动态 CRT。
+
 `reflection.hpp` 提供固定的 `Definition<T>::build` 声明。扫描期间用内存虚拟头屏蔽本组旧 `.gen.hpp`，因此首次生成不需要旧文件，也不会消费过期特化。正常编译必须先完成 CMake 生成依赖，不会把缺失生成文件静默忽略。
 
 编译参数、配置、工具或 include 依赖变化会触发生成；内容不变时保留输出时间戳。输出不含时间戳、绝对路径或 AST 地址。源码/标注验证失败返回非零并保留先前输出，构建仍然失败，不继续使用旧输出完成本次构建。

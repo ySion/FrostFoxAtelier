@@ -1,10 +1,14 @@
 # Build-time only. Reuse the pinned SDK and its Release/static CRT ABI.
 file(TO_CMAKE_PATH "$ENV{ATELIER_LLVM_ROOT}" _reflection_sdk)
-find_package(Clang REQUIRED CONFIG PATHS "${_reflection_sdk}/lib/cmake/clang" NO_DEFAULT_PATH)
-add_executable(atelier_reflect tools/reflection/main.cpp)
-atelier_llvm_target(atelier_reflect)
-target_include_directories(atelier_reflect SYSTEM PRIVATE ${CLANG_INCLUDE_DIRS})
-target_link_libraries(atelier_reflect PRIVATE clangTooling)
+# LLVMConfig sets CMAKE_MSVC_RUNTIME_LIBRARY; keep that SDK default out of
+# later engine and third-party targets while preserving the tool's explicit ABI.
+block(SCOPE_FOR VARIABLES)
+    find_package(Clang REQUIRED CONFIG PATHS "${_reflection_sdk}/lib/cmake/clang" NO_DEFAULT_PATH)
+    add_executable(atelier_reflect tools/reflection/main.cpp)
+    atelier_llvm_target(atelier_reflect)
+    target_include_directories(atelier_reflect SYSTEM PRIVATE ${CLANG_INCLUDE_DIRS})
+    target_link_libraries(atelier_reflect PRIVATE clangTooling)
+endblock()
 
 function(_atelier_reflection_json out value)
     string(REPLACE "\\" "\\\\" value "${value}")
