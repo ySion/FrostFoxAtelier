@@ -13,7 +13,13 @@ namespace atelier {
 namespace detail {
 
 template<class T>
-concept ScalarType = std::same_as<T, float> || std::same_as<T, std::uint32_t>;
+concept ScalarType = std::same_as<T, float> || std::same_as<T, std::uint32_t> ||
+    std::same_as<T, std::int32_t> || (std::is_enum_v<T> && sizeof(T) == 4);
+
+template<class T>
+concept ScalarParameter = ScalarType<std::remove_cvref_t<T>> && !std::is_rvalue_reference_v<T> &&
+    !std::is_volatile_v<std::remove_reference_t<T>>;
+static_assert(sizeof(int) == 4);
 
 template<class> struct Member;
 template<class V, class C> struct Member<V C::*> { using Value = V; using Owner = C; };
@@ -26,7 +32,7 @@ struct Method<R (C::*)(A...)> {
     using Return = R;
     static constexpr bool receiver_read_only = false;
     static_assert(std::same_as<R, void> || ScalarType<R>, "Method results must be void or supported scalars returned by value.");
-    static_assert((ScalarType<A> && ...), "Method arguments must be supported scalars passed by value.");
+    static_assert((ScalarParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
 };
 template<class R, class C, class... A>
 struct Method<R (C::*)(A...) const> : Method<R (C::*)(A...)> {
@@ -53,7 +59,10 @@ public:
             [](void* address) { std::construct_at(static_cast<T*>(address)); },
             [](void* address) noexcept { std::destroy_at(static_cast<T*>(address)); }
         };
-        if (kind == TypeKind::record) {
+        if constexpr (std::is_enum_v<T>) {
+            definition_.enumeration = TypeDefinition::Enumeration{TypeReference::native<std::underlying_type_t<T>>(), {}};
+        }
+        if (kind != TypeKind::object) {
             if constexpr (std::is_copy_constructible_v<T>) {
                 definition_.native.copy_construct = [](void* destination, const void* source) {
                     std::construct_at(static_cast<T*>(destination), *static_cast<const T*>(source));
@@ -65,6 +74,26 @@ public:
                 };
             }
         }
+    }
+
+    template<class U = T> requires std::is_enum_v<U> && std::same_as<U, T>
+    NativeRegistration& enumerator(std::string name, T value) {
+        using Underlying = std::underlying_type_t<T>;
+        static_assert(std::same_as<Underlying, std::int32_t> || std::same_as<Underlying, std::uint32_t>,
+            "Reflected enums require an i32/u32 underlying type.");
+        if (!definition_.enumeration)
+            definition_.enumeration = TypeDefinition::Enumeration{TypeReference::native<Underlying>(), {}};
+        definition_.enumeration->values.emplace_back(std::move(name), static_cast<std::uint32_t>(value));
+        return *this;
+    }
+
+    template<class Base> requires std::derived_from<T, Base>
+    NativeRegistration& base() {
+        definition_.base = TypeReference::native<Base>();
+        definition_.native.base_address = [](void* storage) noexcept -> void* {
+            return static_cast<Base*>(static_cast<T*>(storage));
+        };
+        return *this;
     }
 
     template<auto Pointer>
@@ -112,15 +141,20 @@ public:
         if constexpr (!std::same_as<Return, void>)
             method.signature.result = ValueDefinition{TypeReference::native<Return>()};
         [&]<std::size_t... I>(std::index_sequence<I...>) {
-            (method.signature.parameters.push_back({TypeReference::native<std::tuple_element_t<I, Args>>()}), ...);
+            (method.signature.parameters.push_back({{TypeReference::native<std::remove_cvref_t<std::tuple_element_t<I, Args>>>()},
+                parameter_passing<std::tuple_element_t<I, Args>>}), ...);
         }(std::make_index_sequence<std::tuple_size_v<Args>>{});
         method.invoke = [](CallContext& call) -> Result<void> {
             const auto invoke = [&]<std::size_t... I>(std::index_sequence<I...>) -> Return {
                 return std::invoke(Pointer, *static_cast<Receiver*>(call.storage),
-                    std::get<std::tuple_element_t<I, Args>>(call.arguments[I])...);
+                    call.arguments[I].get<std::tuple_element_t<I, Args>>()...);
             };
             if constexpr (std::same_as<Return, void>) invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
-            else call.result = invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
+            else if constexpr (std::is_enum_v<Return>) {
+                const auto type = call.runtime.native_type<Return>();
+                if (!type) return std::unexpected(type.error());
+                call.result = EnumValue{*type, static_cast<std::uint32_t>(invoke(std::make_index_sequence<std::tuple_size_v<Args>>{}))};
+            } else call.result = invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
             return {};
         };
         definition_.methods.push_back(std::move(method));

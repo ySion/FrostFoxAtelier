@@ -1,6 +1,8 @@
 # 原生 UI 下一增量：研究与实施方案
 
-状态：**S1 主持已收口（`ec6a118`）；S2 合同已通过、正式实施中，真实 Microsoft Pinyin 环境条件待满足；S3 未启动。**
+状态：**S1 主持已收口（`ec6a118`）；S2 UI 双配置 13/13、最终 Window 的 dev/release 本机搜狗真实输入及普通窗口各 709 帧验收均通过，主持已收口。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`；S3 未启动。**
+
+2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
 
 日期：2026-09-28，更新于 2026-09-29。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；唯一集成分支：`codex/ui-foundation`。
 本页是编辑器当前排期的唯一入口。[首版记录](first-editor-plan.md)保留已交付的 M0/M1 与尚未完成的 M2 目标；保存重开、JIT 单步暂不进入本轮。
@@ -29,22 +31,22 @@ Pin 按钮是查看状态，菜单项是命令，均不冒充 bool/enum 业务�
 | [面板与固定](https://www.sidefx.com/docs/houdini/basics/panes.html#pinning)：固定查看目标，未固定时跟随；另有联动通道 | 只实施一个面板的 follow/pin；不将完整停靠、标签系统或通道框架作为前置 |
 | [节点标志](https://www.sidefx.com/docs/houdini/network/flags.html#setting-flags)、[上下文菜单](https://www.sidefx.com/docs/houdini/basics/tabmenu.html)、[快捷键上下文](https://www.sidefx.com/docs/houdini/basics/hotkeys.html)：选择、显示输出与渲染标志不同，命令依赖上下文 | 分开场景选择、面板目标、菜单打开时的目标；不建立一个包办所有用途的全局对象变量 |
 
-**本项目已获主持认可的产品选择：纯位置 undo/redo 保持当前场景选择；增删历史维持现有选择策略。** 其余具体交互合同如下，均为本项目方案，不以 Houdini 文档替代实机证据。
+**S3 的待实施选择方案：纯属性 undo/redo 保持当前场景选择；增删历史维持原策略。** 当前 World IV 尚未采用这一变化，属性历史继续选中记录的 owner Actor。以下第 3/4 节保留为 S3 方向，不以 Houdini 文档替代本项目实机证据。
 
 ## 3. 对象目标、事务与失效
 
-- `Workspace` 保存查看模式及固定的 `ObjectKey`；有效目标为固定键或 `Session::selected()`，每次使用都校验场景成员。Pin 不持有业务 root。Runtime、场景和现有编辑/历史根继续承担保活。
+- 未来 `Workspace` 查看模式以固定 Actor ObjectId 或 `Session::selected()` 定位，每次使用均校验 World 成员。Pin 不持有业务 root；Runtime、World 和历史根承担保活，UI 控件键独立分配。
 - A 固定、B 选中时，读取、标题、控件绑定、编辑和重置均指向 A。删除 A 后保留固定键，显示“固定对象已移除”，停用参数与菜单业务动作，绝不自动改绑 B。删除 undo 将同一稳定键恢复为成员后，面板自动重新显示 A；历史淘汰导致 A 无法恢复时持续显示空态，直到用户取消固定。
 - follow 模式实际切换目标，或普通焦点离开当前字段时：合法草稿先提交，非法草稿取消，然后切换。Pin A 后选择 B 不改变查看目标；点击列表造成的普通字段失焦仍遵循上述规则。OS 失焦、Surface 变化和交互取消回滚未完成编辑。
 - 正在捕获的数值/分隔拖动先完成或取消，菜单/目标切换不抢夺手势、不排队延后执行。取消必须到达已有 active 事务，不能被“现在的面板目标不同”挡住。
-- 原地替换 `Session::begin_position()` 为 `begin_position(ObjectKey target)`；开始时校验成员并取得现有事务根，preview/commit/cancel 继续使用 active 中的目标。同步迁移全部调用者并删除无参入口。
-- 默认值来自 `position_parameters`。重置 X 只改 X；重置位置以一个 before/after Vec3 事务写入 XYZ，只产生一条历史；写入失败沿现有取消路径恢复 before，无变化不记历史。modified 按实际值与默认值比较，编辑草稿与 invalid 状态另行表达。
+- IV 已由 `Session::begin_edit(component, FieldPath, control_session)` 捕获实际目标，preview/commit/cancel 沿同一活动事务；S3 继续消费它，不恢复位置专用入口。
+- 重置和 modified 的字段政策应从当前注册类型及应用参数描述取得。未来重置 XYZ 以一次明确的复合操作提交完整 Transform 前后值，写入失败沿现有回滚，无变化不记历史；编辑草稿与 invalid 状态另行表达。
 - 打开重置菜单先处理普通草稿。合法草稿提交后再执行重置属于两次操作，undo 重置返回刚提交的值；非法草稿取消后重置基于原值。非法数值粘贴不能写 Runtime。
 
 ### 位置历史的准确迁移
 
-基线 [Session::replay](../src/editor/session.cpp) 的 `Kind::position` 分支在写入成功后执行 `selected_ = change.member.key`。
-本轮删除该分支的选择赋值，保留唯一位置回放路径；后面的 add/remove 分支不改选择政策。
+当前 [Session::replay](../src/editor/session.cpp) 的字段分支在写入成功后选中记录的 owner Actor，IV 保留这一既有行为。
+S3 若正式派发上述选择变化，应只调整这一统一字段回放分支；Actor/组件结构历史的选择政策分别保持明确，不引入另一套位置回放。
 前：编辑 A 后选 B，再撤销位置会选回 A。后：固定 A、选 B，编辑/重置/undo/redo A，B 始终保持选中。删除 A 的 undo 仍按已有规则选择恢复的 A，不把位置规则扩大到增删历史。
 
 ## 4. 输入顺序与菜单
@@ -75,7 +77,7 @@ S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合�
 
 ### 剪贴板、IME 与错误回路
 
-平台接线归 `Window`/`Application`，UI 不持 HWND/HIMC。产品沿唯一 IMM32 接线和系统候选窗推进，真实 Microsoft Pinyin 验收是完成条件；不放隐藏 EDIT，也不并存第二种文本后端。平台接口、失败与清理顺序见第 9 节。
+平台接线归 `Window`/`Application`，UI 不持 HWND/HIMC。产品沿唯一 IMM32 接线和系统候选窗推进，本机搜狗真实输入验收是完成条件；不放隐藏 EDIT，也不并存第二种文本后端。平台接口、失败与清理顺序见第 9 节。
 
 ## 6. 文件归属与替换清单
 
@@ -88,7 +90,7 @@ S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合�
 | `Session::prepare` 对屏外控件直接 raster/emit | 候选 bounds∩clip 可见性检查，保留布局/滚动/身份信息 | S1，替换原生成位置，无第二遍兜底绘制 |
 | `Session::input/change_text/finish_edit` 的 ASCII 专用分支、单位置 caret；[Event/Action](../src/ui/session.hpp)；[Window::receive](../src/application/window.cpp)/`Application::native/action` 与验收消费者 | 共享 TextEdit、字符串/组合事件、typed value、同一 TextStore 查询和平台往返 | S2，删除旧 `character`/纯 double 处理及专用编辑缓冲，不留兼容入口 |
 | `Reply.actions`、`Application::effects/action` 失败仍继续发动作、错误被后续状态覆盖 | 原地迁移到有序 `effects`、有结果的顺序派发和同一取消回路 | S2，所有消费者同时删除旧 actions 入口 |
-| `Workspace::describe` 标题/字段/键全部取 selected；`Application::action` 的 selected-only guard；[Session::begin_position/replay](../src/editor/session.cpp)；[scene 验收](../acceptance/editor/scene.cpp) | 显式目标、follow/pin、默认值与单一位置回放 | S3，删除无参 begin、旧 selected guard 与位置回放的选择赋值 |
+| [Workspace](../src/editor/workspace.cpp) 的当前 Actor 查看目标；[Session::begin_edit/replay](../src/editor/session.cpp)；[文档验收](../acceptance/editor/document.cpp) | IV 已使用显式组件字段目标；未来 follow/pin、默认值与重置继续复用它 | S3 未启动；不再保留旧 selected-only/位置专用兼容路径 |
 | `Session::hit` 先过滤当前存活性、`prepare` 统一继承父 clip；`Application::native` UI 前相机抢占 | 同帧 overlay/拦截，先拦截后活性校验，已有 capture 优先、未消费事件导航 | S3，替换原路由；普通子控件仍保留正常父裁剪 |
 
 数值解析器、Layout、已有焦点/capture/incarnation、DrawQuad/R8、Runtime 根和历史都是继续使用的有效机制。无需为迁移新增别名、第二种主题、备用输入后端或独立演示产品。
@@ -163,24 +165,29 @@ UI 维护 `src/ui/session.hpp` 的唯一合同，以下形状在共享头提交�
 
 ### 9.4 原生消息、组合与 accepted caret
 
-1. 原地调整 `Window::poll`：逐条 Dispatch 后，将复制拥有的 NativeEvent 交 Application 依序处理及应用 effects，再接下一条消息。WndProc 只复制/排队；平台调用引发的同步 Win32 回调也排队，不能重入 Session/业务，不另建输入泵。普通文字按当前合法上下文依序应用，不给整个 poll 盖同一旧 revision。
-2. [WM_IME_COMPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-composition) 的 result/preedit/cursor/属性当场复制。start 分配 composition_id，绑定当前 token/base revision 和原替换选区；后续沿该组合流，不按最新 focus 重新盖标签。取消使流失效，迟到结果丢弃，真正新 start 才可重绑。
+1. 原地调整 `Window::poll`：逐条 Dispatch 后，将复制拥有的 NativeEvent 交 Application 依序处理及应用 effects，再接下一条消息。WndProc 的输入事件只复制/排队；平台调用引发的同步输入回调也排队，不能重入 Session/业务，不另建输入泵。同步几何查询只读已拥有的 accepted 快照作答。普通文字按当前合法上下文依序应用，不给整个 poll 盖同一旧 revision。
+2. [WM_IME_COMPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-composition) 的 result/preedit/cursor/属性当场复制。原生 start 捕获时分配 composition_id 并保存当前 token/base revision，交付时校验该 token，再绑定原替换选区；后续沿该组合流，不按最新 focus 重新盖标签。取消使流失效，迟到结果丢弃，真正新 start 才可重绑。
 3. 组合 result 进入统一文字插入及本地历史；数值解析/搜索只消费确认文字。同条事件 result 后仍有新 preedit 时，后者基于刚更新的草稿/revision 开始下一段，不能因旧标签拒掉，也不能丢弃。普通选区/目标变化先取消当前组合；取消恢复组合前选区，保留之前已确认的 Edit 草稿。
 4. 原生 IME 处理期间，终止组合的 Enter/Esc 的 keydown/repeat/keyup 均保持 IME 归属，不能结果先到后把 keyup/重复 down 当字段命令；Ctrl+Z/Y 也不落本地或业务历史。普通输入仅由拥有的文字事件插入，不能 keydown 与 WM_CHAR 各插一遍。消费 result 后按 [Microsoft 样例](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Win7Samples/winui/input/tsf/tsfapps/tsfpad-step1/TextInputCtrl.cpp) 避免默认处理再产生重复文字。
 5. 候选位置只用匹配 accepted caret，经 [ImmSetCandidateWindow](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immsetcandidatewindow) 给系统客户区位置/排除矩形；没有匹配 caret 时等下一接受帧，不用未呈现的候选几何。字体、横滚、DPI 同时更新文字与 caret；失焦/失效立即撤销可用锚点，旧帧仍可持有但不能作为新目标的输入位置。
+6. [IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition) 同步查询只支持本轮实际使用的组合 UTF-16 偏移 0。UI 随帧发布单值 `TextInputAnchor{token,composition_id,composition_revision,bounds,clip}`；`TextInputState::accepted_anchor` 只有当前身份及组合显示版本相符时可用。无组合时取插入/替换选区起点，组合时取组合起点，同一 DWrite 布局提供字符左上位置与行高；不能把显示 caret 当作任意组合偏移。Window 在所有 IMM 调用前复制或清空快照，并在原生组合/失焦/Surface 变化时立即撤下；WndProc 用 ClientToScreen 将物理 bounds 左上及字段 text_clip 转成屏幕坐标，填写 IMECHARPOSITION，不再次乘 DPI。无有效快照、无焦点、结构尺寸错误、空指针或非零偏移返回 0，不保留系统输出指针。该快照是小型 optional 值，不增加每帧共享对象或字符位置数组。
+7. 原生 reading/候选可能早于组合 start。输入绑定的 key/incarnation/generation 变化或失效时，Window 先撤销位置快照，沿同一 [CPS_CANCEL](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immnotifyime) 入口取消，再由既有 [ImmAssociateContextEx](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immassociatecontextex) 路径解绑旧上下文；这些调用返回前保留旧 token。解绑成功后才发布新目标并以 IACE_DEFAULT 恢复同一默认上下文，不新建 HIMC。取消不依赖候选缓存或 UI 已收到 start；同步回调保留捕获归属，排队后不能改绑新字段。正常确认仅推进同一编辑上下文的 revision，不触发解绑。API 成功仅表示该调用成功，reading 是否结束以真实输入行为验收。
 
 ### 9.5 本机环境与真实输入证据
 
-2026-09-29 只读检查：系统为 build **26200.9457 / 25H2**；用户输入列表为 zh-Hans-CN 搜狗拼音与 en-US 美式键盘，默认覆盖仍为搜狗。Microsoft Pinyin 的系统 profile 存在，但 `Enable=0`，未列入用户 InputMethodTips；用户 CTF 路径无对应启用记录。
-Pinyin TIP 为 `{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}`，profile 为 `{FA550B04-5AD7-411F-A5AC-CA038EC515D7}`。`C:\Windows\System32\InputMethod\CHS\ChsIME.exe` 版本 `10.0.26100.9278`，Authenticode 为 Valid / Microsoft Windows。以上证明安装与注册存在，**不证明实际组合输入已可用或已通过**。
-来源为 `Get-WinUserLanguageList`、`Get-WinDefaultInputMethodOverride`、CTF LanguageProfile 注册表、文件版本及签名；未改任何输入设置。[ActivateProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile) 的 ENABLEPROFILE 会写用户注册表，不能把它当只读探测。主持已向用户请求是否启用现有 Pinyin、保留搜狗默认且不删除/重排现有输入法；答复前不启用，此条件不阻塞合同准备。
+用户已明确指定“微软拼音被我移除了，测搜狗就可以”。S2 的真实 IME 收口目标改为本机现有搜狗，不要求恢复微软拼音，不据此宣称其他输入法通过。
+2026-09-29 实机系统 build **26200.9457 / 25H2**；用户输入列表为 zh-Hans-CN 搜狗拼音与 en-US 美式键盘，默认覆盖为搜狗。实际搜狗模块 `C:\Windows\System32\SogouTSF.ime` 的 FileVersion/ProductVersion 均为 **16.8.0.5415**。搜狗 TIP 为 `{E7EA138E-69F8-11D7-A6EA-00065B844310}`，profile 为 `{E7EA138F-69F8-11D7-A6EA-00065B844311}`，语言为 `0804`。
 
-真实 IME 验收须在授权且 profile 可用后进行：
+`atelier_editor --acceptance-ime` 检查并保存当前活动 profile 的完整 type/lang/CLSID/GUID/HKL，`GetActiveProfile` 必须返回 S_OK；S_FALSE 表示无活动 profile，不当作成功。若线程当前是美式键盘等其他 profile，仅在本验收线程选择已启用搜狗；成功或失败退出都恢复原 type1 文本服务或 type2 键盘布局。入口不启用输入法、不改用户默认或输入列表。产品只有 IMM32 接线；TSF profile API 只用于验收环境选择与核对。
 
-- 同一 `atelier_editor`、同一消息泵与 TextEdit。记录原活动 profile，仅在验收窗口的线程选择已启用 Pinyin，结束还原；不改系统默认。配置选择/识别可用 TSF profile API，产品文字接线仍是唯一 IMM32，不成为第二种编辑后端。
-- 确认窗口前台、交互桌面与输入权限后，使用真实硬件输入或 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 的物理键/扫描码键序列输入拼音并选候选，不使用 Unicode 直接灌字。检查插入数量、修饰键状态、活动 profile，以及确由系统产生的 start/preedit/result/end；失去目标前台即停止送键，避免输入落到其他窗口。
-- 搜索中实际拼出“位置”，检查候选窗、确认/取消、组合 Enter 不提交字段、结果只插入一次；再覆盖数字 invalid 草稿、焦点/Surface/目标变化、横滚与 caret 定位。原生候选窗在 OS 层，须原生窗口/桌面区域证据或人工观察记录，renderer readback 只能证明应用绘制，不能冒充候选窗截图。
-- 报告分别列出 **系统 IME 驱动**（profile、实际键序列、系统组合流及可视候选）、**故障消息/结果注入**（过期/重复 token、剪贴板失败、迟到组合、业务失败回滚等）和 **静态环境检查**。SendMessage/合成 WM_IME 只算注入；搜狗结果也不能当作 Microsoft Pinyin 通过。真实链未通过时 S2 未完成。
+此前按启用授权写入的 Microsoft Pinyin 用户 enable 位及追加可选项，在收到用户改用搜狗的指令后，已通过原受支持 API 精确撤回；未覆盖用户整份设置。`out/pinyin-profile-reverted.txt` 与 `out/pinyin-environment-reverted.json` 记录 enable=0、原列表/顺序及搜狗默认与操作前一致。这段记录不代表微软拼音验收通过。
+
+真实搜狗验收要求：
+
+- 同一 `atelier_editor`、同一消息泵与 TextEdit。发送物理键前核对完整搜狗 profile，结束恢复并核对原线程 profile；保持用户默认、列表和启用状态。
+- 确认窗口前台、交互桌面与输入权限后，使用真实硬件输入或 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 的物理键/扫描码键序列输入拼音并选候选。本机原生截图已确认 WEIZHI 的首候选为“位置”，驱动以 Space 确认并严格检查最终文字；这是该本机候选顺序的验收，不是任意候选排序的选择器。失去目标前台即停止送键，记录实际前台窗口身份；不得把文字直接灌入替代组合。
+- 搜索中实际拼出“位置”，检查候选窗、确认/取消、组合 Enter 不提交字段、结果只插入一次；再覆盖数字 invalid 草稿、焦点/Surface/目标变化、横滚与 caret 定位。原生候选窗在 OS 层，须原生窗口区域证据或人工观察记录，renderer readback 只证明应用绘制。
+- 报告分别列出 **系统 IME 驱动**（实际版本/profile、键序列、系统组合流及可视候选）、**故障消息/结果注入**（过期/重复 token、剪贴板失败、迟到组合、业务失败回滚等）和 **静态环境检查**。SendMessage/合成 WM_IME 只算注入；搜狗结果不代表微软拼音或所有 IME 通过。真实链未通过时 S2 未完成。
 
 ### 9.6 文件归属、迁移顺序与终点
 
@@ -189,10 +196,10 @@ Pinyin TIP 为 `{81D4E9C9-1D3B-41BC-9E6C-4B40BF79E35E}`，profile 为 `{FA550B04
 | 共同合同确认后：共享头提交 | UI：`src/ui/session.hpp`；TextEdit/TextStore 私有设计仍归 UI | 一次提交 ControlKind、拥有事件、Action.value、effects、tokens、caret/query；应用仅按明确 SHA 消费，不复制头、不留旧字段兼容 |
 | UI 实现与平台接线并行 | UI：`src/ui/session.cpp`、`text.hpp/.cpp`、必要私有编辑实现、`acceptance/ui`、UI CMake/文档；应用：`Window::NativeEvent/receive/poll`、`Application::native/action/effects` 及转发、Workspace 查询和 `acceptance/editor`、根接线 | UI 删除 numeric-only Edit/ASCII 分支和单 x 选区查询；应用删除 char32 WM_CHAR 强转、旧 double 访问与 `.actions` 消费。业务位置入口/回放保持 S1，RHI 不扩展 |
 | 唯一分支集成 | 应用只 cherry-pick UI 明确提交到 `codex/ui-foundation` | 同一 TextEdit、DWrite、Reply.effects 和 Win32 泵贯通全部消费者；平台失败与业务失败分别处理，清理无遗漏；中间接口提交可短暂未构建，不能带兼容入口交付 |
-| dev/release 同窗口验收 | 应用统筹，UI 提供真实文字服务验收 | 四状态键盘矩阵、number 两种指针模式、权威值同步、搜索提交/回滚、分组和有界本地历史、Unicode 选区/删除、剪贴板成功/失败/过期、业务失败清理、真实 Pinyin 及候选、原有场景/窗口链；全部通过才提交主持收口 |
+| dev/release 同窗口验收 | 应用统筹，UI 提供真实文字服务验收 | 四状态键盘矩阵、number 两种指针模式、权威值同步、搜索提交/回滚、分组和有界本地历史、Unicode 选区/删除、剪贴板成功/失败/过期、业务失败清理、真实搜狗及候选、原有场景/窗口链；全部通过才提交主持收口 |
 
-主持已批准按上述顺序实施。Microsoft Pinyin 启用仍待用户答复，不阻塞生产实现和非 IME 验收；答复前不改输入设置，真实 Pinyin 未通过则 S2 不结项。S3 不启动。
+主持已批准按上述顺序实施。用户已指定使用现有搜狗完成真实输入验收；通过前 S2 不结项，S3 不启动。
 
 ## 会审结论入口
 
-主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。第 9 节已通过，是应用/UI 的唯一 S2 实施交接依据；当前正式实施，真实 Pinyin 环境门槛单独保留。S3 未启动，不推送或合并主线。
+主持已收口 S1：`ec6a118` 干净集成树、dev/release UI 8/8 与各 597 帧窗口链及原始截图通过，证据见[编辑器验收](modules/editor/README.md#验收入口)，不重复验收。第 9 节是应用/UI 的唯一 S2 实施交接依据。组合起点几何已按 `4de055a` → `7cd9c28` 集成，UI 双配置 13/13 通过。最终 Window 输入绑定生命周期修改已通过 dev/release 真实搜狗输入和普通窗口各 709 帧链路；跨字段 query 与干净 Space 基准一致、X=0、business editing=0，原线程 profile 恢复且用户列表/默认不变。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`，[当前集成状态](modules/editor/README.md#s2-集成状态与输入法验收)记录实际范围与限制。S2 主持已收口；S3 未启动，不推送或合并主线。

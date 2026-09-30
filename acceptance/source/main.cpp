@@ -8,6 +8,7 @@
 
 void verify_source_shutdown();
 void verify_source_session();
+void verify_source_inheritance();
 
 namespace {
 using namespace atelier;
@@ -97,6 +98,7 @@ void verify_public_program() {
 int main() {
     try {
         verify_public_program();
+        verify_source_inheritance();
         verify_source_shutdown();
         verify_source_session();
         std::puts("Source public consumer: PASS");

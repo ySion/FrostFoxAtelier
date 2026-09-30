@@ -34,6 +34,7 @@ public:
     ExecutionFrame& operator=(ExecutionFrame&&) = delete;
 
     [[nodiscard]] Result<void> hold(std::uint32_t slot, ObjectId object);
+    [[nodiscard]] Result<void> hold(std::uint32_t slot, ObjectId object, TypeId declared_type);
     // Copy a typed holding value, including null or a preserved stale identity.
     [[nodiscard]] Result<void> hold(std::uint32_t slot, const ObjectReference& reference);
     [[nodiscard]] Result<ObjectReference> reference(std::uint32_t slot) const;

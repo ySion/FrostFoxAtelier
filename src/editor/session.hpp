@@ -1,57 +1,63 @@
 #pragma once
 
-#include "scene/scene.hpp"
+#include "world/world.hpp"
 
 namespace atelier::editor {
-
 struct Parameter {
     const char* name;
     const char* unit;
-    float default_value;
-    float minimum;
-    float maximum;
-    float drag_step;
+    std::array<FieldId, 2> path;
+    float minimum{-10000.f}, maximum{10000.f}, drag_step{.01f};
 };
-inline constexpr std::array position_parameters{
-    Parameter{"X", "m", 0, -scene::Scene::position_limit, scene::Scene::position_limit, .01f},
-    Parameter{"Y", "m", 0, -scene::Scene::position_limit, scene::Scene::position_limit, .01f},
-    Parameter{"Z", "m", 0, -scene::Scene::position_limit, scene::Scene::position_limit, .01f}};
 
-// All document mutations enter here. Continuous previews update the real object;
-// the active edit stores only the before-value and the target's holding root.
+// One document writer. History retains ordinary roots and removal records;
+// evicting history never explicitly destroys a game object.
 class Session final {
 public:
     Session();
-    const scene::Scene& scene() const noexcept { return scene_; }
-    scene::ObjectKey selected() const noexcept { return selected_; }
-    Result<void> select(scene::ObjectKey);
-    Result<scene::ObjectKey> add(scene::Vec3 = {});
-    Result<void> erase_selected();
-    Result<void> begin_position();
-    Result<void> preview_position(std::size_t axis, float value);
-    Result<void> commit_position();
-    Result<void> cancel_position();
-    Result<void> undo();
-    Result<void> redo();
-    Result<void> collect_step() { return scene_.collect_step(); }
+    const world::World& world() const noexcept { return world_; }
+    const world::Types& types() const noexcept { return types_; }
+    std::span<const Parameter> parameters() const noexcept { return parameters_; }
+    ObjectId selected() const noexcept { return selected_; }
+    Result<void> select(ObjectId);
+    Result<world::Commit> add_actor();
+    Result<world::Commit> erase_selected();
+    Result<world::Commit> add_component(TypeId);
+    Result<world::Commit> remove_component(ObjectId);
+    Result<void> begin_edit(ObjectId component, std::span<const FieldId>, std::uint64_t control_session);
+    Result<void> preview_edit(std::uint64_t control_session, float);
+    Result<void> commit_edit(std::uint64_t control_session);
+    Result<void> cancel_edit();
+    bool owns_edit(std::uint64_t control_session) const noexcept;
+    Result<world::Commit> undo();
+    Result<world::Commit> redo();
+    Result<world::Commit> close();
+    Result<void> collect_step();
     bool editing() const noexcept { return active_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
+    static constexpr std::size_t maximum_actors = 256;
 private:
-    enum class Kind { add, remove, position };
-    struct Change {
-        Kind kind;
-        scene::Member member;
-        std::size_t index{};
-        scene::Vec3 before{}, after{};
+    struct ActorChange { bool added{}; world::ActorRemoval removal; };
+    struct ComponentChange { bool added{}; world::ComponentRemoval removal; };
+    struct FieldChange {
+        ObjectRoot root;
+        ObjectId actor;
+        world::FieldPath path;
+        std::uint64_t control_session{};
+        world::Trs before, after; // Quaternion field writes may normalize other components.
     };
+    using Change = std::variant<ActorChange, ComponentChange, FieldChange>;
     static constexpr std::size_t history_limit = 128;
-    scene::Scene scene_;
+    Runtime runtime_;
+    world::Types types_;
+    world::World world_;
+    std::array<Parameter, 3> parameters_;
     std::vector<Change> history_;
     std::size_t cursor_{};
-    scene::ObjectKey selected_{};
-    std::optional<Change> active_;
+    ObjectId selected_;
+    std::optional<FieldChange> active_;
     void remember(Change);
-    Result<void> replay(const Change&, bool forward);
+    Result<world::Commit> replay(Change&, bool forward);
 };
 }

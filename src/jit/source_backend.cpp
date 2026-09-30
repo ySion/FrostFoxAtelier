@@ -46,12 +46,16 @@ struct CompiledBusiness {
     std::string function_name;
     std::string source_name;
     BusinessServices services{};
-    std::vector<ScalarKind> parameters;
+    std::vector<BusinessParameter> parameters;
     std::vector<std::string> field_names;
     std::vector<BusinessFieldBinding> fields;
     std::vector<std::string> method_names;
-    std::vector<std::vector<ScalarKind>> method_parameters;
+    std::vector<std::vector<BusinessParameter>> method_parameters;
     std::vector<BusinessMethodBinding> methods;
+    std::vector<std::string> enum_names;
+    std::vector<std::vector<std::string>> enum_item_names;
+    std::vector<std::vector<BusinessEnumItem>> enum_items;
+    std::vector<BusinessEnumBinding> enumerations;
     BusinessSignature signature{};
     BusinessEnvironment environment{};
     bool requires_receiver{};
@@ -74,19 +78,25 @@ void free_coroutine(void* storage, std::uint32_t alignment) noexcept {
     ::operator delete(storage, std::align_val_t{alignment < minimum ? minimum : alignment});
 }
 
-ScalarKind scalar_kind(language::ValueType type) {
-    switch (type) {
+BusinessType scalar_kind(language::ValueType type) {
+    switch (type.kind) {
     case language::ValueType::void_value: return ScalarKind::void_value;
     case language::ValueType::f32: return ScalarKind::f32;
     case language::ValueType::u32: return ScalarKind::u32;
+    case language::ValueType::i32: return ScalarKind::i32;
+    case language::ValueType::enumeration: return {ScalarKind::enumeration, type.enum_index};
     default: throw std::logic_error("Unsupported business scalar type.");
     }
 }
 
-language::ValueType scalar_type(ScalarKind kind) {
-    switch (kind) {
+language::ValueType scalar_type(BusinessType kind) {
+    if (kind.kind != ScalarKind::enumeration && kind.enum_index != 0)
+        throw std::runtime_error("Scalar catalog entry has an unexpected enum identity.");
+    switch (kind.kind) {
     case ScalarKind::f32: return language::ValueType::f32;
     case ScalarKind::u32: return language::ValueType::u32;
+    case ScalarKind::i32: return language::ValueType::i32;
+    case ScalarKind::enumeration: return {language::ValueType::enumeration, kind.enum_index};
     default: throw std::runtime_error("Host fields, parameters and non-void results require float or uint kinds.");
     }
 }
@@ -158,7 +168,7 @@ public:
             llvm::cast<llvm::Function>(function.getCallee())->addFnAttr(llvm::Attribute::NoUnwind);
             return function;
         };
-        scalar_type_ = llvm::StructType::get(*context_, {i32, i32});
+        scalar_type_ = llvm::StructType::get(*context_, {i32, i32, i32, i32, ptr, i32, i32});
         begin_ = declare("business_begin", i32, {ptr});
         create_ = declare("business_create", i32, {ptr, i32});
         read_float_ = declare("business_read_float", i32, {ptr, i32, i32, ptr});
@@ -201,14 +211,15 @@ public:
         // All host-call scratch is allocated once, never on a loop backedge.
         if (max_call_arguments_ != 0) {
             call_arguments_ = ir_.CreateAlloca(scalar_type_, ir_.getInt32(max_call_arguments_), "host.arguments");
-            call_arguments_->setAlignment(llvm::Align(4));
+            call_arguments_->setAlignment(llvm::Align(8));
         }
         if (has_call_result_) {
             call_result_ = ir_.CreateAlloca(scalar_type_, nullptr, "host.result");
-            call_result_->setAlignment(llvm::Align(4));
+            call_result_->setAlignment(llvm::Align(8));
         }
-        for (const auto& local : program_.locals) {
-            if (is_reference(local.type)) {
+        for (std::size_t index = 0; index < program_.locals.size(); ++index) {
+            const auto& local = program_.locals[index];
+            if (is_reference(local.type) || (index < program_.parameters.size() && program_.parameters[index].passing != ParameterPassing::value)) {
                 locals_.push_back(nullptr);
                 continue;
             }
@@ -219,9 +230,13 @@ public:
         for (std::size_t index = 0; index < program_.parameters.size(); ++index) {
             auto* argument = ir_.CreateInBoundsGEP(scalar_type_, entry_->getArg(1),
                 ir_.getInt32(static_cast<std::uint32_t>(index)));
-            auto* bits = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, argument, 1));
+            if (program_.parameters[index].passing != ParameterPassing::value) {
+                locals_[index] = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(scalar_type_, argument, 4));
+                continue;
+            }
+            auto* bits = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, argument, 2));
             llvm::Value* value = bits;
-            if (program_.parameters[index] == language::ValueType::f32)
+            if (program_.parameters[index].type == language::ValueType::f32)
                 value = ir_.CreateBitCast(bits, ir_.getFloatTy());
             ir_.CreateStore(value, locals_.at(index));
         }
@@ -352,9 +367,11 @@ private:
         throw std::logic_error("A null reference cannot own invocation storage.");
     }
     llvm::Type* value_type(language::ValueType value) {
-        switch (value) {
+        switch (value.kind) {
         case language::ValueType::f32: return ir_.getFloatTy();
-        case language::ValueType::u32: return ir_.getInt32Ty();
+        case language::ValueType::u32:
+        case language::ValueType::i32:
+        case language::ValueType::enumeration: return ir_.getInt32Ty();
         case language::ValueType::predicate: return ir_.getInt1Ty();
         case language::ValueType::void_value: return ir_.getVoidTy();
         case language::ValueType::strong_reference:
@@ -397,7 +414,7 @@ private:
             checked_call(read_float_, {invocation_, slot, ir_.getInt32(field), float_result_});
             return ir_.CreateLoad(ir_.getFloatTy(), float_result_);
         }
-        if (type != language::ValueType::u32) throw std::logic_error("Unsupported business field binding.");
+        if (type != language::ValueType::u32 && type != language::ValueType::i32 && type.kind != language::ValueType::enumeration) throw std::logic_error("Unsupported business field binding.");
         checked_call(read_uint_, {invocation_, slot, ir_.getInt32(field), uint_result_});
         return ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
     }
@@ -405,7 +422,7 @@ private:
         if (type == language::ValueType::f32) {
             checked_call(write_float_, {invocation_, slot, ir_.getInt32(field), value});
         } else {
-            if (type != language::ValueType::u32) throw std::logic_error("Unsupported business field binding.");
+            if (type != language::ValueType::u32 && type != language::ValueType::i32 && type.kind != language::ValueType::enumeration) throw std::logic_error("Unsupported business field binding.");
             checked_call(write_uint_, {invocation_, slot, ir_.getInt32(field), value});
         }
     }
@@ -445,18 +462,39 @@ private:
             auto* owner = expression(node.receiver);
             // Nested calls reuse the same entry scratch. Finish every operand
             // left-to-right and retain its SSA value before packing this call.
-            llvm::SmallVector<llvm::Value*, 8> values;
-            values.reserve(node.arguments.size());
-            for (const auto argument : node.arguments) values.push_back(expression(argument));
-            for (std::size_t index = 0; index < node.arguments.size(); ++index) {
-                const auto type = program_.expressions[node.arguments[index]].type;
-                auto* value = values[index];
-                auto* storage = ir_.CreateInBoundsGEP(scalar_type_, call_arguments_,
-                    ir_.getInt32(static_cast<std::uint32_t>(index)));
-                ir_.CreateStore(ir_.getInt32(static_cast<std::uint32_t>(scalar_kind(type))),
-                    ir_.CreateStructGEP(scalar_type_, storage, 0));
-                auto* bits = type == language::ValueType::f32 ? ir_.CreateBitCast(value, ir_.getInt32Ty()) : value;
-                ir_.CreateStore(bits, ir_.CreateStructGEP(scalar_type_, storage, 1));
+            struct Operand { llvm::Value* value; ArgumentStorage storage; std::uint32_t field; };
+            llvm::SmallVector<Operand, 8> values;
+            for (std::size_t i = 0; i < node.arguments.size(); ++i) {
+                const auto id = node.arguments[i];
+                const auto& argument = program_.expressions[id];
+                const auto passing = node.argument_passing[i];
+                if (passing != ParameterPassing::value && argument.kind == Kind::local)
+                    values.push_back({locals_[argument.value], passing == ParameterPassing::reference ?
+                        ArgumentStorage::reference : ArgumentStorage::read_only, 0});
+                else if (passing != ParameterPassing::value && argument.kind == Kind::field)
+                    values.push_back({expression(argument.receiver), ArgumentStorage::field, argument.value});
+                else values.push_back({expression(id), ArgumentStorage::value, 0});
+            }
+            for (std::size_t i = 0; i < node.arguments.size(); ++i) {
+                const auto type = program_.expressions[node.arguments[i]].type;
+                const auto& operand = values[i];
+                auto* storage = ir_.CreateInBoundsGEP(scalar_type_, call_arguments_, ir_.getInt32(static_cast<std::uint32_t>(i)));
+                const auto put = [&](unsigned member, llvm::Value* value) { ir_.CreateStore(value, ir_.CreateStructGEP(scalar_type_, storage, member)); };
+                const auto kind = scalar_kind(type);
+                put(0, ir_.getInt32(static_cast<std::uint32_t>(kind.kind)));
+                put(1, ir_.getInt32(kind.enum_index));
+                llvm::Value* bits = ir_.getInt32(0);
+                llvm::Value* data = llvm::ConstantPointerNull::get(ir_.getPtrTy());
+                llvm::Value* slot = ir_.getInt32(0);
+                if (operand.storage == ArgumentStorage::value)
+                    bits = type == language::ValueType::f32 ? ir_.CreateBitCast(operand.value, ir_.getInt32Ty()) : operand.value;
+                else if (operand.storage == ArgumentStorage::field) slot = operand.value;
+                else data = operand.value;
+                put(2, bits);
+                put(3, ir_.getInt32(static_cast<std::uint32_t>(operand.storage)));
+                put(4, data);
+                put(5, slot);
+                put(6, ir_.getInt32(operand.field));
             }
             llvm::Value* arguments = node.arguments.empty() ? llvm::ConstantPointerNull::get(ir_.getPtrTy()) :
                 static_cast<llvm::Value*>(call_arguments_);
@@ -465,9 +503,7 @@ private:
                 output = call_result_;
                 // A successful callback that omits its value must not reuse a
                 // previous nested call's result or expose uninitialized bits.
-                ir_.CreateStore(ir_.getInt32(static_cast<std::uint32_t>(ScalarKind::void_value)),
-                    ir_.CreateStructGEP(scalar_type_, output, 0));
-                ir_.CreateStore(ir_.getInt32(0), ir_.CreateStructGEP(scalar_type_, output, 1));
+                ir_.CreateStore(llvm::Constant::getNullValue(scalar_type_), output);
             }
             checked_call(call_, {invocation_, owner, ir_.getInt32(node.value), arguments,
                 ir_.getInt32(static_cast<std::uint32_t>(node.arguments.size())), output});
@@ -477,16 +513,21 @@ private:
             failure_status_->addIncoming(ir_.getInt32(1), ir_.GetInsertBlock());
             failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)),
                 ir_.GetInsertBlock());
-            ir_.CreateCondBr(ir_.CreateICmpEQ(kind, ir_.getInt32(static_cast<std::uint32_t>(scalar_kind(node.type)))),
-                next, failure_);
+            const auto expected = scalar_kind(node.type);
+            auto* enum_index = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, output, 1));
+            auto* storage_kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, output, 3));
+            auto* valid = ir_.CreateAnd(ir_.CreateICmpEQ(kind, ir_.getInt32(static_cast<std::uint32_t>(expected.kind))),
+                ir_.CreateICmpEQ(enum_index, ir_.getInt32(expected.enum_index)));
+            valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(storage_kind, ir_.getInt32(0)));
+            ir_.CreateCondBr(valid, next, failure_);
             ir_.SetInsertPoint(next);
             // Load now: later operands may invoke another method using this slot.
-            auto* bits = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, output, 1));
+            auto* bits = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(scalar_type_, output, 2));
             return node.type == language::ValueType::f32 ? ir_.CreateBitCast(bits, ir_.getFloatTy()) : bits;
         }
         case Kind::unary: {
             auto* value = expression(node.left);
-            return node.operation == language::Operation::positive ? value : ir_.CreateFNeg(value);
+            return node.operation == language::Operation::positive ? value : node.type == language::ValueType::f32 ? ir_.CreateFNeg(value) : ir_.CreateNeg(value);
         }
         case Kind::binary: break;
         }
@@ -509,10 +550,10 @@ private:
         case Op::multiply: return floating ? ir_.CreateFMul(left, right) : ir_.CreateMul(left, right);
         case Op::equal: return floating ? ir_.CreateFCmpOEQ(left, right) : ir_.CreateICmpEQ(left, right);
         case Op::not_equal: return floating ? ir_.CreateFCmpUNE(left, right) : ir_.CreateICmpNE(left, right);
-        case Op::less: return floating ? ir_.CreateFCmpOLT(left, right) : ir_.CreateICmpULT(left, right);
-        case Op::less_equal: return floating ? ir_.CreateFCmpOLE(left, right) : ir_.CreateICmpULE(left, right);
-        case Op::greater: return floating ? ir_.CreateFCmpOGT(left, right) : ir_.CreateICmpUGT(left, right);
-        case Op::greater_equal: return floating ? ir_.CreateFCmpOGE(left, right) : ir_.CreateICmpUGE(left, right);
+        case Op::less: return floating ? ir_.CreateFCmpOLT(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSLT(left, right) : ir_.CreateICmpULT(left, right);
+        case Op::less_equal: return floating ? ir_.CreateFCmpOLE(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSLE(left, right) : ir_.CreateICmpULE(left, right);
+        case Op::greater: return floating ? ir_.CreateFCmpOGT(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSGT(left, right) : ir_.CreateICmpUGT(left, right);
+        case Op::greater_equal: return floating ? ir_.CreateFCmpOGE(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSGE(left, right) : ir_.CreateICmpUGE(left, right);
         case Op::positive:
         case Op::negate: break;
         }
@@ -634,7 +675,7 @@ private:
     llvm::AllocaInst* call_result_{};
     llvm::AllocaInst* float_result_{};
     llvm::AllocaInst* uint_result_{};
-    std::vector<llvm::AllocaInst*> locals_;
+    std::vector<llvm::Value*> locals_;
     std::vector<std::uint32_t> local_slots_;
     std::vector<std::uint32_t> temporary_slots_;
     std::vector<std::uint32_t> temporaries_;
@@ -680,7 +721,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     state->services = services;
     state->object_type_name = program.object_type_name;
     state->parameters.reserve(program.parameters.size());
-    for (const auto parameter : program.parameters) state->parameters.push_back(scalar_kind(parameter));
+    for (const auto parameter : program.parameters) state->parameters.push_back({scalar_kind(parameter.type), parameter.passing});
     state->signature = {state->parameters.empty() ? nullptr : state->parameters.data(),
         static_cast<std::uint32_t>(state->parameters.size()), scalar_kind(program.result), program.is_coroutine};
     state->field_names.reserve(environment.fields.size());
@@ -696,13 +737,31 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         state->method_names.emplace_back(method.name);
         auto& parameters = state->method_parameters.emplace_back();
         parameters.reserve(method.parameters.size());
-        for (const auto parameter : method.parameters) parameters.push_back(scalar_kind(parameter));
+        for (const auto parameter : method.parameters) parameters.push_back({scalar_kind(parameter.type), parameter.passing});
         state->methods.push_back({state->method_names.back().c_str(), parameters.empty() ? nullptr : parameters.data(),
             static_cast<std::uint32_t>(parameters.size()), scalar_kind(method.result), method.receiver_read_only});
     }
+    state->enum_names.reserve(environment.enumerations.size());
+    state->enum_item_names.reserve(environment.enumerations.size());
+    state->enum_items.reserve(environment.enumerations.size());
+    state->enumerations.reserve(environment.enumerations.size());
+    for (const auto& enumeration : environment.enumerations) {
+        state->enum_names.emplace_back(enumeration.name);
+        auto& names = state->enum_item_names.emplace_back();
+        auto& items = state->enum_items.emplace_back();
+        names.reserve(enumeration.values.size());
+        items.reserve(enumeration.values.size());
+        for (const auto& value : enumeration.values) {
+            names.emplace_back(value.name);
+            items.push_back({names.back().c_str(), value.bits});
+        }
+        state->enumerations.push_back({state->enum_names.back().c_str(), scalar_kind(enumeration.underlying).kind,
+            items.data(), static_cast<std::uint32_t>(items.size())});
+    }
     state->environment = {state->fields.empty() ? nullptr : state->fields.data(),
         static_cast<std::uint32_t>(state->fields.size()), state->methods.empty() ? nullptr : state->methods.data(),
-        static_cast<std::uint32_t>(state->methods.size()), state->object_type_name.c_str()};
+        static_cast<std::uint32_t>(state->methods.size()), state->object_type_name.c_str(),
+        state->enumerations.data(), static_cast<std::uint32_t>(state->enumerations.size())};
     for (const auto& expression : program.expressions)
         if (expression.kind == language::Expression::Kind::receiver) { state->requires_receiver = true; break; }
     state->jit = take(builder.create());
@@ -785,12 +844,27 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
         using namespace atelier;
         using namespace atelier::source::detail;
         std::vector<language::FieldBinding> fields;
-        std::vector<std::vector<language::ValueType>> method_parameters;
+        std::vector<std::vector<language::ParameterType>> method_parameters;
         std::vector<language::MethodBinding> methods;
+        std::vector<std::vector<language::EnumItem>> enum_items;
+        std::vector<language::EnumBinding> enumerations;
         if (environment) {
             if ((environment->field_count != 0 && !environment->fields) ||
                 (environment->method_count != 0 && !environment->methods))
                 throw std::runtime_error("Host binding count requires catalog storage.");
+            if (environment->enumeration_count && !environment->enumerations) throw std::runtime_error("Missing enum catalog.");
+            enum_items.reserve(environment->enumeration_count);
+            enumerations.reserve(environment->enumeration_count);
+            for (std::uint32_t i = 0; i < environment->enumeration_count; ++i) {
+                const auto& enumeration = environment->enumerations[i];
+                if (!enumeration.name || (enumeration.value_count && !enumeration.values)) throw std::runtime_error("Invalid enum catalog.");
+                auto& items = enum_items.emplace_back();
+                for (std::uint32_t j = 0; j < enumeration.value_count; ++j) {
+                    if (!enumeration.values[j].name) throw std::runtime_error("Invalid enum item name.");
+                    items.push_back({enumeration.values[j].name, enumeration.values[j].bits});
+                }
+                enumerations.push_back({enumeration.name, scalar_type(enumeration.underlying), items});
+            }
             fields.reserve(environment->field_count);
             for (std::uint32_t index = 0; index < environment->field_count; ++index) {
                 const auto& field = environment->fields[index];
@@ -806,14 +880,14 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                 auto& parameters = method_parameters.emplace_back();
                 parameters.reserve(method.parameter_count);
                 for (std::uint32_t parameter = 0; parameter < method.parameter_count; ++parameter)
-                    parameters.push_back(scalar_type(method.parameters[parameter]));
+                    parameters.push_back({scalar_type(method.parameters[parameter].type), method.parameters[parameter].passing});
                 const auto result_type = method.result == ScalarKind::void_value ? language::ValueType::void_value :
                     scalar_type(method.result);
                 methods.push_back({method.name, parameters, result_type, method.receiver_read_only});
             }
         }
         const language::Environment source_environment{fields, methods,
-            environment && environment->object_type_name ? std::string_view(environment->object_type_name) : std::string_view{}};
+            environment && environment->object_type_name ? std::string_view(environment->object_type_name) : std::string_view{}, enumerations};
         auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment);
         if (!program) {
             const auto& diagnostic = program.error();
@@ -859,11 +933,12 @@ std::uint32_t atelier_compile_business_without_poll_for_verification(
 }
 #endif
 
-atelier::source::detail::BusinessCodeInfo atelier_business_info(
-    atelier::source::detail::BusinessCode* code) noexcept {
-    if (!code) return {};
+void atelier_query_business_info(atelier::source::detail::BusinessCode* code,
+    atelier::source::detail::BusinessCodeInfo* output) noexcept {
+    if (!output) return;
+    if (!code) { *output = {}; return; }
     const auto& state = *code->state;
-    return {state.function_name.c_str(), state.source_name.c_str(),
+    *output = {state.function_name.c_str(), state.source_name.c_str(),
         state.signature.is_coroutine ? reinterpret_cast<std::uintptr_t>(state.coroutine_entry) :
             reinterpret_cast<std::uintptr_t>(state.entry), state.services, state.signature, state.environment,
         state.requires_receiver};
@@ -900,7 +975,12 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         return 1;
     }
     for (std::uint32_t index = 0; index < argument_count; ++index) {
-        if (arguments[index].kind != signature.parameters[index]) {
+        const auto mode = signature.parameters[index].passing;
+        const auto& argument = arguments[index];
+        const bool valid_storage = mode == atelier::ParameterPassing::value ? argument.storage == atelier::source::detail::ArgumentStorage::value :
+            argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % 4 == 0 &&
+            (argument.storage == atelier::source::detail::ArgumentStorage::reference || (mode == atelier::ParameterPassing::read_only && argument.storage == atelier::source::detail::ArgumentStorage::read_only));
+        if (argument.kind != signature.parameters[index].type || !valid_storage) {
             std::snprintf(error, error_capacity, "Business argument %u does not match its compiled scalar kind.", index);
             return 1;
         }
@@ -933,7 +1013,7 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
         return 1;
     }
     for (std::uint32_t i = 0; i < argument_count; ++i) {
-        if (arguments[i].kind != active->signature.parameters[i]) {
+        if (arguments[i].kind != active->signature.parameters[i].type || arguments[i].storage != ArgumentStorage::value) {
             std::snprintf(error, error_capacity, "%s", "Coroutine argument has the wrong scalar kind.");
             return 1;
         }
