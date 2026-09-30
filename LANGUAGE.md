@@ -6,11 +6,11 @@
 
 ## 能力范围
 
-每份源码包含一个函数。它可接受任意数量的 float/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还可借用原生记录、Array 和只读 String，并创建拥有型 String/Array 局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、原生成员调用、块、`if/else`、`while` 和 `return`。
+每份源码是一个含有一至多个函数的模块，由宿主选定一个公开入口。函数可接受任意数量的 float/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还可借用原生记录、Array 和只读 String，并创建拥有型 String/Array 局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、同模块函数调用、原生成员调用、块、`if/else`、`while` 和 `return`。
 
 对象环境至多包含一个宿主已注册的绑定对象类型，目录包含其继承的公开成员。接收者可为该类型的派生实例；源码的声明视图仍是绑定类型。源码可使用该视图的持有/观察局部、`null`、`new`、身份比较和已绑定的标量字段/原生方法。原生与描述型对象沿用同一 Runtime 类型和身份。
 
-尚未支持：源码类型声明、多函数/跨文件声明收集、多对象类型目录、对象引用字段、对象引用参数与返回、记录/容器的按值参数与返回、拥有型记录局部、借用返回与借用局部声明、源码显式销毁、通用泛型、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移。本文不把这些边界转成必须立即实施的计划。
+尚未支持：源码类型声明、跨文件声明收集、递归调用、内部 async 调用、多对象类型目录、对象引用字段、对象引用参数与返回、记录/容器的按值参数与返回、拥有型记录局部、借用返回与借用局部声明、源码显式销毁、通用泛型、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移。本文不把这些边界转成必须立即实施的计划。
 
 ## 源码与词法
 
@@ -67,7 +67,7 @@ void float uint int const if else while return self weak null new observe try_ac
 - `.size()` 返回 `uint`；索引接受 `uint` 或 `int`，在实际访问前检查负数和越界。长度超过 uint 范围或缓冲布局不合法时执行失败，不截断。空序列的长度查询合法，任何元素访问均越界。
 - 只读性沿记录字段与数组元素向下传播。可写借用允许修改标量/枚举叶值，不允许整值赋值、改变序列结构或修改 String。只读和可写参数可以指向同一存储，读取会观察已经发生的别名写入。
 
-含原生聚合借用参数、拥有型局部或 String 字面量的函数形成**同步原生值区间**：允许标量计算、局部、控制流和上述值访问；原生方法仅允许调用 `self` 上声明 `BorrowSafe` 的方法。其他对象操作、async 与 yield 被拒绝。区间内不运行入口/回边/结束 GC 回调；返回宿主后由宿主继续推进收集。调用方须保证存储已构造且持续有效，不销毁、重分配或并发修改其结构。没有执行超时保证，无限循环也会推迟宿主重新取得控制。
+含原生聚合借用参数、拥有型局部或 String 字面量的函数形成**同步原生值区间**：允许标量计算、局部、控制流和上述值访问；原生方法仅允许调用 `self` 上声明 `BorrowSafe` 的方法。其他对象操作、async 与 yield 被拒绝。函数使用原生值的效果沿调用图传播；区间内包括所有被调用的同步辅助函数，不运行入口/回边/结束 GC 回调；返回宿主后由宿主继续推进收集。调用方须保证存储已构造且持续有效，不销毁、重分配或并发修改其结构。没有执行超时保证，无限循环也会推迟宿主重新取得控制。
 
 聚合值不能按值传入或返回，借用不能保存或逃逸。String/Array 拥有型局部遵循[拥有值规则](#拥有型-stringarray-与原生算法)。错误保留此前完成的写入，成功结果仍只在整次执行完成后提交。公共调用链、布局来源和验收见[原生值借用](docs/native-value-borrows.md)。
 
@@ -114,7 +114,7 @@ uint process(const Array<float>& input) {
 下列文法与本页类型、名称和能力限制共同适用；句法可解析不等于通过静态检查。
 
 ```ebnf
-program        = function, end_of_input ;
+program        = function, { function }, end_of_input ;
 function       = [ "async" ], result_type, identifier, "(", [ parameters ], ")", block ;
 result_type    = "void" | scalar_type ;
 scalar_type    = "float" | "uint" | "int" | qualified_enum_name ;
@@ -145,7 +145,7 @@ product        = unary, { "*", unary } ;
 unary          = ( "+" | "-" ), unary | postfix ;
 postfix        = primary, { ".", qualified_name, [ "(", [ arguments ], ")" ] | "[", expression, "]" } ;
 arguments      = expression, { ",", expression } ;
-primary        = qualified_enum_name, "::", identifier | numeric_literal | string_literal | identifier | "(", expression, ")" | "self" | "null"
+primary        = qualified_enum_name, "::", identifier | numeric_literal | string_literal | identifier, [ "(", [ arguments ], ")" ] | "(", expression, ")" | "self" | "null"
                | "new", qualified_name, "(", ")"
                | "observe", "(", expression, ")"
                | "try_acquire", "(", expression, ")" ;
@@ -161,11 +161,25 @@ primary        = qualified_enum_name, "::", identifier | numeric_literal | strin
 
 ### 控制流与返回
 
-声明、赋值、调用、`return` 和 `yield` 以分号结束；空语句 `;` 拒绝，空块合法。原生成员调用和序列修改可以作为表达式语句；普通数值、字段读取或 `new` 表达式不能单独作为语句。
+声明、赋值、调用、`return` 和 `yield` 以分号结束；空语句 `;` 拒绝，空块合法。同模块函数调用、原生成员调用和序列修改可以作为表达式语句；普通数值、字段读取或 `new` 表达式不能单独作为语句。
 
 `if/while` 必须有括号条件和花括号体；`else` 可跟块或完整 `if`。条件必须是比较产生的谓词。`while` 可能执行零次；不提供循环终止证明、执行次数或超时上限。
 
-`void` 入口允许 `return;` 或自然落尾。标量入口必须返回同类型表达式；顺序块中确定返回、完整 `if/else` 两侧返回可证明不落尾，循环自身不能证明必定返回。不可达代码仍要通过语法和类型检查。
+`void` 函数允许 `return;` 或自然落尾。标量函数必须返回同类型表达式；顺序块中确定返回、完整 `if/else` 两侧返回可证明不落尾，循环自身不能证明必定返回。不可达代码仍要通过语法和类型检查。
+
+## 同模块函数与入口
+
+函数使用 `sum(values)` 形式直接调用同一模块中的函数，允许调用在后面声明的函数。函数名唯一，当前没有重载或函数值。所有函数体均须通过类型检查；机器码只包含选定入口可达的函数。
+
+宿主使用 `program.request(source_name, source, "process")` 选定入口。首次发布前只有一个函数时可省略名称；多个函数必须明确选择。首次发布后，省略名称沿用已冻结的入口，不依赖声明顺序。入口名称、参数/结果、接收者要求和同步/async 种类沿原发布契约固定；私有助手可随整模块版本改变名称、顺序及签名。
+
+- 内部同步调用支持原有标量/枚举值和引用，以及原生聚合引用；返回 void 或标量/枚举。引用直接传递地址，const 标量引用可绑定临时值，String 字面量保持到当前语句结束。
+- Runtime 对象字段可以按值传给内部函数；字段引用仅能用于受 Runtime 保护的原生成员调用，不能跨进源码助手。调用方拥有的标量、原生记录/数组的叶值和聚合借用沿已有规则传递。
+- 借用保护与接收者需求沿调用图传播，内部函数不能绕过只读性、结构修改限制或 BorrowSafe 契约。未调用的函数不改变所选入口的接收者和执行区间要求。
+- 调用图必须无环，直接和间接递归均在编译时拒绝；内部调用目标必须同步。函数中的对象根与拥有值归该次调用，逐层清理；助手不执行整次调用的 begin/finish 回调，也不清理调用者或公开接收者的根。
+- 活动调用、固定租约和挂起入口保留整个模块版本。更新后，旧执行链中的所有助手仍来自旧模块。
+
+具体执行结构、示例与端到端证据见[同模块多函数](docs/source-function-modules.md)。
 
 ## 对象与成员
 
@@ -226,11 +240,11 @@ async uint accumulate(uint count) {
 
 return 完成原有清理后发布结果；挂起、失败、取消不发布完成结果。宿主在同一 Runtime 线程显式恢复：ready/suspended 取消立即清理，running 只登记请求，在本次恢复返回时处理。执行错误优先，否则取消压过挂起或成功结果；既有副作用不回滚。取消不抢占原生函数或无挂起长循环，也不运行用户续体。
 
-每个实例始终恢复和清理创建时的版本。旧实例挂起时可发布兼容新版本，新实例使用新版本；没有帧迁移。完整状态、准入及关停责任见 [Runtime 协程协议](docs/runtime-model.md#协程核心协议)。
+协程入口可以调用同步辅助函数，辅助调用必须在 yield 前结束；源码不能直接调用 async 函数。每个实例始终恢复和清理创建时的整模块版本，包括各同步辅助函数。旧实例挂起时可发布兼容新版本，新实例使用新版本；没有帧迁移。完整状态、准入及关停责任见 [Runtime 协程协议](docs/runtime-model.md#协程核心协议)。
 
 ## 执行、诊断与保护
 
-代码必须经过类型检查、LLVM/JIT 编译、链接和发布校验才执行；失败保留已有发布版本。没有解释执行回退。当前每份源码的编译产物拥有所需名称和目录数据；原生对象生命周期、错误首因与代码退休沿[正式执行协议](docs/runtime-model.md#已实现的最小业务执行协议)。
+代码必须经过类型检查、LLVM/JIT 编译、链接和发布校验才执行；失败保留已有发布版本。没有解释执行回退。当前每份源码的编译产物拥有所需名称、目录数据和入口可达的全部内部函数；原生对象生命周期、错误首因与代码退休沿[正式执行协议](docs/runtime-model.md#已实现的最小业务执行协议)。
 
 编译诊断包含源名、从 1 开始的行列及原因，通常在首个词法/语法/类型错误停止；当前位置可能是解析器发现问题的位置。过长源名的显示有界缩略，仍保留请求号、位置和原因，完整名字不因此变成截断身份。
 
@@ -241,9 +255,10 @@ return 完成原有清理后发布结果；挂起、失败、取消不发布完�
 | 实现保护 | 当前边界 |
 | --- | --- |
 | 解析递归和表达式高度 | 各受 128 的实现预算约束，不等于可接受 128 层括号或语句块 |
+| 模块函数数量 | 最多 1024 个；模块内函数名唯一，调用图无环 |
 | 局部/目录索引 | `uint32_t` 范围检查，不承诺能编译数十亿项 |
 | DLL 源码长度 | 使用 `uint32_t` 字节长度；前端接收 string_view，不承诺近 4 GiB 输入 |
 | 执行平台 | 当前 Windows x64，同一 Runtime 线程 |
 | 编译资源 | 同步编译，尚无硬内存配额、超时中断或完整 OOM 恢复 |
 
-这些实现保护不是永久语言规则，也不构成任意不可信程序的安全沙箱。语法实例与拒绝场景由[源码端到端验收](acceptance/jit/business.cpp)、[标量调用验收](acceptance/jit/typed_business.inl)、[协程验收](acceptance/jit/coroutine_business.inl)、[生成反射调用链](acceptance/reflection/calls.cpp)、[原生值借用验收](acceptance/source/native_values.cpp)、[拥有值验收](acceptance/source/owned_values.cpp)及[公共消费者](acceptance/source/main.cpp)覆盖；命令以 README 为准。
+这些实现保护不是永久语言规则，也不构成任意不可信程序的安全沙箱。语法实例与拒绝场景由[源码端到端验收](acceptance/jit/business.cpp)、[标量调用验收](acceptance/jit/typed_business.inl)、[协程验收](acceptance/jit/coroutine_business.inl)、[生成反射调用链](acceptance/reflection/calls.cpp)、[原生值借用验收](acceptance/source/native_values.cpp)、[拥有值验收](acceptance/source/owned_values.cpp)、[模块函数验收](acceptance/source/modules.cpp)及[公共消费者](acceptance/source/main.cpp)覆盖；命令以 README 为准。

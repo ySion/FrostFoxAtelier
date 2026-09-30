@@ -146,7 +146,7 @@ struct BusinessFrameLayout {
     // or active invocation pin is alive. Empty/null retains the generic binding
     // used by scalar-only programs.
     const char* object_type_name;
-    // Maximum arity among calls in the compiled AST, not the host catalog.
+    // Maximum native-call arity across reachable functions, not the host catalog.
     std::uint32_t max_call_arguments;
 };
 static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_v<BusinessFrameLayout>);
@@ -162,7 +162,8 @@ struct BusinessCoroutine;
 #define ATELIER_BUSINESS_BACKEND __declspec(dllimport)
 #endif
 
-// Source has scalar/enum values and synchronous native value borrows, with an optional scalar result.
+// A module has one selected host entry and internal synchronous functions.
+// entry_name may be omitted for a single function; results remain scalar/enum.
 // Environment members describe the host's validated Runtime binding; a null
 // environment is empty. Code and LLVM state stay in their DLL; source bytes,
 // catalog names and arrays are borrowed only for compile. Compiled metadata
@@ -177,7 +178,7 @@ extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business(
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity) noexcept;
+    char* error, std::uint32_t error_capacity, const char* entry_name = nullptr) noexcept;
 
 // Actual compiled metadata, not caller-provided claims. Null code returns null
 // names/tables, a zero address and null callbacks. Querying acquires no owner.

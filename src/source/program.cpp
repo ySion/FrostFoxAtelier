@@ -245,9 +245,9 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
 }
 
 Program::SourceRequest::SourceRequest(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract,
-    std::shared_ptr<const Declaration> declaration, std::uint64_t number, std::string name, std::string text)
+    std::shared_ptr<const Declaration> declaration, std::uint64_t number, std::string name, std::string text, std::string entry)
     : owner_(std::move(owner)), contract_(std::move(contract)), declaration_(std::move(declaration)),
-      sequence(number), source_name(std::move(name)), source(std::move(text)) {}
+      sequence(number), source_name(std::move(name)), source(std::move(text)), entry_name(std::move(entry)) {}
 Program::Candidate::Candidate() = default;
 Program::Candidate::Candidate(std::unique_ptr<Prepared> prepared) : prepared_(std::move(prepared)) {}
 Program::Candidate::~Candidate() = default;
@@ -365,15 +365,16 @@ Result<Program::Lease> Program::pin() const {
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no version to pin."});
     return Lease{state_->current};
 }
-Result<Program::Request> Program::request(std::string_view name, std::string_view source) {
+Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name) {
     if (!state_->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     if (state_->latest_request == std::numeric_limits<std::uint64_t>::max())
         return std::unexpected(Error{ErrorCode::capacity_exceeded, "Business request sequence exhausted."});
-    if (source.size() > std::numeric_limits<std::uint32_t>::max() || name.find('\0') != std::string_view::npos)
+    if (source.size() > std::numeric_limits<std::uint32_t>::max() || name.find('\0') != std::string_view::npos || entry_name.find('\0') != std::string_view::npos)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business source/name exceeds its compiler contract."});
+    if (entry_name.empty() && state_->declaration) entry_name = state_->declaration->name;
     const auto sequence = state_->latest_request + 1;
     Request result{new SourceRequest(state_, state_->contract, state_->declaration, sequence,
-        std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source))};
+        std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source), std::string(entry_name))};
     state_->latest_request = sequence;
     return result;
 }
@@ -392,9 +393,12 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     const EnvironmentView storage(contract.binding);
     const auto environment = storage.view(contract.type_name.c_str());
     const auto status = compile(&contract.actual_services, request->source_name.c_str(), request->source.data(),
-        static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic));
+        static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic), request->entry_name.c_str());
     CodeOwner code{output, &atelier_destroy_business};
     if (status != 0) return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});
+    const auto info = atelier_business_info(code.get());
+    if (!request->entry_name.empty() && (!info.function_name || request->entry_name != info.function_name))
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Compiler did not produce the selected module entry."});
     auto compatible = contract.compatible(code.get(), request->source_name, request->declaration_.get());
     if (!compatible)
         return std::unexpected(Error{compatible.error().code, request->source_name + ": " + compatible.error().message});

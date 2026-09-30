@@ -141,35 +141,29 @@ T take(llvm::Expected<T> value) {
 
 class SourceLowering {
 public:
-    SourceLowering(LLJIT& jit, const language::Program& program)
-        : program_(program), context_(std::make_unique<llvm::LLVMContext>()),
-          module_(std::make_unique<llvm::Module>(program.function_name, *context_)), ir_(*context_),
-          local_slots_(program.locals.size(), null_reference_slot),
-          temporary_slots_(program.expressions.size(), null_reference_slot) {
-        for (std::size_t index = 0; index < program_.locals.size(); ++index) {
-            const auto type = program_.locals[index].type;
+    SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
+        std::uint32_t function, const std::vector<llvm::Function*>& functions, std::uint32_t strong_base, std::uint32_t weak_base)
+        : function_(source.functions[function]), source_(source), functions_(functions), context_(&context), module_(&module), ir_(context),
+          entry_(functions[function]), local_slots_(function_.locals.size(), null_reference_slot),
+          temporary_slots_(function_.expressions.size(), null_reference_slot),
+          strong_slots_(strong_base), weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
+          public_entry_(function == source.entry), protected_values_(source.functions[source.entry].uses_native_values) {
+        for (std::size_t index = 0; index < function_.locals.size(); ++index) {
+            const auto type = function_.locals[index].type;
             if (is_reference(type)) local_slots_[index] = allocate_reference(type);
         }
-        for (std::size_t index = 0; index < program_.expressions.size(); ++index) {
-            const auto& node = program_.expressions[index];
+        for (std::size_t index = 0; index < function_.expressions.size(); ++index) {
+            const auto& node = function_.expressions[index];
             using Kind = language::Expression::Kind;
             if (node.kind == Kind::create_reference || node.kind == Kind::observe_reference ||
                 node.kind == Kind::acquire_reference)
                 temporary_slots_[index] = allocate_reference(node.type);
+            has_source_calls_ |= node.kind == Kind::source_call;
             if (node.kind == Kind::call) {
-                if (node.arguments.size() > max_call_arguments_)
-                    max_call_arguments_ = static_cast<std::uint32_t>(node.arguments.size());
-                has_call_result_ = has_call_result_ || node.type != language::ValueType::void_value;
+                max_call_arguments_ = std::max(max_call_arguments_, static_cast<std::uint32_t>(node.arguments.size()));
+                has_call_result_ |= node.type != language::ValueType::void_value;
             }
         }
-        // Bound the COFF file label as well as formatted errors; the full
-        // source identity remains in Program and CompiledBusiness metadata.
-        if (program.source_name.size() <= diagnostic_source_limit)
-            module_->setSourceFileName(program.source_name);
-        else
-            module_->setSourceFileName(diagnostic_source_name(program.source_name));
-        module_->setTargetTriple(jit.getTargetTriple());
-        module_->setDataLayout(jit.getDataLayout());
         auto* i32 = ir_.getInt32Ty();
         auto* f32 = ir_.getFloatTy();
         auto* ptr = ir_.getPtrTy();
@@ -197,21 +191,14 @@ public:
         assign_value_ = declare("business_assign_value", i32, {ptr, i32, ptr, ptr});
         destroy_value_ = declare("business_destroy_value", ir_.getVoidTy(), {ptr, i32, ptr});
         mutate_sequence_ = declare("business_mutate_sequence", i32, {ptr, i32, i32, ptr, ptr, ir_.getInt64Ty()});
-        auto* entry_type = program_.is_coroutine ? llvm::FunctionType::get(ptr, {ptr, ptr, ptr, ptr, ptr, ptr}, false) :
-            llvm::FunctionType::get(i32, {ptr, ptr, ptr, ptr}, false);
-        entry_ = llvm::Function::Create(entry_type,
-            llvm::GlobalValue::ExternalLinkage, "atelier_source_entry", *module_);
-        entry_->addFnAttr(llvm::Attribute::NoInline);
-        entry_->addFnAttr(llvm::Attribute::NoUnwind);
-        entry_->addFnAttr("disable-tail-calls", "true");
-        entry_->setUWTableKind(llvm::UWTableKind::Async);
-        if (program_.is_coroutine) entry_->addFnAttr(llvm::Attribute::PresplitCoroutine);
         invocation_ = entry_->getArg(0);
+        result_output_ = entry_->getArg(public_entry_ ? 2 : 1);
+        failure_output_ = entry_->getArg(public_entry_ ? 3 : 2);
     }
 
     BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr, max_call_arguments_}; }
 
-    llvm::orc::ThreadSafeModule generate() {
+    void generate() {
         auto* start = block("entry");
         failure_ = block("cleanup.failure");
         finish_ = block("finish");
@@ -219,11 +206,12 @@ public:
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
         failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
         ir_.SetInsertPoint(start);
-        if (program_.is_coroutine) setup_coroutine();
+        if (function_.is_coroutine) setup_coroutine();
         float_result_ = ir_.CreateAlloca(ir_.getFloatTy());
         uint_result_ = ir_.CreateAlloca(ir_.getInt32Ty());
         float_result_->setAlignment(llvm::Align(4));
         uint_result_->setAlignment(llvm::Align(4));
+        if (has_source_calls_) source_failure_ = ir_.CreateAlloca(ir_.getInt32Ty(), nullptr, "callee.failure");
         // All host-call scratch is allocated once, never on a loop backedge.
         if (max_call_arguments_ != 0) {
             call_arguments_ = ir_.CreateAlloca(abi_value_type_, ir_.getInt32(max_call_arguments_), "host.arguments");
@@ -233,17 +221,17 @@ public:
             call_result_ = ir_.CreateAlloca(abi_value_type_, nullptr, "host.result");
             call_result_->setAlignment(llvm::Align(8));
         }
-        owned_local_slots_.resize(program_.locals.size(), language::no_node);
-        literal_slots_.resize(program_.expressions.size(), language::no_node);
-        for (std::size_t index = 0; index < program_.locals.size(); ++index) {
-            const auto& local = program_.locals[index];
-            if (index >= program_.parameters.size() && language::aggregate(local.type)) {
+        owned_local_slots_.resize(function_.locals.size(), language::no_node);
+        literal_slots_.resize(function_.expressions.size(), language::no_node);
+        for (std::size_t index = 0; index < function_.locals.size(); ++index) {
+            const auto& local = function_.locals[index];
+            if (index >= function_.parameters.size() && language::aggregate(local.type)) {
                 const auto slot = allocate_owned(local.type, local.name);
                 owned_local_slots_[index] = slot;
                 locals_.push_back(owned_[slot].storage);
                 continue;
             }
-            if (is_reference(local.type) || (index < program_.parameters.size() && program_.parameters[index].passing != ParameterPassing::value)) {
+            if (is_reference(local.type) || (index < function_.parameters.size() && function_.parameters[index].passing != ParameterPassing::value)) {
                 locals_.push_back(nullptr);
                 continue;
             }
@@ -251,79 +239,63 @@ public:
             storage->setAlignment(llvm::Align(4));
             locals_.push_back(storage);
         }
-        std::vector<bool> direct_text_inputs(program_.expressions.size());
+        std::vector<bool> direct_text_inputs(function_.expressions.size());
         const auto mark_text = [&](language::NodeId id) {
             if (id != language::no_node) direct_text_inputs[id] = true;
         };
-        for (const auto& node : program_.statements) mark_text(direct_text_input(node));
-        for (const auto& node : program_.expressions) mark_text(direct_text_input(node));
-        for (std::size_t index = 0; index < program_.expressions.size(); ++index) {
-            const auto& node = program_.expressions[index];
+        for (const auto& node : function_.statements) mark_text(direct_text_input(node));
+        for (const auto& node : function_.expressions) mark_text(direct_text_input(node));
+        for (std::size_t index = 0; index < function_.expressions.size(); ++index) {
+            const auto& node = function_.expressions[index];
             if (node.kind == language::Expression::Kind::string_literal && !direct_text_inputs[index])
                 literal_slots_[index] = allocate_owned(node.type, "text.literal");
         }
-        for (std::size_t index = 0; index < program_.parameters.size(); ++index) {
+        for (std::size_t index = 0; index < function_.parameters.size(); ++index) {
+            if (!public_entry_) {
+                auto* argument = entry_->getArg(static_cast<unsigned>(index + 3));
+                if (function_.parameters[index].passing == ParameterPassing::value) ir_.CreateStore(argument, locals_[index]);
+                else locals_[index] = argument;
+                continue;
+            }
             auto* argument = ir_.CreateInBoundsGEP(abi_value_type_, entry_->getArg(1),
                 ir_.getInt32(static_cast<std::uint32_t>(index)));
-            if (program_.parameters[index].passing != ParameterPassing::value) {
+            if (function_.parameters[index].passing != ParameterPassing::value) {
                 locals_[index] = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4));
                 continue;
             }
             auto* bits = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, argument, 2));
             llvm::Value* value = bits;
-            if (program_.parameters[index].type == language::ValueType::f32)
+            if (function_.parameters[index].type == language::ValueType::f32)
                 value = ir_.CreateBitCast(bits, ir_.getFloatTy());
             ir_.CreateStore(value, locals_.at(index));
         }
-        if (!program_.uses_native_values) checked_call(begin_, {invocation_});
-        parameter_views_.resize(program_.parameters.size());
-        for (std::size_t i = 0; i < program_.parameters.size(); ++i) {
-            const auto type = program_.parameters[i].type;
+        if (public_entry_ && !protected_values_) checked_call(begin_, {invocation_});
+        parameter_views_.resize(function_.parameters.size());
+        for (std::size_t i = 0; i < function_.parameters.size(); ++i) {
+            const auto type = function_.parameters[i].type;
             if (type.kind == language::ValueType::array || type.kind == language::ValueType::string)
                 parameter_views_[i] = sequence_view(locals_[i], type);
         }
         safe_point();
-        statement(program_.body);
+        statement(function_.body);
         if (!terminated()) {
-            if (program_.result == language::ValueType::void_value) ir_.CreateBr(finish_);
+            if (function_.result == language::ValueType::void_value) ir_.CreateBr(finish_);
             else ir_.CreateUnreachable(); // The typed tree rejects every reachable scalar fallthrough.
         }
         ir_.SetInsertPoint(finish_);
-        if (!program_.uses_native_values) checked_call(finish_call_, {invocation_});
+        if (public_entry_ && !protected_values_) checked_call(finish_call_, {invocation_});
         clear_execution_resources();
         complete(ir_.getInt32(0));
         ir_.SetInsertPoint(failure_);
         clear_execution_resources();
-        ir_.CreateStore(failure_reason_, entry_->getArg(3));
+        ir_.CreateStore(failure_reason_, failure_output_);
         complete(failure_status_);
-        if (program_.is_coroutine) finish_coroutine();
-        std::string diagnostics;
-        llvm::raw_string_ostream stream(diagnostics);
-        if (llvm::verifyModule(*module_, &stream)) throw std::runtime_error(diagnostics);
-        if (program_.is_coroutine) {
-            llvm::LoopAnalysisManager loops;
-            llvm::FunctionAnalysisManager functions;
-            llvm::CGSCCAnalysisManager graph;
-            llvm::ModuleAnalysisManager modules;
-            llvm::PassBuilder passes;
-            passes.registerModuleAnalyses(modules);
-            passes.registerCGSCCAnalyses(graph);
-            passes.registerFunctionAnalyses(functions);
-            passes.registerLoopAnalyses(loops);
-            passes.crossRegisterProxies(loops, functions, graph, modules);
-            llvm::ModulePassManager pipeline;
-            pipeline.addPass(llvm::CoroEarlyPass());
-            pipeline.addPass(llvm::createModuleToPostOrderCGSCCPassAdaptor(llvm::CoroSplitPass()));
-            pipeline.addPass(llvm::CoroCleanupPass());
-            pipeline.run(*module_, modules);
-            diagnostics.clear();
-            if (llvm::verifyModule(*module_, &stream)) throw std::runtime_error(diagnostics);
-        }
-        return {std::move(module_), std::move(context_)};
+        if (function_.is_coroutine) finish_coroutine();
+
     }
 private:
     llvm::Function* intrinsic(llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> types = {}) {
-        return llvm::Intrinsic::getOrInsertDeclaration(module_.get(), id, types);
+        return llvm::Intrinsic::getOrInsertDeclaration(module_, id, types);
     }
     void suspend(bool final) {
         auto* resume = block(final ? "coroutine.final.unreachable" : "coroutine.continue");
@@ -336,7 +308,7 @@ private:
         if (final) ir_.CreateUnreachable();
     }
     void complete(llvm::Value* status) {
-        if (!program_.is_coroutine) { ir_.CreateRet(status); return; }
+        if (!function_.is_coroutine) { ir_.CreateRet(status); return; }
         ir_.CreateStore(status, entry_->getArg(4));
         ir_.CreateStore(ir_.getInt32(1), entry_->getArg(5));
         ir_.CreateBr(coroutine_final_);
@@ -439,7 +411,7 @@ private:
     }
     struct OwnedValue { language::ValueType type; llvm::Value* storage; llvm::AllocaInst* live; };
     std::size_t allocate_owned(language::ValueType type, const llvm::Twine& name) {
-        const auto& layout = program_.value_layouts.at(type.type_index);
+        const auto& layout = source_.value_layouts.at(type.type_index);
         auto* storage = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), layout.size), nullptr, name);
         storage->setAlignment(llvm::Align(layout.alignment));
         auto* live = ir_.CreateAlloca(ir_.getInt1Ty(), nullptr, "value.live");
@@ -465,7 +437,7 @@ private:
         ir_.SetInsertPoint(next);
     }
     bool string_literal(language::NodeId id) const {
-        return id != language::no_node && program_.expressions[id].kind == language::Expression::Kind::string_literal;
+        return id != language::no_node && function_.expressions[id].kind == language::Expression::Kind::string_literal;
     }
     // Use the same decision for entry storage and lowering. A typed String
     // declaration/assignment or append can consume bytes without a temporary.
@@ -479,29 +451,29 @@ private:
             string_literal(node.right) ? node.right : language::no_node;
     }
     void write_text(language::ValueType type, llvm::Value* storage, std::uint32_t text, SequenceMutation operation) {
-        const auto& bytes = program_.strings.at(text);
+        const auto& bytes = function_.strings.at(text);
         auto* data = ir_.CreateGlobalString(llvm::StringRef(bytes.data(), bytes.size()));
         checked_call(mutate_sequence_, {invocation_, ir_.getInt32(type.type_index), ir_.getInt32(static_cast<std::uint32_t>(operation)),
             storage, data, ir_.getInt64(bytes.size())});
     }
     llvm::Value* input_address(language::NodeId id) {
-        const auto type = program_.expressions[id].type;
+        const auto type = function_.expressions[id].type;
         auto* value = expression(id);
         if (language::aggregate(type)) return value;
         llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
-        auto* storage = entry_ir.CreateAlloca(value_type(type), nullptr, "sequence.input");
+        auto* storage = entry_ir.CreateAlloca(value_type(type), nullptr, "value.temporary");
         storage->setAlignment(llvm::Align(4));
         ir_.CreateStore(value, storage);
         return storage;
     }
     void clear_user_values() {
         for (auto slot = owned_.size(); slot != 0;) destroy_owned(--slot);
-        for (auto slot = weak_slots_; slot != 0;) clear_slot(observation_slot_bit | --slot);
-        for (auto slot = strong_slots_; slot > business_root_slots;) clear_slot(--slot);
+        for (auto slot = weak_slots_; slot > first_weak_slot_;) clear_slot(observation_slot_bit | --slot);
+        for (auto slot = strong_slots_; slot > first_strong_slot_;) clear_slot(--slot);
     }
     void clear_execution_resources() {
         clear_user_values();
-        clear_slot(receiver_slot);
+        if (public_entry_) clear_slot(receiver_slot);
     }
     void clear_temporaries() {
         for (auto slot = temporaries_.rbegin(); slot != temporaries_.rend(); ++slot) clear_slot(*slot);
@@ -530,7 +502,7 @@ private:
             checked_call(write_uint_, {invocation_, slot, ir_.getInt32(field), value});
         }
     }
-    void safe_point() { if (!program_.uses_native_values) checked_call(poll_, {invocation_}); }
+    void safe_point() { if (!protected_values_) checked_call(poll_, {invocation_}); }
     void check_value(llvm::Value* valid, EntryFailure reason) {
         failure_status_->addIncoming(ir_.getInt32(1), ir_.GetInsertBlock());
         failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(reason)), ir_.GetInsertBlock());
@@ -540,7 +512,7 @@ private:
     }
     struct Sequence { llvm::Value *data{}, *size{}; };
     Sequence sequence_view(llvm::Value* value, language::ValueType type) {
-        const auto& layout = program_.value_layouts.at(type.type_index);
+        const auto& layout = source_.value_layouts.at(type.type_index);
         // Entry allocas are reused by accesses in loops; projection is a trusted
         // leaf operation on the native container, with no business callbacks.
         llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
@@ -562,19 +534,19 @@ private:
         return result;
     }
     std::size_t storage_size(language::ValueType type) const {
-        return language::aggregate(type) ? program_.value_layouts.at(type.type_index).size : 4;
+        return language::aggregate(type) ? source_.value_layouts.at(type.type_index).size : 4;
     }
     std::size_t storage_alignment(language::ValueType type) const {
-        return language::aggregate(type) ? program_.value_layouts.at(type.type_index).alignment : 4;
+        return language::aggregate(type) ? source_.value_layouts.at(type.type_index).alignment : 4;
     }
     Sequence sequence(language::NodeId id) {
-        const auto& node = program_.expressions[id];
+        const auto& node = function_.expressions[id];
         if (node.kind == language::Expression::Kind::local && node.value < parameter_views_.size() && parameter_views_[node.value].data)
             return parameter_views_[node.value];
         return sequence_view(value_address(id), node.type);
     }
     llvm::Value* value_address(language::NodeId id) {
-        const auto& node = program_.expressions[id];
+        const auto& node = function_.expressions[id];
         if (node.kind == language::Expression::Kind::local) return locals_.at(node.value);
         if (node.kind == language::Expression::Kind::string_literal) return expression(id);
         if (node.kind == language::Expression::Kind::value_field)
@@ -582,16 +554,16 @@ private:
         if (node.kind == language::Expression::Kind::index) {
             const auto input = sequence(node.left);
             auto* index = expression(node.right);
-            auto* offset = program_.expressions[node.right].type == language::ValueType::i32 ?
+            auto* offset = function_.expressions[node.right].type == language::ValueType::i32 ?
                 ir_.CreateSExt(index, ir_.getInt64Ty()) : ir_.CreateZExt(index, ir_.getInt64Ty());
             check_value(ir_.CreateICmpULT(offset, input.size), EntryFailure::sequence_bounds);
-            const auto stride = program_.expressions[node.left].type.kind == language::ValueType::string ? 1 : storage_size(node.type);
+            const auto stride = function_.expressions[node.left].type.kind == language::ValueType::string ? 1 : storage_size(node.type);
             return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), input.data, ir_.CreateMul(offset, ir_.getInt64(stride)));
         }
         throw std::logic_error("Expression has no borrowed native storage.");
     }
     llvm::Value* expression(language::NodeId index) {
-        const auto& node = program_.expressions[index];
+        const auto& node = function_.expressions[index];
         using Kind = language::Expression::Kind;
         switch (node.kind) {
         case Kind::literal:
@@ -606,17 +578,17 @@ private:
             return owned_[slot].storage;
         }
         case Kind::sequence_mutation: {
-            const auto type = program_.expressions[node.left].type;
+            const auto type = function_.expressions[node.left].type;
             auto* target = value_address(node.left);
             if (const auto text = direct_text_input(node); text != language::no_node) {
-                write_text(type, target, program_.expressions[text].value, SequenceMutation::append_text);
+                write_text(type, target, function_.expressions[text].value, SequenceMutation::append_text);
                 return nullptr;
             }
             llvm::Value* input = llvm::ConstantPointerNull::get(ir_.getPtrTy());
             llvm::Value* count = ir_.getInt64(0);
             if (node.mutation == SequenceMutation::reserve || node.mutation == SequenceMutation::resize) {
                 auto* number = expression(node.right);
-                if (program_.expressions[node.right].type == language::ValueType::i32)
+                if (function_.expressions[node.right].type == language::ValueType::i32)
                     check_value(ir_.CreateICmpSGE(number, ir_.getInt32(0)), EntryFailure::sequence_size);
                 count = ir_.CreateZExt(number, ir_.getInt64Ty());
             } else if (node.right != language::no_node) input = input_address(node.right);
@@ -629,7 +601,7 @@ private:
         case Kind::index: {
             auto* address = value_address(index);
             if (language::aggregate(node.type)) return address;
-            if (node.kind == Kind::index && program_.expressions[node.left].type.kind == language::ValueType::string)
+            if (node.kind == Kind::index && function_.expressions[node.left].type.kind == language::ValueType::string)
                 return ir_.CreateZExt(ir_.CreateAlignedLoad(ir_.getInt8Ty(), address, llvm::Align(1)), ir_.getInt32Ty());
             return ir_.CreateAlignedLoad(value_type(node.type), address, llvm::Align(storage_alignment(node.type)));
         }
@@ -657,6 +629,30 @@ private:
             return ir_.getInt32(slot);
         }
         case Kind::field: return read_field(expression(node.receiver), node.type, node.value);
+        case Kind::source_call: {
+            llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, uint_result_, source_failure_};
+            for (std::size_t i = 0; i < node.arguments.size(); ++i) {
+                const auto id = node.arguments[i];
+                const auto& argument = function_.expressions[id];
+                if (node.argument_passing[i] == ParameterPassing::value) arguments.push_back(expression(id));
+                else if (language::aggregate(argument.type)) arguments.push_back(expression(id));
+                else if (argument.kind == Kind::local || argument.kind == Kind::value_field ||
+                    (argument.kind == Kind::index && function_.expressions[argument.left].type.kind != language::ValueType::string))
+                    arguments.push_back(value_address(id));
+                else arguments.push_back(input_address(id));
+            }
+            ir_.CreateStore(ir_.getInt32(0), source_failure_);
+            auto* status = ir_.CreateCall(functions_.at(node.value), arguments);
+            failure_status_->addIncoming(status, ir_.GetInsertBlock());
+            failure_reason_->addIncoming(ir_.CreateLoad(ir_.getInt32Ty(), source_failure_), ir_.GetInsertBlock());
+            auto* next = block("function.ok");
+            ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failure_);
+            ir_.SetInsertPoint(next);
+            safe_point();
+            if (node.type == language::ValueType::void_value) return nullptr;
+            auto* bits = ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
+            return node.type == language::ValueType::f32 ? ir_.CreateBitCast(bits, ir_.getFloatTy()) : bits;
+        }
         case Kind::call: {
             auto* owner = expression(node.receiver);
             // Nested calls reuse the same entry scratch. Finish every operand
@@ -665,7 +661,7 @@ private:
             llvm::SmallVector<Operand, 8> values;
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto id = node.arguments[i];
-                const auto& argument = program_.expressions[id];
+                const auto& argument = function_.expressions[id];
                 const auto passing = node.argument_passing[i];
                 if (passing != ParameterPassing::value && argument.kind == Kind::local)
                     values.push_back({locals_[argument.value], passing == ParameterPassing::reference ?
@@ -674,13 +670,13 @@ private:
                     values.push_back({expression(argument.receiver), ArgumentStorage::field, argument.value});
                 else if (passing != ParameterPassing::value && (language::aggregate(argument.type) ||
                     argument.kind == Kind::value_field || (argument.kind == Kind::index &&
-                    program_.expressions[argument.left].type.kind != language::ValueType::string)))
+                    function_.expressions[argument.left].type.kind != language::ValueType::string)))
                     values.push_back({language::aggregate(argument.type) ? expression(id) : value_address(id),
                         passing == ParameterPassing::reference ? ArgumentStorage::reference : ArgumentStorage::read_only, 0});
                 else values.push_back({expression(id), ArgumentStorage::value, 0});
             }
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
-                const auto type = program_.expressions[node.arguments[i]].type;
+                const auto type = function_.expressions[node.arguments[i]].type;
                 const auto& operand = values[i];
                 auto* storage = ir_.CreateInBoundsGEP(abi_value_type_, call_arguments_, ir_.getInt32(static_cast<std::uint32_t>(i)));
                 const auto put = [&](unsigned member, llvm::Value* value) { ir_.CreateStore(value, ir_.CreateStructGEP(abi_value_type_, storage, member)); };
@@ -737,7 +733,7 @@ private:
         }
         auto* left = expression(node.left);
         auto* right = expression(node.right);
-        const auto left_type = program_.expressions[node.left].type;
+        const auto left_type = function_.expressions[node.left].type;
         using Op = language::Operation;
         if (is_reference(left_type)) {
             if (node.operation != Op::equal && node.operation != Op::not_equal)
@@ -764,7 +760,7 @@ private:
         throw std::logic_error("Invalid typed binary operation.");
     }
     void statement(language::NodeId index) {
-        const auto& node = program_.statements[index];
+        const auto& node = function_.statements[index];
         using Kind = language::Statement::Kind;
         switch (node.kind) {
         case Kind::block:
@@ -774,7 +770,7 @@ private:
             }
             if (!terminated()) {
                 for (auto local = node.locals.rbegin(); local != node.locals.rend(); ++local) {
-                    if (is_reference(program_.locals[*local].type)) clear_slot(local_slots_[*local]);
+                    if (is_reference(function_.locals[*local].type)) clear_slot(local_slots_[*local]);
                     else if (owned_local_slots_[*local] != language::no_node) destroy_owned(owned_local_slots_[*local]);
                 }
             }
@@ -784,19 +780,19 @@ private:
                 const auto slot = owned_local_slots_[node.target];
                 if (const auto text = direct_text_input(node); text != language::no_node) {
                     construct_owned(slot);
-                    write_text(owned_[slot].type, owned_[slot].storage, program_.expressions[text].value, SequenceMutation::assign_text);
+                    write_text(owned_[slot].type, owned_[slot].storage, function_.expressions[text].value, SequenceMutation::assign_text);
                 } else construct_owned(slot, node.expression == language::no_node ? nullptr : expression(node.expression));
                 clear_temporaries();
                 return;
             }
             auto* value = expression(node.expression);
-            if (is_reference(program_.locals[node.target].type)) copy_reference(local_slots_[node.target], value);
+            if (is_reference(function_.locals[node.target].type)) copy_reference(local_slots_[node.target], value);
             else ir_.CreateStore(value, locals_[node.target]);
             clear_temporaries();
             return;
         }
         case Kind::assign: {
-            const auto& target = program_.expressions[node.target];
+            const auto& target = function_.expressions[node.target];
             // Evaluate a field's owner before its RHS and keep any owner
             // temporary rooted through the store, even if the RHS calls out.
             auto* owner = target.kind == language::Expression::Kind::field ? expression(target.receiver) : nullptr;
@@ -804,7 +800,7 @@ private:
             auto* address = direct ? value_address(node.target) : nullptr;
             if (language::aggregate(target.type)) {
                 if (const auto text = direct_text_input(node); text != language::no_node)
-                    write_text(target.type, locals_[target.value], program_.expressions[text].value, SequenceMutation::assign_text);
+                    write_text(target.type, locals_[target.value], function_.expressions[text].value, SequenceMutation::assign_text);
                 else checked_call(assign_value_, {invocation_, ir_.getInt32(target.type.type_index), locals_[target.value], expression(node.expression)});
                 clear_temporaries();
                 return;
@@ -829,9 +825,9 @@ private:
         case Kind::return_value:
             if (node.expression != language::no_node) {
                 auto* value = expression(node.expression);
-                auto* bits = program_.result == language::ValueType::f32 ?
+                auto* bits = function_.result == language::ValueType::f32 ?
                     ir_.CreateBitCast(value, ir_.getInt32Ty()) : value;
-                ir_.CreateStore(bits, entry_->getArg(2));
+                ir_.CreateStore(bits, result_output_);
             }
             clear_temporaries();
             // Stage before shared cleanup; public result storage is untouched
@@ -881,12 +877,14 @@ private:
         throw std::logic_error("Invalid typed statement.");
     }
 
-    const language::Program& program_;
-    std::unique_ptr<llvm::LLVMContext> context_;
-    std::unique_ptr<llvm::Module> module_;
+    const language::Function& function_;
+    const language::Program& source_;
+    const std::vector<llvm::Function*>& functions_;
+    llvm::LLVMContext* context_;
+    llvm::Module* module_;
     llvm::IRBuilder<> ir_;
     llvm::Function* entry_{};
-    llvm::Value* invocation_{};
+    llvm::Value *invocation_{}, *result_output_{}, *failure_output_{};
     llvm::BasicBlock* failure_{};
     llvm::BasicBlock* finish_{};
     llvm::BasicBlock* return_cleanup_{};
@@ -899,6 +897,7 @@ private:
     llvm::AllocaInst* call_result_{};
     llvm::AllocaInst* float_result_{};
     llvm::AllocaInst* uint_result_{};
+    llvm::AllocaInst* source_failure_{};
     std::vector<llvm::Value*> locals_;
     std::vector<OwnedValue> owned_;
     std::vector<std::size_t> owned_local_slots_, literal_slots_, value_temporaries_;
@@ -908,8 +907,10 @@ private:
     std::vector<std::uint32_t> temporaries_;
     std::uint32_t strong_slots_{business_root_slots};
     std::uint32_t weak_slots_{};
+    const std::uint32_t first_strong_slot_, first_weak_slot_;
+    const bool public_entry_, protected_values_;
     std::uint32_t max_call_arguments_{};
-    bool has_call_result_{};
+    bool has_call_result_{}, has_source_calls_{};
     llvm::FunctionCallee begin_, create_, read_float_, write_float_, read_uint_, write_uint_;
     llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
     llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
@@ -917,9 +918,69 @@ private:
 
 llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Program& program,
     BusinessFrameLayout& layout) {
-    SourceLowering lowering(jit, program);
-    layout = lowering.layout();
-    return lowering.generate();
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto module = std::make_unique<llvm::Module>(program.source_name, *context);
+    module->setSourceFileName(diagnostic_source_name(program.source_name));
+    module->setTargetTriple(jit.getTargetTriple());
+    module->setDataLayout(jit.getDataLayout());
+    auto* ptr = llvm::PointerType::getUnqual(*context);
+    auto* i32 = llvm::Type::getInt32Ty(*context);
+    std::vector<llvm::Function*> functions(program.functions.size());
+    for (std::size_t i = 0; i < functions.size(); ++i) {
+        if (!program.reachable[i]) continue;
+        const bool entry = i == program.entry;
+        const bool coroutine = program.functions[i].is_coroutine;
+        llvm::SmallVector<llvm::Type*, 8> parameters;
+        if (entry) parameters.assign(coroutine ? 6 : 4, ptr);
+        else {
+            parameters.assign(3, ptr); // invocation, scalar result bits, failure reason
+            for (const auto& parameter : program.functions[i].parameters)
+                parameters.push_back(parameter.passing != ParameterPassing::value ? static_cast<llvm::Type*>(ptr) :
+                    parameter.type == language::ValueType::f32 ? llvm::Type::getFloatTy(*context) : i32);
+        }
+        auto* type = llvm::FunctionType::get(coroutine ? static_cast<llvm::Type*>(ptr) : i32, parameters, false);
+        auto* function = llvm::Function::Create(type, entry ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage,
+            entry ? "atelier_source_entry" : "atelier_source_function_" + std::to_string(i), *module);
+        function->addFnAttr(llvm::Attribute::NoInline);
+        function->addFnAttr(llvm::Attribute::NoUnwind);
+        function->addFnAttr("disable-tail-calls", "true");
+        function->setUWTableKind(llvm::UWTableKind::Async);
+        if (coroutine) function->addFnAttr(llvm::Attribute::PresplitCoroutine);
+        functions[i] = function;
+    }
+    layout = {business_root_slots, 0, nullptr, 0};
+    for (std::uint32_t i = 0; i < functions.size(); ++i) {
+        if (!program.reachable[i]) continue;
+        SourceLowering lowering(*context, *module, program, i, functions, layout.strong_slots, layout.weak_slots);
+        const auto demand = lowering.layout();
+        layout.strong_slots = demand.strong_slots;
+        layout.weak_slots = demand.weak_slots;
+        layout.max_call_arguments = std::max(layout.max_call_arguments, demand.max_call_arguments);
+        lowering.generate();
+    }
+    std::string diagnostics;
+    llvm::raw_string_ostream stream(diagnostics);
+    if (llvm::verifyModule(*module, &stream)) throw std::runtime_error(diagnostics);
+    if (program.functions[program.entry].is_coroutine) {
+        llvm::LoopAnalysisManager loops;
+        llvm::FunctionAnalysisManager functions;
+        llvm::CGSCCAnalysisManager graph;
+        llvm::ModuleAnalysisManager modules;
+        llvm::PassBuilder passes;
+        passes.registerModuleAnalyses(modules);
+        passes.registerCGSCCAnalyses(graph);
+        passes.registerFunctionAnalyses(functions);
+        passes.registerLoopAnalyses(loops);
+        passes.crossRegisterProxies(loops, functions, graph, modules);
+        llvm::ModulePassManager pipeline;
+        pipeline.addPass(llvm::CoroEarlyPass());
+        pipeline.addPass(llvm::createModuleToPostOrderCGSCCPassAdaptor(llvm::CoroSplitPass()));
+        pipeline.addPass(llvm::CoroCleanupPass());
+        pipeline.run(*module, modules);
+        diagnostics.clear();
+        if (llvm::verifyModule(*module, &stream)) throw std::runtime_error(diagnostics);
+    }
+    return {std::move(module), std::move(context)};
 }
 
 std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, const language::Program& program,
@@ -943,15 +1004,16 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
             return layer;
         });
     builder.setPlatformSetUp(llvm::orc::setUpInactivePlatform);
+    const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
-    state->function_name = program.function_name;
+    state->function_name = entry.function_name;
     state->source_name = program.source_name;
     state->services = services;
     state->object_type_name = program.object_type_name;
-    state->parameters.reserve(program.parameters.size());
-    for (const auto parameter : program.parameters) state->parameters.push_back({business_type(parameter.type), parameter.passing});
+    state->parameters.reserve(entry.parameters.size());
+    for (const auto parameter : entry.parameters) state->parameters.push_back({business_type(parameter.type), parameter.passing});
     state->signature = {state->parameters.empty() ? nullptr : state->parameters.data(),
-        static_cast<std::uint32_t>(state->parameters.size()), business_type(program.result), program.is_coroutine};
+        static_cast<std::uint32_t>(state->parameters.size()), business_type(entry.result), entry.is_coroutine};
     state->field_names.reserve(environment.fields.size());
     state->fields.reserve(environment.fields.size());
     for (const auto& field : environment.fields) {
@@ -1007,8 +1069,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         static_cast<std::uint32_t>(state->methods.size()), state->object_type_name.c_str(),
         state->enumerations.data(), static_cast<std::uint32_t>(state->enumerations.size()),
         state->values.data(), static_cast<std::uint32_t>(state->values.size())};
-    for (const auto& expression : program.expressions)
-        if (expression.kind == language::Expression::Kind::receiver) { state->requires_receiver = true; break; }
+    state->requires_receiver = entry.requires_receiver;
     state->jit = take(builder.create());
     state->jit->getExecutionSession().setErrorReporter([owner = state.get()](llvm::Error error) {
         owner->diagnostic = llvm::toString(std::move(error));
@@ -1037,7 +1098,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     if (services.assign_value) bind("business_assign_value", services.assign_value);
     if (services.destroy_value) bind("business_destroy_value", services.destroy_value);
     if (services.mutate_sequence) bind("business_mutate_sequence", services.mutate_sequence);
-    if (program.is_coroutine) {
+    if (entry.is_coroutine) {
         bind("business_coroutine_allocate", &allocate_coroutine);
         bind("business_coroutine_free", &free_coroutine);
     }
@@ -1050,7 +1111,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         if (!state->diagnostic.empty()) diagnostic += "\n" + state->diagnostic;
         throw std::runtime_error(diagnostic_source_name(program.source_name) + ": JIT materialization: " + diagnostic);
     }
-    if (program.is_coroutine) {
+    if (entry.is_coroutine) {
         state->coroutine_entry = address->toPtr<CoroutineEntry>();
         state->resume = take(state->jit->lookup("atelier_source_resume")).toPtr<CoroutineAction>();
         state->destroy = take(state->jit->lookup("atelier_source_destroy")).toPtr<CoroutineAction>();
@@ -1077,7 +1138,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity
+    char* error, std::uint32_t error_capacity, const char* entry_name
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
     , bool omit_poll_for_verification = false
 #endif
@@ -1152,7 +1213,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
         }
         const language::Environment source_environment{fields, methods,
             environment && environment->object_type_name ? std::string_view(environment->object_type_name) : std::string_view{}, enumerations, values};
-        auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment);
+        auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment, entry_name ? entry_name : "");
         if (!program) {
             const auto& diagnostic = program.error();
             const auto display_name = diagnostic_source_name(source_name);
@@ -1160,8 +1221,13 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                 diagnostic.position.line, diagnostic.position.column, diagnostic.message.c_str());
             return 1;
         }
-        const bool owns_values = std::any_of(program->locals.begin() + program->parameters.size(), program->locals.end(),
-            [](const auto& local) { return language::aggregate(local.type); }) || !program->strings.empty();
+        bool owns_values = false;
+        for (std::size_t i = 0; i < program->functions.size(); ++i) {
+            if (!program->reachable[i]) continue;
+            const auto& function = program->functions[i];
+            owns_values |= std::any_of(function.locals.begin() + function.parameters.size(), function.locals.end(),
+                [](const auto& local) { return language::aggregate(local.type); }) || !function.strings.empty();
+        }
         if (owns_values && (!services->construct_value || !services->assign_value ||
             !services->destroy_value || !services->mutate_sequence))
             throw std::runtime_error("Source-owned values require the native value lifecycle and sequence services.");
@@ -1185,9 +1251,9 @@ std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessSe
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity) noexcept {
+    char* error, std::uint32_t error_capacity, const char* entry_name) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment,
-        output, error, error_capacity);
+        output, error, error_capacity, entry_name);
 }
 
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
@@ -1196,9 +1262,9 @@ std::uint32_t atelier_compile_business_without_poll_for_verification(
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity) noexcept {
+    char* error, std::uint32_t error_capacity, const char* entry_name) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment,
-        output, error, error_capacity, true);
+        output, error, error_capacity, entry_name, true);
 }
 #endif
 

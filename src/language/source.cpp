@@ -138,15 +138,59 @@ BinaryOperator binary_operator(std::string_view text) noexcept {
 class Parser {
 public:
     Parser(std::string_view name, std::string_view source, Environment environment)
-        : lexer_(source), environment_(environment), token_(lexer_.next()) { program_.source_name = name; }
+        : lexer_(source), environment_(environment), token_(lexer_.next()) { module_.source_name = name; }
 
-    Program parse() {
+    Program parse(std::string_view entry_name) {
         validate_environment();
-        program_.object_type_name = environment_.object_type_name;
-        program_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
-        program_.is_coroutine = accept("async");
-        program_.result = accept("void") ? ValueType::void_value : scalar_type();
-        program_.function_name = identifier().text;
+        module_.object_type_name = environment_.object_type_name;
+        module_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
+        struct Body { Lexer lexer; Token token; };
+        std::vector<Body> bodies;
+        while (token_.kind != Token::Kind::end) {
+            if (module_.functions.size() >= 1024) reject(token_.position, "A source module supports at most 1024 functions.");
+            function_ = {};
+            function_.position = token_.position;
+            visible_.clear();
+            signature();
+            for (const auto& previous : module_.functions)
+                if (previous.function_name == function_.function_name) reject(function_.position, "Duplicate source function name.");
+            bodies.push_back({lexer_, token_});
+            module_.functions.push_back(std::move(function_));
+            expect("{");
+            std::size_t braces = 1;
+            while (braces != 0) {
+                if (token_.kind == Token::Kind::end) reject(token_.position, "Expected '}' to close the function body.");
+                if (token_.text == "{") ++braces;
+                if (token_.text == "}") --braces;
+                consume();
+            }
+        }
+        if (module_.functions.empty()) reject(token_.position, "Source module requires an entry function.");
+        if (entry_name.empty() && module_.functions.size() != 1)
+            reject({}, "A multi-function module requires an explicit host entry name.");
+        bool found = entry_name.empty();
+        for (std::size_t i = 0; i < module_.functions.size(); ++i) {
+            function_ = module_.functions[i];
+            if (function_.function_name == entry_name) { module_.entry = static_cast<std::uint32_t>(i); found = true; }
+            lexer_ = bodies[i].lexer; token_ = bodies[i].token;
+            visible_.clear(); expression_heights_.clear();
+            for (std::uint32_t j = 0; j < function_.parameters.size(); ++j) visible_.push_back(j);
+            function_.body = block();
+            if (function_.result != ValueType::void_value && !returns(function_.body))
+                reject(function_.position, "Non-void function can reach the end without a return value.");
+            module_.functions[i] = std::move(function_);
+        }
+        if (!found) reject({}, "Selected entry function was not declared in this module.");
+        analyze_calls();
+        return std::move(module_);
+    }
+
+private:
+
+    void signature() {
+        function_.is_coroutine = accept("async");
+        function_.result = accept("void") ? ValueType::void_value : scalar_type();
+        function_.function_name = identifier().text;
         expect("(");
         if (!accept(")")) {
             do {
@@ -157,44 +201,96 @@ public:
                 const bool reference = accept("&");
                 if (read_only && !reference) reject(position, "const parameters require a reference in this source slice.");
                 const auto passing = reference ? (read_only ? ParameterPassing::read_only : ParameterPassing::reference) : ParameterPassing::value;
-                if (program_.is_coroutine && reference) reject(position, "async parameters cannot borrow caller storage.");
+                if (function_.is_coroutine && reference) reject(position, "async parameters cannot borrow caller storage.");
                 if (aggregate(type)) {
                     if (!reference) reject(position, "Native values require a borrowed parameter; use Type& or const Type&.");
                     if (type.kind == ValueType::string && !read_only) reject(position, "String borrowing requires const String&.");
-                    program_.uses_native_values = true;
+                    function_.uses_native_values = true;
                 }
                 const auto index = local(identifier(), type);
-                program_.locals[index].read_only = read_only;
-                program_.parameters.push_back({type, passing});
+                function_.locals[index].read_only = read_only;
+                function_.parameters.push_back({type, passing});
             } while (accept(","));
             expect(")");
         }
-        program_.body = block();
-        if (program_.uses_native_values) {
-            if (program_.is_coroutine) reject({}, "Owning native values currently require synchronous execution.");
-            std::vector<bool> allowed_receivers(program_.expressions.size());
-            for (const auto& node : program_.expressions) {
+    }
+    void analyze_calls() {
+        // Summarize direct effects before propagating callee effects bottom-up.
+        for (auto& function : module_.functions) {
+            std::vector<bool> allowed(function.expressions.size());
+            function.preserves_borrows = true;
+            for (const auto& node : function.expressions) {
+                if (node.kind == Expression::Kind::receiver) function.requires_receiver = true;
                 if (node.kind != Expression::Kind::call) continue;
                 if (!environment_.methods[node.value].preserves_borrows ||
-                    program_.expressions[node.receiver].kind != Expression::Kind::receiver)
-                    reject(node.position, "Native value scopes require a BorrowSafe method on self.");
-                allowed_receivers[node.receiver] = true;
+                    function.expressions[node.receiver].kind != Expression::Kind::receiver)
+                    function.preserves_borrows = false;
+                else allowed[node.receiver] = true;
             }
-            for (std::size_t i = 0; i < program_.expressions.size(); ++i) {
-                const auto& node = program_.expressions[i];
-                if (reference_type(node.type) && !allowed_receivers[i])
-                    reject(node.position, "Native value scopes cannot perform object operations.");
-            }
-            for (const auto& value : program_.locals)
-                if (reference_type(value.type)) reject({}, "A native value scope cannot own Runtime object references.");
+            for (std::size_t i = 0; i < function.expressions.size(); ++i)
+                if (reference_type(function.expressions[i].type) && !allowed[i]) function.preserves_borrows = false;
+            for (const auto& local : function.locals)
+                if (reference_type(local.type)) function.preserves_borrows = false;
         }
-        if (token_.kind != Token::Kind::end)
-            reject(token_.position, "Only one host-bound entry function is supported.");
-        if (program_.result != ValueType::void_value && !returns(program_.body))
-            reject(token_.position, "Non-void entry can reach the end without a return value.");
-        return std::move(program_);
+        enum class State { fresh, active, complete };
+        std::vector<State> states(module_.functions.size());
+        struct Cursor { std::uint32_t function; std::size_t next{}; };
+        std::vector<Cursor> stack;
+        for (std::uint32_t root = 0; root < module_.functions.size(); ++root) {
+            if (states[root] != State::fresh) continue;
+            states[root] = State::active; stack.push_back({root});
+            while (!stack.empty()) {
+                auto& cursor = stack.back();
+                auto& function = module_.functions[cursor.function];
+                while (cursor.next < function.expressions.size() &&
+                    function.expressions[cursor.next].kind != Expression::Kind::source_call) ++cursor.next;
+                if (cursor.next < function.expressions.size()) {
+                    const auto& call = function.expressions[cursor.next];
+                    if (states[call.value] == State::active)
+                        reject(call.position, "Recursive source calls are not supported in this module stage.");
+                    if (states[call.value] == State::fresh) {
+                        states[call.value] = State::active; stack.push_back({call.value}); continue;
+                    }
+                    const auto& callee = module_.functions[call.value];
+                    function.uses_native_values |= callee.uses_native_values;
+                    function.requires_receiver |= callee.requires_receiver;
+                    function.preserves_borrows &= callee.preserves_borrows;
+                    ++cursor.next;
+                } else {
+                    if (function.uses_native_values && (function.is_coroutine || !function.preserves_borrows))
+                        reject(function.position, "Native value scope in '" + function.function_name +
+                            "' reaches suspension, object operations or a native call without BorrowSafe.");
+                    states[cursor.function] = State::complete; stack.pop_back();
+                }
+            }
+        }
+        module_.reachable.resize(module_.functions.size());
+        std::vector<std::uint32_t> pending{module_.entry};
+        while (!pending.empty()) {
+            const auto index = pending.back(); pending.pop_back();
+            if (module_.reachable[index]) continue;
+            module_.reachable[index] = true;
+            for (const auto& call : module_.functions[index].expressions)
+                if (call.kind == Expression::Kind::source_call) pending.push_back(call.value);
+        }
     }
-private:
+    std::vector<NodeId> call_arguments(std::span<const ParameterType> parameters) {
+        std::vector<NodeId> arguments;
+        if (!accept(")")) {
+            do {
+                if (arguments.size() >= parameters.size()) reject(token_.position, "Call argument count mismatch.");
+                const auto argument = expression();
+                const auto& parameter = parameters[arguments.size()];
+                same_type(argument, parameter.type);
+                if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
+                    reject(function_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
+                arguments.push_back(argument);
+            } while (accept(","));
+            expect(")");
+        }
+        if (arguments.size() != parameters.size()) reject(token_.position, "Call argument count mismatch.");
+        return arguments;
+    }
     struct Depth {
         std::size_t& value;
         Depth(std::size_t& depth, SourcePosition position) : value(depth) {
@@ -345,25 +441,25 @@ private:
         for (const auto argument : expression.arguments)
             if (expression_heights_[argument] + 1 > height) height = expression_heights_[argument] + 1;
         if (height > 128) reject(expression.position, "Expression tree exceeds the compiler limit of 128.");
-        program_.expressions.push_back(std::move(expression));
+        function_.expressions.push_back(std::move(expression));
         expression_heights_.push_back(height);
-        return program_.expressions.size() - 1;
+        return function_.expressions.size() - 1;
     }
     NodeId add(Statement statement) {
-        program_.statements.push_back(std::move(statement));
-        return program_.statements.size() - 1;
+        function_.statements.push_back(std::move(statement));
+        return function_.statements.size() - 1;
     }
     void unused_name(const Token& name) const {
         for (const auto index : visible_)
-            if (program_.locals[index].name == name.text)
+            if (function_.locals[index].name == name.text)
                 reject(name.position, "A local or parameter with this name is already visible; shadowing is not supported.");
     }
     std::uint32_t local(const Token& name, ValueType type) {
         unused_name(name);
-        if (program_.locals.size() >= std::numeric_limits<std::uint32_t>::max())
+        if (function_.locals.size() >= std::numeric_limits<std::uint32_t>::max())
             reject(name.position, "Too many source locals.");
-        const auto index = static_cast<std::uint32_t>(program_.locals.size());
-        program_.locals.push_back({std::string(name.text), type});
+        const auto index = static_cast<std::uint32_t>(function_.locals.size());
+        function_.locals.push_back({std::string(name.text), type});
         visible_.push_back(index);
         return index;
     }
@@ -399,7 +495,7 @@ private:
         reject(position, "Unknown registered value type '" + name + "'.");
     }
     bool returns(NodeId id) const {
-        const auto& statement = program_.statements[id];
+        const auto& statement = function_.statements[id];
         switch (statement.kind) {
         case Statement::Kind::return_value: return true;
         case Statement::Kind::block:
@@ -411,46 +507,46 @@ private:
         }
     }
     bool writable(NodeId id) const {
-        const auto& expression = program_.expressions[id];
+        const auto& expression = function_.expressions[id];
         if (aggregate(expression.type)) return expression.kind == Expression::Kind::local &&
-            expression.value >= program_.parameters.size() && !program_.locals[expression.value].read_only;
+            expression.value >= function_.parameters.size() && !function_.locals[expression.value].read_only;
         return writable_storage(id);
     }
     bool writable_storage(NodeId id) const {
-        const auto& node = program_.expressions[id];
+        const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::field) return true;
-        if (node.kind == Expression::Kind::local) return !program_.locals[node.value].read_only;
-        if (node.kind == Expression::Kind::index && program_.expressions[node.left].type.kind == ValueType::string) return false;
+        if (node.kind == Expression::Kind::local) return !function_.locals[node.value].read_only;
+        if (node.kind == Expression::Kind::index && function_.expressions[node.left].type.kind == ValueType::string) return false;
         if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index) return writable_storage(node.left);
         return false;
     }
     bool owned_storage(NodeId id) const {
-        const auto& node = program_.expressions[id];
-        if (node.kind == Expression::Kind::local) return node.value >= program_.parameters.size() && !program_.locals[node.value].read_only;
+        const auto& node = function_.expressions[id];
+        if (node.kind == Expression::Kind::local) return node.value >= function_.parameters.size() && !function_.locals[node.value].read_only;
         if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index) return owned_storage(node.left);
         return false;
     }
     bool integer_constant(NodeId id) const {
-        const auto& node = program_.expressions[id];
+        const auto& node = function_.expressions[id];
         if (node.type != ValueType::u32) return false;
         if (node.kind == Expression::Kind::literal) return node.value <= 2147483647u;
         return (node.kind == Expression::Kind::unary && integer_constant(node.left)) ||
             (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right));
     }
     void signed_constant(NodeId id) {
-        auto& node = program_.expressions[id];
+        auto& node = function_.expressions[id];
         node.type = ValueType::i32;
         if (node.left != no_node) signed_constant(node.left);
         if (node.right != no_node) signed_constant(node.right);
     }
     void same_type(NodeId expression, ValueType required) {
         if (required == ValueType::i32 && integer_constant(expression)) signed_constant(expression);
-        const auto actual = program_.expressions[expression].type;
+        const auto actual = function_.expressions[expression].type;
         if (actual == required || (reference_type(required) && actual == ValueType::null_reference)) return;
         if (reference_type(required) || reference_type(actual))
-            reject(program_.expressions[expression].position,
+            reject(function_.expressions[expression].position,
                 "Type mismatch; references require the same strong/weak form or null and cannot mix with scalars.");
-        reject(program_.expressions[expression].position, "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
+        reject(function_.expressions[expression].position, "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
     }
     NodeId block() {
         Depth guard(depth_, token_.position);
@@ -479,7 +575,7 @@ private:
             if (aggregate(type)) {
                 if (type.kind == ValueType::record || !environment_.values[type.type_index].can_own)
                     reject(position, "Owned locals require String or Array with borrow-preserving value operations.");
-                program_.uses_native_values = true;
+                function_.uses_native_values = true;
             }
             const auto name = identifier();
             unused_name(name);
@@ -496,7 +592,7 @@ private:
         if (accept("if")) {
             expect("(");
             const auto condition = expression();
-            if (program_.expressions[condition].type != ValueType::predicate)
+            if (function_.expressions[condition].type != ValueType::predicate)
                 reject(position, "An if condition requires a comparison, not numeric truthiness.");
             expect(")");
             const auto body = block();
@@ -507,25 +603,25 @@ private:
         if (accept("while")) {
             expect("(");
             const auto condition = expression();
-            if (program_.expressions[condition].type != ValueType::predicate)
+            if (function_.expressions[condition].type != ValueType::predicate)
                 reject(position, "A while condition requires a comparison, not numeric truthiness.");
             expect(")");
             const auto body = block();
             return add(Statement{Statement::Kind::loop, position, no_node, condition, body, no_node, {}});
         }
         if (accept("yield")) {
-            if (!program_.is_coroutine) reject(position, "yield requires an async entry.");
+            if (!function_.is_coroutine) reject(position, "yield requires an async entry.");
             expect(";");
             return add(Statement{Statement::Kind::yield, position, no_node, no_node, no_node, no_node, {}});
         }
         if (accept("return")) {
             NodeId value = no_node;
-            if (program_.result == ValueType::void_value) {
+            if (function_.result == ValueType::void_value) {
                 if (token_.text != ";") reject(token_.position, "This void entry cannot return a value.");
             } else {
                 if (token_.text == ";") reject(token_.position, "Non-void entry requires a return value.");
                 value = expression();
-                same_type(value, program_.result);
+                same_type(value, function_.result);
             }
             expect(";");
             return add(Statement{Statement::Kind::return_value, position, no_node, value, no_node, no_node, {}});
@@ -535,12 +631,12 @@ private:
             if (!writable(target))
                 reject(position, "Assignment requires a writable local or field.");
             const auto value = expression();
-            same_type(value, program_.expressions[target].type);
+            same_type(value, function_.expressions[target].type);
             expect(";");
             return add(Statement{Statement::Kind::assign, position, target, value, no_node, no_node, {}});
         }
-        if (program_.expressions[target].kind != Expression::Kind::call && program_.expressions[target].kind != Expression::Kind::sequence_mutation)
-            reject(position, "Only a native method call can be used as an expression statement.");
+        if (function_.expressions[target].kind != Expression::Kind::call && function_.expressions[target].kind != Expression::Kind::source_call && function_.expressions[target].kind != Expression::Kind::sequence_mutation)
+            reject(position, "Only calls and sequence modifications can be used as expression statements.");
         expect(";");
         return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
     }
@@ -552,10 +648,10 @@ private:
             if (operation.precedence < minimum) return left;
             const auto symbol = consume();
             const auto right = expression(operation.precedence + 1);
-            if (program_.expressions[left].type == ValueType::i32 && integer_constant(right)) signed_constant(right);
-            if (program_.expressions[right].type == ValueType::i32 && integer_constant(left)) signed_constant(left);
-            const auto type = program_.expressions[left].type;
-            const auto right_type = program_.expressions[right].type;
+            if (function_.expressions[left].type == ValueType::i32 && integer_constant(right)) signed_constant(right);
+            if (function_.expressions[right].type == ValueType::i32 && integer_constant(left)) signed_constant(left);
+            const auto type = function_.expressions[left].type;
+            const auto right_type = function_.expressions[right].type;
             if (reference_type(type) || reference_type(right_type)) {
                 if (!reference_type(type) || !reference_type(right_type) ||
                     (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
@@ -573,11 +669,11 @@ private:
         if (token_.text == "+" || token_.text == "-") {
             const auto symbol = consume();
             const auto operand = unary();
-            if (symbol.text == "-" && program_.expressions[operand].kind == Expression::Kind::literal &&
-                program_.expressions[operand].type == ValueType::u32 && program_.expressions[operand].value == 2147483648u)
+            if (symbol.text == "-" && function_.expressions[operand].kind == Expression::Kind::literal &&
+                function_.expressions[operand].type == ValueType::u32 && function_.expressions[operand].value == 2147483648u)
                 return add(Expression{Expression::Kind::literal, ValueType::i32, symbol.position, no_node, no_node, 2147483648u});
             if (symbol.text == "-" && integer_constant(operand)) signed_constant(operand);
-            const auto type = program_.expressions[operand].type;
+            const auto type = function_.expressions[operand].type;
             if (type != ValueType::f32 && type != ValueType::u32 && type != ValueType::i32)
                 reject(symbol.position, "Unary arithmetic requires a numeric operand.");
             if (symbol.text == "-" && type != ValueType::f32 && type != ValueType::i32)
@@ -590,12 +686,12 @@ private:
     NodeId postfix() {
         auto receiver = primary();
         while (token_.text == "." || token_.text == "[") {
-            const auto position = program_.expressions[receiver].position;
-            const auto type = program_.expressions[receiver].type;
+            const auto position = function_.expressions[receiver].position;
+            const auto type = function_.expressions[receiver].type;
             if (accept("[")) {
                 if (type.kind != ValueType::array && type.kind != ValueType::string) reject(position, "Indexing requires Array or String.");
                 const auto index = expression(); expect("]");
-                if (program_.expressions[index].type != ValueType::u32 && program_.expressions[index].type != ValueType::i32)
+                if (function_.expressions[index].type != ValueType::u32 && function_.expressions[index].type != ValueType::i32)
                     reject(position, "A sequence index requires uint or int.");
                 const auto element = type.kind == ValueType::string ? ValueType{ValueType::u32} : environment_.values[type.type_index].element;
                 receiver = add(Expression{Expression::Kind::index, element, position, receiver, index});
@@ -623,7 +719,7 @@ private:
                         if (operation != SequenceMutation::clear) {
                             input = expression();
                             if (operation == SequenceMutation::reserve || operation == SequenceMutation::resize) {
-                                const auto input_type = program_.expressions[input].type;
+                                const auto input_type = function_.expressions[input].type;
                                 if (input_type != ValueType::u32 && input_type != ValueType::i32) reject(member.position, "Sequence capacity requires uint or int.");
                             } else same_type(input, operation == SequenceMutation::add ? environment_.values[type.type_index].element : type);
                         }
@@ -642,29 +738,14 @@ private:
                 }
                 continue;
             }
-            if (program_.expressions[receiver].type != ValueType::strong_reference)
+            if (function_.expressions[receiver].type != ValueType::strong_reference)
                 reject(position, "Member access requires a strong reference; acquire weak references first.");
             const auto member = qualified_identifier();
             if (accept("(")) {
                 const MethodBinding* method{};
                 for (const auto& candidate : environment_.methods) if (candidate.name == member) method = &candidate;
                 if (!method) reject(position, "Unknown native method '" + member + "'.");
-                std::vector<NodeId> arguments;
-                if (!accept(")")) {
-                    do {
-                        if (arguments.size() >= method->parameters.size())
-                            reject(token_.position, "Native method argument count mismatch.");
-                        const auto argument = expression();
-                        const auto& parameter = method->parameters[arguments.size()];
-                        same_type(argument, parameter.type);
-                        if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
-                            reject(program_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
-                        arguments.push_back(argument);
-                    } while (accept(","));
-                    expect(")");
-                }
-                if (arguments.size() != method->parameters.size())
-                    reject(position, "Native method argument count mismatch.");
+                auto arguments = call_arguments(method->parameters);
                 Expression call{Expression::Kind::call, method->result, position,
                     no_node, no_node, static_cast<std::uint32_t>(method - environment_.methods.data()), Operation::add, receiver};
                 call.arguments = std::move(arguments);
@@ -707,9 +788,9 @@ private:
             }
             for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
                 if (environment_.values[i].kind != ValueType::string || !environment_.values[i].can_own || !environment_.values[i].can_mutate) continue;
-                program_.uses_native_values = true;
-                const auto index = static_cast<std::uint32_t>(program_.strings.size());
-                program_.strings.push_back(std::move(value));
+                function_.uses_native_values = true;
+                const auto index = static_cast<std::uint32_t>(function_.strings.size());
+                function_.strings.push_back(std::move(value));
                 return add(Expression{Expression::Kind::string_literal, {ValueType::string, i}, token.position, no_node, no_node, index});
             }
             reject(token.position, "String literals require the registered foundation String.");
@@ -773,8 +854,8 @@ private:
             if (token_.text == ")") reject(token_.position, "Reference operation requires one argument.");
             const auto argument = expression();
             const auto required = observe ? ValueType::strong_reference : ValueType::weak_reference;
-            if (program_.expressions[argument].type != required)
-                reject(program_.expressions[argument].position, observe ?
+            if (function_.expressions[argument].type != required)
+                reject(function_.expressions[argument].position, observe ?
                     "observe requires a strong reference argument." : "try_acquire requires a weak reference argument.");
             if (token_.text == ",") reject(token_.position, "Reference operation requires exactly one argument.");
             expect(")");
@@ -782,10 +863,27 @@ private:
                 observe ? ValueType::weak_reference : ValueType::strong_reference, token.position, argument});
         }
         for (auto iterator = visible_.rbegin(); iterator != visible_.rend(); ++iterator) {
-            const auto& local_value = program_.locals[*iterator];
+            const auto& local_value = function_.locals[*iterator];
             if (local_value.name == token.text)
                 return add(Expression{Expression::Kind::local, local_value.type, token.position,
                     no_node, no_node, *iterator});
+        }
+        if (accept("(")) {
+            for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
+                const auto& target = module_.functions[i];
+                if (target.function_name != token.text) continue;
+                if (target.is_coroutine) reject(token.position, "Source calls require a synchronous function; async entries are started by the host.");
+                Expression call{Expression::Kind::source_call, target.result, token.position, no_node, no_node, i};
+                call.arguments = call_arguments(target.parameters);
+                for (std::size_t parameter = 0; parameter < target.parameters.size(); ++parameter) {
+                    const auto mode = target.parameters[parameter].passing;
+                    if (mode != ParameterPassing::value && function_.expressions[call.arguments[parameter]].kind == Expression::Kind::field)
+                        reject(token.position, "Runtime object fields may only be borrowed by protected native calls.");
+                    call.argument_passing.push_back(mode);
+                }
+                return add(std::move(call));
+            }
+            reject(token.position, "Unknown source function '" + std::string(token.text) + "'.");
         }
         reject(token.position, "Unknown identifier '" + std::string(token.text) + "'.");
     }
@@ -793,7 +891,8 @@ private:
     Lexer lexer_;
     Environment environment_;
     Token token_;
-    Program program_;
+    Function function_;
+    Program module_;
     std::vector<std::uint32_t> visible_;
     std::vector<std::size_t> expression_heights_;
     std::size_t depth_{};
@@ -801,9 +900,9 @@ private:
 }
 
 std::expected<Program, Diagnostic> compile_source(
-    std::string_view source_name, std::string_view source, Environment environment) {
+    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name) {
     try {
-        return Parser(source_name, source, environment).parse();
+        return Parser(source_name, source, environment).parse(entry_name);
     } catch (Rejected& rejected) {
         return std::unexpected(std::move(rejected.diagnostic));
     }
