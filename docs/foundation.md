@@ -1,6 +1,6 @@
 # 引擎 C++ 基础库
 
-当前提供 `atelier::Array<T>`、`Span<T>`、`String`、`StringView`。它们服务于连续数据、临时计算、文本传递与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。完整 STL 兼容、关联容器、Unicode 排版及源码容器表达式不在本片范围。
+当前提供 `atelier::Array<T>`、`Span<T>`、`String`、`StringView`。它们服务于连续数据、临时计算、文本传递与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。完整 STL 兼容、关联容器与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
 
 ## 类型与所有权
 
@@ -85,7 +85,9 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 字段可以属于原生对象，也可以属于运行时计算布局的描述型对象。构造、复制、赋值、析构复用 `initialize_value/copy_construct_value/assign_value/destroy_value`，对象销毁或 GC 回收时沿同一路径清理拥有缓冲。`with_native<T>(object, path, callback)` 是现有同步原生借用入口的字段重载，校验最终字段的类型与原生表示，借用范围内保护对象存储；`T` 可为 const。返回值必须拥有其数据，直接返回 Span/StringView 会被拒绝。
 
-本片不提供运行时擦除类型的数组增删/元素编辑器，也未把 String/Array 变成 Scalar 参数。当前 AFUNCTION、语言参数及 JIT 调用仍限于已支持的标量/枚举与三种传递方式。非平凡值调用 ABI、源码容器表达式与跨挂起生命周期接线是下一片工作。
+源码通过既有 `Program` / `Argument::borrow` 接受原生记录、Array 的只读或可写借用，以及 String 的只读借用。数组长度、元素和有直接偏移的原生记录字段由生成代码访问同一存储；String 只开放字节长度和只读索引。布局和序列视图来自同一 Runtime 元数据，不把 String/Array 塞进 `Scalar`。`AFUNCTION` 原生成员同时支持无 GC 引用的原生记录/Array/String 引用，聚合值仍不进入 Scalar。
+
+源码拥有型局部复用原生构析操作，序列修改经 `Runtime::mutate_sequence` 分派到基础库；`sequence_mutate` 与 `value_operations_preserve_borrows` 由同一 TypeInfo 发布，数组能力还取决于元素的操作契约。当前没有数组元素编辑器、非平凡按值调用 ABI 或跨挂起借用。同步原生值区间只允许 `BorrowSafe` 原生方法，结构修改限于源码拥有的序列，并把 GC 留给区间外的宿主；原生调用方仍负责实际存续期。详细限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
 
 ## 验收
 
@@ -96,6 +98,8 @@ cmake --build --preset release --target foundation_acceptance reflection_accepta
 ```
 
 [消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 增量覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
+
+[源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍与原生基础库首片)。
 
