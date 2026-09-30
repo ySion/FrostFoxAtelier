@@ -14,6 +14,7 @@ template<class T> struct Definition {
 // associates them with actual AST declarations. Ordinary C++ needs no plugin.
 #define ACLASS(...)
 #define ASTRUCT(...)
+#define AENUM(...)
 #define AFIELD(...)
 #define AFUNCTION(...)
 #define AGENERATED_BODY(Type) friend struct ::atelier::reflection::Definition<Type>;

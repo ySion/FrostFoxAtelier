@@ -12,9 +12,9 @@ function(_atelier_reflection_json out value)
     set(${out} "\"${value}\"" PARENT_SCOPE)
 endfunction()
 
-add_executable(atelier_reflection_acceptance acceptance/reflection/main.cpp)
+add_executable(atelier_reflection_acceptance acceptance/reflection/main.cpp acceptance/reflection/calls.cpp)
 atelier_target(atelier_reflection_acceptance)
-target_link_libraries(atelier_reflection_acceptance PRIVATE atelier_runtime)
+target_link_libraries(atelier_reflection_acceptance PRIVATE atelier_source)
 target_include_directories(atelier_reflection_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
 
 # SOURCE selects a real target compile command; headers use those exact settings.

@@ -69,12 +69,17 @@ if ($LASTEXITCODE -ne 0 -or (Get-FileHash $generatedSource -Algorithm SHA256).Ha
 }
 if ((Get-Content -Raw "$OutputDirectory/probe.d") -notmatch 'dependency\.hpp') { throw 'Included header is missing from the depfile.' }
 $cases = @(
+    @{name='view-field'; text=('#include "foundation/string.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() atelier::StringView view;')); error='Borrowed views cannot be persistent fields'},
+    @{name='array-ref-field'; text=('#include "foundation/array.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() atelier::Array<atelier::ReferenceSlot> references;')); error='reference-free Array'},
+    @{name='array-hidden-ref'; text=('#include "foundation/array.hpp"' + "`n" + 'struct Nested { atelier::ReferenceSlot slot; };' + $valid.Replace('AFIELD() ProbeScalar value{};', 'atelier::Array<Nested> references;')); error='requires an explicit AFIELD'},
     @{name='option'; text=$valid.Replace('Name="probe.Widget"','Nmae="probe.Widget"'); error='Unknown or duplicate reflection option'},
     @{name='unmarked'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'atelier::ReferenceSlot missing;'); error='requires an explicit AFIELD'},
     @{name='nested-unmarked'; text='struct Nested { atelier::ReferenceSlot slot; };' + $valid.Replace('AFIELD() ProbeScalar value{};', 'Nested missing;'); error='requires an explicit AFIELD'},
     @{name='strength'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Sequence="probe.Widget") atelier::ReferenceSlot slot;'); error='matching Strong, Weak or Sequence'},
     @{name='target'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Strong="probe.Missing") atelier::ReferenceSlot slot;'); error='Reference target must name'},
-    @{name='signature'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() void bad(float&) {}'); error='parameters must be float or uint32_t'},
+    @{name='signature'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() void bad(float&&) {}'); error='supported scalar/enum values'},
+    @{name='enum-width'; text='AENUM() enum class Small : unsigned char { value };'; error='int32_t or uint32_t underlying type'},
+    @{name='enum-unscoped'; text='AENUM() enum Plain { value };'; error='namespace-level enum class'},
     @{name='static-method'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() static float bad() { return 0; }'); error='non-static scalar member signature'},
     @{name='body'; text=$valid.Replace('AGENERATED_BODY(Widget)', ''); error='requires exactly one AGENERATED_BODY'},
     @{name='grouped'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() float first{}, second{};'); error='split grouped declarations'},

@@ -73,7 +73,7 @@ Config read_config(const char* path) {
     return result;
 }
 
-enum class MarkerKind { object, record, field, method, body };
+enum class MarkerKind { object, record, enumeration, field, method, body };
 struct Marker {
     MarkerKind kind;
     SourceLocation location;
@@ -93,6 +93,9 @@ struct Type {
     std::string qualified, scope, name, runtime_name, base;
     std::vector<Field> fields;
     std::vector<Method> methods;
+    const EnumDecl* enumeration{};
+    std::string underlying{};
+    std::vector<std::string> enumerators{};
 };
 struct State {
     Config& config;
@@ -198,6 +201,7 @@ public:
         std::optional<MarkerKind> kind;
         if (spelling == "ACLASS") kind = MarkerKind::object;
         else if (spelling == "ASTRUCT") kind = MarkerKind::record;
+        else if (spelling == "AENUM") kind = MarkerKind::enumeration;
         else if (spelling == "AFIELD") kind = MarkerKind::field;
         else if (spelling == "AFUNCTION") kind = MarkerKind::method;
         else if (spelling == "AGENERATED_BODY") kind = MarkerKind::body;
@@ -239,6 +243,52 @@ public:
         return RecursiveASTVisitor::TraverseDecl(declaration);
     }
     bool TraverseStmt(Stmt*) { return true; }
+    bool VisitEnumDecl(EnumDecl* declaration) {
+        auto* marker = state_.prefix(*declaration, MarkerKind::enumeration);
+        if (!marker) return true;
+        const auto options = state_.options(*marker, {"Name"});
+        if (!options) return true;
+        const auto* definition = declaration->getDefinition();
+        if (!definition || !definition->isScoped() || definition->getName().empty() ||
+            (!isa<NamespaceDecl>(definition->getDeclContext()) && !definition->getDeclContext()->isTranslationUnit())) {
+            state_.error(marker->location, "AENUM requires a complete namespace-level enum class."); return true;
+        }
+        for (auto* context = definition->getDeclContext(); !context->isTranslationUnit(); context = context->getParent())
+            if (const auto* scope = dyn_cast<NamespaceDecl>(context); scope && scope->isAnonymousNamespace()) {
+                state_.error(marker->location, "Reflected enums cannot have anonymous namespace linkage."); return true;
+            }
+        const auto underlying = definition->getIntegerType().getCanonicalType();
+        if (state_.compiler->getASTContext().getTypeSize(underlying) != 32 ||
+            (!underlying->isSpecificBuiltinType(BuiltinType::Int) && !underlying->isSpecificBuiltinType(BuiltinType::UInt))) {
+            state_.error(marker->location, "AENUM requires an int32_t or uint32_t underlying type."); return true;
+        }
+        const auto qualified = definition->getQualifiedNameAsString();
+        std::string runtime_name = qualified;
+        for (auto at = runtime_name.find("::"); at != std::string::npos; at = runtime_name.find("::")) runtime_name.replace(at, 2, ".");
+        if (options->contains("Name")) runtime_name = options->at("Name");
+        for (const auto& type : state_.types) {
+            if (type.enumeration == definition) {
+                if (type.runtime_name != runtime_name) state_.error(marker->location, "Conflicting enum names.");
+                return true;
+            }
+            if (type.runtime_name == runtime_name) { state_.error(marker->location, "Duplicate reflected type name: " + runtime_name); return true; }
+        }
+        const auto owner = state_.header_of(definition->getLocation());
+        if (!owner) { state_.error(marker->location, "Enum definition must belong to a configured header."); return true; }
+        Type type;
+        type.header = *owner;
+        type.line = state_.compiler->getSourceManager().getExpansionLineNumber(definition->getLocation());
+        type.enumeration = definition;
+        type.qualified = "::" + qualified;
+        const auto scope = qualified.rfind("::");
+        type.scope = scope == std::string::npos ? "" : qualified.substr(0, scope);
+        type.name = definition->getNameAsString();
+        type.runtime_name = std::move(runtime_name);
+        type.underlying = underlying->isSignedIntegerType() ? "::std::int32_t" : "::std::uint32_t";
+        for (const auto* item : definition->enumerators()) type.enumerators.push_back(item->getNameAsString());
+        state_.types.push_back(std::move(type));
+        return true;
+    }
     bool VisitCXXRecordDecl(CXXRecordDecl* declaration) {
         if (declaration->isImplicit()) return true;
         auto* marker = state_.prefix(*declaration, MarkerKind::object);
@@ -285,30 +335,60 @@ const Type* reflected(State& state, const CXXRecordDecl* record) {
     for (const auto& type : state.types) if (type.declaration == definition) return &type;
     return nullptr;
 }
-std::optional<std::string> scalar(QualType type, ASTContext& context, bool allow_void = false) {
+std::optional<std::string> scalar(QualType type, State& state, ASTContext& context, bool allow_void = false) {
     if (type.hasLocalQualifiers()) return {};
     type = type.getCanonicalType();
     if (allow_void && type->isVoidType()) return "void";
+    if (const auto* enumeration = type->getAs<EnumType>())
+        for (const auto& reflected_type : state.types)
+            if (reflected_type.enumeration == enumeration->getDecl()->getDefinition()) return reflected_type.qualified;
+    if (type->isSpecificBuiltinType(BuiltinType::Int) && context.getTypeSize(type) == 32) return "::std::int32_t";
     if (type->isSpecificBuiltinType(BuiltinType::Float)) return "float";
     if (type->isSpecificBuiltinType(BuiltinType::UInt) && context.getTypeSize(type) == 32) return "::std::uint32_t";
     return {};
 }
 
-bool contains_reference_storage(QualType type, ASTContext& context) {
+const ClassTemplateSpecializationDecl* array_specialization(QualType type) {
+    const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
+    const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(record);
+    return specialization && specialization->getSpecializedTemplate()->getQualifiedNameAsString() == "atelier::Array"
+        ? specialization : nullptr;
+}
+
+bool contains_reference_storage(QualType type, ASTContext& context, std::set<const CXXRecordDecl*>& visited) {
     type = type.getCanonicalType();
-    if (const auto* array = context.getAsArrayType(type)) return contains_reference_storage(array->getElementType(), context);
+    if (const auto* array = context.getAsArrayType(type)) return contains_reference_storage(array->getElementType(), context, visited);
     const auto* record = type->getAsCXXRecordDecl();
     if (!record) return false;
     const auto name = record->getQualifiedNameAsString();
-    if (name == "atelier::ReferenceSlot" || name == "atelier::ReferenceSequence") return true;
+    if (name == "atelier::ReferenceSlot" || name == "atelier::ReferenceSequence" || name == "atelier::ObjectReference") return true;
     record = record->getDefinition();
-    if (!record) return false;
-    for (const auto* field : record->fields()) if (contains_reference_storage(field->getType(), context)) return true;
-    for (const auto& base : record->bases()) if (contains_reference_storage(base.getType(), context)) return true;
+    if (!record || !visited.insert(record).second) return false;
+    if (const auto* array = array_specialization(type))
+        return contains_reference_storage(array->getTemplateArgs()[0].getAsType(), context, visited);
+    for (const auto* field : record->fields()) if (contains_reference_storage(field->getType(), context, visited)) return true;
+    for (const auto& base : record->bases()) if (contains_reference_storage(base.getType(), context, visited)) return true;
     return false;
+}
+bool contains_reference_storage(QualType type, ASTContext& context) {
+    std::set<const CXXRecordDecl*> visited;
+    return contains_reference_storage(type, context, visited);
+}
+
+bool value_field(QualType type, State& state, ASTContext& context) {
+    if (type.hasLocalQualifiers()) return false;
+    if (scalar(type, state, context)) return true;
+    const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
+    if (!record) return false;
+    if (record->getQualifiedNameAsString() == "atelier::String") return true;
+    if (const auto* array = array_specialization(type))
+        return !contains_reference_storage(type, context) && value_field(array->getTemplateArgs()[0].getAsType(), state, context);
+    const auto* nested = reflected(state, record);
+    return nested && !nested->object;
 }
 
 void members(State& state, Type& type, ASTContext& context) {
+    if (type.enumeration) return;
     auto& sources = state.compiler->getSourceManager();
     const auto* record = type.declaration;
     if (record->getNumBases() > (type.object ? 1u : 0u)) {
@@ -368,9 +448,8 @@ void members(State& state, Type& type, ASTContext& context) {
                 state.error(field->getLocation(), "Reference target must name a reflected object in this group or core.Object: " + result.target); continue;
             }
         } else {
-            const auto* nested = reflected(state, field_record);
-            if (!scalar(field->getType(), context) && (!nested || nested->object)) {
-                state.error(field->getLocation(), "AFIELD supports float, uint32_t, reflected records and explicit Runtime reference storage."); continue;
+            if (!value_field(field->getType(), state, context)) {
+                state.error(field->getLocation(), "AFIELD requires a supported scalar/enum/record, String, reference-free Array<T>, or explicit Runtime reference storage. Borrowed views cannot be persistent fields."); continue;
             }
         }
         if (!names.insert(result.name).second) state.error(field->getLocation(), "Duplicate reflected member name: " + result.name);
@@ -381,7 +460,7 @@ void members(State& state, Type& type, ASTContext& context) {
         if (!marker) continue;
         const auto options = state.options(*marker, {"Name"});
         if (!options) continue;
-        const auto result = scalar(method->getReturnType(), context, true);
+        const auto result = scalar(method->getReturnType(), state, context, true);
         if (!result || method->isStatic() || method->isVariadic() || method->isDeleted() || method->isVolatile() ||
             method->getRefQualifier() != RQ_None || method->getDescribedFunctionTemplate() ||
             isa<CXXConstructorDecl>(method) || isa<CXXDestructorDecl>(method) || method->isOverloadedOperator() || isa<CXXConversionDecl>(method)) {
@@ -391,8 +470,14 @@ void members(State& state, Type& type, ASTContext& context) {
         if (options->contains("Name")) value.name = options->at("Name");
         bool valid = true;
         for (unsigned i = 0; i < method->getNumParams(); ++i) {
-            const auto parameter = scalar(method->getParamDecl(i)->getType().getUnqualifiedType(), context);
-            if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected method parameters must be float or uint32_t by value."); valid = false; break; }
+            auto parameter_type = method->getParamDecl(i)->getType();
+            const bool reference = parameter_type->isLValueReferenceType();
+            if (reference) parameter_type = parameter_type->getPointeeType();
+            const bool read_only = parameter_type.isConstQualified();
+            auto parameter = parameter_type.isVolatileQualified() ? std::optional<std::string>{} :
+                scalar(parameter_type.getUnqualifiedType(), state, context);
+            if (parameter && reference) *parameter = (read_only ? "const " : "") + *parameter + "&";
+            if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected parameters require supported scalar/enum values, const T& or T&."); valid = false; break; }
             if (i) value.pointer += ", ";
             value.pointer += *parameter;
         }
@@ -479,12 +564,15 @@ void emit(const State& state) {
     for (const auto& type : state.types) {
         auto& header = headers[type.header];
         if (!type.scope.empty()) header += "namespace " + type.scope + " { ";
-        header += std::string(type.class_tag ? "class " : "struct ") + type.name + ";";
+        if (type.enumeration) header += "enum class " + type.name + " : " + type.underlying + ";";
+        else header += std::string(type.class_tag ? "class " : "struct ") + type.name + ";";
         if (!type.scope.empty()) header += " }";
         header += "\nnamespace atelier::reflection {\ntemplate<> TypeDefinition Definition<" + type.qualified + ">::build(Runtime&);\n}\n";
         const auto location = [&](unsigned line) { return "\n#line " + std::to_string(line) + " " + quote(state.config.headers[type.header].include) + "\n"; };
         cpp += location(type.line) + "template<> TypeDefinition Definition<" + type.qualified + ">::build(Runtime& runtime) {\n    using Self = " + type.qualified + ";\n";
-        cpp += "    return NativeRegistration<Self>{runtime, " + quote(type.runtime_name) + ", TypeKind::" + (type.object ? "object" : "record") + "}";
+        cpp += "    return NativeRegistration<Self>{runtime, " + quote(type.runtime_name) + ", TypeKind::" + (type.enumeration ? "enumeration" : type.object ? "object" : "record") + "}";
+        for (const auto& name : type.enumerators)
+            cpp += "\n        .enumerator(" + quote(name) + ", Self::" + name + ")";
         if (!type.base.empty()) cpp += "\n        .base<" + type.base + ">()";
         for (const auto& field : type.fields) {
             cpp += location(field.line) + "        ." + (field.hidden ? "hidden_field" : "field") + "<&Self::" + field.cpp_name + ">(" + quote(field.name);

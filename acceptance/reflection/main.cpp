@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <stdexcept>
 
+void verify_shared_calls(atelier::Runtime&);
+
 namespace {
 using namespace atelier;
 using namespace atelier::acceptance::reflection;
@@ -24,7 +26,11 @@ int main() {
         Runtime runtime;
         const auto types = take(runtime.register_types({
             atelier::reflection::Definition<Sample>::build(runtime),
-            atelier::reflection::Definition<Counter>::build(runtime)}));
+            atelier::reflection::Definition<Counter>::build(runtime),
+            atelier::reflection::Definition<CallProbe>::build(runtime),
+            atelier::reflection::Definition<Mode>::build(runtime),
+            atelier::reflection::Definition<OtherMode>::build(runtime),
+            atelier::reflection::Definition<UnsignedMode>::build(runtime)}));
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);
@@ -39,6 +45,7 @@ int main() {
 #else
         require(runtime.find_field(types[1], "release_only").has_value() && !runtime.find_field(types[1], "debug_only"), "Generator lost release preprocessing context.");
 #endif
+        verify_shared_calls(runtime);
         const auto destroyed = runtime.destroy(object.id());
         if (!destroyed) throw std::runtime_error(destroyed.error().message);
         require(Counter::live == 0 && !runtime.type_of(object.id()), "Generated native destruction or identity invalidation failed.");

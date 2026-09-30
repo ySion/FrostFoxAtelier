@@ -24,6 +24,7 @@ public:
 | --- | --- |
 | `ACLASS(Name = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
 | `ASTRUCT(Name = "...")` | 声明 Runtime 记录值，允许内联使用 |
+| `AENUM(Name = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t，不需要 AGENERATED_BODY |
 | `AFIELD(Name = "...", Hidden, Strong = "...")` | 声明字段；各选项按需要填写，引用形式见下文 |
 | `AFUNCTION(Name = "...")` | 声明成员方法；名称可省略，重载须使用不同的反射名称 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
@@ -34,13 +35,26 @@ public:
 
 ### 字段与方法
 
-- 内联字段支持 `float`、`std::uint32_t` 和本生成组中的反射记录。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
+- 内联字段支持 float、int/int32_t、uint32_t、本生成组中的反射枚举与记录，以及引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
 - `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标须为本组反射对象或 `core.Object`。这些选项不能用于普通内联值。
 - `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。
 - 漏标直接引用槽、序列或内嵌包含引用存储的记录/数组会报错，避免遗漏 GC 边。未标记的普通原生状态不自动成为反射字段；任意外部资源的所有权仍由原生实现负责。
 - 对象支持一个 public、非 virtual 的原生反射基类，基类须在本组中；记录不支持继承。继承反射成员重名会报错。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。
-- 方法支持 `void/float/uint32_t` 结果、`float/uint32_t` 按值参数，以及 const/noexcept 成员函数。静态方法、变参、模板、引用参数、引用限定方法和运算符方法报错。生成器使用完整成员指针类型消除重载歧义。
+- 方法支持 void 或标量/枚举值结果，参数支持按值、`const T&` 和 `T&`，以及 const/noexcept 成员函数。静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。记录、String、Array 和借用视图参数尚未开放。生成器使用完整成员指针类型消除重载歧义。
 - 构造、析构和记录复制能力沿用 `NativeRegistration`。生成代码带原头文件的 `#line`，编译器继续验证默认构造及不抛异常析构等约束。
+
+### 枚举与引用示例
+
+```cpp
+AENUM(Name = "models.Mode")
+enum class Mode : std::int32_t { idle = -1, active = 2, running = active };
+
+// 位于带 ACLASS/AGENERATED_BODY 的类中：
+AFIELD() Mode mode{Mode::idle};
+AFUNCTION() void accumulate(int amount, const int& bias, int& total);
+```
+
+枚举必须与引用它的类型处于同一生成组，并由模块入口一起发布。生成器保留独立 TypeId 及名字/数值，不将枚举合并为底层整数；别名和未命名底层值均有效。当前不生成 uint8/int16 等底层枚举。借用合同见[共享函数契约](runtime-model.md#共享函数签名与结果)，源码写法见 [LANGUAGE](../LANGUAGE.md#参数传递与枚举)。
 
 ## 生成文件与使用入口
 
@@ -56,6 +70,8 @@ auto types = runtime.register_types(std::move(definitions));
 调用方仍决定发布的类型集合及生命周期。每次构建定义显式传入 Runtime，不缓存全局 `TypeId`。已迁移类型删除重复手写描述；`NativeRegistration` 本身及其他未迁移消费者保留。
 
 首个真实消费者是 [World 的类型声明](../src/world/world.hpp)和[数学记录](../src/world/math.hpp)：七种类型、十五个字段及 `Counter::advance` 已迁移。`world::register_types` 保留原顺序、成组发布和字段路径绑定；`detail::Access` 保留业务访问职责。
+
+拥有容器的类型定义由 `runtime/foundation.hpp` 提供，与生成类型一起提交到同一发布入口；完整示例、字段借用与生命周期合同见[基础库](foundation.md#共享反射与-runtime)。
 
 ## CMake 接入
 
@@ -96,6 +112,6 @@ cmake --preset release
 cmake --build --preset release --target reflection_acceptance world_acceptance
 ```
 
-[生成消费者](../acceptance/reflection/main.cpp)实际编译并调用生成方法，检查私有记录、重载别名、const/noexcept、配置宏和构析。[命令行消费者](../acceptance/reflection/cli.ps1)检查旧输出隔离、可重现写入、include 依赖及带位置的非法输入诊断。World 验收继续覆盖实际对象图、字段/方法、GC、JIT、协程和业务生命周期。
+[生成消费者](../acceptance/reflection/main.cpp)实际编译并调用生成方法，检查私有记录、重载别名、const/noexcept、配置宏和构析。[调用链消费者](../acceptance/reflection/calls.cpp)覆盖 i32、枚举、三种传递方式、原生/描述型存储、JIT 双向调用、别名、错误、协程与签名更新。[命令行消费者](../acceptance/reflection/cli.ps1)检查旧输出隔离、可重现写入、include 依赖及带位置的非法输入诊断。World 验收继续覆盖实际对象图、字段/方法、GC、JIT、协程和业务生命周期。
 
 当前生成组要求共同解析其反射基类、记录与引用目标；跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。初始 C#/ClangSharp、Attribute 路线对照见[选型记录](research/attribute-reflection-feasibility.md)。
