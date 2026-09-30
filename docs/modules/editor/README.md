@@ -1,7 +1,7 @@
 # 首个场景编辑器
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
-当前沿[对象模型合同](../../research/game-world-object-model.md)的 IV 将正式 Actor/Component/World 接入同一编辑器；dev/release 程序构建与无窗口文档验收已通过，GPU/正式窗口验收等待统一前台时段。已收口的 S1/S2 输入与视觉合同保留，历史证据见下文，不能代替本轮 World 迁移验收。
+当前沿[对象模型合同](../../research/game-world-object-model.md)的 IV 将正式 Actor/Component/World 接入同一编辑器，并已同步自动反射、共享调用合同与基础值类型。dev/release 正式程序构建与无窗口文档验收已通过，GPU/正式窗口验收等待统一前台时段。已收口的 S1/S2 输入与视觉合同保留，历史证据见下文，不能代替本轮 World 迁移验收。
 模型与渲染消费完整 TRS；面板仍只暴露位置 XYZ。旋转/缩放控件、存档重开、JIT 单步、视口拾取、gizmo、节点画布、自由停靠及 S3 面板体系未启动。
 
 ## 正式执行链
@@ -20,6 +20,7 @@ WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入�
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
 [World](../../../src/world/world.hpp)和 Runtime 管理唯一 Actor/Component 身份、组成与成员资格。编辑 World 保持 stopped；Actor 的 AttachedInactive 状态仍可呈现和编辑，renderer 不按 Active 状态筛除编辑内容。
+World 的类型与字段元数据由[自动反射](../../reflection.md)生成，仍经 `world::register_types` 发布到 Session 拥有的 Runtime。编辑器使用该入口返回的类型和字段路径；生成头、World 库及正式编辑器均由当前工作树、当前配置的 CMake 依赖链构建。
 [Session](../../../src/editor/session.hpp)是文档唯一写入口，保存 Actor 选择和统一的 Actor、组件、字段历史。字段事务捕获具体组件 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。Transform 字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 继续选中记录的 owner Actor。
 Actor 删除记录保存普通 Actor 根及 World 成员位置，组件独立移除记录保存组件根及 owner/顺序/依赖恢复资料。Undo 恢复同一 ObjectId 的当前组成与成员资格，重新生成 UI 绑定。裁剪历史/redo 与关闭文档只释放持有，不隐式 destroy。历史最多128项，编辑器最多256个 Actor；只有 World 成员可编辑，没有离线写入或多写者冲突机制。
 World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notification_error 表示关系已改变。Session 先记录变化并更新选择，应用再报告通知错误并停止后续动作，不把它当成未提交或重做一次。成员 span 只在结构变化前借用，UI/renderer 不持有它。
