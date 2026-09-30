@@ -122,7 +122,7 @@ std::array<TypeId, 2> register_typed_ui(Runtime& runtime) {
         {"fail_result", {{}, ValueDefinition{u32}}, typed_ui_fail_result}};
     return {native, take(runtime.register_type(std::move(described)))};
 }
-void typed_value(BusinessScalar actual, BusinessScalar expected, const char* message) {
+void typed_value(BusinessValue actual, BusinessValue expected, const char* message) {
     require(actual.kind == expected.kind && actual.bits == expected.bits, message);
 }
 struct TypedTrace {
@@ -169,7 +169,7 @@ void typed_trace_poll(void* context, Invocation& invocation, const CollectionPro
 }
 struct TypedRawResult { std::uint32_t status; std::string error; std::size_t polls; };
 TypedRawResult typed_raw(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
-    const BusinessScalar* arguments, std::uint32_t count, BusinessScalar* result, TypedTrace& trace) {
+    const BusinessValue* arguments, std::uint32_t count, BusinessValue* result, TypedTrace& trace) {
     auto activation = ExecutionScope::enter(runtime);
     require(static_cast<bool>(activation), "Typed raw invocation could not enter execution.");
     FixtureInvocation observed{false, typed_trace_poll, &trace};
@@ -195,7 +195,7 @@ void verify_typed_scalars() {
         "Pure scalar node required a receiver, root or snapshot.");
     auto identity = compile_bound(binding, "float identity(float value) { return value; }", "typed-bits.source");
     for (const auto bits : {0u, 0x80000000u, 0x7fc12345u}) {
-        const std::array arguments{BusinessScalar{ScalarKind::f32, bits}};
+        const std::array arguments{BusinessValue{ValueKind::f32, bits}};
         typed_value(take(execute_fixture(runtime, binding, identity.get(), {}, arguments)).value, arguments[0],
             "float identity changed zero/sign/NaN payload bits.");
     }
@@ -223,11 +223,11 @@ void verify_typed_scalars() {
     }
     const auto callbacks = typed_trace_services();
     auto checked = compile_bound(binding, "float checked(float value, uint count) { return value; }", "typed-abi.source", callbacks);
-    const BusinessScalar sentinel{ScalarKind::u32, 0xa55ac33cu};
+    const BusinessValue sentinel{ValueKind::u32, 0xa55ac33cu};
     const std::array valid{scalar(1.5f), scalar(2u), scalar(3u)};
     for (unsigned scenario = 0; scenario != 9; ++scenario) {
         auto values = valid;
-        const BusinessScalar* input = values.data();
+        const BusinessValue* input = values.data();
         std::uint32_t count = 2;
         auto output = sentinel;
         auto* storage = &output;
@@ -237,8 +237,8 @@ void verify_typed_scalars() {
         if (scenario == 3) input = nullptr;
         if (scenario == 4) values[0] = scalar(1u);
         if (scenario == 5) values[1] = scalar(2.0f);
-        if (scenario == 6) values[0].kind = ScalarKind::void_value;
-        if (scenario == 7) values[1].kind = static_cast<ScalarKind>(99);
+        if (scenario == 6) values[0].kind = ValueKind::void_value;
+        if (scenario == 7) values[1].kind = static_cast<ValueKind>(99);
         if (scenario == 8) storage = nullptr;
         TypedTrace trace;
         const auto rejected = typed_raw(runtime, binding, checked.get(), {}, input, count, storage, trace);
@@ -274,7 +274,7 @@ void verify_typed_scalars() {
         auto output = sentinel;
         const auto success = typed_raw(runtime, binding, nothing.get(), {}, nullptr, 0, with_output ? &output : nullptr, trace);
         require(success.status == 0 && trace.begins == 1 && trace.finishes == 1, "Void entry rejected optional output.");
-        typed_value(output, with_output ? BusinessScalar{} : sentinel, "Void success did not commit its explicit kind and zero bits.");
+        typed_value(output, with_output ? BusinessValue{} : sentinel, "Void success did not commit its explicit kind and zero bits.");
     }
     std::puts("[pass] Typed scalar nodes: zero/one/ten mixed parameters, reassignment, nested returns, uint wrap, zero/NaN bits, void and pre-callback ABI rejection");
 }
@@ -329,10 +329,10 @@ void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
         require(atelier_compile_business(&callbacks, source_name.c_str(), source.data(),
             static_cast<std::uint32_t>(source.size()), &environment, &output, diagnostic, sizeof(diagnostic)) == 0, diagnostic);
         code.reset(output);
-        for (auto& field : temporary.fields) { field.name.assign("destroyed_field"); field.kind = ScalarKind::void_value; }
+        for (auto& field : temporary.fields) { field.name.assign("destroyed_field"); field.kind = ValueKind::void_value; }
         for (auto& method : temporary.methods) {
             method.name.assign("destroyed_method");
-            for (auto& parameter : method.parameters) parameter.type = ScalarKind::void_value;
+            for (auto& parameter : method.parameters) parameter.type = ValueKind::void_value;
         }
         callbacks.begin = nullptr;
         type_name.assign("destroyed_type"); source_name.assign("destroyed_source"); source.assign("destroyed_program");
@@ -340,8 +340,8 @@ void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
     const auto info = atelier_business_info(code.get());
     require(info.requires_receiver && std::string_view(info.function_name) == "owned" &&
         std::string_view(info.source_name) == "typed-owned.source" && info.services == services &&
-        info.signature.parameter_count == 2 && info.signature.parameters[0].type == ScalarKind::f32 &&
-        info.signature.parameters[1].type == ScalarKind::u32 && info.signature.result == ScalarKind::f32 &&
+        info.signature.parameter_count == 2 && info.signature.parameters[0].type == ValueKind::f32 &&
+        info.signature.parameters[1].type == ValueKind::u32 && info.signature.result == ValueKind::f32 &&
         info.environment.object_type_name && std::string_view(info.environment.object_type_name) == binding.name &&
         same_environment(binding, info.environment), "Typed metadata borrowed destroyed catalog/name/signature storage.");
     auto receiver = take(runtime.create(binding.type));
@@ -356,7 +356,7 @@ void verify_typed_catalog_errors(const Binding& binding) {
         EnvironmentView storage(binding);
         const std::string type_name(binding.name);
         auto environment = storage.view(type_name.c_str());
-        const ScalarKind invalid = static_cast<ScalarKind>(99);
+        const ValueKind invalid = static_cast<ValueKind>(99);
         const BusinessParameter invalid_parameter{invalid};
         if (scenario == 0) environment.fields = nullptr;
         if (scenario == 1) environment.methods = nullptr;
@@ -365,7 +365,7 @@ void verify_typed_catalog_errors(const Binding& binding) {
         if (scenario == 4) storage.fields[0].name = "bad.";
         if (scenario == 5) storage.fields[1].name = storage.fields[0].name;
         if (scenario == 6) storage.fields[0].kind = invalid;
-        if (scenario == 7) storage.fields[0].kind = ScalarKind::void_value;
+        if (scenario == 7) storage.fields[0].kind = ValueKind::void_value;
         if (scenario == 8) storage.methods[0].name = nullptr;
         if (scenario == 9) storage.methods[1].name = storage.methods[0].name;
         if (scenario == 10) { storage.methods[0].parameters = nullptr; storage.methods[0].parameter_count = 1; }
@@ -460,7 +460,7 @@ void verify_typed_reference_results(Runtime& runtime, const Binding& binding) {
         trace.fail_finish = scenario == 4;
         const auto branch = scenario == 1 ? 2u : scenario == 2 ? 1u : 0u;
         const std::array arguments{scalar(4.0f), scalar(branch)};
-        const BusinessScalar sentinel{ScalarKind::u32, 0xbad00badu};
+        const BusinessValue sentinel{ValueKind::u32, 0xbad00badu};
         auto output = sentinel;
         const auto result = typed_raw(runtime, binding, code.get(), receiver.id(), arguments.data(),
             static_cast<std::uint32_t>(arguments.size()), &output, trace);
@@ -493,7 +493,7 @@ void verify_typed_active_owner() {
         auto code = compile_bound(binding, "float identity(float value) { return value; }", "typed-active-owner.source");
         const auto address = atelier_business_info(code.get()).entry_address;
         struct State { CodeOwner* owner; std::uintptr_t address; bool fail; unsigned callbacks{}; } state{&code, address, fail};
-        const std::array arguments{BusinessScalar{ScalarKind::f32, 0x7fc54321u}};
+        const std::array arguments{BusinessValue{ValueKind::f32, 0x7fc54321u}};
         ExecutionStats stats;
         auto result = execute_fixture(runtime, binding, code.get(), {}, arguments, false, &stats,
             [](void* context, Invocation&, const CollectionProgress&) {
@@ -607,7 +607,7 @@ void verify_native_result_consumers(Runtime& runtime, const Binding& binding) {
             return self.combine(self.first(), self.fail_result());
         })", binding.name);
     auto failure = compile_bound(binding, failure_source, "native-result-failure.source", typed_trace_services());
-    const BusinessScalar sentinel{ScalarKind::u32, 0x5a5ac33c};
+    const BusinessValue sentinel{ValueKind::u32, 0x5a5ac33c};
     auto output = sentinel;
     TypedTrace trace;
     const auto failed = typed_raw(runtime, binding, failure.get(), receiver.id(), nullptr, 0, &output, trace);
@@ -643,14 +643,14 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
     struct Calls { std::uint32_t count{}; Fault fault{}; };
     auto callbacks = services;
     callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method,
-        const BusinessScalar* arguments, std::uint32_t count, BusinessScalar* output) noexcept -> std::uint32_t {
+        const BusinessValue* arguments, std::uint32_t count, BusinessValue* output) noexcept -> std::uint32_t {
         auto& invocation = *static_cast<Invocation*>(context);
         auto& state = *static_cast<Calls*>(fixture(invocation).hook_state);
         if (++state.count == 2 && state.fault == Fault::missing_result) return 0;
         const auto status = call_method(context, slot, method, arguments, count, output);
         if (status != 0 && state.fault == Fault::service_failure) return 2;
         if (status == 0 && state.count == 2 && state.fault == Fault::wrong_kind && output)
-            output->kind = ScalarKind::f32;
+            output->kind = ValueKind::f32;
         return status;
     };
     const auto source = reference_source(R"(
@@ -662,7 +662,7 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
         })", binding.name);
     auto code = compile_bound(binding, source,
         "native-result-abi.source", callbacks);
-    const BusinessScalar sentinel{ScalarKind::u32, 0xcafebabe};
+    const BusinessValue sentinel{ValueKind::u32, 0xcafebabe};
     const auto check_cleanup = [&](const Invocation& invocation) {
         require(invocation.frame.empty() && runtime.root_count() == 1,
             "Native ABI result path relied on RAII root cleanup.");

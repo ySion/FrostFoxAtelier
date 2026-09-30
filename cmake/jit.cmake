@@ -94,9 +94,10 @@ function(atelier_add_source)
 
     add_executable(atelier_source_minimal
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
-        acceptance/source/inheritance.cpp)
+        acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
+    target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
     add_custom_target(source_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal>
         DEPENDS atelier_source_minimal USES_TERMINAL VERBATIM)

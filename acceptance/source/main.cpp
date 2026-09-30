@@ -9,6 +9,8 @@
 void verify_source_shutdown();
 void verify_source_session();
 void verify_source_inheritance();
+void verify_native_value_borrows();
+void verify_source_owned_values();
 
 namespace {
 using namespace atelier;
@@ -98,6 +100,8 @@ void verify_public_program() {
 int main() {
     try {
         verify_public_program();
+        verify_native_value_borrows();
+        verify_source_owned_values();
         verify_source_inheritance();
         verify_source_shutdown();
         verify_source_session();

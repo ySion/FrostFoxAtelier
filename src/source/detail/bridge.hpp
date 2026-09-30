@@ -21,16 +21,34 @@ struct BoundMethod {
     std::string name;
     MethodId id;
     std::vector<BusinessParameter> parameters;
-    BusinessType result{ScalarKind::void_value};
+    BusinessType result{ValueKind::void_value};
     bool receiver_read_only{};
+    bool preserves_borrows{};
     bool operator==(const BoundMethod&) const = default;
 };
 struct BoundEnum {
     TypeId type;
     std::string name;
-    ScalarKind underlying;
+    ValueKind underlying;
     std::vector<std::pair<std::string, std::uint32_t>> values;
     bool operator==(const BoundEnum&) const = default;
+};
+struct BoundValueField {
+    std::string name;
+    BusinessType type;
+    std::size_t offset;
+    bool operator==(const BoundValueField&) const = default;
+};
+struct BoundValue {
+    TypeId type;
+    std::string name;
+    ValueKind kind;
+    std::size_t size, alignment;
+    BusinessType element{ValueKind::void_value};
+    std::vector<BoundValueField> fields;
+    void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
+    bool can_own{}, can_mutate{};
+    bool operator==(const BoundValue&) const = default;
 };
 struct Binding {
     Runtime* runtime{};
@@ -40,28 +58,31 @@ struct Binding {
     std::vector<BoundMethod> methods;
     std::vector<TypeId> dependencies;
     std::vector<BoundEnum> enumerations{};
+    std::vector<BoundValue> values{};
     TypeId f32{}, u32{}, i32{};
 };
 Binding bind_type(Runtime&, TypeId);
-BusinessType scalar_kind(const Binding&, TypeId);
-TypeId scalar_type(const Binding&, BusinessType);
+BusinessType value_kind(const Binding&, TypeId);
+TypeId value_type_id(const Binding&, BusinessType);
 struct EnvironmentView {
     std::vector<BusinessFieldBinding> fields;
     std::vector<BusinessMethodBinding> methods;
     std::vector<std::vector<BusinessEnumItem>> enum_items;
     std::vector<BusinessEnumBinding> enumerations;
+    std::vector<std::vector<BusinessValueField>> value_fields;
+    std::vector<BusinessValueBinding> values;
     explicit EnvironmentView(const Binding&);
     BusinessEnvironment view(const char* object_type_name) const;
 };
-inline BusinessScalar scalar(float value) { return {ScalarKind::f32, std::bit_cast<std::uint32_t>(value)}; }
-inline BusinessScalar scalar(std::uint32_t value) { return {ScalarKind::u32, value}; }
-inline BusinessScalar scalar(std::int32_t value) { return {ScalarKind::i32, std::bit_cast<std::uint32_t>(value)}; }
-BusinessScalar scalar(const Scalar&, const Binding&);
-std::optional<Scalar> scalar_value(BusinessScalar, const Binding* = nullptr);
+inline BusinessValue scalar(float value) { return {ValueKind::f32, std::bit_cast<std::uint32_t>(value)}; }
+inline BusinessValue scalar(std::uint32_t value) { return {ValueKind::u32, value}; }
+inline BusinessValue scalar(std::int32_t value) { return {ValueKind::i32, std::bit_cast<std::uint32_t>(value)}; }
+BusinessValue scalar(const Scalar&, const Binding&);
+std::optional<Scalar> scalar_value(BusinessValue, const Binding* = nullptr);
 struct AbiArguments {
-    std::array<BusinessScalar, 8> inline_values;
-    std::vector<BusinessScalar> expanded;
-    std::span<BusinessScalar> values;
+    std::array<BusinessValue, 8> inline_values;
+    std::vector<BusinessValue> expanded;
+    std::span<BusinessValue> values;
     PreparedArguments prepared;
     Result<void> status;
     AbiArguments(const Binding&, const FunctionSignature&, std::span<const Scalar>);
@@ -98,10 +119,11 @@ struct Invocation {
     CollectionBudget budget;
     InvocationObserver observer;
     bool failed{};
+    std::size_t live_values{};
     ErrorCode error_code{ErrorCode::invocation_failed};
     char error[512]{};
     Invocation(Runtime&, const Binding&, BusinessFrameLayout, CollectionBudget, InvocationObserver = {});
-    bool references_cleared() const noexcept;
+    bool resources_cleared() const noexcept;
     void fail(ErrorCode, const char*) noexcept;
 };
 template<class Operation>
@@ -122,7 +144,7 @@ std::uint32_t read_float(void*, std::uint32_t, std::uint32_t, float*) noexcept;
 std::uint32_t write_float(void*, std::uint32_t, std::uint32_t, float) noexcept;
 std::uint32_t read_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
 std::uint32_t write_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
-std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessScalar*, std::uint32_t, BusinessScalar*) noexcept;
+std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t, BusinessValue*) noexcept;
 std::uint32_t begin(void*) noexcept;
 std::uint32_t poll(void*) noexcept;
 std::uint32_t finish(void*) noexcept;
@@ -132,24 +154,24 @@ std::uint32_t same_reference(void*, std::uint32_t, std::uint32_t, std::uint32_t*
 void clear_slot(void*, std::uint32_t) noexcept;
 extern const BusinessServices services;
 bool same_environment(const Binding&, const BusinessEnvironment&);
-Result<void> check_source_arguments(const BusinessSignature&, std::span<const BusinessScalar>);
+Result<void> check_source_arguments(const BusinessSignature&, std::span<const BusinessValue>);
 Result<void> check_source_receiver(const Binding&, ObjectId);
-Result<BusinessScalar> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
-    BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessScalar>,
+Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
+    BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessValue>,
     bool request_collection, InvocationObserver = {}, CollectionBudget = {1});
-Result<BusinessScalar> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId,
-    std::span<const BusinessScalar>, bool request_collection = false,
+Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId,
+    std::span<const BusinessValue>, bool request_collection = false,
     InvocationObserver = {}, CollectionBudget = {1});
 
 struct ProgramAccess {
     using Compiler = decltype(&atelier_compile_business);
-    static Result<BusinessScalar> invoke(const Program::Entry&, ObjectId, std::span<const BusinessScalar>,
+    static Result<BusinessValue> invoke(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
         InvocationObserver = {}, CollectionBudget = {1});
-    static Result<BusinessScalar> invoke(const Program::Lease&, ObjectId, std::span<const BusinessScalar>,
+    static Result<BusinessValue> invoke(const Program::Lease&, ObjectId, std::span<const BusinessValue>,
         InvocationObserver = {}, CollectionBudget = {1});
-    static Result<Coroutine> start(const Program::Entry&, ObjectId, std::span<const BusinessScalar>,
+    static Result<Coroutine> start(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
         InvocationObserver = {}, CollectionBudget = {1});
-    static Result<Coroutine> start(const Program::Lease&, ObjectId, std::span<const BusinessScalar>,
+    static Result<Coroutine> start(const Program::Lease&, ObjectId, std::span<const BusinessValue>,
         InvocationObserver = {}, CollectionBudget = {1});
     static BusinessFrameLayout layout(const Program::Lease&) noexcept;
     static Result<Program::Candidate> prepare(const Program::Request&, Compiler);
@@ -161,6 +183,6 @@ struct ProgramAccess {
 #endif
 private:
     static Result<Coroutine> start_version(std::shared_ptr<const Program::Version>, ObjectId,
-        std::span<const BusinessScalar>, InvocationObserver, CollectionBudget);
+        std::span<const BusinessValue>, InvocationObserver, CollectionBudget);
 };
 }
