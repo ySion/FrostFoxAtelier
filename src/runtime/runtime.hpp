@@ -320,7 +320,7 @@ struct ParameterDefinition : ValueDefinition {
         : ValueDefinition(std::move(value)), passing(mode) {}
 };
 
-// Values own their scalar. References borrow live caller-owned storage until
+// Value operands own their scalar. References borrow live caller-owned storage until
 // return. A field operand borrows its path and resolves inside the native call.
 class Argument {
     friend class Runtime;
@@ -406,6 +406,14 @@ struct NativeLayout {
     void* (*base_address)(void*) noexcept{};
     // Array element representation, checked against the same registered value type.
     const void* element_representation{};
+    // Trusted read-only, non-reentrant projection of a live Array/String.
+    // Does not allocate, mutate, invoke user code or extend the buffer lifetime.
+    void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
+    void (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t){};
+    // Trusted promise: value operations may change their destination, but do
+    // not invalidate other borrowed storage, retain input addresses or reenter
+    // source execution. Array publication also requires this of its element.
+    bool value_operations_preserve_borrows{};
 };
 
 struct FieldDefinition {
@@ -418,12 +426,18 @@ struct FieldDefinition {
     const void* native_representation{};
     // Hidden fields participate in layout and tracing, but have no public FieldId.
     bool exposed{true};
+    // Optional direct access to standard-layout native fields, supplied by
+    // generated offsetof expressions. Native bindings are trusted producers.
+    std::optional<std::size_t> native_offset{};
 };
 
 struct MethodDefinition {
     std::string name;
     SignatureDefinition signature;
     Invoker invoke{};
+    // Includes transitive calls: no borrowed-address escape or invalidation.
+    // Runtime's existing callback scope also rejects GC/lifecycle reentry.
+    bool preserves_borrows{};
 };
 
 struct TypeDefinition {
@@ -446,12 +460,14 @@ struct FieldInfo {
     FieldId id;
     std::string name;
     ValueDescription value;
+    std::optional<std::size_t> offset{};
 };
 
 struct MethodInfo {
     MethodId id;
     std::string name;
     FunctionSignature signature;
+    bool preserves_borrows{};
 };
 
 struct TypeInfo {
@@ -475,6 +491,10 @@ struct TypeInfo {
     };
     std::optional<Enumeration> enumeration{};
     std::optional<TypeId> element{};
+    bool native_storage{};
+    void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
+    void (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t){};
+    bool value_operations_preserve_borrows{};
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };
@@ -584,6 +604,11 @@ public:
     [[nodiscard]] Result<void> assign_value(TypeId type, std::span<std::byte> destination,
                                           std::span<const std::byte> source);
     [[nodiscard]] Result<void> destroy_value(TypeId type, std::span<std::byte> storage);
+    // Mutates caller-owned live foundation storage under the same callback
+    // protection as other value operations. Input is an element, same sequence,
+    // or UTF-8 bytes according to operation; count is used by capacity operations.
+    [[nodiscard]] Result<void> mutate_sequence(TypeId type, std::span<std::byte> storage,
+        SequenceMutation operation, TypeId input_type = {}, std::span<const std::byte> input = {}, std::size_t count = 0);
 
     // Creation publishes an external root before returning. Roots do not prevent
     // explicit destruction or Runtime shutdown, and releasing one never destroys an object.

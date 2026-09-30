@@ -80,6 +80,8 @@ endfunction()
 
 atelier_reflect(atelier_reflection_acceptance SOURCE acceptance/reflection/main.cpp
     BASE_DIR "${PROJECT_SOURCE_DIR}/acceptance" HEADERS acceptance/reflection/fixture.hpp)
+atelier_reflect(atelier_source_minimal SOURCE acceptance/source/native_values.cpp
+    BASE_DIR "${PROJECT_SOURCE_DIR}/acceptance" HEADERS acceptance/source/native_values.hpp)
 find_program(_reflection_powershell NAMES pwsh powershell REQUIRED)
 add_custom_target(reflection_acceptance
     COMMAND $<TARGET_FILE:atelier_reflection_acceptance>

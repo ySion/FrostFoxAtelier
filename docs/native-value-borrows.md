@@ -1,0 +1,63 @@
+# 原生值借用与源码直接访问
+
+状态：已实现并通过 dev/release 端到端验收。C++ 持有 `Array<原生记录>`，源码通过引用处理同一缓冲，C++ 直接读取修改结果。所有权和析构仍由原生拥有者负责。
+
+## 使用方式
+
+宿主将原生记录、String 和具体 Array 类型提交给同一个 `Runtime::register_types`，然后使用既有 `source::Program` 编译、发布和调用。下面的源码操作[验收中的原生 Particle](../acceptance/source/native_values.hpp)：
+
+```source
+float update(Array<borrow.Particle>& values, float delta) {
+    uint index = 0;
+    float total = 0.0;
+    while (index < values.size()) {
+        values[index].position.x = values[index].position.x + delta;
+        total = total + values[index].position.x;
+        index = index + 1;
+    }
+    return total;
+}
+```
+
+原生入口可用 `program.bind<float, Array<Particle>&, float>()` 核对共享签名；实参为 `Argument::borrow(particles)` 与 `Argument{Scalar{delta}}`。`Entry::invoke` 返回后，原生 `particles[i].position.x` 即为更新后的值。完整错误处理、注册及调用样例见[公共消费者](../acceptance/source/native_values.cpp)。
+
+Array 泛型拼写解析到已发布具体类型的同一身份；没有独立容器注册表。只读记录和数组使用 `const Type& name`，String 只支持只读长度/字节访问。确切语法、只读传播、索引及同步区间限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
+
+## 一条布局与执行链
+
+1. [反射生成器](../tools/reflection/main.cpp)从实际 C++ 声明生成既有 `NativeRegistration` 调用。可直接访问的字段携带 `offsetof`；[基础库适配器](../src/runtime/foundation.hpp)提供取得 Array/String 原缓冲与长度的只读原语。
+2. [Runtime](../src/runtime/runtime.cpp)在原事务中验证并发布大小、对齐、元素身份和字段偏移。只有满足自然对齐的标准布局字段由生成器提供直接偏移；隐藏、非标准布局或紧凑布局字段保留原访问器，不猜测地址。
+3. [源码绑定](../src/source/detail/bridge.cpp)从同一 Runtime 捕获目录；[Program](../src/source/program.cpp)解析共享 `FunctionSignature`，将元数据依赖固定到代码版本，兼容发布再次核对。
+4. [前端](../src/language/source.cpp)检查类型、可写性和存续期限制；[LLVM 后端](../src/jit/source_backend.cpp)在边界检查后按真实字段偏移和元素步长发出加载/写入。
+5. 调用仍经过同一个 `Argument::borrow`、参数准备与 `ExecutionScope`。聚合参数传递原地址，不复制到 `Scalar`，也不构造镜像对象。同步返回后借用结束，原生拥有者继续管理缓冲。
+
+源码目录只开放具备所需投影的值，数组须先有可用的元素投影；未开放的嵌套容器和以其为参数的方法保留为原生能力，不妨碍无关标量或对象函数编译。源码实际使用未开放类型或方法时报告编译错误。
+
+顶层序列视图在调用入口取得并复用；嵌套序列按访问取得视图，循环中的暂存放在函数入口。只读路径和可写路径允许合法别名，生成代码不附加独占访问假设。
+
+## 生命周期与当前边界
+
+含聚合值借用的函数形成同步原生值区间，允许拥有型临时 String/Array 和 `self` 上已声明 `BorrowSafe` 的原生方法；其他对象操作、未声明的原生业务调用及挂起仍被拒绝，也不运行 `begin/poll/finish` 策略回调。GC 留给返回后的宿主，生成清理和结果提交仍沿原执行协议。原生调用方须保证存储已构造、存续且结构稳定；编译器不能验证任意 C++ 调用者提供地址的真实寿命。
+
+[拥有型基础值](source-owned-values.md)已扩展 String/Array 局部及其结构修改；外部借用容器仍不能扩容。拥有型记录局部、按值聚合参数/结果和跨挂起借用尚未实现。Runtime 对象字段仍不能借用到源码执行入口；`with_native` 中重入源码继续被拒绝。以后扩展这些能力需要补齐相应构造、析构、地址失效和根交接契约。
+
+错误时已完成的写入保留，失败不提交结果。布局依赖和参数传递方式不兼容时拒绝发布，旧代码租约仍按原版本执行；没有迁移原生布局或活动存储。
+
+## 验收结果
+
+[端到端消费者](../acceptance/source/native_values.cpp)使用正式入口及宏生成的原生类型，验证：
+
+- 32 个 64 字节对齐记录由源码原地更新；缓冲、元素位置和长 String 地址保持一致，调用期间复制、移动、析构计数不增加。
+- 只读/可写参数别名、嵌套记录、嵌套数组、短/长/UTF-8 String、空数组，以及错误原生类型和对齐拒绝。
+- 越界诊断与先前写入保留；借用期间暂停的 GC 不推进，返回后宿主可继续收集；拥有者退出时正常析构。
+- 禁止只读写入、借用参数整值赋值、借用逃逸、跨挂起和未声明保持借用有效的业务回调；紧凑布局字段不被错误开放为自然对齐的直接访问。
+- 兼容版本替换、旧租约执行，以及修改 const 参数契约时拒绝发布。
+- 合法但未开放源码投影的 String、嵌套数组及原生方法不会阻断无关 Program；实际使用未开放类型时拒绝编译。
+
+```powershell
+. ./tools/enter-dev.ps1
+cmake --build --preset dev --target source_acceptance
+cmake --build --preset release --target source_acceptance
+```
+
+本次 dev/release 均通过上述消费者及基础库、反射（含 15 项 CLI 失败场景）、JIT、Runtime、World 和编辑器文档端到端验收。没有执行图形窗口验收。本次证明共享存储和零元素复制，不以此宣称特定吞吐提升或零调用开销。

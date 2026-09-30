@@ -17,7 +17,7 @@ concept ScalarType = std::same_as<T, float> || std::same_as<T, std::uint32_t> ||
     std::same_as<T, std::int32_t> || (std::is_enum_v<T> && sizeof(T) == 4);
 
 template<class T>
-concept ScalarParameter = ScalarType<std::remove_cvref_t<T>> && !std::is_rvalue_reference_v<T> &&
+concept NativeParameter = (ScalarType<std::remove_cvref_t<T>> || std::is_lvalue_reference_v<T>) && !std::is_rvalue_reference_v<T> &&
     !std::is_volatile_v<std::remove_reference_t<T>>;
 static_assert(sizeof(int) == 4);
 
@@ -32,7 +32,7 @@ struct Method<R (C::*)(A...)> {
     using Return = R;
     static constexpr bool receiver_read_only = false;
     static_assert(std::same_as<R, void> || ScalarType<R>, "Method results must be void or supported scalars returned by value.");
-    static_assert((ScalarParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
+    static_assert((NativeParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
 };
 template<class R, class C, class... A>
 struct Method<R (C::*)(A...) const> : Method<R (C::*)(A...)> {
@@ -59,6 +59,9 @@ public:
             [](void* address) { std::construct_at(static_cast<T*>(address)); },
             [](void* address) noexcept { std::destroy_at(static_cast<T*>(address)); }
         };
+        definition_.native.value_operations_preserve_borrows = std::is_trivially_default_constructible_v<T> &&
+            std::is_trivially_copy_constructible_v<T> && std::is_trivially_copy_assignable_v<T> && std::is_trivially_destructible_v<T> &&
+            std::is_trivially_constructible_v<T, decltype(std::move_if_noexcept(std::declval<T&>()))>;
         if constexpr (std::is_enum_v<T>) {
             definition_.enumeration = TypeDefinition::Enumeration{TypeReference::native<std::underlying_type_t<T>>(), {}};
         }
@@ -104,14 +107,14 @@ public:
 
     // Explicit descriptions allow references to definitions in the same batch.
     template<auto Pointer>
-    NativeRegistration& field(std::string name, ValueDefinition value) {
+    NativeRegistration& field(std::string name, ValueDefinition value, std::optional<std::size_t> offset = std::nullopt) {
         using Traits = detail::Member<decltype(Pointer)>;
         using Value = typename Traits::Value;
         static_assert(std::same_as<typename Traits::Owner, T>);
         static_assert(!std::is_const_v<Value> && !std::is_volatile_v<Value>);
         definition_.fields.push_back({std::move(name), std::move(value),
             [](void* object) noexcept -> void* { return std::addressof(static_cast<T*>(object)->*Pointer); },
-            detail::representation<Value>()});
+            detail::representation<Value>(), true, offset});
         return *this;
     }
 
@@ -129,7 +132,7 @@ public:
     }
 
     template<auto Pointer>
-    NativeRegistration& method(std::string name) {
+    NativeRegistration& method(std::string name, bool preserves_borrows = false) {
         using Traits = detail::Method<decltype(Pointer)>;
         static_assert(std::same_as<typename Traits::Owner, T>);
         using Args = typename Traits::Arguments;
@@ -137,6 +140,7 @@ public:
         using Receiver = std::conditional_t<Traits::receiver_read_only, const T, T>;
         MethodDefinition method;
         method.name = std::move(name);
+        method.preserves_borrows = preserves_borrows;
         method.signature.receiver = ReceiverDefinition{TypeReference::native<T>(), Traits::receiver_read_only};
         if constexpr (!std::same_as<Return, void>)
             method.signature.result = ValueDefinition{TypeReference::native<Return>()};

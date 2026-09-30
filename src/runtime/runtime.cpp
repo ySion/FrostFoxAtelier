@@ -565,11 +565,14 @@ struct Runtime::Impl {
     Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition,
         std::optional<TypeId> owner = std::nullopt,
         std::span<const std::unique_ptr<Type>> staged = {}) const {
-        const auto resolve_value = [&](const ValueDefinition& value) -> Result<ValueDescription> {
+        const auto resolve_value = [&](const ValueDefinition& value, bool borrow = false) -> Result<ValueDescription> {
             const auto* type = lookup(value.type, staged);
             if (!type) return failure(ErrorCode::invalid_definition, "Signature contains an unresolved value type.");
-            if ((type->info.kind != TypeKind::scalar && type->info.kind != TypeKind::enumeration) || value.form != ValueForm::inline_value)
-                return failure(ErrorCode::invalid_definition, "Signature parameters and result must be inline scalars.");
+            const bool scalar = type->info.kind == TypeKind::scalar || type->info.kind == TypeKind::enumeration;
+            const bool native_borrow = borrow && type->info.native_storage && !type->info.contains_references &&
+                (type->info.kind == TypeKind::record || type->info.kind == TypeKind::array || type->info.kind == TypeKind::string);
+            if ((!scalar && !native_borrow) || value.form != ValueForm::inline_value)
+                return failure(ErrorCode::invalid_definition, "Signature requires scalar values or synchronous native value borrows without GC references.");
             return ValueDescription{type->info.id, value.form};
         };
         FunctionSignature signature;
@@ -580,7 +583,7 @@ struct Runtime::Impl {
         signature.execution = definition.execution;
         signature.parameters.reserve(definition.parameters.size());
         for (const auto& parameter : definition.parameters) {
-            auto value = resolve_value(parameter);
+            auto value = resolve_value(parameter, parameter.passing != ParameterPassing::value);
             if (!value) return std::unexpected(std::move(value.error()));
             if (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only &&
                 parameter.passing != ParameterPassing::reference)
@@ -1010,7 +1013,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
         const bool is_native = native.size || native.alignment || native.representation || native.construct ||
-                               native.destroy || native.copy_construct || native.copy_assign || native.base_address || native.element_representation;
+                               native.destroy || native.copy_construct || native.copy_assign || native.base_address || native.element_representation || native.sequence_view || native.sequence_mutate || native.value_operations_preserve_borrows;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) ||
             !native.representation || !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition, "Native layout requires valid size, alignment and lifecycle operations.");
@@ -1031,6 +1034,8 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
         const bool string = definition.kind == TypeKind::string;
         if (array != definition.element.has_value() || array != (native.element_representation != nullptr))
             return failure(ErrorCode::invalid_definition, "Array types require their exact native element representation.");
+        if ((native.sequence_view || native.sequence_mutate) && !array && !string)
+            return failure(ErrorCode::invalid_definition, "Only Array/String types can project sequence storage.");
         if ((array || string) && (!is_native || !native.copy_construct || !native.copy_assign || !definition.fields.empty()))
             return failure(ErrorCode::invalid_definition, "Foundation values require native ownership operations and no inline fields.");
         if (string && native.representation != detail::representation<String>())
@@ -1043,6 +1048,10 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             type->info.copy_assignable = !is_native || native.copy_assign;
         }
         type->native = native;
+        type->info.native_storage = is_native;
+        type->info.sequence_view = native.sequence_view;
+        type->info.sequence_mutate = native.sequence_mutate;
+        type->info.value_operations_preserve_borrows = native.value_operations_preserve_borrows;
         staged.push_back(std::move(type));
     }
 
@@ -1143,13 +1152,13 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
                 if (!field.native_address || !field.native_representation || field.native_representation != representation) {
                     return failure(ErrorCode::invalid_definition, "Native member representation does not match its value description.");
                 }
-            } else if (field.native_address || field.native_representation) {
+            } else if (field.native_address || field.native_representation || field.native_offset) {
                 return failure(ErrorCode::invalid_definition, "Described fields cannot supply native member accessors.");
             }
             const auto index = static_cast<std::uint32_t>(type.fields.size());
             const ValueDescription value{target->info.id, form};
             type.fields.push_back({0, field.native_address, value});
-            if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value});
+            if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());
@@ -1161,7 +1170,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             auto signature = impl_->resolve_signature(method.signature, id, staged);
             if (!signature) return std::unexpected(std::move(signature.error()));
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
-                std::move(method.name), std::move(*signature)});
+                std::move(method.name), std::move(*signature), method.preserves_borrows});
             type.methods.push_back(method.invoke);
         }
     }
@@ -1209,6 +1218,8 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             }
             if (type.info.element) {
                 const auto& element = resolved_type(*type.info.element)->info;
+                type.info.value_operations_preserve_borrows &= element.kind == TypeKind::scalar ||
+                    element.kind == TypeKind::enumeration || element.value_operations_preserve_borrows;
                 if (element.contains_references || !element.copy_constructible)
                     return failure(ErrorCode::invalid_definition, "Reflected Array elements must be copyable values without GC references; use ReferenceSequence for object references.");
             }
@@ -1253,6 +1264,18 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
                     }
                 }
             }
+            // Direct offsets are published only after every dependent layout is complete.
+            for (auto& field : type.info.fields) {
+                if (field.id.owner_ != type.info.id) continue;
+                const auto& storage = type.fields[field.id.index_];
+                if (!is_native) field.offset = storage.offset;
+                if (!field.offset) continue;
+                const bool inline_value = field.value.form == ValueForm::inline_value;
+                const auto size = inline_value ? storage.type->info.size : field.value.form == ValueForm::strong_sequence ? sizeof(ReferenceSequence) : sizeof(ReferenceSlot);
+                const auto alignment = inline_value ? storage.type->info.alignment : field.value.form == ValueForm::strong_sequence ? alignof(ReferenceSequence) : alignof(ReferenceSlot);
+                if (*field.offset > type.info.size || size > type.info.size - *field.offset || *field.offset % alignment != 0 || type.info.alignment < alignment)
+                    return failure(ErrorCode::invalid_definition, "Direct field offset exceeds its type layout or alignment.");
+            }
             if (!is_native) {
                 const auto size = aligned_size(std::max(std::size_t{1}, type.info.size), type.info.alignment);
                 if (!size) return std::unexpected(size.error());
@@ -1277,6 +1300,14 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
         }
     }
 
+    // Method-only dependencies may be later in the batch. Recheck the shared
+    // resolver after all layouts and their GC-reference closure are complete.
+    for (std::size_t i = 0; i < staged.size(); ++i) {
+        for (const auto& method : definitions[i].methods) {
+            auto signature = impl_->resolve_signature(method.signature, staged[i]->info.id, staged);
+            if (!signature) return std::unexpected(std::move(signature.error()));
+        }
+    }
     std::vector<TypeId> result;
     result.reserve(staged.size());
     for (const auto& type : staged) result.push_back(type->info.id);
@@ -1647,6 +1678,51 @@ Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage
     CallbackScope scope{impl_->callbacks};
     impl_->destroy(**type, storage.data());
     return {};
+}
+
+Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> storage,
+    SequenceMutation operation, TypeId input_type, std::span<const std::byte> input, std::size_t count) {
+    if (impl_->roots->traversals != 0 || impl_->changing_references)
+        return failure(ErrorCode::busy, "Sequence mutation is not allowed during traversal or batch preparation.");
+    const auto type = impl_->value_type(type_id, storage);
+    if (!type) return std::unexpected(type.error());
+    const auto& info = (*type)->info;
+    if (!info.sequence_mutate || !info.value_operations_preserve_borrows || info.contains_references)
+        return failure(ErrorCode::unsupported_operation, "Sequence operations lack a borrow-preserving value contract.");
+    switch (operation) {
+    case SequenceMutation::add:
+    case SequenceMutation::append: {
+        const auto expected = operation == SequenceMutation::add ? info.element.value_or(TypeId{}) : type_id;
+        if (expected == TypeId{} || input_type != expected)
+            return failure(ErrorCode::type_mismatch, "Sequence input type does not match its operation.");
+        auto valid = impl_->value_type(expected, input);
+        if (!valid) return std::unexpected(valid.error());
+        break;
+    }
+    case SequenceMutation::assign_text:
+    case SequenceMutation::append_text:
+        if (info.kind != TypeKind::string || input_type != TypeId{})
+            return failure(ErrorCode::type_mismatch, "Text operations require String and UTF-8 bytes.");
+        count = input.size();
+        break;
+    case SequenceMutation::resize:
+        if (info.kind != TypeKind::array) return failure(ErrorCode::unsupported_operation, "Only Array supports resize.");
+        [[fallthrough]];
+    case SequenceMutation::reserve:
+    case SequenceMutation::clear:
+        if (!input.empty() || input_type != TypeId{}) return failure(ErrorCode::argument_mismatch, "Unexpected sequence input.");
+        break;
+    default: return failure(ErrorCode::unsupported_operation, "Unknown sequence operation.");
+    }
+    CallbackScope scope{impl_->callbacks};
+    try {
+        info.sequence_mutate(operation, storage.data(), input.data(), count);
+        return {};
+    } catch (const std::exception& error) {
+        return failure(ErrorCode::invocation_failed, error.what());
+    } catch (...) {
+        return failure(ErrorCode::invocation_failed, "Native sequence operation failed.");
+    }
 }
 
 Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
@@ -2021,7 +2097,11 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
         const auto& argument = arguments[i];
         const auto& parameter = signature.parameters[i];
         const auto* expected = impl_->lookup(parameter.type);
-        if (!expected || (expected->info.kind != TypeKind::scalar && expected->info.kind != TypeKind::enumeration) ||
+        const bool scalar = expected && (expected->info.kind == TypeKind::scalar || expected->info.kind == TypeKind::enumeration);
+        const bool native_borrow = expected && expected->info.native_storage && !expected->info.contains_references &&
+            (expected->info.kind == TypeKind::record || expected->info.kind == TypeKind::array || expected->info.kind == TypeKind::string) &&
+            parameter.passing != ParameterPassing::value;
+        if (!expected || (!scalar && !native_borrow) ||
             parameter.form != ValueForm::inline_value ||
             (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference) ||
             (signature.execution == FunctionExecution::coroutine && parameter.passing != ParameterPassing::value))
