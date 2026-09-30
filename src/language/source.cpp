@@ -1,4 +1,6 @@
 #include "language/source.hpp"
+#include "language/lexer.hpp"
+#include "language/declarations.hpp"
 
 #include <bit>
 #include <algorithm>
@@ -8,119 +10,12 @@
 
 namespace atelier::language {
 namespace {
-struct Rejected { Diagnostic diagnostic; };
-[[noreturn]] void reject(SourcePosition position, std::string message) {
-    throw Rejected{{position, std::move(message)}};
-}
+using namespace detail;
 
-bool letter(char value) noexcept {
-    return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || value == '_';
-}
-bool digit(char value) noexcept { return value >= '0' && value <= '9'; }
-bool reserved(std::string_view value) noexcept {
-    return value == "void" || value == "float" || value == "uint" || value == "int" || value == "const" || value == "if" ||
-        value == "else" || value == "while" || value == "return" || value == "self" ||
-        value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
-        value == "async" || value == "yield";
-}
 bool reference_type(ValueType type) noexcept {
     return type == ValueType::strong_reference || type == ValueType::weak_reference ||
         type == ValueType::null_reference;
 }
-struct Token {
-    enum class Kind { end, identifier, number, punctuation, string };
-    Kind kind;
-    std::string_view text;
-    SourcePosition position;
-};
-
-class Lexer {
-public:
-    explicit Lexer(std::string_view source) : source_(source) {}
-    Token next() {
-        for (;;) {
-            while (peek() == ' ' || peek() == '\t' || peek() == '\r' || peek() == '\n' ||
-                   peek() == '\v' || peek() == '\f') advance();
-            if (peek() == '/' && peek(1) == '/') {
-                while (!at_end() && peek() != '\n') advance();
-            } else if (peek() == '/' && peek(1) == '*') {
-                const auto start = position_;
-                advance(); advance();
-                while (!at_end() && !(peek() == '*' && peek(1) == '/')) advance();
-                if (at_end()) reject(start, "Unterminated block comment.");
-                advance(); advance();
-            } else break;
-        }
-        const auto start = position_;
-        if (at_end()) return {Token::Kind::end, {}, start};
-        const auto first = peek();
-        if (first == '"') {
-            advance();
-            while (!at_end() && peek() != '"') {
-                if (peek() == '\n' || peek() == '\r' || peek() == '\0') reject(start, "Invalid character in string literal.");
-                if (peek() == '\\') { advance(); if (at_end()) break; }
-                advance();
-            }
-            if (at_end()) reject(start, "Unterminated string literal.");
-            advance();
-            return token(Token::Kind::string, start);
-        }
-        if (letter(first)) {
-            do { advance(); } while (letter(peek()) || digit(peek()));
-            return token(Token::Kind::identifier, start);
-        }
-        if (digit(first)) {
-            do { advance(); } while (digit(peek()));
-            if (peek() == '.') {
-                advance();
-                while (digit(peek())) advance();
-            }
-            if (peek() == 'e' || peek() == 'E') {
-                advance();
-                if (peek() == '+' || peek() == '-') advance();
-                if (!digit(peek())) reject(start, "A numeric exponent requires digits.");
-                while (digit(peek())) advance();
-            }
-            if (letter(peek())) reject(start, "Invalid numeric literal suffix.");
-            return token(Token::Kind::number, start);
-        }
-        if (first == '=' || first == '!' || first == '<' || first == '>') {
-            advance();
-            if (peek() == '=') advance();
-            if (first == '!' && position_.offset == start.offset + 1)
-                reject(start, "Logical negation is not supported in this source slice.");
-            return token(Token::Kind::punctuation, start);
-        }
-        if (first == ':') {
-            advance();
-            if (peek() != ':') reject(start, "Enum qualification requires '::'.");
-            advance();
-            return token(Token::Kind::punctuation, start);
-        }
-        if (std::string_view("(){}[];.,+-*&").find(first) != std::string_view::npos) {
-            advance();
-            return token(Token::Kind::punctuation, start);
-        }
-        if (first == '/') reject(start, "Division is not supported in this source slice.");
-        reject(start, "Unsupported source character.");
-    }
-private:
-    bool at_end() const noexcept { return position_.offset == source_.size(); }
-    char peek(std::size_t ahead = 0) const noexcept {
-        return ahead < source_.size() - position_.offset ? source_[position_.offset + ahead] : '\0';
-    }
-    void advance() noexcept {
-        const auto value = source_[position_.offset++];
-        if (value == '\n') { ++position_.line; position_.column = 1; }
-        else ++position_.column;
-    }
-    Token token(Token::Kind kind, SourcePosition start) const {
-        return {kind, source_.substr(start.offset, position_.offset - start.offset), start};
-    }
-    std::string_view source_;
-    SourcePosition position_;
-};
-
 struct BinaryOperator { int precedence; Operation operation; bool comparison; };
 BinaryOperator binary_operator(std::string_view text) noexcept {
     if (text == "==") return {2, Operation::equal, true};
@@ -135,10 +30,10 @@ BinaryOperator binary_operator(std::string_view text) noexcept {
     return {-1, Operation::add, false};
 }
 
-class Parser {
+class Parser : private Tokens {
 public:
     Parser(std::string_view name, std::string_view source, Environment environment)
-        : lexer_(source), environment_(environment), token_(lexer_.next()) { module_.source_name = name; }
+        : Tokens(source), environment_(environment) { module_.source_name = name; }
 
     Program parse(std::string_view entry_name) {
         validate_environment();
@@ -146,7 +41,17 @@ public:
         module_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
         struct Body { Lexer lexer; Token token; };
         std::vector<Body> bodies;
+        std::vector<std::string> type_names;
         while (token_.kind != Token::Kind::end) {
+            if (token_.text == "struct" || token_.text == "enum") {
+                auto declaration = parse_type_declaration(*this);
+                if (type_names.size() == 1024) reject(declaration.position, "A source module supports at most 1024 type declarations.");
+                if (std::ranges::find(type_names, declaration.name) != type_names.end())
+                    reject(declaration.position, "Duplicate source type name.");
+                validate_declaration(declaration);
+                type_names.push_back(std::move(declaration.name));
+                continue;
+            }
             if (module_.functions.size() >= 1024) reject(token_.position, "A source module supports at most 1024 functions.");
             function_ = {};
             function_.position = token_.position;
@@ -166,6 +71,9 @@ public:
             }
         }
         if (module_.functions.empty()) reject(token_.position, "Source module requires an entry function.");
+        for (const auto& function : module_.functions)
+            if (std::ranges::find(type_names, function.function_name) != type_names.end())
+                reject(function.position, "A source function and type cannot have the same name.");
         if (entry_name.empty() && module_.functions.size() != 1)
             reject({}, "A multi-function module requires an explicit host entry name.");
         bool found = entry_name.empty();
@@ -187,6 +95,38 @@ public:
 
 private:
 
+    ValueType declared_type(std::string_view name, SourcePosition position) const {
+        if (name == "float") return ValueType::f32;
+        if (name == "uint") return ValueType::u32;
+        if (name == "int") return ValueType::i32;
+        for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
+            if (environment_.enumerations[i].name == name) return {ValueType::enumeration, i};
+        for (std::uint32_t i = 0; i < environment_.values.size(); ++i)
+            if (environment_.values[i].name == name) return {environment_.values[i].kind, i};
+        reject(position, "Source type declaration has no prepared Runtime layout: " + std::string(name));
+    }
+    void validate_declaration(const TypeDeclaration& declaration) const {
+        const auto type = declared_type(declaration.name, declaration.position);
+        if (declaration.enumeration) {
+            if (type.kind != ValueType::enumeration) reject(declaration.position, "Source enum conflicts with its Runtime type.");
+            const auto& layout = environment_.enumerations[type.type_index];
+            if (layout.underlying != (declaration.signed_enum ? ValueType::i32 : ValueType::u32) ||
+                layout.values.size() != declaration.enumerators.size())
+                reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
+            for (std::size_t i = 0; i < layout.values.size(); ++i)
+                if (layout.values[i].name != declaration.enumerators[i].first || layout.values[i].bits != declaration.enumerators[i].second)
+                    reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
+        } else {
+            if (type.kind != ValueType::record) reject(declaration.position, "Source struct conflicts with its Runtime type.");
+            const auto& layout = environment_.values[type.type_index];
+            if (layout.fields.size() != declaration.fields.size())
+                reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
+            for (std::size_t i = 0; i < layout.fields.size(); ++i)
+                if (layout.fields[i].name != declaration.fields[i].first ||
+                    layout.fields[i].type != declared_type(declaration.fields[i].second, declaration.position))
+                    reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
+        }
+    }
     void signature() {
         function_.is_coroutine = accept("async");
         function_.result = accept("void") ? ValueType::void_value : scalar_type();
@@ -205,7 +145,7 @@ private:
                 if (aggregate(type)) {
                     if (!reference) reject(position, "Native values require a borrowed parameter; use Type& or const Type&.");
                     if (type.kind == ValueType::string && !read_only) reject(position, "String borrowing requires const String&.");
-                    function_.uses_native_values = true;
+                    function_.uses_scoped_values = true;
                 }
                 const auto index = local(identifier(), type);
                 function_.locals[index].read_only = read_only;
@@ -252,13 +192,13 @@ private:
                         states[call.value] = State::active; stack.push_back({call.value}); continue;
                     }
                     const auto& callee = module_.functions[call.value];
-                    function.uses_native_values |= callee.uses_native_values;
+                    function.uses_scoped_values |= callee.uses_scoped_values;
                     function.requires_receiver |= callee.requires_receiver;
                     function.preserves_borrows &= callee.preserves_borrows;
                     ++cursor.next;
                 } else {
-                    if (function.uses_native_values && (function.is_coroutine || !function.preserves_borrows))
-                        reject(function.position, "Native value scope in '" + function.function_name +
+                    if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
+                        reject(function.position, "Scoped value execution in '" + function.function_name +
                             "' reaches suspension, object operations or a native call without BorrowSafe.");
                     states[cursor.function] = State::complete; stack.pop_back();
                 }
@@ -393,26 +333,6 @@ private:
                 if (environment_.methods[j].name == method.name) reject({}, "Ambiguous host method binding.");
         }
     }
-    Token consume() { auto previous = token_; token_ = lexer_.next(); return previous; }
-    bool accept(std::string_view text) {
-        if (token_.text != text) return false;
-        consume();
-        return true;
-    }
-    Token expect(std::string_view text) {
-        if (token_.text != text) reject(token_.position, "Expected '" + std::string(text) + "'.");
-        return consume();
-    }
-    Token identifier() {
-        if (token_.kind != Token::Kind::identifier || reserved(token_.text))
-            reject(token_.position, "Expected a non-reserved identifier.");
-        return consume();
-    }
-    std::string qualified_identifier() {
-        std::string name(identifier().text);
-        while (accept(".")) { name += '.'; name += identifier().text; }
-        return name;
-    }
     void object_type() {
         const auto position = token_.position;
         const auto name = qualified_identifier();
@@ -508,8 +428,8 @@ private:
     }
     bool writable(NodeId id) const {
         const auto& expression = function_.expressions[id];
-        if (aggregate(expression.type)) return expression.kind == Expression::Kind::local &&
-            expression.value >= function_.parameters.size() && !function_.locals[expression.value].read_only;
+        if (aggregate(expression.type)) return owned_storage(id) &&
+            (expression.kind == Expression::Kind::local || expression.type.kind == ValueType::record);
         return writable_storage(id);
     }
     bool writable_storage(NodeId id) const {
@@ -573,9 +493,9 @@ private:
                 type = ValueType::weak_reference;
             }
             if (aggregate(type)) {
-                if (type.kind == ValueType::record || !environment_.values[type.type_index].can_own)
-                    reject(position, "Owned locals require String or Array with borrow-preserving value operations.");
-                function_.uses_native_values = true;
+                if (!environment_.values[type.type_index].can_own)
+                    reject(position, "Owned locals require values with borrow-preserving copy and lifecycle operations.");
+                function_.uses_scoped_values = true;
             }
             const auto name = identifier();
             unused_name(name);
@@ -788,7 +708,7 @@ private:
             }
             for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
                 if (environment_.values[i].kind != ValueType::string || !environment_.values[i].can_own || !environment_.values[i].can_mutate) continue;
-                function_.uses_native_values = true;
+                function_.uses_scoped_values = true;
                 const auto index = static_cast<std::uint32_t>(function_.strings.size());
                 function_.strings.push_back(std::move(value));
                 return add(Expression{Expression::Kind::string_literal, {ValueType::string, i}, token.position, no_node, no_node, index});
@@ -888,9 +808,7 @@ private:
         reject(token.position, "Unknown identifier '" + std::string(token.text) + "'.");
     }
 
-    Lexer lexer_;
     Environment environment_;
-    Token token_;
     Function function_;
     Program module_;
     std::vector<std::uint32_t> visible_;

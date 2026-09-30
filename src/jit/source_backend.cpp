@@ -147,7 +147,7 @@ public:
           entry_(functions[function]), local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot),
           strong_slots_(strong_base), weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
-          public_entry_(function == source.entry), protected_values_(source.functions[source.entry].uses_native_values) {
+          public_entry_(function == source.entry), protected_values_(source.functions[source.entry].uses_scoped_values) {
         for (std::size_t index = 0; index < function_.locals.size(); ++index) {
             const auto type = function_.locals[index].type;
             if (is_reference(type)) local_slots_[index] = allocate_reference(type);
@@ -801,7 +801,8 @@ private:
             if (language::aggregate(target.type)) {
                 if (const auto text = direct_text_input(node); text != language::no_node)
                     write_text(target.type, locals_[target.value], function_.expressions[text].value, SequenceMutation::assign_text);
-                else checked_call(assign_value_, {invocation_, ir_.getInt32(target.type.type_index), locals_[target.value], expression(node.expression)});
+                else checked_call(assign_value_, {invocation_, ir_.getInt32(target.type.type_index),
+                    direct ? address : locals_[target.value], expression(node.expression)});
                 clear_temporaries();
                 return;
             }

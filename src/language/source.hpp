@@ -17,7 +17,7 @@ namespace atelier::language {
 struct ValueType {
     enum Kind { f32, u32, i32, predicate, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string };
     Kind kind{void_value};
-    std::uint32_t type_index{}; // index in the enum or native-value catalog, selected by kind
+    std::uint32_t type_index{}; // index in the enum or value catalog, selected by kind
     constexpr ValueType(Kind value = void_value, std::uint32_t index = 0) : kind(value), type_index(index) {}
     bool operator==(const ValueType&) const = default;
 };
@@ -72,7 +72,7 @@ struct Expression {
     Operation operation{Operation::add};
     NodeId receiver{no_node}; // field/call owner
     std::vector<ParameterPassing> argument_passing{};
-    std::vector<NodeId> arguments{}; // native call operands, evaluated left to right
+    std::vector<NodeId> arguments{}; // call operands, evaluated left to right
     std::size_t offset{};
     SequenceMutation mutation{};
 };
@@ -101,7 +101,7 @@ struct Function {
     std::vector<Statement> statements;
     NodeId body{no_node};
     bool is_coroutine{};
-    bool uses_native_values{};
+    bool uses_scoped_values{};
     bool requires_receiver{};
     bool preserves_borrows{};
     std::vector<std::string> strings;
@@ -115,7 +115,7 @@ struct Program {
     std::vector<bool> reachable;
 };
 
-// One module with a host-selected entry: scalar/enum values or native borrowed parameters,
+// One module with a host-selected entry: scalar/enum values or borrowed value parameters,
 // an optional scalar result and implicit self. Async cannot borrow caller storage.
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during

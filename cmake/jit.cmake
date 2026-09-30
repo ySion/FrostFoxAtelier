@@ -74,7 +74,7 @@ function(atelier_add_source)
 
     add_library(atelier_source_backend SHARED
         src/jit/source_backend.cpp
-        src/language/source.cpp)
+        src/language/source.cpp src/language/declarations.cpp)
     atelier_llvm_target(atelier_source_backend)
     target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
     target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support)
@@ -83,7 +83,7 @@ function(atelier_add_source)
         target_include_directories(atelier_source_backend PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
     endif()
 
-    add_library(atelier_source STATIC src/source/program.cpp src/source/detail/bridge.cpp)
+    add_library(atelier_source STATIC src/source/program.cpp src/source/detail/bridge.cpp src/language/declarations.cpp)
     atelier_target(atelier_source)
     target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
     target_compile_features(atelier_source PUBLIC cxx_std_23)
@@ -94,7 +94,8 @@ function(atelier_add_source)
 
     add_executable(atelier_source_minimal
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
-        acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp)
+        acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp
+        acceptance/source/types.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")

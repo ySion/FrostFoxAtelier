@@ -1,6 +1,6 @@
 # Runtime、源码与 JIT 的结构和执行链
 
-状态：正式源码执行结构，包含对象单继承、强引用序列、受保护原生借用、成组引用修改、基类接收者视图、`async/yield`、共享签名绑定、String/Array 拥有型局部、同模块函数及受控原生算法调用和单入口兼容方法体发布。本页维护模块分工、调用链及结构性技术债；具体行为以[运行时协议](runtime-model.md)和[语言契约](language-contract.md)为准，构建命令见 [README](../README.md)。
+状态：正式源码执行结构，包含对象单继承、强引用序列、受保护原生借用、成组引用修改、基类接收者视图、`async/yield`、共享签名绑定、String/Array/记录拥有型局部、源码 enum/struct、同模块函数及受控原生算法调用和单入口兼容方法体发布。本页维护模块分工、调用链及结构性技术债；具体行为以[运行时协议](runtime-model.md)和[语言契约](language-contract.md)为准，构建命令见 [README](../README.md)。
 
 ## 结构判断
 
@@ -15,7 +15,7 @@
 | 类型与对象 Runtime | [runtime.hpp](../src/runtime/runtime.hpp)、[runtime.cpp](../src/runtime/runtime.cpp)：类型发布、对象身份、值操作、根、GC 和原生调用 | 正式静态目标 `atelier_runtime`；不依赖 LLVM、语言前端或验收代码 |
 | 执行协议 | [execution.hpp](../src/runtime/execution.hpp)、[execution.cpp](../src/runtime/execution.cpp)：ExecutionScope、根槽执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
 | 原生定义生产者 | [native.hpp](../src/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition；[自动反射工具](../tools/reflection/main.cpp)产生这些注册调用 | `atelier_reflect` 是构建期工具，薄宏入口为 [reflection.hpp](../src/runtime/reflection.hpp)；生成代码使用同一 Runtime 定义与 Invoker 协议 |
-| 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：词法、语法、类型检查和定型 AST | 源码仅依赖标准库，编入 `atelier_source_backend`。Environment 借用到编译结束，AST 拥有降低所需数据 |
+| 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：类型检查和定型 AST；[declarations.cpp](../src/language/declarations.cpp)、[lexer.hpp](../src/language/lexer.hpp)：共享声明解析与词法 | 声明解析分别编入宿主和后端，STL 对象不跨 DLL；完整定型和 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
 | LLVM 降低与代码资源 | [source_backend.cpp](../src/jit/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
 | Windows 展开信息 | [windows_unwind.cpp](../src/jit/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
 | 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar，使用已有 Coroutine 表达协程拥有关系 |
@@ -27,7 +27,7 @@
 
 `ValueType`、`BusinessType/BusinessParameter` 和 `FunctionSignature` 分别服务编译分类、私有 ABI 和 Runtime 语义描述。前两者由真实编译产物/元数据核对，不建立业务类型身份；它们的存在不等于三套类型体系。枚举索引只定位捕获的 Runtime 目录；ParameterPassing 在宿主与编译链间共用。私有 ABI 尚不是永久通用调用协议。
 
-`atelier_foundation` 独立管理 Array/String 的拥有存储及 Span/StringView 的借用接口；不依赖 Runtime。`runtime/foundation.hpp` 只生产现有 TypeDefinition，数组元素元数据和受保护字段借用归 `atelier_runtime`，宏生成器复用 NativeRegistration。值构析与对象 GC 共用已有执行链。原生字段直接偏移与 Array/String 序列视图沿同一 TypeInfo 发布；`atelier_source` 捕获布局和共享签名，前端检查同步借用和拥有值能力，后端直接操作调用方存储；拥有型 String/Array 在生成栈上构造，生命周期和序列修改通过同一 Runtime 操作。没有独立容器身份或第二套调用入口，见[原生值借用](native-value-borrows.md)。具体操作见[基础库](foundation.md)。
+`atelier_foundation` 独立管理 Array/String 的拥有存储及 Span/StringView 的借用接口；不依赖 Runtime。`runtime/foundation.hpp` 只生产现有 TypeDefinition，数组元素元数据和受保护字段借用归 `atelier_runtime`，宏生成器复用 NativeRegistration。值构析与对象 GC 共用已有执行链。原生字段直接偏移与 Array/String 序列视图沿同一 TypeInfo 发布；`atelier_source` 捕获布局和共享签名，前端检查同步借用和拥有值能力，后端直接操作调用方存储；拥有型记录/String/Array 在生成栈上构造，生命周期和序列修改通过同一 Runtime 操作。没有独立容器身份或第二套调用入口，见[原生值借用](native-value-borrows.md)。具体操作见[基础库](foundation.md)。
 
 对象字段的 `ReferenceSequence`、`ReferenceField`、`with_native` 和 `apply_reference_changes` 均归 `atelier_runtime`。字段定位复用注册元数据和继承地址调整，单槽与批量写入共用引用校验/屏障；序列追踪使用既有 GC 灰队列，原生借用复用回调准入保护。调用链为“字段定位 → 整批验证/复制/容量准备 → 无回调提交 → 屏障与必要的重新追踪”。对象引用序列尚未开放源码容器操作；原生无 GC 引用的 Array 同步借用是单独的已支持值形式。完整接口边界见[引用序列与受保护原生访问](runtime-model.md#引用序列与受保护原生访问)。
 
@@ -35,7 +35,8 @@
 
 ```mermaid
 flowchart TD
-    Request[Program.request: 源码与声明快照] --> Prepare[prepare: 编译候选]
+    Request[Program.request: 声明收集与快照] --> Types[Runtime: 未发布的类型与布局]
+    Types --> Prepare[prepare: 编译候选]
     Prepare --> Front[compile_source: 定型 AST]
     Front --> Lower[SourceLowering: LLVM IR]
     Lower --> Coro{async 入口}
@@ -44,13 +45,13 @@ flowchart TD
     Split --> JIT
     JIT --> Candidate[Candidate: 代码拥有者及兼容性检查]
     Candidate --> Publish[try_publish: 最新请求、准入、依赖复核]
-    Publish --> Current[State.current: 发布 Version]
+    Publish --> Current[提交类型与 State.current 的 Version]
 ```
 
-1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号，不运行源码。
+1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号；新增 enum/struct 经 Runtime 内部类型批次解析和计算布局，暂不发布，也不运行源码。
 2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端通过服务索引降低成员访问；同步与协程共用 SourceLowering，只有协程经过协程转换。
-3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布时通过 `Runtime::resolve_signature` 建立不可变声明。
-4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。完成可能失败的工作后才替换 current。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
+3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布通过 Runtime 的共享签名解析器建立不可变声明；有新类型时，解析器使用同一未发布批次。
+4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。签名、版本分配和类型容器预留完成后，无回调提交新类型与 current。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
 
 **线程边界：** 当前整个适配器按单线程使用。prepare 的编译与兼容检查主要使用快照，但也检查程序拥有者的存活状态；这不足以授权与程序关闭/发布并发执行。后台编译需要单独确定请求、关闭和提交的同步契约。
 
@@ -111,9 +112,15 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 工业来源及历史对照见[JIT 研究](research/jit-industrial-research.md)、[协程研究](research/coroutine-runtime-research.md)和[早退清理实验](research/jit-cleanup-experiment.md)。这些材料不另维护执行合同。
 
+## 源码类型生产
+
+`runtime/detail/type_publication.hpp` 是内部生产者事务，原生 `register_types` 和源码 Program 共用 Runtime 的校验、布局与提交实现。预备身份只在候选元数据中使用，公开 Runtime 查询和调用不能访问；候选未提交即丢弃时，类型名和身份均未占用。
+
+首次成功发布固定源码类型集合与定义。独立模块可依次发布各自类型；已有程序按其捕获依赖复核，后续无关类型不重排旧编译目录。仍含新类型的候选须重验完整目录位置，目录变化后重新请求，防止预备身份冲突。类型身份与布局不随代码版本退休，详见[源码类型声明](source-type-declarations.md)。
+
 ## 模块内函数执行
 
-前端先收集模块签名，再检查各函数体与调用图；返回的定型 Program 拥有独立 Function AST 和共用类型目录。接收者需求、原生值使用及借用保持效果沿无环图传播，入口可达性决定实际编译范围。
+前端先收集模块签名，再检查各函数体与调用图；返回的定型 Program 拥有独立 Function AST 和共用类型目录。接收者需求、值存储使用及借用保持效果沿无环图传播，入口可达性决定实际编译范围。
 
 一个 LLVM module 拥有公开入口及内部函数，逐函数降低复用同一实现。内部函数使用 LLVM 定型参数：标量按值、引用按地址；公共入口和原生调用继续使用既有边界描述。每个函数的值和实参暂存放在自己的生成栈上，循环不追加栈分配。原生调用暂存需求取可达函数的最大实际原生调用参数数。
 
@@ -128,7 +135,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 | 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 以[阶段测量](research/runtime-stage-measurements.md)及连续运行证据评估消费者预算；当前没有已证明需要池化、根表替换或退休队列的负载 |
 | 诊断与源码调试未贯通 | 编译有源名/行列，平台有动态展开信息；尚无协程挂起源码位置、源码断点和局部变量查看 | 编辑器消费者需要定位挂起/错误时，再贯通 source position、代码版本和运行状态 |
 
-`await`、跨模块调用、递归、多类型环境、对象引用参数、聚合值按值调用和布局迁移属于尚未实现的能力；原生记录与容器的同步借用、String/Array 拥有型局部及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
+`await`、跨模块调用、递归、多对象类型环境、对象引用参数、聚合值按值调用和布局迁移属于尚未实现的能力；原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
 
 正式接口的成本也需保留可见性：公共 Scalar 参数最多八项时在栈上转码，更多参数按需分配；冷端 Candidate 为隐藏内部状态增加一份独立存储，Request 私有构造目前使用独立 shared_ptr 控制块。迁移没有证明吞吐提升，协程已有的固定拥有链仍保持原有分配职责。
 

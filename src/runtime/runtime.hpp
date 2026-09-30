@@ -171,6 +171,7 @@ inline const char representation_token{};
 template<class T>
 constexpr const void* representation() noexcept { return &representation_token<T>; }
 struct RootState;
+class TypePublication;
 template<class T> inline constexpr bool borrowed_result = std::is_pointer_v<T> || std::is_reference_v<T>;
 template<class T, std::size_t N> inline constexpr bool borrowed_result<std::span<T, N>> = true;
 template<class C, class Traits> inline constexpr bool borrowed_result<std::basic_string_view<C, Traits>> = true;
@@ -689,6 +690,8 @@ public:
     [[nodiscard]] std::size_t pending_reclamation() const noexcept;
 
 private:
+    friend class detail::TypePublication;
+    Result<std::shared_ptr<detail::TypePublication>> prepare_types(std::vector<TypeDefinition>);
     [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*);
     [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>, PreparedArguments&, bool fields) const;
     friend class ExecutionScope;

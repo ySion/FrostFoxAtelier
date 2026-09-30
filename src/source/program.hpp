@@ -25,6 +25,9 @@ public:
         friend struct detail::ProgramAccess;
         std::weak_ptr<State> owner_;
         std::shared_ptr<const Contract> contract_;
+        std::shared_ptr<const Contract> compilation_contract_;
+        std::shared_ptr<atelier::detail::TypePublication> type_publication_;
+        std::optional<Error> declaration_error_;
         std::shared_ptr<const Declaration> declaration_;
         SourceRequest(std::weak_ptr<State>, std::shared_ptr<const Contract>,
             std::shared_ptr<const Declaration>, std::uint64_t, std::string, std::string, std::string);
@@ -112,8 +115,10 @@ public:
         return bind_signature(std::move(expected));
     }
     Result<Lease> pin() const;
-    // Requests own the module source, entry selection and captured metadata, but
-    // do not retain code. Multiple functions require an entry name before
+    // Requests collect source type declarations and capture unpublished Runtime
+    // layouts. Preparation reports declaration/body errors without publishing types.
+    // Requests own the module source, entry selection and metadata, but no code.
+    // Multiple functions require an entry name before
     // first publication; later requests default to the frozen declaration name.
     Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {});
     static Result<Candidate> prepare(const Request&);

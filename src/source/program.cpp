@@ -1,5 +1,9 @@
 #include "source/program.hpp"
 #include "source/detail/bridge.hpp"
+#include "runtime/detail/type_publication.hpp"
+#include "language/declarations.hpp"
+
+#include <algorithm>
 
 #include <limits>
 #include <stdexcept>
@@ -10,6 +14,38 @@ namespace {
 template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     return std::move(*value);
+}
+}
+namespace {
+Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations, const Binding& binding) {
+    std::vector<TypeDefinition> definitions;
+    for (const auto& declaration : declarations) {
+        TypeDefinition definition;
+        definition.name = declaration.name;
+        definition.kind = declaration.enumeration ? TypeKind::enumeration : TypeKind::record;
+        if (declaration.enumeration) {
+            definition.enumeration = TypeDefinition::Enumeration{
+                declaration.signed_enum ? binding.i32 : binding.u32, declaration.enumerators};
+        } else {
+            for (const auto& [name, type] : declaration.fields) {
+                TypeReference reference;
+                if (type == "float") reference = binding.f32;
+                else if (type == "uint") reference = binding.u32;
+                else if (type == "int") reference = binding.i32;
+                else {
+                    const bool declared = std::ranges::any_of(declarations, [&](const auto& value) { return value.name == type; });
+                    const bool enumeration = std::ranges::any_of(binding.enumerations, [&](const auto& value) { return value.name == type; });
+                    if (!declared && !enumeration)
+                        return std::unexpected(Error{ErrorCode::invalid_definition,
+                            "Source struct fields require scalars, enums or structs declared in the same module: " + type});
+                    reference = TypeReference{type};
+                }
+                definition.fields.push_back({name, {std::move(reference)}});
+            }
+        }
+        definitions.push_back(std::move(definition));
+    }
+    return definitions;
 }
 }
 struct Program::Metadata {
@@ -45,12 +81,17 @@ struct Program::Contract {
     std::string type_name;
     BusinessServices actual_services;
     std::vector<Metadata> metadata;
-    Contract(Runtime& runtime, TypeId type)
-        : binding(bind_type(runtime, type)), type_name(binding.name),
-          actual_services(services) {
+    std::vector<language::TypeDeclaration> declarations;
+    Contract(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog = {},
+        std::vector<language::TypeDeclaration> source_types = {})
+        : binding(bind_type(runtime, type, catalog)), type_name(binding.name),
+          actual_services(services), declarations(std::move(source_types)) {
         binding.name = type_name;
         for (const auto dependency : binding.dependencies) {
-            const auto* info = take(runtime.describe(dependency));
+            const TypeInfo* info{};
+            if (catalog.empty()) info = take(runtime.describe(dependency));
+            else for (const auto* candidate : catalog) if (candidate->id == dependency) { info = candidate; break; }
+            if (!info) throw std::logic_error("Source type dependency has no Runtime metadata.");
             metadata.push_back({info, *info});
         }
     }
@@ -59,7 +100,13 @@ struct Program::Contract {
         if (type != TypeId{}) return ValueDescription{type};
         return std::nullopt;
     }
-    Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info) const {
+    Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info, atelier::detail::TypePublication* publication = nullptr) const {
+        const auto reference = [&](TypeId type) -> TypeReference {
+            if (publication) {
+                for (const auto& item : metadata) if (item.value.id == type) return TypeReference{item.value.name};
+            }
+            return type;
+        };
         SignatureDefinition definition;
         definition.execution = info.signature.is_coroutine ? FunctionExecution::coroutine : FunctionExecution::synchronous;
         definition.parameters.reserve(info.signature.parameter_count);
@@ -67,16 +114,16 @@ struct Program::Contract {
             const auto value = value_description(info.signature.parameters[i].type);
             if (!value)
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source parameter."});
-            definition.parameters.push_back({{value->type, value->form}, info.signature.parameters[i].passing});
+            definition.parameters.push_back({{reference(value->type), value->form}, info.signature.parameters[i].passing});
         }
         if (info.signature.result != ValueKind::void_value) {
             const auto value = value_description(info.signature.result);
             if (!value)
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source result."});
-            definition.result = ValueDefinition{value->type, value->form};
+            definition.result = ValueDefinition{reference(value->type), value->form};
         }
         if (info.requires_receiver) definition.receiver = ReceiverDefinition{binding.type};
-        return binding.runtime->resolve_signature(definition);
+        return publication ? publication->resolve_signature(*binding.runtime, definition) : binding.runtime->resolve_signature(definition);
     }
     Result<void> compatible(BusinessCode* code, std::string_view source_name,
         const Declaration* declaration = nullptr) const {
@@ -114,13 +161,18 @@ struct Program::Contract {
         return {};
     }
     Result<void> unchanged() const {
+        std::vector<const TypeInfo*> catalog;
+        catalog.reserve(metadata.size());
         for (const auto& dependency : metadata) {
             auto info = binding.runtime->describe(dependency.value.id);
             if (!info) return std::unexpected(std::move(info.error()));
             if (!dependency.matches(**info))
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Bound Runtime metadata changed."});
+            catalog.push_back(*info);
         }
-        const auto actual = bind_type(*binding.runtime, binding.type);
+        // Other producers may append unrelated types. Revalidate this program's
+        // captured catalog without changing its compiled type-table indices.
+        const auto actual = bind_type(*binding.runtime, binding.type, catalog);
         if (actual.runtime != binding.runtime || actual.type != binding.type || actual.name != type_name ||
             actual.fields != binding.fields || actual.methods != binding.methods || actual.enumerations != binding.enumerations || actual.values != binding.values || actual.dependencies != binding.dependencies)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Bound member identities changed."});
@@ -210,6 +262,8 @@ struct Program::Frame final : CoroutineFrame {
 struct Program::Prepared {
     std::weak_ptr<State> owner;
     std::shared_ptr<const Contract> contract;
+    std::shared_ptr<const Contract> compilation_contract;
+    std::shared_ptr<atelier::detail::TypePublication> type_publication;
     std::uint64_t sequence;
     CodeOwner code;
     std::string source_name;
@@ -246,7 +300,7 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
 
 Program::SourceRequest::SourceRequest(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract,
     std::shared_ptr<const Declaration> declaration, std::uint64_t number, std::string name, std::string text, std::string entry)
-    : owner_(std::move(owner)), contract_(std::move(contract)), declaration_(std::move(declaration)),
+    : owner_(std::move(owner)), contract_(std::move(contract)), compilation_contract_(contract_), declaration_(std::move(declaration)),
       sequence(number), source_name(std::move(name)), source(std::move(text)), entry_name(std::move(entry)) {}
 Program::Candidate::Candidate() = default;
 Program::Candidate::Candidate(std::unique_ptr<Prepared> prepared) : prepared_(std::move(prepared)) {}
@@ -373,9 +427,31 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business source/name exceeds its compiler contract."});
     if (entry_name.empty() && state_->declaration) entry_name = state_->declaration->name;
     const auto sequence = state_->latest_request + 1;
-    Request result{new SourceRequest(state_, state_->contract, state_->declaration, sequence,
+    auto result = std::shared_ptr<SourceRequest>{new SourceRequest(state_, state_->contract, state_->declaration, sequence,
         std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source), std::string(entry_name))};
     state_->latest_request = sequence;
+    const auto report = [&](std::string message, language::SourcePosition position = {}) {
+        result->declaration_error_ = Error{ErrorCode::invalid_definition, result->source_name + ":" +
+            std::to_string(position.line) + ":" + std::to_string(position.column) + ": " + std::move(message)};
+    };
+    auto declarations = language::collect_declarations(source);
+    if (!declarations) { report(declarations.error().message, declarations.error().position); return result; }
+    if (state_->declaration) {
+        const auto& previous = state_->contract->declarations;
+        if (declarations->size() != previous.size() || !std::equal(declarations->begin(), declarations->end(), previous.begin(),
+            [](const auto& a, const auto& b) { return a.same_definition(b); }))
+            report("Published source type definitions are immutable; restart the Runtime to change them.");
+        return result;
+    }
+    if (declarations->empty()) return result;
+    auto definitions = type_definitions(*declarations, state_->contract->binding);
+    if (!definitions) { report(definitions.error().message); return result; }
+    auto& runtime = *state_->contract->binding.runtime;
+    auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
+    if (!publication) { report(publication.error().message); return result; }
+    result->type_publication_ = *publication;
+    result->compilation_contract_ = std::make_shared<const Contract>(runtime, state_->contract->binding.type,
+        (*publication)->catalog(), std::move(*declarations));
     return result;
 }
 Result<Program::Candidate> Program::prepare(const Request& request) {
@@ -387,9 +463,10 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     const auto owner = request->owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request belongs to a closed program."});
+    if (request->declaration_error_) return std::unexpected(*request->declaration_error_);
     BusinessCode* output{};
     char diagnostic[2048];
-    const auto& contract = *request->contract_;
+    const auto& contract = *request->compilation_contract_;
     const EnvironmentView storage(contract.binding);
     const auto environment = storage.view(contract.type_name.c_str());
     const auto status = compile(&contract.actual_services, request->source_name.c_str(), request->source.data(),
@@ -402,7 +479,7 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     auto compatible = contract.compatible(code.get(), request->source_name, request->declaration_.get());
     if (!compatible)
         return std::unexpected(Error{compatible.error().code, request->source_name + ": " + compatible.error().message});
-    return Program::Candidate{std::make_unique<Program::Prepared>(request->owner_, request->contract_, request->sequence,
+    return Program::Candidate{std::make_unique<Program::Prepared>(request->owner_, request->contract_, request->compilation_contract_, request->type_publication_, request->sequence,
         std::move(code), request->source_name)};
 }
 Result<void> Program::try_publish(Candidate& candidate) {
@@ -414,21 +491,27 @@ Result<void> Program::try_publish(Candidate& candidate) {
         return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate belongs to another program/Runtime contract."});
     if (prepared.sequence != owner->latest_request || prepared.sequence <= owner->published_request)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate is stale or its request was already published."});
-    auto compatible = owner->contract->compatible(prepared.code.get(), prepared.source_name, owner->declaration.get());
+    auto compatible = prepared.compilation_contract->compatible(prepared.code.get(), prepared.source_name, owner->declaration.get());
     if (!compatible) return compatible;
     auto admission = owner->contract->binding.runtime->check_code_publication();
     if (!admission) return admission;
     auto unchanged = owner->contract->unchanged();
     if (!unchanged) return unchanged;
+    if (prepared.type_publication) {
+        auto ready = prepared.type_publication->reserve_commit(*owner->contract->binding.runtime);
+        if (!ready) return ready;
+    }
     auto declaration = owner->declaration;
     if (!declaration) {
         const auto info = atelier_business_info(prepared.code.get());
-        auto signature = owner->contract->resolve_signature(info);
+        auto signature = prepared.compilation_contract->resolve_signature(info, prepared.type_publication.get());
         if (!signature) return std::unexpected(std::move(signature.error()));
         declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
     }
     // Allocation precedes the noexcept constructor's transfer of candidate code.
-    auto version = std::make_shared<const Version>(owner->contract, declaration, prepared.sequence, std::move(prepared.code));
+    auto version = std::make_shared<const Version>(prepared.compilation_contract, declaration, prepared.sequence, std::move(prepared.code));
+    if (prepared.type_publication) prepared.type_publication->commit(*owner->contract->binding.runtime);
+    owner->contract = prepared.compilation_contract;
     owner->declaration = std::move(declaration);
     owner->published_request = prepared.sequence;
     owner->current = std::move(version);
