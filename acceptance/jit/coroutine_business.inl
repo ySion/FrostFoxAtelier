@@ -128,9 +128,9 @@ void verify_coroutine_references(Runtime& runtime, TypeId type) {
 
     auto callbacks = services;
     callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method,
-        const BusinessScalar* arguments, std::uint32_t count, BusinessScalar* result) noexcept -> std::uint32_t {
+        const BusinessValue* arguments, std::uint32_t count, BusinessValue* result) noexcept -> std::uint32_t {
         auto status = call_method(context, slot, method, arguments, count, result);
-        if (status == 0 && result) result->kind = ScalarKind::void_value;
+        if (status == 0 && result) result->kind = ValueKind::void_value;
         return status;
     };
     auto malformed_code = compile_bound(binding, "async uint malformed() { yield; return self.bump(0); }",
@@ -222,7 +222,7 @@ void verify_coroutine_control() {
     BusinessProgram floating(runtime, {});
     publish_coroutine(floating, "coroutine-float.source", "async float value(float number) { yield; return number; }");
     for (const auto bits : {0x80000000u, 0x7fc12345u}) {
-        const std::array arguments{BusinessScalar{ScalarKind::f32, bits}};
+        const std::array arguments{BusinessValue{ValueKind::f32, bits}};
         auto task = take(start_fixture(floating.entry(), {}, arguments));
         take(task.resume()); take(task.resume());
         require(std::bit_cast<std::uint32_t>(std::get<float>(*take(task.result()))) == bits,

@@ -88,7 +88,7 @@ public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
     };
 
-    // TypeId{} declares a receiverless scalar environment. Binding errors are
+    // TypeId{} declares a receiverless typed value environment. Binding errors are
     // reported by exception during construction; execution errors use Result.
     Program(Runtime&, TypeId);
     ~Program();

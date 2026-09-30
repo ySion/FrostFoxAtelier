@@ -1,6 +1,8 @@
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/RecordLayout.h>
+#include <clang/AST/QualTypeNames.h>
 #include <clang/Basic/Diagnostic.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Frontend/CompilerInstance.h>
@@ -83,8 +85,8 @@ struct Marker {
     bool used{};
 };
 using Options = std::map<std::string, std::string>;
-struct Field { std::string cpp_name, name, form, target; bool hidden{}; unsigned line{}; };
-struct Method { std::string cpp_name, name, pointer; unsigned line{}; };
+struct Field { std::string cpp_name, name, form, target; bool hidden{}; unsigned line{}; bool direct_layout{}; };
+struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; };
 struct Type {
     const CXXRecordDecl* declaration{};
     std::size_t header{};
@@ -159,10 +161,10 @@ struct State {
                 if (value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
                     error(marker.location, "Reflection option strings must be nonempty and contain no control characters."); return {};
                 }
-            } else if (name != "Hidden") {
+            } else if (name != "Hidden" && name != "BorrowSafe") {
                 error(marker.location, "Reflection option " + name + " requires a value."); return {};
             }
-            if (name == "Hidden" && !value.empty()) { error(marker.location, "Hidden is a flag, without a value."); return {}; }
+            if ((name == "Hidden" || name == "BorrowSafe") && !value.empty()) { error(marker.location, name + " is a flag, without a value."); return {}; }
             result.emplace(name, std::move(value));
             if (i < tokens.size()) {
                 if (!tokens[i++].is(tok::comma) || i == tokens.size()) {
@@ -432,6 +434,11 @@ void members(State& state, Type& type, ASTContext& context) {
             state.error(field->getLocation(), "AFIELD requires a named, mutable, addressable data member."); continue;
         }
         Field result{field->getNameAsString(), field->getNameAsString(), {}, {}, options->contains("Hidden"), sources.getExpansionLineNumber(field->getLocation())};
+        const auto alignment = context.getTypeAlign(field->getType());
+        const auto& layout = context.getASTRecordLayout(record);
+        result.direct_layout = record->isStandardLayout() &&
+            layout.getAlignment().getQuantity() * context.getCharWidth() >= alignment &&
+            layout.getFieldOffset(field->getFieldIndex()) % alignment == 0;
         if (options->contains("Name")) result.name = options->at("Name");
         unsigned forms = 0;
         for (const auto* form : {"Strong", "Weak", "Sequence"}) if (options->contains(form)) {
@@ -458,16 +465,17 @@ void members(State& state, Type& type, ASTContext& context) {
     for (const auto* method : record->methods()) {
         auto* marker = state.prefix(*method, MarkerKind::method);
         if (!marker) continue;
-        const auto options = state.options(*marker, {"Name"});
+        const auto options = state.options(*marker, {"Name", "BorrowSafe"});
         if (!options) continue;
         const auto result = scalar(method->getReturnType(), state, context, true);
         if (!result || method->isStatic() || method->isVariadic() || method->isDeleted() || method->isVolatile() ||
             method->getRefQualifier() != RQ_None || method->getDescribedFunctionTemplate() ||
             isa<CXXConstructorDecl>(method) || isa<CXXDestructorDecl>(method) || method->isOverloadedOperator() || isa<CXXConversionDecl>(method)) {
-            state.error(method->getLocation(), "AFUNCTION requires a supported non-static scalar member signature."); continue;
+            state.error(method->getLocation(), "AFUNCTION requires a supported non-static member with a scalar or void result."); continue;
         }
         Method value{method->getNameAsString(), method->getNameAsString(), *result + " (Self::*)(", sources.getExpansionLineNumber(method->getLocation())};
         if (options->contains("Name")) value.name = options->at("Name");
+        value.preserves_borrows = options->contains("BorrowSafe");
         bool valid = true;
         for (unsigned i = 0; i < method->getNumParams(); ++i) {
             auto parameter_type = method->getParamDecl(i)->getType();
@@ -476,8 +484,12 @@ void members(State& state, Type& type, ASTContext& context) {
             const bool read_only = parameter_type.isConstQualified();
             auto parameter = parameter_type.isVolatileQualified() ? std::optional<std::string>{} :
                 scalar(parameter_type.getUnqualifiedType(), state, context);
+            if (!parameter && reference && !parameter_type.isVolatileQualified() &&
+                value_field(parameter_type.getUnqualifiedType(), state, context) && !contains_reference_storage(parameter_type, context))
+                parameter = TypeName::getFullyQualifiedName(parameter_type.getCanonicalType().getUnqualifiedType(),
+                    context, context.getPrintingPolicy(), true);
             if (parameter && reference) *parameter = (read_only ? "const " : "") + *parameter + "&";
-            if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected parameters require supported scalar/enum values, const T& or T&."); valid = false; break; }
+            if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected parameters require scalar/enum values or supported native values passed as const T& or T&."); valid = false; break; }
             if (i) value.pointer += ", ";
             value.pointer += *parameter;
         }
@@ -577,10 +589,14 @@ void emit(const State& state) {
         for (const auto& field : type.fields) {
             cpp += location(field.line) + "        ." + (field.hidden ? "hidden_field" : "field") + "<&Self::" + field.cpp_name + ">(" + quote(field.name);
             if (!field.form.empty()) cpp += ", {TypeReference{" + quote(field.target) + "}, ValueForm::" + field.form + "}";
+            else if (!field.hidden && field.direct_layout)
+                cpp += ", {TypeReference::native<decltype(Self::" + field.cpp_name + ")>()}";
+            if (!field.hidden && field.direct_layout)
+                cpp += ", offsetof(Self, " + field.cpp_name + ")";
             cpp += ")";
         }
         for (const auto& method : type.methods)
-            cpp += location(method.line) + "        .method<static_cast<" + method.pointer + ">(&Self::" + method.cpp_name + ")>(" + quote(method.name) + ")";
+            cpp += location(method.line) + "        .method<static_cast<" + method.pointer + ">(&Self::" + method.cpp_name + ")>(" + quote(method.name) + (method.preserves_borrows ? ", true)" : ")");
         cpp += "\n        .build();\n}\n";
     }
     cpp += "}\n";
