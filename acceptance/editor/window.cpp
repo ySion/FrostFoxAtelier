@@ -13,7 +13,19 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
-    static Result<void> begin_position(Application& app) { return app.document_.begin_position(); }
+    static Result<void> begin_edit(Application& app, ui::ControlKey control) {
+        const auto* binding = app.workspace_.binding(control);
+        if (!binding || binding->path.empty()) return std::unexpected(Error{ErrorCode::invalid_definition, "Missing field binding."});
+        return app.document_.begin_edit(binding->object, binding->path, control);
+    }
+    static Result<void> edit_field(Application& app, ObjectId component, std::span<const FieldId> path, float value) {
+        constexpr auto session = std::numeric_limits<ui::ControlKey>::max();
+        auto began = app.document_.begin_edit(component, path, session);
+        if (!began) return began;
+        auto preview = app.document_.preview_edit(session, value);
+        if (!preview) return preview;
+        return app.document_.commit_edit(session);
+    }
 };
 }
 
@@ -83,9 +95,33 @@ void type(Application& app, const wchar_t* value) {
     while (*value) SendMessageW(app.window(), WM_CHAR, static_cast<WPARAM>(*value++), 0);
     tick(app, 1);
 }
-float x(const Application& app, atelier::scene::ObjectKey key) {
-    const auto point = app.document().scene().position(key);
-    require(point.has_value(), "Missing position in current scene."); return point->x;
+template<class T> T model(atelier::Result<T> result) {
+    if (!result) throw std::runtime_error(result.error().message);
+    return std::move(*result);
+}
+std::span<const atelier::world::Member> actors(const Application& app) { return model(app.document().world().members()); }
+bool contains(const Application& app, atelier::ObjectId actor) {
+    const auto members = actors(app);
+    return std::any_of(members.begin(), members.end(), [actor](const auto& member) { return member.id() == actor; });
+}
+atelier::ObjectId component(const Application& app, atelier::ObjectId actor, atelier::TypeId type) {
+    auto& runtime = app.document().world().runtime();
+    for (const auto& root : model(atelier::world::components(runtime, actor)))
+        if (model(runtime.is_a(model(runtime.type_of(root.id())), type))) return root.id();
+    throw std::runtime_error("Required component is absent.");
+}
+ControlKey property_control(const Application& app, atelier::ObjectId actor, std::size_t axis) {
+    if (actor == atelier::ObjectId{}) return control::empty_field_base + axis;
+    const auto target = model(atelier::world::root_transform(app.document().world().runtime(), actor));
+    if (!target) return control::empty_field_base + axis;
+    const auto key = app.field_control(*target, app.document().parameters()[axis].path);
+    require(key != 0, "Missing live component-field control binding.");
+    return key;
+}
+float x(const Application& app, atelier::ObjectId actor) {
+    const auto target = model(atelier::world::root_transform(app.document().world().runtime(), actor));
+    require(target.has_value(), "Missing Transform in current World.");
+    return std::get<float>(model(app.document().world().read(*target, app.document().parameters()[0].path)));
 }
 bool intersects(const atelier::ui::Rect& a, const atelier::ui::Rect& b) {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
@@ -141,7 +177,7 @@ void capture(Application& app, const std::filesystem::path& path) {
     require(scene_pixels > 32, "Real scene geometry is absent from the depth capture.");
     png(image, path);
 }
-void verify_control_states(Application& app, const std::filesystem::path& output, atelier::scene::ObjectKey object) {
+void verify_control_states(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     mouse(app, WM_MOUSEMOVE, centre(app, control::viewport));
     const auto normal = solid_colors(*app.presented(), control::reset);
     const auto button = centre(app, control::reset);
@@ -153,7 +189,7 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     capture(app, output / "s1-pressed.png");
     mouse(app, WM_LBUTTONUP, button);
 
-    const auto field = control::position(object, 0);
+    auto field = property_control(app, object, 0);
     click(app, field);
     const auto focused = solid_colors(*app.presented(), field);
     capture(app, output / "s1-focused.png");
@@ -163,19 +199,19 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     key(app, VK_ESCAPE);
 
     const auto before = x(app, object);
-    click(app, control::remove);
-    const auto* disabled = app.presented()->find(control::position(0, 0));
+    click(app, control::remove_actor);
+    const auto* disabled = app.presented()->find(property_control(app, {}, 0));
     require(disabled && !disabled->enabled && text_coverage(*app.presented(), disabled->key),
         "Unselected parameter state did not retain disabled text and geometry.");
     capture(app, output / "s1-disabled.png");
     click(app, control::undo);
     require(app.document().selected() == object && x(app, object) == before, "State verification did not restore the edited object.");
-    const auto* selected = app.presented()->find(control::first_object + object);
+    const auto* selected = app.presented()->find(app.object_control(object));
     require(selected && selected->enabled, "Selected object row lost its enabled control geometry.");
 }
-void verify_style_changes(Application& app, const std::filesystem::path& output, atelier::scene::ObjectKey object) {
+void verify_style_changes(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     const auto initial_style = app.style();
-    const auto field = control::position(object, 0);
+    auto field = property_control(app, object, 0);
     click(app, field);
     key(app, VK_END);
     const auto original = app.presented();
@@ -231,7 +267,7 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(current_caret.x >= original_bounds.x && current_caret.x <= original_bounds.x + original_bounds.width &&
         original->find(field)->bounds == original_bounds && original_coverage->pixels == original_pixels,
         "Font update changed old-frame geometry/content or misplaced the new caret.");
-    for (const auto command : {control::add, control::remove, control::undo, control::redo, control::focus, control::reset}) {
+    for (const auto command : {control::add_actor, control::remove_actor, control::undo, control::redo, control::focus, control::reset}) {
         const auto* box = app.presented()->find(command);
         const auto coverage = text_coverage(*app.presented(), command);
         require(box && coverage && box->bounds.x + box->bounds.width <= app.presented()->drawing->extent.width,
@@ -290,8 +326,8 @@ struct TimingSeries {
                << total.cached_coverage_count << ',' << total.cached_coverage_texel_bytes << ',' << total.cached_coverage_cpu_bytes << '\n';
     }
 };
-void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::scene::ObjectKey object) {
-    const auto field = control::position(object, 0);
+void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
+    auto field = property_control(app, object, 0);
     const auto original_position = x(app, object);
     const auto original_history = app.document().undo_count();
     click(app, control::parameter_search);
@@ -301,7 +337,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     key(app, VK_RETURN);
     require(app.query() == L"位置" && app.wants_keyboard(), "Search Enter did not commit while retaining focus.");
     type(app, L"x");
-    require(app.presented()->find(field) && !app.presented()->find(control::position(object, 1)), "Search did not filter actual parameter rows.");
+    require(app.presented()->find(field) && !app.presented()->find(property_control(app, object, 1)), "Search did not filter actual parameter rows.");
     key(app, 'Z', true);
     require(app.query() == L"位置", "Local undo did not restore the committed search.");
     key(app, 'Y', true);
@@ -314,7 +350,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     SetFocus(nullptr); tick(app, 1); SetFocus(app.window()); tick(app, 1);
     require(app.query() == L"z", "OS blur did not roll search preview back.");
     click(app, control::parameter_search); type(app, L""); key(app, VK_RETURN);
-    require(app.query().empty() && app.presented()->find(control::position(object, 2)), "Empty search did not restore all parameter rows.");
+    require(app.query().empty() && app.presented()->find(property_control(app, object, 2)), "Empty search did not restore all parameter rows.");
 
     constexpr auto graphemes = L"a\U0001F600e\u0301\U0001F469\u200d\U0001F4BB";
     type(app, graphemes); key(app, VK_END);
@@ -374,7 +410,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     capture(app, output / "s2-number-selection.png");
     key(app, VK_ESCAPE);
     const auto failure_history = app.document().undo_count();
-    require(atelier::application::EditorAcceptanceAccess::begin_position(app).has_value(), "Could not seed an active backend transaction.");
+    require(atelier::application::EditorAcceptanceAccess::begin_edit(app, field).has_value(), "Could not seed an active backend transaction.");
     auto drag = centre(app, field);
     mouse(app, WM_LBUTTONDOWN, drag); drag.x += 30; mouse(app, WM_MOUSEMOVE, drag);
     require(!app.document().editing() && x(app, object) == original_position && GetCapture() != app.window() &&
@@ -384,27 +420,48 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     mouse(app, WM_LBUTTONUP, drag);
     click(app, control::reset);
 }
+void verify_transform_projection(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
+    const auto transform = component(app, actor, app.document().types().transform);
+    const auto before = model(atelier::world::read_transform(app.document().world().runtime(), transform));
+    atelier::renderer::Capture original, rotated, scaled, restored;
+    require(app.step(&original), "Could not capture the original World transform.");
+    require(atelier::application::EditorAcceptanceAccess::edit_field(app, transform,
+        app.document().types().rotation_fields[2], .7f).has_value(), "The real Session rotation transaction failed.");
+    tick(app);
+    require(app.step(&rotated) && rotated.depth != original.depth, "World rotation did not reach actual GPU geometry.");
+    capture(app, output / "world-trs-rotated.png");
+    require(atelier::application::EditorAcceptanceAccess::edit_field(app, transform,
+        app.document().types().scale_fields[0], 1.75f).has_value(), "The real Session scale transaction failed.");
+    tick(app);
+    require(app.step(&scaled) && scaled.depth != rotated.depth, "World nonuniform scale did not reach actual GPU geometry.");
+    capture(app, output / "world-trs-scaled.png");
+    click(app, control::undo); click(app, control::undo);
+    require(model(atelier::world::read_transform(app.document().world().runtime(), transform)) == before &&
+        app.step(&restored) && restored.depth == original.depth, "TRS history did not restore the original value and GPU projection.");
+}
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
     // Real scene additions use the existing toolbar and Window/UI/Session route.
-    const auto add = centre(app, control::add);
-    while (app.document().scene().members().size() < atelier::scene::Scene::maximum_members) {
-        const auto before_count = app.document().scene().members().size();
+    const auto add = centre(app, control::add_actor);
+    while (actors(app).size() < atelier::editor::Session::maximum_actors) {
+        const auto before_count = actors(app).size();
         SendMessageW(app.window(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(add.x, add.y));
         SendMessageW(app.window(), WM_LBUTTONUP, 0, MAKELPARAM(add.x, add.y));
         tick(app, 1);
-        require(app.document().scene().members().size() == before_count + 1, "Toolbar failed to populate the real list workload.");
+        require(actors(app).size() == before_count + 1, "Toolbar failed to populate the real list workload.");
     }
-    const auto first = app.document().scene().members().front().key;
-    const auto last = app.document().scene().members().back().key;
-    require(app.presented()->find(control::first_object + last) &&
-        !text_coverage(*app.presented(), control::first_object + last),
+    click(app, control::add_transform);
+    click(app, control::add_cube);
+    const auto first = actors(app).front().id();
+    const auto last = actors(app).back().id();
+    require(app.presented()->find(app.object_control(last)) &&
+        !text_coverage(*app.presented(), app.object_control(last)),
         "Offscreen list row lost geometry or emitted text before scrolling.");
     wheel(app, 23, -240);
-    require(text_coverage(*app.presented(), control::first_object + last) &&
-        !text_coverage(*app.presented(), control::first_object + first), "Scrolling did not exchange visible list text.");
+    require(text_coverage(*app.presented(), app.object_control(last)) &&
+        !text_coverage(*app.presented(), app.object_control(first)), "Scrolling did not exchange visible list text.");
     capture(app, output / "s1-list-256.png");
     wheel(app, 23, 240);
-    require(text_coverage(*app.presented(), control::first_object + first) != nullptr,
+    require(text_coverage(*app.presented(), app.object_control(first)) != nullptr,
         "Scrolling back did not regenerate visible list text.");
 
     TimingSeries scroll(app);
@@ -413,7 +470,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
         wheel(app, 23, frame < 24 ? -8 : 8);
         scroll.record(app);
     }
-    const auto field = control::position(last, 0);
+    const auto field = property_control(app, last, 0);
     const auto before = x(app, last);
     const auto history = app.document().undo_count();
     auto point = centre(app, field);
@@ -438,13 +495,13 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     require(x(app, last) == after, "Redo did not restore the dense-scene drag.");
     std::ofstream report(output / "s1-performance.csv");
     report << "workload,stage,samples,mean,p50,p95,max\n";
-    scroll.write(report, "256_objects_scroll");
-    editing.write(report, "256_objects_position_drag");
+    scroll.write(report, "256_actors_scroll");
+    editing.write(report, "256_actors_field_drag");
     require(report.good(), "Cannot save window sampling evidence.");
     std::ofstream resources(output / "s1-resources.csv");
     resources << "workload,accepted_samples,prepare_calls,rasterizations,raster_bytes,culled_text_controls,ui_draw_calls,scene_draw_calls,coverage_upload_count,coverage_payload_bytes,peak_live_cpu_coverages,peak_live_cpu_bytes,peak_renderer_cache_count,peak_renderer_cache_texel_bytes,peak_renderer_cache_cpu_bytes\n";
-    scroll.resources(resources, "256_objects_scroll");
-    editing.resources(resources, "256_objects_position_drag");
+    scroll.resources(resources, "256_actors_scroll");
+    editing.resources(resources, "256_actors_field_drag");
     require(resources.good(), "Cannot save resource sampling evidence.");
 }
 }
@@ -466,19 +523,37 @@ int verify_editor_window(Application& app, const char* output_directory) {
     mouse(app, WM_MOUSEMOVE, divider); mouse(app, WM_LBUTTONUP, divider);
     require(app.parameter_width() > original_width + 20, "Pane divider did not change the workspace.");
 
-    const auto initial_count = app.document().scene().members().size();
-    click(app, control::add); click(app, control::add);
-    require(app.document().scene().members().size() == initial_count + 2, "Add cube did not enter the scene.");
+    const auto initial_count = actors(app).size();
+    click(app, control::add_actor); click(app, control::add_actor);
+    require(actors(app).size() == initial_count + 2, "Add cube did not enter the scene.");
     const auto added_key = app.document().selected();
-    const auto added_id = app.document().scene().find(added_key)->id();
+    const auto added_id = added_key;
     click(app, control::undo);
-    require(!app.document().scene().find(added_key), "Undo add did not remove membership.");
+    require(!contains(app, added_key), "Undo add did not remove membership.");
     click(app, control::redo);
-    require(app.document().scene().find(added_key)->id() == added_id, "Redo add replaced object identity.");
-    const auto object = app.document().scene().members().front().key;
-    click(app, control::first_object + object);
+    require(contains(app, added_id), "Redo add replaced object identity.");
+    require(model(atelier::world::components(app.document().world().runtime(), added_key)).empty(),
+        "Add Actor did not produce an empty Actor.");
+    const auto render_count = model(app.document().world().render_items()).size();
+    click(app, control::add_transform);
+    click(app, control::add_cube);
+    const auto added_cube = component(app, added_key, app.document().types().cube);
+    const auto removed_control = app.object_control(added_cube);
+    require(model(app.document().world().render_items()).size() == render_count + 1,
+        "Adding Transform and Cube did not project an actual component.");
+    capture(app, output / "world-components.png");
+    click(app, removed_control);
+    require(contains(app, added_key) && model(app.document().world().render_items()).size() == render_count,
+        "Removing Cube removed its Actor or retained its drawing.");
+    click(app, control::undo);
+    require(component(app, added_key, app.document().types().cube) == added_cube &&
+        app.object_control(added_cube) != removed_control &&
+        model(app.document().world().render_items()).size() == render_count + 1,
+        "Component undo did not restore identity with a fresh control binding and drawing.");
+    const auto object = actors(app).front().id();
+    click(app, app.object_control(object));
     require(app.document().selected() == object, "List selection did not select the clicked object.");
-    const auto field = control::position(object, 0);
+    auto field = property_control(app, object, 0);
     const auto before = x(app, object);
     const auto history = app.document().undo_count();
     auto point = centre(app, field);
@@ -496,9 +571,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
 
     click(app, field);
     require(app.wants_keyboard(), "Numeric control did not enter text input.");
-    const auto count = app.document().scene().members().size();
+    const auto count = actors(app).size();
     key(app, 'A', true); key(app, VK_DELETE);
-    require(app.document().scene().members().size() == count, "Delete in text focus deleted a scene object.");
+    require(actors(app).size() == count, "Delete in text focus deleted a scene object.");
     key(app, VK_ESCAPE);
     click(app, field); type(app, L"-2.5"); key(app, VK_RETURN);
     require(std::abs(x(app, object) + 2.5f) < .0001f, "Numeric text commit did not update the Runtime field.");
@@ -510,14 +585,21 @@ int verify_editor_window(Application& app, const char* output_directory) {
         "Invalid Enter wrote the scene, recorded history or exited text focus.");
     key(app, VK_ESCAPE);
     require(std::abs(x(app, object) + 2.5f) < .0001f, "Esc did not roll back the invalid draft's earlier preview.");
-    const auto identity = app.document().scene().find(object)->id();
-    click(app, control::remove);
-    require(!app.document().scene().find(object), "Deleted object remained a member.");
+    const auto identity = object;
+    const auto old_actor_control = app.object_control(object);
+    const auto old_field_control = field;
+    click(app, control::remove_actor);
+    require(!contains(app, object), "Deleted object remained a member.");
     tick(app, 64); // host GC crosses complete cycles while only history holds this object
     click(app, control::undo);
-    require(app.document().scene().find(object)->id() == identity && std::abs(x(app, object) + 2.5f) < .0001f,
+    require(contains(app, identity) && std::abs(x(app, object) + 2.5f) < .0001f,
         "Window delete/GC/undo failed to restore identity and position.");
+    field = property_control(app, object, 0);
+    require(field != old_field_control && app.object_control(object) != old_actor_control,
+        "Actor restore reused retired control identities.");
     click(app, control::focus); click(app, control::reset);
+
+    verify_transform_projection(app, output, object);
 
     atelier::renderer::Capture camera_before, camera_orbit, camera_zoom;
     require(app.step(&camera_before), "Camera capture failed.");
@@ -574,9 +656,11 @@ int verify_editor_window(Application& app, const char* output_directory) {
     require(!app.step(), "WM_CLOSE did not close the application.");
     std::ofstream report(output / "acceptance.txt");
     report << "Editor window acceptance: PASS\n"
-           << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> Runtime -> renderer\n"
+           << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
+           << "World: empty Actor; explicit Transform/Cube; remove Cube while retaining Actor; component undo same identity/new control binding; Actor delete/GC/undo same composition/new bindings; AttachedInactive presentation/editing\n"
+           << "TRS: actual Session field transactions set rotation/nonuniform scale, World value matrices alter captured GPU depth, two UI undo commands restore the original value and depth; XYZ controls remain position-only\n"
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
-           << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 objects/culling/scroll-back\n"
+           << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
@@ -812,7 +896,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     capture_native_candidate("s2-ime-native-candidate.png");
     physical_key(VK_SPACE); // The captured local Sogou candidate page shows position as item 1.
     wait_for([&] { return app.query() == L"位置" && app.text_input() && !app.text_input()->composing; }, "Pinyin candidate did not confirm exactly one position query.");
-    require(app.document().scene().members().size() == 1, "IME confirmation triggered a scene command.");
+    require(actors(app).size() == 1, "IME confirmation triggered a scene command.");
     capture(app, output / "s2-ime-confirmed.png");
     const auto confirmed_results = app.input_statistics().results;
     physical_key('X');
@@ -834,7 +918,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     physical_key(VK_RETURN);
     wait_for([&] { return app.input_statistics().results > confirmed_results && app.text_input() && !app.text_input()->composing; }, "IME Enter did not produce a confirmed result.");
     key(app, 'Z', true);
-    require(app.query() == L"位置" && app.document().scene().members().size() == 1, "IME Enter also committed the field or reached scene history.");
+    require(app.query() == L"位置" && actors(app).size() == 1, "IME Enter also committed the field or reached scene history.");
     physical_key(VK_RETURN); // A new key sequence commits the search field.
     physical_key(VK_SPACE);
     const auto clean_space_query = app.query();
@@ -842,7 +926,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     physical_key(VK_ESCAPE);
     require(app.query() == L"位置", "Clean-state Space cancellation did not restore the committed query.");
     const auto object = app.document().selected();
-    click(app, control::position(object, 0));
+    click(app, property_control(app, object, 0));
     compose_position(); physical_key(VK_SPACE); // The captured local Sogou candidate page shows position as item 1.
     wait_for([&] { return app.text_input() && !app.text_input()->composing; }, "Numeric Pinyin result did not end composition.");
     const auto history = app.document().undo_count();
@@ -880,7 +964,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(app.query() == clean_space_query && x(app, object) == 0,
         "Space after a surface change differed from clean-state input or changed the object.");
     physical_key(VK_ESCAPE);
-    click(app, control::position(object, 0));
+    click(app, property_control(app, object, 0));
     compose_position();
     require(!app.document().editing(), "Native reading began a numeric business edit before confirmation.");
     click(app, control::parameter_search);
@@ -898,12 +982,14 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(x(app, object) == 0, "Space after switching editable fields changed the old object's value.");
     require(!app.document().editing(), "Space in the search field retained a numeric business edit.");
     physical_key(VK_ESCAPE);
-    click(app, control::add);
+    click(app, control::add_actor);
+    click(app, control::add_transform);
+    click(app, control::add_cube);
     const auto other = app.document().selected();
     const auto other_x = x(app, other);
-    click(app, control::first_object + object);
-    click(app, control::position(object, 0)); compose_position();
-    click(app, control::first_object + other);
+    click(app, app.object_control(object));
+    click(app, property_control(app, object, 0)); compose_position();
+    click(app, app.object_control(other));
     require(app.document().selected() == other && !app.document().editing() && x(app, object) == 0 &&
         x(app, other) == other_x && (!app.text_input() || !app.text_input()->composing),
         "Changing the parameter target retained composition or edited either object.");

@@ -46,10 +46,16 @@ function(atelier_target target)
     endif()
 endfunction()
 
+add_library(atelier_foundation STATIC src/foundation/string.cpp)
+target_include_directories(atelier_foundation PUBLIC src)
+target_compile_features(atelier_foundation PUBLIC cxx_std_23)
+atelier_target(atelier_foundation)
+
 add_library(atelier_runtime STATIC src/runtime/runtime.cpp src/runtime/execution.cpp)
 target_include_directories(atelier_runtime PUBLIC src)
 target_compile_features(atelier_runtime PUBLIC cxx_std_23)
 atelier_target(atelier_runtime)
+target_link_libraries(atelier_runtime PUBLIC atelier_foundation)
 
 add_library(atelier_allocator_client SHARED acceptance/memory/crt_client.cpp)
 target_compile_definitions(atelier_allocator_client PRIVATE ATELIER_ALLOCATOR_CLIENT_BUILD)
@@ -84,6 +90,12 @@ add_custom_target(ui_layout_acceptance
 include(cmake/jit.cmake)
 atelier_add_source()
 
+include(cmake/reflection.cmake)
+include(cmake/foundation.cmake)
+
+include(cmake/world.cmake)
+atelier_add_world()
+
 include(cmake/rhi.cmake)
 atelier_add_rhi()
 
@@ -106,13 +118,14 @@ endif()
 add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
     COMMAND $<TARGET_FILE:atelier_source_minimal>
+    COMMAND $<TARGET_FILE:atelier_world_acceptance>
     ${_jit_acceptance_commands}
     COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
     COMMAND $<TARGET_FILE:atelier_ui_acceptance>
-    COMMAND $<TARGET_FILE:atelier_editor_scene_acceptance>
+    COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
     COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
-    DEPENDS atelier_runtime_acceptance atelier_source_minimal ${_jit_acceptance_dependencies}
+    DEPENDS atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
-        atelier_editor_scene_acceptance atelier_editor rhi_acceptance
+        atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance foundation_acceptance
     USES_TERMINAL VERBATIM)

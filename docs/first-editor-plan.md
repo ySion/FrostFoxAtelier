@@ -7,7 +7,7 @@
 基线：`1ddaac3`
 
 本页记录首个编辑器的范围、责任和验收终点。当前交付见[编辑器模块](modules/editor/README.md)；M2 保留为未完成的阶段目标。
-**当前排期以[原生 UI 增量方案](ui-foundation-plan.md)为准**；本页下文保留首版阶段设计，不表示立即继续 M2。
+**当前 World 接入以[对象模型合同](research/game-world-object-model.md)为准**；[原生 UI 方案](ui-foundation-plan.md)保留已收口 S1/S2 和未启动 S3。本页只保留首版阶段记录，不表示立即继续 M2，也不要求恢复已经删除的旧 Scene/位置入口。
 本轮交付位置 XYZ、列表选择、增删/撤销重做、可调分隔、基本相机及窗口生命周期；旋转缩放编辑、存档、JIT、节点画布、gizmo、视口拾取、自由停靠、多窗口和完整 IME 编辑器留待后续。
 长期工程规则沿用 [AGENTS.md](../AGENTS.md) 与[工程指南](engineering.md)；启动和构建命令统一维护在 [README](../README.md)。
 
@@ -64,9 +64,8 @@ Runtime/JIT 线维护 [Runtime](../src/runtime/runtime.hpp)、[Program](../src/s
 
 ## 场景身份、字段与编辑操作
 
-Scene 保存持久 ObjectKey 到 Runtime 对象的目录；同一业务状态只存于实际场景对象。
-ObjectId 仅在所属会话有效；重开保留 ObjectKey，重新建立 Runtime 身份和映射。
-首版 SceneObject 使用内联 Transform；对象标量状态全部纳入同一可编辑字段目录。
+首版曾采用 SceneObject 内联 Transform 和自增 ObjectKey，但没有交付存档/重开协议。World 接入已删除这些固定类型与业务别名，当前 Actor/Component 使用 Runtime ObjectId，UI 控件另有独立身份。
+持久身份与重开映射在真实存档任务中另行定义；本页旧方案不构成已经实现的格式或兼容性承诺。同一业务状态继续只存于实际 Runtime 对象。
 数值输入、文件加载和源码执行后的检查复用同一目录及合法域，不各自维护字段清单。
 字段 UI 描述由应用参数描述绑定 Runtime 字段，包含范围、默认值、单位和分组；纯 layout 与 Runtime 不承载编辑器规则，控件不复制业务状态。
 应用与 RHI 在实施前用一个具体方块例子写定坐标系、单位、旋转/矩阵顺序及有限值、缩放范围。

@@ -1,3 +1,4 @@
+#include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 
 #include <algorithm>
@@ -269,6 +270,7 @@ struct Runtime::Impl {
     bool sealed{};
     TypeId f32;
     TypeId u32;
+    TypeId i32;
     TypeId object;
     CollectionPhase phase{CollectionPhase::idle};
     std::uint64_t epoch{};
@@ -566,7 +568,7 @@ struct Runtime::Impl {
         const auto resolve_value = [&](const ValueDefinition& value) -> Result<ValueDescription> {
             const auto* type = lookup(value.type, staged);
             if (!type) return failure(ErrorCode::invalid_definition, "Signature contains an unresolved value type.");
-            if (type->info.kind != TypeKind::scalar || value.form != ValueForm::inline_value)
+            if ((type->info.kind != TypeKind::scalar && type->info.kind != TypeKind::enumeration) || value.form != ValueForm::inline_value)
                 return failure(ErrorCode::invalid_definition, "Signature parameters and result must be inline scalars.");
             return ValueDescription{type->info.id, value.form};
         };
@@ -580,7 +582,12 @@ struct Runtime::Impl {
         for (const auto& parameter : definition.parameters) {
             auto value = resolve_value(parameter);
             if (!value) return std::unexpected(std::move(value.error()));
-            signature.parameters.push_back(*value);
+            if (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only &&
+                parameter.passing != ParameterPassing::reference)
+                return failure(ErrorCode::invalid_definition, "Unknown parameter passing mode.");
+            if (definition.execution == FunctionExecution::coroutine && parameter.passing != ParameterPassing::value)
+                return failure(ErrorCode::invalid_definition, "Coroutine parameters cannot borrow caller storage.");
+            signature.parameters.push_back({*value, parameter.passing});
         }
         if (definition.result) {
             auto value = resolve_value(*definition.result);
@@ -609,7 +616,7 @@ struct Runtime::Impl {
     Result<const Type*> value_type(TypeId id, std::span<const std::byte> storage) const {
         const auto* type = lookup(id);
         if (!type || type->info.kind == TypeKind::object) {
-            return failure(ErrorCode::invalid_type, "Value operations require a registered scalar or record type.");
+            return failure(ErrorCode::invalid_type, "Value operations require a registered value type.");
         }
         const auto valid = validate_storage(type->info, storage);
         if (!valid) return std::unexpected(valid.error());
@@ -636,7 +643,10 @@ struct Runtime::Impl {
     }
 
     TypeId scalar_type(const Scalar& scalar) const noexcept {
-        return std::holds_alternative<float>(scalar) ? f32 : u32;
+        if (std::holds_alternative<float>(scalar)) return f32;
+        if (std::holds_alternative<std::uint32_t>(scalar)) return u32;
+        if (std::holds_alternative<std::int32_t>(scalar)) return i32;
+        return std::get<EnumValue>(scalar).type;
     }
 
     template<class T>
@@ -650,6 +660,7 @@ struct Runtime::Impl {
     void construct_scalar_block(const Type& type, void* storage, const void* source) noexcept {
         if (source) std::memcpy(storage, source, type.info.size);
         else if (type.scalar_leaf->info.id == f32) initialize_scalars<float>(storage, type.info.size);
+        else if (type.scalar_leaf->info.id == i32) initialize_scalars<std::int32_t>(storage, type.info.size);
         else initialize_scalars<std::uint32_t>(storage, type.info.size);
     }
 
@@ -862,6 +873,7 @@ Runtime::Runtime() : impl_(std::make_unique<Impl>()) {
     if (impl_->context == 0) throw std::overflow_error("Runtime identity space exhausted.");
     impl_->f32 = impl_->add_scalar<float>("core.f32");
     impl_->u32 = impl_->add_scalar<std::uint32_t>("core.u32");
+    impl_->i32 = impl_->add_scalar<std::int32_t>("core.i32");
     impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
     auto root = std::make_unique<Impl::Type>();
     root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
@@ -976,8 +988,9 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
     staged.reserve(definitions.size());
     for (auto& definition : definitions) {
         if (definition.name.empty() ||
-            (definition.kind != TypeKind::record && definition.kind != TypeKind::object)) {
-            return failure(ErrorCode::invalid_definition, "A named record or object type is required.");
+            (definition.kind != TypeKind::record && definition.kind != TypeKind::object && definition.kind != TypeKind::enumeration &&
+             definition.kind != TypeKind::string && definition.kind != TypeKind::array)) {
+            return failure(ErrorCode::invalid_definition, "A named record, object, enum, string or array type is required.");
         }
         const auto same_name = [&](const auto& type) { return type->info.name == definition.name; };
         if (std::ranges::any_of(impl_->types, same_name) || std::ranges::any_of(staged, same_name)) {
@@ -997,21 +1010,35 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
         const bool is_native = native.size || native.alignment || native.representation || native.construct ||
-                               native.destroy || native.copy_construct || native.copy_assign || native.base_address;
+                               native.destroy || native.copy_construct || native.copy_assign || native.base_address || native.element_representation;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) ||
             !native.representation || !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition, "Native layout requires valid size, alignment and lifecycle operations.");
         }
-        if (definition.kind == TypeKind::record && !definition.methods.empty()) {
+        if (definition.kind != TypeKind::object && !definition.methods.empty()) {
             return failure(ErrorCode::invalid_definition, "This slice supports methods on object types only.");
         }
-        if (definition.kind == TypeKind::record && (definition.base || native.base_address)) {
-            return failure(ErrorCode::invalid_definition, "Records cannot declare an object base.");
+        if (definition.kind != TypeKind::object && (definition.base || native.base_address)) {
+            return failure(ErrorCode::invalid_definition, "Value types cannot declare an object base.");
         }
+        if ((definition.kind == TypeKind::enumeration) != definition.enumeration.has_value())
+            return failure(ErrorCode::invalid_definition, "Enumeration metadata must match its type kind.");
+        if (definition.kind == TypeKind::enumeration &&
+            (!definition.fields.empty() || !definition.methods.empty() || definition.base || native.base_address ||
+             (is_native && (native.size != 4 || native.alignment != 4 || !native.copy_construct || !native.copy_assign))))
+            return failure(ErrorCode::invalid_definition, "Enums require a 32-bit value layout and cannot declare members or bases.");
+        const bool array = definition.kind == TypeKind::array;
+        const bool string = definition.kind == TypeKind::string;
+        if (array != definition.element.has_value() || array != (native.element_representation != nullptr))
+            return failure(ErrorCode::invalid_definition, "Array types require their exact native element representation.");
+        if ((array || string) && (!is_native || !native.copy_construct || !native.copy_assign || !definition.fields.empty()))
+            return failure(ErrorCode::invalid_definition, "Foundation values require native ownership operations and no inline fields.");
+        if (string && native.representation != detail::representation<String>())
+            return failure(ErrorCode::invalid_definition, "String types require the engine UTF-8 String representation.");
         const TypeId id{impl_->context, static_cast<std::uint32_t>(first_index + staged.size())};
         auto type = std::make_unique<Impl::Type>();
         type->info = {id, std::move(definition.name), definition.kind, native.size, is_native ? native.alignment : 1, {}, {}};
-        if (definition.kind == TypeKind::record) {
+        if (definition.kind != TypeKind::object) {
             type->info.copy_constructible = !is_native || native.copy_construct;
             type->info.copy_assignable = !is_native || native.copy_assign;
         }
@@ -1029,6 +1056,32 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
         auto& definition = definitions[i];
         auto& type = *staged[i];
         const auto id = type.info.id;
+        if (definition.enumeration) {
+            const auto* underlying = resolve(definition.enumeration->underlying);
+            if (!underlying || (underlying->info.id != impl_->i32 && underlying->info.id != impl_->u32))
+                return failure(ErrorCode::invalid_definition, "Enum underlying type must be core.i32 or core.u32.");
+            const auto& values = definition.enumeration->values;
+            for (std::size_t e = 0; e < values.size(); ++e) {
+                if (values[e].first.empty()) return failure(ErrorCode::invalid_definition, "Enum names cannot be empty.");
+                for (std::size_t j = 0; j < e; ++j)
+                    if (values[j].first == values[e].first)
+                        return failure(ErrorCode::duplicate_name, "Duplicate enum name: " + values[e].first);
+            }
+            type.info.enumeration = TypeInfo::Enumeration{underlying->info.id, std::move(definition.enumeration->values)};
+            type.info.size = 4;
+            type.info.alignment = 4;
+            if (!type.native.construct) {
+                type.native = underlying->native;
+                type.native.representation = nullptr;
+            }
+        }
+        if (definition.element) {
+            const auto* element = resolve(*definition.element);
+            if (!element || element->info.kind == TypeKind::object ||
+                element->native.representation != type.native.element_representation)
+                return failure(ErrorCode::invalid_definition, "Array elements must resolve to their registered native value representation.");
+            type.info.element = element->info.id;
+        }
         const bool is_native = type.native.construct != nullptr;
         if (type.info.kind == TypeKind::object) {
             type.base = definition.base ? resolve(*definition.base) : impl_->lookup(impl_->object);
@@ -1127,8 +1180,9 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             auto& frame = stack.back();
             auto& type = *staged[frame.type];
             bool descended = false;
-            while (frame.next_field != type.fields.size()) {
-                const auto value = type.fields[frame.next_field++].value;
+            while (frame.next_field != type.fields.size() + (type.info.element ? 1u : 0u)) {
+                const auto edge = frame.next_field++;
+                const auto value = edge < type.fields.size() ? type.fields[edge].value : ValueDescription{*type.info.element};
                 if (value.form != ValueForm::inline_value || value.type.index_ < first_index) continue;
                 const auto dependency = value.type.index_ - first_index;
                 if (states[dependency] == LayoutState::active) {
@@ -1152,6 +1206,11 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
                 }
                 type.info.fields.insert(type.info.fields.begin(), type.base->info.fields.begin(), type.base->info.fields.end());
                 type.info.methods.insert(type.info.methods.begin(), type.base->info.methods.begin(), type.base->info.methods.end());
+            }
+            if (type.info.element) {
+                const auto& element = resolved_type(*type.info.element)->info;
+                if (element.contains_references || !element.copy_constructible)
+                    return failure(ErrorCode::invalid_definition, "Reflected Array elements must be copyable values without GC references; use ReferenceSequence for object references.");
             }
             type.needs_destroy = is_native;
             for (std::size_t field_index = 0; field_index != type.fields.size(); ++field_index) {
@@ -1253,6 +1312,12 @@ Result<const TypeInfo*> Runtime::describe(TypeId type) const {
     return &found->info;
 }
 
+std::vector<TypeId> Runtime::types() const {
+    std::vector<TypeId> result;
+    result.reserve(impl_->types.size());
+    for (const auto& type : impl_->types) result.push_back(type->info.id);
+    return result;
+}
 TypeId Runtime::object_type() const noexcept { return impl_->object; }
 
 Result<bool> Runtime::is_a(TypeId actual, TypeId expected) const {
@@ -1310,13 +1375,22 @@ Runtime::NativeBorrow::~NativeBorrow() {
     if (runtime) { --runtime->impl_->native_borrows; --runtime->impl_->callbacks; }
 }
 
-Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation) {
+Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation, std::span<const FieldId> path) {
     if (!impl_->roots->alive || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
     auto index = resolve_object(object);
     if (!index) return std::unexpected(index.error());
     auto target = find_representation(representation);
     if (!target) return std::unexpected(target.error());
+    if (!path.empty()) {
+        NativeBorrow borrow{*this, nullptr};
+        auto field = resolve_field(object, path);
+        if (!field) return std::unexpected(field.error());
+        if (field->value.form != ValueForm::inline_value || field->value.type != *target)
+            return failure(ErrorCode::type_mismatch, "Field does not have the requested native value representation.");
+        borrow.storage = field->data;
+        return borrow;
+    }
     const auto* expected = impl_->lookup(*target);
     const auto& slot = impl_->slots[*index];
     const auto* actual = impl_->lookup(slot.type);
@@ -1576,7 +1650,7 @@ Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage
 }
 
 Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
-    if (object.context_ != impl_->context || object.index_ >= impl_->slots.size()) {
+    if (!belongs_to_context(object) || object.index_ >= impl_->slots.size()) {
         return failure(ErrorCode::invalid_object, "Object does not belong to this runtime.");
     }
     const auto& slot = impl_->slots[object.index_];
@@ -1653,6 +1727,10 @@ Result<void> Runtime::destroy(ObjectId object) {
     }
     impl_->recycle(*index);
     return {};
+}
+
+bool Runtime::belongs_to_context(ObjectId object) const noexcept {
+    return object != ObjectId{} && object.context_ == impl_->context;
 }
 
 Result<TypeId> Runtime::type_of(ObjectId object) const {
@@ -1893,7 +1971,14 @@ Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) con
     if (!address) return std::unexpected(address.error());
     if (address->value.type == impl_->f32) return Scalar{*static_cast<const float*>(address->data)};
     if (address->value.type == impl_->u32) return Scalar{*static_cast<const std::uint32_t*>(address->data)};
-    return failure(ErrorCode::type_mismatch, "Read requires a scalar field; select a field inside the record.");
+    if (address->value.type == impl_->i32) return Scalar{*static_cast<const std::int32_t*>(address->data)};
+    const auto* type = impl_->lookup(address->value.type);
+    if (type && type->info.kind == TypeKind::enumeration && address->value.form == ValueForm::inline_value) {
+        std::uint32_t bits;
+        std::memcpy(&bits, address->data, 4);
+        return Scalar{EnumValue{type->info.id, bits}};
+    }
+    return failure(ErrorCode::type_mismatch, "Read requires a scalar or enum field; select a field inside the record.");
 }
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
@@ -1903,12 +1988,95 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
     if (address->value.form != ValueForm::inline_value || address->value.type != impl_->scalar_type(value)) {
         return failure(ErrorCode::type_mismatch, "Value type does not match the field.");
     }
+    if (std::holds_alternative<EnumValue>(value) && impl_->lookup(address->value.type)->info.kind != TypeKind::enumeration)
+        return failure(ErrorCode::type_mismatch, "Enum value cannot masquerade as a scalar.");
     if (address->value.type == impl_->f32) *static_cast<float*>(address->data) = std::get<float>(value);
-    else *static_cast<std::uint32_t*>(address->data) = std::get<std::uint32_t>(value);
+    else if (address->value.type == impl_->u32) *static_cast<std::uint32_t*>(address->data) = std::get<std::uint32_t>(value);
+    else if (address->value.type == impl_->i32) *static_cast<std::int32_t*>(address->data) = std::get<std::int32_t>(value);
+    else {
+        const auto* type = impl_->lookup(address->value.type);
+        if (!type || type->info.kind != TypeKind::enumeration || !std::holds_alternative<EnumValue>(value))
+            return failure(ErrorCode::type_mismatch, "Value is not an enum of the field type.");
+        std::memcpy(address->data, &std::get<EnumValue>(value).bits, 4);
+    }
+    return {};
+}
+
+Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
+    PreparedArguments& prepared) const {
+    return prepare_arguments(signature, arguments, prepared, false);
+}
+Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
+    PreparedArguments& prepared, bool fields) const {
+    prepared.size_ = 0;
+    if (arguments.size() != signature.parameters.size())
+        return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
+    if (arguments.size() > prepared.inline_views_.size()) {
+        prepared.slots_.resize(arguments.size());
+        prepared.views_.resize(arguments.size());
+    }
+    auto* slots = arguments.size() > prepared.inline_slots_.size() ? prepared.slots_.data() : prepared.inline_slots_.data();
+    auto* views = arguments.size() > prepared.inline_views_.size() ? prepared.views_.data() : prepared.inline_views_.data();
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        const auto& argument = arguments[i];
+        const auto& parameter = signature.parameters[i];
+        const auto* expected = impl_->lookup(parameter.type);
+        if (!expected || (expected->info.kind != TypeKind::scalar && expected->info.kind != TypeKind::enumeration) ||
+            parameter.form != ValueForm::inline_value ||
+            (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference) ||
+            (signature.execution == FunctionExecution::coroutine && parameter.passing != ParameterPassing::value))
+            return failure(ErrorCode::invalid_definition, "Unsupported parameter description.");
+        const Impl::Type* actual{};
+        const void* data = argument.data_;
+        void* writable = argument.writable_;
+        const bool field = argument.object_ != ObjectId{} || !argument.path_.empty();
+        if (field) {
+            if (!fields) return failure(ErrorCode::argument_mismatch, "Source entry cannot borrow object-field storage across safe points.");
+            auto address = resolve_field(argument.object_, argument.path_);
+            if (!address) return std::unexpected(address.error());
+            if (address->value.form != ValueForm::inline_value)
+                return failure(ErrorCode::argument_mismatch, "Reference parameter requires scalar or enum storage.");
+            actual = impl_->lookup(address->value.type);
+            data = writable = address->data;
+        } else if (argument.borrowed_) {
+            if (!data) return failure(ErrorCode::invalid_storage, "Borrowed argument is null.");
+            actual = impl_->lookup(argument.type_);
+        }
+        else actual = impl_->lookup(impl_->scalar_type(argument.value_));
+        if (actual != expected || (std::holds_alternative<EnumValue>(argument.value_) && !data && expected->info.kind != TypeKind::enumeration))
+            return failure(ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i));
+        if (data && (reinterpret_cast<std::uintptr_t>(data) % expected->info.alignment != 0 || (writable && data != writable)))
+            return failure(ErrorCode::invalid_storage, "Borrowed argument storage is invalid or misaligned.");
+        if (parameter.passing == ParameterPassing::reference && !writable)
+            return failure(ErrorCode::argument_mismatch, "Writable reference requires mutable lvalue storage.");
+        if (parameter.passing == ParameterPassing::value || !data) {
+            auto* destination = slots[i].bytes;
+            if (data) expected->native.copy_construct(destination, data);
+            else {
+                expected->native.construct(destination);
+                std::visit([&](const auto& value) {
+                    using T = std::remove_cvref_t<decltype(value)>;
+                    if constexpr (std::same_as<T, EnumValue>) std::memcpy(destination, &value.bits, 4);
+                    else std::memcpy(destination, &value, 4);
+                }, argument.value_);
+            }
+            data = destination;
+            writable = nullptr;
+        }
+        views[i] = {parameter.type, data, parameter.passing == ParameterPassing::reference ? writable : nullptr};
+    }
+    prepared.size_ = arguments.size();
     return {};
 }
 
 Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output) {
+    std::array<Argument, 8> local;
+    std::vector<Argument> expanded(arguments.size() > local.size() ? arguments.size() : 0);
+    auto values = (expanded.empty() ? std::span<Argument>{local} : std::span<Argument>{expanded}).first(arguments.size());
+    for (std::size_t i = 0; i < arguments.size(); ++i) values[i] = Argument{arguments[i]};
+    return call_arguments(object, method, values, output);
+}
+Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span<const Argument> arguments, Scalar* output) {
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Method execution is not allowed during reference traversal.");
     const auto index = resolve_object(object);
     if (!index) return std::unexpected(index.error());
@@ -1920,23 +2088,19 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
     }
     const auto inherited = type->base ? type->base->info.methods.size() : 0;
     const auto& signature = type->info.methods[inherited + method.index_].signature;
-    if (arguments.size() != signature.parameters.size()) {
-        return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
-    }
-    for (std::size_t i = 0; i != arguments.size(); ++i) {
-        if (impl_->scalar_type(arguments[i]) != signature.parameters[i].type) {
-            return failure(ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i));
-        }
-    }
     if (signature.result && !output)
         return failure(ErrorCode::invalid_storage, "Non-void method requires result storage.");
     CallbackScope scope{impl_->callbacks};
-    CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), arguments};
+    PreparedArguments prepared;
+    auto checked = prepare_arguments(signature, arguments, prepared, true);
+    if (!checked) return checked;
+    CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), prepared.values()};
     try {
         auto invoked = type->methods[method.index_](context);
         if (!invoked) return invoked;
         if (signature.result) {
-            if (!context.result || impl_->scalar_type(*context.result) != signature.result->type)
+            if (!context.result || impl_->scalar_type(*context.result) != signature.result->type ||
+                (std::holds_alternative<EnumValue>(*context.result) && impl_->lookup(signature.result->type)->info.kind != TypeKind::enumeration))
                 return failure(ErrorCode::invocation_failed, "Method did not produce its declared result type.");
             *output = *context.result;
         } else if (context.result) {

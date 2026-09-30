@@ -34,18 +34,18 @@ Result<void> typed_ui_apply(CallContext& call) {
     const auto cursor = typed_ui_field(call, "cursor");
     const auto revisions = typed_ui_field(call, "revisions");
     take(call.runtime.write(call.self, opacity, std::get<float>(take(call.runtime.read(call.self, opacity))) +
-        std::get<float>(call.arguments[0])));
+        call.arguments[0].get<float>()));
     take(call.runtime.write(call.self, cursor, std::get<float>(take(call.runtime.read(call.self, cursor))) +
-        std::get<float>(call.arguments[2]) * static_cast<float>(std::get<std::uint32_t>(call.arguments[3]))));
-    take(call.runtime.write(call.self, typed_ui_field(call, "selected"), std::get<std::uint32_t>(call.arguments[1])));
+        call.arguments[2].get<float>() * static_cast<float>(call.arguments[3].get<std::uint32_t>())));
+    take(call.runtime.write(call.self, typed_ui_field(call, "selected"), call.arguments[1].get<std::uint32_t>()));
     return call.runtime.write(call.self, revisions, std::get<std::uint32_t>(take(call.runtime.read(call.self, revisions))) +
-        std::get<std::uint32_t>(call.arguments[3]));
+        call.arguments[3].get<std::uint32_t>());
 }
 Result<void> typed_ui_accumulate(CallContext& call) {
     const auto selected = typed_ui_field(call, "selected");
     auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, selected)));
     for (std::size_t index = 0; index < call.arguments.size(); ++index)
-        value += static_cast<std::uint32_t>(index + 1) * std::get<std::uint32_t>(call.arguments[index]);
+        value += static_cast<std::uint32_t>(index + 1) * call.arguments[index].get<std::uint32_t>();
     return call.runtime.write(call.self, selected, value);
 }
 Result<void> typed_ui_explode(CallContext& call) {
@@ -57,14 +57,14 @@ Result<void> typed_ui_explode(CallContext& call) {
 Result<void> typed_ui_bump(CallContext& call) {
     const auto field = typed_ui_field(call, "revisions");
     const auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, field))) +
-        std::get<std::uint32_t>(call.arguments[0]);
+        call.arguments[0].get<std::uint32_t>();
     take(call.runtime.write(call.self, field, value));
     call.result = Scalar{value};
     return {};
 }
 Result<void> typed_ui_scale(CallContext& call) {
     call.result = Scalar{std::get<float>(take(call.runtime.read(call.self, typed_ui_field(call, "opacity")))) *
-        std::get<float>(call.arguments[0])};
+        call.arguments[0].get<float>()};
     return {};
 }
 Result<void> typed_ui_first(CallContext& call) {
@@ -78,15 +78,15 @@ Result<void> typed_ui_next(CallContext& call) {
     const auto field = typed_ui_field(call, "selected");
     const auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, field)));
     take(call.runtime.write(call.self, field, value * 10u + 2u));
-    call.result = Scalar{std::get<std::uint32_t>(call.arguments[0]) + 20u};
+    call.result = Scalar{call.arguments[0].get<std::uint32_t>() + 20u};
     return {};
 }
 Result<void> typed_ui_combine(CallContext& call) {
     const auto field = typed_ui_field(call, "selected");
     const auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, field)));
     take(call.runtime.write(call.self, field, value * 10u + 3u));
-    call.result = Scalar{std::get<std::uint32_t>(call.arguments[0]) * 100u +
-        std::get<std::uint32_t>(call.arguments[1])};
+    call.result = Scalar{call.arguments[0].get<std::uint32_t>() * 100u +
+        call.arguments[1].get<std::uint32_t>()};
     return {};
 }
 Result<void> typed_ui_fail_result(CallContext& call) {
@@ -332,7 +332,7 @@ void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
         for (auto& field : temporary.fields) { field.name.assign("destroyed_field"); field.kind = ScalarKind::void_value; }
         for (auto& method : temporary.methods) {
             method.name.assign("destroyed_method");
-            for (auto& parameter : method.parameters) parameter = ScalarKind::void_value;
+            for (auto& parameter : method.parameters) parameter.type = ScalarKind::void_value;
         }
         callbacks.begin = nullptr;
         type_name.assign("destroyed_type"); source_name.assign("destroyed_source"); source.assign("destroyed_program");
@@ -340,8 +340,8 @@ void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
     const auto info = atelier_business_info(code.get());
     require(info.requires_receiver && std::string_view(info.function_name) == "owned" &&
         std::string_view(info.source_name) == "typed-owned.source" && info.services == services &&
-        info.signature.parameter_count == 2 && info.signature.parameters[0] == ScalarKind::f32 &&
-        info.signature.parameters[1] == ScalarKind::u32 && info.signature.result == ScalarKind::f32 &&
+        info.signature.parameter_count == 2 && info.signature.parameters[0].type == ScalarKind::f32 &&
+        info.signature.parameters[1].type == ScalarKind::u32 && info.signature.result == ScalarKind::f32 &&
         info.environment.object_type_name && std::string_view(info.environment.object_type_name) == binding.name &&
         same_environment(binding, info.environment), "Typed metadata borrowed destroyed catalog/name/signature storage.");
     auto receiver = take(runtime.create(binding.type));
@@ -357,6 +357,7 @@ void verify_typed_catalog_errors(const Binding& binding) {
         const std::string type_name(binding.name);
         auto environment = storage.view(type_name.c_str());
         const ScalarKind invalid = static_cast<ScalarKind>(99);
+        const BusinessParameter invalid_parameter{invalid};
         if (scenario == 0) environment.fields = nullptr;
         if (scenario == 1) environment.methods = nullptr;
         if (scenario == 2) storage.fields[0].name = nullptr;
@@ -368,7 +369,7 @@ void verify_typed_catalog_errors(const Binding& binding) {
         if (scenario == 8) storage.methods[0].name = nullptr;
         if (scenario == 9) storage.methods[1].name = storage.methods[0].name;
         if (scenario == 10) { storage.methods[0].parameters = nullptr; storage.methods[0].parameter_count = 1; }
-        if (scenario == 11) { storage.methods[0].parameters = &invalid; storage.methods[0].parameter_count = 1; }
+        if (scenario == 11) { storage.methods[0].parameters = &invalid_parameter; storage.methods[0].parameter_count = 1; }
         if (scenario == 12) storage.methods[0].name = "";
         if (scenario == 13) environment.object_type_name = "bad.";
         auto* retained = existing.get();
@@ -566,7 +567,7 @@ void verify_native_result_consumers(Runtime& runtime, const Binding& binding) {
     const auto u32 = take(runtime.native_type<std::uint32_t>());
     const auto f32 = take(runtime.native_type<float>());
     require(bump && scale && bump->signature.receiver && scale->signature.receiver && bump->signature.receiver->type == binding.type &&
-        !bump->signature.receiver->read_only && bump->signature.parameters == std::vector<ValueDescription>{{u32}} &&
+        !bump->signature.receiver->read_only && bump->signature.parameters == std::vector<ParameterDescription>{{u32}} &&
         bump->signature.result == ValueDescription{u32} && scale->signature.receiver->read_only &&
         scale->signature.result == ValueDescription{f32}, "Native/described function metadata lost result or receiver semantics.");
     auto receiver = take(runtime.create(binding.type));

@@ -45,6 +45,7 @@ void publication_failures() {
 
 void objects_and_views() {
     Runtime runtime, foreign;
+    require(!runtime.belongs_to_context({}) && !foreign.belongs_to_context({}), "Null identity acquired a runtime context.");
     const auto types = register_types(runtime);
     const auto value = take(runtime.find_field(types.base, "value"));
     const auto bump = take(runtime.find_method(types.base, "bump"));
@@ -64,6 +65,8 @@ void objects_and_views() {
         const auto live_before = Base::live;
         const auto destroyed_before = Base::destroyed;
         auto object = take(runtime.create(type));
+        require(runtime.belongs_to_context(object.id()) && !foreign.belongs_to_context(object.id()),
+            "Live object identity lost its runtime context.");
         auto* native_base = Base::latest;
         if (type == types.derived) {
             require(static_cast<void*>(Derived::latest) != static_cast<void*>(static_cast<Base*>(Derived::latest)),
@@ -116,7 +119,12 @@ void objects_and_views() {
         reject(runtime.write_reference(holder.id(), strong_field, unrelated.reference()), ErrorCode::type_mismatch);
         reject(runtime.write_reference(holder.id(), strong_field, weak), ErrorCode::type_mismatch);
         auto alien = take(foreign.create(foreign.object_type()));
+        require(foreign.belongs_to_context(alien.id()) && !runtime.belongs_to_context(alien.id()),
+            "Foreign live identity was treated as local.");
         reject(runtime.write_reference(holder.id(), strong_field, alien.reference()), ErrorCode::invalid_type);
+        take(foreign.destroy(alien.id()));
+        require(foreign.belongs_to_context(alien.id()) && !runtime.belongs_to_context(alien.id()),
+            "Destroying a foreign object changed its identity context.");
         require(take(runtime.read_reference(holder.id(), strong_field)) == view.reference(), "Failed assignment changed the field.");
         reject(runtime.read(unrelated.id(), value), ErrorCode::invalid_member);
         reject(runtime.call(unrelated.id(), bump, args, &result), ErrorCode::invalid_member);
@@ -135,6 +143,7 @@ void objects_and_views() {
         require(runtime.type_of(hidden_id).has_value() && runtime.type_of(own_id).has_value(),
             "Base-only view lost an ancestor or derived strong edge.");
         take(runtime.destroy(id));
+        require(runtime.belongs_to_context(id) && !foreign.belongs_to_context(id), "Stale identity lost its original context.");
         require(!take(runtime.try_acquire(weak)), "Strong holder prevented explicit destruction.");
         reject(runtime.cast_reference(take(runtime.read_reference(holder.id(), strong_field)), type), ErrorCode::invalid_object);
         auto stale = take(runtime.cast_reference(take(runtime.read_reference(holder.id(), strong_field)), runtime.object_type()));
@@ -144,6 +153,8 @@ void objects_and_views() {
         holder.reset(); collect(runtime);
         require(runtime.live_objects() == 0, "Inherited graph leaked objects.");
         auto reused = take(runtime.create(type));
+        require(runtime.belongs_to_context(id) && runtime.belongs_to_context(reused.id()),
+            "Slot reuse changed the provenance of an existing identity.");
         std::unordered_set<ObjectId> ids{id, reused.id(), id};
         require(ids.size() == 2 && reused.id() != id, "Object generation/hash rebound an old identity.");
         reused.reset(); collect(runtime);
