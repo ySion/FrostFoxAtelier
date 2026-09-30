@@ -1,5 +1,6 @@
 #include "renderer/renderer.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -73,12 +74,108 @@ const std::uint8_t *pixel(const render::Capture &c, unsigned x, unsigned y) {
 float depth(const render::Capture &c, unsigned x, unsigned y) {
     return c.depth[std::size_t(y) * c.extent.width + x];
 }
+std::array<float, 16> translation(float x, float y, float z) {
+    return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1};
+}
 void snapshot(const render::Capture &c) {
     std::ofstream out("renderer-acceptance.ppm", std::ios::binary);
     out << "P6\n" << c.extent.width << ' ' << c.extent.height << "\n255\n";
     for (std::size_t i = 0; i < c.rgba.size(); i += 4)
         out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
     check(out.good(), "write capture evidence");
+}
+void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
+    ui::Frame ui_frame{.id = 1000, .extent = extent, .draws = {}};
+    std::array<render::Cube, 2> cubes{};
+    cubes[0].world = translation(0, 0, 2);
+    cubes[0].color = {1, 1, 1, 1};
+    render::Camera camera;
+    camera.projection[10] = .1f;
+    render::Frame frame{ui_frame, camera, {120, 40, 480, 320}, {cubes.data(), 1}};
+    render::Capture capture;
+    auto render_capture = [&] {
+        ++ui_frame.id;
+        const auto result = take(renderer.render(frame, &capture));
+        check(result.status == render::FrameStatus::accepted && capture.frame_id == ui_frame.id &&
+                  result.stats.scene_draw_calls == 1 && result.stats.ui_draw_calls == 0,
+              "transformed scene accepted through the same instanced draw path");
+    };
+    render_capture();
+    const auto front_color = pixel(capture, 360, 200)[0];
+    // Scale (2,.5,1.5), then rotate 90 degrees about Y, then translate +2 Z.
+    // The visible front face now has local +X normal, not the original -Z.
+    cubes[0].world = {0, 0, -2, 0, 0, .5f, 0, 0, 1.5f, 0, 0, 0, 0, 0, 2, 1};
+    render_capture();
+    check(std::abs(depth(capture, 360, 200) - .1f) < .0001f &&
+              std::abs(depth(capture, 510, 200) - .1f) < .0001f && depth(capture, 550, 200) == 1 &&
+              depth(capture, 360, 250) == 1,
+          "rotated nonuniform cube has transformed silhouette and depth");
+    check(std::abs(int(pixel(capture, 360, 200)[0]) - int(front_color)) <= 1,
+          "rotation transforms local +X into the outward front normal");
+
+    // An affine hierarchy can shear. Its front plane is z=.5*x+1.5, whose
+    // outward normal is (.5,0,-1), unlike the transformed local normal vector.
+    cubes[0].world = {1, 0, .5f, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 2, 1};
+    render_capture();
+    const float sample_x = (420.5f - 120) / 240 - 1;
+    const double linear = .3 + .7 * .8 / std::sqrt(1.25 * 1.16);
+    const int expected_color =
+        static_cast<int>(std::lround((1.055 * std::pow(linear, 1 / 2.4) - .055) * 255));
+    check(std::abs(depth(capture, 420, 200) - (.15f + .05f * sample_x)) < .00001f &&
+              std::abs(int(pixel(capture, 420, 200)[0]) - expected_color) <= 2,
+          "affine hierarchy shear uses inverse-transpose normal direction");
+    const auto unreflected = capture;
+    for (int component = 0; component < 3; ++component)
+        cubes[0].world[component] *= -1;
+    render_capture();
+    for (unsigned x : {300u, 360u, 420u})
+        for (unsigned y : {160u, 200u, 240u}) {
+            check(std::abs(depth(capture, x, y) - depth(unreflected, x, y)) < .00001f &&
+                      std::abs(int(pixel(capture, x, y)[0]) - int(pixel(unreflected, x, y)[0])) <= 1,
+                  "negative determinant preserves outward lighting and mirrored winding visibility");
+        }
+
+    // Finite small/large positive scales are not rejected by an arbitrary
+    // determinant epsilon. Projection compensates scale to keep the cube visible.
+    for (float scale : {1e-20f, 1e20f}) {
+        cubes[0].world = {0, 0, -scale, 0, 0, scale, 0, 0, scale, 0, 0, 0, 0, 0, 2 * scale, 1};
+        frame.camera.projection = {1 / scale, 0, 0, 0, 0, 1 / scale, 0, 0, 0, 0, .1f / scale, 0, 0, 0, 0, 1};
+        render_capture();
+        check(std::abs(depth(capture, 360, 200) - .15f) < .0001f &&
+                  std::abs(int(pixel(capture, 360, 200)[0]) - int(front_color)) <= 1,
+              "finite extreme scales retain visible geometry and finite unit normals");
+    }
+    frame.camera = camera;
+    cubes[0].world = translation(0, 0, 2);
+    render_capture();
+    const auto previous_id = capture.frame_id;
+    frame.cubes = cubes;
+    std::array<std::array<float, 16>, 5> invalid{};
+    invalid[0] = {}; // Not affine (all zero).
+    invalid[1] = translation(0, 0, 3);
+    invalid[1][0] = 0; // Zero scale, singular but otherwise affine.
+    invalid[2] = translation(0, 0, 3);
+    invalid[2][0] = std::numeric_limits<float>::infinity();
+    invalid[3] = translation(0, 0, 3);
+    invalid[3][3] = .1f; // Perspective belongs to Camera, not world transforms.
+    invalid[4] = translation(0, 0, 3);
+    invalid[4][4] = 1;
+    invalid[4][5] = 0; // Linearly dependent basis rows despite nonzero entries.
+    for (const auto &matrix : invalid) {
+        cubes[1].world = matrix;
+        ++ui_frame.id;
+        const auto rejected = renderer.render(frame, &capture);
+        check(!rejected && !rejected.error().terminal &&
+                  rejected.error().cause.code == atelier::rhi::ErrorCode::invalid_argument &&
+                  capture.frame_id == previous_id,
+              "bad second world matrix rejects the whole frame before encoding and retains capture");
+    }
+    frame.cubes = {cubes.data(), 1};
+    render_capture();
+    check(std::abs(depth(capture, 360, 200) - .15f) < .0001f,
+          "valid world frame remains usable after rejected candidates");
+    std::puts("Renderer world transforms: PASS (rotation, nonuniform scale, shear normals, reflection, "
+              "extreme scale, invalid-frame recovery)");
 }
 } // namespace
 int main() {
@@ -102,7 +199,8 @@ int main() {
     std::weak_ptr<const ui::Coverage> old_coverage = coverage;
     ui_frame.draws.push_back({{10, 100, 60, 40}, full, {1, 1, 1, 1}, {0, 0, 1, 1}, coverage});
     coverage.reset();
-    std::array<render::Cube, 2> cubes{{{{0, 0, 2}, {1, 0, 0, 1}, false}, {{0, 0, 5}, {0, 0, 1, 1}, false}}};
+    std::array<render::Cube, 2> cubes{{{translation(0, 0, 2), {1, 0, 0, 1}, false},
+                                     {translation(0, 0, 5), {0, 0, 1, 1}, false}}};
     render::Camera camera;
     camera.projection[10] = .1f;
     render::Frame frame{ui_frame, camera, {120, 40, 480, 320}, cubes};
@@ -225,7 +323,7 @@ int main() {
     frame.camera.view[14] = 4;
     frame.camera.projection = {2.0f / 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 10.0f / 9.9f, 1,
                                0, 0, -1.0f / 9.9f, 0};
-    cubes[0].position = {0, 0, 0};
+    cubes[0].world = translation(0, 0, 0);
     ++ui_frame.id;
     take(renderer.render(frame, &capture));
     check(std::abs(depth(capture, 360, 200) - (10.0f / 9.9f - 1.0f / (9.9f * 3.5f))) < .0001f,
@@ -239,6 +337,7 @@ int main() {
               result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 0,
           "unused coverage leaves cache totals and empty scene emits no draw");
+    transform_cases(renderer, ui_frame.extent);
     auto closed = renderer.close();
     check(bool(closed), "drain and close before HWND destruction");
     check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");

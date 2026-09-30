@@ -1,4 +1,5 @@
 #pragma once
+#include "runtime/parameter.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,21 +12,47 @@ inline constexpr std::uint32_t business_root_slots = 1;
 inline constexpr std::uint32_t observation_slot_bit = 0x80000000u;
 inline constexpr std::uint32_t null_reference_slot = 0xffffffffu;
 
-enum class ScalarKind : std::uint32_t { void_value, f32, u32 };
+enum class ScalarKind : std::uint32_t { void_value, f32, u32, i32, enumeration };
+struct BusinessType {
+    ScalarKind kind;
+    std::uint32_t enum_index;
+    BusinessType() = default;
+    constexpr BusinessType(ScalarKind value, std::uint32_t index = 0) : kind(value), enum_index(index) {}
+    bool operator==(const BusinessType&) const = default;
+};
+struct BusinessParameter {
+    BusinessType type;
+    ParameterPassing passing{ParameterPassing::value};
+    bool operator==(const BusinessParameter&) const = default;
+};
+enum class ArgumentStorage : std::uint32_t { value, read_only, reference, field };
+// Fixed-layout scalar operand. A borrowed address or field locator is only
+// valid through a synchronous call. Results always use value storage.
 struct BusinessScalar {
-    ScalarKind kind{ScalarKind::void_value};
+    BusinessType kind{};
     std::uint32_t bits{};
+    ArgumentStorage storage{ArgumentStorage::value};
+    const void* data{};
+    std::uint32_t slot{}, field{};
 };
 static_assert(std::is_standard_layout_v<BusinessScalar> && std::is_trivially_copyable_v<BusinessScalar>);
-static_assert(sizeof(BusinessScalar) == 8 && alignof(BusinessScalar) == 4 && offsetof(BusinessScalar, bits) == 4);
+static_assert(sizeof(BusinessScalar) == 32 && alignof(BusinessScalar) == 8 &&
+    offsetof(BusinessScalar, bits) == 8 && offsetof(BusinessScalar, data) == 16 && offsetof(BusinessScalar, slot) == 24);
 
-struct BusinessFieldBinding { const char* name; ScalarKind kind; };
+struct BusinessFieldBinding { const char* name; BusinessType kind; };
 struct BusinessMethodBinding {
     const char* name;
-    const ScalarKind* parameters;
+    const BusinessParameter* parameters;
     std::uint32_t parameter_count;
-    ScalarKind result{ScalarKind::void_value};
+    BusinessType result{ScalarKind::void_value};
     bool receiver_read_only{};
+};
+struct BusinessEnumItem { const char* name; std::uint32_t bits; };
+struct BusinessEnumBinding {
+    const char* name;
+    ScalarKind underlying;
+    const BusinessEnumItem* values;
+    std::uint32_t value_count;
 };
 struct BusinessEnvironment {
     const BusinessFieldBinding* fields;
@@ -33,11 +60,13 @@ struct BusinessEnvironment {
     const BusinessMethodBinding* methods;
     std::uint32_t method_count;
     const char* object_type_name;
+    const BusinessEnumBinding* enumerations{};
+    std::uint32_t enumeration_count{};
 };
 struct BusinessSignature {
-    const ScalarKind* parameters;
+    const BusinessParameter* parameters;
     std::uint32_t parameter_count;
-    ScalarKind result;
+    BusinessType result;
     bool is_coroutine;
 };
 
@@ -111,7 +140,7 @@ struct BusinessCoroutine;
 #define ATELIER_BUSINESS_BACKEND __declspec(dllimport)
 #endif
 
-// Source has zero or more float/uint parameters and a void/float/uint result.
+// Source has scalar/enum parameters with explicit passing modes and an optional value result.
 // Environment members describe the host's validated Runtime binding; a null
 // environment is empty. Code and LLVM state stay in their DLL; source bytes,
 // catalog names and arrays are borrowed only for compile. Compiled metadata
@@ -130,8 +159,13 @@ extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business(
 
 // Actual compiled metadata, not caller-provided claims. Null code returns null
 // names/tables, a zero address and null callbacks. Querying acquires no owner.
-extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessCodeInfo atelier_business_info(
-    atelier::source::detail::BusinessCode* code) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND void atelier_query_business_info(
+    atelier::source::detail::BusinessCode* code, atelier::source::detail::BusinessCodeInfo* output) noexcept;
+inline atelier::source::detail::BusinessCodeInfo atelier_business_info(atelier::source::detail::BusinessCode* code) noexcept {
+    atelier::source::detail::BusinessCodeInfo output{};
+    atelier_query_business_info(code, &output);
+    return output;
+}
 
 // Query before allocating invocation storage. Null code returns zero counts.
 extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessFrameLayout atelier_business_layout(

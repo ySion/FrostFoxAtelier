@@ -10,8 +10,10 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 场景和 UI
 
-- 方块共享一份几何；每帧批量上传平移、线性颜色和选中标记，以一次 instanced draw 绘制。方块边长 1 米，局部各轴 `[-0.5,0.5]`，不透明、启用深度，选中时混入金色。当前没有旋转、缩放、材质、拾取或资产导入。
+- 方块共享一份几何；`Cube::world` 是默认单位阵的完整 local-to-world 值矩阵，没有单独的 position 字段。每帧批量上传矩阵、面法线方向、线性颜色和选中标记，以一次 instanced draw 绘制。方块局部边长 1 米、各轴 `[-0.5,0.5]`，支持真实旋转、非均匀缩放以及层级复合形成的剪切；不透明、启用深度，选中时混入金色。当前没有材质、拾取或资产导入。
 - 相机为左手系，+Y 向上，D3D 深度 `[0,1]`。矩阵为 row-major，行向量按 `p * world * view * projection` 执行，匹配 LookAtLH/PerspectiveFovLH。renderer 不维护相机控制状态。
+- World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。本片 World 只有独立 TRS；renderer 能消费一般仿射矩阵不代表 World 已实现父子层级。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
+- 法线方向按 world 的 3×3 逆转置计算。当前 Cube 的法线只有正负三个基轴，因此 CPU 用 double 计算余因子与行列式符号，分别归一化这三个方向后上传，避免有限极端缩放在 shader 中下溢或上溢。这不是可直接套用任意平滑网格法线的逐轴归一化矩阵。镜像输入保留朝外法线并沿用无背面剔除；本片 World 的生产 scale 域仍是正、非零、有限，不因 renderer 能消费镜像而扩展。
 - 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
 - UI 支持半开 scissor、实色矩形、R8 覆盖图与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。

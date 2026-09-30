@@ -1,7 +1,7 @@
 option(ATELIER_BUILD_JIT_ACCEPTANCE "Build platform JIT probes and source fault-injection acceptance" ON)
 
 # LLVM-facing objects share the pinned SDK's ABI. This helper is private to
-# the backend DLLs; the source host and other targets retain /MD(d).
+# the backend DLLs and build-time Clang tool; other targets retain /MD(d).
 function(atelier_llvm_target target)
     atelier_target(${target})
     set_target_properties(${target} PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)
@@ -93,7 +93,8 @@ function(atelier_add_source)
     endif()
 
     add_executable(atelier_source_minimal
-        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp)
+        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
+        acceptance/source/inheritance.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     add_custom_target(source_acceptance

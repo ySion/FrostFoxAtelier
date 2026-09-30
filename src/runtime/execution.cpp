@@ -44,6 +44,14 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& ref
     return {};
 }
 
+Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId declared_type) {
+    if (slot >= slots_.size()) return invalid_slot();
+    auto root = runtime_.hold(object, declared_type);
+    if (!root) return std::unexpected(std::move(root.error()));
+    slots_[slot] = std::move(*root);
+    return {};
+}
+
 Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
     if (slot >= slots_.size()) return invalid_slot();
     if (!slots_[slot].registered())

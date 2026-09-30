@@ -121,7 +121,7 @@ struct ActionScope {
 };
 
 Result<void> advance_native(CallContext& call) {
-    static_cast<NativeMachine*>(call.storage)->advance(std::get<float>(call.arguments[0]));
+    static_cast<NativeMachine*>(call.storage)->advance(call.arguments[0].get<float>());
     if (native_action) native_action->run(native_action->context, call);
     return {};
 }
@@ -135,7 +135,7 @@ Result<void> advance_described(CallContext& call) {
     auto current = call.runtime.read(call.self, *field);
     if (!current) return std::unexpected(std::move(current.error()));
     auto written = call.runtime.write(call.self, *field,
-        std::get<float>(*current) + std::get<float>(call.arguments[0]));
+        std::get<float>(*current) + call.arguments[0].get<float>());
     if (!written) return written;
     if (native_action) native_action->run(native_action->context, call);
     return {};
@@ -2058,7 +2058,7 @@ void verify_source_rejections(BusinessCode* existing) {
         {"void bad(float a, uint n) { { uint x = 1; } self.state.cycles = x; }", "Unknown identifier"},
         {"void bad(float a, uint n) { uint n = 0; }", "already visible"},
         {"void bad(float a, uint n) { if (n) { return; } }", "requires a comparison"},
-        {"void bad(float a, uint n) { if (a > n) { return; } }", "matching float or uint"},
+        {"void bad(float a, uint n) { if (a > n) { return; } }", "matching numeric types"},
         {"void bad(float a, uint n) { 1 = 2; }", "Assignment requires"},
         {"void bad(float a, uint n) { +n = 1; }", "Assignment requires"},
         {"void bad(float a, uint n) { +self.progress = a; }", "Assignment requires"},
@@ -2066,7 +2066,7 @@ void verify_source_rejections(BusinessCode* existing) {
         {"void bad(float a, uint n) { return 1; }", "cannot return a value"},
         {"void bad(float a, uint n) { uint x = 4294967296; }", "outside 0..4294967295"},
         {"void bad(float a, uint n) { float x = 1.0e999; }", "out of range"},
-        {"void bad(float a, uint n) { uint x = -1; }", "Unary minus requires float"},
+        {"void bad(float a, uint n) { uint x = -1; }", "Type mismatch"},
         {"void bad(float a, uint n) { float x = a / 2.0; }", "Division is not supported"},
         {"void bad(float a, uint n) { float x = 1.0e; }", "exponent requires digits"},
         {"void bad(float a, uint n) { uint x = 1word; }", "Invalid numeric literal suffix"},

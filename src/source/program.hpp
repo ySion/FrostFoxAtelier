@@ -58,6 +58,14 @@ public:
     public:
         Lease() = default;
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        template<std::ranges::contiguous_range R>
+            requires std::same_as<std::ranges::range_value_t<R>, Argument>
+        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, budget);
+        }
+    private:
+        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget) const;
+    public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
         std::uintptr_t address() const noexcept;
     };
@@ -69,6 +77,14 @@ public:
     public:
         Entry() = default;
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        template<std::ranges::contiguous_range R>
+            requires std::same_as<std::ranges::range_value_t<R>, Argument>
+        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, budget);
+        }
+    private:
+        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget) const;
+    public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
     };
 
@@ -85,10 +101,12 @@ public:
     Entry entry() const;
     Result<FunctionSignature> describe() const;
     template<class R, class... Args>
+        requires ((!std::is_rvalue_reference_v<Args> && !std::is_volatile_v<std::remove_reference_t<Args>>) && ...) &&
+            (!std::is_reference_v<R>)
     Result<Entry> bind(FunctionExecution execution = FunctionExecution::synchronous) const {
         SignatureDefinition expected;
         expected.execution = execution;
-        expected.parameters = {ValueDefinition{TypeReference::native<Args>()}...};
+        expected.parameters = {ParameterDefinition{{TypeReference::native<std::remove_cvref_t<Args>>()}, parameter_passing<Args>}...};
         if constexpr (!std::is_void_v<R>) expected.result = ValueDefinition{TypeReference::native<R>()};
         return bind_signature(std::move(expected));
     }

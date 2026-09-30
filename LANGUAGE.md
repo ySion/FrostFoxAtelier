@@ -6,11 +6,11 @@
 
 ## 能力范围
 
-每份源码包含一个函数。它可接受任意数量的 `float/uint` 参数，返回 `void/float/uint`；`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、原生成员调用、块、`if/else`、`while` 和 `return`。
+每份源码包含一个函数。它可接受任意数量的 float/uint/int 或已注册枚举参数，返回 void 或同范围值类型；`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、原生成员调用、块、`if/else`、`while` 和 `return`。
 
-对象环境至多包含一个宿主已注册对象类型。源码可使用该类型的持有/观察局部、`null`、`new`、身份比较和已绑定的标量字段/原生方法。原生与描述型对象沿用同一 Runtime 类型和身份。
+对象环境至多包含一个宿主已注册的绑定对象类型，目录包含其继承的公开成员。接收者可为该类型的派生实例；源码的声明视图仍是绑定类型。源码可使用该视图的持有/观察局部、`null`、`new`、身份比较和已绑定的标量字段/原生方法。原生与描述型对象沿用同一 Runtime 类型和身份。
 
-尚未支持：源码类型声明、多函数/跨文件声明收集、多类型目录、引用字段、引用/记录参数与返回、源码销毁、容器/泛型/字符串、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移。本文不把这些边界转成必须立即实施的计划。
+尚未支持：源码类型声明、多函数/跨文件声明收集、多对象类型目录、对象引用字段、对象引用/记录参数与返回、借用返回与借用局部声明、源码销毁、容器/泛型/字符串、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移。本文不把这些边界转成必须立即实施的计划。
 
 ## 源码与词法
 
@@ -25,28 +25,38 @@
 保留字不能用于函数、参数、局部、类型名段或成员路径段：
 
 ```text
-void float uint if else while return self weak null new observe try_acquire async yield
+void float uint int const if else while return self weak null new observe try_acquire async yield
 ```
 
 `true/false/bool/class/break/continue` 等目前没有内建含义，也不在保留字集合中；符合规则时可用作普通名字，不代表已实现同名特性。
 
-记号包括 `+ - * = == != < <= > >= ( ) { } ; , .`。没有除法、取余、位运算、逻辑连接、独立 `!`、复合赋值或自增自减。相邻的 `+/-` 会分别读取，因此 `++steps` 在表达式中是两次一元正号，`--amount` 是两次浮点取负；独立的 `++steps;` 和 `steps++;` 均不合法。
+记号包括 `+ - * = == != < <= > >= ( ) { } ; , . & ::`。没有除法、取余、位运算、逻辑连接、独立 `!`、复合赋值或自增自减。相邻的 `+/-` 会分别读取，因此 `++steps` 在表达式中是两次一元正号，`--amount` 是两次有符号整数或浮点取负；独立的 `++steps;` 和 `steps++;` 均不合法。
 
 ## 类型与数值
 
 | 类型 | 规则 |
 | --- | --- |
 | `uint` | 32 位无符号整数，范围 0～4294967295 |
+| `int` | 32 位有符号整数，对应 core.i32 和当前目标的 C++ int |
 | `float` | 32 位浮点数 |
+| 已注册枚举 | 独立类型身份，底层为 i32/u32；使用完整 Runtime 类型名 |
 | `void` | 函数/方法无结果，不能用于值上下文 |
 | 宿主对象类型 | 持有引用，允许为空；`weak` 表达观察引用 |
 | 内部谓词 | 比较结果，只用于条件；没有源码类型名、局部或字面量 |
 
-初始化、赋值、运算、参数与返回均严格匹配类型，没有 `float/uint` 隐式转换。标量参数按值传入，可以像局部一样赋值，不写回宿主参数。
+已定型值严格匹配类型：整数与浮点、不同枚举、枚举与底层整数不隐式转换。非负十进制整数常量默认保持既有 uint 语义；int 上下文可将所有叶字面量均不超过 2147483647 的纯整数常量表达式定型为 int。
+
+### 参数传递与枚举
+
+同步函数和原生成员支持 `T`、`const T&`、`T&`，其中 T 为已支持的标量或枚举。按值参数有独立存储；只读引用可绑定同类型左值或临时值；可写引用必须绑定可写局部、参数或对象内联字段。调用语法不增加 ref/out 标记。只读参数不可赋值或转交可写引用，但能观察其他别名对同一存储的更新。
+
+同一存储重复传参保持别名，包括只读与可写参数混用，以及参数与接收者字段重合。借用只覆盖同步调用；保存借用、借用返回、借用局部声明和 async 引用参数尚不支持。async 体可在一次同步原生调用期间借用帧内局部，借用不跨 yield。
+
+枚举使用 `namespace.Mode::item` 常量，可声明局部、传参、返回、读写字段及比较同类型枚举的 `==/!=`。重复数值的名字保留为别名；宿主提供的未命名底层值仍有效。源码没有整数与枚举转换或 flags 运算。
 
 ### 字面量
 
-- `uint` 只接受十进制数字；`007` 为十进制 7。超范围字面量拒绝，不先回绕。没有进制前缀、分隔符或后缀；`-1` 是对 uint 应用一元负号，因此拒绝。
+- `uint` 只接受十进制数字；`007` 为十进制 7。超范围字面量拒绝，不先回绕。没有进制前缀、分隔符或后缀。`-1` 定型为 int；`-2147483648` 合法，超出有符号范围的负字面量拒绝。uint 变量仍不能应用一元负号。
 - `float` 必须以数字开头，且包含小数点或指数。`1.0`、`1.`、`1e2`、`1E-2`、`1.e+2` 合法；`.5`、缺少指数数字的 `1e+`、后缀形式 `1.0f` 不合法。
 - 浮点字面量由 `std::from_chars` 完整转换，结果必须有限；超范围或下溢范围错误拒绝。`NaN/Infinity/inf` 没有字面量含义，宿主输入和运行中的运算仍可携带非有限值。
 
@@ -55,6 +65,7 @@ void float uint if else while return self weak null new observe try_acquire asyn
 从高到低：主表达式/成员后缀，一元 `+/-`，`*`，`+/-`，关系比较 `< <= > >=`，相等比较 `== !=`。一元右结合，二元左结合。括号改变组合，不改变类型。
 
 - `uint` 的加减乘按模 `2^32` 回绕；比较按无符号值，一元 `+` 保持值，没有一元负号。`4294967295 + 1` 合法并为 0，`4294967296` 是错误字面量。
+- `int` 加减乘和取负按 32 位补码回绕，比较按有符号值；生成代码不附加 signed-overflow 未定义行为假设。
 - `float` 加减乘及取负不启用 fast-math 假设。一元负号翻转符号，保留负零；正负零数值相等。`==/< /<=/>/>=` 遇 NaN 为假，`!=` 遇 NaN 为真。运算可产生无穷或 NaN；没有饱和或浮点异常处理语法，不承诺额外的跨平台 NaN payload/次正规数行为。
 - 比较结果不能再次参与数值或谓词比较；`a < b < c` 和 `(a < b) == (c < d)` 拒绝。条件不接受数值或引用真值转换。
 - 二元操作从左到右求值；成员接收者先于实参，实参从左到右求值。字段赋值先求接收者，再求右侧，并保持接收者到写入完成。嵌套调用不能覆盖外层已求出的参数。
@@ -67,9 +78,10 @@ void float uint if else while return self weak null new observe try_acquire asyn
 program        = function, end_of_input ;
 function       = [ "async" ], result_type, identifier, "(", [ parameters ], ")", block ;
 result_type    = "void" | scalar_type ;
-scalar_type    = "float" | "uint" ;
+scalar_type    = "float" | "uint" | "int" | qualified_enum_name ;
+qualified_enum_name = qualified_name ; (* 必须解析为已注册枚举 *)
 parameters     = parameter, { ",", parameter } ;
-parameter      = scalar_type, identifier ;
+parameter      = ( scalar_type, [ "&" ] | "const", scalar_type, "&" ), identifier ;
 qualified_name = identifier, { ".", identifier } ;
 block          = "{", { statement }, "}" ;
 statement      = block | scalar_local | reference_local | assignment | call_statement
@@ -90,7 +102,7 @@ product        = unary, { "*", unary } ;
 unary          = ( "+" | "-" ), unary | postfix ;
 postfix        = primary, { ".", qualified_name, [ "(", [ arguments ], ")" ] } ;
 arguments      = expression, { ",", expression } ;
-primary        = numeric_literal | identifier | "(", expression, ")" | "self" | "null"
+primary        = qualified_enum_name, "::", identifier | numeric_literal | identifier | "(", expression, ")" | "self" | "null"
                | "new", qualified_name, "(", ")"
                | "observe", "(", expression, ")"
                | "try_acquire", "(", expression, ")" ;
@@ -102,7 +114,7 @@ primary        = numeric_literal | identifier | "(", expression, ")" | "self" | 
 
 标量局部必须显式初始化；持有/观察局部可以省略初始化器，等价于该类型和持有形式的空引用。未初始化槽不能当成已初始化空值。
 
-赋值目标只允许可见参数、局部或绑定标量字段，可以外包括号。字面量、方法调用、比较和运算结果不可赋值；`(steps) = 1;` 合法，`+steps = 1;` 不合法。`=` 不是表达式，不允许链式或条件内赋值。`self` 不可赋值。
+赋值目标只允许可写参数、局部或绑定标量/枚举字段，可以外包括号。字面量、方法调用、比较和运算结果不可赋值；`(steps) = 1;` 合法，`+steps = 1;` 不合法。`=` 不是表达式，不允许链式或条件内赋值。`self` 不可赋值。
 
 ### 控制流与返回
 
@@ -116,11 +128,11 @@ primary        = numeric_literal | identifier | "(", expression, ")" | "self" | 
 
 宿主提供完整的已注册类型名，例如 `business.NativeMachine`；声明与 `new` 必须使用该名字，不能用布局相似的另一个名字替代。当前没有别名、短名回退、`import/include` 或源码类型定义。
 
-字段路径及原生方法签名来自同一 Runtime 元数据。标量字段可位于内联记录中；目录名由非保留标识符组成，同类目录不允许重复。源码可通过 `self`、持有局部或持有临时值访问同绑定类型的其他对象，尚不能遍历引用字段或另一种对象类型。
+字段路径及原生方法签名来自同一 Runtime 元数据，继承成员保留原声明身份。标量字段可位于内联记录中；目录名由非保留标识符组成，同类目录不允许重复。源码可通过 `self`、持有局部或持有临时值访问符合绑定类型的对象，尚不能遍历引用字段或使用第二种声明类型的目录。基类绑定看不到派生专有成员，原生基段地址调整由 Runtime 完成。
 
 `self` 是受保护的接收者持有值。目录含对象类型不表示入口必须提供 self：纯标量或仅 `new` 的函数可以不使用接收者。首次发布固定接收者要求；已有接收者声明即使新方法体不再读取 self，调用方仍须提供正确活对象，无接收者声明不能在兼容更新中新增 self。
 
-原生成员方法接受零个或多个标量参数，返回 `void/float/uint`。非 void 调用可参与算术、比较、实参和 return，也可作为语句丢弃成功值；失败仍传播。void 不能用于值上下文。原生 const 接收者信息保留在共享签名中，不据此新增源码只读引用或一般借用参数。
+原生成员方法接受零个或多个标量/枚举参数，支持三种传递方式，返回 void 或标量/枚举值。非 void 调用可参与算术、比较、实参和 return，也可作为语句丢弃成功值；失败仍传播。void 不能用于值上下文。原生 const 接收者信息与参数传递方式分别保留在共享签名中。
 
 ### 引用操作
 
@@ -132,7 +144,7 @@ primary        = numeric_literal | identifier | "(", expression, ")" | "self" | 
 | 持有与观察互赋 | 拒绝，须显式转换 |
 | `observe(holding)` | 返回同类型观察引用；允许空或已失效持有值，不访问对象数据 |
 | `try_acquire(observation)` | 存活目标返回临时持有；空或已失效目标返回同类型空持有，不改写原观察 |
-| `new T()` | 通过共享 Runtime 默认构造同绑定类型对象，立即保护返回的持有临时值；没有构造参数 |
+| `new T()` | 通过共享 Runtime 默认构造绑定类型 T，立即保护返回的持有临时值；不改为接收者的实际派生类型，没有构造参数 |
 | 引用 `==/!=` | 比较身份，不比较内容或存活性；持有/观察可交叉比较，也可与 null 比较 |
 | 观察引用成员访问 | 静态拒绝，须先取得持有引用 |
 
@@ -167,7 +179,7 @@ async uint accumulate(uint count) {
 
 `async` 位于结果类型前，执行种类属于函数契约。`yield;` 只能位于协程体，可出现在块、分支或循环中；它不产生值，不结束作用域或函数。
 
-创建复制标量参数并固定代码版本，不执行源码体；首次恢复从开头执行，其后从上次 yield 后继续。标量由持久帧保存，引用沿同一 Runtime 根机制保活；挂起不缩短词法生命周期。显式销毁仍可能使目标失效，恢复后访问继续校验。
+创建复制标量/枚举值参数并固定代码版本，不执行源码体；首次恢复从开头执行，其后从上次 yield 后继续。标量由持久帧保存，引用沿同一 Runtime 根机制保活；挂起不缩短词法生命周期。显式销毁仍可能使目标失效，恢复后访问继续校验。
 
 return 完成原有清理后发布结果；挂起、失败、取消不发布完成结果。宿主在同一 Runtime 线程显式恢复：ready/suspended 取消立即清理，running 只登记请求，在本次恢复返回时处理。执行错误优先，否则取消压过挂起或成功结果；既有副作用不回滚。取消不抢占原生函数或无挂起长循环，也不运行用户续体。
 
@@ -191,4 +203,4 @@ return 完成原有清理后发布结果；挂起、失败、取消不发布完�
 | 执行平台 | 当前 Windows x64，同一 Runtime 线程 |
 | 编译资源 | 同步编译，尚无硬内存配额、超时中断或完整 OOM 恢复 |
 
-这些实现保护不是永久语言规则，也不构成任意不可信程序的安全沙箱。语法实例与拒绝场景由[源码端到端验收](acceptance/jit/business.cpp)、[标量调用验收](acceptance/jit/typed_business.inl)、[协程验收](acceptance/jit/coroutine_business.inl)及[公共消费者](acceptance/source/main.cpp)覆盖；命令以 README 为准。
+这些实现保护不是永久语言规则，也不构成任意不可信程序的安全沙箱。语法实例与拒绝场景由[源码端到端验收](acceptance/jit/business.cpp)、[标量调用验收](acceptance/jit/typed_business.inl)、[协程验收](acceptance/jit/coroutine_business.inl)、[生成反射调用链](acceptance/reflection/calls.cpp)及[公共消费者](acceptance/source/main.cpp)覆盖；命令以 README 为准。

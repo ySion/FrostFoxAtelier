@@ -19,6 +19,10 @@ public:
     HWND window() const noexcept { return window_.handle(); }
     const editor::Session& document() const noexcept { return document_; }
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
+    ui::ControlKey object_control(ObjectId actor) const noexcept { return workspace_.object_control(actor); }
+    ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
+        return workspace_.field_control(component, path);
+    }
     float parameter_width() const noexcept { return workspace_.parameter_width; }
     bool wants_keyboard() const noexcept { return ui_.wants_keyboard(); }
     const std::wstring& query() const noexcept { return workspace_.query; }
@@ -54,6 +58,8 @@ private:
     Result<void> action(const ui::Action&);
     void sync_text_input();
     void status(Result<void>, const wchar_t* success);
+    void status(Result<world::Commit>, const wchar_t* success);
+    Result<void> focus_selected();
     void invalidate_surface();
     bool pointer_ready() const noexcept;
     bool over_viewport(float, float) const noexcept;

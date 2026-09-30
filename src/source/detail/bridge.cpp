@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -17,17 +18,26 @@ template<class T> T take(Result<T> value) {
 }
 
 Binding bind_type(Runtime& runtime, TypeId type) {
-    if (type == TypeId{}) {
-        Binding binding{};
-        binding.runtime = &runtime;
-        binding.dependencies = {take(runtime.native_type<float>()), take(runtime.native_type<std::uint32_t>())};
-        return binding;
+    Binding binding{};
+    binding.runtime = &runtime;
+    binding.type = type;
+    binding.f32 = take(runtime.native_type<float>());
+    binding.u32 = take(runtime.native_type<std::uint32_t>());
+    binding.i32 = take(runtime.native_type<std::int32_t>());
+    binding.dependencies = {binding.f32, binding.u32, binding.i32};
+    for (const auto id : runtime.types()) {
+        const auto* enumeration = take(runtime.describe(id));
+        if (!enumeration->enumeration) continue;
+        binding.enumerations.push_back({id, enumeration->name,
+            enumeration->enumeration->underlying == binding.i32 ? ScalarKind::i32 : ScalarKind::u32,
+            enumeration->enumeration->values});
     }
+    std::sort(binding.enumerations.begin(), binding.enumerations.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    for (const auto& enumeration : binding.enumerations) binding.dependencies.push_back(enumeration.type);
+    if (type == TypeId{}) return binding;
     const auto* info = take(runtime.describe(type));
     require(info->kind == TypeKind::object, "Source receiver must be an object.");
-    const auto f32 = take(runtime.native_type<float>());
-    const auto u32 = take(runtime.native_type<std::uint32_t>());
-    Binding binding{&runtime, type, info->name, {}, {}, {}};
+    binding.name = info->name;
     const auto remember = [&](TypeId dependency) {
         if (std::find(binding.dependencies.begin(), binding.dependencies.end(), dependency) == binding.dependencies.end())
             binding.dependencies.push_back(dependency);
@@ -37,6 +47,10 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     std::vector<FieldId> path;
     std::string prefix;
     remember(type);
+    for (auto base = info->base; base; ) {
+        remember(*base);
+        base = take(runtime.describe(*base))->base;
+    }
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) { cursors.pop_back(); continue; }
@@ -46,8 +60,9 @@ Binding bind_type(Runtime& runtime, TypeId type) {
         if (field.value.form != ValueForm::inline_value) continue;
         path.push_back(field.id);
         prefix += field.name;
-        if (field.value.type == f32 || field.value.type == u32) {
-            binding.fields.push_back({prefix, path, field.value.type == f32 ? ScalarKind::f32 : ScalarKind::u32});
+        const auto field_kind = scalar_kind(binding, field.value.type);
+        if (field_kind != ScalarKind::void_value) {
+            binding.fields.push_back({prefix, path, field_kind});
         } else {
             const auto* nested = take(runtime.describe(field.value.type));
             if (nested->kind != TypeKind::record) continue;
@@ -58,29 +73,59 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     }
     for (const auto& method : info->methods) {
         const auto& signature = method.signature;
-        require(signature.receiver && signature.receiver->type == type,
+        require(signature.receiver && take(runtime.is_a(type, signature.receiver->type)),
             "Source host method receiver does not match its owning type.");
         const auto kind = [&](ValueDescription value) {
-            require(value.form == ValueForm::inline_value && (value.type == f32 || value.type == u32),
-                "Source host methods require float/uint values.");
-            return value.type == f32 ? ScalarKind::f32 : ScalarKind::u32;
+            const auto result = scalar_kind(binding, value.type);
+            require(value.form == ValueForm::inline_value && result != ScalarKind::void_value,
+                "Source host methods require supported scalar or enum values.");
+            return result;
         };
         BoundMethod bound{method.name, method.id, {},
             signature.result ? kind(*signature.result) : ScalarKind::void_value, signature.receiver->read_only};
-        for (const auto parameter : signature.parameters) bound.parameters.push_back(kind(parameter));
+        for (const auto parameter : signature.parameters) bound.parameters.push_back({kind(parameter), parameter.passing});
         binding.methods.push_back(std::move(bound));
     }
     // Stable catalogs are independent of native/descriptor field declaration order.
     std::sort(binding.fields.begin(), binding.fields.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
     std::sort(binding.methods.begin(), binding.methods.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
-    remember(f32);
-    remember(u32);
     return binding;
+}
+
+BusinessType scalar_kind(const Binding& binding, TypeId type) {
+    if (type == binding.f32) return ScalarKind::f32;
+    if (type == binding.u32) return ScalarKind::u32;
+    if (type == binding.i32) return ScalarKind::i32;
+    for (std::uint32_t i = 0; i < binding.enumerations.size(); ++i)
+        if (type == binding.enumerations[i].type) return {ScalarKind::enumeration, i};
+    return ScalarKind::void_value;
+}
+TypeId scalar_type(const Binding& binding, BusinessType type) {
+    if (type == ScalarKind::f32) return binding.f32;
+    if (type == ScalarKind::u32) return binding.u32;
+    if (type == ScalarKind::i32) return binding.i32;
+    if (type.kind == ScalarKind::enumeration && type.enum_index < binding.enumerations.size())
+        return binding.enumerations[type.enum_index].type;
+    return {};
+}
+BusinessScalar scalar(const Scalar& value, const Binding& binding) {
+    return std::visit([&](const auto& item) -> BusinessScalar {
+        using T = std::remove_cvref_t<decltype(item)>;
+        if constexpr (std::same_as<T, EnumValue>) return {scalar_kind(binding, item.type), item.bits};
+        else return scalar(item);
+    }, value);
 }
 
 EnvironmentView::EnvironmentView(const Binding& binding) {
     require(binding.fields.size() <= std::numeric_limits<std::uint32_t>::max() &&
         binding.methods.size() <= std::numeric_limits<std::uint32_t>::max(), "Source member catalog is too large.");
+    enum_items.reserve(binding.enumerations.size());
+    enumerations.reserve(binding.enumerations.size());
+    for (const auto& enumeration : binding.enumerations) {
+        auto& items = enum_items.emplace_back();
+        for (const auto& [name, bits] : enumeration.values) items.push_back({name.c_str(), bits});
+        enumerations.push_back({enumeration.name.c_str(), enumeration.underlying, items.data(), static_cast<std::uint32_t>(items.size())});
+    }
     for (const auto& field : binding.fields) fields.push_back({field.name.c_str(), field.kind});
     for (const auto& method : binding.methods) {
         require(method.parameters.size() <= std::numeric_limits<std::uint32_t>::max(), "Host signature is too large.");
@@ -90,18 +135,41 @@ EnvironmentView::EnvironmentView(const Binding& binding) {
 }
 BusinessEnvironment EnvironmentView::view(const char* object_type_name) const {
     return {fields.data(), static_cast<std::uint32_t>(fields.size()), methods.data(),
-        static_cast<std::uint32_t>(methods.size()), object_type_name};
+        static_cast<std::uint32_t>(methods.size()), object_type_name, enumerations.data(), static_cast<std::uint32_t>(enumerations.size())};
 }
-std::optional<Scalar> scalar_value(BusinessScalar value) {
+std::optional<Scalar> scalar_value(BusinessScalar value, const Binding* binding) {
     if (value.kind == ScalarKind::f32) return std::bit_cast<float>(value.bits);
     if (value.kind == ScalarKind::u32) return value.bits;
+    if (value.kind == ScalarKind::i32) return std::bit_cast<std::int32_t>(value.bits);
+    if (binding && value.kind.kind == ScalarKind::enumeration && value.kind.enum_index < binding->enumerations.size())
+        return EnumValue{binding->enumerations[value.kind.enum_index].type, value.bits};
     return std::nullopt;
 }
-AbiArguments::AbiArguments(std::span<const Scalar> arguments)
-    : expanded(arguments.size() > inline_values.size() ? arguments.size() : 0),
-      values((expanded.empty() ? std::span<BusinessScalar>{inline_values} : std::span<BusinessScalar>{expanded}).first(arguments.size())) {
-    for (std::size_t i = 0; i < arguments.size(); ++i)
-        values[i] = std::visit([](auto value) { return scalar(value); }, arguments[i]);
+AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature, std::span<const Scalar> arguments) {
+    std::array<Argument, 8> local;
+    std::vector<Argument> extra(arguments.size() > local.size() ? arguments.size() : 0);
+    auto input = (extra.empty() ? std::span<Argument>{local} : std::span<Argument>{extra}).first(arguments.size());
+    for (std::size_t i = 0; i < arguments.size(); ++i) input[i] = Argument{arguments[i]};
+    initialize(binding, signature, input);
+}
+AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature, std::span<const Argument> arguments) {
+    initialize(binding, signature, arguments);
+}
+void AbiArguments::initialize(const Binding& binding, const FunctionSignature& signature, std::span<const Argument> arguments) {
+    status = binding.runtime->prepare_arguments(signature, arguments, prepared);
+    if (!status) return;
+    if (arguments.size() > inline_values.size()) expanded.resize(arguments.size());
+    values = (expanded.empty() ? std::span<BusinessScalar>{inline_values} : std::span<BusinessScalar>{expanded}).first(arguments.size());
+    const auto views = prepared.values();
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = {};
+        values[i].kind = scalar_kind(binding, views[i].type);
+        if (signature.parameters[i].passing == ParameterPassing::value) std::memcpy(&values[i].bits, views[i].data, 4);
+        else {
+            values[i].data = views[i].data;
+            values[i].storage = signature.parameters[i].passing == ParameterPassing::reference ? ArgumentStorage::reference : ArgumentStorage::read_only;
+        }
+    }
 }
 
 Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout,
@@ -111,7 +179,7 @@ Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout
       roots(expanded_roots.empty() ? std::span<ObjectRoot>{inline_roots} : std::span<ObjectRoot>{expanded_roots}),
       observations(layout.weak_slots), frame(owner, roots),
       expanded_arguments(layout.max_call_arguments > inline_arguments.size() ? layout.max_call_arguments : 0),
-      method_arguments(expanded_arguments.empty() ? std::span<Scalar>{inline_arguments} : std::span<Scalar>{expanded_arguments}),
+      method_arguments(expanded_arguments.empty() ? std::span<Argument>{inline_arguments} : std::span<Argument>{expanded_arguments}),
       budget(work), observer(observation) {}
 bool Invocation::references_cleared() const noexcept {
     if (!frame.empty()) return false;
@@ -131,7 +199,7 @@ std::uint32_t create_slot(void* context, std::uint32_t slot) noexcept {
     return bridge(invocation, [&] { return invocation.frame.create(slot, invocation.binding.type); });
 }
 
-std::span<const FieldId> field_path(const Binding& binding, std::uint32_t field, ScalarKind kind) {
+std::span<const FieldId> field_path(const Binding& binding, std::uint32_t field, BusinessType kind) {
     require(field < binding.fields.size() && binding.fields[field].kind == kind, "Host field index or scalar kind is invalid.");
     return binding.fields[field].path;
 }
@@ -159,9 +227,10 @@ std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, 
     return bridge(invocation, [&]() -> Result<void> {
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
-        auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ScalarKind::u32));
+        require(field < invocation.binding.fields.size() && invocation.binding.fields[field].kind != ScalarKind::f32, "Invalid integer/enum field.");
+        auto value = invocation.runtime.read(*object, invocation.binding.fields[field].path);
         if (!value) return std::unexpected(std::move(value.error()));
-        *output = std::get<std::uint32_t>(*value);
+        *output = scalar(*value, invocation.binding).bits;
         return {};
     });
 }
@@ -170,7 +239,10 @@ std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field,
     return bridge(invocation, [&]() -> Result<void> {
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
-        return invocation.runtime.write(*object, field_path(invocation.binding, field, ScalarKind::u32), value);
+        require(field < invocation.binding.fields.size() && invocation.binding.fields[field].kind != ScalarKind::f32, "Invalid integer/enum field.");
+        auto decoded = scalar_value({invocation.binding.fields[field].kind, value}, &invocation.binding);
+        require(decoded.has_value(), "Invalid integer/enum value.");
+        return invocation.runtime.write(*object, invocation.binding.fields[field].path, *decoded);
     });
 }
 std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t method,
@@ -183,9 +255,24 @@ std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t metho
         require(count == target.parameters.size() && count <= invocation.method_arguments.size() &&
             (count == 0 || arguments), "Host argument count or storage is invalid.");
         for (std::uint32_t index = 0; index < count; ++index) {
-            require(arguments[index].kind == target.parameters[index], "Host argument scalar kind is invalid.");
-            invocation.method_arguments[index] = arguments[index].kind == ScalarKind::f32 ?
-                Scalar{std::bit_cast<float>(arguments[index].bits)} : Scalar{arguments[index].bits};
+            const auto& input = arguments[index];
+            require(input.kind == target.parameters[index].type, "Host argument type is invalid.");
+            if (input.storage == ArgumentStorage::field) {
+                require(input.field < invocation.binding.fields.size() && invocation.binding.fields[input.field].kind == input.kind,
+                    "Host borrowed field is invalid.");
+                auto owner = invocation.frame.object(input.slot);
+                if (!owner) return std::unexpected(owner.error());
+                invocation.method_arguments[index] = Argument::field(*owner, invocation.binding.fields[input.field].path);
+            } else if (input.storage == ArgumentStorage::read_only || input.storage == ArgumentStorage::reference) {
+                require(input.data != nullptr, "Host borrowed argument is null.");
+                invocation.method_arguments[index] = Argument::borrow(scalar_type(invocation.binding, input.kind), input.data,
+                    input.storage == ArgumentStorage::reference ? const_cast<void*>(input.data) : nullptr);
+            } else {
+                require(input.storage == ArgumentStorage::value, "Invalid argument storage kind.");
+                auto decoded = scalar_value(input, &invocation.binding);
+                require(decoded.has_value(), "Invalid scalar argument.");
+                invocation.method_arguments[index] = Argument{*decoded};
+            }
         }
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
@@ -193,8 +280,7 @@ std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t metho
         auto invoked = invocation.runtime.call(*object, target.id, invocation.method_arguments.first(count),
             target.result == ScalarKind::void_value ? nullptr : &result);
         if (!invoked) return invoked;
-        if (target.result == ScalarKind::f32) *output = scalar(std::get<float>(result));
-        else if (target.result == ScalarKind::u32) *output = scalar(std::get<std::uint32_t>(result));
+        if (target.result != ScalarKind::void_value) *output = scalar(result, invocation.binding);
         return {};
     });
 }
@@ -317,7 +403,14 @@ const BusinessServices services{begin, create_slot, read_float, write_float, rea
     write_uint, call_method, poll, finish, clear_slot, change_reference, same_reference};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
-    if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count) return false;
+    if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count || binding.enumerations.size() != environment.enumeration_count) return false;
+    for (std::size_t i = 0; i < binding.enumerations.size(); ++i) {
+        const auto& expected = binding.enumerations[i];
+        const auto& actual = environment.enumerations[i];
+        if (!actual.name || expected.name != actual.name || expected.underlying != actual.underlying || expected.values.size() != actual.value_count) return false;
+        for (std::size_t j = 0; j < expected.values.size(); ++j)
+            if (!actual.values[j].name || expected.values[j].first != actual.values[j].name || expected.values[j].second != actual.values[j].bits) return false;
+    }
     for (std::size_t i = 0; i < binding.fields.size(); ++i)
         if (binding.fields[i].name != environment.fields[i].name || binding.fields[i].kind != environment.fields[i].kind) return false;
     for (std::size_t i = 0; i < binding.methods.size(); ++i) {
@@ -333,9 +426,27 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
 Result<void> check_source_arguments(const BusinessSignature& signature, std::span<const BusinessScalar> arguments) {
     if (arguments.size() != signature.parameter_count)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument count does not match its signature."});
-    for (std::size_t i = 0; i < arguments.size(); ++i)
-        if (arguments[i].kind != signature.parameters[i])
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument kind does not match its signature."});
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        const auto& argument = arguments[i];
+        const auto mode = signature.parameters[i].passing;
+        const bool valid = mode == ParameterPassing::value ? argument.storage == ArgumentStorage::value :
+            argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % 4 == 0 &&
+            (argument.storage == ArgumentStorage::reference || (mode == ParameterPassing::read_only && argument.storage == ArgumentStorage::read_only));
+        if (argument.kind != signature.parameters[i].type || !valid)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument type or storage does not match its signature."});
+    }
+    return {};
+}
+
+Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
+    auto actual = binding.runtime->type_of(receiver);
+    if (!actual) return std::unexpected(actual.error());
+    if (binding.type == TypeId{})
+        return std::unexpected(Error{ErrorCode::type_mismatch, "Receiverless source cannot accept an object."});
+    auto compatible = binding.runtime->is_a(*actual, binding.type);
+    if (!compatible) return std::unexpected(compatible.error());
+    if (!*compatible)
+        return std::unexpected(Error{ErrorCode::type_mismatch, "Source receiver has the wrong type."});
     return {};
 }
 
@@ -347,14 +458,12 @@ Result<BusinessScalar> execute_admitted(ExecutionScope&, Runtime& runtime, const
     CollectionBudget budget) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
-        auto type = runtime.type_of(receiver);
-        if (!type) return std::unexpected(std::move(type.error()));
-        if (*type != binding.type)
-            return std::unexpected(Error{ErrorCode::type_mismatch, "Business receiver has the wrong type."});
+        auto checked = check_source_receiver(binding, receiver);
+        if (!checked) return std::unexpected(std::move(checked.error()));
     }
     Invocation invocation(runtime, binding, layout, budget, observer);
     if (hold_receiver) {
-        auto rooted = invocation.frame.hold(receiver_slot, receiver);
+        auto rooted = invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!rooted) return std::unexpected(std::move(rooted.error()));
     }
     if (request_collection) invocation.frame.request_collection();

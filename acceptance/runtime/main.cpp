@@ -283,7 +283,7 @@ Result<void> advance_described(CallContext& call) {
     const auto value = call.runtime.read(call.self, *field);
     if (!value) return std::unexpected(value.error());
     return call.runtime.write(call.self, *field,
-        std::get<float>(*value) + std::get<float>(call.arguments[0]));
+        std::get<float>(*value) + call.arguments[0].get<float>());
 }
 
 Result<void> attempt_self_destruction(CallContext& call) {
@@ -504,7 +504,7 @@ void verify_signature_publication() {
     definition.parameters.clear();
     definition.result.reset();
     definition.receiver.reset();
-    require(resolved.parameters == std::vector<ValueDescription>{{u32}} &&
+    require(resolved.parameters == std::vector<ParameterDescription>{{u32}} &&
         resolved.result == std::optional{ValueDescription{u32}} &&
         resolved.receiver == std::optional{ReceiverDescription{native, false}},
         "Resolved signature borrowed mutable producer storage.");
@@ -617,7 +617,7 @@ Result<void> increment_signature_value(CallContext& call) {
     if (!field) return std::unexpected(std::move(field.error()));
     auto value = call.runtime.read(call.self, *field);
     if (!value) return std::unexpected(std::move(value.error()));
-    const auto next = std::get<std::uint32_t>(*value) + std::get<std::uint32_t>(call.arguments[0]);
+    const auto next = std::get<std::uint32_t>(*value) + call.arguments[0].get<std::uint32_t>();
     auto written = call.runtime.write(call.self, *field, next);
     if (!written) return written;
     call.result = next;
@@ -648,7 +648,7 @@ void verify_method_results() {
         {"increment", increment, increment_signature_value},
         {"read", read, read_signature_value},
         {"echo", echo, [](CallContext& call) -> Result<void> {
-            call.result = call.arguments[0];
+            call.result = call.arguments[0].get<float>();
             return {};
         }},
         {"missing", increment, [](CallContext& call) -> Result<void> {
@@ -2084,6 +2084,9 @@ void verify_native_member_address() {
 
 }
 
+void verify_runtime_inheritance();
+void verify_reference_sequences();
+
 int main() {
     try {
         atelier::acceptance::verify_default_allocator();
@@ -2105,6 +2108,8 @@ int main() {
         verify_deep_value_walks();
         verify_scalar_plans();
         verify_native_member_address();
+        verify_runtime_inheritance();
+        verify_reference_sequences();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

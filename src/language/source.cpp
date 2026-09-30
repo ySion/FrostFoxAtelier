@@ -17,7 +17,7 @@ bool letter(char value) noexcept {
 }
 bool digit(char value) noexcept { return value >= '0' && value <= '9'; }
 bool reserved(std::string_view value) noexcept {
-    return value == "void" || value == "float" || value == "uint" || value == "if" ||
+    return value == "void" || value == "float" || value == "uint" || value == "int" || value == "const" || value == "if" ||
         value == "else" || value == "while" || value == "return" || value == "self" ||
         value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
         value == "async" || value == "yield";
@@ -79,7 +79,13 @@ public:
                 reject(start, "Logical negation is not supported in this source slice.");
             return token(Token::Kind::punctuation, start);
         }
-        if (std::string_view("(){};.,+-*").find(first) != std::string_view::npos) {
+        if (first == ':') {
+            advance();
+            if (peek() != ':') reject(start, "Enum qualification requires '::'.");
+            advance();
+            return token(Token::Kind::punctuation, start);
+        }
+        if (std::string_view("(){};.,+-*&").find(first) != std::string_view::npos) {
             advance();
             return token(Token::Kind::punctuation, start);
         }
@@ -131,9 +137,16 @@ public:
         expect("(");
         if (!accept(")")) {
             do {
+                const auto position = token_.position;
+                const bool read_only = accept("const");
                 const auto type = scalar_type();
-                local(identifier(), type);
-                program_.parameters.push_back(type);
+                const bool reference = accept("&");
+                if (read_only && !reference) reject(position, "const parameters require a reference in this source slice.");
+                const auto passing = reference ? (read_only ? ParameterPassing::read_only : ParameterPassing::reference) : ParameterPassing::value;
+                if (program_.is_coroutine && reference) reject(position, "async parameters cannot borrow caller storage.");
+                const auto index = local(identifier(), type);
+                program_.locals[index].read_only = read_only;
+                program_.parameters.push_back({type, passing});
             } while (accept(","));
             expect(")");
         }
@@ -168,15 +181,33 @@ private:
             if (start == name.size()) reject({}, "Host binding name cannot end with '.'.");
         }
     }
+    bool scalar(ValueType type) const {
+        return type == ValueType::f32 || type == ValueType::u32 || type == ValueType::i32 ||
+            (type.kind == ValueType::enumeration && type.enum_index < environment_.enumerations.size());
+    }
     void validate_environment() const {
         validate_name(environment_.object_type_name, true);
+        for (std::size_t i = 0; i < environment_.enumerations.size(); ++i) {
+            const auto& enumeration = environment_.enumerations[i];
+            validate_name(enumeration.name, false);
+            if (enumeration.underlying != ValueType::i32 && enumeration.underlying != ValueType::u32)
+                reject({}, "Enum requires i32/u32 representation.");
+            for (std::size_t j = 0; j < i; ++j)
+                if (environment_.enumerations[j].name == enumeration.name) reject({}, "Duplicate enum type name.");
+            for (std::size_t j = 0; j < enumeration.values.size(); ++j) {
+                validate_name(enumeration.values[j].name, false);
+                if (enumeration.values[j].name.find('.') != std::string_view::npos) reject({}, "Enum item must be a simple identifier.");
+                for (std::size_t k = 0; k < j; ++k)
+                    if (enumeration.values[k].name == enumeration.values[j].name) reject({}, "Duplicate enum item name.");
+            }
+        }
         if (environment_.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
             environment_.methods.size() > std::numeric_limits<std::uint32_t>::max())
             reject({}, "Host member catalog exceeds its index range.");
         for (std::size_t i = 0; i < environment_.fields.size(); ++i) {
             const auto& field = environment_.fields[i];
             validate_name(field.name, false);
-            if (field.type != ValueType::f32 && field.type != ValueType::u32)
+            if (!scalar(field.type))
                 reject({}, "Host field has an unsupported scalar type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.fields[j].name == field.name) reject({}, "Ambiguous host field binding.");
@@ -186,10 +217,11 @@ private:
             validate_name(method.name, false);
             if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
                 reject({}, "Host parameter list exceeds its index range.");
-            for (const auto type : method.parameters)
-                if (type != ValueType::f32 && type != ValueType::u32)
-                    reject({}, "Host method has an unsupported parameter type.");
-            if (method.result != ValueType::void_value && method.result != ValueType::f32 && method.result != ValueType::u32)
+            for (const auto& parameter : method.parameters)
+                if (!scalar(parameter.type) || (parameter.passing != ParameterPassing::value &&
+                    parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference))
+                    reject({}, "Host method has an unsupported parameter type or passing mode.");
+            if (method.result != ValueType::void_value && !scalar(method.result))
                 reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.methods[j].name == method.name) reject({}, "Ambiguous host method binding.");
@@ -267,7 +299,12 @@ private:
     ValueType scalar_type() {
         if (accept("float")) return ValueType::f32;
         if (accept("uint")) return ValueType::u32;
-        reject(token_.position, "Expected 'float' or 'uint' scalar type.");
+        if (accept("int")) return ValueType::i32;
+        const auto position = token_.position;
+        const auto name = qualified_identifier();
+        for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
+            if (environment_.enumerations[i].name == name) return {ValueType::enumeration, i};
+        reject(position, "Expected float, uint, int or a registered enum type.");
     }
     bool returns(NodeId id) const {
         const auto& statement = program_.statements[id];
@@ -281,13 +318,32 @@ private:
         default: return false; // A loop may execute zero times.
         }
     }
-    void same_type(NodeId expression, ValueType required) const {
+    bool writable(NodeId id) const {
+        const auto& expression = program_.expressions[id];
+        return expression.kind == Expression::Kind::field ||
+            (expression.kind == Expression::Kind::local && !program_.locals[expression.value].read_only);
+    }
+    bool integer_constant(NodeId id) const {
+        const auto& node = program_.expressions[id];
+        if (node.type != ValueType::u32) return false;
+        if (node.kind == Expression::Kind::literal) return node.value <= 2147483647u;
+        return (node.kind == Expression::Kind::unary && integer_constant(node.left)) ||
+            (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right));
+    }
+    void signed_constant(NodeId id) {
+        auto& node = program_.expressions[id];
+        node.type = ValueType::i32;
+        if (node.left != no_node) signed_constant(node.left);
+        if (node.right != no_node) signed_constant(node.right);
+    }
+    void same_type(NodeId expression, ValueType required) {
+        if (required == ValueType::i32 && integer_constant(expression)) signed_constant(expression);
         const auto actual = program_.expressions[expression].type;
         if (actual == required || (reference_type(required) && actual == ValueType::null_reference)) return;
         if (reference_type(required) || reference_type(actual))
             reject(program_.expressions[expression].position,
                 "Type mismatch; references require the same strong/weak form or null and cannot mix with scalars.");
-        reject(program_.expressions[expression].position, "Type mismatch; float and uint do not convert implicitly.");
+        reject(program_.expressions[expression].position, "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
     }
     NodeId block() {
         Depth guard(depth_, token_.position);
@@ -306,14 +362,23 @@ private:
         Depth guard(depth_, token_.position);
         const auto position = token_.position;
         if (token_.text == "{") return block();
-        if (token_.text == "float" || token_.text == "uint" || token_.text == "weak" || reference_declaration()) {
+        if (token_.text == "float" || token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration()) {
             ValueType type;
             if (accept("float")) type = ValueType::f32;
             else if (accept("uint")) type = ValueType::u32;
+            else if (accept("int")) type = ValueType::i32;
             else {
                 const auto weak = accept("weak");
-                object_type();
-                type = weak ? ValueType::weak_reference : ValueType::strong_reference;
+                const auto type_position = token_.position;
+                const auto name = qualified_identifier();
+                if (name == environment_.object_type_name) type = weak ? ValueType::weak_reference : ValueType::strong_reference;
+                else {
+                    if (weak) reject(type_position, "weak requires an object type.");
+                    bool found = false;
+                    for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
+                        if (environment_.enumerations[i].name == name) { type = {ValueType::enumeration, i}; found = true; break; }
+                    if (!found) reject(type_position, "Unknown declared type.");
+                }
             }
             const auto name = identifier();
             unused_name(name);
@@ -365,9 +430,8 @@ private:
         }
         const auto target = expression();
         if (accept("=")) {
-            const auto kind = program_.expressions[target].kind;
-            if (kind != Expression::Kind::local && kind != Expression::Kind::field)
-                reject(position, "Assignment requires a local or a scalar field.");
+            if (!writable(target))
+                reject(position, "Assignment requires a writable local or field.");
             const auto value = expression();
             same_type(value, program_.expressions[target].type);
             expect(";");
@@ -386,14 +450,17 @@ private:
             if (operation.precedence < minimum) return left;
             const auto symbol = consume();
             const auto right = expression(operation.precedence + 1);
+            if (program_.expressions[left].type == ValueType::i32 && integer_constant(right)) signed_constant(right);
+            if (program_.expressions[right].type == ValueType::i32 && integer_constant(left)) signed_constant(left);
             const auto type = program_.expressions[left].type;
             const auto right_type = program_.expressions[right].type;
             if (reference_type(type) || reference_type(right_type)) {
                 if (!reference_type(type) || !reference_type(right_type) ||
                     (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
                     reject(symbol.position, "References support only == and != with another reference or null.");
-            } else if ((type != ValueType::f32 && type != ValueType::u32) || right_type != type) {
-                reject(symbol.position, "Binary operands require matching float or uint types.");
+            } else if (!scalar(type) || right_type != type ||
+                (type.kind == ValueType::enumeration && operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
+                reject(symbol.position, "Binary operands require matching numeric types; enums support equality only.");
             }
             left = add(Expression{Expression::Kind::binary,
                 operation.comparison ? ValueType::predicate : type, symbol.position, left, right, 0, operation.operation});
@@ -404,11 +471,15 @@ private:
         if (token_.text == "+" || token_.text == "-") {
             const auto symbol = consume();
             const auto operand = unary();
+            if (symbol.text == "-" && program_.expressions[operand].kind == Expression::Kind::literal &&
+                program_.expressions[operand].type == ValueType::u32 && program_.expressions[operand].value == 2147483648u)
+                return add(Expression{Expression::Kind::literal, ValueType::i32, symbol.position, no_node, no_node, 2147483648u});
+            if (symbol.text == "-" && integer_constant(operand)) signed_constant(operand);
             const auto type = program_.expressions[operand].type;
-            if (type != ValueType::f32 && type != ValueType::u32)
+            if (type != ValueType::f32 && type != ValueType::u32 && type != ValueType::i32)
                 reject(symbol.position, "Unary arithmetic requires a numeric operand.");
-            if (symbol.text == "-" && type != ValueType::f32)
-                reject(symbol.position, "Unary minus requires float; use uint subtraction for modulo arithmetic.");
+            if (symbol.text == "-" && type != ValueType::f32 && type != ValueType::i32)
+                reject(symbol.position, "Unary minus requires float or int; use uint subtraction for modulo arithmetic.");
             return add(Expression{Expression::Kind::unary, type, symbol.position, operand, no_node, 0,
                 symbol.text == "+" ? Operation::positive : Operation::negate});
         }
@@ -431,7 +502,10 @@ private:
                         if (arguments.size() >= method->parameters.size())
                             reject(token_.position, "Native method argument count mismatch.");
                         const auto argument = expression();
-                        same_type(argument, method->parameters[arguments.size()]);
+                        const auto& parameter = method->parameters[arguments.size()];
+                        same_type(argument, parameter.type);
+                        if (parameter.passing == ParameterPassing::reference && !writable(argument))
+                            reject(program_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
                         arguments.push_back(argument);
                     } while (accept(","));
                     expect(")");
@@ -441,6 +515,7 @@ private:
                 Expression call{Expression::Kind::call, method->result, position,
                     no_node, no_node, static_cast<std::uint32_t>(method - environment_.methods.data()), Operation::add, receiver};
                 call.arguments = std::move(arguments);
+                for (const auto& parameter : method->parameters) call.argument_passing.push_back(parameter.passing);
                 receiver = add(std::move(call));
             } else {
                 const FieldBinding* field{};
@@ -476,6 +551,30 @@ private:
             return add(Expression{Expression::Kind::literal, ValueType::u32, token.position, no_node, no_node, value});
         }
         if (token.kind != Token::Kind::identifier) reject(token.position, "Expected an expression.");
+        {
+            auto lookahead = lexer_;
+            auto next = lookahead.next();
+            std::string name(token.text);
+            while (next.text == ".") {
+                const auto segment = lookahead.next();
+                name += "."; name += segment.text;
+                next = lookahead.next();
+            }
+            if (next.text == "::") {
+                const auto name_actual = qualified_identifier();
+                expect("::");
+                const auto item = identifier();
+                for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i) {
+                    const auto& enumeration = environment_.enumerations[i];
+                    if (enumeration.name != name_actual) continue;
+                    for (const auto& value : enumeration.values)
+                        if (value.name == item.text) return add(Expression{Expression::Kind::literal,
+                            {ValueType::enumeration, i}, token.position, no_node, no_node, value.bits});
+                    reject(item.position, "Unknown enumerator.");
+                }
+                reject(token.position, "Unknown enum type.");
+            }
+        }
         consume();
         if (token.text == "self")
             return add(Expression{Expression::Kind::receiver, ValueType::strong_reference, token.position});

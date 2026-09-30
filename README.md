@@ -6,6 +6,14 @@
 
 项目协作入口为 [AGENTS.md](AGENTS.md)，编程范式与性能约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。Runtime、源码与 JIT 的模块归属、调用链、所有权和已知边界集中在[执行结构说明](docs/runtime-structure.md)。现行源码语法统一由 [LANGUAGE.md](LANGUAGE.md) 维护。
 
+Runtime 已支持以 `core.Object` 为根的正式单继承、基类引用视图、继承成员访问，以及原生和描述型派生对象的完整 GC/构析。现有同步与协程源码入口可接受符合绑定基类的派生对象；源码类型声明、虚方法覆盖和布局迁移尚未开放。具体合同见[对象单继承](docs/runtime-model.md#正式对象单继承)。
+
+对象字段已支持定型强引用序列，宿主通过 `with_native` 同步借用原生载荷，通过 `apply_reference_changes` 原子提交序列与引用槽的成组修改。序列参与同一 GC，支持暂停标记期间的扩容、移位和清空；当前仍由原生宿主操作，源码容器语法尚未开放。具体合同见[引用序列与受保护原生访问](docs/runtime-model.md#引用序列与受保护原生访问)。
+
+C++ 自动反射使用 `ACLASS/ASTRUCT/AENUM/AFIELD/AFUNCTION` 与 `AGENERATED_BODY`。锁定版本的 Clang LibTooling 生成 `.gen.hpp/.gen.cpp`，继续通过现有 Runtime 发布；World 的七种真实类型已迁移。i32、枚举及三种参数传递方式已贯通原生、源码与 JIT，见[调用链验收](acceptance/reflection/calls.cpp)。写法、构建接线、首片限制和端到端入口见[自动反射](docs/reflection.md)。
+
+引擎 C++ 基础库已提供拥有型 `Array<T>/String` 和借用型 `Span<T>/StringView`，支持宏反射字段、同一 Runtime 类型身份及原生/描述型值构析。String 使用 UTF-8；反射数组首片限于无 GC 引用的值元素。接口、所有权、接入示例及边界见[基础库](docs/foundation.md)。
+
 ## 启动首个场景编辑器
 
 在仓库根目录的 PowerShell 中执行唯一产品入口：
@@ -17,9 +25,9 @@ cmake --build --preset dev --target atelier_editor
 ./out/dev/atelier_editor.exe
 ```
 
-首版包含方块视口、对象列表、位置 XYZ 参数、可拖分隔、增删与撤销/重做，以及相机观察/缩放/聚焦/重置。数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除场景对象。
+编辑器直接消费正式 Actor/Component/World。启动时创建一个带 Transform 和 Cube 的示例 Actor；`+ Add Actor` 创建空 Actor，右侧 `+ Transform`、`+ Cube` 添加实际组件，`− Cube` 只移除方块能力并保留 Actor。位置 XYZ 编辑实际 Transform 字段，数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Actor。列表、可拖分隔和相机观察沿用同一窗口入口。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
-本轮对应[方案](docs/first-editor-plan.md)的 M0 与 M1 核心操作。旋转缩放编辑、保存重开、JIT 单步、节点图、视口拾取和 gizmo 尚未接入；不宣称 M2 已完成。
+World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、保存重开、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[对象模型合同](docs/research/game-world-object-model.md)，不启动 S3 面板体系。
 原生 UI 的 S1 已收口。S2 已接入共享 Unicode 单行编辑、参数搜索、剪贴板与 IMM32 平台往返；dev/release UI 13/13、真实搜狗输入及最终普通窗口各 709 帧验收均通过。字段切换统一取消并解除旧原生输入关联，再恢复新目标，已验证旧候选不会落入新字段。数值非法 Enter 保留草稿，提交/取消后保留焦点；无本地事务时 Ctrl+Z/Y 进入场景历史。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`，[原生 UI 方案](docs/ui-foundation-plan.md)维护唯一排期，S3 未启动。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
@@ -30,7 +38,7 @@ cmake --preset release
 cmake --build --preset release --target editor_acceptance
 ```
 
-每种配置输出 `Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`；GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，S1 另输出状态/字体/256对象列表截图和 `s1-performance.csv`、`s1-resources.csv`。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
+每种配置输出 `Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`；只运行无窗口文档链使用 `editor_document_acceptance`。GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，包括状态/字体/256 Actor 列表、组件增删和完整 TRS 投影。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
 窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。运行目录须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证。
 
 ## 构建与端到端验收
@@ -48,7 +56,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先执行 RHI 依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (13/13)`、`Editor scene acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先完成基础库、反射（含 CLI）和 RHI 验收依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (13/13)`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
@@ -92,7 +100,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## 引擎资源连接方案
 
-[图片资源首例](docs/modules/resources/design-proposal.md)目前是设计提案：宿主建立共享 Runtime Texture 对象，业务引用共享，布局和绘制消费固定内容版本。正式源码宿主已可用；跨类型源码目录、引用字段编译、受保护原生载荷访问及生产图片接线仍未实现。此次合入文档不代表这条跨模块业务链已通过验收。
+[图片资源首例](docs/modules/resources/design-proposal.md)目前是设计提案：宿主建立共享 Runtime Texture 对象，业务引用共享，布局和绘制消费固定内容版本。正式源码宿主和受保护原生载荷访问已可用；跨类型源码目录、引用字段编译及生产图片接线仍未实现。这条跨模块业务链尚未通过验收。
 
 ## 默认内存分配
 
@@ -102,7 +110,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 实际覆盖包括全局 C++ 分配、采用默认分配器的标准容器，以及经过动态 CRT 的 C 分配。独立堆、直接操作系统分配、GPU/JIT 专用内存和第三方自定义分配不因 CRT 重定向而自动改用 mimalloc。原有析构、所有权和指定释放接口的契约保持不变。
 
-验收会检查 CRT 重定向状态，关闭重定向时返回失败；仅链接 mimalloc 或仅覆盖 `new/delete` 不算通过。开发配置保留上游调试检查，当前尚未测量分配器带来的性能收益。核心容器选型尚未实现，演进约定见工程指南。
+验收会检查 CRT 重定向状态，关闭重定向时返回失败；仅链接 mimalloc 或仅覆盖 `new/delete` 不算通过。开发配置保留上游调试检查，当前尚未测量分配器带来的性能收益。引擎基础容器通过相同分配入口取得存储，具体契约见基础库文档，演进约定见工程指南。
 
 ## Windows JIT 平台验收
 
@@ -126,7 +134,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## JIT 业务执行闭环
 
-正式消费者包含 [source/program.hpp](src/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。参数和返回值使用 Runtime 的 `Scalar`，不会暴露 LLVM 或私有 DLL 参数布局。[独立最小消费者](acceptance/source/main.cpp)仅依赖该公共入口，验证同步结果、兼容替换、旧版本租约和程序关闭后的挂起帧存活。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
+正式消费者包含 [source/program.hpp](src/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。值参数和返回值使用 Runtime 的 `Scalar`，借用参数使用 `Argument`，不会暴露 LLVM 或私有 DLL 参数布局。[独立最小消费者](acceptance/source/main.cpp)仅依赖该公共入口，验证同步结果、兼容替换、旧版本租约和程序关闭后的挂起帧存活。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
 
 单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。配置时设置 `-DATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收及后端故障注入，正式源码库和该最小消费者仍可构建；默认 ON 保留既有完整验收入口。
 
@@ -145,15 +153,15 @@ cmake --build --preset release --target atelier_source_measure
 - 顶层以 `ExecutionScope` 覆盖入场至帧清理，内部准入检查拒绝原生借用或遍历内重入；同一 Runtime 的活动调用统一计数。真正原生调用仍保留 `Runtime::call` 的保护；生成安全点按宿主请求与单步预算推进同一个 GC，不引入另一个收集器或 Tick 调度器。
 - 错误通过定型 thunk 的状态与固定诊断返回；IR 显式清根，宿主在 RAII 兜底之前验证清理完成。跨 Runtime、错类型、失效代际与槽位复用均按原身份规则拒绝，已发生的业务修改不回滚。
 - LLVM 与 C++ 所有权继续隔离。活动调用在 DLL 内持有代码；已实际验证原生回调销毁外层代码句柄后继续执行，返回后释放代码页和展开表。两条生成路径共用 [Windows 展开机制](src/jit/windows_unwind.cpp)。
-- 源码入口接受零个或多个 `float/uint` 参数，显式返回 `void/float/uint`，不隐式转换。调用先校验数量、类型和结果存储；失败状态与成功标量分开，只有原生调用、结束回调和生成清理全部成功才提交结果，失败不覆盖调用方结果。
+- 源码入口接受零个或多个 float/uint/int/枚举参数，支持值、只读引用及可写引用，返回 void 或同范围值类型；已定型数值不隐式转换。调用先校验数量、类型和结果存储；失败状态与成功标量分开，只有原生调用、结束回调和生成清理全部成功才提交结果，失败不覆盖调用方结果。
 - 成员名称、字段路径和原生方法签名来自同一 Runtime 的元数据；前端/后端只使用宿主绑定表索引，不知道机器字段名字。机器快照的创建、轮询后刷新与结果根交接归宿主验收适配器；纯标量入口无需接收者、快照或登记对象根。
-- 原生注册和源码发布共用 `FunctionSignature` 及 Runtime 解析规则；原生 `void/float/uint` 结果已经贯通动态调用、源码表达式和 LLVM 降低，保留原生成员的 const 接收者信息。嵌套实参先顺序求值再打包，原生失败、漏写或错误种类的结果不提交给源码调用方。
+- 原生注册和源码发布共用 `FunctionSignature` 及 Runtime 解析规则；原生 void 或标量/枚举值结果已经贯通动态调用、源码表达式和 LLVM 降低，保留原生成员的 const 接收者信息。嵌套实参先顺序求值再打包，原生失败、漏写或错误种类的结果不提交给源码调用方。
 
 开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单入口、标量、既有成员、`if/while/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#已实现的最小业务执行协议)。新增引用在原生/描述型对象上各执行 12 个独立场景；其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。旧数值、错误、GC、展开和代码退休验收继续通过。
 
 构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。这不等于已有文件监视、机器码源码行映射或断点调试。
 
-当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不依赖 LLVM/Runtime，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，记录/引用参数与结果尚未开放。
+当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，记录、对象引用参数与结果及借用返回尚未开放。
 
 前端与源码执行链已完成一轮[专项审查及真实机器批量基线](docs/research/jit-industrial-research.md#v001-源码专项审查与真实机器基线)：修复业务链接根因诊断丢失，补充 owner 撤销后原生异常的组合验收，执行固定种子源码变异/数值对照，并分别测量编译、批量调用和回收。已有基线不等于完成业务吞吐优化或全面安全审计。
 
@@ -208,10 +216,10 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 类型先注册后使用，实例首次创建成功后关闭注册。支持原生与描述型定义成组发布，前向依赖和引用环不要求按依赖顺序提交；整组验证与布局计算成功后才公开，失败不会留下半注册类型。单条注册复用同一路径。
 - `TypeId`、`FieldId`、`MethodId` 和 `ObjectId` 都限于所属运行时；限定类型名是声明名称，进程内标识不是存档 ID。
 - `create` 交付已登记的 `ObjectRoot`，`ObjectId` 仍只标识身份。根复制增加独立登记，移动转移登记；释放根不立即销毁目标，也不延长 `Runtime` 自身的生命。显式销毁及运行时退出仍释放对象；不可达对象由宿主显式推进 GC 回收。
-- 当前可执行 `float`、`uint32_t`、含引用内联记录与对象，以及接收标量、返回 `void/float/uint32_t` 的方法。引用字段仍由共享值描述控制，记录/引用函数参数与结果未实现；不支持继承、容器字段或值记录方法。
+- 当前支持 float/u32/i32、i32/u32 底层枚举、含引用内联记录与单继承对象；方法支持标量/枚举的值、只读引用及可写引用参数。对象强引用序列见上方合同；记录/对象引用参数与结果、借用返回、通用值容器及记录方法尚未实现。
 - 标量和记录支持调用方存储上的初始化、复制构造、赋值和销毁。含引用记录的复制保持共享目标，不克隆对象；原生记录执行 C++ 操作，描述型记录按字段执行。`TypeInfo` 分别提供复制构造和赋值能力，缺少能力时在操作开始前拒绝。
 - `root_value` 用可移动的 `ValueRoot` 登记调用方的活值存储，不接管或延长存储寿命。登记撤销前禁止重建或销毁该存储；赋值仍可更新其中的引用。值接口检查类型、容量、对齐和重叠，调用方负责实际表示、构造状态和存续期。这仍是可信原生接口，不是任意字节的安全验证器，见[值操作入口](docs/runtime-model.md#已实现的值操作入口)。
-- `Scalar` 是仅含上述两种标量的无堆分配参数/结果载体，不承担语言对象或通用动态值的存储。
+- `Scalar` 是保存 float/u32/i32 或带类型身份枚举值的无堆分配值载体，不承担语言对象或通用动态值的存储。
 - 通过名称查找成员后可缓存成员标识。类型/成员名称查询目前是线性扫描，定位于注册和发现阶段；缓存后的字段路径访问与方法调用不重新查名字，不分配堆内存（错误报告除外）。
 - `read/write` 的终字段必须是标量，`read_reference/write_reference` 操作引用字段；字段路径只穿过内联记录，不隐式解引用对象。引用写入检查目标类型和形式，弱引用不能直接写入持有字段；`try_acquire` 对活的观察目标交付根句柄，空或失效目标返回空结果。已定型的失效引用仍可复制，旧身份不自动清空，也不绑定复用槽位的新对象。
 - `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根，异常转换为调用错误。
