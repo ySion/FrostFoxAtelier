@@ -1,3 +1,21 @@
+void parameter_menu(Application& app, ControlKey source) {
+    require_input_focus(app);
+    KeyStateScope modifiers;
+    const auto at=centre(app,source);
+    SendMessageW(app.window(),WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(at.x,at.y));
+    SendMessageW(app.window(),WM_RBUTTONUP,0,MAKELPARAM(at.x,at.y));
+    tick(app,2);
+    require(app.presented()->popup==control::parameter_menu,"Parameter menu did not enter the accepted frame.");
+}
+bool tuple_reset_available(Application& app, ControlKey group) {
+    parameter_menu(app,group);
+    const bool enabled=app.presented()->find(control::menu_group_reset)->enabled;
+    key(app,VK_ESCAPE); return enabled;
+}
+void reset_tuple(Application& app, ControlKey group) {
+    parameter_menu(app,group); click(app,control::menu_group_reset);
+    require(!app.presented()->popup,"Tuple reset left its popup open.");
+}
 void verify_basic_controls(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
     const auto resize_panel=[&](float width) {
         require_input_focus(app);
@@ -24,13 +42,13 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     }
     const auto count=app.document().undo_count();
     const auto reset=app.reset_control(*target);
-    require(reset && app.presented()->find(reset)->enabled,"Modified vector has no reset action.");
+    require(reset && tuple_reset_available(app,reset),"Modified vector has no reset action.");
     const auto modified=app.presented()->find(property_control(app,actor,0))->style->foreground;
     capture(app,output/"controls-vector-modified.png");
-    click(app,reset);
+    reset_tuple(app,reset);
     require(position(0)==0 && position(1)==0 && position(2)==0 && app.document().undo_count()==count+1,
         "Vector reset did not apply as one history entry.");
-    require(!app.presented()->find(reset)->enabled &&
+    require(!tuple_reset_available(app,reset) &&
         app.presented()->find(property_control(app,actor,0))->style->foreground!=modified,
         "Restoring defaults did not clear the modified state and reset availability.");
     click(app,control::undo);
@@ -40,14 +58,14 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
 
     click(app,property_control(app,actor,1)); type(app,L"5"); key(app,VK_RETURN);
     click(app,control::parameter_search); type(app,L"x"); key(app,VK_RETURN);
-    require(!app.presented()->find(property_control(app,actor,1)) && app.presented()->find(reset)->enabled,
+    require(!app.presented()->find(property_control(app,actor,1)) && tuple_reset_available(app,reset),
         "Filtering out the only modified component disabled the whole-vector reset.");
     const auto filtered_history=app.document().undo_count();
-    click(app,reset);
+    reset_tuple(app,reset);
     require(position(0)==0 && position(1)==0 && position(2)==0 && app.document().undo_count()==filtered_history+1,
         "Filtered reset did not restore the hidden component in one transaction.");
     click(app,control::undo);
-    require(position(1)==5 && app.query()==L"x" && app.presented()->find(reset)->enabled,
+    require(position(1)==5 && app.query()==L"x" && tuple_reset_available(app,reset),
         "Undo did not restore the hidden component and whole-group modified state.");
     capture(app,output/"controls-filtered-reset.png");
     click(app,control::redo);
@@ -114,6 +132,96 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     wheel(app,sample::list,12);
     resize_panel(width);
     click(app,sample::long_labels);
+    // Real native messages, clipboard, accepted frames, history and renderer.
+    parameter_menu(app,sample::position_x);
+    capture(app,output/"controls-parameter-menu.png");
+    click(app,control::menu_copy);
+    require(!app.presented()->popup,"Copy left its popup open.");
+    parameter_menu(app,sample::position_y); click(app,control::menu_paste);
+    require(app.control_workbench().values().position[1]==12.5,"Paste Value did not commit the clipboard value.");
+    click(app,control::undo);
+    require(app.control_workbench().values().position[1]==0,"Menu paste did not produce one undoable edit.");
+    parameter_menu(app,sample::position_x); click(app,control::menu_reset);
+    require(app.control_workbench().values().position[0]==0,"Scalar default command did not restore its value.");
+    click(app,control::undo);
+    parameter_menu(app,sample::name); click(app,control::menu_copy);
+    parameter_menu(app,sample::position_x); click(app,control::menu_paste);
+    require(app.control_workbench().values().position[0]==12.5 && app.text_input(),
+        "Invalid numeric paste committed or discarded the editable draft.");
+    key(app,VK_ESCAPE);
+    parameter_menu(app,sample::position_x);
+    key(app,VK_DELETE);
+    require(app.presented()->popup && contains(app,actor),"Popup leaked Delete to the scene.");
+    const auto view=atelier::application::EditorAcceptanceAccess::camera_view(app);
+    wheel(app,control::viewport,3);
+    require(atelier::application::EditorAcceptanceAccess::camera_view(app)==view,"Popup wheel escaped to the camera.");
+    click(app,control::workbench);
+    require(!app.presented()->popup && app.workbench_visible(),"Outside click did not dismiss without activating the toolbar.");
+    click(app,sample::position_x); key(app,VK_APPS);
+    require(app.presented()->popup,"Keyboard context menu did not open.");
+    key(app,VK_ESCAPE);
+    require(!app.presented()->popup,"Escape failed to dismiss the menu.");
+    key(app,VK_APPS); key(app,VK_ESCAPE); // Owner focus survived dismissal.
+    {
+        KeyStateScope modifiers(false,true);
+        SendMessageW(app.window(),WM_SYSKEYDOWN,VK_F10,0);
+        SendMessageW(app.window(),WM_SYSKEYUP,VK_F10,0); tick(app,2);
+    }
+    require(app.presented()->popup,"Native Shift+F10 did not open the parameter menu.");
+    key(app,VK_ESCAPE);
+    // The ladder uses one transaction and one cached text paragraph while held.
+    const auto drag=[&](bool ctrl,bool shift,bool cancel) {
+        require_input_focus(app); KeyStateScope modifiers(ctrl,shift);
+        const auto from=centre(app,sample::position_x);
+        const LONG dx=static_cast<LONG>(std::lround(10*app.presented()->drawing->dpi_scale));
+        SendMessageW(app.window(),WM_MBUTTONDOWN,MK_MBUTTON,MAKELPARAM(from.x,from.y));
+        if (!ctrl) SendMessageW(app.window(),WM_MOUSEMOVE,MK_MBUTTON,MAKELPARAM(from.x+dx,from.y));
+        if (cancel) SendMessageW(app.window(),WM_KEYDOWN,VK_ESCAPE,0);
+        SendMessageW(app.window(),WM_MBUTTONUP,0,MAKELPARAM(from.x+dx,from.y));
+        if (cancel) SendMessageW(app.window(),WM_KEYUP,VK_ESCAPE,0);
+        tick(app,2);
+    };
+    const auto history_before=app.control_workbench().undo_count();
+    drag(false,false,true);
+    require(app.control_workbench().values().position[0]==12.5 && app.control_workbench().undo_count()==history_before,
+        "Esc failed to roll back the ladder gesture.");
+    drag(false,false,false);
+    require(std::abs(app.control_workbench().values().position[0]-12.6)<1e-6 && app.control_workbench().undo_count()==history_before+1,
+        "Middle drag did not commit one stepped edit.");
+    click(app,control::undo);
+    drag(false,true,false);
+    require(std::abs(app.control_workbench().values().position[0]-12.51)<1e-6,"Shift ladder did not use fine steps.");
+    click(app,control::undo);
+    drag(true,false,false);
+    require(app.control_workbench().values().position[0]==0,"Ctrl+middle did not restore the default.");
+    click(app,control::undo);
+    {
+        require_input_focus(app); KeyStateScope modifiers;
+        const auto from=centre(app,sample::position_x);
+        SendMessageW(app.window(),WM_MBUTTONDOWN,MK_MBUTTON,MAKELPARAM(from.x,from.y));
+        tick(app,2);
+        capture(app,output/"controls-value-ladder.png");
+        const auto cached=app.ui_statistics(); tick(app,3);
+        require(app.ui_statistics().text_layouts==cached.text_layouts && app.ui_statistics().rasterizations==cached.rasterizations,
+            "Held value ladder rebuilt unchanged labels every frame.");
+        const LONG dx=static_cast<LONG>(std::lround(10*app.presented()->drawing->dpi_scale));
+        const LONG dy=static_cast<LONG>(std::lround(24*app.presented()->drawing->dpi_scale));
+        SendMessageW(app.window(),WM_MOUSEMOVE,MK_MBUTTON,MAKELPARAM(from.x+dx,from.y-dy));
+        SendMessageW(app.window(),WM_MBUTTONUP,0,MAKELPARAM(from.x+dx,from.y-dy)); tick(app,2);
+        require(app.control_workbench().values().position[0]>12.6,"Vertical ladder motion failed to choose a coarser step.");
+    }
+    click(app,control::undo);
+    wheel(app,sample::list,-12);
+    click(app,sample::mode);
+    require(app.presented()->popup,"Combo did not open its menu.");
+    capture(app,output/"controls-combo.png");
+    key(app,VK_DOWN); key(app,VK_RETURN);
+    require(!app.presented()->popup && app.control_workbench().values().mode==1,"Combo keyboard selection failed.");
+    key(app,VK_DOWN); key(app,VK_ESCAPE);
+    require(app.control_workbench().values().mode==1,"Combo cancellation changed the selection.");
+    click(app,control::undo);
+    require(app.control_workbench().values().mode==0,"Combo selection bypassed sample history.");
+    wheel(app,sample::list,12);
     click(app,sample::fold);
     require(!app.presented()->find(sample::position_x),"Workbench foldout did not collapse its subtree.");
     key(app,VK_RETURN);

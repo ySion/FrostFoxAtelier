@@ -34,19 +34,20 @@ text_edit:focus { border-color: token(accent); }
 ## 支持的语法
 
 - 单控件选择器：`button`、`*`、`.compact`、`button.compact.danger`，可用逗号共享声明。
-- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout`。
+- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo`。
 - 角色：`:role(normal|panel|title|caption)`。
 - 状态：`:enabled / :disabled / :hover / :pressed / :focus / :selected / :invalid / :modified`，可组合；enabled 与 disabled 不能共存。`modified` 来自宿主的默认值比较，与焦点、选中和非法草稿分别表达。
 - `@tokens { name: value; }` 与全值 `token(name)`；支持前向引用，拒绝循环及未知 token。
 - UTF-8 文本、`/* 注释 */`；每条声明必须以分号结尾。类名为不以数字开头的 ASCII 字母、数字、`_`、`-`，最长 64 字节。
 
-状态选择器只改变绘制属性，拒绝字体和 padding，避免 hover/pressed 改变命中几何。结构布局继续用 `NodeInput`；本片没有后代选择器、浏览器盒模型、百分比、表达式、动画或通用 CSS。
+状态选择器只改变绘制属性，拒绝字体、text-align 和 padding，避免 hover/pressed 改变命中几何。结构布局继续用 `NodeInput`；本片没有后代选择器、浏览器盒模型、百分比、表达式、动画或通用 CSS。
 
 | 属性 | 值 |
 | --- | --- |
 | `color / background / border-color / selection-color / caret-color / scrollbar-color` | `#RRGGBB`、`#RRGGBBAA`、`transparent` 或 `none`；作者 RGB 是 sRGB，解析为线性颜色 |
 | `font-family / font-locale` | 单引号或双引号 UTF-8 字符串，不支持转义 |
 | `font-size / font-weight` | 4–256 DIP / 整数 1–999 |
+| `text-align` | `left / center / right`；不继承，在同一 DirectWrite 段落内处理测量、绘制和命中 |
 | `padding` | 1、2 或 4 个长度；四值依次上、右、下、左，0–128 DIP |
 | `border-radius` | 1、2 或 4 个长度；四值依次左上、右上、右下、左下，0–32768 DIP |
 | `border-width / caret-width` | 0–128 / 0.25–16 DIP |
@@ -69,7 +70,7 @@ renderer 只合并相邻且有效 scissor、管线、图片身份/版本相同�
 
 样式资源解析与校验在发布前完成。稳定控件复用最终样式，样式来源、继承、类名或状态改变才重新匹配；实际结果相同时保留原对象。测量和绘制消费同一个结果，局部字体变化不会增加全局字体 provider 版本，绘制属性变化复用段落和 R8 像素。
 
-`UiFrame` 保有每个可编辑字段的不可变段落、文字内容、最终原点、DPI、横滚和编辑 token。指针命中使用已接受帧的段落；未接受的新字体、padding 或横滚不会移动旧画面的命中。内容已变化但尚未绘制时，指针请求重绘，不把旧 offset 应用于新草稿。连续键盘输入则用接受帧的字体/宽度策略重排当前草稿。平台输入法位置继续要求 token、组合显示版本和 Surface 匹配。
+`UiFrame` 保有每个可编辑字段的不可变段落、文字内容、最终原点、DPI、横滚和编辑 token。指针命中使用已接受帧的段落；未接受的新字体、padding 或横滚不会移动旧画面的命中。内容已变化但尚未绘制时，指针请求重绘，不把旧 offset 应用于新草稿。连续键盘输入则用接受帧的字体/对齐/宽度策略重排当前草稿。平台输入法位置继续要求 token、组合显示版本和 Surface 匹配。
 
 ## 验收
 

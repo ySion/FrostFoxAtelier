@@ -12,6 +12,7 @@ inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40, splitter = 41;
 inline constexpr ui::ControlKey parameter_search = 54;
 inline constexpr ui::ControlKey empty_field_base = 200;
+inline constexpr ui::ControlKey parameter_menu=500, menu_group_reset=501, menu_reset=502, menu_copy=503, menu_paste=504;
 }
 struct Workspace {
     struct Binding {
@@ -25,6 +26,7 @@ struct Workspace {
     ControlWorkbench workbench;
     std::wstring status{L"Ready"};
     std::wstring query;
+    std::optional<ui::ContextMenuRequest> menu;
     std::vector<ui::Control> describe(const Session&);
     const Binding* binding(ui::ControlKey) const noexcept;
     ui::ControlKey object_control(ObjectId) const noexcept;

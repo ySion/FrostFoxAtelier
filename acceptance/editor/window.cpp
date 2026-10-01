@@ -13,6 +13,7 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
     static Result<void> begin_edit(Application& app, ui::ControlKey control) {
         const auto* binding = app.workspace_.binding(control);
         if (!binding || binding->path.empty()) return std::unexpected(Error{ErrorCode::invalid_definition, "Missing field binding."});
@@ -398,7 +399,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     require(app.query().empty() && app.document().undo_count() == original_history, "Search history escaped into scene history.");
     type(app, L"ab אבג xy"); key(app, 'A', true);
     const auto colors = solid_colors(*app.presented(), control::parameter_search);
-    require(std::count(colors.begin(), colors.end(), app.style().palette.selection) > 1,
+    require(std::count(colors.begin(), colors.end(), app.presented()->find(control::parameter_search)->style->selection) > 1,
         "Bidirectional selection did not produce multiple visual ranges.");
     capture(app, output / "s2-bidi-selection.png");
     key(app, VK_ESCAPE);
@@ -684,7 +685,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
-           << "Basic controls: responsive Vector3, modified/default states, atomic vector reset and undo/redo, pointer/keyboard checkbox and foldout, disabled inheritance, narrow/long-label workbench, isolated sample history, return to scene\n"
+           << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"

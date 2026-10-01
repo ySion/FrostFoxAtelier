@@ -12,10 +12,12 @@ namespace atelier::ui {
 namespace {
 bool text_kind(ControlKind kind) {
     return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item ||
-        kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::checkbox || kind == ControlKind::foldout;
+        kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::checkbox || kind == ControlKind::foldout ||
+        kind == ControlKind::menu_item || kind == ControlKind::combo;
 }
 bool toggle_kind(ControlKind kind) { return kind == ControlKind::checkbox || kind == ControlKind::foldout; }
-bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind); }
+bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind) || kind==ControlKind::menu_item || kind==ControlKind::combo; }
+bool scrolling(ControlKind kind) { return kind==ControlKind::list || kind==ControlKind::popup; }
 bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit; }
 bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter; }
 bool focusable(ControlKind kind) { return text_kind(kind) && kind != ControlKind::label; }
@@ -89,6 +91,10 @@ struct Session::Impl {
         float x{}, y{}, last_x{}, last_y{};
         double original{}, value{};
         bool dragging{}, selecting{};
+        PointerButton button{PointerButton::primary};
+        float ladder_band{24};
+        int ladder_level{};
+        bool ladder_fine{};
     };
     struct Edit {
         struct Composition {
@@ -107,6 +113,7 @@ struct Session::Impl {
         std::optional<Composition> composition;
         std::optional<ClipboardRequest> clipboard;
         std::optional<ImeRequest> ime_request;
+        bool commit_paste{};
         Edit(const State& state, std::wstring value, double numeric, bool mode, bool select_all)
             : key(state.control.key),token{key,state.incarnation,detail::new_identity(),detail::new_identity()},
               buffer(std::move(value),state.control.kind==ControlKind::number?64:4096,select_all),
@@ -130,6 +137,8 @@ struct Session::Impl {
     ControlKey keyboard_pressed{};
     Key keyboard_key{Key::none};
     Key terminal_key{Key::none};
+    ControlKey popup{}, popup_return_focus{};
+    bool popup_dismissed{};
 
     Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
     bool active() const {
@@ -157,6 +166,7 @@ struct Session::Impl {
         return nullptr;
     }
 #include "ui/session_edit.inl"
+#include "ui/session_popup.inl"
     void resolve(State& state) {
         const auto& control=state.control;
         const auto* parent=control.parent?&states.at(control.parent):nullptr;
@@ -202,12 +212,16 @@ struct Session::Impl {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
             input.content_revision = text_field(state.control.kind) ?
-                text.set(state.control.key, display(state), appearance.font,false) :
-                text.set(state.control.key, state.control.text, appearance.font,state.control.kind == ControlKind::label);
+                text.set(state.control.key, display(state), appearance.font,false,appearance.text_align) :
+                text.set(state.control.key, state.control.text, appearance.font,state.control.kind == ControlKind::label,appearance.text_align);
         } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter) {
             input.kind = ui_layout::Kind::box;
-        } else if (state.control.kind == ControlKind::list) {
+        } else if (scrolling(state.control.kind)) {
             input.kind = ui_layout::Kind::column;
+            if (state.control.kind==ControlKind::popup) {
+                input.height.maximum=surface.extent.height/surface.dpi_scale;
+                input.width.maximum=surface.extent.width/surface.dpi_scale;
+            }
         }
         return input;
     }
@@ -289,9 +303,10 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     if (unchanged) return Reply{};
     std::map<ControlKey, const Control*> validated;
     std::vector<ControlKey> order; order.reserve(controls.size());
+    ControlKey next_popup{};
     for (const auto& control : controls) {
         if (!control.key || validated.contains(control.key) || (control.parent && !validated.contains(control.parent)) ||
-            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::foldout) ||
+            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::combo) ||
             static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 || !std::isfinite(control.value) ||
             !std::isfinite(control.minimum) || !std::isfinite(control.maximum) || control.minimum > control.maximum ||
             !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
@@ -299,12 +314,31 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum || *control.default_value>control.maximum))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.kind==ControlKind::popup) {
+            if (next_popup || control.parent || !control.popup_owner || !validated.contains(control.popup_owner))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+            next_popup=control.key;
+        } else if (control.popup_owner) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.edit_command) {
+            const auto found=validated.find(control.edit_command->target);
+            if (control.kind!=ControlKind::menu_item || found==validated.end() || !text_field(found->second->kind) ||
+                static_cast<unsigned>(control.edit_command->kind)>static_cast<unsigned>(EditCommandKind::reset) ||
+                (control.edit_command->kind==EditCommandKind::reset && !found->second->default_value))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        }
+        if (next_popup && control.key!=next_popup) {
+            auto parent=control.parent;
+            while (parent && parent!=next_popup) parent=validated.at(parent)->parent;
+            if (parent!=next_popup) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        }
         if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
             !std::all_of(control.classes.begin(),control.classes.end(),[](const auto& name){return StyleSheet::valid_class(name);}))
             return std::unexpected(Error{ErrorCode::invalid_style,control.key});
         if (control.parent) {
             const auto kind = validated.at(control.parent)->kind;
-            if (kind != ControlKind::container && kind != ControlKind::list)
+            if (kind != ControlKind::container && kind != ControlKind::list && kind!=ControlKind::popup)
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         }
         if (editable(control.kind) && (control.value < control.minimum || control.value > control.maximum))
@@ -350,6 +384,8 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
         }
     }
     self.order = std::move(order);
+    self.update_popup(next_popup,reply);
+    if (self.popup && absent(self.states.at(self.popup).control.popup_owner)) self.dismiss_popup(reply);
     return reply;
 }
 
@@ -376,13 +412,13 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
         }
         for (auto key : self.order) {
             const auto& state = self.states.at(key);
-            if (state.control.parent && self.states.at(state.control.parent).control.kind == ControlKind::list)
+            if (state.control.parent && scrolling(self.states.at(state.control.parent).control.kind))
                 if (const auto* box = geometry->find(state.node))
                     self.states.at(state.control.parent).content_bottom = std::max(self.states.at(state.control.parent).content_bottom,box->y+box->height);
         }
         for (auto key : self.order) {
             auto& state = self.states.at(key);
-            if (state.control.kind == ControlKind::list)
+            if (scrolling(state.control.kind))
                 if (const auto* box = geometry->find(state.node)) {
                     const auto padding=effective_padding(state.control,*state.resolved);
                     state.scroll_limit = std::max(0.f,state.content_bottom+padding.bottom-box->height);
@@ -394,8 +430,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (visible(bounds,clip) && color.a > 0)
                 draws->draws.push_back({bounds,clip,color,{0,0,1,1},std::move(coverage)});
         };
+        std::size_t popup_draw_begin=std::numeric_limits<std::size_t>::max();
         for (auto key : self.order) {
             auto& state = self.states.at(key);
+            if (state.control.kind==ControlKind::popup && self.popup_dismissed) continue;
             const auto* box = geometry->find(state.node);
             if (!box) continue;
             Rect bounds{box->x*scale,box->y*scale,box->width*scale,box->height*scale};
@@ -408,7 +446,13 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 bounds.x += parent_box.bounds.x; bounds.y += parent_box.bounds.y;
                 clip = intersect(parent_box.clip,clip_rect(parent_box.bounds));
                 enabled &= parent_box.enabled;
-                if (parent_state.control.kind == ControlKind::list) bounds.y -= static_cast<float>(parent_state.scroll)*scale;
+                if (scrolling(parent_state.control.kind)) bounds.y -= static_cast<float>(parent_state.scroll)*scale;
+            }
+            if (state.control.kind==ControlKind::popup) {
+                bounds.x=std::clamp(bounds.x,0.f,std::max(0.f,static_cast<float>(self.surface.extent.width)-bounds.width));
+                bounds.y=std::clamp(bounds.y,0.f,std::max(0.f,static_cast<float>(self.surface.extent.height)-bounds.height));
+                output->popup=key;
+                popup_draw_begin=draws->draws.size();
             }
             // Cap before conversion to integer clip; layout can legally overflow.
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
@@ -437,11 +481,18 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 if (kind==ControlKind::checkbox) {
                     draws->draws.push_back({{x,y,14*scale,14*scale},marker_clip,{0,0,0,0},{0,0,1,1},{},
                         {2*scale,2*scale,2*scale,2*scale},scale,appearance.foreground});
-                    if (state.control.selected) quad({x+4*scale,y+4*scale,6*scale,6*scale},marker_clip,appearance.foreground);
+                    if (state.control.selected) quad({x+scale,y+scale,12*scale,12*scale},marker_clip,appearance.foreground,
+                        self.text.symbol(detail::TextStore::Symbol::check,static_cast<std::uint32_t>(std::ceil(12*scale))));
                 } else {
-                    quad({x+3*scale,y+6*scale,8*scale,2*scale},marker_clip,appearance.foreground);
-                    if (!state.control.selected) quad({x+6*scale,y+3*scale,2*scale,8*scale},marker_clip,appearance.foreground);
+                    quad({x+scale,y+scale,12*scale,12*scale},marker_clip,appearance.foreground,
+                        self.text.symbol(state.control.selected?detail::TextStore::Symbol::down:detail::TextStore::Symbol::right,
+                            static_cast<std::uint32_t>(std::ceil(12*scale))));
                 }
+            }
+            if (kind==ControlKind::combo) {
+                const float size=12*scale;
+                quad({bounds.x+bounds.width-16*scale,bounds.y+(bounds.height-size)*.5f,size,size},intersect(clip,clip_rect(bounds)),
+                    appearance.foreground,self.text.symbol(detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
             }
             if (text_kind(kind)) {
                 const auto padding = effective_padding(state.control,appearance);
@@ -518,9 +569,9 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 }
             }
         }
-        for (auto key : self.order) {
-            auto& state = self.states.at(key);
-            if (state.control.kind != ControlKind::list || state.frame_index == std::numeric_limits<std::size_t>::max()) continue;
+        const auto popup_draw_end=draws->draws.size();
+        const auto scrollbar=[&](const auto& state) {
+            if (state.frame_index==std::numeric_limits<std::size_t>::max()) return;
             const auto& bounds = output->controls[state.frame_index];
             const auto& appearance=*state.resolved;
             if (state.scroll_limit > 0) {
@@ -530,7 +581,15 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 quad({bounds.bounds.x+bounds.bounds.width-(appearance.scrollbar_width+appearance.scrollbar_inset)*scale,
                     y,appearance.scrollbar_width*scale,thumb},intersect(bounds.clip,clip_rect(bounds.bounds)),appearance.scrollbar);
             }
+        };
+        for (auto key:self.order) if (self.states.at(key).control.kind==ControlKind::list) scrollbar(self.states.at(key));
+        if (popup_draw_begin!=std::numeric_limits<std::size_t>::max()) {
+            // Root popup owns the top layer, including over ordinary list bars.
+            std::rotate(draws->draws.begin()+static_cast<std::ptrdiff_t>(popup_draw_begin),
+                draws->draws.begin()+static_cast<std::ptrdiff_t>(popup_draw_end),draws->draws.end());
+            scrollbar(self.states.at(output->popup));
         }
+#include "ui/session_ladder.inl"
         output->drawing = std::move(draws);
         return std::shared_ptr<const UiFrame>(std::move(output));
     } catch (const detail::TextFailure& failure) { return std::unexpected(Error{ErrorCode::text_failed,0,failure.code}); }
@@ -550,6 +609,7 @@ bool Session::wants_keyboard() const noexcept {
     const auto* state=impl_->live(impl_->focus);
     return state && text_field(state->control.kind) && impl_->active();
 }
+bool Session::has_popup() const noexcept { return impl_->popup || (impl_->published && impl_->published->popup); }
 std::optional<TextInputState> Session::text_input() const noexcept {
     const auto& self=*impl_;
     if (!self.edit || self.focus!=self.edit->key || !self.active()) return {};

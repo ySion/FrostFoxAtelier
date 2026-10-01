@@ -53,7 +53,7 @@
                     edit.emplace(states.at(old.key),format(old.original),old.original,false,false);
             }
         }
-        finish_edit(reply,false,true); keyboard_pressed=0; hover=0;
+        finish_edit(reply,false,true); keyboard_pressed=0; hover=0; dismiss_popup(reply);
         return reply;
     }
     void changed(Reply& reply, detail::TextEdit::Change change, bool was_active) {
@@ -130,8 +130,12 @@
         if (request.operation_id!=result.operation_id || request.kind!=result.kind ||
             request.token!=result.token || edit->token!=result.token) return;
         edit->clipboard.reset(); reply.consumed=true;
-        if (!result.success) { reply.error=Error{ErrorCode::platform_failed,edit->key,result.native_error}; return; }
+        if (!result.success) { edit->commit_paste=false; reply.error=Error{ErrorCode::platform_failed,edit->key,result.native_error}; return; }
         if (result.kind!=ClipboardKind::copy) insert(reply,result.kind==ClipboardKind::cut?std::wstring_view{}:result.text,detail::TextEdit::Group::isolated);
+        if (edit && edit->commit_paste && result.kind==ClipboardKind::read) {
+            edit->commit_paste=false;
+            finish_edit(reply,true,true,true);
+        }
     }
     void ime_result(Reply& reply, const ImeResult& result) {
         if (!edit || !edit->ime_request) return;

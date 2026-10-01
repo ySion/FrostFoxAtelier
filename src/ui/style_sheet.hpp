@@ -20,6 +20,7 @@ struct StyleProperties {
     std::optional<std::wstring> font_family, font_locale;
     std::optional<float> font_size;
     std::optional<std::uint16_t> font_weight;
+    std::optional<TextAlign> text_align;
     std::optional<Color> foreground, background, border, selection, caret, scrollbar;
     std::optional<ui_layout::Insets> padding;
     std::optional<float> border_width, caret_width;
@@ -41,6 +42,7 @@ struct NamedImage { std::string name; std::shared_ptr<const ColorImage> image; }
 // Complete value used by measurement, painting and the accepted frame.
 struct ResolvedStyle {
     Font font;
+    TextAlign text_align{TextAlign::left};
     ui_layout::Insets padding;
     Color foreground, border, selection, caret, scrollbar;
     std::optional<Color> background;

@@ -44,6 +44,7 @@ Reply Session::input(const Event& event) {
             if (event.key!=Key::tab) return reply;
         }
         const auto* hit=self.hit(event.x,event.y);
+        if (self.popup_input(reply,event,hit)) return reply;
         if (event.kind==EventKind::pointer_move) {
             const auto key=hit?hit->key:0;
             reply.redraw=self.hover!=key; self.hover=key;
@@ -60,12 +61,16 @@ Reply Session::input(const Event& event) {
                         Impl::action(reply,ActionKind::edit_begin,press.key,press.original);
                     }
                     if (press.dragging) {
-                        press.value=std::clamp(press.value+delta/self.surface.dpi_scale*(event.shift?control.fine_step:control.drag_step),control.minimum,control.maximum);
+                        press.ladder_fine=event.shift;
+                        if (press.button==PointerButton::middle)
+                            press.ladder_level=std::clamp(static_cast<int>(std::round((press.y-event.y)/self.surface.dpi_scale/press.ladder_band)),-3,3);
+                        const auto step=(event.shift?control.fine_step:control.drag_step)*std::pow(10.0,press.ladder_level);
+                        press.value=std::clamp(press.value+delta/self.surface.dpi_scale*step,control.minimum,control.maximum);
                         Impl::action(reply,ActionKind::edit_preview,press.key,press.value); reply.redraw=true;
                     }
                 }
                 press.last_x=event.x; press.last_y=event.y; reply.consumed=true;
-            } else reply.consumed=hit && hit->kind!=ControlKind::viewport;
+            } else reply.consumed=self.popup || (hit && hit->kind!=ControlKind::viewport);
             if (hit) {
                 const auto& control=self.states.at(hit->key).control;
                 if (control.kind==ControlKind::text_edit || (control.kind==ControlKind::number && self.edit && self.edit->key==hit->key && self.edit->text_mode)) reply.cursor=Cursor::text;
@@ -76,10 +81,25 @@ Reply Session::input(const Event& event) {
         }
         if (event.kind==EventKind::pointer_down) {
             reply.consumed=hit && hit->kind!=ControlKind::viewport;
-            if (event.button!=PointerButton::primary || self.press) return reply;
+            if (self.press) return reply;
+            if (hit && event.button==PointerButton::secondary && self.states.at(hit->key).control.context_target) {
+                self.context_request(reply,*hit,event.x,event.y); return reply;
+            }
+            if (hit && event.button==PointerButton::middle && event.control) {
+                const auto& control=self.states.at(hit->key).control;
+                if (hit->kind==ControlKind::number && control.default_value) {
+                    self.execute_edit_command(reply,{EditCommandKind::reset,hit->key}); reply.consumed=true; return reply;
+                }
+                if (control.context_target) {
+                    self.finish_edit(reply,true); Impl::action(reply,ActionKind::reset,control.context_target);
+                    reply.consumed=reply.redraw=true; return reply;
+                }
+            }
+            if (event.button!=PointerButton::primary && !(hit && event.button==PointerButton::middle && hit->kind==ControlKind::number)) return reply;
             self.keyboard_pressed=0;
             const auto next=hit && focusable(hit->kind)?hit->key:0;
             if (next!=self.focus) { self.finish_edit(reply,true); self.focus=next; }
+            if (event.button==PointerButton::middle) self.finish_edit(reply,true);
             if (!hit || (!focusable(hit->kind) && hit->kind!=ControlKind::splitter)) return reply;
             const auto& control=self.states.at(hit->key).control;
             if (text_field(control.kind) && (!self.edit || self.edit->key!=hit->key))
@@ -88,10 +108,16 @@ Reply Session::input(const Event& event) {
             if (self.edit) self.edit->buffer.break_group();
             if (selecting) self.select_at(reply,event.x,event.y,event.shift);
             self.press=Impl::Press{hit->key,event.x,event.y,event.x,event.y,control.value,control.value,false,selecting};
+            self.press->button=event.button;
+            self.press->ladder_fine=event.shift;
+            if (event.button==PointerButton::middle) {
+                self.text.set(0,L"0",hit->style->font,false);
+                self.press->ladder_band=self.text.metrics(0,70).height;
+            }
             reply.capture=Capture::acquire; reply.redraw=true; return reply;
         }
         if (event.kind==EventKind::pointer_up) {
-            if (event.button!=PointerButton::primary || !self.press) return reply;
+            if (!self.press || event.button!=self.press->button) return reply;
             const auto press=*self.press; self.press.reset();
             reply.consumed=reply.redraw=true; reply.capture=Capture::release;
             if (press.dragging) {
@@ -99,12 +125,10 @@ Reply Session::input(const Event& event) {
                 if (self.focus==press.key && self.states.at(press.key).control.kind==ControlKind::number)
                     self.edit.emplace(self.states.at(press.key),format(press.value),press.value,false,false);
             } else if (!press.selecting && hit && hit->key==press.key) {
-                if (hit->kind==ControlKind::number) {
+                if (hit->kind==ControlKind::number && press.button==PointerButton::primary) {
                     if (!self.edit) self.begin_edit(hit->key,true,true);
                     else { self.edit->text_mode=true; if (self.edit->buffer.select_all()) self.revise(); }
-                } else if (activatable(hit->kind))
-                    Impl::action(reply,hit->kind==ControlKind::item?ActionKind::select:ActionKind::activate,hit->key,
-                        toggle_kind(hit->kind)?ActionValue{!hit->selected}:ActionValue{});
+                } else if (activatable(hit->kind)) self.activate(reply,*hit);
             }
             return reply;
         }
@@ -112,7 +136,7 @@ Reply Session::input(const Event& event) {
             auto key=hit?hit->key:0;
             while (key) {
                 auto& state=self.states.at(key);
-                if (state.control.kind==ControlKind::list) {
+                if (scrolling(state.control.kind)) {
                     state.scroll=std::clamp(state.scroll-static_cast<double>(event.wheel)*48,0.0,state.scroll_limit);
                     reply.consumed=reply.redraw=true; return reply;
                 }
@@ -143,6 +167,12 @@ Reply Session::input(const Event& event) {
         auto* focused=self.live(self.focus);
         const auto* focused_box=self.published->find(self.focus);
         if (!focused || !focused_box || !self.current(*focused_box)) return reply;
+        if (event.kind==EventKind::key_down &&
+            (event.key==Key::menu || (event.key==Key::f10 && event.shift) ||
+             (focused->control.kind==ControlKind::combo && (event.key==Key::down || event.key==Key::up))) &&
+            (focused->control.context_target || focused->control.kind==ControlKind::combo)) {
+            self.context_request(reply,*focused_box,focused_box->bounds.x,focused_box->bounds.y+focused_box->bounds.height); return reply;
+        }
         if (text_field(focused->control.kind)) {
             if (!self.edit) self.begin_edit(self.focus,focused->control.kind==ControlKind::text_edit);
             auto& edit=*self.edit;
@@ -202,8 +232,7 @@ Reply Session::input(const Event& event) {
             } else if (event.kind==EventKind::key_up) {
                 const auto pressed=std::exchange(self.keyboard_pressed,ControlKey{}); reply.redraw=pressed!=0;
                 if (pressed==self.focus && self.keyboard_key==event.key)
-                    Impl::action(reply,focused->control.kind==ControlKind::item?ActionKind::select:ActionKind::activate,self.focus,
-                        toggle_kind(focused->control.kind)?ActionValue{!focused_box->selected}:ActionValue{});
+                    self.activate(reply,*focused_box);
             }
         }
         return reply;

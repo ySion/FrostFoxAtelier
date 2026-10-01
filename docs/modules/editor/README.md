@@ -2,7 +2,7 @@
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。本工作树的 World 基线仍使用 Transform/Cube，后续对象模型迁移遵循[对象模型合同](../../research/game-world-object-model.md)。
-模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用基础控件及同宿主实验台已落地；旋转/缩放业务字段、存档重开、JIT 单步、视口拾取、gizmo、节点画布、自由停靠、参数面板固定目标及菜单浮层仍未实施。
+模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、菜单浮层、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、存档重开、JIT 单步、视口拾取、gizmo、节点画布、自由停靠、参数面板固定目标仍未实施。
 
 ## 正式执行链
 
@@ -32,7 +32,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 范围、默认值、单位与拖调步长由[应用参数描述](../../../src/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
 控件 key 独立单调分配，绑定具体 ObjectId 和 FieldId 路径；稳定控件复用其键，失效后退役且不再分配。Actor/组件恢复保留业务身份，但不会恢复旧控件会话、IME 或剪贴板请求。
 
-位置使用共享 `append_number_row` 组合三个 number；标题、Reset 和字段随宽度自动换行，分量共用一行。修改状态逐分量比较 `Parameter.default_value`。Reset 始终恢复整组位置（包括搜索过滤隐藏的分量）；按钮绑定具体组件身份，`Session::reset_position` 经 World 一次应用完整 TRS，再记录一次现有 FieldChange。无变化不增加历史，旋转和缩放保持原值，undo/redo 沿用已有 owner 选择政策。
+位置使用共享 `append_number_row` 组合三个 number；标题和字段随宽度自动换行，分量共用一行。修改状态逐分量比较 `Parameter.default_value`。数值菜单可恢复当前分量，标题或菜单的整组命令恢复完整位置（包括搜索过滤隐藏的分量）。标题绑定具体组件身份，`Session::reset_position` 经 World 一次应用完整 TRS，再记录一次现有 FieldChange。无变化不增加历史，旋转和缩放保持原值，undo/redo 沿用已有 owner 选择政策。
 
 - 左手坐标系，+Y向上，单位米；方块各轴范围 `[-0.5, 0.5]`。World 提供完整 `S * R * T` 矩阵，renderer 不自行重算 TRS；首片没有空间父子操作。
 - 默认相机 eye `(6,5,-8)`、target `(0,0,0)`、up `(0,1,0)`；使用 LookAtLH/PerspectiveFovLH。
@@ -44,17 +44,18 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 工具条 **Controls** 在同一个应用窗口中切换右侧面板；再次点击回到实际场景参数。实验台使用同一个 `ui::Session`、SS、布局、输入法和 renderer，没有独立绘制循环。
 
-- 可编辑 Position Vector3、Exposure 数值、Unicode 名称、Enabled 勾选和 Vector4；Reset 可恢复各数值组或全部样本。Vector4 是独立控件样本，不向 World 添加业务字段。
+- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4 和 Projection 下拉样本。数值、名称与下拉共用右对齐标签列、紧凑字段和 SS 灰色/琥珀色状态；勾选使用勾号，折叠使用三角。
+- 右键菜单提供分量/整组默认值、复制和粘贴；Ctrl+中键直接恢复默认值，中键按住调出数值阶梯。整组恢复仍只记一次撤销，全部样本保留统一 Reset。Projection 和 Vector4 均为独立样本，不向 World 添加虚构字段。
 - Disable sample fields 检查祖先禁用传播，Show long labels 检查换行，Parameters 标题支持鼠标与 Enter/Space 折叠。
 - 分隔条范围为 220–560 DIP。窄面板保持字段可达，超出可用高度的样本通过同一 list 滚动。
 - 样本最多保留 64 次提交历史；UI 活动草稿仍优先使用共享文本历史。实验台打开时，工具条 Undo/Redo 与无本地事务的 Ctrl+Z/Y 进入样本历史，Delete 不穿透到场景删除。样本值不写入 World。
 
-真实窗口验收在既有 `editor_acceptance` 中覆盖整向量单次撤销、搜索隐藏修改分量后的整组恢复、修改状态、折叠与稳定字段身份、勾选键鼠行为、最窄面板中的 Vector3/Vector4 与禁用、样本历史隔离及返回业务面板。截图为 `out/<配置>/editor-evidence/controls-*.png`；真实搜狗输入、Space 确认、折叠/切换面板取消组合由同一 `editor_ime_acceptance` 覆盖。
+真实窗口验收在既有 `editor_acceptance` 中覆盖整向量单次撤销、搜索隐藏修改分量后的整组恢复、修改状态、折叠与稳定字段身份、勾选键鼠行为、最窄面板中的 Vector3/Vector4 与禁用、样本历史隔离及返回业务面板。新增验收覆盖菜单不穿透外部点击/视口滚轮/Delete、Menu/Shift+F10/Esc、下拉键盘选择、菜单剪贴板及非法粘贴取消、中键阶梯/细调/默认值/取消/缓存复用。截图为 `out/<配置>/editor-evidence/controls-*.png`；真实搜狗输入、Space 确认、折叠/切换面板取消组合由同一 `editor_ime_acceptance` 覆盖。
 
 ## 首版操作
 
 工具条提供空 Actor 新增、删除、撤销、重做、聚焦选择和重置相机；左侧列表负责 Actor 单选，右侧提供实际 Transform/Cube 组件增删和位置字段。首片 UI 每个 Actor 只添加一次 Transform/Cube。Actor 没有 Transform 时位置字段和 Focus 停用；移除 Cube 后 Actor 与 Transform 仍保留。右侧参数区仍可拖动分隔条调整宽度。
-数值控件普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
+数值控件支持普通拖动和中键七档数值阶梯；上下移动选步长，左右移动调值，Shift 细调，释放提交一次、Esc 取消。右键或 Menu/Shift+F10 打开参数菜单；Ctrl+中键恢复分量或标题对应整组默认值。菜单期间视口输入暂停，外部点击只关闭菜单，Esc/Tab 返回原焦点。普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
 文本与数值共用 Unicode 字素边界、视觉光标、双向选区、横滚及本地撤销/重做。Ctrl+A/C/X/V 提供全选、复制、剪切、粘贴。存在本地事务时 Ctrl+Z/Y 只操作本地历史，即使历史耗尽也不穿透；仅聚焦无事务时进入场景历史，Ctrl+Shift+Z 同样重做。历史合组、容量和 Unicode 覆盖见 [UI 模块](../ui/README.md#共享单行编辑)。
 参数搜索按 Position/“位置”/X/Y/Z 名称与别名过滤实际位置行。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。
 右键拖动视口旋转观察，滚轮缩放；Focus 或 F 聚焦选中对象，Reset camera 恢复初始相机。
@@ -62,7 +63,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## UI 样式与诊断
 
-Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及工具栏 `compact/danger` 类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。工具条与参数标题共用 title 层级，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。工具条按钮宽度按文字测量并保留原最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
+Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及工具栏 `danger` 类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。工具条与参数标题共用 title 层级，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。工具条按钮宽度按文字测量并保留原最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
 `Application::set_style` 直接进入 UI 的整体校验/应用路径，应用不保存另一份主题。颜色复用文字 Coverage，字体族、字重和字号经同一 TextStore 更新度量、caret 和栅格；已接受帧仍保有旧几何与不可变内容。具体样式、版本及状态合同见 [UI 模块](../ui/README.md)。
 `Application::sample_frames` 显式开启 CPU prepare/render 计时，默认关闭；Capture 帧不计入。窗口验收从同一应用按钮添加真实场景成员至 256，再采样列表滚动与位置拖动。UI 累计计数按段求差，renderer 的 `FrameResult::stats` 按实际采样帧合计；CPU Coverage 和 renderer cache 的持有峰值分别记录。
 render 计时包括 Present/等待，R8 上传字节只表示有效 payload，缓存 texel 字节不表示物理显存。验收使用硬件 D3D12 debug/GBV 与 vsync，含 release 配置；数据用于说明该验收负载，不能直接当作关闭验证的产品帧耗时，也没有同负载改前基线可用于百分比提升结论。

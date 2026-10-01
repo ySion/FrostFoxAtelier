@@ -73,7 +73,6 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     const auto command = [&](ui::ControlKey key, float minimum_width, const wchar_t* text) -> ui::Control& {
         auto layout = NodeInput::box(0, 32); layout.width = Axis::content(minimum_width);
         auto& button=add(key, 2, ControlKind::button, layout, text);
-        button.classes={"compact"};
         if (key==control::remove_actor) button.classes.push_back("danger");
         return button;
     };
@@ -155,13 +154,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
         const double value=transform ? std::get<float>(take(session.world().read(*transform, definition.path))) : definition.default_value;
         group_modified|=value!=definition.default_value;
         if (!matches[axis]) continue;
-        fields[field_count++]={field,80+axis,names[axis],value,definition.default_value,definition.minimum,definition.maximum,definition.drag_step};
+        fields[field_count++]={field,names[axis],value,definition.default_value,definition.minimum,definition.maximum,definition.drag_step};
     }
-    if (field_count) ui::append_number_row(result,{70,71,72,73,transform?bind(*transform,{},true):ui::ControlKey{74},58,
+    if (field_count) ui::append_number_row(result,{70,72,73,transform?bind(*transform,{},true):ui::ControlKey{74},58,
         L"Position (m)",actor_status.can_edit && transform.has_value(),group_modified},std::span(fields).first(field_count));
     auto hint=NodeInput::box(0,0); hint.width=Axis::expand(); hint.height=Axis::content();
-    add(90, 50, ControlKind::label, hint, L"Drag to adjust · Shift for fine steps").role = ui::Role::caption;
-    add(91, 50, ControlKind::label, hint, L"Click to type · Enter commits · Esc cancels").role = ui::Role::caption;
+    add(90, 50, ControlKind::label, hint, L"Middle drag: value ladder · Shift: fine steps").role = ui::Role::caption;
+    add(91, 50, ControlKind::label, hint, L"Right click: parameter menu · Ctrl + middle: defaults").role = ui::Role::caption;
     add(92, 50, ControlKind::label, hint, L"Right drag: orbit · Wheel: zoom").role = ui::Role::caption;
     }
     auto footer = NodeInput::row(); footer.height = Axis::fixed(28); footer.padding = {12, 0, 12, 0};
@@ -169,6 +168,35 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     auto status_box = NodeInput::box(0, 28); status_box.width = Axis::expand();
     add(101, 100, ControlKind::label, status_box, status + L"  |  " + std::to_wstring(members.size()) + L" Actors").role = ui::Role::caption;
     bindings_.erase(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_count_), bindings_.end());
+    if (menu) {
+        const auto find=[&](ui::ControlKey key) -> const ui::Control* {
+            const auto at=std::find_if(result.begin(),result.end(),[&](const auto& item){return item.key==key;});
+            return at==result.end()?nullptr:&*at;
+        };
+        const auto* source=find(menu->source);
+        bool available=source!=nullptr;
+        for (auto* item=source;item;item=find(item->parent))
+            available&=item->enabled && !item->layout.collapsed;
+        if (!available) menu.reset();
+        else {
+            std::vector<ui::MenuItem> items;
+            if (source->kind==ControlKind::combo && source->key==workbench_control::mode) {
+                for (std::size_t i=0;i<ControlWorkbench::mode_names.size();++i)
+                    items.push_back({workbench_control::mode_first+i,ControlWorkbench::mode_names[i],true,workbench.values().mode==i,{}});
+            } else {
+                if (source->kind==ControlKind::number)
+                    items.push_back({control::menu_reset,L"Revert to Default",source->modified,false,ui::EditCommand{ui::EditCommandKind::reset,source->key}});
+                const auto* group=menu->group?find(menu->group):(source->kind==ControlKind::label?source:nullptr);
+                if (group) items.push_back({control::menu_group_reset,L"Revert Tuple to Defaults",group->modified,false,{}});
+                if (source->kind==ControlKind::number || source->kind==ControlKind::text_edit) {
+                    items.push_back({control::menu_copy,L"Copy Value",true,false,ui::EditCommand{ui::EditCommandKind::copy,source->key}});
+                    items.push_back({control::menu_paste,L"Paste Value",true,false,ui::EditCommand{ui::EditCommandKind::paste,source->key}});
+                }
+            }
+            if (items.empty()) menu.reset();
+            else ui::append_menu(result,control::parameter_menu,source->key,menu->x,menu->y,216,items);
+        }
+    }
     return result;
 }
 }

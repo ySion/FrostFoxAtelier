@@ -34,13 +34,15 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     if (role == Role::title) { value.font.size *= style.title_scale; value.font.weight = style.title_weight; }
     if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
-    const bool button = kind == ControlKind::button, item = kind == ControlKind::item;
+    const bool button = kind == ControlKind::button || kind == ControlKind::combo;
+    const bool item = kind == ControlKind::item || kind == ControlKind::menu_item;
     const bool toggle = kind == ControlKind::checkbox || kind == ControlKind::foldout;
     const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
     if (button) value.background = p.button;
     if (number) value.background = p.field;
     if (splitter) value.background = p.splitter;
     if (kind == ControlKind::list) value.background = p.list;
+    if (kind == ControlKind::popup) { value.background=p.panel; value.border_width=style.border_width; }
     if (button || item || number || toggle) value.padding = style.control_padding;
     if (button || number || splitter) value.border_width = style.border_width;
     if (state.selected && (button || item)) value.background = p.selected;
@@ -58,13 +60,14 @@ ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle&
     const auto& padding = control.layout.padding;
     const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? 20.f : 0.f;
     return {padding.left+style.padding.left+marker,padding.top+style.padding.top,
-            padding.right+style.padding.right,padding.bottom+style.padding.bottom};
+            padding.right+style.padding.right+(control.kind==ControlKind::combo?18.f:0.f),padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.font_family) value.font.family=*p.font_family;
     if (p.font_locale) value.font.locale=*p.font_locale;
     if (p.font_size) value.font.size=*p.font_size;
     if (p.font_weight) value.font.weight=*p.font_weight;
+    if (p.text_align) value.text_align=*p.text_align;
     if (p.foreground) value.foreground=*p.foreground;
     if (p.background) value.background=*p.background;
     if (p.border) value.border=*p.border;

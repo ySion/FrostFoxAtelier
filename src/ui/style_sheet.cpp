@@ -11,7 +11,7 @@ bool bounded(float n,float minimum,float maximum) { return std::isfinite(n) && n
 bool color_valid(Color c) { return bounded(c.r,0,1) && bounded(c.g,0,1) && bounded(c.b,0,1) && bounded(c.a,0,1); }
 bool name_valid(const std::wstring& value) { return !value.empty() && value.size()<=128 && value.find(L'\0')==value.npos; }
 bool layout_properties(const StyleProperties& p) {
-    return p.font_family || p.font_locale || p.font_size || p.font_weight || p.padding;
+    return p.font_family || p.font_locale || p.font_size || p.font_weight || p.padding || p.text_align;
 }
 unsigned specificity(const StyleSelector& s) {
     unsigned states=0;
@@ -72,7 +72,7 @@ class Parser {
             if (take('*')) any=true;
             else {
                 const auto type=identifier(); any=true;
-                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout"};
+                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo"};
                 const auto found=std::find(std::begin(kinds),std::end(kinds),type);
                 if (found==std::end(kinds)) fail("Unknown control type: "+type);
                 result.kind=static_cast<ControlKind>(found-std::begin(kinds));
@@ -163,6 +163,13 @@ class Parser {
         else if (name=="font-family") p.font_family=string(v);
         else if (name=="font-locale") p.font_locale=string(v);
         else if (name=="font-size") p.font_size=number(v);
+        else if (name=="text-align") {
+            const auto value=resolve(v).text;
+            if (value=="left") p.text_align=TextAlign::left;
+            else if (value=="center") p.text_align=TextAlign::center;
+            else if (value=="right") p.text_align=TextAlign::right;
+            else fail("Expected left, center or right",v.position);
+        }
         else if (name=="font-weight") {
             const auto weight=number(v,false);
             if (weight<1 || weight>999 || weight!=std::floor(weight)) fail("Font weight must be an integer in 1..999",v.position);
@@ -248,6 +255,7 @@ bool StyleSheet::valid_class(std::string_view name) noexcept {
     return std::all_of(name.begin(),name.end(),[](char c){return (c>='a'&&c<='z') || (c>='A'&&c<='Z') || (c>='0'&&c<='9') || c=='_' || c=='-';});
 }
 bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
+    if (p.text_align && static_cast<unsigned>(*p.text_align)>static_cast<unsigned>(TextAlign::right)) return false;
     if (p.image && *p.image) {
         const auto& image=**p.image;
         if (!image.identity || !image.width || !image.height || image.width>16384 || image.height>16384 ||
@@ -268,7 +276,7 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     for (auto& rule:rules) {
         auto& s=rule.selector;
         const auto bits=static_cast<unsigned>(s.states);
-        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::foldout)) ||
+        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::combo)) ||
             (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>255 || (bits&3)==3 ||
             (bits && layout_properties(rule.properties)) || s.classes.size()>16 ||
             !std::all_of(s.classes.begin(),s.classes.end(),[](const auto& id){return valid_class(id);}))

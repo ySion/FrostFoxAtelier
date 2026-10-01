@@ -1,10 +1,10 @@
 # 原生 UI 阶段计划与历史合同
 
-状态：**S1、S2 主持已收口；历史证据归档于 `out/{dev,release}/editor-evidence-s2/`。SS 与基础控件增量已接入；原 S3 中的修改提示、整向量重置现已实现，固定目标和菜单浮层仍未实施。**
+状态：**S1、S2 主持已收口；历史证据归档于 `out/{dev,release}/editor-evidence-s2/`。SS 与基础控件增量已接入；原 S3 中的修改提示、整向量重置现已实现，菜单浮层、下拉和数值阶梯已实现，固定目标仍未实施。**
 
 2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
 
-2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。随后批准基础控件优先的编辑器改进：共享参数行、Vector3、默认值/修改状态、checkbox、foldout 与同宿主 Controls 实验台已接入，见[当前控件合同](modules/ui/README.md#可组合参数控件)和[Houdini 实机调研](research/houdini-controls-20261001.md)。当前保留既有场景历史选择政策；follow/pin、菜单浮层、停靠、非矩形后代裁剪及语言 UI 语法仍未实施。下文 S1/S2 的旧排期、当时的 S3 限制与主持派发记录属于历史，不覆盖本次用户授权。
+2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。随后批准基础控件优先的编辑器改进：共享参数行、Vector3、默认值/修改状态、checkbox、foldout 与同宿主 Controls 实验台已接入，见[当前控件合同](modules/ui/README.md#可组合参数控件)和[Houdini 实机调研](research/houdini-controls-20261001.md)。当前保留既有场景历史选择政策；follow/pin、停靠、非矩形后代裁剪及语言 UI 语法仍未实施。下文 S1/S2 的旧排期、当时的 S3 限制与主持派发记录属于历史，不覆盖本次用户授权。
 
 以下为 2026-09-28 至 2026-09-29 的原始计划与交接记录。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；当时集成分支：`codex/ui-foundation`。
 本页维护阶段边界，当前能力和验收以[UI 模块](modules/ui/README.md)和[编辑器模块](modules/editor/README.md)为准。[首版记录](first-editor-plan.md)保留 M0/M1 与 M2 历史目标；保存重开、JIT 单步仍在后续范围。

@@ -1,6 +1,6 @@
 # 从 Houdini 参数控件改进编辑器
 
-日期：2026-10-01。状态：第一、二步基础控件已实现并完成阶段验收、双路 review 与文档收口；后续浮层、面板与停靠仍为建议。
+日期：2026-10-01。状态：基础控件已完成阶段收口；随后按用户确认的“参数控件外观＋交互”接入菜单、下拉、数值阶梯与紧凑参数样式。固定目标、停靠仍为后续方向。
 
 本仓库观察基线：`9ad772ee9069a72ba90e535f598864f7565ea2c5`。已有 UI/SS 能力以 [UI 模块文档](../modules/ui/README.md) 和 [样式表文档](../modules/ui/style-sheets.md) 为准。本记录补充 [UI 基础计划](../ui-foundation-plan.md) 的控件方向，不另立实现规范。
 
@@ -8,11 +8,27 @@
 
 ### 当前实现
 
-同一编辑器工具条新增 Controls 实验台；通用数值/向量参数行、修改状态、默认值恢复、checkbox 与 foldout 已接入正式 UI/SS。实际位置参数已迁移到共享组合接口，整组 Reset 进入一次场景历史；实验台包括可操作的 Vector3/Vector4，样本有独立提交历史。具体合同与验收入口集中在[编辑器模块](../modules/editor/README.md#控件实验台)和[UI 模块](../modules/ui/README.md#可组合参数控件)，本记录下方保留调研时的依赖顺序。
+实际 Position 与 Controls 实验台共用参数行、文字编辑、样式和接受帧。数值、文本和下拉都使用同一标签/字段组合；24 DIP 字段、右对齐标签、相邻向量分量、灰色背景、琥珀色修改/焦点、勾号和三角折叠符参考 Houdini 实机。
+
+参数右键菜单支持分量/整组默认值、复制和粘贴；Menu/Shift+F10 可从键盘打开，Esc/Tab 返回焦点，外部点击只关闭菜单，视口输入被拦截。中键数值阶梯可上下选择十倍档位、左右拖调，Shift 细调，Ctrl+中键恢复默认值。菜单与下拉复用一层公共 popup。样本的 Projection 选择和字段编辑进入同一独立样本历史，实际整向量恢复仍是一条场景历史。
+
+此轮再次查看了 Houdini 22.0.429 的参数行、右键菜单和勾选状态；没有保存临时场景。当前自动化接口没有中键按住拖动原生 Houdini 的能力，数值阶梯参考此前核对的[官方说明](https://www.sidefx.com/docs/houdini/basics/ladder.html)，不把本项目的端到端结果当作 Houdini 实机手势证据。
+
+公共合同与验收入口集中在[编辑器模块](../modules/editor/README.md#控件实验台)、[UI 模块](../modules/ui/README.md#可组合参数控件)和 [SS](../modules/ui/style-sheets.md)。仍不包含表达式/动画通道、参数固定目标、滑块、颜色编辑器和停靠。
 
 实现只修改本 UI 工作树，没有修改 World 线程的工作目录。由于本工作树基线尚使用 Transform/Cube，后续集成需将新增的 `Session::reset_position` 接到新 SceneComponent 的同等原子 TRS 接口，并合并 Workspace 的控件组合改动；通用 UI 和实验台不依赖这些业务类型。
 
-最终阶段验收：dev/release UI 15/15、编辑器文档链、普通窗口各 914 个接受帧均通过；真实搜狗输入法双配置通过，包括实验台的 Space 确认“位置”、组合位置查询、折叠及切换面板取消组合、样本/场景历史隔离。报告与截图位于 `out/{dev,release}/editor-evidence/` 的 `acceptance.txt`、`ime-acceptance.txt`、`controls-*.png`。前期被其他窗口占用前台的运行曾安全中断，最终结果来自完整成功运行。新窄面板验收连续发送完整拖动后再观察结果，避免合成消息与系统鼠标移动交错；原有分步拖动预览/取消验收保留。
+### 参数控件复刻增量验收
+
+在 `2397365` 之上完成上述增量。dev/release 的 UI 消费者各 15/15，编辑器文档链与真实窗口均通过，窗口各接受 1036 帧。新增实际消息验收覆盖菜单、剪贴板、非法粘贴、默认值与撤销、外部点击/滚轮/Delete 拦截、键盘菜单/下拉、中键阶梯与静止缓存复用；原搜索隐藏分量、窄 Vector4、取消与历史隔离回归保留。
+
+两种配置的真实搜狗均 PASS：composition starts/results 各 4，candidate changes 各 78，Space 确认“位置”、折叠/切换取消和原线程 profile 恢复均成功。前台不匹配的启动曾安全中断；最终使用正常可见窗口启动后完成。IME 通过后只移除了无样式规则使用的工具栏 compact 类，并将旧验收的选区颜色检查改为读取接受帧的 SS 最终颜色，输入实现未再改变。
+
+截图和报告归档于 `out/ui-controls-evidence/parameter-controls-20261001/`。`controls-parameter-menu.png`、`controls-combo.png` 和 `controls-value-ladder.png` 来自实际 GPU 读回。基础参数行、样式、输入、菜单均在基础 UI 模块中；未新增语言语法、另一套绘制入口或业务字段存储。
+
+### 基础控件阶段验收（2397365）
+
+dev/release UI 15/15、编辑器文档链、普通窗口各 914 个接受帧均通过；真实搜狗输入法双配置通过，包括实验台的 Space 确认“位置”、组合位置查询、折叠及切换面板取消组合、样本/场景历史隔离。该阶段报告与截图保存在 `out/ui-controls-evidence/23973653c6946cf155e46b885c7860fe6f203064/`，下列 Standards/Spec 结论只属于该阶段。新参数控件的结果另列，避免混用证据。
 
 验收启用真实硬件 D3D12 debug/GBV，不据此宣称产品帧耗时改善；DPI 覆盖为当前显示器及既有过渡政策，未进行多显示器迁移。未保存 Houdini 中的临时场景。提交边界为本工作树的基础控件增量，不含其他线程的 World 迁移或主线集成。
 
