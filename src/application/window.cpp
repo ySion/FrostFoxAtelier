@@ -34,7 +34,7 @@ std::expected<std::wstring, DWORD> composition_text(HIMC context, DWORD index) {
     return value;
 }
 }
-Window::Window() {
+Window::Window(HWND popup_owner) : popup_(popup_owner!=nullptr) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     WNDCLASSEXW cls{};
     cls.cbSize = sizeof(cls);
@@ -47,13 +47,56 @@ Window::Window() {
     const auto dpi=GetDpiForSystem();
     RECT size{0,0,MulDiv(1280,static_cast<int>(dpi),96),MulDiv(840,static_cast<int>(dpi),96)};
     AdjustWindowRectExForDpi(&size, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem());
-    handle_ = CreateWindowExW(0, window_class, L"FrostFox Atelier | Scene", WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, size.right - size.left, size.bottom - size.top,
-        nullptr, nullptr, cls.hInstance, this);
+    handle_ = CreateWindowExW(popup_?WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE:0, window_class,
+        popup_?L"FrostFox Atelier | Menu":L"FrostFox Atelier | Scene", popup_?WS_POPUP:WS_OVERLAPPEDWINDOW,
+        popup_?0:CW_USEDEFAULT, popup_?0:CW_USEDEFAULT, popup_?32:size.right-size.left, popup_?32:size.bottom-size.top,
+        popup_owner, nullptr, cls.hInstance, this);
     if (!handle_) throw std::runtime_error("Cannot create editor window.");
 }
-Window::~Window() { if (handle_) DestroyWindow(handle_); }
+Window::~Window() {
+    if (handle_) DestroyWindow(handle_);
+    if (adjustment_cursor_) {
+        if (GetCursor()==adjustment_cursor_) SetCursor(LoadCursorW(nullptr,IDC_ARROW));
+        DestroyCursor(adjustment_cursor_);
+    }
+}
+void Window::cursor(ui::Cursor intent) {
+    const wchar_t* standard=IDC_ARROW;
+    if (intent==ui::Cursor::text) standard=IDC_IBEAM;
+    else if (intent==ui::Cursor::resize_horizontal || intent==ui::Cursor::drag_horizontal) standard=IDC_SIZEWE;
+    else if (intent==ui::Cursor::resize_vertical) standard=IDC_SIZENS;
+    else if (intent==ui::Cursor::move) standard=IDC_SIZEALL;
+    else if (intent==ui::Cursor::pan) standard=IDC_HAND;
+    cursor_=LoadCursorW(nullptr,standard);
+    if (intent==ui::Cursor::drag_horizontal) {
+        const int size=GetSystemMetricsForDpi(SM_CXCURSOR,GetDpiForWindow(handle_));
+        if (cursor_size_!=size) {
+            SetCursor(cursor_);
+            if (adjustment_cursor_) DestroyCursor(adjustment_cursor_);
+            adjustment_cursor_=nullptr; cursor_size_=size;
+            const int stride=((size+15)/16)*2;
+            std::vector<BYTE> mask(static_cast<std::size_t>(stride*size),0xff),ink(mask.size(),0);
+            // Original adjustment glyph: opposing arrows with a central fine-step notch.
+            const auto shape=[](int x,int y) {
+                return (y==16 && x>=4 && x<=27) || (x>=4 && x<=9 && std::abs(y-16)==x-4) ||
+                    (x>=22 && x<=27 && std::abs(y-16)==27-x) || (x==15 && y>=12 && y<=20);
+            };
+            for (int y=0;y<size;++y) for (int x=0;x<size;++x) {
+                const int sx=x*32/size,sy=y*32/size;
+                bool edge=false;
+                for (int dy=-1;dy<=1;++dy) for (int dx=-1;dx<=1;++dx) edge|=shape(sx+dx,sy+dy);
+                const auto index=static_cast<std::size_t>(y*stride+x/8); const auto bit=static_cast<BYTE>(0x80>>(x%8));
+                if (edge) mask[index]&=static_cast<BYTE>(~bit);
+                if (shape(sx,sy)) ink[index]|=bit;
+            }
+            adjustment_cursor_=CreateCursor(GetModuleHandleW(nullptr),size/2,size/2,size,size,mask.data(),ink.data());
+        }
+        if (adjustment_cursor_) cursor_=adjustment_cursor_;
+    }
+    SetCursor(cursor_);
+}
 void Window::show() {
+    if (popup_) { ShowWindow(handle_,SW_SHOWNOACTIVATE); return; }
     // The first call can honor a launcher's hidden STARTUPINFO instead of SW_SHOW.
     ShowWindow(handle_, SW_SHOW); ShowWindow(handle_, SW_SHOW); UpdateWindow(handle_);
 }
@@ -129,11 +172,15 @@ LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPA
     catch (...) { self->callback_failure_ = std::current_exception(); return 0; }
 }
 LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message==WM_SETCURSOR && LOWORD(lparam)==HTCLIENT) {
+        SetCursor(cursor_?cursor_:LoadCursorW(nullptr,IDC_ARROW)); return TRUE;
+    }
     switch (message) {
     case WM_CLOSE: input_anchor_.reset(); closing_ = true; return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT paint; BeginPaint(handle_, &paint); EndPaint(handle_, &paint); return 0; }
     case WM_GETMINMAXINFO: {
+        if (popup_) return 0;
         const auto dpi = GetDpiForWindow(handle_);
         auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
         limits->ptMinTrackSize = {MulDiv(900, static_cast<int>(dpi), 96), MulDiv(560, static_cast<int>(dpi), 96)};
@@ -185,9 +232,10 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         events_.push_back(std::move(value)); return 0;
     }
     case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-        // Windows reports F10 as a system key. Keep Alt shortcuts with Windows;
-        // route unmodified/Shift F10 through the same key ownership protocol.
-        if (wparam!=VK_F10 || (lparam & (LPARAM{1}<<29))) return DefWindowProcW(handle_,message,wparam,lparam);
+        // Keep system shortcuts such as Alt+F4 with Windows; menu mnemonics
+        // and F10 use the same queued key ownership as ordinary controls.
+        if (wparam!=VK_F10 && wparam!=VK_MENU && wparam!='F' && wparam!='E' && wparam!='C' && wparam!='V' && wparam!='W')
+            return DefWindowProcW(handle_,message,wparam,lparam);
         [[fallthrough]];
     case WM_KEYDOWN: case WM_KEYUP: {
         const auto key_message=message==WM_SYSKEYDOWN?WM_KEYDOWN:message==WM_SYSKEYUP?WM_KEYUP:message;
@@ -206,17 +254,22 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         input_anchor_.reset();
         high_surrogate_ = 0; key_owner_.fill(0);
         events_.push_back(event(message, wparam, lparam)); return 0;
+    case WM_SYSCHAR: return 0; // Menu mnemonics are handled by their key event.
     case WM_CAPTURECHANGED:
         if (releasing_capture_) return 0;
         [[fallthrough]];
     case WM_SIZE:
         input_anchor_.reset(); events_.push_back(event(message, wparam, lparam)); return 0;
     case WM_SETFOCUS:
+    case WM_MOVE: case WM_CANCELMODE: case WM_ACTIVATEAPP:
     case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_MOUSEWHEEL:
         events_.push_back(event(message, wparam, lparam));
         return 0;
+    case WM_MOUSEACTIVATE:
+        if (popup_) return MA_NOACTIVATE;
+        return DefWindowProcW(handle_,message,wparam,lparam);
     default: return DefWindowProcW(handle_, message, wparam, lparam);
     }
 }

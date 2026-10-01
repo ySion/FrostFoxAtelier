@@ -22,7 +22,7 @@
         popup_return_focus=focus; focus=0; keyboard_pressed=0; hover=0;
         for (auto key:order) {
             const auto& control=states.at(key).control;
-            if (control.parent==popup && control.kind==ControlKind::menu_item && control.enabled) {
+            if (control.kind==ControlKind::menu_item && control.enabled) {
                 if (!focus || control.selected) focus=key;
             }
         }
@@ -75,7 +75,7 @@
         }
         if (!popup || popup_dismissed || published->popup!=popup) return true;
         const auto* owner=published->find(states.at(popup).control.popup_owner);
-        if (!owner || !current(*owner) || !visible(owner->bounds,owner->clip)) { dismiss_popup(reply); return true; }
+        if (states.at(popup).control.popup_owner && (!owner || !current(*owner) || !visible(owner->bounds,owner->clip))) { dismiss_popup(reply); return true; }
         bool inside=false;
         for (auto key=hit?hit->key:0;key;) {
             if (key==popup) { inside=true; break; }
@@ -89,7 +89,7 @@
         if (event.kind==EventKind::key_down && (event.key==Key::up || event.key==Key::down || event.key==Key::home || event.key==Key::end)) {
             std::vector<ControlKey> keys;
             for (const auto& box:published->controls)
-                if (box.parent==popup && box.kind==ControlKind::menu_item && current(box)) keys.push_back(box.key);
+                if (box.kind==ControlKind::menu_item && current(box)) keys.push_back(box.key);
             if (!keys.empty()) {
                 const auto at=std::find(keys.begin(),keys.end(),focus);
                 auto index=at==keys.end()?std::size_t{}:static_cast<std::size_t>(at-keys.begin());

@@ -25,7 +25,7 @@ struct NativeInputStatistics {
 // close the renderer before this owner destroys the HWND.
 class Window final {
 public:
-    Window();
+    explicit Window(HWND popup_owner = nullptr);
     ~Window();
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
@@ -37,13 +37,17 @@ public:
     bool closing() const noexcept { return closing_; }
     float dpi_scale() const noexcept;
     void capture(bool enabled);
+    void cursor(ui::Cursor);
     ui::ClipboardResult clipboard(const ui::ClipboardRequest&);
     ui::ImeResult ime(const ui::ImeRequest&);
     std::uint32_t text_input(const std::optional<ui::TextInputState>&);
     const NativeInputStatistics& input_statistics() const noexcept { return input_statistics_; }
 private:
     HWND handle_{};
+    HCURSOR cursor_{}, adjustment_cursor_{};
+    int cursor_size_{};
     bool closing_{}, releasing_capture_{};
+    bool popup_{};
     std::vector<NativeEvent> events_;
     std::exception_ptr callback_failure_;
     std::optional<ui::EditToken> input_token_;

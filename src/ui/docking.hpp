@@ -9,6 +9,7 @@ struct DockTab {
     ControlKey key{}, content{};
     std::wstring title;
     ui_layout::Size minimum{220,140}; // Includes pane chrome; shrinks only if the host is smaller.
+    std::vector<std::string> classes{};
 };
 // Single-host split tree. Owns geometry and tab placement, never the views' state.
 // UI Session owns every gesture/capture. apply() consumes its accepted-frame actions.
@@ -24,6 +25,10 @@ public:
     bool close(ControlKey);
     void maximize(ControlKey); // Toggle display isolation, preserving the tree and ratios.
     void cycle(int direction);
+    static ControlKey add_tab_button(ControlKey pane) { return pane+11; }
+    static ControlKey collapse_first_button(ControlKey divider) { return divider+11; }
+    static ControlKey collapse_second_button(ControlKey divider) { return divider+12; }
+    static ControlKey divider_grip(ControlKey divider) { return divider+13; }
     bool visible(ControlKey) const noexcept;
     ControlKey focused_tab() const noexcept { return focused_; }
     ControlKey pane(ControlKey tab) const noexcept;
@@ -43,12 +48,14 @@ private:
         ControlKey active{};
         DragAxis axis{};
         float fraction{.5f};
+        unsigned collapsed{}; // 0 none, 1 first, 2 second; fraction always retains expanded geometry.
         std::unique_ptr<Node> first, second;
         bool split() const noexcept { return first!=nullptr; }
     };
     struct Drop { ControlKey pane{}, before{}; DockSide side{}; Rect preview{}; };
     struct Drag { ControlKey tab{}; std::optional<Drop> target; };
     ControlKey base_{}, next_{}, focused_{}, maximized_{}, menu_pane_{};
+    bool menu_add_{};
     std::vector<DockTab> tabs_;
     std::unique_ptr<Node> root_;
     std::optional<Drag> drag_;
@@ -56,6 +63,9 @@ private:
     const DockTab* tab(ControlKey) const noexcept;
     Node* find(ControlKey) const noexcept;
     Node* owner(ControlKey) const noexcept;
+    Node* parent(ControlKey) const noexcept;
+    void reveal(ControlKey);
+    void collapse(Node&,unsigned);
     void normalize(std::unique_ptr<Node>&);
     bool place(ControlKey,ControlKey,DockSide,ControlKey before=0,float fraction=.5f);
     void remove(Node&,ControlKey);

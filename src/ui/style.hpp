@@ -6,16 +6,22 @@
 
 namespace atelier::ui {
 
-enum class ControlIcon { none, close, maximize, restore };
+enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world };
 enum class Role { normal, panel, title, caption };
 enum class TextAlign { left, center, right };
+enum class TextVerticalAlign { top, center, bottom };
 enum class BorderStyle { solid, inset, outset };
-enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo, tab };
+enum class BorderEdges : unsigned { none=0, top=1, right=2, bottom=4, left=8, all=15 };
+constexpr bool has_edge(BorderEdges edges,BorderEdges edge) { return (static_cast<unsigned>(edges)&static_cast<unsigned>(edge))!=0; }
+enum class ComboIndicator { down, arrows };
+enum class FontStyle { normal, italic };
+enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo, tab, slider };
 struct Font {
     std::wstring family{L"Microsoft YaHei UI"};
     std::wstring locale{L"en-US"};
     float size{14}; // DIPs. Role scales preserve the typography hierarchy.
     std::uint16_t weight{400};
+    FontStyle style{FontStyle::normal};
     bool operator==(const Font&) const = default;
 };
 struct Palette {

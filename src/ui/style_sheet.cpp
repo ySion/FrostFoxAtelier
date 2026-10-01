@@ -16,7 +16,9 @@ bool invalid_state_properties(const StyleProperties& p, StyleState states) {
     // Persistent value/selection states may change weight; pointer/focus/error
     // transitions must not move text or hit geometry.
     const auto transient=static_cast<unsigned>(states)&(4u|8u|16u|64u);
-    return p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.indicator_size || (p.font_weight && transient);
+    return p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.text_vertical_align || p.indicator_size ||
+        p.scrollbar_width || p.scrollbar_inset || p.scrollbar_min_thumb || p.scrollbar_button_size ||
+        ((p.font_weight || p.font_style) && transient);
 }
 unsigned specificity(const StyleSelector& s) {
     unsigned states=0;
@@ -78,7 +80,7 @@ class Parser {
             if (take('*')) any=true;
             else {
                 const auto type=identifier(); any=true;
-                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab"};
+                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab","slider"};
                 const auto found=std::find(std::begin(kinds),std::end(kinds),type);
                 if (found==std::end(kinds)) fail("Unknown control type: "+type);
                 result.kind=static_cast<ControlKind>(found-std::begin(kinds));
@@ -162,14 +164,17 @@ class Parser {
         const auto input=resolve(value);
         const std::string key(input.text);
         if (const auto found=gradients_.find(key);found!=gradients_.end()) return found->second;
-        auto stops=input.text.substr(16,input.text.size()-17);
+        auto stops=trim(input.text.substr(16,input.text.size()-17));
+        bool horizontal=false;
+        if (stops.starts_with("to right,")) { horizontal=true; stops=trim(stops.substr(9)); }
+        else if (stops.starts_with("to bottom,")) stops=trim(stops.substr(10));
         const auto comma=stops.find(',');
         if (comma==stops.npos || stops.find(',',comma+1)!=stops.npos) fail("Expected two gradient colors",input.position);
         const auto a=color({trim(stops.substr(0,comma)),input.position});
         const auto b=color({trim(stops.substr(comma+1)),input.position});
         auto image=std::make_shared<ColorImage>();
         image->identity=detail::new_identity(); image->revision=1;
-        image->width=1; image->height=64; image->row_pitch=4; image->pixels.reserve(256);
+        image->width=horizontal?64:1; image->height=horizontal?1:64; image->row_pitch=image->width*4; image->pixels.reserve(256);
         const auto encode=[](float linear) {
             const auto srgb=linear<=.0031308f?linear*12.92f:1.055f*std::pow(linear,1.f/2.4f)-.055f;
             return static_cast<std::uint8_t>(std::lround(std::clamp(srgb,0.f,1.f)*255));
@@ -187,12 +192,34 @@ class Parser {
         if (name=="color") p.foreground=color(v);
         else if (name=="background") p.background=color(v);
         else if (name=="border-color") p.border=color(v);
+        else if (name=="border-inner-color") p.border_inner=color(v);
+        else if (name=="border-edges") {
+            auto input=resolve(v).text;
+            unsigned edges{};
+            if (input=="all") edges=15;
+            else if (input!="none") while (!input.empty()) {
+                const auto end=input.find_first_of(" \t\r\n"); const auto word=input.substr(0,end);
+                const unsigned bit=word=="top"?1:word=="right"?2:word=="bottom"?4:word=="left"?8:0;
+                if (!bit || (edges&bit)) fail("Expected unique top/right/bottom/left edges, all or none",v.position);
+                edges|=bit; input=end==input.npos?std::string_view{}:trim(input.substr(end));
+            }
+            p.border_edges=static_cast<BorderEdges>(edges);
+        }
+        else if (name=="combo-indicator") {
+            const auto value=resolve(v).text;
+            if (value=="down") p.combo_indicator=ComboIndicator::down;
+            else if (value=="arrows") p.combo_indicator=ComboIndicator::arrows;
+            else fail("Expected down or arrows",v.position);
+        }
         else if (name=="selection-color") p.selection=color(v);
         else if (name=="caret-color") p.caret=color(v);
         else if (name=="scrollbar-color") p.scrollbar=color(v);
         else if (name=="indicator-background") p.indicator_background=color(v);
         else if (name=="indicator-border-color") p.indicator_border=color(v);
+        else if (name=="indicator-color") p.indicator_foreground=color(v);
         else if (name=="indicator-size") p.indicator_size=number(v);
+        else if (name=="accent-color") p.accent=color(v);
+        else if (name=="accent-width") p.accent_width=number(v);
         else if (name=="border-style") {
             const auto value=resolve(v).text;
             if (value=="solid") p.border_style=BorderStyle::solid;
@@ -203,12 +230,25 @@ class Parser {
         else if (name=="font-family") p.font_family=string(v);
         else if (name=="font-locale") p.font_locale=string(v);
         else if (name=="font-size") p.font_size=number(v);
+        else if (name=="font-style") {
+            const auto value=resolve(v).text;
+            if (value=="normal") p.font_style=FontStyle::normal;
+            else if (value=="italic") p.font_style=FontStyle::italic;
+            else fail("Expected normal or italic",v.position);
+        }
         else if (name=="text-align") {
             const auto value=resolve(v).text;
             if (value=="left") p.text_align=TextAlign::left;
             else if (value=="center") p.text_align=TextAlign::center;
             else if (value=="right") p.text_align=TextAlign::right;
             else fail("Expected left, center or right",v.position);
+        }
+        else if (name=="text-vertical-align") {
+            const auto value=resolve(v).text;
+            if (value=="top") p.text_vertical_align=TextVerticalAlign::top;
+            else if (value=="center") p.text_vertical_align=TextVerticalAlign::center;
+            else if (value=="bottom") p.text_vertical_align=TextVerticalAlign::bottom;
+            else fail("Expected top, center or bottom",v.position);
         }
         else if (name=="font-weight") {
             const auto weight=number(v,false);
@@ -227,16 +267,18 @@ class Parser {
         else if (name=="scrollbar-width") p.scrollbar_width=number(v);
         else if (name=="scrollbar-inset") p.scrollbar_inset=number(v);
         else if (name=="scrollbar-min-thumb") p.scrollbar_min_thumb=number(v);
-        else if (name=="background-image") {
+        else if (name=="scrollbar-button-size") p.scrollbar_button_size=number(v);
+        else if (name=="background-image" || name=="scrollbar-image") {
+            auto& image_property=name=="background-image"?p.image:p.scrollbar_image;
             const auto input=resolve(v);
-            if (input.text=="none") p.image=std::shared_ptr<const ColorImage>{};
-            else if (input.text.starts_with("linear-gradient(") && input.text.ends_with(')')) p.image=gradient(input);
+            if (input.text=="none") image_property=std::shared_ptr<const ColorImage>{};
+            else if (input.text.starts_with("linear-gradient(") && input.text.ends_with(')')) image_property=gradient(input);
             else {
                 if (!input.text.starts_with("image(") || !input.text.ends_with(')')) fail("Expected image(name) or none",v.position);
                 const auto id=trim(input.text.substr(6,input.text.size()-7));
                 const auto found=std::find_if(images_.begin(),images_.end(),[&](const auto& image){return image.name==id;});
                 if (found==images_.end() || !found->image) fail("Unknown image resource: "+std::string(id),v.position);
-                p.image=found->image;
+                image_property=found->image;
             }
         } else fail("Unknown property: "+name,v.position);
         if (!StyleSheet::valid_properties(p)) fail("Property value is outside the supported range: "+name,v.position);
@@ -296,30 +338,37 @@ bool StyleSheet::valid_class(std::string_view name) noexcept {
     return std::all_of(name.begin(),name.end(),[](char c){return (c>='a'&&c<='z') || (c>='A'&&c<='Z') || (c>='0'&&c<='9') || c=='_' || c=='-';});
 }
 bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
+    if (p.font_style && static_cast<unsigned>(*p.font_style)>static_cast<unsigned>(FontStyle::italic)) return false;
     if (p.text_align && static_cast<unsigned>(*p.text_align)>static_cast<unsigned>(TextAlign::right)) return false;
+    if (p.text_vertical_align && static_cast<unsigned>(*p.text_vertical_align)>static_cast<unsigned>(TextVerticalAlign::bottom)) return false;
     if (p.border_style && static_cast<unsigned>(*p.border_style)>static_cast<unsigned>(BorderStyle::outset)) return false;
+    if (p.border_edges && static_cast<unsigned>(*p.border_edges)>15) return false;
+    if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::arrows)) return false;
     if (p.indicator_size && !bounded(*p.indicator_size,4,32)) return false;
-    if (p.image && *p.image) {
-        const auto& image=**p.image;
+    if (p.accent_width && !bounded(*p.accent_width,0,16)) return false;
+    if (p.accent && !color_valid(*p.accent)) return false;
+    for (const auto* resource:{&p.image,&p.scrollbar_image}) if (*resource && **resource) {
+        const auto& image=***resource;
         if (!image.identity || !image.width || !image.height || image.width>16384 || image.height>16384 ||
             std::uint64_t(image.row_pitch)<std::uint64_t(image.width)*4 ||
             std::uint64_t(image.row_pitch)*image.height>image.pixels.size()) return false;
     }
     if ((p.font_family && !name_valid(*p.font_family)) || (p.font_locale && !name_valid(*p.font_locale)) ||
         (p.font_size && !bounded(*p.font_size,4,256)) || (p.font_weight && (!*p.font_weight || *p.font_weight>999))) return false;
-    for (const auto* color:{&p.foreground,&p.background,&p.border,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border}) if (*color && !color_valid(**color)) return false;
+    for (const auto* color:{&p.foreground,&p.background,&p.border,&p.border_inner,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border,&p.indicator_foreground}) if (*color && !color_valid(**color)) return false;
     if (p.padding) for (auto n:{p.padding->left,p.padding->top,p.padding->right,p.padding->bottom}) if (!bounded(n,0,128)) return false;
     if (p.radius) for (auto n:{p.radius->top_left,p.radius->top_right,p.radius->bottom_right,p.radius->bottom_left}) if (!bounded(n,0,32768)) return false;
     return (!p.border_width || bounded(*p.border_width,0,128)) && (!p.caret_width || bounded(*p.caret_width,.25f,16)) &&
         (!p.scrollbar_width || bounded(*p.scrollbar_width,.25f,32)) && (!p.scrollbar_inset || bounded(*p.scrollbar_inset,0,32)) &&
-        (!p.scrollbar_min_thumb || bounded(*p.scrollbar_min_thumb,1,128));
+        (!p.scrollbar_min_thumb || bounded(*p.scrollbar_min_thumb,1,128)) &&
+        (!p.scrollbar_button_size || bounded(*p.scrollbar_button_size,0,64));
 }
 StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     if (rules.size()>4096) return std::unexpected(StyleDiagnostic{0,0,"Too many style rules"});
     for (auto& rule:rules) {
         auto& s=rule.selector;
         const auto bits=static_cast<unsigned>(s.states);
-        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::tab)) ||
+        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::slider)) ||
             (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>255 || (bits&3)==3 ||
             invalid_state_properties(rule.properties,s.states) || s.classes.size()>16 ||
             !std::all_of(s.classes.begin(),s.classes.end(),[](const auto& id){return valid_class(id);}))

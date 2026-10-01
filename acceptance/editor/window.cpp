@@ -13,6 +13,7 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static auto name_control(const Application& app,ObjectId actor) { return app.workspace_.name_control(actor); }
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
     static Result<void> begin_edit(Application& app, ui::ControlKey control) {
         const auto* binding = app.workspace_.binding(control);
@@ -39,19 +40,21 @@ void require(bool condition, const char* message) { if (!condition) throw std::r
 void hr(HRESULT result) { if (FAILED(result)) throw std::runtime_error("PNG encoding failed."); }
 struct KeyStateScope {
     BYTE original[256]{};
-    explicit KeyStateScope(bool control = false, bool shift = false) {
+    explicit KeyStateScope(bool control = false, bool shift = false, bool alt = false) {
         require(GetKeyboardState(original) != FALSE, "Cannot preserve acceptance thread key state.");
         BYTE state[256]{}; std::copy(std::begin(original), std::end(original), state);
         for (const auto code : {VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_MENU, VK_LMENU, VK_RMENU})
             state[code] = 0;
         state[VK_CONTROL] = state[VK_LCONTROL] = control ? 0x80 : 0;
         state[VK_SHIFT] = state[VK_LSHIFT] = shift ? 0x80 : 0;
+        state[VK_MENU] = state[VK_LMENU] = alt ? 0x80 : 0;
         require(SetKeyboardState(state) != FALSE, "Cannot set acceptance thread modifiers.");
     }
     ~KeyStateScope() { SetKeyboardState(original); }
 };
 void require_input_focus(Application& app) {
-    require(GetFocus() == app.window(), "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
+    require(GetFocus() == app.window() && GetForegroundWindow() == app.window(),
+        "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
 }
 void tick(Application& app, unsigned count = 2) {
     const auto before = app.accepted_frames();
@@ -61,8 +64,16 @@ void tick(Application& app, unsigned count = 2) {
 }
 POINT centre(Application& app, ControlKey key) {
     require(app.presented() != nullptr, "Missing presented UI frame.");
-    const auto* box = app.presented()->find(key);
-    require(box != nullptr, "Missing control in presented UI frame.");
+    auto* box = app.presented()->find(key);
+    const bool popup=!box && app.menu_frame();
+    if (popup) box=app.menu_frame()->find(key);
+    if (!box) {
+        std::string menu;
+        if (app.menu_frame()) for (const auto& item:app.menu_frame()->controls) menu+=" "+std::to_string(item.key);
+        POINT pointer{}; GetCursorPos(&pointer); ScreenToClient(app.window(),&pointer);
+        throw std::runtime_error("Missing control "+std::to_string(key)+" in presented main/menu frames; popup keys:"+menu+
+            "; OS pointer="+std::to_string(pointer.x)+","+std::to_string(pointer.y));
+    }
     const auto left = std::max(box->bounds.x, static_cast<float>(box->clip.left));
     const auto right = std::min(box->bounds.x + box->bounds.width, static_cast<float>(box->clip.right));
     const auto top = std::max(box->bounds.y, static_cast<float>(box->clip.top));
@@ -70,13 +81,27 @@ POINT centre(Application& app, ControlKey key) {
     if (!(right>left && bottom>top)) throw std::runtime_error("Control "+std::to_string(key)+
         " has no visible hit area (y="+std::to_string(box->bounds.y)+", height="+std::to_string(box->bounds.height)+
         ", clip="+std::to_string(box->clip.top)+".."+std::to_string(box->clip.bottom)+").");
-    return {static_cast<LONG>((left + right) * .5f), static_cast<LONG>((top + bottom) * .5f)};
+    POINT result{static_cast<LONG>((left + right) * .5f), static_cast<LONG>((top + bottom) * .5f)};
+    if (popup) MapWindowPoints(app.menu_window(),app.window(),&result,1);
+    return result;
 }
 void mouse(Application& app, UINT message, POINT point) {
     require_input_focus(app);
     KeyStateScope modifiers;
+    // Unlike atomic click_at(), this helper deliberately holds gestures across
+    // rendered frames. Capture-generated native movement must start at the same point.
+    if (message==WM_LBUTTONDOWN) {
+        auto native_point=point; ClientToScreen(app.window(),&native_point);
+        require(SetCursorPos(native_point.x,native_point.y)!=FALSE,"Cannot align the held gesture pointer.");
+        tick(app,2);
+    }
     SendMessageW(app.window(), message, message == WM_LBUTTONUP ? 0 : MK_LBUTTON, MAKELPARAM(point.x, point.y));
     tick(app, 1);
+    if (message==WM_LBUTTONUP) {
+        RECT host{}; GetWindowRect(app.window(),&host);
+        require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the pointer after the held gesture.");
+        tick(app,1);
+    }
 }
 void click_at(Application& app, POINT point) {
     require_input_focus(app);
@@ -88,6 +113,8 @@ void click_at(Application& app, POINT point) {
     tick(app,2);
 }
 void click(Application& app, ControlKey key) {
+    if (!app.presented()->find(key) && (!app.menu_frame() || !app.menu_frame()->find(key)))
+        if (const auto menu=control::command_menu(key)) click(app,menu);
     // Docked views can be shorter than their content. Reach the target through
     // actual wheel messages, using the same accepted clip as a user would see.
     for (unsigned attempt=0;attempt<40;++attempt) {
@@ -209,24 +236,65 @@ void capture(Application& app, const std::filesystem::path& path) {
     if (app.presented()->find(control::viewport)) require(scene_pixels>32,"Real scene geometry is absent from the depth capture.");
     else require(scene_pixels==0,"Hidden Scene tab continued rendering geometry.");
     png(image, path);
+    if (app.menu_window()) {
+        atelier::renderer::Capture popup; app.capture_menu(popup);
+        png(popup,path.parent_path()/(path.stem().wstring()+L"-popup.png"));
+    }
+}
+void verify_chrome_pixels(Application& app,const std::filesystem::path& output) {
+    atelier::renderer::Capture pixels;
+    require(app.step(&pixels) && pixels.frame_id,"Chrome pixel capture failed.");
+    const auto pixel=[&](int x,int y,int gray) {
+        require(x>=0 && y>=0 && x<static_cast<int>(pixels.extent.width) && y<static_cast<int>(pixels.extent.height),"Chrome probe left the surface.");
+        const auto offset=(static_cast<std::size_t>(y)*pixels.extent.width+static_cast<std::size_t>(x))*4;
+        for (std::size_t channel=0;channel<3;++channel)
+            require(std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)<=1,"Chrome edge did not match the reference sRGB value.");
+    };
+    const auto field=app.presented()->find(control::parameter_search)->bounds;
+    for (const auto& control:app.presented()->controls)
+        if (control.kind==atelier::ui::ControlKind::number || control.kind==atelier::ui::ControlKind::text_edit)
+            require(std::abs(control.bounds.height-field.height)<.1f,"Single-line editors have inconsistent heights.");
+    const auto x=static_cast<int>(std::round(field.x)),y=static_cast<int>(std::round(field.y));
+    // Current display: a sub-DIP authored edge rounds to one physical pixel.
+    const auto stroke=std::max(1,static_cast<int>(std::round(.667f*app.presented()->drawing->dpi_scale)));
+    pixel(x,y+4*stroke,36); pixel(x+stroke,y+4*stroke,46); pixel(x+3*stroke,y+4*stroke,19);
+    pixel(x+8*stroke,y,36); pixel(x+8*stroke,y+stroke,46);
+    const auto selected=app.presented()->find(control::parameter_transform)->bounds;
+    const auto tx=static_cast<int>(std::round(selected.x)),ty=static_cast<int>(std::round(selected.y));
+    pixel(tx+5*stroke,ty,38); pixel(tx+5*stroke,ty+2*stroke,79);
+    pixel(tx+5*stroke,static_cast<int>(std::round(selected.y+selected.height))-1,79);
+    const auto tab_bar=app.presented()->find(control::parameter_pages)->bounds;
+    const auto list=app.presented()->find(control::parameter_list)->bounds;
+    const auto fold=app.presented()->find(control::position_fold)->bounds;
+    require(std::abs(selected.x-tab_bar.x)<.1f && std::abs(fold.x-list.x)<.1f,
+        "Parameter tabs or fold header added an independent left inset.");
+    pixel(static_cast<int>(std::round(fold.x))+stroke,static_cast<int>(std::round(fold.y))+stroke,51);
+    png(pixels,output/"chrome-pixels.png");
 }
 void verify_control_states(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     const auto paint=[&] {
-        const auto bounds=app.presented()->find(control::reset)->bounds;
+        const auto bounds=app.presented()->find(control::file_menu)->bounds;
         std::shared_ptr<const atelier::ui::ColorImage> image;
         for (const auto& draw:app.presented()->drawing->draws) if (draw.bounds==bounds && draw.image) image=draw.image;
-        return std::pair{solid_colors(*app.presented(),control::reset),image};
+        return std::pair{solid_colors(*app.presented(),control::file_menu),image};
     };
     mouse(app, WM_MOUSEMOVE, centre(app, control::viewport));
     const auto normal = paint();
-    const auto button = centre(app, control::reset);
+    const auto button = centre(app, control::file_menu);
     mouse(app, WM_MOUSEMOVE, button);
     const auto hover = paint();
-    require(hover != normal, "Hover did not use the shared control state style.");
+    if (hover==normal) {
+        POINT cursor{}; GetCursorPos(&cursor); ScreenToClient(app.window(),&cursor);
+        capture(app,output/"failed-hover.png");
+        throw std::runtime_error("Hover did not use the shared control state style. Expected pointer "+
+            std::to_string(button.x)+","+std::to_string(button.y)+"; OS pointer "+
+            std::to_string(cursor.x)+","+std::to_string(cursor.y)+"; menu="+std::to_string(app.menu_window()!=nullptr));
+    }
     mouse(app, WM_LBUTTONDOWN, button);
     require(paint() != hover, "Pressed state did not change the shared paint.");
     capture(app, output / "s1-pressed.png");
     mouse(app, WM_LBUTTONUP, button);
+    key(app,VK_ESCAPE);
 
     auto field = property_control(app, object, 0);
     click(app, field);
@@ -306,15 +374,15 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(current_caret.x >= original_bounds.x && current_caret.x <= original_bounds.x + original_bounds.width &&
         original->find(field)->bounds == original_bounds && original_coverage->pixels == original_pixels,
         "Font update changed old-frame geometry/content or misplaced the new caret.");
-    for (const auto command : {control::add_actor, control::remove_actor, control::undo, control::redo, control::focus, control::reset}) {
+    for (const auto command : {control::file_menu, control::edit_menu, control::create_menu, control::view_menu, control::window_menu}) {
         const auto* box = app.presented()->find(command);
         const auto coverage = text_coverage(*app.presented(), command);
         require(box && coverage && box->bounds.x + box->bounds.width <= app.presented()->drawing->extent.width,
-            "Unified font change pushed a toolbar command outside the window.");
+            "Unified font change pushed a menubar title outside the window.");
         for (const auto& draw : app.presented()->drawing->draws)
             if (draw.coverage == coverage) require(draw.bounds.x >= box->bounds.x &&
                 draw.bounds.x + draw.bounds.width <= box->bounds.x + box->bounds.width,
-                "Measured toolbar width clipped the changed font's glyphs.");
+                "Measured menubar width clipped the changed font's glyphs.");
     }
     capture(app, output / "s1-font.png");
     key(app, VK_ESCAPE);
@@ -485,14 +553,11 @@ void verify_transform_projection(Application& app, const std::filesystem::path& 
         app.step(&restored) && restored.depth == original.depth, "TRS history did not restore the original value and GPU projection.");
 }
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
-    // Real scene additions use the existing toolbar and Window/UI/Session route.
-    const auto add = centre(app, control::add_actor);
+    // Populate through the real Create menu and its native popup surface.
     while (actors(app).size() < atelier::editor::Session::maximum_actors) {
         const auto before_count = actors(app).size();
-        SendMessageW(app.window(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(add.x, add.y));
-        SendMessageW(app.window(), WM_LBUTTONUP, 0, MAKELPARAM(add.x, add.y));
-        tick(app, 1);
-        require(actors(app).size() == before_count + 1, "Toolbar failed to populate the real list workload.");
+        click(app,control::add_actor);
+        require(actors(app).size() == before_count + 1, "Create menu failed to populate the real list workload.");
     }
     click(app, control::add_transform);
     click(app, control::add_cube);
@@ -508,6 +573,37 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     wheel(app, 23, 240);
     require(text_coverage(*app.presented(), app.object_control(first)) != nullptr,
         "Scrolling back did not regenerate visible list text.");
+
+    const auto bar=[&]() {
+        const auto& bars=app.presented()->scrollbars;
+        const auto found=std::find_if(bars.begin(),bars.end(),[](const auto& value){return value.key==23;});
+        require(found!=bars.end(),"Overflowing Actor list has no accepted scrollbar geometry.");
+        return *found;
+    };
+    const auto middle=[](atelier::ui::Rect box) { return POINT{static_cast<LONG>(box.x+box.width*.5f),static_cast<LONG>(box.y+box.height*.5f)}; };
+    click_at(app,middle(bar().increment));
+    require(bar().value>0,"Scrollbar step button did not scroll.");
+    click_at(app,middle(bar().decrement));
+    require(bar().value==0,"Scrollbar reverse step did not restore the start.");
+    auto page_point=middle(bar().track);
+    click_at(app,page_point);
+    require(bar().value>=bar().page-1,"Scrollbar track click did not advance a page.");
+    const auto history_before_scroll=app.document().undo_count();
+    const auto from=middle(bar().thumb);
+    auto to=from; to.y=static_cast<LONG>(bar().track.y+bar().track.height+80);
+    {
+        require_input_focus(app); KeyStateScope modifiers;
+        SendMessageW(app.window(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(from.x,from.y));
+        SendMessageW(app.window(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(to.x,to.y));
+        SendMessageW(app.window(),WM_LBUTTONUP,0,MAKELPARAM(to.x,to.y)); tick(app,2);
+    }
+    require(bar().value==bar().maximum && text_coverage(*app.presented(),app.object_control(last)),"Scrollbar thumb did not reach the last Actor.");
+    mouse(app,WM_LBUTTONDOWN,middle(bar().thumb));
+    key(app,VK_ESCAPE);
+    require(GetCapture()!=app.window() && app.document().undo_count()==history_before_scroll,"Scrollbar cancellation changed document history or retained capture.");
+    require(app.presented()->find(app.object_control(last))->clip.right<=bar().bounds.x,"Actor rows overlapped the scrollbar gutter.");
+    capture(app,output/"scrollbar-thumb-end.png");
+    wheel(app,23,240);
 
     TimingSeries scroll(app);
     app.sample_frames(true);
@@ -551,6 +647,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
 }
 #include "controls.inl"
 #include "docking.inl"
+#include "menus.inl"
 }
 
 int verify_editor_window(Application& app, const char* output_directory) {
@@ -562,12 +659,58 @@ int verify_editor_window(Application& app, const char* output_directory) {
     std::ofstream(output / "acceptance.txt") << "Editor window acceptance: RUNNING\n";
     SetForegroundWindow(app.window()); SetFocus(app.window());
     tick(app);
+    require_input_focus(app);
+    // SendMessage gestures deliberately keep the OS cursor off the client.
+    // Capture/show can synthesize movement there; parking on the title bar
+    // prevents those messages from switching a menu to an unrelated heading.
+    RECT host{}; GetWindowRect(app.window(),&host);
+    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
+    tick(app);
     capture(app, output / "m0.png");
+    verify_chrome_pixels(app,output);
+    const auto named_actor=app.document().selected();
+    const auto name_key=atelier::application::EditorAcceptanceAccess::name_control(app,named_actor);
+    const std::wstring original_name(app.document().name(named_actor));
+    click(app,name_key); type(app,L"主角 Hero"); key(app,VK_RETURN);
+    require(app.document().name(named_actor)==L"主角 Hero","Object header did not commit the document name.");
+    key(app,'Z',true);
+    require(app.document().name(named_actor)==original_name,"Object name bypassed scene Undo.");
+    key(app,'Y',true);
+    require(app.document().name(named_actor)==L"主角 Hero","Object name Redo failed.");
+    key(app,'Z',true); key(app,VK_ESCAPE);
+    mouse(app,WM_MOUSEMOVE,centre(app,control::viewport));
+    const auto tab_style=*app.presented()->find(control::parameters_tab)->style;
+    mouse(app,WM_MOUSEMOVE,centre(app,control::parameters_tab));
+    require(*app.presented()->find(control::parameters_tab)->style==tab_style,"Workspace tab hover changed its appearance.");
+    auto cursor_point=centre(app,property_control(app,named_actor,0));
+    ClientToScreen(app.window(),&cursor_point);
+    require(SetCursorPos(cursor_point.x,cursor_point.y)!=FALSE,"Cannot position the cursor over its accepted field.");
+    tick(app,3);
+    const auto adjust_cursor=GetCursor();
+    require(adjust_cursor && adjust_cursor!=LoadCursorW(nullptr,IDC_ARROW) && adjust_cursor!=LoadCursorW(nullptr,IDC_SIZEWE),"Number adjustment did not use its own cursor.");
+    SendMessageW(app.window(),WM_SETCURSOR,reinterpret_cast<WPARAM>(app.window()),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+    require(GetCursor()==adjust_cursor,"WM_SETCURSOR overwrote the adjustment cursor.");
+    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot restore the acceptance pointer.");
+    tick(app,3);
+    const auto navigation_history=app.document().undo_count();
+    click(app,control::parameter_back);
+    require(app.document().selected()==atelier::ObjectId{} && app.presented()->find(control::scene_forward)->enabled,"Path back did not reach World context.");
+    click(app,control::scene_forward);
+    require(app.document().selected()==named_actor,"Path forward did not restore the selected Actor.");
+    click(app,control::actor_path); capture(app,output/"path-context-menu.png");
+    click(app,control::world_context);
+    click(app,control::parameter_path); key(app,VK_DOWN); key(app,VK_RETURN);
+    require(app.document().selected()==named_actor && app.document().undo_count()==navigation_history,"Path menu selection changed document history or chose the wrong Actor.");
     click(app, control::reset);
     const auto original_width = app.parameter_width();
     auto divider = centre(app, app.parameter_splitter());
-    mouse(app, WM_LBUTTONDOWN, divider); divider.x -= 50;
-    mouse(app, WM_MOUSEMOVE, divider); mouse(app, WM_LBUTTONUP, divider);
+    {
+        require_input_focus(app); KeyStateScope modifiers;
+        SendMessageW(app.window(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(divider.x,divider.y));
+        divider.x-=50;
+        SendMessageW(app.window(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(divider.x,divider.y));
+        SendMessageW(app.window(),WM_LBUTTONUP,0,MAKELPARAM(divider.x,divider.y)); tick(app,2);
+    }
     require(app.parameter_width() > original_width + 20, "Pane divider did not change the workspace.");
 
     const auto initial_count = actors(app).size();
@@ -588,6 +731,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     const auto removed_control = app.object_control(added_cube);
     require(model(app.document().world().render_items()).size() == render_count + 1,
         "Adding Transform and Cube did not project an actual component.");
+    click(app,control::parameter_components);
     capture(app, output / "world-components.png");
     click(app, removed_control);
     require(contains(app, added_key) && model(app.document().world().render_items()).size() == render_count,
@@ -598,6 +742,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
         model(app.document().world().render_items()).size() == render_count + 1,
         "Component undo did not restore identity with a fresh control binding and drawing.");
     const auto object = actors(app).front().id();
+    click(app,control::parameter_transform);
     click(app, app.object_control(object));
     require(app.document().selected() == object, "List selection did not select the clicked object.");
     auto field = property_control(app, object, 0);
@@ -606,7 +751,12 @@ int verify_editor_window(Application& app, const char* output_directory) {
     auto point = centre(app, field);
     mouse(app, WM_LBUTTONDOWN, point);
     for (unsigned move = 0; move < 4; ++move) { point.x += 12; mouse(app, WM_MOUSEMOVE, point); }
-    require(x(app, object) > before && app.document().undo_count() == history, "Drag failed to preview the real object without history.");
+    if (!(x(app,object)>before && app.document().undo_count()==history)) {
+        capture(app,output/"failed-field-drag.png");
+        throw std::runtime_error("Drag failed to preview without history: before="+std::to_string(before)+
+            ", value="+std::to_string(x(app,object))+", undo="+std::to_string(app.document().undo_count())+
+            ", expected undo="+std::to_string(history)+", editing="+std::to_string(app.document().editing()));
+    }
     mouse(app, WM_LBUTTONUP, point);
     const auto after = x(app, object);
     require(app.document().undo_count() == history + 1, "Continuous drag did not commit exactly one undo.");
@@ -696,6 +846,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     verify_style_changes(app, output, object);
     verify_shared_text(app, output, object);
     verify_docking(app, output, object);
+    verify_native_menus(app, output, object);
     verify_basic_controls(app, output, object);
     view = centre(app, control::viewport); ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)), MAKELPARAM(view.x, view.y)); tick(app, 1);
@@ -711,8 +862,11 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
-           << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories.\n"
+           << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
            << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
+           << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, Home/End and Shift keyboard steps, disabled input; shared axis-accent SS and GPU capture.\n"
+           << "Chrome: GPU pixels match ordinary field outer/inner/fill and selected tab open-bottom colors; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
+           << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
@@ -1082,9 +1236,9 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         "Workbench IME Space did not confirm the selected candidate.");
     physical_key(VK_RETURN);
     compose_position();
-    click(app,sample::fold);
-    require(!app.text_input() && !app.presented()->find(sample::name) && app.control_workbench().values().name==L"位置",
-        "Collapsing the workbench group retained native composition or changed confirmed text.");
+    click(app,sample::disable);
+    require(!app.text_input() && !app.presented()->find(sample::name)->enabled && app.control_workbench().values().name==L"位置",
+        "Disabling the workbench retained native composition or changed confirmed text.");
     key(app,VK_SPACE);
     click(app,sample::name);
     compose_position();

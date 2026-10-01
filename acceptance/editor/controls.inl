@@ -5,17 +5,51 @@ void parameter_menu(Application& app, ControlKey source) {
     SendMessageW(app.window(),WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(at.x,at.y));
     SendMessageW(app.window(),WM_RBUTTONUP,0,MAKELPARAM(at.x,at.y));
     tick(app,2);
-    require(app.presented()->popup==control::parameter_menu,"Parameter menu did not enter the accepted frame.");
+    require(app.menu_frame() && app.menu_frame()->popup==control::parameter_menu,"Parameter menu did not enter the accepted frame.");
 }
 bool tuple_reset_available(Application& app, ControlKey group) {
     parameter_menu(app,group);
-    const bool enabled=app.presented()->find(control::menu_group_reset)->enabled;
+    const bool enabled=app.menu_frame()->find(control::menu_group_reset)->enabled;
     key(app,VK_ESCAPE); return enabled;
 }
 void reset_tuple(Application& app, ControlKey group) {
     parameter_menu(app,group); click(app,control::menu_group_reset);
-    require(!app.presented()->popup,"Tuple reset left its popup open.");
+    require(!app.menu_window(),"Tuple reset left its popup open.");
 }
+void verify_parameter_slider(Application& app,const std::filesystem::path& output) {
+    namespace sample=atelier::editor::workbench_control;
+    click(app,sample::scalar); type(app,L"24"); key(app,VK_RETURN);
+    require(app.control_workbench().values().exposure==24,"Number input was incorrectly limited to the slider's navigation range.");
+    const auto history=app.control_workbench().undo_count();
+    auto at=centre(app,sample::scalar_slider);
+    mouse(app,WM_LBUTTONDOWN,at);
+    const auto preview=app.control_workbench().values().exposure;
+    require(preview>6 && preview<10,"Slider track click did not preview the value.");
+    key(app,VK_ESCAPE); mouse(app,WM_LBUTTONUP,at);
+    require(app.control_workbench().values().exposure==24 && app.control_workbench().undo_count()==history,
+        "Slider cancellation lost an original value outside the navigation range.");
+    mouse(app,WM_LBUTTONDOWN,at); at.x+=20; mouse(app,WM_MOUSEMOVE,at); mouse(app,WM_LBUTTONUP,at);
+    require(app.control_workbench().values().exposure>preview && app.control_workbench().undo_count()==history+1,
+        "Slider drag did not commit exactly one history entry.");
+    key(app,'Z',true);
+    require(app.control_workbench().values().exposure==24,"Slider undo did not restore the number.");
+    key(app,VK_HOME);
+    require(app.control_workbench().values().exposure==0,"Slider Home failed.");
+    key(app,VK_RIGHT,false,true);
+    require(std::abs(app.control_workbench().values().exposure-.005)<1e-8,"Slider fine keyboard step failed.");
+    key(app,VK_END);
+    require(app.control_workbench().values().exposure==16,"Slider End failed.");
+    at=centre(app,sample::scalar_slider);
+    mouse(app,WM_LBUTTONDOWN,at); SendMessageW(app.window(),WM_CANCELMODE,0,0); tick(app,2);
+    require(app.control_workbench().values().exposure==16 && GetCapture()!=app.window(),"Capture loss did not roll back the slider.");
+    click(app,sample::disable);
+    click(app,sample::scalar_slider);
+    require(app.control_workbench().values().exposure==16,"Disabled slider accepted input.");
+    click(app,sample::disable);
+    click(app,sample::scalar); type(app,L"1"); key(app,VK_RETURN);
+    capture(app,output/"controls-axis-slider.png");
+}
+
 void verify_basic_controls(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
     const auto resize_panel=[&](float width) {
         require_input_focus(app);
@@ -136,7 +170,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     parameter_menu(app,sample::position_x);
     capture(app,output/"controls-parameter-menu.png");
     click(app,control::menu_copy);
-    require(!app.presented()->popup,"Copy left its popup open.");
+    require(!app.menu_window(),"Copy left its popup open.");
     parameter_menu(app,sample::position_y); click(app,control::menu_paste);
     require(app.control_workbench().values().position[1]==12.5,"Paste Value did not commit the clipboard value.");
     click(app,control::undo);
@@ -151,27 +185,27 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     key(app,VK_ESCAPE);
     parameter_menu(app,sample::position_x);
     key(app,VK_DELETE);
-    require(app.presented()->popup && contains(app,actor),"Popup leaked Delete to the scene.");
+    require(app.menu_window() && contains(app,actor),"Popup leaked Delete to the scene.");
     const auto view=atelier::application::EditorAcceptanceAccess::camera_view(app);
     wheel(app,control::viewport,3);
     require(atelier::application::EditorAcceptanceAccess::camera_view(app)==view,"Popup wheel escaped to the camera.");
     click(app,control::workbench);
-    require(!app.presented()->popup && app.workbench_visible(),"Outside click did not dismiss without activating the toolbar.");
+    require(!app.menu_window() && app.workbench_visible(),"Outside click did not dismiss without activating the toolbar.");
     click(app,sample::position_x); key(app,VK_APPS);
-    require(app.presented()->popup,"Keyboard context menu did not open.");
+    require(app.menu_window(),"Keyboard context menu did not open.");
     key(app,VK_ESCAPE);
-    require(!app.presented()->popup,"Escape failed to dismiss the menu.");
+    require(!app.menu_window(),"Escape failed to dismiss the menu.");
     key(app,VK_APPS); key(app,VK_ESCAPE); // Owner focus survived dismissal.
     {
         KeyStateScope modifiers(false,true);
         SendMessageW(app.window(),WM_SYSKEYDOWN,VK_F10,0);
         SendMessageW(app.window(),WM_SYSKEYUP,VK_F10,0); tick(app,2);
     }
-    require(app.presented()->popup,"Native Shift+F10 did not open the parameter menu.");
+    require(app.menu_window(),"Native Shift+F10 did not open the parameter menu.");
     key(app,VK_ESCAPE);
-    // The ladder uses one transaction and one cached text paragraph while held.
-    const auto drag=[&](bool ctrl,bool shift,bool cancel) {
-        require_input_focus(app); KeyStateScope modifiers(ctrl,shift);
+    // The ladder uses one transaction and cached per-rung glyphs while held.
+    const auto drag=[&](bool ctrl,bool shift,bool cancel,bool alt=false) {
+        require_input_focus(app); KeyStateScope modifiers(ctrl,shift,alt);
         const auto from=centre(app,sample::position_x);
         const LONG dx=static_cast<LONG>(std::lround(10*app.presented()->drawing->dpi_scale));
         SendMessageW(app.window(),WM_MBUTTONDOWN,MK_MBUTTON,MAKELPARAM(from.x,from.y));
@@ -186,11 +220,14 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(app.control_workbench().values().position[0]==12.5 && app.control_workbench().undo_count()==history_before,
         "Esc failed to roll back the ladder gesture.");
     drag(false,false,false);
-    require(std::abs(app.control_workbench().values().position[0]-12.6)<1e-6 && app.control_workbench().undo_count()==history_before+1,
+    require(std::abs(app.control_workbench().values().position[0]-12.7)<1e-6 && app.control_workbench().undo_count()==history_before+1,
         "Middle drag did not commit one stepped edit.");
     click(app,control::undo);
     drag(false,true,false);
-    require(std::abs(app.control_workbench().values().position[0]-12.51)<1e-6,"Shift ladder did not use fine steps.");
+    require(std::abs(app.control_workbench().values().position[0]-12.52)<1e-6,"Shift ladder did not use fine steps.");
+    click(app,control::undo);
+    drag(false,false,false,true);
+    require(std::abs(app.control_workbench().values().position[0]-15.125)<1e-6,"Alt ladder did not multiply by the selected increment.");
     click(app,control::undo);
     drag(true,false,false);
     require(app.control_workbench().values().position[0]==0,"Ctrl+middle did not restore the default.");
@@ -198,25 +235,46 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     {
         require_input_focus(app); KeyStateScope modifiers;
         const auto from=centre(app,sample::position_x);
+        // This gesture stays captured across frames. Keep physical and synthetic
+        // positions aligned so capture-generated WM_MOUSEMOVE is not a drag to the title bar.
+        auto native_point=from; ClientToScreen(app.window(),&native_point);
+        require(SetCursorPos(native_point.x,native_point.y)!=FALSE,"Cannot align the held ladder pointer.");
+        tick(app,2);
         SendMessageW(app.window(),WM_MBUTTONDOWN,MK_MBUTTON,MAKELPARAM(from.x,from.y));
         tick(app,2);
         capture(app,output/"controls-value-ladder.png");
+        require(app.presented()->value_ladder.has_value(),"Value ladder did not publish its painted geometry.");
+        const auto ladder=*app.presented()->value_ladder;
+        require(ladder.selected_row==3 && ladder.increment==.1 && ladder.bounds.y>=0 &&
+            ladder.bounds.y+ladder.bounds.height<=app.presented()->drawing->extent.height,
+            "Value ladder default increment or surface containment is incorrect.");
         const auto cached=app.ui_statistics(); tick(app,3);
         require(app.ui_statistics().text_layouts==cached.text_layouts && app.ui_statistics().rasterizations==cached.rasterizations,
             "Held value ladder rebuilt unchanged labels every frame.");
         const LONG dx=static_cast<LONG>(std::lround(10*app.presented()->drawing->dpi_scale));
-        const LONG dy=static_cast<LONG>(std::lround(24*app.presented()->drawing->dpi_scale));
-        SendMessageW(app.window(),WM_MOUSEMOVE,MK_MBUTTON,MAKELPARAM(from.x+dx,from.y-dy));
-        SendMessageW(app.window(),WM_MBUTTONUP,0,MAKELPARAM(from.x+dx,from.y-dy)); tick(app,2);
-        require(app.control_workbench().values().position[0]>12.6,"Vertical ladder motion failed to choose a coarser step.");
+        const LONG row_y=static_cast<LONG>(std::lround(ladder.bounds.y+ladder.row_height*2.5f));
+        const auto select_history=app.control_workbench().undo_count();
+        auto row_point=POINT{from.x,row_y}; ClientToScreen(app.window(),&row_point);
+        require(SetCursorPos(row_point.x,row_point.y)!=FALSE,"Cannot align the ladder row pointer.");
+        SendMessageW(app.window(),WM_MOUSEMOVE,MK_MBUTTON,MAKELPARAM(from.x,row_y)); tick(app,2);
+        require(app.presented()->value_ladder->selected_row==2 && app.presented()->value_ladder->increment==1 &&
+            app.control_workbench().values().position[0]==12.5 && app.control_workbench().undo_count()==select_history,
+            "Selecting a visible ladder rung changed the value or used a different hit region.");
+        SendMessageW(app.window(),WM_MOUSEMOVE,MK_MBUTTON,MAKELPARAM(from.x+dx,row_y));
+        SendMessageW(app.window(),WM_MBUTTONUP,0,MAKELPARAM(from.x+dx,row_y)); tick(app,2);
+        require(std::abs(app.control_workbench().values().position[0]-14.5)<1e-6 && !app.presented()->value_ladder,
+            "Coarse ladder edit or release cleanup failed.");
+        RECT host{}; GetWindowRect(app.window(),&host);
+        require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer after the ladder.");
+        tick(app,2);
     }
     click(app,control::undo);
     wheel(app,sample::list,-12);
     click(app,sample::mode);
-    require(app.presented()->popup,"Combo did not open its menu.");
+    require(app.menu_window(),"Combo did not open its menu.");
     capture(app,output/"controls-combo.png");
     key(app,VK_DOWN); key(app,VK_RETURN);
-    require(!app.presented()->popup && app.control_workbench().values().mode==1,"Combo keyboard selection failed.");
+    require(!app.menu_window() && app.control_workbench().values().mode==1,"Combo keyboard selection failed.");
     key(app,VK_DOWN); key(app,VK_ESCAPE);
     require(app.control_workbench().values().mode==1,"Combo cancellation changed the selection.");
     click(app,control::undo);
@@ -231,6 +289,34 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(app.control_workbench().values()==atelier::editor::ControlWorkbench::Values{},"Workbench reset did not restore sample defaults.");
     click(app,control::undo);
     require(app.control_workbench().values().position[0]==12.5,"Sample reset did not have one reversible history entry.");
+    verify_parameter_slider(app,output);
+    click(app,sample::appearance_page);
+    require(!app.presented()->find(sample::position_x) && app.presented()->find(sample::red),"Parameter page did not switch its content.");
+    const auto color_before=app.control_workbench().values().color;
+    click(app,sample::red); type(app,L"0.75"); key(app,VK_RETURN);
+    require(app.control_workbench().values().color[0]==.75 && app.presented()->find(sample::swatch)->style->background->r==.75f,
+        "Color tuple and its swatch diverged.");
+    click(app,sample::rgb_page); key(app,VK_RIGHT);
+    require(app.presented()->find(sample::channels_page)->selected && app.presented()->find(480),"Nested parameter tabs did not support arrow navigation.");
+    const auto nested_scale=app.presented()->drawing->dpi_scale;
+    const auto outer=app.presented()->find(sample::list)->bounds;
+    const auto nested=app.presented()->find(sample::color_pages)->bounds;
+    const auto nested_tab=app.presented()->find(sample::rgb_page)->bounds;
+    const auto nested_fold=app.presented()->find(sample::color_fold)->bounds;
+    require(std::abs(nested.x-outer.x-8*nested_scale)<.1f && std::abs(nested_tab.x-nested.x)<.1f &&
+        std::abs(nested_fold.x-nested.x)<.1f && std::abs(nested_fold.width-nested.width)<.1f,
+        "Nested page insets accumulated in tabs or its full-width fold header.");
+    capture(app,output/"controls-color-channels.png");
+    click(app,control::undo);
+    require(app.control_workbench().values().color==color_before,"Color editing did not share sample history.");
+    click(app,sample::color_fold);
+    require(!app.presented()->find(sample::red),"Nested fold did not collapse the color controls.");
+    capture(app,output/"controls-nested-collapsed.png");
+    key(app,VK_RETURN); click(app,sample::rgb_page);
+    capture(app,output/"controls-color-tuple.png");
+    click(app,sample::general_page); click(app,sample::appearance_page);
+    require(app.presented()->find(sample::rgb_page)->selected,"Independent tab groups lost their selected pages.");
+    click(app,sample::general_page);
     require(app.document().undo_count()==scene_history && position(0)==0,
         "Workbench values or history modified the actual scene.");
     click(app,control::parameters_tab);

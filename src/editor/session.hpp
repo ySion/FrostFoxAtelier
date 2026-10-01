@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/world.hpp"
+#include <unordered_map>
 
 namespace atelier::editor {
 struct Parameter {
@@ -20,6 +21,8 @@ public:
     const world::Types& types() const noexcept { return types_; }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     ObjectId selected() const noexcept { return selected_; }
+    std::wstring_view name(ObjectId) const noexcept;
+    Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<world::Commit> add_actor();
     Result<world::Commit> erase_selected();
@@ -49,7 +52,8 @@ private:
         std::uint64_t control_session{};
         world::Trs before, after; // Quaternion field writes may normalize other components.
     };
-    using Change = std::variant<ActorChange, ComponentChange, FieldChange>;
+    struct NameChange { ObjectRoot root; std::wstring before, after; };
+    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -59,6 +63,8 @@ private:
     std::size_t cursor_{};
     ObjectId selected_;
     std::optional<FieldChange> active_;
+    std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
+    std::uint64_t next_name_{1};
     void remember(Change);
     Result<world::Commit> replay(Change&, bool forward);
 };

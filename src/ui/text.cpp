@@ -36,7 +36,7 @@ struct TrackedCoverage final : Coverage {
 };
 struct FontLess {
     bool operator()(const Font& a, const Font& b) const {
-        return std::tie(a.family,a.locale,a.size,a.weight) < std::tie(b.family,b.locale,b.size,b.weight);
+        return std::tie(a.family,a.locale,a.size,a.weight,a.style) < std::tie(b.family,b.locale,b.size,b.weight,b.style);
     }
 };
 
@@ -158,7 +158,8 @@ struct TextStore::Impl {
         auto& format = formats[entry.font];
         if (!format) {
             check(factory->CreateTextFormat(entry.font.family.c_str(), font_collection.Get(), static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
+                entry.font.style==FontStyle::italic?DWRITE_FONT_STYLE_ITALIC:DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
         }
         check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
             width.value_or(0), 0, &paragraph.layout));
@@ -227,11 +228,11 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         ++impl_->statistics.coverage_cache_hits; return found->second;
     }
     auto coverage=std::make_shared<TrackedCoverage>(impl_->accounting,pixels,pixels);
-    const auto segment=[](float x,float y,float ax,float ay,float bx,float by) {
+    const auto segment=[symbol](float x,float y,float ax,float ay,float bx,float by) {
         const auto dx=bx-ax,dy=by-ay;
         const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
         const auto px=x-ax-t*dx,py=y-ay-t*dy;
-        return px*px+py*py<=.0064f;
+        return px*px+py*py<=(symbol==Symbol::world?.001225f:.0064f);
     };
     for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
         unsigned inside{};
@@ -242,11 +243,23 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                 return px>=left && px<=right && py>=top && py<=bottom &&
                     (px<left+.1f || px>right-.1f || py<top+.1f || py>bottom-.1f);
             };
-            const bool hit=symbol==Symbol::close?(segment(px,py,.2f,.2f,.8f,.8f) || segment(px,py,.8f,.2f,.2f,.8f)):
-                symbol==Symbol::maximize?outline(.15f,.15f,.85f,.85f):
+            const auto ax=symbol==Symbol::forward?1-px:px;
+            const bool hit=(symbol==Symbol::back || symbol==Symbol::forward)?
+                ((ax>=.08f && ax<=.53f && std::abs(py-.5f)<(ax-.08f)*.85f) || (ax>=.5f && ax<=.92f && py>=.37f && py<=.63f)):
+                symbol==Symbol::world?(segment(px,py,.16f,.30f,.50f,.12f) || segment(px,py,.50f,.12f,.84f,.30f) ||
+                    segment(px,py,.16f,.30f,.50f,.49f) || segment(px,py,.50f,.49f,.84f,.30f) ||
+                    segment(px,py,.16f,.30f,.16f,.70f) || segment(px,py,.84f,.30f,.84f,.70f) ||
+                    segment(px,py,.50f,.49f,.50f,.89f) || segment(px,py,.16f,.70f,.50f,.89f) || segment(px,py,.50f,.89f,.84f,.70f)):
+                symbol==Symbol::close?(segment(px,py,.2f,.2f,.8f,.8f) || segment(px,py,.8f,.2f,.2f,.8f)):
+                symbol==Symbol::plus?(segment(px,py,.2f,.5f,.8f,.5f) || segment(px,py,.5f,.2f,.5f,.8f)):
+                symbol==Symbol::maximize?(px>=.15f && px<=.85f && py>=.225f && py<=.775f && px+py<1):
                 symbol==Symbol::restore?(outline(.1f,.3f,.7f,.9f) || ((py<.3f || px>.7f) && outline(.3f,.1f,.9f,.7f))):
                 symbol==Symbol::check?
                 (segment(px,py,.17f,.53f,.40f,.77f) || segment(px,py,.40f,.77f,.85f,.23f)):
+                symbol==Symbol::disclosure_right?(px>=.2f && px<=.8f && std::abs(py-.5f)<(.8f-px)*.75f):
+                symbol==Symbol::disclosure_down?(py>=.2f && py<=.8f && std::abs(px-.5f)<(.8f-py)*.75f):
+                symbol==Symbol::left?(px>=.25f && px<=.7f && std::abs(py-.5f)<(px-.25f)*.7f):
+                symbol==Symbol::up?(py>=.25f && py<=.7f && std::abs(px-.5f)<(py-.25f)*.7f):
                 symbol==Symbol::right?(px>=.3f && px<=.75f && std::abs(py-.5f)<(.75f-px)*.7f):
                 (py>=.3f && py<=.75f && std::abs(px-.5f)<(.75f-py)*.7f);
             inside+=hit?1u:0u;

@@ -29,10 +29,11 @@ struct Control {
     ui_layout::NodeInput layout{ui_layout::NodeInput::column()};
     std::wstring text;
     Role role{Role::normal};
-    ControlIcon icon{ControlIcon::none}; // Icon-only button; shares indicator_size and foreground.
+    ControlIcon icon{ControlIcon::none}; // Standalone or leading glyph; text reserves the same measured icon space.
     bool enabled{true}, selected{};
+    bool click_action{}; // splitter grip only: activate on click; bool payload means Alt modifier.
     double value{}, minimum{-10000}, maximum{10000};
-    double drag_step{0.01}, fine_step{0.001}; // Value per logical pointer pixel.
+    double drag_step{0.01}, fine_step{0.001}; // Number/splitter: per DIP. Slider: keyboard increment.
     DragAxis drag_axis{DragAxis::horizontal};
     std::vector<std::string> classes;
     StyleProperties style;
@@ -40,7 +41,8 @@ struct Control {
     bool invalid{}, modified{}; // Modified compares the authoritative value with its declared default.
     std::optional<double> default_value;
     ControlKey context_target{}, context_group{}; // Context request target and optional group reset command.
-    ControlKey popup_owner{}; // popup only: earlier, visible owner. One popup per Session.
+    ControlKey selection_group{}; // Button group: arrow navigation; Tab visits the selected member.
+    ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
     bool operator==(const Control&) const = default;
 };
@@ -91,6 +93,19 @@ struct TextGeometry {
     EditToken token;
     std::uint64_t composition_id{};
 };
+struct ScrollbarGeometry {
+    ControlKey key{};
+    Rect bounds, track, thumb, decrement, increment;
+    Clip clip;
+    double maximum{}, value{}, page{};
+};
+struct ValueLadderGeometry {
+    ControlKey key{};
+    Rect bounds; // Frozen client pixels for this captured gesture.
+    float row_height{};
+    int selected_row{3};
+    double increment{.1};
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
@@ -99,6 +114,8 @@ struct UiFrame {
     std::optional<TextCaret> caret;
     std::optional<TextInputAnchor> input_anchor{};
     std::vector<TextGeometry> text_geometry;
+    std::vector<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
+    std::optional<ValueLadderGeometry> value_ladder;
     ControlKey popup{};
     const ControlBox* find(ControlKey) const noexcept;
     const TextGeometry* find_text(ControlKey) const noexcept;
@@ -166,11 +183,11 @@ struct Error {
 };
 template<class T> using Result = std::expected<T, Error>;
 enum class Capture { unchanged, acquire, release };
-enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical };
+enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan };
 struct Reply {
     bool consumed{}, redraw{};
     Capture capture{Capture::unchanged};
-    Cursor cursor{Cursor::arrow};
+    std::optional<Cursor> cursor; // No change for non-pointer events.
     std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
     std::optional<Error> error; // Input/platform failure; the edit and its history remain intact.
 };
@@ -226,6 +243,8 @@ public:
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
     Reply input(const Event&);
     Reply cancel_interaction();
+    Reply focus(ControlKey); // Visible accepted control only; commits the previous legal draft.
+    Reply execute(EditCommand, std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.
     ControlKey focused_control() const noexcept;
     bool wants_keyboard() const noexcept;
     bool has_popup() const noexcept; // Modal barrier includes an opening/closing frame transition.

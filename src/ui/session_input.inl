@@ -44,7 +44,56 @@ Reply Session::input(const Event& event) {
             if (event.key!=Key::tab) return reply;
         }
         const auto* hit=self.hit(event.x,event.y);
+        const auto pointer_cursor=[&] {
+            const auto* state=self.press?self.live(self.press->key):(hit?self.live(hit->key):nullptr);
+            if (state) {
+                const auto& control=state->control;
+                if (control.kind==ControlKind::text_edit || (control.kind==ControlKind::number && self.edit && self.edit->key==control.key && self.edit->text_mode)) return Cursor::text;
+                if (control.kind==ControlKind::number || control.kind==ControlKind::slider) return Cursor::drag_horizontal;
+                if (control.kind==ControlKind::splitter) return control.drag_axis==DragAxis::horizontal?Cursor::resize_horizontal:Cursor::resize_vertical;
+                if (control.kind==ControlKind::tab && self.press && self.press->dragging) return Cursor::move;
+            }
+            return Cursor::arrow;
+        };
+        if (event.kind==EventKind::pointer_move || event.kind==EventKind::pointer_down || event.kind==EventKind::pointer_up) reply.cursor=pointer_cursor();
         if (self.popup_input(reply,event,hit)) return reply;
+        // The bar is part of its scroll owner, with no synthetic document controls.
+        if (self.press && self.press->scrollbar) {
+            auto& press=*self.press;
+            auto* state=self.live(press.key);
+            if (!state) return self.cancel();
+            reply.consumed=true; reply.cursor=Cursor::arrow;
+            if (event.kind==EventKind::pointer_move) {
+                state->scroll=std::clamp(press.original+(event.y-press.y)*press.value/std::max(1.f,press.slider_span),0.0,state->scroll_limit);
+                reply.redraw=true;
+            } else if (event.kind==EventKind::pointer_up && event.button==press.button) {
+                self.press.reset(); reply.capture=Capture::release; reply.redraw=true;
+            } else if (event.kind==EventKind::key_down && event.key==Key::escape) return self.cancel();
+            return reply;
+        }
+        for (auto it=self.published->scrollbars.rbegin();it!=self.published->scrollbars.rend();++it) {
+            const auto& bar=*it;
+            const auto* owner=self.published->find(bar.key);
+            if (!owner || !self.current(*owner) || !contains(bar.bounds,event.x,event.y) || !contains(bar.clip,event.x,event.y)) continue;
+            if (event.kind==EventKind::pointer_move) {
+                reply.redraw=self.hover!=bar.key; self.hover=bar.key; reply.cursor=Cursor::arrow; reply.consumed=true; return reply;
+            }
+            if (event.kind==EventKind::pointer_down && event.button==PointerButton::primary && !self.press) {
+                self.finish_edit(reply,true);
+                auto& state=self.states.at(bar.key);
+                if (contains(bar.thumb,event.x,event.y)) {
+                    self.press=Impl::Press{bar.key,event.x,event.y,event.x,event.y,state.scroll,bar.maximum};
+                    self.press->scrollbar=true; self.press->slider_span=bar.track.height-bar.thumb.height;
+                    reply.capture=Capture::acquire;
+                } else {
+                    const auto step=contains(bar.decrement,event.x,event.y)?-24.0:contains(bar.increment,event.x,event.y)?24.0:
+                        (event.y<bar.thumb.y?-bar.page:bar.page);
+                    state.scroll=std::clamp(state.scroll+step,0.0,state.scroll_limit);
+                }
+                reply.cursor=Cursor::arrow; reply.consumed=reply.redraw=true; return reply;
+            }
+            break;
+        }
         if (event.kind==EventKind::pointer_move) {
             const auto key=hit?hit->key:0;
             reply.redraw=self.hover!=key; self.hover=key;
@@ -63,28 +112,60 @@ Reply Session::input(const Event& event) {
                         Impl::action(reply,ActionKind::drag_preview,press.key,DragPoint{event.x,event.y}); reply.redraw=true;
                     }
                 } else if (editable(control.kind)) {
+                    if (press.ladder) {
+                        auto& ladder=*press.ladder;
+                        auto& geometry=ladder.geometry;
+                        bool choosing=ladder.fine!=event.shift || ladder.multiply!=event.alt;
+                        if (event.y!=press.last_y && event.x>=geometry.bounds.x && event.x<geometry.bounds.x+geometry.bounds.width) {
+                            const auto row=std::clamp(static_cast<int>(std::floor((event.y-geometry.bounds.y)/geometry.row_height)),0,6);
+                            choosing|=row!=geometry.selected_row;
+                            geometry.selected_row=row;
+                        }
+                        ladder.fine=event.shift; ladder.multiply=event.alt;
+                        geometry.increment=ladder_steps[geometry.selected_row]*(ladder.fine?.1:1);
+                        if (choosing) ladder.remainder=0;
+                        else ladder.remainder+=(event.x-press.last_x)/self.surface.dpi_scale;
+                        const auto ticks=std::trunc(ladder.remainder/ladder_tick_distance);
+                        ladder.remainder-=ticks*ladder_tick_distance;
+                        if (ticks!=0) {
+                            double next=press.value;
+                            if (ladder.multiply) {
+                                const auto factor=std::pow(1+geometry.increment,ticks);
+                                if (next!=0) next*=factor;
+                                ladder.multiplier=std::clamp(ladder.multiplier*factor,1e-12,1e12);
+                            } else next+=ticks*geometry.increment;
+                            next=std::clamp(next,control.minimum,control.maximum);
+                            if (next!=press.value) {
+                                if (!press.dragging) {
+                                    self.finish_edit(reply,true); press.dragging=true;
+                                    Impl::action(reply,ActionKind::edit_begin,press.key,press.original);
+                                }
+                                press.value=next;
+                                Impl::action(reply,ActionKind::edit_preview,press.key,press.value);
+                            }
+                        }
+                        reply.redraw=true;
+                    } else {
                     const auto delta=control.drag_axis==DragAxis::horizontal?event.x-press.last_x:event.y-press.last_y;
                     if (!press.dragging && (std::abs(event.x-press.x)>3 || std::abs(event.y-press.y)>3)) {
                         self.finish_edit(reply,true); press.dragging=true;
                         Impl::action(reply,ActionKind::edit_begin,press.key,press.original);
                     }
                     if (press.dragging) {
-                        press.ladder_fine=event.shift;
-                        if (press.button==PointerButton::middle)
-                            press.ladder_level=std::clamp(static_cast<int>(std::round((press.y-event.y)/self.surface.dpi_scale/press.ladder_band)),-3,3);
-                        const auto step=(event.shift?control.fine_step:control.drag_step)*std::pow(10.0,press.ladder_level);
-                        press.value=std::clamp(press.value+delta/self.surface.dpi_scale*step,control.minimum,control.maximum);
+                        if (control.kind==ControlKind::slider) {
+                            const auto step=(control.maximum-control.minimum)/press.slider_span*(event.shift?.1:1.0);
+                            press.value=std::clamp(press.value+(event.x-press.last_x)*step,control.minimum,control.maximum);
+                        } else {
+                            const auto step=event.shift?control.fine_step:control.drag_step;
+                            press.value=std::clamp(press.value+delta/self.surface.dpi_scale*step,control.minimum,control.maximum);
+                        }
                         Impl::action(reply,ActionKind::edit_preview,press.key,press.value); reply.redraw=true;
+                    }
                     }
                 }
                 press.last_x=event.x; press.last_y=event.y; reply.consumed=true;
             } else reply.consumed=self.popup || (hit && hit->kind!=ControlKind::viewport);
-            if (hit) {
-                const auto& control=self.states.at(hit->key).control;
-                if (control.kind==ControlKind::text_edit || (control.kind==ControlKind::number && self.edit && self.edit->key==hit->key && self.edit->text_mode)) reply.cursor=Cursor::text;
-                else if (control.kind==ControlKind::number) reply.cursor=Cursor::drag_horizontal;
-                else if (control.kind==ControlKind::splitter) reply.cursor=control.drag_axis==DragAxis::horizontal?Cursor::resize_horizontal:Cursor::resize_vertical;
-            }
+            reply.cursor=pointer_cursor();
             return reply;
         }
         if (event.kind==EventKind::pointer_down) {
@@ -117,10 +198,35 @@ Reply Session::input(const Event& event) {
             if (selecting) self.select_at(reply,event.x,event.y,event.shift);
             self.press=Impl::Press{hit->key,event.x,event.y,event.x,event.y,control.value,control.value,false,selecting};
             self.press->button=event.button;
-            self.press->ladder_fine=event.shift;
+            if (control.kind==ControlKind::slider) {
+                const auto track=slider_track(hit->bounds,self.surface.dpi_scale);
+                auto& press=*self.press; press.slider_span=std::max(track.width,1.f);
+                press.value=std::clamp(control.value,control.minimum,control.maximum);
+                const auto thumb=track.x+track.width*(press.value-control.minimum)/(control.maximum-control.minimum);
+                if (std::abs(event.x-thumb)>5*self.surface.dpi_scale) {
+                    press.dragging=true;
+                    press.value=control.minimum+std::clamp((event.x-track.x)/press.slider_span,0.f,1.f)*(control.maximum-control.minimum);
+                    Impl::action(reply,ActionKind::edit_begin,press.key,press.original);
+                    Impl::action(reply,ActionKind::edit_preview,press.key,press.value);
+                }
+            }
             if (event.button==PointerButton::middle) {
-                self.text.set(0,L"0",hit->style->font,false);
-                self.press->ladder_band=self.text.metrics(0,70).height;
+                auto& ladder=self.press->ladder.emplace();
+                // A transient popup consumes the same scoped SS rules as ordinary controls.
+                Impl::State popup; popup.control.parent=hit->key; popup.control.kind=ControlKind::popup;
+                popup.control.classes={"value-ladder"}; self.resolve(popup); ladder.style=popup.resolved;
+                ladder.fine=event.shift; ladder.multiply=event.alt;
+                const auto scale=self.surface.dpi_scale;
+                const auto width=std::min(45.333f*scale,static_cast<float>(self.surface.extent.width));
+                const auto height=std::min(44.667f*7*scale,static_cast<float>(self.surface.extent.height));
+                const auto x=std::clamp(event.x-width*.5f,0.f,static_cast<float>(self.surface.extent.width)-width);
+                const auto y=std::clamp(event.y-height*.5f,0.f,static_cast<float>(self.surface.extent.height)-height);
+                ladder.geometry={hit->key,{x,y,width,height},height/7,3,.1*(event.shift?.1:1)};
+                for (std::size_t row=0;row<ladder.labels.size();++row) {
+                    self.text.set(0,ladder_labels[row],ladder.style->font,false,TextAlign::center);
+                    ladder.text_height=self.text.metrics(0,width/scale).height;
+                    ladder.labels[row]=self.text.raster(0,width/scale,scale);
+                }
             }
             reply.capture=Capture::acquire; reply.redraw=true; return reply;
         }
@@ -138,8 +244,11 @@ Reply Session::input(const Event& event) {
                 if (hit->kind==ControlKind::number && press.button==PointerButton::primary) {
                     if (!self.edit) self.begin_edit(hit->key,true,true);
                     else { self.edit->text_mode=true; if (self.edit->buffer.select_all()) self.revise(); }
-                } else if (activatable(hit->kind)) self.activate(reply,*hit);
+                } else if (hit->kind==ControlKind::splitter && self.states.at(hit->key).control.click_action)
+                    Impl::action(reply,ActionKind::activate,hit->key,event.alt);
+                else if (activatable(hit->kind)) self.activate(reply,*hit);
             }
+            reply.cursor=pointer_cursor();
             return reply;
         }
         if (event.kind==EventKind::wheel) {
@@ -164,7 +273,10 @@ Reply Session::input(const Event& event) {
         if (event.kind==EventKind::key_down && event.key==Key::tab) {
             self.finish_edit(reply,true);
             std::vector<ControlKey> keys;
-            for (const auto& box:self.published->controls) if (focusable(box.kind) && visible(box.bounds,box.clip) && self.current(box)) keys.push_back(box.key);
+            for (const auto& box:self.published->controls) if (focusable(box.kind) && visible(box.bounds,box.clip) && self.current(box)) {
+                const auto& control=self.states.at(box.key).control;
+                if (!control.selection_group || box.selected) keys.push_back(box.key);
+            }
             if (!keys.empty()) {
                 const auto at=std::find(keys.begin(),keys.end(),self.focus);
                 const auto index=at==keys.end()?(event.shift?keys.size()-1:0):
@@ -177,6 +289,30 @@ Reply Session::input(const Event& event) {
         auto* focused=self.live(self.focus);
         const auto* focused_box=self.published->find(self.focus);
         if (!focused || !focused_box || !self.current(*focused_box)) return reply;
+        if (focused->control.selection_group && event.kind==EventKind::key_down && !event.control && !event.alt &&
+            (event.key==Key::left || event.key==Key::right || event.key==Key::home || event.key==Key::end)) {
+            std::vector<const ControlBox*> keys;
+            for (const auto& box:self.published->controls)
+                if (self.current(box) && visible(box.bounds,box.clip) && self.states.at(box.key).control.selection_group==focused->control.selection_group) keys.push_back(&box);
+            const auto found=std::find(keys.begin(),keys.end(),focused_box);
+            if (!keys.empty() && found!=keys.end()) {
+                const auto at=static_cast<std::size_t>(found-keys.begin());
+                const auto next=event.key==Key::home?0:event.key==Key::end?keys.size()-1:(at+keys.size()+(event.key==Key::left?-1:1))%keys.size();
+                self.focus=keys[next]->key; self.activate(reply,*keys[next]);
+            }
+            reply.consumed=reply.redraw=true; return reply;
+        }
+        if (focused->control.kind==ControlKind::slider && event.kind==EventKind::key_down && !event.control && !event.alt &&
+            (event.key==Key::left || event.key==Key::right || event.key==Key::up || event.key==Key::down || event.key==Key::home || event.key==Key::end)) {
+            const auto& control=focused->control;
+            const auto step=event.shift?control.fine_step:control.drag_step;
+            const auto value=event.key==Key::home?control.minimum:event.key==Key::end?control.maximum:
+                std::clamp(control.value+(event.key==Key::left || event.key==Key::down?-step:step),control.minimum,control.maximum);
+            Impl::action(reply,ActionKind::edit_begin,self.focus,control.value);
+            Impl::action(reply,ActionKind::edit_preview,self.focus,value);
+            Impl::action(reply,ActionKind::edit_commit,self.focus,value);
+            reply.consumed=reply.redraw=true; return reply;
+        }
         if (event.kind==EventKind::key_down &&
             (event.key==Key::menu || (event.key==Key::f10 && event.shift) ||
              (focused->control.kind==ControlKind::combo && (event.key==Key::down || event.key==Key::up))) &&

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "application/window.hpp"
+#include "application/popup.hpp"
 #include "editor/camera.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
@@ -19,6 +20,9 @@ public:
     HWND window() const noexcept { return window_.handle(); }
     const editor::Session& document() const noexcept { return document_; }
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
+    HWND menu_window() const noexcept { return popup_ && popup_->visible()?popup_->window():nullptr; }
+    const ui::UiFrame* menu_frame() const noexcept { return menu_window()?popup_->presented().get():nullptr; }
+    void capture_menu(renderer::Capture& capture) { if (menu_window()) popup_->render(&capture); }
     ui::ControlKey object_control(ObjectId actor) const noexcept { return workspace_.object_control(actor); }
     ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
         return workspace_.field_control(component, path);
@@ -54,6 +58,12 @@ private:
     editor::Camera camera_;
     editor::Workspace workspace_;
     ui::Session ui_;
+    std::shared_ptr<const ui::StyleSheet> style_sheet_;
+    std::unique_ptr<PopupHost> popup_;
+    bool gpu_validation_{};
+    std::uint64_t menu_incarnation_{};
+    ui::ControlKey menu_return_focus_{};
+    ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
     renderer::Renderer renderer_;
     std::vector<renderer::Cube> cubes_;
     ui::Surface surface_;
@@ -63,6 +73,10 @@ private:
     renderer::FrameStats frame_statistics_;
     float last_x_{}, last_y_{};
     void native(NativeEvent);
+    void request_menu(const ui::ContextMenuRequest&);
+    void close_menu(bool restore_focus=true);
+    void update_menu();
+    bool menu_input(const ui::Event&,WPARAM);
     void effects(const ui::Reply&);
     Result<void> action(const ui::Action&);
     void sync_text_input();

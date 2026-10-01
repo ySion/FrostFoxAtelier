@@ -4,7 +4,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab 是文字叶，list 和 popup 是带裁剪和滚动的 column，splitter/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab 是文字叶，list 和 popup 是带裁剪和滚动的 column，splitter/slider/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
 
@@ -20,11 +20,27 @@
 
 ## 可组合参数控件
 
-[controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 24 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
+`append_path_bar`、`append_object_header` 和 `append_parameter_tabs` 用普通 row/column、label、text_edit、button 组合路径、类型＋名称与内容页签。对象字段仍由宿主绑定实际身份和历史。内容页签使用 `selection_group`：左右键/Home/End 切换，Tab 只访问组内选中项；宿主保存选择并折叠对应内容容器。它与可拖动的工作区 `tab` 职责分开，多层页签和折叠组可直接嵌套在同一布局树中。
+
+布局缩进由父容器负责。`append_parameter_tabs` 本身没有左、右或顶部缩进，只保留底部细分隔线的空间；调用方通过普通 column 的 padding 安排顶层位置和嵌套内容。折叠标题铺满所属内容区，字段缩进放在其内容容器。编辑器 SS 用 `parameter-page`、`parameter-body`、`parameter-inset` 表达这些现有容器的角色，不引入独立布局节点或另一个页面状态系统。
+
+`PathBar` 提供宿主拥有的路径 combo、后退/前进按钮身份及可用状态；路径图标与文字使用同一测量入口。`Control.icon` 可与文字并存，前置图标保留 indicator-size 加 6 DIP 的空间；没有文字时仍是居中图标。下拉的方向标记限制在右侧预留区域内，较大的前置图标不会放大右侧箭头。路径菜单与普通下拉继续调用原菜单入口。
+
+[controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 23 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
 
 `Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖颜色和字重。修改状态可通过字重影响文字测量，不代替非法输入状态。标题使用稳定的 `group_key` 作为身份，右键可请求整组菜单；Ctrl+中键发出 `reset(group_key)`，整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `ParameterRow.group_modified` 提供完整组状态；未提供时数值组合从传入字段推导。各字段始终独立比较自己的默认值。
 
-数值中键按住显示七档 value ladder：垂直移动切换十倍步长，水平移动调值；基准为字段 `drag_step`，Shift 使用 `fine_step`。释放提交一次，Esc/失焦/捕获丢失取消。Ctrl+中键恢复 `Control.default_value`。阶梯复用文字服务的一段缓存，静止时不重建排版或像素；背景、文字与档位高亮分别使用该字段最终样式的 background、color 和 selection-color。
+名称、搜索与数值字段统一使用 `single_line_layout`，默认最低 23 DIP；采用相同字号和内容内距，字号增大时可随测量增长。标签可通过 `text-vertical-align: center` 对齐编辑框的内容中心，说明段落仍保持顶部对齐。
+
+数值中键按住显示七档 value ladder：100、10、1、.1、.01、.001、.0001。指针位于阶梯横向范围内时，上下移动选择实际绘制的档位；离开该范围后保持选档。水平累计每 4 DIP 改变一个所选增量，保留不足一步的位移；换档或切换修饰键清除余量而不改值。Shift 将增量乘 .1，Alt 将每步改为乘以 `1+增量`（左移取倒数）；选中格第二行显示灵敏度或本次乘法累计倍率。`drag_step/fine_step` 继续服务普通左键拖调。释放提交一次，Esc/失焦/捕获丢失取消，Ctrl+中键恢复默认值。
+
+阶梯几何在按下时冻结，绘制和命中共用 `ValueLadderGeometry`，并随接受帧发布；尺寸受当前 Surface 限制。它通过普通 popup 的 `value-ladder` 类解析同一 SS 作用域。七个档位的文字 Coverage 在按下时生成并在手势内复用，静止帧不重新排版或栅格化；手势结束释放。倍率使用文字服务的保留槽零。
+
+`NumberField.axis` 显式选择 X/Y/Z/W 提示线，过滤后的字段保留原轴身份；`none` 不加提示。SS 的 `accent-color` / `accent-width` 绘制底边细线，项目将它用于轴识别，不表示动画或表达式状态。
+
+单标量 `NumberField.slider` 可提供另一个稳定 key 和显示范围；`append_number_row` 仍是唯一组合入口，生成 72 DIP 数值框与可伸缩滑条。显示范围必须位于数值合法范围内；手工输入可超出显示范围，滑块停在相应端点，不改权威值。宿主将两个 key 映射到同一值和历史。
+
+`slider` 复用 Session 捕获与 `edit_begin/preview/commit/cancel`：轨道点击预览，拖动释放提交一次，Esc/失焦/捕获丢失取消并恢复原值，包括显示范围之外的原值。拖动映射冻结已接受轨道宽度，Shift 降低十倍速度；方向键使用 drag_step，Shift 使用 fine_step，Home/End 到显示端点。禁用、隐藏和 Surface 变化沿同一失效清理。滑条不创建文字缓冲或另一个平台输入入口。
 
 `checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 indicator-size 加 6 DIP 的指示区域。勾号和三角形使用按形状/像素尺寸缓存的抗锯齿 R8 Coverage，沿同一 DrawQuad、上传和资源记账路径绘制。
 
@@ -32,17 +48,23 @@
 
 正式编辑器的 Controls 实验台与位置参数行均使用上述接口，真实窗口验收覆盖两者，见[编辑器模块](../editor/README.md#控件实验台)。
 
+### 滚动与指针
+
+list/popup 在布局时保留 `scrollbar-width + 2 * scrollbar-inset` 的右侧空间，子内容裁剪到该区域之前，避免滚动条盖住字段；保留空间不依赖当前是否溢出，防止出现滚动条时反复换行。溢出时发布 `UiFrame::scrollbars`，轨道、滑块和底部双步进按钮的绘制与命中消费同一份已接受几何。滑块按可见高度/总高度计算比例，拖动保留抓取点，轨道按页、按钮按 24 DIP、滚轮按 48 DIP 滚动。范围随内容变化夹取，失焦、Esc、捕获丢失、隐藏及 Surface 变化释放滚动捕获，保留当前滚动位置，不生成业务编辑或撤销。
+
+`Reply.cursor` 未提供时保留当前指针。指针意图由已接受命中或活动手势决定，数值调整、文本、分隔、停靠移动及视口观察各用相应形态。Window 缓存原生指针并处理客户区 `WM_SETCURSOR`；数值调整使用项目自己的双向箭头，按当前 DPI 创建并管理生命周期，其他形态复用 Windows 指针。捕获期间离开原控件仍保持手势指针。
+
 ### 菜单与下拉
 
-`append_menu` 组合一个根级 `popup` 和普通 `menu_item`。每个 Session 只允许一个 popup，其 owner 必须先出现，浮层子树必须放在描述末尾。Session 将它夹到客户区、按需滚动，并绘制在普通列表滚动条之上；不继承 owner 的裁剪。
+`append_menu` 组合根级 `popup`、普通 `menu_item`、快捷键提示和分隔线。每个 Session 只允许一个 popup；同一 surface 内的非零 owner 必须先出现，浮层子树放在描述末尾。owner=0 表示独立菜单 surface，外部目标的身份与生命周期由宿主管理。Session 只负责本 surface 的布局、滚动、绘制和接受帧，不假定它是主窗口。
 
-`context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 通过点击、Enter/Space 或上下键请求菜单。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标，宿主转换为 DIP 后调用组合接口。Session 管理菜单焦点、上下/Home/End 导航、Enter/Space 激活、Esc/Tab 关闭和焦点恢复。外部点击只关闭，滚轮及键盘不穿透；宿主处理视口输入前也须检查 `has_popup()`。它在浮层开关的待接受帧期间仍保持拦截。
+`context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 通过点击、Enter/Space 或上下键请求菜单。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
 
-`dismiss` 要求宿主撤下浮层描述；目标移除、禁用、折叠、Surface 失效或失焦也会结束菜单。所有取消副作用必须处理，包括业务操作失败后的 dismiss。菜单项身份同样遵守业务绑定寿命，不把仍存活的项改绑到另一命令目标。
+正式编辑器全部菜单使用 [PopupHost](../../../src/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。
 
-`menu_item.edit_command` 可指定 copy/paste/reset 和文字字段 key。命令关闭菜单后进入同一个 TextEdit、原生剪贴板和事务链；有效数字粘贴立即提交一次，非法数字保留可取消草稿。其目标仍需是当前有效字段；reset 还要求声明 default_value。普通菜单项通过 activate 交还宿主，下拉的选项与权威值也由宿主维护。
+同 surface 的 `menu_item.edit_command` 仍由 Session 直接处理；独立菜单宿主关闭菜单后调用原 Session 的 `execute(command, incarnation)`。该入口检查原控件的已接受身份和当前有效性，之后进入原 TextEdit、原生剪贴板与业务事务。有效数字粘贴立即提交一次，非法数字保留可取消草稿。控件被替换后不能把旧菜单命令派给新绑定。`focus(key)` 只接受当前可见、已接受控件。
 
-`Session(font_files)` 可在构造时将应用字体与系统字体合成一个私有 DirectWrite 集合，不安装系统字体。字体文件在 Session 生命周期内保持可读；已接受段落持有其原生布局，继续遵守旧帧寿命。默认构造仍只使用系统字体；未知字体名与中文缺字保持 DirectWrite 的系统回退。当前编辑器随程序部署 Source Sans 3 与 Source Code Pro，来源和许可证在 [字体资源](../../../assets/fonts/README.md)。
+`Session(font_files)` 可在构造时将应用字体与系统字体合成一个私有 DirectWrite 集合，不安装系统字体。字体文件在 Session 生命周期内保持可读；已接受段落持有其原生布局，继续遵守旧帧寿命。默认构造仍只使用系统字体；未知字体名与中文缺字保持 DirectWrite 的系统回退。当前编辑器随程序部署 Sarasa UI SC 与 Source Code Pro，来源和许可证在 [字体资源](../../../assets/fonts/README.md)。
 
 ## 停靠与标签
 
@@ -52,7 +74,10 @@
 - `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。
 - 标签栏落点改变顺序或合并，内容四边落点分割；空间不足时不接受边缘分割，菜单也禁用对应项。分隔线复用普通 splitter 的数值预览/取消链路。每叶最低尺寸取已注册视图的最大需求，并沿树合成；窗口不足时按最低需求比例压缩，由内容自己的滚动/换行保持可达。
 - `focused_control()` 供宿主依据已接受父链选择业务历史上下文；它不把键盘焦点等同于业务对象选择。`visible(tab)` 与 `focused_tab()` 分别表示实际显示和最近操作的视图。
-- `Control.icon` 支持关闭、最大化、恢复三个无文字按钮标记；尺寸取最终 `indicator-size`，颜色取前景，沿已有按形状/像素尺寸缓存的 R8 Coverage 绘制，不依赖字体中的图标字形。
+- 每个分割节点保留展开比例及独立的收起侧。分隔条两端箭头收起对应侧，留下 8 DIP 细条，再点恢复。隐藏子树停止描述，业务视图身份、值和历史仍归宿主所有；菜单 Show 会展开目标的全部隐藏祖先。Tab 栏没有前置收拢按钮；bar 类型的收拢由宿主使用普通容器、按钮及 collapsed 组合。
+- Tab 栏的“＋”是带图标的 combo，紧跟最后一个标签；复用 context_menu 和宿主原生弹窗。选择已有视图将它移到当前组，关闭视图重新打开；右侧 Pane 菜单的 Show 保持跳转到原组的语义。`DockTab.classes` 进入原标签控件的 SS 匹配。
+- 中央点阵握柄单击交换两侧，Alt+单击旋转分割方向；比例保持不变。握柄和其余分隔条都可拖动，普通 splitter 的 `click_action` 将未拖动释放转为 activate（bool 为 Alt）；超过拖动阈值只走一次编辑手势。收起期间拖动不覆盖展开比例。
+- `Control.icon` 支持关闭、最大化、恢复、加号及四向箭头，可用于纯图标 button、splitter、combo。符号尺寸取 `indicator-size`，在 padding 后的内容区居中并限制尺寸；颜色取前景，最大化对角底色取 `indicator-background`，使用缓存 R8 Coverage。点阵握柄用可相邻合批的实色小方块绘制。
 
 所有结构仍描述为普通容器、tab、button、splitter 和内容控件，经同一布局、SS、接受帧与 renderer 绘制。调用者保留当前 `DockSpace` 实例；原生浮动窗口与布局文件持久化不在该首片中。
 
@@ -62,7 +87,7 @@
 
 控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid、modified。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
 
-label文字从内容顶部绘制，普通 button/item/number/text_edit/checkbox/foldout/menu_item/combo 在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
+label 默认从内容顶部绘制，普通 button/item/number/text_edit/checkbox/foldout/menu_item/combo 默认在内容框内垂直居中。`text-vertical-align` 可显式选择 top、center 或 bottom；文字、选区、caret 与输入法锚点共用最后的文字原点。控件显式或经 Flex 父项参与首基线对齐时，其 UI 文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代，避免额外偏移破坏布局基线。这只决定文字内部放置，不改变 NodeInput 对齐和脱流规则。退出基线上下文后恢复最终样式指定的对齐。
 
 `Style.control_padding` 为 button/item/number/text_edit/checkbox/foldout/menu_item/combo 增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
 

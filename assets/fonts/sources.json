@@ -1,27 +1,25 @@
 [
   {
-    "file": "SourceSans3-Regular.otf",
-    "url": "https://raw.githubusercontent.com/adobe-fonts/source-sans/ed1808970eb3c7301c9a523bee26473ba0bb62fa/OTF/SourceSans3-Regular.otf",
-    "sha256": "08df266400933d3178d081a45f94a08814c3e55b4b7dd2e0ff69cb1329f13ab6",
-    "bytes": 334924
+    "file": "SarasaUiSC-Regular.ttf",
+    "url": "https://github.com/be5invis/Sarasa-Gothic/releases/download/v1.0.42/SarasaUiSC-TTF-1.0.42.7z",
+    "sha256": "81fc5857cbc9b05a16a75c7ad3e848032df52dddd29192f14b48d4b449c973f7",
+    "bytes": 24049996,
+    "archive_sha256": "daba2085409fb8a23dfc22f36e02e8b901a08510a3ac95ce3b0fb7161e6925bd",
+    "archive_member": "SarasaUiSC-Regular.ttf"
   },
   {
-    "file": "SourceSans3-Semibold.otf",
-    "url": "https://raw.githubusercontent.com/adobe-fonts/source-sans/ed1808970eb3c7301c9a523bee26473ba0bb62fa/OTF/SourceSans3-Semibold.otf",
-    "sha256": "36f1cd2c344aa3109e64429bce41a41e4b2b923beb2db19b8dbf9bb56f05a4f9",
-    "bytes": 339636
+    "file": "SarasaUiSC-SemiBold.ttf",
+    "url": "https://github.com/be5invis/Sarasa-Gothic/releases/download/v1.0.42/SarasaUiSC-TTF-1.0.42.7z",
+    "sha256": "1e11a0a06f4eb8f3256858b6ae085ea0b5c5eef9e216f153e152b868d741ae62",
+    "bytes": 23978372,
+    "archive_sha256": "daba2085409fb8a23dfc22f36e02e8b901a08510a3ac95ce3b0fb7161e6925bd",
+    "archive_member": "SarasaUiSC-SemiBold.ttf"
   },
   {
-    "file": "SourceSans3-Bold.otf",
-    "url": "https://raw.githubusercontent.com/adobe-fonts/source-sans/ed1808970eb3c7301c9a523bee26473ba0bb62fa/OTF/SourceSans3-Bold.otf",
-    "sha256": "7776ddb9f3eb58683e59f28d558d8896b768c2d0c80799fb3f1c56c54dfd98c9",
-    "bytes": 343596
-  },
-  {
-    "file": "source-sans-LICENSE.md",
-    "url": "https://raw.githubusercontent.com/adobe-fonts/source-sans/ed1808970eb3c7301c9a523bee26473ba0bb62fa/LICENSE.md",
-    "sha256": "89ad2c4f66dd29127527493e729c31e731f111cf10faf5774c3db9275ed0c22c",
-    "bytes": 4579
+    "file": "sarasa-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/be5invis/Sarasa-Gothic/v1.0.42/LICENSE",
+    "sha256": "32c932e0dbae4f6e6386964bbc2d04178707665a05ca65cf636241af13d50a53",
+    "bytes": 4702
   },
   {
     "file": "SourceCodePro-Regular.otf",
