@@ -1,6 +1,6 @@
 # 从 Houdini 参数控件改进编辑器
 
-日期：2026-10-01。状态：基础控件已完成阶段收口；随后按用户确认的“参数控件外观＋交互”接入菜单、下拉、数值阶梯与紧凑参数样式。固定目标、停靠仍为后续方向。
+日期：2026-10-01。状态：基础控件已完成阶段收口；随后按用户确认的“参数控件外观＋交互”接入菜单、下拉、数值阶梯与紧凑参数样式。固定目标仍为后续方向；随后按用户要求推进的停靠和 1.75 缩放校准见[工作区研究](houdini-workspace-reference-20261001.md)。
 
 本仓库观察基线：`9ad772ee9069a72ba90e535f598864f7565ea2c5`。已有 UI/SS 能力以 [UI 模块文档](../modules/ui/README.md) 和 [样式表文档](../modules/ui/style-sheets.md) 为准。本记录补充 [UI 基础计划](../ui-foundation-plan.md) 的控件方向，不另立实现规范。
 
@@ -8,7 +8,7 @@
 
 ### 当前实现
 
-实际 Position 与 Controls 实验台共用参数行、文字编辑、样式和接受帧。数值、文本和下拉都使用同一标签/字段组合；24 DIP 字段、右对齐标签、相邻向量分量、灰色背景、琥珀色修改/焦点、勾号和三角折叠符参考 Houdini 实机。
+实际 Position 与 Controls 实验台共用参数行、文字编辑、样式和接受帧。数值、文本和下拉都使用同一标签/字段组合；20 DIP 起的字段、右对齐标签、相邻向量分量、黑色输入框、细明暗边缘、加粗的非默认数值、暖色焦点、勾号和三角折叠符参考 Houdini 实机。
 
 参数右键菜单支持分量/整组默认值、复制和粘贴；Menu/Shift+F10 可从键盘打开，Esc/Tab 返回焦点，外部点击只关闭菜单，视口输入被拦截。中键数值阶梯可上下选择十倍档位、左右拖调，Shift 细调，Ctrl+中键恢复默认值。菜单与下拉复用一层公共 popup。样本的 Projection 选择和字段编辑进入同一独立样本历史，实际整向量恢复仍是一条场景历史。
 
@@ -25,6 +25,23 @@
 两种配置的真实搜狗均 PASS：composition starts/results 各 4，candidate changes 各 78，Space 确认“位置”、折叠/切换取消和原线程 profile 恢复均成功。前台不匹配的启动曾安全中断；最终使用正常可见窗口启动后完成。IME 通过后只移除了无样式规则使用的工具栏 compact 类，并将旧验收的选区颜色检查改为读取接受帧的 SS 最终颜色，输入实现未再改变。
 
 截图和报告归档于 `out/ui-controls-evidence/parameter-controls-20261001/`。`controls-parameter-menu.png`、`controls-combo.png` 和 `controls-value-ladder.png` 来自实际 GPU 读回。基础参数行、样式、输入、菜单均在基础 UI 模块中；未新增语言语法、另一套绘制入口或业务字段存储。
+
+### 视觉细化：Houdini 实机参照
+
+用户认为初版外观仍偏离 Houdini，要求提交推送原功能后继续细化。原控件已提交为 `4703847` 并经 PR #5 合入 `5b9a025`；本轮在该基线上调整样式，保留输入和历史合同。
+
+实机查看默认/聚焦/选中文本/非默认数值、勾选、右键菜单与下拉。截图像素中，参数面板为 RGB 61，输入框内部为 RGB 19；边缘上暗下亮，按钮为微弱纵向渐变。普通勾选与非默认值为灰白/加粗，暖色用于定位和焦点。现场 `font.map` 表明界面与数字分别使用 SideFX 版本的 Source Sans Pro、Source Code Pro。观察图片保留在 `out/ui-style-reference/`，没有保存 Houdini 场景。
+
+对应实现：
+
+- 从 Adobe 固定版本获取未修改的 Source Sans 3 / Source Code Pro 与 OFL 许可证，随应用部署，通过同一 TextStore 的私有字体集合加载，中文继续系统回退。来源见[字体清单](../../assets/fonts/README.md)。
+- SS 增加两色纵向渐变、方角 inset/outset 边框、指示符尺寸/颜色；渐变只在解析时生成 256 字节图片并共享。绘制仍复用既有 ColorImage、四边实色实例与相邻合批，没有变更 renderer 协议。
+- 持久 modified/selected 状态可改变字重；悬停、按下、焦点和非法状态继续禁止改变文字几何。参数行最低 20 DIP、标题列 112 DIP，组间距 5 DIP；字号增加时数值行随内容增长。
+- 缩小工具栏、标题和列表行，名称、向量、下拉和勾选对齐同一字段列；下拉保持内容宽度，菜单使用暖色定位和灰白常态。
+
+公开字体依据：[Source Sans](https://github.com/adobe-fonts/source-sans)、[Source Code Pro](https://github.com/adobe-fonts/source-code-pro)；私有字体加载使用 [DirectWrite AddFontFile](https://learn.microsoft.com/en-us/windows/win32/api/dwrite_3/nf-dwrite_3-idwritefontsetbuilder1-addfontfile)。此次不复制 Houdini 图标或品牌资源，也不扩展滑块、动画通道或停靠。
+
+本轮视觉细化已通过 dev/release 编译、UI 消费者各 15/15、编辑器文档链与普通窗口验收（各 1036 个接受帧）。实机复核覆盖紧凑参数面板、菜单、下拉和窄面板；报告、截图及带原始/规范化哈希的源码副本归档于 `out/ui-controls-evidence/houdini-style-20261001/`。该视觉增量未单独重跑真实搜狗，前述旧阶段的 IME PASS 不代表本轮字体变化已完成实机验收；后续停靠重构阶段用户明确暂不需要重复搜狗验收。该样式增量随工作区重构一并完成阶段收口。
 
 ### 基础控件阶段验收（2397365）
 

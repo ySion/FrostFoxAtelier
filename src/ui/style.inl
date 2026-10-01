@@ -10,6 +10,7 @@ bool valid_style(const Style& style) {
     const auto valid_name = [](const std::wstring& value) { return !value.empty() && value.size() <= 128 && value.find(L'\0') == std::wstring::npos; };
     if (!valid_name(style.font.family) || !valid_name(style.font.locale) ||
         !bounded(style.font.size,4,256) || !style.font.weight || style.font.weight > 999 ||
+        static_cast<unsigned>(style.font.style)>static_cast<unsigned>(FontStyle::italic) ||
         !bounded(style.font.size*style.title_scale,4,256) || !bounded(style.font.size*style.caption_scale,4,256) ||
         !style.title_weight || style.title_weight > 999) return false;
     for (auto value : {style.control_padding.left,style.control_padding.top,style.control_padding.right,style.control_padding.bottom})
@@ -31,13 +32,16 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     value.scrollbar_width=style.scrollbar_width; value.scrollbar_inset=style.scrollbar_inset; value.scrollbar_min_thumb=style.scrollbar_min_thumb;
     value.foreground = p.text; value.border = p.border; value.selection = p.selection; value.caret = p.text;
     value.scrollbar=p.muted;
+    if (scrolling(kind)) { value.indicator_background=p.field; value.indicator_border=p.border; }
+    if (kind==ControlKind::slider) { value.indicator_background=p.button; value.indicator_border=p.border; }
     if (role == Role::title) { value.font.size *= style.title_scale; value.font.weight = style.title_weight; }
     if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
-    const bool button = kind == ControlKind::button || kind == ControlKind::combo;
+    const bool button = kind == ControlKind::button || kind == ControlKind::combo || kind == ControlKind::tab;
     const bool item = kind == ControlKind::item || kind == ControlKind::menu_item;
     const bool toggle = kind == ControlKind::checkbox || kind == ControlKind::foldout;
     const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
+    if (button || item || number || toggle) value.text_vertical_align=TextVerticalAlign::center;
     if (button) value.background = p.button;
     if (number) value.background = p.field;
     if (splitter) value.background = p.splitter;
@@ -58,22 +62,35 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
 }
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
-    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? 20.f : 0.f;
-    return {padding.left+style.padding.left+marker,padding.top+style.padding.top,
-            padding.right+style.padding.right+(control.kind==ControlKind::combo?18.f:0.f),padding.bottom+style.padding.bottom};
+    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? style.indicator_size+6 : 0.f;
+    const float leading=control.icon!=ControlIcon::none && !control.text.empty()?style.indicator_size+6:0.f;
+    return {padding.left+style.padding.left+marker+leading,padding.top+style.padding.top,
+            padding.right+style.padding.right+(control.kind==ControlKind::combo && (control.icon==ControlIcon::none || !control.text.empty())?18.f:0.f),padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.font_family) value.font.family=*p.font_family;
     if (p.font_locale) value.font.locale=*p.font_locale;
     if (p.font_size) value.font.size=*p.font_size;
     if (p.font_weight) value.font.weight=*p.font_weight;
+    if (p.font_style) value.font.style=*p.font_style;
     if (p.text_align) value.text_align=*p.text_align;
+    if (p.text_vertical_align) value.text_vertical_align=*p.text_vertical_align;
+    if (p.border_style) value.border_style=*p.border_style;
+    if (p.border_edges) value.border_edges=*p.border_edges;
+    if (p.border_inner) value.border_inner=*p.border_inner;
+    if (p.combo_indicator) value.combo_indicator=*p.combo_indicator;
+    if (p.indicator_size) value.indicator_size=*p.indicator_size;
+    if (p.indicator_background) value.indicator_background=*p.indicator_background;
+    if (p.indicator_border) value.indicator_border=*p.indicator_border;
+    if (p.indicator_foreground) value.indicator_foreground=*p.indicator_foreground;
     if (p.foreground) value.foreground=*p.foreground;
     if (p.background) value.background=*p.background;
     if (p.border) value.border=*p.border;
     if (p.selection) value.selection=*p.selection;
     if (p.caret) value.caret=*p.caret;
     if (p.scrollbar) value.scrollbar=*p.scrollbar;
+    if (p.accent) value.accent=*p.accent;
+    if (p.accent_width) value.accent_width=*p.accent_width;
     if (p.padding) value.padding=*p.padding;
     if (p.border_width) value.border_width=*p.border_width;
     if (p.caret_width) value.caret_width=*p.caret_width;
@@ -81,13 +98,16 @@ void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.scrollbar_width) value.scrollbar_width=*p.scrollbar_width;
     if (p.scrollbar_inset) value.scrollbar_inset=*p.scrollbar_inset;
     if (p.scrollbar_min_thumb) value.scrollbar_min_thumb=*p.scrollbar_min_thumb;
+    if (p.scrollbar_button_size) value.scrollbar_button_size=*p.scrollbar_button_size;
     if (p.image) value.image=*p.image;
+    if (p.scrollbar_image) value.scrollbar_image=*p.scrollbar_image;
 }
 void inherit_properties(StyleProperties& inherited,const StyleProperties& p) {
     if (p.font_family) inherited.font_family=p.font_family;
     if (p.font_locale) inherited.font_locale=p.font_locale;
     if (p.font_size) inherited.font_size=p.font_size;
     if (p.font_weight) inherited.font_weight=p.font_weight;
+    if (p.font_style) inherited.font_style=p.font_style;
     if (p.foreground) inherited.foreground=p.foreground;
 }
 bool matches(const StyleSelector& selector,const Control& control,VisualState state) {
