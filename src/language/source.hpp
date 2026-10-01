@@ -17,7 +17,7 @@ namespace atelier::language {
 struct ValueType {
     enum Kind { f32, u32, i32, predicate, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string };
     Kind kind{void_value};
-    std::uint32_t type_index{}; // index in the enum or native-value catalog, selected by kind
+    std::uint32_t type_index{}; // index in the enum or value catalog, selected by kind
     constexpr ValueType(Kind value = void_value, std::uint32_t index = 0) : kind(value), type_index(index) {}
     bool operator==(const ValueType&) const = default;
 };
@@ -62,7 +62,7 @@ struct Expression {
     enum class Kind {
         literal, local, field, call, unary, binary,
         receiver, null_reference, create_reference, observe_reference, acquire_reference,
-        value_field, index, length, string_literal, sequence_mutation
+        value_field, index, length, string_literal, sequence_mutation, source_call
     };
     Kind kind;
     ValueType type;
@@ -72,7 +72,7 @@ struct Expression {
     Operation operation{Operation::add};
     NodeId receiver{no_node}; // field/call owner
     std::vector<ParameterPassing> argument_passing{};
-    std::vector<NodeId> arguments{}; // native call operands, evaluated left to right
+    std::vector<NodeId> arguments{}; // call operands, evaluated left to right
     std::size_t offset{};
     SequenceMutation mutation{};
 };
@@ -88,11 +88,11 @@ struct Local {
     std::string name;
     ValueType type;
     bool read_only{};
-    // The first Program::parameters.size() locals are parameters;
+    // The first Function::parameters.size() locals are parameters;
     // all remaining locals initialize at their declaration.
 };
-struct Program {
-    std::string source_name;
+struct Function {
+    SourcePosition position;
     std::string function_name;
     std::vector<ParameterType> parameters;
     ValueType result{ValueType::void_value};
@@ -100,19 +100,27 @@ struct Program {
     std::vector<Expression> expressions;
     std::vector<Statement> statements;
     NodeId body{no_node};
-    std::string object_type_name;
     bool is_coroutine{};
-    bool uses_native_values{};
-    std::vector<ValueLayout> value_layouts;
+    bool uses_scoped_values{};
+    bool requires_receiver{};
+    bool preserves_borrows{};
     std::vector<std::string> strings;
 };
+struct Program {
+    std::string source_name;
+    std::string object_type_name;
+    std::vector<ValueLayout> value_layouts;
+    std::vector<Function> functions;
+    std::uint32_t entry{};
+    std::vector<bool> reachable;
+};
 
-// One host-bound function: scalar/enum values or native borrowed parameters,
+// One module with a host-selected entry: scalar/enum values or borrowed value parameters,
 // an optional scalar result and implicit self. Async cannot borrow caller storage.
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.
 [[nodiscard]] std::expected<Program, Diagnostic> compile_source(
-    std::string_view source_name, std::string_view source, Environment environment);
+    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name = {});
 
 }
