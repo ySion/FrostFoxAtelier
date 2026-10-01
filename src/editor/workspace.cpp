@@ -68,7 +68,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     add(3, 2, ControlKind::label, NodeInput::box(210, 32), L"FROSTFOX / World").role = ui::Role::title;
     const auto command = [&](ui::ControlKey key, float minimum_width, const wchar_t* text) -> ui::Control& {
         auto layout = NodeInput::box(0, 32); layout.width = Axis::content(minimum_width);
-        return add(key, 2, ControlKind::button, layout, text);
+        auto& button=add(key, 2, ControlKind::button, layout, text);
+        button.classes={"compact"};
+        if (key==control::remove_actor) button.classes.push_back("danger");
+        return button;
     };
     command(control::add_actor, 88, L"+ Add Actor").enabled = members.size() < Session::maximum_actors;
     command(control::remove_actor, 72, L"Delete").enabled = actor_status.can_edit;
