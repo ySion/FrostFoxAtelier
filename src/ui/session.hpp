@@ -30,7 +30,7 @@ struct Control {
     std::vector<std::string> classes;
     StyleProperties style;
     std::shared_ptr<const StyleSheet> style_scope; // Applies to this control and its descendants.
-    bool invalid{};
+    bool invalid{}, modified{}; // Modified compares the authoritative value with its declared default.
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -48,6 +48,7 @@ struct ControlBox {
     bool enabled{};
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
     std::shared_ptr<const ResolvedStyle> style;
+    bool selected{}; // Accepted toggle value; activation requests its inverse.
 };
 struct EditToken {
     ControlKey key{};
@@ -92,10 +93,11 @@ struct UiFrame {
 };
 
 enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel };
+using ActionValue = std::variant<std::monostate,double,std::wstring,bool>;
 struct Action {
     ActionKind kind{};
     ControlKey key{};
-    std::variant<std::monostate,double,std::wstring> value; // Cancel returns the original value.
+    ActionValue value; // Cancel returns the original value; toggles activate with the requested bool.
 };
 enum class ClipboardKind { read, copy, cut };
 struct ClipboardRequest {

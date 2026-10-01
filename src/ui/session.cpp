@@ -12,8 +12,10 @@ namespace atelier::ui {
 namespace {
 bool text_kind(ControlKind kind) {
     return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item ||
-        kind == ControlKind::number || kind == ControlKind::text_edit;
+        kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::checkbox || kind == ControlKind::foldout;
 }
+bool toggle_kind(ControlKind kind) { return kind == ControlKind::checkbox || kind == ControlKind::foldout; }
+bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind); }
 bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit; }
 bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter; }
 bool focusable(ControlKind kind) { return text_kind(kind) && kind != ControlKind::label; }
@@ -162,7 +164,7 @@ struct Session::Impl {
         const VisualState visual{enabled,enabled && hover==control.key,
             enabled && ((press && press->key==control.key) || keyboard_pressed==control.key),
             enabled && focus==control.key,control.selected,
-            control.invalid || (edit && edit->key==control.key && !valid_edit())};
+            control.invalid || (edit && edit->key==control.key && !valid_edit()),control.modified};
         const auto parent_revision=parent?parent->inheritance_revision:0;
         if (!state.style_dirty && state.resolved && state.theme_revision==style_revision &&
             state.parent_revision==parent_revision && state.visual==visual) return;
@@ -289,7 +291,7 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     std::vector<ControlKey> order; order.reserve(controls.size());
     for (const auto& control : controls) {
         if (!control.key || validated.contains(control.key) || (control.parent && !validated.contains(control.parent)) ||
-            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::text_edit) ||
+            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::foldout) ||
             static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 || !std::isfinite(control.value) ||
             !std::isfinite(control.minimum) || !std::isfinite(control.maximum) || control.minimum > control.maximum ||
             !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
@@ -321,6 +323,7 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     };
     if ((self.press && absent(self.press->key)) || (self.edit && absent(self.edit->key))) { reply = self.cancel(); self.edit.reset(); }
     if (absent(self.focus)) self.focus = 0;
+    if (absent(self.keyboard_pressed)) self.keyboard_pressed = 0;
     self.structure_dirty |= order != self.order;
     for (auto it = self.states.begin(); it != self.states.end();) {
         if (!validated.contains(it->first)) {
@@ -411,7 +414,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected});
             const auto kind = state.control.kind;
             // Keep every arranged box and its parent transform. Only painting is culled.
             if (!visible(bounds,clip)) {
@@ -426,6 +429,19 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 const auto background=appearance.background.value_or(Color{0,0,0,0});
                 draws->draws.push_back({bounds,clip,appearance.image?Color{1,1,1,1}:background,
                     {0,0,1,1},{},radius,border,appearance.border,appearance.image,background});
+            }
+            if (toggle_kind(kind)) {
+                const auto marker_clip=intersect(clip,clip_rect(bounds));
+                const float x=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
+                const float y=bounds.y+(bounds.height-14*scale)*.5f;
+                if (kind==ControlKind::checkbox) {
+                    draws->draws.push_back({{x,y,14*scale,14*scale},marker_clip,{0,0,0,0},{0,0,1,1},{},
+                        {2*scale,2*scale,2*scale,2*scale},scale,appearance.foreground});
+                    if (state.control.selected) quad({x+4*scale,y+4*scale,6*scale,6*scale},marker_clip,appearance.foreground);
+                } else {
+                    quad({x+3*scale,y+6*scale,8*scale,2*scale},marker_clip,appearance.foreground);
+                    if (!state.control.selected) quad({x+6*scale,y+3*scale,2*scale,8*scale},marker_clip,appearance.foreground);
+                }
             }
             if (text_kind(kind)) {
                 const auto padding = effective_padding(state.control,appearance);

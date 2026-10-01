@@ -1,5 +1,5 @@
     static void action(Reply& reply, ActionKind kind, ControlKey key,
-                       std::variant<std::monostate,double,std::wstring> value = {}) {
+                       ActionValue value = {}) {
         reply.effects.emplace_back(Action{kind,key,std::move(value)});
     }
     static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace_back(std::move(request)); }
@@ -36,8 +36,8 @@
         const auto value=numeric?(commit?*parsed:edit->original_value):0.0;
         auto content=commit?edit->buffer.current().text:edit->buffer.original();
         if (edit->buffer.active()) action(reply,commit?ActionKind::edit_commit:ActionKind::edit_cancel,key,
-            numeric?std::variant<std::monostate,double,std::wstring>{value}:
-                std::variant<std::monostate,double,std::wstring>{content});
+            numeric?ActionValue{value}:
+                ActionValue{content});
         edit.reset();
         if (keep_context && focus==key) edit.emplace(state,numeric?format(value):std::move(content),value,!numeric,false);
         reply.redraw=true; return true;
@@ -66,8 +66,8 @@
         const auto& control=states.at(edit->key).control;
         const bool numeric=control.kind==ControlKind::number;
         if (!was_active) action(reply,ActionKind::edit_begin,edit->key,
-            numeric?std::variant<std::monostate,double,std::wstring>{edit->original_value}:
-                std::variant<std::monostate,double,std::wstring>{edit->buffer.original()});
+            numeric?ActionValue{edit->original_value}:
+                ActionValue{edit->buffer.original()});
         if (numeric) {
             const auto value=number(edit->buffer.current().text,control);
             if (value && *value!=edit->preview_value) {

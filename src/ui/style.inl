@@ -1,6 +1,6 @@
 // Private validation and state resolution shared by measurement and painting.
 struct VisualState {
-    bool enabled{true}, hover{}, pressed{}, focus{}, selected{}, invalid{};
+    bool enabled{true}, hover{}, pressed{}, focus{}, selected{}, invalid{}, modified{};
     bool operator==(const VisualState&) const = default;
 };
 bool valid_style(const Style& style) {
@@ -17,7 +17,7 @@ bool valid_style(const Style& style) {
     if (!bounded(style.border_width,0,16) || !bounded(style.caret_width,.25f,16) ||
         !bounded(style.scrollbar_width,.25f,32) || !bounded(style.scrollbar_inset,0,32) || !bounded(style.scrollbar_min_thumb,1,128)) return false;
     const auto& p = style.palette;
-    for (auto color : {p.text,p.muted,p.panel,p.button,p.field,p.splitter,p.list,p.selected,p.hover,p.pressed,p.border,p.focus,p.invalid,p.selection})
+    for (auto color : {p.text,p.muted,p.panel,p.button,p.field,p.splitter,p.list,p.selected,p.hover,p.pressed,p.border,p.focus,p.invalid,p.selection,p.modified})
         if (!valid_color(color)) return false;
     return true;
 }
@@ -35,26 +35,29 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
     const bool button = kind == ControlKind::button, item = kind == ControlKind::item;
+    const bool toggle = kind == ControlKind::checkbox || kind == ControlKind::foldout;
     const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
     if (button) value.background = p.button;
     if (number) value.background = p.field;
     if (splitter) value.background = p.splitter;
     if (kind == ControlKind::list) value.background = p.list;
-    if (button || item || number) value.padding = style.control_padding;
+    if (button || item || number || toggle) value.padding = style.control_padding;
     if (button || number || splitter) value.border_width = style.border_width;
     if (state.selected && (button || item)) value.background = p.selected;
     if (state.enabled) {
-        if (state.hover && (button || item || splitter) && !state.selected) value.background = p.hover;
+        if (state.hover && (button || item || splitter || toggle) && (!state.selected || toggle)) value.background = p.hover;
         if (state.hover && number) value.border = p.hover;
-        if (state.pressed && (button || item || splitter)) value.background = p.pressed;
-        if (state.focus) { value.border = p.focus; if (item) value.border_width = style.border_width; }
+        if (state.pressed && (button || item || splitter || toggle)) value.background = p.pressed;
+        if (state.focus) { value.border = p.focus; if (item || toggle) value.border_width = style.border_width; }
+        if (state.modified) value.foreground = p.modified;
         if (state.invalid) value.border = p.invalid;
     } else { value.foreground = p.muted; value.caret = p.muted; }
     return value;
 }
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
-    return {padding.left+style.padding.left,padding.top+style.padding.top,
+    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? 20.f : 0.f;
+    return {padding.left+style.padding.left+marker,padding.top+style.padding.top,
             padding.right+style.padding.right,padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
@@ -89,6 +92,6 @@ bool matches(const StyleSelector& selector,const Control& control,VisualState st
     for (const auto& name:selector.classes) if (std::find(control.classes.begin(),control.classes.end(),name)==control.classes.end()) return false;
     unsigned bits=state.enabled?1u:2u;
     if (state.hover) bits|=4; if (state.pressed) bits|=8; if (state.focus) bits|=16;
-    if (state.selected) bits|=32; if (state.invalid) bits|=64;
+    if (state.selected) bits|=32; if (state.invalid) bits|=64; if (state.modified) bits|=128;
     return (bits&static_cast<unsigned>(selector.states))==static_cast<unsigned>(selector.states);
 }

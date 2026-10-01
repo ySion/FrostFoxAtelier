@@ -34,9 +34,9 @@ text_edit:focus { border-color: token(accent); }
 ## 支持的语法
 
 - 单控件选择器：`button`、`*`、`.compact`、`button.compact.danger`，可用逗号共享声明。
-- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit`。
+- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout`。
 - 角色：`:role(normal|panel|title|caption)`。
-- 状态：`:enabled / :disabled / :hover / :pressed / :focus / :selected / :invalid`，可组合；enabled 与 disabled 不能共存。
+- 状态：`:enabled / :disabled / :hover / :pressed / :focus / :selected / :invalid / :modified`，可组合；enabled 与 disabled 不能共存。`modified` 来自宿主的默认值比较，与焦点、选中和非法草稿分别表达。
 - `@tokens { name: value; }` 与全值 `token(name)`；支持前向引用，拒绝循环及未知 token。
 - UTF-8 文本、`/* 注释 */`；每条声明必须以分号结尾。类名为不以数字开头的 ASCII 字母、数字、`_`、`-`，最长 64 字节。
 

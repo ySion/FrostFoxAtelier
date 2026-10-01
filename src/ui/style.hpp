@@ -7,7 +7,7 @@
 namespace atelier::ui {
 
 enum class Role { normal, panel, title, caption };
-enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit };
+enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout };
 struct Font {
     std::wstring family{L"Microsoft YaHei UI"};
     std::wstring locale{L"en-US"};
@@ -22,11 +22,12 @@ struct Palette {
     Color selected{.055f,.16f,.27f,1}, hover{.10f,.13f,.17f,1}, pressed{.11f,.23f,.35f,1};
     Color border{.095f,.11f,.13f,1}, focus{.15f,.38f,.62f,1}, invalid{.65f,.08f,.04f,1};
     Color selection{.08f,.23f,.42f,1};
+    Color modified{.9f,.73f,.43f,1};
     bool operator==(const Palette&) const = default;
 };
 // One value owns all presentation defaults. Explicit NodeInput geometry remains
 // the only structural layout policy; control_padding adds text insets for
-// button/item/number/text_edit, and does not modify containers, labels or the viewport.
+// interactive text controls, and does not modify containers, labels or the viewport.
 struct Style {
     Font font;
     float title_scale{9.f/7}, caption_scale{6.f/7};

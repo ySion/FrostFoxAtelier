@@ -8,7 +8,7 @@
 namespace atelier::ui {
 
 enum class StyleState : std::uint16_t {
-    none=0, enabled=1, disabled=2, hover=4, pressed=8, focus=16, selected=32, invalid=64
+    none=0, enabled=1, disabled=2, hover=4, pressed=8, focus=16, selected=32, invalid=64, modified=128
 };
 constexpr StyleState operator|(StyleState a, StyleState b) noexcept {
     return static_cast<StyleState>(static_cast<unsigned>(a)|static_cast<unsigned>(b));

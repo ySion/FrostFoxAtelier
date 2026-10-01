@@ -72,7 +72,7 @@ class Parser {
             if (take('*')) any=true;
             else {
                 const auto type=identifier(); any=true;
-                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit"};
+                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout"};
                 const auto found=std::find(std::begin(kinds),std::end(kinds),type);
                 if (found==std::end(kinds)) fail("Unknown control type: "+type);
                 result.kind=static_cast<ControlKind>(found-std::begin(kinds));
@@ -89,7 +89,7 @@ class Parser {
                 if (found==std::end(roles) || result.role) fail("Unknown or duplicate role");
                 result.role=static_cast<Role>(found-std::begin(roles));
             } else {
-                constexpr std::string_view names[]={"enabled","disabled","hover","pressed","focus","selected","invalid"};
+                constexpr std::string_view names[]={"enabled","disabled","hover","pressed","focus","selected","invalid","modified"};
                 const auto found=std::find(std::begin(names),std::end(names),id);
                 if (found==std::end(names)) fail("Unknown state: "+id);
                 const auto bit=static_cast<StyleState>(1u<<(found-std::begin(names)));
@@ -268,8 +268,8 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     for (auto& rule:rules) {
         auto& s=rule.selector;
         const auto bits=static_cast<unsigned>(s.states);
-        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::text_edit)) ||
-            (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>127 || (bits&3)==3 ||
+        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::foldout)) ||
+            (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>255 || (bits&3)==3 ||
             (bits && layout_properties(rule.properties)) || s.classes.size()>16 ||
             !std::all_of(s.classes.begin(),s.classes.end(),[](const auto& id){return valid_class(id);}))
             return std::unexpected(StyleDiagnostic{0,0,"Invalid selector or style properties"});

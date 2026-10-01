@@ -4,7 +4,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit是文字叶，list是带裁剪和滚动的column，splitter/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout是文字叶，list是带裁剪和滚动的column，splitter/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数控件key应包含业务对象key与轴，切换绑定时更换控件key。控件删除再出现会获得新incarnation，旧帧命中不能误派给重用key。
 
@@ -18,15 +18,27 @@
 
 `UiFrame::find(key)`返回同次帧的物理像素bounds/clip，供场景viewport和真实窗口验收使用。候选prepare不会改变命中几何。输入始终使用已接受帧，依绘制逆序命中并检查当前控件身份与祖先启用状态。
 
+## 可组合参数控件
+
+[controls.hpp](../../../src/ui/controls.hpp) 的 `append_number_row` 将 1–4 个普通 number、分量标签、参数标题和可选 Reset 按钮组合成一行。宿主显式提供全部 key、值、默认值、范围和步长；组合层不创建焦点、草稿、业务对象或历史。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度由每字段 24 DIP、实际分量标签及间距相加得到；四个带标签字段需要 172 DIP，在编辑器最窄面板中仍完整可达。
+
+`Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖绘制。它不改变布局，也不代替非法输入状态。Reset 使用普通 `activate(reset_key)`；整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `NumberRow.group_modified` 提供完整组状态，保持标题提示与整组 Reset 可用性；未提供时从传入字段推导。各字段始终独立比较自己的默认值。
+
+`checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 20 DIP 指示区域，符号通过同一 DrawQuad 协议绘制。
+
+折叠标题与内容容器是两个控件；宿主将展开状态映射到内容容器的 `layout.collapsed`。现有祖先有效性检查统一取消隐藏/禁用字段的草稿、组合和捕获；展开后复用仍存续的 key。宿主替换目标时仍须退役旧绑定。
+
+正式编辑器的 Controls 实验台与位置参数行均使用上述接口，真实窗口验收覆盖两者，见[编辑器模块](../editor/README.md#控件实验台)。
+
 ## Style与失效
 
 [style.hpp](../../../src/ui/style.hpp)的`Style`提供基础主题，由`Session::set_style`完整校验、复制后应用；非法值返回`invalid_style`且不修改任何配置。根/局部`StyleSheet`、类名及逐属性覆盖扩展同一解析入口，最终`ResolvedStyle`供测量、绘制与接受帧持有。语法、优先级和资源合同见 [SS 样式表](style-sheets.md)。更换配置后仍通过`prepare → renderer accepted → accept`发布。候选失败保留已接受帧。`UiFrame`记录本帧的`style_revision`和`measure_provider_revision`，旧帧颜色、几何与文字像素不会跟随当前Style改变。
 
-控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
+控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid、modified。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
 
-label文字从内容顶部绘制，普通button/item/number/text_edit在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
+label文字从内容顶部绘制，普通button/item/number/text_edit/checkbox/foldout在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
 
-`Style.control_padding`只为button/item/number/text_edit增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
+`Style.control_padding`只为button/item/number/text_edit/checkbox/foldout增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
 
 - family、locale、weight、字号或角色字体比例改变：推进文字provider revision，清理对应格式/段落缓存，再通过正常布局入口测量。
 - 内容或角色改变：由内容revision识别实际解析后的文字与字体；旧帧保持自己的Coverage。
@@ -53,7 +65,7 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 - 普通换焦点合法提交、非法取消；OS失焦、Surface失效、控件失效取消。数值拖调提交后回仅聚焦，下一次Ctrl+Z交业务。仅聚焦时新的权威投影更新被动缓冲，不能被旧文字覆盖。
 - 字段聚焦时Delete/Backspace由共享文字编辑消费，不能删除场景对象。Tab按可见呈现控件顺序导航，Ctrl+A全选，Left/Right按视觉方向移动或折叠选择，Shift扩选，Home/End到视觉行端。
 
-Action.value为`variant<monostate,double,wstring>`：activate/select无值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
+Action.value为`ActionValue = variant<monostate,double,wstring,bool>`：普通activate/select无值，checkbox/foldout的activate携带请求的bool值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
 
 本地历史保存文字和选择快照；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 

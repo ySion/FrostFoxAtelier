@@ -103,6 +103,21 @@ Result<void> Application::action(const ui::Action& event) {
         if (finished) workspace_.status = message;
         return finished;
     };
+    if (event.key==workbench && event.kind==ui::ActionKind::activate) {
+        workspace_.show_workbench=!workspace_.show_workbench;
+        workspace_.status=workspace_.show_workbench?L"Control workbench / sample history":L"Scene parameters / scene history";
+        return {};
+    }
+    if (workspace_.workbench.apply(event)) return {};
+    if (workspace_.show_workbench && event.kind==ui::ActionKind::activate && (event.key==undo || event.key==redo)) {
+        if (event.key==undo) workspace_.workbench.undo(); else workspace_.workbench.redo();
+        workspace_.status=L"Sample history updated"; return {};
+    }
+    if (event.key==position_fold && event.kind==ui::ActionKind::activate) {
+        const auto* expanded=std::get_if<bool>(&event.value);
+        if (!expanded) return invalid();
+        workspace_.position_expanded=*expanded; return {};
+    }
     if (event.key == parameter_search) {
         const auto* value = std::get_if<std::wstring>(&event.value);
         if (!value) return invalid();
@@ -123,6 +138,10 @@ Result<void> Application::action(const ui::Action& event) {
     if (event.kind == ui::ActionKind::edit_cancel)
         return document_.owns_edit(event.key) ? done(document_.cancel_edit(), L"Edit cancelled") : Result<void>{};
     if (const auto* binding = workspace_.binding(event.key)) {
+        if (binding->reset_position) {
+            if (event.kind!=ui::ActionKind::activate) return invalid();
+            return done(document_.reset_position(binding->object),L"Position restored to default / Undo restores the vector");
+        }
         if (binding->path.empty()) {
             if (event.kind == ui::ActionKind::select) return done(document_.select(binding->object), L"Actor selected");
             if (event.kind == ui::ActionKind::activate) return done(document_.remove_component(binding->object), L"Component removed / Undo restores it");
@@ -304,6 +323,13 @@ void Application::native(NativeEvent message) {
         return;
     }
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
+        if (workspace_.show_workbench) {
+            if (event.control && (event.key==ui::Key::z || event.key==ui::Key::y)) {
+                const bool redo=event.key==ui::Key::y || event.shift;
+                status(action({ui::ActionKind::activate,redo?editor::control::redo:editor::control::undo,{}}),L"Sample history updated");
+            }
+            return;
+        }
         if (event.key == ui::Key::delete_key) status(document_.erase_selected(), L"Actor removed");
         else if (event.control && event.key == ui::Key::z) status(event.shift ? document_.redo() : document_.undo(), event.shift ? L"Redo" : L"Undo");
         else if (event.control && event.key == ui::Key::y) status(document_.redo(), L"Redo");
