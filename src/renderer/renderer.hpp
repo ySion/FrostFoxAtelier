@@ -54,6 +54,8 @@ enum class FrameStatus { accepted, skipped };
 // activity. These are not GPU timings. Errors provide no complete statistics.
 struct FrameStats {
     std::uint64_t ui_draw_calls{};
+    std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
+    std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
     std::uint64_t coverage_upload_count{};
     std::uint64_t coverage_upload_bytes{}; // Tight R8 payload; excludes copy padding/scratch.
@@ -61,6 +63,11 @@ struct FrameStats {
     std::uint64_t cached_coverage_count{};
     std::uint64_t cached_coverage_texel_bytes{}; // Logical R8 texels, not physical VRAM.
     std::uint64_t cached_coverage_cpu_bytes{};   // Owned pixels.size(), including CPU row padding.
+    std::uint64_t image_upload_count{};
+    std::uint64_t image_upload_bytes{}; // Tight RGBA8 payload.
+    std::uint64_t cached_image_count{};
+    std::uint64_t cached_image_texel_bytes{};
+    std::uint64_t cached_image_cpu_bytes{};
 };
 struct FrameResult {
     FrameStatus status{FrameStatus::skipped};

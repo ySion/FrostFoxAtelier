@@ -7,6 +7,7 @@
 namespace atelier::ui {
 
 enum class Role { normal, panel, title, caption };
+enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit };
 struct Font {
     std::wstring family{L"Microsoft YaHei UI"};
     std::wstring locale{L"en-US"};

@@ -15,7 +15,7 @@ namespace atelier::ui::detail {
 using Microsoft::WRL::ComPtr;
 namespace {
 void check(HRESULT status) { if (FAILED(status)) throw TextFailure{static_cast<std::uint32_t>(status)}; }
-std::atomic<std::uint64_t> next_coverage{1};
+std::atomic<std::uint64_t> next_identity{1};
 constexpr std::int64_t max_bitmap_bytes = 16 * 1024 * 1024;
 struct CoverageAccounting {
     std::atomic<std::uint64_t> count{}, bytes{};
@@ -95,24 +95,23 @@ struct Rasterizer final : IDWriteTextRenderer {
 }
 
 std::uint64_t new_identity() {
-    auto value = next_coverage.load(std::memory_order_relaxed);
+    auto value = next_identity.load(std::memory_order_relaxed);
     do {
         if (value == UINT64_MAX) throw TextFailure{static_cast<std::uint32_t>(E_FAIL)};
-    } while (!next_coverage.compare_exchange_weak(value,value+1,std::memory_order_relaxed));
+    } while (!next_identity.compare_exchange_weak(value,value+1,std::memory_order_relaxed));
     return value;
 }
 
 struct TextStore::Impl {
     struct Paragraph {
-        struct Stop { TextPosition position; float x; };
         ComPtr<IDWriteTextLayout> layout;
+        std::shared_ptr<const TextSnapshot> snapshot;
         std::optional<float> width;
         ui_layout::MeasuredSize metrics;
         RasterText raster;
         float raster_scale{};
         std::optional<Clip> raster_viewport;
         bool valid{};
-        std::vector<Stop> stops;
     };
     struct Entry {
         std::wstring text;
@@ -138,18 +137,18 @@ struct TextStore::Impl {
         auto& entry = found->second;
         auto& paragraph = entry.paragraphs[width ? 1 : 0];
         if (paragraph.layout && paragraph.valid && paragraph.width == width) return paragraph;
-        paragraph.valid = false;
+        // Published snapshots can retain this native layout. Width changes create
+        // a new layout instead of mutating geometry still used by an older frame.
+        paragraph = {};
         auto& format = formats[entry.font];
         if (!format) {
             check(factory->CreateTextFormat(entry.font.family.c_str(), nullptr, static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
         }
-        if (!paragraph.layout) {
-            check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
-                width.value_or(0), 0, &paragraph.layout));
-            ++statistics.text_layouts;
-            check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
-        } else check(paragraph.layout->SetMaxWidth(width.value_or(0)));
+        check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
+            width.value_or(0), 0, &paragraph.layout));
+        ++statistics.text_layouts;
+        check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
         DWRITE_TEXT_METRICS metrics{};
         check(paragraph.layout->GetMetrics(&metrics));
         UINT32 count{};
@@ -159,37 +158,45 @@ struct TextStore::Impl {
         check(paragraph.layout->GetLineMetrics(lines.data(), count, &count));
         paragraph.metrics = {metrics.widthIncludingTrailingWhitespace, metrics.height, count ? lines[0].baseline : 0};
         paragraph.width = width;
-        paragraph.raster = {};
-        paragraph.raster_scale = 0;
-        paragraph.stops.clear();
         paragraph.valid = true;
         return paragraph;
     }
-    static Rect caret_box(Paragraph& paragraph, TextPosition position) {
+};
+
+struct TextSnapshot::Impl {
+    struct Stop { TextPosition position; float x; };
+    ComPtr<IDWriteTextLayout> layout;
+    std::wstring text;
+    Font font;
+    float width{};
+    mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
+    Rect caret_box(TextPosition position) const {
         FLOAT x{},y{}; DWRITE_HIT_TEST_METRICS metrics{};
         const bool trailing=position.trailing && position.offset!=0;
-        check(paragraph.layout->HitTestTextPosition(position.offset-(trailing?1:0),trailing,&x,&y,&metrics));
+        check(layout->HitTestTextPosition(position.offset-(trailing?1:0),trailing,&x,&y,&metrics));
         return {x,y,1,metrics.height};
     }
-    void resolve_stops(std::uint64_t key, Paragraph& paragraph) {
-        if (!paragraph.stops.empty()) return;
-        const auto boundaries=character_boundaries(entries.at(key).text);
+    void resolve_stops() const {
+        if (!stops.empty()) return;
+        const auto boundaries=character_boundaries(text);
         for (auto offset:boundaries) {
             const TextPosition leading{offset,false},trailing{offset,offset!=0};
-            const auto first=caret_box(paragraph,leading), last=caret_box(paragraph,trailing);
-            paragraph.stops.push_back({leading,first.x});
-            if (std::abs(first.x-last.x)>.01f) paragraph.stops.push_back({trailing,last.x});
+            const auto first=caret_box(leading), last=caret_box(trailing);
+            stops.push_back({leading,first.x});
+            if (std::abs(first.x-last.x)>.01f) stops.push_back({trailing,last.x});
         }
-        std::stable_sort(paragraph.stops.begin(),paragraph.stops.end(),[](auto a,auto b){ return a.x<b.x; });
+        std::stable_sort(stops.begin(),stops.end(),[](auto a,auto b){ return a.x<b.x; });
     }
 };
+TextSnapshot::TextSnapshot(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
+bool TextSnapshot::matches(std::wstring_view text) const noexcept { return impl_->text == text; }
+
 TextStore::TextStore() : impl_(std::make_unique<Impl>()) {}
 TextStore::~TextStore() = default;
-std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, float size, std::uint16_t weight, bool wrap) {
+std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, bool wrap) {
     auto& entry = impl_->entries[key];
-    if (entry.text != text || entry.font.family != font.family || entry.font.locale != font.locale ||
-        entry.font.size != size || entry.font.weight != weight || entry.wrap != wrap) {
-        entry.text = text; entry.font = font; entry.font.size = size; entry.font.weight = weight; entry.wrap = wrap;
+    if (entry.text != text || entry.font != font || entry.wrap != wrap) {
+        entry.text = text; entry.font = font; entry.wrap = wrap;
         entry.revision = new_identity(); entry.paragraphs = {};
     }
     return entry.revision;
@@ -254,50 +261,59 @@ RasterText TextStore::raster(std::uint64_t key, float width, float dpi, std::opt
     paragraph.raster = output; paragraph.raster_scale = dpi; paragraph.raster_viewport=viewport;
     return output;
 }
-Rect TextStore::caret(std::uint64_t key, float width, TextPosition position) {
-    auto& paragraph = impl_->resolve(key, width);
-    return Impl::caret_box(paragraph,position);
-}
-Rect TextStore::character(std::uint64_t key, float width, std::uint32_t position) {
+std::shared_ptr<const TextSnapshot> TextStore::snapshot(std::uint64_t key, float width) {
     auto& paragraph=impl_->resolve(key,width);
+    if (!paragraph.snapshot) {
+        auto data=std::make_shared<TextSnapshot::Impl>();
+        data->layout=paragraph.layout; data->text=impl_->entries.at(key).text;
+        data->font=impl_->entries.at(key).font; data->width=width;
+        paragraph.snapshot=std::shared_ptr<const TextSnapshot>(new TextSnapshot(std::move(data)));
+    }
+    return paragraph.snapshot;
+}
+std::shared_ptr<const TextSnapshot> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed, std::wstring_view value) {
+    const auto& policy=*displayed.impl_;
+    set(key,value,policy.font,false);
+    return snapshot(key,policy.width);
+}
+Rect TextSnapshot::caret(TextPosition position) const { return impl_->caret_box(position); }
+Rect TextSnapshot::character(std::uint32_t position) const {
     FLOAT x{},y{}; DWRITE_HIT_TEST_METRICS metrics{};
-    check(paragraph.layout->HitTestTextPosition(position,FALSE,&x,&y,&metrics));
+    check(impl_->layout->HitTestTextPosition(position,FALSE,&x,&y,&metrics));
     // The leading caret of an RTL run is its right edge. Native character
     // position requests need the actual enclosing character's upper-left.
     return {metrics.left,metrics.top,metrics.width,metrics.height};
 }
-TextPosition TextStore::hit(std::uint64_t key, float width, float x, float y) {
-    auto& paragraph=impl_->resolve(key,width);
+TextPosition TextSnapshot::hit(float x, float y) const {
+    impl_->resolve_stops();
     BOOL trailing{},inside{}; DWRITE_HIT_TEST_METRICS metrics{};
-    check(paragraph.layout->HitTestPoint(x,y,&trailing,&inside,&metrics));
+    check(impl_->layout->HitTestPoint(x,y,&trailing,&inside,&metrics));
     (void)inside;
     const TextPosition candidate{metrics.textPosition+(trailing?metrics.length:0),trailing!=FALSE};
-    impl_->resolve_stops(key,paragraph);
-    auto selected=paragraph.stops.front();
-    for (auto stop:paragraph.stops) {
+    auto selected=impl_->stops.front();
+    for (auto stop:impl_->stops) {
         const auto distance=std::abs(stop.x-x), previous=std::abs(selected.x-x);
         if (distance<previous || (distance==previous && stop.position==candidate)) selected=stop;
     }
     return selected.position;
 }
-TextPosition TextStore::move(std::uint64_t key, float width, TextPosition position, int direction, bool edge) {
-    auto& paragraph=impl_->resolve(key,width); impl_->resolve_stops(key,paragraph);
-    const auto& stops=paragraph.stops;
+TextPosition TextSnapshot::move(TextPosition position, int direction, bool edge) const {
+    impl_->resolve_stops();
+    const auto& stops=impl_->stops;
     if (edge) return direction<0?stops.front().position:stops.back().position;
-    const float x=Impl::caret_box(paragraph,position).x;
+    const float x=impl_->caret_box(position).x;
     if (direction<0) {
         for (auto at=stops.rbegin();at!=stops.rend();++at) if (at->x<x-.01f) return at->position;
     } else for (auto stop:stops) if (stop.x>x+.01f) return stop.position;
     return position;
 }
-std::vector<Rect> TextStore::selection(std::uint64_t key, float width, std::uint32_t first, std::uint32_t last) {
+std::vector<Rect> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
     if (first==last) return {};
-    auto& paragraph=impl_->resolve(key,width);
     UINT32 count{};
-    const auto status=paragraph.layout->HitTestTextRange(first,last-first,0,0,nullptr,0,&count);
+    const auto status=impl_->layout->HitTestTextRange(first,last-first,0,0,nullptr,0,&count);
     if (status!=HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)) check(status);
     std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
-    check(paragraph.layout->HitTestTextRange(first,last-first,0,0,metrics.data(),count,&count));
+    check(impl_->layout->HitTestTextRange(first,last-first,0,0,metrics.data(),count,&count));
     std::vector<Rect> result; result.reserve(count);
     for (const auto& metric:metrics) result.push_back({metric.left,metric.top,metric.width,metric.height});
     return result;

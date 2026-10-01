@@ -2,6 +2,7 @@
 
 #include "ui/frame.hpp"
 #include "ui/style.hpp"
+#include "ui/style_sheet.hpp"
 #include "ui_layout/layout.hpp"
 #include <expected>
 #include <limits>
@@ -11,8 +12,9 @@
 
 namespace atelier::ui {
 
+namespace detail { class TextSnapshot; }
+
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
-enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit };
 enum class DragAxis { horizontal, vertical };
 
 struct Control {
@@ -25,6 +27,10 @@ struct Control {
     double value{}, minimum{-10000}, maximum{10000};
     double drag_step{0.01}, fine_step{0.001}; // Value per logical pointer pixel.
     DragAxis drag_axis{DragAxis::horizontal};
+    std::vector<std::string> classes;
+    StyleProperties style;
+    std::shared_ptr<const StyleSheet> style_scope; // Applies to this control and its descendants.
+    bool invalid{};
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -41,6 +47,7 @@ struct ControlBox {
     Clip clip; // Effective ancestor clip, in the same space.
     bool enabled{};
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
+    std::shared_ptr<const ResolvedStyle> style;
 };
 struct EditToken {
     ControlKey key{};
@@ -64,6 +71,14 @@ struct TextInputState {
     std::optional<TextCaret> accepted_caret;
     std::optional<TextInputAnchor> accepted_anchor{}; // Only IME offset zero is supported.
 };
+struct TextGeometry {
+    ControlKey key{};
+    std::uint64_t incarnation{};
+    std::shared_ptr<const detail::TextSnapshot> paragraph;
+    float x{}, y{}, dpi_scale{1}, scroll{}; // Final displayed origin, including horizontal scroll.
+    EditToken token;
+    std::uint64_t composition_id{};
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
@@ -71,7 +86,9 @@ struct UiFrame {
     std::uint64_t style_revision{}, measure_provider_revision{};
     std::optional<TextCaret> caret;
     std::optional<TextInputAnchor> input_anchor{};
+    std::vector<TextGeometry> text_geometry;
     const ControlBox* find(ControlKey) const noexcept;
+    const TextGeometry* find_text(ControlKey) const noexcept;
 };
 
 enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel };
@@ -176,6 +193,7 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     Result<void> set_style(const Style&); // Validate/copy the complete value before applying.
+    Result<void> set_style_sheet(std::shared_ptr<const StyleSheet>);
     const Style& style() const noexcept;
     Statistics statistics() const noexcept;
     // Resize/DPI transitions cancel presses/edits and gate activation until a

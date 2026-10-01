@@ -20,9 +20,9 @@
 
 ## Style与失效
 
-[style.hpp](../../../src/ui/style.hpp)的`Style`是唯一呈现配置，由`Session::set_style`完整校验、复制后应用；非法值返回`invalid_style`且不修改任何配置。`style()`读取当前配置；更换配置后仍通过`prepare → renderer accepted → accept`发布。候选失败保留已接受帧。`UiFrame`记录本帧的`style_revision`和`measure_provider_revision`，旧帧颜色、几何与文字像素不会跟随当前Style改变。
+[style.hpp](../../../src/ui/style.hpp)的`Style`提供基础主题，由`Session::set_style`完整校验、复制后应用；非法值返回`invalid_style`且不修改任何配置。根/局部`StyleSheet`、类名及逐属性覆盖扩展同一解析入口，最终`ResolvedStyle`供测量、绘制与接受帧持有。语法、优先级和资源合同见 [SS 样式表](style-sheets.md)。更换配置后仍通过`prepare → renderer accepted → accept`发布。候选失败保留已接受帧。`UiFrame`记录本帧的`style_revision`和`measure_provider_revision`，旧帧颜色、几何与文字像素不会跟随当前Style改变。
 
-控件只选择`Role::normal/panel/title/caption`，不再单独设置字体或背景。一个私有状态解析入口处理normal、hover、pressed、focus、selected、disabled、invalid。字体配置包括family、locale、weight和DIP字号；title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
+控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
 
 label文字从内容顶部绘制，普通button/item/number/text_edit在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
 
@@ -73,13 +73,15 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 本轮只支持[IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition)实测需要的`dwCharPos=0`；Window把bounds左上和clip转换成屏幕坐标，填[IMECHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition)的pt、cLineHeight和rcDocument。其他offset或无有效快照明确返回0，不夹到offset0，也不以显示caret冒充起点；没有预建逐字符坐标数组。此合同修复本身不证明真实输入法的组合链已经通过。
 
-UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。当前真实IME验收尚未通过；验收结论只覆盖实际记录的输入法与环境。
+UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。S2的本机搜狗实测已通过，环境与限制见[编辑器集成记录](../editor/README.md#s2-集成状态与输入法验收)；SS增量没有重跑真实IME，不将既有结论扩展到新代码或其他输入法。
 
 ## CPU绘制与文字寿命
 
-[frame.hpp](../../../src/ui/frame.hpp)定义唯一renderer协议：有序DrawQuad、物理像素bounds、半开clip、linear straight RGBA及可选R8 Coverage。没有Coverage时为实色矩形；文字引用不可变CPU覆盖率像素。shader输出和blend必须配对，避免重复预乘。Coverage identity/revision不可重新解释成另一份像素；renderer自行管理GPU缓存、上传和在飞退休。
+[frame.hpp](../../../src/ui/frame.hpp)定义唯一renderer协议：有序DrawQuad、物理像素bounds、半开clip、linear straight颜色、独立圆角和向内边框。可选资源为R8 Coverage或预乘RGBA ColorImage，二者互斥；无纹理时为实色盒。shader输出和blend必须配对，避免重复预乘。资源identity/revision不可重新解释成另一份像素；renderer自行管理GPU缓存、上传和在飞退休，并只合并相邻兼容项。图片字节编码、合成与统计见 [SS 绘制合同](style-sheets.md#图片圆角与批处理)。
 
 文字服务位于生产`text.cpp`。同一个DirectWrite布局对象提供尺寸、首基线、caret位置和栅格字形；使用Factory2灰度分析合成为整段文字R8覆盖率，不建立通用图集。格式缓存按family/locale/weight/解析后字号索引。相同内容/字体/宽度/DPI复用像素；文字/约束改变时生成新版本，已发布帧持有旧像素，Session析构不使旧帧失效。固定尺寸、未参与布局测量的可见文字也在prepare时栅格化。
+
+可编辑字段还由`UiFrame`持有不可变段落和最终文字原点、宽度、DPI与横滚。指针命中始终查询接受帧的文字快照，未接受的字体/布局改变不会重解释旧画面的坐标。内容已不同则请求重绘；连续键盘导航用接受帧的字体与宽度策略排布当前草稿。详细发布行为见 [文字一致性](style-sheets.md#发布与文字一致性)。
 
 所有未collapsed且成功布局的控件保留`ControlBox`、身份、父子变换及滚动位置。只有最终物理bounds与祖先clip相交时才栅格化文字、输出绘制；子树仍按正常顺序处理，不以屏外父项替代语义遍历。滚回屏内会正常生成或复用文字。此裁剪减少栅格化和绘制成本，未将描述、布局或输入遍历改为可见行数量；大型逻辑集合仍应由消费者使用现有VirtualList控制实例数。
 
@@ -95,8 +97,8 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，13组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序，以及正反向选区、RTL组合起点、横滚不可见起点拒绝、显示版本/候选/旧帧和DPI失效。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
+正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，15组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序，以及正反向选区、RTL组合起点、横滚不可见起点拒绝、显示版本/候选/旧帧和DPI失效。新增接受帧文字快照和SS作用域/继承/覆盖/错误恢复两组，图片与圆角也通过正式帧接线。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
 
 S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回累计栅格化8行。S2的4096宽字符/100 DIP字段保持完整编辑，生成的覆盖率宽度不超过100像素。正式窗口平台与搜索业务由[编辑器端到端验收](../editor/README.md)负责，S2整体是否完成以该集成记录及本机搜狗真实系统输入验收证据为准。
 
-当前模块验收只使用本worktree源码和项目固定工具链。根构建接线由应用负责人统一提交；未通过跨工作树绝对路径include或链接替代集成。
+模块、renderer及正式编辑器使用同一源码树和项目固定工具链构建；阶段验收范围与证据见[SS文档](style-sheets.md#验收)。
