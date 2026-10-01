@@ -34,7 +34,7 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     if (role == Role::title) { value.font.size *= style.title_scale; value.font.weight = style.title_weight; }
     if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
-    const bool button = kind == ControlKind::button || kind == ControlKind::combo;
+    const bool button = kind == ControlKind::button || kind == ControlKind::combo || kind == ControlKind::tab;
     const bool item = kind == ControlKind::item || kind == ControlKind::menu_item;
     const bool toggle = kind == ControlKind::checkbox || kind == ControlKind::foldout;
     const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
@@ -58,7 +58,7 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
 }
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
-    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? 20.f : 0.f;
+    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? style.indicator_size+6 : 0.f;
     return {padding.left+style.padding.left+marker,padding.top+style.padding.top,
             padding.right+style.padding.right+(control.kind==ControlKind::combo?18.f:0.f),padding.bottom+style.padding.bottom};
 }
@@ -68,6 +68,10 @@ void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.font_size) value.font.size=*p.font_size;
     if (p.font_weight) value.font.weight=*p.font_weight;
     if (p.text_align) value.text_align=*p.text_align;
+    if (p.border_style) value.border_style=*p.border_style;
+    if (p.indicator_size) value.indicator_size=*p.indicator_size;
+    if (p.indicator_background) value.indicator_background=*p.indicator_background;
+    if (p.indicator_border) value.indicator_border=*p.indicator_border;
     if (p.foreground) value.foreground=*p.foreground;
     if (p.background) value.background=*p.background;
     if (p.border) value.border=*p.border;

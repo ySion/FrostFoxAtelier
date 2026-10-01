@@ -65,7 +65,8 @@ void style_sheets() {
         "@tokens { a: token(b); b: token(a); } button { color: token(a); }",
         "button { color: token(missing); }", "button { font-size: -2dip; }",
         "button .child { color: #ffffff; }", "/* missing close", "button { background: #gg0000; }",
-        "button:enabled:disabled { color: #ffffff; }"}) {
+        "button:enabled:disabled { color: #ffffff; }", "button:hover { font-weight: 700; }",
+        "button { background-image: linear-gradient(#ffffff); }", "button { border-style: unknown; }"}) {
         const auto invalid=ui::StyleSheet::parse(source);
         require(!invalid && invalid.error().line>0 && invalid.error().column>0,"invalid SS lacked positioned diagnosis");
     }
@@ -93,6 +94,21 @@ void style_sheets() {
     auto malformed=std::make_shared<ui::ColorImage>(*pixels); malformed->row_pitch=1;
     ui::StyleRule invalid_image; invalid_image.properties.image=malformed;
     require(!ui::StyleSheet::create({invalid_image}),"invalid image resource entered native style rules");
+
+    accepted(c.ui.set_style_sheet(sheet(R"ss(
+        button { background-image: linear-gradient(#ff000080, transparent); border-style: outset; border-color: #808080; }
+        button:modified { font-weight: 700; }
+    )ss")));
+    c.prepare(); const auto gradient_frame=c.frame;
+    const auto gradient=gradient_frame->find(1)->style->image;
+    require(gradient && gradient==gradient_frame->find(2)->style->image && gradient->pixels.size()==256 &&
+        gradient->pixels[0]==188 && gradient->pixels[3]==128 && gradient->pixels.back()==0,
+        "gradient did not share a correctly encoded premultiplied image");
+    require(std::any_of(gradient_frame->drawing->draws.begin(),gradient_frame->drawing->draws.end(),
+        [&](const auto& draw){return draw.image==gradient && draw.border_width==0;}),"gradient/bevel did not reach the existing drawing path");
+    c.controls[1].modified=true; c.prepare();
+    require(c.frame->find(1)->style->font.weight==700 && gradient_frame->find(1)->style->font.weight==400 &&
+        c.frame->find(1)->style->image==gradient,"persistent weight state changed an old frame or rebuilt the gradient");
 
     Consumer scrolling;
     ui::Control list; list.key=10; list.kind=ui::ControlKind::list;

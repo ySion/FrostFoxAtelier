@@ -44,7 +44,8 @@ Window::Window() {
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         throw std::runtime_error("Cannot register editor window class.");
-    RECT size{0, 0, 1280, 800};
+    const auto dpi=GetDpiForSystem();
+    RECT size{0,0,MulDiv(1280,static_cast<int>(dpi),96),MulDiv(840,static_cast<int>(dpi),96)};
     AdjustWindowRectExForDpi(&size, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem());
     handle_ = CreateWindowExW(0, window_class, L"FrostFox Atelier | Scene", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, size.right - size.left, size.bottom - size.top,

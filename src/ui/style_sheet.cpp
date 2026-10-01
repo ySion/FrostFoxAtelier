@@ -1,4 +1,5 @@
 #include "ui/style_sheet.hpp"
+#include "ui/text.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <charconv>
@@ -10,8 +11,12 @@ namespace {
 bool bounded(float n,float minimum,float maximum) { return std::isfinite(n) && n>=minimum && n<=maximum; }
 bool color_valid(Color c) { return bounded(c.r,0,1) && bounded(c.g,0,1) && bounded(c.b,0,1) && bounded(c.a,0,1); }
 bool name_valid(const std::wstring& value) { return !value.empty() && value.size()<=128 && value.find(L'\0')==value.npos; }
-bool layout_properties(const StyleProperties& p) {
-    return p.font_family || p.font_locale || p.font_size || p.font_weight || p.padding || p.text_align;
+bool invalid_state_properties(const StyleProperties& p, StyleState states) {
+    if (states==StyleState::none) return false;
+    // Persistent value/selection states may change weight; pointer/focus/error
+    // transitions must not move text or hit geometry.
+    const auto transient=static_cast<unsigned>(states)&(4u|8u|16u|64u);
+    return p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.indicator_size || (p.font_weight && transient);
 }
 unsigned specificity(const StyleSelector& s) {
     unsigned states=0;
@@ -32,6 +37,7 @@ class Parser {
     std::span<const NamedImage> images_;
     std::size_t at_{};
     std::map<std::string,Value,std::less<>> tokens_;
+    std::map<std::string,std::shared_ptr<const ColorImage>,std::less<>> gradients_;
     std::vector<Block> blocks_;
     [[noreturn]] void fail(std::string message,std::size_t position) const { throw ParseFailure{position,std::move(message)}; }
     [[noreturn]] void fail(std::string message) const { fail(std::move(message),at_); }
@@ -72,7 +78,7 @@ class Parser {
             if (take('*')) any=true;
             else {
                 const auto type=identifier(); any=true;
-                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo"};
+                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab"};
                 const auto found=std::find(std::begin(kinds),std::end(kinds),type);
                 if (found==std::end(kinds)) fail("Unknown control type: "+type);
                 result.kind=static_cast<ControlKind>(found-std::begin(kinds));
@@ -152,7 +158,31 @@ class Parser {
         if (MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),result.data(),count)!=count) fail("Invalid UTF-8 string",input.position);
         return result;
     }
-    void property(StyleProperties& p,const Declaration& d) const {
+    std::shared_ptr<const ColorImage> gradient(Value value) {
+        const auto input=resolve(value);
+        const std::string key(input.text);
+        if (const auto found=gradients_.find(key);found!=gradients_.end()) return found->second;
+        auto stops=input.text.substr(16,input.text.size()-17);
+        const auto comma=stops.find(',');
+        if (comma==stops.npos || stops.find(',',comma+1)!=stops.npos) fail("Expected two gradient colors",input.position);
+        const auto a=color({trim(stops.substr(0,comma)),input.position});
+        const auto b=color({trim(stops.substr(comma+1)),input.position});
+        auto image=std::make_shared<ColorImage>();
+        image->identity=detail::new_identity(); image->revision=1;
+        image->width=1; image->height=64; image->row_pitch=4; image->pixels.reserve(256);
+        const auto encode=[](float linear) {
+            const auto srgb=linear<=.0031308f?linear*12.92f:1.055f*std::pow(linear,1.f/2.4f)-.055f;
+            return static_cast<std::uint8_t>(std::lround(std::clamp(srgb,0.f,1.f)*255));
+        };
+        for (unsigned row=0;row<64;++row) {
+            const float t=static_cast<float>(row)/63;
+            for (auto pair:{std::pair{a.r*a.a,b.r*b.a},std::pair{a.g*a.a,b.g*b.a},std::pair{a.b*a.a,b.b*b.a}})
+                image->pixels.push_back(encode(std::lerp(pair.first,pair.second,t)));
+            image->pixels.push_back(static_cast<std::uint8_t>(std::lround(std::lerp(a.a,b.a,t)*255)));
+        }
+        gradients_.emplace(key,image); return image;
+    }
+    void property(StyleProperties& p,const Declaration& d) {
         const auto& name=d.name; const auto v=d.value;
         if (name=="color") p.foreground=color(v);
         else if (name=="background") p.background=color(v);
@@ -160,6 +190,16 @@ class Parser {
         else if (name=="selection-color") p.selection=color(v);
         else if (name=="caret-color") p.caret=color(v);
         else if (name=="scrollbar-color") p.scrollbar=color(v);
+        else if (name=="indicator-background") p.indicator_background=color(v);
+        else if (name=="indicator-border-color") p.indicator_border=color(v);
+        else if (name=="indicator-size") p.indicator_size=number(v);
+        else if (name=="border-style") {
+            const auto value=resolve(v).text;
+            if (value=="solid") p.border_style=BorderStyle::solid;
+            else if (value=="inset") p.border_style=BorderStyle::inset;
+            else if (value=="outset") p.border_style=BorderStyle::outset;
+            else fail("Expected solid, inset or outset",v.position);
+        }
         else if (name=="font-family") p.font_family=string(v);
         else if (name=="font-locale") p.font_locale=string(v);
         else if (name=="font-size") p.font_size=number(v);
@@ -190,6 +230,7 @@ class Parser {
         else if (name=="background-image") {
             const auto input=resolve(v);
             if (input.text=="none") p.image=std::shared_ptr<const ColorImage>{};
+            else if (input.text.starts_with("linear-gradient(") && input.text.ends_with(')')) p.image=gradient(input);
             else {
                 if (!input.text.starts_with("image(") || !input.text.ends_with(')')) fail("Expected image(name) or none",v.position);
                 const auto id=trim(input.text.substr(6,input.text.size()-7));
@@ -239,7 +280,7 @@ public:
             StyleProperties properties;
             for (const auto& d:block.declarations) property(properties,d);
             for (const auto& selector:block.selectors) {
-                if (selector.states!=StyleState::none && layout_properties(properties))
+                if (invalid_state_properties(properties,selector.states))
                     fail("State selectors may only change paint properties",block.declarations.empty()?0:block.declarations.front().value.position);
                 rules.push_back({selector,properties});
                 if (rules.size()>4096) fail("Too many style rules");
@@ -256,6 +297,8 @@ bool StyleSheet::valid_class(std::string_view name) noexcept {
 }
 bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.text_align && static_cast<unsigned>(*p.text_align)>static_cast<unsigned>(TextAlign::right)) return false;
+    if (p.border_style && static_cast<unsigned>(*p.border_style)>static_cast<unsigned>(BorderStyle::outset)) return false;
+    if (p.indicator_size && !bounded(*p.indicator_size,4,32)) return false;
     if (p.image && *p.image) {
         const auto& image=**p.image;
         if (!image.identity || !image.width || !image.height || image.width>16384 || image.height>16384 ||
@@ -264,7 +307,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     }
     if ((p.font_family && !name_valid(*p.font_family)) || (p.font_locale && !name_valid(*p.font_locale)) ||
         (p.font_size && !bounded(*p.font_size,4,256)) || (p.font_weight && (!*p.font_weight || *p.font_weight>999))) return false;
-    for (const auto* color:{&p.foreground,&p.background,&p.border,&p.selection,&p.caret,&p.scrollbar}) if (*color && !color_valid(**color)) return false;
+    for (const auto* color:{&p.foreground,&p.background,&p.border,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border}) if (*color && !color_valid(**color)) return false;
     if (p.padding) for (auto n:{p.padding->left,p.padding->top,p.padding->right,p.padding->bottom}) if (!bounded(n,0,128)) return false;
     if (p.radius) for (auto n:{p.radius->top_left,p.radius->top_right,p.radius->bottom_right,p.radius->bottom_left}) if (!bounded(n,0,32768)) return false;
     return (!p.border_width || bounded(*p.border_width,0,128)) && (!p.caret_width || bounded(*p.caret_width,.25f,16)) &&
@@ -276,9 +319,9 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     for (auto& rule:rules) {
         auto& s=rule.selector;
         const auto bits=static_cast<unsigned>(s.states);
-        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::combo)) ||
+        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::tab)) ||
             (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>255 || (bits&3)==3 ||
-            (bits && layout_properties(rule.properties)) || s.classes.size()>16 ||
+            invalid_state_properties(rule.properties,s.states) || s.classes.size()>16 ||
             !std::all_of(s.classes.begin(),s.classes.end(),[](const auto& id){return valid_class(id);}))
             return std::unexpected(StyleDiagnostic{0,0,"Invalid selector or style properties"});
         std::sort(s.classes.begin(),s.classes.end());

@@ -88,6 +88,23 @@ void click_at(Application& app, POINT point) {
     tick(app,2);
 }
 void click(Application& app, ControlKey key) {
+    // Docked views can be shorter than their content. Reach the target through
+    // actual wheel messages, using the same accepted clip as a user would see.
+    for (unsigned attempt=0;attempt<40;++attempt) {
+        const auto* box=app.presented()->find(key); if (!box) break;
+        if (box->bounds.y>=box->clip.top && box->bounds.y+box->bounds.height<=box->clip.bottom) break;
+        auto parent=box->parent;
+        while (parent) {
+            const auto* ancestor=app.presented()->find(parent); if (!ancestor) { parent=0; break; }
+            if (ancestor->kind==atelier::ui::ControlKind::list) break;
+            parent=ancestor->parent;
+        }
+        if (!parent) break;
+        POINT point=centre(app,parent); ClientToScreen(app.window(),&point);
+        const auto delta=box->bounds.y<box->clip.top?WHEEL_DELTA:-WHEEL_DELTA;
+        SendMessageW(app.window(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(delta)),MAKELPARAM(point.x,point.y));
+        tick(app,1);
+    }
     const auto point = centre(app, key);
     mouse(app, WM_MOUSEMOVE, point); click_at(app, point);
 }
@@ -189,18 +206,25 @@ void capture(Application& app, const std::filesystem::path& path) {
     require(image.rgba.size() == static_cast<std::size_t>(image.extent.width) * image.extent.height * 4,
         "Capture has an invalid pixel payload.");
     const auto scene_pixels = std::count_if(image.depth.begin(), image.depth.end(), [](float value) { return value > 0 && value < .999999f; });
-    require(scene_pixels > 32, "Real scene geometry is absent from the depth capture.");
+    if (app.presented()->find(control::viewport)) require(scene_pixels>32,"Real scene geometry is absent from the depth capture.");
+    else require(scene_pixels==0,"Hidden Scene tab continued rendering geometry.");
     png(image, path);
 }
 void verify_control_states(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
+    const auto paint=[&] {
+        const auto bounds=app.presented()->find(control::reset)->bounds;
+        std::shared_ptr<const atelier::ui::ColorImage> image;
+        for (const auto& draw:app.presented()->drawing->draws) if (draw.bounds==bounds && draw.image) image=draw.image;
+        return std::pair{solid_colors(*app.presented(),control::reset),image};
+    };
     mouse(app, WM_MOUSEMOVE, centre(app, control::viewport));
-    const auto normal = solid_colors(*app.presented(), control::reset);
+    const auto normal = paint();
     const auto button = centre(app, control::reset);
     mouse(app, WM_MOUSEMOVE, button);
-    const auto hover = solid_colors(*app.presented(), control::reset);
+    const auto hover = paint();
     require(hover != normal, "Hover did not use the shared control state style.");
     mouse(app, WM_LBUTTONDOWN, button);
-    require(solid_colors(*app.presented(), control::reset) != hover, "Pressed state did not change the shared paint.");
+    require(paint() != hover, "Pressed state did not change the shared paint.");
     capture(app, output / "s1-pressed.png");
     mouse(app, WM_LBUTTONUP, button);
 
@@ -526,6 +550,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     require(resources.good(), "Cannot save resource sampling evidence.");
 }
 #include "controls.inl"
+#include "docking.inl"
 }
 
 int verify_editor_window(Application& app, const char* output_directory) {
@@ -540,7 +565,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     capture(app, output / "m0.png");
     click(app, control::reset);
     const auto original_width = app.parameter_width();
-    auto divider = centre(app, control::splitter);
+    auto divider = centre(app, app.parameter_splitter());
     mouse(app, WM_LBUTTONDOWN, divider); divider.x -= 50;
     mouse(app, WM_MOUSEMOVE, divider); mouse(app, WM_LBUTTONUP, divider);
     require(app.parameter_width() > original_width + 20, "Pane divider did not change the workspace.");
@@ -670,6 +695,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     verify_control_states(app, output, object);
     verify_style_changes(app, output, object);
     verify_shared_text(app, output, object);
+    verify_docking(app, output, object);
     verify_basic_controls(app, output, object);
     view = centre(app, control::viewport); ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)), MAKELPARAM(view.x, view.y)); tick(app, 1);
@@ -685,6 +711,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
+           << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories.\n"
            << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
@@ -1061,13 +1088,13 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     key(app,VK_SPACE);
     click(app,sample::name);
     compose_position();
-    click(app,control::workbench);
+    click(app,control::parameters_tab);
     require(!app.text_input() && app.control_workbench().values().name==L"位置" && app.document().undo_count()==scene_history,
         "Switching from workbench to scene retained composition or changed scene history.");
     click(app,control::workbench);
     click(app,sample::name);
     capture(app,output/"controls-ime-confirmed.png");
-    click(app,control::workbench);
+    click(app,control::parameters_tab);
     const auto native_after = app.input_statistics();
     capture(app, output / "s2-ime-final.png");
     check_active_profile();

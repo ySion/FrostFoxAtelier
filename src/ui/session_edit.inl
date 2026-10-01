@@ -48,7 +48,9 @@
             const auto old=*press;
             press.reset(); reply.capture=Capture::release; reply.redraw=true;
             if (old.dragging) {
-                action(reply,ActionKind::edit_cancel,old.key,old.original);
+                if (states.at(old.key).control.kind==ControlKind::tab)
+                    action(reply,ActionKind::drag_cancel,old.key,DragPoint{old.last_x,old.last_y});
+                else action(reply,ActionKind::edit_cancel,old.key,old.original);
                 if (focus==old.key && states.at(old.key).control.kind==ControlKind::number)
                     edit.emplace(states.at(old.key),format(old.original),old.original,false,false);
             }

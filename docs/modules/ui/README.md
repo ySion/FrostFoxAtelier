@@ -4,7 +4,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo 是文字叶，list 和 popup 是带裁剪和滚动的 column，splitter/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab 是文字叶，list 和 popup 是带裁剪和滚动的 column，splitter/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
 
@@ -20,13 +20,13 @@
 
 ## 可组合参数控件
 
-[controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 96 DIP，字段高 24 DIP；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
+[controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 24 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
 
-`Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖绘制。它不改变布局，也不代替非法输入状态。标题使用稳定的 `group_key` 作为身份，右键可请求整组菜单；Ctrl+中键发出 `reset(group_key)`，整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `ParameterRow.group_modified` 提供完整组状态；未提供时数值组合从传入字段推导。各字段始终独立比较自己的默认值。
+`Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖颜色和字重。修改状态可通过字重影响文字测量，不代替非法输入状态。标题使用稳定的 `group_key` 作为身份，右键可请求整组菜单；Ctrl+中键发出 `reset(group_key)`，整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `ParameterRow.group_modified` 提供完整组状态；未提供时数值组合从传入字段推导。各字段始终独立比较自己的默认值。
 
 数值中键按住显示七档 value ladder：垂直移动切换十倍步长，水平移动调值；基准为字段 `drag_step`，Shift 使用 `fine_step`。释放提交一次，Esc/失焦/捕获丢失取消。Ctrl+中键恢复 `Control.default_value`。阶梯复用文字服务的一段缓存，静止时不重建排版或像素；背景、文字与档位高亮分别使用该字段最终样式的 background、color 和 selection-color。
 
-`checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 20 DIP 指示区域。勾号和三角形使用按形状/像素尺寸缓存的抗锯齿 R8 Coverage，沿同一 DrawQuad、上传和资源记账路径绘制。
+`checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 indicator-size 加 6 DIP 的指示区域。勾号和三角形使用按形状/像素尺寸缓存的抗锯齿 R8 Coverage，沿同一 DrawQuad、上传和资源记账路径绘制。
 
 折叠标题与内容容器是两个控件；宿主将展开状态映射到内容容器的 `layout.collapsed`。现有祖先有效性检查统一取消隐藏/禁用字段的草稿、组合和捕获；展开后复用仍存续的 key。宿主替换目标时仍须退役旧绑定。
 
@@ -41,6 +41,20 @@
 `dismiss` 要求宿主撤下浮层描述；目标移除、禁用、折叠、Surface 失效或失焦也会结束菜单。所有取消副作用必须处理，包括业务操作失败后的 dismiss。菜单项身份同样遵守业务绑定寿命，不把仍存活的项改绑到另一命令目标。
 
 `menu_item.edit_command` 可指定 copy/paste/reset 和文字字段 key。命令关闭菜单后进入同一个 TextEdit、原生剪贴板和事务链；有效数字粘贴立即提交一次，非法数字保留可取消草稿。其目标仍需是当前有效字段；reset 还要求声明 default_value。普通菜单项通过 activate 交还宿主，下拉的选项与权威值也由宿主维护。
+
+`Session(font_files)` 可在构造时将应用字体与系统字体合成一个私有 DirectWrite 集合，不安装系统字体。字体文件在 Session 生命周期内保持可读；已接受段落持有其原生布局，继续遵守旧帧寿命。默认构造仍只使用系统字体；未知字体名与中文缺字保持 DirectWrite 的系统回退。当前编辑器随程序部署 Source Sans 3 与 Source Code Pro，来源和许可证在 [字体资源](../../../assets/fonts/README.md)。
+
+## 停靠与标签
+
+[docking.hpp](../../../src/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，并通过 `append` 的内容回调描述已有视图。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
+
+- 分割是横/纵方向、比例和两个孩子；叶子是标签组。移动后清理空组与单子分割；最后一组可为空，并仍能从菜单打开内容。最大化不改动原树。
+- `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。
+- 标签栏落点改变顺序或合并，内容四边落点分割；空间不足时不接受边缘分割，菜单也禁用对应项。分隔线复用普通 splitter 的数值预览/取消链路。每叶最低尺寸取已注册视图的最大需求，并沿树合成；窗口不足时按最低需求比例压缩，由内容自己的滚动/换行保持可达。
+- `focused_control()` 供宿主依据已接受父链选择业务历史上下文；它不把键盘焦点等同于业务对象选择。`visible(tab)` 与 `focused_tab()` 分别表示实际显示和最近操作的视图。
+- `Control.icon` 支持关闭、最大化、恢复三个无文字按钮标记；尺寸取最终 `indicator-size`，颜色取前景，沿已有按形状/像素尺寸缓存的 R8 Coverage 绘制，不依赖字体中的图标字形。
+
+所有结构仍描述为普通容器、tab、button、splitter 和内容控件，经同一布局、SS、接受帧与 renderer 绘制。调用者保留当前 `DockSpace` 实例；原生浮动窗口与布局文件持久化不在该首片中。
 
 ## Style与失效
 
@@ -77,7 +91,7 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 - 普通换焦点合法提交、非法取消；OS失焦、Surface失效、控件失效取消。数值拖调提交后回仅聚焦，下一次Ctrl+Z交业务。仅聚焦时新的权威投影更新被动缓冲，不能被旧文字覆盖。
 - 字段聚焦时Delete/Backspace由共享文字编辑消费，不能删除场景对象。Tab按可见呈现控件顺序导航，Ctrl+A全选，Left/Right按视觉方向移动或折叠选择，Shift扩选，Home/End到视觉行端。
 
-Action.value为`ActionValue = variant<monostate,double,wstring,bool>`：普通activate/select无值，checkbox/foldout的activate携带请求的bool值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
+Action.value为`ActionValue = variant<monostate,double,wstring,bool,ContextMenuRequest,DragPoint>`：普通activate/select无值，checkbox/foldout的activate携带请求的bool值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
 
 本地历史保存文字和选择快照；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 

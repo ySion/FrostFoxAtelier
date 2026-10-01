@@ -1,5 +1,9 @@
 function(atelier_add_editor)
     configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ss" "${CMAKE_BINARY_DIR}/editor.ss" COPYONLY)
+    foreach(font_asset SourceSans3-Regular.otf SourceSans3-Semibold.otf SourceSans3-Bold.otf
+            SourceCodePro-Regular.otf SourceCodePro-Bold.otf source-sans-LICENSE.md source-code-pro-LICENSE.md sources.json)
+        configure_file("${PROJECT_SOURCE_DIR}/assets/fonts/${font_asset}" "${CMAKE_BINARY_DIR}/fonts/${font_asset}" COPYONLY)
+    endforeach()
     add_library(atelier_editor_core STATIC
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")

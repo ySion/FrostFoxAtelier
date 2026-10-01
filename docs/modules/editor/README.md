@@ -2,7 +2,7 @@
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。本工作树的 World 基线仍使用 Transform/Cube，后续对象模型迁移遵循[对象模型合同](../../research/game-world-object-model.md)。
-模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、菜单浮层、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、存档重开、JIT 单步、视口拾取、gizmo、节点画布、自由停靠、参数面板固定目标仍未实施。
+模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、菜单浮层、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、存档重开、JIT 单步、视口拾取、gizmo、节点画布、原生浮动窗口、布局文件保存、参数面板固定目标仍未实施。
 
 ## 正式执行链
 
@@ -40,11 +40,24 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 - viewport 与 UI clip 使用窗口客户区左上为原点的物理像素。1280×720客户区内的 `{240,32,760,660}` 表示从 `(240,32)` 开始、宽760高660的视口。
 - UI 根据实际 backbuffer 尺寸和 DPI 生成 draw/clip；renderer 不再次缩放。深度目标显式匹配实际 backbuffer。
 
+## 工作区与停靠
+
+默认布局参照 Houdini 的分区：Scene View 在左，Parameters/Controls 共用右上标签组，Actors 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域。
+
+- 拖标签到另一个标签栏可合并/重排；拖到内容的左、右、上、下边缘可分栏，松开前有预览，Esc 取消。分隔条可拖动改变两侧比例。
+- 标签的关闭按钮移除其显示；右侧菜单可以重新打开四种视图，并把当前标签移到右方/下方的新区域。空间不足或组中只有一个标签时，对应分割菜单不可用。
+- 面板右上角切换最大化/还原；Ctrl+B 对最近操作的面板执行同一动作。Ctrl+Tab / Ctrl+Shift+Tab 切换组内标签，Ctrl+W 关闭当前标签；菜单打开期间由菜单独占键盘。
+- 顶部 **Reset layout** 恢复默认位置及标签；场景、相机、筛选、样本值和历史不因恢复布局而重置。最后一个视图关闭后也可恢复。
+- 样本与场景历史按照最近操作的视图选择，允许 Controls 与 Parameters 同时显示。视图隐藏/移动时，未提交交互仍通过 Session 的取消/失焦合同结束；业务字段 key 依对象实际成员生命周期退役，隐藏面板不退役对象绑定。
+- Scene View 隐藏时提交空场景矩形，不生成场景实例；其他 UI 继续走原窗口、renderer 和接受帧。参数面板与实验台整体滚动以适应较矮的区域；窄参数行仍使用公共 Flex 换行。
+
+本轮把用户指定的 Houdini UI Scale 1.75 作为同机参照，字体为 14 DIP Source Sans 3、字段最低 24 DIP、标签列 160 DIP、行间 7 DIP、标签栏 24 DIP。系统 DPI 仍只有 Window → Surface 的一个换算入口。实机照片、像素口径和公开事实见[工作区研究](../../research/houdini-workspace-reference-20261001.md)。独立原生浮窗、多份同类视图和持久布局属于后续增量。
+
 ## 控件实验台
 
-工具条 **Controls** 在同一个应用窗口中切换右侧面板；再次点击回到实际场景参数。实验台使用同一个 `ui::Session`、SS、布局、输入法和 renderer，没有独立绘制循环。
+**Controls** 标签打开实验台；选择 **Parameters** 回到实际场景参数，也可将两者分栏同时显示。实验台使用同一个 `ui::Session`、SS、布局、输入法和 renderer，没有独立绘制循环。
 
-- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4 和 Projection 下拉样本。数值、名称与下拉共用右对齐标签列、紧凑字段和 SS 灰色/琥珀色状态；勾选使用勾号，折叠使用三角。
+- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4 和 Projection 下拉样本。数值、名称与下拉共用右对齐标签列、24 DIP 起的紧凑字段和统一 SS：黑色输入框、凹入边缘、轻渐变按钮；默认灰白文字、非默认数值加粗、暖色焦点和菜单定位；勾选使用勾号，折叠使用三角。
 - 右键菜单提供分量/整组默认值、复制和粘贴；Ctrl+中键直接恢复默认值，中键按住调出数值阶梯。整组恢复仍只记一次撤销，全部样本保留统一 Reset。Projection 和 Vector4 均为独立样本，不向 World 添加虚构字段。
 - Disable sample fields 检查祖先禁用传播，Show long labels 检查换行，Parameters 标题支持鼠标与 Enter/Space 折叠。
 - 分隔条范围为 220–560 DIP。窄面板保持字段可达，超出可用高度的样本通过同一 list 滚动。
@@ -64,6 +77,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 ## UI 样式与诊断
 
 Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及工具栏 `danger` 类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。工具条与参数标题共用 title 层级，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。工具条按钮宽度按文字测量并保留原最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
+界面文字使用随程序部署的 Source Sans 3，数字使用 Source Code Pro；中文沿系统回退，应用不修改系统字体设置。构建部署 `fonts/` 和两份 SIL OFL 许可证，版本与原始文件 hash 见 [字体清单](../../../assets/fonts/sources.json)。工具栏高 36 DIP，按钮 26 DIP；参数行和菜单以 24 DIP 为基础，行距 7 DIP，窄面板继续同一 Flex 换行。
 `Application::set_style` 直接进入 UI 的整体校验/应用路径，应用不保存另一份主题。颜色复用文字 Coverage，字体族、字重和字号经同一 TextStore 更新度量、caret 和栅格；已接受帧仍保有旧几何与不可变内容。具体样式、版本及状态合同见 [UI 模块](../ui/README.md)。
 `Application::sample_frames` 显式开启 CPU prepare/render 计时，默认关闭；Capture 帧不计入。窗口验收从同一应用按钮添加真实场景成员至 256，再采样列表滚动与位置拖动。UI 累计计数按段求差，renderer 的 `FrameResult::stats` 按实际采样帧合计；CPU Coverage 和 renderer cache 的持有峰值分别记录。
 render 计时包括 Present/等待，R8 上传字节只表示有效 payload，缓存 texel 字节不表示物理显存。验收使用硬件 D3D12 debug/GBV 与 vsync，含 release 配置；数据用于说明该验收负载，不能直接当作关闭验证的产品帧耗时，也没有同负载改前基线可用于百分比提升结论。

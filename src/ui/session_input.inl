@@ -54,7 +54,15 @@ Reply Session::input(const Event& event) {
                 if (!state) return self.cancel();
                 const auto& control=state->control;
                 if (press.selecting && self.edit && self.edit->key==press.key) self.select_at(reply,event.x,event.y,true);
-                else if (editable(control.kind)) {
+                else if (control.kind==ControlKind::tab) {
+                    if (!press.dragging && (std::abs(event.x-press.x)>4*self.surface.dpi_scale || std::abs(event.y-press.y)>4*self.surface.dpi_scale)) {
+                        self.finish_edit(reply,true); press.dragging=true;
+                        Impl::action(reply,ActionKind::drag_begin,press.key,DragPoint{press.x,press.y});
+                    }
+                    if (press.dragging) {
+                        Impl::action(reply,ActionKind::drag_preview,press.key,DragPoint{event.x,event.y}); reply.redraw=true;
+                    }
+                } else if (editable(control.kind)) {
                     const auto delta=control.drag_axis==DragAxis::horizontal?event.x-press.last_x:event.y-press.last_y;
                     if (!press.dragging && (std::abs(event.x-press.x)>3 || std::abs(event.y-press.y)>3)) {
                         self.finish_edit(reply,true); press.dragging=true;
@@ -120,7 +128,9 @@ Reply Session::input(const Event& event) {
             if (!self.press || event.button!=self.press->button) return reply;
             const auto press=*self.press; self.press.reset();
             reply.consumed=reply.redraw=true; reply.capture=Capture::release;
-            if (press.dragging) {
+            if (press.dragging && self.states.at(press.key).control.kind==ControlKind::tab) {
+                Impl::action(reply,ActionKind::drag_commit,press.key,DragPoint{event.x,event.y});
+            } else if (press.dragging) {
                 Impl::action(reply,ActionKind::edit_commit,press.key,press.value);
                 if (self.focus==press.key && self.states.at(press.key).control.kind==ControlKind::number)
                     self.edit.emplace(self.states.at(press.key),format(press.value),press.value,false,false);

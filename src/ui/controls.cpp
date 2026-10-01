@@ -14,16 +14,16 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
         return controls.back();
     };
     const bool modified=row.group_modified.value_or(false);
-    auto layout=NodeInput::row(8); layout.cross_gap=4;
+    auto layout=NodeInput::row(8); layout.cross_gap=3;
     layout.flow=FlexSpec{}; layout.flow->wrap=Wrap::wrap;
     layout.flow->align_items=Alignment::fit(.5f);
     auto& root=append(row.key,row.parent,ControlKind::container,layout);
     root.enabled=row.enabled; root.classes={"parameter-row"};
-    auto caption=NodeInput::box(96,24); caption.height=Axis::content(24);
+    auto caption=NodeInput::box(160,24); caption.height=Axis::content(24);
     auto& label=append(row.group_key?row.group_key:row.label_key,row.key,ControlKind::label,caption,row.label);
     label.classes={"parameter-label"}; label.modified=modified;
     label.context_target=row.group_key;
-    auto body=NodeInput::row(2); body.height=Axis::fixed(24);
+    auto body=NodeInput::row(2); body.height=Axis::content(24);
     body.width=Axis::flex(Basis::fixed(std::max(144.f,body_minimum)),1,1,body_minimum);
     append(row.body_key,row.key,ControlKind::container,body);
 }
@@ -36,7 +36,7 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
     for (const auto& field:fields) {
         Control number;
         number.key=field.key; number.parent=row.body_key; number.kind=ControlKind::number; number.text=field.label;
-        number.layout=ui_layout::NodeInput::box(0,24); number.layout.width=ui_layout::Axis::expand(1,field_minimum);
+        number.layout=ui_layout::NodeInput::box(0,24); number.layout.height=ui_layout::Axis::content(24); number.layout.width=ui_layout::Axis::expand(1,field_minimum);
         number.value=field.value; number.minimum=field.minimum; number.maximum=field.maximum;
         number.default_value=field.default_value;
         number.context_target=field.key; number.context_group=row.group_key;
@@ -51,7 +51,7 @@ void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owne
     Control popup;
     popup.key=key; popup.kind=ControlKind::popup; popup.popup_owner=owner;
     popup.layout=NodeInput::column(); popup.layout.width=Axis::fixed(width);
-    popup.layout.padding={3,3,3,3}; popup.layout.out_of_flow=true;
+    popup.layout.padding={1,2,1,2}; popup.layout.out_of_flow=true;
     popup.layout.offset_x=x; popup.layout.offset_y=y;
     controls.push_back(std::move(popup));
     for (const auto& item:items) {

@@ -23,9 +23,15 @@ public:
     ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
         return workspace_.field_control(component, path);
     }
-    float parameter_width() const noexcept { return workspace_.parameter_width; }
+    float parameter_width() const noexcept {
+        const auto& frame=ui_.presented();
+        const auto* pane=frame?frame->find(workspace_.dock.pane(editor::control::parameters_tab)):nullptr;
+        return pane?pane->bounds.width/frame->drawing->dpi_scale:0;
+    }
+    ui::ControlKey parameter_splitter() const noexcept { return workspace_.dock.divider(editor::control::parameters_tab,ui::DragAxis::horizontal); }
+    const ui::DockSpace& docking() const noexcept { return workspace_.dock; }
     ui::ControlKey reset_control(ObjectId component) const noexcept { return workspace_.reset_control(component); }
-    bool workbench_visible() const noexcept { return workspace_.show_workbench; }
+    bool workbench_visible() const noexcept { return workspace_.show_workbench(); }
     const editor::ControlWorkbench& control_workbench() const noexcept { return workspace_.workbench; }
     bool wants_keyboard() const noexcept { return ui_.wants_keyboard(); }
     const std::wstring& query() const noexcept { return workspace_.query; }

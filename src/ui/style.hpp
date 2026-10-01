@@ -6,9 +6,11 @@
 
 namespace atelier::ui {
 
+enum class ControlIcon { none, close, maximize, restore };
 enum class Role { normal, panel, title, caption };
 enum class TextAlign { left, center, right };
-enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo };
+enum class BorderStyle { solid, inset, outset };
+enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo, tab };
 struct Font {
     std::wstring family{L"Microsoft YaHei UI"};
     std::wstring locale{L"en-US"};

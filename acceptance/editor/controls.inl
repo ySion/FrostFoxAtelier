@@ -20,7 +20,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     const auto resize_panel=[&](float width) {
         require_input_focus(app);
         KeyStateScope modifiers;
-        const auto from=centre(app,control::splitter);
+        const auto from=centre(app,app.parameter_splitter());
         auto to=from;
         to.x+=static_cast<LONG>(std::lround((app.parameter_width()-width)*app.presented()->drawing->dpi_scale));
         // This check observes the completed resize. Send the whole gesture
@@ -106,7 +106,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     click(app,sample::long_labels);
     const auto width=app.parameter_width();
     resize_panel(180); // Cross the lower bound to verify its clamp.
-    require(app.parameter_width()==220,"Narrow workbench did not reach the declared minimum.");
+    require(std::abs(app.parameter_width()-220)<1,"Narrow workbench did not reach the declared minimum.");
     const auto* first=app.presented()->find(sample::position_x);
     for (const auto field:{sample::position_x,sample::position_y,sample::position_z}) {
         const auto* box=app.presented()->find(field);
@@ -233,7 +233,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(app.control_workbench().values().position[0]==12.5,"Sample reset did not have one reversible history entry.");
     require(app.document().undo_count()==scene_history && position(0)==0,
         "Workbench values or history modified the actual scene.");
-    click(app,control::workbench);
+    click(app,control::parameters_tab);
     require(!app.workbench_visible() && app.presented()->find(property_control(app,actor,0)),
         "Returning from the workbench did not restore scene controls.");
 }

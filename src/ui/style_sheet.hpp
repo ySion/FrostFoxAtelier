@@ -21,6 +21,9 @@ struct StyleProperties {
     std::optional<float> font_size;
     std::optional<std::uint16_t> font_weight;
     std::optional<TextAlign> text_align;
+    std::optional<BorderStyle> border_style;
+    std::optional<float> indicator_size;
+    std::optional<Color> indicator_background, indicator_border;
     std::optional<Color> foreground, background, border, selection, caret, scrollbar;
     std::optional<ui_layout::Insets> padding;
     std::optional<float> border_width, caret_width;
@@ -43,6 +46,9 @@ struct NamedImage { std::string name; std::shared_ptr<const ColorImage> image; }
 struct ResolvedStyle {
     Font font;
     TextAlign text_align{TextAlign::left};
+    BorderStyle border_style{BorderStyle::solid};
+    float indicator_size{14};
+    Color indicator_background{0,0,0,0}, indicator_border{0,0,0,0};
     ui_layout::Insets padding;
     Color foreground, border, selection, caret, scrollbar;
     std::optional<Color> background;

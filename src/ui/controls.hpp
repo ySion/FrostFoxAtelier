@@ -21,7 +21,7 @@ struct ParameterRow {
     std::optional<bool> group_modified{};
 };
 // Common caption/body composition for numbers, text and choices. body_key is
-// a 24 DIP row; callers append their ordinary controls to it.
+// a row with a 24 DIP minimum height; callers append their ordinary controls to it.
 void append_parameter_row(std::vector<Control>&, const ParameterRow&, float body_minimum=144);
 // Append 1–4 fields. The caption uses group_key when supplied; its context menu
 // and Ctrl+middle reset address that stable identity. The host owns group undo.

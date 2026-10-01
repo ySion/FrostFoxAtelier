@@ -13,10 +13,10 @@ namespace {
 bool text_kind(ControlKind kind) {
     return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item ||
         kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::checkbox || kind == ControlKind::foldout ||
-        kind == ControlKind::menu_item || kind == ControlKind::combo;
+        kind == ControlKind::menu_item || kind == ControlKind::combo || kind == ControlKind::tab;
 }
 bool toggle_kind(ControlKind kind) { return kind == ControlKind::checkbox || kind == ControlKind::foldout; }
-bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind) || kind==ControlKind::menu_item || kind==ControlKind::combo; }
+bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind) || kind==ControlKind::menu_item || kind==ControlKind::combo || kind==ControlKind::tab; }
 bool scrolling(ControlKind kind) { return kind==ControlKind::list || kind==ControlKind::popup; }
 bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit; }
 bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter; }
@@ -140,7 +140,7 @@ struct Session::Impl {
     ControlKey popup{}, popup_return_focus{};
     bool popup_dismissed{};
 
-    Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
+    explicit Impl(std::span<const std::wstring> fonts) : text(fonts) { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
     bool active() const {
         return published && published->drawing->extent == surface.extent &&
             published->drawing->dpi_scale == surface.dpi_scale && published->drawing->surface_revision == surface.revision &&
@@ -257,7 +257,7 @@ struct Session::Impl {
     }
 };
 
-Session::Session() : impl_(std::make_unique<Impl>()) {}
+Session::Session(std::span<const std::wstring> fonts) : impl_(std::make_unique<Impl>(fonts)) {}
 Session::~Session() = default;
 Result<void> Session::set_style(const Style& style) {
     if (!valid_style(style)) return std::unexpected(Error{ErrorCode::invalid_style});
@@ -306,11 +306,14 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     ControlKey next_popup{};
     for (const auto& control : controls) {
         if (!control.key || validated.contains(control.key) || (control.parent && !validated.contains(control.parent)) ||
-            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::combo) ||
+            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::tab) ||
             static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 || !std::isfinite(control.value) ||
             !std::isfinite(control.minimum) || !std::isfinite(control.maximum) || control.minimum > control.maximum ||
             !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
             static_cast<unsigned>(control.drag_axis) > static_cast<unsigned>(DragAxis::vertical))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::restore) ||
+            (control.icon!=ControlIcon::none && (control.kind!=ControlKind::button || !control.text.empty())))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
@@ -430,6 +433,19 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (visible(bounds,clip) && color.a > 0)
                 draws->draws.push_back({bounds,clip,color,{0,0,1,1},std::move(coverage)});
         };
+        const auto paint_box=[&](Rect bounds,Clip clip,Color background,std::shared_ptr<const ColorImage> image,
+                                 CornerRadii radius,float border,Color edge,BorderStyle relief) {
+            const bool beveled=relief!=BorderStyle::solid;
+            draws->draws.push_back({bounds,clip,image?Color{1,1,1,1}:background,{0,0,1,1},{},
+                beveled?CornerRadii{}:radius,beveled?0:border,edge,std::move(image),background});
+            if (!beveled || border<=0) return;
+            const Color dark{edge.r*.15f,edge.g*.15f,edge.b*.15f,edge.a};
+            const auto near=relief==BorderStyle::outset?edge:dark, far=relief==BorderStyle::outset?dark:edge;
+            quad({bounds.x,bounds.y,bounds.width,border},clip,near);
+            quad({bounds.x,bounds.y+border,border,std::max(0.f,bounds.height-border*2)},clip,near);
+            quad({bounds.x,bounds.y+bounds.height-border,bounds.width,border},clip,far);
+            quad({bounds.x+bounds.width-border,bounds.y+border,border,std::max(0.f,bounds.height-border*2)},clip,far);
+        };
         std::size_t popup_draw_begin=std::numeric_limits<std::size_t>::max();
         for (auto key : self.order) {
             auto& state = self.states.at(key);
@@ -471,27 +487,39 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 appearance.radius.bottom_right*scale,appearance.radius.bottom_left*scale};
             if (appearance.background || appearance.image || (border>0 && appearance.border.a>0)) {
                 const auto background=appearance.background.value_or(Color{0,0,0,0});
-                draws->draws.push_back({bounds,clip,appearance.image?Color{1,1,1,1}:background,
-                    {0,0,1,1},{},radius,border,appearance.border,appearance.image,background});
+                paint_box(bounds,clip,background,appearance.image,radius,border,appearance.border,appearance.border_style);
+            }
+            if (state.control.icon!=ControlIcon::none) {
+                using Symbol=detail::TextStore::Symbol;
+                const auto symbol=state.control.icon==ControlIcon::close?Symbol::close:
+                    state.control.icon==ControlIcon::maximize?Symbol::maximize:Symbol::restore;
+                const float size=appearance.indicator_size*scale;
+                quad({bounds.x+(bounds.width-size)*.5f,bounds.y+(bounds.height-size)*.5f,size,size},intersect(clip,clip_rect(bounds)),
+                    appearance.foreground,self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
             }
             if (toggle_kind(kind)) {
                 const auto marker_clip=intersect(clip,clip_rect(bounds));
                 const float x=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
-                const float y=bounds.y+(bounds.height-14*scale)*.5f;
+                const float size=appearance.indicator_size*scale;
+                const float y=bounds.y+(bounds.height-size)*.5f;
+                const float glyph=std::max(2.f,appearance.indicator_size-2)*scale;
                 if (kind==ControlKind::checkbox) {
-                    draws->draws.push_back({{x,y,14*scale,14*scale},marker_clip,{0,0,0,0},{0,0,1,1},{},
-                        {2*scale,2*scale,2*scale,2*scale},scale,appearance.foreground});
-                    if (state.control.selected) quad({x+scale,y+scale,12*scale,12*scale},marker_clip,appearance.foreground,
-                        self.text.symbol(detail::TextStore::Symbol::check,static_cast<std::uint32_t>(std::ceil(12*scale))));
+                    paint_box({x,y,size,size},marker_clip,appearance.indicator_background,{}, {},scale,
+                        appearance.indicator_border.a>0?appearance.indicator_border:appearance.foreground,
+                        appearance.indicator_border.a>0?BorderStyle::inset:BorderStyle::solid);
+                    if (state.control.selected) quad({x+scale,y+scale,glyph,glyph},marker_clip,appearance.foreground,
+                        self.text.symbol(detail::TextStore::Symbol::check,static_cast<std::uint32_t>(std::ceil(glyph))));
                 } else {
-                    quad({x+scale,y+scale,12*scale,12*scale},marker_clip,appearance.foreground,
+                    quad({x+scale,y+scale,glyph,glyph},marker_clip,appearance.foreground,
                         self.text.symbol(state.control.selected?detail::TextStore::Symbol::down:detail::TextStore::Symbol::right,
-                            static_cast<std::uint32_t>(std::ceil(12*scale))));
+                            static_cast<std::uint32_t>(std::ceil(glyph))));
                 }
             }
             if (kind==ControlKind::combo) {
-                const float size=12*scale;
-                quad({bounds.x+bounds.width-16*scale,bounds.y+(bounds.height-size)*.5f,size,size},intersect(clip,clip_rect(bounds)),
+                const float size=appearance.indicator_size*scale;
+                const auto arrow_clip=intersect(clip,clip_rect(bounds));
+                quad({bounds.x+bounds.width-16*scale,bounds.y+scale,15*scale,std::max(0.f,bounds.height-2*scale)},arrow_clip,{0,0,0,.15f});
+                quad({bounds.x+bounds.width-(16*scale+size)*.5f,bounds.y+(bounds.height-size)*.5f,size,size},arrow_clip,
                     appearance.foreground,self.text.symbol(detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
             }
             if (text_kind(kind)) {
@@ -605,6 +633,7 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }
 Reply Session::cancel_interaction() { return impl_->cancel(); }
+ControlKey Session::focused_control() const noexcept { return impl_->focus; }
 bool Session::wants_keyboard() const noexcept {
     const auto* state=impl_->live(impl_->focus);
     return state && text_field(state->control.kind) && impl_->active();

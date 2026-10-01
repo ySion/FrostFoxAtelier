@@ -63,16 +63,17 @@ void ControlWorkbench::append(std::vector<ui::Control>& controls, ui::ControlKey
         controls.push_back(std::move(control)); return controls.back();
     };
     const auto full=[](float height) { auto box=NodeInput::box(0,height); box.width=Axis::expand(); return box; };
-    add(301,parent,ControlKind::label,full(24),L"Control workbench").role=ui::Role::title;
+    auto scroll=NodeInput::column(7); scroll.height=Axis::expand(); scroll.padding={0,2,2,6};
+    add(list,parent,ControlKind::list,scroll).classes={"parameter-list"};
+    parent=list;
+    add(301,parent,ControlKind::label,full(26),L"Control workbench").role=ui::Role::title;
     auto paragraph=full(0); paragraph.height=Axis::content();
     add(302,parent,ControlKind::label,paragraph,L"Live samples · scene values stay separate").role=ui::Role::caption;
-    add(disable,parent,ControlKind::checkbox,full(28),L"Disable sample fields").selected=disabled_;
-    add(long_labels,parent,ControlKind::checkbox,full(28),L"Show long labels").selected=long_labels_;
-    auto scroll=NodeInput::column(8); scroll.height=Axis::expand(); scroll.padding={0,4,4,8};
-    add(list,parent,ControlKind::list,scroll).classes={"parameter-list"};
-    auto& header=add(fold,list,ControlKind::foldout,full(28),L"Parameters");
+    add(disable,parent,ControlKind::checkbox,full(24),L"Disable sample fields").selected=disabled_;
+    add(long_labels,parent,ControlKind::checkbox,full(24),L"Show long labels").selected=long_labels_;
+    auto& header=add(fold,list,ControlKind::foldout,full(24),L"Parameters");
     header.selected=expanded_; header.classes={"section"};
-    auto content=NodeInput::column(8); content.collapsed=!expanded_;
+    auto content=NodeInput::column(7); content.collapsed=!expanded_;
     add(body,list,ControlKind::container,content).enabled=!disabled_;
     std::array<ui::NumberField,3> vector;
     constexpr std::array names{L"X",L"Y",L"Z"};
@@ -86,7 +87,8 @@ void ControlWorkbench::append(std::vector<ui::Control>& controls, ui::ControlKey
     ui::append_parameter_row(controls,{356,360,357,0,body,L"Name",true,values_.name!=defaults.name});
     auto& text=add(name,357,ControlKind::text_edit,full(24),values_.name);
     text.modified=values_.name!=defaults.name; text.context_target=name;
-    auto& check=add(enabled,body,ControlKind::checkbox,full(28),L"Enabled");
+    ui::append_parameter_row(controls,{363,364,365,0,body,L""});
+    auto& check=add(enabled,365,ControlKind::checkbox,full(24),L"Enabled");
     check.selected=values_.enabled; check.modified=values_.enabled!=defaults.enabled;
     std::array<ui::NumberField,4> vector4;
     constexpr std::array names4{L"X",L"Y",L"Z",L"W"};
@@ -95,8 +97,8 @@ void ControlWorkbench::append(std::vector<ui::Control>& controls, ui::ControlKey
     ui::append_number_row(controls,{380,382,383,vector4_reset,body,L"Vector4"},vector4);
     ui::append_parameter_row(controls,{417,419,418,0,body,L"Projection",true,values_.mode!=defaults.mode});
     auto& choice=add(mode,418,ControlKind::combo,full(24),mode_names[values_.mode]);
-    choice.modified=values_.mode!=defaults.mode;
-    add(reset,parent,ControlKind::button,full(28),L"Reset sample values").enabled=values_!=defaults;
+    choice.modified=values_.mode!=defaults.mode; choice.layout.width=Axis::content(120);
+    add(reset,parent,ControlKind::button,full(24),L"Reset sample values").enabled=values_!=defaults;
     add(371,parent,ControlKind::label,paragraph,
         L"Sample history  ·  "+std::to_wstring(undo_count())+L" undo / "+std::to_wstring(redo_count())+L" redo").role=ui::Role::caption;
     add(372,parent,ControlKind::label,paragraph,L"Middle drag: value ladder · Right click: menu\nCtrl + middle: defaults · Esc: cancel").role=ui::Role::caption;

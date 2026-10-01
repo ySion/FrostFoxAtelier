@@ -29,6 +29,7 @@ struct Control {
     ui_layout::NodeInput layout{ui_layout::NodeInput::column()};
     std::wstring text;
     Role role{Role::normal};
+    ControlIcon icon{ControlIcon::none}; // Icon-only button; shares indicator_size and foreground.
     bool enabled{true}, selected{};
     double value{}, minimum{-10000}, maximum{10000};
     double drag_step{0.01}, fine_step{0.001}; // Value per logical pointer pixel.
@@ -103,9 +104,10 @@ struct UiFrame {
     const TextGeometry* find_text(ControlKey) const noexcept;
 };
 
-enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset };
+enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel };
 struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; }; // Accepted client pixels.
-using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest>;
+struct DragPoint { float x{}, y{}; }; // Accepted-frame client pixels.
+using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint>;
 struct Action {
     ActionKind kind{};
     ControlKey key{};
@@ -202,7 +204,9 @@ struct Statistics {
 // Keep returned frames through render(); accept only after final renderer accepted.
 class Session {
 public:
-    Session();
+    // Optional application fonts join the system collection for this Session.
+    // Files must remain available for its lifetime; no global font installation.
+    explicit Session(std::span<const std::wstring> font_files = {});
     ~Session();
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
@@ -222,6 +226,7 @@ public:
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
     Reply input(const Event&);
     Reply cancel_interaction();
+    ControlKey focused_control() const noexcept;
     bool wants_keyboard() const noexcept;
     bool has_popup() const noexcept; // Modal barrier includes an opening/closing frame transition.
     // Live binding plus matching accepted caret only; no pending-frame geometry.

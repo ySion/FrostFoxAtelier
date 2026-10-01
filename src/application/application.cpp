@@ -48,12 +48,22 @@ ui::PixelExtent client_extent(HWND window) {
     RECT bounds{}; GetClientRect(window, &bounds);
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
-std::shared_ptr<const ui::StyleSheet> editor_styles() {
+std::filesystem::path editor_directory() {
     std::wstring executable(32768,L'\0');
     const auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
     if (!length || length>=executable.size()) throw std::runtime_error("Cannot locate editor style assets");
     executable.resize(length);
-    const auto path=std::filesystem::path(executable).parent_path()/"editor.ss";
+    return std::filesystem::path(executable).parent_path();
+}
+std::vector<std::wstring> editor_fonts() {
+    const auto directory=editor_directory()/"fonts";
+    std::vector<std::wstring> paths;
+    for (const auto* file:{L"SourceSans3-Regular.otf",L"SourceSans3-Semibold.otf",L"SourceSans3-Bold.otf",
+                          L"SourceCodePro-Regular.otf",L"SourceCodePro-Bold.otf"}) paths.push_back((directory/file).wstring());
+    return paths;
+}
+std::shared_ptr<const ui::StyleSheet> editor_styles() {
+    const auto path=editor_directory()/"editor.ss";
     std::ifstream file(path,std::ios::binary|std::ios::ate);
     if (!file) throw std::runtime_error("Cannot open editor.ss beside the executable");
     const auto size=file.tellg();
@@ -67,8 +77,8 @@ std::shared_ptr<const ui::StyleSheet> editor_styles() {
     return std::move(*parsed);
 }
 }
-Application::Application(bool validation) {
-    auto style=ui_.style(); style.font.size=12; style.caption_scale=1; style.title_scale=7.f/6;
+Application::Application(bool validation) : ui_(editor_fonts()) {
+    auto style=ui_.style(); style.font.family=L"Source Sans 3"; style.font.size=14; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     if (!ui_.set_style_sheet(editor_styles())) throw std::runtime_error("Cannot publish editor style sheet");
     take(completion(document_.add_actor()));
@@ -119,13 +129,12 @@ Result<void> Application::action(const ui::Action& event) {
         if (!workspace_.menu) return {};
         return action({ui::ActionKind::reset,workspace_.menu->group?workspace_.menu->group:workspace_.menu->source,{}});
     }
-    if (event.key==workbench && event.kind==ui::ActionKind::activate) {
-        workspace_.show_workbench=!workspace_.show_workbench;
-        workspace_.status=workspace_.show_workbench?L"Control workbench / sample history":L"Scene parameters / scene history";
-        return {};
+    if (event.key==reset_layout && event.kind==ui::ActionKind::activate) {
+        workspace_.reset_layout(); workspace_.status=L"Default workspace restored"; return {};
     }
+    if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
     if (workspace_.workbench.apply(event)) return {};
-    if (workspace_.show_workbench && event.kind==ui::ActionKind::activate && (event.key==undo || event.key==redo)) {
+    if (workspace_.sample_history() && event.kind==ui::ActionKind::activate && (event.key==undo || event.key==redo)) {
         if (event.key==undo) workspace_.workbench.undo(); else workspace_.workbench.redo();
         workspace_.status=L"Sample history updated"; return {};
     }
@@ -141,13 +150,6 @@ Result<void> Application::action(const ui::Action& event) {
             workspace_.query = *value;
             workspace_.status = event.kind == ui::ActionKind::edit_cancel ? L"Filter cancelled" : L"Parameters filtered";
         }
-        return {};
-    }
-    if (event.key == splitter) {
-        const auto* value = std::get_if<double>(&event.value);
-        if (!value) return invalid();
-        if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit || event.kind == ui::ActionKind::edit_cancel)
-            workspace_.parameter_width = static_cast<float>(-*value);
         return {};
     }
     // A retired control's cleanup must not cancel a different live edit.
@@ -206,7 +208,7 @@ void Application::effects(const ui::Reply& reply) {
         for (const auto& effect : current.effects) {
             if (business_failed && !cleanup) break;
             if (const auto* command = std::get_if<ui::Action>(&effect)) {
-                if (cleanup && command->kind != ui::ActionKind::edit_cancel && command->kind!=ui::ActionKind::dismiss) continue;
+                if (cleanup && command->kind != ui::ActionKind::edit_cancel && command->kind!=ui::ActionKind::dismiss && command->kind!=ui::ActionKind::drag_cancel) continue;
                 const auto result = action(*command);
                 if (!result) {
                     if (cleanup) first_error += L"; rollback failed: " + widen(result.error().message);
@@ -318,7 +320,16 @@ void Application::native(NativeEvent message) {
     }
     const bool release = event.kind == ui::EventKind::pointer_up;
     if (pointer && !release && !pointer_ready()) return;
-    if (pointer && !ui_.has_popup() && !workspace_.menu && over_viewport(event.x, event.y)) {
+    if (event.kind==ui::EventKind::key_down && event.control && !ui_.has_popup() &&
+        (message.wparam==VK_TAB || message.wparam=='B' || message.wparam=='W')) {
+        effects(ui_.cancel_interaction());
+        if (message.wparam==VK_TAB) workspace_.dock.cycle(event.shift?-1:1);
+        else if (message.wparam=='B') workspace_.dock.maximize(workspace_.dock.focused_tab());
+        else workspace_.dock.close(workspace_.dock.focused_tab());
+        return;
+    }
+    if (pointer && !ui_.has_popup() && !workspace_.menu && !workspace_.dock.dragging() && over_viewport(event.x, event.y)) {
+        if (event.kind==ui::EventKind::pointer_down) workspace_.dock.select(editor::control::scene_tab);
         if (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::secondary) {
             effects(ui_.cancel_interaction());
             orbiting_ = true; last_x_ = event.x; last_y_ = event.y; window_.capture(true); return;
@@ -331,6 +342,7 @@ void Application::native(NativeEvent message) {
     }
     if (orbiting_ && release && event.button == ui::PointerButton::secondary) { orbiting_ = false; window_.capture(false); return; }
     auto reply = ui_.input(event);
+    if (ui_.presented()) workspace_.dock.focus_control(ui_.focused_control(),*ui_.presented());
     effects(reply);
     if (event.kind == ui::EventKind::focus_lost || event.kind == ui::EventKind::capture_lost) {
         window_.capture(false); // Includes camera capture, which is owned outside UI.
@@ -339,7 +351,7 @@ void Application::native(NativeEvent message) {
         return;
     }
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
-        if (workspace_.show_workbench) {
+        if (workspace_.sample_history()) {
             if (event.control && (event.key==ui::Key::z || event.key==ui::Key::y)) {
                 const bool redo=event.key==ui::Key::y || event.shift;
                 status(action({ui::ActionKind::activate,redo?editor::control::redo:editor::control::undo,{}}),L"Sample history updated");
@@ -367,7 +379,7 @@ bool Application::step(renderer::Capture* capture) {
     auto updated = ui_.set_surface(surface_);
     if (!updated) throw std::runtime_error("UI rejected the window surface.");
     effects(*updated);
-    auto controls = workspace_.describe(document_);
+    auto controls = workspace_.describe(document_,{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale},ui_.presented().get());
     auto described = ui_.set_controls(controls);
     if (!described) throw std::runtime_error("UI rejected editor controls (key " + std::to_string(described.error().key) + ").");
     effects(*described);
@@ -387,14 +399,14 @@ bool Application::step(renderer::Capture* capture) {
     }
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
-    if (!viewport) throw std::runtime_error("Editor viewport is missing.");
+    const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};
     cubes_.clear();
-    const auto items = take(document_.world().render_items());
+    const auto items = viewport?take(document_.world().render_items()):std::vector<world::RenderItem>{};
     cubes_.reserve(items.size());
     for (const auto& item : items)
         cubes_.push_back({item.world, {.19f, .42f, .57f, 1}, item.actor == document_.selected()});
-    const auto camera = camera_.matrices(viewport->bounds.width / std::max(viewport->bounds.height, 1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, viewport->bounds, cubes_};
+    const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
+    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, scene_bounds, cubes_};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
