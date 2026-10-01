@@ -6,7 +6,7 @@
 namespace atelier::source {
 namespace detail { struct ProgramAccess; }
 
-// One source declaration with replaceable compatible code. All operations use
+// One selected module entry with replaceable compatible module code. All operations use
 // the Runtime thread. Runtime and the backend DLL outlive programs, leases and
 // nonterminal coroutines. Closing a program invalidates entries; leases and
 // already-created coroutines retain their own version.
@@ -25,13 +25,17 @@ public:
         friend struct detail::ProgramAccess;
         std::weak_ptr<State> owner_;
         std::shared_ptr<const Contract> contract_;
+        std::shared_ptr<const Contract> compilation_contract_;
+        std::shared_ptr<atelier::detail::TypePublication> type_publication_;
+        std::optional<Error> declaration_error_;
         std::shared_ptr<const Declaration> declaration_;
         SourceRequest(std::weak_ptr<State>, std::shared_ptr<const Contract>,
-            std::shared_ptr<const Declaration>, std::uint64_t, std::string, std::string);
+            std::shared_ptr<const Declaration>, std::uint64_t, std::string, std::string, std::string);
     public:
         const std::uint64_t sequence;
         const std::string source_name;
         const std::string source;
+        const std::string entry_name;
     };
     using Request = std::shared_ptr<const SourceRequest>;
     class Candidate {
@@ -111,8 +115,12 @@ public:
         return bind_signature(std::move(expected));
     }
     Result<Lease> pin() const;
-    // Requests own source and captured metadata, but do not retain code.
-    Result<Request> request(std::string_view name, std::string_view source);
+    // Requests collect source type declarations and capture unpublished Runtime
+    // layouts. Preparation reports declaration/body errors without publishing types.
+    // Requests own the module source, entry selection and metadata, but no code.
+    // Multiple functions require an entry name before
+    // first publication; later requests default to the frozen declaration name.
+    Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {});
     static Result<Candidate> prepare(const Request&);
     // Busy does not consume the candidate. Publishing requires the latest
     // request, unchanged dependencies and the declaration's frozen signature.

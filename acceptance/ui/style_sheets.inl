@@ -18,7 +18,7 @@ void style_sheets() {
     accepted(c.ui.set_style_sheet(rules));
     ui::Control root; root.key=10; root.layout=ui_layout::NodeInput::column();
     root.layout.width=ui_layout::Axis::fixed(420); root.layout.height=ui_layout::Axis::fixed(160);
-    root.style.font_size=18; root.style.foreground=ui::Color{1,1,1,1};
+    root.style.font_size=18; root.style.foreground=ui::Color{1,1,1,1}; root.style.font_style=ui::FontStyle::italic;
     root.style_scope=sheet(".special { background: #00ff00; }");
     auto first=leaf(1,ui::ControlKind::button,0,L"Styled first"); first.parent=10; first.classes={"compact","special"};
     auto second=leaf(2,ui::ControlKind::button,0,L"Styled second"); second.parent=10; second.classes={"special","compact"};
@@ -27,7 +27,7 @@ void style_sheets() {
     c.controls={root,first,second,outside,caption}; c.prepare();
     const auto original=c.frame;
     const auto& a=*original->find(1)->style; const auto& b=*original->find(2)->style;
-    require(a.font.size==18 && a.foreground==ui::Color{1,1,1,1} && a.padding==ui_layout::Insets{6,2,6,2},
+    require(a.font.size==18 && a.font.style==ui::FontStyle::italic && a.foreground==ui::Color{1,1,1,1} && a.padding==ui_layout::Insets{6,2,6,2},
         "SS inheritance/class/token did not feed final measurement style");
     require(a.background==ui::Color{0,1,0,1} && b.background==a.background && b.padding==a.padding,
         "local scope or class order changed rule precedence");
@@ -52,7 +52,8 @@ void style_sheets() {
     require(c.frame->find(1)->style->font.size==18 && c.frame->find(1)->style->background==ui::Color{0,1,0,1} &&
         c.frame->find(1)->style->foreground==ui::Color{0,0,0,1},"unset/disabled did not resolve through the same rules");
     c.controls[1].enabled=true; c.controls[0].style={}; c.controls[0].style_scope.reset(); c.prepare();
-    require(c.frame->find(1)->style->font.size==14 && c.frame->find(1)->style->background==ui::Color{1,0,0,1},
+    require(c.frame->find(1)->style->font.size==14 && c.frame->find(1)->style->font.style==ui::FontStyle::normal &&
+        original->find(1)->style->font.style==ui::FontStyle::italic && c.frame->find(1)->style->background==ui::Color{1,0,0,1},
         "removing scope/inherited overrides did not restore defaults");
 
     ui::StyleRule native; native.selector.kind=ui::ControlKind::button; native.selector.classes={"compact"};
@@ -65,7 +66,9 @@ void style_sheets() {
         "@tokens { a: token(b); b: token(a); } button { color: token(a); }",
         "button { color: token(missing); }", "button { font-size: -2dip; }",
         "button .child { color: #ffffff; }", "/* missing close", "button { background: #gg0000; }",
-        "button:enabled:disabled { color: #ffffff; }"}) {
+        "button:enabled:disabled { color: #ffffff; }", "button:hover { font-weight: 700; }",
+        "button:hover { font-style: italic; }", "button { font-style: sideways; }",
+        "button { background-image: linear-gradient(#ffffff); }", "button { border-style: unknown; }"}) {
         const auto invalid=ui::StyleSheet::parse(source);
         require(!invalid && invalid.error().line>0 && invalid.error().column>0,"invalid SS lacked positioned diagnosis");
     }
@@ -93,6 +96,22 @@ void style_sheets() {
     auto malformed=std::make_shared<ui::ColorImage>(*pixels); malformed->row_pitch=1;
     ui::StyleRule invalid_image; invalid_image.properties.image=malformed;
     require(!ui::StyleSheet::create({invalid_image}),"invalid image resource entered native style rules");
+
+    accepted(c.ui.set_style_sheet(sheet(R"ss(
+        button { background-image: linear-gradient(#ff000080, transparent); border-style: outset; border-color: #808080; }
+        button:modified { font-weight: 700; font-style: italic; }
+    )ss")));
+    c.prepare(); const auto gradient_frame=c.frame;
+    const auto gradient=gradient_frame->find(1)->style->image;
+    require(gradient && gradient==gradient_frame->find(2)->style->image && gradient->pixels.size()==256 &&
+        gradient->pixels[0]==188 && gradient->pixels[3]==128 && gradient->pixels.back()==0,
+        "gradient did not share a correctly encoded premultiplied image");
+    require(std::any_of(gradient_frame->drawing->draws.begin(),gradient_frame->drawing->draws.end(),
+        [&](const auto& draw){return draw.image==gradient && draw.border_width==0;}),"gradient/bevel did not reach the existing drawing path");
+    c.controls[1].modified=true; c.prepare();
+    require(c.frame->find(1)->style->font.weight==700 && gradient_frame->find(1)->style->font.weight==400 &&
+        c.frame->find(1)->style->font.style==ui::FontStyle::italic && gradient_frame->find(1)->style->font.style==ui::FontStyle::normal &&
+        c.frame->find(1)->style->image==gradient,"persistent weight state changed an old frame or rebuilt the gradient");
 
     Consumer scrolling;
     ui::Control list; list.key=10; list.kind=ui::ControlKind::list;

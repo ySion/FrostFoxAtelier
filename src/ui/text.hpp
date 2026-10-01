@@ -38,10 +38,10 @@ private:
 // One DWrite layout supplies metrics, caret positions and grayscale pixels.
 class TextStore {
 public:
-    TextStore();
+    explicit TextStore(std::span<const std::wstring> font_files = {});
     ~TextStore();
     std::uint64_t set(std::uint64_t key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left);
-    enum class Symbol { check, right, down };
+    enum class Symbol { check, right, down, close, maximize, restore, left, up, plus, back, forward, world, disclosure_right, disclosure_down };
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);
     std::uint64_t provider_revision() const noexcept;
     void set_provider_revision(std::uint64_t) noexcept;
