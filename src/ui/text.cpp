@@ -117,12 +117,14 @@ struct TextStore::Impl {
         std::wstring text;
         Font font;
         bool wrap{};
+        TextAlign alignment{TextAlign::left};
         std::uint64_t revision{1};
         std::array<Paragraph, 2> paragraphs;
     };
     ComPtr<IDWriteFactory2> factory;
     std::map<std::uint64_t, Entry> entries;
     std::map<Font, ComPtr<IDWriteTextFormat>, FontLess> formats;
+    std::map<std::pair<TextStore::Symbol,std::uint32_t>,std::shared_ptr<const Coverage>> symbols;
     std::vector<DWRITE_LINE_METRICS> lines;
     std::uint64_t provider_revision{new_identity()};
     TextStatistics statistics;
@@ -149,6 +151,8 @@ struct TextStore::Impl {
             width.value_or(0), 0, &paragraph.layout));
         ++statistics.text_layouts;
         check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
+        if (width) check(paragraph.layout->SetTextAlignment(entry.alignment==TextAlign::right?DWRITE_TEXT_ALIGNMENT_TRAILING:
+            entry.alignment==TextAlign::center?DWRITE_TEXT_ALIGNMENT_CENTER:DWRITE_TEXT_ALIGNMENT_LEADING));
         DWRITE_TEXT_METRICS metrics{};
         check(paragraph.layout->GetMetrics(&metrics));
         UINT32 count{};
@@ -168,6 +172,7 @@ struct TextSnapshot::Impl {
     ComPtr<IDWriteTextLayout> layout;
     std::wstring text;
     Font font;
+    TextAlign alignment{TextAlign::left};
     float width{};
     mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
     Rect caret_box(TextPosition position) const {
@@ -193,15 +198,44 @@ bool TextSnapshot::matches(std::wstring_view text) const noexcept { return impl_
 
 TextStore::TextStore() : impl_(std::make_unique<Impl>()) {}
 TextStore::~TextStore() = default;
-std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, bool wrap) {
+std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment) {
     auto& entry = impl_->entries[key];
-    if (entry.text != text || entry.font != font || entry.wrap != wrap) {
-        entry.text = text; entry.font = font; entry.wrap = wrap;
+    if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment!=alignment) {
+        entry.text = text; entry.font = font; entry.wrap = wrap; entry.alignment=alignment;
         entry.revision = new_identity(); entry.paragraphs = {};
     }
     return entry.revision;
 }
 void TextStore::erase(std::uint64_t key) { impl_->entries.erase(key); }
+std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t pixels) {
+    if (!pixels || pixels>128) throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
+    const auto key=std::pair{symbol,pixels};
+    if (const auto found=impl_->symbols.find(key);found!=impl_->symbols.end()) {
+        ++impl_->statistics.coverage_cache_hits; return found->second;
+    }
+    auto coverage=std::make_shared<TrackedCoverage>(impl_->accounting,pixels,pixels);
+    const auto segment=[](float x,float y,float ax,float ay,float bx,float by) {
+        const auto dx=bx-ax,dy=by-ay;
+        const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
+        const auto px=x-ax-t*dx,py=y-ay-t*dy;
+        return px*px+py*py<=.0064f;
+    };
+    for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
+        unsigned inside{};
+        for (unsigned sy=0;sy<4;++sy) for (unsigned sx=0;sx<4;++sx) {
+            const auto px=(static_cast<float>(x)+(static_cast<float>(sx)+.5f)/4)/static_cast<float>(pixels);
+            const auto py=(static_cast<float>(y)+(static_cast<float>(sy)+.5f)/4)/static_cast<float>(pixels);
+            const bool hit=symbol==Symbol::check?
+                (segment(px,py,.17f,.53f,.40f,.77f) || segment(px,py,.40f,.77f,.85f,.23f)):
+                symbol==Symbol::right?(px>=.3f && px<=.75f && std::abs(py-.5f)<(.75f-px)*.7f):
+                (py>=.3f && py<=.75f && std::abs(px-.5f)<(.75f-py)*.7f);
+            inside+=hit?1u:0u;
+        }
+        coverage->pixels[static_cast<std::size_t>(y)*pixels+x]=static_cast<std::uint8_t>((inside*255+8)/16);
+    }
+    ++impl_->statistics.rasterizations; impl_->statistics.raster_bytes+=coverage->pixels.size();
+    impl_->symbols.emplace(key,coverage); return coverage;
+}
 std::uint64_t TextStore::provider_revision() const noexcept { return impl_->provider_revision; }
 void TextStore::set_provider_revision(std::uint64_t revision) noexcept {
     impl_->provider_revision = revision;
@@ -266,14 +300,14 @@ std::shared_ptr<const TextSnapshot> TextStore::snapshot(std::uint64_t key, float
     if (!paragraph.snapshot) {
         auto data=std::make_shared<TextSnapshot::Impl>();
         data->layout=paragraph.layout; data->text=impl_->entries.at(key).text;
-        data->font=impl_->entries.at(key).font; data->width=width;
+        data->font=impl_->entries.at(key).font; data->alignment=impl_->entries.at(key).alignment; data->width=width;
         paragraph.snapshot=std::shared_ptr<const TextSnapshot>(new TextSnapshot(std::move(data)));
     }
     return paragraph.snapshot;
 }
 std::shared_ptr<const TextSnapshot> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed, std::wstring_view value) {
     const auto& policy=*displayed.impl_;
-    set(key,value,policy.font,false);
+    set(key,value,policy.font,false,policy.alignment);
     return snapshot(key,policy.width);
 }
 Rect TextSnapshot::caret(TextPosition position) const { return impl_->caret_box(position); }

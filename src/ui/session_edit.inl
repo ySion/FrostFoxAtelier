@@ -1,5 +1,5 @@
     static void action(Reply& reply, ActionKind kind, ControlKey key,
-                       std::variant<std::monostate,double,std::wstring> value = {}) {
+                       ActionValue value = {}) {
         reply.effects.emplace_back(Action{kind,key,std::move(value)});
     }
     static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace_back(std::move(request)); }
@@ -36,8 +36,8 @@
         const auto value=numeric?(commit?*parsed:edit->original_value):0.0;
         auto content=commit?edit->buffer.current().text:edit->buffer.original();
         if (edit->buffer.active()) action(reply,commit?ActionKind::edit_commit:ActionKind::edit_cancel,key,
-            numeric?std::variant<std::monostate,double,std::wstring>{value}:
-                std::variant<std::monostate,double,std::wstring>{content});
+            numeric?ActionValue{value}:
+                ActionValue{content});
         edit.reset();
         if (keep_context && focus==key) edit.emplace(state,numeric?format(value):std::move(content),value,!numeric,false);
         reply.redraw=true; return true;
@@ -53,7 +53,7 @@
                     edit.emplace(states.at(old.key),format(old.original),old.original,false,false);
             }
         }
-        finish_edit(reply,false,true); keyboard_pressed=0; hover=0;
+        finish_edit(reply,false,true); keyboard_pressed=0; hover=0; dismiss_popup(reply);
         return reply;
     }
     void changed(Reply& reply, detail::TextEdit::Change change, bool was_active) {
@@ -66,8 +66,8 @@
         const auto& control=states.at(edit->key).control;
         const bool numeric=control.kind==ControlKind::number;
         if (!was_active) action(reply,ActionKind::edit_begin,edit->key,
-            numeric?std::variant<std::monostate,double,std::wstring>{edit->original_value}:
-                std::variant<std::monostate,double,std::wstring>{edit->buffer.original()});
+            numeric?ActionValue{edit->original_value}:
+                ActionValue{edit->buffer.original()});
         if (numeric) {
             const auto value=number(edit->buffer.current().text,control);
             if (value && *value!=edit->preview_value) {
@@ -130,8 +130,12 @@
         if (request.operation_id!=result.operation_id || request.kind!=result.kind ||
             request.token!=result.token || edit->token!=result.token) return;
         edit->clipboard.reset(); reply.consumed=true;
-        if (!result.success) { reply.error=Error{ErrorCode::platform_failed,edit->key,result.native_error}; return; }
+        if (!result.success) { edit->commit_paste=false; reply.error=Error{ErrorCode::platform_failed,edit->key,result.native_error}; return; }
         if (result.kind!=ClipboardKind::copy) insert(reply,result.kind==ClipboardKind::cut?std::wstring_view{}:result.text,detail::TextEdit::Group::isolated);
+        if (edit && edit->commit_paste && result.kind==ClipboardKind::read) {
+            edit->commit_paste=false;
+            finish_edit(reply,true,true,true);
+        }
     }
     void ime_result(Reply& reply, const ImeResult& result) {
         if (!edit || !edit->ime_request) return;

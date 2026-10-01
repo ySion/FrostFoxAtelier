@@ -183,14 +183,20 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         value.text.push_back(character); // Assemble surrogate pairs in ordered pump delivery.
         events_.push_back(std::move(value)); return 0;
     }
+    case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+        // Windows reports F10 as a system key. Keep Alt shortcuts with Windows;
+        // route unmodified/Shift F10 through the same key ownership protocol.
+        if (wparam!=VK_F10 || (lparam & (LPARAM{1}<<29))) return DefWindowProcW(handle_,message,wparam,lparam);
+        [[fallthrough]];
     case WM_KEYDOWN: case WM_KEYUP: {
-        auto value = event(message, wparam, lparam);
+        const auto key_message=message==WM_SYSKEYDOWN?WM_KEYDOWN:message==WM_SYSKEYUP?WM_KEYUP:message;
+        auto value = event(key_message, wparam, lparam);
         const auto code = wparam == VK_PROCESSKEY ? ImmGetVirtualKey(handle_) : wparam;
         if (code < key_owner_.size()) {
-            if (message == WM_KEYDOWN && !key_owner_[code])
+            if (key_message == WM_KEYDOWN && !key_owner_[code])
                 key_owner_[code] = native_composition_id_ || wparam == VK_PROCESSKEY ? 2 : 1;
             value.ime_owned = key_owner_[code] == 2;
-            if (message == WM_KEYUP) key_owner_[code] = 0;
+            if (key_message == WM_KEYUP) key_owner_[code] = 0;
         }
         if (value.ime_owned) return DefWindowProcW(handle_, message, wparam, lparam);
         events_.push_back(std::move(value)); return 0;

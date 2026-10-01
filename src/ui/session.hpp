@@ -16,6 +16,12 @@ namespace detail { class TextSnapshot; }
 
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
 enum class DragAxis { horizontal, vertical };
+enum class EditCommandKind { copy, paste, reset };
+struct EditCommand {
+    EditCommandKind kind{};
+    ControlKey target{};
+    bool operator==(const EditCommand&) const = default;
+};
 
 struct Control {
     ControlKey key{}, parent{}; // Unique live keys; parent precedes child in the input.
@@ -30,7 +36,11 @@ struct Control {
     std::vector<std::string> classes;
     StyleProperties style;
     std::shared_ptr<const StyleSheet> style_scope; // Applies to this control and its descendants.
-    bool invalid{};
+    bool invalid{}, modified{}; // Modified compares the authoritative value with its declared default.
+    std::optional<double> default_value;
+    ControlKey context_target{}, context_group{}; // Context request target and optional group reset command.
+    ControlKey popup_owner{}; // popup only: earlier, visible owner. One popup per Session.
+    std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -48,6 +58,7 @@ struct ControlBox {
     bool enabled{};
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
     std::shared_ptr<const ResolvedStyle> style;
+    bool selected{}; // Accepted toggle value; activation requests its inverse.
 };
 struct EditToken {
     ControlKey key{};
@@ -87,15 +98,18 @@ struct UiFrame {
     std::optional<TextCaret> caret;
     std::optional<TextInputAnchor> input_anchor{};
     std::vector<TextGeometry> text_geometry;
+    ControlKey popup{};
     const ControlBox* find(ControlKey) const noexcept;
     const TextGeometry* find_text(ControlKey) const noexcept;
 };
 
-enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel };
+enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset };
+struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; }; // Accepted client pixels.
+using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest>;
 struct Action {
     ActionKind kind{};
     ControlKey key{};
-    std::variant<std::monostate,double,std::wstring> value; // Cancel returns the original value.
+    ActionValue value; // Cancel returns the original value; toggles activate with the requested bool.
 };
 enum class ClipboardKind { read, copy, cut };
 struct ClipboardRequest {
@@ -162,7 +176,7 @@ enum class EventKind { pointer_move, pointer_down, pointer_up, wheel, key_down, 
                        text, focus_lost, capture_lost, clipboard_result, ime_result, composition };
 enum class PointerButton { primary, secondary, middle };
 enum class Key { none, backspace, delete_key, enter, escape, tab, left, right, home, end,
-                 space, a, z, y, c, x, v };
+                 space, a, z, y, c, x, v, up, down, menu, f10 };
 using InputData = std::variant<std::monostate,std::wstring,ClipboardResult,ImeResult,CompositionEvent>;
 struct Event {
     EventKind kind{};
@@ -209,6 +223,7 @@ public:
     Reply input(const Event&);
     Reply cancel_interaction();
     bool wants_keyboard() const noexcept;
+    bool has_popup() const noexcept; // Modal barrier includes an opening/closing frame transition.
     // Live binding plus matching accepted caret only; no pending-frame geometry.
     std::optional<TextInputState> text_input() const noexcept;
 private:
