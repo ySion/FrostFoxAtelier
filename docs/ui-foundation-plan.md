@@ -4,6 +4,8 @@
 
 2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
 
+2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。本页的“RGBA 图片延后”“每 quad 一次 draw”等描述保留为 S1/S2 历史；后续参数面板 S3、非矩形后代裁剪、业务语言 UI 语法仍未实施。
+
 日期：2026-09-28，更新于 2026-09-29。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；唯一集成分支：`codex/ui-foundation`。
 本页是编辑器当前排期的唯一入口。[首版记录](first-editor-plan.md)保留已交付的 M0/M1 与尚未完成的 M2 目标；保存重开、JIT 单步暂不进入本轮。
 应用负责人汇总三席只读研究（参数、工作区、UI 结构）及 UI/RHI 负责人反馈；本轮未运行 Houdini，以下严格区分官方文档观察、仓库事实和本项目选择。

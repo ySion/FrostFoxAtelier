@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 
 namespace atelier::application {
@@ -44,8 +46,27 @@ ui::PixelExtent client_extent(HWND window) {
     RECT bounds{}; GetClientRect(window, &bounds);
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
+std::shared_ptr<const ui::StyleSheet> editor_styles() {
+    std::wstring executable(32768,L'\0');
+    const auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
+    if (!length || length>=executable.size()) throw std::runtime_error("Cannot locate editor style assets");
+    executable.resize(length);
+    const auto path=std::filesystem::path(executable).parent_path()/"editor.ss";
+    std::ifstream file(path,std::ios::binary|std::ios::ate);
+    if (!file) throw std::runtime_error("Cannot open editor.ss beside the executable");
+    const auto size=file.tellg();
+    if (size<0 || size>1024*1024) throw std::runtime_error("Invalid or oversized editor.ss");
+    std::string source(static_cast<std::size_t>(size),'\0');
+    file.seekg(0);
+    if (!file.read(source.data(),static_cast<std::streamsize>(source.size()))) throw std::runtime_error("Cannot read editor.ss");
+    auto parsed=ui::StyleSheet::parse(source);
+    if (!parsed) throw std::runtime_error("editor.ss:"+std::to_string(parsed.error().line)+":"+
+        std::to_string(parsed.error().column)+": "+parsed.error().message);
+    return std::move(*parsed);
+}
 }
 Application::Application(bool validation) {
+    if (!ui_.set_style_sheet(editor_styles())) throw std::runtime_error("Cannot publish editor style sheet");
     take(completion(document_.add_actor()));
     take(completion(document_.add_component(document_.types().transform)));
     take(completion(document_.add_component(document_.types().cube)));

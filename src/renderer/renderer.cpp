@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -39,6 +40,13 @@ bool valid(const ui::Rect &r) {
     return finite(r.x) && finite(r.y) && finite(r.width) && finite(r.height) && r.width >= 0 &&
            r.height >= 0 && finite(r.x + r.width) && finite(r.y + r.height);
 }
+template<class Pixels> bool valid_pixels(const Pixels &image, unsigned channels) {
+    return image.identity != 0 && image.width > 0 && image.height > 0 &&
+        image.width <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION &&
+        image.height <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION &&
+        std::uint64_t(image.row_pitch) >= std::uint64_t(image.width) * channels &&
+        std::uint64_t(image.row_pitch) * image.height <= image.pixels.size();
+}
 void validate(const Frame &frame) {
     const auto &ui = frame.ui_frame;
     bool good =
@@ -46,7 +54,8 @@ void validate(const Frame &frame) {
         frame.scene_viewport.x >= 0 && frame.scene_viewport.y >= 0 &&
         frame.scene_viewport.x + frame.scene_viewport.width <= static_cast<float>(ui.extent.width) &&
         frame.scene_viewport.y + frame.scene_viewport.height <= static_cast<float>(ui.extent.height) &&
-        frame.cubes.size() <= std::numeric_limits<std::uint32_t>::max();
+        frame.cubes.size() <= std::numeric_limits<std::uint32_t>::max() &&
+        ui.draws.size() <= std::numeric_limits<std::uint32_t>::max();
     for (float v : frame.camera.view)
         good &= finite(v);
     for (float v : frame.camera.projection)
@@ -58,17 +67,15 @@ void validate(const Frame &frame) {
         good &= cube.world[3] == 0 && cube.world[7] == 0 && cube.world[11] == 0 && cube.world[15] == 1;
     }
     for (const auto &draw : ui.draws) {
-        good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color);
-        if (draw.coverage) {
-            const auto &image = *draw.coverage;
-            good &= image.identity != 0 && image.width > 0 && image.height > 0 &&
-                    image.width <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION &&
-                    image.height <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION && image.row_pitch >= image.width &&
-                    std::uint64_t(image.row_pitch) * image.height <= image.pixels.size();
-        }
+        good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
+            finite(draw.border_width) && draw.border_width >= 0 && !(draw.coverage && draw.image);
+        for (float radius : {draw.radius.top_left, draw.radius.top_right, draw.radius.bottom_right, draw.radius.bottom_left})
+            good &= finite(radius) && radius >= 0;
+        if (draw.coverage) good &= valid_pixels(*draw.coverage, 1);
+        if (draw.image) good &= valid_pixels(*draw.image, 4);
     }
     if (!good)
-        throw error(rhi::ErrorCode::invalid_argument, "Invalid renderer frame, camera, color or coverage");
+        throw error(rhi::ErrorCode::invalid_argument, "Invalid renderer frame, camera, shape, color or image");
 }
 struct Vertex {
     float position[3];
@@ -125,20 +132,47 @@ std::array<Vertex, 36> cube_vertices() {
         }
     return vertices;
 }
-struct CoverageKey {
+struct TextureKey {
     std::uint64_t identity, revision;
-    bool operator==(const CoverageKey &) const = default;
+    bool color{};
+    bool operator==(const TextureKey &) const = default;
 };
-struct CoverageHash {
-    std::size_t operator()(const CoverageKey &k) const noexcept {
-        return std::hash<std::uint64_t>{}(k.identity) ^ (std::hash<std::uint64_t>{}(k.revision) << 1);
+struct TextureHash {
+    std::size_t operator()(const TextureKey &k) const noexcept {
+        return std::hash<std::uint64_t>{}(k.identity) ^ (std::hash<std::uint64_t>{}(k.revision) << 1) ^
+            (std::hash<bool>{}(k.color) << 2);
     }
 };
-struct CachedCoverage {
-    std::shared_ptr<const ui::Coverage> owner;
+struct CachedImage {
+    std::shared_ptr<const void> owner;
     GfxTexture texture;
     bool used{};
+    std::uint64_t texel_bytes{}, cpu_bytes{};
 };
+struct UiInstance {
+    ui::Rect bounds, uv;
+    ui::Color tint, border_color;
+    ui::CornerRadii radius;
+    ui::Color image_background;
+    float border_width{}, reserved[3]{};
+};
+static_assert(sizeof(UiInstance) == 112);
+struct UiBatch {
+    std::uint32_t first{}, count{};
+    ui::Clip clip;
+    TextureKey texture;
+    const ui::DrawQuad *source{};
+};
+ui::CornerRadii fit_radius(ui::CornerRadii r, ui::Rect bounds) {
+    double factor = 1;
+    const auto fit = [&](double sum, double extent) { if (sum > 0) factor = std::min(factor, extent / sum); };
+    fit(double(r.top_left) + r.top_right, bounds.width);
+    fit(double(r.bottom_left) + r.bottom_right, bounds.width);
+    fit(double(r.top_left) + r.bottom_left, bounds.height);
+    fit(double(r.top_right) + r.bottom_right, bounds.height);
+    return {float(r.top_left * factor), float(r.top_right * factor),
+            float(r.bottom_right * factor), float(r.bottom_left * factor)};
+}
 // gfx destruction queues retirement in the same execution domain; it is safe
 // after the last encoded use, without waiting for each individual resource.
 struct BufferOwner {
@@ -157,14 +191,16 @@ struct Renderer::State {
     rhi::Context context;
     GfxContext gfx;
     Options options;
-    rhi::Pipeline scene, solid, coverage;
+    rhi::Pipeline scene, solid, coverage, color_image;
     GfxSamplerState sampler;
     GfxBuffer vertices;
     GfxTexture depth;
     ui::PixelExtent depth_extent;
-    std::unordered_map<CoverageKey, CachedCoverage, CoverageHash> images;
+    std::unordered_map<TextureKey, CachedImage, TextureHash> images;
     FrameStats stats;
     std::vector<Instance> instances;
+    std::vector<UiInstance> ui_instances;
+    std::vector<UiBatch> ui_batches;
     std::vector<std::uint8_t> upload_pixels;
     std::optional<Error> failure;
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
@@ -192,7 +228,7 @@ struct Renderer::State {
             const auto r = gfxDestroyTexture(gfx, image.texture);
             if (r != kGfxResult_NoError)
                 return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Coverage retirement failed", true, r));
+                    error(rhi::ErrorCode::execution_failed, "UI texture retirement failed", true, r));
             image.texture = {};
         }
         images.clear();
@@ -220,6 +256,7 @@ struct Renderer::State {
         scene = {};
         solid = {};
         coverage = {};
+        color_image = {};
         auto result = context.close();
         if (!result) return std::unexpected(Error{result.error(), true});
         gfx = {};
@@ -276,30 +313,59 @@ struct Renderer::State {
         }
         debug->ClearStoredMessages();
     }
-    GfxTexture texture(const std::shared_ptr<const ui::Coverage> &owner) {
-        const CoverageKey key{owner->identity, owner->revision};
+    template<class Pixels> GfxTexture texture(const std::shared_ptr<const Pixels> &owner) {
+        constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
+        constexpr unsigned channels = color ? 4 : 1;
+        const TextureKey key{owner->identity, owner->revision, color};
         auto [it, inserted] = images.try_emplace(key);
         auto &image = it->second;
         image.used = true;
         if (!inserted) return image.texture;
         image.owner = owner;
-        image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height, DXGI_FORMAT_R8_UNORM);
+        image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height,
+            color ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8_UNORM);
         allocation(bool(image.texture));
-        ++stats.cached_coverage_count;
-        stats.cached_coverage_texel_bytes += std::uint64_t(owner->width) * owner->height;
-        stats.cached_coverage_cpu_bytes += owner->pixels.size();
+        image.texel_bytes = std::uint64_t(owner->width) * owner->height * channels;
+        image.cpu_bytes = owner->pixels.size();
+        ++(color ? stats.cached_image_count : stats.cached_coverage_count);
+        (color ? stats.cached_image_texel_bytes : stats.cached_coverage_texel_bytes) += image.texel_bytes;
+        (color ? stats.cached_image_cpu_bytes : stats.cached_coverage_cpu_bytes) += image.cpu_bytes;
         // The protocol permits padded CPU rows; gfx's upload contract is tight.
-        upload_pixels.resize(std::size_t(owner->width) * owner->height);
+        const auto pitch = std::size_t(owner->width) * channels;
+        upload_pixels.resize(pitch * owner->height);
         for (std::uint32_t y = 0; y < owner->height; ++y)
-            std::memcpy(upload_pixels.data() + std::size_t(y) * owner->width,
-                        owner->pixels.data() + std::size_t(y) * owner->row_pitch, owner->width);
+            std::memcpy(upload_pixels.data() + std::size_t(y) * pitch,
+                        owner->pixels.data() + std::size_t(y) * owner->row_pitch, pitch);
         BufferOwner upload{
             gfx, gfxCreateBuffer(gfx, upload_pixels.size(), upload_pixels.data(), kGfxCpuAccess_Write)};
         allocation(bool(upload.buffer));
-        require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI coverage");
-        ++stats.coverage_upload_count;
-        stats.coverage_upload_bytes += upload_pixels.size();
+        require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI texture");
+        ++(color ? stats.image_upload_count : stats.coverage_upload_count);
+        (color ? stats.image_upload_bytes : stats.coverage_upload_bytes) += upload_pixels.size();
         return image.texture;
+    }
+    void prepare_ui(const ui::Frame &frame) {
+        ui_instances.clear(); ui_batches.clear();
+        ui_instances.reserve(frame.draws.size());
+        for (const auto &item : frame.draws) {
+            const ui::Clip clip{std::clamp(item.clip.left, 0, int(frame.extent.width)),
+                std::clamp(item.clip.top, 0, int(frame.extent.height)),
+                std::clamp(item.clip.right, 0, int(frame.extent.width)),
+                std::clamp(item.clip.bottom, 0, int(frame.extent.height))};
+            if (clip.left >= clip.right || clip.top >= clip.bottom || item.bounds.width == 0 || item.bounds.height == 0 ||
+                (item.color.a == 0 && (!item.image || item.image_background.a == 0) &&
+                    (item.border_width == 0 || item.border_color.a == 0))) continue;
+            TextureKey key{};
+            if (item.coverage) key = {item.coverage->identity, item.coverage->revision, false};
+            if (item.image) key = {item.image->identity, item.image->revision, true};
+            const auto first = static_cast<std::uint32_t>(ui_instances.size());
+            ui_instances.push_back({item.bounds, item.uv, item.color, item.border_color,
+                fit_radius(item.radius, item.bounds), item.image_background,
+                std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f})});
+            if (!ui_batches.empty() && ui_batches.back().clip == clip && ui_batches.back().texture == key)
+                ++ui_batches.back().count;
+            else ui_batches.push_back({first, 1, clip, key, &item});
+        }
     }
     void draw(const Frame &frame, const ui::PixelExtent extent, Capture *capture) {
         if (depth_extent != extent) {
@@ -343,15 +409,16 @@ struct Renderer::State {
                 "Set UI viewport");
         for (auto &[key, image] : images)
             image.used = false;
-        for (const auto &item : frame.ui_frame.draws) {
-            const int left = std::clamp(item.clip.left, 0, static_cast<int>(extent.width));
-            const int top = std::clamp(item.clip.top, 0, static_cast<int>(extent.height));
-            const int right = std::clamp(item.clip.right, 0, static_cast<int>(extent.width));
-            const int bottom = std::clamp(item.clip.bottom, 0, static_cast<int>(extent.height));
-            if (left >= right || top >= bottom || item.bounds.width == 0 || item.bounds.height == 0 ||
-                item.color.a == 0)
-                continue;
-            const auto &pipeline = item.coverage ? coverage : solid;
+        BufferOwner ui_data{gfx, {}};
+        if (!ui_instances.empty()) {
+            ui_data.buffer = gfxCreateBuffer<UiInstance>(gfx, static_cast<std::uint32_t>(ui_instances.size()), ui_instances.data());
+            allocation(bool(ui_data.buffer));
+            stats.ui_instance_upload_bytes = ui_instances.size() * sizeof(UiInstance);
+            stats.ui_quads = ui_instances.size();
+        }
+        for (const auto &batch : ui_batches) {
+            const auto &item = *batch.source;
+            const auto &pipeline = item.coverage ? coverage : item.image ? color_image : solid;
             const auto program = pipeline.program();
             if (item.coverage) {
                 require(gfxProgramSetParameter(gfx, program, "coverage", texture(item.coverage)),
@@ -359,15 +426,19 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "coverage_sampler", sampler),
                         "Bind coverage sampler");
             }
+            if (item.image) {
+                require(gfxProgramSetParameter(gfx, program, "color_image", texture(item.image)), "Bind UI image");
+                require(gfxProgramSetParameter(gfx, program, "image_sampler", sampler), "Bind image sampler");
+            }
             const std::array<float, 2> size{static_cast<float>(extent.width),
                                             static_cast<float>(extent.height)};
-            require(gfxProgramSetParameter(gfx, program, "bounds", item.bounds), "Set UI bounds");
-            require(gfxProgramSetParameter(gfx, program, "uv_bounds", item.uv), "Set UI UV");
+            require(gfxProgramSetParameter(gfx, program, "ui_instances", ui_data.buffer), "Bind UI instances");
+            require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set UI instance offset");
             require(gfxProgramSetParameter(gfx, program, "target_size", size), "Set UI target");
-            require(gfxProgramSetParameter(gfx, program, "tint", item.color), "Set UI color");
-            require(gfxCommandSetScissorRect(gfx, left, top, right - left, bottom - top), "Set UI scissor");
+            const auto &clip = batch.clip;
+            require(gfxCommandSetScissorRect(gfx, clip.left, clip.top, clip.right - clip.left, clip.bottom - clip.top), "Set UI scissor");
             require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind UI pipeline");
-            require(gfxCommandDraw(gfx, 6), "Draw UI quad");
+            require(gfxCommandDraw(gfx, 6, batch.count), "Draw UI batch");
             ++stats.ui_draw_calls;
         }
         for (auto it = images.begin(); it != images.end();) {
@@ -375,11 +446,11 @@ struct Renderer::State {
                 ++it;
                 continue;
             }
-            require(gfxDestroyTexture(gfx, it->second.texture), "Retire unused coverage");
-            const auto &owner = *it->second.owner;
-            --stats.cached_coverage_count;
-            stats.cached_coverage_texel_bytes -= std::uint64_t(owner.width) * owner.height;
-            stats.cached_coverage_cpu_bytes -= owner.pixels.size();
+            require(gfxDestroyTexture(gfx, it->second.texture), "Retire unused UI texture");
+            const bool color = it->first.color;
+            --(color ? stats.cached_image_count : stats.cached_coverage_count);
+            (color ? stats.cached_image_texel_bytes : stats.cached_coverage_texel_bytes) -= it->second.texel_bytes;
+            (color ? stats.cached_image_cpu_bytes : stats.cached_coverage_cpu_bytes) -= it->second.cpu_bytes;
             it = images.erase(it);
         }
         if (capture) {
@@ -435,6 +506,7 @@ Result<Renderer> Renderer::open(HWND window, const Options &options) {
         s.prepare_pipeline(s.scene, "editor scene", shaders::scene_vs, shaders::scene_ps, true);
         s.prepare_pipeline(s.solid, "editor rectangles", shaders::ui_vs, shaders::solid_ps, false);
         s.prepare_pipeline(s.coverage, "editor text coverage", shaders::ui_vs, shaders::coverage_ps, false);
+        s.prepare_pipeline(s.color_image, "editor color images", shaders::ui_vs, shaders::image_ps, false);
         s.sampler = gfxCreateSamplerState(s.gfx, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
         allocation(bool(s.sampler));
         const auto geometry = cube_vertices();
@@ -464,9 +536,13 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     if (!destination) return std::unexpected(destination.error());
     auto &s = *state_;
     s.stats.ui_draw_calls = 0;
+    s.stats.ui_quads = 0;
+    s.stats.ui_instance_upload_bytes = 0;
     s.stats.scene_draw_calls = 0;
     s.stats.coverage_upload_count = 0;
     s.stats.coverage_upload_bytes = 0;
+    s.stats.image_upload_count = 0;
+    s.stats.image_upload_bytes = 0;
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)
         return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
@@ -477,6 +553,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.instances.reserve(frame.cubes.size());
         for (const auto &cube : frame.cubes)
             s.instances.push_back(prepare_instance(cube));
+        s.prepare_ui(frame.ui_frame);
         Capture pending;
         if (capture) {
             pending.frame_id = frame.ui_frame.id;

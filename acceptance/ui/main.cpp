@@ -1,4 +1,5 @@
 #include "ui/session.hpp"
+#include "ui/text.hpp"
 #include <Windows.h>
 #include <icu.h>
 #include <algorithm>
@@ -262,6 +263,8 @@ void visible_range_and_accounting() {
         static_cast<unsigned long long>(initial.rasterizations),static_cast<unsigned long long>(initial.culled_text_controls));
 }
 #include "text_edit.inl"
+#include "style_snapshots.inl"
+#include "style_sheets.inl"
 void styled_baseline_placement() {
     for (unsigned mode=0;mode<3;++mode) {
         Consumer consumer;
@@ -306,7 +309,8 @@ int main() {
         {"style_and_invalidation",style_and_invalidation},{"visible_range_and_accounting",visible_range_and_accounting},
         {"styled_baseline_placement",styled_baseline_placement},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
         {"unicode_visual_editing",unicode_visual_editing},{"clipboard_roundtrips",clipboard_roundtrips},
-        {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor}};
+        {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor},
+        {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;
