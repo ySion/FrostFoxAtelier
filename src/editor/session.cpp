@@ -24,6 +24,28 @@ void Session::remember(Change change) {
     if (history_.size() > history_limit) history_.erase(history_.begin());
     cursor_ = history_.size();
 }
+std::wstring_view Session::name(ObjectId actor) const noexcept {
+    const auto at=names_.find(actor);
+    return at==names_.end()?std::wstring_view{}:at->second;
+}
+Result<void> Session::rename(ObjectId actor, std::wstring name) {
+    if (name.empty() || name.size()>256 || std::all_of(name.begin(),name.end(),[](wchar_t c){return c==L' ';}) ||
+        std::any_of(name.begin(),name.end(),[](wchar_t c){return c<32 || c==127;}))
+        return invalid("Use a name with 1–256 visible characters.");
+    auto state=world::inspect_actor(runtime_,actor);
+    if (!state) return std::unexpected(state.error());
+    if (!state->can_edit) return invalid("The Actor is not editable.");
+    const auto at=names_.find(actor);
+    if (at==names_.end()) return invalid("The Actor does not belong to this document.");
+    if (at->second==name) return {};
+    auto root=runtime_.hold(actor);
+    if (!root) return std::unexpected(root.error());
+    auto cancelled=cancel_edit();
+    if (!cancelled) return cancelled;
+    NameChange change{std::move(*root),at->second,name};
+    at->second=std::move(name); remember(std::move(change));
+    return {};
+}
 Result<void> Session::select(ObjectId actor) {
     if (actor != ObjectId{}) {
         auto members = world_.members();
@@ -47,6 +69,7 @@ Result<world::Commit> Session::add_actor() {
     ActorChange change;
     change.added = true;
     change.removal.root = std::move(*root);
+    names_.emplace(change.removal.id(),L"Actor "+std::to_wstring(next_name_++));
     auto attached = world_.attach(change.removal.id());
     if (!attached) return attached;
     if (attached->changed) {
@@ -172,7 +195,14 @@ Result<void> Session::reset_position(ObjectId component) {
 Result<world::Commit> Session::replay(Change& change, bool forward) {
     return std::visit([&](auto& item) -> Result<world::Commit> {
         using T = std::decay_t<decltype(item)>;
-        if constexpr (std::is_same_v<T, FieldChange>) {
+        if constexpr (std::is_same_v<T, NameChange>) {
+            auto state=world::inspect_actor(runtime_,item.root.id());
+            if (!state) return std::unexpected(state.error());
+            if (!state->can_edit) return invalid("The Actor is not editable.");
+            names_.at(item.root.id())=forward?item.after:item.before;
+            selected_=item.root.id();
+            return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, FieldChange>) {
             auto state = world::inspect_component(runtime_, item.root.id());
             if (!state) return std::unexpected(state.error());
             if (!state->valid || state->owner != item.actor) return invalid("The field's owning Actor changed.");
@@ -225,7 +255,7 @@ Result<world::Commit> Session::close() {
     if (!cancelled) return std::unexpected(cancelled.error());
     auto closed = world_.close();
     if (!closed) return closed;
-    history_.clear(); cursor_ = 0; selected_ = {};
+    history_.clear(); names_.clear(); cursor_ = 0; selected_ = {};
     return closed;
 }
 Result<void> Session::collect_step() {
@@ -235,6 +265,8 @@ Result<void> Session::collect_step() {
     }
     auto progress = runtime_.collect_step({32});
     if (!progress) return std::unexpected(progress.error());
+    if (runtime_.collection_phase()==CollectionPhase::idle)
+        std::erase_if(names_,[&](const auto& item){return !runtime_.type_of(item.first);});
     return {};
 }
 }

@@ -1,5 +1,6 @@
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
+#include "runtime/detail/type_publication.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -569,10 +570,10 @@ struct Runtime::Impl {
             const auto* type = lookup(value.type, staged);
             if (!type) return failure(ErrorCode::invalid_definition, "Signature contains an unresolved value type.");
             const bool scalar = type->info.kind == TypeKind::scalar || type->info.kind == TypeKind::enumeration;
-            const bool native_borrow = borrow && type->info.native_storage && !type->info.contains_references &&
+            const bool value_borrow = borrow && !type->info.contains_references &&
                 (type->info.kind == TypeKind::record || type->info.kind == TypeKind::array || type->info.kind == TypeKind::string);
-            if ((!scalar && !native_borrow) || value.form != ValueForm::inline_value)
-                return failure(ErrorCode::invalid_definition, "Signature requires scalar values or synchronous native value borrows without GC references.");
+            if ((!scalar && !value_borrow) || value.form != ValueForm::inline_value)
+                return failure(ErrorCode::invalid_definition, "Signature requires scalar values or synchronous value borrows without GC references.");
             return ValueDescription{type->info.id, value.form};
         };
         FunctionSignature signature;
@@ -974,7 +975,60 @@ Result<FunctionSignature> Runtime::resolve_signature(const SignatureDefinition& 
     return impl_->resolve_signature(definition);
 }
 
+struct detail::TypePublication::State {
+    std::uint64_t context{};
+    std::size_t first_index{};
+    std::vector<std::unique_ptr<Runtime::Impl::Type>> staged;
+    std::vector<const TypeInfo*> catalog;
+    bool reserved{}, committed{};
+};
+detail::TypePublication::TypePublication() : state_(std::make_unique<State>()) {}
+detail::TypePublication::~TypePublication() = default;
+Result<std::shared_ptr<detail::TypePublication>> detail::TypePublication::prepare(Runtime& runtime, std::vector<TypeDefinition> definitions) {
+    return runtime.prepare_types(std::move(definitions));
+}
+std::span<const TypeInfo* const> detail::TypePublication::catalog() const noexcept { return state_->catalog; }
+Result<FunctionSignature> detail::TypePublication::resolve_signature(Runtime& runtime, const SignatureDefinition& definition) const {
+    if (state_->context != runtime.impl_->context || state_->committed || state_->first_index != runtime.impl_->types.size())
+        return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
+    return runtime.impl_->resolve_signature(definition, std::nullopt, state_->staged);
+}
+Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
+    auto& impl = *runtime.impl_;
+    if (state_->context != impl.context || state_->committed || state_->first_index != impl.types.size())
+        return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
+    if (impl.phase != CollectionPhase::idle || impl.sealed || impl.callbacks != 0)
+        return failure(ErrorCode::busy, "Type registration requires an idle Runtime before object execution.");
+    std::size_t walk_depth = 1;
+    for (const auto& type : state_->staged) walk_depth = std::max(walk_depth, type->walk_depth);
+    impl.walk_stack.reserve(walk_depth);
+    impl.types.reserve(state_->first_index + state_->staged.size());
+    state_->reserved = true;
+    return {};
+}
+void detail::TypePublication::commit(Runtime& runtime) noexcept {
+    auto& impl = *runtime.impl_;
+    if (!state_->reserved || state_->committed || state_->context != impl.context || state_->first_index != impl.types.size())
+        std::terminate();
+    for (auto& type : state_->staged) {
+        if (!type->trace_fields.empty()) impl.maximum_trace_depth = std::max(impl.maximum_trace_depth, type->trace_depth);
+        impl.types.push_back(std::move(type));
+    }
+    state_->staged.clear();
+    state_->committed = true;
+}
 Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> definitions) {
+    auto publication = prepare_types(std::move(definitions));
+    if (!publication) return std::unexpected(std::move(publication.error()));
+    std::vector<TypeId> result;
+    for (const auto& type : (*publication)->state_->staged) result.push_back(type->info.id);
+    auto ready = (*publication)->reserve_commit(*this);
+    if (!ready) return std::unexpected(std::move(ready.error()));
+    (*publication)->commit(*this);
+    return result;
+}
+
+Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
     if (impl_->phase != CollectionPhase::idle) return failure(ErrorCode::busy, "Cannot publish types during collection.");
     if (impl_->sealed || impl_->callbacks != 0) {
         return failure(ErrorCode::busy, "Type registration closes when object execution begins.");
@@ -987,7 +1041,10 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
     }
 
     const auto first_index = impl_->types.size();
-    std::vector<std::unique_ptr<Impl::Type>> staged;
+    auto publication = std::shared_ptr<detail::TypePublication>(new detail::TypePublication);
+    publication->state_->context = impl_->context;
+    publication->state_->first_index = first_index;
+    auto& staged = publication->state_->staged;
     staged.reserve(definitions.size());
     for (auto& definition : definitions) {
         if (definition.name.empty() ||
@@ -1224,11 +1281,15 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
                     return failure(ErrorCode::invalid_definition, "Reflected Array elements must be copyable values without GC references; use ReferenceSequence for object references.");
             }
             type.needs_destroy = is_native;
+            if (!is_native && type.info.kind == TypeKind::record) type.info.value_operations_preserve_borrows = true;
             for (std::size_t field_index = 0; field_index != type.fields.size(); ++field_index) {
                 const auto value = type.fields[field_index].value;
                 const auto* target = resolved_type(value.type);
                 type.fields[field_index].type = target;
                 const bool reference = value.form != ValueForm::inline_value;
+                if (!is_native && type.info.kind == TypeKind::record)
+                    type.info.value_operations_preserve_borrows &= !reference && (target->info.kind == TypeKind::scalar ||
+                        target->info.kind == TypeKind::enumeration || target->info.value_operations_preserve_borrows);
                 type.info.contains_references |= reference || target->info.contains_references;
                 if (!reference) {
                     type.walk_depth = std::max(type.walk_depth, target->walk_depth + 1);
@@ -1308,19 +1369,11 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
             if (!signature) return std::unexpected(std::move(signature.error()));
         }
     }
-    std::vector<TypeId> result;
-    result.reserve(staged.size());
-    for (const auto& type : staged) result.push_back(type->info.id);
-    // All potentially allocating work precedes commit. Moving unique_ptrs cannot fail.
-    std::size_t walk_depth = 1;
-    for (const auto& type : staged) walk_depth = std::max(walk_depth, type->walk_depth);
-    impl_->walk_stack.reserve(walk_depth);
-    impl_->types.reserve(first_index + staged.size());
-    for (auto& type : staged) {
-        if (!type->trace_fields.empty()) impl_->maximum_trace_depth = std::max(impl_->maximum_trace_depth, type->trace_depth);
-        impl_->types.push_back(std::move(type));
-    }
-    return result;
+    auto& catalog = publication->state_->catalog;
+    catalog.reserve(first_index + staged.size());
+    for (const auto& type : impl_->types) catalog.push_back(&type->info);
+    for (const auto& type : staged) catalog.push_back(&type->info);
+    return publication;
 }
 
 Result<TypeId> Runtime::find_type(std::string_view name) const {
@@ -2098,10 +2151,10 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
         const auto& parameter = signature.parameters[i];
         const auto* expected = impl_->lookup(parameter.type);
         const bool scalar = expected && (expected->info.kind == TypeKind::scalar || expected->info.kind == TypeKind::enumeration);
-        const bool native_borrow = expected && expected->info.native_storage && !expected->info.contains_references &&
+        const bool value_borrow = expected && !expected->info.contains_references &&
             (expected->info.kind == TypeKind::record || expected->info.kind == TypeKind::array || expected->info.kind == TypeKind::string) &&
             parameter.passing != ParameterPassing::value;
-        if (!expected || (!scalar && !native_borrow) ||
+        if (!expected || (!scalar && !value_borrow) ||
             parameter.form != ValueForm::inline_value ||
             (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference) ||
             (signature.execution == FunctionExecution::coroutine && parameter.passing != ParameterPassing::value))
