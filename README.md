@@ -27,12 +27,20 @@ cmake --build --preset dev --target atelier_editor
 
 编辑器直接消费正式 Actor/Component/World。启动时创建一个带 Transform 和 Cube 的示例 Actor；`+ Add Actor` 创建空 Actor，右侧 `+ Transform`、`+ Cube` 添加实际组件，`− Cube` 只移除方块能力并保留 Actor。位置 XYZ 编辑实际 Transform 字段，数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Actor。列表、可拖分隔和相机观察沿用同一窗口入口。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
-World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、保存重开、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[对象模型合同](docs/research/game-world-object-model.md)，参数菜单已接入，参数面板固定目标和工作区停靠仍未实施。
+World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、保存重开、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[对象模型合同](docs/research/game-world-object-model.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 原生 UI 的 S1 已收口。S2 已接入共享 Unicode 单行编辑、参数搜索、剪贴板与 IMM32 平台往返；dev/release UI 13/13、真实搜狗输入及最终普通窗口各 709 帧验收均通过。字段切换统一取消并解除旧原生输入关联，再恢复新目标，已验证旧候选不会落入新字段。数值非法 Enter 保留草稿，提交/取消后保留焦点；无本地事务时 Ctrl+Z/Y 进入场景历史。最终证据归档于 `out/{dev,release}/editor-evidence-s2/`，[原生 UI 方案](docs/ui-foundation-plan.md)维护唯一排期，基础控件增量已接入，参数菜单已实现，固定目标仍未实施。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。这些能力仍在基础 UI 模块中，尚未上升到业务语言语法。
 
-工具条 **Controls** 打开同宿主的控件实验台，可操作数值、Vector3/Vector4、Unicode 文本、下拉、勾选和折叠，检查禁用、长标签与窄面板。实际位置参数复用同一参数行和灰色/琥珀色 SS；右键菜单提供复制、粘贴与默认值恢复，中键支持数值阶梯，整组恢复只记一次撤销。实验台的样本历史独立于场景，详见[控件实验台](docs/modules/editor/README.md#控件实验台)。
+菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前阶段验收与 review 修复见 [2026-10-02 编辑器 UI 收口](docs/research/editor-ui-20261002-closeout.md)。
+
+顶部菜单栏通过 File / Edit / Create / View / Window 组织现有命令，左侧窄收拢区可将它收成细条；再次点击或使用 F10/Alt 菜单快捷键恢复。Tab 栏直接从标签开始，“＋”将已有视图加入当前组。下拉、参数右键和 Pane 菜单共用独立原生弹出窗口，可超出编辑器边界，支持键盘导航、菜单切换与焦点恢复，见[独立菜单窗口](docs/modules/editor/README.md#独立菜单窗口)。
+
+**Controls** 标签打开同宿主的控件实验台，可操作数值、Vector3/Vector4、Unicode 文本、下拉、勾选和折叠，检查禁用、长标签与窄面板。实际位置参数复用同一参数行和 Houdini 风格 SS：中英文统一使用 Sarasa UI SC，数字使用 Source Code Pro，配合黑色字段、细凹凸边缘、轻渐变按钮与暖色输入焦点；Tab 以灰色选中底面区分，不显示焦点描边。右键菜单提供复制、粘贴与默认值恢复，中键支持数值阶梯，整组恢复只记一次撤销。字体依据见[字体说明](assets/fonts/README.md)，实验台的样本历史独立于场景，详见[控件实验台](docs/modules/editor/README.md#控件实验台)。
+
+工作区采用 Scene View、Parameters、Controls、Actors 四个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
+
+参数面板使用固定的类型＋可编辑名称标题、内容页签和独立滚动区。Actor 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 
@@ -43,7 +51,7 @@ cmake --build --preset release --target editor_acceptance
 ```
 
 每种配置输出 `Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`；只运行无窗口文档链使用 `editor_document_acceptance`。GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，包括状态/字体/256 Actor 列表、组件增删和完整 TRS 投影。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
-窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。运行目录须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证。
+窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。运行目录须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证，以及 editor.ss、fonts/ 中的字体和许可证。
 
 ## 构建与端到端验收
 
