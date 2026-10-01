@@ -75,9 +75,18 @@ void mouse(Application& app, UINT message, POINT point) {
     SendMessageW(app.window(), message, message == WM_LBUTTONUP ? 0 : MK_LBUTTON, MAKELPARAM(point.x, point.y));
     tick(app, 1);
 }
+void click_at(Application& app, POINT point) {
+    require_input_focus(app);
+    KeyStateScope modifiers;
+    // Deliver a complete synthetic click before polling queued native movement.
+    // Deliberate drags and pressed-state captures still use mouse() with ticks.
+    SendMessageW(app.window(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+    SendMessageW(app.window(),WM_LBUTTONUP,0,MAKELPARAM(point.x,point.y));
+    tick(app,2);
+}
 void click(Application& app, ControlKey key) {
     const auto point = centre(app, key);
-    mouse(app, WM_MOUSEMOVE, point); mouse(app, WM_LBUTTONDOWN, point); mouse(app, WM_LBUTTONUP, point);
+    mouse(app, WM_MOUSEMOVE, point); click_at(app, point);
 }
 void key(Application& app, WPARAM code, bool ctrl = false, bool shift = false) {
     require_input_focus(app);
@@ -142,7 +151,10 @@ std::vector<atelier::ui::Color> solid_colors(const atelier::ui::UiFrame& frame, 
     require(box != nullptr, "Paint control disappeared from the frame.");
     std::vector<atelier::ui::Color> colors;
     for (const auto& draw : frame.drawing->draws)
-        if (!draw.coverage && intersects(draw.bounds, box->bounds)) colors.push_back(draw.color);
+        if (!draw.coverage && intersects(draw.bounds, box->bounds)) {
+            colors.push_back(draw.color);
+            if (draw.border_width>0) colors.push_back(draw.border_color);
+        }
     return colors;
 }
 void wheel(Application& app, ControlKey key, short notches) {
@@ -389,7 +401,13 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     capture(app, output / "s2-bidi-selection.png");
     key(app, VK_ESCAPE);
 
-    click(app, field);
+    const auto field_point=centre(app,field);
+    mouse(app,WM_MOUSEMOVE,field_point);
+    require(PostMessageW(app.window(),WM_MOUSEMOVE,0,MAKELPARAM(field_point.x+8,field_point.y))!=FALSE,
+        "Could not enqueue native mouse movement for click acceptance.");
+    click_at(app,field_point);
+    require(x(app,object)==original_position && app.document().undo_count()==original_history && !app.document().editing(),
+        "Queued native movement turned a synthetic click into a committed drag.");
     type(app, L"42");
     require(x(app, object) == 42 && app.document().undo_count() == original_history, "Numeric draft did not preview without business history.");
     key(app, 'Z', true);

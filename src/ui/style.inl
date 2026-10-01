@@ -1,14 +1,7 @@
 // Private validation and state resolution shared by measurement and painting.
-struct Appearance {
-    float font_size{};
-    std::uint16_t font_weight{};
-    ui_layout::Insets padding;
-    Color foreground, border, selection, caret;
-    std::optional<Color> background;
-    float border_width{};
-};
 struct VisualState {
     bool enabled{true}, hover{}, pressed{}, focus{}, selected{}, invalid{};
+    bool operator==(const VisualState&) const = default;
 };
 bool valid_style(const Style& style) {
     const auto bounded = [](float value, float minimum, float maximum) {
@@ -31,13 +24,15 @@ bool valid_style(const Style& style) {
 bool same_font_policy(const Style& a, const Style& b) {
     return a.font == b.font && a.title_scale == b.title_scale && a.caption_scale == b.caption_scale && a.title_weight == b.title_weight;
 }
-Appearance resolve_style(const Style& style, Role role, ControlKind kind, VisualState state = {}) {
+ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, VisualState state = {}) {
     const auto& p = style.palette;
-    Appearance value;
-    value.font_size = style.font.size; value.font_weight = style.font.weight;
+    ResolvedStyle value;
+    value.font=style.font; value.caret_width=style.caret_width;
+    value.scrollbar_width=style.scrollbar_width; value.scrollbar_inset=style.scrollbar_inset; value.scrollbar_min_thumb=style.scrollbar_min_thumb;
     value.foreground = p.text; value.border = p.border; value.selection = p.selection; value.caret = p.text;
-    if (role == Role::title) { value.font_size *= style.title_scale; value.font_weight = style.title_weight; }
-    if (role == Role::caption) { value.font_size *= style.caption_scale; value.foreground = p.muted; }
+    value.scrollbar=p.muted;
+    if (role == Role::title) { value.font.size *= style.title_scale; value.font.weight = style.title_weight; }
+    if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
     const bool button = kind == ControlKind::button, item = kind == ControlKind::item;
     const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
@@ -57,8 +52,43 @@ Appearance resolve_style(const Style& style, Role role, ControlKind kind, Visual
     } else { value.foreground = p.muted; value.caret = p.muted; }
     return value;
 }
-ui_layout::Insets effective_padding(const Control& control, const Appearance& style) {
+ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
     return {padding.left+style.padding.left,padding.top+style.padding.top,
             padding.right+style.padding.right,padding.bottom+style.padding.bottom};
+}
+void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
+    if (p.font_family) value.font.family=*p.font_family;
+    if (p.font_locale) value.font.locale=*p.font_locale;
+    if (p.font_size) value.font.size=*p.font_size;
+    if (p.font_weight) value.font.weight=*p.font_weight;
+    if (p.foreground) value.foreground=*p.foreground;
+    if (p.background) value.background=*p.background;
+    if (p.border) value.border=*p.border;
+    if (p.selection) value.selection=*p.selection;
+    if (p.caret) value.caret=*p.caret;
+    if (p.scrollbar) value.scrollbar=*p.scrollbar;
+    if (p.padding) value.padding=*p.padding;
+    if (p.border_width) value.border_width=*p.border_width;
+    if (p.caret_width) value.caret_width=*p.caret_width;
+    if (p.radius) value.radius=*p.radius;
+    if (p.scrollbar_width) value.scrollbar_width=*p.scrollbar_width;
+    if (p.scrollbar_inset) value.scrollbar_inset=*p.scrollbar_inset;
+    if (p.scrollbar_min_thumb) value.scrollbar_min_thumb=*p.scrollbar_min_thumb;
+    if (p.image) value.image=*p.image;
+}
+void inherit_properties(StyleProperties& inherited,const StyleProperties& p) {
+    if (p.font_family) inherited.font_family=p.font_family;
+    if (p.font_locale) inherited.font_locale=p.font_locale;
+    if (p.font_size) inherited.font_size=p.font_size;
+    if (p.font_weight) inherited.font_weight=p.font_weight;
+    if (p.foreground) inherited.foreground=p.foreground;
+}
+bool matches(const StyleSelector& selector,const Control& control,VisualState state) {
+    if ((selector.kind && *selector.kind!=control.kind) || (selector.role && *selector.role!=control.role)) return false;
+    for (const auto& name:selector.classes) if (std::find(control.classes.begin(),control.classes.end(),name)==control.classes.end()) return false;
+    unsigned bits=state.enabled?1u:2u;
+    if (state.hover) bits|=4; if (state.pressed) bits|=8; if (state.focus) bits|=16;
+    if (state.selected) bits|=32; if (state.invalid) bits|=64;
+    return (bits&static_cast<unsigned>(selector.states))==static_cast<unsigned>(selector.states);
 }

@@ -1,4 +1,5 @@
 function(atelier_add_editor)
+    configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ss" "${CMAKE_BINARY_DIR}/editor.ss" COPYONLY)
     add_library(atelier_editor_core STATIC
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")

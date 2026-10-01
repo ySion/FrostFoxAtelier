@@ -99,24 +99,19 @@
         const auto at=std::lower_bound(boundaries.begin(),boundaries.end(),std::min<std::uint32_t>(c.preedit.cursor,static_cast<std::uint32_t>(c.preedit.text.size())));
         return {c.first+*at,*at!=0};
     }
-    struct TextGeometry { float width{}, x{}, y{}; };
-    TextGeometry edit_geometry() {
-        auto& state=states.at(edit->key);
+    const TextGeometry* edit_geometry() const {
+        if (!edit || !active()) return nullptr;
         const auto* box=published->find(edit->key);
-        const auto appearance=resolve_style(style,state.control.role,state.control.kind);
-        const auto padding=effective_padding(state.control,appearance);
-        const float scale=surface.dpi_scale;
-        const float width=std::max(0.f,box->bounds.width/scale-(padding.left+padding.right));
-        text.set(edit->key,display(state),style.font,appearance.font_size,appearance.font_weight,false);
-        const auto caret=text.caret(edit->key,width,{});
-        const auto height=std::max(0.f,box->bounds.height/scale-(padding.top+padding.bottom));
-        return {width,box->bounds.x+(padding.left-edit->scroll)*scale,
-            box->bounds.y+(padding.top+(state.baseline_content?0:std::max(0.f,(height-caret.height)*.5f)))*scale};
+        const auto* geometry=published->find_text(edit->key);
+        if (!box || !current(*box) || !geometry || geometry->incarnation!=edit->token.incarnation || geometry->composition_id)
+            return nullptr;
+        return geometry;
     }
     void select_at(Reply& reply, float x, float y, bool extend) {
-        cancel_composition(reply);
-        const auto geometry=edit_geometry();
-        const auto position=text.hit(edit->key,geometry.width,(x-geometry.x)/surface.dpi_scale,(y-geometry.y)/surface.dpi_scale);
+        if (edit->composition) { cancel_composition(reply); return; }
+        const auto* geometry=edit_geometry();
+        if (!geometry || !geometry->paragraph->matches(edit->buffer.current().text)) { reply.redraw=true; return; }
+        const auto position=geometry->paragraph->hit((x-geometry->x)/geometry->dpi_scale,(y-geometry->y)/geometry->dpi_scale);
         if (edit->buffer.select(position,extend)) { revise(); reply.redraw=true; }
     }
     void clipboard_command(Reply& reply, ClipboardKind kind) {
