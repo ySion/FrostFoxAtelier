@@ -12,9 +12,9 @@
 | 源码与 JIT | 同模块函数、enum/struct 声明与值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
 | C++ 基础库与反射 | Array/String、Span/StringView；ACLASS/ASTRUCT/AENUM/AFIELD/AFUNCTION 薄宏及生成代码接入同一 Runtime | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | Flex/Grid、虚拟列表、Unicode 编辑、参数行、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
-| 场景编辑器与绘制 | Actor/Component/World 编辑、位置参数与撤销、同宿主控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
+| 场景编辑器与绘制 | Actor/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
 
-源码 class、对象引用参数与返回、布局迁移，以及参数面板固定目标、工作区停靠等能力仍待后续增量。Runtime 中已有的对象或值能力不自动代表源码已开放对应语法，实际范围以 [LANGUAGE.md](LANGUAGE.md) 为准。
+源码 class、对象引用参数与返回、布局迁移，以及参数面板固定目标、可浮动的编辑器视图与布局文件保存等能力仍待后续增量。Runtime 中已有的对象或值能力不自动代表源码已开放对应语法，实际范围以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
 ## 启动首个场景编辑器
 
