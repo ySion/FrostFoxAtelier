@@ -68,8 +68,7 @@ std::shared_ptr<const ui::StyleSheet> editor_styles() {
 Application::Application(bool validation) {
     if (!ui_.set_style_sheet(editor_styles())) throw std::runtime_error("Cannot publish editor style sheet");
     take(completion(document_.add_actor()));
-    take(completion(document_.add_component(document_.types().transform)));
-    take(completion(document_.add_component(document_.types().cube)));
+    take(completion(document_.add_component(document_.types().static_mesh_component)));
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
@@ -87,9 +86,9 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
 }
 
 Result<void> Application::focus_selected() {
-    auto transform = world::root_transform(document_.world().runtime(), document_.selected());
+    auto transform = world::root_component(document_.world().runtime(), document_.selected());
     if (!transform) return std::unexpected(transform.error());
-    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no Transform to focus."});
+    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no root SceneComponent to focus."});
     auto matrix = world::world_matrix(document_.world().runtime(), **transform);
     if (!matrix) return std::unexpected(matrix.error());
     camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
@@ -147,8 +146,8 @@ Result<void> Application::action(const ui::Action& event) {
     switch (event.key) {
     case add_actor: return done(document_.add_actor(), L"Empty Actor added");
     case remove_actor: return done(document_.erase_selected(), L"Actor removed / Undo restores it");
-    case add_transform: return done(document_.add_component(document_.types().transform), L"Transform added");
-    case add_cube: return done(document_.add_component(document_.types().cube), L"Cube component added");
+    case add_scene_component: return done(document_.add_component(document_.types().scene_component), L"Scene component added");
+    case add_static_mesh: return done(document_.add_component(document_.types().static_mesh_component), L"Static mesh added");
     case undo: return done(document_.undo(), L"Undo");
     case redo: return done(document_.redo(), L"Redo");
     case focus: return done(focus_selected(), L"Focused selection");
@@ -346,13 +345,14 @@ bool Application::step(renderer::Capture* capture) {
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     if (!viewport) throw std::runtime_error("Editor viewport is missing.");
-    cubes_.clear();
+    meshes_.clear();
     const auto items = take(document_.world().render_items());
-    cubes_.reserve(items.size());
+    meshes_.reserve(items.size());
     for (const auto& item : items)
-        cubes_.push_back({item.world, {.19f, .42f, .57f, 1}, item.actor == document_.selected()});
+        meshes_.push_back({item.world, {item.material.base_color.x, item.material.base_color.y, item.material.base_color.z, 1},
+            item.actor == document_.selected(), item.geometry});
     const auto camera = camera_.matrices(viewport->bounds.width / std::max(viewport->bounds.height, 1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, viewport->bounds, cubes_};
+    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, viewport->bounds, meshes_};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;

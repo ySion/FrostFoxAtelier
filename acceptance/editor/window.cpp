@@ -121,15 +121,15 @@ atelier::ObjectId component(const Application& app, atelier::ObjectId actor, ate
 }
 ControlKey property_control(const Application& app, atelier::ObjectId actor, std::size_t axis) {
     if (actor == atelier::ObjectId{}) return control::empty_field_base + axis;
-    const auto target = model(atelier::world::root_transform(app.document().world().runtime(), actor));
+    const auto target = model(atelier::world::root_component(app.document().world().runtime(), actor));
     if (!target) return control::empty_field_base + axis;
     const auto key = app.field_control(*target, app.document().parameters()[axis].path);
     require(key != 0, "Missing live component-field control binding.");
     return key;
 }
 float x(const Application& app, atelier::ObjectId actor) {
-    const auto target = model(atelier::world::root_transform(app.document().world().runtime(), actor));
-    require(target.has_value(), "Missing Transform in current World.");
+    const auto target = model(atelier::world::root_component(app.document().world().runtime(), actor));
+    require(target.has_value(), "Missing SceneComponent root in current World.");
     return std::get<float>(model(app.document().world().read(*target, app.document().parameters()[0].path)));
 }
 bool intersects(const atelier::ui::Rect& a, const atelier::ui::Rect& b) {
@@ -439,7 +439,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     click(app, control::reset);
 }
 void verify_transform_projection(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
-    const auto transform = component(app, actor, app.document().types().transform);
+    const auto transform = *model(atelier::world::root_component(app.document().world().runtime(), actor));
     const auto before = model(atelier::world::read_transform(app.document().world().runtime(), transform));
     atelier::renderer::Capture original, rotated, scaled, restored;
     require(app.step(&original), "Could not capture the original World transform.");
@@ -467,8 +467,8 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
         tick(app, 1);
         require(actors(app).size() == before_count + 1, "Toolbar failed to populate the real list workload.");
     }
-    click(app, control::add_transform);
-    click(app, control::add_cube);
+    click(app, control::add_scene_component);
+    click(app, control::add_static_mesh);
     const auto first = actors(app).front().id();
     const auto last = actors(app).back().id();
     require(app.presented()->find(app.object_control(last)) &&
@@ -553,18 +553,18 @@ int verify_editor_window(Application& app, const char* output_directory) {
     require(model(atelier::world::components(app.document().world().runtime(), added_key)).empty(),
         "Add Actor did not produce an empty Actor.");
     const auto render_count = model(app.document().world().render_items()).size();
-    click(app, control::add_transform);
-    click(app, control::add_cube);
-    const auto added_cube = component(app, added_key, app.document().types().cube);
+    click(app, control::add_scene_component);
+    click(app, control::add_static_mesh);
+    const auto added_cube = component(app, added_key, app.document().types().static_mesh_component);
     const auto removed_control = app.object_control(added_cube);
     require(model(app.document().world().render_items()).size() == render_count + 1,
-        "Adding Transform and Cube did not project an actual component.");
+        "Adding SceneComponent and StaticMeshComponent did not produce a render item.");
     capture(app, output / "world-components.png");
     click(app, removed_control);
     require(contains(app, added_key) && model(app.document().world().render_items()).size() == render_count,
-        "Removing Cube removed its Actor or retained its drawing.");
+        "Removing StaticMeshComponent removed its Actor or retained its drawing.");
     click(app, control::undo);
-    require(component(app, added_key, app.document().types().cube) == added_cube &&
+    require(component(app, added_key, app.document().types().static_mesh_component) == added_cube &&
         app.object_control(added_cube) != removed_control &&
         model(app.document().world().render_items()).size() == render_count + 1,
         "Component undo did not restore identity with a fresh control binding and drawing.");
@@ -675,7 +675,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     std::ofstream report(output / "acceptance.txt");
     report << "Editor window acceptance: PASS\n"
            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
-           << "World: empty Actor; explicit Transform/Cube; remove Cube while retaining Actor; component undo same identity/new control binding; Actor delete/GC/undo same composition/new bindings; AttachedInactive presentation/editing\n"
+           << "World: empty Actor; explicit SceneComponent/StaticMeshComponent; remove mesh while retaining Actor; component undo same identity/new control binding; Actor delete/GC/undo same composition/new bindings; AttachedInactive presentation/editing\n"
            << "TRS: actual Session field transactions set rotation/nonuniform scale, World value matrices alter captured GPU depth, two UI undo commands restore the original value and depth; XYZ controls remain position-only\n"
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
@@ -1001,8 +1001,8 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(!app.document().editing(), "Space in the search field retained a numeric business edit.");
     physical_key(VK_ESCAPE);
     click(app, control::add_actor);
-    click(app, control::add_transform);
-    click(app, control::add_cube);
+    click(app, control::add_scene_component);
+    click(app, control::add_static_mesh);
     const auto other = app.document().selected();
     const auto other_x = x(app, other);
     click(app, app.object_control(object));

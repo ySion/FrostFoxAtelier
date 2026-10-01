@@ -43,5 +43,8 @@ struct Trs {
 using Matrix4 = std::array<float, 16>;
 [[nodiscard]] Result<Trs> canonical_transform(Trs);
 [[nodiscard]] Matrix4 transform_matrix(const Trs&) noexcept;
+[[nodiscard]] Result<Matrix4> multiply(const Matrix4&, const Matrix4&);
+// Fails on singular parents, overflow, reflection or shear that local TRS cannot represent.
+[[nodiscard]] Result<Trs> relative_transform(const Matrix4& world, const Matrix4& parent);
 
 }

@@ -9,12 +9,13 @@ struct Instance {
 };
 StructuredBuffer<Vertex> vertices;
 StructuredBuffer<Instance> instances;
+uint first_instance;
 row_major float4x4 view;
 row_major float4x4 projection;
 struct Output { float4 position : SV_Position; float3 normal : NORMAL; float4 color : COLOR; };
 Output main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID) {
     Vertex vertex = vertices[vertex_id];
-    Instance instance = instances[instance_id];
+    Instance instance = instances[first_instance + instance_id];
     Output o;
     o.position = mul(mul(mul(float4(vertex.position, 1), instance.world), view), projection);
     o.normal = vertex.normal.x * instance.normal_x + vertex.normal.y * instance.normal_y

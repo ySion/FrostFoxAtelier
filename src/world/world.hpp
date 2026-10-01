@@ -3,6 +3,7 @@
 #include "runtime/execution.hpp"
 #include "runtime/reflection.hpp"
 #include "world/math.hpp"
+#include "geometry/mesh.hpp"
 #include <limits>
 #include "world/world.gen.hpp"
 
@@ -24,6 +25,8 @@ private:
     friend struct detail::Access;
     AFIELD(Name="components", Hidden, Sequence="world.Component")
     ReferenceSequence components_;
+    AFIELD(Name="root", Hidden, Weak="world.SceneComponent")
+    ReferenceSlot root_;
     World* member_world_{};
     bool enabled_{true};
     bool transitioning_{};
@@ -41,11 +44,12 @@ private:
     AFIELD(Name="owner", Hidden, Strong="world.Actor")
     ReferenceSlot owner_;
     bool enabled_{true};
+    bool begun_{};
 };
 
-ACLASS(Name="world.Transform")
-struct Transform : Component {
-    AGENERATED_BODY(Transform)
+ACLASS(Name="world.SceneComponent")
+class SceneComponent : public Component {
+    AGENERATED_BODY(SceneComponent)
 public:
     AFIELD()
     Vec3 position;
@@ -53,38 +57,36 @@ public:
     Quaternion rotation;
     AFIELD()
     Vec3 scale{1.f, 1.f, 1.f};
-};
-ACLASS(Name="world.Cube")
-class Cube : public Component {
-    AGENERATED_BODY(Cube)
-public:
-    Cube() = default;
 private:
     friend struct detail::Access;
-    AFIELD(Name="transform", Hidden, Weak="world.Transform")
-    ReferenceSlot transform_;
+    AFIELD(Name="parent", Hidden, Weak="world.SceneComponent")
+    ReferenceSlot parent_;
 };
-ACLASS(Name="world.Counter")
-struct Counter : Component {
-    AGENERATED_BODY(Counter)
+ASTRUCT(Name="world.Material")
+struct Material {
+    AGENERATED_BODY(Material)
 public:
     AFIELD()
-    float value{};
+    Vec3 base_color{.19f, .42f, .57f};
+};
+ACLASS(Name="world.StaticMeshComponent")
+class StaticMeshComponent : public SceneComponent {
+    AGENERATED_BODY(StaticMeshComponent)
+public:
     AFIELD()
-    std::uint32_t steps{};
-    AFUNCTION()
-    void advance(float amount) noexcept { value += amount; ++steps; }
+    Material material;
+private:
+    friend struct detail::Access;
+    geometry::MeshRef geometry_;
 };
 
 using FieldPath = std::vector<FieldId>;
 struct Types {
-    TypeId actor, component, transform, cube, counter;
+    TypeId actor, component, scene_component, static_mesh_component, material;
     TypeId vec3, quaternion;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
-    FieldId counter_value, counter_steps;
-    MethodId counter_advance;
 };
 // Call once per Runtime, before object creation; additional derived definitions
 // may be registered afterwards, before the Runtime closes registration.
@@ -116,9 +118,9 @@ struct ComponentStatus {
 [[nodiscard]] Result<ComponentStatus> inspect_component(Runtime&, ObjectId);
 // These owning reference snapshots are ordinary roots, not a second relation graph.
 [[nodiscard]] Result<std::vector<ObjectRoot>> components(Runtime&, ObjectId actor);
-[[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId transform);
-[[nodiscard]] Result<Matrix4> world_matrix(Runtime&, ObjectId transform);
-[[nodiscard]] Result<std::optional<ObjectId>> root_transform(Runtime&, ObjectId actor);
+[[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId scene_component);
+[[nodiscard]] Result<Matrix4> world_matrix(Runtime&, ObjectId scene_component);
+[[nodiscard]] Result<std::optional<ObjectId>> root_component(Runtime&, ObjectId actor);
 
 struct Commit {
     bool changed{};
@@ -149,6 +151,8 @@ struct ComponentRemoval {
     ObjectRoot root;
     ObjectId owner;
     std::size_t index{};
+    ObjectId parent;
+    bool was_root{};
     Commit commit;
     [[nodiscard]] ObjectId id() const noexcept { return root.id(); }
 private:
@@ -158,14 +162,21 @@ private:
 };
 struct Attachment {
     ObjectId component;
-    // Required for a new Cube. An existing explicit binding is retained when
-    // this is null; no component is selected implicitly by type or list order.
-    ObjectId transform;
+    ObjectId parent{}; // Explicit same-Actor SceneComponent, possibly in this batch.
+    bool root{};    // Explicit root designation; a root cannot have a parent.
 };
 struct RenderItem {
-    ObjectId actor, component, transform;
+    ObjectId actor, component;
     Matrix4 world;
+    geometry::MeshRef geometry;
+    Material material;
 };
+
+enum class ReparentRule { keep_local, keep_world };
+[[nodiscard]] Result<ObjectId> scene_parent(Runtime&, ObjectId scene_component);
+// Configure detached objects before attachment, or replace a member's immutable
+// mesh resource at a host boundary. No callback/dispatch reentry is permitted.
+[[nodiscard]] Result<void> set_geometry(Runtime&, ObjectId static_mesh_component, geometry::MeshRef);
 
 enum class Lifecycle { attached, activated, deactivated, detached };
 enum class RequestKind {
@@ -178,7 +189,8 @@ struct Request {
     RequestKind kind;
     ObjectId target{};
     ObjectId actor{};       // attach_component destination
-    ObjectId transform{};   // explicit Cube binding
+    ObjectId parent{};      // attach_component spatial parent
+    bool root{};
     std::size_t index{append};
     bool enabled{true};
 };
@@ -197,7 +209,11 @@ struct Activity {
 // private member_world relation is authoritative; directories are indexes.
 class World final {
 public:
-    using CounterUpdate = std::function<Result<void>(Runtime&, ObjectId, float)>;
+    struct Behavior {
+        std::function<Result<void>(Runtime&, ObjectId)> begin{};
+        std::function<Result<void>(Runtime&, ObjectId, float)> tick{};
+        std::function<Result<void>(Runtime&, ObjectId)> end{};
+    };
     using LifecycleObserver = std::function<Result<void>(World&, Lifecycle, ObjectId)>;
     using TaskStart = std::function<Result<Coroutine>(Runtime&, ObjectId)>;
 
@@ -224,6 +240,9 @@ public:
     [[nodiscard]] Result<ComponentRemoval> remove_component(ObjectId component);
     [[nodiscard]] Result<Commit> restore(const ComponentRemoval&);
     [[nodiscard]] Result<Commit> set_enabled(ObjectId actor_or_component, bool);
+    // Begin/Tick follow member order then composition order. End reverses that
+    // order and pairs only with completed Begin. Enabled gates Tick, not Begin.
+    // Dynamic insertion begins new components immediately; End uses current order.
     [[nodiscard]] Result<Commit> start();
     [[nodiscard]] Result<Commit> stop();
     [[nodiscard]] Result<Commit> close();
@@ -232,12 +251,16 @@ public:
     // Transform scalar writes use the same finite/positive-scale TRS validation.
     [[nodiscard]] Result<Scalar> read(ObjectId component, std::span<const FieldId>) const;
     [[nodiscard]] Result<void> write(ObjectId component, std::span<const FieldId>, Scalar);
-    [[nodiscard]] Result<void> set_transform(ObjectId transform, Trs);
+    [[nodiscard]] Result<void> set_transform(ObjectId scene_component, Trs);
+    // Root remains explicit. Non-root nodes must stay below that same Actor root.
+    // Removing a node with children is rejected; reparent its children first.
+    [[nodiscard]] Result<Commit> reparent(ObjectId scene_component, ObjectId parent, ReparentRule);
     [[nodiscard]] Result<std::vector<RenderItem>> render_items() const;
 
-    // Counter has a native default. An optional source/JIT adapter runs outside
-    // all native borrows with the same Runtime and protected member identities.
-    [[nodiscard]] Result<void> counter_update(CounterUpdate);
+    // Stopped-only scheduling configuration, keyed by the Runtime's existing
+    // type identity. The nearest ancestor binding is inherited as a whole.
+    // Native method and source/JIT adapters run outside every native borrow.
+    [[nodiscard]] Result<void> bind_behavior(TypeId component_type, Behavior);
     [[nodiscard]] Result<void> observe_lifecycle(LifecycleObserver);
     [[nodiscard]] Result<void> update(float amount);
     // The trusted starter uses the provided Runtime/receiver. World owns the

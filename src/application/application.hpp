@@ -46,7 +46,7 @@ private:
     editor::Workspace workspace_;
     ui::Session ui_;
     renderer::Renderer renderer_;
-    std::vector<renderer::Cube> cubes_;
+    std::vector<renderer::MeshInstance> meshes_;
     ui::Surface surface_;
     std::uint64_t surface_revision_{1}, accepted_frames_{};
     bool closed_{}, orbiting_{}, sampling_{};

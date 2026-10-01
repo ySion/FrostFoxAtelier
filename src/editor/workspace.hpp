@@ -6,7 +6,7 @@
 namespace atelier::editor {
 namespace control {
 inline constexpr ui::ControlKey add_actor = 10, remove_actor = 11, undo = 12, redo = 13, focus = 14, reset = 15;
-inline constexpr ui::ControlKey add_transform = 16, add_cube = 17;
+inline constexpr ui::ControlKey add_scene_component = 16, add_static_mesh = 17;
 inline constexpr ui::ControlKey viewport = 40, splitter = 41;
 inline constexpr ui::ControlKey parameter_search = 54;
 inline constexpr ui::ControlKey empty_field_base = 200;

@@ -70,21 +70,20 @@ Result<world::Commit> Session::erase_selected() {
 Result<world::Commit> Session::add_component(TypeId type) {
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
-    if (type != types_.transform && type != types_.cube) return invalid("This editor does not expose that component type.");
+    if (type != types_.scene_component && type != types_.static_mesh_component) return invalid("This editor does not expose that component type.");
     auto root = world::create_component(runtime_, type);
     if (!root) return std::unexpected(root.error());
-    ObjectId transform;
-    if (type == types_.cube) {
-        auto target = world::root_transform(runtime_, selected_);
-        if (!target) return std::unexpected(target.error());
-        if (!*target) return invalid("Add a Transform before adding a Cube.");
-        transform = **target;
+    if (type == types_.static_mesh_component) {
+        auto assigned = world::set_geometry(runtime_, root->id(), geometry::cube_mesh());
+        if (!assigned) return std::unexpected(assigned.error());
     }
+    auto actor_root = world::root_component(runtime_, selected_);
+    if (!actor_root) return std::unexpected(actor_root.error());
     ComponentChange change;
     change.added = true;
     change.removal.root = std::move(*root);
     change.removal.owner = selected_;
-    const std::array attachments{world::Attachment{change.removal.id(), transform}};
+    const std::array attachments{world::Attachment{change.removal.id(), actor_root->value_or(ObjectId{}), !actor_root->has_value()}};
     auto attached = world_.attach_components(selected_, attachments);
     if (!attached) return attached;
     if (attached->changed) remember(std::move(change));

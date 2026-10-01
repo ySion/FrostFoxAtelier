@@ -10,10 +10,10 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 场景和 UI
 
-- 方块共享一份几何；`Cube::world` 是默认单位阵的完整 local-to-world 值矩阵，没有单独的 position 字段。每帧批量上传矩阵、面法线方向、线性颜色和选中标记，以一次 instanced draw 绘制。方块局部边长 1 米、各轴 `[-0.5,0.5]`，支持真实旋转、非均匀缩放以及层级复合形成的剪切；不透明、启用深度，选中时混入金色。当前没有材质、拾取或资产导入。
+- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。当前为不透明基础光照，不含资产导入、拾取或着色器图。
 - 相机为左手系，+Y 向上，D3D 深度 `[0,1]`。矩阵为 row-major，行向量按 `p * world * view * projection` 执行，匹配 LookAtLH/PerspectiveFovLH。renderer 不维护相机控制状态。
-- World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。本片 World 只有独立 TRS；renderer 能消费一般仿射矩阵不代表 World 已实现父子层级。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
-- 法线方向按 world 的 3×3 逆转置计算。当前 Cube 的法线只有正负三个基轴，因此 CPU 用 double 计算余因子与行列式符号，分别归一化这三个方向后上传，避免有限极端缩放在 shader 中下溢或上溢。这不是可直接套用任意平滑网格法线的逐轴归一化矩阵。镜像输入保留朝外法线并沿用无背面剔除；本片 World 的生产 scale 域仍是正、非零、有限，不因 renderer 能消费镜像而扩展。
+- World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
+- 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留朝外法线，沿用无背面剔除。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 仍限定正、非零、有限。
 - 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
 - UI 支持半开 scissor、实色矩形、R8 覆盖图与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
@@ -40,9 +40,9 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 | 字段 | 统计边界 |
 | --- | --- |
 | `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
-| `scene_draw_calls` | 实际成功编码的场景 draw 次数；多个方块共享一次 instanced draw，空场景为 0 |
+| `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享一次 instanced draw，空场景为 0 |
 | `coverage_upload_count` | 本次新建内容版本后成功编码的 R8 上传次数；命中已有版本为 0 |
-| `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含方块实例上传 |
+| `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含网格实例上传 |
 | `cached_coverage_count` | 返回时 renderer 缓存持有的 Coverage/GPU texture 项数 |
 | `cached_coverage_texel_bytes` | 缓存项宽×高的逻辑 R8 字节总量，不是物理显存占用 |
 | `cached_coverage_cpu_bytes` | 缓存持有的 Coverage 的 `pixels.size()` 总量，包含 CPU 行 padding；不是 vector capacity 或整个 UI 的 CPU 内存 |

@@ -44,6 +44,53 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
     return state.finish(true, activation_changed ? state.notify(enabled ? Lifecycle::activated : Lifecycle::deactivated, object) : std::nullopt);
 }
 
+std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) {
+    auto root = runtime.hold(item.component);
+    if (!root) return root.error();
+    auto execution = ExecutionScope::enter(runtime);
+    if (!execution) return execution.error();
+    detail::DispatchScope dispatch{dispatch_depth};
+    try {
+        if (item.behavior) {
+            const auto& callback = beginning ? item.behavior->begin : item.behavior->end;
+            if (callback) { auto result = callback(runtime, item.component); if (!result) return result.error(); }
+        }
+    } catch (const std::exception& exception) {
+        return Error{ErrorCode::invocation_failed, exception.what()};
+    } catch (...) { return Error{ErrorCode::invocation_failed, "Component lifecycle callback threw an unknown exception."}; }
+    return {};
+}
+std::optional<Error> World::Impl::begin(ObjectId actor, ObjectId component) {
+    for (const auto& item : ordered) {
+        if ((actor != ObjectId{} && item.actor != actor) || (component != ObjectId{} && item.component != component)) continue;
+        auto data = detail::component_data(runtime, item.component);
+        if (!data) return data.error();
+        if (data->begun) continue;
+        if (auto failure = invoke(item, true)) return failure;
+        auto marked = runtime.with_native<Component>(item.component, [](Component& value) -> Result<void> { Access::begun(value) = true; return {}; });
+        if (!marked) return marked.error();
+    }
+    return {};
+}
+std::optional<Error> World::Impl::end(ObjectId actor, ObjectId component) {
+    std::optional<Error> failure;
+    for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
+        if ((actor != ObjectId{} && it->actor != actor) || (component != ObjectId{} && it->component != component)) continue;
+        auto data = detail::component_data(runtime, it->component);
+        if (!data) { if (!failure) failure = data.error(); continue; }
+        if (!data->begun) continue;
+        // Clear before invoking: End is attempted exactly once, including failures.
+        auto marked = runtime.with_native<Component>(it->component, [](Component& value) -> Result<void> { Access::begun(value) = false; return {}; });
+        if (!marked) { if (!failure) failure = marked.error(); continue; }
+        auto ended = invoke(*it, false);
+        if (!failure) failure = std::move(ended);
+    }
+    return failure;
+}
+std::optional<Error> World::Impl::shutdown() {
+    halt(); // Cancel tasks before End and suppress all further Tick calls.
+    return end();
+}
 Result<Commit> World::start() {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
@@ -52,8 +99,9 @@ Result<Commit> World::start() {
     state.running = true;
     auto refreshed = state.refresh();
     if (!refreshed) return state.finish(true, refreshed.error());
-    std::optional<Error> failure;
-    for (const auto& member : state.members) {
+    auto failure = state.begin();
+    if (!failure) { auto active = state.refresh(); if (!active) failure = active.error(); }
+    if (!failure) for (const auto& member : state.members) {
         auto data = detail::actor_data(runtime(), member.id());
         if (!data) { failure = data.error(); break; }
         if (data->enabled) {
@@ -67,17 +115,13 @@ Result<Commit> World::stop() {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
     if (!state.running) return Commit{};
-    std::optional<Error> failure;
-    {
-        detail::FlagScope transition{state.transitioning};
-        state.halt();
-        for (const auto& member : state.members) {
-            auto data = detail::actor_data(runtime(), member.id());
-            if (!data) { if (!failure) failure = data.error(); continue; }
-            if (data->enabled) {
-                auto notification = state.notify(Lifecycle::deactivated, member.id());
-                if (!failure) failure = std::move(notification);
-            }
+    auto failure = state.shutdown();
+    for (auto it = state.members.rbegin(); it != state.members.rend(); ++it) {
+        auto data = detail::actor_data(runtime(), it->id());
+        if (!data) { if (!failure) failure = data.error(); continue; }
+        if (data->enabled) {
+            auto notification = state.notify(Lifecycle::deactivated, it->id());
+            if (!failure) failure = std::move(notification);
         }
     }
     return state.finish(true, std::move(failure));
@@ -89,9 +133,8 @@ Result<Commit> World::close() {
     state.closing = true;
     const bool was_running = state.running;
     state.lifetime->open = false;
-    state.halt();
+    auto failure = state.shutdown();
     state.presentation.clear();
-    std::optional<Error> failure;
     {
         detail::FlagScope transition{state.transitioning};
         for (const auto& member : state.members) {
@@ -123,7 +166,7 @@ Result<Commit> World::close() {
             });
             if (!cleared && !failure) failure = cleared.error();
         }
-        state.buckets.clear(); state.positions.clear(); state.members.clear();
+        state.ordered.clear(); state.buckets.clear(); state.positions.clear(); state.members.clear();
     }
     state.closed = true;
     state.closing = false;
@@ -132,11 +175,26 @@ Result<Commit> World::close() {
     return {Commit{true, std::move(failure)}};
 }
 
-Result<void> World::counter_update(CounterUpdate update) {
+Result<const World::Behavior*> World::Impl::behavior(TypeId type) const {
+    for (;;) {
+        const auto found = std::ranges::find(behaviors, type, &Binding::type);
+        if (found != behaviors.end()) return &found->behavior;
+        auto info = runtime.describe(type);
+        if (!info) return std::unexpected(info.error());
+        if (!(*info)->base) return nullptr;
+        type = *(*info)->base;
+    }
+}
+Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     if (auto ready = impl_->admit(); !ready) return ready;
-    if (impl_->running) return error(ErrorCode::busy, "Stop the World before replacing its Counter updater.");
-    impl_->counter_update = std::move(update);
-    return {};
+    if (impl_->running) return error(ErrorCode::busy, "Stop the World before replacing a behavior binding.");
+    auto component = runtime().is_a(type, types().component);
+    if (!component) return std::unexpected(component.error());
+    if (!*component) return error(ErrorCode::type_mismatch, "Behavior requires a Component type.");
+    auto found = std::ranges::find(impl_->behaviors, type, &Impl::Binding::type);
+    if (found == impl_->behaviors.end()) impl_->behaviors.push_back({type, std::move(binding)});
+    else found->behavior = std::move(binding);
+    return impl_->refresh();
 }
 Result<void> World::observe_lifecycle(LifecycleObserver observer) {
     if (auto ready = impl_->admit(); !ready) return ready;
@@ -182,17 +240,16 @@ Result<void> World::update(float amount) {
         detail::DispatchScope dispatch{state.dispatch_depth};
         // Registration arrays cannot change under this guard. Member roots keep
         // their composition alive; each invocation also owns its receiver root.
-        for (const auto object : state.updates) {
+        for (const auto& item : state.updates) {
+            const auto object = item.component;
             auto root = runtime().hold(object);
             if (!root) { failure = root.error(); break; }
             try {
-                Result<void> invoked;
-                if (state.counter_update) invoked = state.counter_update(runtime(), object, amount);
-                else { const std::array args{Scalar{amount}}; invoked = runtime().call(object, types().counter_advance, args); }
+                auto invoked = item.behavior->tick(runtime(), object, amount);
                 if (!invoked) { failure = invoked.error(); break; }
             } catch (const std::exception& exception) {
                 failure = Error{ErrorCode::invocation_failed, exception.what()}; break;
-            } catch (...) { failure = Error{ErrorCode::invocation_failed, "Counter updater threw an unknown exception."}; break; }
+            } catch (...) { failure = Error{ErrorCode::invocation_failed, "Component Tick threw an unknown exception."}; break; }
         }
         if (!failure) {
             for (auto& task : state.tasks) {
@@ -201,7 +258,7 @@ Result<void> World::update(float amount) {
             }
         }
     }
-    if (failure) { state.halt(); return std::unexpected(std::move(*failure)); }
+    if (failure) { (void)state.shutdown(); return std::unexpected(std::move(*failure)); }
     std::erase_if(state.tasks, [](const Impl::Task& task) {
         const auto phase = task.coroutine.state();
         return phase == CoroutineState::completed || phase == CoroutineState::cancelled || phase == CoroutineState::failed;
@@ -290,7 +347,7 @@ Result<std::vector<RequestCompletion>> World::flush() {
             case RequestKind::attach_component: {
                 auto member = state.member(item.owner);
                 if (!member) return std::unexpected(member.error());
-                const std::array added{Attachment{command.target, command.transform}};
+                const std::array added{Attachment{command.target, command.parent, command.root}};
                 return attach_components(item.owner, added, command.index);
             }
             case RequestKind::remove_component: {

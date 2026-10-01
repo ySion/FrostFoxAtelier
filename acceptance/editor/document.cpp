@@ -26,6 +26,25 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 }
 int main() {
     try {
+        {
+            editor::Session single;
+            changed(single.add_actor());
+            changed(single.add_component(single.types().static_mesh_component));
+            const auto actor = single.selected();
+            auto& rt = single.world().runtime();
+            const auto mesh = *take(world::root_component(rt, actor));
+            require(take(world::components(rt, actor)).size() == 1 && take(rt.type_of(mesh)) == single.types().static_mesh_component,
+                "A cube Actor acquired a redundant standalone transform component.");
+            take(single.begin_edit(mesh, single.types().position_fields[0], 91));
+            take(single.preview_edit(91, 4)); take(single.commit_edit(91));
+            require(take(single.world().render_items()).front().world[12] == 4, "Inherited root field did not move the mesh.");
+            changed(single.remove_component(mesh));
+            require(!take(world::root_component(rt, actor)) && take(single.world().render_items()).empty(), "Root removal retained spatial/presentation state.");
+            changed(single.undo());
+            require(take(world::root_component(rt, actor)) == mesh && take(single.world().render_items()).front().world[12] == 4,
+                "Root mesh undo did not restore explicit root identity and inherited fields.");
+            changed(single.close());
+        }
         editor::Session document;
         changed(document.add_actor());
         const auto actor = document.selected();
@@ -35,10 +54,10 @@ int main() {
         const auto state = take(world::inspect_actor(runtime, actor));
         require(state.state == world::ActorState::attached_inactive && state.can_edit && !state.can_present,
             "Empty Actor state confused editability with render registrations.");
-        changed(document.add_component(document.types().transform));
-        changed(document.add_component(document.types().cube));
-        const auto transform = component(document, actor, document.types().transform);
-        const auto cube = component(document, actor, document.types().cube);
+        changed(document.add_component(document.types().scene_component));
+        changed(document.add_component(document.types().static_mesh_component));
+        const auto transform = component(document, actor, document.types().scene_component);
+        const auto cube = component(document, actor, document.types().static_mesh_component);
         require(take(document.world().render_items()).size() == 1 && take(world::inspect_actor(runtime, actor)).can_present,
             "AttachedInactive Cube component did not create a value projection.");
         changed(document.remove_component(cube));
@@ -46,7 +65,7 @@ int main() {
             "Removing Cube removed its Actor or retained rendering.");
         collect(document);
         changed(document.undo());
-        require(component(document, actor, document.types().cube) == cube &&
+        require(component(document, actor, document.types().static_mesh_component) == cube &&
             take(world::inspect_component(runtime, cube)).owner == actor, "Component undo replaced identity or owner.");
         changed(document.redo()); changed(document.undo());
         const auto history = document.undo_count();
@@ -88,7 +107,7 @@ int main() {
         collect(document);
         changed(document.undo());
         require(document.selected() == actor && take(document.world().members()).front().id() == actor &&
-            component(document, actor, document.types().transform) == transform && component(document, actor, document.types().cube) == cube &&
+            component(document, actor, document.types().scene_component) == transform && component(document, actor, document.types().static_mesh_component) == cube &&
             value(document, transform) == 34, "Actor delete/GC/undo did not restore identities, composition, order and values.");
         take(document.begin_edit(transform, path, 16)); take(document.preview_edit(16, 88));
         changed(document.erase_selected()); changed(document.undo());

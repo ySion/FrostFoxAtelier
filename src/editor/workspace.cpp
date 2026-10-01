@@ -52,13 +52,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     };
     const auto selected = session.selected();
     const auto actor_status = selected == ObjectId{} ? world::ActorStatus{} : take(world::inspect_actor(runtime, selected));
-    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_transform(runtime, selected));
-    ObjectId cube;
+    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_component(runtime, selected));
+    ObjectId mesh;
     if (selected != ObjectId{}) {
         const auto composition = take(world::components(runtime, selected));
         for (const auto& component : composition) {
             const auto state = take(world::inspect_component(runtime, component.id()));
-            if (state.valid && take(runtime.is_a(state.type, session.types().cube))) { cube = component.id(); break; }
+            if (state.valid && take(runtime.is_a(state.type, session.types().static_mesh_component))) { mesh = component.id(); break; }
         }
     }
     auto root = NodeInput::column(); root.width = root.height = Axis::expand();
@@ -113,10 +113,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     auto component_row = NodeInput::row(6); component_row.height = Axis::fixed(30);
     add(56, 50, ControlKind::container, component_row);
     auto component_button = NodeInput::box(0, 30); component_button.width = Axis::content();
-    add(control::add_transform, 56, ControlKind::button, component_button, L"+ Transform").enabled = actor_status.can_edit && !transform;
+    add(control::add_scene_component, 56, ControlKind::button, component_button, L"+ Scene").enabled = actor_status.can_edit && !transform;
     component_button.width = Axis::expand();
-    if (cube != ObjectId{}) add(bind(cube), 56, ControlKind::button, component_button, L"− Cube").enabled = actor_status.can_edit;
-    else add(control::add_cube, 56, ControlKind::button, component_button, L"+ Cube").enabled = actor_status.can_edit && transform.has_value();
+    if (mesh != ObjectId{}) add(bind(mesh), 56, ControlKind::button, component_button, L"− Mesh").enabled = actor_status.can_edit;
+    else add(control::add_static_mesh, 56, ControlKind::button, component_button, L"+ Mesh").enabled = actor_status.can_edit;
     auto search_label = NodeInput::box(0, 18); search_label.width = Axis::expand();
     add(55, 50, ControlKind::label, search_label, L"Search parameters").role = ui::Role::caption;
     auto search_layout = NodeInput::box(0, 34); search_layout.width = Axis::expand();
@@ -130,7 +130,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session) {
     for (std::size_t axis = 0; axis < matches.size(); ++axis)
         matches[axis] = std::wstring_view(aliases[axis]).find(folded) != std::wstring_view::npos;
     const bool any = std::any_of(matches.begin(), matches.end(), [](bool match) { return match; });
-    add(53, 50, ControlKind::label, heading, any ? (transform ? L"Transform / metres" : L"No Transform") : L"No matching parameters");
+    add(53, 50, ControlKind::label, heading, any ? (transform ? L"Root position / metres" : L"No scene root") : L"No matching parameters");
     constexpr std::array names{L"X", L"Y", L"Z"};
     const auto definitions = session.parameters();
     for (std::size_t axis = 0; axis < definitions.size(); ++axis) {
