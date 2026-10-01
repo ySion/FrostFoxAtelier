@@ -49,7 +49,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## UI 样式与诊断
 
-Workspace 只声明 `normal/panel/title/caption` 角色及 enabled/selected 等语义状态，样式值由唯一 [UI Style](../../../src/ui/style.hpp) 提供。工具条与参数标题共用 title 层级，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，按钮、列表项和数值文字的内容内距由 Style 提供。工具条按钮宽度按文字测量并保留原最小宽度，字号改变时不再靠固定宽度裁掉末字。
+Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及工具栏 `compact/danger` 类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。工具条与参数标题共用 title 层级，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。工具条按钮宽度按文字测量并保留原最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
 `Application::set_style` 直接进入 UI 的整体校验/应用路径，应用不保存另一份主题。颜色复用文字 Coverage，字体族、字重和字号经同一 TextStore 更新度量、caret 和栅格；已接受帧仍保有旧几何与不可变内容。具体样式、版本及状态合同见 [UI 模块](../ui/README.md)。
 `Application::sample_frames` 显式开启 CPU prepare/render 计时，默认关闭；Capture 帧不计入。窗口验收从同一应用按钮添加真实场景成员至 256，再采样列表滚动与位置拖动。UI 累计计数按段求差，renderer 的 `FrameResult::stats` 按实际采样帧合计；CPU Coverage 和 renderer cache 的持有峰值分别记录。
 render 计时包括 Present/等待，R8 上传字节只表示有效 payload，缓存 texel 字节不表示物理显存。验收使用硬件 D3D12 debug/GBV 与 vsync，含 release 配置；数据用于说明该验收负载，不能直接当作关闭验证的产品帧耗时，也没有同负载改前基线可用于百分比提升结论。
