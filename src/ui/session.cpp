@@ -61,6 +61,10 @@ const ControlBox* UiFrame::find(ControlKey key) const noexcept {
     const auto found = std::find_if(controls.begin(), controls.end(), [key](const auto& box) { return box.key == key; });
     return found == controls.end() ? nullptr : &*found;
 }
+const TextGeometry* UiFrame::find_text(ControlKey key) const noexcept {
+    const auto found=std::find_if(text_geometry.begin(),text_geometry.end(),[key](const auto& value){return value.key==key;});
+    return found==text_geometry.end()?nullptr:&*found;
+}
 
 struct Session::Impl {
     struct State {
@@ -71,6 +75,12 @@ struct Session::Impl {
         float content_bottom{};
         bool baseline_content{};
         std::size_t frame_index{std::numeric_limits<std::size_t>::max()};
+        bool style_dirty{true};
+        VisualState visual;
+        std::uint64_t theme_revision{}, parent_revision{}, inheritance_revision{};
+        StyleProperties inherited;
+        std::vector<std::shared_ptr<const StyleSheet>> sheets;
+        std::shared_ptr<const ResolvedStyle> resolved;
     };
     struct Press {
         ControlKey key{};
@@ -102,6 +112,7 @@ struct Session::Impl {
     };
     std::uint64_t identity{detail::new_identity()};
     Style style;
+    std::shared_ptr<const StyleSheet> style_sheet;
     std::uint64_t style_revision{detail::new_identity()}, prepares{}, culled_text_controls{};
     Surface surface;
     detail::TextStore text;
@@ -144,6 +155,32 @@ struct Session::Impl {
         return nullptr;
     }
 #include "ui/session_edit.inl"
+    void resolve(State& state) {
+        const auto& control=state.control;
+        const auto* parent=control.parent?&states.at(control.parent):nullptr;
+        const bool enabled=control.enabled && (!parent || parent->visual.enabled);
+        const VisualState visual{enabled,enabled && hover==control.key,
+            enabled && ((press && press->key==control.key) || keyboard_pressed==control.key),
+            enabled && focus==control.key,control.selected,
+            control.invalid || (edit && edit->key==control.key && !valid_edit())};
+        const auto parent_revision=parent?parent->inheritance_revision:0;
+        if (!state.style_dirty && state.resolved && state.theme_revision==style_revision &&
+            state.parent_revision==parent_revision && state.visual==visual) return;
+        auto sheets=parent?parent->sheets:std::vector<std::shared_ptr<const StyleSheet>>{};
+        if (!parent && style_sheet) sheets.push_back(style_sheet);
+        if (control.style_scope) sheets.push_back(control.style_scope);
+        auto inherited=parent?parent->inherited:StyleProperties{};
+        auto value=resolve_style(style,control.role,control.kind,visual);
+        apply_properties(value,inherited);
+        for (const auto& sheet:sheets) for (const auto& rule:sheet->rules()) if (matches(rule.selector,control,visual)) {
+            apply_properties(value,rule.properties); inherit_properties(inherited,rule.properties);
+        }
+        apply_properties(value,control.style); inherit_properties(inherited,control.style);
+        if (!state.resolved || state.inherited!=inherited || state.sheets!=sheets) state.inheritance_revision=detail::new_identity();
+        if (!state.resolved || *state.resolved!=value) state.resolved=std::make_shared<const ResolvedStyle>(std::move(value));
+        state.inherited=std::move(inherited); state.sheets=std::move(sheets);
+        state.visual=visual; state.parent_revision=parent_revision; state.theme_revision=style_revision; state.style_dirty=false;
+    }
     ui_layout::NodeInput input_for(State& state) {
         auto input = state.control.layout;
         auto alignment = input.vertical_alignment;
@@ -156,14 +193,15 @@ struct Session::Impl {
                 alignment = parent.control.layout.flow->align_items;
         }
         state.baseline_content |= alignment.first_baseline;
-        const auto appearance = resolve_style(style,state.control.role,state.control.kind);
+        resolve(state);
+        const auto& appearance=*state.resolved;
         input.padding = effective_padding(state.control,appearance);
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
             input.content_revision = text_field(state.control.kind) ?
-                text.set(state.control.key, display(state), style.font,appearance.font_size,appearance.font_weight,false) :
-                text.set(state.control.key, state.control.text, style.font,appearance.font_size,appearance.font_weight,state.control.kind == ControlKind::label);
+                text.set(state.control.key, display(state), appearance.font,false) :
+                text.set(state.control.key, state.control.text, appearance.font,state.control.kind == ControlKind::label);
         } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter) {
             input.kind = ui_layout::Kind::box;
         } else if (state.control.kind == ControlKind::list) {
@@ -220,6 +258,13 @@ Result<void> Session::set_style(const Style& style) {
     return {};
 }
 const Style& Session::style() const noexcept { return impl_->style; }
+Result<void> Session::set_style_sheet(std::shared_ptr<const StyleSheet> sheet) {
+    if (impl_->style_sheet!=sheet) {
+        const auto revision=detail::new_identity();
+        impl_->style_sheet=std::move(sheet); impl_->style_revision=revision;
+    }
+    return {};
+}
 Statistics Session::statistics() const noexcept {
     const auto text = impl_->text.statistics();
     return {impl_->prepares,text.measure_calls,text.text_layouts,text.rasterizations,text.raster_bytes,text.coverage_cache_hits,
@@ -252,6 +297,9 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
+            !std::all_of(control.classes.begin(),control.classes.end(),[](const auto& name){return StyleSheet::valid_class(name);}))
+            return std::unexpected(Error{ErrorCode::invalid_style,control.key});
         if (control.parent) {
             const auto kind = validated.at(control.parent)->kind;
             if (kind != ControlKind::container && kind != ControlKind::list)
@@ -286,6 +334,9 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
         if (added) state.incarnation = detail::new_identity();
         self.structure_dirty |= added || state.control.parent != control.parent || state.control.kind != control.kind;
         if (text_kind(state.control.kind) && !text_kind(control.kind)) self.text.erase(control.key);
+        state.style_dirty |= added || state.control.parent!=control.parent || state.control.kind!=control.kind ||
+            state.control.role!=control.role || state.control.classes!=control.classes || state.control.style!=control.style ||
+            state.control.style_scope!=control.style_scope;
         state.control = control;
         if (self.edit && self.edit->key == control.key && !self.edit->buffer.active() && !self.edit->composition &&
             (control.kind==ControlKind::number?self.edit->original_value!=control.value:self.edit->buffer.original()!=control.text)) {
@@ -330,7 +381,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             auto& state = self.states.at(key);
             if (state.control.kind == ControlKind::list)
                 if (const auto* box = geometry->find(state.node)) {
-                    state.scroll_limit = std::max(0.f,state.content_bottom+state.control.layout.padding.bottom-box->height);
+                    const auto padding=effective_padding(state.control,*state.resolved);
+                    state.scroll_limit = std::max(0.f,state.content_bottom+padding.bottom-box->height);
                     state.scroll = std::clamp(state.scroll,0.0,state.scroll_limit);
                 }
         }
@@ -359,28 +411,27 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved});
             const auto kind = state.control.kind;
             // Keep every arranged box and its parent transform. Only painting is culled.
             if (!visible(bounds,clip)) {
                 if (text_kind(kind)) ++self.culled_text_controls;
                 continue;
             }
-            const auto appearance = resolve_style(self.style,state.control.role,kind,{enabled,self.hover == key,
-                (self.press && self.press->key == key) || self.keyboard_pressed == key,self.focus == key,state.control.selected,
-                self.edit && self.edit->key == key && !self.valid_edit()});
-            if (appearance.background) quad(bounds,clip,*appearance.background);
+            const auto& appearance=*state.resolved;
             const float border = std::min({appearance.border_width*scale,bounds.width*.5f,bounds.height*.5f});
-            if (border > 0) {
-                quad({bounds.x,bounds.y,bounds.width,border},clip,appearance.border);
-                quad({bounds.x,bounds.y+bounds.height-border,bounds.width,border},clip,appearance.border);
-                quad({bounds.x,bounds.y+border,border,bounds.height-2*border},clip,appearance.border);
-                quad({bounds.x+bounds.width-border,bounds.y+border,border,bounds.height-2*border},clip,appearance.border);
+            const CornerRadii radius{appearance.radius.top_left*scale,appearance.radius.top_right*scale,
+                appearance.radius.bottom_right*scale,appearance.radius.bottom_left*scale};
+            if (appearance.background || appearance.image || (border>0 && appearance.border.a>0)) {
+                const auto background=appearance.background.value_or(Color{0,0,0,0});
+                draws->draws.push_back({bounds,clip,appearance.image?Color{1,1,1,1}:background,
+                    {0,0,1,1},{},radius,border,appearance.border,appearance.image,background});
             }
             if (text_kind(kind)) {
                 const auto padding = effective_padding(state.control,appearance);
                 const float width = std::max(0.f, box->width - (padding.left + padding.right));
                 const auto metrics = self.text.metrics(key,width);
+                const auto paragraph=text_field(kind)?self.text.snapshot(key,width):nullptr;
                 float x = bounds.x + padding.left*scale;
                 float y = bounds.y + padding.top*scale;
                 const float content_height = std::max(0.f,box->height-(padding.top+padding.bottom));
@@ -391,17 +442,17 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 const auto text_clip = intersect(clip,clip_rect(text_field(kind)?
                     Rect{bounds.x+padding.left*scale,bounds.y+padding.top*scale,width*scale,content_height*scale}:bounds));
                 const bool editing=self.edit && self.edit->key==key && self.edit->text_mode;
+                float scroll=editing?self.edit->scroll:0;
                 Rect caret;
                 if (editing) {
-                    caret=self.text.caret(key,width,self.display_caret());
-                    auto& scroll=self.edit->scroll;
-                    scroll=std::clamp(scroll,0.f,std::max(0.f,metrics.width+self.style.caret_width-width));
+                    caret=paragraph->caret(self.display_caret());
+                    scroll=std::clamp(scroll,0.f,std::max(0.f,metrics.width+appearance.caret_width-width));
                     if (caret.x<scroll) scroll=caret.x;
-                    if (caret.x+self.style.caret_width>scroll+width) scroll=std::max(0.f,caret.x+self.style.caret_width-width);
+                    if (caret.x+appearance.caret_width>scroll+width) scroll=std::max(0.f,caret.x+appearance.caret_width-width);
                     x-=scroll*scale;
                     if (!self.edit->composition) {
                         const auto& s=self.edit->buffer.current();
-                        for (auto range:self.text.selection(key,width,std::min(s.caret.offset,s.anchor.offset),std::max(s.caret.offset,s.anchor.offset)))
+                        for (auto range:paragraph->selection(std::min(s.caret.offset,s.anchor.offset),std::max(s.caret.offset,s.anchor.offset)))
                             quad({x+range.x*scale,y+range.y*scale,range.width*scale,range.height*scale},text_clip,appearance.selection);
                     } else {
                         const auto& c=*self.edit->composition;
@@ -409,11 +460,16 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                             auto last=first+1;
                             while (last<c.preedit.attributes.size() && c.preedit.attributes[last]==c.preedit.attributes[first]) ++last;
                             if (c.preedit.attributes[first]==1 || c.preedit.attributes[first]==3)
-                                for (auto range:self.text.selection(key,width,c.first+static_cast<std::uint32_t>(first),c.first+static_cast<std::uint32_t>(last)))
+                                for (auto range:paragraph->selection(c.first+static_cast<std::uint32_t>(first),c.first+static_cast<std::uint32_t>(last)))
                                     quad({x+range.x*scale,y+range.y*scale,range.width*scale,range.height*scale},text_clip,appearance.selection);
                             first=last;
                         }
                     }
+                }
+                if (text_field(kind)) {
+                    const bool bound=self.edit && self.edit->key==key;
+                    output->text_geometry.push_back({key,state.incarnation,paragraph,x,y,scale,scroll,
+                        bound?self.edit->token:EditToken{},bound && self.edit->composition?self.edit->composition->id:0});
                 }
                 const auto raster=self.text.raster(key,width,scale,text_field(kind)?
                     std::optional<Clip>{clip_rect({static_cast<float>(text_clip.left)-x,static_cast<float>(text_clip.top)-y,
@@ -423,10 +479,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 if (editing) {
                     if (self.edit->composition) {
                         const auto& c=*self.edit->composition;
-                        for (auto range:self.text.selection(key,width,c.first,c.first+static_cast<std::uint32_t>(c.preedit.text.size())))
+                        for (auto range:paragraph->selection(c.first,c.first+static_cast<std::uint32_t>(c.preedit.text.size())))
                             quad({x+range.x*scale,y+(range.y+range.height)*scale-scale,range.width*scale,scale},text_clip,appearance.caret);
                     }
-                    const Rect physical{x+caret.x*scale,y+caret.y*scale,self.style.caret_width*scale,std::max(1.f,caret.height*scale)};
+                    const Rect physical{x+caret.x*scale,y+caret.y*scale,appearance.caret_width*scale,std::max(1.f,caret.height*scale)};
                     quad(physical,text_clip,appearance.caret);
                     if (visible(physical,text_clip)) output->caret=TextCaret{self.edit->token,physical,text_clip};
                     TextInputAnchor anchor{self.edit->token,0,0,{},text_clip};
@@ -434,13 +490,12 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     if (self.edit->composition) {
                         const auto& c=*self.edit->composition;
                         anchor.composition_id=c.id; anchor.composition_revision=c.revision;
-                        start=c.preedit.text.empty()?self.text.caret(key,width,{c.first,false}):
-                            self.text.character(key,width,c.first);
+                        start=c.preedit.text.empty()?paragraph->caret({c.first,false}):paragraph->character(c.first);
                     } else {
                         const auto& selection=self.edit->buffer.current();
                         const auto position=selection.caret.offset==selection.anchor.offset?selection.caret:
                             detail::TextPosition{std::min(selection.caret.offset,selection.anchor.offset),false};
-                        start=self.text.caret(key,width,position);
+                        start=paragraph->caret(position);
                     }
                     anchor.bounds={x+start.x*scale,y+start.y*scale,start.width*scale,start.height*scale};
                     output->input_anchor=anchor;
@@ -451,12 +506,13 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             auto& state = self.states.at(key);
             if (state.control.kind != ControlKind::list || state.frame_index == std::numeric_limits<std::size_t>::max()) continue;
             const auto& bounds = output->controls[state.frame_index];
+            const auto& appearance=*state.resolved;
             if (state.scroll_limit > 0) {
                 const float track = bounds.bounds.height;
-                const float thumb = std::min(track,std::max(self.style.scrollbar_min_thumb*scale, track*track/(track+static_cast<float>(state.scroll_limit)*scale)));
+                const float thumb = std::min(track,std::max(appearance.scrollbar_min_thumb*scale, track*track/(track+static_cast<float>(state.scroll_limit)*scale)));
                 const float y = bounds.bounds.y + static_cast<float>(state.scroll/state.scroll_limit)*(track-thumb);
-                quad({bounds.bounds.x+bounds.bounds.width-(self.style.scrollbar_width+self.style.scrollbar_inset)*scale,
-                    y,self.style.scrollbar_width*scale,thumb},intersect(bounds.clip,clip_rect(bounds.bounds)),self.style.palette.muted);
+                quad({bounds.bounds.x+bounds.bounds.width-(appearance.scrollbar_width+appearance.scrollbar_inset)*scale,
+                    y,appearance.scrollbar_width*scale,thumb},intersect(bounds.clip,clip_rect(bounds.bounds)),appearance.scrollbar);
             }
         }
         output->drawing = std::move(draws);
@@ -468,6 +524,8 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
     if (!frame || !frame->drawing || frame->session_identity != self.identity || frame->drawing->extent != self.surface.extent ||
         frame->drawing->dpi_scale != self.surface.dpi_scale || frame->drawing->surface_revision != self.surface.revision ||
         (self.published && frame->drawing->id < self.published->drawing->id)) return false;
+    if (self.edit) if (const auto* geometry=frame->find_text(self.edit->key); geometry && geometry->token==self.edit->token)
+        self.edit->scroll=geometry->scroll;
     self.published = std::move(frame); return true;
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }

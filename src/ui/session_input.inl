@@ -171,19 +171,23 @@ Reply Session::input(const Event& event) {
                     reply.redraw|=!edit.text_mode; edit.text_mode=true; const bool was_active=edit.buffer.active();
                     self.changed(reply,edit.buffer.erase(event.key==Key::backspace),was_active);
                 } else if (!event.control && (event.key==Key::left || event.key==Key::right || event.key==Key::home || event.key==Key::end)) {
-                    reply.redraw|=!edit.text_mode; edit.text_mode=true; const auto geometry=self.edit_geometry();
+                    reply.redraw|=!edit.text_mode; edit.text_mode=true; const auto* geometry=self.edit_geometry();
+                    edit.buffer.break_group();
+                    if (!geometry) { reply.redraw=true; return reply; }
                     const auto& selected=edit.buffer.current();
+                    const auto paragraph=geometry->paragraph->matches(selected.text)?geometry->paragraph:
+                        self.text.edited_snapshot(edit.key,*geometry->paragraph,selected.text);
                     const bool left=event.key==Key::left || event.key==Key::home, edge=event.key==Key::home || event.key==Key::end;
                     auto position=selected.caret;
                     if (!event.shift && !edge && selected.caret.offset!=selected.anchor.offset) {
-                        const auto ranges=self.text.selection(edit.key,geometry.width,
+                        const auto ranges=paragraph->selection(
                             std::min(selected.caret.offset,selected.anchor.offset),std::max(selected.caret.offset,selected.anchor.offset));
                         if (!ranges.empty()) {
                             float x=left?ranges.front().x:ranges.front().x+ranges.front().width;
                             for (auto range:ranges) x=left?std::min(x,range.x):std::max(x,range.x+range.width);
-                            position=self.text.hit(edit.key,geometry.width,x,0);
+                            position=paragraph->hit(x,0);
                         }
-                    } else position=self.text.move(edit.key,geometry.width,position,left?-1:1,edge);
+                    } else position=paragraph->move(position,left?-1:1,edge);
                     if (edit.buffer.select(position,event.shift)) { self.revise(); reply.redraw=true; }
                 } else edit.buffer.break_group();
             }
