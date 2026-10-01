@@ -8,6 +8,7 @@ struct Parameter {
     const char* unit;
     std::array<FieldId, 2> path;
     float minimum{-10000.f}, maximum{10000.f}, drag_step{.01f};
+    float default_value{};
 };
 
 // One document writer. History retains ordinary roots and removal records;
@@ -28,6 +29,7 @@ public:
     Result<void> preview_edit(std::uint64_t control_session, float);
     Result<void> commit_edit(std::uint64_t control_session);
     Result<void> cancel_edit();
+    Result<void> reset_position(ObjectId component); // One group change and one history entry.
     bool owns_edit(std::uint64_t control_session) const noexcept;
     Result<world::Commit> undo();
     Result<world::Commit> redo();
