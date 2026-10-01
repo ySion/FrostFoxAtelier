@@ -40,7 +40,9 @@ class TextStore {
 public:
     TextStore();
     ~TextStore();
-    std::uint64_t set(std::uint64_t key, std::wstring_view, const Font&, bool wrap);
+    std::uint64_t set(std::uint64_t key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left);
+    enum class Symbol { check, right, down };
+    std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);
     std::uint64_t provider_revision() const noexcept;
     void set_provider_revision(std::uint64_t) noexcept;
     TextStatistics statistics() const noexcept;
