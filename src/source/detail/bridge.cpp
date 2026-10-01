@@ -17,7 +17,16 @@ template<class T> T take(Result<T> value) {
 }
 }
 
-Binding bind_type(Runtime& runtime, TypeId type) {
+Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog) {
+    std::vector<const TypeInfo*> published;
+    if (catalog.empty()) {
+        for (const auto id : runtime.types()) published.push_back(take(runtime.describe(id)));
+        catalog = published;
+    }
+    const auto describe = [&](TypeId id) -> const TypeInfo* {
+        for (const auto* info : catalog) if (info->id == id) return info;
+        throw std::runtime_error("Source catalog contains an unresolved type identity.");
+    };
     Binding binding{};
     binding.runtime = &runtime;
     binding.type = type;
@@ -25,8 +34,8 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     binding.u32 = take(runtime.native_type<std::uint32_t>());
     binding.i32 = take(runtime.native_type<std::int32_t>());
     binding.dependencies = {binding.f32, binding.u32, binding.i32};
-    for (const auto id : runtime.types()) {
-        const auto* enumeration = take(runtime.describe(id));
+    for (const auto* enumeration : catalog) {
+        const auto id = enumeration->id;
         if (!enumeration->enumeration) continue;
         binding.enumerations.push_back({id, enumeration->name,
             enumeration->enumeration->underlying == binding.i32 ? ValueKind::i32 : ValueKind::u32,
@@ -40,9 +49,8 @@ Binding bind_type(Runtime& runtime, TypeId type) {
             value.sequence_mutate != nullptr});
     };
     std::vector<const TypeInfo*> pending_arrays;
-    for (const auto id : runtime.types()) {
-        const auto* value = take(runtime.describe(id));
-        if (!value->native_storage || value->contains_references) continue;
+    for (const auto* value : catalog) {
+        if (value->contains_references) continue;
         if (value->kind == TypeKind::record) append_value(*value, ValueKind::record);
         else if (value->kind == TypeKind::string && value->sequence_view) append_value(*value, ValueKind::string);
         else if (value->kind == TypeKind::array && value->sequence_view) pending_arrays.push_back(value);
@@ -57,7 +65,7 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     std::sort(binding.values.begin(), binding.values.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
     for (auto& value : binding.values) {
         binding.dependencies.push_back(value.type);
-        const auto* info = take(runtime.describe(value.type));
+        const auto* info = describe(value.type);
         if (info->element) {
             value.element = value_kind(binding, *info->element);
             require(value.element != ValueKind::void_value, "Source array requires a supported native element representation.");
@@ -69,7 +77,7 @@ Binding bind_type(Runtime& runtime, TypeId type) {
         }
     }
     if (type == TypeId{}) return binding;
-    const auto* info = take(runtime.describe(type));
+    const auto* info = describe(type);
     require(info->kind == TypeKind::object, "Source receiver must be an object.");
     binding.name = info->name;
     const auto remember = [&](TypeId dependency) {
@@ -83,7 +91,7 @@ Binding bind_type(Runtime& runtime, TypeId type) {
     remember(type);
     for (auto base = info->base; base; ) {
         remember(*base);
-        base = take(runtime.describe(*base))->base;
+        base = describe(*base)->base;
     }
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
@@ -98,7 +106,7 @@ Binding bind_type(Runtime& runtime, TypeId type) {
         if (field_kind != ValueKind::void_value && !aggregate(field_kind)) {
             binding.fields.push_back({prefix, path, field_kind});
         } else {
-            const auto* nested = take(runtime.describe(field.value.type));
+            const auto* nested = describe(field.value.type);
             if (nested->kind != TypeKind::record) continue;
             remember(nested->id);
             prefix += '.';
@@ -451,7 +459,7 @@ const BoundValue& owned_value(Invocation& invocation, std::uint32_t type) {
         "Native value lacks a borrow-preserving lifecycle contract.");
     return invocation.binding.values[type];
 }
-std::uint32_t construct_native_value(void* context, std::uint32_t type, void* target, const void* source) noexcept {
+std::uint32_t construct_value(void* context, std::uint32_t type, void* target, const void* source) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
         const auto& value = owned_value(invocation, type);
@@ -462,7 +470,7 @@ std::uint32_t construct_native_value(void* context, std::uint32_t type, void* ta
         return result;
     });
 }
-std::uint32_t assign_native_value(void* context, std::uint32_t type, void* target, const void* source) noexcept {
+std::uint32_t assign_value(void* context, std::uint32_t type, void* target, const void* source) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
         const auto& value = owned_value(invocation, type);
@@ -470,17 +478,17 @@ std::uint32_t assign_native_value(void* context, std::uint32_t type, void* targe
             {static_cast<const std::byte*>(source), value.size});
     });
 }
-void destroy_native_value(void* context, std::uint32_t type, void* target) noexcept {
+void destroy_value(void* context, std::uint32_t type, void* target) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     (void)bridge(invocation, [&]() -> Result<void> {
         const auto& value = owned_value(invocation, type);
-        require(invocation.live_values != 0, "Native value cleanup has no live construction.");
+        require(invocation.live_values != 0, "Value cleanup has no live construction.");
         auto result = invocation.runtime.destroy_value(value.type, {static_cast<std::byte*>(target), value.size});
         if (result) --invocation.live_values;
         return result;
     });
 }
-std::uint32_t mutate_native_sequence(void* context, std::uint32_t type, SequenceMutation operation,
+std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutation operation,
     void* target, const void* source, std::uint64_t count) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -498,7 +506,7 @@ std::uint32_t mutate_native_sequence(void* context, std::uint32_t type, Sequence
 }
 const BusinessServices services{begin, create_slot, read_float, write_float, read_uint,
     write_uint, call_method, poll, finish, clear_slot, change_reference, same_reference,
-    construct_native_value, assign_native_value, destroy_native_value, mutate_native_sequence};
+    construct_value, assign_value, destroy_value, mutate_sequence};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count || binding.enumerations.size() != environment.enumeration_count) return false;

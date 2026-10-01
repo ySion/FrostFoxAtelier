@@ -2072,7 +2072,7 @@ void verify_source_rejections(BusinessCode* existing) {
         {"void bad(float a, uint n) { uint x = 1word; }", "Invalid numeric literal suffix"},
         {"void bad(float a, uint n) { /* unfinished", "Unterminated block comment"},
         {"void bad(float a, uint n) {", "Expected '}'"},
-        {"void bad(float a, uint n) {} void extra(float a, uint n) {}", "Only one host-bound entry"},
+        {"void bad(float a, uint n) {} void extra(float a, uint n) {}", "explicit host entry name"},
     };
     const auto reject = [&](std::string_view source, std::string_view expected) {
         auto* retained = existing;
