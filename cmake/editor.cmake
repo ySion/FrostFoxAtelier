@@ -9,10 +9,11 @@ function(atelier_add_editor)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/application.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp")
+        "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/control_workbench.cpp")
     atelier_target(atelier_editor_application)
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
-    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui_layout atelier_ui_protocol atelier_rhi)
+    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi)
     add_executable(atelier_editor
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/window.cpp")

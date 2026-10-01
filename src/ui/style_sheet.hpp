@@ -8,7 +8,7 @@
 namespace atelier::ui {
 
 enum class StyleState : std::uint16_t {
-    none=0, enabled=1, disabled=2, hover=4, pressed=8, focus=16, selected=32, invalid=64
+    none=0, enabled=1, disabled=2, hover=4, pressed=8, focus=16, selected=32, invalid=64, modified=128
 };
 constexpr StyleState operator|(StyleState a, StyleState b) noexcept {
     return static_cast<StyleState>(static_cast<unsigned>(a)|static_cast<unsigned>(b));
@@ -20,6 +20,7 @@ struct StyleProperties {
     std::optional<std::wstring> font_family, font_locale;
     std::optional<float> font_size;
     std::optional<std::uint16_t> font_weight;
+    std::optional<TextAlign> text_align;
     std::optional<Color> foreground, background, border, selection, caret, scrollbar;
     std::optional<ui_layout::Insets> padding;
     std::optional<float> border_width, caret_width;
@@ -41,6 +42,7 @@ struct NamedImage { std::string name; std::shared_ptr<const ColorImage> image; }
 // Complete value used by measurement, painting and the accepted frame.
 struct ResolvedStyle {
     Font font;
+    TextAlign text_align{TextAlign::left};
     ui_layout::Insets padding;
     Color foreground, border, selection, caret, scrollbar;
     std::optional<Color> background;
