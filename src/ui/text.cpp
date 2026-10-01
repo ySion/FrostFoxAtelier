@@ -1,6 +1,6 @@
 #include "ui/text.hpp"
 #include <Windows.h>
-#include <dwrite_2.h>
+#include <dwrite_3.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <array>
@@ -36,7 +36,7 @@ struct TrackedCoverage final : Coverage {
 };
 struct FontLess {
     bool operator()(const Font& a, const Font& b) const {
-        return std::tie(a.family,a.locale,a.size,a.weight) < std::tie(b.family,b.locale,b.size,b.weight);
+        return std::tie(a.family,a.locale,a.size,a.weight,a.style) < std::tie(b.family,b.locale,b.size,b.weight,b.style);
     }
 };
 
@@ -122,6 +122,7 @@ struct TextStore::Impl {
         std::array<Paragraph, 2> paragraphs;
     };
     ComPtr<IDWriteFactory2> factory;
+    ComPtr<IDWriteFontCollection1> font_collection;
     std::map<std::uint64_t, Entry> entries;
     std::map<Font, ComPtr<IDWriteTextFormat>, FontLess> formats;
     std::map<std::pair<TextStore::Symbol,std::uint32_t>,std::shared_ptr<const Coverage>> symbols;
@@ -129,9 +130,21 @@ struct TextStore::Impl {
     std::uint64_t provider_revision{new_identity()};
     TextStatistics statistics;
     std::shared_ptr<CoverageAccounting> accounting{std::make_shared<CoverageAccounting>()};
-    Impl() {
+    explicit Impl(std::span<const std::wstring> font_files) {
         check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2),
-            reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
+              reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
+        if (!font_files.empty()) {
+            ComPtr<IDWriteFactory5> loader; check(factory.As(&loader));
+            ComPtr<IDWriteFontSetBuilder1> builder; check(loader->CreateFontSetBuilder(&builder));
+            for (const auto& path:font_files) {
+                ComPtr<IDWriteFontFile> file; check(loader->CreateFontFileReference(path.c_str(),nullptr,&file));
+                check(builder->AddFontFile(file.Get()));
+            }
+            ComPtr<IDWriteFontSet> system; check(loader->GetSystemFontSet(&system));
+            check(builder->AddFontSet(system.Get()));
+            ComPtr<IDWriteFontSet> fonts; check(builder->CreateFontSet(&fonts));
+            check(loader->CreateFontCollectionFromFontSet(fonts.Get(),&font_collection));
+        }
     }
     Paragraph& resolve(std::uint64_t key, std::optional<float> width) {
         auto found = entries.find(key);
@@ -144,8 +157,9 @@ struct TextStore::Impl {
         paragraph = {};
         auto& format = formats[entry.font];
         if (!format) {
-            check(factory->CreateTextFormat(entry.font.family.c_str(), nullptr, static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
+            check(factory->CreateTextFormat(entry.font.family.c_str(), font_collection.Get(), static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
+                entry.font.style==FontStyle::italic?DWRITE_FONT_STYLE_ITALIC:DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
         }
         check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
             width.value_or(0), 0, &paragraph.layout));
@@ -196,7 +210,7 @@ struct TextSnapshot::Impl {
 TextSnapshot::TextSnapshot(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
 bool TextSnapshot::matches(std::wstring_view text) const noexcept { return impl_->text == text; }
 
-TextStore::TextStore() : impl_(std::make_unique<Impl>()) {}
+TextStore::TextStore(std::span<const std::wstring> files) : impl_(std::make_unique<Impl>(files)) {}
 TextStore::~TextStore() = default;
 std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment) {
     auto& entry = impl_->entries[key];
@@ -208,25 +222,44 @@ std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Fo
 }
 void TextStore::erase(std::uint64_t key) { impl_->entries.erase(key); }
 std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t pixels) {
-    if (!pixels || pixels>128) throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
+    if (!pixels || pixels>256) throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
     const auto key=std::pair{symbol,pixels};
     if (const auto found=impl_->symbols.find(key);found!=impl_->symbols.end()) {
         ++impl_->statistics.coverage_cache_hits; return found->second;
     }
     auto coverage=std::make_shared<TrackedCoverage>(impl_->accounting,pixels,pixels);
-    const auto segment=[](float x,float y,float ax,float ay,float bx,float by) {
+    const auto segment=[symbol](float x,float y,float ax,float ay,float bx,float by) {
         const auto dx=bx-ax,dy=by-ay;
         const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
         const auto px=x-ax-t*dx,py=y-ay-t*dy;
-        return px*px+py*py<=.0064f;
+        return px*px+py*py<=(symbol==Symbol::world?.001225f:.0064f);
     };
     for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
         unsigned inside{};
         for (unsigned sy=0;sy<4;++sy) for (unsigned sx=0;sx<4;++sx) {
             const auto px=(static_cast<float>(x)+(static_cast<float>(sx)+.5f)/4)/static_cast<float>(pixels);
             const auto py=(static_cast<float>(y)+(static_cast<float>(sy)+.5f)/4)/static_cast<float>(pixels);
-            const bool hit=symbol==Symbol::check?
+            const auto outline=[&](float left,float top,float right,float bottom) {
+                return px>=left && px<=right && py>=top && py<=bottom &&
+                    (px<left+.1f || px>right-.1f || py<top+.1f || py>bottom-.1f);
+            };
+            const auto ax=symbol==Symbol::forward?1-px:px;
+            const bool hit=(symbol==Symbol::back || symbol==Symbol::forward)?
+                ((ax>=.08f && ax<=.53f && std::abs(py-.5f)<(ax-.08f)*.85f) || (ax>=.5f && ax<=.92f && py>=.37f && py<=.63f)):
+                symbol==Symbol::world?(segment(px,py,.16f,.30f,.50f,.12f) || segment(px,py,.50f,.12f,.84f,.30f) ||
+                    segment(px,py,.16f,.30f,.50f,.49f) || segment(px,py,.50f,.49f,.84f,.30f) ||
+                    segment(px,py,.16f,.30f,.16f,.70f) || segment(px,py,.84f,.30f,.84f,.70f) ||
+                    segment(px,py,.50f,.49f,.50f,.89f) || segment(px,py,.16f,.70f,.50f,.89f) || segment(px,py,.50f,.89f,.84f,.70f)):
+                symbol==Symbol::close?(segment(px,py,.2f,.2f,.8f,.8f) || segment(px,py,.8f,.2f,.2f,.8f)):
+                symbol==Symbol::plus?(segment(px,py,.2f,.5f,.8f,.5f) || segment(px,py,.5f,.2f,.5f,.8f)):
+                symbol==Symbol::maximize?(px>=.15f && px<=.85f && py>=.225f && py<=.775f && px+py<1):
+                symbol==Symbol::restore?(outline(.1f,.3f,.7f,.9f) || ((py<.3f || px>.7f) && outline(.3f,.1f,.9f,.7f))):
+                symbol==Symbol::check?
                 (segment(px,py,.17f,.53f,.40f,.77f) || segment(px,py,.40f,.77f,.85f,.23f)):
+                symbol==Symbol::disclosure_right?(px>=.2f && px<=.8f && std::abs(py-.5f)<(.8f-px)*.75f):
+                symbol==Symbol::disclosure_down?(py>=.2f && py<=.8f && std::abs(px-.5f)<(.8f-py)*.75f):
+                symbol==Symbol::left?(px>=.25f && px<=.7f && std::abs(py-.5f)<(px-.25f)*.7f):
+                symbol==Symbol::up?(py>=.25f && py<=.7f && std::abs(px-.5f)<(py-.25f)*.7f):
                 symbol==Symbol::right?(px>=.3f && px<=.75f && std::abs(py-.5f)<(.75f-px)*.7f):
                 (py>=.3f && py<=.75f && std::abs(px-.5f)<(.75f-py)*.7f);
             inside+=hit?1u:0u;

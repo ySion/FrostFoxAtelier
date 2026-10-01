@@ -29,32 +29,47 @@ text_edit:focus { border-color: token(accent); }
 4. 同一表中，类名与状态每项权重 100，种类与角色每项权重 1；权重相同则后写的规则胜出。类名排列不影响结果，重复类名去重。
 5. `Control.style` 最后覆盖。
 
-只有明确指定的字体 family、locale、size、weight 和文字颜色向下继承。背景、图片、内边距、圆角和边框不继承。Token 只属于所在表，解析时展开，不随控件继承。外层表仍会匹配局部作用域中的后代；scope 增加局部优先级，不隔离树。
+只有明确指定的字体 family、locale、size、weight、style 和文字颜色向下继承。背景、图片、内边距、圆角和边框不继承。Token 只属于所在表，解析时展开，不随控件继承。外层表仍会匹配局部作用域中的后代；scope 增加局部优先级，不隔离树。
 
 ## 支持的语法
 
 - 单控件选择器：`button`、`*`、`.compact`、`button.compact.danger`，可用逗号共享声明。
-- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo`。
+- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo / tab / slider`。
 - 角色：`:role(normal|panel|title|caption)`。
 - 状态：`:enabled / :disabled / :hover / :pressed / :focus / :selected / :invalid / :modified`，可组合；enabled 与 disabled 不能共存。`modified` 来自宿主的默认值比较，与焦点、选中和非法草稿分别表达。
 - `@tokens { name: value; }` 与全值 `token(name)`；支持前向引用，拒绝循环及未知 token。
 - UTF-8 文本、`/* 注释 */`；每条声明必须以分号结尾。类名为不以数字开头的 ASCII 字母、数字、`_`、`-`，最长 64 字节。
 
-状态选择器只改变绘制属性，拒绝字体、text-align 和 padding，避免 hover/pressed 改变命中几何。结构布局继续用 `NodeInput`；本片没有后代选择器、浏览器盒模型、百分比、表达式、动画或通用 CSS。
+悬停、按下、焦点和非法状态只改变绘制属性。modified、selected、enabled、disabled 等持久状态可以改变 font-weight 和 font-style，例如非默认数值加粗；其他字体属性、text-align、padding、indicator-size 和滚动条尺寸仍禁止用于状态选择器。结构布局继续用 `NodeInput`；本片没有后代选择器、浏览器盒模型、百分比、表达式、动画或通用 CSS。
 
 | 属性 | 值 |
 | --- | --- |
-| `color / background / border-color / selection-color / caret-color / scrollbar-color` | `#RRGGBB`、`#RRGGBBAA`、`transparent` 或 `none`；作者 RGB 是 sRGB，解析为线性颜色 |
+| `color / background / border-color / selection-color / caret-color / scrollbar-color / accent-color` | `#RRGGBB`、`#RRGGBBAA`、`transparent` 或 `none`；作者 RGB 是 sRGB，解析为线性颜色 |
 | `font-family / font-locale` | 单引号或双引号 UTF-8 字符串，不支持转义 |
 | `font-size / font-weight` | 4–256 DIP / 整数 1–999 |
+| `font-style` | `normal / italic`；进入同一 DirectWrite 字体身份、测量和字形缓存；缺少斜体字面时由 DirectWrite 合成 |
 | `text-align` | `left / center / right`；不继承，在同一 DirectWrite 段落内处理测量、绘制和命中 |
+| `text-vertical-align` | `top / center / bottom`；不继承，不能用于状态选择器；文字、选区、caret 和输入法锚点共用偏移；显式首基线布局优先 |
+| `border-style` | `solid / inset / outset`；后两者为方角的明暗边缘，沿现有四边实色实例绘制 |
+| `border-edges` | `all`（默认）、`none`，或不重复的 `top right bottom left` 子集；可表达共边页签及选中页签的开口底边 |
+| `border-inner-color` | 方角框上侧、左侧的内沿颜色；厚度同 border-width，透明值关闭，不影响文字测量 |
+| `indicator-size` | 4–32 DIP，控制勾选/折叠/下拉及图标。纯图标按钮在 padding 后的内容区居中，空间不足时缩小 |
+| `indicator-background / indicator-border-color` | 勾选框、滑条拇指的背景与边缘颜色；最大化图标也使用 indicator-background 绘制对角底色 |
+| `indicator-color` | 勾选/折叠标记及下拉箭头的颜色；缺省跟随文字前景，内容图标仍使用 color |
+| `combo-indicator` | `down`（默认）或 `arrows`；上下双箭头仍开启同一原生菜单，右侧预留宽度不变 |
+| `accent-width` | 0–16 DIP，控件底部提示线厚度；0 隐藏。滑条填充色也使用 accent-color |
 | `padding` | 1、2 或 4 个长度；四值依次上、右、下、左，0–128 DIP |
 | `border-radius` | 1、2 或 4 个长度；四值依次左上、右上、右下、左下，0–32768 DIP |
 | `border-width / caret-width` | 0–128 / 0.25–16 DIP |
 | `scrollbar-width / scrollbar-inset / scrollbar-min-thumb` | 0.25–32 / 0–32 / 1–128 DIP |
-| `background-image` | `image(name)` 或 `none`；name 由宿主传入 `NamedImage` 绑定 |
+| `scrollbar-button-size` | 0–64 DIP；0 跟随条宽，窄于 8 DIP 的自动细条省略步进按钮 |
+| `background-image / scrollbar-image` | `image(name)`、`linear-gradient(起色, 终色)` 或 `none`；可在两色前指定 `to right,` 或 `to bottom,`；name 由宿主传入 `NamedImage` 绑定 |
+
+list/popup 的滚动条使用 `scrollbar-color` 和可选 `scrollbar-image` 绘制滑块及可用的步进按钮，`indicator-background` 绘制轨道，`indicator-border-color` 绘制细边和点阵握柄的亮侧；暗侧使用同透明度的黑色。到达端点后相应按钮变暗。宽度和 inset 同时参与布局留白及接受帧命中；颜色仍只影响绘制。编辑器 SS 采用 16 DIP 宽度、21.333 DIP 步进按钮和 24 DIP 最短滑块。工作区及内容页签的 hover 保持原底色，选中页签以底面区分。
 
 长度可带 `dip`，裸数也按 DIP。圆角双值分别作用于左上/右下、右上/左下。输入最多 1 MiB、1024 个块、4096 条展开规则，每个选择器最多 16 个类。原生 `StyleSheet::create` 使用相同属性与选择器校验；其诊断无文本位置，行列为零。
+
+两色渐变在解析时生成一张纵向 1×64 或横向 64×1、256 字节的预乘 RGBA 纹理；缺省方向向下。同一表中的相同声明共享资源，稳定帧不生成像素。透明端点在预乘线性空间插值后编码为 sRGB，继续走现有 ColorImage 上传、裁剪和缓存。仅支持横纵两个方向，没有任意角度或多色标语法。
 
 ## 图片、圆角与批处理
 
@@ -62,7 +77,11 @@ text_edit:focus { border-color: token(accent); }
 
 图片 RGB 字节存储 **sRGB 编码后的线性预乘颜色**，alpha 字节为线性值。导入普通 straight sRGB RGBA 时，先解码 RGB 到线性，乘 alpha，再将 RGB 编码回 sRGB。例如半透明纯红约为 `{188,0,0,128}`。不能直接将普通 PNG 的 straight RGBA 字节当作本协议。R8 文字覆盖图继续使用原协议，两种资源分开标识、统计，共用上传及退休实现；尚未接入引擎 Texture 资源对象或文件解码器。
 
-每个盒的背景、图片及向内边框在一次绘制中合成并应用共同圆角遮罩，避免边缘重复叠色。四角独立，过大半径按相邻边和统一缩放，边框限制在较短边一半以内。圆角只作用于该盒自身，后代裁剪与输入命中仍是矩形；不宣称支持 rounded overflow 或路径裁剪。
+solid 盒的背景、图片及向内边框在一次绘制中合成并应用共同圆角遮罩，避免边缘重复叠色。四角独立，过大半径按相邻边和统一缩放，边框限制在较短边一半以内。圆角只作用于该盒自身，后代裁剪与输入命中仍是矩形；不宣称支持 rounded overflow 或路径裁剪。
+
+inset/outset 使用方角背景及四个相邻边缘实例。浅边使用 border-color，深边使用其线性 RGB 的 15%，alpha 不变；两种方向交换明暗边。此模式明确使用方角，不与 border-radius 组合。焦点可切回 solid 统一细边。
+
+方角边框的边界及非零线宽对齐物理像素，最细为一像素；编辑器使用 0.667 DIP 在当前 150% DPI 下表达一像素细边。布局、文字和接受帧命中仍保留原浮点几何。`border-edges` 的部分边使用同一 painter 的实色实例，也采用方角；`border-inner-color` 只在方角框启用。普通四边 solid/圆角继续走原单实例路径。未扩展 RHI 绘制协议，也没有按编辑器类名分支绘制。
 
 renderer 只合并相邻且有效 scissor、管线、图片身份/版本相同的项，不重排。位置、UV、颜色、圆角及边框在实例数据中，可以在同一批次变化。一帧 UI 实例共用一次上传；没有新增图集或长期几何缓存。`FrameStats` 同时记录 `ui_quads`、实际 `ui_draw_calls`、`ui_instance_upload_bytes`，以及 R8 / RGBA 的上传与缓存数量/字节。缓存统计不含 gfx 在飞退休队列或物理显存。
 

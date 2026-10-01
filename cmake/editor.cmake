@@ -1,5 +1,9 @@
 function(atelier_add_editor)
     configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ss" "${CMAKE_BINARY_DIR}/editor.ss" COPYONLY)
+    foreach(font_asset SarasaUiSC-Regular.ttf SarasaUiSC-SemiBold.ttf
+            SourceCodePro-Regular.otf SourceCodePro-Bold.otf sarasa-LICENSE.txt source-code-pro-LICENSE.md sources.json)
+        configure_file("${PROJECT_SOURCE_DIR}/assets/fonts/${font_asset}" "${CMAKE_BINARY_DIR}/fonts/${font_asset}" COPYONLY)
+    endforeach()
     add_library(atelier_editor_core STATIC
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")
@@ -8,6 +12,7 @@ function(atelier_add_editor)
     target_link_libraries(atelier_editor_core PUBLIC atelier_world)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/application.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/control_workbench.cpp")

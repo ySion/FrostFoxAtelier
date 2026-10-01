@@ -35,6 +35,17 @@ int main() {
         const auto state = take(world::inspect_actor(runtime, actor));
         require(state.state == world::ActorState::attached_inactive && state.can_edit && !state.can_present,
             "Empty Actor state confused editability with render registrations.");
+        const std::wstring original_name(document.name(actor));
+        const auto before_rename=document.undo_count();
+        take(document.rename(actor,L"主角 Hero"));
+        require(document.name(actor)==L"主角 Hero" && document.undo_count()==before_rename+1,"Document name did not create one history entry.");
+        take(document.rename(actor,L"主角 Hero"));
+        require(document.undo_count()==before_rename+1 && !document.rename(actor,L" ") && document.name(actor)==L"主角 Hero",
+            "Unchanged or invalid document names modified history.");
+        changed(document.undo());
+        require(document.name(actor)==original_name,"Name Undo did not restore the label.");
+        changed(document.redo());
+        require(document.name(actor)==L"主角 Hero","Name Redo did not restore the label.");
         changed(document.add_component(document.types().transform));
         changed(document.add_component(document.types().cube));
         const auto transform = component(document, actor, document.types().transform);
@@ -84,12 +95,12 @@ int main() {
         take(document.select(actor));
         changed(document.erase_selected());
         require(take(document.world().members()).size() == 1 && take(document.world().render_items()).empty() &&
-            !document.begin_edit(transform, path, 15), "A detached Actor remained editable or presentable in the World.");
+            !document.begin_edit(transform, path, 15) && !document.rename(actor,L"Detached"), "A detached Actor remained editable or presentable in the World.");
         collect(document);
         changed(document.undo());
         require(document.selected() == actor && take(document.world().members()).front().id() == actor &&
             component(document, actor, document.types().transform) == transform && component(document, actor, document.types().cube) == cube &&
-            value(document, transform) == 34, "Actor delete/GC/undo did not restore identities, composition, order and values.");
+            value(document, transform) == 34 && document.name(actor)==L"主角 Hero", "Actor delete/GC/undo did not restore identities, composition, order, names and values.");
         take(document.begin_edit(transform, path, 16)); take(document.preview_edit(16, 88));
         changed(document.erase_selected()); changed(document.undo());
         require(!document.editing() && value(document, transform) == 34,
@@ -102,14 +113,14 @@ int main() {
             take(world::components(runtime, actor)).size() == 2 && take(world::read_transform(runtime, transform)).position.x == 34,
             "History retirement destroyed an Actor still held by an ordinary root or lost its composition.");
         retained.reset(); collect(document);
-        require(take(world::inspect_actor(runtime, actor)).state == world::ActorState::invalid,
+        require(take(world::inspect_actor(runtime, actor)).state == world::ActorState::invalid && document.name(actor).empty(),
             "Retired document history retained an unreferenced detached Actor.");
         auto survivor = take(runtime.hold(other));
         changed(document.close());
         require(survivor.registered() && take(world::inspect_actor(runtime, other)).state == world::ActorState::detached &&
             document.undo_count() == 0 && document.redo_count() == 0,
             "Document close did not release participation/history or destroyed a retained Actor.");
-        std::puts("Editor document acceptance: PASS (Actor/component identity, field history, membership, retirement, close)");
+        std::puts("Editor document acceptance: PASS (Actor/component identity, name/field history, membership, retirement, close)");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Editor document acceptance: FAIL: %s\n", error.what());

@@ -1,6 +1,7 @@
 #include "ui/session.hpp"
 #include "ui/text.hpp"
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <map>
@@ -10,17 +11,24 @@
 
 namespace atelier::ui {
 namespace {
+constexpr std::array ladder_steps{100.,10.,1.,.1,.01,.001,.0001};
+constexpr std::array ladder_labels{L"100",L"10",L"1",L".1",L".01",L".001",L".0001"};
+constexpr float ladder_tick_distance=4;
 bool text_kind(ControlKind kind) {
     return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item ||
         kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::checkbox || kind == ControlKind::foldout ||
-        kind == ControlKind::menu_item || kind == ControlKind::combo;
+        kind == ControlKind::menu_item || kind == ControlKind::combo || kind == ControlKind::tab;
 }
 bool toggle_kind(ControlKind kind) { return kind == ControlKind::checkbox || kind == ControlKind::foldout; }
-bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind) || kind==ControlKind::menu_item || kind==ControlKind::combo; }
+bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || toggle_kind(kind) || kind==ControlKind::menu_item || kind==ControlKind::combo || kind==ControlKind::tab; }
 bool scrolling(ControlKind kind) { return kind==ControlKind::list || kind==ControlKind::popup; }
 bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit; }
-bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter; }
-bool focusable(ControlKind kind) { return text_kind(kind) && kind != ControlKind::label; }
+bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter || kind == ControlKind::slider; }
+Rect slider_track(Rect bounds,float scale) {
+    const auto inset=std::min(7*scale,bounds.width*.5f);
+    return {bounds.x+inset,bounds.y+bounds.height*.5f-scale,std::max(0.f,bounds.width-2*inset),2*scale};
+}
+bool focusable(ControlKind kind) { return (text_kind(kind) && kind != ControlKind::label) || kind==ControlKind::slider; }
 bool contains(Rect rect, float x, float y) {
     return x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height;
 }
@@ -86,15 +94,23 @@ struct Session::Impl {
         std::vector<std::shared_ptr<const StyleSheet>> sheets;
         std::shared_ptr<const ResolvedStyle> resolved;
     };
+    struct Ladder {
+        ValueLadderGeometry geometry;
+        std::shared_ptr<const ResolvedStyle> style;
+        std::array<detail::RasterText,7> labels;
+        float text_height{};
+        double remainder{}, multiplier{1};
+        bool fine{}, multiply{};
+    };
     struct Press {
         ControlKey key{};
         float x{}, y{}, last_x{}, last_y{};
         double original{}, value{};
         bool dragging{}, selecting{};
         PointerButton button{PointerButton::primary};
-        float ladder_band{24};
-        int ladder_level{};
-        bool ladder_fine{};
+        std::optional<Ladder> ladder{};
+        float slider_span{1}; // Accepted physical track width, frozen until release.
+        bool scrollbar{}; // Scroll offset belongs to the UI, never a document edit.
     };
     struct Edit {
         struct Composition {
@@ -140,7 +156,7 @@ struct Session::Impl {
     ControlKey popup{}, popup_return_focus{};
     bool popup_dismissed{};
 
-    Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
+    explicit Impl(std::span<const std::wstring> fonts) : text(fonts) { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
     bool active() const {
         return published && published->drawing->extent == surface.extent &&
             published->drawing->dpi_scale == surface.dpi_scale && published->drawing->surface_revision == surface.revision &&
@@ -214,13 +230,15 @@ struct Session::Impl {
             input.content_revision = text_field(state.control.kind) ?
                 text.set(state.control.key, display(state), appearance.font,false,appearance.text_align) :
                 text.set(state.control.key, state.control.text, appearance.font,state.control.kind == ControlKind::label,appearance.text_align);
-        } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter) {
+        } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter || state.control.kind==ControlKind::slider) {
             input.kind = ui_layout::Kind::box;
         } else if (scrolling(state.control.kind)) {
             input.kind = ui_layout::Kind::column;
+            input.padding.right += appearance.scrollbar_width + appearance.scrollbar_inset*2;
             if (state.control.kind==ControlKind::popup) {
                 input.height.maximum=surface.extent.height/surface.dpi_scale;
                 input.width.maximum=surface.extent.width/surface.dpi_scale;
+                if (input.width.rule==ui_layout::SizeRule::fixed) input.width.value=std::min(input.width.value,*input.width.maximum);
             }
         }
         return input;
@@ -257,7 +275,7 @@ struct Session::Impl {
     }
 };
 
-Session::Session() : impl_(std::make_unique<Impl>()) {}
+Session::Session(std::span<const std::wstring> fonts) : impl_(std::make_unique<Impl>(fonts)) {}
 Session::~Session() = default;
 Result<void> Session::set_style(const Style& style) {
     if (!valid_style(style)) return std::unexpected(Error{ErrorCode::invalid_style});
@@ -306,18 +324,25 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     ControlKey next_popup{};
     for (const auto& control : controls) {
         if (!control.key || validated.contains(control.key) || (control.parent && !validated.contains(control.parent)) ||
-            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::combo) ||
+            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::slider) ||
             static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 || !std::isfinite(control.value) ||
             !std::isfinite(control.minimum) || !std::isfinite(control.maximum) || control.minimum > control.maximum ||
             !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
             static_cast<unsigned>(control.drag_axis) > static_cast<unsigned>(DragAxis::vertical))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::world) ||
+            (control.icon!=ControlIcon::none && (control.kind!=ControlKind::button && control.kind!=ControlKind::label && control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo)))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if ((control.click_action && control.kind!=ControlKind::splitter) ||
+            (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent || validated.at(control.parent)->kind!=ControlKind::container)) ||
+            (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum || *control.default_value>control.maximum))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.kind==ControlKind::popup) {
-            if (next_popup || control.parent || !control.popup_owner || !validated.contains(control.popup_owner))
+            if (next_popup || control.parent || (control.popup_owner && !validated.contains(control.popup_owner)))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             next_popup=control.key;
         } else if (control.popup_owner) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
@@ -341,7 +366,7 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
             if (kind != ControlKind::container && kind != ControlKind::list && kind!=ControlKind::popup)
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         }
-        if (editable(control.kind) && (control.value < control.minimum || control.value > control.maximum))
+        if (editable(control.kind) && control.kind!=ControlKind::slider && (control.value < control.minimum || control.value > control.maximum))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         validated.emplace(control.key,&control); order.push_back(control.key);
     }
@@ -430,6 +455,36 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (visible(bounds,clip) && color.a > 0)
                 draws->draws.push_back({bounds,clip,color,{0,0,1,1},std::move(coverage)});
         };
+        const auto paint_box=[&](Rect bounds,Clip clip,Color background,std::shared_ptr<const ColorImage> image,
+                                 CornerRadii radius,float border,Color edge,BorderStyle relief,
+                                 BorderEdges edges=BorderEdges::all,std::optional<Color> inner={}) {
+            const bool beveled=relief!=BorderStyle::solid;
+            const bool square=beveled || edges!=BorderEdges::all || radius==CornerRadii{};
+            if (square && border>0) {
+                const auto right=std::round(bounds.x+bounds.width),bottom=std::round(bounds.y+bounds.height);
+                bounds.x=std::round(bounds.x); bounds.y=std::round(bounds.y);
+                bounds.width=std::max(0.f,right-bounds.x); bounds.height=std::max(0.f,bottom-bounds.y);
+                border=std::min({std::max(1.f,std::round(border)),bounds.width*.5f,bounds.height*.5f});
+            }
+            const bool separate=beveled || edges!=BorderEdges::all;
+            draws->draws.push_back({bounds,clip,image?Color{1,1,1,1}:background,{0,0,1,1},{},
+                square?CornerRadii{}:radius,separate?0:border,edge,std::move(image),background});
+            if (border<=0) return;
+            if (separate) {
+                const Color dark{edge.r*.15f,edge.g*.15f,edge.b*.15f,edge.a};
+                const auto near=relief==BorderStyle::inset?dark:edge,far=relief==BorderStyle::outset?dark:edge;
+                const auto top=has_edge(edges,BorderEdges::top)?border:0.f,bottom=has_edge(edges,BorderEdges::bottom)?border:0.f;
+                if (top) quad({bounds.x,bounds.y,bounds.width,border},clip,near);
+                if (bottom) quad({bounds.x,bounds.y+bounds.height-border,bounds.width,border},clip,far);
+                if (has_edge(edges,BorderEdges::left)) quad({bounds.x,bounds.y+top,border,std::max(0.f,bounds.height-top-bottom)},clip,near);
+                if (has_edge(edges,BorderEdges::right)) quad({bounds.x+bounds.width-border,bounds.y+top,border,std::max(0.f,bounds.height-top-bottom)},clip,far);
+            }
+            // Square frames can carry an independent top/left inner relief.
+            if (square && inner) {
+                if (has_edge(edges,BorderEdges::top)) quad({bounds.x+border,bounds.y+border,std::max(0.f,bounds.width-2*border),border},clip,*inner);
+                if (has_edge(edges,BorderEdges::left)) quad({bounds.x+border,bounds.y+2*border,border,std::max(0.f,bounds.height-3*border)},clip,*inner);
+            }
+        };
         std::size_t popup_draw_begin=std::numeric_limits<std::size_t>::max();
         for (auto key : self.order) {
             auto& state = self.states.at(key);
@@ -446,7 +501,12 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 bounds.x += parent_box.bounds.x; bounds.y += parent_box.bounds.y;
                 clip = intersect(parent_box.clip,clip_rect(parent_box.bounds));
                 enabled &= parent_box.enabled;
-                if (scrolling(parent_state.control.kind)) bounds.y -= static_cast<float>(parent_state.scroll)*scale;
+                if (scrolling(parent_state.control.kind)) {
+                    bounds.y -= static_cast<float>(parent_state.scroll)*scale;
+                    const auto& style=*parent_state.resolved;
+                    clip.right=std::min(clip.right,static_cast<std::int32_t>(std::floor(parent_box.bounds.x+parent_box.bounds.width-
+                        (style.scrollbar_width+style.scrollbar_inset*2)*scale)));
+                }
             }
             if (state.control.kind==ControlKind::popup) {
                 bounds.x=std::clamp(bounds.x,0.f,std::max(0.f,static_cast<float>(self.surface.extent.width)-bounds.width));
@@ -471,28 +531,85 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 appearance.radius.bottom_right*scale,appearance.radius.bottom_left*scale};
             if (appearance.background || appearance.image || (border>0 && appearance.border.a>0)) {
                 const auto background=appearance.background.value_or(Color{0,0,0,0});
-                draws->draws.push_back({bounds,clip,appearance.image?Color{1,1,1,1}:background,
-                    {0,0,1,1},{},radius,border,appearance.border,appearance.image,background});
+                paint_box(bounds,clip,background,appearance.image,radius,border,appearance.border,appearance.border_style,appearance.border_edges,appearance.border_inner);
+            }
+            if (appearance.accent_width>0) {
+                const auto height=std::min(appearance.accent_width*scale,bounds.height);
+                quad({bounds.x,bounds.y+bounds.height-height,bounds.width,height},intersect(clip,clip_rect(bounds)),appearance.accent);
+            }
+            if (kind==ControlKind::slider) {
+                const auto track=slider_track(bounds,scale);
+                const auto value=self.press && self.press->key==key?self.press->value:state.control.value;
+                const auto fraction=static_cast<float>(std::clamp((value-state.control.minimum)/(state.control.maximum-state.control.minimum),0.0,1.0));
+                const auto slider_clip=intersect(clip,clip_rect(bounds));
+                quad(track,slider_clip,appearance.border);
+                quad({track.x,track.y,track.width*fraction,track.height},slider_clip,appearance.accent);
+                const auto height=std::min(16*scale,bounds.height);
+                paint_box({track.x+track.width*fraction-2.5f*scale,bounds.y+(bounds.height-height)*.5f,5*scale,height},
+                    slider_clip,appearance.indicator_background,{}, {},scale,appearance.indicator_border,BorderStyle::outset);
+            }
+            if (state.control.icon!=ControlIcon::none) {
+                using Icon=ControlIcon; using Symbol=detail::TextStore::Symbol;
+                const auto icon=state.control.icon;
+                const auto icon_clip=intersect(clip,clip_rect(bounds));
+                if (icon==Icon::grip_horizontal || icon==Icon::grip_vertical) {
+                    const bool vertical=icon==Icon::grip_vertical;
+                    for (int i=0;i<8;++i) for (int j=0;j<2;++j) {
+                        const float major=(static_cast<float>(i)-3.5f)*3*scale,minor=(static_cast<float>(j)-.5f)*3*scale;
+                        quad({bounds.x+bounds.width*.5f+(vertical?minor:major),bounds.y+bounds.height*.5f+(vertical?major:minor),scale,scale},icon_clip,appearance.foreground);
+                    }
+                } else {
+                    const auto symbol=icon==Icon::close?Symbol::close:icon==Icon::maximize?Symbol::maximize:icon==Icon::restore?Symbol::restore:icon==Icon::plus?Symbol::plus:
+                        icon==Icon::back?Symbol::back:icon==Icon::forward?Symbol::forward:icon==Icon::world?Symbol::world:
+                        icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
+                    auto padding=effective_padding(state.control,appearance);
+                    const bool leading=!state.control.text.empty();
+                    if (leading) padding.left-=appearance.indicator_size+6;
+                    const float width=std::max(0.f,bounds.width-(padding.left+padding.right)*scale);
+                    const float height=std::max(0.f,bounds.height-(padding.top+padding.bottom)*scale);
+                    const float size=std::min({appearance.indicator_size*scale,width,height});
+                    const float x=bounds.x+padding.left*scale+(leading?0:(width-size)*.5f), y=bounds.y+padding.top*scale+(height-size)*.5f;
+                    if (size>0) {
+                        if (icon==Icon::maximize) quad({x+size*.15f,y+size*.225f,size*.7f,size*.55f},icon_clip,appearance.indicator_background);
+                        if (icon==Icon::back || icon==Icon::forward) {
+                            quad({x,y,size,size},icon_clip,appearance.indicator_border,self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
+                            const auto stroke=std::max(1.f,std::round(scale));
+                            if (size>stroke*2) quad({x+stroke,y+stroke,size-2*stroke,size-2*stroke},icon_clip,appearance.foreground,
+                                self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size-2*stroke))));
+                        } else quad({x,y,size,size},icon_clip,appearance.foreground,self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
+                    }
+                }
             }
             if (toggle_kind(kind)) {
                 const auto marker_clip=intersect(clip,clip_rect(bounds));
                 const float x=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
-                const float y=bounds.y+(bounds.height-14*scale)*.5f;
+                const float size=appearance.indicator_size*scale;
+                const float y=bounds.y+(bounds.height-size)*.5f;
+                const float glyph=std::max(2.f,appearance.indicator_size-2)*scale;
                 if (kind==ControlKind::checkbox) {
-                    draws->draws.push_back({{x,y,14*scale,14*scale},marker_clip,{0,0,0,0},{0,0,1,1},{},
-                        {2*scale,2*scale,2*scale,2*scale},scale,appearance.foreground});
-                    if (state.control.selected) quad({x+scale,y+scale,12*scale,12*scale},marker_clip,appearance.foreground,
-                        self.text.symbol(detail::TextStore::Symbol::check,static_cast<std::uint32_t>(std::ceil(12*scale))));
+                    paint_box({x,y,size,size},marker_clip,appearance.indicator_background,{}, {},scale,
+                        appearance.indicator_border.a>0?appearance.indicator_border:appearance.foreground,
+                        appearance.indicator_border.a>0?BorderStyle::inset:BorderStyle::solid);
+                    if (state.control.selected) quad({x+scale,y+scale,glyph,glyph},marker_clip,appearance.indicator_foreground.value_or(appearance.foreground),
+                        self.text.symbol(detail::TextStore::Symbol::check,static_cast<std::uint32_t>(std::ceil(glyph))));
                 } else {
-                    quad({x+scale,y+scale,12*scale,12*scale},marker_clip,appearance.foreground,
-                        self.text.symbol(state.control.selected?detail::TextStore::Symbol::down:detail::TextStore::Symbol::right,
-                            static_cast<std::uint32_t>(std::ceil(12*scale))));
+                    quad({x,y,size,size},marker_clip,appearance.indicator_foreground.value_or(appearance.foreground),
+                        self.text.symbol(state.control.selected?detail::TextStore::Symbol::disclosure_down:detail::TextStore::Symbol::disclosure_right,
+                            static_cast<std::uint32_t>(std::ceil(size))));
                 }
             }
-            if (kind==ControlKind::combo) {
-                const float size=12*scale;
-                quad({bounds.x+bounds.width-16*scale,bounds.y+(bounds.height-size)*.5f,size,size},intersect(clip,clip_rect(bounds)),
-                    appearance.foreground,self.text.symbol(detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
+            if (kind==ControlKind::combo && (state.control.icon==ControlIcon::none || !state.control.text.empty())) {
+                const float size=std::min(appearance.indicator_size,14.f)*scale;
+                const auto arrow_clip=intersect(clip,clip_rect(bounds));
+                quad({bounds.x+bounds.width-15*scale,bounds.y+border,15*scale-border,std::max(0.f,bounds.height-2*border)},arrow_clip,{0,0,0,.17f});
+                const auto arrow=[&](detail::TextStore::Symbol symbol,float cy) {
+                    quad({bounds.x+bounds.width-(15*scale+size)*.5f,cy-size*.5f,size,size},arrow_clip,
+                        appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
+                };
+                if (appearance.combo_indicator==ComboIndicator::arrows) {
+                    arrow(detail::TextStore::Symbol::up,bounds.y+bounds.height*.5f-3.5f*scale);
+                    arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f+3.5f*scale);
+                } else arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f);
             }
             if (text_kind(kind)) {
                 const auto padding = effective_padding(state.control,appearance);
@@ -504,8 +621,11 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 const float content_height = std::max(0.f,box->height-(padding.top+padding.bottom));
                 // Baseline contexts use the same top origin as layout measurement,
                 // including text contributing a nested container's first baseline.
-                if (kind != ControlKind::label && !state.baseline_content)
-                    y += std::max(0.f,(content_height-metrics.height)*.5f)*scale;
+                if (!state.baseline_content) {
+                    const auto alignment=appearance.text_vertical_align;
+                    const float offset=alignment==TextVerticalAlign::center?.5f:alignment==TextVerticalAlign::bottom?1.f:0.f;
+                    y += std::max(0.f,content_height-metrics.height)*offset*scale;
+                }
                 const auto text_clip = intersect(clip,clip_rect(text_field(kind)?
                     Rect{bounds.x+padding.left*scale,bounds.y+padding.top*scale,width*scale,content_height*scale}:bounds));
                 const bool editing=self.edit && self.edit->key==key && self.edit->text_mode;
@@ -574,12 +694,45 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (state.frame_index==std::numeric_limits<std::size_t>::max()) return;
             const auto& bounds = output->controls[state.frame_index];
             const auto& appearance=*state.resolved;
-            if (state.scroll_limit > 0) {
-                const float track = bounds.bounds.height;
-                const float thumb = std::min(track,std::max(appearance.scrollbar_min_thumb*scale, track*track/(track+static_cast<float>(state.scroll_limit)*scale)));
-                const float y = bounds.bounds.y + static_cast<float>(state.scroll/state.scroll_limit)*(track-thumb);
-                quad({bounds.bounds.x+bounds.bounds.width-(appearance.scrollbar_width+appearance.scrollbar_inset)*scale,
-                    y,appearance.scrollbar_width*scale,thumb},intersect(bounds.clip,clip_rect(bounds.bounds)),appearance.scrollbar);
+            if (state.scroll_limit<=0 || !visible(bounds.bounds,bounds.clip)) return;
+            ScrollbarGeometry bar;
+            bar.key=bounds.key; bar.clip=intersect(bounds.clip,clip_rect(bounds.bounds));
+            const auto width=appearance.scrollbar_width*scale;
+            const auto inset=appearance.scrollbar_inset*scale;
+            bar.bounds={bounds.bounds.x+bounds.bounds.width-width-inset,bounds.bounds.y+inset,width,std::max(0.f,bounds.bounds.height-2*inset)};
+            const auto step=std::min(appearance.scrollbar_button_size>0?appearance.scrollbar_button_size*scale:
+                (width>=8*scale?width:0.f),bar.bounds.height/3);
+            bar.track={bar.bounds.x,bar.bounds.y,width,bar.bounds.height-2*step};
+            bar.decrement={bar.bounds.x,bar.track.y+bar.track.height,width,step};
+            bar.increment={bar.bounds.x,bar.decrement.y+step,width,step};
+            bar.maximum=state.scroll_limit; bar.value=state.scroll; bar.page=bounds.bounds.height/scale;
+            const auto length=std::min(bar.track.height,std::max(appearance.scrollbar_min_thumb*scale,
+                bar.track.height*static_cast<float>(bar.page/(bar.page+bar.maximum))));
+            bar.thumb={bar.track.x,bar.track.y+static_cast<float>(bar.value/bar.maximum)*(bar.track.height-length),width,length};
+            output->scrollbars.push_back(bar);
+            const auto stroke=std::max(1.f,std::round(scale*2.f/3));
+            const Color shadow{0,0,0,appearance.indicator_border.a};
+            paint_box(bar.track,bar.clip,appearance.indicator_background,{}, {},stroke,shadow,BorderStyle::solid);
+            paint_box(bar.thumb,bar.clip,appearance.scrollbar,appearance.scrollbar_image,{},stroke,appearance.indicator_border,BorderStyle::solid);
+            const auto centre=bar.thumb.y+bar.thumb.height*.5f;
+            if (bar.thumb.height>12*scale && width>7*scale) {
+                const auto pitch=std::max(2.f,std::round(scale*4.f/3));
+                const auto x=std::round(bar.thumb.x+width*.5f-pitch),y=std::round(centre-pitch*1.5f);
+                for (int row=0;row<4;++row) for (int column=0;column<3;++column) {
+                    quad({x+column*pitch+stroke,y+row*pitch+stroke,stroke,stroke},bar.clip,appearance.indicator_border);
+                    quad({x+column*pitch,y+row*pitch,stroke,stroke},bar.clip,shadow);
+                }
+            }
+            for (const auto [button,up]:{std::pair{bar.decrement,true},std::pair{bar.increment,false}}) {
+                if (step<=0) continue;
+                const bool available=bounds.enabled && (up?bar.value>0:bar.value<bar.maximum);
+                paint_box(button,bar.clip,appearance.scrollbar,available?appearance.scrollbar_image:nullptr,{},stroke,
+                    available?appearance.indicator_border:appearance.scrollbar,BorderStyle::solid);
+                const auto size=std::min(16.f*scale,std::min(step,width));
+                auto arrow=appearance.foreground;
+                const auto tone=available?.5f:.085f; arrow.r*=tone; arrow.g*=tone; arrow.b*=tone;
+                quad({button.x+(width-size)*.5f,button.y+(step-size)*.5f,size,size},bar.clip,arrow,
+                    self.text.symbol(up?detail::TextStore::Symbol::up:detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
             }
         };
         for (auto key:self.order) if (self.states.at(key).control.kind==ControlKind::list) scrollbar(self.states.at(key));
@@ -605,6 +758,21 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }
 Reply Session::cancel_interaction() { return impl_->cancel(); }
+Reply Session::focus(ControlKey key) {
+    Reply reply;
+    const auto* box=impl_->published?impl_->published->find(key):nullptr;
+    if (impl_->active() && box && impl_->current(*box) && focusable(box->kind) && visible(box->bounds,box->clip)) {
+        impl_->finish_edit(reply,true); impl_->focus=key; reply.redraw=true;
+    }
+    return reply;
+}
+Reply Session::execute(EditCommand command,std::uint64_t incarnation) {
+    Reply reply;
+    const auto* box=impl_->published?impl_->published->find(command.target):nullptr;
+    if (impl_->active() && box && box->incarnation==incarnation) impl_->execute_edit_command(reply,command);
+    return reply;
+}
+ControlKey Session::focused_control() const noexcept { return impl_->focus; }
 bool Session::wants_keyboard() const noexcept {
     const auto* state=impl_->live(impl_->focus);
     return state && text_field(state->control.kind) && impl_->active();

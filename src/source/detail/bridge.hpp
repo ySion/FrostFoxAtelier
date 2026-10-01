@@ -61,7 +61,7 @@ struct Binding {
     std::vector<BoundValue> values{};
     TypeId f32{}, u32{}, i32{};
 };
-Binding bind_type(Runtime&, TypeId);
+Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});
 BusinessType value_kind(const Binding&, TypeId);
 TypeId value_type_id(const Binding&, BusinessType);
 struct EnvironmentView {
