@@ -38,6 +38,23 @@ int main() {
             take(single.begin_edit(mesh, single.types().position_fields[0], 91));
             take(single.preview_edit(91, 4)); take(single.commit_edit(91));
             require(take(single.world().render_items()).front().world[12] == 4, "Inherited root field did not move the mesh.");
+            take(single.begin_edit(mesh, single.types().rotation_fields[2], 92));
+            take(single.preview_edit(92, .7f)); take(single.commit_edit(92));
+            take(single.begin_edit(mesh, single.types().scale_fields[0], 93));
+            take(single.preview_edit(93, 2.f)); take(single.commit_edit(93));
+            const auto before_reset = take(world::read_transform(rt, mesh));
+            const auto reset_history = single.undo_count();
+            take(single.reset_position(mesh));
+            const auto after_reset = take(world::read_transform(rt, mesh));
+            require(after_reset.position == world::Vec3{} && after_reset.rotation == before_reset.rotation &&
+                after_reset.scale == before_reset.scale && single.undo_count() == reset_history + 1,
+                "Shared tuple reset failed to preserve the root mesh's rotation/scale or one-entry history.");
+            take(single.reset_position(mesh));
+            require(single.undo_count() == reset_history + 1, "Unchanged tuple reset created history.");
+            changed(single.undo());
+            require(take(world::read_transform(rt, mesh)) == before_reset && take(world::root_component(rt, actor)) == mesh,
+                "Tuple undo replaced root identity or failed to restore the complete SceneComponent TRS.");
+            changed(single.redo()); changed(single.undo());
             changed(single.remove_component(mesh));
             require(!take(world::root_component(rt, actor)) && take(single.world().render_items()).empty(), "Root removal retained spatial/presentation state.");
             changed(single.undo());

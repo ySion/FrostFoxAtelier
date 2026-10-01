@@ -84,4 +84,4 @@ cmake --preset release
 cmake --build --preset release --target world_acceptance editor_document_acceptance
 ```
 
-World 六组真实消费者覆盖 JIT 与协程、普通引用与 GC、World/历史/队列隔离、提交后失败、混合类型的有序生命周期、空间树和通用网格资源。编辑器文档链还覆盖一个根 StaticMeshComponent 的创建、继承字段编辑、根移除及同身份撤销。日志位于 `out/scene-{dev,release}-build.log`；GPU 和窗口行为由各自实际窗口验收单独证明。
+World 六组真实消费者覆盖 JIT 与协程、普通引用与 GC、World/历史/队列隔离、提交后失败、混合类型的有序生命周期、空间树和通用网格资源。编辑器文档链还覆盖一个根 StaticMeshComponent 的创建、继承字段编辑、整组位置恢复、旋转/缩放保留、根移除及同身份撤销。本机 `out/scene-candidate.json` 关联候选源码、配套产物与准确验收日志；复用未改源码的既有证据会单独标明。GPU 和窗口行为由各自实际窗口验收单独证明。

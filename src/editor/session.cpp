@@ -151,6 +151,24 @@ Result<void> Session::cancel_edit() {
     active_.reset();
     return {};
 }
+Result<void> Session::reset_position(ObjectId component) {
+    auto cancelled=cancel_edit();
+    if (!cancelled) return cancelled;
+    auto before=world::read_transform(runtime_,component);
+    if (!before) return std::unexpected(before.error());
+    auto state=world::inspect_component(runtime_,component);
+    if (!state) return std::unexpected(state.error());
+    auto root=runtime_.hold(component);
+    if (!root) return std::unexpected(root.error());
+    auto after=*before;
+    after.position={parameters_[0].default_value,parameters_[1].default_value,parameters_[2].default_value};
+    if (after==*before) return {};
+    FieldChange change{std::move(*root),state->owner,{},0,*before,after};
+    auto applied=world_.set_transform(component,after);
+    if (!applied) return applied;
+    remember(std::move(change));
+    return {};
+}
 Result<world::Commit> Session::replay(Change& change, bool forward) {
     return std::visit([&](auto& item) -> Result<world::Commit> {
         using T = std::decay_t<decltype(item)>;

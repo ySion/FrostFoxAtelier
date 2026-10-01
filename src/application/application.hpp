@@ -24,6 +24,9 @@ public:
         return workspace_.field_control(component, path);
     }
     float parameter_width() const noexcept { return workspace_.parameter_width; }
+    ui::ControlKey reset_control(ObjectId component) const noexcept { return workspace_.reset_control(component); }
+    bool workbench_visible() const noexcept { return workspace_.show_workbench; }
+    const editor::ControlWorkbench& control_workbench() const noexcept { return workspace_.workbench; }
     bool wants_keyboard() const noexcept { return ui_.wants_keyboard(); }
     const std::wstring& query() const noexcept { return workspace_.query; }
     const std::wstring& status_text() const noexcept { return workspace_.status; }

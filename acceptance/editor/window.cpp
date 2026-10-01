@@ -13,6 +13,7 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
     static Result<void> begin_edit(Application& app, ui::ControlKey control) {
         const auto* binding = app.workspace_.binding(control);
         if (!binding || binding->path.empty()) return std::unexpected(Error{ErrorCode::invalid_definition, "Missing field binding."});
@@ -66,7 +67,9 @@ POINT centre(Application& app, ControlKey key) {
     const auto right = std::min(box->bounds.x + box->bounds.width, static_cast<float>(box->clip.right));
     const auto top = std::max(box->bounds.y, static_cast<float>(box->clip.top));
     const auto bottom = std::min(box->bounds.y + box->bounds.height, static_cast<float>(box->clip.bottom));
-    require(right > left && bottom > top, "Control has no visible hit area.");
+    if (!(right>left && bottom>top)) throw std::runtime_error("Control "+std::to_string(key)+
+        " has no visible hit area (y="+std::to_string(box->bounds.y)+", height="+std::to_string(box->bounds.height)+
+        ", clip="+std::to_string(box->clip.top)+".."+std::to_string(box->clip.bottom)+").");
     return {static_cast<LONG>((left + right) * .5f), static_cast<LONG>((top + bottom) * .5f)};
 }
 void mouse(Application& app, UINT message, POINT point) {
@@ -396,7 +399,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     require(app.query().empty() && app.document().undo_count() == original_history, "Search history escaped into scene history.");
     type(app, L"ab אבג xy"); key(app, 'A', true);
     const auto colors = solid_colors(*app.presented(), control::parameter_search);
-    require(std::count(colors.begin(), colors.end(), app.style().palette.selection) > 1,
+    require(std::count(colors.begin(), colors.end(), app.presented()->find(control::parameter_search)->style->selection) > 1,
         "Bidirectional selection did not produce multiple visual ranges.");
     capture(app, output / "s2-bidi-selection.png");
     key(app, VK_ESCAPE);
@@ -522,6 +525,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     editing.resources(resources, "256_actors_field_drag");
     require(resources.good(), "Cannot save resource sampling evidence.");
 }
+#include "controls.inl"
 }
 
 int verify_editor_window(Application& app, const char* output_directory) {
@@ -666,6 +670,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     verify_control_states(app, output, object);
     verify_style_changes(app, output, object);
     verify_shared_text(app, output, object);
+    verify_basic_controls(app, output, object);
     view = centre(app, control::viewport); ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)), MAKELPARAM(view.x, view.y)); tick(app, 1);
     capture(app, output / "editor.png");
@@ -680,6 +685,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
+           << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
            << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
@@ -1039,6 +1045,29 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     physical_key(VK_ESCAPE);
     require(app.query() == long_query, "Cancelling scrolled composition changed confirmed text.");
     type(app, L""); key(app, VK_RETURN);
+    const auto scene_history=app.document().undo_count();
+    namespace sample=atelier::editor::workbench_control;
+    click(app,control::workbench);
+    click(app,sample::name); type(app,L""); key(app,VK_RETURN);
+    compose_position(); verify_native_origin();
+    physical_key(VK_SPACE);
+    wait_for([&] { return app.control_workbench().values().name==L"位置" && app.text_input() && !app.text_input()->composing; },
+        "Workbench IME Space did not confirm the selected candidate.");
+    physical_key(VK_RETURN);
+    compose_position();
+    click(app,sample::fold);
+    require(!app.text_input() && !app.presented()->find(sample::name) && app.control_workbench().values().name==L"位置",
+        "Collapsing the workbench group retained native composition or changed confirmed text.");
+    key(app,VK_SPACE);
+    click(app,sample::name);
+    compose_position();
+    click(app,control::workbench);
+    require(!app.text_input() && app.control_workbench().values().name==L"位置" && app.document().undo_count()==scene_history,
+        "Switching from workbench to scene retained composition or changed scene history.");
+    click(app,control::workbench);
+    click(app,sample::name);
+    capture(app,output/"controls-ime-confirmed.png");
+    click(app,control::workbench);
     const auto native_after = app.input_statistics();
     capture(app, output / "s2-ime-final.png");
     check_active_profile();
@@ -1056,6 +1085,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
            << "Candidate changes: " << native_after.candidate_changes - native_before.candidate_changes << '\n'
            << "Candidate/Space confirm/Escape cancel; physical Ctrl+Z/Y during candidates preserve field and scene history; IME Enter ownership; invalid numeric result; OS blur/surface/editable-field/target cancellation; horizontal composition/accepted candidate anchor; original thread profile restored; no enable/default/list setters used.\n"
            << "The long-field fixture uses owned WM_CHAR for its confirmed prefix; all IME compositions use physical SendInput and native IMM32 events.\n";
+    report << "Control workbench: real candidate Space confirmation, accepted native anchor, foldout and scene-tab composition cancellation, sample/scene history isolation.\n";
     require(report.good(), "Cannot save real IME acceptance evidence.");
     std::puts("Sogou Pinyin acceptance: PASS"); return 0;
 } catch (const std::exception& error) {

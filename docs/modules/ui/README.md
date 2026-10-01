@@ -4,9 +4,9 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit是文字叶，list是带裁剪和滚动的column，splitter/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo 是文字叶，list 和 popup 是带裁剪和滚动的 column，splitter/viewport是盒。viewport不自动填色。
 
-应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数控件key应包含业务对象key与轴，切换绑定时更换控件key。控件删除再出现会获得新incarnation，旧帧命中不能误派给重用key。
+应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
 
 调用顺序：
 
@@ -18,15 +18,39 @@
 
 `UiFrame::find(key)`返回同次帧的物理像素bounds/clip，供场景viewport和真实窗口验收使用。候选prepare不会改变命中几何。输入始终使用已接受帧，依绘制逆序命中并检查当前控件身份与祖先启用状态。
 
+## 可组合参数控件
+
+[controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 96 DIP，字段高 24 DIP；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
+
+`Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖绘制。它不改变布局，也不代替非法输入状态。标题使用稳定的 `group_key` 作为身份，右键可请求整组菜单；Ctrl+中键发出 `reset(group_key)`，整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `ParameterRow.group_modified` 提供完整组状态；未提供时数值组合从传入字段推导。各字段始终独立比较自己的默认值。
+
+数值中键按住显示七档 value ladder：垂直移动切换十倍步长，水平移动调值；基准为字段 `drag_step`，Shift 使用 `fine_step`。释放提交一次，Esc/失焦/捕获丢失取消。Ctrl+中键恢复 `Control.default_value`。阶梯复用文字服务的一段缓存，静止时不重建排版或像素；背景、文字与档位高亮分别使用该字段最终样式的 background、color 和 selection-color。
+
+`checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 20 DIP 指示区域。勾号和三角形使用按形状/像素尺寸缓存的抗锯齿 R8 Coverage，沿同一 DrawQuad、上传和资源记账路径绘制。
+
+折叠标题与内容容器是两个控件；宿主将展开状态映射到内容容器的 `layout.collapsed`。现有祖先有效性检查统一取消隐藏/禁用字段的草稿、组合和捕获；展开后复用仍存续的 key。宿主替换目标时仍须退役旧绑定。
+
+正式编辑器的 Controls 实验台与位置参数行均使用上述接口，真实窗口验收覆盖两者，见[编辑器模块](../editor/README.md#控件实验台)。
+
+### 菜单与下拉
+
+`append_menu` 组合一个根级 `popup` 和普通 `menu_item`。每个 Session 只允许一个 popup，其 owner 必须先出现，浮层子树必须放在描述末尾。Session 将它夹到客户区、按需滚动，并绘制在普通列表滚动条之上；不继承 owner 的裁剪。
+
+`context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 通过点击、Enter/Space 或上下键请求菜单。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标，宿主转换为 DIP 后调用组合接口。Session 管理菜单焦点、上下/Home/End 导航、Enter/Space 激活、Esc/Tab 关闭和焦点恢复。外部点击只关闭，滚轮及键盘不穿透；宿主处理视口输入前也须检查 `has_popup()`。它在浮层开关的待接受帧期间仍保持拦截。
+
+`dismiss` 要求宿主撤下浮层描述；目标移除、禁用、折叠、Surface 失效或失焦也会结束菜单。所有取消副作用必须处理，包括业务操作失败后的 dismiss。菜单项身份同样遵守业务绑定寿命，不把仍存活的项改绑到另一命令目标。
+
+`menu_item.edit_command` 可指定 copy/paste/reset 和文字字段 key。命令关闭菜单后进入同一个 TextEdit、原生剪贴板和事务链；有效数字粘贴立即提交一次，非法数字保留可取消草稿。其目标仍需是当前有效字段；reset 还要求声明 default_value。普通菜单项通过 activate 交还宿主，下拉的选项与权威值也由宿主维护。
+
 ## Style与失效
 
 [style.hpp](../../../src/ui/style.hpp)的`Style`提供基础主题，由`Session::set_style`完整校验、复制后应用；非法值返回`invalid_style`且不修改任何配置。根/局部`StyleSheet`、类名及逐属性覆盖扩展同一解析入口，最终`ResolvedStyle`供测量、绘制与接受帧持有。语法、优先级和资源合同见 [SS 样式表](style-sheets.md)。更换配置后仍通过`prepare → renderer accepted → accept`发布。候选失败保留已接受帧。`UiFrame`记录本帧的`style_revision`和`measure_provider_revision`，旧帧颜色、几何与文字像素不会跟随当前Style改变。
 
-控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
+控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid、modified。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
 
-label文字从内容顶部绘制，普通button/item/number/text_edit在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
+label文字从内容顶部绘制，普通 button/item/number/text_edit/checkbox/foldout/menu_item/combo 在内容框内垂直居中。控件显式或经Flex父项参与首基线对齐时，其UI文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代；避免绘制时额外居中破坏已求得的基线。这只决定文字内部放置，不改变NodeInput对齐和脱流规则。退出该上下文后恢复普通控件居中。
 
-`Style.control_padding`只为button/item/number/text_edit增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
+`Style.control_padding` 为 button/item/number/text_edit/checkbox/foldout/menu_item/combo 增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
 
 - family、locale、weight、字号或角色字体比例改变：推进文字provider revision，清理对应格式/段落缓存，再通过正常布局入口测量。
 - 内容或角色改变：由内容revision识别实际解析后的文字与字体；旧帧保持自己的Coverage。
@@ -53,7 +77,7 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 - 普通换焦点合法提交、非法取消；OS失焦、Surface失效、控件失效取消。数值拖调提交后回仅聚焦，下一次Ctrl+Z交业务。仅聚焦时新的权威投影更新被动缓冲，不能被旧文字覆盖。
 - 字段聚焦时Delete/Backspace由共享文字编辑消费，不能删除场景对象。Tab按可见呈现控件顺序导航，Ctrl+A全选，Left/Right按视觉方向移动或折叠选择，Shift扩选，Home/End到视觉行端。
 
-Action.value为`variant<monostate,double,wstring>`：activate/select无值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
+Action.value为`ActionValue = variant<monostate,double,wstring,bool>`：普通activate/select无值，checkbox/foldout的activate携带请求的bool值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
 
 本地历史保存文字和选择快照；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 
@@ -73,7 +97,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 本轮只支持[IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition)实测需要的`dwCharPos=0`；Window把bounds左上和clip转换成屏幕坐标，填[IMECHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition)的pt、cLineHeight和rcDocument。其他offset或无有效快照明确返回0，不夹到offset0，也不以显示caret冒充起点；没有预建逐字符坐标数组。此合同修复本身不证明真实输入法的组合链已经通过。
 
-UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。S2的本机搜狗实测已通过，环境与限制见[编辑器集成记录](../editor/README.md#s2-集成状态与输入法验收)；SS增量没有重跑真实IME，不将既有结论扩展到新代码或其他输入法。
+UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。S2 的历史环境与限制见[编辑器集成记录](../editor/README.md#s2-集成状态与输入法验收)；2026-10-01 参数控件增量已重跑双配置真实搜狗，结果见[本轮验收](../../research/houdini-controls-20261001.md#参数控件复刻增量验收)，不扩展到其他输入法。
 
 ## CPU绘制与文字寿命
 
@@ -85,7 +109,7 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 所有未collapsed且成功布局的控件保留`ControlBox`、身份、父子变换及滚动位置。只有最终物理bounds与祖先clip相交时才栅格化文字、输出绘制；子树仍按正常顺序处理，不以屏外父项替代语义遍历。滚回屏内会正常生成或复用文字。此裁剪减少栅格化和绘制成本，未将描述、布局或输入遍历改为可见行数量；大型逻辑集合仍应由消费者使用现有VirtualList控制实例数。
 
-`Session::statistics()`提供常数时间观测：`prepares/measure_calls/text_layouts/rasterizations/raster_bytes/coverage_cache_hits/culled_text_controls`为Session创建以来累计值，窗口采样使用差值。prepare和rasterization计尝试次数，text_layouts计成功创建的原生段落，raster_bytes计完成的R8像素字节。`provider_revision`是版本标识，不是数量。
+`Session::statistics()`提供常数时间观测：`prepares/measure_calls/text_layouts/rasterizations/raster_bytes/coverage_cache_hits/culled_text_controls`为Session创建以来累计值，窗口采样使用差值。prepare和rasterization计尝试次数，text_layouts计成功创建的原生段落，raster_bytes计完成的R8像素字节。符号 Coverage 同样计入 rasterizations/raster_bytes 和 live_coverages，text_layouts 仍只统计 DirectWrite 段落。`provider_revision`是版本标识，不是数量。
 
 `live_coverages/live_coverage_bytes`是读取时仍被文字缓存、当前/旧帧或renderer持有的唯一CPU覆盖率数量和R8像素字节，同一像素的多个引用不重复计数，不包含DirectWrite对象、临时栅格数据、容器容量或GPU内存。已访问的屏外行可能继续被CPU缓存持有；内容移除或变化清理缓存后，旧帧仍可延长像素寿命。独立共享记账对象随最后Coverage释放，不回指Session，也不为计数保活像素。Session仍要求单拥有者访问；外部持有者释放采用原子记账。
 
