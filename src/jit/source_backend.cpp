@@ -800,7 +800,7 @@ private:
             auto* address = direct ? value_address(node.target) : nullptr;
             if (language::aggregate(target.type)) {
                 if (const auto text = direct_text_input(node); text != language::no_node)
-                    write_text(target.type, locals_[target.value], function_.expressions[text].value, SequenceMutation::assign_text);
+                    write_text(target.type, direct ? address : locals_[target.value], function_.expressions[text].value, SequenceMutation::assign_text);
                 else checked_call(assign_value_, {invocation_, ir_.getInt32(target.type.type_index),
                     direct ? address : locals_[target.value], expression(node.expression)});
                 clear_temporaries();

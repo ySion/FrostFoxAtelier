@@ -29,16 +29,33 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
         } else {
             for (const auto& [name, type] : declaration.fields) {
                 TypeReference reference;
-                if (type == "float") reference = binding.f32;
-                else if (type == "uint") reference = binding.u32;
-                else if (type == "int") reference = binding.i32;
+                const bool declared = std::ranges::any_of(declarations, [&](const auto& value) { return value.name == type.name; });
+                if (declared && type.array_depth == 0) reference = TypeReference{type.name};
                 else {
-                    const bool declared = std::ranges::any_of(declarations, [&](const auto& value) { return value.name == type; });
-                    const bool enumeration = std::ranges::any_of(binding.enumerations, [&](const auto& value) { return value.name == type; });
-                    if (!declared && !enumeration)
+                    TypeId resolved{};
+                    if (type.name == "float") resolved = binding.f32;
+                    else if (type.name == "uint") resolved = binding.u32;
+                    else if (type.name == "int") resolved = binding.i32;
+                    for (const auto& value : binding.enumerations) if (value.name == type.name) resolved = value.type;
+                    for (const auto& value : binding.values)
+                        if (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string)) {
+                            resolved = value.type;
+                            break;
+                        }
+                    if (resolved == TypeId{})
                         return std::unexpected(Error{ErrorCode::invalid_definition,
-                            "Source struct fields require scalars, enums or structs declared in the same module: " + type});
-                    reference = TypeReference{type};
+                            "Source struct field type requires a declared or registered value without GC references: " + type.name});
+                    for (std::uint32_t depth = 0; depth < type.array_depth; ++depth) {
+                        const auto element = value_kind(binding, resolved);
+                        const auto array = std::ranges::find_if(binding.values, [&](const auto& value) {
+                            return value.kind == ValueKind::array && value.element == element;
+                        });
+                        if (array == binding.values.end())
+                            return std::unexpected(Error{ErrorCode::invalid_definition,
+                                "Source struct Array field requires an already registered array for its element: " + type.name});
+                        resolved = array->type;
+                    }
+                    reference = resolved;
                 }
                 definition.fields.push_back({name, {std::move(reference)}});
             }

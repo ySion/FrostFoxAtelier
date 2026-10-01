@@ -5,6 +5,19 @@
 #include <charconv>
 
 namespace atelier::language {
+TypeName detail::parse_type_name(Tokens& tokens) {
+    TypeName result;
+    while (tokens.accept("Array")) {
+        if (++result.array_depth > 128) reject(tokens.token_.position, "Array type nesting exceeds the compiler limit of 128.");
+        tokens.expect("<");
+    }
+    if (tokens.token_.text == "float" || tokens.token_.text == "int" || tokens.token_.text == "uint")
+        result.name = tokens.consume().text;
+    else result.name = tokens.qualified_identifier();
+    for (std::uint32_t i = 0; i < result.array_depth; ++i) tokens.expect(">");
+    return result;
+}
+
 TypeDeclaration detail::parse_type_declaration(Tokens& tokens) {
     TypeDeclaration result;
     result.position = tokens.token_.position;
@@ -41,10 +54,7 @@ TypeDeclaration detail::parse_type_declaration(Tokens& tokens) {
             next = value + 1;
             if (tokens.token_.text != "}") tokens.expect(",");
         } else {
-            std::string type;
-            if (tokens.token_.text == "float" || tokens.token_.text == "int" || tokens.token_.text == "uint")
-                type = tokens.consume().text;
-            else type = tokens.qualified_identifier();
+            auto type = parse_type_name(tokens);
             const auto name = tokens.identifier();
             tokens.expect(";");
             if (std::ranges::any_of(result.fields, [&](const auto& field) { return field.first == name.text; }))

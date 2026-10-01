@@ -2,7 +2,7 @@
 
 状态：已实现，并通过 dev/release 的相关端到端验收。
 
-源码通过现有 `source::Program` 声明枚举和简单结构体。Runtime 负责类型身份、布局、反射及值生命周期；JIT 使用同一份字段偏移和原有存储。语法以 [LANGUAGE.md](../LANGUAGE.md) 为准。
+源码通过现有 `source::Program` 声明枚举和结构体，字段可组合已注册的 String、具体 Array 和无 GC 引用记录。Runtime 负责类型身份、布局、反射及值生命周期；JIT 使用同一份字段偏移和原有存储。语法以 [LANGUAGE.md](../LANGUAGE.md) 为准。
 
 ## 使用方式
 
@@ -27,6 +27,20 @@ uint process(combat.DamageInfo& damage) {
 
 这些描述型结构体没有对应的 C++ 静态类型。宿主依据正式元数据访问存储；布局相似不授权将它强转成另一个已注册的 C++ 类型。枚举通过 `EnumValue` 保留 Runtime 类型身份。
 
+宿主已注册 String 和 `Array<float>` 后，也可编译以下值组合：
+
+```cpp
+struct gameplay.Batch { String name; Array<float> samples; };
+uint process(const gameplay.Batch& input) {
+    gameplay.Batch local = input;
+    local.name = "temporary/batch";
+    local.samples.add(1.0);
+    return local.samples.size();
+}
+```
+
+`input` 借用宿主存储；`local` 拥有独立副本，其字段在函数退出时销毁。新源码类型的发布仍遵守下面的注册时序。
+
 ## 准备与发布
 
 1. 请求收集类型声明，捕获源名、正文、入口和类型元数据。声明扫描与完整编译共用词法和声明解析代码。
@@ -42,12 +56,15 @@ uint process(combat.DamageInfo& damage) {
 ## 值与借用
 
 - 枚举底层为 `int`（默认）或 `uint`，枚举项可指定十进制整数，否则从零或上一项加一；溢出和重复项名拒绝。
-- 结构体字段支持 `float/uint/int`、已注册或同模块枚举，以及同模块结构体。支持前向引用，内联布局循环拒绝。字段由 Runtime 默认构造；原有标量默认值为零。
-- 结构体局部使用 Runtime 值操作进行构造、复制、赋值和清理。自有结构体的嵌套记录字段也可整值赋值；对借用结构体仍只开放字段叶值修改，不能整值替换调用者的聚合值。
+- 结构体字段支持 `float/uint/int`、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和具体 Array。支持前向引用，内联布局循环拒绝。字段、参数与局部共用类型名称解析；`String` 和 `Array<T>` 解析既有身份，数组类型仍由原生生产者注册。
+- 结构体局部使用 Runtime 值操作进行构造、深复制、赋值和清理。自有结构体的嵌套记录、String/Array 字段及元素可整值赋值或修改容器结构，目标须满足已有安全值操作能力；借用结构体仍只开放可写字段叶值修改，不能替换其聚合字段或改变容器结构。
+- 默认构造递归将标量置零、String/Array 置空，并调用原生字段构造。字段随记录逆序销毁；部分构造失败时 Runtime 回收已构造字段，生成代码只负责已完成构造的局部，避免重复清理。正常块退出、提前返回和跨函数失败均沿既有作用域清理链。
 - 原生与描述型记录通过同一目录投影和调用检查。只有具有保持借用有效的复制与生命周期能力的记录可成为拥有型局部；描述型记录的该能力由全部字段组合得出。
 - `const T&` 和 `T&` 保持原有只读、别名和有效期契约；拥有型结构体沿用同步值执行区间，失败逐层清理。
 
-当前不包含源码 class、结构体中的 String/Array 或对象引用、结构体按值参数/返回、自定义构造析构、命名空间块、跨文件声明收集和布局迁移。类型名使用准确的声明名，可以写成 `combat.DamageInfo`；同作用域短名推导尚未开放。
+这是 RAII 作用域拥有值：局部本体使用生成栈存储，String/Array 的动态缓冲仍由基础库管理。它不要求缓冲也在栈上，和 C# `stackalloc` 的区别见[调研记录](research/scoped-value-lifetime.md)。
+
+当前不包含源码 class、结构体中的对象引用、自动实例化 `Array<源码结构体>`、结构体按值参数/返回、自定义构造析构、命名空间块、跨文件声明收集和布局迁移。类型名使用准确的声明名，可以写成 `combat.DamageInfo`；同作用域短名推导尚未开放。
 
 ## 验收
 
@@ -58,6 +75,14 @@ uint process(combat.DamageInfo& damage) {
 - 准备时不发布类型、GC 忙状态重试、函数或定义失败、布局循环、只读拒绝、过期候选与外部目录变化。
 - 类型定义冻结、声明重排、多个独立模块追加类型、注册封闭后的代码更新、旧租约以及关闭代码后类型存活。
 
-运行入口为 `source_acceptance`；核心改动同时运行 dev/release 的 Runtime、基础库、反射、JIT、World 与无窗口编辑器文档消费者。没有增加性能基准或宣称吞吐收益。
+### 值组合增量
 
-本阶段 dev/release 的上述消费者均已通过，日志分别为 `out/source-types-final-dev.log` 与 `out/source-types-final-release.log`。图形窗口和 GPU 验收不在本次核心类型改动范围内。
+[值字段消费者](../acceptance/source/value_fields.cpp)沿同一 `source_acceptance` 入口验证：
+
+- 原生 String/Array、64 字节对齐记录，以及另一源码模块已发布记录的字段身份和布局。
+- C++ 构造并填充存储，源码借用直接修改叶值，局部深复制后独立修改字段和嵌套数组；C++ 的 Runtime 复制、赋值与销毁使用同一布局。
+- 嵌套块退出、提前返回、助手函数失败、部分复制构造失败和整值赋值失败后的清理。
+- 借用结构修改、只读写入、含 GC 引用字段、缺少安全值操作能力、未注册数组及跨挂起拥有值的拒绝。
+- 注册封闭后的兼容代码替换及旧代码租约对同一类型的继续使用。
+
+运行入口为 `source_acceptance`，也包含在 `jit_acceptance` 中。2026-10-02 的 dev/release 源码公共消费者、JIT 平台/业务及反射（含 CLI）端到端验收均通过；日志为 `out/value-fields-final-dev.log` 与 `out/value-fields-final-release.log`，新增场景输出 `Source value fields: PASS`。本增量没有改动 Runtime 的存储实现，也没有测量性能收益；图形窗口和 GPU 验收不在本次范围内。

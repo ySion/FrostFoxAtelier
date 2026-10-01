@@ -95,18 +95,31 @@ public:
 
 private:
 
-    ValueType declared_type(std::string_view name, SourcePosition position) const {
+    ValueType named_type(std::string_view name, SourcePosition position) const {
         if (name == "float") return ValueType::f32;
         if (name == "uint") return ValueType::u32;
         if (name == "int") return ValueType::i32;
+        if (name == environment_.object_type_name) return ValueType::strong_reference;
+        for (std::uint32_t i = 0; i < environment_.values.size(); ++i)
+            if (environment_.values[i].name == name || (name == "String" && environment_.values[i].kind == ValueType::string))
+                return {environment_.values[i].kind, i};
         for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
             if (environment_.enumerations[i].name == name) return {ValueType::enumeration, i};
-        for (std::uint32_t i = 0; i < environment_.values.size(); ++i)
-            if (environment_.values[i].name == name) return {environment_.values[i].kind, i};
-        reject(position, "Source type declaration has no prepared Runtime layout: " + std::string(name));
+        reject(position, "Unknown registered value type '" + std::string(name) + "'.");
+    }
+    ValueType declared_type(const TypeName& name, SourcePosition position) const {
+        auto type = named_type(name.name, position);
+        for (std::uint32_t depth = 0; depth < name.array_depth; ++depth) {
+            const auto array = std::ranges::find_if(environment_.values, [&](const auto& value) {
+                return value.kind == ValueType::array && value.element == type;
+            });
+            if (array == environment_.values.end()) reject(position, "This Array element type has not been registered in the Runtime.");
+            type = {ValueType::array, static_cast<std::uint32_t>(array - environment_.values.begin())};
+        }
+        return type;
     }
     void validate_declaration(const TypeDeclaration& declaration) const {
-        const auto type = declared_type(declaration.name, declaration.position);
+        const auto type = named_type(declaration.name, declaration.position);
         if (declaration.enumeration) {
             if (type.kind != ValueType::enumeration) reject(declaration.position, "Source enum conflicts with its Runtime type.");
             const auto& layout = environment_.enumerations[type.type_index];
@@ -395,24 +408,8 @@ private:
     }
     ValueType parameter_type() {
         Depth guard(depth_, token_.position);
-        if (token_.text == "float" || token_.text == "uint" || token_.text == "int") return scalar_type();
         const auto position = token_.position;
-        if (accept("Array")) {
-            expect("<"); const auto element = parameter_type(); expect(">");
-            for (std::uint32_t i = 0; i < environment_.values.size(); ++i)
-                if (environment_.values[i].kind == ValueType::array && environment_.values[i].element == element)
-                    return {ValueType::array, i};
-            reject(position, "This Array element type has not been registered in the Runtime.");
-        }
-        const auto name = qualified_identifier();
-        if (name == environment_.object_type_name) return ValueType::strong_reference;
-        for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
-            const auto& value = environment_.values[i];
-            if (value.name == name || (name == "String" && value.kind == ValueType::string)) return {value.kind, i};
-        }
-        for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
-            if (environment_.enumerations[i].name == name) return {ValueType::enumeration, i};
-        reject(position, "Unknown registered value type '" + name + "'.");
+        return declared_type(parse_type_name(*this), position);
     }
     bool returns(NodeId id) const {
         const auto& statement = function_.statements[id];
@@ -428,8 +425,7 @@ private:
     }
     bool writable(NodeId id) const {
         const auto& expression = function_.expressions[id];
-        if (aggregate(expression.type)) return owned_storage(id) &&
-            (expression.kind == Expression::Kind::local || expression.type.kind == ValueType::record);
+        if (aggregate(expression.type)) return owned_storage(id) && environment_.values[expression.type.type_index].can_own;
         return writable_storage(id);
     }
     bool writable_storage(NodeId id) const {

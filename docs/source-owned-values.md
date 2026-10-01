@@ -49,7 +49,7 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 
 ## 当前边界
 
-- 局部拥有值包括 String/Array，以及具备相同生命周期能力的原生或描述型记录；支持默认构造、深复制初始化和局部整值赋值。Array 支持 reserve/resize/clear/add/append，String 支持 reserve/clear/append 和字面量赋值；修改可以沿拥有局部访问嵌套序列。
+- 局部拥有值包括 String/Array，以及具备相同生命周期能力的原生或描述型记录；支持默认构造、深复制初始化和整值赋值。Array 支持 reserve/resize/clear/add/append，String 支持 reserve/clear/append 和字面量赋值；这些操作也可沿拥有局部访问满足同样能力的嵌套字段或元素。[源码结构体](source-type-declarations.md)复用 Runtime 递归组合字段的布局和生命周期。
 - 外部借用容器禁止结构修改；源码入口的 String 参数仍只允许 `const String&`，字符索引只读。BorrowSafe 原生方法须遵守全部实参的只读性与别名约束。
 - 字面量支持 UTF-8、反斜线、引号、换行/回车/tab/零字节转义；未知转义在编译时拒绝，非法 UTF-8 在基础 String 构造或修改时报告执行错误。
 - 拥有值暂不跨 async/yield。现有标量与对象协程沿原协议执行。
