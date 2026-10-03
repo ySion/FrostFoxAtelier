@@ -45,6 +45,7 @@ Result<void> can_remove(Runtime&, ObjectId component, std::span<const ObjectRoot
 Result<void> clear_component(Runtime&, ObjectId actor, ObjectId component, std::size_t index, bool root);
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
+Result<void> validate_material(const Material&);
 
 }
 

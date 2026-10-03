@@ -561,10 +561,7 @@ Result<std::vector<RenderItem>> World::render_items() const {
         auto matrix = world_matrix(runtime(), object);
         if (!matrix) return std::unexpected(matrix.error());
         auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<RenderItem> {
-            const auto color = component.material.base_color;
-            for (float channel : {color.x, color.y, color.z})
-                if (!std::isfinite(channel) || channel < 0 || channel > 1)
-                    return error(ErrorCode::argument_mismatch, "Material color must be finite and within [0,1].");
+            if (auto valid = detail::validate_material(component.material); !valid) return std::unexpected(valid.error());
             return RenderItem{*owner, object, *matrix, Access::geometry(component), component.material};
         });
         if (!item) return std::unexpected(item.error());

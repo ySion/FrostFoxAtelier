@@ -33,6 +33,13 @@ private:
     bool transitioning_{};
 };
 
+// A real reflected Actor type. Its complete default composition is built by
+// create_static_mesh_actor, while Runtime construction establishes storage only.
+ACLASS(Name="world.StaticMeshActor")
+class StaticMeshActor : public Actor {
+    AGENERATED_BODY(StaticMeshActor)
+};
+
 ACLASS(Name="world.Component")
 class Component {
     AGENERATED_BODY(Component)
@@ -84,6 +91,7 @@ private:
 using FieldPath = std::vector<FieldId>;
 struct Types {
     TypeId actor, component, scene_component, static_mesh_component, material;
+    TypeId static_mesh_actor;
     TypeId vec3, quaternion;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
@@ -115,6 +123,16 @@ struct ComponentStatus {
 
 [[nodiscard]] Result<ObjectRoot> create_actor(Runtime&, TypeId actual = {});
 [[nodiscard]] Result<ObjectRoot> create_component(Runtime&, TypeId actual);
+struct StaticMeshActorDesc {
+    geometry::MeshRef mesh;
+    Trs transform{};
+    Material material{};
+};
+// Returns a complete Detached Actor with one StaticMeshComponent as its root.
+// A null mesh is valid and produces no presentation. No World registration,
+// lifecycle notification or Begin occurs until the caller invokes World::attach.
+// Requires an open World at a host boundary; a running World is supported.
+[[nodiscard]] Result<ObjectRoot> create_static_mesh_actor(World&, const StaticMeshActorDesc&);
 [[nodiscard]] Result<ActorStatus> inspect_actor(Runtime&, ObjectId);
 [[nodiscard]] Result<ComponentStatus> inspect_component(Runtime&, ObjectId);
 // These owning reference snapshots are ordinary roots, not a second relation graph.

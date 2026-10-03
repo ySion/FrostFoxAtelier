@@ -1,5 +1,6 @@
 #include "world/detail.hpp"
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -16,11 +17,13 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<SceneComponent>::build(runtime));
     definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
+    definitions.push_back(reflection::Definition<StaticMeshActor>::build(runtime));
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;
     types.vec3 = (*ids)[0]; types.quaternion = (*ids)[1]; types.actor = (*ids)[2];
     types.component = (*ids)[3]; types.scene_component = (*ids)[4]; types.material = (*ids)[5]; types.static_mesh_component = (*ids)[6];
+    types.static_mesh_actor = (*ids)[7];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
         auto outer = runtime.find_field(types.scene_component, name);
         if (!outer) return std::unexpected(outer.error());
@@ -60,6 +63,13 @@ Result<void> validate_object(Runtime& runtime, ObjectId object, TypeId expected)
     if (!*matches) return error(ErrorCode::type_mismatch, "Object does not derive from the required World type.");
     return {};
 }
+Result<void> validate_material(const Material& material) {
+    const auto color = material.base_color;
+    for (float channel : {color.x, color.y, color.z})
+        if (!std::isfinite(channel) || channel < 0 || channel > 1)
+            return error(ErrorCode::argument_mismatch, "Material color must be finite and within [0,1].");
+    return {};
+}
 }
 
 Result<ObjectRoot> create_actor(Runtime& runtime, TypeId actual) {
@@ -80,6 +90,47 @@ Result<ObjectRoot> create_component(Runtime& runtime, TypeId actual) {
     if (!matches) return std::unexpected(matches.error());
     if (!*matches) return error(ErrorCode::type_mismatch, "create_component requires a Component type.");
     return runtime.create(actual);
+}
+
+Result<ObjectRoot> create_static_mesh_actor(World& world, const StaticMeshActorDesc& description) {
+    if (auto ready = Access::state(world).admit(); !ready) return std::unexpected(ready.error());
+    auto transform = canonical_transform(description.transform);
+    if (!transform) return std::unexpected(transform.error());
+    if (auto valid = detail::validate_material(description.material); !valid) return std::unexpected(valid.error());
+    auto& runtime = world.runtime();
+    struct Construction {
+        Runtime& runtime;
+        ObjectRoot actor, component;
+        ~Construction() {
+            // The graph is unpublished. Either destruction entry also handles
+            // ordinary strong-reference cycles; no partial factory result escapes.
+            if (actor.id() != ObjectId{}) (void)destroy_actor(runtime, actor.id());
+            if (component.id() != ObjectId{} && runtime.type_of(component.id()))
+                (void)destroy_component(runtime, component.id());
+        }
+    } created{runtime, {}, {}};
+    auto actor = create_actor(runtime, world.types().static_mesh_actor);
+    if (!actor) return std::unexpected(actor.error());
+    created.actor = std::move(*actor);
+    auto component = create_component(runtime, world.types().static_mesh_component);
+    if (!component) return std::unexpected(component.error());
+    created.component = std::move(*component);
+    auto configured = runtime.with_native<StaticMeshComponent>(created.component.id(), [&](StaticMeshComponent& value) -> Result<void> {
+        value.position = transform->position;
+        value.rotation = transform->rotation;
+        value.scale = transform->scale;
+        value.material = description.material;
+        return {};
+    });
+    if (!configured) return std::unexpected(configured.error());
+    auto geometry = set_geometry(runtime, created.component.id(), description.mesh);
+    if (!geometry) return std::unexpected(geometry.error());
+    const std::array composition{Attachment{created.component.id(), {}, true}};
+    auto composed = world.attach_components(created.actor.id(), composition);
+    if (!composed) return std::unexpected(composed.error());
+    if (composed->notification_error) return std::unexpected(std::move(*composed->notification_error));
+    created.component.reset(); // Actor composition now retains its root component.
+    return std::move(created.actor);
 }
 
 Result<ActorStatus> inspect_actor(Runtime& runtime, ObjectId object) {
