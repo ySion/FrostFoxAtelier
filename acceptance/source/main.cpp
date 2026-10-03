@@ -100,8 +100,13 @@ void verify_public_program() {
 }
 }
 
-int main() {
+void verify_source_math();
+void measure_source_math();
+
+int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--math-measure") { measure_source_math(); return 0; }
+        verify_source_math();
         verify_public_program();
         verify_native_value_borrows();
         verify_source_owned_values();

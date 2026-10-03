@@ -6,9 +6,11 @@ using detail::Access;
 using detail::error;
 
 Result<Types> register_types(Runtime& runtime) {
+    const auto vector = runtime.native_type<math::Vector3>();
+    const auto quaternion = runtime.native_type<math::Quaternion>();
+    if (!vector) return std::unexpected(vector.error());
+    if (!quaternion) return std::unexpected(quaternion.error());
     std::vector<TypeDefinition> definitions;
-    definitions.push_back(reflection::Definition<Vec3>::build(runtime));
-    definitions.push_back(reflection::Definition<Quaternion>::build(runtime));
     definitions.push_back(reflection::Definition<Actor>::build(runtime));
     definitions.push_back(reflection::Definition<Component>::build(runtime));
     definitions.push_back(reflection::Definition<Transform>::build(runtime));
@@ -17,8 +19,8 @@ Result<Types> register_types(Runtime& runtime) {
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;
-    types.vec3 = (*ids)[0]; types.quaternion = (*ids)[1]; types.actor = (*ids)[2];
-    types.component = (*ids)[3]; types.transform = (*ids)[4]; types.cube = (*ids)[5]; types.counter = (*ids)[6];
+    types.vector3 = *vector; types.quaternion = *quaternion; types.actor = (*ids)[0];
+    types.component = (*ids)[1]; types.transform = (*ids)[2]; types.cube = (*ids)[3]; types.counter = (*ids)[4];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
         auto outer = runtime.find_field(types.transform, name);
         if (!outer) return std::unexpected(outer.error());
@@ -30,9 +32,9 @@ Result<Types> register_types(Runtime& runtime) {
         }
         return {};
     };
-    if (auto result = make_paths(types.position_fields, types.vec3, "position"); !result) return std::unexpected(result.error());
+    if (auto result = make_paths(types.position_fields, types.vector3, "position"); !result) return std::unexpected(result.error());
     if (auto result = make_paths(types.rotation_fields, types.quaternion, "rotation"); !result) return std::unexpected(result.error());
-    if (auto result = make_paths(types.scale_fields, types.vec3, "scale"); !result) return std::unexpected(result.error());
+    if (auto result = make_paths(types.scale_fields, types.vector3, "scale"); !result) return std::unexpected(result.error());
     auto value = runtime.find_field(types.counter, "value");
     auto steps = runtime.find_field(types.counter, "steps");
     auto advance = runtime.find_method(types.counter, "advance");
@@ -166,7 +168,7 @@ Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
         return Trs{transform.position, transform.rotation, transform.scale};
     });
 }
-Result<Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
+Result<math::Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
     auto value = read_transform(runtime, object);
     if (!value) return std::unexpected(value.error());
     auto canonical = canonical_transform(*value);

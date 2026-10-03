@@ -2084,6 +2084,7 @@ void verify_native_member_address() {
 
 }
 
+void verify_runtime_math_precision();
 void verify_runtime_inheritance();
 void verify_reference_sequences();
 
@@ -2108,6 +2109,7 @@ int main() {
         verify_deep_value_walks();
         verify_scalar_plans();
         verify_native_member_address();
+        verify_runtime_math_precision();
         verify_runtime_inheritance();
         verify_reference_sequences();
         std::cout << "Runtime acceptance: PASS\n";

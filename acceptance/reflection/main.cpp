@@ -1,5 +1,7 @@
 #include "reflection/fixture.hpp"
+#include "runtime/foundation.hpp"
 #include <array>
+#include <bit>
 #include <cstdio>
 #include <stdexcept>
 
@@ -12,6 +14,9 @@ template<class T> T take(Result<T> result) {
     if (!result) throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+void take(Result<void> result) {
+    if (!result) throw std::runtime_error(result.error().message);
+}
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 void invoke(Runtime& runtime, ObjectId object, TypeId type, const char* name,
     std::span<const Scalar> args, Scalar expected) {
@@ -19,6 +24,55 @@ void invoke(Runtime& runtime, ObjectId object, TypeId type, const char* name,
     const auto called = runtime.call(object, take(runtime.find_method(type, name)), args, &output);
     if (!called) throw std::runtime_error(called.error().message);
     require(output == expected, "Generated member invoker changed its signature or receiver.");
+}
+void verify_math_calls(Runtime& runtime) {
+    const auto type = take(runtime.native_type<CallProbe>());
+    const auto f64 = take(runtime.native_type<double>());
+    const auto vector3d = take(runtime.native_type<math::Vector3d>());
+    auto object = take(runtime.create(type));
+    const auto method = [&](std::string_view name) { return take(runtime.find_method(type, name)); };
+    const double tiny = 0x1p-40;
+    double target = 4.0;
+    const double read = tiny * 2;
+    const std::array precise_arguments{Argument{Scalar{1.0 + tiny}}, Argument::borrow(read), Argument::borrow(target)};
+    Scalar scalar_output;
+    take(runtime.call(object.id(), method("precise"), precise_arguments, &scalar_output));
+    require(target == 5.0 + tiny * 3 && std::get<double>(scalar_output) == target,
+        "Generated double value/const-reference/reference method narrowed a value or lost mutation.");
+    const auto precise_field = take(runtime.find_field(type, "precise_value"));
+    for (const std::uint64_t bits : {0x3ff0000000000001ull, 0x8000000000000000ull, 0x7ff8123456789abcull}) {
+        const double value = std::bit_cast<double>(bits);
+        take(runtime.write(object.id(), precise_field, Scalar{value}));
+        const std::array arguments{take(runtime.read(object.id(), precise_field))};
+        take(runtime.call(object.id(), method("precise_echo"), arguments, &scalar_output));
+        require(std::bit_cast<std::uint64_t>(std::get<double>(scalar_output)) == bits,
+            "Generated double field/method lost precision, signed zero or NaN payload.");
+    }
+
+    const auto direction_field = take(runtime.find_field(type, "direction"));
+    const math::Vector3d copy{tiny, 2, 3}, initial{1.0 + tiny, 4, 5};
+    take(runtime.write(object.id(), direction_field, ValueInput{vector3d, &initial}));
+    const std::array direction_path{direction_field};
+    const std::array vector_arguments{Argument::borrow(copy), Argument::field(object.id(), direction_path),
+        Argument::field(object.id(), direction_path)};
+    math::Vector3d output;
+    take(runtime.call(object.id(), method("translate"), vector_arguments, ValueOutput{vector3d, &output}));
+    math::Vector3d stored;
+    take(runtime.read(object.id(), direction_field, ValueOutput{vector3d, &stored}));
+    require(output == initial + copy + initial && stored == output,
+        "Generated mathematical value/result or whole-field aliases lost native storage semantics.");
+    require(!runtime.call(object.id(), method("translate"), vector_arguments, ValueOutput{f64, &output}),
+        "Generated mathematical method accepted a different result type.");
+
+    const auto samples_field = take(runtime.find_field(type, "samples"));
+    const std::array samples_path{samples_field};
+    const std::array array_arguments{Argument::field(object.id(), samples_path), Argument::borrow(tiny)};
+    take(runtime.call(object.id(), method("append_sample"), array_arguments, &scalar_output));
+    require(std::get<double>(scalar_output) == tiny &&
+        take(runtime.with_native<CallProbe>(object.id(), [&](const CallProbe& probe) -> Result<bool> {
+            return probe.samples.size() == 1 && probe.samples[0] == tiny;
+        })), "Generated Array<double> field/reference method did not preserve precision.");
+    std::puts("[pass] Generated double/math fields, value/reference parameters, typed results and Array<double>");
 }
 }
 int main() {
@@ -30,7 +84,8 @@ int main() {
             atelier::reflection::Definition<CallProbe>::build(runtime),
             atelier::reflection::Definition<Mode>::build(runtime),
             atelier::reflection::Definition<OtherMode>::build(runtime),
-            atelier::reflection::Definition<UnsignedMode>::build(runtime)}));
+            atelier::reflection::Definition<UnsignedMode>::build(runtime),
+            array_definition<double>(runtime, "reflection.DoubleArray")}));
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);
@@ -45,6 +100,7 @@ int main() {
 #else
         require(runtime.find_field(types[1], "release_only").has_value() && !runtime.find_field(types[1], "debug_only"), "Generator lost release preprocessing context.");
 #endif
+        verify_math_calls(runtime);
         verify_shared_calls(runtime);
         const auto destroyed = runtime.destroy(object.id());
         if (!destroyed) throw std::runtime_error(destroyed.error().message);

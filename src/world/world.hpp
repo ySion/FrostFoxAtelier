@@ -48,11 +48,11 @@ struct Transform : Component {
     AGENERATED_BODY(Transform)
 public:
     AFIELD()
-    Vec3 position;
+    math::Vector3 position;
     AFIELD()
-    Quaternion rotation;
+    math::Quaternion rotation;
     AFIELD()
-    Vec3 scale{1.f, 1.f, 1.f};
+    math::Vector3 scale{1.f, 1.f, 1.f};
 };
 ACLASS(Name="world.Cube")
 class Cube : public Component {
@@ -79,7 +79,7 @@ public:
 using FieldPath = std::vector<FieldId>;
 struct Types {
     TypeId actor, component, transform, cube, counter;
-    TypeId vec3, quaternion;
+    TypeId vector3, quaternion;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
@@ -117,7 +117,7 @@ struct ComponentStatus {
 // These owning reference snapshots are ordinary roots, not a second relation graph.
 [[nodiscard]] Result<std::vector<ObjectRoot>> components(Runtime&, ObjectId actor);
 [[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId transform);
-[[nodiscard]] Result<Matrix4> world_matrix(Runtime&, ObjectId transform);
+[[nodiscard]] Result<math::Matrix4> world_matrix(Runtime&, ObjectId transform);
 [[nodiscard]] Result<std::optional<ObjectId>> root_transform(Runtime&, ObjectId actor);
 
 struct Commit {
@@ -164,7 +164,7 @@ struct Attachment {
 };
 struct RenderItem {
     ObjectId actor, component, transform;
-    Matrix4 world;
+    math::Matrix4 world;
 };
 
 enum class Lifecycle { attached, activated, deactivated, detached };

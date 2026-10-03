@@ -51,6 +51,13 @@ target_include_directories(atelier_foundation PUBLIC src)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
 atelier_target(atelier_foundation)
 
+add_executable(atelier_math_acceptance acceptance/math/main.cpp)
+atelier_target(atelier_math_acceptance)
+target_include_directories(atelier_math_acceptance PRIVATE src)
+add_custom_target(math_acceptance
+    COMMAND $<TARGET_FILE:atelier_math_acceptance>
+    DEPENDS atelier_math_acceptance USES_TERMINAL VERBATIM)
+
 add_library(atelier_runtime STATIC src/runtime/runtime.cpp src/runtime/execution.cpp)
 target_include_directories(atelier_runtime PUBLIC src)
 target_compile_features(atelier_runtime PUBLIC cxx_std_23)
@@ -65,6 +72,7 @@ add_executable(atelier_runtime_acceptance
     acceptance/runtime/main.cpp
     acceptance/runtime/inheritance.cpp
     acceptance/runtime/reference_sequence.cpp
+    acceptance/runtime/math_precision.cpp
     acceptance/memory/acceptance.cpp)
 atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)
@@ -125,7 +133,7 @@ add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_ui_acceptance>
     COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
     COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
-    DEPENDS atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance ${_jit_acceptance_dependencies}
+    DEPENDS math_acceptance atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
         atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance foundation_acceptance
     USES_TERMINAL VERBATIM)

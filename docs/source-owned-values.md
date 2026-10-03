@@ -45,15 +45,15 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 
 非平凡记录元素由生产者明确设置此能力，例如验收中的带计数 Particle；仅仅不含 GC 引用不足以开放源码拥有操作。未具备能力的记录和 Array 仍可按现有规则同步借用。
 
-聚合借用、拥有型局部和 String 字面量使整个函数成为同步值区间。仅开放 `self` 上的 BorrowSafe 方法，GC 和 `begin/poll/finish` 策略回调留到区间结束后的宿主。不提供执行超时保证；原生调用方仍负责外部存储的真实寿命和结构稳定。
+聚合借用、一般记录/String/Array 拥有型局部和 String 字面量使整个函数成为同步值区间。仅开放 `self` 上的 BorrowSafe 方法，GC 和 `begin/poll/finish` 策略回调留到区间结束后的宿主。不提供执行超时保证；原生调用方仍负责外部存储的真实寿命和结构稳定。[内建数学值](math.md)的按值参数与局部不调用这些生命周期服务，也不产生同步值区间；数学引用参数仍保留借用限制。
 
 ## 当前边界
 
 - 局部拥有值包括 String/Array，以及具备相同生命周期能力的原生或描述型记录；支持默认构造、深复制初始化和整值赋值。Array 支持 reserve/resize/clear/add/append，String 支持 reserve/clear/append 和字面量赋值；这些操作也可沿拥有局部访问满足同样能力的嵌套字段或元素。[源码结构体](source-type-declarations.md)复用 Runtime 递归组合字段的布局和生命周期。
 - 外部借用容器禁止结构修改；源码入口的 String 参数仍只允许 `const String&`，字符索引只读。BorrowSafe 原生方法须遵守全部实参的只读性与别名约束。
 - 字面量支持 UTF-8、反斜线、引号、换行/回车/tab/零字节转义；未知转义在编译时拒绝，非法 UTF-8 在基础 String 构造或修改时报告执行错误。
-- 拥有值暂不跨 async/yield。现有标量与对象协程沿原协议执行。
-- 聚合按值参数/结果、借用逃逸与返回和源码 class 仍属于后续增量；[源码 enum/struct](source-type-declarations.md)已接通记录拥有型局部；[同模块多函数](source-function-modules.md)已沿用这些值生命周期与借用契约。
+- String/Array 和一般拥有型记录暂不跨 async/yield；数学局部可以跨挂起。现有标量（含 double）与对象协程沿原协议执行。
+- 一般记录/容器按值参数与结果、借用逃逸与返回和源码 class 仍属于后续增量；内建数学值已支持同步按值参数与结果。[源码 enum/struct](source-type-declarations.md)已接通记录拥有型局部；[同模块多函数](source-function-modules.md)已沿用这些值生命周期与借用契约。
 
 ## 端到端验收
 
