@@ -55,6 +55,61 @@ void shared_edit_history_and_focus() {
     for (unsigned i=0;i<12;++i) bytes.command(ui::Key::z,true);
     require(bytes.value().size()==4096,"history text byte budget was not enforced");
     bytes.command(ui::Key::escape); require(bytes.value()==L"original","byte budget evicted cancellation original");
+
+    TextConsumer returned(L"field");
+    returned.controls.push_back(leaf(2,ui::ControlKind::button,50,L"Menu")); returned.prepare();
+    returned.apply(returned.ui.focus(2));
+    require(!returned.ui.text_input(),"menu focus retained the text input binding");
+    const auto restored=returned.apply(returned.ui.focus(1));
+    require(returned.ui.text_input() && restored.effects.empty(),
+        "returning text focus did not restore its binding before the next native key");
+    const auto restored_token=returned.token();
+    returned.compose({ui::CompositionKind::start,60,restored_token,{},{}});
+    require(returned.ui.text_input()->composing,"returned focus rejected the first composition");
+    const auto refocused=returned.apply(returned.ui.focus(1));
+    require(refocused.effects.empty() && returned.token()==restored_token && returned.ui.text_input()->composing,
+        "same focus changed the live composition binding");
+    returned.compose({ui::CompositionKind::end,60,restored_token,std::wstring{L"位置"},{}});
+    require(returned.value()==L"field位置","returned focus lost the first confirmed composition");
+    returned.apply(returned.ui.focus(0));
+    require(returned.ui.focused_control()==0 && !returned.ui.text_input(),"explicit empty focus retained a control or text binding");
+
+    TextConsumer stable(L"original"); stable.command(ui::Key::a,true); stable.type(L"draft");
+    stable.command(ui::Key::a,true); const auto draft_token=stable.token();
+    require(stable.apply(stable.ui.focus(1)).effects.empty() && stable.token()==draft_token && stable.value()==L"draft",
+        "same focus committed or replaced the active draft");
+    require(request_of<ui::ClipboardRequest>(stable.command(ui::Key::c,true)).text==L"draft",
+        "same focus discarded the selection");
+    require(stable.ui.focus(999).effects.empty() && stable.token()==draft_token,"unknown focus changed the active draft");
+    auto disabled=leaf(2,ui::ControlKind::button,50,L"Disabled"); disabled.enabled=false;
+    stable.controls.push_back(disabled); stable.prepare();
+    require(stable.ui.focus(2).effects.empty() && stable.token()==draft_token,"disabled focus changed the active draft");
+    stable.command(ui::Key::escape); require(stable.value()==L"original","same focus ended draft rollback ownership");
+
+    TextConsumer numeric(L"",ui::ControlKind::number);
+    numeric.controls.push_back(leaf(2,ui::ControlKind::button,50,L"Menu")); numeric.prepare();
+    numeric.apply(numeric.ui.focus(2));
+    require(numeric.apply(numeric.ui.focus(1)).effects.empty() && numeric.ui.text_input(),"numeric focus did not bind passively");
+    require(numeric.command(ui::Key::enter).effects.empty(),"passive numeric focus committed without editing");
+    numeric.type(L"7");
+    require(numeric.controls[0].value==7,"numeric focus did not preserve Enter-to-edit selection");
+
+    TextConsumer transferred(L"",ui::ControlKind::number);
+    transferred.apply(transferred.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter}));
+    transferred.apply(transferred.ui.cancel_interaction()); // The menu owns the old Enter release.
+    transferred.apply(transferred.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter}));
+    transferred.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::enter});
+    transferred.type(L"7");
+    require(transferred.controls[0].value==7,"cancelled input owner swallowed the next Enter-to-edit");
+
+    TextConsumer escaped(L"original"); escaped.command(ui::Key::a,true); escaped.type(L"draft");
+    escaped.apply(escaped.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::escape}));
+    escaped.type(L"next");
+    const auto repeated_escape=escaped.apply(escaped.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::escape}));
+    require(repeated_escape.consumed && repeated_escape.effects.empty() && escaped.value()==L"originalnext",
+        "current Escape repeat escaped its terminal latch");
+    escaped.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::escape});
+    escaped.command(ui::Key::escape); require(escaped.value()==L"original","released Escape could not cancel a new draft");
 }
 void unicode_visual_editing() {
     const std::wstring original=L"A\U0001f600e\u0301\U0001f469\u200d\U0001f4bb\u2764\ufe0fZ";

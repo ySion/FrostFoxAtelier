@@ -232,7 +232,7 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         const auto dx=bx-ax,dy=by-ay;
         const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
         const auto px=x-ax-t*dx,py=y-ay-t*dy;
-        return px*px+py*py<=(symbol==Symbol::world?.001225f:.0064f);
+        return px*px+py*py<=((symbol==Symbol::world || symbol==Symbol::mesh || symbol==Symbol::folder)?.0016f:.0064f);
     };
     for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
         unsigned inside{};
@@ -246,10 +246,19 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
             const auto ax=symbol==Symbol::forward?1-px:px;
             const bool hit=(symbol==Symbol::back || symbol==Symbol::forward)?
                 ((ax>=.08f && ax<=.53f && std::abs(py-.5f)<(ax-.08f)*.85f) || (ax>=.5f && ax<=.92f && py>=.37f && py<=.63f)):
-                symbol==Symbol::world?(segment(px,py,.16f,.30f,.50f,.12f) || segment(px,py,.50f,.12f,.84f,.30f) ||
+                symbol==Symbol::world?(std::abs(std::hypot(px-.5f,py-.5f)-.36f)<.035f ||
+                    (std::abs(py-.5f)<.025f && std::abs(px-.5f)<.36f) ||
+                    (std::abs(std::hypot((px-.5f)*2,py-.5f)-.36f)<.035f)):
+                symbol==Symbol::folder?(segment(px,py,.12f,.28f,.40f,.28f) || segment(px,py,.40f,.28f,.5f,.38f) ||
+                    segment(px,py,.5f,.38f,.88f,.38f) || segment(px,py,.88f,.38f,.88f,.80f) ||
+                    segment(px,py,.88f,.80f,.12f,.80f) || segment(px,py,.12f,.80f,.12f,.28f)):
+                symbol==Symbol::mesh?(segment(px,py,.16f,.30f,.50f,.12f) || segment(px,py,.50f,.12f,.84f,.30f) ||
                     segment(px,py,.16f,.30f,.50f,.49f) || segment(px,py,.50f,.49f,.84f,.30f) ||
                     segment(px,py,.16f,.30f,.16f,.70f) || segment(px,py,.84f,.30f,.84f,.70f) ||
                     segment(px,py,.50f,.49f,.50f,.89f) || segment(px,py,.16f,.70f,.50f,.89f) || segment(px,py,.50f,.89f,.84f,.70f)):
+                symbol==Symbol::object?((px>=.18f && px<=.82f && py>=.28f && py<=.75f) || (py>=.12f && py<.28f && std::abs(px-.5f)<(py-.08f)*2)):
+                symbol==Symbol::axes?(segment(px,py,.45f,.55f,.85f,.75f) || segment(px,py,.45f,.55f,.15f,.85f) || segment(px,py,.45f,.55f,.45f,.10f)):
+                symbol==Symbol::component?((px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)<.16f && (px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)>.06f):
                 symbol==Symbol::close?(segment(px,py,.2f,.2f,.8f,.8f) || segment(px,py,.8f,.2f,.2f,.8f)):
                 symbol==Symbol::plus?(segment(px,py,.2f,.5f,.8f,.5f) || segment(px,py,.5f,.2f,.5f,.8f)):
                 symbol==Symbol::maximize?(px>=.15f && px<=.85f && py>=.225f && py<=.775f && px+py<1):

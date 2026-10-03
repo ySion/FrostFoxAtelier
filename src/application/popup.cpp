@@ -1,6 +1,7 @@
 #include "application/popup.hpp"
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <stdexcept>
 
 namespace atelier::application {
@@ -27,36 +28,77 @@ PopupHost::PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validat
 void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<const ui::MenuItem> items,
                        const ui::Style& style,std::shared_ptr<const ui::StyleSheet> sheet) {
     if (visible_ && source_==source && std::ranges::equal(items,items_) && style==ui_.style() && sheet_==sheet) return;
-    take(ui_.set_style(style)); take(ui_.set_style_sheet(sheet)); sheet_=std::move(sheet);
-    source_=source; items_.assign(items.begin(),items.end());
-    // Position before measurement so GetDpiForWindow uses the anchor monitor.
-    if (!SetWindowPos(window(),nullptr,anchor.left,anchor.bottom,32,32,SWP_NOACTIVATE|SWP_NOZORDER))
-        throw std::runtime_error("Cannot position popup window.");
+    const auto start=std::chrono::steady_clock::now();
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
     if (!GetMonitorInfoW(MonitorFromRect(&anchor,MONITOR_DEFAULTTONEAREST),&monitor))
         throw std::runtime_error("Cannot query popup monitor.");
     const auto area=monitor.rcWork;
+    const ui::PixelExtent work_area{static_cast<std::uint32_t>(area.right-area.left),static_cast<std::uint32_t>(area.bottom-area.top)};
+    // Move to the anchor monitor without shrinking the retained swapchain.
+    if (!SetWindowPos(window(),nullptr,anchor.left,anchor.bottom,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER))
+        throw std::runtime_error("Cannot position popup window.");
     const auto dpi=window_.dpi_scale();
-    take(ui_.set_controls({}));
-    take(ui_.set_surface({{static_cast<std::uint32_t>(area.right-area.left),static_cast<std::uint32_t>(area.bottom-area.top)},dpi,++revision_}));
+    const bool measure=controls_.empty() || !std::ranges::equal(items,items_) || style!=ui_.style() || sheet_!=sheet ||
+        measured_dpi_!=dpi || measured_area_!=work_area;
+    source_=source;
+    LONG width=static_cast<LONG>(extent_.width), height=static_cast<LONG>(extent_.height);
+    if (measure) {
+    suspend();
+    take(ui_.set_style(style)); take(ui_.set_style_sheet(sheet)); sheet_=std::move(sheet);
+    items_.assign(items.begin(),items.end());
+    take(ui_.set_surface({work_area,dpi,++revision_}));
     auto display=items_;
     // Edit commands execute in the origin Session after validating its lifetime.
     for (auto& item:display) item.edit_command.reset();
     std::vector<ui::Control> controls;
     ui::append_menu(controls,500,0,0,0,280,display);
+    // Measure both text columns with the same SS/font/layout path used to draw.
+    for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item)
+        control.layout.width=ui_layout::Axis::content();
     take(ui_.set_controls(controls));
-    const auto measured=take(ui_.prepare())->find(500)->bounds;
-    const auto width=std::min(static_cast<LONG>(std::ceil(measured.width)),area.right-area.left);
-    const auto height=std::min(static_cast<LONG>(std::ceil(measured.height)),area.bottom-area.top);
-    auto x=anchor.left, y=anchor.bottom;
+    const auto measurement=take(ui_.prepare());
+    const auto* menu=measurement->find(500);
+    if (!menu) throw std::runtime_error("Popup measurement has no live menu root.");
+    float title_width{},shortcut_width{};
+    for (const auto& control:controls) {
+        const auto* box=measurement->find(control.key);
+        if (control.kind==ui::ControlKind::menu_item) title_width=std::max(title_width,box->bounds.width/dpi);
+        if (control.kind==ui::ControlKind::label) shortcut_width=std::max(shortcut_width,box->bounds.width/dpi);
+    }
+    const auto gap=shortcut_width>0?18.f:0.f;
+    const bool scrolling=!measurement->scrollbars.empty();
+    const auto gutter=scrolling?menu->style->scrollbar_width+2*menu->style->scrollbar_inset:0.f;
+    const auto padding=controls.front().layout.padding;
+    const auto wanted=std::max(160.f,title_width+shortcut_width+gap+padding.left+padding.right+gutter);
+    width=std::min(static_cast<LONG>(std::ceil(wanted*dpi)),area.right-area.left);
+    height=std::min(static_cast<LONG>(std::ceil(menu->bounds.height)),area.bottom-area.top);
+    controls.front().layout.width=ui_layout::Axis::fixed(static_cast<float>(width)/dpi);
+    controls.front().style.scrollbar_gutter=scrolling?ui::ScrollbarGutter::stable:ui::ScrollbarGutter::overlay;
+    for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item) {
+        control.layout.width=ui_layout::Axis::expand();
+        control.layout.padding.right=shortcut_width+gap;
+    }
+    controls_=std::move(controls); measured_dpi_=dpi; measured_area_=work_area;
+    }
+    auto x=below?anchor.left:anchor.right, y=below?anchor.bottom:anchor.top;
+    if (!below && x+width>area.right) x=anchor.left-width;
     if (y+height>area.bottom) y=below?anchor.top-height:area.bottom-height;
     x=std::clamp(x,area.left,area.right-width); y=std::clamp(y,area.top,area.bottom-height);
     if (!SetWindowPos(window(),HWND_TOP,x,y,width,height,SWP_NOACTIVATE)) throw std::runtime_error("Cannot size popup window.");
-    take(ui_.set_controls({}));
-    take(ui_.set_surface({{static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)},window_.dpi_scale(),++revision_}));
-    take(ui_.set_controls(controls));
-    controls_=std::move(controls); extent_={static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)};
-    window_.show(); visible_=dirty_=true;
+    retarget({static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)});
+    window_.show(); visible_=dirty_=opening_=true;
+    open_cpu_us_=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
+}
+void PopupHost::suspend() {
+    if (controls_.empty()) return;
+    controls_.front().layout.collapsed=true; take(ui_.set_controls(controls_));
+}
+void PopupHost::retarget(ui::PixelExtent extent) {
+    // Retire modal input while retaining text/layout caches and stable identities.
+    suspend();
+    take(ui_.set_surface({extent,window_.dpi_scale(),++revision_}));
+    controls_.front().layout.collapsed=false; take(ui_.set_controls(controls_));
+    extent_=extent;
 }
 void PopupHost::render(renderer::Capture* capture) {
     if (!visible_) return;
@@ -64,23 +106,21 @@ void PopupHost::render(renderer::Capture* capture) {
         if (event.message==WM_SIZE || event.message==WM_DPICHANGED) dirty_=true;
     });
     if (!dirty_ && !capture) return;
+    const auto start=std::chrono::steady_clock::now();
     // The renderer publishes a resize after Present. Drive that same protocol,
     // accepting input only once the back buffer matches the native client.
     for (unsigned attempt=0;attempt<2;++attempt) {
         const auto target=graphics(renderer_.target());
         if (!target.drawable) return;
-        if (target.extent!=extent_) {
-            take(ui_.set_controls({}));
-            take(ui_.set_surface({target.extent,window_.dpi_scale(),++revision_}));
-            take(ui_.set_controls(controls_)); extent_=target.extent;
-        }
+        if (target.extent!=extent_) retarget(target.extent);
         const auto candidate=take(ui_.prepare());
         RECT client{}; GetClientRect(window(),&client);
         const bool current=target.extent==ui::PixelExtent{static_cast<std::uint32_t>(client.right),static_cast<std::uint32_t>(client.bottom)};
         const auto result=graphics(renderer_.render({*candidate->drawing,{}, {},{}},current?capture:nullptr));
         if (current && result.status==renderer::FrameStatus::accepted) {
             if (!ui_.accept(candidate)) throw std::runtime_error("Popup rejected its accepted GPU frame.");
-            dirty_=false; return;
+            if (opening_) open_cpu_us_+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
+            opening_=dirty_=false; return;
         }
     }
 }
@@ -100,7 +140,8 @@ void PopupHost::hide() {
     // Key-up after dismissal belongs to the owner. Retire the popup's terminal
     // key latch now, so the next opening does not swallow its first Escape.
     ui::Event loss; loss.kind=ui::EventKind::focus_lost;
-    static_cast<void>(ui_.input(loss)); take(ui_.set_controls({})); items_.clear();
+    static_cast<void>(ui_.input(loss));
+    suspend();
 }
 void PopupHost::close() {
     if (closed_) return;

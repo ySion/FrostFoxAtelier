@@ -31,10 +31,12 @@ public:
     Window& operator=(const Window&) = delete;
     HWND handle() const noexcept { return handle_; }
     void show();
-    // Drain owned records after each Dispatch, including synchronous callbacks.
-    // The consumer never runs from WndProc.
+    // Main windows pump the thread queue and drain owned records after each
+    // Dispatch. Owned popups only drain records queued by that pump or synchronous
+    // callbacks, including callback failures. The consumer never runs from WndProc.
     void poll(const std::function<void(NativeEvent&&)>&);
     bool closing() const noexcept { return closing_; }
+    void cancel_close() noexcept { closing_=false; }
     float dpi_scale() const noexcept;
     void capture(bool enabled);
     void cursor(ui::Cursor);

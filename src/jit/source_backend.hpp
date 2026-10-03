@@ -1,5 +1,6 @@
 #pragma once
 #include "runtime/parameter.hpp"
+#include "math/type.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +13,7 @@ inline constexpr std::uint32_t business_root_slots = 1;
 inline constexpr std::uint32_t observation_slot_bit = 0x80000000u;
 inline constexpr std::uint32_t null_reference_slot = 0xffffffffu;
 
-enum class ValueKind : std::uint32_t { void_value, f32, u32, i32, enumeration, record, array, string };
+enum class ValueKind : std::uint32_t { void_value, f32, u32, i32, enumeration, record, array, string, f64 };
 struct BusinessType {
     ValueKind kind;
     std::uint32_t type_index;
@@ -27,18 +28,20 @@ struct BusinessParameter {
 };
 enum class ArgumentStorage : std::uint32_t { value, read_only, reference, field };
 // Fixed-layout operand. Native values borrow original storage; bits only carry
-// scalars. Addresses/field locators last through a synchronous call. Results
-// remain scalar values; this is not an aggregate serialization format.
+// scalars. Addresses/field locators last through a synchronous call. Math value
+// arguments point at independent input storage; math results use caller-owned
+// exact typed storage. This is not an aggregate serialization format.
 struct BusinessValue {
     BusinessType kind{};
-    std::uint32_t bits{};
+    std::uint64_t bits{};
     ArgumentStorage storage{ArgumentStorage::value};
     const void* data{};
     std::uint32_t slot{}, field{};
 };
 static_assert(std::is_standard_layout_v<BusinessValue> && std::is_trivially_copyable_v<BusinessValue>);
-static_assert(sizeof(BusinessValue) == 32 && alignof(BusinessValue) == 8 &&
-    offsetof(BusinessValue, bits) == 8 && offsetof(BusinessValue, data) == 16 && offsetof(BusinessValue, slot) == 24);
+static_assert(sizeof(BusinessValue) == 40 && alignof(BusinessValue) == 8 &&
+    offsetof(BusinessValue, bits) == 8 && offsetof(BusinessValue, storage) == 16 &&
+    offsetof(BusinessValue, data) == 24 && offsetof(BusinessValue, slot) == 32 && offsetof(BusinessValue, field) == 36);
 
 struct BusinessFieldBinding { const char* name; BusinessType kind; };
 struct BusinessMethodBinding {
@@ -69,6 +72,7 @@ struct BusinessValueBinding {
     std::uint32_t field_count;
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
     bool can_own{}, can_mutate{};
+    math::Type math{};
 };
 struct BusinessEnvironment {
     const BusinessFieldBinding* fields;
@@ -105,7 +109,8 @@ struct BusinessServices {
     std::uint32_t (*write_uint)(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
     // Arguments/result borrow entry-allocated scratch through this synchronous
     // call. Non-void methods require result storage and commit its declared kind
-    // and bits only on success; void methods may receive a null result pointer.
+    // and payload only on success; math output.data points to typed writable
+    // scratch. Void methods may receive a null result pointer.
     std::uint32_t (*call)(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t,
         BusinessValue* result) noexcept;
     std::uint32_t (*poll)(void*) noexcept;
@@ -121,6 +126,10 @@ struct BusinessServices {
     std::uint32_t (*assign_value)(void*, std::uint32_t, void*, const void*) noexcept{};
     void (*destroy_value)(void*, std::uint32_t, void*) noexcept{};
     std::uint32_t (*mutate_sequence)(void*, std::uint32_t, SequenceMutation, void*, const void*, std::uint64_t) noexcept{};
+    std::uint32_t (*read_double)(void*, std::uint32_t, std::uint32_t, double*) noexcept{};
+    std::uint32_t (*write_double)(void*, std::uint32_t, std::uint32_t, double) noexcept{};
+    std::uint32_t (*read_math)(void*, std::uint32_t, std::uint32_t, void*) noexcept{};
+    std::uint32_t (*write_math)(void*, std::uint32_t, std::uint32_t, const void*) noexcept{};
     bool operator==(const BusinessServices&) const = default;
 };
 
@@ -163,7 +172,8 @@ struct BusinessCoroutine;
 #endif
 
 // A module has one selected host entry and internal synchronous functions.
-// entry_name may be omitted for a single function; results remain scalar/enum.
+// entry_name may be omitted for a single function; results are scalar/enum or
+// synchronous builtin math values.
 // Environment members describe the host's validated Runtime binding; a null
 // environment is empty. Code and LLVM state stay in their DLL; source bytes,
 // catalog names and arrays are borrowed only for compile. Compiled metadata
@@ -200,7 +210,9 @@ extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessFrameLayout
 // Arguments are borrowed and must remain stable through this synchronous call.
 // Arity, kinds and required storage are checked before invoking any callbacks.
 // A non-void result requires storage; void permits null. Only full success
-// commits {declared kind, bits}; failure leaves result entirely unchanged.
+// commits its declared value; a math result requires result->data to address an
+// aligned value of its exact declared type. Failure leaves both the operand and
+// its pointed-to result storage unchanged.
 // Service failure status codes pass through unchanged; their first-cause text
 // stays with the host invocation. Generated result-contract failures instead
 // populate error after explicit cleanup, without replacing a host first cause.

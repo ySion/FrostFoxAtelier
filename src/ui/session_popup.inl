@@ -62,9 +62,9 @@
             dismiss_popup(reply);
             execute_edit_command(reply,*command);
         } else {
-            action(reply,box.kind==ControlKind::item?ActionKind::select:ActionKind::activate,box.key,
+            action(reply,(box.kind==ControlKind::item || box.kind==ControlKind::tree_item)?ActionKind::select:ActionKind::activate,box.key,
                 toggle_kind(box.kind)?ActionValue{!box.selected}:ActionValue{});
-            if (box.kind==ControlKind::menu_item) dismiss_popup(reply);
+            if (box.kind==ControlKind::menu_item && !states.at(box.key).control.menu_branch) dismiss_popup(reply);
         }
     }
     bool popup_input(Reply& reply, const Event& event, const ControlBox* hit) {
@@ -104,6 +104,11 @@
                 menu.scroll=std::clamp(menu.scroll,0.0,menu.scroll_limit);
             }
             reply.redraw=true; return true;
+        }
+        if (event.kind==EventKind::key_down && event.key==Key::right) {
+            const auto* box=published->find(focus);
+            if (box && current(*box) && states.at(box->key).control.menu_branch) activate(reply,*box);
+            return true;
         }
         if ((event.kind==EventKind::key_down || event.kind==EventKind::key_up) && event.key!=Key::enter && event.key!=Key::space) return true;
         if (event.kind==EventKind::text) return true;

@@ -6,16 +6,18 @@
 
 namespace atelier::ui {
 
-enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world };
+enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world, object, axes, component, mesh, folder };
 enum class Role { normal, panel, title, caption };
+enum class IconPlacement { leading, above };
 enum class TextAlign { left, center, right };
 enum class TextVerticalAlign { top, center, bottom };
 enum class BorderStyle { solid, inset, outset };
+enum class ScrollbarGutter { stable, overlay };
 enum class BorderEdges : unsigned { none=0, top=1, right=2, bottom=4, left=8, all=15 };
 constexpr bool has_edge(BorderEdges edges,BorderEdges edge) { return (static_cast<unsigned>(edges)&static_cast<unsigned>(edge))!=0; }
 enum class ComboIndicator { down, arrows };
 enum class FontStyle { normal, italic };
-enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo, tab, slider };
+enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo, tab, slider, tree, tree_item };
 struct Font {
     std::wstring family{L"Microsoft YaHei UI"};
     std::wstring locale{L"en-US"};

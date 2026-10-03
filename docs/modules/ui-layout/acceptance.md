@@ -1,14 +1,15 @@
 # 布局正式验收
 
-状态：**dev/release各39项正式场景及最小消费者PASS，正式ui_layout_acceptance入口均exit 0。** 首次审计发现的基线与Grid问题已复现修复；交叉二审发现的极端权重触界问题也已关闭。新增4项审计场景并扩展真实基线验收，见[审计与同场景性能](audit.md)。实际合同见[Flex/Grid](flex-grid.md)。未改共享构建或其他线源码，没有复跑Runtime/JIT/RHI全仓验收。
+状态：**2026-10-04，dev/release各41项正式场景、最小消费者及生产UI 15/15 PASS，正式入口均exit 0。** 在前次39项基础上补充Flex行/列触界余量、基线能力拒绝及Grid批次/隐式轨道/失败重试。审计、原始资料核对和最终二审见[审计与同场景性能](audit.md)。实际合同见[Flex/Grid](flex-grid.md)。未改共享构建或其他线源码，没有复跑Runtime/JIT/RHI全仓验收。
 
 ## 当前入口与证据范围
 
 - 生产：`src/ui_layout/layout.hpp`、`layout.cpp`及其私有`flex.inl`、`grid.inl`。
 - 正式消费者：`acceptance/ui_layout/main.cpp`、`practical.inl`、`scaling.inl`、`editor.inl`、`flex_grid.inl`、`audit.inl`和`minimal.cpp`；inl仅由现有正式消费者包含，没有第二个目标。
 - 构建与运行仍使用README中的`cmake --build --preset dev --target ui_layout_acceptance`及release对应命令，先按正式工具脚本准备环境和配置。
-- 本轮验收源码以`c644ba5692fe2d67d1dda93953e227a50ba64f9f`为基线。最终源码/构建输入、四个程序及保留的修改前程序SHA-256记录于`out/review/ui-layout-audit/environment.json`，不沿用历史二进制证明新代码。
-- 日志：`out/review/ui-layout-audit/dev-acceptance.log`、`out/review/ui-layout-audit/release-acceptance.log`。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
+- 当前源码以`f42d071b937ad0c9c81e2315c9a8b0ff49ddc00d`为基线；源码、工具链输入和两配置程序SHA-256记录于`out/review/ui-layout-followup/environment.json`。修改前程序先在新增复现下得到39 PASS / 2 FAIL，再保留作同输入性能对照。
+- 当前日志：`out/review/ui-layout-followup/dev-acceptance.log`、`out/review/ui-layout-followup/release-acceptance.log`；每份包含布局41/41、minimal和生产UI 15/15。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
+- 前次39项验收以`c644ba5692fe2d67d1dda93953e227a50ba64f9f`为基线，旧哈希和日志保存在`out/review/ui-layout-audit/`，不替代当前结果。
 - 退役两套旧探针和整理文档后，两配置再次各39/39及minimal通过，exit 0：`out/review/ui-layout-audit/cleanup-dev-acceptance.log`、`out/review/ui-layout-audit/cleanup-release-acceptance.log`。正式源码与上述哈希记录一致。
 - retained_text_frames和editor_session_end_to_end覆盖同内容不同宽度、固定文字的几何复用、旧资源保有/回收、批量编辑、稳定业务key、ghost取消/提交、字体失效及多面板失败保旧。消费链见[composition](composition.md)，最新成本分项见[审计](audit.md)。
 
@@ -36,12 +37,14 @@
 
 | 场景 | 可观察行为 |
 |---|---|
-| allocation_rounded_saturation | 大权重触及max时，剩余空间继续分给小权重，不被比例舍入吞掉 |
+| allocation_rounded_saturation | 旧row/column和显式Flex两方向的大权重触及max时，约0.5的剩余空间继续分给小权重，不被比例舍入吞掉 |
+| flex_baseline_boundaries | 纵向Flex、脱流项目的显式或继承基线明确拒绝并保旧；折叠、恢复和显式stretch覆盖成功 |
+| grid_sizing_batches | 4096轨道/2048显式重叠项目、隐式Expand/max、自然宽模式、嵌套父分配scratch；真实文字的后续Grid失败保旧、重试匹配fresh、缩短需求及重排 |
 | grid_sparse_spans | 行向、列向跨轨自动项目推进全部覆盖轨的游标 |
 | grid_collision_boundaries | 大跨度、64位边界、固定主轴放置、精确容量边界、失败保旧及恢复 |
 | collapsed_publication_indices | 连续折叠/展开、失败和重试、删除/槽复用、旧快照查询均保持完整身份 |
 
-基础17项继续纳入当前39项，矩阵如下。
+基础17项继续纳入当前41项，矩阵如下。
 
 ## 性能与未覆盖项
 

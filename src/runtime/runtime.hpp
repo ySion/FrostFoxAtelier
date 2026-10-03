@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/parameter.hpp"
+#include "math/type.hpp"
 #include <array>
 #include <ranges>
 
@@ -12,6 +13,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -133,7 +135,7 @@ struct EnumValue {
     std::uint32_t bits{};
     bool operator==(const EnumValue&) const = default;
 };
-using Scalar = std::variant<float, std::uint32_t, std::int32_t, EnumValue>;
+using Scalar = std::variant<float, std::uint32_t, std::int32_t, EnumValue, double>;
 
 // Validated, call-scoped storage. Invokers must not retain these addresses.
 struct ArgumentView {
@@ -152,6 +154,17 @@ struct ArgumentView {
 
 class Runtime;
 
+// Caller-owned live mathematical value storage, matching the exact Runtime type.
+// A successful call assigns it; failure leaves the complete value unchanged.
+struct ValueOutput {
+    TypeId type;
+    void* data{};
+};
+struct ValueInput {
+    TypeId type;
+    const void* data{};
+};
+
 struct CallContext {
     Runtime& runtime;
     ObjectId self;
@@ -160,6 +173,10 @@ struct CallContext {
     std::span<const ArgumentView> arguments;
     // Staged business value. Runtime commits it only after successful validation.
     std::optional<Scalar> result{};
+    // Runtime-owned staging for builtin math results. An invoker fills the live
+    // exact value, then sets result_written; it must not retain or replace storage.
+    ValueOutput result_value{};
+    bool result_written{};
 };
 
 using Invoker = Result<void> (*)(CallContext&);
@@ -362,18 +379,22 @@ public:
     }
 };
 
-// Typed scalar scratch and validated views share the invocation lifetime.
-// Small calls need no allocation. Addresses cannot survive this owner.
+// Typed scratch and validated views share the invocation lifetime. Up to eight
+// arguments with at most 128 copied bytes need no allocation. Addresses cannot
+// survive this owner; borrowed arguments consume no copied storage.
 class PreparedArguments {
     friend class Runtime;
-    struct alignas(4) Slot { std::byte bytes[4]; };
-    std::array<Slot, 8> inline_slots_{};
+    alignas(double) std::array<std::byte, 16 * sizeof(double)> inline_storage_;
     std::array<ArgumentView, 8> inline_views_{};
-    std::vector<Slot> slots_;
+    std::unique_ptr<std::byte, void (*)(std::byte*)> storage_{nullptr, [](std::byte* address) noexcept {
+        ::operator delete(address, std::align_val_t{alignof(double)});
+    }};
+    std::size_t storage_capacity_{};
     std::vector<ArgumentView> views_;
     std::size_t size_{};
 public:
-    PreparedArguments() = default;
+    // Scratch is initialized by each copied value, not eagerly cleared.
+    PreparedArguments() noexcept {}
     PreparedArguments(const PreparedArguments&) = delete;
     PreparedArguments& operator=(const PreparedArguments&) = delete;
     [[nodiscard]] std::span<const ArgumentView> values() const noexcept {
@@ -496,6 +517,9 @@ struct TypeInfo {
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
     void (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t){};
     bool value_operations_preserve_borrows{};
+    // Assigned exclusively when Runtime bootstraps its canonical math types.
+    // User definitions cannot acquire compiler intrinsic semantics by naming.
+    math::Type math{};
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };
@@ -627,13 +651,22 @@ public:
     [[nodiscard]] bool belongs_to_context(ObjectId object) const noexcept;
     [[nodiscard]] Result<TypeId> type_of(ObjectId object) const;
 
-    // A field path traverses inline records. Its final field must be a scalar.
+    // A field path traverses inline records. Scalar and builtin mathematical
+    // fields share the same path resolution and exact-type checks.
     [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);
+    [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
+    [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, ValueInput value);
     [[nodiscard]] Result<Scalar> read(ObjectId object, FieldId field) const {
         return read(object, {&field, 1});
     }
     [[nodiscard]] Result<void> write(ObjectId object, FieldId field, Scalar value) {
+        return write(object, {&field, 1}, value);
+    }
+    [[nodiscard]] Result<void> read(ObjectId object, FieldId field, ValueOutput output) const {
+        return read(object, {&field, 1}, output);
+    }
+    [[nodiscard]] Result<void> write(ObjectId object, FieldId field, ValueInput value) {
         return write(object, {&field, 1}, value);
     }
 
@@ -672,10 +705,17 @@ public:
     // User-code side effects are not rolled back. Native borrows still forbid source entry.
     [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments,
                                     Scalar* output = nullptr);
+    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments,
+                                    ValueOutput output);
     template<std::ranges::contiguous_range R>
         requires std::same_as<std::ranges::range_value_t<R>, Argument>
     [[nodiscard]] Result<void> call(ObjectId object, MethodId method, const R& arguments, Scalar* output = nullptr) {
         return call_arguments(object, method, std::span<const Argument>{arguments}, output);
+    }
+    template<std::ranges::contiguous_range R>
+        requires std::same_as<std::ranges::range_value_t<R>, Argument>
+    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, const R& arguments, ValueOutput output) {
+        return call_arguments(object, method, std::span<const Argument>{arguments}, nullptr, output);
     }
     // Source adapters use this before entry. Field operands are rejected here:
     // their addresses may only be borrowed inside a protected native call.
@@ -692,7 +732,7 @@ public:
 private:
     friend class detail::TypePublication;
     Result<std::shared_ptr<detail::TypePublication>> prepare_types(std::vector<TypeDefinition>);
-    [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*);
+    [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*, ValueOutput = {});
     [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>, PreparedArguments&, bool fields) const;
     friend class ExecutionScope;
     [[nodiscard]] Result<void> enter_execution();

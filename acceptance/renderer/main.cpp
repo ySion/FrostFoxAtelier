@@ -84,9 +84,54 @@ void snapshot(const render::Capture &c) {
         out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
     check(out.good(), "write capture evidence");
 }
+void ui_only_cases(render::Renderer &renderer, Window &window) {
+    const auto initial_extent = take(renderer.target()).extent;
+    ui::Frame ui_frame{.id = 3000, .extent = initial_extent, .draws = {}};
+    ui_frame.draws.push_back({{0, 0, 24, 24}, {0, 0, 24, 24}, {1, 0, 0, 1}, {0, 0, 1, 1}, {}});
+    render::Frame frame{ui_frame, {}, {}, {}};
+    auto result = take(renderer.render(frame));
+    check(result.status == render::FrameStatus::accepted && result.stats.scene_draw_calls == 0 &&
+              result.stats.ui_draw_calls == 1,
+          "cold renderer accepts an ordinary UI-only frame");
+    render::Capture capture;
+    auto capture_ui = [&] {
+        ++ui_frame.id;
+        const auto captured = take(renderer.render(frame, &capture));
+        check(captured.status == render::FrameStatus::accepted && captured.accepted_id == ui_frame.id &&
+                  capture.frame_id == ui_frame.id && capture.extent == ui_frame.extent &&
+                  captured.stats.scene_draw_calls == 0 && captured.stats.ui_draw_calls == 1,
+              "UI-only capture retains accepted metadata and draw counts");
+        check(capture.depth.size() == std::size_t(capture.extent.width) * capture.extent.height &&
+                  std::ranges::all_of(capture.depth, [](float value) { return value == 1; }) &&
+                  pixel(capture, 12, 12)[0] == 255 && pixel(capture, 30, 30)[0] == 0,
+              "UI-only capture has rendered color and uniform background depth");
+    };
+    capture_ui();
+    std::array<render::MeshInstance, 1> meshes{};
+    meshes[0].geometry = atelier::geometry::cube_mesh();
+    frame.meshes = meshes;
+    capture_ui(); // A zero viewport still has no scene, even with valid mesh input.
+    frame.meshes = {};
+    for (const auto extent : {ui::PixelExtent{503, 317}, initial_extent}) {
+        window.resize(static_cast<int>(extent.width), static_cast<int>(extent.height));
+        ++ui_frame.id;
+        result = take(renderer.render(frame, &capture));
+        check(result.status == render::FrameStatus::accepted && result.accepted_extent == ui_frame.extent &&
+                  capture.extent == ui_frame.extent && result.next_extent == extent,
+              "UI-only resize captures the rendered target before advancing its extent");
+        const auto captured_id = capture.frame_id;
+        result = take(renderer.render(frame, &capture));
+        check(result.status == render::FrameStatus::skipped && capture.frame_id == captured_id,
+              "UI-only extent mismatch retains the previous capture");
+        ui_frame.extent = extent;
+        capture_ui();
+    }
+    std::puts("Renderer UI-only: PASS (cold render/capture, zero viewport, resize, skipped capture)");
+}
 void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
     ui::Frame ui_frame{.id = 1000, .extent = extent, .draws = {}};
-    std::array<render::Cube, 2> cubes{};
+    std::array<render::MeshInstance, 2> cubes{};
+    for (auto& mesh : cubes) mesh.geometry = atelier::geometry::cube_mesh();
     cubes[0].world = translation(0, 0, 2);
     cubes[0].color = {1, 1, 1, 1};
     render::Camera camera;
@@ -149,8 +194,8 @@ void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
     cubes[0].world = translation(0, 0, 2);
     render_capture();
     const auto previous_id = capture.frame_id;
-    frame.cubes = cubes;
-    std::array<std::array<float, 16>, 5> invalid{};
+    frame.meshes = cubes;
+    std::array<std::array<float, 16>, 6> invalid{};
     invalid[0] = {}; // Not affine (all zero).
     invalid[1] = translation(0, 0, 3);
     invalid[1][0] = 0; // Zero scale, singular but otherwise affine.
@@ -161,6 +206,8 @@ void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
     invalid[4] = translation(0, 0, 3);
     invalid[4][4] = 1;
     invalid[4][5] = 0; // Linearly dependent basis rows despite nonzero entries.
+    invalid[5] = translation(0, 0, 3);
+    invalid[5][0] = 1e-30f; invalid[5][5] = 1e30f; // Double invertible; FP32 normal matrix loses rank.
     for (const auto &matrix : invalid) {
         cubes[1].world = matrix;
         ++ui_frame.id;
@@ -170,12 +217,52 @@ void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
                   capture.frame_id == previous_id,
               "bad second world matrix rejects the whole frame before encoding and retains capture");
     }
-    frame.cubes = {cubes.data(), 1};
+    frame.meshes = {cubes.data(), 1};
     render_capture();
     check(std::abs(depth(capture, 360, 200) - .15f) < .0001f,
           "valid world frame remains usable after rejected candidates");
     std::puts("Renderer world transforms: PASS (rotation, nonuniform scale, shear normals, reflection, "
               "extreme scale, invalid-frame recovery)");
+}
+void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
+    auto geometry = std::make_shared<const atelier::geometry::Mesh>(std::vector<atelier::geometry::Vertex>{
+        {{-.05f,-.5f,0},{1,0,-1}}, {{.05f,-.5f,0},{1,0,-1}}, {{0,.5f,0},{1,0,-1}}});
+    std::weak_ptr<const atelier::geometry::Mesh> observed = geometry;
+    std::array<render::MeshInstance,3> meshes{};
+    for (auto& mesh : meshes) { mesh.world=translation(30,0,2); mesh.color={1,1,1,1}; }
+    meshes[0].world=translation(0,0,2); meshes[0].world[0]=8;
+    meshes[0].geometry=geometry; meshes[1].geometry=geometry; meshes[2].geometry=atelier::geometry::cube_mesh();
+    ui::Frame ui_frame{.id=2000,.extent=extent,.draws={}};
+    render::Camera camera; camera.projection[10]=.1f;
+    render::Frame frame{ui_frame,camera,{120,40,480,320},meshes};
+    render::Capture capture;
+    const auto result=take(renderer.render(frame,&capture));
+    check(result.status==render::FrameStatus::accepted && result.stats.scene_draw_calls==2,
+        "adjacent shared mesh instances batch while different geometry gets its own draw");
+    const double linear=.3+.7*.65/std::sqrt(1.015625*1.16);
+    const int expected=static_cast<int>(std::lround((1.055*std::pow(linear,1/2.4)-.055)*255));
+    check(std::abs(depth(capture,360,200)-.2f)<.00001f && std::abs(int(pixel(capture,360,200)[0])-expected)<=2,
+        "arbitrary triangle geometry and non-axis normal use the full inverse-transpose under nonuniform scale");
+    check(depth(capture,500,240)==1, "triangle does not cover the replacement rectangle's outer area");
+    auto replacement=std::make_shared<const atelier::geometry::Mesh>(std::vector<atelier::geometry::Vertex>{
+        {{-.1f,-.5f,0},{0,0,-1}},{{.1f,-.5f,0},{0,0,-1}},{{.1f,.5f,0},{0,0,-1}},
+        {{-.1f,-.5f,0},{0,0,-1}},{{.1f,.5f,0},{0,0,-1}},{{-.1f,.5f,0},{0,0,-1}}});
+    std::weak_ptr<const atelier::geometry::Mesh> replacement_observer=replacement;
+    meshes[0].geometry=replacement; meshes[1].geometry=replacement;
+    meshes[0].world[14]=2.5f; geometry.reset(); ++ui_frame.id;
+    const auto replaced=take(renderer.render(frame,&capture));
+    check(replaced.status==render::FrameStatus::accepted && replaced.stats.scene_draw_calls==2 &&
+        std::abs(depth(capture,500,240)-.25f)<.00001f && observed.expired(),
+        "new immutable mesh version changes silhouette/depth and retires its old CPU owner");
+    const auto accepted_id=capture.frame_id;
+    meshes[0].geometry.reset(); ++ui_frame.id;
+    auto invalid=renderer.render(frame,&capture);
+    check(!invalid && !invalid.error().terminal && capture.frame_id==accepted_id,
+        "missing mesh resource rejects the entire candidate before encoding");
+    frame.meshes={}; meshes[1].geometry.reset(); replacement.reset(); ++ui_frame.id;
+    const auto empty=take(renderer.render(frame));
+    check(empty.stats.scene_draw_calls==0 && replacement_observer.expired(), "unused geometry CPU/GPU cache ownership retires");
+    std::puts("Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
 }
 #include "ui_shapes.inl"
 } // namespace
@@ -184,6 +271,7 @@ int main() {
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    ui_only_cases(renderer, window);
     auto target = take(renderer.target());
     check(target.drawable && target.extent == ui::PixelExtent{641, 385}, "actual initial target");
     ui::Frame ui_frame{.id = 1, .extent = target.extent, .draws = {}};
@@ -200,8 +288,8 @@ int main() {
     std::weak_ptr<const ui::Coverage> old_coverage = coverage;
     ui_frame.draws.push_back({{10, 100, 60, 40}, full, {1, 1, 1, 1}, {0, 0, 1, 1}, coverage});
     coverage.reset();
-    std::array<render::Cube, 2> cubes{{{translation(0, 0, 2), {1, 0, 0, 1}, false},
-                                     {translation(0, 0, 5), {0, 0, 1, 1}, false}}};
+    std::array<render::MeshInstance, 2> cubes{{{translation(0, 0, 2), {1, 0, 0, 1}, false, atelier::geometry::cube_mesh()},
+                                     {translation(0, 0, 5), {0, 0, 1, 1}, false, atelier::geometry::cube_mesh()}}};
     render::Camera camera;
     camera.projection[10] = .1f;
     render::Frame frame{ui_frame, camera, {120, 40, 480, 320}, cubes};
@@ -330,15 +418,18 @@ int main() {
     check(std::abs(depth(capture, 360, 200) - (10.0f / 9.9f - 1.0f / (9.9f * 3.5f))) < .0001f,
           "left-handed row-major view and perspective projection");
     ui_frame.draws.erase(ui_frame.draws.begin() + 2);
-    frame.cubes = {};
+    frame.meshes = {};
     ++ui_frame.id;
-    result = take(renderer.render(frame));
+    result = take(renderer.render(frame, &capture));
     check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 0 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 0,
           "unused coverage leaves cache totals and empty scene emits no draw");
+    check(std::ranges::all_of(capture.depth, [](float value) { return value == 1; }),
+          "UI-only capture after a scene does not expose the retained scene depth");
     transform_cases(renderer, ui_frame.extent);
+    mesh_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
     auto closed = renderer.close();
     check(bool(closed), "drain and close before HWND destruction");

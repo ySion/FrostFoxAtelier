@@ -16,13 +16,17 @@ public:
     explicit Application(bool gpu_validation = false);
     ~Application();
     bool step(renderer::Capture* = nullptr);
+    Result<void> open_project(const std::filesystem::path&,bool create=false);
+    Result<void> open_scene(const std::filesystem::path&);
+    Result<void> save_scene(const std::filesystem::path& relative = {});
     void close();
     HWND window() const noexcept { return window_.handle(); }
-    const editor::Session& document() const noexcept { return document_; }
+    const editor::Session& document() const noexcept { return *document_; }
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
-    HWND menu_window() const noexcept { return popup_ && popup_->visible()?popup_->window():nullptr; }
-    const ui::UiFrame* menu_frame() const noexcept { return menu_window()?popup_->presented().get():nullptr; }
-    void capture_menu(renderer::Capture& capture) { if (menu_window()) popup_->render(&capture); }
+    HWND menu_window() const noexcept { const auto* host=menu_host(); return host?host->window():nullptr; }
+    const ui::UiFrame* menu_frame() const noexcept { const auto* host=menu_host(); return host?host->presented().get():nullptr; }
+    double menu_open_cpu_us() const noexcept { const auto* host=menu_host(); return host?host->open_cpu_us():0; }
+    void capture_menu(renderer::Capture& capture) { if (auto* host=menu_host()) host->render(&capture); }
     ui::ControlKey object_control(ObjectId actor) const noexcept { return workspace_.object_control(actor); }
     ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
         return workspace_.field_control(component, path);
@@ -54,35 +58,49 @@ public:
 private:
     friend struct EditorAcceptanceAccess; // Seeds real backend failures in the window E2E.
     Window window_;
-    editor::Session document_;
+    std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
+    std::optional<editor::Project> project_;
+    std::filesystem::path scene_path_;
+    std::wstring window_title_;
     editor::Camera camera_;
     editor::Workspace workspace_;
     ui::Session ui_;
     std::shared_ptr<const ui::StyleSheet> style_sheet_;
     std::unique_ptr<PopupHost> popup_;
+    std::vector<std::unique_ptr<PopupHost>> submenus_;
+    std::vector<ui::ControlKey> menu_path_;
     bool gpu_validation_{};
     std::uint64_t menu_incarnation_{};
     ui::ControlKey menu_return_focus_{};
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
     renderer::Renderer renderer_;
-    std::vector<renderer::Cube> cubes_;
+    std::vector<renderer::MeshInstance> meshes_;
     ui::Surface surface_;
     std::uint64_t surface_revision_{1}, accepted_frames_{};
     bool closed_{}, orbiting_{}, sampling_{};
     FrameTiming frame_timing_;
     renderer::FrameStats frame_statistics_;
     float last_x_{}, last_y_{};
+    PopupHost* menu_host() const noexcept {
+        if (!menu_path_.empty() && submenus_.size()>=menu_path_.size() && submenus_[menu_path_.size()-1]->visible())
+            return submenus_[menu_path_.size()-1].get();
+        return popup_ && popup_->visible()?popup_.get():nullptr;
+    }
     void native(NativeEvent);
     void request_menu(const ui::ContextMenuRequest&);
     void close_menu(bool restore_focus=true);
     void update_menu();
     bool menu_input(const ui::Event&,WPARAM);
-    void effects(const ui::Reply&);
+    bool effects(const ui::Reply&);
+    Result<void> execute(editor::Command,std::string_view asset={});
     Result<void> action(const ui::Action&);
     void sync_text_input();
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
+    bool confirm_discard();
+    Result<void> project_command(editor::Command,std::string_view);
+    void publish_document(std::unique_ptr<editor::Session>);
     void invalidate_surface();
     bool pointer_ready() const noexcept;
     bool over_viewport(float, float) const noexcept;

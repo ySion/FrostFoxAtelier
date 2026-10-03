@@ -1,6 +1,6 @@
 # 原生 UI 阶段计划与历史合同
 
-状态：**S1、S2 主持已收口；历史证据归档于 `out/{dev,release}/editor-evidence-s2/`。SS 与基础控件增量已接入；原 S3 中的修改提示、整向量重置现已实现，菜单浮层、下拉和数值阶梯已实现，固定目标仍未实施。**
+状态：**S1、S2 主持已收口；历史证据归档于 `out/{dev,release}/editor-evidence-s2/`。SS 与基础控件增量已接入；原 S3 中的修改提示、整向量重置现已实现，菜单浮层、下拉和数值阶梯已实现，固定目标仍未实施。共享树视图及 [Actors 投影](modules/editor/README.md#actors-树视图)已接入。**
 
 2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
 

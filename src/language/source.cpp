@@ -27,6 +27,7 @@ BinaryOperator binary_operator(std::string_view text) noexcept {
     if (text == "+") return {4, Operation::add, false};
     if (text == "-") return {4, Operation::subtract, false};
     if (text == "*") return {5, Operation::multiply, false};
+    if (text == "/") return {5, Operation::divide, false};
     return {-1, Operation::add, false};
 }
 
@@ -95,8 +96,30 @@ public:
 
 private:
 
+    math::Type math_type(ValueType type) const noexcept {
+        return type.kind == ValueType::record && type.type_index < environment_.values.size() ?
+            environment_.values[type.type_index].math : math::Type{};
+    }
+    static bool floating(ValueType type) noexcept {
+        return type == ValueType::f32 || type == ValueType::f64;
+    }
+    static ValueType math_scalar(math::Type type) noexcept {
+        return type.precision == math::Precision::f64 ? ValueType::f64 : ValueType::f32;
+    }
+    ValueType math_named_type(std::string_view name) const noexcept {
+        for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
+            const auto& value = environment_.values[i];
+            if (value.math && (value.name == name || math::short_name(value.math) == name))
+                return {ValueType::record, i};
+        }
+        return ValueType::void_value;
+    }
+    bool math_reserved_name(std::string_view name) const noexcept {
+        return name == "math" || math_named_type(name) != ValueType::void_value;
+    }
     ValueType named_type(std::string_view name, SourcePosition position) const {
         if (name == "float") return ValueType::f32;
+        if (name == "double") return ValueType::f64;
         if (name == "uint") return ValueType::u32;
         if (name == "int") return ValueType::i32;
         if (name == environment_.object_type_name) return ValueType::strong_reference;
@@ -105,6 +128,8 @@ private:
                 return {environment_.values[i].kind, i};
         for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
             if (environment_.enumerations[i].name == name) return {ValueType::enumeration, i};
+        const auto math = math_named_type(name);
+        if (math != ValueType::void_value) return math;
         reject(position, "Unknown registered value type '" + std::string(name) + "'.");
     }
     ValueType declared_type(const TypeName& name, SourcePosition position) const {
@@ -142,8 +167,12 @@ private:
     }
     void signature() {
         function_.is_coroutine = accept("async");
-        function_.result = accept("void") ? ValueType::void_value : scalar_type();
-        function_.function_name = identifier().text;
+        function_.result = accept("void") ? ValueType::void_value : result_type();
+        if (function_.is_coroutine && math_type(function_.result))
+            reject(function_.position, "async math results are not supported by the task result contract.");
+        const auto name = identifier();
+        if (math_reserved_name(name.text)) reject(name.position, "Source functions cannot replace math constructors or the math namespace.");
+        function_.function_name = name.text;
         expect("(");
         if (!accept(")")) {
             do {
@@ -156,9 +185,10 @@ private:
                 const auto passing = reference ? (read_only ? ParameterPassing::read_only : ParameterPassing::reference) : ParameterPassing::value;
                 if (function_.is_coroutine && reference) reject(position, "async parameters cannot borrow caller storage.");
                 if (aggregate(type)) {
-                    if (!reference) reject(position, "Native values require a borrowed parameter; use Type& or const Type&.");
+                    if (function_.is_coroutine && math_type(type)) reject(position, "async math parameters are not supported by the task argument contract.");
+                    if (!reference && !math_type(type)) reject(position, "Native values require a borrowed parameter; use Type& or const Type&.");
                     if (type.kind == ValueType::string && !read_only) reject(position, "String borrowing requires const String&.");
-                    function_.uses_scoped_values = true;
+                    if (reference || !math_type(type)) function_.uses_scoped_values = true;
                 }
                 const auto index = local(identifier(), type);
                 function_.locals[index].read_only = read_only;
@@ -268,7 +298,7 @@ private:
         }
     }
     bool scalar(ValueType type) const {
-        return type == ValueType::f32 || type == ValueType::u32 || type == ValueType::i32 ||
+        return floating(type) || type == ValueType::u32 || type == ValueType::i32 ||
             (type.kind == ValueType::enumeration && type.type_index < environment_.enumerations.size());
     }
     bool supported_value(ValueType type) const {
@@ -276,10 +306,10 @@ private:
             environment_.values[type.type_index].kind == type.kind);
     }
     std::size_t value_size(ValueType type) const {
-        return aggregate(type) ? environment_.values[type.type_index].size : 4;
+        return aggregate(type) ? environment_.values[type.type_index].size : type == ValueType::f64 ? 8 : 4;
     }
     std::size_t value_alignment(ValueType type) const {
-        return aggregate(type) ? environment_.values[type.type_index].alignment : 4;
+        return aggregate(type) ? environment_.values[type.type_index].alignment : type == ValueType::f64 ? 8 : 4;
     }
     void validate_environment() const {
         validate_name(environment_.object_type_name, true);
@@ -307,6 +337,25 @@ private:
             if ((value.kind == ValueType::array || value.kind == ValueType::string) && !value.sequence_view)
                 reject({}, "Sequence layout requires its native view operation.");
             if (value.kind == ValueType::array && !supported_value(value.element)) reject({}, "Invalid array element type.");
+            if (value.math) {
+                if (value.kind != ValueType::record || value.name != math::name(value.math) ||
+                    value.math.components() == 0 || value.size != value.math.size() || value.alignment != value.math.scalar_size() ||
+                    value.fields.size() != value.math.components() ||
+                    (value.math.precision != math::Precision::f32 && value.math.precision != math::Precision::f64))
+                    reject({}, "Invalid canonical math value layout.");
+                for (std::size_t component = 0; component < value.fields.size(); ++component)
+                    if (value.fields[component].type != math_scalar(value.math) ||
+                        value.fields[component].offset != component * value.math.scalar_size())
+                        reject({}, "Math components require contiguous scalar layout.");
+                const auto alias = math::short_name(value.math);
+                if (environment_.object_type_name == alias) reject({}, "Object type conflicts with a built-in math type alias.");
+                for (const auto& other : environment_.values)
+                    if (&other != &value && (other.math == value.math || other.name == alias))
+                        reject({}, "Ambiguous built-in math type or alias.");
+                for (const auto& enumeration : environment_.enumerations)
+                    if (enumeration.name == alias || enumeration.name == value.name)
+                        reject({}, "Enum type conflicts with a built-in math type or alias.");
+            }
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.values[j].name == value.name) reject({}, "Duplicate native value name.");
             for (std::size_t j = 0; j < value.fields.size(); ++j) {
@@ -326,8 +375,8 @@ private:
         for (std::size_t i = 0; i < environment_.fields.size(); ++i) {
             const auto& field = environment_.fields[i];
             validate_name(field.name, false);
-            if (!scalar(field.type))
-                reject({}, "Host field has an unsupported scalar type.");
+            if (!scalar(field.type) && !math_type(field.type))
+                reject({}, "Host fields require scalar or built-in math value types.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.fields[j].name == field.name) reject({}, "Ambiguous host field binding.");
         }
@@ -337,10 +386,10 @@ private:
             if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
                 reject({}, "Host parameter list exceeds its index range.");
             for (const auto& parameter : method.parameters)
-                if (!supported_value(parameter.type) || (aggregate(parameter.type) && parameter.passing == ParameterPassing::value) || (parameter.passing != ParameterPassing::value &&
+                if (!supported_value(parameter.type) || (aggregate(parameter.type) && !math_type(parameter.type) && parameter.passing == ParameterPassing::value) || (parameter.passing != ParameterPassing::value &&
                     parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference))
                     reject({}, "Host method has an unsupported parameter type or passing mode.");
-            if (method.result != ValueType::void_value && !scalar(method.result))
+            if (method.result != ValueType::void_value && !scalar(method.result) && !math_type(method.result))
                 reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.methods[j].name == method.name) reject({}, "Ambiguous host method binding.");
@@ -378,11 +427,17 @@ private:
         expression_heights_.push_back(height);
         return function_.expressions.size() - 1;
     }
+    NodeId literal(ValueType type, SourcePosition position, std::uint64_t bits) {
+        Expression expression{Expression::Kind::literal, type, position};
+        expression.bits = bits;
+        return add(std::move(expression));
+    }
     NodeId add(Statement statement) {
         function_.statements.push_back(std::move(statement));
         return function_.statements.size() - 1;
     }
     void unused_name(const Token& name) const {
+        if (math_reserved_name(name.text)) reject(name.position, "Locals cannot replace math constructors or the math namespace.");
         for (const auto index : visible_)
             if (function_.locals[index].name == name.text)
                 reject(name.position, "A local or parameter with this name is already visible; shadowing is not supported.");
@@ -396,15 +451,11 @@ private:
         visible_.push_back(index);
         return index;
     }
-    ValueType scalar_type() {
-        if (accept("float")) return ValueType::f32;
-        if (accept("uint")) return ValueType::u32;
-        if (accept("int")) return ValueType::i32;
+    ValueType result_type() {
         const auto position = token_.position;
-        const auto name = qualified_identifier();
-        for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
-            if (environment_.enumerations[i].name == name) return {ValueType::enumeration, i};
-        reject(position, "Expected float, uint, int or a registered enum type.");
+        const auto type = parameter_type();
+        if (scalar(type) || math_type(type)) return type;
+        reject(position, "Function results require a scalar, enum or built-in math value type.");
     }
     ValueType parameter_type() {
         Depth guard(depth_, token_.position);
@@ -425,7 +476,7 @@ private:
     }
     bool writable(NodeId id) const {
         const auto& expression = function_.expressions[id];
-        if (aggregate(expression.type)) return owned_storage(id) && environment_.values[expression.type.type_index].can_own;
+        if (aggregate(expression.type) && !math_type(expression.type)) return owned_storage(id) && environment_.values[expression.type.type_index].can_own;
         return writable_storage(id);
     }
     bool writable_storage(NodeId id) const {
@@ -433,6 +484,10 @@ private:
         if (node.kind == Expression::Kind::field) return true;
         if (node.kind == Expression::Kind::local) return !function_.locals[node.value].read_only;
         if (node.kind == Expression::Kind::index && function_.expressions[node.left].type.kind == ValueType::string) return false;
+        // Whole object math reads are copies. A mutable component must resolve to
+        // its published object field rather than point into that temporary copy.
+        if (node.kind == Expression::Kind::value_field && function_.expressions[node.left].kind == Expression::Kind::field)
+            return false;
         if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index) return writable_storage(node.left);
         return false;
     }
@@ -445,7 +500,7 @@ private:
     bool integer_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.type != ValueType::u32) return false;
-        if (node.kind == Expression::Kind::literal) return node.value <= 2147483647u;
+        if (node.kind == Expression::Kind::literal) return node.bits <= 2147483647u;
         return (node.kind == Expression::Kind::unary && integer_constant(node.left)) ||
             (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right));
     }
@@ -481,14 +536,14 @@ private:
         Depth guard(depth_, token_.position);
         const auto position = token_.position;
         if (token_.text == "{") return block();
-        if (token_.text == "float" || token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration()) {
+        if (token_.text == "float" || token_.text == "double" || token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration()) {
             const bool weak = accept("weak");
             auto type = parameter_type();
             if (weak) {
                 if (type != ValueType::strong_reference) reject(position, "weak requires an object type.");
                 type = ValueType::weak_reference;
             }
-            if (aggregate(type)) {
+            if (aggregate(type) && !math_type(type)) {
                 if (!environment_.values[type.type_index].can_own)
                     reject(position, "Owned locals require values with borrow-preserving copy and lifecycle operations.");
                 function_.uses_scoped_values = true;
@@ -568,16 +623,34 @@ private:
             if (function_.expressions[right].type == ValueType::i32 && integer_constant(left)) signed_constant(left);
             const auto type = function_.expressions[left].type;
             const auto right_type = function_.expressions[right].type;
+            auto result_type = operation.comparison ? ValueType{ValueType::predicate} : type;
             if (reference_type(type) || reference_type(right_type)) {
                 if (!reference_type(type) || !reference_type(right_type) ||
                     (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
                     reject(symbol.position, "References support only == and != with another reference or null.");
+            } else if (math_type(type) || math_type(right_type)) {
+                const auto left_math = math_type(type), right_math = math_type(right_type);
+                const auto op = operation.operation;
+                if ((op == Operation::equal || op == Operation::not_equal) && type == right_type) {
+                    // Mathematical equality compares all components, with scalar IEEE semantics.
+                } else if (left_math.vector() && type == right_type && (op == Operation::add || op == Operation::subtract)) {
+                    result_type = type;
+                } else if (op == Operation::multiply && type == right_type &&
+                    (left_math.shape == math::Shape::quaternion || left_math.shape == math::Shape::matrix4)) {
+                    result_type = type;
+                } else if (left_math.vector() && right_type == math_scalar(left_math) &&
+                    (op == Operation::multiply || op == Operation::divide)) {
+                    result_type = type;
+                } else if (right_math.vector() && type == math_scalar(right_math) && op == Operation::multiply) {
+                    result_type = right_type;
+                } else reject(symbol.position, "Unsupported math operation or mismatched component precision.");
             } else if (!scalar(type) || right_type != type ||
                 (type.kind == ValueType::enumeration && operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
                 reject(symbol.position, "Binary operands require matching numeric types; enums support equality only.");
-            }
+            } else if (operation.operation == Operation::divide && !floating(type))
+                reject(symbol.position, "Division requires matching float or double operands.");
             left = add(Expression{Expression::Kind::binary,
-                operation.comparison ? ValueType::predicate : type, symbol.position, left, right, 0, operation.operation});
+                result_type, symbol.position, left, right, 0, operation.operation});
         }
     }
     NodeId unary() {
@@ -586,14 +659,14 @@ private:
             const auto symbol = consume();
             const auto operand = unary();
             if (symbol.text == "-" && function_.expressions[operand].kind == Expression::Kind::literal &&
-                function_.expressions[operand].type == ValueType::u32 && function_.expressions[operand].value == 2147483648u)
-                return add(Expression{Expression::Kind::literal, ValueType::i32, symbol.position, no_node, no_node, 2147483648u});
+                function_.expressions[operand].type == ValueType::u32 && function_.expressions[operand].bits == 2147483648u)
+                return literal(ValueType::i32, symbol.position, 2147483648u);
             if (symbol.text == "-" && integer_constant(operand)) signed_constant(operand);
             const auto type = function_.expressions[operand].type;
-            if (type != ValueType::f32 && type != ValueType::u32 && type != ValueType::i32)
+            if (!floating(type) && type != ValueType::u32 && type != ValueType::i32 && !math_type(type))
                 reject(symbol.position, "Unary arithmetic requires a numeric operand.");
-            if (symbol.text == "-" && type != ValueType::f32 && type != ValueType::i32)
-                reject(symbol.position, "Unary minus requires float or int; use uint subtraction for modulo arithmetic.");
+            if (symbol.text == "-" && type == ValueType::u32)
+                reject(symbol.position, "Unary minus requires a signed numeric value; use uint subtraction for modulo arithmetic.");
             return add(Expression{Expression::Kind::unary, type, symbol.position, operand, no_node, 0,
                 symbol.text == "+" ? Operation::positive : Operation::negate});
         }
@@ -648,6 +721,18 @@ private:
                     const auto& fields = environment_.values[type.type_index].fields;
                     const auto field = std::find_if(fields.begin(), fields.end(), [&](const auto& candidate) { return candidate.name == member.text; });
                     if (field == fields.end()) reject(member.position, "Field has no published direct native layout.");
+                    const auto& owner = function_.expressions[receiver];
+                    if (owner.kind == Expression::Kind::field) {
+                        const auto path = std::string(environment_.fields[owner.value].name) + "." + field->name;
+                        const auto projection = std::ranges::find_if(environment_.fields, [&](const auto& candidate) {
+                            return candidate.name == path && candidate.type == field->type;
+                        });
+                        if (projection != environment_.fields.end()) {
+                            receiver = add(Expression{Expression::Kind::field, projection->type, position, no_node, no_node,
+                                static_cast<std::uint32_t>(projection - environment_.fields.begin()), Operation::add, owner.receiver});
+                            continue;
+                        }
+                    }
                     Expression access{Expression::Kind::value_field, field->type, position, receiver};
                     access.offset = field->offset;
                     receiver = add(std::move(access));
@@ -676,6 +761,113 @@ private:
             }
         }
         return receiver;
+    }
+    NodeId numeric_literal(const Token& token) {
+        auto text = token.text;
+        const auto suffix = text.back();
+        const bool is_double = suffix == 'd' || suffix == 'D';
+        const bool is_float = suffix == 'f' || suffix == 'F';
+        if (is_float || is_double) text.remove_suffix(1);
+        if (is_double) {
+            double value{};
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+                reject(token.position, "Double literal is out of range or invalid.");
+            return literal(ValueType::f64, token.position, std::bit_cast<std::uint64_t>(value));
+        }
+        if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
+            float value{};
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+                reject(token.position, "Float literal is out of range or invalid.");
+            return literal(ValueType::f32, token.position, std::bit_cast<std::uint32_t>(value));
+        }
+        std::uint32_t value{};
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+            reject(token.position, "Uint literal is outside 0..4294967295.");
+        return literal(ValueType::u32, token.position, value);
+    }
+    NodeId math_call(std::string_view name, SourcePosition position, ValueType constructed) {
+        std::vector<NodeId> arguments;
+        if (!accept(")")) {
+            do {
+                if (arguments.size() == 16) reject(token_.position, "A math call accepts at most 16 scalar components or operands.");
+                arguments.push_back(expression());
+            } while (accept(","));
+            expect(")");
+        }
+        if (constructed != ValueType::void_value) {
+            const auto descriptor = math_type(constructed);
+            if (!arguments.empty() && arguments.size() != descriptor.components() &&
+                !(descriptor.shape == math::Shape::matrix4 && arguments.size() == 1))
+                reject(position, "Math construction requires no arguments, one scalar per component, or one diagonal scalar for a matrix.");
+            for (const auto argument : arguments) same_type(argument, math_scalar(descriptor));
+            Expression result{Expression::Kind::math_construct, constructed, position};
+            result.arguments = std::move(arguments);
+            return add(std::move(result));
+        }
+        MathOperation operation;
+        std::size_t arity = 1;
+        if (name == "math.dot") { operation = MathOperation::dot; arity = 2; }
+        else if (name == "math.cross") { operation = MathOperation::cross; arity = 2; }
+        else if (name == "math.length") operation = MathOperation::length;
+        else if (name == "math.normalize_or_zero") operation = MathOperation::normalize_or_zero;
+        else if (name == "math.conjugate") operation = MathOperation::conjugate;
+        else if (name == "math.rotate") { operation = MathOperation::rotate; arity = 2; }
+        else if (name == "math.transpose") operation = MathOperation::transpose;
+        else if (name == "math.transform_point") { operation = MathOperation::transform_point; arity = 2; }
+        else if (name == "math.transform_direction") { operation = MathOperation::transform_direction; arity = 2; }
+        else if (name == "math.sqrt") operation = MathOperation::square_root;
+        else reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
+        if (arguments.size() != arity) reject(position, "Math operation argument count mismatch.");
+        const auto first = function_.expressions[arguments[0]].type;
+        const auto descriptor = math_type(first);
+        auto result_type = first;
+        switch (operation) {
+        case MathOperation::square_root:
+            if (!floating(first)) reject(position, "math.sqrt requires float or double.");
+            break;
+        case MathOperation::dot:
+        case MathOperation::cross:
+            if (!descriptor.vector() || (operation == MathOperation::cross && descriptor.shape != math::Shape::vector3))
+                reject(position, "math.dot requires vectors; math.cross requires vector3.");
+            same_type(arguments[1], first);
+            if (operation == MathOperation::dot) result_type = math_scalar(descriptor);
+            break;
+        case MathOperation::length:
+        case MathOperation::normalize_or_zero:
+            if (!descriptor.vector() && descriptor.shape != math::Shape::quaternion)
+                reject(position, "Length and normalization require a vector or quaternion.");
+            if (operation == MathOperation::length) result_type = math_scalar(descriptor);
+            break;
+        case MathOperation::conjugate:
+            if (descriptor.shape != math::Shape::quaternion) reject(position, "math.conjugate requires a quaternion.");
+            break;
+        case MathOperation::transpose:
+            if (descriptor.shape != math::Shape::matrix4) reject(position, "math.transpose requires a matrix4.");
+            break;
+        case MathOperation::rotate: {
+            const auto second = function_.expressions[arguments[1]].type;
+            const auto vector = math_type(second);
+            if (descriptor.shape != math::Shape::quaternion || vector.shape != math::Shape::vector3 || descriptor.precision != vector.precision)
+                reject(position, "math.rotate requires a quaternion followed by a vector3 of matching precision.");
+            result_type = second;
+            break;
+        }
+        case MathOperation::transform_point:
+        case MathOperation::transform_direction: {
+            const auto second = function_.expressions[arguments[1]].type;
+            const auto matrix = math_type(second);
+            if (descriptor.shape != math::Shape::vector3 || matrix.shape != math::Shape::matrix4 || descriptor.precision != matrix.precision)
+                reject(position, "Transform operations require a vector3 followed by a matrix4 of matching precision.");
+            break;
+        }
+        }
+        Expression result{Expression::Kind::math_intrinsic, result_type, position};
+        result.math_operation = operation;
+        result.arguments = std::move(arguments);
+        return add(std::move(result));
     }
     NodeId primary() {
         const auto token = token_;
@@ -713,21 +905,19 @@ private:
         }
         if (token.kind == Token::Kind::number) {
             consume();
-            if (token.text.find_first_of(".eE") != std::string_view::npos) {
-                float value{};
-                const auto parsed = std::from_chars(token.text.data(), token.text.data() + token.text.size(), value);
-                if (parsed.ec != std::errc{} || parsed.ptr != token.text.data() + token.text.size() || !std::isfinite(value))
-                    reject(token.position, "Float literal is out of range or invalid.");
-                return add(Expression{Expression::Kind::literal, ValueType::f32, token.position,
-                    no_node, no_node, std::bit_cast<std::uint32_t>(value)});
-            }
-            std::uint32_t value{};
-            const auto parsed = std::from_chars(token.text.data(), token.text.data() + token.text.size(), value);
-            if (parsed.ec != std::errc{} || parsed.ptr != token.text.data() + token.text.size())
-                reject(token.position, "Uint literal is outside 0..4294967295.");
-            return add(Expression{Expression::Kind::literal, ValueType::u32, token.position, no_node, no_node, value});
+            return numeric_literal(token);
         }
         if (token.kind != Token::Kind::identifier) reject(token.position, "Expected an expression.");
+        if (token.text == "float" || token.text == "double") {
+            consume(); expect("(");
+            const auto argument = expression();
+            expect(")");
+            const auto type = function_.expressions[argument].type;
+            if (!floating(type) && type != ValueType::i32 && type != ValueType::u32)
+                reject(token.position, "Numeric conversion requires float, double, int or uint.");
+            return add(Expression{Expression::Kind::scalar_cast, token.text == "double" ? ValueType::f64 : ValueType::f32,
+                token.position, argument});
+        }
         {
             auto lookahead = lexer_;
             auto next = lookahead.next();
@@ -737,6 +927,12 @@ private:
                 name += "."; name += segment.text;
                 next = lookahead.next();
             }
+            if (next.text == "(" && (name.starts_with("math.") || math_named_type(name) != ValueType::void_value)) {
+                const auto constructed = math_named_type(name);
+                const auto actual_name = qualified_identifier();
+                expect("(");
+                return math_call(actual_name, token.position, constructed);
+            }
             if (next.text == "::") {
                 const auto name_actual = qualified_identifier();
                 expect("::");
@@ -745,8 +941,7 @@ private:
                     const auto& enumeration = environment_.enumerations[i];
                     if (enumeration.name != name_actual) continue;
                     for (const auto& value : enumeration.values)
-                        if (value.name == item.text) return add(Expression{Expression::Kind::literal,
-                            {ValueType::enumeration, i}, token.position, no_node, no_node, value.bits});
+                        if (value.name == item.text) return literal({ValueType::enumeration, i}, token.position, value.bits);
                     reject(item.position, "Unknown enumerator.");
                 }
                 reject(token.position, "Unknown enum type.");

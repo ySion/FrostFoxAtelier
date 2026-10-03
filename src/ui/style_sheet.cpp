@@ -16,8 +16,8 @@ bool invalid_state_properties(const StyleProperties& p, StyleState states) {
     // Persistent value/selection states may change weight; pointer/focus/error
     // transitions must not move text or hit geometry.
     const auto transient=static_cast<unsigned>(states)&(4u|8u|16u|64u);
-    return p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.text_vertical_align || p.indicator_size ||
-        p.scrollbar_width || p.scrollbar_inset || p.scrollbar_min_thumb || p.scrollbar_button_size ||
+    return p.tree_row_height || p.tree_indent || p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.text_vertical_align || p.indicator_size || p.icon_placement ||
+        p.scrollbar_width || p.scrollbar_inset || p.scrollbar_min_thumb || p.scrollbar_button_size || p.scrollbar_gutter ||
         ((p.font_weight || p.font_style) && transient);
 }
 unsigned specificity(const StyleSelector& s) {
@@ -80,7 +80,7 @@ class Parser {
             if (take('*')) any=true;
             else {
                 const auto type=identifier(); any=true;
-                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab","slider"};
+                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab","slider","tree","tree_item"};
                 const auto found=std::find(std::begin(kinds),std::end(kinds),type);
                 if (found==std::end(kinds)) fail("Unknown control type: "+type);
                 result.kind=static_cast<ControlKind>(found-std::begin(kinds));
@@ -193,6 +193,7 @@ class Parser {
         else if (name=="background") p.background=color(v);
         else if (name=="border-color") p.border=color(v);
         else if (name=="border-inner-color") p.border_inner=color(v);
+        else if (name=="border-shadow-color") p.border_shadow=color(v);
         else if (name=="border-edges") {
             auto input=resolve(v).text;
             unsigned edges{};
@@ -210,6 +211,12 @@ class Parser {
             if (value=="down") p.combo_indicator=ComboIndicator::down;
             else if (value=="arrows") p.combo_indicator=ComboIndicator::arrows;
             else fail("Expected down or arrows",v.position);
+        }
+        else if (name=="icon-placement") {
+            const auto value=resolve(v).text;
+            if (value=="leading") p.icon_placement=IconPlacement::leading;
+            else if (value=="above") p.icon_placement=IconPlacement::above;
+            else fail("Expected leading or above",v.position);
         }
         else if (name=="selection-color") p.selection=color(v);
         else if (name=="caret-color") p.caret=color(v);
@@ -264,10 +271,20 @@ class Parser {
                 n.size()==2?CornerRadii{n[0],n[1],n[0],n[1]}:CornerRadii{n[0],n[1],n[2],n[3]};
         } else if (name=="border-width") p.border_width=number(v);
         else if (name=="caret-width") p.caret_width=number(v);
+        else if (name=="tree-row-height") p.tree_row_height=number(v);
+        else if (name=="tree-indent") p.tree_indent=number(v);
+        else if (name=="tree-alternate-color") p.tree_alternate=color(v);
+        else if (name=="tree-line-color") p.tree_line=color(v);
         else if (name=="scrollbar-width") p.scrollbar_width=number(v);
         else if (name=="scrollbar-inset") p.scrollbar_inset=number(v);
         else if (name=="scrollbar-min-thumb") p.scrollbar_min_thumb=number(v);
         else if (name=="scrollbar-button-size") p.scrollbar_button_size=number(v);
+        else if (name=="scrollbar-gutter") {
+            const auto input=resolve(v);
+            if (input.text=="stable") p.scrollbar_gutter=ScrollbarGutter::stable;
+            else if (input.text=="overlay") p.scrollbar_gutter=ScrollbarGutter::overlay;
+            else fail("Expected stable or overlay",input.position);
+        }
         else if (name=="background-image" || name=="scrollbar-image") {
             auto& image_property=name=="background-image"?p.image:p.scrollbar_image;
             const auto input=resolve(v);
@@ -343,7 +360,11 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.text_vertical_align && static_cast<unsigned>(*p.text_vertical_align)>static_cast<unsigned>(TextVerticalAlign::bottom)) return false;
     if (p.border_style && static_cast<unsigned>(*p.border_style)>static_cast<unsigned>(BorderStyle::outset)) return false;
     if (p.border_edges && static_cast<unsigned>(*p.border_edges)>15) return false;
+    if (p.scrollbar_gutter && static_cast<unsigned>(*p.scrollbar_gutter)>static_cast<unsigned>(ScrollbarGutter::overlay)) return false;
     if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::arrows)) return false;
+    if (p.tree_row_height && !bounded(*p.tree_row_height,12,128)) return false;
+    if (p.tree_indent && !bounded(*p.tree_indent,8,64)) return false;
+    if (p.icon_placement && static_cast<unsigned>(*p.icon_placement)>static_cast<unsigned>(IconPlacement::above)) return false;
     if (p.indicator_size && !bounded(*p.indicator_size,4,32)) return false;
     if (p.accent_width && !bounded(*p.accent_width,0,16)) return false;
     if (p.accent && !color_valid(*p.accent)) return false;
@@ -355,7 +376,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     }
     if ((p.font_family && !name_valid(*p.font_family)) || (p.font_locale && !name_valid(*p.font_locale)) ||
         (p.font_size && !bounded(*p.font_size,4,256)) || (p.font_weight && (!*p.font_weight || *p.font_weight>999))) return false;
-    for (const auto* color:{&p.foreground,&p.background,&p.border,&p.border_inner,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border,&p.indicator_foreground}) if (*color && !color_valid(**color)) return false;
+    for (const auto* color:{&p.tree_alternate,&p.tree_line,&p.foreground,&p.background,&p.border,&p.border_inner,&p.border_shadow,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border,&p.indicator_foreground}) if (*color && !color_valid(**color)) return false;
     if (p.padding) for (auto n:{p.padding->left,p.padding->top,p.padding->right,p.padding->bottom}) if (!bounded(n,0,128)) return false;
     if (p.radius) for (auto n:{p.radius->top_left,p.radius->top_right,p.radius->bottom_right,p.radius->bottom_left}) if (!bounded(n,0,32768)) return false;
     return (!p.border_width || bounded(*p.border_width,0,128)) && (!p.caret_width || bounded(*p.caret_width,.25f,16)) &&
@@ -368,7 +389,7 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     for (auto& rule:rules) {
         auto& s=rule.selector;
         const auto bits=static_cast<unsigned>(s.states);
-        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::slider)) ||
+        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::tree_item)) ||
             (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>255 || (bits&3)==3 ||
             invalid_state_properties(rule.properties,s.states) || s.classes.size()>16 ||
             !std::all_of(s.classes.begin(),s.classes.end(),[](const auto& id){return valid_class(id);}))

@@ -65,7 +65,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         tick(app,2);
     };
     click(app,control::parameter_search); type(app,L""); key(app,VK_RETURN); key(app,VK_ESCAPE);
-    const auto target=model(atelier::world::root_transform(app.document().world().runtime(),actor));
+    const auto target=model(atelier::world::root_component(app.document().world().runtime(),actor));
     require(target.has_value(),"Parameter-row acceptance needs an actual component.");
     const auto position=[&](std::size_t axis) {
         return std::get<float>(model(app.document().world().read(*target,app.document().parameters()[axis].path)));
@@ -282,8 +282,12 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     wheel(app,sample::list,12);
     click(app,sample::fold);
     require(!app.presented()->find(sample::position_x),"Workbench foldout did not collapse its subtree.");
+    require(app.presented()->find(sample::fold)->style->border_width==0,
+        "Clicked fold header gained a focus border or underline.");
     key(app,VK_RETURN);
     require(app.presented()->find(sample::position_x),"Workbench foldout did not reopen from keyboard.");
+    require(app.presented()->find(sample::fold)->style->border_width==0,
+        "Keyboard-expanded fold header gained a focus border or underline.");
     capture(app,output/"controls-workbench.png");
     click(app,sample::reset);
     require(app.control_workbench().values()==atelier::editor::ControlWorkbench::Values{},"Workbench reset did not restore sample defaults.");

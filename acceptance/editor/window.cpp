@@ -13,20 +13,44 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static void mark_saved(Application& app) { app.effects(app.ui_.cancel_interaction()); app.document_->mark_saved(); }
+    static Result<void> command(Application& app,editor::Command command,std::string_view argument={}) { return app.execute(command,argument); }
+    static auto asset_key(const Application& app,std::string_view resource) {
+        return app.workspace_.assets.control(resource);
+    }
+
     static auto name_control(const Application& app,ObjectId actor) { return app.workspace_.name_control(actor); }
+    static void frame_failure(Application& app) {
+        const auto frame=app.ui_.prepare();
+        std::fprintf(stderr,"Status: %ls\n",app.status_text().c_str());
+        if (frame) if (const auto* view=(*frame)->find(editor::control::viewport))
+            std::fprintf(stderr,"Surface %u x %u; viewport %.3f %.3f %.3f %.3f\n",(*frame)->drawing->extent.width,(*frame)->drawing->extent.height,
+                view->bounds.x,view->bounds.y,view->bounds.width,view->bounds.height);
+    }
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
+    static void menu_items(Application& app,std::span<const ui::MenuItem> items) {
+        if (!app.popup_ || !app.workspace_.menu) throw std::runtime_error("Menu fixture needs an open native host.");
+        RECT anchor{};
+        if (!GetWindowRect(app.menu_window(),&anchor)) throw std::runtime_error("Cannot locate native menu fixture.");
+        anchor.bottom=anchor.top;
+        app.popup_->update(app.workspace_.menu->source,anchor,false,items,app.ui_.style(),app.style_sheet_);
+    }
+    static void menu_end(Application& app) {
+        static_cast<void>(app.popup_->input({.kind=ui::EventKind::key_down,.key=ui::Key::end}));
+        static_cast<void>(app.popup_->input({.kind=ui::EventKind::key_up,.key=ui::Key::end}));
+    }
     static Result<void> begin_edit(Application& app, ui::ControlKey control) {
         const auto* binding = app.workspace_.binding(control);
         if (!binding || binding->path.empty()) return std::unexpected(Error{ErrorCode::invalid_definition, "Missing field binding."});
-        return app.document_.begin_edit(binding->object, binding->path, control);
+        return app.document_->begin_edit(binding->object, binding->path, control);
     }
     static Result<void> edit_field(Application& app, ObjectId component, std::span<const FieldId> path, float value) {
         constexpr auto session = std::numeric_limits<ui::ControlKey>::max();
-        auto began = app.document_.begin_edit(component, path, session);
+        auto began = app.document_->begin_edit(component, path, session);
         if (!began) return began;
-        auto preview = app.document_.preview_edit(session, value);
+        auto preview = app.document_->preview_edit(session, value);
         if (!preview) return preview;
-        return app.document_.commit_edit(session);
+        return app.document_->commit_edit(session);
     }
 };
 }
@@ -60,6 +84,7 @@ void tick(Application& app, unsigned count = 2) {
     const auto before = app.accepted_frames();
     for (unsigned attempt = 0; app.accepted_frames() < before + count && attempt < 180; ++attempt)
         require(app.step(), "Editor closed during input acceptance.");
+    if (app.accepted_frames()<before+count) atelier::application::EditorAcceptanceAccess::frame_failure(app);
     require(app.accepted_frames() >= before + count, "Editor did not accept a frame within 180 iterations.");
 }
 POINT centre(Application& app, ControlKey key) {
@@ -123,7 +148,7 @@ void click(Application& app, ControlKey key) {
         auto parent=box->parent;
         while (parent) {
             const auto* ancestor=app.presented()->find(parent); if (!ancestor) { parent=0; break; }
-            if (ancestor->kind==atelier::ui::ControlKind::list) break;
+            if (ancestor->kind==atelier::ui::ControlKind::list || ancestor->kind==atelier::ui::ControlKind::tree) break;
             parent=ancestor->parent;
         }
         if (!parent) break;
@@ -153,7 +178,7 @@ void type(Application& app, const wchar_t* value) {
 }
 template<class T> T model(atelier::Result<T> result) {
     if (!result) throw std::runtime_error(result.error().message);
-    return std::move(*result);
+    if constexpr (!std::is_void_v<T>) return std::move(*result);
 }
 std::span<const atelier::world::Member> actors(const Application& app) { return model(app.document().world().members()); }
 bool contains(const Application& app, atelier::ObjectId actor) {
@@ -168,15 +193,15 @@ atelier::ObjectId component(const Application& app, atelier::ObjectId actor, ate
 }
 ControlKey property_control(const Application& app, atelier::ObjectId actor, std::size_t axis) {
     if (actor == atelier::ObjectId{}) return control::empty_field_base + axis;
-    const auto target = model(atelier::world::root_transform(app.document().world().runtime(), actor));
+    const auto target = model(atelier::world::root_component(app.document().world().runtime(), actor));
     if (!target) return control::empty_field_base + axis;
     const auto key = app.field_control(*target, app.document().parameters()[axis].path);
     require(key != 0, "Missing live component-field control binding.");
     return key;
 }
 float x(const Application& app, atelier::ObjectId actor) {
-    const auto target = model(atelier::world::root_transform(app.document().world().runtime(), actor));
-    require(target.has_value(), "Missing Transform in current World.");
+    const auto target = model(atelier::world::root_component(app.document().world().runtime(), actor));
+    require(target.has_value(), "Missing SceneComponent root in current World.");
     return std::get<float>(model(app.document().world().read(*target, app.document().parameters()[0].path)));
 }
 bool intersects(const atelier::ui::Rect& a, const atelier::ui::Rect& b) {
@@ -269,6 +294,25 @@ void verify_chrome_pixels(Application& app,const std::filesystem::path& output) 
     require(std::abs(selected.x-tab_bar.x)<.1f && std::abs(fold.x-list.x)<.1f,
         "Parameter tabs or fold header added an independent left inset.");
     pixel(static_cast<int>(std::round(fold.x))+stroke,static_cast<int>(std::round(fold.y))+stroke,51);
+    for (const auto key:{control::scene_tab,control::parameters_tab}) {
+        const auto* tab=app.presented()->find(key);
+        const auto group=app.presented()->find(tab->parent)->bounds;
+        // The first tab continues the selected face after the rail's trailing edge.
+        pixel(static_cast<int>(std::round(group.x)),static_cast<int>(std::round(group.y))+3*stroke,73);
+    }
+    for (const auto axis:{atelier::ui::DragAxis::horizontal,atelier::ui::DragAxis::vertical}) {
+        const bool vertical=axis==atelier::ui::DragAxis::horizontal;
+        const auto divider=app.docking().divider(vertical?control::scene_tab:control::parameters_tab,axis);
+        const auto rail=app.presented()->find(divider)->bounds;
+        const auto rx=static_cast<int>(std::round(rail.x)),ry=static_cast<int>(std::round(rail.y));
+        if (vertical) {
+            pixel(rx,ry+8*stroke,0); pixel(rx+2*stroke,ry+8*stroke,73);
+            pixel(static_cast<int>(std::round(rail.x+rail.width))-1,ry+8*stroke,51);
+        } else {
+            pixel(rx+8*stroke,ry,0); pixel(rx+8*stroke,ry+2*stroke,73);
+            pixel(rx+8*stroke,static_cast<int>(std::round(rail.y+rail.height))-1,51);
+        }
+    }
     png(pixels,output/"chrome-pixels.png");
 }
 void verify_control_states(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
@@ -283,22 +327,20 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     const auto button = centre(app, control::file_menu);
     mouse(app, WM_MOUSEMOVE, button);
     const auto hover = paint();
-    if (hover==normal) {
-        POINT cursor{}; GetCursorPos(&cursor); ScreenToClient(app.window(),&cursor);
-        capture(app,output/"failed-hover.png");
-        throw std::runtime_error("Hover did not use the shared control state style. Expected pointer "+
-            std::to_string(button.x)+","+std::to_string(button.y)+"; OS pointer "+
-            std::to_string(cursor.x)+","+std::to_string(cursor.y)+"; menu="+std::to_string(app.menu_window()!=nullptr));
-    }
+    require(hover==normal && !app.menu_window(),"Closed menubar reacted to pointer hover.");
     mouse(app, WM_LBUTTONDOWN, button);
     require(paint() != hover, "Pressed state did not change the shared paint.");
     capture(app, output / "s1-pressed.png");
     mouse(app, WM_LBUTTONUP, button);
     key(app,VK_ESCAPE);
+    require(app.presented()->find(control::file_menu)->style->border_width==0,
+        "Menu focus added an outer frame after pointer activation.");
 
     auto field = property_control(app, object, 0);
     click(app, field);
     const auto focused = solid_colors(*app.presented(), field);
+    const auto edge=app.presented()->find(field)->style->border;
+    require(edge.r==edge.g && edge.g==edge.b,"Editing focus did not use a neutral field edge.");
     capture(app, output / "s1-focused.png");
     type(app, L"10001");
     require(solid_colors(*app.presented(), field) != focused, "Invalid draft did not change the shared field state.");
@@ -534,7 +576,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     click(app, control::reset);
 }
 void verify_transform_projection(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
-    const auto transform = component(app, actor, app.document().types().transform);
+    const auto transform = *model(atelier::world::root_component(app.document().world().runtime(), actor));
     const auto before = model(atelier::world::read_transform(app.document().world().runtime(), transform));
     atelier::renderer::Capture original, rotated, scaled, restored;
     require(app.step(&original), "Could not capture the original World transform.");
@@ -554,13 +596,12 @@ void verify_transform_projection(Application& app, const std::filesystem::path& 
 }
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
     // Populate through the real Create menu and its native popup surface.
-    while (actors(app).size() < atelier::editor::Session::maximum_actors) {
+    while (actors(app).size() + 1 < atelier::editor::Session::maximum_actors) {
         const auto before_count = actors(app).size();
         click(app,control::add_actor);
         require(actors(app).size() == before_count + 1, "Create menu failed to populate the real list workload.");
     }
-    click(app, control::add_transform);
-    click(app, control::add_cube);
+    click(app, control::add_static_mesh);
     const auto first = actors(app).front().id();
     const auto last = actors(app).back().id();
     require(app.presented()->find(app.object_control(last)) &&
@@ -647,7 +688,10 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
 }
 #include "controls.inl"
 #include "docking.inl"
+#include "shelf.inl"
 #include "menus.inl"
+#include "tree.inl"
+#include "project_window.inl"
 }
 
 int verify_editor_window(Application& app, const char* output_directory) {
@@ -659,6 +703,11 @@ int verify_editor_window(Application& app, const char* output_directory) {
     std::ofstream(output / "acceptance.txt") << "Editor window acceptance: RUNNING\n";
     SetForegroundWindow(app.window()); SetFocus(app.window());
     tick(app);
+    // Launching from a background build process may not grant foreground rights.
+    // Wait once for activation; subsequent focus loss still stops every input.
+    const auto foreground_deadline=GetTickCount64()+20000;
+    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<foreground_deadline)
+        require(app.step(),"Editor closed while waiting for initial foreground.");
     require_input_focus(app);
     // SendMessage gestures deliberately keep the OS cursor off the client.
     // Capture/show can synthesize movement there; parking on the title bar
@@ -666,6 +715,18 @@ int verify_editor_window(Application& app, const char* output_directory) {
     RECT host{}; GetWindowRect(app.window(),&host);
     require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
     tick(app);
+    require(actors(app).empty(),"The production editor did not start with an empty scene.");
+    click(app,control::file_menu);
+    const auto first_open_us=app.menu_open_cpu_us(); const auto retained_popup=app.menu_window(); key(app,VK_ESCAPE);
+    click(app,control::file_menu);
+    const auto warm_open_us=app.menu_open_cpu_us();
+    require(app.menu_window()==retained_popup,"Warm open replaced the native popup window."); key(app,VK_ESCAPE);
+    std::ofstream(output/"popup-open.csv") << "path,cpu_us\nfirst," << first_open_us << "\nwarm," << warm_open_us << "\n";
+    click(app,control::add_static_mesh);
+    require(actors(app).size()==1 && app.document().undo_count()==1,"Static mesh creation was not a single document command.");
+    require(model(app.document().world().runtime().type_of(app.document().selected()))==app.document().types().static_mesh_actor,
+        "Create shelf did not construct the real StaticMeshActor type.");
+    verify_tool_shelf(app,output);
     capture(app, output / "m0.png");
     verify_chrome_pixels(app,output);
     const auto named_actor=app.document().selected();
@@ -715,7 +776,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
 
     const auto initial_count = actors(app).size();
     click(app, control::add_actor); click(app, control::add_actor);
-    require(actors(app).size() == initial_count + 2, "Add cube did not enter the scene.");
+    require(actors(app).size() == initial_count + 2, "Create command did not enter the scene.");
     const auto added_key = app.document().selected();
     const auto added_id = added_key;
     click(app, control::undo);
@@ -725,22 +786,23 @@ int verify_editor_window(Application& app, const char* output_directory) {
     require(model(atelier::world::components(app.document().world().runtime(), added_key)).empty(),
         "Add Actor did not produce an empty Actor.");
     const auto render_count = model(app.document().world().render_items()).size();
-    click(app, control::add_transform);
-    click(app, control::add_cube);
-    const auto added_cube = component(app, added_key, app.document().types().cube);
-    const auto removed_control = app.object_control(added_cube);
-    require(model(app.document().world().render_items()).size() == render_count + 1,
-        "Adding Transform and Cube did not project an actual component.");
-    click(app,control::parameter_components);
-    capture(app, output / "world-components.png");
-    click(app, removed_control);
-    require(contains(app, added_key) && model(app.document().world().render_items()).size() == render_count,
-        "Removing Cube removed its Actor or retained its drawing.");
-    click(app, control::undo);
-    require(component(app, added_key, app.document().types().cube) == added_cube &&
-        app.object_control(added_cube) != removed_control &&
-        model(app.document().world().render_items()).size() == render_count + 1,
-        "Component undo did not restore identity with a fresh control binding and drawing.");
+    const auto creation_history=app.document().undo_count();
+    click(app,atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere"));
+    require(app.document().undo_count()==creation_history,"Browsing a resource created a scene object.");
+    click(app,atelier::editor::browser_control::add);
+    const auto mesh_actor=app.document().selected();
+    const auto mesh_component=component(app,mesh_actor,app.document().types().static_mesh_component);
+    require(app.document().undo_count()==creation_history+1 &&
+        model(app.document().world().render_items()).size()==render_count+1 &&
+        model(app.document().world().runtime().type_of(mesh_actor))==app.document().types().static_mesh_actor,
+        "Asset shelf did not create one complete typed Actor through scene history.");
+    click(app,control::parameter_components); capture(app,output/"world-components.png");
+    click(app,control::undo);
+    require(!contains(app,mesh_actor) && model(app.document().world().render_items()).size()==render_count,
+        "Undo did not remove the whole Actor created by the shelf.");
+    click(app,control::redo);
+    require(contains(app,mesh_actor) && component(app,mesh_actor,app.document().types().static_mesh_component)==mesh_component,
+        "Redo changed the created Actor/component identity.");
     const auto object = actors(app).front().id();
     click(app,control::parameter_transform);
     click(app, app.object_control(object));
@@ -842,30 +904,51 @@ int verify_editor_window(Application& app, const char* output_directory) {
     tick(app, 3);
     require(app.presented()->drawing->surface_revision > revision && !app.document().editing() && x(app, object) == before_resize,
         "DPI transition policy did not cancel and publish matching hit data.");
+    verify_stow_alignment(app);
     verify_control_states(app, output, object);
     verify_style_changes(app, output, object);
     verify_shared_text(app, output, object);
     verify_docking(app, output, object);
     verify_native_menus(app, output, object);
     verify_basic_controls(app, output, object);
+    verify_tree_view(app,output,object);
     view = centre(app, control::viewport); ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)), MAKELPARAM(view.x, view.y)); tick(app, 1);
     capture(app, output / "editor.png");
     verify_list_workload(app, output);
+    verify_project_window(app,output);
+    atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
     require(!app.step(), "WM_CLOSE did not close the application.");
+    {
+        Application quit_app(true);
+        SetForegroundWindow(quit_app.window()); SetFocus(quit_app.window());
+        RECT quit_host{}; GetWindowRect(quit_app.window(),&quit_host);
+        require(SetCursorPos(quit_host.left+32,quit_host.top+12)!=FALSE,"Cannot park the quit acceptance pointer.");
+        tick(quit_app);
+        key(quit_app,VK_F10);
+        require(quit_app.menu_window() && quit_app.menu_frame(),"Quit acceptance did not open an accepted native menu.");
+        PostQuitMessage(0);
+        atelier::renderer::Capture quit_capture;
+        quit_app.capture_menu(quit_capture);
+        require(quit_capture.frame_id!=0,"Quit acceptance did not render the native menu capture.");
+        require(!quit_app.step(),"Native menu capture consumed the thread quit before the main window.");
+        require(!quit_app.menu_window() && GetCapture()!=quit_app.window(),"Thread quit retained an interactive native menu.");
+    }
     std::ofstream report(output / "acceptance.txt");
     report << "Editor window acceptance: PASS\n"
            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
-           << "World: empty Actor; explicit Transform/Cube; remove Cube while retaining Actor; component undo same identity/new control binding; Actor delete/GC/undo same composition/new bindings; AttachedInactive presentation/editing\n"
+           << "World: empty Actor; typed StaticMeshActor creation from shelf; one-step creation undo/redo preserves component identity; Actor delete/GC/undo same composition/new bindings; AttachedInactive presentation/editing\n"
            << "TRS: actual Session field transactions set rotation/nonuniform scale, World value matrices alter captured GPU depth, two UI undo commands restore the original value and depth; XYZ controls remain position-only\n"
-           << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; shutdown\n"
+           << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
+           << "Scene Tree: actual World membership and Actor types; Actor-only rows; World expansion; type/name filtering; close/reopen retains expansion; no scene history changes.\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
            << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
            << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
            << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, Home/End and Shift keyboard steps, disabled input; shared axis-accent SS and GPU capture.\n"
            << "Chrome: GPU pixels match ordinary field outer/inner/fill and selected tab open-bottom colors; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
+           << "Shelf: 56 DIP expanded / 6 DIP stowed; 64 DIP single command hit target with icon above short caption; category and scene state retained across pointer/keyboard stow.\n"
            << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
@@ -1130,6 +1213,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(clean_space_query.size() > 2 && clean_space_query.starts_with(L"位置"), "Clean-state Space did not insert text at the search caret.");
     physical_key(VK_ESCAPE);
     require(app.query() == L"位置", "Clean-state Space cancellation did not restore the committed query.");
+    if (actors(app).empty()) click(app,control::add_static_mesh);
     const auto object = app.document().selected();
     click(app, property_control(app, object, 0));
     compose_position(); physical_key(VK_SPACE); // The captured local Sogou candidate page shows position as item 1.
@@ -1187,9 +1271,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(x(app, object) == 0, "Space after switching editable fields changed the old object's value.");
     require(!app.document().editing(), "Space in the search field retained a numeric business edit.");
     physical_key(VK_ESCAPE);
-    click(app, control::add_actor);
-    click(app, control::add_transform);
-    click(app, control::add_cube);
+    click(app, control::add_static_mesh);
     const auto other = app.document().selected();
     const auto other_x = x(app, other);
     click(app, app.object_control(object));
@@ -1255,6 +1337,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(restore.restore(), "Cannot restore the original thread input profile.");
     TF_INPUTPROCESSORPROFILE restored_profile{};
     record_profile("Restored thread profile", manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &restored_profile), restored_profile);
+    atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0); require(!app.step(), "IME acceptance did not close normally.");
     std::ofstream report(output / "ime-acceptance.txt");
     report << "Sogou Pinyin acceptance: PASS\n"

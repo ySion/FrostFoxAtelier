@@ -1,4 +1,11 @@
 #include "editor/session.hpp"
+#include "editor/project.hpp"
+#include "editor/workspace.hpp"
+#include "editor/json_format.hpp"
+#include <nlohmann/json.hpp>
+#include <algorithm>
+#include <chrono>
+#include <fstream>
 #include <cstdio>
 #include <stdexcept>
 
@@ -23,9 +30,62 @@ ObjectId component(editor::Session& document, ObjectId actor, TypeId type) {
 float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
     return std::get<float>(take(document.world().read(target, document.parameters()[axis].path)));
 }
+#include "project_workspace.inl"
+#include "project_document.inl"
+#include "project_profile.inl"
 }
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 3 && std::string_view(argv[1]) == "--profile-json") {
+            profile_project_json(argv[2]);
+            return 0;
+        }
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory]");
+        verify_project_document();
+        {
+            editor::Session single;
+            changed(single.create_static_mesh(editor::mesh_assets().front()));
+            require(single.undo_count()==1 && take(single.world().runtime().type_of(single.selected()))==single.types().static_mesh_actor,
+                "Static mesh factory did not enter document history as one typed Actor creation.");
+            const auto actor = single.selected();
+            auto& rt = single.world().runtime();
+            const auto mesh = *take(world::root_component(rt, actor));
+            require(take(world::components(rt, actor)).size() == 1 && take(rt.type_of(mesh)) == single.types().static_mesh_component,
+                "A mesh Actor acquired a redundant standalone transform component.");
+            changed(single.undo()); collect(single);
+            require(take(single.world().members()).empty() && take(single.world().render_items()).empty(),
+                "Creation undo retained the Actor or its rendering.");
+            changed(single.redo());
+            require(single.selected()==actor && take(world::root_component(rt,actor))==mesh &&
+                take(single.world().render_items()).front().geometry==editor::mesh_assets().front().mesh,
+                "Creation redo changed Actor/component identity or mesh resource.");
+            take(single.begin_edit(mesh, single.types().position_fields[0], 91));
+            take(single.preview_edit(91, 4)); take(single.commit_edit(91));
+            require(take(single.world().render_items()).front().world[12] == 4, "Inherited root field did not move the mesh.");
+            take(single.begin_edit(mesh, single.types().rotation_fields[2], 92));
+            take(single.preview_edit(92, .7f)); take(single.commit_edit(92));
+            take(single.begin_edit(mesh, single.types().scale_fields[0], 93));
+            take(single.preview_edit(93, 2.f)); take(single.commit_edit(93));
+            const auto before_reset = take(world::read_transform(rt, mesh));
+            const auto reset_history = single.undo_count();
+            take(single.reset_position(mesh));
+            const auto after_reset = take(world::read_transform(rt, mesh));
+            require(after_reset.position == math::Vector3{} && after_reset.rotation == before_reset.rotation &&
+                after_reset.scale == before_reset.scale && single.undo_count() == reset_history + 1,
+                "Shared tuple reset failed to preserve the root mesh's rotation/scale or one-entry history.");
+            take(single.reset_position(mesh));
+            require(single.undo_count() == reset_history + 1, "Unchanged tuple reset created history.");
+            changed(single.undo());
+            require(take(world::read_transform(rt, mesh)) == before_reset && take(world::root_component(rt, actor)) == mesh,
+                "Tuple undo replaced root identity or failed to restore the complete SceneComponent TRS.");
+            changed(single.redo()); changed(single.undo());
+            changed(single.remove_component(mesh));
+            require(!take(world::root_component(rt, actor)) && take(single.world().render_items()).empty(), "Root removal retained spatial/presentation state.");
+            changed(single.undo());
+            require(take(world::root_component(rt, actor)) == mesh && take(single.world().render_items()).front().world[12] == 4,
+                "Root mesh undo did not restore explicit root identity and inherited fields.");
+            changed(single.close());
+        }
         editor::Session document;
         changed(document.add_actor());
         const auto actor = document.selected();
@@ -46,18 +106,19 @@ int main() {
         require(document.name(actor)==original_name,"Name Undo did not restore the label.");
         changed(document.redo());
         require(document.name(actor)==L"主角 Hero","Name Redo did not restore the label.");
-        changed(document.add_component(document.types().transform));
-        changed(document.add_component(document.types().cube));
-        const auto transform = component(document, actor, document.types().transform);
-        const auto cube = component(document, actor, document.types().cube);
+        changed(document.add_component(document.types().scene_component));
+        changed(document.add_component(document.types().static_mesh_component));
+        const auto transform = component(document, actor, document.types().scene_component);
+        const auto cube = component(document, actor, document.types().static_mesh_component);
+        take(world::set_geometry(runtime,cube,editor::mesh_assets().front().mesh));
         require(take(document.world().render_items()).size() == 1 && take(world::inspect_actor(runtime, actor)).can_present,
-            "AttachedInactive Cube component did not create a value projection.");
+            "AttachedInactive mesh component did not create a value projection.");
         changed(document.remove_component(cube));
         require(take(document.world().members()).size() == 1 && take(document.world().render_items()).empty(),
-            "Removing Cube removed its Actor or retained rendering.");
+            "Removing mesh removed its Actor or retained rendering.");
         collect(document);
         changed(document.undo());
-        require(component(document, actor, document.types().cube) == cube &&
+        require(component(document, actor, document.types().static_mesh_component) == cube &&
             take(world::inspect_component(runtime, cube)).owner == actor, "Component undo replaced identity or owner.");
         changed(document.redo()); changed(document.undo());
         const auto history = document.undo_count();
@@ -99,7 +160,7 @@ int main() {
         collect(document);
         changed(document.undo());
         require(document.selected() == actor && take(document.world().members()).front().id() == actor &&
-            component(document, actor, document.types().transform) == transform && component(document, actor, document.types().cube) == cube &&
+            component(document, actor, document.types().scene_component) == transform && component(document, actor, document.types().static_mesh_component) == cube &&
             value(document, transform) == 34 && document.name(actor)==L"主角 Hero", "Actor delete/GC/undo did not restore identities, composition, order, names and values.");
         take(document.begin_edit(transform, path, 16)); take(document.preview_edit(16, 88));
         changed(document.erase_selected()); changed(document.undo());

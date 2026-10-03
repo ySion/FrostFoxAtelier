@@ -18,7 +18,7 @@
 | 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：类型检查和定型 AST；[declarations.cpp](../src/language/declarations.cpp)、[lexer.hpp](../src/language/lexer.hpp)：共享声明解析与词法，字段/参数/局部共用类型名称解析 | 声明解析分别编入宿主和后端，STL 对象不跨 DLL；完整定型和 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
 | LLVM 降低与代码资源 | [source_backend.cpp](../src/jit/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
 | Windows 展开信息 | [windows_unwind.cpp](../src/jit/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
-| 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar，使用已有 Coroutine 表达协程拥有关系 |
+| 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar 或数学值的 ValueOutput，使用已有 Coroutine 表达协程拥有关系 |
 | Runtime 桥接 | [bridge.hpp](../src/source/detail/bridge.hpp)、[bridge.cpp](../src/source/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；不包含机器快照、统计或具体测试模式。内部观察点供验收组合其状态 |
 | 端到端消费者 | [公共最小消费者](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[连续会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 公共消费者使用正式接口，连续会话另读取分配器和 OS 统计；完整验收通过内部接缝检查 raw ABI 和故障路径，均使用同一正式实现 |
 | 阶段测量 | [measure.cpp](../acceptance/source/measure.cpp)：正式接口的有界时间与资源样本 | 显式目标 `atelier_source_measure`，不随普通构建或验收运行此专项目标；不向生产层加入统计状态 |
@@ -88,6 +88,14 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 - `BusinessServices::call` 进入原有 `Runtime::call` 和原生借用保护。源码挂起点不保留普通原生调用栈中的借用地址。
 - 服务状态、宿主首因错误与生成代码的结果契约错误各有明确来源；清理和结果提交仍沿同一执行链，不由消费者拼装第二条错误路径。
 
+## 数学值的直接执行
+
+`math/math.hpp` 提供纯 C++ 数学值与算法；`math/runtime.hpp` 产出同一 Runtime 的类型定义。Runtime 初始化完成规范布局校验后发布 `TypeInfo::math`，绑定桥将该分类连同字段偏移传给语言目录。编译器仍使用 record + 目录索引，没有第二份数学类型注册表。
+
+数学表达式经 `jit/math_lowering.hpp` 形成 LLVM 向量值；访问内存时只读写真实分量，三维向量不会因 SIMD 宽度越界或改变数组步长。局部数学值、内部按值参数与结果可以由 O2 消除中间存储。原生方法与公开源码入口的数学返回沿同一带类型结果缓冲暂存和提交；double 的私有 ABI payload 为 64 位。一般记录/容器继续使用原有生命周期路径。
+
+整模块执行普通 O2 管线，协程先完成拆分；数学向量运算先展开分量，使循环向量化可按目标 SIMD 宽度重新组合；内部函数允许优化器内联，公开入口保持稳定地址。没有 fast-math 标志，也不承诺不同 CPU 或 C++ 编译环境的逐位浮点确定性。规范与能力范围见[数学合同](math.md)。
+
 ## 所有权与释放责任
 
 | 拥有者/对象 | 持有什么 | 释放或失效规则 |
@@ -135,7 +143,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 | 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 以[阶段测量](research/runtime-stage-measurements.md)及连续运行证据评估消费者预算；当前没有已证明需要池化、根表替换或退休队列的负载 |
 | 诊断与源码调试未贯通 | 编译有源名/行列，平台有动态展开信息；尚无协程挂起源码位置、源码断点和局部变量查看 | 编辑器消费者需要定位挂起/错误时，再贯通 source position、代码版本和运行状态 |
 
-`await`、跨模块调用、递归、多对象类型环境、对象引用参数、聚合值按值调用和布局迁移属于尚未实现的能力；原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
+`await`、跨模块调用、递归、多对象类型环境、对象引用参数、一般聚合值按值调用和布局迁移属于尚未实现的能力；原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
 
 正式接口的成本也需保留可见性：公共 Scalar 参数最多八项时在栈上转码，更多参数按需分配；冷端 Candidate 为隐藏内部状态增加一份独立存储，Request 私有构造目前使用独立 shared_ptr 控制块。迁移没有证明吞吐提升，协程已有的固定拥有链仍保持原有分配职责。
 

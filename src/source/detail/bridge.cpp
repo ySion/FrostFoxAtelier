@@ -31,9 +31,10 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     binding.runtime = &runtime;
     binding.type = type;
     binding.f32 = take(runtime.native_type<float>());
+    binding.f64 = take(runtime.native_type<double>());
     binding.u32 = take(runtime.native_type<std::uint32_t>());
     binding.i32 = take(runtime.native_type<std::int32_t>());
-    binding.dependencies = {binding.f32, binding.u32, binding.i32};
+    binding.dependencies = {binding.f32, binding.f64, binding.u32, binding.i32};
     for (const auto* enumeration : catalog) {
         const auto id = enumeration->id;
         if (!enumeration->enumeration) continue;
@@ -46,7 +47,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     const auto append_value = [&](const TypeInfo& value, ValueKind kind) {
         binding.values.push_back({value.id, value.name, kind, value.size, value.alignment, ValueKind::void_value, {},
             value.sequence_view, value.value_operations_preserve_borrows && value.copy_constructible && value.copy_assignable,
-            value.sequence_mutate != nullptr});
+            value.sequence_mutate != nullptr, value.math});
     };
     std::vector<const TypeInfo*> pending_arrays;
     for (const auto* value : catalog) {
@@ -103,9 +104,10 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         path.push_back(field.id);
         prefix += field.name;
         const auto field_kind = value_kind(binding, field.value.type);
-        if (field_kind != ValueKind::void_value && !aggregate(field_kind)) {
+        const bool math_field = field_kind.kind == ValueKind::record && binding.values[field_kind.type_index].math;
+        if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || math_field))
             binding.fields.push_back({prefix, path, field_kind});
-        } else {
+        if (field_kind == ValueKind::void_value || aggregate(field_kind)) {
             const auto* nested = describe(field.value.type);
             if (nested->kind != TypeKind::record) continue;
             remember(nested->id);
@@ -137,6 +139,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
 
 BusinessType value_kind(const Binding& binding, TypeId type) {
     if (type == binding.f32) return ValueKind::f32;
+    if (type == binding.f64) return ValueKind::f64;
     if (type == binding.u32) return ValueKind::u32;
     if (type == binding.i32) return ValueKind::i32;
     for (std::uint32_t i = 0; i < binding.enumerations.size(); ++i)
@@ -147,6 +150,7 @@ BusinessType value_kind(const Binding& binding, TypeId type) {
 }
 TypeId value_type_id(const Binding& binding, BusinessType type) {
     if (type == ValueKind::f32) return binding.f32;
+    if (type == ValueKind::f64) return binding.f64;
     if (type == ValueKind::u32) return binding.u32;
     if (type == ValueKind::i32) return binding.i32;
     if (type.kind == ValueKind::enumeration && type.type_index < binding.enumerations.size())
@@ -178,7 +182,7 @@ EnvironmentView::EnvironmentView(const Binding& binding) {
         auto& fields = value_fields.emplace_back();
         for (const auto& field : value.fields) fields.push_back({field.name.c_str(), field.type, field.offset});
         values.push_back({value.name.c_str(), value.kind, value.size, value.alignment, value.element,
-            fields.data(), static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own, value.can_mutate});
+            fields.data(), static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own, value.can_mutate, value.math});
     }
     for (const auto& field : binding.fields) fields.push_back({field.name.c_str(), field.kind});
     for (const auto& method : binding.methods) {
@@ -193,11 +197,13 @@ BusinessEnvironment EnvironmentView::view(const char* object_type_name) const {
         values.data(), static_cast<std::uint32_t>(values.size())};
 }
 std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) {
-    if (value.kind == ValueKind::f32) return std::bit_cast<float>(value.bits);
-    if (value.kind == ValueKind::u32) return value.bits;
-    if (value.kind == ValueKind::i32) return std::bit_cast<std::int32_t>(value.bits);
+    if (value.kind != ValueKind::f64 && value.bits > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+    if (value.kind == ValueKind::f32) return std::bit_cast<float>(static_cast<std::uint32_t>(value.bits));
+    if (value.kind == ValueKind::f64) return std::bit_cast<double>(value.bits);
+    if (value.kind == ValueKind::u32) return static_cast<std::uint32_t>(value.bits);
+    if (value.kind == ValueKind::i32) return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits));
     if (binding && value.kind.kind == ValueKind::enumeration && value.kind.type_index < binding->enumerations.size())
-        return EnumValue{binding->enumerations[value.kind.type_index].type, value.bits};
+        return EnumValue{binding->enumerations[value.kind.type_index].type, static_cast<std::uint32_t>(value.bits)};
     return std::nullopt;
 }
 AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature, std::span<const Scalar> arguments) {
@@ -219,7 +225,10 @@ void AbiArguments::initialize(const Binding& binding, const FunctionSignature& s
     for (std::size_t i = 0; i < values.size(); ++i) {
         values[i] = {};
         values[i].kind = value_kind(binding, views[i].type);
-        if (signature.parameters[i].passing == ParameterPassing::value) std::memcpy(&values[i].bits, views[i].data, 4);
+        if (signature.parameters[i].passing == ParameterPassing::value) {
+            if (aggregate(values[i].kind)) values[i].data = views[i].data;
+            else std::memcpy(&values[i].bits, views[i].data, values[i].kind == ValueKind::f64 ? 8 : 4);
+        }
         else {
             values[i].data = views[i].data;
             values[i].storage = signature.parameters[i].passing == ParameterPassing::reference ? ArgumentStorage::reference : ArgumentStorage::read_only;
@@ -277,15 +286,63 @@ std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f32), value);
     });
 }
+std::uint32_t read_double(void* context, std::uint32_t slot, std::uint32_t field, double* output) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        auto object = invocation.frame.object(slot);
+        if (!object) return std::unexpected(std::move(object.error()));
+        auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::f64));
+        if (!value) return std::unexpected(std::move(value.error()));
+        *output = std::get<double>(*value);
+        return {};
+    });
+}
+std::uint32_t write_double(void* context, std::uint32_t slot, std::uint32_t field, double value) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        auto object = invocation.frame.object(slot);
+        if (!object) return std::unexpected(std::move(object.error()));
+        return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f64), value);
+    });
+}
+const BoundField& math_field(const Binding& binding, std::uint32_t field) {
+    require(field < binding.fields.size(), "Host math field index is invalid.");
+    const auto& target = binding.fields[field];
+    require(target.kind.kind == ValueKind::record && target.kind.type_index < binding.values.size() &&
+        binding.values[target.kind.type_index].math, "Host field is not a builtin math value.");
+    return target;
+}
+std::uint32_t read_math(void* context, std::uint32_t slot, std::uint32_t field, void* output) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        const auto& target = math_field(invocation.binding, field);
+        auto object = invocation.frame.object(slot);
+        if (!object) return std::unexpected(std::move(object.error()));
+        return invocation.runtime.read(*object, target.path,
+            ValueOutput{value_type_id(invocation.binding, target.kind), output});
+    });
+}
+std::uint32_t write_math(void* context, std::uint32_t slot, std::uint32_t field, const void* input) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        const auto& target = math_field(invocation.binding, field);
+        auto object = invocation.frame.object(slot);
+        if (!object) return std::unexpected(std::move(object.error()));
+        return invocation.runtime.write(*object, target.path,
+            ValueInput{value_type_id(invocation.binding, target.kind), input});
+    });
+}
 std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
-        require(field < invocation.binding.fields.size() && invocation.binding.fields[field].kind != ValueKind::f32, "Invalid integer/enum field.");
+        require(field < invocation.binding.fields.size() &&
+            (invocation.binding.fields[field].kind == ValueKind::u32 || invocation.binding.fields[field].kind == ValueKind::i32 ||
+                invocation.binding.fields[field].kind.kind == ValueKind::enumeration), "Invalid integer/enum field.");
         auto value = invocation.runtime.read(*object, invocation.binding.fields[field].path);
         if (!value) return std::unexpected(std::move(value.error()));
-        *output = scalar(*value, invocation.binding).bits;
+        *output = static_cast<std::uint32_t>(scalar(*value, invocation.binding).bits);
         return {};
     });
 }
@@ -294,7 +351,9 @@ std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field,
     return bridge(invocation, [&]() -> Result<void> {
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
-        require(field < invocation.binding.fields.size() && invocation.binding.fields[field].kind != ValueKind::f32, "Invalid integer/enum field.");
+        require(field < invocation.binding.fields.size() &&
+            (invocation.binding.fields[field].kind == ValueKind::u32 || invocation.binding.fields[field].kind == ValueKind::i32 ||
+                invocation.binding.fields[field].kind.kind == ValueKind::enumeration), "Invalid integer/enum field.");
         auto decoded = scalar_value({invocation.binding.fields[field].kind, value}, &invocation.binding);
         require(decoded.has_value(), "Invalid integer/enum value.");
         return invocation.runtime.write(*object, invocation.binding.fields[field].path, *decoded);
@@ -324,13 +383,32 @@ std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t metho
                     input.storage == ArgumentStorage::reference ? const_cast<void*>(input.data) : nullptr);
             } else {
                 require(input.storage == ArgumentStorage::value, "Invalid argument storage kind.");
-                auto decoded = scalar_value(input, &invocation.binding);
-                require(decoded.has_value(), "Invalid scalar argument.");
-                invocation.method_arguments[index] = Argument{*decoded};
+                if (aggregate(input.kind)) {
+                    require(input.kind.type_index < invocation.binding.values.size() &&
+                        invocation.binding.values[input.kind.type_index].math && input.data, "Invalid math value argument.");
+                    invocation.method_arguments[index] = Argument::borrow(value_type_id(invocation.binding, input.kind), input.data);
+                } else {
+                    auto decoded = scalar_value(input, &invocation.binding);
+                    require(decoded.has_value(), "Invalid scalar argument.");
+                    invocation.method_arguments[index] = Argument{*decoded};
+                }
             }
         }
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
+        if (aggregate(target.result)) {
+            require(target.result.type_index < invocation.binding.values.size() &&
+                invocation.binding.values[target.result.type_index].math && output->data,
+                "Host math result requires typed value storage.");
+            auto invoked = invocation.runtime.call(*object, target.id, invocation.method_arguments.first(count),
+                ValueOutput{value_type_id(invocation.binding, target.result), const_cast<void*>(output->data)});
+            if (!invoked) return invoked;
+            output->kind = target.result;
+            output->bits = 0;
+            output->storage = ArgumentStorage::value;
+            output->slot = output->field = 0;
+            return {};
+        }
         Scalar result;
         auto invoked = invocation.runtime.call(*object, target.id, invocation.method_arguments.first(count),
             target.result == ValueKind::void_value ? nullptr : &result);
@@ -506,7 +584,7 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
 }
 const BusinessServices services{begin, create_slot, read_float, write_float, read_uint,
     write_uint, call_method, poll, finish, clear_slot, change_reference, same_reference,
-    construct_value, assign_value, destroy_value, mutate_sequence};
+    construct_value, assign_value, destroy_value, mutate_sequence, read_double, write_double, read_math, write_math};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count || binding.enumerations.size() != environment.enumeration_count) return false;
@@ -521,7 +599,7 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
     for (std::size_t i = 0; i < binding.values.size(); ++i) {
         const auto& a = binding.values[i]; const auto& b = environment.values[i];
         if (!b.name || a.name != b.name || a.kind != b.kind || a.size != b.size || a.alignment != b.alignment ||
-            a.element != b.element || a.sequence_view != b.sequence_view || a.can_own != b.can_own || a.can_mutate != b.can_mutate || a.fields.size() != b.field_count || (b.field_count && !b.fields)) return false;
+            a.element != b.element || a.sequence_view != b.sequence_view || a.can_own != b.can_own || a.can_mutate != b.can_mutate || a.math != b.math || a.fields.size() != b.field_count || (b.field_count && !b.fields)) return false;
         for (std::size_t j = 0; j < a.fields.size(); ++j) {
             const auto& x = a.fields[j]; const auto& y = b.fields[j];
             if (!y.name || x.name != y.name || x.type != y.type || x.offset != y.offset) return false;
@@ -539,16 +617,23 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
     }
     return true;
 }
-Result<void> check_source_arguments(const BusinessSignature& signature, std::span<const BusinessValue> arguments) {
+Result<void> check_source_arguments(const Binding& binding, const BusinessSignature& signature, std::span<const BusinessValue> arguments) {
     if (arguments.size() != signature.parameter_count)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument count does not match its signature."});
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         const auto& argument = arguments[i];
         const auto mode = signature.parameters[i].passing;
-        const bool valid = mode == ParameterPassing::value ? argument.storage == ArgumentStorage::value :
-            argument.data && (aggregate(argument.kind) || reinterpret_cast<std::uintptr_t>(argument.data) % 4 == 0) &&
+        const BoundValue* value = aggregate(argument.kind) && argument.kind.type_index < binding.values.size() ?
+            &binding.values[argument.kind.type_index] : nullptr;
+        const auto alignment = value ? value->alignment : argument.kind == ValueKind::f64 ? 8u : 4u;
+        const bool has_storage = argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0;
+        const bool valid = mode == ParameterPassing::value ? argument.storage == ArgumentStorage::value &&
+            (!aggregate(argument.kind) || (value && value->math && has_storage)) :
+            has_storage &&
             (argument.storage == ArgumentStorage::reference || (mode == ParameterPassing::read_only && argument.storage == ArgumentStorage::read_only));
-        if (argument.kind != signature.parameters[i].type || !valid)
+        if (argument.kind != signature.parameters[i].type || !valid ||
+            (mode == ParameterPassing::value && !aggregate(argument.kind) && argument.kind != ValueKind::f64 &&
+                argument.bits > std::numeric_limits<std::uint32_t>::max()))
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument type or storage does not match its signature."});
     }
     return {};
@@ -571,7 +656,7 @@ Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const Binding& binding,
     BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver,
     std::span<const BusinessValue> arguments, bool request_collection, InvocationObserver observer,
-    CollectionBudget budget) {
+    CollectionBudget budget, void* result_data) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
         auto checked = check_source_receiver(binding, receiver);
@@ -584,7 +669,8 @@ Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const 
     }
     if (request_collection) invocation.frame.request_collection();
     char backend_error[512];
-    BusinessValue value;
+    BusinessValue value{};
+    value.data = result_data;
     const auto status = atelier_invoke_business(code, &invocation, arguments.data(),
         static_cast<std::uint32_t>(arguments.size()), &value, backend_error, sizeof(backend_error));
     // Inspect generated cleanup before the RAII fallback. Observers cannot
@@ -611,7 +697,9 @@ Result<BusinessValue> execute_typed(Runtime& runtime, const Binding& binding, Bu
     const auto info = atelier_business_info(code);
     if (info.signature.is_coroutine)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
-    auto checked = check_source_arguments(info.signature, arguments);
+    if (aggregate(info.signature.result))
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Math source results require typed value output storage."});
+    auto checked = check_source_arguments(binding, info.signature, arguments);
     if (!checked) return std::unexpected(std::move(checked.error()));
     if (!same_environment(binding, info.environment))
         return std::unexpected(Error{ErrorCode::invalid_definition, "Compiled member catalog does not match the host binding."});

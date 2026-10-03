@@ -1,0 +1,10 @@
+include(FetchContent)
+file(READ "${CMAKE_CURRENT_LIST_DIR}/dependencies-lock.json" _json_dependencies)
+string(JSON _json_url GET "${_json_dependencies}" json url)
+string(JSON _json_sha GET "${_json_dependencies}" json sha256)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(atelier_json URL "${_json_url}" URL_HASH "SHA256=${_json_sha}"
+    DOWNLOAD_DIR "${PROJECT_SOURCE_DIR}/.tools/downloads" EXCLUDE_FROM_ALL SYSTEM)
+FetchContent_MakeAvailable(atelier_json)
+configure_file("${atelier_json_SOURCE_DIR}/LICENSE.MIT" "${CMAKE_BINARY_DIR}/LICENSE.json.txt" COPYONLY)

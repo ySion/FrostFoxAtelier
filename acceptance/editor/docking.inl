@@ -7,25 +7,34 @@ void verify_pane_handles(Application& app,const std::filesystem::path& output,Co
     const auto horizontal=app.docking().divider(control::parameters_tab,DragAxis::vertical);
     const auto scene_bounds=app.presented()->find(scene)->bounds;
     const auto parameter_bounds=app.presented()->find(parameters)->bounds;
-    click(app,DockSpace::collapse_first_button(vertical));
+    // Exercise the expanded hit area beyond the arrow, on both rail orientations.
+    const auto click_outer=[&](ControlKey key,bool trailing=false) {
+        const auto bounds=app.presented()->find(key)->bounds;
+        const auto dpi=app.presented()->drawing->dpi_scale;
+        auto at=centre(app,key);
+        const auto shift=static_cast<LONG>((trailing?14.f:-14.f)*dpi);
+        (bounds.height>bounds.width?at.y:at.x)+=shift;
+        click_at(app,at);
+    };
+    click_outer(DockSpace::collapse_first_button(vertical));
     require(!app.presented()->find(control::viewport) && app.presented()->find(field) &&
         app.docking().pane(control::scene_tab)==scene,"Collapsing Scene lost its identity or left content visible.");
     require(app.presented()->find(vertical)->bounds.width<=8.1f*app.presented()->drawing->dpi_scale,
         "Collapsed pane did not leave a narrow restore strip.");
     capture(app,output/"workspace-collapsed.png");
-    click(app,DockSpace::collapse_first_button(vertical));
+    click_outer(DockSpace::collapse_first_button(vertical));
     require(app.presented()->find(scene)->bounds==scene_bounds,"Expanding Scene lost its previous size.");
-    click(app,DockSpace::collapse_first_button(horizontal));
+    click_outer(DockSpace::collapse_first_button(horizontal));
     require(!app.presented()->find(field) && app.presented()->find(control::viewport),"Divider collapse did not hide Parameters.");
     click(app,DockSpace::collapse_first_button(horizontal));
     require(app.presented()->find(parameters)->bounds==parameter_bounds,"Nested pane restore lost its previous size.");
-    click(app,DockSpace::collapse_second_button(vertical));
+    click_outer(DockSpace::collapse_second_button(vertical),true);
     require(!app.presented()->find(field) && app.presented()->find(control::viewport),"Collapse second side failed.");
     // Showing a registered view must reveal all its collapsed ancestors.
-    click(app,DockSpace::menu_button(scene)); key(app,VK_HOME); key(app,VK_DOWN); key(app,VK_RETURN);
+    click(app,control::show_parameters);
     require(app.presented()->find(field) && app.presented()->find(parameters)->bounds==parameter_bounds,
         "Show Parameters did not reveal a collapsed ancestor.");
-    click(app,DockSpace::divider_grip(horizontal));
+    click_outer(DockSpace::divider_grip(horizontal),true);
     require(app.presented()->find(parameters)->bounds.y>parameter_bounds.y,"Central grip click did not exchange the panes.");
     capture(app,output/"workspace-swapped.png");
     click(app,DockSpace::divider_grip(horizontal));
@@ -109,7 +118,7 @@ void verify_docking(Application& app,const std::filesystem::path& output,atelier
     click(app,control::workbench);
     key(app,'W',true);
     require(!app.docking().pane(control::workbench) && app.presented()->find(control::viewport),"Close did not normalize the tab group.");
-    click(app,DockSpace::menu_button(app.docking().pane(control::scene_tab)));
+    click(app,DockSpace::add_tab_button(app.docking().pane(control::scene_tab)));
     key(app,VK_HOME); key(app,VK_DOWN); key(app,VK_DOWN); key(app,VK_RETURN);
     require(app.workbench_visible() && app.control_workbench().values().position[0]==2 &&
             app.control_workbench().undo_count()==sample_history,"Reopening lost the view's state or history.");

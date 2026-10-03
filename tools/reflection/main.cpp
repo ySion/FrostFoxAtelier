@@ -346,8 +346,27 @@ std::optional<std::string> scalar(QualType type, State& state, ASTContext& conte
             if (reflected_type.enumeration == enumeration->getDecl()->getDefinition()) return reflected_type.qualified;
     if (type->isSpecificBuiltinType(BuiltinType::Int) && context.getTypeSize(type) == 32) return "::std::int32_t";
     if (type->isSpecificBuiltinType(BuiltinType::Float)) return "float";
+    if (type->isSpecificBuiltinType(BuiltinType::Double)) return "double";
     if (type->isSpecificBuiltinType(BuiltinType::UInt) && context.getTypeSize(type) == 32) return "::std::uint32_t";
     return {};
+}
+
+std::optional<std::string> math_value(QualType type, ASTContext& context) {
+    if (type.hasLocalQualifiers()) return {};
+    const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
+    const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(record);
+    if (!specialization) return {};
+    const auto name = specialization->getSpecializedTemplate()->getQualifiedNameAsString();
+    const bool vector = name == "atelier::math::BasicVector";
+    if (!vector && name != "atelier::math::BasicQuaternion" && name != "atelier::math::BasicMatrix4") return {};
+    const auto& arguments = specialization->getTemplateArgs();
+    if (arguments.size() != (vector ? 2u : 1u) || arguments[0].getKind() != TemplateArgument::Type) return {};
+    const auto scalar_type = arguments[0].getAsType().getCanonicalType();
+    if (!scalar_type->isSpecificBuiltinType(BuiltinType::Float) &&
+        !scalar_type->isSpecificBuiltinType(BuiltinType::Double)) return {};
+    if (vector && (arguments[1].getKind() != TemplateArgument::Integral ||
+        arguments[1].getAsIntegral() < 2 || arguments[1].getAsIntegral() > 4)) return {};
+    return TypeName::getFullyQualifiedName(type.getCanonicalType(), context, context.getPrintingPolicy(), true);
 }
 
 const ClassTemplateSpecializationDecl* array_specialization(QualType type) {
@@ -379,7 +398,7 @@ bool contains_reference_storage(QualType type, ASTContext& context) {
 
 bool value_field(QualType type, State& state, ASTContext& context) {
     if (type.hasLocalQualifiers()) return false;
-    if (scalar(type, state, context)) return true;
+    if (scalar(type, state, context) || math_value(type, context)) return true;
     const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
     if (!record) return false;
     if (record->getQualifiedNameAsString() == "atelier::String") return true;
@@ -467,11 +486,12 @@ void members(State& state, Type& type, ASTContext& context) {
         if (!marker) continue;
         const auto options = state.options(*marker, {"Name", "BorrowSafe"});
         if (!options) continue;
-        const auto result = scalar(method->getReturnType(), state, context, true);
+        auto result = scalar(method->getReturnType(), state, context, true);
+        if (!result) result = math_value(method->getReturnType(), context);
         if (!result || method->isStatic() || method->isVariadic() || method->isDeleted() || method->isVolatile() ||
             method->getRefQualifier() != RQ_None || method->getDescribedFunctionTemplate() ||
             isa<CXXConstructorDecl>(method) || isa<CXXDestructorDecl>(method) || method->isOverloadedOperator() || isa<CXXConversionDecl>(method)) {
-            state.error(method->getLocation(), "AFUNCTION requires a supported non-static member with a scalar or void result."); continue;
+            state.error(method->getLocation(), "AFUNCTION requires a supported non-static member with a scalar or void result, or a builtin mathematical value result."); continue;
         }
         Method value{method->getNameAsString(), method->getNameAsString(), *result + " (Self::*)(", sources.getExpansionLineNumber(method->getLocation())};
         if (options->contains("Name")) value.name = options->at("Name");
@@ -484,12 +504,14 @@ void members(State& state, Type& type, ASTContext& context) {
             const bool read_only = parameter_type.isConstQualified();
             auto parameter = parameter_type.isVolatileQualified() ? std::optional<std::string>{} :
                 scalar(parameter_type.getUnqualifiedType(), state, context);
+            if (!parameter && !parameter_type.isVolatileQualified())
+                parameter = math_value(parameter_type.getUnqualifiedType(), context);
             if (!parameter && reference && !parameter_type.isVolatileQualified() &&
                 value_field(parameter_type.getUnqualifiedType(), state, context) && !contains_reference_storage(parameter_type, context))
                 parameter = TypeName::getFullyQualifiedName(parameter_type.getCanonicalType().getUnqualifiedType(),
                     context, context.getPrintingPolicy(), true);
             if (parameter && reference) *parameter = (read_only ? "const " : "") + *parameter + "&";
-            if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected parameters require scalar/enum values or supported native values passed as const T& or T&."); valid = false; break; }
+            if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected parameters require scalar/enum values or supported native values: builtin math by value, or const T&/T& borrows."); valid = false; break; }
             if (i) value.pointer += ", ";
             value.pointer += *parameter;
         }

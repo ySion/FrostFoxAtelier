@@ -11,7 +11,7 @@ TypeName detail::parse_type_name(Tokens& tokens) {
         if (++result.array_depth > 128) reject(tokens.token_.position, "Array type nesting exceeds the compiler limit of 128.");
         tokens.expect("<");
     }
-    if (tokens.token_.text == "float" || tokens.token_.text == "int" || tokens.token_.text == "uint")
+    if (tokens.token_.text == "float" || tokens.token_.text == "double" || tokens.token_.text == "int" || tokens.token_.text == "uint")
         result.name = tokens.consume().text;
     else result.name = tokens.qualified_identifier();
     for (std::uint32_t i = 0; i < result.array_depth; ++i) tokens.expect(">");
@@ -24,7 +24,7 @@ TypeDeclaration detail::parse_type_declaration(Tokens& tokens) {
     result.enumeration = tokens.accept("enum");
     if (!result.enumeration) tokens.expect("struct");
     result.name = tokens.qualified_identifier();
-    if (result.name == "String" || result.name == "Array" || result.name.starts_with("core."))
+    if (result.name == "String" || result.name == "Array" || result.name.starts_with("core.") || result.name.starts_with("math."))
         reject(result.position, "Source declarations cannot replace built-in types.");
     if (result.enumeration && tokens.accept(":")) {
         if (tokens.accept("uint")) result.signed_enum = false;
