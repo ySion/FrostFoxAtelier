@@ -44,10 +44,31 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     for (auto& item:display) item.edit_command.reset();
     std::vector<ui::Control> controls;
     ui::append_menu(controls,500,0,0,0,280,display);
+    // Measure both text columns with the same SS/font/layout path used to draw.
+    for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item)
+        control.layout.width=ui_layout::Axis::content();
     take(ui_.set_controls(controls));
-    const auto measured=take(ui_.prepare())->find(500)->bounds;
-    const auto width=std::min(static_cast<LONG>(std::ceil(measured.width)),area.right-area.left);
-    const auto height=std::min(static_cast<LONG>(std::ceil(measured.height)),area.bottom-area.top);
+    const auto measurement=take(ui_.prepare());
+    const auto* menu=measurement->find(500);
+    float title_width{},shortcut_width{};
+    for (const auto& control:controls) {
+        const auto* box=measurement->find(control.key);
+        if (control.kind==ui::ControlKind::menu_item) title_width=std::max(title_width,box->bounds.width/dpi);
+        if (control.kind==ui::ControlKind::label) shortcut_width=std::max(shortcut_width,box->bounds.width/dpi);
+    }
+    const auto gap=shortcut_width>0?18.f:0.f;
+    const bool scrolling=!measurement->scrollbars.empty();
+    const auto gutter=scrolling?menu->style->scrollbar_width+2*menu->style->scrollbar_inset:0.f;
+    const auto padding=controls.front().layout.padding;
+    const auto wanted=std::max(160.f,title_width+shortcut_width+gap+padding.left+padding.right+gutter);
+    const auto width=std::min(static_cast<LONG>(std::ceil(wanted*dpi)),area.right-area.left);
+    const auto height=std::min(static_cast<LONG>(std::ceil(menu->bounds.height)),area.bottom-area.top);
+    controls.front().layout.width=ui_layout::Axis::fixed(static_cast<float>(width)/dpi);
+    controls.front().style.scrollbar_gutter=scrolling?ui::ScrollbarGutter::stable:ui::ScrollbarGutter::overlay;
+    for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item) {
+        control.layout.width=ui_layout::Axis::expand();
+        control.layout.padding.right=shortcut_width+gap;
+    }
     auto x=anchor.left, y=anchor.bottom;
     if (y+height>area.bottom) y=below?anchor.top-height:area.bottom-height;
     x=std::clamp(x,area.left,area.right-width); y=std::clamp(y,area.top,area.bottom-height);

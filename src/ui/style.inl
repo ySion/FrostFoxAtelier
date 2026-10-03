@@ -38,14 +38,14 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
     if (role == Role::panel && kind != ControlKind::viewport) value.background = p.panel;
     const bool button = kind == ControlKind::button || kind == ControlKind::combo || kind == ControlKind::tab;
-    const bool item = kind == ControlKind::item || kind == ControlKind::menu_item;
+    const bool item = kind == ControlKind::item || kind == ControlKind::tree_item || kind == ControlKind::menu_item;
     const bool toggle = kind == ControlKind::checkbox || kind == ControlKind::foldout;
     const bool number = kind == ControlKind::number || kind == ControlKind::text_edit, splitter = kind == ControlKind::splitter;
     if (button || item || number || toggle) value.text_vertical_align=TextVerticalAlign::center;
     if (button) value.background = p.button;
     if (number) value.background = p.field;
     if (splitter) value.background = p.splitter;
-    if (kind == ControlKind::list) value.background = p.list;
+    if (kind == ControlKind::list || kind==ControlKind::tree) value.background = p.list;
     if (kind == ControlKind::popup) { value.background=p.panel; value.border_width=style.border_width; }
     if (button || item || number || toggle) value.padding = style.control_padding;
     if (button || number || splitter) value.border_width = style.border_width;
@@ -68,6 +68,10 @@ ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle&
             padding.right+style.padding.right+(control.kind==ControlKind::combo && (control.icon==ControlIcon::none || !control.text.empty())?18.f:0.f),padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
+    if (p.tree_row_height) value.tree_row_height=*p.tree_row_height;
+    if (p.tree_indent) value.tree_indent=*p.tree_indent;
+    if (p.tree_alternate) value.tree_alternate=*p.tree_alternate;
+    if (p.tree_line) value.tree_line=*p.tree_line;
     if (p.font_family) value.font.family=*p.font_family;
     if (p.font_locale) value.font.locale=*p.font_locale;
     if (p.font_size) value.font.size=*p.font_size;
@@ -78,6 +82,8 @@ void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.border_style) value.border_style=*p.border_style;
     if (p.border_edges) value.border_edges=*p.border_edges;
     if (p.border_inner) value.border_inner=*p.border_inner;
+    if (p.border_shadow) value.border_shadow=*p.border_shadow;
+    if (p.scrollbar_gutter) value.scrollbar_gutter=*p.scrollbar_gutter;
     if (p.combo_indicator) value.combo_indicator=*p.combo_indicator;
     if (p.indicator_size) value.indicator_size=*p.indicator_size;
     if (p.indicator_background) value.indicator_background=*p.indicator_background;

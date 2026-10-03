@@ -114,8 +114,9 @@ void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owne
     using namespace ui_layout;
     Control popup;
     popup.key=key; popup.kind=ControlKind::popup; popup.popup_owner=owner;
+    popup.classes={"menu"};
     popup.layout=NodeInput::column(); popup.layout.width=Axis::fixed(width);
-    popup.layout.padding={1,2,1,2}; popup.layout.out_of_flow=true;
+    popup.layout.padding={2.f/3,2.f/3,2.f/3,2.f/3}; popup.layout.out_of_flow=true;
     popup.layout.offset_x=x; popup.layout.offset_y=y;
     controls.push_back(std::move(popup));
     auto auxiliary=std::numeric_limits<ControlKey>::max();
@@ -127,16 +128,22 @@ void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owne
     for (const auto& item:items) {
         if (item.separator_before) {
             Control separator; separator.key=allocate(); separator.parent=key;
-            separator.layout=NodeInput::box(0,7); separator.layout.width=Axis::expand();
-            separator.classes={"menu-separator"}; separator.enabled=false;
+            separator.layout=NodeInput::overlay(); separator.layout.height=Axis::fixed(14); separator.layout.width=Axis::expand();
+            separator.enabled=false;
+            const auto separator_key=separator.key;
             controls.push_back(std::move(separator));
+            Control line; line.key=allocate(); line.parent=separator_key;
+            line.layout=NodeInput::box(0,2.f/3); line.layout.width=Axis::expand();
+            line.layout.out_of_flow=true; line.layout.anchor_y=line.layout.pivot_y=.5f;
+            line.classes={"menu-separator"}; line.enabled=false;
+            controls.push_back(std::move(line));
         }
         Control row; row.key=allocate(); row.parent=key;
-        row.layout=NodeInput::column(); row.layout.height=Axis::content(24);
+        row.layout=NodeInput::column(); row.layout.height=Axis::content(25+1.f/3);
         const auto row_key=row.key; controls.push_back(std::move(row));
         Control control;
         control.key=item.key; control.parent=row_key; control.kind=ControlKind::menu_item;
-        control.layout=NodeInput::box(0,24); control.layout.height=Axis::content(24); control.layout.width=Axis::expand();
+        control.layout=NodeInput::box(0,25+1.f/3); control.layout.height=Axis::content(25+1.f/3); control.layout.width=Axis::expand();
         control.text=item.text; control.enabled=item.enabled; control.selected=item.selected;
         control.edit_command=item.edit_command;
         controls.push_back(std::move(control));
@@ -144,9 +151,9 @@ void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owne
             Control shortcut; shortcut.key=allocate(); shortcut.parent=row_key; shortcut.kind=ControlKind::label;
             shortcut.text=item.shortcut; shortcut.enabled=false; shortcut.classes={"menu-shortcut"};
             if (!item.enabled) shortcut.classes.push_back("unavailable");
-            shortcut.layout=NodeInput::box(0,24); shortcut.layout.width=Axis::content();
+            shortcut.layout=NodeInput::box(0,0); shortcut.layout.width=Axis::content(); shortcut.layout.height=Axis::expand();
             shortcut.layout.out_of_flow=true; shortcut.layout.anchor_x=shortcut.layout.pivot_x=1;
-            shortcut.layout.offset_x=-9;
+            shortcut.layout.offset_x=-10;
             controls.push_back(std::move(shortcut));
         }
     }

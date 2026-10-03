@@ -34,7 +34,7 @@ text_edit:focus { border-color: token(accent); }
 ## 支持的语法
 
 - 单控件选择器：`button`、`*`、`.compact`、`button.compact.danger`，可用逗号共享声明。
-- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo / tab / slider`。
+- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo / tab / slider / tree / tree_item`。
 - 角色：`:role(normal|panel|title|caption)`。
 - 状态：`:enabled / :disabled / :hover / :pressed / :focus / :selected / :invalid / :modified`，可组合；enabled 与 disabled 不能共存。`modified` 来自宿主的默认值比较，与焦点、选中和非法草稿分别表达。
 - `@tokens { name: value; }` 与全值 `token(name)`；支持前向引用，拒绝循环及未知 token。
@@ -53,19 +53,23 @@ text_edit:focus { border-color: token(accent); }
 | `border-style` | `solid / inset / outset`；后两者为方角的明暗边缘，沿现有四边实色实例绘制 |
 | `border-edges` | `all`（默认）、`none`，或不重复的 `top right bottom left` 子集；可表达共边页签及选中页签的开口底边 |
 | `border-inner-color` | 方角框上侧、左侧的内沿颜色；厚度同 border-width，透明值关闭，不影响文字测量 |
+| `border-shadow-color` | inset/outset 边框的独立暗边颜色；省略时沿用 border-color 推导的暗边，solid 忽略此属性 |
 | `indicator-size` | 4–32 DIP，控制勾选/折叠/下拉及图标。纯图标按钮在 padding 后的内容区居中，空间不足时缩小 |
 | `indicator-background / indicator-border-color` | 勾选框、滑条拇指的背景与边缘颜色；最大化图标也使用 indicator-background 绘制对角底色 |
-| `indicator-color` | 勾选/折叠标记及下拉箭头的颜色；缺省跟随文字前景，内容图标仍使用 color |
+| `indicator-color` | 勾选/折叠标记及下拉箭头的颜色；缺省跟随文字前景，tree_item 的类型图标也使用此属性，其他内容图标使用 color |
 | `combo-indicator` | `down`（默认）或 `arrows`；上下双箭头仍开启同一原生菜单，右侧预留宽度不变 |
 | `accent-width` | 0–16 DIP，控件底部提示线厚度；0 隐藏。滑条填充色也使用 accent-color |
 | `padding` | 1、2 或 4 个长度；四值依次上、右、下、左，0–128 DIP |
 | `border-radius` | 1、2 或 4 个长度；四值依次左上、右上、右下、左下，0–32768 DIP |
 | `border-width / caret-width` | 0–128 / 0.25–16 DIP |
 | `scrollbar-width / scrollbar-inset / scrollbar-min-thumb` | 0.25–32 / 0–32 / 1–128 DIP |
+| `scrollbar-gutter` | `stable`（默认）预留并裁剪滚动条槽；`overlay` 不预留，溢出时滚动条覆盖内容右侧。不允许通过交互伪状态切换 |
 | `scrollbar-button-size` | 0–64 DIP；0 跟随条宽，窄于 8 DIP 的自动细条省略步进按钮 |
+| `tree-row-height / tree-indent` | 12–128 / 8–64 DIP；在 tree 上统一规定行高与层级间距，不允许通过状态选择器修改 |
+| `tree-alternate-color / tree-line-color` | tree 空白区交替行底色与层级连接线颜色 |
 | `background-image / scrollbar-image` | `image(name)`、`linear-gradient(起色, 终色)` 或 `none`；可在两色前指定 `to right,` 或 `to bottom,`；name 由宿主传入 `NamedImage` 绑定 |
 
-list/popup 的滚动条使用 `scrollbar-color` 和可选 `scrollbar-image` 绘制滑块及可用的步进按钮，`indicator-background` 绘制轨道，`indicator-border-color` 绘制细边和点阵握柄的亮侧；暗侧使用同透明度的黑色。到达端点后相应按钮变暗。宽度和 inset 同时参与布局留白及接受帧命中；颜色仍只影响绘制。编辑器 SS 采用 16 DIP 宽度、21.333 DIP 步进按钮和 24 DIP 最短滑块。工作区及内容页签的 hover 保持原底色，选中页签以底面区分。
+list/tree/popup 的滚动条使用 `scrollbar-color` 和可选 `scrollbar-image` 绘制滑块及可用的步进按钮，`indicator-background` 绘制轨道，`indicator-border-color` 绘制细边和点阵握柄的亮侧；暗侧使用同透明度的黑色。到达端点后相应按钮变暗。宽度和 inset 同时参与布局留白及接受帧命中；颜色仍只影响绘制。编辑器 SS 采用 16 DIP 宽度、21.333 DIP 步进按钮和 24 DIP 最短滑块。工作区及内容页签的 hover 保持原底色，选中页签以底面区分。
 
 长度可带 `dip`，裸数也按 DIP。圆角双值分别作用于左上/右下、右上/左下。输入最多 1 MiB、1024 个块、4096 条展开规则，每个选择器最多 16 个类。原生 `StyleSheet::create` 使用相同属性与选择器校验；其诊断无文本位置，行列为零。
 

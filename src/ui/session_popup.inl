@@ -62,7 +62,7 @@
             dismiss_popup(reply);
             execute_edit_command(reply,*command);
         } else {
-            action(reply,box.kind==ControlKind::item?ActionKind::select:ActionKind::activate,box.key,
+            action(reply,(box.kind==ControlKind::item || box.kind==ControlKind::tree_item)?ActionKind::select:ActionKind::activate,box.key,
                 toggle_kind(box.kind)?ActionValue{!box.selected}:ActionValue{});
             if (box.kind==ControlKind::menu_item) dismiss_popup(reply);
         }

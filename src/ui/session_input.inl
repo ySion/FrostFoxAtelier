@@ -5,7 +5,7 @@ Reply Session::input(const Event& event) {
         if (event.kind==EventKind::capture_lost && !self.press) return reply;
         if (event.kind==EventKind::focus_lost || event.kind==EventKind::capture_lost) {
             reply=self.cancel();
-            if (event.kind==EventKind::focus_lost) { self.edit.reset(); self.focus=0; self.terminal_key=Key::none; }
+            if (event.kind==EventKind::focus_lost) { self.edit.reset(); self.focus=0; }
             return reply;
         }
         if (event.kind==EventKind::clipboard_result) {
@@ -198,6 +198,7 @@ Reply Session::input(const Event& event) {
             if (selecting) self.select_at(reply,event.x,event.y,event.shift);
             self.press=Impl::Press{hit->key,event.x,event.y,event.x,event.y,control.value,control.value,false,selecting};
             self.press->button=event.button;
+            if (const auto* row=self.tree_row(hit->key)) self.press->tree_disclosure=contains(row->disclosure,event.x,event.y);
             if (control.kind==ControlKind::slider) {
                 const auto track=slider_track(hit->bounds,self.surface.dpi_scale);
                 auto& press=*self.press; press.slider_span=std::max(track.width,1.f);
@@ -241,7 +242,10 @@ Reply Session::input(const Event& event) {
                 if (self.focus==press.key && self.states.at(press.key).control.kind==ControlKind::number)
                     self.edit.emplace(self.states.at(press.key),format(press.value),press.value,false,false);
             } else if (!press.selecting && hit && hit->key==press.key) {
-                if (hit->kind==ControlKind::number && press.button==PointerButton::primary) {
+                if (hit->kind==ControlKind::tree_item && press.tree_disclosure) {
+                    if (const auto* row=self.tree_row(hit->key);row && contains(row->disclosure,event.x,event.y))
+                        self.expand_tree(reply,hit->key,!row->expanded);
+                } else if (hit->kind==ControlKind::number && press.button==PointerButton::primary) {
                     if (!self.edit) self.begin_edit(hit->key,true,true);
                     else { self.edit->text_mode=true; if (self.edit->buffer.select_all()) self.revise(); }
                 } else if (hit->kind==ControlKind::splitter && self.states.at(hit->key).control.click_action)
@@ -273,9 +277,14 @@ Reply Session::input(const Event& event) {
         if (event.kind==EventKind::key_down && event.key==Key::tab) {
             self.finish_edit(reply,true);
             std::vector<ControlKey> keys;
+            std::map<ControlKey,ControlKey> tree_stops;
+            for (const auto& box:self.published->controls) if (box.kind==ControlKind::tree_item && self.current(box) && visible(box.bounds,box.clip)) {
+                auto& stop=tree_stops[box.parent];
+                if (!stop || box.key==self.focus || (box.selected && stop!=self.focus)) stop=box.key;
+            }
             for (const auto& box:self.published->controls) if (focusable(box.kind) && visible(box.bounds,box.clip) && self.current(box)) {
                 const auto& control=self.states.at(box.key).control;
-                if (!control.selection_group || box.selected) keys.push_back(box.key);
+                if ((!control.selection_group || box.selected) && (box.kind!=ControlKind::tree_item || tree_stops[box.parent]==box.key)) keys.push_back(box.key);
             }
             if (!keys.empty()) {
                 const auto at=std::find(keys.begin(),keys.end(),self.focus);
@@ -289,6 +298,7 @@ Reply Session::input(const Event& event) {
         auto* focused=self.live(self.focus);
         const auto* focused_box=self.published->find(self.focus);
         if (!focused || !focused_box || !self.current(*focused_box)) return reply;
+        if (self.tree_keyboard(reply,event,*focused)) return reply;
         if (focused->control.selection_group && event.kind==EventKind::key_down && !event.control && !event.alt &&
             (event.key==Key::left || event.key==Key::right || event.key==Key::home || event.key==Key::end)) {
             std::vector<const ControlBox*> keys;

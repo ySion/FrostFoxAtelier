@@ -139,6 +139,7 @@ void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
         if (callback_failure_) std::rethrow_exception(std::exchange(callback_failure_, {}));
     };
     drain();
+    if (popup_) return; // The owning main window alone pumps the thread queue.
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         if (message.message == WM_QUIT) { closing_ = true; continue; }

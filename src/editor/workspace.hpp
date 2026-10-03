@@ -15,6 +15,7 @@ inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=60
 inline constexpr ui::ControlKey scene_content=640;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
+inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
 inline constexpr ui::ControlKey parameter_path=76, parameter_back=78, parameter_forward=79, world_context=720;
 constexpr bool is_path(ui::ControlKey key) { return key==scene_path || key==actor_path || key==parameter_path; }
 constexpr int navigation_direction(ui::ControlKey key) {
@@ -40,7 +41,7 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 }
 struct Workspace {
     struct Binding {
-        enum class Kind { object, field, position_default, name, navigation };
+        enum class Kind { object, field, position_default, name, navigation, tree_component };
         ui::ControlKey key{};
         ObjectId object;
         std::vector<FieldId> path; // Empty for an Actor row; otherwise an actual component field.
@@ -53,12 +54,14 @@ struct Workspace {
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }
     bool can_navigate(int direction) const noexcept;
     Result<void> navigate(Session&,int direction);
+    Result<void> select_tree(Session&,ui::ControlKey);
     bool position_expanded{true};
     ui::ControlKey parameter_page{control::parameter_transform};
     bool menu_bar_collapsed{};
     ControlWorkbench workbench;
     std::wstring status{L"Ready"};
     std::wstring query;
+    std::wstring tree_query;
     std::optional<ui::ContextMenuRequest> menu;
     std::vector<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
     std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*);
@@ -73,6 +76,9 @@ private:
     ui::ControlKey next_binding_{1024};
     std::vector<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
     std::size_t navigation_cursor_{};
+    ObjectId tree_component_, tree_actor_; // View detail under the document's selected Actor; non-owning.
+    std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.
+    std::uint64_t tree_frame_{}; // Consume each accepted snapshot once, including across hidden frames.
     ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
 };
 }

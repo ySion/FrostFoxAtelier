@@ -1,8 +1,10 @@
 #include "ui/session.hpp"
+#include "ui/controls.hpp"
 #include "ui/text.hpp"
 #include <Windows.h>
 #include <icu.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -265,6 +267,7 @@ void visible_range_and_accounting() {
 #include "text_edit.inl"
 #include "style_snapshots.inl"
 #include "style_sheets.inl"
+#include "tree.inl"
 void styled_baseline_placement() {
     for (unsigned mode=0;mode<3;++mode) {
         Consumer consumer;
@@ -310,7 +313,7 @@ int main() {
         {"styled_baseline_placement",styled_baseline_placement},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
         {"unicode_visual_editing",unicode_visual_editing},{"clipboard_roundtrips",clipboard_roundtrips},
         {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor},
-        {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets}};
+        {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets},{"shared_tree_view",shared_tree_view}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;

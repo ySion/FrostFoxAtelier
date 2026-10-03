@@ -78,7 +78,7 @@ std::shared_ptr<const ui::StyleSheet> editor_styles() {
 }
 }
 Application::Application(bool validation) : ui_(editor_fonts()),gpu_validation_(validation) {
-    auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=13; style.caption_scale=1; style.title_scale=7.f/6;
+    auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
     if (!ui_.set_style_sheet(style_sheet_)) throw std::runtime_error("Cannot publish editor style sheet");
@@ -155,12 +155,15 @@ Result<void> Application::action(const ui::Action& event) {
         if (const auto direction=navigation_direction(event.key)) return done(workspace_.navigate(document_,direction),L"Selection history");
         if (event.key==world_context) return done(document_.select({}),L"World context");
     }
-    if (event.key == parameter_search) {
+    if (event.kind==ui::ActionKind::select && event.key==tree_world)
+        return done(workspace_.select_tree(document_,event.key),L"World context");
+    if (event.key == parameter_search || event.key==tree_filter) {
         const auto* value = std::get_if<std::wstring>(&event.value);
         if (!value) return invalid();
         if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit || event.kind == ui::ActionKind::edit_cancel) {
-            workspace_.query = *value;
-            workspace_.status = event.kind == ui::ActionKind::edit_cancel ? L"Filter cancelled" : L"Parameters filtered";
+            (event.key==tree_filter?workspace_.tree_query:workspace_.query) = *value;
+            workspace_.status = event.kind == ui::ActionKind::edit_cancel ? L"Filter cancelled" :
+                event.key==tree_filter?L"Tree filtered":L"Parameters filtered";
         }
         return {};
     }
@@ -168,6 +171,9 @@ Result<void> Application::action(const ui::Action& event) {
     if (event.kind == ui::ActionKind::edit_cancel)
         return document_.owns_edit(event.key) ? done(document_.cancel_edit(), L"Edit cancelled") : Result<void>{};
     if (const auto* binding = workspace_.binding(event.key)) {
+        if (event.kind==ui::ActionKind::select && (binding->kind==editor::Workspace::Binding::Kind::tree_component ||
+            (binding->kind==editor::Workspace::Binding::Kind::object && binding->path.empty())))
+            return done(workspace_.select_tree(document_,event.key),L"Tree selection updated");
         if (binding->kind==editor::Workspace::Binding::Kind::navigation) {
             if (event.kind==ui::ActionKind::activate) return done(document_.select(binding->object),L"Actor selected");
             return {};
@@ -182,7 +188,6 @@ Result<void> Application::action(const ui::Action& event) {
             return done(document_.reset_position(binding->object),L"Position restored to default / Undo restores the vector");
         }
         if (binding->path.empty()) {
-            if (event.kind == ui::ActionKind::select) return done(document_.select(binding->object), L"Actor selected");
             if (event.kind == ui::ActionKind::activate) return done(document_.remove_component(binding->object), L"Component removed / Undo restores it");
             return invalid();
         }

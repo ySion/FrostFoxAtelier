@@ -282,8 +282,12 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     wheel(app,sample::list,12);
     click(app,sample::fold);
     require(!app.presented()->find(sample::position_x),"Workbench foldout did not collapse its subtree.");
+    require(app.presented()->find(sample::fold)->style->border_width==0,
+        "Clicked fold header gained a focus border or underline.");
     key(app,VK_RETURN);
     require(app.presented()->find(sample::position_x),"Workbench foldout did not reopen from keyboard.");
+    require(app.presented()->find(sample::fold)->style->border_width==0,
+        "Keyboard-expanded fold header gained a focus border or underline.");
     capture(app,output/"controls-workbench.png");
     click(app,sample::reset);
     require(app.control_workbench().values()==atelier::editor::ControlWorkbench::Values{},"Workbench reset did not restore sample defaults.");

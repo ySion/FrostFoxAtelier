@@ -68,7 +68,9 @@ void style_sheets() {
         "button .child { color: #ffffff; }", "/* missing close", "button { background: #gg0000; }",
         "button:enabled:disabled { color: #ffffff; }", "button:hover { font-weight: 700; }",
         "button:hover { font-style: italic; }", "button { font-style: sideways; }",
-        "button { background-image: linear-gradient(#ffffff); }", "button { border-style: unknown; }"}) {
+        "button { background-image: linear-gradient(#ffffff); }", "button { border-style: unknown; }",
+        "popup { scrollbar-gutter: unknown; }", "popup:hover { scrollbar-gutter: overlay; }",
+        "button { border-shadow-color: #gggggg; }"}) {
         const auto invalid=ui::StyleSheet::parse(source);
         require(!invalid && invalid.error().line>0 && invalid.error().column>0,"invalid SS lacked positioned diagnosis");
     }
@@ -98,7 +100,7 @@ void style_sheets() {
     require(!ui::StyleSheet::create({invalid_image}),"invalid image resource entered native style rules");
 
     accepted(c.ui.set_style_sheet(sheet(R"ss(
-        button { background-image: linear-gradient(#ff000080, transparent); border-style: outset; border-color: #808080; }
+        button { background-image: linear-gradient(#ff000080, transparent); border-style: outset; border-color: #808080; border-shadow-color: #000000; }
         button:modified { font-weight: 700; font-style: italic; }
     )ss")));
     c.prepare(); const auto gradient_frame=c.frame;
@@ -108,6 +110,9 @@ void style_sheets() {
         "gradient did not share a correctly encoded premultiplied image");
     require(std::any_of(gradient_frame->drawing->draws.begin(),gradient_frame->drawing->draws.end(),
         [&](const auto& draw){return draw.image==gradient && draw.border_width==0;}),"gradient/bevel did not reach the existing drawing path");
+    require(std::any_of(gradient_frame->drawing->draws.begin(),gradient_frame->drawing->draws.end(),
+        [](const auto& draw){return !draw.coverage && draw.color==ui::Color{0,0,0,1} && draw.bounds.width<=2;}),
+        "Explicit bevel shadow color did not reach the production edge drawing path");
     c.controls[1].modified=true; c.prepare();
     require(c.frame->find(1)->style->font.weight==700 && gradient_frame->find(1)->style->font.weight==400 &&
         c.frame->find(1)->style->font.style==ui::FontStyle::italic && gradient_frame->find(1)->style->font.style==ui::FontStyle::normal &&
@@ -136,5 +141,51 @@ void style_sheets() {
         accepted(scrolling.ui.set_style_sheet({})); scrolling.prepare();
         require(std::abs(scrolling.frame->find(20)->bounds.y)<.01f,
             "removing list padding retained out-of-range scroll");
+    }
+    scrolling.controls[0].layout.height=ui_layout::Axis::fixed(80);
+    scrolling.controls[1].layout.width=ui_layout::Axis::expand();
+    scrolling.prepare(); const auto with_gutter=scrolling.frame;
+    accepted(scrolling.ui.set_style_sheet(sheet("list { scrollbar-gutter: overlay; }")));
+    scrolling.prepare();
+    require(scrolling.frame->find(20)->bounds.width>with_gutter->find(20)->bounds.width &&
+        scrolling.frame->find(20)->clip.right>with_gutter->find(20)->clip.right && !scrolling.frame->scrollbars.empty(),
+        "Overlay gutter did not release content width while retaining scrolling");
+
+    Consumer menu;
+    accepted(menu.ui.set_style_sheet(sheet(R"ss(
+        popup.menu { font-size: 13.333dip; scrollbar-gutter: overlay; scrollbar-width: 16dip; scrollbar-inset: 1dip; }
+        menu_item { padding: 0dip 9dip; }
+        menu_item:selected { font-weight: 600; }
+    )ss")));
+    const std::array entries{ui::MenuItem{1,L"Scene View",true,true,{}},ui::MenuItem{2,L"Parameters",true,false,{}},
+        ui::MenuItem{3,L"Controls",true,false,{}},ui::MenuItem{4,L"Actors",true,false,{}}};
+    for (const auto dpi:{1.f,1.25f,1.5f,1.75f,2.f}) {
+        menu.controls.clear(); accepted(menu.ui.set_controls({}));
+        accepted(menu.ui.set_surface({{1920,1080},dpi,++revision}));
+        ui::append_menu(menu.controls,500,0,0,0,160,entries); menu.prepare();
+        const auto bounds=menu.frame->find(500)->bounds;
+        if (!menu.frame->scrollbars.empty()) throw std::runtime_error("Fitting four-item menu has scroll range "+
+            std::to_string(menu.frame->scrollbars.front().maximum)+" DIP at DPI "+std::to_string(dpi));
+        const auto extent=ui::PixelExtent{static_cast<std::uint32_t>(std::ceil(bounds.width)),static_cast<std::uint32_t>(std::ceil(bounds.height))};
+        accepted(menu.ui.set_controls({}));
+        accepted(menu.ui.set_surface({extent,dpi,++revision})); menu.prepare();
+        if (!menu.frame->scrollbars.empty()) throw std::runtime_error("Pixel-sized fitting menu: DPI="+std::to_string(dpi)+
+            " measured="+std::to_string(bounds.height)+" px, window="+std::to_string(extent.height)+
+            " px, laid out="+std::to_string(menu.frame->find(500)->bounds.height)+
+            " px, overflow="+std::to_string(menu.frame->scrollbars.front().maximum)+" DIP");
+        const auto first_row=menu.frame->find(1)->bounds;
+        menu.ui.input({.kind=ui::EventKind::wheel,.x=15*dpi,.y=10*dpi,.wheel=-1000}); menu.prepare();
+        require(menu.frame->find(1)->bounds==first_row,"Fitting menu moved on wheel input");
+        const auto natural_height=menu.controls.front().layout.height;
+        menu.controls.front().layout.height=ui_layout::Axis::fixed(bounds.height/dpi-.25f); menu.prepare();
+        require(!menu.frame->scrollbars.empty() && menu.frame->scrollbars.front().maximum>.2,
+            "Roundoff handling swallowed genuine subpixel overflow");
+        menu.controls.front().layout.height=natural_height;
+        accepted(menu.ui.set_controls({}));
+        accepted(menu.ui.set_surface({{extent.width,extent.height-12},dpi,++revision})); menu.prepare();
+        require(!menu.frame->scrollbars.empty() && menu.frame->scrollbars.front().maximum>0,"Clipped menu lost its real scrollbar");
+        key(menu.ui,ui::Key::end); menu.prepare();
+        const auto tail=menu.frame->find(4);
+        require(tail->bounds.y+tail->bounds.height<=static_cast<float>(tail->clip.bottom)+.01f,"Clipped menu could not reveal its last command");
     }
 }

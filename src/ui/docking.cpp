@@ -324,22 +324,27 @@ void DockSpace::append_node(std::vector<Control>& controls,const Node& node,Cont
         if (node.collapsed!=1) append_node(controls,*node.first,node.key,first_size,describe);
         auto bar=NodeInput::overlay(); bar.width=Axis::fixed(horizontal?std::min(divider_width,size.width):size.width);
         bar.height=Axis::fixed(horizontal?size.height:std::min(divider_width,size.height));
-        add(controls,node.key+15,node.key,ControlKind::container,bar).classes={"dock-divider-bar"};
+        const auto orientation=horizontal?"vertical":"horizontal";
+        add(controls,node.key+15,node.key,ControlKind::container,bar);
         const auto append_splitter=[&](ControlKey key,NodeInput shape,bool grip) {
             auto& divider=add(controls,key,node.key+15,ControlKind::splitter,shape);
             divider.value=span?cut/span:.5f; divider.minimum=span?floor/span:.5f; divider.maximum=span?ceiling/span:.5f;
             divider.drag_axis=node.axis; divider.drag_step=divider.fine_step=1/std::max(span,1.f);
-            divider.classes={grip?"dock-grip":"dock-divider"}; divider.click_action=grip;
+            divider.classes={grip?"dock-grip":"dock-divider",orientation}; divider.click_action=grip;
             // Collapsed geometry must not overwrite the remembered fraction.
             if (node.collapsed) { divider.value=divider.minimum=divider.maximum=node.fraction; }
             if (grip) divider.icon=horizontal?ControlIcon::grip_vertical:ControlIcon::grip_horizontal;
         };
         auto fill=NodeInput::box(0,0); fill.width=fill.height=Axis::expand();
         append_splitter(node.key+1,fill,false);
+        // Keep the rail narrow; give all three actions equal, contiguous hit areas.
+        // Compress the group together if a small host cannot fit its usual length.
+        const float action_length=std::min(36.f,(horizontal?size.height:size.width)/3);
+        const float action_width=std::max(0.f,std::min(divider_width,horizontal?size.width:size.height)-4.f/3);
         for (unsigned part=0;part<3;++part) {
-            auto shape=NodeInput::box(horizontal?divider_width:(part==1?32.f:16.f),horizontal?(part==1?32.f:16.f):divider_width);
+            auto shape=NodeInput::box(horizontal?action_width:action_length,horizontal?action_length:action_width);
             shape.out_of_flow=true; shape.anchor_x=shape.anchor_y=shape.pivot_x=shape.pivot_y=.5f;
-            const float offset=part==0?-24.f:part==2?24.f:0.f;
+            const float offset=(static_cast<float>(part)-1)*action_length;
             (horizontal?shape.offset_y:shape.offset_x)=offset;
             if (part==1) append_splitter(node.key+14,shape,true);
             else {
@@ -362,7 +367,6 @@ void DockSpace::append_node(std::vector<Control>& controls,const Node& node,Cont
         auto group=NodeInput::row(); group.width=Axis::flex(Basis::content(),0,1,44); group.height=Axis::expand(); group.flow=FlexSpec{};
         auto& row=add(controls,base_+wrapper_offset+index,node.key+9,ControlKind::container,group);
         row.classes={"dock-tab-group"}; row.selected=key==node.active;
-        if (key!=node.tabs.front()) row.classes.push_back("joined");
         auto text=NodeInput::box(0,0); text.height=Axis::expand(); text.width=Axis::flex(Basis::content(),1,1,12);
         auto& button=add(controls,key,row.key,ControlKind::tab,text,view->title);
         button.selected=key==node.active; button.context_target=key; button.classes={"dock-tab"};

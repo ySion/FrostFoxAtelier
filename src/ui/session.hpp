@@ -42,6 +42,12 @@ struct Control {
     std::optional<double> default_value;
     ControlKey context_target{}, context_group{}; // Context request target and optional group reset command.
     ControlKey selection_group{}; // Button group: arrow navigation; Tab visits the selected member.
+    // Tree rows are direct layout children of a tree, in depth-first order.
+    // tree_parent references an earlier row in that same tree (zero for roots).
+    // Expansion belongs to Session; initialize on insertion or kind/parent changes.
+    ControlKey tree_parent{};
+    bool tree_initially_expanded{true};
+    std::wstring tree_filter; // tree only: substring with ASCII case folding; retains matching ancestry.
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
     bool operator==(const Control&) const = default;
@@ -62,6 +68,7 @@ struct ControlBox {
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
     std::shared_ptr<const ResolvedStyle> style;
     bool selected{}; // Accepted toggle value; activation requests its inverse.
+    ControlKey tree_parent{}; // Logical parent snapshot, independent of the layout parent.
 };
 struct EditToken {
     ControlKey key{};
@@ -106,6 +113,11 @@ struct ValueLadderGeometry {
     int selected_row{3};
     double increment{.1};
 };
+struct TreeRowGeometry {
+    ControlKey key{}, parent{};
+    Rect disclosure; // Accepted physical hit area; empty on leaves.
+    bool expanded{}, filtering{}; // Retained expansion; filtering temporarily reveals matching descendants.
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
@@ -115,6 +127,7 @@ struct UiFrame {
     std::optional<TextInputAnchor> input_anchor{};
     std::vector<TextGeometry> text_geometry;
     std::vector<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
+    std::vector<TreeRowGeometry> tree_rows;
     std::optional<ValueLadderGeometry> value_ladder;
     ControlKey popup{};
     const ControlBox* find(ControlKey) const noexcept;
@@ -243,7 +256,10 @@ public:
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
     Reply input(const Event&);
     Reply cancel_interaction();
-    Reply focus(ControlKey); // Visible accepted control only; commits the previous legal draft.
+    // Zero clears focus; other targets must be visible, current accepted controls.
+    // A transition finishes the previous draft. Same focus preserves its draft,
+    // selection and composition; text fields bind input immediately, numbers passively.
+    Reply focus(ControlKey);
     Reply execute(EditCommand, std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.
     ControlKey focused_control() const noexcept;
     bool wants_keyboard() const noexcept;

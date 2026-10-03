@@ -45,6 +45,28 @@ Result<void> Workspace::navigate(Session& session,int direction) {
     if (changed) navigation_cursor_=next;
     return changed;
 }
+Result<void> Workspace::select_tree(Session& session,ui::ControlKey key) {
+    if (key==control::tree_world) {
+        auto result=session.select({});
+        if (result) { tree_component_={}; tree_actor_={}; }
+        return result;
+    }
+    const auto* target=binding(key);
+    if (!target) return {};
+    auto actor=target->object;
+    const bool component=target->kind==Binding::Kind::tree_component;
+    if (component) {
+        auto state=world::inspect_component(session.world().runtime(),target->object);
+        if (!state) return std::unexpected(state.error());
+        actor=state->owner;
+    }
+    auto result=session.select(actor);
+    if (result) {
+        tree_actor_=actor; tree_component_=component?target->object:ObjectId{};
+        if (component) parameter_page=control::parameter_components;
+    }
+    return result;
+}
 ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, Binding::Kind kind) {
     if (!path.empty()) kind=Binding::Kind::field;
     const auto first=bindings_.begin()+static_cast<std::ptrdiff_t>(binding_cursor_);
@@ -71,9 +93,18 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         live.insert(member.id());
         for (const auto& component:take(world::components(runtime,member.id()))) live.insert(component.id());
     }
-    // Closing/hiding a view is not an object lifetime change. Removed components
-    // still retire their bindings, including when undo later restores their identity.
-    std::erase_if(bindings_,[&](const auto& item){return !live.contains(item.object);});
+    // A stalled accepted frame must not reinsert keys retired on a prior projection.
+    if (frame && frame->drawing->id!=tree_frame_) {
+        for (const auto& row:frame->tree_rows) tree_expansion_[row.key]=row.expanded;
+        tree_frame_=frame->drawing->id;
+    }
+    // Closing/hiding a view is not an object lifetime change. Retire bindings and
+    // their view state together; undo later restores identity with fresh keys.
+    std::erase_if(bindings_,[&](const auto& item) {
+        if (live.contains(item.object)) return false;
+        tree_expansion_.erase(item.key);
+        return true;
+    });
     binding_cursor_=0;
     std::vector<ui::Control> result;
     result.reserve(64 + members.size());
@@ -85,6 +116,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         return result.back();
     };
     const auto selected = session.selected();
+    if (selected!=tree_actor_ || !live.contains(tree_component_)) tree_component_={};
+    tree_actor_=selected;
     const auto old_cursor=navigation_cursor_;
     std::size_t destination{};
     for (std::size_t i=0;i<navigation_.size();++i) {
@@ -149,15 +182,39 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     if (view.key==control::workbench) { workbench.append(result,view.content); return; }
     if (view.key==control::actors_tab) {
         ui::append_path_bar(result,{24,21,control::actor_path,control::actor_back,control::actor_forward,L"World",can_navigate(-1),can_navigate(1)});
-        auto list=NodeInput::column(1); list.height=Axis::expand();
-        add(23,21,ControlKind::list,list);
+        auto list=NodeInput::column(); list.height=Axis::expand();
+        add(control::actor_tree,21,ControlKind::tree,list).tree_filter=tree_query;
+        auto row=NodeInput::box(0,20); row.width=Axis::expand();
+        auto& world_row=add(control::tree_world,control::actor_tree,ControlKind::tree_item,row,L"World");
+        world_row.icon=ui::ControlIcon::world; world_row.selected=selected==ObjectId{};
+        if (const auto state=tree_expansion_.find(control::tree_world);state!=tree_expansion_.end()) world_row.tree_initially_expanded=state->second;
         for (const auto& member:members) {
             const auto state=take(world::inspect_actor(runtime,member.id()));
-            auto row=NodeInput::box(0,28); row.width=Axis::expand();
-            auto& item=add(bind(member.id()),23,ControlKind::item,row,std::wstring(session.name(member.id())));
+            const auto actor_key=bind(member.id());
+            auto& item=add(actor_key,control::actor_tree,ControlKind::tree_item,row,std::wstring(session.name(member.id())));
+            item.tree_parent=control::tree_world; item.tree_initially_expanded=false;
+            if (const auto expansion=tree_expansion_.find(actor_key);expansion!=tree_expansion_.end()) item.tree_initially_expanded=expansion->second;
+            item.icon=ui::ControlIcon::object; item.classes={"actor"};
             item.enabled=state.state==world::ActorState::attached_inactive || state.state==world::ActorState::active;
-            item.selected=member.id()==selected;
+            item.selected=member.id()==selected && tree_component_==ObjectId{};
+            for (const auto& component:take(world::components(runtime,member.id()))) {
+                const auto info=take(world::inspect_component(runtime,component.id()));
+                const auto type=take(runtime.describe(info.type));
+                auto name=type->name;
+                if (const auto dot=name.find_last_of('.');dot!=name.npos) name=name.substr(dot+1);
+                auto& child=add(bind(component.id(),{},Binding::Kind::tree_component),control::actor_tree,ControlKind::tree_item,row,std::wstring(name.begin(),name.end()));
+                child.tree_parent=actor_key; child.selected=component.id()==tree_component_;
+                const bool is_transform=take(runtime.is_a(info.type,session.types().transform));
+                child.icon=is_transform?ui::ControlIcon::axes:ui::ControlIcon::component;
+                child.classes={is_transform?"transform":"component"};
+            }
         }
+        auto filter=NodeInput::row(6); filter.height=Axis::content(ui::single_line_height); filter.padding={4,2,3,2};
+        add(29,21,ControlKind::container,filter);
+        auto caption=ui::single_line_layout(36);
+        add(30,29,ControlKind::label,caption,L"Filter").classes={"field-label"};
+        auto field=ui::single_line_layout(); field.width=Axis::expand();
+        add(control::tree_filter,29,ControlKind::text_edit,field,tree_query);
         return;
     }
     ui::append_path_bar(result,{75,50,control::parameter_path,control::parameter_back,control::parameter_forward,L"World",can_navigate(-1),can_navigate(1)});
