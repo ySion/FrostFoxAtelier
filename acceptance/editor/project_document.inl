@@ -1,3 +1,41 @@
+void verify_scene_v1(editor::Project& project) {
+    // Fixed v1 input, independent of the current serializer and C++ math names.
+    constexpr std::string_view source=R"({"version":1,"actors":[{
+        "type":"world.StaticMeshActor","name":"旧场景","enabled":true,"root":1,"components":[
+            {"id":1,"type":"world.StaticMeshComponent","enabled":true,"parent":0,
+             "position":[1.25,-2.5,3.75],"rotation":[0,0,1,0],"scale":[2,3,4],
+             "mesh":"builtin/sphere","base_color":[0.125,0.25,0.5]},
+            {"id":2,"type":"world.SceneComponent","enabled":true,"parent":1,
+             "position":[0.5,0.25,-1],"rotation":[0,0,0,1],"scale":[1,2,1]}
+        ]
+    }]})";
+    const auto path=take(project.resolve("Content/Scenes/Scene-v1.scene"));
+    take(editor::write_file(path,source,editor::WriteMode::create));
+    auto document=take(editor::Session::deserialize(take(editor::read_file(path)),project));
+    auto& runtime=document->world().runtime();
+    require(take(runtime.native_type<math::Vector3>())==document->types().vector3 &&
+        take(runtime.native_type<math::Quaternion>())==document->types().quaternion &&
+        !runtime.find_type("world.Vec3") && !runtime.find_type("world.Quaternion"),
+        "Scene loading did not use the canonical Runtime math types.");
+    const auto actor=take(document->world().members()).front().id();
+    const auto root=component(*document,actor,document->types().static_mesh_component);
+    const auto child=component(*document,actor,document->types().scene_component);
+    require(take(world::root_component(runtime,actor))==root && take(world::scene_parent(runtime,child))==root &&
+        document->name(actor)==L"旧场景","Scene v1 lost its root, parent or Unicode name.");
+    const auto matrix=take(world::world_matrix(runtime,child));
+    require(matrix[0]==-2 && matrix[5]==-6 && matrix[10]==4 &&
+        matrix[12]==.25f && matrix[13]==-3.25f && matrix[14]==-.25f,
+        "Scene v1 changed xyzw rotation, float TRS values or row-vector hierarchy composition.");
+    const auto mesh=take(world::read_static_mesh(runtime,root));
+    require(mesh.mesh.source=="builtin/sphere" && mesh.mesh.resolved==take(project.mesh("builtin/sphere")).mesh &&
+        mesh.material.base_color==math::Vector3{.125f,.25f,.5f},
+        "Scene v1 lost its mesh source or material.");
+    take(editor::write_file(path,take(document->serialize())));
+    auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
+    require(nlohmann::json::parse(take(reopened->serialize()))==nlohmann::json::parse(source),
+        "Scene v1 reopen changed its stored schema or values after the math migration.");
+}
+
 void verify_project_document() {
     namespace fs=std::filesystem;
     const auto evidence=fs::current_path()/"project-document-evidence"/std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
@@ -17,6 +55,7 @@ void verify_project_document() {
     require(project.revision()==revision && take(project.mesh(resource)).mesh==original_mesh,
         "An unchanged refresh changed catalog identity or discarded a live mesh.");
     verify_project_workspace(project);
+    verify_scene_v1(project);
     require(!project.import_mesh(external),"Import silently overwrote an existing asset.");
     editor::Session document;
     changed(document.create_static_mesh(take(project.mesh(resource))));
@@ -121,6 +160,6 @@ void verify_project_document() {
     take(world::set_geometry(document.world().runtime(),mesh,editor::mesh_assets().front().mesh));
     require(take(world::read_static_mesh(document.world().runtime(),mesh)).mesh.source.empty() && !document.serialize(),
         "Unattributed procedural geometry retained stale provenance or was silently saved.");
-    std::ofstream(evidence/"acceptance.txt")<<"Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal.\n";
+    std::ofstream(evidence/"acceptance.txt")<<"Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal; fixed Scene v1 file preserves canonical math, TRS hierarchy, mesh source and material across reopen.\n";
     std::puts("Project document acceptance: PASS");
 }

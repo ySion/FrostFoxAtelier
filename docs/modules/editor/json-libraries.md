@@ -36,3 +36,15 @@
 无论选择哪个库，都保留[工程格式](projects.md)中的重复／未知字段、整数 ID、数组长度、文件大小、嵌套深度和对象图校验，以及保存失败保护原文件的机制。语法库不负责 World 重建和 Runtime 身份。
 
 官方 GB/s 成绩与本项目先前的 75–100 MB/s 不具备直接比较条件。后续比较应使用同一批场景、编译选项和完整校验要求，分别记录读取、解析、业务校验、World 重建、写入及内存；本轮尚无候选实测收益结论。
+
+## UE5 采用的方案
+
+核查日期：2026-10-04。UE5 对外提供自己的 **Json 模块接口**：`FJsonObject`／`FJsonValue` 表示 DOM，`TJsonReader`／`TJsonWriter` 处理读写，`FJsonSerializer` 连接二者。**JsonUtilities** 中的 `FJsonObjectConverter` 再将 JSON 与 `UStruct`／`FProperty` 转换，属于反射映射层。[Json API](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Json)、[Converter API](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/JsonUtilities/FJsonObjectConverter)
+
+版本需要区分：**5.6** 官方 API 中 `FJsonSerializer` 是直接接受 UE reader、writer 和 DOM 的类；当前标为 **5.8** 的 API 中，它是 `TJsonSerializer<FJsonSerializerPolicy_JsonObject>` 的别名。5.8 的同一 Json 模块还明确提供 `RapidJsonUtils.h`：`FDocument` 是 `rapidjson::GenericDocument`，`FStringWriter`／`FPrettyStringWriter` 分别是 `rapidjson::Writer`／`PrettyWriter`。因此可以确认新版本包含 RapidJSON 的 DOM 和写入工具接口，不能笼统说“UE5 完全不用第三方 JSON”。[5.6 Serializer](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Json/FJsonSerializer?application_version=5.6)、[5.8 Json](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Json)、[5.8 Serializer](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Json/TJsonSerializer)
+
+**证据边界：**公开 API 没有提供上述函数的完整实现，本轮未取得相应版本的 Epic 官方源码；无法确认 RapidJSON 是通用 `FJsonSerializer` 解析／写入的默认后端、可切换后端，还是供特定调用者直接使用的工具路径，也未确认首次引入版本。5.7 的搜索索引曾标注 RapidJSON 工具页面为 5.7，但打开后显示 5.8，故不将该缓存标注当作版本结论。5.8 `TJsonSerializer` 的公开签名仍接收 `TJsonReader`／`TJsonWriter`；仅凭分配器注释或 RapidJSON 别名不能推出整个 Json 模块默认实现已经替换。[Serializer API](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Json/TJsonSerializer)、[RapidJSON 工具 API](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Json/UE__Json__MakeStringRef)
+
+`.uproject` 是项目描述：`FProjectDescriptor` 提供基于 `FJsonObject` 的读取和 `TJsonWriter` 的写出；编辑器的 `.uasset`／`.umap` 资产文件则是二进制。JSON 接口选型不能直接解释 UE 资产包加载性能。[ProjectDescriptor](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Projects/FProjectDescriptor)、[Epic 资产文件说明](https://dev.epicgames.com/documentation/unreal-engine/using-perforce-as-source-control-for-unreal-engine)
+
+这些资料证明 UE 的接口分层和部分第三方工具接入，没有提供与 yyjson、simdjson 或本项目完整场景路径的同条件测量。不能据此推断 UE Json 更快，或推翻本文候选的实测优先级。

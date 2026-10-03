@@ -38,6 +38,7 @@ Refresh/F5 重新扫描目录并更新目录索引；不在 UI 每帧访问磁�
 - Project、Scene 和资源身份文件均为 UTF-8 JSON、`version: 1`；JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称及相对 `startup_scene`。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene 保存有序 Actor、真实类型名称、名称、enabled、有序组件、局部组件 ID、显式 root/parent、TRS、材质和资源键。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
+- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致，因此 Scene v1 继续可读，无需版本迁移或旧类型别名。
 - 首版支持现有 Actor/StaticMeshActor 和 Component/SceneComponent/StaticMeshComponent。未知版本、未知类型、失效关系、缺失资源或不能完整保存的程序化网格明确失败；空网格保留为空。单场景最多 256 Actor、每个 Actor 最多 1024 组件、文件最多 16 MiB。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源和解析内容，`read_static_mesh` 覆盖 Detached 与空网格。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
 - 重建先创建真实类型对象和组件，恢复值，每个 Actor 一次 `attach_components` 恢复组成与空间关系，最后按文档顺序 attach。加载 StaticMeshActor 不重复调用带默认组成的快捷工厂。
@@ -49,6 +50,8 @@ Refresh/F5 重新扫描目录并更新目录索引；不在 UI 每帧访问磁�
 `editor_document_acceptance` 还直接运行真实 Project → Workspace → UI 布局/绘制/命中链，在两种逻辑窗口尺寸与 1/1.5/2 DPI 下切换三种视图和滚动选择，不创建桌面窗口。文件链覆盖真实目录创建/打开、中文名、OBJ 导入、元数据身份、组件和空网格往返、保存点撤销、坏版本/坏 JSON、写入失败、资源改名、工程搬移、Cache 删除及无来源网格拒绝保存。
 
 同一验收还覆盖非法数值身份、向量长度、重复键、过深/超限输入、独占发布、坏目录导致的导入重试，以及 10000 项目录导致发布后失败时的文件回滚。刷新无变化、文件改名和真实内容改写分别验证缓存复用、旧版本生命周期与新版本解析。
+
+固定 Scene v1 文件独立于当前序列化器，经过真实读盘、Session/World 重建、父子矩阵计算、资源解析、保存与重开，核验统一数学类型后的格式兼容性。
 
 普通 `editor_acceptance` 通过同一应用检查工程命令、Ctrl+S 提交字段、项目重开、三种浏览视图、搜索和类型过滤、资源选择与场景选择隔离、导入定位、坏场景保留当前文档及工程搬移。每轮使用独立证据目录。
 
