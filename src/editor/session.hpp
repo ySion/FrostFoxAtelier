@@ -65,6 +65,8 @@ private:
     std::optional<FieldChange> active_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
     std::uint64_t next_name_{1};
+    Result<void> admit_actor_edit(ObjectId) const;
+    Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     void remember(Change);
     Result<world::Commit> replay(Change&, bool forward);
 };

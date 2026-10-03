@@ -175,7 +175,10 @@ void editing_and_execution() {
     require(runtime.root_count() == 1, "Delete/undo sample still has roots outside its Actor removal record.");
     collect(runtime);
     require(take(w::inspect_actor(runtime, actor_id)).state == w::ActorState::detached && take(world.render_items()).empty(), "Actor detach left participation.");
-    reject(world.write(transform_id, types.position_fields[0], Scalar{99.f}), "Detached data was edited through World.");
+    take(world.write(transform_id, types.position_fields[0], Scalar{99.f}));
+    require(std::get<float>(take(world.read(transform_id, types.position_fields[0]))) == 99.f,
+        "Detached composition did not support preparation through the same World editor entry.");
+    take(world.write(transform_id, types.position_fields[0], Scalar{original.position.x}));
     committed(world.restore(removal));
     actor = take(runtime.hold(actor_id)); transform = take(runtime.hold(transform_id));
     cube = take(runtime.hold(cube_id)); counter = take(runtime.hold(counter_id));
@@ -312,7 +315,8 @@ void failures_and_reentry() {
             ++close_callbacks;
             reject(current.start(), "Closing World restarted from an exit callback.");
             reject(current.request({w::RequestKind::destroy_actor, target}), "Closing World accepted a request.");
-            reject(w::inspect_actor(runtime, target), "Close exposed a partially transitioned Actor.");
+            require(take(w::inspect_actor(runtime, target)).state == w::ActorState::detached,
+                "Close notification did not expose the complete Detached state.");
         }
         return {};
     }));
@@ -403,6 +407,8 @@ void ordered_lifecycle() {
     std::puts("[pass] Ordered lifecycle: inherited native binding, composition order, disabled participation, dynamic insertion/removal, failure cleanup");
 }
 
+#include "lifecycle.inl"
+
 void spatial_tree_and_mesh() {
     Runtime runtime;
     const auto types = take(w::register_types(runtime));
@@ -472,8 +478,9 @@ int main() {
         worlds_and_requests();
         failures_and_reentry();
         ordered_lifecycle();
+        actor_lifecycle_and_detached_graph();
         spatial_tree_and_mesh();
-        std::puts("World acceptance: PASS (6/6)");
+        std::puts("World acceptance: PASS (7/7)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

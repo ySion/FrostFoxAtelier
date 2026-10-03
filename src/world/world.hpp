@@ -29,6 +29,7 @@ private:
     ReferenceSlot root_;
     World* member_world_{};
     bool enabled_{true};
+    bool begun_{};
     bool transitioning_{};
 };
 
@@ -178,6 +179,8 @@ enum class ReparentRule { keep_local, keep_world };
 // mesh resource at a host boundary. No callback/dispatch reentry is permitted.
 [[nodiscard]] Result<void> set_geometry(Runtime&, ObjectId static_mesh_component, geometry::MeshRef);
 
+// World registration notifications: whole Actor groups enter in forward order
+// and leave in reverse order. Detached composition does not emit these events.
 enum class Lifecycle { attached, activated, deactivated, detached };
 enum class RequestKind {
     attach_actor, detach_actor, attach_component, remove_component,
@@ -235,19 +238,23 @@ public:
     [[nodiscard]] Result<Commit> attach(ObjectId actor, std::size_t index = append);
     [[nodiscard]] Result<ActorRemoval> detach(ObjectId actor);
     [[nodiscard]] Result<Commit> restore(const ActorRemoval&);
+    // Detached Actors may be composed before World registration. The same
+    // validation applies; no member/query/presentation or behavior is registered.
     [[nodiscard]] Result<Commit> attach_components(ObjectId actor,
         std::span<const Attachment>, std::size_t index = append);
     [[nodiscard]] Result<ComponentRemoval> remove_component(ObjectId component);
     [[nodiscard]] Result<Commit> restore(const ComponentRemoval&);
     [[nodiscard]] Result<Commit> set_enabled(ObjectId actor_or_component, bool);
-    // Begin/Tick follow member order then composition order. End reverses that
-    // order and pairs only with completed Begin. Enabled gates Tick, not Begin.
+    // Begin/Tick visit each Actor before its components in composition order.
+    // End reverses that order and pairs only with completed Begin.
+    // Enabled gates Tick, not Begin.
     // Dynamic insertion begins new components immediately; End uses current order.
     [[nodiscard]] Result<Commit> start();
     [[nodiscard]] Result<Commit> stop();
     [[nodiscard]] Result<Commit> close();
 
-    // Editing requires an open, stopped World and a current component member.
+    // Editing requires an open, stopped World. Same-context detached objects
+    // may be prepared; objects registered in another World are rejected.
     // Transform scalar writes use the same finite/positive-scale TRS validation.
     [[nodiscard]] Result<Scalar> read(ObjectId component, std::span<const FieldId>) const;
     [[nodiscard]] Result<void> write(ObjectId component, std::span<const FieldId>, Scalar);
@@ -260,12 +267,12 @@ public:
     // Stopped-only scheduling configuration, keyed by the Runtime's existing
     // type identity. The nearest ancestor binding is inherited as a whole.
     // Native method and source/JIT adapters run outside every native borrow.
-    [[nodiscard]] Result<void> bind_behavior(TypeId component_type, Behavior);
+    [[nodiscard]] Result<void> bind_behavior(TypeId actor_or_component_type, Behavior);
     [[nodiscard]] Result<void> observe_lifecycle(LifecycleObserver);
     [[nodiscard]] Result<void> update(float amount);
     // The trusted starter uses the provided Runtime/receiver. World owns the
     // resulting task; deactivate/detach/stop/close cancels it before exit completes.
-    [[nodiscard]] Result<void> start_task(ObjectId component, const TaskStart&);
+    [[nodiscard]] Result<void> start_task(ObjectId actor_or_component, const TaskStart&);
 
     // Request acceptance is not completion. Replay checks the original World's
     // membership/owner conditions; it never follows a target into another World.

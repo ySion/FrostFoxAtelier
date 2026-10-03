@@ -41,7 +41,7 @@ Result<Types> register_types(Runtime& runtime) {
 namespace detail {
 Result<ActorData> actor_data(Runtime& runtime, ObjectId object) {
     return runtime.with_native<Actor>(object, [](Actor& actor) -> Result<ActorData> {
-        return ActorData{Access::member_world(actor), Access::enabled(actor), Access::transitioning(actor)};
+        return ActorData{Access::member_world(actor), Access::enabled(actor), Access::transitioning(actor), Access::begun(actor)};
     });
 }
 Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
@@ -97,7 +97,7 @@ Result<ActorStatus> inspect_actor(Runtime& runtime, ObjectId object) {
     if (data->world) {
         const auto& state = Access::state(*data->world);
         if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
-        status.state = state.running && data->enabled ? ActorState::active : ActorState::attached_inactive;
+        status.state = state.running && data->begun && data->enabled ? ActorState::active : ActorState::attached_inactive;
         status.can_edit = !state.running && !state.dispatch_depth;
         const auto member = state.positions.find(object);
         if (member == state.positions.end()) return error(ErrorCode::invalid_member, "World member index is inconsistent.");

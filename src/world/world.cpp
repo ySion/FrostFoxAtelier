@@ -31,19 +31,33 @@ Result<ObjectId> World::Impl::component_owner(ObjectId object) const {
     if (!found) return std::unexpected(found.error());
     return component->owner;
 }
+Result<detail::ActorData> World::Impl::composition_actor(ObjectId object) const {
+    auto actor = detail::actor_data(runtime, object);
+    if (!actor) return std::unexpected(actor.error());
+    if (actor->transitioning) return error(ErrorCode::busy, "Actor is transitioning.");
+    if (actor->world && actor->world != &world) return error(ErrorCode::invalid_member, "Actor belongs to another World.");
+    return actor;
+}
+Result<detail::ComponentData> World::Impl::composition_component(ObjectId object) const {
+    auto component = detail::component_data(runtime, object);
+    if (!component) return std::unexpected(component.error());
+    if (component->owner != ObjectId{}) {
+        auto actor = composition_actor(component->owner);
+        if (!actor) return std::unexpected(actor.error());
+    }
+    return component;
+}
 Result<std::size_t> World::Impl::prepare_bucket(TypeId type, std::size_t additional) {
     for (std::size_t i = 0; i < buckets.size(); ++i) {
         if (buckets[i].type == type) { buckets[i].objects.reserve(buckets[i].objects.size() + additional); return i; }
     }
-    auto scene = runtime.is_a(type, types.scene_component);
-    if (!scene) return std::unexpected(scene.error());
-    Bucket bucket{type, *scene, {}};
+    Bucket bucket{type, {}};
     bucket.objects.reserve(additional);
     buckets.push_back(std::move(bucket));
     return buckets.size() - 1;
 }
 void World::Impl::prepare_activity(std::size_t additional) {
-    std::size_t count = additional;
+    std::size_t count = additional + members.size();
     for (const auto& bucket : buckets) count += bucket.objects.size();
     presentation.reserve(count); updates.reserve(count); ordered.reserve(count);
 }
@@ -54,6 +68,14 @@ Result<void> World::Impl::refresh() {
     for (const auto& member : members) {
         auto actor = detail::actor_data(runtime, member.id());
         if (!actor) return std::unexpected(actor.error());
+        auto actor_type = runtime.type_of(member.id());
+        if (!actor_type) return std::unexpected(actor_type.error());
+        auto actor_binding = behavior(*actor_type);
+        if (!actor_binding) return std::unexpected(actor_binding.error());
+        Scheduled actor_item{member.id(), member.id(), *actor_binding};
+        ordered.push_back(actor_item);
+        if (running && actor->begun && actor->enabled && actor_item.behavior && actor_item.behavior->tick)
+            updates.push_back(actor_item);
         auto group = components(runtime, member.id());
         if (!group) return std::unexpected(group.error());
         for (const auto& root : *group) {
@@ -83,7 +105,7 @@ Result<void> World::Impl::refresh() {
 }
 void World::Impl::cancel_tasks(ObjectId target, bool actor) noexcept {
     std::erase_if(tasks, [&](Task& task) {
-        if (target != ObjectId{} && (actor ? task.actor : task.component) != target) return false;
+        if (target != ObjectId{} && (actor ? task.actor : task.object) != target) return false;
         task.coroutine.cancel();
         return true;
     });
@@ -104,6 +126,21 @@ std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     }
     return {};
 }
+std::optional<Error> World::Impl::notify_group(Lifecycle event, ObjectId actor, std::span<const ObjectRoot> group) {
+    std::optional<Error> failure;
+    const auto emit = [&](ObjectId object) {
+        auto result = notify(event, object);
+        if (!failure) failure = std::move(result);
+    };
+    if (event == Lifecycle::attached) {
+        emit(actor);
+        for (const auto& component : group) emit(component.id());
+    } else {
+        for (auto it = group.rbegin(); it != group.rend(); ++it) emit(it->id());
+        emit(actor);
+    }
+    return failure;
+}
 Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
     if (failure) (void)shutdown();
     return {changed, std::move(failure)};
@@ -111,8 +148,8 @@ Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
 void World::Impl::erase_indexes(ObjectId object) noexcept {
     for (auto& bucket : buckets) std::erase(bucket.objects, object);
     std::erase(presentation, object);
-    std::erase_if(updates, [object](const Scheduled& item) { return item.component == object; });
-    std::erase_if(ordered, [object](const Scheduled& item) { return item.component == object; });
+    std::erase_if(updates, [object](const Scheduled& item) { return item.object == object; });
+    std::erase_if(ordered, [object](const Scheduled& item) { return item.object == object; });
 }
 
 World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl>(runtime, types, *this)) {
@@ -178,7 +215,7 @@ Result<Commit> World::attach(ObjectId object, std::size_t index) {
     if (auto tree = detail::validate_tree(runtime(), object, *group); !tree) return std::unexpected(tree.error());
     state.members.reserve(state.members.size() + 1);
     state.positions.reserve(state.positions.size() + 1);
-    state.prepare_activity(group->size());
+    state.prepare_activity(group->size() + 1);
     // Prepare the hash node before publishing membership; it is not observable
     // while the structural guard is held, and is removed if the borrow rejects.
     {
@@ -195,7 +232,7 @@ Result<Commit> World::attach(ObjectId object, std::size_t index) {
     }
     auto refreshed = state.refresh();
     if (!refreshed) return state.finish(true, refreshed.error());
-    auto failure = state.notify(Lifecycle::attached, object);
+    auto failure = state.notify_group(Lifecycle::attached, object, *group);
     if (!failure && state.running) failure = state.begin(object);
     if (!failure) { auto active = state.refresh(); if (!active) failure = active.error(); }
     if (!failure && state.running && data->enabled) failure = state.notify(Lifecycle::activated, object);
@@ -220,6 +257,7 @@ Result<ActorRemoval> World::detach(ObjectId object) {
     {
         detail::FlagScope transition{state.transitioning};
         for (const auto& component : *group) state.erase_indexes(component.id());
+        state.erase_indexes(object);
         if (state.running && data->enabled) { auto notification = state.notify(Lifecycle::deactivated, object); if (!failure) failure = std::move(notification); }
         auto published = runtime().with_native<Actor>(object, [&](Actor& actor) -> Result<void> {
             Access::member_world(actor) = nullptr;
@@ -229,9 +267,9 @@ Result<ActorRemoval> World::detach(ObjectId object) {
         state.members.erase(state.members.begin() + std::ptrdiff_t(*at));
         state.positions.erase(object);
         for (std::size_t i = *at; i < state.members.size(); ++i) state.positions.find(state.members[i].id())->second.index = i;
-        auto detached = state.notify(Lifecycle::detached, object);
-        if (!failure) failure = std::move(detached);
     }
+    auto detached = state.notify_group(Lifecycle::detached, object, *group);
+    if (!failure) failure = std::move(detached);
     result.commit = state.finish(true, std::move(failure));
     return result;
 }
@@ -245,8 +283,9 @@ Result<Commit> World::restore(const ActorRemoval& removal) {
 Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attachment> incoming, std::size_t index) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
-    auto actor_at = state.member(actor_id);
-    if (!actor_at) return std::unexpected(actor_at.error());
+    auto actor = state.composition_actor(actor_id);
+    if (!actor) return std::unexpected(actor.error());
+    const bool registered = actor->world != nullptr;
     auto existing = components(runtime(), actor_id);
     if (!existing) return std::unexpected(existing.error());
     if (index == append) index = existing->size();
@@ -278,10 +317,14 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
         if (data->owner != ObjectId{}) return error(ErrorCode::invalid_member, "Component already has an owner.");
         auto type = runtime().type_of(item.component);
         if (!type) return std::unexpected(type.error());
-        auto bucket = state.prepare_bucket(*type, incoming.size());
-        if (!bucket) return std::unexpected(bucket.error());
-        buckets.push_back(*bucket);
-        if (state.buckets[*bucket].scene) {
+        if (registered) {
+            auto bucket = state.prepare_bucket(*type, incoming.size());
+            if (!bucket) return std::unexpected(bucket.error());
+            buckets.push_back(*bucket);
+        }
+        auto scene = runtime().is_a(*type, types().scene_component);
+        if (!scene) return std::unexpected(scene.error());
+        if (*scene) {
             auto value = read_transform(runtime(), item.component);
             if (!value) return std::unexpected(value.error());
             auto canonical = canonical_transform(*value);
@@ -306,7 +349,7 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
         if (!held) return std::unexpected(held.error());
         return runtime().observe(held->reference());
     };
-    state.prepare_activity(incoming.size());
+    if (registered) state.prepare_activity(incoming.size());
     {
         detail::FlagScope transition{state.transitioning};
         auto changed = runtime().with_native<Actor>(actor_id, [&](Actor& actor) -> Result<void> {
@@ -326,7 +369,7 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
                 });
                 if (!owner) return std::unexpected(owner.error());
                 changes.push_back(ReferenceWrite{*owner, actor_root->reference()});
-                if (state.buckets[buckets[i]].scene) {
+                if (parents.contains(incoming[i].component)) {
                     auto parent = runtime().with_native<SceneComponent>(incoming[i].component, [&](SceneComponent& component) {
                         return runtime().reference_field(incoming[i].component, Access::parent(component));
                     });
@@ -339,8 +382,10 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
             return runtime().apply_reference_changes(changes);
         });
         if (!changed) return std::unexpected(changed.error());
-        for (std::size_t i = 0; i < incoming.size(); ++i) state.buckets[buckets[i]].objects.push_back(incoming[i].component);
+        if (registered) for (std::size_t i = 0; i < incoming.size(); ++i)
+            state.buckets[buckets[i]].objects.push_back(incoming[i].component);
     }
+    if (!registered) return Commit{true, {}};
     auto refreshed = state.refresh();
     if (!refreshed) return state.finish(true, refreshed.error());
     std::optional<Error> failure;
@@ -356,9 +401,14 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
 Result<ComponentRemoval> World::remove_component(ObjectId object) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
-    auto owner = state.component_owner(object);
-    if (!owner) return std::unexpected(owner.error());
-    auto group = components(runtime(), *owner);
+    auto data = state.composition_component(object);
+    if (!data) return std::unexpected(data.error());
+    const auto owner = data->owner;
+    if (owner == ObjectId{}) return error(ErrorCode::invalid_member, "Component is not attached.");
+    auto actor = state.composition_actor(owner);
+    if (!actor) return std::unexpected(actor.error());
+    const bool registered = actor->world != nullptr;
+    auto group = components(runtime(), owner);
     if (!group) return std::unexpected(group.error());
     const auto at = std::ranges::find_if(*group, [&](const ObjectRoot& item) { return item.id() == object; });
     if (at == group->end()) return error(ErrorCode::invalid_member, "Component is absent from its owner's composition.");
@@ -369,9 +419,9 @@ Result<ComponentRemoval> World::remove_component(ObjectId object) {
     auto status = inspect_component(runtime(), object);
     if (!status) return std::unexpected(status.error());
     ComponentRemoval result;
-    result.root = std::move(*root); result.owner = *owner;
+    result.root = std::move(*root); result.owner = owner;
     result.index = std::size_t(at - group->begin()); result.origin_ = state.lifetime;
-    auto actor_root = root_component(runtime(), *owner);
+    auto actor_root = root_component(runtime(), owner);
     if (!actor_root) return std::unexpected(actor_root.error());
     result.was_root = *actor_root == object;
     auto scene = detail::is(runtime(), object, types().scene_component);
@@ -381,19 +431,20 @@ Result<ComponentRemoval> World::remove_component(ObjectId object) {
         if (!parent) return std::unexpected(parent.error());
         result.parent = *parent;
     }
-    state.cancel_tasks(object, false);
-    std::optional<Error> failure = state.end({}, object);
+    if (registered) state.cancel_tasks(object, false);
+    std::optional<Error> failure = registered ? state.end({}, object) : std::nullopt;
     {
         detail::FlagScope transition{state.transitioning};
         if (status->active) { auto notification = state.notify(Lifecycle::deactivated, object); if (!failure) failure = std::move(notification); }
-        auto removed = detail::clear_component(runtime(), *owner, object, result.index, result.was_root);
-        if (!removed) { state.halt(); return std::unexpected(removed.error()); }
-        state.erase_indexes(object);
-        auto detached = state.notify(Lifecycle::detached, object);
-        if (!failure) failure = std::move(detached);
+        auto removed = detail::clear_component(runtime(), owner, object, result.index, result.was_root);
+        if (!removed) { if (registered) state.halt(); return std::unexpected(removed.error()); }
+        if (registered) state.erase_indexes(object);
     }
+    if (!registered) { result.commit = Commit{true, {}}; return result; }
     auto refreshed = state.refresh();
     if (!refreshed && !failure) failure = refreshed.error();
+    auto detached = state.notify(Lifecycle::detached, object);
+    if (!failure) failure = std::move(detached);
     result.commit = state.finish(true, std::move(failure));
     return result;
 }
@@ -407,15 +458,15 @@ Result<Commit> World::restore(const ComponentRemoval& removal) {
 
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
-    auto owner = impl_->component_owner(component);
-    if (!owner) return std::unexpected(owner.error());
+    auto data = impl_->composition_component(component);
+    if (!data) return std::unexpected(data.error());
     return runtime().read(component, path);
 }
 Result<void> World::set_transform(ObjectId object, Trs value) {
     if (auto ready = impl_->admit(); !ready) return std::unexpected(ready.error());
     if (impl_->running) return error(ErrorCode::busy, "Editing is disabled while the World runs.");
-    auto owner = impl_->component_owner(object);
-    if (!owner) return std::unexpected(owner.error());
+    auto component = impl_->composition_component(object);
+    if (!component) return std::unexpected(component.error());
     auto canonical = canonical_transform(value);
     if (!canonical) return std::unexpected(canonical.error());
     return runtime().with_native<SceneComponent>(object, [&](SceneComponent& transform) -> Result<void> {
@@ -426,8 +477,8 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
     if (auto ready = impl_->admit(); !ready) return std::unexpected(ready.error());
     if (impl_->running) return error(ErrorCode::busy, "Editing is disabled while the World runs.");
-    auto owner = impl_->component_owner(object);
-    if (!owner) return std::unexpected(owner.error());
+    auto component = impl_->composition_component(object);
+    if (!component) return std::unexpected(component.error());
     auto transform = detail::is(runtime(), object, types().scene_component);
     if (!transform) return std::unexpected(transform.error());
     if (*transform) {
@@ -457,12 +508,13 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
     if (impl_->running) return error(ErrorCode::busy, "Stop the World before editing the spatial hierarchy.");
     if (rule != ReparentRule::keep_local && rule != ReparentRule::keep_world)
         return error(ErrorCode::argument_mismatch, "Unknown reparent rule.");
-    auto owner = impl_->component_owner(object);
-    auto parent_owner = impl_->component_owner(parent);
-    if (!owner) return std::unexpected(owner.error());
-    if (!parent_owner) return std::unexpected(parent_owner.error());
-    if (*owner != *parent_owner) return error(ErrorCode::invalid_member, "Spatial parent belongs to another Actor.");
-    auto root = root_component(runtime(), *owner);
+    auto component = impl_->composition_component(object);
+    auto parent_component = impl_->composition_component(parent);
+    if (!component) return std::unexpected(component.error());
+    if (!parent_component) return std::unexpected(parent_component.error());
+    const auto owner = component->owner, parent_owner = parent_component->owner;
+    if (owner == ObjectId{} || owner != parent_owner) return error(ErrorCode::invalid_member, "Spatial parent must belong to the same Actor.");
+    auto root = root_component(runtime(), owner);
     if (!root) return std::unexpected(root.error());
     if (*root == object) return error(ErrorCode::invalid_member, "The explicit Actor root cannot be parented.");
     auto old_parent = scene_parent(runtime(), object);
