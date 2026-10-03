@@ -65,7 +65,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         tick(app,2);
     };
     click(app,control::parameter_search); type(app,L""); key(app,VK_RETURN); key(app,VK_ESCAPE);
-    const auto target=model(atelier::world::root_transform(app.document().world().runtime(),actor));
+    const auto target=model(atelier::world::root_component(app.document().world().runtime(),actor));
     require(target.has_value(),"Parameter-row acceptance needs an actual component.");
     const auto position=[&](std::size_t axis) {
         return std::get<float>(model(app.document().world().read(*target,app.document().parameters()[axis].path)));

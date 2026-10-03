@@ -54,17 +54,17 @@ void validate(const Frame &frame) {
         frame.scene_viewport.x >= 0 && frame.scene_viewport.y >= 0 &&
         frame.scene_viewport.x + frame.scene_viewport.width <= static_cast<float>(ui.extent.width) &&
         frame.scene_viewport.y + frame.scene_viewport.height <= static_cast<float>(ui.extent.height) &&
-        frame.cubes.size() <= std::numeric_limits<std::uint32_t>::max() &&
+        frame.meshes.size() <= std::numeric_limits<std::uint32_t>::max() &&
         ui.draws.size() <= std::numeric_limits<std::uint32_t>::max();
     for (float v : frame.camera.view)
         good &= finite(v);
     for (float v : frame.camera.projection)
         good &= finite(v);
-    for (const auto &cube : frame.cubes) {
-        good &= valid(cube.color);
-        for (float v : cube.world)
+    for (const auto &mesh : frame.meshes) {
+        good &= bool(mesh.geometry) && valid(mesh.color);
+        for (float v : mesh.world)
             good &= finite(v);
-        good &= cube.world[3] == 0 && cube.world[7] == 0 && cube.world[11] == 0 && cube.world[15] == 1;
+        good &= mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
     }
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
@@ -77,19 +77,15 @@ void validate(const Frame &frame) {
     if (!good)
         throw error(rhi::ErrorCode::invalid_argument, "Invalid renderer frame, camera, shape, color or image");
 }
-struct Vertex {
-    float position[3];
-    float normal[3];
-};
 struct Instance {
     std::array<float, 16> world;
-    std::array<float, 9> face_normals;
+    std::array<float, 9> normal_matrix;
     float selected;
     ui::Color color;
 };
-static_assert(sizeof(Instance) == 120 && sizeof(Vertex) == 24);
-Instance prepare_instance(const Cube &cube) {
-    const auto &m = cube.world;
+static_assert(sizeof(Instance) == 120 && sizeof(geometry::Vertex) == 24);
+Instance prepare_instance(const MeshInstance &mesh) {
+    const auto &m = mesh.world;
     const double a = m[0], b = m[1], c = m[2];
     const double d = m[4], e = m[5], f = m[6];
     const double g = m[8], h = m[9], i = m[10];
@@ -99,38 +95,26 @@ Instance prepare_instance(const Cube &cube) {
                                           c * h - b * i, a * i - c * g, b * g - a * h,
                                           b * f - c * e, c * d - a * f, a * e - b * d};
     const double determinant = a * cofactors[0] + b * cofactors[1] + c * cofactors[2];
-    if (determinant == 0) throw error(rhi::ErrorCode::invalid_argument, "Cube world matrix is singular");
-    Instance result{cube.world, {}, cube.selected ? 1.0f : 0.0f, cube.color};
-    // Cube normals are signed basis axes. Normalize their transformed directions
-    // individually on the CPU so extreme nonuniform scales cannot underflow a
-    // normal in the shader. det's sign preserves outward normals under reflection.
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-        const std::size_t offset = axis * 3;
-        const double length = std::hypot(cofactors[offset], cofactors[offset + 1], cofactors[offset + 2]);
-        if (length == 0)
-            throw error(rhi::ErrorCode::invalid_argument, "Cube world matrix has a degenerate face");
-        const double sign = determinant < 0 ? -1.0 : 1.0;
-        for (std::size_t component = 0; component < 3; ++component)
-            result.face_normals[offset + component] =
-                static_cast<float>(sign * cofactors[offset + component] / length);
-    }
+    if (determinant == 0) throw error(rhi::ErrorCode::invalid_argument, "Mesh world matrix is singular");
+    Instance result{mesh.world, {}, mesh.selected ? 1.0f : 0.0f, mesh.color};
+    // One common factor preserves inverse-transpose row weights for arbitrary
+    // vertex normals. Double cofactors also support very small/large scales.
+    double maximum = 0;
+    for (double value : cofactors) maximum = std::max(maximum, std::abs(value));
+    const double sign = determinant < 0 ? -1. : 1.;
+    for (std::size_t n = 0; n < cofactors.size(); ++n)
+        result.normal_matrix[n] = static_cast<float>(sign * cofactors[n] / maximum);
+    // Test the actual FP32 representation, including GPU flush-to-zero. A
+    // nonzero double determinant alone does not guarantee a usable GPU matrix.
+    for (float& value : result.normal_matrix)
+        if (std::abs(value) < std::numeric_limits<float>::min()) value = 0;
+    const auto& normal = result.normal_matrix;
+    const double gpu_determinant = double(normal[0])*(double(normal[4])*normal[8]-double(normal[5])*normal[7])
+        - double(normal[1])*(double(normal[3])*normal[8]-double(normal[5])*normal[6])
+        + double(normal[2])*(double(normal[3])*normal[7]-double(normal[4])*normal[6]);
+    if (gpu_determinant == 0)
+        throw error(rhi::ErrorCode::invalid_argument, "Mesh normal transform cannot be represented by GPU floats");
     return result;
-}
-std::array<Vertex, 36> cube_vertices() {
-    constexpr float p[8][3] = {{-.5f, -.5f, -.5f}, {.5f, -.5f, -.5f}, {.5f, .5f, -.5f}, {-.5f, .5f, -.5f},
-                               {-.5f, -.5f, .5f},  {.5f, -.5f, .5f},  {.5f, .5f, .5f},  {-.5f, .5f, .5f}};
-    constexpr int faces[6][4] = {{0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7},
-                                 {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0}};
-    constexpr float normals[6][3] = {{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
-    constexpr int indices[6] = {0, 1, 2, 0, 2, 3};
-    std::array<Vertex, 36> vertices{};
-    for (int face = 0; face < 6; ++face)
-        for (int i = 0; i < 6; ++i) {
-            auto &v = vertices[face * 6 + i];
-            std::copy_n(p[faces[face][indices[i]]], 3, v.position);
-            std::copy_n(normals[face], 3, v.normal);
-        }
-    return vertices;
 }
 struct TextureKey {
     std::uint64_t identity, revision;
@@ -193,7 +177,10 @@ struct Renderer::State {
     Options options;
     rhi::Pipeline scene, solid, coverage, color_image;
     GfxSamplerState sampler;
-    GfxBuffer vertices;
+    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
+    struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
+    std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
+    std::vector<MeshBatch> mesh_batches;
     GfxTexture depth;
     ui::PixelExtent depth_extent;
     std::unordered_map<TextureKey, CachedImage, TextureHash> images;
@@ -239,13 +226,14 @@ struct Renderer::State {
                     error(rhi::ErrorCode::execution_failed, "Depth retirement failed", true, r));
             depth = {};
         }
-        if (vertices) {
-            const auto r = gfxDestroyBuffer(gfx, vertices);
-            if (r)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
-            vertices = {};
+        for (auto& [key, geometry] : geometries) {
+            (void)key;
+            if (!geometry.vertices) continue;
+            const auto r = gfxDestroyBuffer(gfx, geometry.vertices);
+            if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
+            geometry.vertices = {};
         }
+        geometries.clear(); mesh_batches.clear();
         if (sampler) {
             const auto r = gfxDestroySamplerState(gfx, sampler);
             if (r)
@@ -378,6 +366,7 @@ struct Renderer::State {
         require(gfxCommandClearBackBuffer(gfx), "Clear window");
         require(gfxCommandClearTexture(gfx, depth), "Clear depth");
         const auto &viewport = frame.scene_viewport;
+        for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         if (!instances.empty() && viewport.width > 0 && viewport.height > 0) {
             BufferOwner data{gfx, gfxCreateBuffer<Instance>(gfx, static_cast<std::uint32_t>(instances.size()),
                                                             instances.data())};
@@ -393,15 +382,30 @@ struct Renderer::State {
                                                  static_cast<int>(std::floor(viewport.y))),
                     "Set scene scissor");
             const auto program = scene.program();
-            require(gfxProgramSetParameter(gfx, program, "vertices", vertices), "Bind cube vertices");
-            require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind cube instances");
+            require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
             require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
             require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection),
                     "Set projection matrix");
             require(gfxCommandBindKernel(gfx, scene.kernel()), "Bind scene pipeline");
-            require(gfxCommandDraw(gfx, 36, static_cast<std::uint32_t>(instances.size())),
-                    "Draw scene cubes");
-            ++stats.scene_draw_calls;
+            for (const auto& batch : mesh_batches) {
+                auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
+                auto& geometry = found->second;
+                const auto vertices = geometry.source->vertices();
+                if (inserted) {
+                    geometry.vertices = gfxCreateBuffer<geometry::Vertex>(gfx, static_cast<std::uint32_t>(vertices.size()), vertices.data());
+                    allocation(bool(geometry.vertices));
+                }
+                geometry.used = true;
+                require(gfxProgramSetParameter(gfx, program, "vertices", geometry.vertices), "Bind mesh vertices");
+                require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set mesh instance offset");
+                require(gfxCommandDraw(gfx, static_cast<std::uint32_t>(vertices.size()), batch.count), "Draw mesh batch");
+                ++stats.scene_draw_calls;
+            }
+        }
+        for (auto it = geometries.begin(); it != geometries.end();) {
+            if (it->second.used) { ++it; continue; }
+            require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
+            it = geometries.erase(it);
         }
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");
         require(gfxCommandSetViewport(gfx, 0, 0, static_cast<float>(extent.width),
@@ -509,10 +513,6 @@ Result<Renderer> Renderer::open(HWND window, const Options &options) {
         s.prepare_pipeline(s.color_image, "editor color images", shaders::ui_vs, shaders::image_ps, false);
         s.sampler = gfxCreateSamplerState(s.gfx, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
         allocation(bool(s.sampler));
-        const auto geometry = cube_vertices();
-        s.vertices =
-            gfxCreateBuffer<Vertex>(s.gfx, static_cast<std::uint32_t>(geometry.size()), geometry.data());
-        allocation(bool(s.vertices));
         s.check_debug();
         return renderer;
     } catch (const Error &e) {
@@ -550,9 +550,15 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     try {
         validate(frame);
         s.instances.clear();
-        s.instances.reserve(frame.cubes.size());
-        for (const auto &cube : frame.cubes)
-            s.instances.push_back(prepare_instance(cube));
+        s.instances.reserve(frame.meshes.size());
+        s.mesh_batches.clear();
+        for (const auto &mesh : frame.meshes) {
+            const auto first = static_cast<std::uint32_t>(s.instances.size());
+            s.instances.push_back(prepare_instance(mesh));
+            if (!s.mesh_batches.empty() && s.mesh_batches.back().geometry == mesh.geometry)
+                ++s.mesh_batches.back().count;
+            else s.mesh_batches.push_back({first, 1, mesh.geometry});
+        }
         s.prepare_ui(frame.ui_frame);
         Capture pending;
         if (capture) {

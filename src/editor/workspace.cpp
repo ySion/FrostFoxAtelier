@@ -101,13 +101,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         navigation_cursor_=navigation_.size()-1;
     }
     const auto actor_status = selected == ObjectId{} ? world::ActorStatus{} : take(world::inspect_actor(runtime, selected));
-    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_transform(runtime, selected));
-    ObjectId cube;
+    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_component(runtime, selected));
+    ObjectId mesh;
     if (selected != ObjectId{}) {
         const auto composition = take(world::components(runtime, selected));
         for (const auto& component : composition) {
             const auto state = take(world::inspect_component(runtime, component.id()));
-            if (state.valid && take(runtime.is_a(state.type, session.types().cube))) { cube = component.id(); break; }
+            if (state.valid && take(runtime.is_a(state.type, session.types().static_mesh_component))) { mesh = component.id(); break; }
         }
     }
     auto root = NodeInput::column(); root.width = root.height = Axis::expand();
@@ -173,10 +173,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     component_row.collapsed=parameter_page!=control::parameter_components;
     add(56, control::parameter_list, ControlKind::container, component_row).classes={"parameter-inset"};
     auto component_button = NodeInput::box(0, 26); component_button.width = Axis::content();
-    add(control::add_transform, 56, ControlKind::button, component_button, L"+ Transform").enabled = actor_status.can_edit && !transform;
+    add(control::add_scene_component, 56, ControlKind::button, component_button, L"+ Scene").enabled = actor_status.can_edit && !transform;
     component_button.width = Axis::expand();
-    if (cube != ObjectId{}) add(bind(cube), 56, ControlKind::button, component_button, L"− Cube").enabled = actor_status.can_edit;
-    else add(control::add_cube, 56, ControlKind::button, component_button, L"+ Cube").enabled = actor_status.can_edit && transform.has_value();
+    if (mesh != ObjectId{}) add(bind(mesh), 56, ControlKind::button, component_button, L"− Mesh").enabled = actor_status.can_edit;
+    else add(control::add_static_mesh, 56, ControlKind::button, component_button, L"+ Mesh").enabled = actor_status.can_edit;
     auto page=NodeInput::column(7); page.collapsed=parameter_page!=control::parameter_transform;
     add(85,control::parameter_list,ControlKind::container,page);
     auto search_row=NodeInput::row(8); search_row.flow=FlexSpec{}; search_row.flow->align_items=Alignment::fit(.5f);
@@ -195,9 +195,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     for (std::size_t axis = 0; axis < matches.size(); ++axis)
         matches[axis] = std::wstring_view(aliases[axis]).find(folded) != std::wstring_view::npos;
     const bool any = std::any_of(matches.begin(), matches.end(), [](bool match) { return match; });
-    if (!any || !transform) add(53,85,ControlKind::label,heading,any ? L"No Transform" : L"No matching parameters");
+    if (!any || !transform) add(53,85,ControlKind::label,heading,any ? L"No scene root" : L"No matching parameters");
     auto section=NodeInput::box(0,28); section.width=Axis::expand();
-    auto& fold=add(control::position_fold,85,ControlKind::foldout,section,L"Transform");
+    auto& fold=add(control::position_fold,85,ControlKind::foldout,section,L"Scene root");
     fold.selected=position_expanded; fold.classes={"section"}; fold.layout.collapsed=!any;
     auto contents=NodeInput::column(7); contents.collapsed=!position_expanded || !any;
     add(58,85,ControlKind::container,contents).classes={"parameter-inset"};
@@ -252,8 +252,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     command(control::remove_actor,L"Delete Actor",actor_status.can_edit,L"Delete",true); break;
                 case control::create_menu:
                     command(control::add_actor,L"Add Actor",members.size()<Session::maximum_actors);
-                    command(control::add_transform,L"Add Transform",actor_status.can_edit && !transform,L"",true);
-                    command(control::add_cube,L"Add Cube",actor_status.can_edit && transform.has_value() && cube==ObjectId{}); break;
+                    command(control::add_scene_component,L"Add Scene Component",actor_status.can_edit && !transform,L"",true);
+                    command(control::add_static_mesh,L"Add Static Mesh",actor_status.can_edit && mesh==ObjectId{}); break;
                 case control::view_menu:
                     command(control::focus,L"Focus Selection",transform.has_value() &&
                         (actor_status.state==world::ActorState::attached_inactive || actor_status.state==world::ActorState::active),L"F");

@@ -8,7 +8,7 @@
 namespace atelier::editor {
 namespace control {
 inline constexpr ui::ControlKey add_actor = 10, remove_actor = 11, undo = 12, redo = 13, focus = 14, reset = 15;
-inline constexpr ui::ControlKey add_transform = 16, add_cube = 17;
+inline constexpr ui::ControlKey add_scene_component = 16, add_static_mesh = 17;
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=603;
@@ -32,7 +32,7 @@ constexpr bool is_menu(ui::ControlKey key) { return key>=file_menu && key<=windo
 constexpr ui::ControlKey command_menu(ui::ControlKey key) {
     if (key==exit) return file_menu;
     if (key==undo || key==redo || key==remove_actor) return edit_menu;
-    if (key==add_actor || key==add_transform || key==add_cube) return create_menu;
+    if (key==add_actor || key==add_scene_component || key==add_static_mesh) return create_menu;
     if (key==focus || key==reset) return view_menu;
     if (key==reset_layout || (key>=show_scene && key<=maximize_pane)) return window_menu;
     return 0;
