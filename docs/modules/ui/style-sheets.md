@@ -102,3 +102,5 @@ renderer 只合并相邻且有效 scissor、管线、图片身份/版本相同�
 - `atelier_editor --acceptance <目录>`：同一产品入口验证 SS 文件接线、交互状态、文字编辑、主题切换、256 Actor 场景和 GPU 捕获。真实系统 IME 有独立验收，本增量不以普通窗口验收替代它。
 
 2026-10-01 的双配置实测、review、滚动边距修复、旧文字接口清理及证据路径统一记录在[阶段收口](../../research/ui-rendering-20261001/closeout.md)。
+
+图标文字组合支持 `icon-placement: leading | above`，默认 leading 保留已有横向排列。above 在测量时为顶部图标与 2 DIP 间距预留空间，绘制仍使用同一控件 bounds 和点击身份；`indicator-size` 控制图标尺寸，`text-align` / `text-vertical-align` 控制标题。该属性改变布局，不允许在 hover/pressed/focus 等状态规则中切换。

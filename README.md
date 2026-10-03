@@ -27,9 +27,9 @@ cmake --build --preset dev --target atelier_editor
 ./out/dev/atelier_editor.exe
 ```
 
-编辑器直接消费正式 Actor/Component/World。启动时创建一个带 Transform 和 Cube 的示例 Actor；`+ Add Actor` 创建空 Actor，右侧 `+ Transform`、`+ Cube` 添加实际组件，`− Cube` 只移除方块能力并保留 Actor。位置 XYZ 编辑实际 Transform 字段，数值拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Actor。列表、可拖分隔和相机观察沿用同一窗口入口。
+编辑器直接消费正式 Actor/Component/World，启动为空场景。顶部 Create 快捷区创建空 Actor 或真正的 StaticMeshActor；Asset Browser 浏览工程文件与内置网格，选择资源后 Add to Scene 一次创建完整 Actor，撤销/重做保留 Actor 和根组件身份。Scene Tree 只展示 World 成员与实际 Actor 类型，组件放在 Parameters 中。菜单、快捷区和快捷键共用指令定义、可用性与应用执行入口。位置字段编辑 SceneComponent 的实际数据，拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Actor。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
-World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、保存重开、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[对象模型合同](docs/research/game-world-object-model.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
+World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[对象模型合同](docs/research/game-world-object-model.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，当前功能排期由[原生 UI 方案](docs/ui-foundation-plan.md)维护。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。这些能力仍在基础 UI 模块中，尚未上升到业务语言语法。
@@ -44,11 +44,13 @@ World 提供完整 TRS 与权威矩阵，renderer 仅消费矩阵值；当前面
 
 **Controls** 标签打开同宿主的控件实验台，可操作数值、Vector3/Vector4、Unicode 文本、下拉、勾选和折叠，检查禁用、长标签与窄面板。实际位置参数复用同一参数行和 Houdini 风格 SS：中英文统一使用 Sarasa UI SC，数字使用 Source Code Pro，配合黑色字段、细凹凸边缘、轻渐变按钮与灰色编辑边界；Tab 以灰色选中底面区分，不显示焦点描边。右键菜单提供复制、粘贴与默认值恢复，中键支持数值阶梯，整组恢复只记一次撤销。字体依据见[字体说明](assets/fonts/README.md)，实验台的样本历史独立于场景，详见[控件实验台](docs/modules/editor/README.md#控件实验台)。
 
-工作区采用 Scene View、Parameters、Controls、Actors 四个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
+工作区采用 Scene View、Parameters、Controls、Scene Tree、Asset Browser 五个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
 
-Actors 已改为 World → Actor → Component 树视图，具有逐层展开、类型图标、层级线、交替行、键盘导航和底部过滤，详见[Actors 树视图](docs/modules/editor/README.md#actors-树视图)。
+Scene Tree 展示 World → Actor 关系和实际 Actor 类型，具有类型图标、层级线、交替行、键盘导航和底部过滤；组件由 Parameters 展示，详见[编辑器模块](docs/modules/editor/README.md)。
 
 参数面板使用固定的类型＋可编辑名称标题、内容页签和独立滚动区。Actor 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
+
+工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存场景；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 

@@ -36,6 +36,7 @@ public:
     // callbacks, including callback failures. The consumer never runs from WndProc.
     void poll(const std::function<void(NativeEvent&&)>&);
     bool closing() const noexcept { return closing_; }
+    void cancel_close() noexcept { closing_=false; }
     float dpi_scale() const noexcept;
     void capture(bool enabled);
     void cursor(ui::Cursor);

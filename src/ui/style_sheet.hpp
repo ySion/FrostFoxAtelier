@@ -28,6 +28,7 @@ struct StyleProperties {
     std::optional<Color> border_inner, border_shadow;
     std::optional<ScrollbarGutter> scrollbar_gutter;
     std::optional<ComboIndicator> combo_indicator;
+    std::optional<IconPlacement> icon_placement;
     std::optional<float> indicator_size;
     std::optional<Color> indicator_background, indicator_border, indicator_foreground;
     std::optional<Color> foreground, background, border, selection, caret, scrollbar;
@@ -64,6 +65,7 @@ struct ResolvedStyle {
     std::optional<Color> border_inner, border_shadow;
     ScrollbarGutter scrollbar_gutter{ScrollbarGutter::stable};
     ComboIndicator combo_indicator{ComboIndicator::down};
+    IconPlacement icon_placement{IconPlacement::leading};
     float indicator_size{14};
     Color indicator_background{0,0,0,0}, indicator_border{0,0,0,0};
     std::optional<Color> indicator_foreground;

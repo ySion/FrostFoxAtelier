@@ -6,40 +6,23 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
         const auto at=std::find_if(rows.begin(),rows.end(),[&](const auto& r){return r.key==key;});
         require(at!=rows.end(),"Native tree row has no accepted geometry"); return *at;
     };
-    const auto toggle=[&](ControlKey key) {
-        const auto box=row(key).disclosure;
-        click_at(app,{static_cast<LONG>(box.x+box.width*.5f),static_cast<LONG>(box.y+box.height*.5f)});
-    };
     click(app,control::tree_world);
     require(app.document().selected()==atelier::ObjectId{},"Tree World row did not select the world context");
     click(app,actor_key);
-    if (!row(actor_key).expanded) toggle(actor_key);
-    const auto& rows=app.presented()->tree_rows;
-    const auto child=std::find_if(rows.begin(),rows.end(),[&](const auto& r){return r.parent==actor_key;});
-    require(child!=rows.end(),"Real Actor components did not enter the tree");
-    const auto child_key=child->key;
-    click(app,child_key);
-    require(app.document().selected()==actor && app.presented()->find(child_key)->selected && !app.presented()->find(actor_key)->selected,
-        "Component selection did not retain its owner and a single highlighted tree row");
-    capture(app,output/"tree-component-selection.png");
-    key(app,VK_LEFT);
-    require(app.presented()->find(actor_key)->selected,"Tree Left did not return to Actor selection");
-    key(app,VK_LEFT);
-    require(!app.presented()->find(child_key),"Tree Left did not collapse actual components");
-    click(app,control::tree_filter); type(app,L"Transform"); key(app,VK_RETURN);
-    require(app.presented()->find(child_key),"Tree filter did not reveal matching components through the collapsed Actor");
+    require(std::none_of(app.presented()->tree_rows.begin(),app.presented()->tree_rows.end(),[&](const auto& r){return r.parent==actor_key;}),
+        "Scene Tree exposed component rows beneath an Actor");
+    key(app,VK_RIGHT);
+    require(app.document().selected()==actor,"Actor leaf navigation selected a component");
+    click(app,control::tree_filter); type(app,L"StaticMeshActor"); key(app,VK_RETURN);
+    require(app.presented()->find(actor_key),"Actual Actor type was not searchable");
     capture(app,output/"tree-filtered.png");
     click(app,control::tree_filter); type(app,L""); key(app,VK_RETURN);
-    require(!app.presented()->find(child_key),"Clearing tree filter changed stored expansion");
-    click(app,actor_key); key(app,VK_RIGHT);
-    require(app.presented()->find(child_key),"Tree Right did not expand actual components");
+    click(app,control::tree_world); key(app,VK_LEFT);
+    require(!app.presented()->find(actor_key),"World collapse did not hide its Actors");
+    key(app,'W',true); click(app,control::show_actors);
+    require(!row(control::tree_world).expanded && !app.presented()->find(actor_key),"Reopening Scene Tree lost its expansion state");
+    click(app,control::tree_world); key(app,VK_RIGHT); click(app,actor_key);
     capture(app,output/"tree-view.png");
-    key(app,'W',true);
-    click(app,control::show_actors);
-    require(row(actor_key).expanded && app.presented()->find(child_key),"Reopened tree lost its accepted expansion state");
-    click(app,actor_key);
-    key(app,VK_LEFT);
-    click(app,control::reset_layout);
-    click(app,control::parameter_transform);
+    click(app,control::reset_layout); click(app,control::parameter_transform);
     require(app.document().selected()==actor && app.document().undo_count()==history,"Tree navigation/filtering polluted scene history");
 }

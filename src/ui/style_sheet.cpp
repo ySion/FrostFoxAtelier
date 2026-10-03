@@ -16,7 +16,7 @@ bool invalid_state_properties(const StyleProperties& p, StyleState states) {
     // Persistent value/selection states may change weight; pointer/focus/error
     // transitions must not move text or hit geometry.
     const auto transient=static_cast<unsigned>(states)&(4u|8u|16u|64u);
-    return p.tree_row_height || p.tree_indent || p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.text_vertical_align || p.indicator_size ||
+    return p.tree_row_height || p.tree_indent || p.font_family || p.font_locale || p.font_size || p.padding || p.text_align || p.text_vertical_align || p.indicator_size || p.icon_placement ||
         p.scrollbar_width || p.scrollbar_inset || p.scrollbar_min_thumb || p.scrollbar_button_size || p.scrollbar_gutter ||
         ((p.font_weight || p.font_style) && transient);
 }
@@ -212,6 +212,12 @@ class Parser {
             else if (value=="arrows") p.combo_indicator=ComboIndicator::arrows;
             else fail("Expected down or arrows",v.position);
         }
+        else if (name=="icon-placement") {
+            const auto value=resolve(v).text;
+            if (value=="leading") p.icon_placement=IconPlacement::leading;
+            else if (value=="above") p.icon_placement=IconPlacement::above;
+            else fail("Expected leading or above",v.position);
+        }
         else if (name=="selection-color") p.selection=color(v);
         else if (name=="caret-color") p.caret=color(v);
         else if (name=="scrollbar-color") p.scrollbar=color(v);
@@ -358,6 +364,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::arrows)) return false;
     if (p.tree_row_height && !bounded(*p.tree_row_height,12,128)) return false;
     if (p.tree_indent && !bounded(*p.tree_indent,8,64)) return false;
+    if (p.icon_placement && static_cast<unsigned>(*p.icon_placement)>static_cast<unsigned>(IconPlacement::above)) return false;
     if (p.indicator_size && !bounded(*p.indicator_size,4,32)) return false;
     if (p.accent_width && !bounded(*p.accent_width,0,16)) return false;
     if (p.accent && !color_valid(*p.accent)) return false;

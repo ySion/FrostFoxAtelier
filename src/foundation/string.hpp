@@ -70,7 +70,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] std::size_t capacity() const noexcept { return heap_ ? buffer_.capacity : inline_capacity; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-    [[nodiscard]] const char* c_str() const noexcept { return heap_ ? heap_ : buffer_.small; }
+    [[nodiscard]] const char* c_str() const noexcept { return heap_ ? heap_ : buffer_.inline_bytes; }
     [[nodiscard]] StringView view() const & noexcept { return {c_str(), size()}; }
     StringView view() const && = delete;
     [[nodiscard]] char operator[](std::size_t index) const { return StringView{c_str(), size()}[index]; }
@@ -90,7 +90,7 @@ public:
     friend auto operator<=>(const String& left, const String& right) noexcept { return left.view() <=> right.view(); }
 
 private:
-    [[nodiscard]] char* mutable_data() noexcept { return heap_ ? heap_ : buffer_.small; }
+    [[nodiscard]] char* mutable_data() noexcept { return heap_ ? heap_ : buffer_.inline_bytes; }
     [[nodiscard]] std::size_t grown_capacity(std::size_t minimum) const noexcept;
     void reallocate(std::size_t capacity);
     void write_validated(StringView text, std::size_t prefix);
@@ -99,9 +99,9 @@ private:
     char* heap_{};
     std::size_t size_{};
     union Buffer {
-        char small[inline_capacity + 1];
+        char inline_bytes[inline_capacity + 1];
         std::size_t capacity;
-        constexpr Buffer() noexcept : small{} {}
+        constexpr Buffer() noexcept : inline_bytes{} {}
     } buffer_;
 };
 

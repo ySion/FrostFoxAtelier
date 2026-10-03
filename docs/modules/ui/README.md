@@ -44,6 +44,8 @@
 
 `checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 indicator-size 加 6 DIP 的指示区域。勾号和三角形使用按形状/像素尺寸缓存的抗锯齿 R8 Coverage，沿同一 DrawQuad、上传和资源记账路径绘制。
 
+`append_collapsible_bar` 用普通容器、按钮和 `collapsed` 组成可收起栏：统一轨道宽度、顶部箭头位置、恢复条高度和 `bar-stow` 样式，返回本次占用高度供宿主分配剩余空间。宿主提供稳定的栏/按钮/内容 key、展开高度及内容布局，仍通过原激活入口管理展开状态；没有独立控件生命周期或第二套输入逻辑。
+
 折叠标题与内容容器是两个控件；宿主将展开状态映射到内容容器的 `layout.collapsed`。现有祖先有效性检查统一取消隐藏/禁用字段的草稿、组合和捕获；展开后复用仍存续的 key。宿主替换目标时仍须退役旧绑定。
 
 正式编辑器的 Controls 实验台与位置参数行均使用上述接口，真实窗口验收覆盖两者，见[编辑器模块](../editor/README.md#控件实验台)。
@@ -84,7 +86,7 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 - `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。
 - 标签栏落点改变顺序或合并，内容四边落点分割；空间不足时不接受边缘分割，菜单也禁用对应项。分隔线复用普通 splitter 的数值预览/取消链路。每叶最低尺寸取已注册视图的最大需求，并沿树合成；窗口不足时按最低需求比例压缩，由内容自己的滚动/换行保持可达。
 - `focused_control()` 供宿主依据已接受父链选择业务历史上下文；它不把键盘焦点等同于业务对象选择。`visible(tab)` 与 `focused_tab()` 分别表示实际显示和最近操作的视图。
-- 每个分割节点保留展开比例及独立的收起侧。分隔条两端箭头收起对应侧，留下 8 DIP 细条，再点恢复。隐藏子树停止描述，业务视图身份、值和历史仍归宿主所有；菜单 Show 会展开目标的全部隐藏祖先。Tab 栏没有前置收拢按钮；bar 类型的收拢由宿主使用普通容器、按钮及 collapsed 组合。
+- 每个分割节点保留展开比例及独立的收起侧。分隔条两端箭头收起对应侧，留下 8 DIP 细条，再点恢复。隐藏子树停止描述，业务视图身份、值和历史仍归宿主所有；菜单 Show 会展开目标的全部隐藏祖先。Tab 栏没有前置收拢按钮；菜单栏与工具架使用 `append_collapsible_bar` 共享收起结构。
 - Tab 栏的“＋”是带图标的 combo，紧跟最后一个标签；复用 context_menu 和宿主原生弹窗。选择已有视图将它移到当前组，关闭视图重新打开；右侧 Pane 菜单的 Show 保持跳转到原组的语义。`DockTab.classes` 进入原标签控件的 SS 匹配。
 - 中央点阵握柄单击交换两侧，Alt+单击旋转分割方向；比例保持不变。握柄和其余分隔条都可拖动，普通 splitter 的 `click_action` 将未拖动释放转为 activate（bool 为 Alt）；超过拖动阈值只走一次编辑手势。收起期间拖动不覆盖展开比例。
 - `Control.icon` 支持关闭、最大化、恢复、加号及四向箭头，可用于纯图标 button、splitter、combo。符号尺寸取 `indicator-size`，在 padding 后的内容区居中并限制尺寸；颜色取前景，最大化对角底色取 `indicator-background`，使用缓存 R8 Coverage。点阵握柄用可相邻合批的实色小方块绘制。
@@ -175,3 +177,9 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回累计栅格化8行。S2的4096宽字符/100 DIP字段保持完整编辑，生成的覆盖率宽度不超过100像素。正式窗口平台与搜索业务由[编辑器端到端验收](../editor/README.md)负责，S2整体是否完成以该集成记录及本机搜狗真实系统输入验收证据为准。
 
 模块、renderer及正式编辑器使用同一源码树和项目固定工具链构建；阶段验收范围与证据见[SS文档](style-sheets.md#验收)。
+
+### 原生宿主的菜单链
+
+`MenuItem::children` 描述子菜单，`append_menu` 将分支投影为带箭头的 `menu_item`。`Control::menu_branch` 只允许用于无 EditCommand 的菜单条目：点击或 Right 发出 activate 并保留父菜单，宿主按条目 key 打开子窗口；叶条目沿既有 activate/dismiss 路径执行。通用 UI Session 不持有平台窗口。
+
+将 popup 根的 layout.collapsed 设为 true 会退出其 modal 状态，再展开会初始化菜单焦点。此路径保留控件/文字缓存，供原生 PopupHost 隐藏与暖重开使用；隐藏期间不能接受旧显示帧的输入。窗口链与来源失效策略由 Application 负责。

@@ -55,7 +55,8 @@ private:
     struct Drop { ControlKey pane{}, before{}; DockSide side{}; Rect preview{}; };
     struct Drag { ControlKey tab{}; std::optional<Drop> target; };
     ControlKey base_{}, next_{}, focused_{}, maximized_{}, menu_pane_{};
-    bool menu_add_{};
+    bool menu_add_{}, menu_type_{};
+    std::vector<ControlKey> closed_tabs_;
     std::vector<DockTab> tabs_;
     std::unique_ptr<Node> root_;
     std::optional<Drag> drag_;

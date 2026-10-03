@@ -15,6 +15,7 @@ public:
     void render(renderer::Capture* = nullptr);
     void hide();
     void close(); // Retire GPU work before HWND destruction.
+    double open_cpu_us() const noexcept { return open_cpu_us_; }
     bool visible() const noexcept { return visible_; }
     HWND window() const noexcept { return window_.handle(); }
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
@@ -31,5 +32,11 @@ private:
     ui::ControlKey source_{};
     std::uint64_t revision_{};
     bool visible_{}, dirty_{}, closed_{};
+    double open_cpu_us_{};
+    bool opening_{};
+    float measured_dpi_{};
+    ui::PixelExtent measured_area_;
+    void suspend();
+    void retarget(ui::PixelExtent);
 };
 }

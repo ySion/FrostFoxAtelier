@@ -3,6 +3,8 @@
 #include "runtime/execution.hpp"
 #include "runtime/reflection.hpp"
 #include "world/math.hpp"
+#include "geometry/mesh.hpp"
+#include "foundation/string.hpp"
 #include <limits>
 #include "world/world.gen.hpp"
 
@@ -24,9 +26,19 @@ private:
     friend struct detail::Access;
     AFIELD(Name="components", Hidden, Sequence="world.Component")
     ReferenceSequence components_;
+    AFIELD(Name="root", Hidden, Weak="world.SceneComponent")
+    ReferenceSlot root_;
     World* member_world_{};
     bool enabled_{true};
+    bool begun_{};
     bool transitioning_{};
+};
+
+// A real reflected Actor type. Its complete default composition is built by
+// create_static_mesh_actor, while Runtime construction establishes storage only.
+ACLASS(Name="world.StaticMeshActor")
+class StaticMeshActor : public Actor {
+    AGENERATED_BODY(StaticMeshActor)
 };
 
 ACLASS(Name="world.Component")
@@ -41,11 +53,12 @@ private:
     AFIELD(Name="owner", Hidden, Strong="world.Actor")
     ReferenceSlot owner_;
     bool enabled_{true};
+    bool begun_{};
 };
 
-ACLASS(Name="world.Transform")
-struct Transform : Component {
-    AGENERATED_BODY(Transform)
+ACLASS(Name="world.SceneComponent")
+class SceneComponent : public Component {
+    AGENERATED_BODY(SceneComponent)
 public:
     AFIELD()
     Vec3 position;
@@ -53,38 +66,39 @@ public:
     Quaternion rotation;
     AFIELD()
     Vec3 scale{1.f, 1.f, 1.f};
-};
-ACLASS(Name="world.Cube")
-class Cube : public Component {
-    AGENERATED_BODY(Cube)
-public:
-    Cube() = default;
 private:
     friend struct detail::Access;
-    AFIELD(Name="transform", Hidden, Weak="world.Transform")
-    ReferenceSlot transform_;
+    AFIELD(Name="parent", Hidden, Weak="world.SceneComponent")
+    ReferenceSlot parent_;
 };
-ACLASS(Name="world.Counter")
-struct Counter : Component {
-    AGENERATED_BODY(Counter)
+ASTRUCT(Name="world.Material")
+struct Material {
+    AGENERATED_BODY(Material)
 public:
     AFIELD()
-    float value{};
+    Vec3 base_color{.19f, .42f, .57f};
+};
+ACLASS(Name="world.StaticMeshComponent")
+class StaticMeshComponent : public SceneComponent {
+    AGENERATED_BODY(StaticMeshComponent)
+public:
     AFIELD()
-    std::uint32_t steps{};
-    AFUNCTION()
-    void advance(float amount) noexcept { value += amount; ++steps; }
+    Material material;
+private:
+    friend struct detail::Access;
+    AFIELD(Name="mesh_source", Hidden)
+    String mesh_source_;
+    geometry::MeshRef geometry_;
 };
 
 using FieldPath = std::vector<FieldId>;
 struct Types {
-    TypeId actor, component, transform, cube, counter;
+    TypeId actor, component, scene_component, static_mesh_component, material;
+    TypeId static_mesh_actor;
     TypeId vec3, quaternion;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
-    FieldId counter_value, counter_steps;
-    MethodId counter_advance;
 };
 // Call once per Runtime, before object creation; additional derived definitions
 // may be registered afterwards, before the Runtime closes registration.
@@ -112,13 +126,24 @@ struct ComponentStatus {
 
 [[nodiscard]] Result<ObjectRoot> create_actor(Runtime&, TypeId actual = {});
 [[nodiscard]] Result<ObjectRoot> create_component(Runtime&, TypeId actual);
+struct StaticMeshActorDesc {
+    geometry::MeshRef mesh;
+    Trs transform{};
+    Material material{};
+    std::string_view mesh_source{};
+};
+// Returns a complete Detached Actor with one StaticMeshComponent as its root.
+// A null mesh is valid and produces no presentation. No World registration,
+// lifecycle notification or Begin occurs until the caller invokes World::attach.
+// Requires an open World at a host boundary; a running World is supported.
+[[nodiscard]] Result<ObjectRoot> create_static_mesh_actor(World&, const StaticMeshActorDesc&);
 [[nodiscard]] Result<ActorStatus> inspect_actor(Runtime&, ObjectId);
 [[nodiscard]] Result<ComponentStatus> inspect_component(Runtime&, ObjectId);
 // These owning reference snapshots are ordinary roots, not a second relation graph.
 [[nodiscard]] Result<std::vector<ObjectRoot>> components(Runtime&, ObjectId actor);
-[[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId transform);
-[[nodiscard]] Result<Matrix4> world_matrix(Runtime&, ObjectId transform);
-[[nodiscard]] Result<std::optional<ObjectId>> root_transform(Runtime&, ObjectId actor);
+[[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId scene_component);
+[[nodiscard]] Result<Matrix4> world_matrix(Runtime&, ObjectId scene_component);
+[[nodiscard]] Result<std::optional<ObjectId>> root_component(Runtime&, ObjectId actor);
 
 struct Commit {
     bool changed{};
@@ -149,6 +174,8 @@ struct ComponentRemoval {
     ObjectRoot root;
     ObjectId owner;
     std::size_t index{};
+    ObjectId parent;
+    bool was_root{};
     Commit commit;
     [[nodiscard]] ObjectId id() const noexcept { return root.id(); }
 private:
@@ -158,15 +185,30 @@ private:
 };
 struct Attachment {
     ObjectId component;
-    // Required for a new Cube. An existing explicit binding is retained when
-    // this is null; no component is selected implicitly by type or list order.
-    ObjectId transform;
+    ObjectId parent{}; // Explicit same-Actor SceneComponent, possibly in this batch.
+    bool root{};    // Explicit root designation; a root cannot have a parent.
 };
 struct RenderItem {
-    ObjectId actor, component, transform;
+    ObjectId actor, component;
     Matrix4 world;
+    geometry::MeshRef geometry;
+    Material material;
 };
 
+enum class ReparentRule { keep_local, keep_world };
+[[nodiscard]] Result<ObjectId> scene_parent(Runtime&, ObjectId scene_component);
+// Configure detached objects before attachment, or replace a member's immutable
+// mesh resource at a host boundary. No callback/dispatch reentry is permitted.
+[[nodiscard]] Result<void> set_geometry(Runtime&, ObjectId static_mesh_component, geometry::MeshRef);
+struct MeshBinding { std::string source; geometry::MeshRef resolved; };
+struct StaticMeshState { MeshBinding mesh; Material material; };
+// Source and resolved immutable content change together. Bare set_geometry
+// clears provenance. These snapshots also support detached and null-mesh data.
+[[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
+[[nodiscard]] Result<StaticMeshState> read_static_mesh(Runtime&, ObjectId);
+
+// World registration notifications: whole Actor groups enter in forward order
+// and leave in reverse order. Detached composition does not emit these events.
 enum class Lifecycle { attached, activated, deactivated, detached };
 enum class RequestKind {
     attach_actor, detach_actor, attach_component, remove_component,
@@ -178,7 +220,8 @@ struct Request {
     RequestKind kind;
     ObjectId target{};
     ObjectId actor{};       // attach_component destination
-    ObjectId transform{};   // explicit Cube binding
+    ObjectId parent{};      // attach_component spatial parent
+    bool root{};
     std::size_t index{append};
     bool enabled{true};
 };
@@ -197,7 +240,11 @@ struct Activity {
 // private member_world relation is authoritative; directories are indexes.
 class World final {
 public:
-    using CounterUpdate = std::function<Result<void>(Runtime&, ObjectId, float)>;
+    struct Behavior {
+        std::function<Result<void>(Runtime&, ObjectId)> begin{};
+        std::function<Result<void>(Runtime&, ObjectId, float)> tick{};
+        std::function<Result<void>(Runtime&, ObjectId)> end{};
+    };
     using LifecycleObserver = std::function<Result<void>(World&, Lifecycle, ObjectId)>;
     using TaskStart = std::function<Result<Coroutine>(Runtime&, ObjectId)>;
 
@@ -219,30 +266,41 @@ public:
     [[nodiscard]] Result<Commit> attach(ObjectId actor, std::size_t index = append);
     [[nodiscard]] Result<ActorRemoval> detach(ObjectId actor);
     [[nodiscard]] Result<Commit> restore(const ActorRemoval&);
+    // Detached Actors may be composed before World registration. The same
+    // validation applies; no member/query/presentation or behavior is registered.
     [[nodiscard]] Result<Commit> attach_components(ObjectId actor,
         std::span<const Attachment>, std::size_t index = append);
     [[nodiscard]] Result<ComponentRemoval> remove_component(ObjectId component);
     [[nodiscard]] Result<Commit> restore(const ComponentRemoval&);
     [[nodiscard]] Result<Commit> set_enabled(ObjectId actor_or_component, bool);
+    // Begin/Tick visit each Actor before its components in composition order.
+    // End reverses that order and pairs only with completed Begin.
+    // Enabled gates Tick, not Begin.
+    // Dynamic insertion begins new components immediately; End uses current order.
     [[nodiscard]] Result<Commit> start();
     [[nodiscard]] Result<Commit> stop();
     [[nodiscard]] Result<Commit> close();
 
-    // Editing requires an open, stopped World and a current component member.
+    // Editing requires an open, stopped World. Same-context detached objects
+    // may be prepared; objects registered in another World are rejected.
     // Transform scalar writes use the same finite/positive-scale TRS validation.
     [[nodiscard]] Result<Scalar> read(ObjectId component, std::span<const FieldId>) const;
     [[nodiscard]] Result<void> write(ObjectId component, std::span<const FieldId>, Scalar);
-    [[nodiscard]] Result<void> set_transform(ObjectId transform, Trs);
+    [[nodiscard]] Result<void> set_transform(ObjectId scene_component, Trs);
+    // Root remains explicit. Non-root nodes must stay below that same Actor root.
+    // Removing a node with children is rejected; reparent its children first.
+    [[nodiscard]] Result<Commit> reparent(ObjectId scene_component, ObjectId parent, ReparentRule);
     [[nodiscard]] Result<std::vector<RenderItem>> render_items() const;
 
-    // Counter has a native default. An optional source/JIT adapter runs outside
-    // all native borrows with the same Runtime and protected member identities.
-    [[nodiscard]] Result<void> counter_update(CounterUpdate);
+    // Stopped-only scheduling configuration, keyed by the Runtime's existing
+    // type identity. The nearest ancestor binding is inherited as a whole.
+    // Native method and source/JIT adapters run outside every native borrow.
+    [[nodiscard]] Result<void> bind_behavior(TypeId actor_or_component_type, Behavior);
     [[nodiscard]] Result<void> observe_lifecycle(LifecycleObserver);
     [[nodiscard]] Result<void> update(float amount);
     // The trusted starter uses the provided Runtime/receiver. World owns the
     // resulting task; deactivate/detach/stop/close cancels it before exit completes.
-    [[nodiscard]] Result<void> start_task(ObjectId component, const TaskStart&);
+    [[nodiscard]] Result<void> start_task(ObjectId actor_or_component, const TaskStart&);
 
     // Request acceptance is not completion. Replay checks the original World's
     // membership/owner conditions; it never follows a target into another World.

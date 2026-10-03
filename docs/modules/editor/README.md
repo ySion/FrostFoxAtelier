@@ -1,8 +1,12 @@
 # 首个场景编辑器
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
-当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。本工作树的 World 基线仍使用 Transform/Cube，后续对象模型迁移遵循[对象模型合同](../../research/game-world-object-model.md)。
-模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、存档重开、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
+当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
+模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
+
+## 工程与文件
+
+工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ 几何导入；Source 的跨文件编译仍是后续语言接点。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
 
 ## 正式执行链
 
@@ -12,7 +16,7 @@ Win32 窗口消息 → Window 复制拥有的事件 → 每条消息后顺序排
   → Action → editor::Session → world::World → Runtime 的真实 Actor/Component 字段
            → Workspace.query → 参数查看投影
   → PlatformRequest → Window 剪贴板/IMM32 → UI 结果事件
-  → Workspace 控件描述 + World RenderItem 矩阵值 → UI 帧 + renderer 方块实例
+  → Workspace 控件描述 + World RenderItem 矩阵值 → UI 帧 + renderer 网格实例
  → renderer 最终 accepted → UI 接受对应命中帧
 ```
 
@@ -55,7 +59,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 - 样本与场景历史按照最近操作的视图选择，允许 Controls 与 Parameters 同时显示。视图隐藏/移动时，未提交交互仍通过 Session 的取消/失焦合同结束；业务字段 key 依对象实际成员生命周期退役，隐藏面板不退役对象绑定。
 - Scene View 隐藏时提交空场景矩形，不生成场景实例；其他 UI 继续走原窗口、renderer 和接受帧。参数面板与实验台的标题和内容页签固定，下方内容滚动以适应较矮的区域；窄参数行仍使用公共 Flex 换行。
 
-以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。按 2026-10-02 用户截图复测，菜单栏为 32 DIP、左侧收拢区 12 DIP，Tab 栏为 22 DIP。当前中英文正文与 Tab 使用 13 DIP Sarasa UI SC，菜单文字为 14 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。菜单栏收起后保留 8 DIP 高的恢复条，F10/Alt 菜单快捷键也会展开；恢复布局一并展开菜单栏。系统 DPI 仍只有 Window → Surface 的一个换算入口。原始观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)，栏结构与实现边界见[栏结构校准](../../research/houdini-chrome-20261002.md)。独立原生浮窗、多份同类视图和持久布局属于后续增量。
+以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。按 2026-10-02 用户截图复测，菜单栏为 32 DIP，Tab 栏为 22 DIP。菜单栏与工具架统一使用 8 DIP 左侧收起轨道、6 DIP 箭头和 6 DIP 恢复条；轨道完整高度均可点击，正文从同一条右边界开始。当前中英文正文与 Tab 使用 13 DIP Sarasa UI SC，菜单栏文字为 13.5 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。原始观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)，栏结构与实现边界见[栏结构校准](../../research/houdini-chrome-20261002.md)。独立原生浮窗、多份同类视图和持久布局属于后续增量。
 
 布局与参数的本轮参照、原生观察及验收记录见 [Pane 细节](../../research/houdini-pane-details-20261001.md)。
 
@@ -77,7 +81,15 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 首版操作
 
-顶部菜单栏提供 File / Edit / Create / View / Window。Create 添加 Actor/组件，Edit 删除与撤销/重做，View 聚焦选择及重置相机，Window 显示视图、最大化和恢复布局，File 退出；左侧列表负责 Actor 单选，右侧提供实际 Transform/Cube 组件增删和位置字段。首片 UI 每个 Actor 只添加一次 Transform/Cube。Actor 没有 Transform 时位置字段和 Focus 停用；移除 Cube 后 Actor 与 Transform 仍保留。右侧参数区仍可拖动分隔条调整宽度。
+顶部菜单栏提供 File / Edit / Create / View / Window。Create 快捷区创建 Actor 或 Static Mesh Actor，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。应用启动为空场景，不再默认创建演示对象。Parameters 通过真实类型显示对象标题，位置字段编辑根 SceneComponent；Components 页展示实际组成。没有场景根时位置字段与 Focus 停用。
+
+`commands.hpp` 是编辑器命令描述入口，`Workspace::command_enabled` 判定当前可用性，`Application::execute` 执行。菜单和顶部快捷区读取同一描述，快捷键与资源点击进入同一个执行函数。执行时再次检查可用性；UI 只产生通用 Action，不直接修改 World。输入字段和拖动仍通过 Session 事务入口。
+
+菜单栏和工具架通过共享 `append_collapsible_bar` 描述轨道、箭头位置及内容隐藏；工作区高度预算使用该入口返回的实际占用高度。窗口验收比较两栏在展开、分别收起、同时收起、悬停和窗口变化后的物理边界与样式，避免分别固定两个互不一致的尺寸。
+
+顶部工具架使用 18 DIP 分类行与紧凑图标区，总高 56 DIP；左侧窄轨可收起到 6 DIP，保留展开箭头和键盘激活。分类选择跨收起/展开保留，收起不会改变场景历史，Reset Layout 恢复展开。工具按钮统一宽 64 DIP、18 DIP 图标与 10.5 DIP 短标签，菜单保留完整指令名。图标和文字由同一按钮绘制/命中，`icon-placement: above` 由共享 SS 测量与绘制处理。
+
+Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单击选择，Add to Scene 执行共享创建命令，支持名称/类型过滤与 List/Details/Tiles，详见[工程与资源浏览](projects.md)。顶部快捷创建继续引用相同内置资源。World/renderer 不按 Cube 名字分支；拖放、吸附和模型缩略图尚未实施。
 数值控件支持普通拖动和中键七档数值阶梯；上下移动选步长，左右移动调值，Shift 细调，释放提交一次、Esc 取消。右键或 Menu/Shift+F10 打开参数菜单；Ctrl+中键恢复分量或标题对应整组默认值。菜单期间视口输入暂停，外部点击只关闭菜单，Esc/Tab 返回原焦点。普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
 文本与数值共用 Unicode 字素边界、视觉光标、双向选区、横滚及本地撤销/重做。Ctrl+A/C/X/V 提供全选、复制、剪切、粘贴。存在本地事务时 Ctrl+Z/Y 只操作本地历史，即使历史耗尽也不穿透；仅聚焦无事务时进入场景历史，Ctrl+Shift+Z 同样重做。历史合组、容量和 Unicode 覆盖见 [UI 模块](../ui/README.md#共享单行编辑)。
 参数搜索按 Position/“位置”/X/Y/Z 名称与别名过滤实际位置行。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。
@@ -188,12 +200,20 @@ cmake --build --preset release --target editor_ime_acceptance
 滚动/拖动分别累计 UI draw 4245/5632、场景 draw 48/64。采样时 UI CPU Coverage 持有峰值分别为277项/451706字节、277项/457032字节；renderer cache峰值分别为33项/65354 texel字节、32项/64488 texel字节。CPU像素统计不含DWrite对象等开销，cache统计不含gfx待退休资源或物理显存。
 滚动中累计剪除11716个屏外文字控件生成，拖动中剪除15616个；滚回可能重新上传是现有帧末GPU缓存淘汰行为。真实业务参数仍只有XYZ，数据不代表高密度参数面板已经验证。
 
-## Actors 树视图
+## Scene Tree
 
-Actors 使用共享 `tree/tree_item`，展示真实的 World → Actor → Component 关系。World 行进入世界上下文；Actor 行选择场景成员；Component 行保留其所属 Actor 的场景选择，并切换到 Components 参数页。行身份绑定实际 ObjectId，与组件移除按钮的命令身份分开；视图状态不持有业务根，不增加场景撤销。
+Scene Tree 使用共享 `tree/tree_item`，投影 World → Actor。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Actor、StaticMeshActor 使用不同的原生矢量符号和颜色。组件仅在 Parameters 中显示，不进入 Scene Tree。当前 World 没有跨 Actor 父子合同，因此成员平铺在 World 下，不用组件空间关系伪造 Actor 层级。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
 
 参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。树节点的展开状态跨停靠、隐藏及重开恢复；每份接受帧只保存一次，绑定退休时同步删除其展开记录，避免旧帧重放和逐条反查绑定。底部过滤保留祖先并临时展开结果，清空后恢复手动折叠。
 
 上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。复用当前路径栏、字号、滚动条、输入捕获与接受帧；当前 World 没有 Actor 父子关系，因此没有添加虚构父子、拖拽重挂或多选语义。
 
 共享 UI 端到端包含四档 DPI、过滤、长树滚动、禁用祖先、退休和失效命中；真实窗口验收新增 `tree-component-selection.png`、`tree-filtered.png`、`tree-view.png`，随完整窗口链执行。2026-10-03 开发版与发布版完整窗口链均通过，最终清理候选报告分别为 `out/dev/ui-stage-evidence/acceptance.txt`、`out/release/ui-stage-evidence/acceptance.txt`；共享 UI 16/16 与文档消费者同样通过。普通窗口验收仅在启动时等待一次前台激活，开始输入后失焦仍立即中断。本轮未运行搜狗验收。
+
+## 页签菜单与弹窗资源
+
+页签下拉菜单提供 Set Pane Tab Type 子菜单、前后页签、关闭页签、恢复最近关闭、最大化、关闭整个 pane 和左右/上下分割。已注册视图保持单实例；更换类型交换已有视图的位置，关闭后重开保留该视图状态。加号负责向当前组加入视图。浮动窗口、复制视图尚未实现，菜单不提供无效动作。
+
+菜单描述可嵌套。每层是保留的原生无激活窗口，主窗口保留键盘焦点与 capture；点击或 Right 打开子菜单，Left/Escape 回到父菜单，选择叶命令关闭整条菜单链。改变根来源、失焦、关闭和改变 surface 时清理子菜单路径。每层按实际文字、DPI、样式和屏幕工作区测量，短菜单不保留滚动槽。
+
+应用初始化主菜单及首层子菜单宿主；Renderer 仅在实际网格绘制时创建场景管线和深度资源。隐藏菜单折叠已有控件，保留文字缓存；相同描述重开复用尺寸，不再先缩到 32×32。验收输出 `popup-open.csv` 记录当前首次打开和暖重开在更新/呈现路径上的 CPU 耗时，不包含启动期 Context 初始化，也不包含截图读回；不据此声称已经测量旧版本加速比。

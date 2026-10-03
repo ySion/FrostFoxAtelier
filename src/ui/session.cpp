@@ -346,7 +346,7 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
             !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
             static_cast<unsigned>(control.drag_axis) > static_cast<unsigned>(DragAxis::vertical))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::component) ||
+        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::folder) ||
             (control.icon!=ControlIcon::none && (control.kind!=ControlKind::button && control.kind!=ControlKind::label && control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item)))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if ((control.click_action && control.kind!=ControlKind::splitter) ||
@@ -373,6 +373,8 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             next_popup=control.key;
         } else if (control.popup_owner) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.menu_branch && (control.kind!=ControlKind::menu_item || control.edit_command))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.edit_command) {
             const auto found=validated.find(control.edit_command->target);
             if (control.kind!=ControlKind::menu_item || found==validated.end() || !text_field(found->second->kind) ||
@@ -448,7 +450,7 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     if (const auto* focused=self.live(self.focus);focused && (focused->tree_hidden || !focused->tree_enabled)) {
         while (focused && (focused->tree_hidden || !focused->tree_enabled)) { self.focus=focused->control.tree_parent; focused=self.live(self.focus); }
     }
-    self.update_popup(next_popup,reply);
+    self.update_popup(next_popup && !self.states.at(next_popup).control.layout.collapsed?next_popup:0,reply);
     if (self.popup && absent(self.states.at(self.popup).control.popup_owner)) self.dismiss_popup(reply);
     return reply;
 }
@@ -656,15 +658,18 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     }
                 } else {
                     const auto symbol=icon==Icon::close?Symbol::close:icon==Icon::maximize?Symbol::maximize:icon==Icon::restore?Symbol::restore:icon==Icon::plus?Symbol::plus:
-                        icon==Icon::back?Symbol::back:icon==Icon::forward?Symbol::forward:icon==Icon::world?Symbol::world:icon==Icon::object?Symbol::object:icon==Icon::axes?Symbol::axes:icon==Icon::component?Symbol::component:
+                        icon==Icon::back?Symbol::back:icon==Icon::forward?Symbol::forward:icon==Icon::world?Symbol::world:icon==Icon::object?Symbol::object:icon==Icon::axes?Symbol::axes:icon==Icon::component?Symbol::component:icon==Icon::mesh?Symbol::mesh:icon==Icon::folder?Symbol::folder:
                         icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
                     auto padding=self.padding_for(state);
-                    const bool leading=!state.control.text.empty();
+                    const bool captioned=!state.control.text.empty();
+                    const bool above=captioned && appearance.icon_placement==IconPlacement::above;
+                    const bool leading=captioned && !above;
                     if (leading) padding.left-=appearance.indicator_size+6;
+                    if (above) padding.top-=appearance.indicator_size+2;
                     const float width=std::max(0.f,bounds.width-(padding.left+padding.right)*scale);
                     const float height=std::max(0.f,bounds.height-(padding.top+padding.bottom)*scale);
                     const float size=std::min({appearance.indicator_size*scale,width,height});
-                    const float x=bounds.x+padding.left*scale+(leading?0:(width-size)*.5f), y=bounds.y+padding.top*scale+(height-size)*.5f;
+                    const float x=bounds.x+padding.left*scale+(leading?0:(width-size)*.5f), y=bounds.y+padding.top*scale+(above?0:(height-size)*.5f);
                     if (size>0) {
                         if (icon==Icon::maximize) quad({x+size*.15f,y+size*.225f,size*.7f,size*.55f},icon_clip,appearance.indicator_background);
                         if (icon==Icon::back || icon==Icon::forward) {
@@ -672,7 +677,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                             const auto stroke=std::max(1.f,std::round(scale));
                             if (size>stroke*2) quad({x+stroke,y+stroke,size-2*stroke,size-2*stroke},icon_clip,appearance.foreground,
                                 self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size-2*stroke))));
-                        } else quad({x,y,size,size},icon_clip,kind==ControlKind::tree_item?appearance.indicator_foreground.value_or(appearance.foreground):appearance.foreground,self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
+                        } else quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
                     }
                 }
             }
@@ -854,6 +859,11 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }
 Reply Session::cancel_interaction() { return impl_->cancel(); }
+Result<Reply> Session::commit_edit() {
+    Reply reply;
+    if (!impl_->finish_edit(reply,true,false,true)) return std::unexpected(Error{ErrorCode::invalid_text,impl_->focus});
+    return reply;
+}
 Reply Session::focus(ControlKey key) {
     Reply reply;
     const auto* box=impl_->published?impl_->published->find(key):nullptr;

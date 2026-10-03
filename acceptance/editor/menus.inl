@@ -1,4 +1,8 @@
 void verify_native_menus(Application& app,const std::filesystem::path& output,atelier::ObjectId actor) {
+    const auto live_menu=[&]() {
+        require(app.menu_frame()!=nullptr,"Expected a live accepted native menu frame.");
+        return app.menu_frame();
+    };
     const auto closed_titles=[&] {
         require(!app.menu_window(),"Menu remained open after dismissal.");
         for (const auto key:{control::file_menu,control::edit_menu,control::create_menu,control::view_menu,control::window_menu}) {
@@ -15,9 +19,9 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     const auto expanded=app.presented()->find(pane)->bounds;
     const auto history=app.document().undo_count();
     const auto dpi_before=app.presented()->drawing->dpi_scale;
-    require(std::abs(app.presented()->find(control::menu_bar_handle)->bounds.width/dpi_before-12)<.1f,
-        "Menubar stow rail width differs from the reference.");
+    verify_stow_alignment(app);
     click(app,control::menu_bar_handle);
+    verify_stow_alignment(app);
     require(!app.presented()->find(control::file_menu) && app.presented()->find(field) &&
         app.presented()->find(pane)->bounds.y<expanded.y-20*dpi_before && app.document().undo_count()==history,
         "Stowing the menubar did not release space or changed the document.");
@@ -25,7 +29,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     click(app,control::menu_bar_handle);
     require(app.presented()->find(pane)->bounds==expanded,"Restoring the menubar changed the pane geometry.");
     click(app,control::menu_bar_handle); key(app,VK_F10);
-    require(app.presented()->find(control::file_menu) && app.menu_frame() && app.menu_frame()->find(control::exit),
+    require(app.presented()->find(control::file_menu) && app.menu_frame() && live_menu()->find(control::exit),
         "F10 did not reveal the stowed menubar and open File.");
     key(app,VK_ESCAPE);
     for (const bool middle:{false,true}) {
@@ -52,18 +56,32 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
         require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park menu-transition pointer."); tick(app,2);
     }
     click(app,field); key(app,VK_ESCAPE); key(app,VK_F10);
-    require(app.menu_frame() && app.menu_frame()->find(control::exit),"F10 did not open File.");
+    require(app.menu_frame() && live_menu()->find(control::exit),"F10 did not open File.");
     const auto native_popup=app.menu_window();
+    key(app,VK_ESCAPE);
+    const auto menu_pane=app.docking().pane(control::scene_tab);
+    click(app,atelier::ui::DockSpace::menu_button(menu_pane));
+    require(live_menu()->find(menu_pane+5) && live_menu()->find(menu_pane+6),"Pane menu omitted close/maximize actions.");
+    const auto parent_popup=app.menu_window();
+    key(app,VK_HOME); key(app,VK_RIGHT);
+    require(app.menu_window()!=parent_popup && live_menu()->scrollbars.empty(),"Pane type submenu did not open as a separate, bounded popup.");
+    atelier::renderer::Capture submenu_pixels; app.capture_menu(submenu_pixels); png(submenu_pixels,output/"pane-types.png");
+    key(app,VK_ESCAPE);
+    require(app.menu_window()==parent_popup,"Escape did not return from the submenu to its parent.");
+    key(app,VK_ESCAPE);
+    require(!app.menu_window(),"Root Escape did not close the menu chain.");
+    click(app,field); key(app,VK_ESCAPE); key(app,VK_F10);
+
     require(native_popup!=app.window() && GetWindow(native_popup,GW_OWNER)==app.window() &&
         (GetWindowLongPtrW(native_popup,GWL_STYLE)&WS_POPUP) && !(GetWindowLongPtrW(native_popup,GWL_STYLE)&WS_CHILD),
         "Dropdown is not an independently owned native popup window.");
     require(GetFocus()==app.window() && GetCapture()==app.window(),"Menu stole owner focus or lost capture.");
     key(app,VK_RIGHT);
-    require(app.menu_frame()->find(control::undo),"Right arrow did not switch to Edit.");
+    require(live_menu()->find(control::undo),"Right arrow did not switch to Edit.");
     key(app,VK_RIGHT);
-    require(app.menu_frame()->find(control::add_actor) && app.menu_window()==native_popup,"Menu switching rebuilt its native host.");
+    require(live_menu()->find(control::add_actor) && app.menu_window()==native_popup,"Menu switching rebuilt its native host.");
     mouse(app,WM_MOUSEMOVE,centre(app,control::view_menu));
-    require(app.menu_frame()->find(control::reset),"Menubar hover did not switch the open dropdown.");
+    require(live_menu()->find(control::reset),"Menubar hover did not switch the open dropdown.");
     atelier::renderer::Capture menu_pixels; app.capture_menu(menu_pixels);
     require(menu_pixels.extent.width>0 && !menu_pixels.rgba.empty(),"Native menu did not render through the GPU.");
     const auto menu_pixel=[&](unsigned x,unsigned y,int gray) {
@@ -74,8 +92,8 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     menu_pixel(0,5,148); menu_pixel(5,0,148);
     menu_pixel(menu_pixels.extent.width-1,5,38);
     menu_pixel(5,menu_pixels.extent.height-1,38);
-    require(app.menu_frame()->scrollbars.empty(),"Short native menu retained an empty scrollbar.");
-    for (const auto& box:app.menu_frame()->controls) if (box.kind==atelier::ui::ControlKind::label)
+    require(live_menu()->scrollbars.empty(),"Short native menu retained an empty scrollbar.");
+    for (const auto& box:live_menu()->controls) if (box.kind==atelier::ui::ControlKind::label)
         require(box.style->font.style==atelier::ui::FontStyle::italic &&
             box.style->text_vertical_align==atelier::ui::TextVerticalAlign::center,"Menu shortcut lost its italic, vertically centered style.");
     png(menu_pixels,output/"native-menu-view.png");
@@ -89,7 +107,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
         SendMessageW(app.window(),WM_SYSKEYDOWN,'W',LPARAM{1}<<29);
         SendMessageW(app.window(),WM_SYSKEYUP,'W',LPARAM{1}<<29); tick(app,2);
     }
-    require(app.menu_frame() && app.menu_frame()->find(control::reset_layout),"Alt+W did not open Window.");
+    require(app.menu_frame() && live_menu()->find(control::reset_layout),"Alt+W did not open Window.");
     key(app,VK_ESCAPE);
     RECT previous{}; GetWindowRect(app.window(),&previous);
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
@@ -123,35 +141,35 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     // Drive the same native host with boundary-sized data, retaining its actual
     // theme, private fonts, monitor placement and GPU accepted-frame path.
     click(app,control::window_menu);
-    const auto ordinary_width=app.menu_frame()->drawing->extent.width;
+    const auto ordinary_width=live_menu()->drawing->extent.width;
     const std::array long_items{
         atelier::ui::MenuItem{9000001,L"A substantially longer editor command title",true,false,{},L"Ctrl+Alt+Shift+F12"},
         atelier::ui::MenuItem{9000002,L"Unavailable command",false,false,{},L"Ctrl+Shift+F11"}};
     atelier::application::EditorAcceptanceAccess::menu_items(app,long_items);
     app.capture_menu(menu_pixels);
-    require(menu_pixels.frame_id && menu_pixels.extent.width>ordinary_width && app.menu_frame()->scrollbars.empty(),
+    require(menu_pixels.frame_id && menu_pixels.extent.width>ordinary_width && live_menu()->scrollbars.empty(),
         "Native menu did not fit long title and shortcut columns.");
-    for (const auto& box:app.menu_frame()->controls) if (box.kind==atelier::ui::ControlKind::label) {
-        const auto* row=app.menu_frame()->find(box.parent);
-        const auto command=std::find_if(app.menu_frame()->controls.begin(),app.menu_frame()->controls.end(),
+    for (const auto& box:live_menu()->controls) if (box.kind==atelier::ui::ControlKind::label) {
+        const auto* row=live_menu()->find(box.parent);
+        const auto command=std::find_if(live_menu()->controls.begin(),live_menu()->controls.end(),
             [&](const auto& item){return item.parent==box.parent && item.kind==atelier::ui::ControlKind::menu_item;});
-        require(row && command!=app.menu_frame()->controls.end() && box.bounds.x+box.bounds.width<=box.clip.right+1,
+        require(row && command!=live_menu()->controls.end() && box.bounds.x+box.bounds.width<=box.clip.right+1,
             "Native menu shortcut was clipped by its column.");
         const auto title=text_coverage(*app.menu_frame(),command->key);
-        for (const auto& draw:app.menu_frame()->drawing->draws) if (draw.coverage==title)
+        for (const auto& draw:live_menu()->drawing->draws) if (draw.coverage==title)
             require(draw.bounds.x+draw.bounds.width<box.bounds.x,"Native menu title overlaps its shortcut.");
     }
     png(menu_pixels,output/"native-menu-long-columns.png");
-    const auto menu_dpi=app.menu_frame()->drawing->dpi_scale;
+    const auto menu_dpi=live_menu()->drawing->dpi_scale;
     const auto count=static_cast<unsigned>(std::ceil((area.bottom-area.top)/(25.f*menu_dpi)))+8;
     std::vector<atelier::ui::MenuItem> overflow_items;
     for (unsigned i=0;i<count;++i) overflow_items.push_back({9100000+i,L"Menu entry "+std::to_wstring(i+1),true,false,{}});
     atelier::application::EditorAcceptanceAccess::menu_items(app,overflow_items);
     app.capture_menu(menu_pixels);
-    require(menu_pixels.frame_id && !app.menu_frame()->scrollbars.empty(),"Screen-limited native menu lost its scrollbar.");
+    require(menu_pixels.frame_id && !live_menu()->scrollbars.empty(),"Screen-limited native menu lost its scrollbar.");
     atelier::application::EditorAcceptanceAccess::menu_end(app);
     app.capture_menu(menu_pixels);
-    const auto* last=app.menu_frame()->find(overflow_items.back().key);
+    const auto* last=live_menu()->find(overflow_items.back().key);
     require(last && last->bounds.y>=last->clip.top && last->bounds.y+last->bounds.height<=last->clip.bottom+.1f,
         "Native menu End navigation did not reveal the final command.");
     GetWindowRect(app.menu_window(),&popup);

@@ -179,7 +179,7 @@ button.parameter-tab.joined:selected { border-edges: top right; }
 .bar-stow {
     background-image: linear-gradient(#555555, #3b3b3b);
     border-color: #111111; border-inner-color: #575757; border-width: 0.667dip; border-style: solid;
-    padding: 0dip; indicator-size: 14dip; color: #101010;
+    padding: 0dip; indicator-size: 6dip; color: #101010;
 }
 .bar-stow:hover { background-image: linear-gradient(#666666, #4a4a4a); color: #dddddd; }
 .bar-stow:focus { color: #dddddd; }
@@ -207,3 +207,28 @@ slider:hover, slider:pressed { indicator-background: #8a8a8a; }
 slider:focus { indicator-border-color: #cccccc; }
 slider:disabled { accent-color: #565656; indicator-background: #444444; indicator-border-color: #606060; }
 number:disabled { accent-color: #616161; }
+
+/* Catalog and command shelf share the editor's compact pane vocabulary. */
+.tool-shelf { background: #393939; border-color: #202020; border-width: 0.667dip; border-edges: bottom; }
+.shelf-tab { font-size: 10.5dip; padding: 0dip 7dip; }
+.shelf-tool {
+    background: transparent; background-image: none; border-width: 0dip;
+    text-align: center; text-vertical-align: bottom; font-size: 10.5dip;
+    padding: 1dip 3dip; icon-placement: above; indicator-size: 18dip; indicator-color: #9bbdc8;
+}
+button.shelf-tool:hover { background: #484848; }
+button.shelf-tool:pressed { background: #555555; }
+.asset-entry { background: transparent; background-image: none; border-width: 0dip; text-align: left; padding: 2dip 5dip; indicator-size: 18dip; indicator-color: #a7c0cb; }
+button.asset-entry:hover { background: #484848; }
+button.asset-entry:pressed { background: #555555; }
+tree_item.mesh-actor { indicator-color: #a7c0cb; }
+
+/* File browser: shared selection and geometry across list/details/tiles. */
+.browser-tool { padding: 1dip 5dip; font-size: 11dip; }
+.browser-path { padding: 0dip 5dip; }
+.browser-directories { background: #303030; }
+.asset-tile { background: transparent; background-image: none; border-width: 0dip; padding: 4dip; icon-placement: above; indicator-size: 24dip; text-align: center; text-vertical-align: bottom; }
+button.asset-tile:hover { background: #444444; }
+button.asset-entry:selected, button.asset-tile:selected { background: #55564c; background-image: none; }
+.asset-column { text-align: right; text-vertical-align: center; padding: 0dip; font-size: 11dip; }
+label.asset-column:disabled { color: #a3a3a3; }

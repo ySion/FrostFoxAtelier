@@ -6,8 +6,9 @@
 
 namespace atelier::ui {
 
-enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world, object, axes, component };
+enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world, object, axes, component, mesh, folder };
 enum class Role { normal, panel, title, caption };
+enum class IconPlacement { leading, above };
 enum class TextAlign { left, center, right };
 enum class TextVerticalAlign { top, center, bottom };
 enum class BorderStyle { solid, inset, outset };

@@ -6,7 +6,7 @@
 namespace atelier::ui {
 namespace {
 constexpr float tab_height=22, divider_width=8;
-constexpr ControlKey close_offset=1'000'000, wrapper_offset=2'000'000, open_offset=3'000'000, preview_offset=4'000'000;
+constexpr ControlKey close_offset=1'000'000, wrapper_offset=2'000'000, open_offset=3'000'000, preview_offset=4'000'000, command_offset=5'000'000;
 bool inside(Rect r,float x,float y) { return x>=r.x && y>=r.y && x<r.x+r.width && y<r.y+r.height; }
 Control& add(std::vector<Control>& controls,ControlKey key,ControlKey parent,ControlKind kind,
              ui_layout::NodeInput layout,std::wstring text={}) {
@@ -16,14 +16,14 @@ Control& add(std::vector<Control>& controls,ControlKey key,ControlKey parent,Con
 }
 }
 DockSpace::DockSpace(ControlKey base,std::vector<DockTab> tabs) : base_(base),next_(base),tabs_(std::move(tabs)) {
-    if (!base || base>std::numeric_limits<ControlKey>::max()-preview_offset-1 || tabs_.empty() || tabs_.size()>64)
+    if (!base || base>std::numeric_limits<ControlKey>::max()-command_offset-256 || tabs_.empty() || tabs_.size()>64)
         throw std::invalid_argument("Invalid dock registry or key range.");
     std::vector<ControlKey> keys;
     for (const auto& view:tabs_) {
         if (!view.key || !view.content || view.title.empty() || !std::isfinite(view.minimum.width) || !std::isfinite(view.minimum.height) ||
             view.minimum.width<120 || view.minimum.height<60) throw std::invalid_argument("Invalid dock view.");
         for (auto key:{view.key,view.content}) {
-            if ((key>=base && key<=base+preview_offset) || std::find(keys.begin(),keys.end(),key)!=keys.end())
+            if ((key>=base && key<=base+command_offset+256) || std::find(keys.begin(),keys.end(),key)!=keys.end())
                 throw std::invalid_argument("Overlapping dock identities.");
             keys.push_back(key);
         }
@@ -60,7 +60,7 @@ void DockSpace::reset() {
     root_=make_node();
     for (const auto& view:tabs_) root_->tabs.push_back(view.key);
     focused_=root_->active=tabs_.front().key;
-    maximized_=menu_pane_=0; menu_add_=false; drag_.reset();
+    maximized_=menu_pane_=0; menu_add_=menu_type_=false; closed_tabs_.clear(); drag_.reset();
 }
 ControlKey DockSpace::pane(ControlKey key) const noexcept { const auto* node=owner(key); return node?node->key:0; }
 bool DockSpace::visible(ControlKey key) const noexcept {
@@ -116,12 +116,14 @@ bool DockSpace::select(ControlKey key) {
         }
         node->tabs.push_back(key);
     }
+    std::erase(closed_tabs_,key);
     reveal(key); focused_=node->active=key;
     if (maximized_) maximized_=node->key;
     return true;
 }
 bool DockSpace::close(ControlKey key) {
     auto* node=owner(key); if (!node) return false;
+    std::erase(closed_tabs_,key); closed_tabs_.push_back(key);
     remove(*node,key); const auto next=node->active;
     normalize(root_);
     if (maximized_ && !find(maximized_)) maximized_=0;
@@ -188,7 +190,7 @@ ControlKey DockSpace::divider(ControlKey key,DragAxis axis) const noexcept {
     const auto visit=[&](auto&& self,const Node* node)->std::pair<bool,ControlKey> {
         if (!node->split()) return {node->key==leaf,0};
         auto child=self(self,node->first.get()); if (!child.first) child=self(self,node->second.get());
-        if (child.first && node->axis==axis) child.second=node->key+1;
+        if (child.first && !child.second && node->axis==axis) child.second=node->key+1;
         return child;
     };
     return visit(visit,root_.get()).second;
@@ -250,10 +252,32 @@ bool DockSpace::apply(const Action& action,const UiFrame& frame) {
         if (action.kind==ActionKind::activate && action.key==base_+close_offset+index) return close(tabs_[index].key);
         if (action.kind==ActionKind::activate && action.key==base_+open_offset+index) {
             const auto key=tabs_[index].key;
+            if (menu_type_) {
+                auto* destination=find(menu_pane_); auto* origin=owner(key);
+                if (!destination || destination->split() || destination==origin) return select(key);
+                const auto previous=destination->active;
+                auto slot=std::find(destination->tabs.begin(),destination->tabs.end(),previous);
+                if (slot==destination->tabs.end()) return select(key);
+                if (origin) {
+                    *std::find(origin->tabs.begin(),origin->tabs.end(),key)=previous;
+                    if (origin->active==key) origin->active=previous;
+                } else { std::erase(closed_tabs_,previous); closed_tabs_.push_back(previous); }
+                *slot=key; destination->active=key; std::erase(closed_tabs_,key);
+                reveal(key); focused_=key; return true;
+            }
             // Registered views retain a single state/history when added to another group.
             if (menu_add_ && owner(key) && pane(key)!=menu_pane_) return place(key,menu_pane_,DockSide::tabs);
             return select(key);
         }
+    }
+    if (action.kind==ActionKind::activate && action.key>=base_+command_offset && action.key<base_+command_offset+5) {
+        auto* node=find(menu_pane_);
+        if (!node || node->split()) return true;
+        const auto command=action.key-base_-command_offset;
+        if (command==1 || command==2) { focused_=node->active; cycle(command==1?-1:1); }
+        else if (command==3 && !closed_tabs_.empty()) { const auto key=closed_tabs_.back(); select(key); }
+        else if (command==4) { const auto tabs=node->tabs; for (auto key:tabs) close(key); }
+        return true;
     }
     if (action.key<base_ || action.key>=base_+close_offset) return false;
     const auto key=base_+(action.key-base_)/16*16;
@@ -288,20 +312,27 @@ std::vector<MenuItem> DockSpace::menu_items(ControlKey source,const UiFrame* fra
     if (!node && source>=base_ && source<base_+close_offset) node=find(base_+(source-base_)/16*16);
     if (!node || node->split()) return {};
     menu_pane_=node->key;
-    menu_add_=source==add_tab_button(node->key);
-    std::vector<MenuItem> result;
+    menu_add_=source==add_tab_button(node->key); menu_type_=!menu_add_;
+    std::vector<MenuItem> types;
     for (std::size_t index=0;index<tabs_.size();++index)
-        result.push_back({base_+open_offset+index,(menu_add_?L"":L"Show ")+tabs_[index].title,true,node->active==tabs_[index].key,{}});
-    if (menu_add_) return result;
-    result.push_back({node->key+6,maximized_?L"Restore Pane":L"Maximize Pane",node->active!=0,false,{}});
+        types.push_back({base_+open_offset+index,tabs_[index].title,true,node->active==tabs_[index].key,{}});
+    if (menu_add_) return types;
+    // Choosing a registered view moves its existing state to this pane.
+    std::vector<MenuItem> result;
+    result.push_back({base_+command_offset,L"Set Pane Tab Type",true,false,{},L"",false,std::move(types)});
+    result.push_back({base_+command_offset+1,L"Previous Pane Tab",node->tabs.size()>1,false,{},L"Ctrl+Shift+Tab"});
+    result.push_back({base_+command_offset+2,L"Next Pane Tab",node->tabs.size()>1,false,{},L"Ctrl+Tab"});
+    result.push_back({node->key+5,L"Close Pane Tab",node->active!=0,false,{},L"Ctrl+W",true});
+    result.push_back({base_+command_offset+3,L"Undo Close Tab",!closed_tabs_.empty(),false,{}});
+    result.push_back({node->key+6,maximized_?L"Restore Pane":L"Maximize Pane",node->active!=0,false,{},L"Ctrl+B",true});
+    result.push_back({base_+command_offset+4,L"Close Pane (All Tabs)",node->active!=0,false,{}});
     const auto* bounds=frame?frame->find(node->key):nullptr;
     const auto need=minimum(*node);
     const auto own=tab(node->active)?tab(node->active)->minimum:ui_layout::Size{};
     const bool horizontal=node->tabs.size()>1 && bounds && bounds->bounds.width/frame->drawing->dpi_scale>=need.width+own.width+divider_width;
     const bool vertical=node->tabs.size()>1 && bounds && bounds->bounds.height/frame->drawing->dpi_scale>=need.height+own.height+divider_width;
-    result.push_back({node->key+7,L"Split Active Tab Right",horizontal,false,{}});
-    result.push_back({node->key+8,L"Split Active Tab Below",vertical,false,{}});
-    result.push_back({node->key+5,L"Close Active Tab",node->active!=0,false,{}});
+    result.push_back({node->key+7,L"Split Pane Left/Right",horizontal,false,{},L"",true});
+    result.push_back({node->key+8,L"Split Pane Top/Bottom",vertical,false,{}});
     return result;
 }
 void DockSpace::append_node(std::vector<Control>& controls,const Node& node,ControlKey parent,

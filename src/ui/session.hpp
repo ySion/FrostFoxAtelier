@@ -49,6 +49,7 @@ struct Control {
     bool tree_initially_expanded{true};
     std::wstring tree_filter; // tree only: substring with ASCII case folding; retains matching ancestry.
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
+    bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
     bool operator==(const Control&) const = default;
 };
@@ -256,6 +257,9 @@ public:
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
     Reply input(const Event&);
     Reply cancel_interaction();
+    // Finish a valid text draft before a document save. Invalid input stays
+    // editable; callers must apply the returned effects before serialization.
+    Result<Reply> commit_edit();
     // Zero clears focus; other targets must be visible, current accepted controls.
     // A transition finishes the previous draft. Same focus preserves its draft,
     // selection and composition; text fields bind input immediately, numbers passively.

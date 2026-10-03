@@ -6,8 +6,8 @@
 namespace atelier::world::detail {
 
 struct WorldLifetime { bool open{true}; };
-struct ActorData { World* world{}; bool enabled{}; bool transitioning{}; };
-struct ComponentData { ObjectId owner; bool enabled{}; };
+struct ActorData { World* world{}; bool enabled{}; bool transitioning{}; bool begun{}; };
+struct ComponentData { ObjectId owner; bool enabled{}, begun{}; };
 struct FlagScope {
     bool& flag;
     explicit FlagScope(bool& value) : flag(value) { flag = true; }
@@ -25,7 +25,14 @@ struct Access {
     static const State& state(const World& world) noexcept { return *world.impl_; }
     static ReferenceSequence& sequence(Actor& value) noexcept { return value.components_; }
     static ReferenceSlot& owner(Component& value) noexcept { return value.owner_; }
-    static ReferenceSlot& transform(Cube& value) noexcept { return value.transform_; }
+    static ReferenceSlot& root(Actor& value) noexcept { return value.root_; }
+    static ReferenceSlot& parent(SceneComponent& value) noexcept { return value.parent_; }
+    static geometry::MeshRef& geometry(StaticMeshComponent& value) noexcept { return value.geometry_; }
+    static const geometry::MeshRef& geometry(const StaticMeshComponent& value) noexcept { return value.geometry_; }
+    static String& mesh_source(StaticMeshComponent& value) noexcept { return value.mesh_source_; }
+    static const String& mesh_source(const StaticMeshComponent& value) noexcept { return value.mesh_source_; }
+    static bool& begun(Component& value) noexcept { return value.begun_; }
+    static bool& begun(Actor& value) noexcept { return value.begun_; }
     static World*& member_world(Actor& value) noexcept { return value.member_world_; }
     static bool& enabled(Actor& value) noexcept { return value.enabled_; }
     static bool& enabled(Component& value) noexcept { return value.enabled_; }
@@ -35,9 +42,13 @@ struct Access {
 inline std::unexpected<Error> error(ErrorCode code, std::string message) { return std::unexpected(Error{code, std::move(message)}); }
 Result<ActorData> actor_data(Runtime&, ObjectId);
 Result<ComponentData> component_data(Runtime&, ObjectId);
-Result<ObjectId> cube_transform(Runtime&, ObjectId);
+Result<void> validate_parents(ObjectId root, const std::unordered_map<ObjectId, ObjectId>&);
+Result<void> validate_tree(Runtime&, ObjectId actor, std::span<const ObjectRoot>);
+Result<void> can_remove(Runtime&, ObjectId component, std::span<const ObjectRoot>);
+Result<void> clear_component(Runtime&, ObjectId actor, ObjectId component, std::size_t index, bool root);
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
+Result<void> validate_material(const Material&);
 
 }
 
@@ -45,8 +56,8 @@ namespace atelier::world {
 
 struct World::Impl {
     struct Position { std::size_t index{}, presentations{}; };
-    struct Bucket { TypeId type; bool cube{}, counter{}, transform{}; std::vector<ObjectId> objects; };
-    struct Task { ObjectId component, actor; Coroutine coroutine; };
+    struct Bucket { TypeId type; std::vector<ObjectId> objects; };
+    struct Task { ObjectId object, actor; Coroutine coroutine; };
     struct Pending { std::uint64_t serial; Request request; ObjectId owner; bool member_required{}; };
 
     Runtime& runtime;
@@ -58,23 +69,37 @@ struct World::Impl {
     std::vector<Member> members;
     std::unordered_map<ObjectId, Position> positions;
     std::vector<Bucket> buckets;
-    std::vector<ObjectId> updates, presentation;
+    struct Scheduled { ObjectId object, actor; const Behavior* behavior{}; };
+    std::vector<Scheduled> ordered, updates;
+    std::vector<ObjectId> presentation;
     std::vector<Task> tasks;
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
-    CounterUpdate counter_update;
+    struct Binding { TypeId type; Behavior behavior; };
+    std::vector<Binding> behaviors;
+    Result<const Behavior*> behavior(TypeId) const;
     LifecycleObserver observer;
 
     Impl(Runtime& r, const Types& t, World& w) : runtime(r), types(t), world(w) {}
     Result<void> admit(bool mutation = true) const;
     Result<std::size_t> member(ObjectId) const;
     Result<ObjectId> component_owner(ObjectId) const;
+    // Admits same-context detached composition as well as this World's members.
+    Result<detail::ActorData> composition_actor(ObjectId) const;
+    Result<detail::ComponentData> composition_component(ObjectId) const;
     Result<std::size_t> prepare_bucket(TypeId, std::size_t additional);
     void prepare_activity(std::size_t additional = 0);
     Result<void> refresh();
     void cancel_tasks(ObjectId target = {}, bool actor = true) noexcept;
     void halt() noexcept;
+    std::optional<Error> begin(ObjectId actor = {}, ObjectId component = {});
+    std::optional<Error> end(ObjectId actor = {}, ObjectId component = {});
+    std::optional<Error> invoke(const Scheduled&, bool beginning);
+    Result<bool> begun(const Scheduled&) const;
+    Result<void> mark_begun(const Scheduled&, bool);
+    std::optional<Error> shutdown();
     std::optional<Error> notify(Lifecycle, ObjectId);
+    std::optional<Error> notify_group(Lifecycle, ObjectId actor, std::span<const ObjectRoot>);
     Commit finish(bool changed, std::optional<Error> failure = {});
     void erase_indexes(ObjectId component) noexcept;
 };

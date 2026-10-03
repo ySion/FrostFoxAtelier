@@ -82,12 +82,11 @@ Application::Application(bool validation) : ui_(editor_fonts()),gpu_validation_(
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
     if (!ui_.set_style_sheet(style_sheet_)) throw std::runtime_error("Cannot publish editor style sheet");
-    take(completion(document_.add_actor()));
-    take(completion(document_.add_component(document_.types().transform)));
-    take(completion(document_.add_component(document_.types().cube)));
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
+    popup_=std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_);
+    submenus_.push_back(std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_));
     window_.show();
 }
 Application::~Application() {
@@ -102,10 +101,10 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
 }
 
 Result<void> Application::focus_selected() {
-    auto transform = world::root_transform(document_.world().runtime(), document_.selected());
+    auto transform = world::root_component(document_->world().runtime(), document_->selected());
     if (!transform) return std::unexpected(transform.error());
     if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no Transform to focus."});
-    auto matrix = world::world_matrix(document_.world().runtime(), **transform);
+    auto matrix = world::world_matrix(document_->world().runtime(), **transform);
     if (!matrix) return std::unexpected(matrix.error());
     camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
     return {};
@@ -124,8 +123,10 @@ Result<void> Application::action(const ui::Action& event) {
         request_menu(*request); return {};
     }
     if (event.kind==ui::ActionKind::dismiss) { close_menu(); return {}; }
-    if (event.kind==ui::ActionKind::activate && event.key==menu_bar_handle) {
-        close_menu(); workspace_.menu_bar_collapsed=!workspace_.menu_bar_collapsed; return {};
+    if (event.kind==ui::ActionKind::activate && (event.key==menu_bar_handle || event.key==shelf_handle)) {
+        close_menu();
+        auto& collapsed=event.key==shelf_handle?workspace_.shelf_collapsed:workspace_.menu_bar_collapsed;
+        collapsed=!collapsed; return {};
     }
     if (event.kind==ui::ActionKind::activate && is_menu(event.key)) {
         request_menu({event.key,0,0,0}); return {};
@@ -134,14 +135,17 @@ Result<void> Application::action(const ui::Action& event) {
         if (!workspace_.menu) return {};
         return action({ui::ActionKind::reset,workspace_.menu->group?workspace_.menu->group:workspace_.menu->source,{}});
     }
-    if (event.key==reset_layout && event.kind==ui::ActionKind::activate) {
-        workspace_.reset_layout(); workspace_.status=L"Default workspace restored"; return {};
-    }
     if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
     if (workspace_.workbench.apply(event)) return {};
-    if (workspace_.sample_history() && event.kind==ui::ActionKind::activate && (event.key==undo || event.key==redo)) {
-        if (event.key==undo) workspace_.workbench.undo(); else workspace_.workbench.redo();
-        workspace_.status=L"Sample history updated"; return {};
+    if (workspace_.assets.apply(event)) return {};
+    if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
+        const auto selected=workspace_.assets.selected();
+        if (!selected) return {};
+        if (event.key==editor::browser_control::add && selected->kind==editor::AssetKind::mesh)
+            return execute(editor::Command::create_static_mesh,selected->key);
+        if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
+        else if (selected->kind==editor::AssetKind::scene) return open_scene(selected->path);
+        return {};
     }
     if (event.key==position_fold && event.kind==ui::ActionKind::activate) {
         const auto* expanded=std::get_if<bool>(&event.value);
@@ -152,11 +156,14 @@ Result<void> Application::action(const ui::Action& event) {
         workspace_.parameter_page=event.key; return {};
     }
     if (event.kind==ui::ActionKind::activate) {
-        if (const auto direction=navigation_direction(event.key)) return done(workspace_.navigate(document_,direction),L"Selection history");
-        if (event.key==world_context) return done(document_.select({}),L"World context");
+        if (const auto direction=navigation_direction(event.key)) return done(workspace_.navigate(*document_,direction),L"Selection history");
+        if (event.key==world_context) return done(document_->select({}),L"World context");
     }
     if (event.kind==ui::ActionKind::select && event.key==tree_world)
-        return done(workspace_.select_tree(document_,event.key),L"World context");
+        return done(workspace_.select_tree(*document_,event.key),L"World context");
+    if (event.kind==ui::ActionKind::activate && (event.key==shelf_create || event.key==shelf_view)) {
+        workspace_.shelf_page=event.key; return {};
+    }
     if (event.key == parameter_search || event.key==tree_filter) {
         const auto* value = std::get_if<std::wstring>(&event.value);
         if (!value) return invalid();
@@ -169,63 +176,89 @@ Result<void> Application::action(const ui::Action& event) {
     }
     // A retired control's cleanup must not cancel a different live edit.
     if (event.kind == ui::ActionKind::edit_cancel)
-        return document_.owns_edit(event.key) ? done(document_.cancel_edit(), L"Edit cancelled") : Result<void>{};
+        return document_->owns_edit(event.key) ? done(document_->cancel_edit(), L"Edit cancelled") : Result<void>{};
     if (const auto* binding = workspace_.binding(event.key)) {
-        if (event.kind==ui::ActionKind::select && (binding->kind==editor::Workspace::Binding::Kind::tree_component ||
-            (binding->kind==editor::Workspace::Binding::Kind::object && binding->path.empty())))
-            return done(workspace_.select_tree(document_,event.key),L"Tree selection updated");
+        if (event.kind==ui::ActionKind::select && binding->kind==editor::Workspace::Binding::Kind::object && binding->path.empty())
+            return done(workspace_.select_tree(*document_,event.key),L"Tree selection updated");
         if (binding->kind==editor::Workspace::Binding::Kind::navigation) {
-            if (event.kind==ui::ActionKind::activate) return done(document_.select(binding->object),L"Actor selected");
+            if (event.kind==ui::ActionKind::activate) return done(document_->select(binding->object),L"Actor selected");
             return {};
         }
         if (binding->kind==editor::Workspace::Binding::Kind::name) {
             if (event.kind==ui::ActionKind::edit_commit)
-                return done(document_.rename(binding->object,std::get<std::wstring>(event.value)),L"Actor renamed / Undo restores its name");
+                return done(document_->rename(binding->object,std::get<std::wstring>(event.value)),L"Actor renamed / Undo restores its name");
             return {};
         }
         if (binding->kind==editor::Workspace::Binding::Kind::position_default) {
             if (event.kind!=ui::ActionKind::reset) return invalid();
-            return done(document_.reset_position(binding->object),L"Position restored to default / Undo restores the vector");
+            return done(document_->reset_position(binding->object),L"Position restored to default / Undo restores the vector");
         }
         if (binding->path.empty()) {
-            if (event.kind == ui::ActionKind::activate) return done(document_.remove_component(binding->object), L"Component removed / Undo restores it");
             return invalid();
         }
         const auto* value = std::get_if<double>(&event.value);
         if (!value) return invalid();
         switch (event.kind) {
         case ui::ActionKind::edit_begin:
-            return done(document_.begin_edit(binding->object, binding->path, event.key), L"Editing field / Esc cancels");
+            return done(document_->begin_edit(binding->object, binding->path, event.key), L"Editing field / Esc cancels");
         case ui::ActionKind::edit_preview:
-            return done(document_.preview_edit(event.key, static_cast<float>(*value)), L"Field preview / Esc cancels");
+            return done(document_->preview_edit(event.key, static_cast<float>(*value)), L"Field preview / Esc cancels");
         case ui::ActionKind::edit_commit: {
-            auto preview = document_.preview_edit(event.key, static_cast<float>(*value));
+            auto preview = document_->preview_edit(event.key, static_cast<float>(*value));
             if (!preview) return preview;
-            return done(document_.commit_edit(event.key), L"Field committed");
+            return done(document_->commit_edit(event.key), L"Field committed");
         }
         default: return {};
         }
     }
     if (event.kind != ui::ActionKind::activate) return {}; // Includes retired field/Actor bindings.
-    switch (event.key) {
-    case exit: PostMessageW(window(),WM_CLOSE,0,0); return {};
-    case show_scene: workspace_.dock.select(scene_tab); return {};
-    case show_parameters: workspace_.dock.select(parameters_tab); return {};
-    case show_controls: workspace_.dock.select(workbench); return {};
-    case show_actors: workspace_.dock.select(actors_tab); return {};
-    case maximize_pane: workspace_.dock.maximize(workspace_.dock.focused_tab()); return {};
-    case add_actor: return done(document_.add_actor(), L"Empty Actor added");
-    case remove_actor: return done(document_.erase_selected(), L"Actor removed / Undo restores it");
-    case add_transform: return done(document_.add_component(document_.types().transform), L"Transform added");
-    case add_cube: return done(document_.add_component(document_.types().cube), L"Cube component added");
-    case undo: return done(document_.undo(), L"Undo");
-    case redo: return done(document_.redo(), L"Redo");
-    case focus: return done(focus_selected(), L"Focused selection");
-    case reset: camera_.reset(); workspace_.status = L"Camera reset"; return {};
-    default: return {};
-    }
+    if (const auto* command=editor::command_definition(event.key)) return execute(command->id);
+    return {};
 }
-void Application::effects(const ui::Reply& reply) {
+Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
+    using enum editor::Command;
+    if (!workspace_.command_enabled(command,*document_)) return {};
+    Result<void> result;
+    switch (command) {
+    case new_project: case open_project: case save_scene: case save_scene_as: case open_scene: case import_mesh: case refresh_assets:
+        workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
+        return project_command(command,asset_key);
+    case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
+    case create_actor: result=completion(document_->add_actor()); break;
+    case create_static_mesh: {
+        const auto catalog=editor::mesh_assets();
+        if (asset_key.empty()) asset_key=catalog.front().key;
+        if (project_) {
+            auto asset=project_->mesh(asset_key);if (!asset) return std::unexpected(asset.error());
+            result=completion(document_->create_static_mesh(*asset));
+        } else {
+            const auto* asset=editor::mesh_asset(asset_key);
+            if (!asset) return std::unexpected(Error{ErrorCode::invalid_definition,"Unknown mesh asset."});
+            result=completion(document_->create_static_mesh(*asset));
+        }
+        break;
+    }
+    case erase_actor: result=completion(document_->erase_selected()); break;
+    case undo: case redo:
+        if (workspace_.sample_history()) { if (command==undo) workspace_.workbench.undo(); else workspace_.workbench.redo(); }
+        else result=completion(command==undo?document_->undo():document_->redo());
+        break;
+    case focus: result=focus_selected(); break;
+    case reset_camera: camera_.reset(); break;
+    case show_scene: workspace_.dock.select(editor::control::scene_tab); break;
+    case show_parameters: workspace_.dock.select(editor::control::parameters_tab); break;
+    case show_controls: workspace_.dock.select(editor::control::workbench); break;
+    case show_actors: workspace_.dock.select(editor::control::actors_tab); break;
+    case show_assets: workspace_.dock.select(editor::control::assets_tab); break;
+    case maximize_pane: workspace_.dock.maximize(workspace_.dock.focused_tab()); break;
+    case previous_tab: case next_tab: workspace_.dock.cycle(command==previous_tab?-1:1); break;
+    case close_tab: workspace_.dock.close(workspace_.dock.focused_tab()); break;
+    case reset_layout: workspace_.reset_layout(); break;
+    }
+    if (result) workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
+    return result;
+}
+bool Application::effects(const ui::Reply& reply) {
     std::wstring first_error;
     bool business_failed = false;
     const auto remember = [&](std::wstring message) { if (first_error.empty()) first_error = std::move(message); };
@@ -276,13 +309,15 @@ void Application::effects(const ui::Reply& reply) {
     apply(apply, reply, false);
     if (business_failed) {
         apply(apply, ui_.cancel_interaction(), true);
-        const auto cancelled = document_.cancel_edit();
+        const auto cancelled = document_->cancel_edit();
         if (!cancelled) first_error += L"; rollback failed: " + widen(cancelled.error().message);
         window_.capture(false);
     }
     const auto native_error = window_.text_input(ui_.text_input());
     if (native_error) remember(L"Text input unavailable (Windows " + std::to_wstring(native_error) + L").");
-    if (!first_error.empty()) workspace_.status = std::move(first_error);
+    const bool success=first_error.empty();
+    if (!success) workspace_.status = std::move(first_error);
+    return success;
 }
 void Application::sync_text_input() {
     const auto error = window_.text_input(ui_.text_input());
@@ -293,7 +328,7 @@ void Application::invalidate_surface() {
     ++surface_revision_;
     orbiting_ = false;
     effects(ui_.cancel_interaction());
-    const auto cancelled = document_.cancel_edit();
+    const auto cancelled = document_->cancel_edit();
     if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
     window_.capture(false);
 }
@@ -315,6 +350,8 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     // The native menu owns subsequent mouse-up events. Retire the previous
     // gesture through its UI/business transaction before transferring capture.
     effects(ui_.cancel_interaction());
+    for (auto& submenu:submenus_) submenu->hide();
+    menu_path_.clear();
     workspace_.menu=request; menu_incarnation_=source->incarnation;
     orbiting_=false; window_.capture(false);
 }
@@ -323,6 +360,8 @@ void Application::close_menu(bool restore_focus) {
     const bool was_open=workspace_.menu.has_value() || menu_window();
     if (!was_open) return;
     workspace_.menu.reset(); workspace_.menu_items.clear();
+    for (auto& submenu:submenus_) submenu->hide();
+    menu_path_.clear();
     if (popup_) popup_->hide();
     if (was_open) {
         window_.capture(false);
@@ -346,6 +385,21 @@ void Application::update_menu() {
     if (!popup_) popup_=std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_);
     popup_->update(source->key,{points[0].x,points[0].y,points[1].x,points[1].y},below,workspace_.menu_items,ui_.style(),style_sheet_);
     window_.capture(true); popup_->render();
+    auto items=std::span<const ui::MenuItem>(workspace_.menu_items);
+    auto* parent=popup_.get();
+    for (std::size_t depth=0;depth<menu_path_.size();++depth) {
+        const auto at=std::find_if(items.begin(),items.end(),[&](const auto& item){return item.key==menu_path_[depth];});
+        const auto* box=parent->presented()?parent->presented()->find(menu_path_[depth]):nullptr;
+        if (at==items.end() || at->children.empty() || !at->enabled || !box) { menu_path_.resize(depth); break; }
+        if (depth==submenus_.size()) submenus_.push_back(std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_));
+        POINT corners[2]{{static_cast<LONG>(box->bounds.x),static_cast<LONG>(box->bounds.y)},
+                         {static_cast<LONG>(box->bounds.x+box->bounds.width),static_cast<LONG>(box->bounds.y+box->bounds.height)}};
+        MapWindowPoints(parent->window(),nullptr,corners,2);
+        auto& child=*submenus_[depth];
+        child.update(at->key,{corners[0].x,corners[0].y,corners[1].x,corners[1].y},false,at->children,ui_.style(),style_sheet_);
+        child.render(); parent=&child; items=at->children;
+    }
+    for (std::size_t depth=menu_path_.size();depth<submenus_.size();++depth) submenus_[depth]->hide();
 }
 bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
     if (!workspace_.menu) return false;
@@ -364,19 +418,40 @@ bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
         return true;
     }
     if (input.kind==ui::EventKind::key_down && (input.key==ui::Key::f10 || native_key==VK_MENU)) { close_menu(); return true; }
-    if (top && input.kind==ui::EventKind::key_down && (input.key==ui::Key::left || input.key==ui::Key::right)) {
+    if (top && menu_path_.empty() && input.kind==ui::EventKind::key_down && (input.key==ui::Key::left || input.key==ui::Key::right)) {
         change(editor::control::file_menu+(source-editor::control::file_menu+5+(input.key==ui::Key::left?-1:1))%5); return true;
     }
     if (!menu_window()) return true; // Opening transition is modal before the first accepted popup frame.
-    auto event=input;
-    POINT point{static_cast<LONG>(event.x),static_cast<LONG>(event.y)};
-    MapWindowPoints(window(),popup_->window(),&point,1);
-    event.x=static_cast<float>(point.x); event.y=static_cast<float>(point.y);
-    const auto reply=popup_->input(event);
+    const bool pointer=input.kind==ui::EventKind::pointer_down || input.kind==ui::EventKind::pointer_up ||
+        input.kind==ui::EventKind::pointer_move || input.kind==ui::EventKind::wheel;
+    std::size_t level=menu_path_.size();
+    POINT screen{static_cast<LONG>(input.x),static_cast<LONG>(input.y)}; ClientToScreen(window(),&screen);
+    if (pointer) for (std::size_t i=menu_path_.size()+1;i>0;--i) {
+        const auto index=i-1; auto* host=index?submenus_[index-1].get():popup_.get();
+        RECT bounds{}; GetWindowRect(host->window(),&bounds);
+        if (PtInRect(&bounds,screen)) { level=index; break; }
+    }
+    if (input.kind==ui::EventKind::key_down && !menu_path_.empty() &&
+        (input.key==ui::Key::left || input.key==ui::Key::escape)) {
+        submenus_[menu_path_.size()-1]->hide(); menu_path_.pop_back(); return true;
+    }
+    auto* host=level?submenus_[level-1].get():popup_.get();
+    auto items=std::span<const ui::MenuItem>(workspace_.menu_items);
+    for (std::size_t depth=0;depth<level;++depth) {
+        const auto at=std::find_if(items.begin(),items.end(),[&](const auto& item){return item.key==menu_path_[depth];});
+        if (at==items.end()) { close_menu(); return true; }
+        items=at->children;
+    }
+    auto event=input; ScreenToClient(host->window(),&screen);
+    event.x=static_cast<float>(screen.x); event.y=static_cast<float>(screen.y);
+    const auto reply=host->input(event);
     for (const auto& effect:reply.effects) if (const auto* command=std::get_if<ui::Action>(&effect)) {
         if (command->kind==ui::ActionKind::activate) {
-            const auto at=std::find_if(workspace_.menu_items.begin(),workspace_.menu_items.end(),[&](const auto& item){return item.key==command->key;});
-            if (at==workspace_.menu_items.end() || !at->enabled) continue;
+            const auto at=std::find_if(items.begin(),items.end(),[&](const auto& item){return item.key==command->key;});
+            if (at==items.end() || !at->enabled) continue;
+            if (!at->children.empty()) {
+                menu_path_.resize(level); menu_path_.push_back(at->key); update_menu(); return true;
+            }
             const auto edit=at->edit_command;
             if (edit) {
                 const auto incarnation=menu_incarnation_;
@@ -386,7 +461,8 @@ bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
                 if (!result) status(result,L"");
                 close_menu();
             }
-        } else if (command->kind==ui::ActionKind::dismiss) close_menu();
+            return true;
+        } else if (command->kind==ui::ActionKind::dismiss) { close_menu(); return true; }
     }
     return true;
 }
@@ -450,12 +526,18 @@ void Application::native(NativeEvent message) {
             menu_return_focus_=ui_.focused_control();
     const bool release = event.kind == ui::EventKind::pointer_up;
     if (pointer && !release && !pointer_ready()) return;
+    if (event.kind==ui::EventKind::key_down && !workspace_.menu &&
+        ((event.control && (message.wparam=='S' || message.wparam=='O')) || message.wparam==VK_F5)) {
+        const auto command=message.wparam=='O'?editor::Command::open_project:message.wparam==VK_F5?editor::Command::refresh_assets:
+            event.shift?editor::Command::save_scene_as:editor::Command::save_scene;
+        status(execute(command),L"Project command completed");return;
+    }
     if (event.kind==ui::EventKind::key_down && event.control && !workspace_.menu &&
         (message.wparam==VK_TAB || message.wparam=='B' || message.wparam=='W')) {
         effects(ui_.cancel_interaction());
-        if (message.wparam==VK_TAB) workspace_.dock.cycle(event.shift?-1:1);
-        else if (message.wparam=='B') workspace_.dock.maximize(workspace_.dock.focused_tab());
-        else workspace_.dock.close(workspace_.dock.focused_tab());
+        const auto command=message.wparam==VK_TAB?(event.shift?editor::Command::previous_tab:editor::Command::next_tab):
+            message.wparam=='B'?editor::Command::maximize_pane:editor::Command::close_tab;
+        if (auto result=execute(command);!result) status(result,L"");
         return;
     }
     if (pointer && !workspace_.menu && !workspace_.dock.dragging() && over_viewport(event.x, event.y)) {
@@ -476,25 +558,20 @@ void Application::native(NativeEvent message) {
     effects(reply);
     if (event.kind == ui::EventKind::focus_lost || event.kind == ui::EventKind::capture_lost) {
         window_.capture(false); // Includes camera capture, which is owned outside UI.
-        const auto cancelled = document_.cancel_edit();
+        const auto cancelled = document_->cancel_edit();
         if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
         return;
     }
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
-        if (workspace_.sample_history()) {
-            if (event.control && (event.key==ui::Key::z || event.key==ui::Key::y)) {
-                const bool redo=event.key==ui::Key::y || event.shift;
-                status(action({ui::ActionKind::activate,redo?editor::control::redo:editor::control::undo,{}}),L"Sample history updated");
-            }
-            return;
+        std::optional<editor::Command> command;
+        if (event.control && (event.key==ui::Key::z || event.key==ui::Key::y))
+            command=(event.key==ui::Key::y || event.shift)?editor::Command::redo:editor::Command::undo;
+        else if (!workspace_.sample_history()) {
+            if (event.key==ui::Key::delete_key) command=editor::Command::erase_actor;
+            else if (message.wparam=='F' && !ui_.wants_keyboard()) command=editor::Command::focus;
+            else if (event.key==ui::Key::escape) status(document_->cancel_edit(),L"Edit cancelled");
         }
-        if (event.key == ui::Key::delete_key) status(document_.erase_selected(), L"Actor removed");
-        else if (event.control && event.key == ui::Key::z) status(event.shift ? document_.redo() : document_.undo(), event.shift ? L"Redo" : L"Undo");
-        else if (event.control && event.key == ui::Key::y) status(document_.redo(), L"Redo");
-        else if (event.key == ui::Key::escape) status(document_.cancel_edit(), L"Edit cancelled");
-        else if (message.wparam == 'F' && !ui_.wants_keyboard()) {
-            status(focus_selected(), L"Focused selection");
-        }
+        if (command) if (auto result=execute(*command);!result) status(result,L"");
     }
 }
 bool Application::step(renderer::Capture* capture) {
@@ -502,18 +579,24 @@ bool Application::step(renderer::Capture* capture) {
     frame_statistics_ = {};
     if (closed_) return false;
     window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
-    if (window_.closing()) { close(); return false; }
+    if (window_.closing()) {
+        if (confirm_discard()) {close();return false;}
+        window_.cancel_close();
+    }
+    const auto title=(project_?project_->name():L"No project")+L" — "+(scene_path_.empty()?L"Untitled":scene_path_.filename().wstring())+
+        (document_->dirty()?L" *":L"")+L" — FrostFox Atelier";
+    if (title!=window_title_) { SetWindowTextW(window(),title.c_str());window_title_=title; }
     auto target = graphics(renderer_.target());
     const auto extent = target.drawable ? target.extent : ui::PixelExtent{};
     surface_ = {extent, window_.dpi_scale(), surface_revision_};
     auto updated = ui_.set_surface(surface_);
     if (!updated) throw std::runtime_error("UI rejected the window surface.");
     effects(*updated);
-    auto controls = workspace_.describe(document_,{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale},ui_.presented().get());
+    auto controls = workspace_.describe(*document_,{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale},ui_.presented().get(),project_?&*project_:nullptr);
     auto described = ui_.set_controls(controls);
     if (!described) throw std::runtime_error("UI rejected editor controls (key " + std::to_string(described.error().key) + ").");
     effects(*described);
-    auto gc = document_.collect_step();
+    auto gc = document_->collect_step();
     if (!gc) throw std::runtime_error(gc.error().message);
     if (!target.drawable) { MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
     using Clock = std::chrono::steady_clock;
@@ -530,13 +613,13 @@ bool Application::step(renderer::Capture* capture) {
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};
-    cubes_.clear();
-    const auto items = viewport?take(document_.world().render_items()):std::vector<world::RenderItem>{};
-    cubes_.reserve(items.size());
+    meshes_.clear();
+    const auto items = viewport?take(document_->world().render_items()):std::vector<world::RenderItem>{};
+    meshes_.reserve(items.size());
     for (const auto& item : items)
-        cubes_.push_back({item.world, {.19f, .42f, .57f, 1}, item.actor == document_.selected()});
+        meshes_.push_back({item.world, {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1}, item.actor == document_->selected(),item.geometry});
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, scene_bounds, cubes_};
+    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, scene_bounds, meshes_};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
@@ -563,12 +646,13 @@ void Application::close() {
     if (closed_) return;
     closed_ = true;
     close_menu(false);
+    for (auto& submenu:submenus_) submenu->close();
     if (popup_) popup_->close();
     effects(ui_.cancel_interaction());
-    const auto cancelled = document_.cancel_edit();
+    const auto cancelled = document_->cancel_edit();
     if (!cancelled) throw std::runtime_error(cancelled.error().message);
     window_.capture(false);
-    take(completion(document_.close()));
+    take(completion(document_->close()));
     const auto stopped = renderer_.close();
     if (!stopped) throw std::runtime_error(stopped.error().cause.message);
 }

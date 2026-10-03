@@ -1,4 +1,5 @@
 #include "editor/workspace.hpp"
+#include "editor/assets.hpp"
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
@@ -9,12 +10,19 @@ Workspace::Workspace() : dock(1ULL<<48,{
     {control::scene_tab,control::scene_content,L"Scene View",{240,160}},
     {control::parameters_tab,50,L"Parameters",{220,260}},
     {control::workbench,300,L"Controls",{220,280}},
-    {control::actors_tab,21,L"Actors",{180,140}}}) { reset_layout(); }
+    {control::actors_tab,21,L"Scene Tree",{180,140}},
+    {control::assets_tab,control::assets_content,L"Asset Browser",{240,140}}}) { reset_layout(); }
 void Workspace::reset_layout() {
     dock.reset();
     dock.move(control::scene_tab,control::parameters_tab,ui::DockSide::left,.62f);
     dock.move(control::actors_tab,control::parameters_tab,ui::DockSide::bottom,.7f);
-    dock.select(control::parameters_tab); menu.reset(); menu_bar_collapsed=false;
+    dock.move(control::assets_tab,control::scene_tab,ui::DockSide::bottom,.73f);
+    dock.select(control::parameters_tab); menu.reset(); menu_bar_collapsed=shelf_collapsed=false;
+}
+void Workspace::reset_document() {
+    bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;
+    navigation_={ObjectId{}}; navigation_cursor_=0; query.clear(); tree_query.clear();
+    menu.reset(); assets.reset(project_open);
 }
 const Workspace::Binding* Workspace::binding(ui::ControlKey key) const noexcept {
     const auto found = std::find_if(bindings_.begin(), bindings_.end(), [key](const auto& item) { return item.key == key; });
@@ -46,26 +54,31 @@ Result<void> Workspace::navigate(Session& session,int direction) {
     return changed;
 }
 Result<void> Workspace::select_tree(Session& session,ui::ControlKey key) {
-    if (key==control::tree_world) {
-        auto result=session.select({});
-        if (result) { tree_component_={}; tree_actor_={}; }
-        return result;
-    }
+    if (key==control::tree_world) return session.select({});
     const auto* target=binding(key);
-    if (!target) return {};
-    auto actor=target->object;
-    const bool component=target->kind==Binding::Kind::tree_component;
-    if (component) {
-        auto state=world::inspect_component(session.world().runtime(),target->object);
-        if (!state) return std::unexpected(state.error());
-        actor=state->owner;
+    return target && target->kind==Binding::Kind::object?session.select(target->object):Result<void>{};
+}
+bool Workspace::command_enabled(Command command,const Session& session) const {
+    switch (command) {
+    case Command::save_scene: case Command::save_scene_as: case Command::open_scene:
+    case Command::import_mesh: case Command::refresh_assets: return project_open;
+    case Command::undo: return (sample_history()?workbench.undo_count():session.undo_count())!=0;
+    case Command::redo: return (sample_history()?workbench.redo_count():session.redo_count())!=0;
+    case Command::create_actor: case Command::create_static_mesh: {
+        const auto members=session.world().members(); return members && members->size()<Session::maximum_actors;
     }
-    auto result=session.select(actor);
-    if (result) {
-        tree_actor_=actor; tree_component_=component?target->object:ObjectId{};
-        if (component) parameter_page=control::parameter_components;
+    case Command::erase_actor: case Command::focus: {
+        if (session.selected()==ObjectId{}) return false;
+        const auto state=world::inspect_actor(session.world().runtime(),session.selected());
+        if (!state || !state->can_edit) return false;
+        if (command==Command::erase_actor) return true;
+        const auto root=world::root_component(session.world().runtime(),session.selected());
+        return root && root->has_value();
     }
-    return result;
+    case Command::previous_tab: case Command::next_tab: case Command::close_tab: case Command::maximize_pane:
+        return dock.focused_tab()!=0;
+    default: return true;
+    }
 }
 ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, Binding::Kind kind) {
     if (!path.empty()) kind=Binding::Kind::field;
@@ -79,7 +92,7 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
     std::iter_swap(bindings_.begin()+static_cast<std::ptrdiff_t>(binding_cursor_),bindings_.end()-1);
     return bindings_[binding_cursor_++].key;
 }
-std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame) {
+std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project) {
     const auto take = []<class T>(Result<T> value) -> T {
         if (!value) throw std::runtime_error(value.error().message);
         return std::move(*value);
@@ -116,8 +129,6 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         return result.back();
     };
     const auto selected = session.selected();
-    if (selected!=tree_actor_ || !live.contains(tree_component_)) tree_component_={};
-    tree_actor_=selected;
     const auto old_cursor=navigation_cursor_;
     std::size_t destination{};
     for (std::size_t i=0;i<navigation_.size();++i) {
@@ -134,27 +145,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         navigation_cursor_=navigation_.size()-1;
     }
     const auto actor_status = selected == ObjectId{} ? world::ActorStatus{} : take(world::inspect_actor(runtime, selected));
-    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_transform(runtime, selected));
-    ObjectId cube;
-    if (selected != ObjectId{}) {
-        const auto composition = take(world::components(runtime, selected));
-        for (const auto& component : composition) {
-            const auto state = take(world::inspect_component(runtime, component.id()));
-            if (state.valid && take(runtime.is_a(state.type, session.types().cube))) { cube = component.id(); break; }
-        }
-    }
+    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_component(runtime, selected));
     auto root = NodeInput::column(); root.width = root.height = Axis::expand();
     add(1, 0, ControlKind::container, root);
-    const float menu_height=menu_bar_collapsed?8.f:32.f;
-    auto bar=NodeInput::row(); bar.height=Axis::fixed(menu_height);
-    add(2,1,ControlKind::container,bar).classes={"menubar"};
-    auto handle=NodeInput::box(12,menu_height); handle.padding.bottom=menu_bar_collapsed?0.f:18.f;
-    auto& stow=add(control::menu_bar_handle,2,ControlKind::button,handle);
-    stow.icon=menu_bar_collapsed?ui::ControlIcon::down:ui::ControlIcon::up;
-    stow.classes={"bar-stow"};
-    auto menu_body=NodeInput::row(); menu_body.height=Axis::expand(); menu_body.width=Axis::expand();
-    menu_body.padding={0,1,0,1}; menu_body.collapsed=menu_bar_collapsed;
-    add(control::menu_bar_body,2,ControlKind::container,menu_body);
+    auto menu_body=NodeInput::row(); menu_body.padding={0,1,0,1};
+    const auto menu_height=ui::append_collapsible_bar(result,
+        {2,1,control::menu_bar_handle,control::menu_bar_body,32,menu_bar_collapsed,menu_body,"menubar"});
     constexpr std::array titles{L"File",L"Edit",L"Create",L"View",L"Window"};
     for (std::size_t index=0;index<titles.size();++index) {
         auto shape=NodeInput::box(0,0); shape.height=Axis::expand(); shape.width=Axis::content(38);
@@ -163,9 +159,29 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         title.classes={"menubar-item"}; title.context_target=key;
         title.selected=menu && menu->source==key;
     }
+    const auto shelf_height=ui::append_collapsible_bar(result,
+        {control::shelf,1,control::shelf_handle,control::shelf_contents,56,shelf_collapsed,NodeInput::column(),"tool-shelf"});
+    const std::array shelf_tabs{ui::ParameterTab{control::shelf_create,L"Create"},ui::ParameterTab{control::shelf_view,L"View"}};
+    const auto tab_start=result.size();
+    ui::append_parameter_tabs(result,control::shelf_tabs,control::shelf_contents,shelf_page,shelf_tabs,17+1.f/3);
+    for (auto index=tab_start;index<result.size();++index)
+        result[index].classes.push_back(result[index].kind==ControlKind::button?"shelf-tab":"shelf-tabs");
+    auto tools=NodeInput::row(); tools.height=Axis::expand(); tools.padding={2,1,2,1};
+    add(control::shelf_body,control::shelf_contents,ControlKind::container,tools);
+    for (const auto& definition:command_definitions) {
+        const auto group=shelf_page==control::shelf_create?CommandGroup::create:CommandGroup::view;
+        if (definition.group!=group) continue;
+        auto shape=NodeInput::box(64,0); shape.height=Axis::expand();
+        const auto title=definition.shelf_title.empty()?definition.title:definition.shelf_title;
+        auto& tool=add(static_cast<ui::ControlKey>(definition.id),control::shelf_body,ControlKind::button,shape,std::wstring(title));
+        tool.classes={"shelf-tool"}; tool.enabled=command_enabled(definition.id,session);
+        tool.icon=definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
+            definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
+    }
     auto body = NodeInput::column(); body.height = Axis::expand();
     add(20, 1, ControlKind::container, body);
-    dock.append(result,20,{size.width,std::max(0.f,size.height-menu_height-26)},[&](const ui::DockTab& view,std::vector<ui::Control>&,ui::ControlKey parent) {
+    constexpr float footer_height=26;
+    dock.append(result,20,{size.width,std::max(0.f,size.height-menu_height-shelf_height-footer_height)},[&](const ui::DockTab& view,std::vector<ui::Control>&,ui::ControlKey parent) {
     auto heading=NodeInput::box(0,26); heading.width=Axis::expand();
     if (view.key==control::scene_tab) {
         auto contents=NodeInput::column(); contents.width=contents.height=Axis::expand();
@@ -180,6 +196,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     pane_content.role=ui::Role::panel;
     if (view.key==control::parameters_tab) pane_content.classes={"parameter-pane"};
     if (view.key==control::workbench) { workbench.append(result,view.content); return; }
+    if (view.key==control::assets_tab) {
+        assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame);
+        return;
+    }
     if (view.key==control::actors_tab) {
         ui::append_path_bar(result,{24,21,control::actor_path,control::actor_back,control::actor_forward,L"World",can_navigate(-1),can_navigate(1)});
         auto list=NodeInput::column(); list.height=Axis::expand();
@@ -194,20 +214,14 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             auto& item=add(actor_key,control::actor_tree,ControlKind::tree_item,row,std::wstring(session.name(member.id())));
             item.tree_parent=control::tree_world; item.tree_initially_expanded=false;
             if (const auto expansion=tree_expansion_.find(actor_key);expansion!=tree_expansion_.end()) item.tree_initially_expanded=expansion->second;
-            item.icon=ui::ControlIcon::object; item.classes={"actor"};
+            const auto type=take(runtime.describe(state.type));
+            auto type_name=type->name;
+            if (const auto dot=type_name.find_last_of('.');dot!=type_name.npos) type_name=type_name.substr(dot+1);
+            item.text+=L"   ("+std::wstring(type_name.begin(),type_name.end())+L")";
+            const bool mesh_actor=take(runtime.is_a(state.type,session.types().static_mesh_actor));
+            item.icon=mesh_actor?ui::ControlIcon::mesh:ui::ControlIcon::object; item.classes={mesh_actor?"mesh-actor":"actor"};
             item.enabled=state.state==world::ActorState::attached_inactive || state.state==world::ActorState::active;
-            item.selected=member.id()==selected && tree_component_==ObjectId{};
-            for (const auto& component:take(world::components(runtime,member.id()))) {
-                const auto info=take(world::inspect_component(runtime,component.id()));
-                const auto type=take(runtime.describe(info.type));
-                auto name=type->name;
-                if (const auto dot=name.find_last_of('.');dot!=name.npos) name=name.substr(dot+1);
-                auto& child=add(bind(component.id(),{},Binding::Kind::tree_component),control::actor_tree,ControlKind::tree_item,row,std::wstring(name.begin(),name.end()));
-                child.tree_parent=actor_key; child.selected=component.id()==tree_component_;
-                const bool is_transform=take(runtime.is_a(info.type,session.types().transform));
-                child.icon=is_transform?ui::ControlIcon::axes:ui::ControlIcon::component;
-                child.classes={is_transform?"transform":"component"};
-            }
+            item.selected=member.id()==selected;
         }
         auto filter=NodeInput::row(6); filter.height=Axis::content(ui::single_line_height); filter.padding={4,2,3,2};
         add(29,21,ControlKind::container,filter);
@@ -219,21 +233,25 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     ui::append_path_bar(result,{75,50,control::parameter_path,control::parameter_back,control::parameter_forward,L"World",can_navigate(-1),can_navigate(1)});
     ui::append_object_header(result,51,50,52,selected==ObjectId{}?ui::ControlKey{77}:bind(selected,{},Binding::Kind::name),
-        L"Actor",selected==ObjectId{}?L"No selection":std::wstring(session.name(selected)),actor_status.can_edit);
+        selected==ObjectId{}?L"Actor":([&] { auto name=take(runtime.describe(actor_status.type))->name;
+            if (const auto dot=name.find_last_of('.');dot!=name.npos) name=name.substr(dot+1);
+            return std::wstring(name.begin(),name.end()); })(),selected==ObjectId{}?L"No selection":std::wstring(session.name(selected)),actor_status.can_edit);
     const std::array tabs{ui::ParameterTab{control::parameter_transform,L"Transform"},ui::ParameterTab{control::parameter_components,L"Components"}};
     auto page_stack=NodeInput::column(); page_stack.height=Axis::expand();
     add(93,50,ControlKind::container,page_stack).classes={"parameter-page"};
     ui::append_parameter_tabs(result,control::parameter_pages,93,parameter_page,tabs);
     auto scroll=NodeInput::column(7); scroll.height=Axis::expand(); scroll.padding={0,7.333f,0,8};
     add(control::parameter_list,93,ControlKind::list,scroll).classes={"parameter-list"};
-    auto component_row = NodeInput::row(6); component_row.height = Axis::fixed(26);
-    component_row.collapsed=parameter_page!=control::parameter_components;
-    add(56, control::parameter_list, ControlKind::container, component_row).classes={"parameter-inset"};
-    auto component_button = NodeInput::box(0, 26); component_button.width = Axis::content();
-    add(control::add_transform, 56, ControlKind::button, component_button, L"+ Transform").enabled = actor_status.can_edit && !transform;
-    component_button.width = Axis::expand();
-    if (cube != ObjectId{}) add(bind(cube), 56, ControlKind::button, component_button, L"− Cube").enabled = actor_status.can_edit;
-    else add(control::add_cube, 56, ControlKind::button, component_button, L"+ Cube").enabled = actor_status.can_edit && transform.has_value();
+    auto composition=NodeInput::column(3); composition.collapsed=parameter_page!=control::parameter_components;
+    add(56,control::parameter_list,ControlKind::container,composition).classes={"parameter-inset"};
+    if (selected!=ObjectId{}) for (const auto& component:take(world::components(runtime,selected))) {
+        const auto state=take(world::inspect_component(runtime,component.id()));
+        auto type=take(runtime.describe(state.type))->name;
+        if (const auto dot=type.find_last_of('.');dot!=type.npos) type=type.substr(dot+1);
+        auto row=ui::single_line_layout(); row.width=Axis::expand();
+        auto& entry=add(bind(component.id()),56,ControlKind::label,row,std::wstring(type.begin(),type.end()));
+        entry.icon=ui::ControlIcon::component;
+    }
     auto page=NodeInput::column(7); page.collapsed=parameter_page!=control::parameter_transform;
     add(85,control::parameter_list,ControlKind::container,page);
     auto search_row=NodeInput::row(8); search_row.flow=FlexSpec{}; search_row.flow->align_items=Alignment::fit(.5f);
@@ -252,7 +270,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     for (std::size_t axis = 0; axis < matches.size(); ++axis)
         matches[axis] = std::wstring_view(aliases[axis]).find(folded) != std::wstring_view::npos;
     const bool any = std::any_of(matches.begin(), matches.end(), [](bool match) { return match; });
-    if (!any || !transform) add(53,85,ControlKind::label,heading,any ? L"No Transform" : L"No matching parameters");
+    if (!any || !transform) add(53,85,ControlKind::label,heading,any ? L"No scene root" : L"No matching parameters");
     auto section=NodeInput::box(0,28); section.width=Axis::expand();
     auto& fold=add(control::position_fold,85,ControlKind::foldout,section,L"Transform");
     fold.selected=position_expanded; fold.classes={"section"}; fold.layout.collapsed=!any;
@@ -278,9 +296,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     add(90,85,ControlKind::label,hint,L"Middle drag: value ladder · Shift: fine steps").role = ui::Role::caption;
     add(91,85,ControlKind::label,hint,L"Right click: parameter menu · Ctrl + middle: defaults").role = ui::Role::caption;
     auto info=hint; info.collapsed=parameter_page!=control::parameter_components;
-    add(92,control::parameter_list,ControlKind::label,info,L"Components belong to this Actor. Adding or removing one participates in scene history.").role=ui::Role::caption;
+    add(92,control::parameter_list,ControlKind::label,info,L"Components owned by the selected Actor.").role=ui::Role::caption;
     });
-    auto footer = NodeInput::row(); footer.height = Axis::fixed(26); footer.padding = {8, 2, 8, 0};
+    auto footer = NodeInput::row(); footer.height = Axis::fixed(footer_height); footer.padding = {8, 2, 8, 0};
     add(100, 1, ControlKind::container, footer).role = ui::Role::panel;
     auto status_box = NodeInput::box(0, 26); status_box.width = Axis::expand();
     add(101, 100, ControlKind::label, status_box, status + L"  |  " + std::to_wstring(members.size()) + L" Actors").role = ui::Role::caption;
@@ -298,34 +316,16 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         else {
             std::vector<ui::MenuItem> items=dock.menu_items(source->key,frame);
             if (control::is_menu(source->key)) {
-                const auto command=[&](ui::ControlKey key,const wchar_t* text,bool enabled=true,const wchar_t* shortcut=L"",bool separator=false) {
-                    items.push_back({key,text,enabled,false,{},shortcut,separator});
-                };
-                switch (source->key) {
-                case control::file_menu: command(control::exit,L"Exit",true,L"Alt+F4"); break;
-                case control::edit_menu:
-                    command(control::undo,L"Undo",(sample_history()?workbench.undo_count():session.undo_count())!=0,L"Ctrl+Z");
-                    command(control::redo,L"Redo",(sample_history()?workbench.redo_count():session.redo_count())!=0,L"Ctrl+Shift+Z");
-                    command(control::remove_actor,L"Delete Actor",actor_status.can_edit,L"Delete",true); break;
-                case control::create_menu:
-                    command(control::add_actor,L"Add Actor",members.size()<Session::maximum_actors);
-                    command(control::add_transform,L"Add Transform",actor_status.can_edit && !transform,L"",true);
-                    command(control::add_cube,L"Add Cube",actor_status.can_edit && transform.has_value() && cube==ObjectId{}); break;
-                case control::view_menu:
-                    command(control::focus,L"Focus Selection",transform.has_value() &&
-                        (actor_status.state==world::ActorState::attached_inactive || actor_status.state==world::ActorState::active),L"F");
-                    command(control::reset,L"Reset Camera"); break;
-                case control::window_menu:
-                    command(control::show_scene,L"Scene View"); command(control::show_parameters,L"Parameters");
-                    command(control::show_controls,L"Controls"); command(control::show_actors,L"Actors");
-                    command(control::maximize_pane,L"Maximize / Restore Pane",true,L"Ctrl+B",true);
-                    command(control::reset_layout,L"Reset Layout"); break;
-                }
+                const auto group=static_cast<CommandGroup>(source->key-control::file_menu);
+                for (const auto& definition:command_definitions) if (definition.group==group)
+                    items.push_back({static_cast<ui::ControlKey>(definition.id),std::wstring(definition.title),
+                        command_enabled(definition.id,session),false,{},std::wstring(definition.shortcut),definition.separator});
             } else if (control::is_path(source->key)) {
                 items.push_back({control::world_context,L"World",true,selected==ObjectId{},{}});
                 for (const auto& member:members) items.push_back({bind(member.id(),{},Binding::Kind::navigation),
                     std::wstring(session.name(member.id())),true,selected==member.id(),{},L"",items.size()==1});
-            } else if (!items.empty()) {}
+            } else if (source->key==browser_control::filter) items=assets.filter_menu();
+            else if (!items.empty()) {}
             else if (source->kind==ControlKind::combo && source->key==workbench_control::mode) {
                 for (std::size_t i=0;i<ControlWorkbench::mode_names.size();++i)
                     items.push_back({workbench_control::mode_first+i,ControlWorkbench::mode_names[i],true,workbench.values().mode==i,{}});

@@ -31,7 +31,7 @@ void verify_pane_handles(Application& app,const std::filesystem::path& output,Co
     click_outer(DockSpace::collapse_second_button(vertical),true);
     require(!app.presented()->find(field) && app.presented()->find(control::viewport),"Collapse second side failed.");
     // Showing a registered view must reveal all its collapsed ancestors.
-    click(app,DockSpace::menu_button(scene)); key(app,VK_HOME); key(app,VK_DOWN); key(app,VK_RETURN);
+    click(app,control::show_parameters);
     require(app.presented()->find(field) && app.presented()->find(parameters)->bounds==parameter_bounds,
         "Show Parameters did not reveal a collapsed ancestor.");
     click_outer(DockSpace::divider_grip(horizontal),true);
@@ -118,7 +118,7 @@ void verify_docking(Application& app,const std::filesystem::path& output,atelier
     click(app,control::workbench);
     key(app,'W',true);
     require(!app.docking().pane(control::workbench) && app.presented()->find(control::viewport),"Close did not normalize the tab group.");
-    click(app,DockSpace::menu_button(app.docking().pane(control::scene_tab)));
+    click(app,DockSpace::add_tab_button(app.docking().pane(control::scene_tab)));
     key(app,VK_HOME); key(app,VK_DOWN); key(app,VK_DOWN); key(app,VK_RETURN);
     require(app.workbench_visible() && app.control_workbench().values().position[0]==2 &&
             app.control_workbench().undo_count()==sample_history,"Reopening lost the view's state or history.");

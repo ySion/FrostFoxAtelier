@@ -1,83 +1,104 @@
-# World与游戏对象
+# World 与游戏对象
 
-正式公共入口为[world.hpp](../../../src/world/world.hpp)，数学值为[math.hpp](../../../src/world/math.hpp)。`atelier_world`只依赖`atelier_runtime`，不依赖Application、编辑器、renderer或RHI。JIT适配由宿主使用现有`atelier_source`提供；[无窗口消费者](../../../acceptance/world/main.cpp)展示完整接线。
+正式入口为 [world.hpp](../../../src/world/world.hpp)，数学值为 [math.hpp](../../../src/world/math.hpp)。`atelier_world` 链接 `atelier_runtime`；网格使用 [mesh.hpp](../../../src/geometry/mesh.hpp) 中不依赖窗口、GPU 或 Runtime 的不可变 CPU 资源协议。无窗口宿主不链接 renderer/RHI。语言执行由宿主适配 `atelier_source` 的已验证入口，[完整消费者](../../../acceptance/world/main.cpp)展示接线。
 
-## 对象与引用
+## 类型与所有权
 
-- 宿主拥有Runtime，先调用`world::register_types`，再注册额外派生类型，最后创建对象。Types返回正式TypeId、Counter方法/字段以及Transform三组字段路径。
-- Vec3、Quaternion和五个对象类型的反射声明与字段、方法写在各自C++定义旁。构建生成`world/math.gen.hpp`、`world/world.gen.hpp`及对应实现，沿用NativeRegistration产出TypeDefinition；`world::register_types`仍是唯一成组发布入口，保留原注册顺序与字段路径绑定。生成元数据只获得所需friend访问，`detail::Access`继续负责World业务关系访问。
-- Actor和Component都是core.Object的正式派生类型，Transform、Cube、Counter正式派生于Component。Actor可有零组件；对象与语言执行共用Runtime的ObjectId、存储及GC，没有第二实体身份。
-- Actor的隐藏强引用序列是组成与顺序的权威。附属Component强持owner，**单个组件强引用会保住Actor及兄弟组件**；这个代价是明确合同。移除组件通过一次Core引用批次解除双向关系。
-- Cube以弱引用明确绑定同Actor的Transform。每个Actor至多一个Transform，包括其派生类型；移除仍被Cube依赖的Transform会失败。允许多个Cube分别产生绘制项，UI可以限制其首片创建范围。
-- `components`返回普通ObjectRoot快照；历史保活也使用普通根。它们不冻结字段或组成。无外部根的Actor↔Component环可由现有追踪GC回收；索引、请求与历史来源凭证不形成隐藏根。
+```text
+core.Object
+├─ Actor
+│  └─ StaticMeshActor
+└─ Component
+   └─ SceneComponent
+      └─ StaticMeshComponent
+```
 
-World借用Runtime。Runtime必须晚于World、未结束任务及相关对象操作结束；根本身不能延长Runtime寿命。对象数据可以活过World，不能靠强引用继续使用关闭的世界服务。
+- Actor/Component 是世界的业务模型。所有对象沿用 Runtime 的 TypeId、ObjectId、继承、引用与 GC；类型桶只提供查询索引，不决定执行顺序。
+- `register_types` 一次发布 Vec3、Quaternion、Material 三个值类型与上述五个对象类型。元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 追加在原有类型之后，拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
+- Actor 的隐藏强引用序列决定组成顺序，Component 强持 owner。一个组件的普通强引用会保住 Actor 和兄弟组件；没有外部根的组成环可被 GC 回收。
+- Actor 的显式根引用和 SceneComponent 的空间父引用均为弱引用。组成负责拥有，空间关系负责坐标继承，两种顺序独立。
+- StaticMeshComponent 继承完整局部 TRS，持有不可变 geometry::Mesh 资源和 Material 值。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。
+- `components` 返回普通根快照，保持身份与当前数据，不冻结字段。World 成员目录持有 Actor 根；查询、执行列表、请求和历史来源凭证不另建隐藏根。
 
-## 状态、编辑与呈现
+Runtime 必须晚于 World、相关对象操作及任务结束。对象可以活过旧 World，但普通根不能延长 Runtime 或关闭的 World 服务寿命。
 
-`inspect_actor(Runtime&,ObjectId)`统一返回状态和`enabled/can_edit/can_present`。它先验证上下文和身份，再访问类型与载荷；本Runtime已终结或空身份为Invalid，其他Runtime或非Actor类型是错误。`inspect_component`给出其独立启用、激活与呈现资格。
+## StaticMeshActor 完整创建
 
-`can_present`表示实际World呈现注册：Actor至少有一个已注册的呈现组件时为true，Component自身已注册时为true。空Actor可以是AttachedInactive且`can_edit=true`，同时`can_present=false`。对象列表与选择依据有效成员状态，字段编辑依据`can_edit`，聚焦还要求真实根Transform；绘制项统一取自`render_items`。是否Active不决定编辑器可见性。
+`create_static_mesh_actor(World&, const StaticMeshActorDesc&)` 返回普通 ObjectRoot，指向已组装、尚未注册的 StaticMeshActor。描述包含 `mesh`（MeshRef）、`transform`（Trs）与 `material`（Material）；结果仅包含一个作为显式根的 StaticMeshComponent，没有独立 Transform。`root_component` 与 `components` 沿既有入口查询真实组成。
 
-| 状态 | 含义 |
+工厂先验证 TRS 与基础色，再沿现有 Runtime 创建和 World 组成机制组装对象。失败清理本次未发布对象；成功返回不会修改 World 成员、查询或呈现目录，也不产生生命周期通知或 Begin。开放的运行中 World 同样可以准备 Detached 图；随后 `World::attach` 才注册整组并按当前运行状态决定 Begin。关闭 World 或回调内重入会在创建前拒绝。
+
+MeshRef 可为空，此时根组件依然存在但不产生绘制项。工厂没有内置方块分支；快捷创建或资源条目按需要传入 `geometry::cube_mesh()` 或其他共享网格。MeshRef 是不可变 CPU 内容的共享引用，不是持久资产 ID；World 的组件和提取快照按各自生命周期保有内容，renderer 消费同一协议。
+
+编辑器创建应先取得完整 Detached 图，再一次 attach，并为 `Commit.changed` 记录一个 Actor 创建项；通知失败按已提交结果处理。现有 ActorRemoval 即可整组 detach/restore，保持 Actor、根组件与资源关系，勿把组装步骤拆成独立组件历史。原始 `create_actor/runtime.create` 只建立类型与默认存储，完整默认组成由这个工厂负责。
+
+## 空间树与网格
+
+`Attachment{component, parent, root}` 同时声明组成与空间挂接。`World::attach_components` 接受本 World 成员以及同 Runtime 的 Detached Actor；后者只建立对象组成，不登记成员、查询、呈现或运行回调。`attach` 校验已经完整的对象图后再注册。一个 Actor 可以没有空间组件；有空间组件时必须显式指定唯一根，其余节点必须沿同一 Actor 内的父链抵达根。批次内允许父组件晚于子组件出现；重复身份、多个根、跨 Actor 父引用、环与非法 TRS 在发布前整批拒绝。
+
+根由 Attachment 明确指定，不按类型、注册顺序或组成位置推断。`root_component` 与 `scene_parent` 读取真实引用。根不能被挂到其他节点下面；移除有孩子的节点会失败。先移除或换父处理孩子，再移除该节点。移除最后一个根同时清除 Actor 根引用。
+
+`reparent(component, parent, rule)` 在停止的 World 中调整同 Actor 内的非根节点：
+
+- `keep_local` 保留局部 TRS，世界矩阵随新父变化。
+- `keep_world` 先计算 `old_world * inverse(new_parent_world)`，完整验证后再同时发布父引用和局部 TRS。不能表示的剪切、反射、奇异父矩阵或溢出返回错误，原状态不变。浮点正交检查容差为 `1e-6`。
+
+Trs 使用 position、xyzw 四元数、每轴严格为正的 scale；输入有限，四元数非零并规范化，不设置任意缩放下限。Matrix4 为行主序、行向量，`local = S * R * T`，平移位于 12–14；`world = local * parent_world`。世界矩阵可含层级复合形成的剪切，不重新分解成 TRS，也不保存第二份可编辑状态。溢出或无效身份不返回伪造的单位矩阵。
+
+`set_geometry(Runtime&, component, resource)` 是网格资源的写入口：可在 Detached 对象加入世界前配置，也可在宿主边界替换成员资源；回调内重入失败。空资源撤下呈现注册，替换资源不改变 Component 身份或创建 Tick。geometry::Mesh 构造时验证非空三角形列表、有限坐标和有效法线；多个对象可共享同一不可变资源。当前 Material 表达线性不透明基础色，不包含资产导入、着色器图或资源预算系统。
+
+## 生命周期与执行顺序
+
+`bind_behavior(TypeId, Behavior{begin,tick,end})` 配置 Actor 或 Component 的可选执行入口，只能在 World 停止时修改。实际类型沿 Runtime 已有基类链查找最近的一份完整登记；派生登记整体替代祖先登记，显式空登记可关闭继承行为。Actor 和 Component 使用同一有序执行队列与失败清理机制；它只配置 World 调度，不声明第二套类型、方法身份或语言虚分派。
+
+原生适配器可调用现有 Runtime MethodId；语言适配器调用经 Program.bind 验证的 Entry。所有回调都在 native borrow 外执行，携带 Runtime 和 ObjectId，接收者受根与 ExecutionScope 保护。source 当前支持的单入口热发布边界仍然适用。
+
+| 时机 | 行为 |
 | --- | --- |
-| Detached | 对象有效但不是World成员，可读取或明确终结；不能通过World编辑/运行/呈现 |
-| AttachedInactive | 仍是成员，但World停止或Actor未启用；编辑模式下仍可显示、编辑 |
-| Active | World运行且Actor启用；组件还须满足自己的enabled与执行资格 |
-| Invalid | 对象身份已经终结；禁止再读载荷，不用墓碑区分GC与destroy |
+| start | 按 Actor 成员顺序，每个 Actor 先自身 Begin，再按组件组成顺序 Begin；禁用对象也进入这次运行周期 |
+| update | 同样顺序 Tick；只包括完成 Begin、启用且有 Tick 的对象，Actor 禁用同时阻止其组件 Tick；之后推进已有协程 |
+| 运行中加入 | 新 Actor 先自身再组件 Begin；已有 Actor 新增组件只 Begin 新组件，后续 Tick 使用当前完整组成顺序 |
+| enabled 改变 | 只改变 Tick 资格；禁用取消相关任务，不重复 Begin/End |
+| 移除组件或 Actor 离场 | 先取消相关任务；移除组件只 End 该组件，Actor 离场先组件逆序 End 再 Actor End；随后解除参与/关系 |
+| stop、close | 先停止 Tick 并取消任务，再按 Actor 成员逆序，每组先组件逆序 End，最后 Actor End |
 
-Actor私有的非拥有`member_world`是唯一成员关系，World成员目录持根，位置/类型表是索引。状态只读、由权威事实派生；进入和退出有内部重入保护，没有独立可写state或GC业务状态。
+只对成功完成 Begin 的对象执行一次 End。动态插入后的 End 以**当前组成顺序的逆序**为准，不以插入时间排序。没有回调的数据对象正常拥有生命周期，但不会产生空 Tick 调用。静态网格呈现不依赖 Tick。Actor Begin 可以读取完整组件组成，但组件 Begin 的业务副作用仍在随后执行。
 
-`World.read/write/set_transform`要求当前组件成员，编辑写还要求World停止且未进入回调/关闭。`enabled`只影响游戏运行意图，不隐含隐藏对象。Cube的呈现注册与Counter执行注册分别维护：stop取消游戏任务和执行注册，保留编辑呈现；detach/close结束全部相关World参与。
+Actor 或 Component Begin 失败停止后续 Begin，并逆序结束已经成功开始的对象。任一对象 Tick 首错停止本帧后续执行，整个 World 停止并完成 End 清理。End 失败仍继续其余清理，只报告首错；已产生的业务副作用不回滚。
 
-## 结构操作与历史
+`start_task` 接受活动 Actor 或 Component 的真实 Coroutine 启动器，World 持有 ready/suspended 任务。Actor 禁用或离场取消自身和组件任务；单组件禁用或移除只取消其任务，stop/close 取消全部任务。这里不提供线程调度器。
 
-1. `create_actor/create_component`建立Detached对象并返回普通根。
-2. `World.attach`接纳Actor；`attach_components`接纳一批Attachment。先验证整个批次及依赖，再一次更新组成、owner和Cube绑定，最后发布索引。
-3. 同步`detach`返回ActorRemoval，包含根与原成员位置；`remove_component`返回ComponentRemoval，另含原owner和组成位置。记录可无抛移动，`restore`恢复同一身份，失败不抢占其他归属。
-4. 历史来源用World寿命的弱凭证，关闭后该次restore失效；它不保持World，也不限制Actor的永久归属。history裁剪只释放根，绝不触发永久销毁。
+LifecycleObserver 的 attached/detached 表达 World 注册/注销：Actor 整组注册按 Actor、组件正序通知，注销按组件逆序、Actor 最后；World close 还反转 Actor 顺序。动态组件增删采用相同规则；Detached 组成变动不产生这些通知。注册通知可以看到已提交完整图；注销通知可以看到已撤参与关系的完整对象，通知期间根仍保活。通知出错继续交付整组事件，并以 `Commit.notification_error` 报告。activated/deactivated 继续表达启用资格变化，所有通知均不代替 Begin/End。回调中同步结构修改失败，可用 `request/flush` 在宿主边界延后执行。
 
-同Runtime的Actor完全脱离后，可独立加入另一个兼容且开放的World。在A中直接加入B会失败；detach A与attach B是两个可分别失败的步骤。当前类型的兼容性包括唯一Transform、Cube显式依赖、有效TRS及统一Runtime；没有资源迁移、原子转移或永久affinity规则。
+正式创建路径为 `create_actor/create_component` 建立默认存储，`attach_components` 与字段写入准备 Detached 图，`attach` 校验并注册，之后由 start 开始运行。构造不访问尚未建立的 owner/World，GC 与析构不执行业务 End。本片没有额外 Initialize/PostLoad 钩子；文件解码及加载就绪协议仍待序列化增量。
 
-`Result`错误表示操作未正常完成。`Commit.notification_error`明确表示**变化已经提交，但生命周期通知或终结清理失败**；消费者先记录已完成变化，再报告错误、停止后续动作，不能据此伪回滚。原生构造、用户回调副作用与进程级内存耗尽不提供通用回滚保证。关系批次的普通验证失败不半写。
+## 状态、编辑与历史
 
-## 执行、请求与退出
+Actor 的私有非拥有 `member_world` 是成员关系权威。`inspect_actor` 返回 Detached、AttachedInactive、Active 或 Invalid，以及 enabled/can_edit/can_present。`inspect_component` 还报告 owner 和独立激活资格。外部 Runtime 身份或错误类型是错误，本 Runtime 的已终结身份是 Invalid。
 
-`start/stop/set_enabled`统一维护运行意图与实际执行注册。Counter默认调用其正式原生advance方法；可在停止状态安装CounterUpdate，适配同Runtime上的Program.Entry。更新期间身份受成员根及接收者根保护，source/JIT调用发生在所有with_native和引用遍历之外。
+- 空 Actor 仍可选择和编辑；`can_present` 表示实际网格呈现注册。静止编辑 World 仍渲染已有网格。
+- `read/write/set_transform` 使用实际 Component 和正式 FieldPath；编辑写要求 World 停止，也允许准备同 Runtime 的 Detached/未归属组件，拒绝其他 World 的成员。字段级 TRS 写与整值写使用同一验证。`remove_component/reparent/set_enabled` 同样支持 Detached 组成；编辑器 can_edit 仍以自身文档成员资格决定。
+- `attach_components` 一次提交组成、owner、root、parent 引用；普通验证失败不半写。`detach` 只撤 World 成员资格，保留整个对象图。
+- ActorRemoval 保存普通根与成员位置；ComponentRemoval 保存组件根、owner、组成位置、parent 和根身份。restore 恢复同一 ObjectId，重新验证全部关系及 World 来源，不抢占其他归属。
+- 历史来源凭证不保持 World；关闭后失效。裁剪历史只释放根，不隐式 destroy。TRS 编辑历史保存完整前后值，因为四元数单字段写会规范化其他分量。
+- `Commit.notification_error` 表示关系已提交、通知或清理出错。消费者先记录已完成变化，再报告错误，不能把它当作未提交。构造、副作用及进程级内存耗尽不提供通用回滚。
 
-`start_task`接受实际Coroutine启动器。World拥有返回的ready/suspended任务，在update推进；组件/Actor停用、移除、stop或close会取消相关任务并释放帧。启动器是可信宿主接口，必须使用传入Runtime与接收者；本模块不提供通用线程调度器。
+同一 Runtime 内完全离场的 Actor 可加入另一个 World。排队请求仅持 ObjectId 与原 World/owner 条件，flush 重新验证，不跟随对象迁入另一 World。回执只有 Commit，不返回移除历史或保活根；回调中新排的请求在下一次 flush 执行。
 
-LifecycleObserver是提交/退出通知，不拥有必要的执行或呈现注册。Actor的激活通知表示其组的有效运行条件改变；组件直接加入、移除或启用变化也通知相应目标。回调在执行保护下运行：同步结构重入失败，允许请求队列延后；通知失败记录首因并停止游戏更新，已有关系不伪装成未提交。
-
-`request`只返回排队号。宿主在静止点调用`flush`；回放重验原World、完整ObjectId和owner条件，不跟随已换World的目标。排队destroy不会提前使对象失效。**RequestCompletion只有Commit，没有同步移除的根或memento**；异步消费者若要保留对象，必须自己已有普通根。当前没有异步历史消费者，不另建结果variant或隐藏保活机制。回调产生的新请求在下一次flush处理。
-
-close先拒绝新操作，收束真实任务并撤下执行/呈现注册，清除member_world及索引，最后释放成员根。完成后World不可重启；重复close无副作用，残留排队回执可由flush取回关闭错误。World析构必须处于合法宿主边界，会完成同一close流程。
-
-`world::destroy_actor/destroy_component`是唯一游戏对象销毁入口。在场对象先经所在World退出，Detached对象直接进入共同关系清理与Runtime终结。原World已析构也能销毁离场整组；普通强引用不否决终结，旧身份不能恢复。Actor销毁先终结依赖者、再终结Transform，最后Actor。可信宿主不得直接Runtime.destroy游戏对象绕过这一入口。
-
-## Transform数学
-
-Trs包含position、xyzw四元数rotation及scale。输入必须有限，四元数非零后归一化，scale每轴严格大于零；没有任意epsilon缩放下限。字段级Transform写也经过同一TRS验证，失败保留原值。
-
-Matrix4为16个float，行主序/行向量，`local = S * R * T`，平移位于12–14，3/7/11为零、15为一。World求唯一矩阵，`RenderItem.world`由renderer直接消费，不另存第二套可编辑矩阵。当前没有空间父子或多空间部件操作；未知/最终不可表示的矩阵不以identity冒充成功。
-
-四元数单字段写可能规范化其他分量，所以应用层Transform编辑历史保存完整Trs before/after，再用set_transform恢复。World本身不建设快照或多写冲突版本体系。
+close 完成 End、撤呈现与成员关系、释放成员根，之后不可重启；重复 close 无副作用。`destroy_actor/destroy_component` 是游戏对象的终结入口，先经当前 World 退出再清理关系并调用 Runtime。整组按组成逆序终结组件，最后终结 Actor；结束参与与对象被 GC 收集是不同事件。可信宿主不得直接调用 Runtime.destroy 绕过此入口。
 
 ## 验收
 
 ```powershell
 . ./tools/enter-dev.ps1
 cmake --preset dev
-cmake --build --preset dev --target world_acceptance
+cmake --build --preset dev --target world_acceptance editor_document_acceptance
 cmake --preset release
-cmake --build --preset release --target world_acceptance
+cmake --build --preset release --target world_acceptance editor_document_acceptance
 ```
 
-两配置均输出`World acceptance: PASS (4/4)`。四组真实消费者覆盖：
+World 八组真实消费者覆盖 JIT 与协程、普通引用与 GC、World/历史/队列隔离、提交后失败、Actor/Component 有序生命周期、Detached 组成、空间树和通用网格资源，以及 StaticMeshActor 完整工厂、真实类型、材质/网格投影和整组身份恢复。编辑器文档链还覆盖一个根 StaticMeshComponent 的创建、继承字段编辑、整组位置恢复、旋转/缩放保留、根移除及同身份撤销。工厂增量的双配置记录为 `out/static-mesh-actor-dev-build.log` 和 `out/static-mesh-actor-release-build.log`；GPU 和窗口行为由各自实际窗口验收单独证明，之前的 `out/scene-candidate.json` 仍只记录其原冻结候选。
 
-- 空Actor、真实/派生组件、组成与依赖失败不半写、字段路径与完整TRS、编辑可见但不运行、同一Runtime的JIT Counter及真实协程取消。
-- 普通Actor字段和组件字段保组，World关闭并析构后的对象读取与整组明确销毁，以及独立的不可达强环GC样本。
-- 两个World隔离、Detached重新接纳、历史来源、跨Runtime/类型错误、旧World排队销毁拒绝及失效代际不复活。
-- 提交后通知失败、重入拒绝/延后、关闭准入与实际任务/注册归零。
+## 可保存的网格来源
 
-证据保存在实现树的`out/world-evidence/`：两配置构建/运行日志及最终源文件、二进制hash清单。本片未运行GUI，也未重跑已验收I/II的全部消费者。编辑器/renderer的IV完成由对应应用验收收口，III通过不等于整轮产品已经交付。
+`StaticMeshComponent` 的隐藏反射字段 `mesh_source` 保存资源来源键，`set_mesh_binding` 整体替换来源及不可变 MeshRef；直接 `set_geometry` 清除来源。`read_static_mesh` 返回拥有的来源、MeshRef 和 Material 快照，支持 Detached 和空网格，供完整场景存档读取；不以 presentation 列表代替组成。资源位置解析与文件格式仍由[工程模块](../editor/projects.md)负责。来源字段使用同一 `core.String`，没有另建对象身份或按组件 ID 建立来源副表。

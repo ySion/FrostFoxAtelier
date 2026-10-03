@@ -63,8 +63,10 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
     const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? style.indicator_size+6 : 0.f;
-    const float leading=control.icon!=ControlIcon::none && !control.text.empty()?style.indicator_size+6:0.f;
-    return {padding.left+style.padding.left+marker+leading,padding.top+style.padding.top,
+    const bool captioned=control.icon!=ControlIcon::none && !control.text.empty();
+    const float leading=captioned && style.icon_placement==IconPlacement::leading?style.indicator_size+6:0.f;
+    const float above=captioned && style.icon_placement==IconPlacement::above?style.indicator_size+2:0.f;
+    return {padding.left+style.padding.left+marker+leading,padding.top+style.padding.top+above,
             padding.right+style.padding.right+(control.kind==ControlKind::combo && (control.icon==ControlIcon::none || !control.text.empty())?18.f:0.f),padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
@@ -85,6 +87,7 @@ void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.border_shadow) value.border_shadow=*p.border_shadow;
     if (p.scrollbar_gutter) value.scrollbar_gutter=*p.scrollbar_gutter;
     if (p.combo_indicator) value.combo_indicator=*p.combo_indicator;
+    if (p.icon_placement) value.icon_placement=*p.icon_placement;
     if (p.indicator_size) value.indicator_size=*p.indicator_size;
     if (p.indicator_background) value.indicator_background=*p.indicator_background;
     if (p.indicator_border) value.indicator_border=*p.indicator_border;

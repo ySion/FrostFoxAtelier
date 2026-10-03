@@ -49,17 +49,17 @@ void String::move_from(String& other) noexcept {
     if (other.heap_) {
         heap_ = std::exchange(other.heap_, nullptr);
         buffer_.capacity = other.buffer_.capacity;
-    } else std::memcpy(buffer_.small, other.buffer_.small, size_ + 1);
+    } else std::memcpy(buffer_.inline_bytes, other.buffer_.inline_bytes, size_ + 1);
     // Assignment to an array member starts its union lifetime, including after
     // moving a heap string. Empty/moved-from objects always use inline storage.
-    other.buffer_.small[0] = '\0';
+    other.buffer_.inline_bytes[0] = '\0';
 }
 
 void String::release() noexcept {
     delete[] heap_;
     heap_ = nullptr;
     size_ = 0;
-    buffer_.small[0] = '\0';
+    buffer_.inline_bytes[0] = '\0';
 }
 
 void String::swap(String& other) noexcept {
@@ -91,8 +91,8 @@ void String::squeeze() {
     if (!heap_) return;
     if (size_ <= inline_capacity) {
         char* previous = heap_;
-        buffer_.small[0] = '\0';
-        std::memcpy(buffer_.small, previous, size_ + 1);
+        buffer_.inline_bytes[0] = '\0';
+        std::memcpy(buffer_.inline_bytes, previous, size_ + 1);
         heap_ = nullptr;
         delete[] previous;
     } else if (size_ < buffer_.capacity) reallocate(size_);

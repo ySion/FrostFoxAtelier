@@ -9,16 +9,35 @@ ui_layout::NodeInput single_line_layout(float width) {
     layout.height=ui_layout::Axis::content(single_line_height);
     return layout;
 }
+float append_collapsible_bar(std::vector<Control>& controls,const CollapsibleBar& bar) {
+    using namespace ui_layout;
+    constexpr float rail_width=8, collapsed_height=6, arrow_region_height=18;
+    const float height=bar.collapsed?collapsed_height:bar.expanded_height;
+    Control root; root.key=bar.key; root.parent=bar.parent;
+    root.layout=NodeInput::row(); root.layout.height=Axis::fixed(height);
+    if (!bar.style_class.empty()) root.classes.emplace_back(bar.style_class);
+    controls.push_back(std::move(root));
+    Control handle; handle.key=bar.handle_key; handle.parent=bar.key; handle.kind=ControlKind::button;
+    handle.layout=NodeInput::box(rail_width,height);
+    // Keep the arrow near the top while the whole rail remains clickable.
+    handle.layout.padding.bottom=std::max(0.f,height-arrow_region_height);
+    handle.icon=bar.collapsed?ControlIcon::down:ControlIcon::up; handle.classes={"bar-stow"};
+    controls.push_back(std::move(handle));
+    Control body; body.key=bar.body_key; body.parent=bar.key; body.layout=bar.body;
+    body.layout.width=body.layout.height=Axis::expand(); body.layout.collapsed=bar.collapsed;
+    controls.push_back(std::move(body));
+    return height;
+}
 void append_parameter_tabs(std::vector<Control>& controls,ControlKey key,ControlKey parent,
-                           ControlKey selected,std::span<const ParameterTab> tabs) {
+                           ControlKey selected,std::span<const ParameterTab> tabs,float tab_height) {
     Control bar; bar.key=key; bar.parent=parent; bar.layout=ui_layout::NodeInput::row();
-    bar.layout.height=ui_layout::Axis::content(26+2.f/3); bar.layout.padding={0,0,0,2.f/3}; bar.layout.flow=ui_layout::FlexSpec{};
+    bar.layout.height=ui_layout::Axis::content(tab_height+2.f/3); bar.layout.padding={0,0,0,2.f/3}; bar.layout.flow=ui_layout::FlexSpec{};
     bar.layout.flow->wrap=ui_layout::Wrap::wrap; bar.classes={"parameter-tabs"};
     controls.push_back(std::move(bar));
     bool first=true;
     for (const auto& tab:tabs) {
         Control item; item.key=tab.key; item.parent=key; item.kind=ControlKind::button; item.text=tab.text;
-        item.layout=ui_layout::NodeInput::box(0,26); item.layout.width=ui_layout::Axis::content(0);
+        item.layout=ui_layout::NodeInput::box(0,tab_height); item.layout.width=ui_layout::Axis::content(0);
         item.selected=tab.key==selected; item.selection_group=key; item.classes={"parameter-tab"};
         if (!first) item.classes.push_back("joined");
         controls.push_back(std::move(item)); first=false;
@@ -145,13 +164,14 @@ void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owne
         control.key=item.key; control.parent=row_key; control.kind=ControlKind::menu_item;
         control.layout=NodeInput::box(0,25+1.f/3); control.layout.height=Axis::content(25+1.f/3); control.layout.width=Axis::expand();
         control.text=item.text; control.enabled=item.enabled; control.selected=item.selected;
-        control.edit_command=item.edit_command;
+        control.edit_command=item.edit_command; control.menu_branch=!item.children.empty();
         controls.push_back(std::move(control));
-        if (!item.shortcut.empty()) {
+        if (!item.shortcut.empty() || !item.children.empty()) {
             Control shortcut; shortcut.key=allocate(); shortcut.parent=row_key; shortcut.kind=ControlKind::label;
-            shortcut.text=item.shortcut; shortcut.enabled=false; shortcut.classes={"menu-shortcut"};
+            shortcut.text=item.children.empty()?item.shortcut:L"";
+            if (!item.children.empty()) shortcut.icon=ControlIcon::right; shortcut.enabled=false; shortcut.classes={"menu-shortcut"};
             if (!item.enabled) shortcut.classes.push_back("unavailable");
-            shortcut.layout=NodeInput::box(0,0); shortcut.layout.width=Axis::content(); shortcut.layout.height=Axis::expand();
+            shortcut.layout=NodeInput::box(0,0); shortcut.layout.width=Axis::content(item.children.empty()?0.f:12.f); shortcut.layout.height=Axis::expand();
             shortcut.layout.out_of_flow=true; shortcut.layout.anchor_x=shortcut.layout.pivot_x=1;
             shortcut.layout.offset_x=-10;
             controls.push_back(std::move(shortcut));

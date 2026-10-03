@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/rhi.hpp"
+#include "geometry/mesh.hpp"
 #include "ui/frame.hpp"
 
 #include <array>
@@ -32,21 +33,22 @@ struct Camera {
     std::array<float, 16> view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::array<float, 16> projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 };
-struct Cube {
+struct MeshInstance {
     // Producer-evaluated local-to-world affine matrix. Same row-major storage
     // and row-vector convention as Camera; hierarchy evaluation stays outside
-    // the renderer. Local geometry remains the unit cube [-0.5,0.5].
-    // Non-finite, non-affine or singular matrices reject the entire frame before
-    // encoding. Invertible reflected transforms are supported by this boundary.
+    // the renderer. Geometry is an immutable, shareable triangle resource.
+    // Non-finite, non-affine, singular or GPU-unrepresentable normal transforms
+    // reject the entire frame before encoding. Invertible reflected transforms are supported by this boundary.
     std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     ui::Color color{0.2f, 0.45f, 0.75f, 1};
     bool selected{};
+    geometry::MeshRef geometry;
 };
 struct Frame {
     const ui::Frame &ui_frame; // Sole authoritative id/extent; borrowed to return.
     Camera camera;
     ui::Rect scene_viewport;     // Physical pixels, top-left origin.
-    std::span<const Cube> cubes; // Borrowed draw snapshots; no business object ownership.
+    std::span<const MeshInstance> meshes; // Borrowed draw snapshots; no business object ownership.
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts
