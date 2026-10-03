@@ -84,6 +84,50 @@ void snapshot(const render::Capture &c) {
         out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
     check(out.good(), "write capture evidence");
 }
+void ui_only_cases(render::Renderer &renderer, Window &window) {
+    const auto initial_extent = take(renderer.target()).extent;
+    ui::Frame ui_frame{.id = 3000, .extent = initial_extent, .draws = {}};
+    ui_frame.draws.push_back({{0, 0, 24, 24}, {0, 0, 24, 24}, {1, 0, 0, 1}, {0, 0, 1, 1}, {}});
+    render::Frame frame{ui_frame, {}, {}, {}};
+    auto result = take(renderer.render(frame));
+    check(result.status == render::FrameStatus::accepted && result.stats.scene_draw_calls == 0 &&
+              result.stats.ui_draw_calls == 1,
+          "cold renderer accepts an ordinary UI-only frame");
+    render::Capture capture;
+    auto capture_ui = [&] {
+        ++ui_frame.id;
+        const auto captured = take(renderer.render(frame, &capture));
+        check(captured.status == render::FrameStatus::accepted && captured.accepted_id == ui_frame.id &&
+                  capture.frame_id == ui_frame.id && capture.extent == ui_frame.extent &&
+                  captured.stats.scene_draw_calls == 0 && captured.stats.ui_draw_calls == 1,
+              "UI-only capture retains accepted metadata and draw counts");
+        check(capture.depth.size() == std::size_t(capture.extent.width) * capture.extent.height &&
+                  std::ranges::all_of(capture.depth, [](float value) { return value == 1; }) &&
+                  pixel(capture, 12, 12)[0] == 255 && pixel(capture, 30, 30)[0] == 0,
+              "UI-only capture has rendered color and uniform background depth");
+    };
+    capture_ui();
+    std::array<render::MeshInstance, 1> meshes{};
+    meshes[0].geometry = atelier::geometry::cube_mesh();
+    frame.meshes = meshes;
+    capture_ui(); // A zero viewport still has no scene, even with valid mesh input.
+    frame.meshes = {};
+    for (const auto extent : {ui::PixelExtent{503, 317}, initial_extent}) {
+        window.resize(static_cast<int>(extent.width), static_cast<int>(extent.height));
+        ++ui_frame.id;
+        result = take(renderer.render(frame, &capture));
+        check(result.status == render::FrameStatus::accepted && result.accepted_extent == ui_frame.extent &&
+                  capture.extent == ui_frame.extent && result.next_extent == extent,
+              "UI-only resize captures the rendered target before advancing its extent");
+        const auto captured_id = capture.frame_id;
+        result = take(renderer.render(frame, &capture));
+        check(result.status == render::FrameStatus::skipped && capture.frame_id == captured_id,
+              "UI-only extent mismatch retains the previous capture");
+        ui_frame.extent = extent;
+        capture_ui();
+    }
+    std::puts("Renderer UI-only: PASS (cold render/capture, zero viewport, resize, skipped capture)");
+}
 void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
     ui::Frame ui_frame{.id = 1000, .extent = extent, .draws = {}};
     std::array<render::MeshInstance, 2> cubes{};
@@ -227,6 +271,7 @@ int main() {
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    ui_only_cases(renderer, window);
     auto target = take(renderer.target());
     check(target.drawable && target.extent == ui::PixelExtent{641, 385}, "actual initial target");
     ui::Frame ui_frame{.id = 1, .extent = target.extent, .draws = {}};
@@ -375,12 +420,14 @@ int main() {
     ui_frame.draws.erase(ui_frame.draws.begin() + 2);
     frame.meshes = {};
     ++ui_frame.id;
-    result = take(renderer.render(frame));
+    result = take(renderer.render(frame, &capture));
     check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 0 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 0,
           "unused coverage leaves cache totals and empty scene emits no draw");
+    check(std::ranges::all_of(capture.depth, [](float value) { return value == 1; }),
+          "UI-only capture after a scene does not expose the retained scene depth");
     transform_cases(renderer, ui_frame.extent);
     mesh_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);

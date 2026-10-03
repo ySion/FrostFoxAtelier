@@ -356,18 +356,21 @@ struct Renderer::State {
         }
     }
     void draw(const Frame &frame, const ui::PixelExtent extent, Capture *capture) {
-        if (depth_extent != extent) {
-            if (depth) require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
-            const float clear[4] = {1, 0, 0, 0};
-            depth = gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_D32_FLOAT, 1, clear);
-            allocation(bool(depth));
-            depth_extent = extent;
-        }
-        require(gfxCommandClearBackBuffer(gfx), "Clear window");
-        require(gfxCommandClearTexture(gfx, depth), "Clear depth");
         const auto &viewport = frame.scene_viewport;
+        const bool draw_scene = !instances.empty() && viewport.width > 0 && viewport.height > 0;
+        require(gfxCommandClearBackBuffer(gfx), "Clear window");
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
-        if (!instances.empty() && viewport.width > 0 && viewport.height > 0) {
+        if (draw_scene) {
+            if (!scene)
+                prepare_pipeline(scene, "editor scene", shaders::scene_vs, shaders::scene_ps, true);
+            if (depth_extent != extent) {
+                if (depth) require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
+                const float clear[4] = {1, 0, 0, 0};
+                depth = gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_D32_FLOAT, 1, clear);
+                allocation(bool(depth));
+                depth_extent = extent;
+            }
+            require(gfxCommandClearTexture(gfx, depth), "Clear depth");
             BufferOwner data{gfx, gfxCreateBuffer<Instance>(gfx, static_cast<std::uint32_t>(instances.size()),
                                                             instances.data())};
             allocation(bool(data.buffer));
@@ -461,21 +464,29 @@ struct Renderer::State {
             const std::uint32_t pitch = (extent.width * 4 + 255) & ~255u;
             BufferOwner color{
                 gfx, gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read)};
-            BufferOwner z{
-                gfx, gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read)};
-            allocation(bool(color.buffer) && bool(z.buffer));
+            allocation(bool(color.buffer));
             require(gfxCommandCopyBackBufferToBuffer(gfx, color.buffer, pitch), "Capture window color");
-            require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
+            BufferOwner z{gfx, {}};
+            if (draw_scene) {
+                z.buffer = gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
+                allocation(bool(z.buffer));
+                require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
+            } else {
+                // A UI-only capture describes this frame, not a retained scene depth texture.
+                std::fill(capture->depth.begin(), capture->depth.end(), 1.0f);
+            }
             const auto finished = context.finish();
             if (!finished) throw Error{finished.error(), true};
             const auto *rgba = static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, color.buffer));
-            const auto *depth_bytes = static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, z.buffer));
-            allocation(rgba && depth_bytes);
+            const auto *depth_bytes = draw_scene
+                ? static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, z.buffer)) : nullptr;
+            allocation(rgba && (!draw_scene || depth_bytes));
             for (std::uint32_t y = 0; y < extent.height; ++y) {
                 std::memcpy(capture->rgba.data() + std::size_t(y) * extent.width * 4,
                             rgba + std::size_t(y) * pitch, extent.width * 4);
-                std::memcpy(capture->depth.data() + std::size_t(y) * extent.width,
-                            depth_bytes + std::size_t(y) * pitch, extent.width * 4);
+                if (depth_bytes)
+                    std::memcpy(capture->depth.data() + std::size_t(y) * extent.width,
+                                depth_bytes + std::size_t(y) * pitch, extent.width * 4);
             }
         }
     }
@@ -507,7 +518,6 @@ Result<Renderer> Renderer::open(HWND window, const Options &options) {
                 error(rhi::ErrorCode::unsupported, "Editor renderer requires an sRGB RGBA8 window target"));
         if (options.validation != rhi::Validation::disabled)
             gfxGetDevice(s.gfx)->QueryInterface(IID_PPV_ARGS(&s.debug));
-        s.prepare_pipeline(s.scene, "editor scene", shaders::scene_vs, shaders::scene_ps, true);
         s.prepare_pipeline(s.solid, "editor rectangles", shaders::ui_vs, shaders::solid_ps, false);
         s.prepare_pipeline(s.coverage, "editor text coverage", shaders::ui_vs, shaders::coverage_ps, false);
         s.prepare_pipeline(s.color_image, "editor color images", shaders::ui_vs, shaders::image_ps, false);
