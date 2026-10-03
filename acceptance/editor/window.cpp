@@ -201,7 +201,7 @@ ControlKey property_control(const Application& app, atelier::ObjectId actor, std
 }
 float x(const Application& app, atelier::ObjectId actor) {
     const auto target = model(atelier::world::root_component(app.document().world().runtime(), actor));
-    require(target.has_value(), "Missing Transform in current World.");
+    require(target.has_value(), "Missing SceneComponent root in current World.");
     return std::get<float>(model(app.document().world().read(*target, app.document().parameters()[0].path)));
 }
 bool intersects(const atelier::ui::Rect& a, const atelier::ui::Rect& b) {
@@ -576,7 +576,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     click(app, control::reset);
 }
 void verify_transform_projection(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
-    const auto transform = component(app, actor, app.document().types().scene_component);
+    const auto transform = *model(atelier::world::root_component(app.document().world().runtime(), actor));
     const auto before = model(atelier::world::read_transform(app.document().world().runtime(), transform));
     atelier::renderer::Capture original, rotated, scaled, restored;
     require(app.step(&original), "Could not capture the original World transform.");

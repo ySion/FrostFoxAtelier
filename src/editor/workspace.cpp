@@ -272,7 +272,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     const bool any = std::any_of(matches.begin(), matches.end(), [](bool match) { return match; });
     if (!any || !transform) add(53,85,ControlKind::label,heading,any ? L"No scene root" : L"No matching parameters");
     auto section=NodeInput::box(0,28); section.width=Axis::expand();
-    auto& fold=add(control::position_fold,85,ControlKind::foldout,section,L"Transform");
+    auto& fold=add(control::position_fold,85,ControlKind::foldout,section,L"Scene root");
     fold.selected=position_expanded; fold.classes={"section"}; fold.layout.collapsed=!any;
     auto contents=NodeInput::column(7); contents.collapsed=!position_expanded || !any;
     add(58,85,ControlKind::container,contents).classes={"parameter-inset"};

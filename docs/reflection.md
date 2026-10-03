@@ -71,7 +71,7 @@ auto types = runtime.register_types(std::move(definitions));
 
 调用方仍决定发布的类型集合及生命周期。每次构建定义显式传入 Runtime，不缓存全局 `TypeId`。已迁移类型删除重复手写描述；`NativeRegistration` 本身及其他未迁移消费者保留。
 
-首个真实消费者是 [World 的类型声明](../src/world/world.hpp)和[数学记录](../src/world/math.hpp)：七种类型、十五个字段及 `Counter::advance` 已迁移。`world::register_types` 保留原顺序、成组发布和字段路径绑定；`detail::Access` 保留业务访问职责。
+首个真实消费者是 [World 的类型声明](../src/world/world.hpp)和[数学记录](../src/world/math.hpp)：三个值类型与 Actor、StaticMeshActor、Component、SceneComponent、StaticMeshComponent 共八种类型。`world::register_types` 沿同一入口成组发布和绑定字段路径；`detail::Access` 保留业务访问职责。Counter 及其方法仅属于验收业务类型。
 
 拥有容器的类型定义由 `runtime/foundation.hpp` 提供，与生成类型一起提交到同一发布入口；完整示例、字段借用与生命周期合同见[基础库](foundation.md#共享反射与-runtime)。
 

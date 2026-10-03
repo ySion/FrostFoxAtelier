@@ -103,7 +103,7 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
 Result<void> Application::focus_selected() {
     auto transform = world::root_component(document_->world().runtime(), document_->selected());
     if (!transform) return std::unexpected(transform.error());
-    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no Transform to focus."});
+    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no root SceneComponent to focus."});
     auto matrix = world::world_matrix(document_->world().runtime(), **transform);
     if (!matrix) return std::unexpected(matrix.error());
     camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
