@@ -61,11 +61,11 @@ class SceneComponent : public Component {
     AGENERATED_BODY(SceneComponent)
 public:
     AFIELD()
-    Vec3 position;
+    math::Vector3 position;
     AFIELD()
-    Quaternion rotation;
+    math::Quaternion rotation;
     AFIELD()
-    Vec3 scale{1.f, 1.f, 1.f};
+    math::Vector3 scale{1.f, 1.f, 1.f};
 private:
     friend struct detail::Access;
     AFIELD(Name="parent", Hidden, Weak="world.SceneComponent")
@@ -76,7 +76,7 @@ struct Material {
     AGENERATED_BODY(Material)
 public:
     AFIELD()
-    Vec3 base_color{.19f, .42f, .57f};
+    math::Vector3 base_color{.19f, .42f, .57f};
 };
 ACLASS(Name="world.StaticMeshComponent")
 class StaticMeshComponent : public SceneComponent {
@@ -95,7 +95,7 @@ using FieldPath = std::vector<FieldId>;
 struct Types {
     TypeId actor, component, scene_component, static_mesh_component, material;
     TypeId static_mesh_actor;
-    TypeId vec3, quaternion;
+    TypeId vector3, quaternion;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
@@ -142,7 +142,7 @@ struct StaticMeshActorDesc {
 // These owning reference snapshots are ordinary roots, not a second relation graph.
 [[nodiscard]] Result<std::vector<ObjectRoot>> components(Runtime&, ObjectId actor);
 [[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId scene_component);
-[[nodiscard]] Result<Matrix4> world_matrix(Runtime&, ObjectId scene_component);
+[[nodiscard]] Result<math::Matrix4> world_matrix(Runtime&, ObjectId scene_component);
 [[nodiscard]] Result<std::optional<ObjectId>> root_component(Runtime&, ObjectId actor);
 
 struct Commit {
@@ -190,7 +190,7 @@ struct Attachment {
 };
 struct RenderItem {
     ObjectId actor, component;
-    Matrix4 world;
+    math::Matrix4 world;
     geometry::MeshRef geometry;
     Material material;
 };

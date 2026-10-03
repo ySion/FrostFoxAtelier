@@ -1,5 +1,7 @@
 #pragma once
 #include "runtime/reflection.hpp"
+#include "foundation/array.hpp"
+#include "math/math.hpp"
 #include "reflection/fixture.gen.hpp"
 #include <stdexcept>
 
@@ -44,6 +46,9 @@ struct CallProbe {
     AFIELD() Mode mode{Mode::idle};
     AFIELD() Sample sample;
     AFIELD() std::uint32_t bits{};
+    AFIELD() double precise_value{};
+    AFIELD() math::Vector3d direction;
+    AFIELD() Array<double> samples;
     AFUNCTION() int aliases(const int& read, int& write) { write = 10; write += read; return read; }
     AFUNCTION() int mixed(int copy, const int& read, int& write) { write += copy + read; return write; }
     AFUNCTION() int read_only(const int& v) const noexcept { return v; }
@@ -58,6 +63,19 @@ struct CallProbe {
     AFUNCTION() int fail(int& v) { v = -7; throw std::runtime_error("borrow failure"); }
     AFUNCTION() int wide(int& a, const int& b, int& c, const int& d, int& e, const int& f, int& g, const int& h, int& i) {
         a = 1; c += b; e += d; g += f; i += h; return i;
+    }
+    AFUNCTION() double precise_echo(double input) const noexcept { return input; }
+    AFUNCTION() double precise(double copy, const double& read, double& write) {
+        write += copy + read;
+        return write;
+    }
+    AFUNCTION() math::Vector3d translate(math::Vector3d copy, const math::Vector3d& read, math::Vector3d& write) {
+        write += copy + read;
+        return write;
+    }
+    AFUNCTION() double append_sample(Array<double>& values, const double& input) {
+        values.add(input);
+        return values[values.size() - 1];
     }
 };
 }

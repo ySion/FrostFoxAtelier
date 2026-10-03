@@ -62,13 +62,22 @@ public:
     public:
         Lease() = default;
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        // Math results require live, aligned storage of the exact declared type.
+        // Failure preserves the complete output; scalar results use the overload above.
+        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}) const;
         template<std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
         Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}) const {
             return invoke_arguments(object, std::span<const Argument>{arguments}, budget);
         }
+        template<std::ranges::contiguous_range R>
+            requires std::same_as<std::ranges::range_value_t<R>, Argument>
+        Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, CollectionBudget budget = {1}) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, output, budget);
+        }
     private:
         Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget) const;
+        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, CollectionBudget) const;
     public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
         std::uintptr_t address() const noexcept;
@@ -81,13 +90,20 @@ public:
     public:
         Entry() = default;
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}) const;
         template<std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
         Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}) const {
             return invoke_arguments(object, std::span<const Argument>{arguments}, budget);
         }
+        template<std::ranges::contiguous_range R>
+            requires std::same_as<std::ranges::range_value_t<R>, Argument>
+        Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, CollectionBudget budget = {1}) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, output, budget);
+        }
     private:
         Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget) const;
+        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, CollectionBudget) const;
     public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
     };

@@ -15,14 +15,14 @@ template<class T> T take(Result<T> value) {
 void committed(Result<world::Commit> value) {
     auto result=take(std::move(value)); if (result.notification_error) throw std::runtime_error(result.notification_error->message);
 }
-Json vector(world::Vec3 value) { return Json::array({value.x,value.y,value.z}); }
-world::Vec3 vector(const Json& value) {
+Json vector(math::Vector3 value) { return Json::array({value.x,value.y,value.z}); }
+math::Vector3 vector(const Json& value) {
     const auto v=json_format::vector<3>(value); return {v[0],v[1],v[2]};
 }
 std::string type_name(Runtime& runtime,TypeId type) { return std::string(take(runtime.describe(type))->name); }
 auto failed(const std::exception& error) { return std::unexpected(Error{ErrorCode::invalid_storage,error.what()}); }
 using json_format::fields;
-void validate_color(world::Vec3 color) {
+void validate_color(math::Vector3 color) {
     if (!std::isfinite(color.x) || !std::isfinite(color.y) || !std::isfinite(color.z) || color.x<0 || color.y<0 || color.z<0 || color.x>1 || color.y>1 || color.z>1)
         throw std::runtime_error("Invalid scene material color.");
 }

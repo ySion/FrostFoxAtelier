@@ -48,6 +48,7 @@ struct BoundValue {
     std::vector<BoundValueField> fields;
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
     bool can_own{}, can_mutate{};
+    math::Type math{};
     bool operator==(const BoundValue&) const = default;
 };
 struct Binding {
@@ -59,7 +60,7 @@ struct Binding {
     std::vector<TypeId> dependencies;
     std::vector<BoundEnum> enumerations{};
     std::vector<BoundValue> values{};
-    TypeId f32{}, u32{}, i32{};
+    TypeId f32{}, f64{}, u32{}, i32{};
 };
 Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});
 BusinessType value_kind(const Binding&, TypeId);
@@ -75,6 +76,7 @@ struct EnvironmentView {
     BusinessEnvironment view(const char* object_type_name) const;
 };
 inline BusinessValue scalar(float value) { return {ValueKind::f32, std::bit_cast<std::uint32_t>(value)}; }
+inline BusinessValue scalar(double value) { return {ValueKind::f64, std::bit_cast<std::uint64_t>(value)}; }
 inline BusinessValue scalar(std::uint32_t value) { return {ValueKind::u32, value}; }
 inline BusinessValue scalar(std::int32_t value) { return {ValueKind::i32, std::bit_cast<std::uint32_t>(value)}; }
 BusinessValue scalar(const Scalar&, const Binding&);
@@ -142,6 +144,10 @@ std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
 std::uint32_t create_slot(void*, std::uint32_t) noexcept;
 std::uint32_t read_float(void*, std::uint32_t, std::uint32_t, float*) noexcept;
 std::uint32_t write_float(void*, std::uint32_t, std::uint32_t, float) noexcept;
+std::uint32_t read_double(void*, std::uint32_t, std::uint32_t, double*) noexcept;
+std::uint32_t write_double(void*, std::uint32_t, std::uint32_t, double) noexcept;
+std::uint32_t read_math(void*, std::uint32_t, std::uint32_t, void*) noexcept;
+std::uint32_t write_math(void*, std::uint32_t, std::uint32_t, const void*) noexcept;
 std::uint32_t read_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
 std::uint32_t write_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
 std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t, BusinessValue*) noexcept;
@@ -154,11 +160,11 @@ std::uint32_t same_reference(void*, std::uint32_t, std::uint32_t, std::uint32_t*
 void clear_slot(void*, std::uint32_t) noexcept;
 extern const BusinessServices services;
 bool same_environment(const Binding&, const BusinessEnvironment&);
-Result<void> check_source_arguments(const BusinessSignature&, std::span<const BusinessValue>);
+Result<void> check_source_arguments(const Binding&, const BusinessSignature&, std::span<const BusinessValue>);
 Result<void> check_source_receiver(const Binding&, ObjectId);
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
     BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessValue>,
-    bool request_collection, InvocationObserver = {}, CollectionBudget = {1});
+    bool request_collection, InvocationObserver = {}, CollectionBudget = {1}, void* result_data = nullptr);
 Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId,
     std::span<const BusinessValue>, bool request_collection = false,
     InvocationObserver = {}, CollectionBudget = {1});

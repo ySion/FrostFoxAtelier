@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
             const auto reset_history = single.undo_count();
             take(single.reset_position(mesh));
             const auto after_reset = take(world::read_transform(rt, mesh));
-            require(after_reset.position == world::Vec3{} && after_reset.rotation == before_reset.rotation &&
+            require(after_reset.position == math::Vector3{} && after_reset.rotation == before_reset.rotation &&
                 after_reset.scale == before_reset.scale && single.undo_count() == reset_history + 1,
                 "Shared tuple reset failed to preserve the root mesh's rotation/scale or one-entry history.");
             take(single.reset_position(mesh));

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/runtime.hpp"
+#include "math/math.hpp"
 
 #include <concepts>
 #include <functional>
@@ -13,11 +14,15 @@ namespace atelier {
 namespace detail {
 
 template<class T>
-concept ScalarType = std::same_as<T, float> || std::same_as<T, std::uint32_t> ||
+concept ScalarType = std::same_as<T, float> || std::same_as<T, double> || std::same_as<T, std::uint32_t> ||
     std::same_as<T, std::int32_t> || (std::is_enum_v<T> && sizeof(T) == 4);
 
 template<class T>
-concept NativeParameter = (ScalarType<std::remove_cvref_t<T>> || std::is_lvalue_reference_v<T>) && !std::is_rvalue_reference_v<T> &&
+concept MathValueType = static_cast<bool>(math::type_of<T>);
+
+template<class T>
+concept NativeParameter = (ScalarType<std::remove_cvref_t<T>> || MathValueType<std::remove_cvref_t<T>> ||
+    std::is_lvalue_reference_v<T>) && !std::is_rvalue_reference_v<T> &&
     !std::is_volatile_v<std::remove_reference_t<T>>;
 static_assert(sizeof(int) == 4);
 
@@ -31,7 +36,8 @@ struct Method<R (C::*)(A...)> {
     using Arguments = std::tuple<A...>;
     using Return = R;
     static constexpr bool receiver_read_only = false;
-    static_assert(std::same_as<R, void> || ScalarType<R>, "Method results must be void or supported scalars returned by value.");
+    static_assert(std::same_as<R, void> || ScalarType<R> || MathValueType<R>,
+        "Method results must be void or supported scalar/math values returned by value.");
     static_assert((NativeParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
 };
 template<class R, class C, class... A>
@@ -154,6 +160,14 @@ public:
                     call.arguments[I].get<std::tuple_element_t<I, Args>>()...);
             };
             if constexpr (std::same_as<Return, void>) invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
+            else if constexpr (detail::MathValueType<Return>) {
+                const auto type = call.runtime.native_type<Return>();
+                if (!type) return std::unexpected(type.error());
+                if (call.result_value.type != *type || !call.result_value.data)
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Native math result requires exact typed output storage."});
+                *static_cast<Return*>(call.result_value.data) = invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
+                call.result_written = true;
+            }
             else if constexpr (std::is_enum_v<Return>) {
                 const auto type = call.runtime.native_type<Return>();
                 if (!type) return std::unexpected(type.error());

@@ -10,9 +10,11 @@ using detail::Access;
 using detail::error;
 
 Result<Types> register_types(Runtime& runtime) {
+    const auto vector = runtime.native_type<math::Vector3>();
+    const auto quaternion = runtime.native_type<math::Quaternion>();
+    if (!vector) return std::unexpected(vector.error());
+    if (!quaternion) return std::unexpected(quaternion.error());
     std::vector<TypeDefinition> definitions;
-    definitions.push_back(reflection::Definition<Vec3>::build(runtime));
-    definitions.push_back(reflection::Definition<Quaternion>::build(runtime));
     definitions.push_back(reflection::Definition<Actor>::build(runtime));
     definitions.push_back(reflection::Definition<Component>::build(runtime));
     definitions.push_back(reflection::Definition<SceneComponent>::build(runtime));
@@ -23,9 +25,9 @@ Result<Types> register_types(Runtime& runtime) {
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;
-    types.vec3 = (*ids)[0]; types.quaternion = (*ids)[1]; types.actor = (*ids)[2];
-    types.component = (*ids)[3]; types.scene_component = (*ids)[4]; types.material = (*ids)[5]; types.static_mesh_component = (*ids)[6];
-    types.static_mesh_actor = (*ids)[7];
+    types.vector3 = *vector; types.quaternion = *quaternion; types.actor = (*ids)[0];
+    types.component = (*ids)[1]; types.scene_component = (*ids)[2]; types.material = (*ids)[3]; types.static_mesh_component = (*ids)[4];
+    types.static_mesh_actor = (*ids)[5];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
         auto outer = runtime.find_field(types.scene_component, name);
         if (!outer) return std::unexpected(outer.error());
@@ -37,9 +39,9 @@ Result<Types> register_types(Runtime& runtime) {
         }
         return {};
     };
-    if (auto result = make_paths(types.position_fields, types.vec3, "position"); !result) return std::unexpected(result.error());
+    if (auto result = make_paths(types.position_fields, types.vector3, "position"); !result) return std::unexpected(result.error());
     if (auto result = make_paths(types.rotation_fields, types.quaternion, "rotation"); !result) return std::unexpected(result.error());
-    if (auto result = make_paths(types.scale_fields, types.vec3, "scale"); !result) return std::unexpected(result.error());
+    if (auto result = make_paths(types.scale_fields, types.vector3, "scale"); !result) return std::unexpected(result.error());
     return types;
 }
 
@@ -255,9 +257,9 @@ Result<ObjectId> scene_parent(Runtime& runtime, ObjectId object) {
         return Access::parent(component).id();
     });
 }
-Result<Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
+Result<math::Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
     if (object == ObjectId{}) return error(ErrorCode::invalid_object, "World matrix requires a SceneComponent identity.");
-    Matrix4 result{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    auto result = math::Matrix4::identity();
     // Private parent links are acyclic by construction. Evaluate all the way to
     // the explicit root; composing matrices preserves shear introduced by TRS.
     for (auto node = object; node != ObjectId{};) {

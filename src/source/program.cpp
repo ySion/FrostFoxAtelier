@@ -4,6 +4,7 @@
 #include "language/declarations.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 #include <limits>
 #include <stdexcept>
@@ -20,6 +21,10 @@ namespace {
 Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations, const Binding& binding) {
     std::vector<TypeDefinition> definitions;
     for (const auto& declaration : declarations) {
+        for (const auto& value : binding.values)
+            if (value.math && declaration.name == math::short_name(value.math))
+                return std::unexpected(Error{ErrorCode::invalid_definition,
+                    "Source type declaration conflicts with a builtin math name: " + declaration.name});
         TypeDefinition definition;
         definition.name = declaration.name;
         definition.kind = declaration.enumeration ? TypeKind::enumeration : TypeKind::record;
@@ -34,11 +39,13 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                 else {
                     TypeId resolved{};
                     if (type.name == "float") resolved = binding.f32;
+                    else if (type.name == "double") resolved = binding.f64;
                     else if (type.name == "uint") resolved = binding.u32;
                     else if (type.name == "int") resolved = binding.i32;
                     for (const auto& value : binding.enumerations) if (value.name == type.name) resolved = value.type;
                     for (const auto& value : binding.values)
-                        if (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string)) {
+                        if (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string) ||
+                            (value.math && type.name == math::short_name(value.math))) {
                             resolved = value.type;
                             break;
                         }
@@ -70,7 +77,7 @@ struct Program::Metadata {
     TypeInfo value;
     bool matches(const TypeInfo& actual) const {
         if (&actual != identity || actual.id != value.id || actual.name != value.name ||
-            actual.enumeration != value.enumeration || actual.kind != value.kind || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
+            actual.enumeration != value.enumeration || actual.kind != value.kind || actual.math != value.math || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
             actual.copy_constructible != value.copy_constructible || actual.copy_assignable != value.copy_assignable ||
             actual.contains_references != value.contains_references || actual.element != value.element ||
             actual.native_storage != value.native_storage || actual.sequence_view != value.sequence_view ||
@@ -209,23 +216,51 @@ struct Program::Version {
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())) {}
     template<class T>
     Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget) const {
+        if (aggregate(info.signature.result))
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Math source results require typed value output storage."});
         const AbiArguments encoded(contract->binding, declaration->signature, arguments);
         if (!encoded.status) return std::unexpected(encoded.status.error());
         auto result = invoke(receiver, encoded.values, {}, budget);
         if (!result) return std::unexpected(result.error());
-        return detail::scalar_value(*result, &contract->binding);
+        auto decoded = detail::scalar_value(*result, &contract->binding);
+        if (info.signature.result != ValueKind::void_value && !decoded)
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled source returned an invalid scalar value."});
+        return decoded;
+    }
+    template<class T>
+    Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output, CollectionBudget budget) const {
+        const auto kind = info.signature.result;
+        const auto& binding = contract->binding;
+        if (!aggregate(kind) || kind.type_index >= binding.values.size() || !binding.values[kind.type_index].math)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Typed value output requires a builtin math source result."});
+        const auto& value = binding.values[kind.type_index];
+        if (output.type != value.type || !output.data || reinterpret_cast<std::uintptr_t>(output.data) % value.alignment != 0)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source output storage does not match its declared math type and alignment."});
+        alignas(double) std::array<std::byte, 16 * sizeof(double)> staged{};
+        if (value.size > staged.size() || value.alignment > alignof(double))
+            return std::unexpected(Error{ErrorCode::invalid_definition, "Builtin math layout exceeds the source result ABI."});
+        const AbiArguments encoded(binding, declaration->signature, arguments);
+        if (!encoded.status) return std::unexpected(encoded.status.error());
+        auto result = invoke(receiver, encoded.values, {}, budget, staged.data());
+        if (!result) return std::unexpected(result.error());
+        if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged.data())
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled math result changed its typed output storage."});
+        std::memcpy(output.data, staged.data(), value.size);
+        return {};
     }
     Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
-        InvocationObserver observer, CollectionBudget budget) const {
+        InvocationObserver observer, CollectionBudget budget, void* result_data = nullptr) const {
         if (info.signature.is_coroutine)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
+        if (aggregate(info.signature.result) && !result_data)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Math source results require typed value output storage."});
         const auto& binding = contract->binding;
         auto activation = ExecutionScope::enter(*binding.runtime);
         if (!activation) return std::unexpected(std::move(activation.error()));
-        auto checked = check_source_arguments(info.signature, arguments);
+        auto checked = check_source_arguments(binding, info.signature, arguments);
         if (!checked) return std::unexpected(std::move(checked.error()));
         return execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
-            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget);
+            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data);
     }
 };
 struct Program::State {
@@ -293,7 +328,7 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
     const auto& binding = version->contract->binding;
     auto activation = ExecutionScope::enter(*binding.runtime);
     if (!activation) return std::unexpected(std::move(activation.error()));
-    auto checked = check_source_arguments(version->info.signature, arguments);
+    auto checked = check_source_arguments(binding, version->info.signature, arguments);
     if (!checked) return std::unexpected(std::move(checked.error()));
     const bool hold_receiver = version->declaration->signature.receiver.has_value() || receiver != ObjectId{};
     if (hold_receiver) {
@@ -390,6 +425,34 @@ Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver
     const auto version = version_;
     if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
     return version->invoke_values(receiver, arguments, budget);
+}
+Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
+    ValueOutput output, CollectionBudget budget) const {
+    const auto owner = owner_.lock();
+    if (!owner || !owner->open || !owner->current)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
+    const auto version = owner->current;
+    return version->invoke_values(receiver, arguments, output, budget);
+}
+Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
+    ValueOutput output, CollectionBudget budget) const {
+    const auto owner = owner_.lock();
+    if (!owner || !owner->open || !owner->current)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
+    const auto version = owner->current;
+    return version->invoke_values(receiver, arguments, output, budget);
+}
+Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
+    ValueOutput output, CollectionBudget budget) const {
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    return version->invoke_values(receiver, arguments, output, budget);
+}
+Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
+    ValueOutput output, CollectionBudget budget) const {
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    return version->invoke_values(receiver, arguments, output, budget);
 }
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {

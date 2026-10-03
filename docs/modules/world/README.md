@@ -14,7 +14,7 @@ core.Object
 ```
 
 - Actor/Component 是世界的业务模型。所有对象沿用 Runtime 的 TypeId、ObjectId、继承、引用与 GC；类型桶只提供查询索引，不决定执行顺序。
-- `register_types` 一次发布 Vec3、Quaternion、Material 三个值类型与上述五个对象类型。元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 追加在原有类型之后，拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
+- `register_types` 一次发布 Material 值类型与上述五个对象类型，复用 Runtime 已初始化的 `math.vector3`、`math.quaternion` 身份。业务元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
 - Actor 的隐藏强引用序列决定组成顺序，Component 强持 owner。一个组件的普通强引用会保住 Actor 和兄弟组件；没有外部根的组成环可被 GC 回收。
 - Actor 的显式根引用和 SceneComponent 的空间父引用均为弱引用。组成负责拥有，空间关系负责坐标继承，两种顺序独立。
 - StaticMeshComponent 继承完整局部 TRS，持有不可变 geometry::Mesh 资源和 Material 值。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。

@@ -1,4 +1,5 @@
 #pragma once
+#include "math/type.hpp"
 #include "runtime/parameter.hpp"
 
 #include <cstddef>
@@ -15,7 +16,7 @@ namespace atelier::language {
 // Compiler classifications, not a separate registry of business types.
 // A predicate is internal to conditions, not a new Runtime value type.
 struct ValueType {
-    enum Kind { f32, u32, i32, predicate, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string };
+    enum Kind { f32, u32, i32, predicate, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string, f64 };
     Kind kind{void_value};
     std::uint32_t type_index{}; // index in the enum or value catalog, selected by kind
     constexpr ValueType(Kind value = void_value, std::uint32_t index = 0) : kind(value), type_index(index) {}
@@ -34,6 +35,7 @@ struct ValueLayout {
     std::vector<ValueField> fields;
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
     bool can_own{}, can_mutate{};
+    math::Type math{};
 };
 inline bool aggregate(ValueType type) noexcept {
     return type.kind == ValueType::record || type.kind == ValueType::array || type.kind == ValueType::string;
@@ -57,24 +59,28 @@ struct Diagnostic { SourcePosition position; std::string message; };
 
 using NodeId = std::size_t;
 inline constexpr NodeId no_node = std::numeric_limits<NodeId>::max();
-enum class Operation { add, subtract, multiply, positive, negate, equal, not_equal, less, less_equal, greater, greater_equal };
+enum class Operation { add, subtract, multiply, positive, negate, equal, not_equal, less, less_equal, greater, greater_equal, divide };
+enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root };
 struct Expression {
     enum class Kind {
         literal, local, field, call, unary, binary,
         receiver, null_reference, create_reference, observe_reference, acquire_reference,
-        value_field, index, length, string_literal, sequence_mutation, source_call
+        value_field, index, length, string_literal, sequence_mutation, source_call,
+        math_construct, math_intrinsic, scalar_cast
     };
     Kind kind;
     ValueType type;
     SourcePosition position;
     NodeId left{no_node}, right{no_node};
-    std::uint32_t value{}; // literal bits, local index, or host catalog index
+    std::uint32_t value{}; // local index or host catalog index
     Operation operation{Operation::add};
     NodeId receiver{no_node}; // field/call owner
     std::vector<ParameterPassing> argument_passing{};
     std::vector<NodeId> arguments{}; // call operands, evaluated left to right
     std::size_t offset{};
     SequenceMutation mutation{};
+    std::uint64_t bits{}; // literal payload, including exact double representation
+    MathOperation math_operation{MathOperation::dot};
 };
 struct Statement {
     enum class Kind { block, declare, assign, call, condition, loop, return_value, yield };
@@ -115,8 +121,9 @@ struct Program {
     std::vector<bool> reachable;
 };
 
-// One module with a host-selected entry: scalar/enum values or borrowed value parameters,
-// an optional scalar result and implicit self. Async cannot borrow caller storage.
+// One module with a host-selected entry: scalar/enum/math values or borrowed value
+// parameters, an optional scalar/math result and implicit self. Async cannot borrow
+// caller storage or expose aggregate parameters/results.
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.

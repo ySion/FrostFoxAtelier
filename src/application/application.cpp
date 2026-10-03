@@ -617,9 +617,9 @@ bool Application::step(renderer::Capture* capture) {
     const auto items = viewport?take(document_->world().render_items()):std::vector<world::RenderItem>{};
     meshes_.reserve(items.size());
     for (const auto& item : items)
-        meshes_.push_back({item.world, {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1}, item.actor == document_->selected(),item.geometry});
+        meshes_.push_back({item.world.elements, {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1}, item.actor == document_->selected(),item.geometry});
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view, camera.projection}, scene_bounds, meshes_};
+    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds, meshes_};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;

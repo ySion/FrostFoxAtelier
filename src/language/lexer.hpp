@@ -12,7 +12,7 @@ inline bool letter(char value) noexcept {
 }
 inline bool digit(char value) noexcept { return value >= '0' && value <= '9'; }
 inline bool reserved(std::string_view value) noexcept {
-    return value == "void" || value == "float" || value == "uint" || value == "int" || value == "const" || value == "if" ||
+    return value == "void" || value == "float" || value == "double" || value == "uint" || value == "int" || value == "const" || value == "if" ||
         value == "else" || value == "while" || value == "return" || value == "self" ||
         value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
         value == "async" || value == "yield" || value == "struct" || value == "enum";
@@ -71,7 +71,8 @@ public:
                 if (!digit(peek())) reject(start, "A numeric exponent requires digits.");
                 while (digit(peek())) advance();
             }
-            if (letter(peek())) reject(start, "Invalid numeric literal suffix.");
+            if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D') advance();
+            if (letter(peek()) || digit(peek())) reject(start, "Invalid numeric literal suffix.");
             return token(Token::Kind::number, start);
         }
         if (first == '=' || first == '!' || first == '<' || first == '>') {
@@ -86,11 +87,10 @@ public:
             if (peek() == ':') advance();
             return token(Token::Kind::punctuation, start);
         }
-        if (std::string_view("(){}[];.,+-*&").find(first) != std::string_view::npos) {
+        if (std::string_view("(){}[];.,+-*/&").find(first) != std::string_view::npos) {
             advance();
             return token(Token::Kind::punctuation, start);
         }
-        if (first == '/') reject(start, "Division is not supported in this source slice.");
         reject(start, "Unsupported source character.");
     }
 private:
