@@ -39,6 +39,8 @@ World 提供同 Actor 空间树、显式根、完整 TRS，以及 Actor/Componen
 
 其后与 Runtime 冻结交付的同候选双配置重建和消费者验收见 [Runtime／编辑器集成记录](docs/research/runtime-editor-integration-20261002.md)；原 2870 帧窗口记录仍归属集成前的编辑器版本。
 
+2026-10-04 的数学基础、World、文件夹工程与 UI 布局组合已通过双配置后台端到端验收和正式编辑器编译，见[本轮集成记录](docs/research/math-project-integration-20261004.md)。普通窗口与实际 GPU 提交复验待执行；此前 Unicode 剪贴板偶发失败仍未确定根因。
+
 本阶段菜单、交互边界与树视图的审查、清理和验收边界见 [UI 边界与生命周期审查](docs/research/ui-boundary-state-lifecycle-audit-20261002.md)。
 
 顶部菜单栏通过 File / Edit / Create / View / Window 组织现有命令，左侧窄收拢区可将它收成细条；再次点击或使用 F10/Alt 菜单快捷键恢复。Tab 栏直接从标签开始，“＋”将已有视图加入当前组。下拉、参数右键和 Pane 菜单共用独立原生弹出窗口，可超出编辑器边界，支持键盘导航、菜单切换与焦点恢复，见[独立菜单窗口](docs/modules/editor/README.md#独立菜单窗口)。
