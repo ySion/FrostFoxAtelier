@@ -98,7 +98,7 @@ RHI 采用固定 gfx 与局部补丁，提供 Compute、Mesh、Vertex 管线和�
 
 ## UI 布局核心
 
-正式静态目标 `atelier_ui_layout` 的唯一公开入口是 `ui_layout/layout.hpp`。`LayoutDocument` 统一管理节点身份、结构编辑、测量缓存和事务几何发布；核心不链接 Runtime/JIT/RHI/DirectWrite。DirectWrite 只在验收的文字 Adapter 中使用；正式验收包含最小消费者和 39 个场景。
+正式静态目标 `atelier_ui_layout` 的唯一公开入口是 `ui_layout/layout.hpp`。`LayoutDocument` 统一管理节点身份、结构编辑、测量缓存和事务几何发布；核心不链接 Runtime/JIT/RHI/DirectWrite。DirectWrite 只在验收的文字 Adapter 中使用；正式验收包含最小消费者和 41 个场景。
 
 - 尺寸与排布：Fixed/Content/Expand、数值 min/max、对齐/锚定、table 共享列、wrap 自然换行与自适应重复槽、collapsed；原生 Flex 支持 basis/grow/shrink、分行/分布/reverse 和首基线，二维 Grid 支持轨道、跨度及显式或 sparse 自动放置。
 - `VirtualList` 管理逻辑行高、可见范围与滚动锚点；10 万逻辑行的真实消费者只实例化窗口中的行。滚动控件本身仍由上层实现。

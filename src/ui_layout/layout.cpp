@@ -556,7 +556,8 @@ struct LayoutDocument::Impl {
                 if ((input.width.rule == SizeRule::flex && (parent.kind != Kind::row || !in_flow(input, parent) || table_for_row(index) != no_slot)) ||
                     (input.height.rule == SizeRule::flex && (parent.kind != Kind::column || !in_flow(input, parent))))
                     return std::unexpected(Error{ErrorCode::unsupported_dependency, id(child), 0, InputField::flow});
-                if (alignment(child, false).first_baseline && !is_flex(index))
+                if (alignment(child, false).first_baseline &&
+                    (!is_flex(index) || parent.kind != Kind::row || !in_flow(input, parent)))
                     return std::unexpected(Error{ErrorCode::unsupported_dependency, id(child), 0, InputField::alignment});
             }
             if (parent.kind == Kind::grid) {

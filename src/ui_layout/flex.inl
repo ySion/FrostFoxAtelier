@@ -106,7 +106,9 @@ void flex_allocate(std::size_t begin, std::size_t end, double pool) {
             const auto& item = flex_items[at];
             const double weight = grow ? item.grow : item.shrink * std::max(0.0, item.basis - item.padding);
             const double target = item.basis + level * weight;
-            if (target < item.minimum || target > item.maximum) { fits = false; break; }
+            // A rounded collision with a bound can hide residual space for
+            // smaller weights. Nonparticipating items need no saturation event.
+            if (weight > 0 && (target <= item.minimum || target >= item.maximum)) { fits = false; break; }
         }
         if (fits) {
             for (auto at = begin; at < end; ++at) {

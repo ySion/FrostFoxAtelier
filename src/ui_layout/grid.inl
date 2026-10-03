@@ -2,21 +2,26 @@
     // work index; no second node tree or persistent ownership is introduced.
     struct GridPlan {
         std::size_t begin{}, count{}, columns_begin{}, rows_begin{};
+        std::size_t columns_prefix{no_pending}, rows_prefix{no_pending};
         std::uint32_t columns{}, rows{};
+        SizeRule columns_rule{SizeRule::fixed}, rows_rule{SizeRule::fixed};
         bool ready{};
     };
     struct GridItem {
         std::uint32_t node{}, row{no_slot}, column{no_slot}, row_span{1}, column_span{1};
     };
     struct GridTrack { double size{}, position{}; };
+    struct GridPrefix { std::uint32_t non_fixed{}, expand{}; };
     Buffer<GridPlan> grid_plans{BufferAllocator<GridPlan>{&memory}};
     Buffer<GridItem> grid_items{BufferAllocator<GridItem>{&memory}};
     Buffer<std::size_t> grid_item_for_work{BufferAllocator<std::size_t>{&memory}};
     Buffer<GridTrack> grid_tracks{BufferAllocator<GridTrack>{&memory}};
+    Buffer<GridPrefix> grid_prefixes{BufferAllocator<GridPrefix>{&memory}};
     Buffer<std::uint64_t> grid_occupancy{BufferAllocator<std::uint64_t>{&memory}};
     Buffer<std::uint32_t> grid_locked_cursors{BufferAllocator<std::uint32_t>{&memory}};
     Buffer<std::size_t> grid_candidates{BufferAllocator<std::size_t>{&memory}};
     Buffer<double> grid_increases{BufferAllocator<double>{&memory}};
+    Buffer<std::uint32_t> grid_touched_tracks{BufferAllocator<std::uint32_t>{&memory}};
     // Intrinsic Grid sizing can run while the parent is collecting its ordinary
     // shares. Keep track allocation scratch separate from that live parent state.
     Buffer<Share> grid_shares{BufferAllocator<Share>{&memory}};
@@ -28,6 +33,7 @@
     void prepare_grid_work() {
         grid_items.clear();
         grid_tracks.clear();
+        grid_prefixes.clear();
         const bool present = has_grid_work;
         grid_plans.assign(present ? work.size() : 0, {});
         grid_item_for_work.assign(present ? work.size() : 0, no_pending);
@@ -180,6 +186,30 @@
         grid_tracks.resize(grid_tracks.size() + plan.columns);
         plan.rows_begin = grid_tracks.size();
         grid_tracks.resize(grid_tracks.size() + plan.rows);
+        // Uniform axes need only their rule class. Mixed axes retain inclusive
+        // counts in compute-local storage for constant-time span classification.
+        for (const bool horizontal_axis : {true, false}) {
+            const auto count = horizontal_axis ? plan.columns : plan.rows;
+            const auto& rules = horizontal_axis ? spec.columns : spec.rows;
+            const auto implicit_rule = (horizontal_axis ? spec.implicit_column : spec.implicit_row).rule;
+            auto& common_rule = horizontal_axis ? plan.columns_rule : plan.rows_rule;
+            auto& prefix_begin = horizontal_axis ? plan.columns_prefix : plan.rows_prefix;
+            common_rule = rules.empty() ? implicit_rule : rules.front().rule;
+            bool uniform = true;
+            for (const auto& rule : rules) {
+                if (rule.rule != common_rule) { uniform = false; break; }
+            }
+            if (count > rules.size() && implicit_rule != common_rule) uniform = false;
+            if (uniform) continue;
+            prefix_begin = grid_prefixes.size();
+            std::uint32_t non_fixed = 0, expand = 0;
+            for (std::uint32_t track = 0; track < count; ++track) {
+                const auto rule = grid_rule(index, horizontal_axis, track).rule;
+                non_fixed += rule != SizeRule::fixed;
+                expand += rule == SizeRule::expand;
+                grid_prefixes.push_back({non_fixed, expand});
+            }
+        }
         plan.ready = true;
         return {};
     }
@@ -191,13 +221,17 @@
     bool grid_contributes(std::uint32_t index, const GridItem& item, bool horizontal_axis, bool intrinsic) const {
         const auto start = horizontal_axis ? item.column : item.row;
         const auto count = horizontal_axis ? item.column_span : item.row_span;
-        bool content = false;
-        for (auto track = start; track < start + count; ++track) {
-            const auto rule = grid_rule(index, horizontal_axis, track).rule;
-            if (!intrinsic && rule == SizeRule::expand) return false;
-            content |= rule != SizeRule::fixed;
+        const auto& plan = grid_plans[slots[index].work_index];
+        const auto offset = horizontal_axis ? plan.columns_prefix : plan.rows_prefix;
+        if (offset == no_pending) {
+            const auto rule = horizontal_axis ? plan.columns_rule : plan.rows_rule;
+            return rule != SizeRule::fixed && (intrinsic || rule != SizeRule::expand);
         }
-        return content;
+        const auto& last = grid_prefixes[offset + start + count - 1];
+        const auto non_fixed_before = start ? grid_prefixes[offset + start - 1].non_fixed : 0;
+        const auto expand_before = start ? grid_prefixes[offset + start - 1].expand : 0;
+        return last.non_fixed != non_fixed_before &&
+            (intrinsic || last.expand == expand_before);
     }
     bool grid_intrinsic_required(std::uint32_t child) {
         const auto index = slots[child].parent;
@@ -212,7 +246,9 @@
         const double gap = horizontal_axis ? spec.column_gap : spec.row_gap;
         for (std::uint32_t track = 0; track < count; ++track) {
             const auto& rule = grid_rule(index, horizontal_axis, track);
-            grid_tracks[offset + track] = {rule.rule == SizeRule::fixed ? rule.value : rule.minimum, 0};
+            auto& value = grid_tracks[offset + track];
+            value.size = rule.rule == SizeRule::fixed ? rule.value : rule.minimum;
+            value.position = 0;
         }
         grid_candidates.clear();
         bool spanning = false;
@@ -225,6 +261,14 @@
             return (horizontal_axis ? grid_items[a].column_span : grid_items[a].row_span) <
                    (horizontal_axis ? grid_items[b].column_span : grid_items[b].row_span);
         });
+        grid_increases.assign(grid_candidates.empty() ? 0 : count, 0);
+        grid_touched_tracks.clear();
+        auto plan_increase = [&](std::uint32_t track, double increase) {
+            auto& planned = grid_increases[track];
+            if (increase <= planned) return;
+            if (planned == 0) grid_touched_tracks.push_back(track);
+            planned = increase;
+        };
         std::size_t begin = 0;
         while (begin < grid_candidates.size()) {
             const auto& first = grid_items[grid_candidates[begin]];
@@ -235,7 +279,6 @@
                 if ((horizontal_axis ? item.column_span : item.row_span) != span) break;
                 ++end;
             }
-            grid_increases.assign(count, 0);
             for (auto candidate = begin; candidate < end; ++candidate) {
                 const auto& item = grid_items[grid_candidates[candidate]];
                 const auto start = horizontal_axis ? item.column : item.row;
@@ -245,26 +288,34 @@
                     const auto& rule = grid_rule(index, horizontal_axis, start);
                     const auto current = grid_tracks[offset + start].size;
                     const double desired = rule.maximum ? std::min<double>(demand, *rule.maximum) : demand;
-                    grid_increases[start] = std::max(grid_increases[start], std::max(0.0, desired - current));
+                    plan_increase(start, std::max(0.0, desired - current));
                     continue;
                 }
                 double occupied = gap * (span - 1);
+                // Sizes and gaps are nonnegative. Once the shared batch base
+                // meets demand, later tracks cannot create a positive deficit.
+                for (auto track = start; track < start + span && occupied < demand; ++track)
+                    occupied += grid_tracks[offset + track].size;
+                if (occupied >= demand) continue;
                 grid_shares.clear(); grid_share_indices.clear();
                 for (auto track = start; track < start + span; ++track) {
                     const auto& rule = grid_rule(index, horizontal_axis, track);
                     const auto current = grid_tracks[offset + track].size;
-                    occupied += current;
                     if (rule.rule == SizeRule::fixed) continue;
                     grid_shares.push_back({0, 1, rule.maximum ? std::optional<double>(std::max(0.0, *rule.maximum - current)) : std::nullopt});
                     grid_share_indices.push_back(track);
                 }
                 allocate_slots(grid_shares, std::max(0.0, demand - occupied), grid_share_output, grid_events, grid_weight_sums);
                 for (std::size_t track = 0; track < grid_share_indices.size(); ++track)
-                    grid_increases[grid_share_indices[track]] = std::max(grid_increases[grid_share_indices[track]], grid_share_output[track]);
+                    plan_increase(grid_share_indices[track], grid_share_output[track]);
             }
             // Every item in a span batch observes the same base sizes. Taking the
             // maximum planned increase makes dimensions independent of child order.
-            for (std::uint32_t track = 0; track < count; ++track) grid_tracks[offset + track].size += grid_increases[track];
+            for (const auto track : grid_touched_tracks) {
+                grid_tracks[offset + track].size += grid_increases[track];
+                grid_increases[track] = 0;
+            }
+            grid_touched_tracks.clear();
             begin = end;
         }
         if (available) {

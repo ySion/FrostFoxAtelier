@@ -505,6 +505,8 @@ int main(int argc, char** argv) {
             {"grid_limits_and_nested_content", grid_limits_and_nested_content},
             {"flex_grid_editor_end_to_end", flex_grid_editor_end_to_end},
             {"allocation_rounded_saturation", allocation_rounded_saturation},
+            {"flex_baseline_boundaries", flex_baseline_boundaries},
+            {"grid_sizing_batches", grid_sizing_batches},
             {"grid_sparse_spans", grid_sparse_spans},
             {"grid_collision_boundaries", grid_collision_boundaries},
             {"collapsed_publication_indices", collapsed_publication_indices}

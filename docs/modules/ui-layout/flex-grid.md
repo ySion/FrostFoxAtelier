@@ -51,6 +51,8 @@ MeasureQuery.first_baseline表示本次需要基线；MeasureResult现在包含M
 
 尚未确定的容器高度如果会通过居中、反向或分行摆放影响传播基线，则返回unsupported_dependency；Grid/overlay的容器基线传播和Grid内基线组也未开放。可使用真实文字叶、可确定基线的自然高行或Fixed高容器组合；不会以错误近似代替缺失能力。
 
+纵向Flex或out_of_flow项目请求首基线时返回unsupported_dependency/alignment，包括从父继承的基线。脱流项目可以显式设置vertical_alignment=Alignment::stretch()覆盖继承，再使用原锚定路径；折叠项目退出本次校验和布局。
+
 ## 二维 Grid
 
 ```cpp
@@ -90,8 +92,10 @@ Grid自然需求查询可以发生在父级空间分配期间，因此其轨道�
 
 自动放置在冲突时沿移动轴跳过仍覆盖该冲突格的候选位置；其复杂度与探测形状、跨度有关，不宣称总是O(N)。全显式无跨度、已确定轨道、重复槽和无饱和分配各走较短路径。比例候选触及min/max时保留断点求解，避免舍入吞掉小权重余量；确定高度的Grid省去无消费者的行求解，Flex同一行分配池不变则复用本次结果。规模较大的数据仍使用VirtualList；通用局部调度和异步求解未加入。
 
+Grid跨度是否贡献自然需求为常数时间查询：同规则轴直接判定，混合规则轴使用本次计划的紧凑计数前缀，含隐式轨道。需求已满足的跨度不建立分配临时数据；同跨度批次只提交收到正增量的轨道，仍保持共同初值和逐轨最大增量。正缺口依然按原顺序累计轨道大小，随后构建分配输入；没有浮点前缀差分或逐项提交。
+
 ## 正式验收与复现
 
-当前39项继续覆盖数值边界、全部分布、反向/换行、真实混字号基线、跨行跨列、自动定位、容量、嵌套、内容更新与失败保旧；Flex/Grid场景位于[flex_grid.inl](../../../acceptance/ui_layout/flex_grid.inl)，审计补充位于[audit.inl](../../../acceptance/ui_layout/audit.inl)。复合消费者用真正Grid外壳和Flex工具栏，文字仍来自真实DirectWrite。新增复现和交叉二审见[审计记录](audit.md)。
+当前41项继续覆盖数值边界、全部分布、反向/换行、真实混字号基线、跨行跨列、自动定位、容量、嵌套、内容更新与失败保旧；Flex/Grid场景位于[flex_grid.inl](../../../acceptance/ui_layout/flex_grid.inl)，审计补充位于[audit.inl](../../../acceptance/ui_layout/audit.inl)。复合消费者用真正Grid外壳和Flex工具栏，文字仍来自真实DirectWrite。新增复现和交叉二审见[审计记录](audit.md)。
 
 在正式环境中构建ui_layout_acceptance的dev/release目标；使用`./out/release/atelier_ui_layout_acceptance.exe --flex-grid-performance`测量新场景。结果分开报告整次操作、compute、内部测量和消费协调，不能把回调外全部工作都称为纯布局。最新数字与可执行文件记录在[验收](acceptance.md)。

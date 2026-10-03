@@ -1,6 +1,6 @@
 # UI 布局核心
 
-状态：**原生布局基建已完成本阶段审计与优化，可以收尾。** 支持基准尺寸与伸缩、换行/分布/首基线，以及二维轨道、跨行跨列和自动放置；既有稳定身份、共享列、重复格、虚拟列表、缓存和事务发布保持。开发/发布覆盖39个场景，见[验收记录](acceptance.md)与[交叉审计和性能](audit.md)。这是原生UI语义，CSS兼容、循环依赖与基线边界见[Flex/Grid合同](flex-grid.md)；正式控件与文字见[UI消费模块](../ui/README.md)，真实窗口与绘制接线见[编辑器](../editor/README.md)。
+状态：**原生布局基建已完成本阶段审计与优化，可以收尾。** 支持基准尺寸与伸缩、换行/分布/首基线，以及二维轨道、跨行跨列和自动放置；既有稳定身份、共享列、重复格、虚拟列表、缓存和事务发布保持。开发/发布覆盖41个场景，生产UI消费者两配置各15/15通过，见[验收记录](acceptance.md)与[交叉审计和性能](audit.md)。这是原生UI语义，CSS兼容、循环依赖与基线边界见[Flex/Grid合同](flex-grid.md)；正式控件与文字见[UI消费模块](../ui/README.md)，真实窗口与绘制接线见[编辑器](../editor/README.md)。
 
 ## 当前入口
 
@@ -61,6 +61,7 @@ cmake --build --preset release --target ui_layout_acceptance
 - [三候选真实验证](../../research/ui-layout-reassessment/validation-results.md)：历史比较路径、性能分项、反例及覆盖限制。
 - [工业游戏UI](../../research/ui-layout-reassessment/industry-game-ui.md) / [工业编辑器UI](../../research/ui-layout-reassessment/industry-editor-ui.md)：通过Exa调查的机制依据。
 - [研究总入口](../../research/ui-layout-reassessment/README.md)：来源和历史资料，不是当前生产依赖。
+- [本次Flex/Grid原始资料核对](research.md)：规范和工业实现的算法依据、性能取舍与保留边界。
 - 已退役的候选与原生首步探针可从Git历史恢复；源码、独立runner和已失效方案不再留在当前树中。固定来源、许可与必要实测摘要保存在研究目录。
 
 正式代码位于 `src/ui_layout/`，消费者位于 `acceptance/ui_layout/`。当前树只保留这一套正式布局实现和验收入口；共享README与跨模块验收由集成负责人协调。
