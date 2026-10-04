@@ -11,10 +11,10 @@
 | World 生命周期、空间树与 StaticMeshActor | PASS（8/8） | PASS（8/8） |
 | 视口显示栏 1×/1.5×/2× DPI 布局 | PASS | PASS |
 | 新场景 VS/PS，DXC Shader Model 6.5 编译及 GPU 结构布局核对 | PASS（两配置共享同一 HLSL） | 同左 |
-| Renderer 真实 GPU 颜色/深度与模式矩阵 | 待执行 | 待执行 |
-| 正式编辑器原生菜单切换、MatCap/线框画面与 World TRS 投影 | 待执行 | 待执行 |
+| Renderer 真实 GPU 颜色/深度与模式矩阵 | PASS（2026-10-05，fb77b6a） | 待执行 |
+| 正式编辑器原生菜单切换、MatCap/线框画面与 World TRS 投影 | 前台检查中断，未完成 | 待执行 |
 
-GPU 项待确认可使用桌面的时段；当前窗口 fixture 会显示/恢复窗口，编辑器消费者还会执行窗口内输入。本记录不将编译、CPU 布局或历史 GPU PASS 当作新视口的 GPU 验收结果。日志在本工作区 `out/viewport-integration/`。
+窗口 fixture 会显示/恢复窗口，编辑器消费者还会执行窗口内输入。本记录不将编译、CPU 布局或历史 GPU PASS 当作新视口的 GPU 验收结果。原后台日志在视口工作树 `out/viewport-integration/`；2026-10-05 的同树 GPU 执行情况与中断边界见下。
 
 阶段冻结时已正常合入固定主线 `a57cb0ca5cd15aef61e79cef42513105b1c9bd3e`，无冲突。实际双配置后台验证的代码提交为 `f70d4e5e5f1059764a6ea35c6f2c1f3205a97d36`；其后的本节收口只修改文档。执行目标为 `atelier_renderer_acceptance atelier_editor editor_document_acceptance world_acceptance`：前两项仅编译，后两项编译并运行。日志为 `stage-sync-dev.log`、`stage-sync-release.log`，两种配置均退出 0。没有使用其他树的可执行文件。World 负责人已确认边标记与现有资源来源键恢复兼容，无需更改 Scene 格式；RHI 接口与后端均未修改。最终组合 Runtime/应用等其他成果后的 GPU 验收仍须在应用负责人指定的同一固定候选上执行。
 
@@ -30,6 +30,16 @@ cmake --build --preset dev --target editor_viewport_acceptance
 Renderer 消费者检查 MatCap 对基础色的覆盖与视空间响应、Flat/顶点法线差异、多边形对角线过滤、全场景遮挡、纯线模式深度、线宽与透视距离、无效参数的编码前拒绝、异步模式切换；沿原消费者继续执行矩阵、网格版本、UI 与关停验收。正式编辑器专项仍使用 `atelier_editor`，通过真实资源浏览器创建 sphere、点击共享原生下拉菜单切换各显示模式，检查几何/材质引用、矩阵、选中对象与撤销历史保持不变，并复验 World TRS 到 GPU 的投影。专项图片将保存在 `out/<配置>/viewport-evidence/`。
 
 当前只内置一张程序生成的中性陶土 MatCap；没有新增自定义图片导入、Ghost 淡显、AO 或 PBR。OBJ 输入继续沿原三角形合同，不能恢复源文件未保留的多边形边。尚无本轮帧耗时或显存性能测量结论。
+
+### 2026-10-05 固定集成树 GPU 执行
+
+用户已授权本轮窗口验收。在 `math-project-sync/FrostFoxAtelier` 的固定 `495bf513c4f3cb7e7a2a0ab9506559e34ee3f3c7` 开始执行；所有程序与日志均来自该树。
+
+首次 Dev Renderer 的纯 UI 部分通过，场景管线创建因根签名超过 64 DWORD 失败。RHI 负责人修复了各 shader stage 根常量与描述符表成本没有聚合的缺口，复用既有 CBV 常量池回退；修复提交为 `fb77b6a04063cb3e1df7f6d6e1872a9804890cc2`，直接父为上述固定候选。集成树正常快进该提交后双配置重新编译，Dev `renderer_acceptance` 完整 PASS，真实硬件为 AMD Radeon RX 6800 XT，启用 D3D12 debug/GBV。覆盖矩阵、任意网格、MatCap、线框、隐藏线、选择、线宽及资源寿命；日志未报告 D3D12 warning/error。
+
+随后 Dev `editor_viewport_acceptance` 因前台焦点检查退出 1，未生成模式 PNG。原错误共用于初始激活失败和运行中失焦，因此本次日志不能断言用户曾切走；停止后没有强抢焦点或自动重试。验收诊断提交 `e9c2210010fcf9d8f66d671e92c6898deab7132e` 仅区分初始 20 秒未获前台与运行中失焦，原输入保护不变，已通过 Dev/Release 编译；尚未再次执行窗口验收。待确认可保持前台的时段后完成两配置正式视口及 Release Renderer，不能据本次 Dev Renderer PASS 声称四项全部完成。
+
+证据目录为该集成树 `out/viewport-validation-20261005/`：首次失败 `dev-renderer-initial.log`、修复后 `dev-renderer.log`、编辑器中断 `dev-viewport.log`、两配置重建 `{dev,release}-build-rhi-fix.log` 和 `{dev,release}-activation-diagnostic-build.log`。RHI 自有树的双配置离屏回归是底层补丁证据，不代替本集成树的窗口结果。旧 Project 普通窗口和 Unicode 剪贴板问题未在本专项修复或验收。
 
 ## 历史验收
 
