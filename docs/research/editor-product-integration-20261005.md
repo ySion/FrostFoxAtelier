@@ -36,6 +36,7 @@ About 显示实时工程根目录与场景路径；工程成功打开后记录�
 
 - 合并 `5cd7304` 的 Dev／Release 正式 editor 编译、World 8／8、Project／Workspace／editor_document 均通过，日志为 `out/product-integration-20261005/{dev,release}-merged-build.log`。
 - 后续完整工程链已编入同一 editor，尚待串行窗口验收。程序在每次运行的报告中写入其实际构建标识和配置。
+- `f0052b2` 的 Dev 普通窗口已完成共享视口／TRS、About、工程打开、导入及参数撤销重做；随后导入网格的叠线像素检查失败。截图与 Renderer 合同确认：选中对象在 Off 和 Overlay 均保留同样的橙色轮廓。验收改为通过 Scene Tree 选择 World 后比较同一未选中网格，保持原像素阈值，并独立检查深度、选择和文档不变；保留两帧截图与变化像素数。生产渲染行为未修改。首错日志为 `out/product-integration-20261005/dev-product-window-resume1.log`。
 - Renderer 在固定 `5c1f21a29fd281cca6e9b87545d46e7c318dd48d` 的 Dev／Release `renderer_acceptance` 均通过，覆盖 MatCap、线框、矩阵和资源寿命；后续到 `4722d2` 仅改变窗口验收初始等待和记录。本轮应用候选的 Renderer／Geometry／RHI／gfx 生产代码与该版本一致。
 - 正式视口专项先因小球体的单 R 通道采样不足而失败，已改为通过现有相机放大球体并比较 RGB，保留原差异阈值。后续启动遭遇初始前台拒绝；该结果没有证明运行期间发生了失焦。当前同一窗口最多等待激活 120 秒，分别记录 WAITING、RUNNING 或启动超时；运行后失焦仍停止输入。
 - 本阶段不宣称普通 Project 确认对话框和间歇性 Unicode 剪贴板问题已解决；按实际覆盖结果更新，不以 Renderer 专项代替。

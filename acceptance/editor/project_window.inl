@@ -57,6 +57,9 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(x(app,imported_actor)==0,"Undo did not restore the imported Actor's position.");
     click(app,control::redo);require(x(app,imported_actor)==2.5f,"Redo did not restore the imported Actor's edit.");
     click(app,control::focus);
+    // Selected geometry keeps its orange edges even when the display overlay is off.
+    click(app,control::tree_world);
+    require(app.document().selected()==atelier::ObjectId{},"World selection did not clear the imported Actor's outline.");
     const auto display_document=model(app.document().serialize());
     const auto display_history=app.document().undo_count();
     const auto choose=[&](ControlKey source,ControlKey option) {click(app,source);click(app,option);tick(app);};
@@ -70,6 +73,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     atelier::renderer::Capture outlined;
     require(app.step(&outlined) && outlined.frame_id!=0 && outlined.extent==shaded.extent,
         "Project wireframe did not produce an accepted GPU frame.");
+    png(outlined,output/"project-wireframe.png");
     const auto viewport=app.presented()->find(control::viewport)->bounds;
     std::size_t changed{};
     for (unsigned row=static_cast<unsigned>(viewport.y);row<static_cast<unsigned>(viewport.y+viewport.height);++row)
@@ -79,9 +83,11 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
                 std::abs(int(shaded.rgba[offset+1])-int(outlined.rgba[offset+1]))>3 ||
                 std::abs(int(shaded.rgba[offset+2])-int(outlined.rgba[offset+2]))>3) ++changed;
         }
-    require(changed>8 && model(app.document().serialize())==display_document && app.document().undo_count()==display_history,
-        "Wireframe did not change scene pixels or modified persistent project state.");
-    png(outlined,output/"project-wireframe.png");
+    std::printf("Project overlay changed %zu viewport pixels.\n",changed);
+    require(changed>8,"Wireframe did not change the unselected imported mesh's scene pixels.");
+    require(outlined.depth==shaded.depth,"Project wireframe changed scene depth.");
+    require(app.document().selected()==atelier::ObjectId{} && model(app.document().serialize())==display_document &&
+        app.document().undo_count()==display_history,"Wireframe changed selection or persistent project state.");
     choose(control::scene_edges,control::edges_first);
     model(access::EditorAcceptanceAccess::command(app,Command::save_scene));tick(app,2);
     saved=app.document().serialize();require(saved.has_value(),"Cannot inspect the saved imported scene.");
