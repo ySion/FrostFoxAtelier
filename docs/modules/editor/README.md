@@ -4,6 +4,8 @@
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
 模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
+UI 作者层的后续方向见[声明式 UI 方案](declarative-ui-proposal.md)：类 UXML 标记、现有 SS 与自有语言共享当前构造和事务链。该方案已归档，UI 构造接口及绑定接线尚未实施。
+
 ## 工程与文件
 
 工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ 几何导入；Source 的跨文件编译仍是后续语言接点。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
