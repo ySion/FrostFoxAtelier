@@ -45,4 +45,7 @@ function(atelier_add_editor)
     add_custom_target(editor_ime_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-ime "${CMAKE_BINARY_DIR}/editor-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_viewport_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-viewport "${CMAKE_BINARY_DIR}/viewport-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
 endfunction()

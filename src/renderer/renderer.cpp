@@ -56,6 +56,9 @@ void validate(const Frame &frame) {
         frame.scene_viewport.y + frame.scene_viewport.height <= static_cast<float>(ui.extent.height) &&
         frame.meshes.size() <= std::numeric_limits<std::uint32_t>::max() &&
         ui.draws.size() <= std::numeric_limits<std::uint32_t>::max();
+    good &= frame.view.shading <= Shading::matcap && frame.view.wireframe <= Wireframe::only &&
+        finite(frame.view.wire_width) && frame.view.wire_width > 0 && frame.view.wire_width <= 8 &&
+        finite(frame.view.wire_opacity) && frame.view.wire_opacity >= 0 && frame.view.wire_opacity <= 1;
     for (float v : frame.camera.view)
         good &= finite(v);
     for (float v : frame.camera.projection)
@@ -84,6 +87,30 @@ struct Instance {
     ui::Color color;
 };
 static_assert(sizeof(Instance) == 120 && sizeof(geometry::Vertex) == 24);
+struct SceneTriangle {
+    std::array<geometry::Vertex, 3> vertices;
+    std::uint32_t edge_mask;
+    std::array<float, 3> face_normal;
+};
+static_assert(sizeof(SceneTriangle) == 88);
+SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
+    const auto vertices = mesh.vertices().subspan(index * 3, 3);
+    SceneTriangle result{{vertices[0], vertices[1], vertices[2]}, mesh.edge_mask(index), {}};
+    std::array<double, 3> a{}, b{}, normal{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        a[i] = double(vertices[1].position[i]) - vertices[0].position[i];
+        b[i] = double(vertices[2].position[i]) - vertices[0].position[i];
+    }
+    normal = {a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]};
+    const double length = std::hypot(normal[0], normal[1], normal[2]);
+    double orientation = 0;
+    for (std::size_t i = 0; i < 3; ++i)
+        orientation += normal[i] * (double(vertices[0].normal[i]) + vertices[1].normal[i] + vertices[2].normal[i]);
+    for (std::size_t i = 0; i < 3; ++i)
+        result.face_normal[i] = length == 0 ? vertices[0].normal[i] :
+            static_cast<float>(normal[i] / length * (orientation < 0 ? -1 : 1));
+    return result;
+}
 Instance prepare_instance(const MeshInstance &mesh) {
     const auto &m = mesh.world;
     const double a = m[0], b = m[1], c = m[2];
@@ -175,7 +202,8 @@ struct Renderer::State {
     rhi::Context context;
     GfxContext gfx;
     Options options;
-    rhi::Pipeline scene, solid, coverage, color_image;
+    rhi::Pipeline scene, scene_depth, visible_lines, all_lines, solid, coverage, color_image;
+    GfxTexture matcap;
     GfxSamplerState sampler;
     struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
     struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
@@ -219,6 +247,11 @@ struct Renderer::State {
             image.texture = {};
         }
         images.clear();
+        if (matcap) {
+            const auto r = gfxDestroyTexture(gfx, matcap);
+            if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
+            matcap = {};
+        }
         if (depth) {
             const auto r = gfxDestroyTexture(gfx, depth);
             if (r)
@@ -242,6 +275,9 @@ struct Renderer::State {
             sampler = {};
         }
         scene = {};
+        scene_depth = {};
+        visible_lines = {};
+        all_lines = {};
         solid = {};
         coverage = {};
         color_image = {};
@@ -258,7 +294,7 @@ struct Renderer::State {
         return {};
     }
     void prepare_pipeline(rhi::Pipeline &output, const char *name, const char *vs, const char *ps,
-                          bool scene_depth) {
+                          bool with_depth, unsigned pass = 0, bool hidden_lines = true) {
         rhi::PipelineDesc desc;
         desc.kind = rhi::PipelineKind::vertex;
         desc.name = name;
@@ -267,13 +303,23 @@ struct Renderer::State {
         require(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
                 "Set window color target");
         require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set culling");
-        if (scene_depth) {
+        if (with_depth) {
             require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT),
                     "Set depth target");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state, D3D12_COMPARISON_FUNC_LESS),
+            require(gfxDrawStateSetDepthFunction(desc.draw_state, pass == 1 ?
+                    (hidden_lines ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_ALWAYS) :
+                    D3D12_COMPARISON_FUNC_LESS),
                     "Set depth comparison");
-            require(gfxDrawStateSetDepthWriteMask(desc.draw_state, D3D12_DEPTH_WRITE_MASK_ALL),
+            require(gfxDrawStateSetDepthWriteMask(desc.draw_state, pass == 1 ?
+                    D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL),
                     "Set depth writes");
+            if (pass != 0)
+                require(gfxDrawStateSetBlendMode(desc.draw_state,
+                    pass == 2 ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
+                    pass == 2 ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
+                    pass == 2 ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
+                    pass == 2 ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD),
+                    "Set scene pass blending");
         } else {
             require(gfxDrawStateSetDepthWriteMask(desc.draw_state, D3D12_DEPTH_WRITE_MASK_ZERO),
                     "Disable depth writes");
@@ -285,6 +331,37 @@ struct Renderer::State {
         auto prepared = context.prepare(desc);
         if (!prepared) throw Error{prepared.error(), false};
         output = std::move(*prepared);
+    }
+    void prepare_matcap() {
+        if (matcap) return;
+        // Bake one neutral clay sphere in linear light, then encode its pixels as
+        // sRGB. This is a fixed material capture, shared by every scene instance.
+        constexpr unsigned side = 256;
+        std::vector<std::uint8_t> pixels(side * side * 4);
+        for (unsigned y = 0; y < side; ++y) for (unsigned x = 0; x < side; ++x) {
+            float nx = 2 * (float(x) + .5f) / side - 1, ny = 1 - 2 * (float(y) + .5f) / side;
+            const float radius = std::hypot(nx, ny);
+            if (radius > 1) { nx /= radius; ny /= radius; }
+            const float nz = -std::sqrt(std::max(0.f, 1 - nx*nx - ny*ny));
+            const float key = std::max(0.f, -.45f*nx + .65f*ny - .6124f*nz);
+            const float fill = std::max(0.f, .65f*nx - .2f*ny - .7331f*nz);
+            const float highlight = std::pow(std::max(0.f, -.32f*nx + .46f*ny - .8283f*nz), 40.f);
+            const float light = .14f + .57f*key + .15f*fill + .09f*std::pow(1 + nz, 3.f);
+            const std::array tint{1.f, .98f, .95f};
+            const auto offset = (std::size_t(y) * side + x) * 4;
+            for (unsigned channel = 0; channel < 3; ++channel) {
+                const float linear = std::clamp(light * tint[channel] + .1f * highlight, 0.f, 1.f);
+                const float srgb = linear <= .0031308f ? linear * 12.92f :
+                    1.055f * std::pow(linear, 1.f / 2.4f) - .055f;
+                pixels[offset + channel] = static_cast<std::uint8_t>(std::lround(srgb * 255));
+            }
+            pixels[offset + 3] = 255;
+        }
+        matcap = gfxCreateTexture2D(gfx, side, side, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+        allocation(bool(matcap));
+        BufferOwner upload{gfx, gfxCreateBuffer(gfx, pixels.size(), pixels.data(), kGfxCpuAccess_Write)};
+        allocation(bool(upload.buffer));
+        require(gfxCommandCopyBufferToTexture(gfx, matcap, upload.buffer), "Upload clay MatCap");
     }
     void check_debug() {
         if (!debug) return;
@@ -361,8 +438,18 @@ struct Renderer::State {
         require(gfxCommandClearBackBuffer(gfx), "Clear window");
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         if (draw_scene) {
-            if (!scene)
-                prepare_pipeline(scene, "editor scene", shaders::scene_vs, shaders::scene_ps, true);
+            const bool lines_only = frame.view.wireframe == Wireframe::only;
+            if (!lines_only && !scene)
+                prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, true);
+            if (lines_only) {
+                if (!scene_depth)
+                    prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, true, 2);
+                auto& lines = frame.view.hidden_lines ? visible_lines : all_lines;
+                if (!lines)
+                    prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
+                                     true, 1, frame.view.hidden_lines);
+            }
+            prepare_matcap();
             if (depth_extent != extent) {
                 if (depth) require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
                 const float clear[4] = {1, 0, 0, 0};
@@ -384,26 +471,48 @@ struct Renderer::State {
                                              static_cast<int>(std::ceil(viewport.y + viewport.height)) -
                                                  static_cast<int>(std::floor(viewport.y))),
                     "Set scene scissor");
-            const auto program = scene.program();
-            require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
-            require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
-            require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection),
-                    "Set projection matrix");
-            require(gfxCommandBindKernel(gfx, scene.kernel()), "Bind scene pipeline");
             for (const auto& batch : mesh_batches) {
                 auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
                 auto& geometry = found->second;
                 const auto vertices = geometry.source->vertices();
                 if (inserted) {
-                    geometry.vertices = gfxCreateBuffer<geometry::Vertex>(gfx, static_cast<std::uint32_t>(vertices.size()), vertices.data());
+                    std::vector<SceneTriangle> triangles;
+                    triangles.reserve(vertices.size() / 3);
+                    for (std::size_t i = 0; i < vertices.size() / 3; ++i)
+                        triangles.push_back(prepare_triangle(*geometry.source, i));
+                    geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
+                        static_cast<std::uint32_t>(triangles.size()), triangles.data());
                     allocation(bool(geometry.vertices));
                 }
                 geometry.used = true;
-                require(gfxProgramSetParameter(gfx, program, "vertices", geometry.vertices), "Bind mesh vertices");
-                require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set mesh instance offset");
-                require(gfxCommandDraw(gfx, static_cast<std::uint32_t>(vertices.size()), batch.count), "Draw mesh batch");
-                ++stats.scene_draw_calls;
             }
+            const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
+                const auto program = pipeline.program();
+                const std::array<std::uint32_t, 4> display{
+                    static_cast<std::uint32_t>(frame.view.shading), static_cast<std::uint32_t>(frame.view.wireframe),
+                    frame.view.triangle_edges ? 1u : 0u, pass};
+                const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
+                require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
+                require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
+                require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
+                require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy");
+                require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
+                require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
+                require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
+                require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
+                for (const auto& batch : mesh_batches) {
+                    const auto& geometry = geometries.at(batch.geometry.get());
+                    require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
+                    require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set mesh instance offset");
+                    require(gfxCommandDraw(gfx, static_cast<std::uint32_t>(geometry.source->vertices().size()),
+                                           batch.count), "Draw mesh batch");
+                    ++stats.scene_draw_calls;
+                }
+            };
+            if (lines_only) {
+                draw_batches(scene_depth, 2);
+                draw_batches(frame.view.hidden_lines ? visible_lines : all_lines, 1);
+            } else draw_batches(scene, 0);
         }
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }

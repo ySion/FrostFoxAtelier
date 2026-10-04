@@ -138,6 +138,7 @@ Result<void> Application::action(const ui::Action& event) {
     if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) return {};
+    if (workspace_.apply_view(event)) return {};
     if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
         const auto selected=workspace_.assets.selected();
         if (!selected) return {};
@@ -619,7 +620,7 @@ bool Application::step(renderer::Capture* capture) {
     for (const auto& item : items)
         meshes_.push_back({item.world.elements, {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1}, item.actor == document_->selected(),item.geometry});
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds, meshes_};
+    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds, meshes_, workspace_.view};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
