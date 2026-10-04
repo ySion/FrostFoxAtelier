@@ -692,6 +692,29 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
 #include "controls.inl"
 #include "docking.inl"
 #include "shelf.inl"
+void await_acceptance_activation(Application& app,const std::filesystem::path& output,const char* kind) {
+    const auto label=std::string("Editor ")+kind+" acceptance";
+    std::ofstream(output/"acceptance.txt")<<label<<": WAITING FOR ACTIVATION (no synthetic input)\n";
+    std::printf("%s: waiting up to 120 seconds; click the editor title bar to begin. No synthetic input has started.\n",label.c_str());
+    std::fflush(stdout);
+    SetForegroundWindow(app.window());SetFocus(app.window());tick(app);
+    const auto deadline=GetTickCount64()+120000;
+    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<deadline)
+        require(app.step(),"Editor closed while waiting for initial foreground.");
+    if (GetFocus()!=app.window() || GetForegroundWindow()!=app.window()) {
+        const auto foreground=GetForegroundWindow();
+        DWORD process{};GetWindowThreadProcessId(foreground,&process);
+        std::ofstream(output/"acceptance.txt")<<label<<": BLOCKED before input; initial activation timed out\n"
+            <<"editor="<<app.window()<<"; foreground="<<foreground<<"; focus="<<GetFocus()<<"; foreground PID="<<process<<'\n';
+        throw std::runtime_error("Initial foreground activation was not granted within 120 seconds; no synthetic input was sent.");
+    }
+    std::ofstream(output/"acceptance.txt")<<label<<": RUNNING (activation acquired)\n";
+    std::printf("%s: activation acquired; starting input checks.\n",label.c_str());std::fflush(stdout);
+    // Keep native pointer movement away from menu headings during message-driven gestures.
+    RECT host{};GetWindowRect(app.window(),&host);
+    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
+}
+
 #include "menus.inl"
 #include "tree.inl"
 #include "project_window.inl"
@@ -712,14 +735,7 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
         for (const auto name:{L"Config",L"Content",L"Source"}) if (std::filesystem::exists(source/name))
             std::filesystem::copy(source/name,folder/name,std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     } else std::filesystem::create_directories(output);
-    std::ofstream(output/"acceptance.txt")<<"Editor project acceptance: RUNNING\n";
-    SetForegroundWindow(app.window());SetFocus(app.window());tick(app);
-    const auto deadline=GetTickCount64()+20000;
-    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<deadline)
-        require(app.step(),"Editor closed while waiting for project acceptance foreground.");
-    require_input_focus(app);
-    RECT host{};GetWindowRect(app.window(),&host);
-    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the project acceptance pointer.");
+    await_acceptance_activation(app,output,"project");
     verify_project_window(app,output,source_project!=nullptr);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Project acceptance did not close the editor.");
@@ -738,32 +754,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    std::ofstream(output / "acceptance.txt") << "Editor window acceptance: WAITING FOR ACTIVATION (no synthetic input)\n";
-    std::puts("Editor acceptance: waiting up to 120 seconds for activation; click the editor window. No synthetic input has started.");
-    std::fflush(stdout);
-    SetForegroundWindow(app.window()); SetFocus(app.window());
-    tick(app);
-    // Launching from a background build process may not grant foreground rights.
-    // Wait once for activation; subsequent focus loss still stops every input.
-    const auto foreground_deadline=GetTickCount64()+120000;
-    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<foreground_deadline)
-        require(app.step(),"Editor closed while waiting for initial foreground.");
-    if (GetFocus()!=app.window() || GetForegroundWindow()!=app.window()) {
-        const auto foreground=GetForegroundWindow();
-        DWORD process{}; GetWindowThreadProcessId(foreground,&process);
-        std::ofstream(output/"acceptance.txt") << "Editor window acceptance: BLOCKED before input; initial activation timed out\n"
-            << "editor=" << app.window() << "; foreground=" << foreground << "; focus=" << GetFocus()
-            << "; foreground PID=" << process << '\n';
-        throw std::runtime_error("Initial foreground activation was not granted within 120 seconds; no synthetic input was sent.");
-    }
-    std::ofstream(output/"acceptance.txt") << "Editor window acceptance: RUNNING (activation acquired)\n";
-    std::puts("Editor acceptance: activation acquired; starting input checks.");
-    std::fflush(stdout);
-    // SendMessage gestures deliberately keep the OS cursor off the client.
-    // Capture/show can synthesize movement there; parking on the title bar
-    // prevents those messages from switching a menu to an unrelated heading.
-    RECT host{}; GetWindowRect(app.window(),&host);
-    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
+    await_acceptance_activation(app,output,viewport_only?"viewport":"window");
     tick(app);
     require(actors(app).empty(),"The production editor did not start with an empty scene.");
     if (viewport_only) {

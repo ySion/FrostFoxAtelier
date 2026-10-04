@@ -11,6 +11,7 @@
 - 独立工程窗口验收模式：`0a3f634ebe4757d833f70c6210926fd5208c1909`。
 - Renderer／RHI 来源：`fb77b6a04063cb3e1df7f6d6e1872a9804890cc2`，包含原 `495bf51` 候选及跨 shader stage 根签名预算修复。
 - 正常合并：`5cd730484b9a31abba222d80d904af236a54a0bc`，保留双方历史、正式视口和工程验收模式。后续工程链增量复用同一程序。
+- 后续正常合入 Renderer 固定 `4722d20673ba659073606735bbcabd9eee73607c`，merge 为 `b663e222e9ff03a9b6d368b1179b8c80f7e4b615`；保留 RGB／真实相机放大采样及前台激活诊断。Project 与 Viewport 的初始激活等待归入同一个验收 helper。
 
 ## 用户可以辨认的运行版本
 
@@ -35,5 +36,6 @@ About 显示实时工程根目录与场景路径；工程成功打开后记录�
 
 - 合并 `5cd7304` 的 Dev／Release 正式 editor 编译、World 8／8、Project／Workspace／editor_document 均通过，日志为 `out/product-integration-20261005/{dev,release}-merged-build.log`。
 - 后续完整工程链已编入同一 editor，尚待串行窗口验收。程序在每次运行的报告中写入其实际构建标识和配置。
-- Renderer 专项保留自己的固定代码和日志；已发现并修复的根签名预算问题不能仅用编译结果代替 GPU 验证。此前前台错误可能发生于初始激活未获准，须与运行期间失焦区分。
+- Renderer 在固定 `5c1f21a29fd281cca6e9b87545d46e7c318dd48d` 的 Dev／Release `renderer_acceptance` 均通过，覆盖 MatCap、线框、矩阵和资源寿命；后续到 `4722d2` 仅改变窗口验收初始等待和记录。本轮应用候选的 Renderer／Geometry／RHI／gfx 生产代码与该版本一致。
+- 正式视口专项先因小球体的单 R 通道采样不足而失败，已改为通过现有相机放大球体并比较 RGB，保留原差异阈值。后续启动遭遇初始前台拒绝；该结果没有证明运行期间发生了失焦。当前同一窗口最多等待激活 120 秒，分别记录 WAITING、RUNNING 或启动超时；运行后失焦仍停止输入。
 - 本阶段不宣称普通 Project 确认对话框和间歇性 Unicode 剪贴板问题已解决；按实际覆盖结果更新，不以 Renderer 专项代替。
