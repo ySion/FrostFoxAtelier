@@ -737,6 +737,8 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
             std::filesystem::copy(source/name,folder/name,std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     } else std::filesystem::create_directories(output);
     await_acceptance_activation(app,output,"project");
+    require(actors(app).empty(),"The production editor did not start with an empty scene.");
+    verify_viewport_display(app,output);
     verify_project_window(app,output,source_project!=nullptr);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Project acceptance did not close the editor.");
@@ -744,7 +746,7 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
     report<<"Editor project acceptance: PASS\nBuild: "<<atelier::build_info::revision<<"\nConfiguration: "<<atelier::build_info::configuration
         <<"\nSource project: "<<(source_project?atelier::editor::utf8(source_project):"new fixture")
         <<"\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
-        <<"Shared commands, About identity/current root, Actor creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n";
+        <<"Shared viewport display/TRS checks followed by project commands, About identity/current root, Actor creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n";
     std::printf("Editor project acceptance: PASS; evidence: %s\n",atelier::editor::utf8(output.wstring()).c_str());
     return 0;
 }
