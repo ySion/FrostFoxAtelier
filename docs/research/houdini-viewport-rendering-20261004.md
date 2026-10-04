@@ -36,7 +36,7 @@ MatCap 纹理包含固定照明和材质信息，不响应 Work Lights 或 Scene
 
 ## 可用于项目方案的判断
 
-以下保留研究时形成的项目建议，不是 Houdini 的出厂默认值结论。其后 MatCap、实体着色、边线及视口控件已在待验分支实现；当前合同与验证状态分别见[Renderer 合同](../modules/renderer/contract.md#视口显示策略)和[验收记录](../modules/renderer/acceptance.md#视口显示增量)。GPU/窗口项仍待许可与实际执行。
+以下保留研究时形成的项目建议，不是 Houdini 的出厂默认值结论。其后 MatCap、实体着色、边线及视口控件已通过双配置真实 GPU 与正式窗口验收，并随 PR #11 发布到 `855433a`，见[集成收口](editor-product-integration-20261005.md)。当前合同与后续增量的独立验证状态分别见[Renderer 合同](../modules/renderer/contract.md#视口显示策略)和[验收记录](../modules/renderer/acceptance.md)。
 
 首个完整增量建议提供 MatCap、基础实体着色（Smooth/Flat），以及线框叠加、纯线框和隐藏不可见边。默认可选中性陶土 MatCap；保留对象基础色的实体模式，方便场景辨识；Ghost 淡显遮挡边可后续补充。界面提供快捷预设，内部组合表面着色、边线显示与遮挡政策，继续通过同一个 `Renderer::render(Frame)` 消费场景。视口显示设置由应用持有并随帧提交，切换模式不改 World 材质数据。[当前 Renderer 边界](../../src/renderer/renderer.hpp)、[应用接线](../../src/application/application.cpp)
 
