@@ -701,16 +701,27 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    std::ofstream(output / "acceptance.txt") << "Editor window acceptance: RUNNING\n";
+    std::ofstream(output / "acceptance.txt") << "Editor window acceptance: WAITING FOR ACTIVATION (no synthetic input)\n";
+    std::puts("Editor acceptance: waiting up to 120 seconds for activation; click the editor window. No synthetic input has started.");
+    std::fflush(stdout);
     SetForegroundWindow(app.window()); SetFocus(app.window());
     tick(app);
     // Launching from a background build process may not grant foreground rights.
     // Wait once for activation; subsequent focus loss still stops every input.
-    const auto foreground_deadline=GetTickCount64()+20000;
+    const auto foreground_deadline=GetTickCount64()+120000;
     while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<foreground_deadline)
         require(app.step(),"Editor closed while waiting for initial foreground.");
-    require(GetFocus()==app.window() && GetForegroundWindow()==app.window(),
-        "Initial foreground activation was not granted within 20 seconds; no synthetic input was sent.");
+    if (GetFocus()!=app.window() || GetForegroundWindow()!=app.window()) {
+        const auto foreground=GetForegroundWindow();
+        DWORD process{}; GetWindowThreadProcessId(foreground,&process);
+        std::ofstream(output/"acceptance.txt") << "Editor window acceptance: BLOCKED before input; initial activation timed out\n"
+            << "editor=" << app.window() << "; foreground=" << foreground << "; focus=" << GetFocus()
+            << "; foreground PID=" << process << '\n';
+        throw std::runtime_error("Initial foreground activation was not granted within 120 seconds; no synthetic input was sent.");
+    }
+    std::ofstream(output/"acceptance.txt") << "Editor window acceptance: RUNNING (activation acquired)\n";
+    std::puts("Editor acceptance: activation acquired; starting input checks.");
+    std::fflush(stdout);
     // SendMessage gestures deliberately keep the OS cursor off the client.
     // Capture/show can synthesize movement there; parking on the title bar
     // prevents those messages from switching a menu to an unrelated heading.
