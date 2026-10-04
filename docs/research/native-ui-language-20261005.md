@@ -1,6 +1,6 @@
 # 原生 UI 语言首个编辑器组件验收
 
-日期：2026-10-05。基线：`855433a840584b414073758d6587f5ce6ae66703`，加本工作树未提交的 UI 语言与 Session 属性更新。两个正式编辑器均报告 `+ local changes`；本阶段没有提交、推送或发布主线。
+首次 M1 验收日期：2026-10-05。基线：`855433a840584b414073758d6587f5ce6ae66703`，加当时未提交的 UI 语言与 Session 属性更新。两个正式编辑器当时均报告 `+ local changes`；以下保留原始证据，后续审查和正式组合验收见末节。
 
 ## 实际交付
 
@@ -62,4 +62,30 @@ Session 的 33 控件场景测得：单项颜色变化更新 1 个控件，布�
 - 布局审查：准备失败后的旧帧不能解除输入暂停，恢复必须接受失败之后的新候选。正式交付为 `08b2fa2cbeee1033948603f97a9c9564abd5e93d`。
 - 文档清理：删除过期派发和分支指令，纠正逐 quad 提交、单级菜单、UI 语法未实施等旧描述；当前模块职责与历史证据分开维护。
 
-新增边界检查仍在同一 `editor_document_acceptance` 内，使用真实 World、Source/JIT 和 UI 输入。最终组合版本与验收证据在统一集成后补记，不能由此前的 WIP 报告代替。
+新增边界检查仍在同一 `editor_document_acceptance` 内，使用真实 World、Source/JIT 和 UI 输入；相关负责人已定向复核修复。
+
+## 正式组合验收
+
+应用集成提交 `acae7b90784c7a1ad6a76e077a9ee5a3b6592530` 汇合以下生产者提交，保留各自历史：
+
+| 改动 | 生产者提交 |
+| --- | --- |
+| 持久 Session、稀疏更新与失败恢复 | `08b2fa2cbeee1033948603f97a9c9564abd5e93d` |
+| 原生 UI 组件、编辑器迁移、审查修复与文档清理 | `c49ba44d48f7d271b422e5fa199ea3ee74ce4bed` |
+| RHI 所有权与当前能力文档 | `f2c5f8180001268c3819f8d2a511284dd16c7005` |
+| Renderer Guides 与正式编辑器接线 | `d2dafe49298b2e67617e270df788c050badc246d` |
+
+Runtime、World、Foundation 负责人完成各自接点审查，没有需要其模块修改的缺陷，不制造空提交。README 与 Workspace 邻接声明的合并冲突已保留两侧意图；旧 Position 构造和无效文档陈述未恢复。
+
+在组合工作树执行两个配置的 `atelier_editor editor_document_acceptance ui_acceptance renderer_acceptance` 目标，均通过，UI 为 20/20；Renderer 包含真实 GPU 的空场景、渐变/网格/轴线、深度、相机及资源退休检查。随后以干净的 `acae7b9` 重编正式编辑器，依次运行两个配置的 `--acceptance-project`，退出码均为 0，报告均为 PASS。
+
+正式窗口链同时覆盖 Guides 菜单和像素变化、显示/TRS、Position 参数编辑/撤销重做、项目导入、保存重开、失败打开及工程搬移。原 `E:/ffa_testproj` 的 Config/Content/Source 文件集合和 SHA-256 保持不变。未新增真实系统 IME 或完整普通控件窗口矩阵的验收结论。
+
+组合证据在 `out/unified-review-20261005/`：
+
+- `dev-build.log`、`release-build.log`：组合编译与后台消费者。
+- `dev-window-evidence/run-68616-345766906/acceptance.txt`。
+- `release-window-evidence/run-6184-345813640/acceptance.txt`。
+- 窗口目录保留 Guides 与项目 PNG；`manifest.json` 固定验收提交、源码、部署资产和二进制哈希。
+
+之后的收口提交只更新文档；以上窗口报告保持其真实验收提交身份，不重标为后续文档或主线合并 SHA。

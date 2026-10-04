@@ -2,7 +2,9 @@
 
 ## 背景与参考网格（2026-10-05）
 
-本轮在 `viewport-rendering/FrostFoxAtelier` 工作树、基线 `855433a840584b414073758d6587f5ce6ae66703` 上实现。以下是 Guides 独立生产者的验收，首次执行时的源码指纹保存在 `out/reference-guides-20261005/source-manifest.json`；基线 SHA 不包含本轮代码。原生 UI 语言 M1 位于另一工作树，两片组合后的实际接点由应用负责人统一验收，不能用这里的独立 PASS 代替。
+Guides 生产者提交为 `d2dafe49298b2e67617e270df788c050badc246d`。它与原生 UI 语言 M1、Session 更新及 RHI 文档在 `acae7b90784c7a1ad6a76e077a9ee5a3b6592530` 完成组合，开发/发布版 Renderer、UI、文档消费者与正式项目窗口均通过，见[组合验收](../../research/native-ui-language-20261005.md#正式组合验收)。
+
+以下保留 Guides 独立生产者的首次验收：当时工作树为 `viewport-rendering/FrostFoxAtelier`，基线 `855433a840584b414073758d6587f5ce6ae66703`，源码指纹在 `out/reference-guides-20261005/source-manifest.json`；该基线 SHA 本身不包含 Guides 代码。
 
 | 验证 | Dev | Release |
 | --- | --- | --- |
