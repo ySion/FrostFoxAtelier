@@ -46,7 +46,9 @@ public:
     }
     Array(Array&& other) noexcept { swap(other); }
     Array& operator=(Array&& other) noexcept {
-        if (this != &other) { release(); swap(other); }
+        // An element can own the source container. Transfer its storage before
+        // releasing our old elements, which may destroy that source object.
+        if (this != &other) { Array incoming{std::move(other)}; swap(incoming); }
         return *this;
     }
     ~Array() { release(); }
