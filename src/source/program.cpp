@@ -78,7 +78,7 @@ struct Program::Metadata {
     TypeInfo value;
     bool matches(const TypeInfo& actual) const {
         if (&actual != identity || actual.id != value.id || actual.name != value.name ||
-            actual.enumeration != value.enumeration || actual.kind != value.kind || actual.math != value.math || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
+            actual.enumeration != value.enumeration || actual.kind != value.kind || actual.math != value.math || actual.plain_value != value.plain_value || actual.base != value.base || actual.size != value.size || actual.alignment != value.alignment ||
             actual.copy_constructible != value.copy_constructible || actual.copy_assignable != value.copy_assignable ||
             actual.contains_references != value.contains_references || actual.element != value.element ||
             actual.native_storage != value.native_storage || actual.sequence_view != value.sequence_view ||
@@ -218,7 +218,7 @@ struct Program::Version {
     template<class T>
     Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget) const {
         if (aggregate(info.signature.result))
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Math source results require typed value output storage."});
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
         const AbiArguments encoded(contract->binding, declaration->signature, arguments);
         if (!encoded.status) return std::unexpected(encoded.status.error());
         auto result = invoke(receiver, encoded.values, {}, budget);
@@ -233,21 +233,22 @@ struct Program::Version {
     Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output, CollectionBudget budget) const {
         const auto kind = info.signature.result;
         const auto& binding = contract->binding;
-        if (!aggregate(kind) || kind.type_index >= binding.values.size() || !binding.values[kind.type_index].math)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Typed value output requires a builtin math source result."});
+        if (!aggregate(kind) || kind.type_index >= binding.values.size() || !(binding.values[kind.type_index].math || binding.values[kind.type_index].plain_value))
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Typed value output requires a math or plain record source result."});
         const auto& value = binding.values[kind.type_index];
         if (output.type != value.type || !output.data || reinterpret_cast<std::uintptr_t>(output.data) % value.alignment != 0)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source output storage does not match its declared math type and alignment."});
-        alignas(double) std::array<std::byte, 16 * sizeof(double)> staged{};
-        if (value.size > staged.size() || value.alignment > alignof(double))
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Builtin math layout exceeds the source result ABI."});
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source output storage does not match its declared value type and alignment."});
         const AbiArguments encoded(binding, declaration->signature, arguments);
         if (!encoded.status) return std::unexpected(encoded.status.error());
-        auto result = invoke(receiver, encoded.values, {}, budget, staged.data());
+        // Only the returned representation enters this buffer. Constructing a
+        // native value here would execute an unrelated default constructor.
+        ::atelier::detail::ValueStorage staging_owner;
+        auto* staged = staging_owner.prepare(value.size, value.alignment);
+        auto result = invoke(receiver, encoded.values, {}, budget, staged);
         if (!result) return std::unexpected(result.error());
-        if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged.data())
-            return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled math result changed its typed output storage."});
-        std::memcpy(output.data, staged.data(), value.size);
+        if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled aggregate result changed its typed output storage."});
+        std::memcpy(output.data, staged, value.size);
         return {};
     }
     Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
@@ -255,7 +256,7 @@ struct Program::Version {
         if (info.signature.is_coroutine)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
         if (aggregate(info.signature.result) && !result_data)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Math source results require typed value output storage."});
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
         const auto& binding = contract->binding;
         auto activation = ExecutionScope::enter(*binding.runtime);
         if (!activation) return std::unexpected(std::move(activation.error()));

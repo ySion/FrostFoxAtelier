@@ -2,6 +2,7 @@
 #include "jit/windows_unwind.hpp"
 #include "jit/math_lowering.hpp"
 #include "language/source.hpp"
+#include "runtime/value_storage.hpp"
 
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 #include "jit/source_backend_verification.hpp"
@@ -44,7 +45,7 @@ const char* failure_message(EntryFailure reason) noexcept {
     switch (reason) {
     case EntryFailure::none: return nullptr;
     case EntryFailure::invalid_call_result:
-        return "Native call result contract violation: successful callback omitted the result or returned an invalid scalar value.";
+        return "Native call result contract violation: successful callback omitted the result or returned an invalid value.";
     case EntryFailure::sequence_bounds: return "Borrowed Array/String index is out of range.";
     case EntryFailure::sequence_layout: return "Borrowed sequence has invalid storage, alignment or size beyond uint range.";
     case EntryFailure::sequence_size: return "Sequence size cannot be negative.";
@@ -206,8 +207,8 @@ public:
         write_float_ = declare("business_write_float", i32, {ptr, i32, i32, f32});
         read_double_ = declare("business_read_double", i32, {ptr, i32, i32, ptr});
         write_double_ = declare("business_write_double", i32, {ptr, i32, i32, ir_.getDoubleTy()});
-        read_math_ = declare("business_read_math", i32, {ptr, i32, i32, ptr});
-        write_math_ = declare("business_write_math", i32, {ptr, i32, i32, ptr});
+        read_value_ = declare("business_read_value", i32, {ptr, i32, i32, ptr});
+        write_value_ = declare("business_write_value", i32, {ptr, i32, i32, ptr});
         read_uint_ = declare("business_read_uint", i32, {ptr, i32, i32, ptr});
         write_uint_ = declare("business_write_uint", i32, {ptr, i32, i32, i32});
         read_bool_ = declare("business_read_bool", i32, {ptr, i32, i32, ptr});
@@ -263,16 +264,21 @@ public:
             call_math_result_->setAlignment(llvm::Align(8));
         }
         owned_local_slots_.resize(function_.locals.size(), language::no_node);
-        literal_slots_.resize(function_.expressions.size(), language::no_node);
+        expression_value_slots_.resize(function_.expressions.size(), language::no_node);
+        source_value_results_.resize(function_.expressions.size());
+        argument_value_slots_.resize(function_.expressions.size());
         for (std::size_t index = 0; index < function_.locals.size(); ++index) {
             const auto& local = function_.locals[index];
-            if (index >= function_.parameters.size() && managed_value(local.type)) {
+            const bool parameter = index < function_.parameters.size();
+            if (managed_value(local.type) && (!parameter ||
+                (public_entry_ && function_.parameters[index].passing == ParameterPassing::value))) {
                 const auto slot = allocate_owned(local.type, local.name);
                 owned_local_slots_[index] = slot;
                 locals_.push_back(owned_[slot].storage);
                 continue;
             }
-            if (is_reference(local.type) || (index < function_.parameters.size() && function_.parameters[index].passing != ParameterPassing::value)) {
+            if (is_reference(local.type) || (parameter &&
+                (function_.parameters[index].passing != ParameterPassing::value || managed_value(local.type)))) {
                 locals_.push_back(nullptr);
                 continue;
             }
@@ -289,12 +295,28 @@ public:
         for (std::size_t index = 0; index < function_.expressions.size(); ++index) {
             const auto& node = function_.expressions[index];
             if (node.kind == language::Expression::Kind::string_literal && !direct_text_inputs[index])
-                literal_slots_[index] = allocate_owned(node.type, "text.literal");
+                expression_value_slots_[index] = allocate_owned(node.type, "text.literal");
+            if (managed_value(node.type) && node.kind == language::Expression::Kind::source_call)
+                source_value_results_[index] = allocate_value_storage(node.type, "function.value.result");
+            if (managed_value(node.type) && node.kind == language::Expression::Kind::call)
+                expression_value_slots_[index] = allocate_owned(node.type, "value.result");
+            if (node.kind == language::Expression::Kind::call || node.kind == language::Expression::Kind::source_call) {
+                auto& slots = argument_value_slots_[index];
+                slots.resize(node.arguments.size(), language::no_node);
+                for (std::size_t i = 0; i < node.arguments.size(); ++i) {
+                    const auto type = function_.expressions[node.arguments[i]].type;
+                    if (node.argument_passing[i] == ParameterPassing::value && managed_value(type))
+                        slots[i] = allocate_owned(type, "value.argument");
+                }
+            }
         }
         for (std::size_t index = 0; index < function_.parameters.size(); ++index) {
             if (!public_entry_) {
                 auto* argument = entry_->getArg(static_cast<unsigned>(index + 3));
-                if (function_.parameters[index].passing == ParameterPassing::value) store_value(argument, locals_[index], function_.parameters[index].type);
+                // Internal record arguments already own a caller-created
+                // snapshot. It cannot escape this synchronous call chain.
+                if (function_.parameters[index].passing == ParameterPassing::value && !managed_value(function_.parameters[index].type))
+                    store_value(argument, locals_[index], function_.parameters[index].type);
                 else locals_[index] = argument;
                 continue;
             }
@@ -305,6 +327,11 @@ public:
                 continue;
             }
             const auto type = function_.parameters[index].type;
+            if (managed_value(type)) {
+                construct_owned(owned_local_slots_[index],
+                    ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4)));
+                continue;
+            }
             auto* value = math_type(type) ? load_value(ir_.CreateLoad(ir_.getPtrTy(),
                 ir_.CreateStructGEP(abi_value_type_, argument, 4)), type) :
                 decode_bits(ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, argument, 2)), type);
@@ -321,7 +348,7 @@ public:
         statement(function_.body);
         if (!terminated()) {
             if (function_.result == language::ValueType::void_value) ir_.CreateBr(finish_);
-            else ir_.CreateUnreachable(); // The typed tree rejects every reachable scalar fallthrough.
+            else ir_.CreateUnreachable(); // The typed tree rejects every reachable value fallthrough.
         }
         ir_.SetInsertPoint(finish_);
         // Every normal exit releases user resources before the host finish
@@ -500,10 +527,14 @@ private:
         ir_.CreateCall(clear_, {invocation_, ir_.getInt32(slot)});
     }
     struct OwnedValue { language::ValueType type; llvm::Value* storage; llvm::AllocaInst* live; };
-    std::size_t allocate_owned(language::ValueType type, const llvm::Twine& name) {
+    llvm::AllocaInst* allocate_value_storage(language::ValueType type, const llvm::Twine& name) {
         const auto& layout = source_.value_layouts.at(type.type_index);
         auto* storage = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), layout.size), nullptr, name);
         storage->setAlignment(llvm::Align(layout.alignment));
+        return storage;
+    }
+    std::size_t allocate_owned(language::ValueType type, const llvm::Twine& name) {
+        auto* storage = allocate_value_storage(type, name);
         auto* live = ir_.CreateAlloca(ir_.getInt1Ty(), nullptr, "value.live");
         ir_.CreateStore(ir_.getFalse(), live);
         owned_.push_back({type, storage, live});
@@ -514,6 +545,11 @@ private:
         checked_call(construct_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage,
             source ? source : llvm::ConstantPointerNull::get(ir_.getPtrTy())});
         ir_.CreateStore(ir_.getTrue(), value.live);
+    }
+    llvm::Value* temporary_value(std::size_t slot, llvm::Value* source = nullptr) {
+        construct_owned(slot, source);
+        value_temporaries_.push_back(slot);
+        return owned_[slot].storage;
     }
     void destroy_owned(std::size_t slot) {
         const auto& value = owned_.at(slot);
@@ -577,7 +613,7 @@ private:
     }
     llvm::Value* read_field(llvm::Value* slot, language::ValueType type, std::uint32_t field) {
         if (math_type(type)) {
-            checked_call(read_math_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
+            checked_call(read_value_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
             return load_value(math_field_result_, type);
         }
         if (type == language::ValueType::f32) {
@@ -601,7 +637,7 @@ private:
     void write_field(llvm::Value* slot, language::ValueType type, std::uint32_t field, llvm::Value* value) {
         if (math_type(type)) {
             store_value(value, math_field_result_, type);
-            checked_call(write_math_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
+            checked_call(write_value_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
             return;
         }
         if (type == language::ValueType::f32) {
@@ -675,6 +711,9 @@ private:
             const auto stride = function_.expressions[node.left].type.kind == language::ValueType::string ? 1 : storage_size(node.type);
             return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), input.data, ir_.CreateMul(offset, ir_.getInt64(stride)));
         }
+        if (managed_value(node.type) && (node.kind == language::Expression::Kind::call ||
+            node.kind == language::Expression::Kind::source_call))
+            return expression(id);
         if (math_type(node.type)) return input_address(id);
         throw std::logic_error("Expression has no borrowed native storage.");
     }
@@ -722,11 +761,9 @@ private:
             if (node.type == language::ValueType::boolean) return ir_.getInt1(node.bits != 0);
             return ir_.getInt32(static_cast<std::uint32_t>(node.bits));
         case Kind::string_literal: {
-            const auto slot = literal_slots_.at(index);
-            construct_owned(slot);
-            value_temporaries_.push_back(slot);
-            write_text(node.type, owned_[slot].storage, node.value, SequenceMutation::assign_text);
-            return owned_[slot].storage;
+            auto* storage = temporary_value(expression_value_slots_.at(index));
+            write_text(node.type, storage, node.value, SequenceMutation::assign_text);
+            return storage;
         }
         case Kind::sequence_mutation: {
             const auto type = function_.expressions[node.left].type;
@@ -785,13 +822,22 @@ private:
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto id = node.arguments[i];
                 const auto& argument = function_.expressions[id];
-                if (node.argument_passing[i] == ParameterPassing::value) arguments.push_back(expression(id));
+                if (node.argument_passing[i] == ParameterPassing::value) {
+                    auto* value = expression(id);
+                    if (managed_value(argument.type)) value = temporary_value(argument_value_slots_[index][i], value);
+                    arguments.push_back(value);
+                }
                 else if (language::aggregate(argument.type)) arguments.push_back(value_address(id));
                 else if (argument.kind == Kind::local || argument.kind == Kind::value_field ||
                     (argument.kind == Kind::index && function_.expressions[argument.left].type.kind != language::ValueType::string))
                     arguments.push_back(value_address(id));
                 else arguments.push_back(input_address(id));
             }
+            llvm::Value* result_storage = source_result_;
+            // Plain source results are fully copied by the callee. Their
+            // trivial lifetime needs no default construction or cleanup.
+            if (managed_value(node.type)) result_storage = source_value_results_.at(index);
+            arguments[1] = result_storage;
             ir_.CreateStore(ir_.getInt32(0), source_failure_);
             auto* status = ir_.CreateCall(functions_.at(node.value), arguments);
             failure_status_->addIncoming(status, ir_.GetInsertBlock());
@@ -801,6 +847,7 @@ private:
             ir_.SetInsertPoint(next);
             safe_point();
             if (node.type == language::ValueType::void_value) return nullptr;
+            if (managed_value(node.type)) return result_storage;
             return math_type(node.type) ? load_value(source_result_, node.type) :
                 decode_bits(ir_.CreateLoad(ir_.getInt64Ty(), source_result_), node.type);
         }
@@ -824,7 +871,11 @@ private:
                     function_.expressions[argument.left].type.kind != language::ValueType::string)))
                     values.push_back({value_address(id),
                         passing == ParameterPassing::reference ? ArgumentStorage::reference : ArgumentStorage::read_only, 0});
-                else values.push_back({math_type(argument.type) ? input_address(id) : expression(id), ArgumentStorage::value, 0});
+                else {
+                    auto* value = math_type(argument.type) ? input_address(id) : expression(id);
+                    if (managed_value(argument.type)) value = temporary_value(argument_value_slots_[index][i], value);
+                    values.push_back({value, ArgumentStorage::value, 0});
+                }
             }
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto type = function_.expressions[node.arguments[i]].type;
@@ -838,7 +889,7 @@ private:
                 llvm::Value* data = llvm::ConstantPointerNull::get(ir_.getPtrTy());
                 llvm::Value* slot = ir_.getInt32(0);
                 if (operand.storage == ArgumentStorage::value) {
-                    if (math_type(type)) data = operand.value;
+                    if (language::aggregate(type)) data = operand.value;
                     else bits = encode_bits(operand.value, type);
                 }
                 else if (operand.storage == ArgumentStorage::field) slot = operand.value;
@@ -852,12 +903,14 @@ private:
             llvm::Value* arguments = node.arguments.empty() ? llvm::ConstantPointerNull::get(ir_.getPtrTy()) :
                 static_cast<llvm::Value*>(call_arguments_);
             llvm::Value* output = llvm::ConstantPointerNull::get(ir_.getPtrTy());
+            llvm::Value* value_result = call_math_result_;
+            if (managed_value(node.type)) value_result = temporary_value(expression_value_slots_.at(index));
             if (node.type != language::ValueType::void_value) {
                 output = call_result_;
                 // A successful callback that omits its value must not reuse a
                 // previous nested call's result or expose uninitialized bits.
                 ir_.CreateStore(llvm::Constant::getNullValue(abi_value_type_), output);
-                if (math_type(node.type)) ir_.CreateStore(call_math_result_, ir_.CreateStructGEP(abi_value_type_, output, 4));
+                if (language::aggregate(node.type)) ir_.CreateStore(value_result, ir_.CreateStructGEP(abi_value_type_, output, 4));
             }
             checked_call(call_, {invocation_, owner, ir_.getInt32(node.value), arguments,
                 ir_.getInt32(static_cast<std::uint32_t>(node.arguments.size())), output});
@@ -873,9 +926,9 @@ private:
             auto* valid = ir_.CreateAnd(ir_.CreateICmpEQ(kind, ir_.getInt32(static_cast<std::uint32_t>(expected.kind))),
                 ir_.CreateICmpEQ(type_index, ir_.getInt32(expected.type_index)));
             valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(storage_kind, ir_.getInt32(0)));
-            if (math_type(node.type)) {
+            if (language::aggregate(node.type)) {
                 auto* data = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, output, 4));
-                valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(data, call_math_result_));
+                valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(data, value_result));
             } else if (node.type != language::ValueType::f64) {
                 auto* bits = ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, output, 2));
                 valid = ir_.CreateAnd(valid, ir_.CreateICmpULE(bits,
@@ -884,6 +937,7 @@ private:
             ir_.CreateCondBr(valid, next, failure_);
             ir_.SetInsertPoint(next);
             // Load now: later operands may invoke another method using this slot.
+            if (managed_value(node.type)) return value_result;
             if (math_type(node.type)) return load_value(call_math_result_, node.type);
             return decode_bits(ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, output, 2)), node.type);
         }
@@ -1035,7 +1089,11 @@ private:
         case Kind::return_value:
             if (node.expression != language::no_node) {
                 auto* value = expression(node.expression);
-                if (math_type(function_.result)) store_value(value, result_output_, function_.result);
+                if (managed_value(function_.result)) {
+                    const auto& layout = source_.value_layouts.at(function_.result.type_index);
+                    ir_.CreateMemCpy(result_output_, llvm::Align(layout.alignment), value,
+                        llvm::Align(layout.alignment), layout.size);
+                } else if (math_type(function_.result)) store_value(value, result_output_, function_.result);
                 else ir_.CreateStore(encode_bits(value, function_.result), result_output_);
             }
             clear_temporaries();
@@ -1119,8 +1177,10 @@ private:
     llvm::AllocaInst* uint_result_{};
     llvm::AllocaInst* source_failure_{};
     std::vector<llvm::Value*> locals_;
+    std::vector<llvm::AllocaInst*> source_value_results_;
     std::vector<OwnedValue> owned_;
-    std::vector<std::size_t> owned_local_slots_, literal_slots_, value_temporaries_;
+    std::vector<std::size_t> owned_local_slots_, expression_value_slots_, value_temporaries_;
+    std::vector<std::vector<std::size_t>> argument_value_slots_;
     std::vector<Sequence> parameter_views_;
     std::vector<std::uint32_t> local_slots_;
     std::vector<std::uint32_t> temporary_slots_;
@@ -1134,7 +1194,7 @@ private:
     const bool public_entry_, protected_values_;
     std::uint32_t max_call_arguments_{};
     bool has_call_result_{}, has_source_calls_{};
-    llvm::FunctionCallee begin_, create_, read_float_, write_float_, read_double_, write_double_, read_math_, write_math_, read_uint_, write_uint_;
+    llvm::FunctionCallee begin_, create_, read_float_, write_float_, read_double_, write_double_, read_value_, write_value_, read_uint_, write_uint_;
     llvm::FunctionCallee read_bool_, write_bool_;
     llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
     llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
@@ -1160,8 +1220,10 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
             parameters.assign(3, ptr); // invocation, scalar result bits, failure reason
             for (const auto& parameter : program.functions[i].parameters) {
                 if (parameter.passing != ParameterPassing::value) parameters.push_back(ptr);
-                else if (parameter.type.kind == language::ValueType::record)
-                    parameters.push_back(MathLowering::value_type(*context, program.value_layouts.at(parameter.type.type_index).math));
+                else if (parameter.type.kind == language::ValueType::record) {
+                    const auto math = program.value_layouts.at(parameter.type.type_index).math;
+                    parameters.push_back(math ? static_cast<llvm::Type*>(MathLowering::value_type(*context, math)) : ptr);
+                }
                 else if (parameter.type == language::ValueType::f32) parameters.push_back(llvm::Type::getFloatTy(*context));
                 else if (parameter.type == language::ValueType::f64) parameters.push_back(llvm::Type::getDoubleTy(*context));
                 else if (parameter.type == language::ValueType::boolean) parameters.push_back(llvm::Type::getInt1Ty(*context));
@@ -1304,7 +1366,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
             fields.push_back({names.back().c_str(), business_type(field.type), field.offset});
         }
         state->values.push_back({state->value_names.back().c_str(), business_type({value.kind}).kind, value.size, value.alignment,
-            business_type(value.element), fields.data(), static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own, value.can_mutate, value.math});
+            business_type(value.element), fields.data(), static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own, value.can_mutate, value.math, value.plain_value});
     }
     state->environment = {state->fields.empty() ? nullptr : state->fields.data(),
         static_cast<std::uint32_t>(state->fields.size()), state->methods.empty() ? nullptr : state->methods.data(),
@@ -1327,8 +1389,8 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     bind("business_write_float", state->services.write_float);
     if (services.read_double) bind("business_read_double", services.read_double);
     if (services.write_double) bind("business_write_double", services.write_double);
-    if (services.read_math) bind("business_read_math", services.read_math);
-    if (services.write_math) bind("business_write_math", services.write_math);
+    if (services.read_value) bind("business_read_value", services.read_value);
+    if (services.write_value) bind("business_write_value", services.write_value);
     if (services.read_bool) bind("business_read_bool", services.read_bool);
     if (services.write_bool) bind("business_write_bool", services.write_bool);
     bind("business_read_uint", state->services.read_uint);
@@ -1431,7 +1493,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                 const auto& value = environment->values[i];
                 if (!value.name || (value.field_count && !value.fields)) throw std::runtime_error("Invalid native value catalog.");
                 language::ValueLayout layout{value.name, source_type({value.kind, i}).kind, value.size, value.alignment,
-                    value.kind == ValueKind::array ? source_type(value.element) : language::ValueType::void_value, {}, value.sequence_view, value.can_own, value.can_mutate, value.math};
+                    value.kind == ValueKind::array ? source_type(value.element) : language::ValueType::void_value, {}, value.sequence_view, value.can_own, value.can_mutate, value.math, value.plain_value};
                 for (std::uint32_t j = 0; j < value.field_count; ++j) {
                     const auto& field = value.fields[j];
                     if (!field.name) throw std::runtime_error("Missing native field name.");
@@ -1471,15 +1533,34 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             return 1;
         }
         bool owns_values = false;
+        bool mutates_sequences = false;
         for (std::size_t i = 0; i < program->functions.size(); ++i) {
             if (!program->reachable[i]) continue;
             const auto& function = program->functions[i];
-            owns_values |= std::any_of(function.locals.begin() + function.parameters.size(), function.locals.end(),
-                [&](const auto& local) { return language::aggregate(local.type) && !program->value_layouts[local.type.type_index].math; }) || !function.strings.empty();
+            const auto owned_type = [&](language::ValueType type) {
+                return language::aggregate(type) && !program->value_layouts[type.type_index].math;
+            };
+            for (std::size_t local = 0; local < function.locals.size(); ++local)
+                owns_values |= owned_type(function.locals[local].type) && (local >= function.parameters.size() ||
+                    (i == program->entry && function.parameters[local].passing == ParameterPassing::value));
+            owns_values |= !function.strings.empty();
+            mutates_sequences |= !function.strings.empty();
+            for (const auto& expression : function.expressions) {
+                using Kind = language::Expression::Kind;
+                mutates_sequences |= expression.kind == Kind::sequence_mutation;
+                const bool call = expression.kind == Kind::call || expression.kind == Kind::source_call;
+                owns_values |= owned_type(expression.type) && expression.kind == Kind::call;
+                if (call)
+                    for (std::size_t argument = 0; argument < expression.arguments.size(); ++argument)
+                        owns_values |= expression.argument_passing[argument] == ParameterPassing::value &&
+                            owned_type(function.expressions[expression.arguments[argument]].type);
+            }
         }
         if (owns_values && (!services->construct_value || !services->assign_value ||
-            !services->destroy_value || !services->mutate_sequence))
-            throw std::runtime_error("Source-owned values require the native value lifecycle and sequence services.");
+            !services->destroy_value))
+            throw std::runtime_error("Source-owned values require the native value lifecycle services.");
+        if (mutates_sequences && !services->mutate_sequence)
+            throw std::runtime_error("Source sequence mutation requires its native service.");
         auto state = atelier::source::detail::compile(*services, *program, source_environment
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
             , omit_poll_for_verification
@@ -1555,7 +1636,7 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         return 1;
     }
     if (signature.result != ValueKind::void_value && !result) {
-        std::snprintf(error, error_capacity, "%s", "A scalar business result requires output storage.");
+        std::snprintf(error, error_capacity, "%s", "A business result requires output storage.");
         return 1;
     }
     for (std::uint32_t index = 0; index < argument_count; ++index) {
@@ -1567,31 +1648,38 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         const bool valid_storage = mode == atelier::ParameterPassing::value ? argument.storage == atelier::source::detail::ArgumentStorage::value :
             argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0 &&
             (argument.storage == atelier::source::detail::ArgumentStorage::reference || (mode == atelier::ParameterPassing::read_only && argument.storage == atelier::source::detail::ArgumentStorage::read_only));
-        const bool math_value = atelier::source::detail::aggregate(type);
-        const bool valid_value = mode != atelier::ParameterPassing::value || (math_value ?
+        const bool aggregate_value = atelier::source::detail::aggregate(type);
+        const bool valid_value = mode != atelier::ParameterPassing::value || (aggregate_value ?
             argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0 :
             type == ValueKind::f64 || argument.bits <= (type == ValueKind::boolean ? 1 : UINT32_MAX));
         if (argument.kind != signature.parameters[index].type || !valid_storage || !valid_value) {
-            std::snprintf(error, error_capacity, "Business argument %u does not match its compiled scalar kind.", index);
+            std::snprintf(error, error_capacity, "Business argument %u does not match its compiled kind or storage.", index);
             return 1;
         }
     }
-    const auto math_result = signature.result.kind == ValueKind::record ?
-        active_code->values.at(signature.result.type_index).math : atelier::math::Type{};
-    if (math_result && (!result->data || reinterpret_cast<std::uintptr_t>(result->data) % math_result.scalar_size() != 0)) {
-        std::snprintf(error, error_capacity, "%s", "Mathematical result requires aligned typed output storage.");
+    const auto* value_result = signature.result.kind == ValueKind::record ?
+        &active_code->values.at(signature.result.type_index) : nullptr;
+    if (value_result && (!result->data || reinterpret_cast<std::uintptr_t>(result->data) % value_result->alignment != 0)) {
+        std::snprintf(error, error_capacity, "%s", "Record result requires aligned typed output storage.");
         return 1;
     }
     std::uint64_t staged_bits{};
-    alignas(double) std::byte staged_math[128]{};
+    atelier::detail::ValueStorage result_storage;
+    void* staged_value = nullptr;
+    try {
+        if (value_result) staged_value = result_storage.prepare(value_result->size, value_result->alignment);
+    } catch (const std::bad_alloc&) {
+        std::snprintf(error, error_capacity, "%s", "Could not allocate record result staging.");
+        return 1;
+    }
     auto failure_reason = atelier::source::detail::EntryFailure::none;
     const auto status = active_code->entry(invocation, arguments,
-        math_result ? static_cast<void*>(staged_math) : &staged_bits, &failure_reason);
+        value_result ? staged_value : &staged_bits, &failure_reason);
     if (const auto* message = atelier::source::detail::failure_message(failure_reason))
         std::snprintf(error, error_capacity, "%s", message);
     if (status == 0 && result) {
-        if (math_result) {
-            std::memcpy(const_cast<void*>(result->data), staged_math, math_result.size());
+        if (value_result) {
+            std::memcpy(const_cast<void*>(result->data), staged_value, value_result->size);
             *result = {signature.result, 0, atelier::source::detail::ArgumentStorage::value, result->data};
         } else *result = {signature.result, staged_bits};
     }

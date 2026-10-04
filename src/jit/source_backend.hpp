@@ -28,8 +28,8 @@ struct BusinessParameter {
 };
 enum class ArgumentStorage : std::uint32_t { value, read_only, reference, field };
 // Fixed-layout operand. Native values borrow original storage; bits only carry
-// scalars; boolean bits must be exactly 0 or 1. Addresses/field locators last through a synchronous call. Math value
-// arguments point at independent input storage; math results use caller-owned
+// scalars; boolean bits must be exactly 0 or 1. Addresses/field locators last through a synchronous call. Math and plain record value
+// arguments point at independent input storage; aggregate results use caller-owned
 // exact typed storage. This is not an aggregate serialization format.
 struct BusinessValue {
     BusinessType kind{};
@@ -73,6 +73,7 @@ struct BusinessValueBinding {
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
     bool can_own{}, can_mutate{};
     math::Type math{};
+    bool plain_value{};
 };
 struct BusinessEnvironment {
     const BusinessFieldBinding* fields;
@@ -109,7 +110,7 @@ struct BusinessServices {
     std::uint32_t (*write_uint)(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
     // Arguments/result borrow entry-allocated scratch through this synchronous
     // call. Non-void methods require result storage and commit its declared kind
-    // and payload only on success; math output.data points to typed writable
+    // and payload only on success; aggregate output.data points to typed writable
     // scratch. Void methods may receive a null result pointer.
     std::uint32_t (*call)(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t,
         BusinessValue* result) noexcept;
@@ -128,8 +129,9 @@ struct BusinessServices {
     std::uint32_t (*mutate_sequence)(void*, std::uint32_t, SequenceMutation, void*, const void*, std::uint64_t) noexcept{};
     std::uint32_t (*read_double)(void*, std::uint32_t, std::uint32_t, double*) noexcept{};
     std::uint32_t (*write_double)(void*, std::uint32_t, std::uint32_t, double) noexcept{};
-    std::uint32_t (*read_math)(void*, std::uint32_t, std::uint32_t, void*) noexcept{};
-    std::uint32_t (*write_math)(void*, std::uint32_t, std::uint32_t, const void*) noexcept{};
+    // Exact typed reads/writes for builtin math and recursively plain records.
+    std::uint32_t (*read_value)(void*, std::uint32_t, std::uint32_t, void*) noexcept{};
+    std::uint32_t (*write_value)(void*, std::uint32_t, std::uint32_t, const void*) noexcept{};
     // Numeric ABI operands are canonical 0/1; native bool storage remains one byte.
     std::uint32_t (*read_bool)(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept{};
     std::uint32_t (*write_bool)(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept{};
@@ -176,7 +178,7 @@ struct BusinessCoroutine;
 
 // A module has one selected host entry and internal synchronous functions.
 // entry_name may be omitted for a single function; results are scalar/enum or
-// synchronous builtin math values.
+// synchronous builtin math or plain record values.
 // Environment members describe the host's validated Runtime binding; a null
 // environment is empty. Code and LLVM state stay in their DLL; source bytes,
 // catalog names and arrays are borrowed only for compile. Compiled metadata
@@ -213,7 +215,7 @@ extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessFrameLayout
 // Arguments are borrowed and must remain stable through this synchronous call.
 // Arity, kinds and required storage are checked before invoking any callbacks.
 // A non-void result requires storage; void permits null. Only full success
-// commits its declared value; a math result requires result->data to address an
+// commits its declared value; an aggregate result requires result->data to address an
 // aligned value of its exact declared type. Failure leaves both the operand and
 // its pointed-to result storage unchanged.
 // Service failure status codes pass through unchanged; their first-cause text

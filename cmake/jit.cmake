@@ -96,7 +96,7 @@ function(atelier_add_source)
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
         acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp
         acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp
-        acceptance/source/foundations.cpp)
+        acceptance/source/foundations.cpp acceptance/source/plain_records.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")

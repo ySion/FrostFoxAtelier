@@ -93,9 +93,11 @@ void verify_runtime_math_precision() {
         {"precision.Described", TypeKind::object, {{"triple", {TypeReference{"precision.Triple"}}}}, {}, {}}
     }));
     const auto owner_type = published[1], triple_type = published[2], described_type = published[3];
-    SignatureDefinition forged_math;
-    forged_math.parameters = {{triple_type}};
-    require(!runtime.resolve_signature(forged_math), "A lookalike record acquired builtin math value semantics.");
+    SignatureDefinition plain_signature;
+    plain_signature.parameters = {{triple_type}};
+    const auto* triple_info = take(runtime.describe(triple_type));
+    require(!triple_info->math && triple_info->plain_value && runtime.resolve_signature(plain_signature).has_value(),
+        "A plain record lost value passing or acquired builtin math intrinsic semantics.");
     SignatureDefinition async_math;
     async_math.parameters = {{vector3d}};
     async_math.execution = FunctionExecution::coroutine;

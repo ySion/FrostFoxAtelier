@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
 
 void verify_shared_calls(atelier::Runtime&);
 
@@ -64,6 +65,16 @@ void verify_math_calls(Runtime& runtime) {
     require(!runtime.call(object.id(), method("translate"), vector_arguments, ValueOutput{f64, &output}),
         "Generated mathematical method accepted a different result type.");
 
+    const auto plain_type = take(runtime.native_type<PlainRecord>());
+    static_assert(sizeof(PlainRecord) > 128 && alignof(PlainRecord) == 64);
+    PlainRecord record{true, Mode::active, math::Matrix4d::identity(), 4};
+    PlainRecord record_output{};
+    take(runtime.call(object.id(), method("record_alias"),
+        std::array{Argument::borrow(std::as_const(record)), Argument::borrow(record)},
+        ValueOutput{plain_type, &record_output}));
+    require(take(runtime.describe(plain_type))->plain_value && record.count == 14 &&
+        record_output.count == 4 && !record_output.enabled && record_output.mode == Mode::active,
+        "Generated record thunk lost aligned value snapshots, bool/enum fields or typed large output.");
     const auto samples_field = take(runtime.find_field(type, "samples"));
     const std::array samples_path{samples_field};
     const std::array array_arguments{Argument::field(object.id(), samples_path), Argument::borrow(tiny)};
@@ -129,6 +140,7 @@ int main() {
             atelier::reflection::Definition<Mode>::build(runtime),
             atelier::reflection::Definition<OtherMode>::build(runtime),
             atelier::reflection::Definition<UnsignedMode>::build(runtime),
+            atelier::reflection::Definition<PlainRecord>::build(runtime),
             array_definition<double>(runtime, "reflection.DoubleArray"),
             array_definition<bool>(runtime, "reflection.BoolArray")}));
         auto object = take(runtime.create(types[1]));

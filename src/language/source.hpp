@@ -35,6 +35,7 @@ struct ValueLayout {
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
     bool can_own{}, can_mutate{};
     math::Type math{};
+    bool plain_value{};
 };
 inline bool aggregate(ValueType type) noexcept {
     return type.kind == ValueType::record || type.kind == ValueType::array || type.kind == ValueType::string;
@@ -126,8 +127,8 @@ struct Program {
     std::vector<bool> reachable;
 };
 
-// One module with a host-selected entry: scalar/enum/math values or borrowed value
-// parameters, an optional scalar/math result and implicit self. Async cannot borrow
+// One module with a host-selected entry: scalar/enum/plain record values or borrowed
+// parameters, an optional scalar/plain record result and implicit self. Async cannot borrow
 // caller storage or expose aggregate parameters/results.
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during

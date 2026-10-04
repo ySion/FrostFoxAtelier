@@ -49,6 +49,7 @@ struct BoundValue {
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
     bool can_own{}, can_mutate{};
     math::Type math{};
+    bool plain_value{};
     bool operator==(const BoundValue&) const = default;
 };
 struct Binding {
@@ -147,8 +148,8 @@ std::uint32_t read_float(void*, std::uint32_t, std::uint32_t, float*) noexcept;
 std::uint32_t write_float(void*, std::uint32_t, std::uint32_t, float) noexcept;
 std::uint32_t read_double(void*, std::uint32_t, std::uint32_t, double*) noexcept;
 std::uint32_t write_double(void*, std::uint32_t, std::uint32_t, double) noexcept;
-std::uint32_t read_math(void*, std::uint32_t, std::uint32_t, void*) noexcept;
-std::uint32_t write_math(void*, std::uint32_t, std::uint32_t, const void*) noexcept;
+std::uint32_t read_value(void*, std::uint32_t, std::uint32_t, void*) noexcept;
+std::uint32_t write_value(void*, std::uint32_t, std::uint32_t, const void*) noexcept;
 std::uint32_t read_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
 std::uint32_t write_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
 std::uint32_t read_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;

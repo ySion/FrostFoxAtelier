@@ -136,6 +136,10 @@ private:
         return type.kind == ValueType::record && type.type_index < environment_.values.size() ?
             environment_.values[type.type_index].math : math::Type{};
     }
+    bool plain_record(ValueType type) const noexcept {
+        return type.kind == ValueType::record && type.type_index < environment_.values.size() &&
+            (environment_.values[type.type_index].plain_value || bool(math_type(type)));
+    }
     static bool floating(ValueType type) noexcept {
         return type == ValueType::f32 || type == ValueType::f64;
     }
@@ -205,8 +209,9 @@ private:
     void signature() {
         function_.is_coroutine = accept("async");
         function_.result = accept("void") ? ValueType::void_value : result_type();
-        if (function_.is_coroutine && math_type(function_.result))
-            reject(function_.position, "async math results are not supported by the task result contract.");
+        if (function_.is_coroutine && aggregate(function_.result))
+            reject(function_.position, "async aggregate results are not supported by the task result contract.");
+        if (plain_record(function_.result) && !math_type(function_.result)) function_.uses_scoped_values = true;
         const auto name = identifier();
         if (math_reserved_name(name.text)) reject(name.position, "Source functions cannot replace math constructors or the math namespace.");
         function_.function_name = name.text;
@@ -222,8 +227,10 @@ private:
                 const auto passing = reference ? (read_only ? ParameterPassing::read_only : ParameterPassing::reference) : ParameterPassing::value;
                 if (function_.is_coroutine && reference) reject(position, "async parameters cannot borrow caller storage.");
                 if (aggregate(type)) {
-                    if (function_.is_coroutine && math_type(type)) reject(position, "async math parameters are not supported by the task argument contract.");
-                    if (!reference && !math_type(type)) reject(position, "Native values require a borrowed parameter; use Type& or const Type&.");
+                    if (function_.is_coroutine) reject(position, "async aggregate parameters are not supported by the task argument contract.");
+                    if (!reference && !plain_record(type)) reject(position, "Only plain records support value parameters; other native values require Type& or const Type&.");
+                    if (!reference && !math_type(type) && !environment_.values[type.type_index].can_own)
+                        reject(position, "Plain record value parameters require borrow-preserving copy and lifecycle operations.");
                     if (type.kind == ValueType::string && !read_only) reject(position, "String borrowing requires const String&.");
                     if (reference || !math_type(type)) function_.uses_scoped_values = true;
                 }
@@ -302,6 +309,10 @@ private:
                 const auto argument = expression();
                 const auto& parameter = parameters[arguments.size()];
                 same_type(argument, parameter.type);
+                if (parameter.passing == ParameterPassing::value && plain_record(parameter.type) &&
+                    !math_type(parameter.type) && !environment_.values[parameter.type.type_index].can_own)
+                    reject(function_.expressions[argument].position,
+                        "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
                 if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
                     reject(function_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
                 arguments.push_back(argument);
@@ -423,10 +434,10 @@ private:
             if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
                 reject({}, "Host parameter list exceeds its index range.");
             for (const auto& parameter : method.parameters)
-                if (!supported_value(parameter.type) || (aggregate(parameter.type) && !math_type(parameter.type) && parameter.passing == ParameterPassing::value) || (parameter.passing != ParameterPassing::value &&
+                if (!supported_value(parameter.type) || (aggregate(parameter.type) && parameter.passing == ParameterPassing::value && !plain_record(parameter.type)) || (parameter.passing != ParameterPassing::value &&
                     parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference))
                     reject({}, "Host method has an unsupported parameter type or passing mode.");
-            if (method.result != ValueType::void_value && !scalar(method.result) && !math_type(method.result))
+            if (method.result != ValueType::void_value && !scalar(method.result) && !plain_record(method.result))
                 reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.methods[j].name == method.name) reject({}, "Ambiguous host method binding.");
@@ -494,7 +505,12 @@ private:
         const auto position = token_.position;
         const auto type = parameter_type();
         if (scalar(type) || math_type(type)) return type;
-        reject(position, "Function results require a scalar, enum or built-in math value type.");
+        if (plain_record(type)) {
+            if (!environment_.values[type.type_index].can_own)
+                reject(position, "Plain record results require borrow-preserving copy and lifecycle operations.");
+            return type;
+        }
+        reject(position, "Function results require a scalar, enum or plain record value type.");
     }
     ValueType parameter_type() {
         Depth guard(depth_, token_.position);
@@ -532,7 +548,8 @@ private:
     }
     bool owned_storage(NodeId id) const {
         const auto& node = function_.expressions[id];
-        if (node.kind == Expression::Kind::local) return node.value >= function_.parameters.size() && !function_.locals[node.value].read_only;
+        if (node.kind == Expression::Kind::local) return !function_.locals[node.value].read_only && (node.value >= function_.parameters.size() ||
+            function_.parameters[node.value].passing == ParameterPassing::value);
         if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index) return owned_storage(node.left);
         return false;
     }
@@ -974,9 +991,12 @@ private:
                 const MethodBinding* method{};
                 for (const auto& candidate : environment_.methods) if (candidate.name == member) method = &candidate;
                 if (!method) reject(position, "Unknown native method '" + member + "'.");
+                if (plain_record(method->result) && !math_type(method->result) && !environment_.values[method->result.type_index].can_own)
+                    reject(position, "Native plain record results require borrow-preserving copy and lifecycle operations.");
                 auto arguments = call_arguments(method->parameters);
                 Expression call{Expression::Kind::call, method->result, position,
                     no_node, no_node, static_cast<std::uint32_t>(method - environment_.methods.data()), Operation::add, receiver};
+                if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
                 call.arguments = std::move(arguments);
                 for (const auto& parameter : method->parameters) call.argument_passing.push_back(parameter.passing);
                 receiver = add(std::move(call));
@@ -1222,6 +1242,7 @@ private:
                 if (target.function_name != token.text) continue;
                 if (target.is_coroutine) reject(token.position, "Source calls require a synchronous function; async entries are started by the host.");
                 Expression call{Expression::Kind::source_call, target.result, token.position, no_node, no_node, i};
+                if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
                 call.arguments = call_arguments(target.parameters);
                 for (std::size_t parameter = 0; parameter < target.parameters.size(); ++parameter) {
                     const auto mode = target.parameters[parameter].passing;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/parameter.hpp"
+#include "runtime/value_storage.hpp"
 #include "math/type.hpp"
 #include <array>
 #include <ranges>
@@ -154,7 +155,7 @@ struct ArgumentView {
 
 class Runtime;
 
-// Caller-owned live mathematical value storage, matching the exact Runtime type.
+// Caller-owned live plain value storage, matching the exact Runtime type.
 // A successful call assigns it; failure leaves the complete value unchanged.
 struct ValueOutput {
     TypeId type;
@@ -173,7 +174,7 @@ struct CallContext {
     std::span<const ArgumentView> arguments;
     // Staged business value. Runtime commits it only after successful validation.
     std::optional<Scalar> result{};
-    // Runtime-owned staging for builtin math results. An invoker fills the live
+    // Runtime-owned staging for plain record results. An invoker fills the live
     // exact value, then sets result_written; it must not retain or replace storage.
     ValueOutput result_value{};
     bool result_written{};
@@ -380,16 +381,13 @@ public:
 };
 
 // Typed scratch and validated views share the invocation lifetime. Up to eight
-// arguments with at most 128 copied bytes need no allocation. Addresses cannot
-// survive this owner; borrowed arguments consume no copied storage.
+// arguments with at most 128 copied bytes and alignment <= 8 need no allocation. Addresses cannot
+// survive this owner; borrowed arguments consume no copied storage. All copied
+// values have trivial destruction, so this owner can outlive the Runtime.
 class PreparedArguments {
     friend class Runtime;
-    alignas(double) std::array<std::byte, 16 * sizeof(double)> inline_storage_;
+    detail::ValueStorage storage_;
     std::array<ArgumentView, 8> inline_views_{};
-    std::unique_ptr<std::byte, void (*)(std::byte*)> storage_{nullptr, [](std::byte* address) noexcept {
-        ::operator delete(address, std::align_val_t{alignof(double)});
-    }};
-    std::size_t storage_capacity_{};
     std::vector<ArgumentView> views_;
     std::size_t size_{};
 public:
@@ -436,6 +434,8 @@ struct NativeLayout {
     // not invalidate other borrowed storage, retain input addresses or reenter
     // source execution. Array publication also requires this of its element.
     bool value_operations_preserve_borrows{};
+    // Trusted producer qualification; Runtime also checks every declared field.
+    bool plain_value{};
 };
 
 struct FieldDefinition {
@@ -520,6 +520,7 @@ struct TypeInfo {
     // Assigned exclusively when Runtime bootstraps its canonical math types.
     // User definitions cannot acquire compiler intrinsic semantics by naming.
     math::Type math{};
+    bool plain_value{};
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };
@@ -651,7 +652,7 @@ public:
     [[nodiscard]] bool belongs_to_context(ObjectId object) const noexcept;
     [[nodiscard]] Result<TypeId> type_of(ObjectId object) const;
 
-    // A field path traverses inline records. Scalar and builtin mathematical
+    // A field path traverses inline records. Scalar and plain record
     // fields share the same path resolution and exact-type checks.
     [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);

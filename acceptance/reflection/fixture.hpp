@@ -39,9 +39,20 @@ enum class OtherMode : std::int32_t { active = 2 };
 AENUM(Name = "reflection.UnsignedMode")
 enum class UnsignedMode : std::uint32_t { high = 0xffffffffu };
 
+ASTRUCT(Name = "reflection.PlainRecord")
+struct alignas(64) PlainRecord {
+    AGENERATED_BODY(PlainRecord)
+    AFIELD() bool enabled;
+    AFIELD() Mode mode;
+    AFIELD() math::Matrix4d transform;
+    AFIELD() std::uint32_t count;
+};
 ACLASS(Name = "reflection.CallProbe")
 struct CallProbe {
     AGENERATED_BODY(CallProbe)
+    AFUNCTION(BorrowSafe) PlainRecord record_alias(PlainRecord copy, PlainRecord& target) const {
+        target.count += 10; copy.enabled = !copy.enabled; return copy;
+    }
     AFIELD() int value{};
     AFIELD() Mode mode{Mode::idle};
     AFIELD() Sample sample;

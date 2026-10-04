@@ -51,8 +51,8 @@ void verify_required_services(Runtime& runtime, const Binding& binding) {
     auto callbacks = services;
     callbacks.read_double = nullptr;
     callbacks.write_double = nullptr;
-    callbacks.read_math = nullptr;
-    callbacks.write_math = nullptr;
+    callbacks.read_value = nullptr;
+    callbacks.write_value = nullptr;
     auto retained = compile(binding, "uint run() { return 7; }", callbacks);
     const auto scalar_result = take(execute_typed(runtime, binding, retained.get(), {}, {}));
     require(scalar_result.kind == ValueKind::u32 && scalar_result.bits == 7,
@@ -71,8 +71,8 @@ void verify_required_services(Runtime& runtime, const Binding& binding) {
         switch (index) {
         case 0: callbacks.read_double = nullptr; break;
         case 1: callbacks.write_double = nullptr; break;
-        case 2: callbacks.read_math = nullptr; break;
-        case 3: callbacks.write_math = nullptr; break;
+        case 2: callbacks.read_value = nullptr; break;
+        case 3: callbacks.write_value = nullptr; break;
         default: std::unreachable();
         }
         auto* candidate = retained.get();

@@ -77,10 +77,10 @@ $cases = @(
     @{name='nested-unmarked'; text='struct Nested { atelier::ReferenceSlot slot; };' + $valid.Replace('AFIELD() ProbeScalar value{};', 'Nested missing;'); error='requires an explicit AFIELD'},
     @{name='strength'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Sequence="probe.Widget") atelier::ReferenceSlot slot;'); error='matching Strong, Weak or Sequence'},
     @{name='target'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Strong="probe.Missing") atelier::ReferenceSlot slot;'); error='Reference target must name'},
-    @{name='signature'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() void bad(float&&) {}'); error='scalar/enum values or supported native values'},
+    @{name='signature'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() void bad(float&&) {}'); error='scalar/enum/plain record values or const T&/T& borrows'},
     @{name='enum-width'; text='AENUM() enum class Small : unsigned char { value };'; error='int32_t or uint32_t underlying type'},
     @{name='enum-unscoped'; text='AENUM() enum Plain { value };'; error='namespace-level enum class'},
-    @{name='static-method'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() static float bad() { return 0; }'); error='non-static member with a scalar or void result'},
+    @{name='static-method'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() static float bad() { return 0; }'); error='non-static member with a scalar, void or plain record result'},
     @{name='body'; text=$valid.Replace('AGENERATED_BODY(Widget)', ''); error='requires exactly one AGENERATED_BODY'},
     @{name='grouped'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() float first{}, second{};'); error='split grouped declarations'},
     @{name='inherited-name'; text='ACLASS() struct Base { AGENERATED_BODY(Base) AFIELD() float value{}; };' + $valid.Replace('struct Widget {', 'struct Widget : Base {'); error='Inherited reflected member name cannot be shadowed'}
