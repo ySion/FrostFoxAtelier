@@ -1,0 +1,253 @@
+    // Both description producers enter the same validation and lifetime path.
+    template<class Lookup> static Result<void> validate_control(const Control& control, Lookup lookup) {
+        const auto* parent=lookup(control.parent);
+        if (!control.key || (control.parent && !parent) ||
+            static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::tree_item) ||
+            static_cast<unsigned>(control.role)>static_cast<unsigned>(Role::caption) || control.text.size()>4096 ||
+            !std::isfinite(control.value) || !std::isfinite(control.minimum) || !std::isfinite(control.maximum) ||
+            control.minimum>control.maximum || !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) ||
+            control.drag_step<=0 || control.fine_step<=0 ||
+            static_cast<unsigned>(control.drag_axis)>static_cast<unsigned>(DragAxis::vertical))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::folder) ||
+            (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
+             control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if ((control.click_action && control.kind!=ControlKind::splitter) ||
+            (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent ||
+                !parent || parent->kind!=ControlKind::container)) ||
+            (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.kind==ControlKind::tree_item) {
+            const auto* branch=lookup(control.tree_parent);
+            if (!parent || parent->kind!=ControlKind::tree || (control.tree_parent &&
+                (!branch || branch->kind!=ControlKind::tree_item || branch->parent!=control.parent)))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        } else if (control.tree_parent) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 ||
+            !detail::valid_text(control.tree_filter,false) || !detail::valid_text(control.text,control.kind==ControlKind::text_edit))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum ||
+            *control.default_value>control.maximum)) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.kind==ControlKind::popup) {
+            if (control.parent || (control.popup_owner && !lookup(control.popup_owner)))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        } else if (control.popup_owner) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.menu_branch && (control.kind!=ControlKind::menu_item || control.edit_command))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.edit_command) {
+            const auto* target=lookup(control.edit_command->target);
+            if (control.kind!=ControlKind::menu_item || !target || !text_field(target->kind) ||
+                static_cast<unsigned>(control.edit_command->kind)>static_cast<unsigned>(EditCommandKind::reset) ||
+                (control.edit_command->kind==EditCommandKind::reset && !target->default_value))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        }
+        if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
+            !std::all_of(control.classes.begin(),control.classes.end(),[](const auto& name){return StyleSheet::valid_class(name);}))
+            return std::unexpected(Error{ErrorCode::invalid_style,control.key});
+        if (parent && ((parent->kind==ControlKind::tree && control.kind!=ControlKind::tree_item) ||
+            (parent->kind!=ControlKind::container && parent->kind!=ControlKind::list && parent->kind!=ControlKind::popup &&
+             parent->kind!=ControlKind::tree))) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (editable(control.kind) && control.kind!=ControlKind::slider &&
+            (control.value<control.minimum || control.value>control.maximum))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        return {};
+    }
+    static bool same_structure(const Control& a,const Control& b) {
+        return a.kind==b.kind && a.parent==b.parent && a.layout.kind==b.layout.kind &&
+            a.tree_parent==b.tree_parent && a.popup_owner==b.popup_owner && a.selection_group==b.selection_group &&
+            a.context_target==b.context_target && a.context_group==b.context_group && a.edit_command==b.edit_command &&
+            a.menu_branch==b.menu_branch;
+    }
+    Result<Reply> apply_controls(std::span<const Control> controls,bool sparse) {
+        if (controls.size()>10000) return std::unexpected(Error{ErrorCode::capacity_exceeded});
+        // Sparse order has no meaning. Resolve references through the entire
+        // proposed batch, then the retained state; full input validates preorder.
+        std::map<ControlKey,const Control*> proposed;
+        for (const auto& control:controls) {
+            if (!control.key || !proposed.emplace(control.key,&control).second)
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+            if (sparse) {
+                const auto* previous=live(control.key);
+                if (!previous || !same_structure(previous->control,control))
+                    return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+            }
+        }
+        const auto lookup=[&](ControlKey key)->const Control* {
+            if (const auto found=proposed.find(key);found!=proposed.end()) return found->second;
+            const auto* state=sparse?live(key):nullptr;
+            return state?&state->control:nullptr;
+        };
+        std::vector<ControlKey> next_order;
+        std::map<ControlKey,const Control*> preceding;
+        std::vector<ControlKey> tree_path;
+        ControlKey next_popup=sparse?popup:0,tree_owner{};
+        bool check_commands=false;
+        if (!sparse) next_order.reserve(controls.size());
+        for (const auto& control:controls) {
+            if (auto checked=validate_control(control,lookup);!checked) return std::unexpected(checked.error());
+            if (sparse) {
+                check_commands|=live(control.key)->control.default_value!=control.default_value;
+                continue;
+            }
+            if ((control.parent && !preceding.contains(control.parent)) ||
+                (control.popup_owner && !preceding.contains(control.popup_owner)) ||
+                (control.edit_command && !preceding.contains(control.edit_command->target)))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+            if (control.kind==ControlKind::tree_item) {
+                if (tree_owner!=control.parent) { tree_path.clear(); tree_owner=control.parent; }
+                while (!tree_path.empty() && tree_path.back()!=control.tree_parent) tree_path.pop_back();
+                if ((control.tree_parent && tree_path.empty()) || tree_path.size()>=128)
+                    return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+                tree_path.push_back(control.key);
+            }
+            if (control.kind==ControlKind::popup) {
+                if (next_popup) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+                next_popup=control.key;
+            }
+            if (next_popup && control.key!=next_popup) {
+                auto parent=control.parent;
+                while (parent && parent!=next_popup) parent=lookup(parent)->parent;
+                if (parent!=next_popup) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+            }
+            preceding.emplace(control.key,&control); next_order.push_back(control.key);
+        }
+        // A target property can invalidate an unchanged reset menu item.
+        if (check_commands) for (const auto& [key,state]:states) if (state.control.edit_command)
+            if (auto checked=validate_control(*lookup(key),lookup);!checked) return std::unexpected(checked.error());
+
+        struct Change { State* state; Control value; };
+        std::vector<Change> changes;
+        std::map<ControlKey,State> additions,removed;
+        std::vector<ControlKey> added_keys,removed_keys;
+        bool structural=!sparse && next_order!=order;
+        bool tree_change=trees_dirty || structural;
+        for (const auto& control:controls) {
+            if (auto* previous=live(control.key)) {
+                if (previous->control==control) continue;
+                changes.push_back({previous,control});
+                structural|=previous->control.parent!=control.parent || previous->control.kind!=control.kind;
+                const auto& before=previous->control;
+                tree_change|=(before.kind!=control.kind && (before.kind==ControlKind::tree || before.kind==ControlKind::tree_item ||
+                        control.kind==ControlKind::tree || control.kind==ControlKind::tree_item)) ||
+                    (control.kind==ControlKind::tree && before.tree_filter!=control.tree_filter) ||
+                    (control.kind==ControlKind::tree_item && (before.parent!=control.parent || before.tree_parent!=control.tree_parent ||
+                        before.text!=control.text || before.enabled!=control.enabled || before.layout.collapsed!=control.layout.collapsed));
+            } else {
+                auto& value=additions[control.key];
+                value.control=control; value.incarnation=detail::new_identity();
+                value.tree_expanded=control.tree_initially_expanded;
+                added_keys.push_back(control.key);
+            }
+        }
+        if (!sparse) for (const auto& [key,state]:states) if (!proposed.contains(key)) removed_keys.push_back(key);
+        if (changes.empty() && added_keys.empty() && removed_keys.empty() && !structural) return Reply{};
+        retired.reserve(retired.size()+removed_keys.size());
+        const auto revision=detail::new_identity();
+        const auto absent=[&](ControlKey key) {
+            while (key) {
+                const auto* future=lookup(key);
+                const auto* previous=live(key);
+                if (!future || !future->enabled || future->layout.collapsed || (previous &&
+                    (future->kind!=previous->control.kind || (future->kind==ControlKind::tree_item &&
+                     (future->tree_parent!=previous->control.tree_parent || future->parent!=previous->control.parent))))) return true;
+                key=future->parent;
+            }
+            return false;
+        };
+        if (next_popup && lookup(next_popup)->layout.collapsed) next_popup=0;
+        // A collapsed popup can be re-opened through a sparse property update.
+        if (sparse) for (const auto& control:controls) if (control.kind==ControlKind::popup)
+            next_popup=control.layout.collapsed?0:control.key;
+        const bool cancelling=(press && absent(press->key)) || (edit && absent(edit->key));
+        const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed);
+        const auto* future_edit=edit?lookup(edit->key):nullptr;
+        const bool refresh_edit=edit && future_edit && !edit->buffer.active() && !edit->composition &&
+            (future_edit->kind==ControlKind::number?edit->original_value!=future_edit->value:edit->buffer.original()!=future_edit->text);
+        const bool popup_invalid=next_popup && absent(lookup(next_popup)->popup_owner);
+        const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit || tree_change ||
+            next_popup!=popup || popup_invalid;
+        auto old_press=interaction_changes?press:std::optional<Press>{};
+        auto old_edit=interaction_changes?edit:std::optional<Edit>{};
+        const auto old_focus=focus,old_hover=hover,old_keyboard=keyboard_pressed;
+        const auto old_keyboard_key=keyboard_key,old_terminal=terminal_key;
+        const auto old_popup=popup,old_popup_focus=popup_return_focus;
+        const bool old_dismissed=popup_dismissed,old_trees_dirty=trees_dirty;
+        struct TreeBackup { State* state; TreeState value; };
+        std::vector<TreeBackup> tree_backup;
+        if (tree_change) {
+            tree_backup.reserve(states.size());
+            for (auto& [key,state]:states) tree_backup.push_back({&state,static_cast<const TreeState&>(state)});
+        }
+        Reply reply;
+        std::size_t applied{};
+        bool inserted=false,reordered=false;
+        try {
+            // Cleanup can allocate owned effects/history. Retain descriptors,
+            // interaction and tree metadata until those fallible steps finish.
+            if (cancelling) { reply=cancel(); edit.reset(); }
+            if (clear_focus) focus=0;
+            if (clear_keyboard) keyboard_pressed=0;
+            for (auto key:removed_keys) removed.insert(states.extract(key));
+            states.merge(additions); inserted=true;
+            static_assert(std::is_nothrow_swappable_v<Control>);
+            for (auto& change:changes) {
+                std::swap(change.state->control,change.value); ++applied;
+                const auto& control=change.state->control;
+                if (control.kind==ControlKind::tree_item && (change.value.kind!=control.kind ||
+                    change.value.parent!=control.parent || change.value.tree_parent!=control.tree_parent))
+                    change.state->tree_expanded=control.tree_initially_expanded;
+            }
+            if (!sparse && next_order!=order) { order.swap(next_order); reordered=true; }
+            if (refresh_edit && edit) {
+                const auto caret=edit->buffer.current().caret,anchor=edit->buffer.current().anchor;
+                const auto key=edit->key; const bool mode=edit->text_mode;
+                begin_edit(key,mode); edit->buffer.select(anchor,false); edit->buffer.select(caret,true);
+            }
+            trees_dirty|=tree_change;
+            update_trees();
+            if (press && (states.at(press->key).tree_hidden || !states.at(press->key).tree_enabled)) reply=cancel();
+            if (const auto* focused=live(focus);focused && (focused->tree_hidden || !focused->tree_enabled)) {
+                while (focused && (focused->tree_hidden || !focused->tree_enabled)) {
+                    focus=focused->control.tree_parent; focused=live(focus);
+                }
+            }
+            update_popup(next_popup,reply);
+            if (popup && popup_invalid) dismiss_popup(reply);
+        } catch (...) {
+            // std::map node transfers keep State addresses and allocate nothing.
+            if (reordered) order.swap(next_order);
+            for (std::size_t i=0;i<applied;++i) std::swap(changes[i].state->control,changes[i].value);
+            if (inserted) for (auto key:added_keys) states.erase(key);
+            states.merge(removed);
+            for (const auto& saved:tree_backup) static_cast<TreeState&>(*saved.state)=saved.value;
+            trees_dirty=old_trees_dirty;
+            if (interaction_changes) {
+                press=std::move(old_press); edit=std::move(old_edit);
+                focus=old_focus; hover=old_hover; keyboard_pressed=old_keyboard;
+                keyboard_key=old_keyboard_key; terminal_key=old_terminal;
+                popup=old_popup; popup_return_focus=old_popup_focus; popup_dismissed=old_dismissed;
+            }
+            throw;
+        }
+        // No allocation or callbacks after this point. Text resources remain
+        // owned by old frames even when the mutable store drops its cache.
+        for (const auto& [key,state]:removed) {
+            if (state.node) retired.push_back(state.node);
+            text.erase(key);
+        }
+        for (auto& change:changes) {
+            auto& state=*change.state;
+            const auto& before=change.value; const auto& after=state.control;
+            if (text_kind(before.kind) && !text_kind(after.kind)) text.erase(after.key);
+            state.style_dirty|=before.parent!=after.parent || before.kind!=after.kind || before.role!=after.role ||
+                before.classes!=after.classes || before.style!=after.style || before.style_scope!=after.style_scope;
+            state.layout_dirty|=before.kind!=after.kind || before.layout!=after.layout || before.text!=after.text ||
+                (text_field(after.kind) && before.value!=after.value);
+        }
+        structure_dirty|=structural;
+        controls_revision=revision; ++control_batches;
+        controls_updated+=changes.size(); controls_created+=added_keys.size(); controls_removed+=removed_keys.size();
+        reply.redraw=true;
+        return reply;
+    }

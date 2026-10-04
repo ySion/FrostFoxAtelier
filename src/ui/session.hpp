@@ -123,6 +123,7 @@ struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
     std::uint64_t session_identity{};
+    std::uint64_t controls_revision{}; // Complete descriptor batch used by this candidate.
     std::uint64_t style_revision{}, measure_provider_revision{};
     std::optional<TextCaret> caret;
     std::optional<TextInputAnchor> input_anchor{};
@@ -229,6 +230,11 @@ struct Statistics {
     // Unique CPU coverages produced by this Session and still retained by any
     // owner (text cache, current/old frames or renderer). No per-frame scan.
     std::uint64_t live_coverages{}, live_coverage_bytes{};
+    // Successful descriptor changes; identical values do not count as updates.
+    std::uint64_t control_batches{}, controls_updated{}, controls_created{}, controls_removed{};
+    // Attempts to synchronize a dirty control, and successful layout-node creates.
+    std::uint64_t layout_syncs{}, layout_nodes_created{};
+    ui_layout::Stats layout;
 };
 
 // One owner thread. Owns UI state and content versions, not scene objects or undo.
@@ -252,6 +258,12 @@ public:
     // disappear/disable. Active text drafts survive fresh model projections;
     // passive buffers instead follow the latest authoritative value.
     Result<Reply> set_controls(std::span<const Control>);
+    // Sparse complete values for existing keys. Order is irrelevant; duplicate or
+    // missing keys and changes to kind/parent/structural references are rejected.
+    // Both description entries validate and prepare before changing live controls.
+    // Layout dependencies are resolved by prepare; its failure retains the old
+    // frame, not the previous descriptors or cancelled interaction.
+    Result<Reply> update_controls(std::span<const Control>);
     Result<std::shared_ptr<const UiFrame>> prepare();
     bool accept(std::shared_ptr<const UiFrame>);
     const std::shared_ptr<const UiFrame>& presented() const noexcept;

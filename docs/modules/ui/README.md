@@ -11,12 +11,14 @@
 调用顺序：
 
 1. `set_surface({backbuffer_extent,dpi_scale,revision})`，应用处理返回的取消/释放捕获动作。
-2. `set_controls(controls)`，应用处理因目标移除、隐藏或禁用而产生的取消动作。
+2. 初装/结构改变使用`set_controls(controls)`；同身份属性改变使用`update_controls(changed_controls)`。两入口共用校验与交互清理，应用处理返回的取消动作。完整合同见[持久实例与稀疏更新](updates.md)。
 3. `prepare()`得到拥有式`shared_ptr<const UiFrame>`；失败仍可保有上一完整帧。
 4. renderer同步消费`*frame->drawing`，应用持有整个帧至返回。
 5. 仅renderer最终accepted后调用`accept(frame)`；skipped不调用。失败进入渲染终态时停止交互，不能声称画面回滚。
 
 `UiFrame::find(key)`返回同次帧的物理像素bounds/clip，供场景viewport和真实窗口验收使用。候选prepare不会改变命中几何。输入始终使用已接受帧，依绘制逆序命中并检查当前控件身份与祖先启用状态。
+
+`UiFrame.controls_revision`标识候选使用的描述批次；描述或SS版本改变后，`accept`拒绝旧候选。颜色改变保留控件incarnation。`prepare`失败仍保有旧帧，但暂停交互激活，直到修复后的帧被接受；已提交描述及已返回的取消effects不会因出帧失败自动撤回。
 
 ## 可组合参数控件
 
@@ -170,9 +172,11 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 ## 限额与验收
 
+2026-10-05 稀疏属性更新增量：Dev/Release正式`ui_acceptance`各20/20通过，使用真实Session、LayoutDocument和DirectWrite。新增计数、批次失败、编辑取消及过时候选覆盖见[更新合同与证据](updates.md#验收)。
+
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，15组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序，以及正反向选区、RTL组合起点、横滚不可见起点拒绝、显示版本/候选/旧帧和DPI失效。新增接受帧文字快照和SS作用域/继承/覆盖/错误恢复两组，图片与圆角也通过正式帧接线。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
+正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，20组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序，以及正反向选区、RTL组合起点、横滚不可见起点拒绝、显示版本/候选/旧帧和DPI失效。新增接受帧文字快照和SS作用域/继承/覆盖/错误恢复两组，图片与圆角也通过正式帧接线。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
 
 S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回累计栅格化8行。S2的4096宽字符/100 DIP字段保持完整编辑，生成的覆盖率宽度不超过100像素。正式窗口平台与搜索业务由[编辑器端到端验收](../editor/README.md)负责，S2整体是否完成以该集成记录及本机搜狗真实系统输入验收证据为准。
 
