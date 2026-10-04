@@ -1,5 +1,35 @@
 # 编辑器 renderer 验收
 
+## 视口显示增量
+
+2026-10-04，`codex/viewport-rendering` 基于 `bba15954` 实现 MatCap、Smooth/Flat、实体叠线、隐藏线与全线框、原始多边形边/三角形边选择。成果按待验分支保存；以下是本工作区状态，不复用其他工作树的 GPU 证据。
+
+| 验证 | Dev | Release |
+| --- | --- | --- |
+| 正式 editor、renderer、专项验收消费者编译 | PASS | PASS |
+| Project/Workspace/editor 文档端到端链 | PASS | PASS |
+| 视口显示栏 1×/1.5×/2× DPI 布局 | PASS | PASS |
+| 新场景 VS/PS，DXC Shader Model 6.5 编译及 GPU 结构布局核对 | PASS（两配置共享同一 HLSL） | 同左 |
+| Renderer 真实 GPU 颜色/深度与模式矩阵 | 待执行 | 待执行 |
+| 正式编辑器原生菜单切换、MatCap/线框画面与 World TRS 投影 | 待执行 | 待执行 |
+
+GPU 项待确认可使用桌面的时段；当前窗口 fixture 会显示/恢复窗口，编辑器消费者还会执行窗口内输入。本记录不将编译、CPU 布局或历史 GPU PASS 当作新视口的 GPU 验收结果。日志在本工作区 `out/viewport-integration/`。
+
+已接好的可重复入口（会显示真实窗口，需依次执行）：
+
+```powershell
+. ./tools/enter-dev.ps1
+cmake --build --preset dev --target renderer_acceptance
+cmake --build --preset dev --target editor_viewport_acceptance
+# release 使用相同目标，对应 --preset release。
+```
+
+Renderer 消费者检查 MatCap 对基础色的覆盖与视空间响应、Flat/顶点法线差异、多边形对角线过滤、全场景遮挡、纯线模式深度、线宽与透视距离、无效参数的编码前拒绝、异步模式切换；沿原消费者继续执行矩阵、网格版本、UI 与关停验收。正式编辑器专项仍使用 `atelier_editor`，通过真实资源浏览器创建 sphere、点击共享原生下拉菜单切换各显示模式，检查几何/材质引用、矩阵、选中对象与撤销历史保持不变，并复验 World TRS 到 GPU 的投影。专项图片将保存在 `out/<配置>/viewport-evidence/`。
+
+当前只内置一张程序生成的中性陶土 MatCap；没有新增自定义图片导入、Ghost 淡显、AO 或 PBR。OBJ 输入继续沿原三角形合同，不能恢复源文件未保留的多边形边。尚无本轮帧耗时或显存性能测量结论。
+
+## 历史验收
+
 2026-09-28，Windows x64、AMD Radeon RX 6800 XT，dev 与 release 的正式 `renderer_acceptance` 均通过。fixture 使用真实 HWND、正式 Renderer、D3D12 debug layer 与 GPU validation；不使用 mock。最终程序输出必须包含 `Renderer acceptance: PASS` 且退出 0，runner 保留日志并限制进程为 120 秒。
 
 ## 可重复入口

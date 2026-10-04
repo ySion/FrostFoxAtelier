@@ -77,8 +77,8 @@ float depth(const render::Capture &c, unsigned x, unsigned y) {
 std::array<float, 16> translation(float x, float y, float z) {
     return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1};
 }
-void snapshot(const render::Capture &c) {
-    std::ofstream out("renderer-acceptance.ppm", std::ios::binary);
+void snapshot(const render::Capture &c, const char* path = "renderer-acceptance.ppm") {
+    std::ofstream out(path, std::ios::binary);
     out << "P6\n" << c.extent.width << ' ' << c.extent.height << "\n255\n";
     for (std::size_t i = 0; i < c.rgba.size(); i += 4)
         out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
@@ -265,6 +265,7 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     std::puts("Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
 }
 #include "ui_shapes.inl"
+#include "viewport_modes.inl"
 } // namespace
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -318,7 +319,9 @@ int main() {
     cubes[0].selected = true;
     ui_frame.id++;
     result = take(renderer.render(frame, &capture));
-    check(pixel(capture, 360, 200)[1] > pixel(initial, 360, 200)[1] + 70, "selection highlight");
+    check(pixel(capture, 240, 200)[1] > pixel(initial, 240, 200)[1] + 60 &&
+          pixel(capture, 360, 200)[1] == pixel(initial, 360, 200)[1],
+          "selection highlights polygon edges while preserving the surface");
     check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 1 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 10,
@@ -431,6 +434,7 @@ int main() {
     transform_cases(renderer, ui_frame.extent);
     mesh_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
+    viewport_cases(renderer, ui_frame.extent);
     auto closed = renderer.close();
     check(bool(closed), "drain and close before HWND destruction");
     check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");

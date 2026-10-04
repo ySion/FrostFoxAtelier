@@ -31,6 +31,8 @@ cmake --build --preset dev --target atelier_editor
 编辑器直接消费正式 Actor/Component/World，启动为空场景。顶部 Create 快捷区创建空 Actor 或真正的 StaticMeshActor；Asset Browser 浏览工程文件与内置网格，选择资源后 Add to Scene 一次创建完整 Actor，撤销/重做保留 Actor 和根组件身份。Scene Tree 只展示 World 成员与实际 Actor 类型，组件放在 Parameters 中。菜单、快捷区和快捷键共用指令定义、可用性与应用执行入口。位置字段编辑 SceneComponent 的实际数据，拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Actor。
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
 World 提供同 Actor 空间树、显式根、完整 TRS，以及 Actor/Component 共用的有序 Begin/Tick/End 和任务取消；Actor 可以先完成 Detached 组件组装，再注册到 World。renderer 消费矩阵、共享网格资源与基础色快照。当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
+
+Scene View 的显示栏提供 **MatCap / Smooth / Flat**、**Edges: Off / Overlay / Lines: Visible / Lines: All** 和 **Polygons / Triangles**。默认使用中性陶土 MatCap，选中对象以边线高亮；显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，已三角化 OBJ 保留其三角形边。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md#视口显示增量)。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，当前功能排期由[原生 UI 方案](docs/ui-foundation-plan.md)维护。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。这些能力仍在基础 UI 模块中，尚未上升到业务语言语法。

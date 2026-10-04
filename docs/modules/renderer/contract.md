@@ -20,6 +20,19 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
 - Coverage 的非零 identity 与 revision 一起标识不可变内容，renderer 缓存同时保有 `shared_ptr<const Coverage>`。CPU 行可有 padding；上传时收紧行。每个实际使用的版本只上传一次，无用缓存释放 CPU owner，GPU 资源沿 gfx 原有机制退休。当前没有字体图集、显存预算或资源管理器。
 
+## 视口显示策略
+
+应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 的三个下拉框使用既有 CPU UI、独立菜单窗口和 accepted 输入链；模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。正式编辑器默认 MatCap；直接调用 Renderer 的默认设置仍为 Smooth。
+
+- **Shading**：Smooth 使用已有顶点法线和基础色；Flat 使用几何面法线，并依据输入法线的总体方向确定正反，保留当前双面绘制。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
+- **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。
+- **Topology**：Polygons 尊重生产者提交的边标记；Triangles 显示全部三角形边。每个三角形的三位 mask 中，bit i 表示顶点 i 对边。没有 mask 的既有资源按全部三角形边处理；不通过位置焊接或共面关系猜测原始拓扑。内置 cube、plane、sphere 提供边标记，过滤三角化对角线。OBJ 仍只接受已三角化输入，无法恢复文件中已经丢失的多边形边。
+- 线宽以物理像素计，默认 1.25，接受范围 (0,8]；叠线不透明度默认 0.7，范围 [0,1]。线框用无透视插值重心坐标的屏幕导数估算像素距离，并平滑覆盖边界。选中边至少 2 像素，显示橙色；表面不再整体染黄。仅线模式的可见线为不透明浅灰（抗锯齿边缘除外）。
+
+全部资源仍在当前 Context 的借用 gfx 合同内创建、绑定和录制。深度预通道使用 gfx 的 ZERO/ONE 混合保持颜色，线通道使用 LESS_EQUAL 或 ALWAYS 比较且关闭深度写入。没有新建原生设备、队列、提交或等待入口。pipeline 和 MatCap 随 Renderer 保有、关闭时沿原机制退休；纯 UI 窗口继续不创建场景资源。
+
+每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
+
 ## 帧接受与失败
 
 `Frame::ui_frame` 是帧 id、extent、DPI 和 surface revision 的唯一来源；所有输入借用到同步 `render` 返回。renderer 的 `target()` 报告实际 backbuffer 尺寸，窗口 client 尺寸可能在 resize 时领先一帧。
@@ -41,7 +54,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 | 字段 | 统计边界 |
 | --- | --- |
 | `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
-| `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享一次 instanced draw，空场景为 0 |
+| `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享批次。实体/叠线每批一次，纯线框深度与边线每批各一次，空场景为 0 |
 | `coverage_upload_count` | 本次新建内容版本后成功编码的 R8 上传次数；命中已有版本为 0 |
 | `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含网格实例上传 |
 | `cached_coverage_count` | 返回时 renderer 缓存持有的 Coverage/GPU texture 项数 |

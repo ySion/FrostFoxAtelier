@@ -51,6 +51,15 @@ void verify_project_workspace(editor::Project& project) {
         present({static_cast<std::uint32_t>(size.width*scale),static_cast<std::uint32_t>(size.height*scale)},scale);click(browser::engine);present({static_cast<std::uint32_t>(size.width*scale),static_cast<std::uint32_t>(size.height*scale)},scale);
         const auto key=workspace.assets.control("builtin/sphere");click(key);present({static_cast<std::uint32_t>(size.width*scale),static_cast<std::uint32_t>(size.height*scale)},scale);
         require(workspace.assets.selected() && workspace.assets.selected()->key=="builtin/sphere","Asset hit input did not select the resource.");
+        const auto* viewport=surface.presented()->find(editor::control::viewport);
+        require(viewport!=nullptr,"Scene viewport is missing.");
+        for (const auto control:{editor::control::scene_shading,editor::control::scene_edges,editor::control::scene_topology}) {
+            const auto* option=surface.presented()->find(control);
+            require(option && option->kind==ui::ControlKind::combo && option->bounds.width>0 &&
+                option->bounds.x>=option->clip.left && option->bounds.x+option->bounds.width<=option->clip.right+.1f &&
+                option->bounds.y+option->bounds.height<=viewport->bounds.y+.1f,
+                "Viewport options overflow or overlap scene input at this size/DPI.");
+        }
         for (const auto view:{browser::tiles,browser::list,browser::details}) {
             click(view);present({static_cast<std::uint32_t>(size.width*scale),static_cast<std::uint32_t>(size.height*scale)},scale);
             require(surface.presented()->find(key)->selected,"View switch lost resource selection.");

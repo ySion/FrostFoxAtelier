@@ -21,10 +21,18 @@ struct Vertex {
 // Triangles use consecutive vertices. Sharing the resource never shares an Actor.
 class Mesh final {
 public:
-    explicit Mesh(std::vector<Vertex> vertices) : vertices_(std::move(vertices)) {
+    // One optional mask per triangle: bit i displays the edge opposite vertex i.
+    // No masks means all triangle edges. Producers preserve polygon boundaries
+    // during triangulation; the renderer never guesses connectivity from positions.
+    explicit Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {})
+        : vertices_(std::move(vertices)), edge_masks_(std::move(edge_masks)) {
         if (vertices_.empty() || vertices_.size() % 3 != 0 ||
             vertices_.size() > std::numeric_limits<std::uint32_t>::max())
             throw std::invalid_argument("Mesh requires a nonempty triangle list.");
+        if (!edge_masks_.empty() && edge_masks_.size() != vertices_.size() / 3)
+            throw std::invalid_argument("Mesh requires one edge mask per triangle.");
+        for (auto mask : edge_masks_)
+            if (mask > 7) throw std::invalid_argument("Mesh edge mask uses only three bits.");
         for (auto& vertex : vertices_) {
             for (float value : vertex.position)
                 if (!std::isfinite(value)) throw std::invalid_argument("Mesh position must be finite.");
@@ -38,8 +46,12 @@ public:
     Mesh& operator=(const Mesh&) = delete;
     Mesh& operator=(Mesh&&) = delete;
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
+    [[nodiscard]] std::uint8_t edge_mask(std::size_t triangle) const noexcept {
+        return edge_masks_.empty() ? std::uint8_t{7} : edge_masks_[triangle];
+    }
 private:
     std::vector<Vertex> vertices_;
+    std::vector<std::uint8_t> edge_masks_;
 };
 
 using MeshRef = std::shared_ptr<const Mesh>;
@@ -59,7 +71,8 @@ using MeshRef = std::shared_ptr<const Mesh>;
             std::copy_n(positions[faces[face][indices[i]]], 3, vertex.position);
             std::copy_n(normals[face], 3, vertex.normal);
         }
-        return std::make_shared<const Mesh>(std::move(vertices));
+        return std::make_shared<const Mesh>(std::move(vertices),
+            std::vector<std::uint8_t>{5,3,5,3,5,3,5,3,5,3,5,3});
     }();
     return resource;
 }
