@@ -692,7 +692,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
 #include "controls.inl"
 #include "docking.inl"
 #include "shelf.inl"
-void await_acceptance_activation(Application& app,const std::filesystem::path& output,const char* kind) {
+RECT await_acceptance_activation(Application& app,const std::filesystem::path& output,const char* kind) {
     const auto label=std::string("Editor ")+kind+" acceptance";
     std::ofstream(output/"acceptance.txt")<<label<<": WAITING FOR ACTIVATION (no synthetic input)\n";
     std::printf("%s: waiting up to 120 seconds; click the editor title bar to begin. No synthetic input has started.\n",label.c_str());
@@ -713,6 +713,7 @@ void await_acceptance_activation(Application& app,const std::filesystem::path& o
     // Keep native pointer movement away from menu headings during message-driven gestures.
     RECT host{};GetWindowRect(app.window(),&host);
     require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
+    return host;
 }
 
 #include "menus.inl"
@@ -754,7 +755,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    await_acceptance_activation(app,output,viewport_only?"viewport":"window");
+    const auto host=await_acceptance_activation(app,output,viewport_only?"viewport":"window");
     tick(app);
     require(actors(app).empty(),"The production editor did not start with an empty scene.");
     if (viewport_only) {
