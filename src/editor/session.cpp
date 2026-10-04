@@ -1,4 +1,5 @@
 #include "editor/session.hpp"
+#include "ui_language/component.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -12,7 +13,10 @@ template<class T> T take(Result<T> result) {
     return std::move(*result);
 }
 }
-Session::Session() : types_(take(world::register_types(runtime_))), world_(runtime_, types_),
+Session::Session() : types_([&] {
+    take(ui_language::register_types(runtime_));
+    return take(world::register_types(runtime_));
+}()), world_(runtime_, types_),
     parameters_{Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
                 Parameter{"Z", "m", types_.position_fields[2]}} {
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);

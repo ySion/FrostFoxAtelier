@@ -1,7 +1,7 @@
 include_guard(GLOBAL)
 
 function(atelier_add_renderer)
-    foreach(_shader scene_common scene_vs scene_ps ui_common ui_vs solid_ps coverage_ps image_ps)
+    foreach(_shader scene_common scene_vs scene_ps ui_common ui_vs solid_ps coverage_ps image_ps viewport_vs background_ps grid_ps)
         set(_path "${PROJECT_SOURCE_DIR}/src/renderer/shaders/${_shader}.hlsl")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_path}")
         file(READ "${_path}" ${_shader})

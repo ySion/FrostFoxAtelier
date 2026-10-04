@@ -69,6 +69,32 @@ std::optional<double> number(std::wstring_view text, const Control& control) {
 }
 }
 
+Result<void> validate_control_properties(const Control& control) {
+    if (!control.key || static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::tree_item) ||
+        static_cast<unsigned>(control.role)>static_cast<unsigned>(Role::caption) || control.text.size()>4096 ||
+        !std::isfinite(control.value) || !std::isfinite(control.minimum) || !std::isfinite(control.maximum) ||
+        control.minimum>control.maximum || !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) ||
+        control.drag_step<=0 || control.fine_step<=0 ||
+        static_cast<unsigned>(control.drag_axis)>static_cast<unsigned>(DragAxis::vertical))
+        return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::folder) ||
+        (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
+         control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item) ||
+        (control.click_action && control.kind!=ControlKind::splitter) ||
+        (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
+        return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 ||
+        !detail::valid_text(control.tree_filter,false) || !detail::valid_text(control.text,control.kind==ControlKind::text_edit))
+        return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum ||
+        *control.default_value>control.maximum)) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
+        !std::all_of(control.classes.begin(),control.classes.end(),[](const auto& name){return StyleSheet::valid_class(name);}))
+        return std::unexpected(Error{ErrorCode::invalid_style,control.key});
+    if (editable(control.kind) && control.kind!=ControlKind::slider && (control.value<control.minimum || control.value>control.maximum))
+        return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    return {};
+}
 const ControlBox* UiFrame::find(ControlKey key) const noexcept {
     const auto found = std::find_if(controls.begin(), controls.end(), [key](const auto& box) { return box.key == key; });
     return found == controls.end() ? nullptr : &*found;
@@ -79,18 +105,24 @@ const TextGeometry* UiFrame::find_text(ControlKey key) const noexcept {
 }
 
 struct Session::Impl {
-    struct State {
+    struct TreeState {
+        bool tree_expanded{true}, tree_branch{}, tree_hidden{}, tree_match{}, tree_enabled{true};
+        unsigned tree_depth{};
+        ControlKey tree_next{};
+    };
+    struct State : TreeState {
         Control control;
         ui_layout::LayoutNodeId node;
         std::uint64_t incarnation{};
         double scroll{}, scroll_limit{};
         float content_bottom{};
         bool baseline_content{};
-        bool tree_expanded{true}, tree_branch{}, tree_hidden{}, tree_match{}, tree_enabled{true};
-        unsigned tree_depth{};
-        ControlKey tree_next{};
         std::size_t frame_index{std::numeric_limits<std::size_t>::max()};
         bool style_dirty{true};
+        bool layout_dirty{true}, layout_tree_hidden{};
+        ui_layout::Insets layout_padding{};
+        float layout_tree_height{};
+        std::uint64_t display_revision{};
         VisualState visual;
         std::uint64_t theme_revision{}, parent_revision{}, inheritance_revision{};
         StyleProperties inherited;
@@ -143,6 +175,10 @@ struct Session::Impl {
     Style style;
     std::shared_ptr<const StyleSheet> style_sheet;
     std::uint64_t style_revision{detail::new_identity()}, prepares{}, culled_text_controls{};
+    std::uint64_t controls_revision{detail::new_identity()};
+    std::uint64_t control_batches{}, controls_updated{}, controls_created{}, controls_removed{};
+    std::uint64_t layout_syncs{}, layout_nodes_created{};
+    std::uint64_t failed_frame_id{};
     Surface surface;
     detail::TextStore text;
     ui_layout::LayoutDocument layout{detail::TextStore::measure, &text, {10001, 128}};
@@ -162,7 +198,7 @@ struct Session::Impl {
 
     explicit Impl(std::span<const std::wstring> fonts) : text(fonts) { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
     bool active() const {
-        return published && published->drawing->extent == surface.extent &&
+        return !failed_frame_id && published && published->drawing->extent == surface.extent &&
             published->drawing->dpi_scale == surface.dpi_scale && published->drawing->surface_revision == surface.revision &&
             surface.extent.width && surface.extent.height;
     }
@@ -192,6 +228,7 @@ struct Session::Impl {
 #include "ui/session_edit.inl"
 #include "ui/session_popup.inl"
 #include "ui/session_tree.inl"
+#include "ui/session_update.inl"
     void resolve(State& state) {
         const auto& control=state.control;
         const auto* parent=control.parent?&states.at(control.parent):nullptr;
@@ -218,21 +255,10 @@ struct Session::Impl {
         state.inherited=std::move(inherited); state.sheets=std::move(sheets);
         state.visual=visual; state.parent_revision=parent_revision; state.theme_revision=style_revision; state.style_dirty=false;
     }
-    ui_layout::NodeInput input_for(State& state) {
+    ui_layout::NodeInput input_for(State& state, ui_layout::Insets padding) {
         auto input = state.control.layout;
-        auto alignment = input.vertical_alignment;
-        state.baseline_content = false;
-        if (state.control.parent) {
-            const auto& parent = states.at(state.control.parent);
-            state.baseline_content = parent.baseline_content;
-            if (alignment.inherited && parent.control.kind == ControlKind::container &&
-                parent.control.layout.kind == ui_layout::Kind::row && parent.control.layout.flow)
-                alignment = parent.control.layout.flow->align_items;
-        }
-        state.baseline_content |= alignment.first_baseline;
-        resolve(state);
         const auto& appearance=*state.resolved;
-        input.padding = padding_for(state);
+        input.padding = padding;
         if (state.control.kind==ControlKind::tree_item) {
             input.collapsed=state.tree_hidden;
             input.height=ui_layout::Axis::fixed(states.at(state.control.parent).resolved->tree_row_height);
@@ -247,8 +273,6 @@ struct Session::Impl {
             input.kind = ui_layout::Kind::box;
         } else if (scrolling(state.control.kind)) {
             input.kind = ui_layout::Kind::column;
-            if (appearance.scrollbar_gutter==ScrollbarGutter::stable)
-                input.padding.right += appearance.scrollbar_width + appearance.scrollbar_inset*2;
             if (state.control.kind==ControlKind::popup) {
                 input.height.maximum=surface.extent.height/surface.dpi_scale;
                 input.width.maximum=surface.extent.width/surface.dpi_scale;
@@ -273,17 +297,44 @@ struct Session::Impl {
         }
         for (auto key : order) {
             auto& state = states.at(key);
-            auto input = input_for(state);
+            auto alignment=state.control.layout.vertical_alignment;
+            const auto* owner=state.control.parent?&states.at(state.control.parent):nullptr;
+            state.baseline_content=owner && owner->baseline_content;
+            if (owner && alignment.inherited && owner->control.kind==ControlKind::container &&
+                owner->control.layout.kind==ui_layout::Kind::row && owner->control.layout.flow)
+                alignment=owner->control.layout.flow->align_items;
+            state.baseline_content|=alignment.first_baseline;
+            const auto previous=state.resolved;
+            resolve(state);
+            const auto& appearance=*state.resolved;
+            auto padding=padding_for(state);
+            if (scrolling(state.control.kind) && appearance.scrollbar_gutter==ScrollbarGutter::stable)
+                padding.right+=appearance.scrollbar_width+appearance.scrollbar_inset*2;
+            const auto row_height=state.control.kind==ControlKind::tree_item?owner->resolved->tree_row_height:0.f;
+            const auto display_version=edit && edit->key==key?
+                (edit->composition?edit->composition->revision:edit->token.revision):0;
+            state.layout_dirty|=!previous || (text_kind(state.control.kind) &&
+                (previous->font!=appearance.font || previous->text_align!=appearance.text_align)) ||
+                padding!=state.layout_padding || row_height!=state.layout_tree_height ||
+                state.display_revision!=display_version ||
+                (state.control.kind==ControlKind::tree_item && state.tree_hidden!=state.layout_tree_hidden);
+            if (!structure_dirty && !state.layout_dirty) continue;
+            ++layout_syncs;
+            auto input = input_for(state,padding);
             const auto parent = state.control.parent ? states.at(state.control.parent).node : layout.root();
             if (!state.node) {
                 const auto created = layout.create(parent, input);
                 if (!created) return std::unexpected(Error{ErrorCode::layout_failed,key,created.error().provider_code});
                 state.node = *created;
+                ++layout_nodes_created;
             } else {
                 if (auto result = checked(layout.update(state.node, input), key); !result) return result;
                 if (structure_dirty)
                     if (auto result = checked(layout.move(state.node, parent), key); !result) return result;
             }
+            state.layout_dirty=false;
+            state.layout_padding=padding; state.layout_tree_height=row_height;
+            state.layout_tree_hidden=state.tree_hidden; state.display_revision=display_version;
         }
         structure_dirty = false;
         return {};
@@ -317,147 +368,42 @@ Result<void> Session::set_style_sheet(std::shared_ptr<const StyleSheet> sheet) {
 Statistics Session::statistics() const noexcept {
     const auto text = impl_->text.statistics();
     return {impl_->prepares,text.measure_calls,text.text_layouts,text.rasterizations,text.raster_bytes,text.coverage_cache_hits,
-        impl_->culled_text_controls,impl_->text.provider_revision(),text.live_coverages,text.live_coverage_bytes};
+        impl_->culled_text_controls,impl_->text.provider_revision(),text.live_coverages,text.live_coverage_bytes,
+        impl_->control_batches,impl_->controls_updated,impl_->controls_created,impl_->controls_removed,
+        impl_->layout_syncs,impl_->layout_nodes_created,impl_->layout.stats()};
 }
 Result<Reply> Session::set_surface(Surface surface) {
     if (!std::isfinite(surface.dpi_scale) || surface.dpi_scale < .25f || surface.dpi_scale > 8 ||
         !surface.revision || surface.extent.width > 32768 || surface.extent.height > 32768)
         return std::unexpected(Error{ErrorCode::invalid_surface});
     Reply reply;
-    if (impl_->surface != surface) { reply = impl_->cancel(); impl_->edit.reset(); impl_->focus = 0; impl_->surface = surface; reply.redraw = true; }
+    if (impl_->surface != surface) {
+        reply = impl_->cancel(); impl_->edit.reset(); impl_->focus = 0; impl_->surface = surface; reply.redraw = true;
+        for (auto& [key,state]:impl_->states) if (state.control.kind==ControlKind::popup) state.layout_dirty=true;
+    }
     return reply;
 }
 Result<Reply> Session::set_controls(std::span<const Control> controls) {
-    auto& self = *impl_;
-    if (controls.size() > 10000) return std::unexpected(Error{ErrorCode::capacity_exceeded});
-    bool unchanged = controls.size() == self.order.size();
-    for (std::size_t i = 0; unchanged && i < controls.size(); ++i)
-        unchanged = controls[i].key == self.order[i] && controls[i] == self.states.at(self.order[i]).control;
+    bool unchanged=controls.size()==impl_->order.size();
+    for (std::size_t i=0;unchanged && i<controls.size();++i)
+        unchanged=controls[i].key==impl_->order[i] && controls[i]==impl_->states.at(impl_->order[i]).control;
     if (unchanged) return Reply{};
-    std::map<ControlKey, const Control*> validated;
-    std::vector<ControlKey> order; order.reserve(controls.size());
-    ControlKey next_popup{}, tree_owner{};
-    std::vector<ControlKey> tree_path;
-    for (const auto& control : controls) {
-        if (!control.key || validated.contains(control.key) || (control.parent && !validated.contains(control.parent)) ||
-            static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::tree_item) ||
-            static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 || !std::isfinite(control.value) ||
-            !std::isfinite(control.minimum) || !std::isfinite(control.maximum) || control.minimum > control.maximum ||
-            !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
-            static_cast<unsigned>(control.drag_axis) > static_cast<unsigned>(DragAxis::vertical))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::folder) ||
-            (control.icon!=ControlIcon::none && (control.kind!=ControlKind::button && control.kind!=ControlKind::label && control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item)))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if ((control.click_action && control.kind!=ControlKind::splitter) ||
-            (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent || validated.at(control.parent)->kind!=ControlKind::container)) ||
-            (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.kind==ControlKind::tree_item) {
-            if (!control.parent || validated.at(control.parent)->kind!=ControlKind::tree)
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-            if (tree_owner!=control.parent) { tree_path.clear(); tree_owner=control.parent; }
-            while (!tree_path.empty() && tree_path.back()!=control.tree_parent) tree_path.pop_back();
-            if ((control.tree_parent && tree_path.empty()) || tree_path.size()>=128)
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-            tree_path.push_back(control.key);
-        } else if (control.tree_parent) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 || !detail::valid_text(control.tree_filter,false))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum || *control.default_value>control.maximum))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.kind==ControlKind::popup) {
-            if (next_popup || control.parent || (control.popup_owner && !validated.contains(control.popup_owner)))
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-            next_popup=control.key;
-        } else if (control.popup_owner) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.menu_branch && (control.kind!=ControlKind::menu_item || control.edit_command))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.edit_command) {
-            const auto found=validated.find(control.edit_command->target);
-            if (control.kind!=ControlKind::menu_item || found==validated.end() || !text_field(found->second->kind) ||
-                static_cast<unsigned>(control.edit_command->kind)>static_cast<unsigned>(EditCommandKind::reset) ||
-                (control.edit_command->kind==EditCommandKind::reset && !found->second->default_value))
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        }
-        if (next_popup && control.key!=next_popup) {
-            auto parent=control.parent;
-            while (parent && parent!=next_popup) parent=validated.at(parent)->parent;
-            if (parent!=next_popup) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        }
-        if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
-            !std::all_of(control.classes.begin(),control.classes.end(),[](const auto& name){return StyleSheet::valid_class(name);}))
-            return std::unexpected(Error{ErrorCode::invalid_style,control.key});
-        if (control.parent) {
-            const auto kind = validated.at(control.parent)->kind;
-            if (kind==ControlKind::tree && control.kind!=ControlKind::tree_item)
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-            if (kind != ControlKind::container && kind != ControlKind::list && kind!=ControlKind::popup && kind!=ControlKind::tree)
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        }
-        if (editable(control.kind) && control.kind!=ControlKind::slider && (control.value < control.minimum || control.value > control.maximum))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        validated.emplace(control.key,&control); order.push_back(control.key);
-    }
-    Reply reply;
-    const auto absent = [&](ControlKey key) {
-        while (key) {
-            const auto found = validated.find(key);
-            if (found == validated.end() || !found->second->enabled || found->second->layout.collapsed ||
-                (self.live(key) && (found->second->kind != self.live(key)->control.kind ||
-                    (found->second->kind==ControlKind::tree_item && (found->second->tree_parent!=self.live(key)->control.tree_parent ||
-                        found->second->parent!=self.live(key)->control.parent))))) return true;
-            key = found->second->parent;
-        }
-        return false;
-    };
-    if ((self.press && absent(self.press->key)) || (self.edit && absent(self.edit->key))) { reply = self.cancel(); self.edit.reset(); }
-    if (absent(self.focus)) self.focus = 0;
-    if (absent(self.keyboard_pressed)) self.keyboard_pressed = 0;
-    self.structure_dirty |= order != self.order;
-    for (auto it = self.states.begin(); it != self.states.end();) {
-        if (!validated.contains(it->first)) {
-            if (it->second.node) self.retired.push_back(it->second.node);
-            self.text.erase(it->first); it = self.states.erase(it);
-        } else ++it;
-    }
-    for (const auto& control : controls) {
-        auto [it, added] = self.states.try_emplace(control.key);
-        auto& state = it->second;
-        if (added) state.incarnation = detail::new_identity();
-        if (added || state.control.kind!=control.kind || state.control.parent!=control.parent || state.control.tree_parent!=control.tree_parent)
-            state.tree_expanded=control.tree_initially_expanded;
-        self.structure_dirty |= added || state.control.parent != control.parent || state.control.kind != control.kind;
-        if (text_kind(state.control.kind) && !text_kind(control.kind)) self.text.erase(control.key);
-        state.style_dirty |= added || state.control.parent!=control.parent || state.control.kind!=control.kind ||
-            state.control.role!=control.role || state.control.classes!=control.classes || state.control.style!=control.style ||
-            state.control.style_scope!=control.style_scope;
-        state.control = control;
-        if (self.edit && self.edit->key == control.key && !self.edit->buffer.active() && !self.edit->composition &&
-            (control.kind==ControlKind::number?self.edit->original_value!=control.value:self.edit->buffer.original()!=control.text)) {
-            const auto caret=self.edit->buffer.current().caret, anchor=self.edit->buffer.current().anchor;
-            const auto mode=self.edit->text_mode;
-            self.begin_edit(control.key,mode);
-            self.edit->buffer.select(anchor,false); self.edit->buffer.select(caret,true);
-        }
-    }
-    self.order = std::move(order);
-    self.trees_dirty=true;
-    self.update_trees();
-    if (self.press && (self.states.at(self.press->key).tree_hidden || !self.states.at(self.press->key).tree_enabled)) reply=self.cancel();
-    if (const auto* focused=self.live(self.focus);focused && (focused->tree_hidden || !focused->tree_enabled)) {
-        while (focused && (focused->tree_hidden || !focused->tree_enabled)) { self.focus=focused->control.tree_parent; focused=self.live(self.focus); }
-    }
-    self.update_popup(next_popup && !self.states.at(next_popup).control.layout.collapsed?next_popup:0,reply);
-    if (self.popup && absent(self.states.at(self.popup).control.popup_owner)) self.dismiss_popup(reply);
-    return reply;
+    return impl_->apply_controls(controls,false);
+}
+Result<Reply> Session::update_controls(std::span<const Control> controls) {
+    return impl_->apply_controls(controls,true);
 }
 
 Result<std::shared_ptr<const UiFrame>> Session::prepare() {
     auto& self = *impl_;
     ++self.prepares;
+    const auto frame_id=detail::new_identity();
+    struct Attempt {
+        std::uint64_t& failed;
+        std::uint64_t frame_id;
+        bool completed{};
+        ~Attempt() { if (!completed) failed=frame_id; }
+    } attempt{self.failed_frame_id,frame_id};
     if (!self.surface.extent.width || !self.surface.extent.height) return std::unexpected(Error{ErrorCode::unavailable_surface});
     try {
         if (auto synced = self.synchronize(); !synced) return std::unexpected(synced.error());
@@ -467,9 +413,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
         auto output = std::make_shared<UiFrame>();
         auto draws = std::make_shared<Frame>();
         output->controls.reserve(self.order.size()); draws->draws.reserve(self.order.size()*3);
-        draws->id = detail::new_identity();
+        draws->id = frame_id;
         draws->extent = self.surface.extent; draws->dpi_scale = scale; draws->surface_revision = self.surface.revision;
         output->session_identity = self.identity;
+        output->controls_revision = self.controls_revision;
         output->style_revision = self.style_revision;
         output->measure_provider_revision = self.text.provider_revision();
         const Clip target{0,0,static_cast<std::int32_t>(draws->extent.width),static_cast<std::int32_t>(draws->extent.height)};
@@ -845,17 +792,20 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
         }
 #include "ui/session_ladder.inl"
         output->drawing = std::move(draws);
+        attempt.completed=true;
         return std::shared_ptr<const UiFrame>(std::move(output));
     } catch (const detail::TextFailure& failure) { return std::unexpected(Error{ErrorCode::text_failed,0,failure.code}); }
 }
 bool Session::accept(std::shared_ptr<const UiFrame> frame) {
     auto& self = *impl_;
-    if (!frame || !frame->drawing || frame->session_identity != self.identity || frame->drawing->extent != self.surface.extent ||
+    if (!frame || !frame->drawing || frame->session_identity != self.identity || frame->controls_revision!=self.controls_revision ||
+        frame->style_revision!=self.style_revision || frame->drawing->extent != self.surface.extent ||
         frame->drawing->dpi_scale != self.surface.dpi_scale || frame->drawing->surface_revision != self.surface.revision ||
+        frame->drawing->id<=self.failed_frame_id ||
         (self.published && frame->drawing->id < self.published->drawing->id)) return false;
     if (self.edit) if (const auto* geometry=frame->find_text(self.edit->key); geometry && geometry->token==self.edit->token)
         self.edit->scroll=geometry->scroll;
-    self.published = std::move(frame); return true;
+    self.published = std::move(frame); self.failed_frame_id=0; return true;
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }
 Reply Session::cancel_interaction() { return impl_->cancel(); }

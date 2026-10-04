@@ -266,6 +266,7 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
 }
 #include "ui_shapes.inl"
 #include "viewport_modes.inl"
+#include "reference_guides.inl"
 } // namespace
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -435,6 +436,7 @@ int main() {
     mesh_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
     viewport_cases(renderer, ui_frame.extent);
+    reference_guide_cases(renderer, ui_frame.extent);
     auto closed = renderer.close();
     check(bool(closed), "drain and close before HWND destruction");
     check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");

@@ -22,7 +22,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 视口显示策略
 
-应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 的三个下拉框使用既有 CPU UI、独立菜单窗口和 accepted 输入链；模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。正式编辑器默认 MatCap；直接调用 Renderer 的默认设置仍为 Smooth。
+应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 的 Shading、Edges、Topology、Guides 下拉框使用既有 CPU UI、独立菜单窗口和 accepted 输入链；模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。正式编辑器默认 MatCap；直接调用 Renderer 的默认设置仍为 Smooth。
 
 - **Shading**：Smooth 使用已有顶点法线和基础色；Flat 使用几何面法线，并依据输入法线的总体方向确定正反，保留当前双面绘制。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
 - **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。
@@ -30,6 +30,22 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - 线宽以物理像素计，默认 1.25，接受范围 (0,8]；叠线不透明度默认 0.7，范围 [0,1]。线框用无透视插值重心坐标的屏幕导数估算像素距离，并平滑覆盖边界。选中边至少 2 像素，显示橙色；表面不再整体染黄。仅线模式的可见线为不透明浅灰（抗锯齿边缘除外）。
 
 全部资源仍在当前 Context 的借用 gfx 合同内创建、绑定和录制。深度预通道使用 gfx 的 ZERO/ONE 混合保持颜色，线通道使用 LESS_EQUAL 或 ALWAYS 比较且关闭深度写入。没有新建原生设备、队列、提交或等待入口。pipeline 和 MatCap 随 Renderer 保有、关闭时沿原机制退休；纯 UI 窗口继续不创建场景资源。
+
+### 背景与参考辅助显示
+
+`ViewSettings` 的 `background`、`reference_grid`、`origin_axes` 与着色/线框模式独立。正式编辑器默认开启蓝灰渐变、XZ 平面 Y=0 参考网格及 X/Z 原点轴线；直接 Renderer 调用默认关闭。Scene View 的 Guides 菜单沿同一显示设置入口切换，既不创建 Actor，也不改变几何、材质、场景序列化、选择或撤销历史。
+
+背景只绘制 scene viewport；网格与轴线通过程序化全屏三角形生成，没有网格顶点缓冲或贴图。网格基准为 0.2 米细格、每五格主线，根据投影像素密度在十倍尺度之间交叉渐变，并在接近地平线和远处淡出。颜色输入为线性值，由既有 sRGB RTV 编码；线宽以物理像素计算。
+
+有物体时参考网格读取同一场景深度、关闭深度写入。实体模式为背景→实体→网格→UI；纯线模式为背景→完整物体深度→网格→Visible/All 边线→UI。共面物体优先，All 只改变物体边线显示，不令网格穿透表面。空 World 仍绘制背景与网格，但不为辅助显示创建深度、MatCap 或实例缓冲，capture 深度保持全 1；零尺寸 viewport 和纯 UI 窗口不绘制这些辅助内容。
+
+CPU 在编码前复用数学模块计算一次 inverse view-projection。有限但不可逆或无法表达为有限 FP32 逆矩阵的相机，仅跳过参考网格；背景与既有场景路径继续，保持旧相机输入合同。相机落在平面、交点位于近裁面后方或接近水平时，网格稳定裁弃/衰减。没有另一个相机控制状态。
+
+### 运行状态与着色模式的独立性
+
+Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用未来的场景光照模式（Scene Lit）。场景光照将消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
+
+背景与参考辅助显示处于独立的视口策略中，可用于上述任意着色模式；场景天空/环境属于场景光照的画面内容，视口渐变不能在其后覆盖场景环境。本轮只实现背景与参考网格，没有加入未实现的 Scene Lit 枚举、Play 状态或空渲染管线。
 
 每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 
@@ -49,19 +65,20 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ### 每帧计数
 
-`FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照，七项均为 `uint64_t`。它不持有额外资源，也不增加 GPU 查询、等待或动态分配。
+`FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照，各项均为 `uint64_t`。它不持有额外资源，也不增加 GPU 查询、等待或动态分配。
 
 | 字段 | 统计边界 |
 | --- | --- |
 | `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
 | `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享批次。实体/叠线每批一次，纯线框深度与边线每批各一次，空场景为 0 |
+| `viewport_draw_calls` | 实际成功编码的视口辅助 draw 次数；渐变一次，网格与轴线共用一次；不计入物体或 UI draw，不代表 GPU 时间 |
 | `coverage_upload_count` | 本次新建内容版本后成功编码的 R8 上传次数；命中已有版本为 0 |
 | `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含网格实例上传 |
 | `cached_coverage_count` | 返回时 renderer 缓存持有的 Coverage/GPU texture 项数 |
 | `cached_coverage_texel_bytes` | 缓存项宽×高的逻辑 R8 字节总量，不是物理显存占用 |
 | `cached_coverage_cpu_bytes` | 缓存持有的 Coverage 的 `pixels.size()` 总量，包含 CPU 行 padding；不是 vector capacity 或整个 UI 的 CPU 内存 |
 
-编码前 skipped 的前四项为 0，后三项反映仍被持有的缓存。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存量不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧计数重置，缓存总量随现有插入/退休动作更新，未改变淘汰策略。
+编码前 skipped 的活动计数为 0，缓存计数反映仍被持有的资源。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存量不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧计数重置，缓存总量随现有插入/退休动作更新，未改变淘汰策略。
 
 应用可在正式交互中测量 prepare/render 的 CPU 墙钟时间；render 时间包含 Present 或必要等待，不能称为 GPU 时长。使用同一 `FrameResult` 关联活动计数，显式 Capture 另行记录，避免把它的同步成本混入普通交互样本。
 

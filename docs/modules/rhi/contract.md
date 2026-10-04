@@ -54,4 +54,4 @@
 
 ## 上层关系
 
-gfx 就是 RHI 的资源与执行主体。未来 RDG 在这个执行契约上组织依赖，不复制 barrier、descriptor 或资源生命周期世界。业务语言包装复用项目权威类型体系；RHI 不持有业务对象、UI Node、GC 根或 JIT 回调。[编辑器 renderer](../renderer/contract.md) 已复用该执行域完成单窗口呈现；多 queue、并行录制、native import、HDR 或多窗口仍须定义并验收对应契约。
+gfx 就是 RHI 的资源与执行主体。未来 RDG 在这个执行契约上组织依赖，不复制 barrier、descriptor 或资源生命周期世界。业务语言包装复用项目权威类型体系；RHI 不持有业务对象、UI Node、GC 根或 JIT 回调。[编辑器 renderer](../renderer/contract.md) 按窗口持有执行域，原生弹出窗口使用独立 Renderer/Context。多 queue、并行录制、native import、HDR 或同一执行域承载多个窗口仍须定义并验收对应契约。

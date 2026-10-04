@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 #include "shader_source.hpp"
+#include "math/math.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -57,6 +58,7 @@ void validate(const Frame &frame) {
         frame.meshes.size() <= std::numeric_limits<std::uint32_t>::max() &&
         ui.draws.size() <= std::numeric_limits<std::uint32_t>::max();
     good &= frame.view.shading <= Shading::matcap && frame.view.wireframe <= Wireframe::only &&
+        frame.view.background <= Background::gradient &&
         finite(frame.view.wire_width) && frame.view.wire_width > 0 && frame.view.wire_width <= 8 &&
         finite(frame.view.wire_opacity) && frame.view.wire_opacity >= 0 && frame.view.wire_opacity <= 1;
     for (float v : frame.camera.view)
@@ -92,6 +94,30 @@ struct SceneTriangle {
     std::uint32_t edge_mask;
     std::array<float, 3> face_normal;
 };
+struct GridCamera {
+    std::array<float, 16> view_projection, inverse;
+};
+std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
+    if ((!frame.view.reference_grid && !frame.view.origin_axes) ||
+        frame.scene_viewport.width == 0 || frame.scene_viewport.height == 0) return {};
+    math::Matrix4d view, projection;
+    for (std::size_t i=0; i<16; ++i) {
+        view.elements[i]=frame.camera.view[i];
+        projection.elements[i]=frame.camera.projection[i];
+    }
+    const auto combined=view*projection;
+    const auto inverse=math::try_inverse(combined);
+    // An optional reference guide must not reject an otherwise valid camera.
+    if (!inverse) return {};
+    GridCamera result;
+    for (std::size_t i=0; i<16; ++i) {
+        result.view_projection[i]=static_cast<float>(combined.elements[i]);
+        result.inverse[i]=static_cast<float>(inverse->elements[i]);
+        if (!finite(result.view_projection[i]) || !finite(result.inverse[i])) return {};
+    }
+    return result;
+}
+enum class PipelineStyle { ui, surface, depth, visible_lines, all_lines, background, grid, grid_depth };
 static_assert(sizeof(SceneTriangle) == 88);
 SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
     const auto vertices = mesh.vertices().subspan(index * 3, 3);
@@ -203,6 +229,8 @@ struct Renderer::State {
     GfxContext gfx;
     Options options;
     rhi::Pipeline scene, scene_depth, visible_lines, all_lines, solid, coverage, color_image;
+    rhi::Pipeline background, grid, grid_depth;
+    std::optional<GridCamera> grid_camera;
     GfxTexture matcap;
     GfxSamplerState sampler;
     struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
@@ -281,6 +309,9 @@ struct Renderer::State {
         solid = {};
         coverage = {};
         color_image = {};
+        background = {};
+        grid = {};
+        grid_depth = {};
         auto result = context.close();
         if (!result) return std::unexpected(Error{result.error(), true});
         gfx = {};
@@ -294,7 +325,7 @@ struct Renderer::State {
         return {};
     }
     void prepare_pipeline(rhi::Pipeline &output, const char *name, const char *vs, const char *ps,
-                          bool with_depth, unsigned pass = 0, bool hidden_lines = true) {
+                          PipelineStyle style) {
         rhi::PipelineDesc desc;
         desc.kind = rhi::PipelineKind::vertex;
         desc.name = name;
@@ -303,31 +334,26 @@ struct Renderer::State {
         require(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
                 "Set window color target");
         require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set culling");
+        const bool with_depth = style == PipelineStyle::surface || style == PipelineStyle::depth ||
+            style == PipelineStyle::visible_lines || style == PipelineStyle::all_lines || style == PipelineStyle::grid_depth;
+        const bool write_depth = style == PipelineStyle::surface || style == PipelineStyle::depth;
         if (with_depth) {
             require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT),
                     "Set depth target");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state, pass == 1 ?
-                    (hidden_lines ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_ALWAYS) :
-                    D3D12_COMPARISON_FUNC_LESS),
+            require(gfxDrawStateSetDepthFunction(desc.draw_state,
+                    style == PipelineStyle::all_lines ? D3D12_COMPARISON_FUNC_ALWAYS :
+                    style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_LESS),
                     "Set depth comparison");
-            require(gfxDrawStateSetDepthWriteMask(desc.draw_state, pass == 1 ?
-                    D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL),
-                    "Set depth writes");
-            if (pass != 0)
-                require(gfxDrawStateSetBlendMode(desc.draw_state,
-                    pass == 2 ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
-                    pass == 2 ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
-                    pass == 2 ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
-                    pass == 2 ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD),
-                    "Set scene pass blending");
-        } else {
-            require(gfxDrawStateSetDepthWriteMask(desc.draw_state, D3D12_DEPTH_WRITE_MASK_ZERO),
-                    "Disable depth writes");
-            require(gfxDrawStateSetBlendMode(desc.draw_state, D3D12_BLEND_ONE, D3D12_BLEND_INV_SRC_ALPHA,
-                                             D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_INV_SRC_ALPHA,
-                                             D3D12_BLEND_OP_ADD),
-                    "Set premultiplied alpha blending");
         }
+        require(gfxDrawStateSetDepthWriteMask(desc.draw_state,
+                write_depth ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO), "Set depth writes");
+        if (style != PipelineStyle::surface && style != PipelineStyle::background)
+            require(gfxDrawStateSetBlendMode(desc.draw_state,
+                style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
+                style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
+                style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
+                style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD),
+                "Set pass blending");
         auto prepared = context.prepare(desc);
         if (!prepared) throw Error{prepared.error(), false};
         output = std::move(*prepared);
@@ -432,22 +458,54 @@ struct Renderer::State {
             else ui_batches.push_back({first, 1, clip, key, &item});
         }
     }
+    void draw_grid(const Frame& frame, bool with_depth) {
+        if (!grid_camera) return;
+        auto& pipeline=with_depth?grid_depth:grid;
+        if (!pipeline)
+            prepare_pipeline(pipeline, "viewport reference grid", shaders::viewport_vs, with_depth?shaders::grid_ps:shaders::grid_empty_ps,
+                             with_depth?PipelineStyle::grid_depth:PipelineStyle::grid);
+        require(gfxCommandBindDepthStencilTarget(gfx, with_depth?depth:GfxTexture{}), "Bind guide occlusion depth");
+        const auto program=pipeline.program();
+        const std::array<std::uint32_t,2> guides{frame.view.reference_grid?1u:0u,frame.view.origin_axes?1u:0u};
+        require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse), "Set grid inverse camera");
+        require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection), "Set grid camera");
+        require(gfxProgramSetParameter(gfx, program, "guides", guides), "Set reference guides");
+        require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind reference grid");
+        require(gfxCommandDraw(gfx, 3), "Draw reference grid");
+        ++stats.viewport_draw_calls;
+    }
     void draw(const Frame &frame, const ui::PixelExtent extent, Capture *capture) {
         const auto &viewport = frame.scene_viewport;
-        const bool draw_scene = !instances.empty() && viewport.width > 0 && viewport.height > 0;
+        const bool has_viewport = viewport.width > 0 && viewport.height > 0;
+        const bool draw_scene = !instances.empty() && has_viewport;
         require(gfxCommandClearBackBuffer(gfx), "Clear window");
+        require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for viewport background");
+        if (has_viewport) {
+            require(gfxCommandSetViewport(gfx, viewport.x, viewport.y, viewport.width, viewport.height), "Set scene viewport");
+            require(gfxCommandSetScissorRect(gfx, static_cast<int>(std::floor(viewport.x)),
+                static_cast<int>(std::floor(viewport.y)),
+                static_cast<int>(std::ceil(viewport.x+viewport.width))-static_cast<int>(std::floor(viewport.x)),
+                static_cast<int>(std::ceil(viewport.y+viewport.height))-static_cast<int>(std::floor(viewport.y))), "Set scene scissor");
+            if (frame.view.background == Background::gradient) {
+                if (!background)
+                    prepare_pipeline(background, "viewport background", shaders::viewport_vs, shaders::background_ps, PipelineStyle::background);
+                require(gfxCommandBindKernel(gfx, background.kernel()), "Bind viewport background");
+                require(gfxCommandDraw(gfx, 3), "Draw viewport background");
+                ++stats.viewport_draw_calls;
+            }
+        }
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         if (draw_scene) {
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             if (!lines_only && !scene)
-                prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, true);
+                prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, PipelineStyle::surface);
             if (lines_only) {
                 if (!scene_depth)
-                    prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, true, 2);
+                    prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
                 auto& lines = frame.view.hidden_lines ? visible_lines : all_lines;
                 if (!lines)
                     prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
-                                     true, 1, frame.view.hidden_lines);
+                                     frame.view.hidden_lines?PipelineStyle::visible_lines:PipelineStyle::all_lines);
             }
             prepare_matcap();
             if (depth_extent != extent) {
@@ -462,15 +520,6 @@ struct Renderer::State {
                                                             instances.data())};
             allocation(bool(data.buffer));
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
-            require(gfxCommandSetViewport(gfx, viewport.x, viewport.y, viewport.width, viewport.height),
-                    "Set scene viewport");
-            require(gfxCommandSetScissorRect(gfx, static_cast<int>(std::floor(viewport.x)),
-                                             static_cast<int>(std::floor(viewport.y)),
-                                             static_cast<int>(std::ceil(viewport.x + viewport.width)) -
-                                                 static_cast<int>(std::floor(viewport.x)),
-                                             static_cast<int>(std::ceil(viewport.y + viewport.height)) -
-                                                 static_cast<int>(std::floor(viewport.y))),
-                    "Set scene scissor");
             for (const auto& batch : mesh_batches) {
                 auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
                 auto& geometry = found->second;
@@ -511,9 +560,13 @@ struct Renderer::State {
             };
             if (lines_only) {
                 draw_batches(scene_depth, 2);
+                draw_grid(frame, true);
                 draw_batches(frame.view.hidden_lines ? visible_lines : all_lines, 1);
-            } else draw_batches(scene, 0);
-        }
+            } else {
+                draw_batches(scene, 0);
+                draw_grid(frame, true);
+            }
+        } else if (has_viewport) draw_grid(frame, false);
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
             require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
@@ -627,9 +680,9 @@ Result<Renderer> Renderer::open(HWND window, const Options &options) {
                 error(rhi::ErrorCode::unsupported, "Editor renderer requires an sRGB RGBA8 window target"));
         if (options.validation != rhi::Validation::disabled)
             gfxGetDevice(s.gfx)->QueryInterface(IID_PPV_ARGS(&s.debug));
-        s.prepare_pipeline(s.solid, "editor rectangles", shaders::ui_vs, shaders::solid_ps, false);
-        s.prepare_pipeline(s.coverage, "editor text coverage", shaders::ui_vs, shaders::coverage_ps, false);
-        s.prepare_pipeline(s.color_image, "editor color images", shaders::ui_vs, shaders::image_ps, false);
+        s.prepare_pipeline(s.solid, "editor rectangles", shaders::ui_vs, shaders::solid_ps, PipelineStyle::ui);
+        s.prepare_pipeline(s.coverage, "editor text coverage", shaders::ui_vs, shaders::coverage_ps, PipelineStyle::ui);
+        s.prepare_pipeline(s.color_image, "editor color images", shaders::ui_vs, shaders::image_ps, PipelineStyle::ui);
         s.sampler = gfxCreateSamplerState(s.gfx, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
         allocation(bool(s.sampler));
         s.check_debug();
@@ -658,6 +711,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.ui_quads = 0;
     s.stats.ui_instance_upload_bytes = 0;
     s.stats.scene_draw_calls = 0;
+    s.stats.viewport_draw_calls = 0;
     s.stats.coverage_upload_count = 0;
     s.stats.coverage_upload_bytes = 0;
     s.stats.image_upload_count = 0;
@@ -668,6 +722,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     bool encoding = false;
     try {
         validate(frame);
+        s.grid_camera=prepare_grid_camera(frame);
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
         s.mesh_batches.clear();

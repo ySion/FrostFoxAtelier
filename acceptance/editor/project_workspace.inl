@@ -53,7 +53,7 @@ void verify_project_workspace(editor::Project& project) {
         require(workspace.assets.selected() && workspace.assets.selected()->key=="builtin/sphere","Asset hit input did not select the resource.");
         const auto* viewport=surface.presented()->find(editor::control::viewport);
         require(viewport!=nullptr,"Scene viewport is missing.");
-        for (const auto control:{editor::control::scene_shading,editor::control::scene_edges,editor::control::scene_topology}) {
+        for (const auto control:{editor::control::scene_shading,editor::control::scene_edges,editor::control::scene_topology,editor::control::scene_guides}) {
             const auto* option=surface.presented()->find(control);
             require(option && option->kind==ui::ControlKind::combo && option->bounds.width>0 &&
                 option->bounds.x>=option->clip.left && option->bounds.x+option->bounds.width<=option->clip.right+.1f &&

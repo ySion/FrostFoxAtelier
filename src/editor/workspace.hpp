@@ -7,6 +7,7 @@
 #include "ui/session.hpp"
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
+#include "ui_language/component.hpp"
 
 namespace atelier::editor {
 namespace control {
@@ -22,6 +23,7 @@ inline constexpr ui::ControlKey shelf=730, shelf_tabs=731, shelf_create=732, she
 inline constexpr ui::ControlKey scene_content=640;
 inline constexpr ui::ControlKey scene_shading=646, scene_edges=647, scene_topology=648, scene_display_bar=649;
 inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_first=767;
+inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
@@ -66,11 +68,16 @@ struct Workspace {
     Result<void> select_tree(Session&,ui::ControlKey);
     bool command_enabled(Command,const Session&) const;
     bool apply_view(const ui::Action&);
-    renderer::ViewSettings view{.shading=renderer::Shading::matcap};
+    Result<bool> apply_parameter(const ui::Action&);
+    std::string_view parameter_error() const noexcept { return parameter_error_; }
+    std::optional<ui_language::Statistics> parameter_statistics() const noexcept {
+        return parameter_instance_?std::optional{parameter_instance_->statistics()}:std::nullopt;
+    }
+    renderer::ViewSettings view{.shading=renderer::Shading::matcap,
+        .background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true};
     ui::ControlKey shelf_page{control::shelf_create};
     AssetBrowser assets;
     bool project_open{};
-    bool position_expanded{true};
     ui::ControlKey parameter_page{control::parameter_transform};
     bool menu_bar_collapsed{}, shelf_collapsed{};
     ControlWorkbench workbench;
@@ -87,6 +94,10 @@ struct Workspace {
     ui::ControlKey reset_control(ObjectId) const noexcept;
     ui::ControlKey name_control(ObjectId) const noexcept;
 private:
+    std::shared_ptr<ui_language::Component> parameter_component_;
+    std::unique_ptr<ui_language::Instance> parameter_instance_;
+    std::string parameter_error_;
+    ui::ControlKey parameter_error_key_{};
     std::vector<Binding> bindings_;
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};

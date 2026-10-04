@@ -20,7 +20,7 @@ struct CollapsibleBar {
 // The host owns the expanded height, body layout, state and activation command.
 float append_collapsible_bar(std::vector<Control>&, const CollapsibleBar&);
 // Slider endpoints are a navigation range; the number retains its legal range.
-struct SliderRange { ControlKey key{}; double minimum{}, maximum{1}; };
+struct SliderRange { ControlKey key{}; double minimum{}, maximum{1}; bool operator==(const SliderRange&) const = default; };
 // A scalar/vector row is a composition of ordinary controls. All keys belong
 // to the caller; field keys remain stable when the row wraps or is regrouped.
 struct NumberField {
@@ -30,6 +30,7 @@ struct NumberField {
     double drag_step{.01}, fine_step{.001};
     VectorAxis axis{VectorAxis::none};
     std::optional<SliderRange> slider{};
+    bool operator==(const NumberField&) const = default;
 };
 struct ParameterRow {
     ControlKey key{}, label_key{}, body_key{}, group_key{}, parent{};

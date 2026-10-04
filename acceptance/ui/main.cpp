@@ -301,6 +301,206 @@ void styled_baseline_placement() {
             "removing baseline context failed to restore centered control text");
     }
 }
+void prepare_current(Consumer& consumer,bool publish=true) {
+    consumer.frame=accepted(consumer.ui.prepare());
+    if (publish) require(consumer.ui.accept(consumer.frame),"updated candidate rejected");
+}
+void persistent_control_updates() {
+    Consumer c;
+    ui::Control parent; parent.key=1; parent.layout=ui_layout::NodeInput::column();
+    parent.layout.width=ui_layout::Axis::fixed(280);
+    c.controls.push_back(parent);
+    for (std::uint64_t id=2;id<=33;++id) {
+        auto label=leaf(id,ui::ControlKind::label,0,L"Persistent label"); label.parent=1;
+        label.layout.width=label.layout.height=ui_layout::Axis::content();
+        c.controls.push_back(std::move(label));
+    }
+    c.prepare(); const auto initial=c.ui.statistics(); const auto held=c.frame;
+    require(initial.controls_created==33 && initial.layout_nodes_created==33,"static nodes were not created once");
+    const auto coverage=first_text(*held).coverage;
+    const auto pixels=coverage->pixels;
+    c.controls[1].style.foreground=ui::Color{.9f,.2f,.1f,1};
+    auto reply=accepted(c.ui.update_controls(std::span(&c.controls[1],1)));
+    require(reply.redraw && reply.effects.empty(),"paint patch did not request only redraw");
+    prepare_current(c);
+    const auto color=c.ui.statistics();
+    require(color.controls_updated==initial.controls_updated+1 && color.controls_created==initial.controls_created &&
+        color.layout_nodes_created==initial.layout_nodes_created && color.layout_syncs==initial.layout_syncs &&
+        color.layout.node_visits==initial.layout.node_visits && color.measure_calls==initial.measure_calls &&
+        color.rasterizations==initial.rasterizations,"single color patch synchronized or remeasured layout");
+    require(first_text(*c.frame).coverage==coverage && coverage->pixels==pixels &&
+        c.frame->find(2)->incarnation==held->find(2)->incarnation && c.frame->find(33)->incarnation==held->find(33)->incarnation,
+        "paint patch changed identity or old pixels");
+    c.controls[0].style.foreground=ui::Color{.1f,.8f,.2f,1};
+    accepted(c.ui.update_controls(std::span(&c.controls[0],1))); prepare_current(c);
+    const auto inherited=c.ui.statistics();
+    require(c.frame->find(3)->style->foreground==*c.controls[0].style.foreground &&
+        inherited.layout_syncs==color.layout_syncs && inherited.layout.node_visits==color.layout.node_visits &&
+        inherited.measure_calls==color.measure_calls && inherited.rasterizations==color.rasterizations,
+        "inherited color invalidated geometry or failed to reach descendants");
+    c.controls[1].text=L"Only this natural-size label changes its real measured width.";
+    accepted(c.ui.update_controls(std::span(&c.controls[1],1))); prepare_current(c);
+    const auto text=c.ui.statistics();
+    require(text.controls_updated==inherited.controls_updated+1 && text.layout_syncs==inherited.layout_syncs+1 &&
+        text.measure_calls>inherited.measure_calls && text.layout.node_visits>inherited.layout.node_visits &&
+        text.layout_nodes_created==initial.layout_nodes_created,"text patch did not synchronize just its measured control");
+    const auto before_noop=c.frame->controls_revision;
+    accepted(c.ui.update_controls(std::span(&c.controls[1],1))); prepare_current(c);
+    const auto noop=c.ui.statistics();
+    require(c.frame->controls_revision==before_noop && noop.control_batches==text.control_batches &&
+        noop.layout_syncs==text.layout_syncs && noop.layout.node_visits==text.layout.node_visits && noop.measure_calls==text.measure_calls,
+        "identical sparse patch performed work");
+    c.controls[0].style.font_size=20;
+    accepted(c.ui.update_controls(std::span(&c.controls[0],1))); prepare_current(c);
+    const auto font=c.ui.statistics();
+    require(c.frame->find(3)->style->font.size==20 && font.layout_syncs>noop.layout_syncs+1 &&
+        font.measure_calls>noop.measure_calls && held->find(3)->style->font.size!=20,
+        "inherited font did not invalidate necessary descendants or changed old frame");
+    std::printf("UI sparse update counters: nodes=33, color_control_updates=%llu, color_layout_syncs=%llu, color_layout_visits=%llu, color_measure_calls=%llu, color_rasterizations=%llu, text_layout_syncs=%llu\n",
+        static_cast<unsigned long long>(color.controls_updated-initial.controls_updated),
+        static_cast<unsigned long long>(color.layout_syncs-initial.layout_syncs),
+        static_cast<unsigned long long>(color.layout.node_visits-initial.layout.node_visits),
+        static_cast<unsigned long long>(color.measure_calls-initial.measure_calls),
+        static_cast<unsigned long long>(color.rasterizations-initial.rasterizations),
+        static_cast<unsigned long long>(text.layout_syncs-inherited.layout_syncs));
+}
+void control_batch_validation() {
+    Consumer c;
+    c.controls={leaf(1,ui::ControlKind::number,10),leaf(2,ui::ControlKind::button,70,L"Original")};
+    c.controls[0].value=2; c.controls[1].layout.width=ui_layout::Axis::content();
+    c.prepare(); c.click(1);
+    c.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"9"}});
+    prepare_current(c);
+    const auto before=c.ui.statistics(); const auto old=c.frame; const auto token=c.ui.text_input()->token;
+    auto button=c.controls[1]; button.text=L"A much longer replacement that must not be committed";
+    auto invalid=c.controls[0]; invalid.value=invalid.maximum+1;
+    const std::array bad{button,invalid};
+    require(!c.ui.update_controls(bad),"invalid sparse batch accepted");
+    require(!c.ui.set_controls(bad),"invalid full batch accepted");
+    const std::array duplicate{c.controls[0],c.controls[0]};
+    require(!c.ui.update_controls(duplicate),"duplicate sparse key accepted");
+    auto changed=c.controls[0]; changed.key=999;
+    require(!c.ui.update_controls(std::span(&changed,1)),"missing sparse key created a node");
+    changed=c.controls[0]; changed.parent=2;
+    require(!c.ui.update_controls(std::span(&changed,1)),"sparse update changed parent");
+    changed=c.controls[0]; changed.kind=ui::ControlKind::text_edit;
+    require(!c.ui.update_controls(std::span(&changed,1)),"sparse update changed kind");
+    changed=c.controls[0]; changed.context_target=2;
+    require(!c.ui.update_controls(std::span(&changed,1)),"sparse update changed binding reference");
+    prepare_current(c);
+    require(c.frame->controls_revision==old->controls_revision && c.ui.text_input()->token==token &&
+        c.frame->find(2)->bounds.width==old->find(2)->bounds.width && c.ui.statistics().controls_updated==before.controls_updated,
+        "rejected batch changed descriptors, draft or revision");
+    c.controls[0].value=77;
+    accepted(c.ui.update_controls(std::span(&c.controls[0],1))); prepare_current(c);
+    require(c.frame->find_text(1)->paragraph->matches(L"9"),"authoritative projection overwrote active draft");
+    const auto committed=actions_of(key(c.ui,ui::Key::enter));
+    require(committed.size()==1 && committed[0].kind==ui::ActionKind::edit_commit && number_value(committed[0])==9,
+        "patch changed the active edit commit");
+    c.controls[0].value=7;
+    accepted(c.ui.update_controls(std::span(&c.controls[0],1))); prepare_current(c);
+    require(c.frame->find_text(1)->paragraph->matches(L"7"),"passive draft did not follow authoritative patch");
+}
+void control_update_cleanup() {
+    Consumer c;
+    ui::Control parent; parent.key=1; parent.layout=ui_layout::NodeInput::column();
+    auto number=leaf(2,ui::ControlKind::number,0); number.parent=1; number.value=2;
+    c.controls={parent,number}; c.prepare(); c.click(2);
+    c.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"9"}});
+    const auto token=c.ui.text_input()->token;
+    c.ui.input({.kind=ui::EventKind::composition,.data=ui::CompositionEvent{ui::CompositionKind::start,501,token,{},{}}});
+    c.ui.input({.kind=ui::EventKind::composition,.data=ui::CompositionEvent{ui::CompositionKind::update,501,token,{},ui::Preedit{L"拼",1,{}}}});
+    c.controls[0].enabled=false;
+    const auto disabled=accepted(c.ui.update_controls(std::span(&c.controls[0],1)));
+    const auto cancelled=actions_of(disabled);
+    bool ime_cancel=false;
+    for (const auto& effect:disabled.effects) if (const auto* platform=std::get_if<ui::PlatformRequest>(&effect))
+        if (const auto* ime=std::get_if<ui::ImeRequest>(platform)) ime_cancel|=ime->kind==ui::ImeKind::cancel && ime->composition_id==501;
+    require(ime_cancel && cancelled.size()==1 && cancelled[0].kind==ui::ActionKind::edit_cancel &&
+        number_value(cancelled[0])==2 && c.ui.focused_control()==0 && !c.ui.text_input(),
+        "ancestor disable did not cancel edit and IME through the shared path");
+    c.controls[0].enabled=true;
+    accepted(c.ui.update_controls(std::span(&c.controls[0],1))); prepare_current(c);
+    const auto bounds=c.frame->find(2)->bounds;
+    c.ui.input({.kind=ui::EventKind::pointer_down,.x=bounds.x+20,.y=bounds.y+10});
+    c.ui.input({.kind=ui::EventKind::pointer_move,.x=bounds.x+70,.y=bounds.y+10});
+    c.controls[0].enabled=false;
+    const auto released=accepted(c.ui.update_controls(std::span(&c.controls[0],1)));
+    require(released.capture==ui::Capture::release && actions_of(released).size()==1 &&
+        actions_of(released)[0].kind==ui::ActionKind::edit_cancel,"ancestor patch retained an active capture");
+    c.controls[0].enabled=true;
+    accepted(c.ui.update_controls(std::span(&c.controls[0],1))); prepare_current(c); c.click(2);
+    c.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"8"}});
+    const auto held=c.frame;
+    c.controls.pop_back();
+    const auto removed=accepted(c.ui.set_controls(c.controls));
+    const auto old_hit=c.ui.input({.kind=ui::EventKind::pointer_down,.x=bounds.x+20,.y=bounds.y+10});
+    require(actions_of(removed).size()==1 && actions_of(removed)[0].kind==ui::ActionKind::edit_cancel &&
+        old_hit.capture!=ui::Capture::acquire && actions_of(old_hit).empty() && c.ui.focused_control()!=2 && held->find(2),
+        "full removal diverged from sparse cleanup or old frame lost its resource");
+
+    Consumer menu;
+    auto owner=leaf(1,ui::ControlKind::combo,10,L"Owner");
+    ui::Control popup; popup.key=2; popup.kind=ui::ControlKind::popup; popup.popup_owner=1;
+    popup.layout=ui_layout::NodeInput::column(); popup.layout.width=ui_layout::Axis::fixed(180); popup.layout.offset_y=60;
+    auto item=leaf(3,ui::ControlKind::menu_item,0,L"Item"); item.parent=2;
+    menu.controls={owner,popup,item}; menu.prepare();
+    menu.controls[0].enabled=false;
+    auto bad=item; bad.role=static_cast<ui::Role>(999);
+    const std::array invalid{menu.controls[0],bad};
+    require(!menu.ui.update_controls(invalid) && menu.ui.has_popup(),"rejected batch dismissed an owned popup");
+    const auto dismissed=actions_of(accepted(menu.ui.update_controls(std::span(&menu.controls[0],1))));
+    require(dismissed.size()==1 && dismissed[0].kind==ui::ActionKind::dismiss && dismissed[0].key==2,
+        "owner disable did not dismiss its popup");
+}
+void control_candidate_revision() {
+    Consumer c; c.controls={leaf(1,ui::ControlKind::button,10,L"Button")}; c.prepare();
+    const auto held=c.frame; const auto pending=accepted(c.ui.prepare());
+    c.controls[0].style.foreground=ui::Color{.8f,.1f,.2f,1};
+    accepted(c.ui.update_controls(c.controls));
+    require(!c.ui.accept(pending) && c.ui.presented()==held,"descriptor change accepted a stale candidate");
+    prepare_current(c);
+    require(c.frame->find(1)->incarnation==held->find(1)->incarnation,"paint change replaced incarnation");
+    const auto style_pending=accepted(c.ui.prepare());
+    auto style=c.ui.style(); style.palette.text={.1f,.8f,.2f,1}; accepted(c.ui.set_style(style));
+    require(!c.ui.accept(style_pending),"theme change accepted a stale candidate"); prepare_current(c);
+    const auto last_good=c.frame;
+    c.controls[0].layout.width=ui_layout::Axis::fixed(-1);
+    accepted(c.ui.update_controls(c.controls));
+    require(!c.ui.prepare() && c.ui.presented()==last_good,"failed prepare replaced the accepted frame");
+    require(!c.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).consumed,
+        "failed publication routed input through the pending description");
+    c.controls[0].layout.width=ui_layout::Axis::fixed(180);
+    accepted(c.ui.update_controls(c.controls)); prepare_current(c,false);
+    require(!c.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).consumed,
+        "unaccepted recovery re-enabled input");
+    require(c.ui.accept(c.frame) && actions_of(c.click(1)).size()==1,"accepted recovery did not restore input");
+    const auto previous=c.frame;
+    const auto publication=c.ui.statistics().layout.publications;
+    c.controls[0].layout.offset_x=2e8f;
+    accepted(c.ui.update_controls(c.controls));
+    require(!c.ui.prepare() && c.ui.statistics().layout.publications>publication && c.ui.presented()==previous,
+        "failure after geometry publication replaced the complete UI frame");
+    require(!c.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).consumed,
+        "late UI preparation failure allowed old geometry to route pending input");
+    c.controls[0].layout.offset_x=10;
+    accepted(c.ui.update_controls(c.controls)); prepare_current(c);
+    require(actions_of(c.click(1)).size()==1,"late preparation failure did not recover");
+    const auto before_suspend=c.frame;
+    const auto pending_before_suspend=accepted(c.ui.prepare());
+    accepted(c.ui.set_surface({{0,0},1,1}));
+    require(!c.ui.prepare(),"suspended surface prepared a frame");
+    // Resume the same coordinate mapping, without changing descriptors or theme.
+    accepted(c.ui.set_surface({{640,480},1,1}));
+    require(!c.ui.accept(before_suspend) && !c.ui.accept(pending_before_suspend),
+        "pre-failure frame bypassed the recovery boundary");
+    prepare_current(c,false);
+    require(!c.ui.accept(pending_before_suspend) &&
+        !c.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).consumed,
+        "unaccepted recovery allowed a pre-failure frame to restore input");
+    require(c.ui.accept(c.frame) && c.ui.accept(c.frame) && actions_of(c.click(1)).size()==1,
+        "fresh recovery or repeated acceptance failed");
+}
 }
 int main() {
     UVersionInfo icu{},unicode{}; u_getVersion(icu); u_getUnicodeVersion(unicode);
@@ -313,7 +513,9 @@ int main() {
         {"styled_baseline_placement",styled_baseline_placement},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
         {"unicode_visual_editing",unicode_visual_editing},{"clipboard_roundtrips",clipboard_roundtrips},
         {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor},
-        {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets},{"shared_tree_view",shared_tree_view}};
+        {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets},{"shared_tree_view",shared_tree_view},
+        {"persistent_control_updates",persistent_control_updates},{"control_batch_validation",control_batch_validation},
+        {"control_update_cleanup",control_update_cleanup},{"control_candidate_revision",control_candidate_revision}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;

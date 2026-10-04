@@ -2,6 +2,7 @@
 #include "geometry/mesh.hpp"
 #include <string_view>
 #include <string>
+#include <filesystem>
 
 namespace atelier::editor {
 // Resolved resource data shared by engine and project catalogs. Keys identify
@@ -13,4 +14,5 @@ struct MeshAsset {
 };
 std::span<const MeshAsset> mesh_assets();
 const MeshAsset* mesh_asset(std::string_view key);
+std::filesystem::path asset_directory();
 }

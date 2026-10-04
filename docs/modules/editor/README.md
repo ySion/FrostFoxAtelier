@@ -5,7 +5,7 @@
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
 模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
-UI 作者层的后续方向见[声明式 UI 方案](declarative-ui-proposal.md)：类 UXML 标记、现有 SS 与自有语言共享当前构造和事务链。该方案已归档，UI 构造接口及绑定接线尚未实施。
+UI 作者层正在迁移到[引擎原生声明式 UI](declarative-ui-proposal.md)：真实 Position 区由 `position.ui.source` 定义，经现有 Source/JIT 创建持久实例并更新绑定，样式和字段编辑继续使用 SS 与原编辑事务。其余工作区面板仍使用现有 C++ 描述；当前实现与验收边界见该文档。
 
 ## 工程与文件
 
@@ -111,7 +111,7 @@ Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单
 
 弹出窗口基于锚点显示器的工作区定位，可超出编辑器边界；下拉空间不足时向上翻转，超宽/超高按可用空间限制并滚动。主窗口移动、尺寸/DPI 改变、失焦、系统取消或捕获丢失关闭菜单；关闭编辑器时先关闭弹出窗口的 GPU 资源，再销毁 HWND。它不创建第二套字段编辑或场景历史。
 
-当前 renderer/RHI 的所有权仍是一窗口一上下文，菜单宿主首次使用时建立并在后续菜单之间复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。跨窗口共享 GPU 设备和纹理缓存尚未实现；多显示器真实 DPI 迁移需要额外设备验证。现阶段只有单级菜单，未实现级联子菜单。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
+当前 renderer/RHI 的所有权仍是一窗口一上下文，菜单宿主首次使用时建立并在后续菜单之间复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。跨窗口共享 GPU 设备和纹理缓存尚未实现；多显示器真实 DPI 迁移需要额外设备验证。级联子菜单复用保留的原生菜单窗口，详见下方[页签菜单与弹窗资源](#页签菜单与弹窗资源)。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
 
 主窗口统一消费线程消息队列，每次分发后处理自身事件记录；弹出窗口只处理已由该消息泵或同步回调排入的自身记录和回调错误，业务消费者始终在 WndProc 返回后执行。
 

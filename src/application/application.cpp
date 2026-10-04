@@ -49,22 +49,15 @@ ui::PixelExtent client_extent(HWND window) {
     RECT bounds{}; GetClientRect(window, &bounds);
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
-std::filesystem::path editor_directory() {
-    std::wstring executable(32768,L'\0');
-    const auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
-    if (!length || length>=executable.size()) throw std::runtime_error("Cannot locate editor style assets");
-    executable.resize(length);
-    return std::filesystem::path(executable).parent_path();
-}
 std::vector<std::wstring> editor_fonts() {
-    const auto directory=editor_directory()/"fonts";
+    const auto directory=editor::asset_directory()/"fonts";
     std::vector<std::wstring> paths;
     for (const auto* file:{L"SarasaUiSC-Regular.ttf",L"SarasaUiSC-SemiBold.ttf",
                           L"SourceCodePro-Regular.otf",L"SourceCodePro-Bold.otf"}) paths.push_back((directory/file).wstring());
     return paths;
 }
 std::shared_ptr<const ui::StyleSheet> editor_styles() {
-    const auto path=editor_directory()/"editor.ss";
+    const auto path=editor::asset_directory()/"editor.ss";
     std::ifstream file(path,std::ios::binary|std::ios::ate);
     if (!file) throw std::runtime_error("Cannot open editor.ss beside the executable");
     const auto size=file.tellg();
@@ -140,6 +133,9 @@ Result<void> Application::action(const ui::Action& event) {
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) return {};
     if (workspace_.apply_view(event)) return {};
+    const auto parameter_event=workspace_.apply_parameter(event);
+    if (!parameter_event) return std::unexpected(parameter_event.error());
+    if (*parameter_event) return {};
     if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
         const auto selected=workspace_.assets.selected();
         if (!selected) return {};
@@ -148,11 +144,6 @@ Result<void> Application::action(const ui::Action& event) {
         if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
         else if (selected->kind==editor::AssetKind::scene) return open_scene(selected->path);
         return {};
-    }
-    if (event.key==position_fold && event.kind==ui::ActionKind::activate) {
-        const auto* expanded=std::get_if<bool>(&event.value);
-        if (!expanded) return invalid();
-        workspace_.position_expanded=*expanded; return {};
     }
     if ((event.key==parameter_transform || event.key==parameter_components) && event.kind==ui::ActionKind::activate) {
         workspace_.parameter_page=event.key; return {};
