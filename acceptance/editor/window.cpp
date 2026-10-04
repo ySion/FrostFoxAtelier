@@ -709,7 +709,8 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     const auto foreground_deadline=GetTickCount64()+20000;
     while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<foreground_deadline)
         require(app.step(),"Editor closed while waiting for initial foreground.");
-    require_input_focus(app);
+    require(GetFocus()==app.window() && GetForegroundWindow()==app.window(),
+        "Initial foreground activation was not granted within 20 seconds; no synthetic input was sent.");
     // SendMessage gestures deliberately keep the OS cursor off the client.
     // Capture/show can synthesize movement there; parking on the title bar
     // prevents those messages from switching a menu to an unrelated heading.
