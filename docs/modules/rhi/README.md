@@ -2,7 +2,7 @@
 
 当前实现位于 [src/rhi](../../../src/rhi/rhi.hpp)，采用固定 gfx 及可重放补丁。资源、反射绑定、descriptor、barrier、命令与退休继续由 gfx 负责；`atelier::rhi` 只承担硬件/验证门禁、execution owner、管线准备与生命周期。
 
-这是 Compute、Mesh、Vertex 三类管线的真实离屏实现，不是旧 SDK clear/copy 探针，也不是完整 renderer。现行行为以 [contract.md](contract.md) 为准，逐项运行证据以 [acceptance.md](acceptance.md) 为准。
+Compute、Mesh、Vertex 三类管线共用这一执行域，支持离屏执行和现有 Renderer 的窗口呈现。现行行为以 [contract.md](contract.md) 为准，逐项运行证据以 [acceptance.md](acceptance.md) 为准。
 
 2026-09-27 的[模块审计](audit-2026-09-27.md)所列九项缺陷已修正，新增间接大常量、range 复制及输入边界回归通过 dev/release；生命周期观察与覆盖边界见[验收证据](acceptance.md#审计修正的生命周期观察)。
 
@@ -36,7 +36,7 @@ cmake --build --preset release --target rhi_acceptance
 
 验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
 
-本轮已接入单窗口 Present/resize、显式尺寸深度与最终帧结果，并通过 dev/release 的[renderer验收](../renderer/acceptance.md)及[编辑器窗口链](../editor/README.md)。现行呈现和失败语义见[renderer合同](../renderer/contract.md)。
-尚未实现或未验收：通用RDG/完整renderer、业务语言绑定、并发RHI、多queue、透明设备恢复、WARP/其他GPU支持矩阵、HDR/多窗口、ray tracing与性能基线；驱动故障及原生DXGI遮挡状态未动态注入。
+现有 Renderer 已接入 Present/resize、显式尺寸深度与最终帧结果，并通过 dev/release 的[renderer验收](../renderer/acceptance.md)及[编辑器窗口链](../editor/README.md)。主窗口与原生弹出窗口分别持有自己的 Renderer/Context；现行呈现和失败语义见[renderer合同](../renderer/contract.md)。
+尚未实现或未验收：通用 RDG、业务 Texture 语言接线、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、HDR、同一执行域承载多个窗口、ray tracing 与性能基线；驱动故障及原生 DXGI 遮挡状态未动态注入。
 
-共享业务图片接线仍是后续备选，见[资源连接提案](../resources/design-proposal.md)。新增类型、原生访问接口和跨模块图片消费者尚未实现，不作为首个编辑器的前置。
+共享 Runtime Texture 类型及跨模块图片消费者仍未接通，见[资源连接提案](../resources/design-proposal.md)。Runtime 已提供受保护的 `with_native` 载荷访问；提案中的历史缺口清单须对照[当前 Runtime 接口](../../../src/runtime/runtime.hpp)。现有 UI 的不可变 CPU 图片和 Renderer 上传/退休路径可继续复用，声明式 UI 前端无需等待这条业务资源接线。
