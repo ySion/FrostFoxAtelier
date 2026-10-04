@@ -19,6 +19,7 @@
 - `shader_model` 是至多 11 字节的十进制 `major_minor` 后缀，格式与长度先于 gfx 编译检查；具体版本支持由 DXC 判断。文件模式下显式空 `file_path` 返回 invalid_argument，空指针仍采用 gfx 的默认当前目录。
 - 设置 `file_name` 选择文件模式，`source` 不参与该模式。文件扩展名沿 gfx：`.comp`、`.vert`、`.geom`、`.frag`、`.task`、`.mesh`。可选文件不存在允许继续；存在的文件必须成功编译，主阶段缺失不能形成 Ready。
 - 补丁把编译与反射失败贯通到 kernel 准备，拒绝缺失的主字节码；宿主最终同时检查有效 kernel、root signature 和 PSO。不能因其他阶段生成了 PSO 就忽略所请求阶段的错误。
+- 全局根签名在收集所有 shader stage 后统一计算 [64 DWORD 预算](https://learn.microsoft.com/en-us/windows/win32/direct3d12/root-signature-limits)：根常量按实际 DWORD 数计费，当前反射路径的每个资源描述符表计 1。超限时优先把最大的可回退 `$Globals` 块转为现有 CBV 描述符表，保留阶段可见性、寄存器和各变量的反射偏移；参数设置仍走同一 `gfxProgramSetParameter`，常量数据使用既有常量池及帧槽寿命。预算回退不迁移含 `gfx_DispatchID` 的根常量块，以保留多次间接 dispatch 的直接更新语义；没有可回退块仍超限时准备失败。局部 ray tracing 根签名不使用此全局预算策略。
 - 先 prepare 新候选，成功后移动赋给旧 Pipeline；失败不改变旧 Pipeline。新 Program 不隐式继承旧参数，消费者重新绑定。旧资源沿 gfx 的延迟退休机制处理，不建立第二套版本/引用账。
 - Program/Kernel 返回值都是借用，受 Pipeline 与执行域寿命约束，不是跨设备稳定身份。失败执行域不再返回可用的借用句柄，但 Pipeline 仍须释放后才能 close。
 

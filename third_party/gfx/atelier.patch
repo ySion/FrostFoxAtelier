@@ -857,6 +857,47 @@
                   ? D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE
                   : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
      }
+@@ -6797,6 +6944,40 @@
++        // Root arguments share one 64-DWORD budget across all shader stages.
++        // Keep resource tables in that total and spill only as many globals as
++        // needed through the existing reflected CBV/constant-pool binding path.
++        size_t root_cost = 0;
++        for(auto const &parameter : global_root_signature_parameters.kernel_parameters)
++            root_cost += parameter.type_ == Kernel::Parameter::kType_Constants
++                ? parameter.variable_size_ / sizeof(uint32_t) : 1;
++        while(root_cost > 64)
++        {
++            size_t largest = global_root_signature_parameters.kernel_parameters.size();
++            size_t largest_cost = 1;
++            for(size_t i = 0; i < global_root_signature_parameters.kernel_parameters.size(); ++i)
++            {
++                auto const &parameter = global_root_signature_parameters.kernel_parameters[i];
++                if(parameter.type_ != Kernel::Parameter::kType_Constants) continue;
++                // Multi-dispatch patches this value directly in the root arguments.
++                bool dispatch_id = false;
++                for(uint32_t j = 0; j < parameter.variable_count_; ++j)
++                    dispatch_id |= parameter.variables_[j].parameter_id_ == Hash("gfx_DispatchID");
++                size_t const cost = parameter.variable_size_ / sizeof(uint32_t);
++                if(!dispatch_id && cost > largest_cost)
++                {
++                    largest = i;
++                    largest_cost = cost;
++                }
++            }
++            if(largest == global_root_signature_parameters.kernel_parameters.size())
++                return GFX_SET_ERROR(kGfxResult_InvalidOperation,
++                    "Global root signature cannot fit 64 DWORDs after constant-buffer fallback");
++            auto &parameter = global_root_signature_parameters.kernel_parameters[largest];
++            parameter.type_ = Kernel::Parameter::kType_ConstantBuffer;
++            root_cost -= largest_cost - 1;  // A CBV descriptor table costs one DWORD.
++        }
++
+         auto finalize_root_parameters = [](RootSignatureParameters &root_signature_parameters)
+         {
+             for(size_t i = 0; i < root_signature_parameters.root_parameters.size(); ++i)
+             {
+                 Kernel::Parameter const &kernel_parameter = root_signature_parameters.kernel_parameters[i];
+                 if(kernel_parameter.type_ == Kernel::Parameter::kType_Constants)
 @@ -7218,9 +7365,11 @@
                  render_width = GFX_MIN(render_width, texture_width); render_height = GFX_MIN(render_height, texture_height);
                  transitionResource(gfx_texture, D3D12_RESOURCE_STATE_DEPTH_WRITE);
