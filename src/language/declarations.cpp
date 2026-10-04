@@ -11,7 +11,7 @@ TypeName detail::parse_type_name(Tokens& tokens) {
         if (++result.array_depth > 128) reject(tokens.token_.position, "Array type nesting exceeds the compiler limit of 128.");
         tokens.expect("<");
     }
-    if (tokens.token_.text == "float" || tokens.token_.text == "double" || tokens.token_.text == "int" || tokens.token_.text == "uint")
+    if (tokens.token_.text == "bool" || tokens.token_.text == "float" || tokens.token_.text == "double" || tokens.token_.text == "int" || tokens.token_.text == "uint")
         result.name = tokens.consume().text;
     else result.name = tokens.qualified_identifier();
     for (std::uint32_t i = 0; i < result.array_depth; ++i) tokens.expect(">");
@@ -79,6 +79,15 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
                 if (std::ranges::any_of(result, [&](const auto& other) { return other.name == declaration.name; }))
                     reject(declaration.position, "Duplicate source type name.");
                 result.push_back(std::move(declaration));
+                continue;
+            }
+            if (tokens.accept("const")) {
+                // Full typing and constant evaluation belong to the typed parser.
+                while (!tokens.accept(";")) {
+                    if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" || tokens.token_.text == "}")
+                        reject(tokens.token_.position, "Expected ';' to close a module constant.");
+                    tokens.consume();
+                }
                 continue;
             }
             // Function syntax and bodies are checked by the full typed parser.

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <type_traits>
 #include <utility>
 
 namespace atelier::language {
@@ -18,16 +19,24 @@ bool reference_type(ValueType type) noexcept {
 }
 struct BinaryOperator { int precedence; Operation operation; bool comparison; };
 BinaryOperator binary_operator(std::string_view text) noexcept {
-    if (text == "==") return {2, Operation::equal, true};
-    if (text == "!=") return {2, Operation::not_equal, true};
-    if (text == "<") return {3, Operation::less, true};
-    if (text == "<=") return {3, Operation::less_equal, true};
-    if (text == ">") return {3, Operation::greater, true};
-    if (text == ">=") return {3, Operation::greater_equal, true};
-    if (text == "+") return {4, Operation::add, false};
-    if (text == "-") return {4, Operation::subtract, false};
-    if (text == "*") return {5, Operation::multiply, false};
-    if (text == "/") return {5, Operation::divide, false};
+    if (text == "||") return {1, Operation::logical_or, false};
+    if (text == "&&") return {2, Operation::logical_and, false};
+    if (text == "|") return {3, Operation::bitwise_or, false};
+    if (text == "^") return {4, Operation::bitwise_xor, false};
+    if (text == "&") return {5, Operation::bitwise_and, false};
+    if (text == "==") return {6, Operation::equal, true};
+    if (text == "!=") return {6, Operation::not_equal, true};
+    if (text == "<") return {7, Operation::less, true};
+    if (text == "<=") return {7, Operation::less_equal, true};
+    if (text == ">") return {7, Operation::greater, true};
+    if (text == ">=") return {7, Operation::greater_equal, true};
+    if (text == "<<") return {8, Operation::shift_left, false};
+    if (text == ">>") return {8, Operation::shift_right, false};
+    if (text == "+") return {9, Operation::add, false};
+    if (text == "-") return {9, Operation::subtract, false};
+    if (text == "*") return {10, Operation::multiply, false};
+    if (text == "/") return {10, Operation::divide, false};
+    if (text == "%") return {10, Operation::remainder, false};
     return {-1, Operation::add, false};
 }
 
@@ -53,6 +62,24 @@ public:
                 type_names.push_back(std::move(declaration.name));
                 continue;
             }
+            if (accept("const")) {
+                const auto position = token_.position;
+                const auto type = parameter_type();
+                if (!scalar(type)) reject(position, "Module constants require a scalar or enum type.");
+                const auto name = identifier();
+                if (math_reserved_name(name.text)) reject(name.position, "Module constants cannot replace built-in math names.");
+                if (std::ranges::any_of(constants_, [&](const auto& value) { return value.name == name.text; }))
+                    reject(name.position, "Duplicate module constant name.");
+                if (constants_.size() == 1024) reject(position, "A source module supports at most 1024 constants.");
+                expect("=");
+                constants_.push_back({std::string(name.text), type, name.position, lexer_, token_});
+                while (!accept(";")) {
+                    if (token_.kind == Token::Kind::end || token_.text == "{" || token_.text == "}")
+                        reject(token_.position, "Expected ';' to close a module constant.");
+                    consume();
+                }
+                continue;
+            }
             if (module_.functions.size() >= 1024) reject(token_.position, "A source module supports at most 1024 functions.");
             function_ = {};
             function_.position = token_.position;
@@ -75,6 +102,15 @@ public:
         for (const auto& function : module_.functions)
             if (std::ranges::find(type_names, function.function_name) != type_names.end())
                 reject(function.position, "A source function and type cannot have the same name.");
+        for (const auto& value : constants_) {
+            if (std::ranges::find(type_names, value.name) != type_names.end() ||
+                std::ranges::any_of(module_.functions, [&](const auto& function) { return function.function_name == value.name; }))
+                reject(value.position, "A module constant cannot share a name with a source type or function.");
+            for (const auto& function : module_.functions)
+                for (const auto& parameter : function.locals)
+                    if (parameter.name == value.name) reject(function.position, "Parameters cannot shadow a module constant.");
+        }
+        for (std::size_t i = 0; i < constants_.size(); ++i) resolve_constant(i);
         if (entry_name.empty() && module_.functions.size() != 1)
             reject({}, "A multi-function module requires an explicit host entry name.");
         bool found = entry_name.empty();
@@ -100,6 +136,10 @@ private:
         return type.kind == ValueType::record && type.type_index < environment_.values.size() ?
             environment_.values[type.type_index].math : math::Type{};
     }
+    bool plain_record(ValueType type) const noexcept {
+        return type.kind == ValueType::record && type.type_index < environment_.values.size() &&
+            (environment_.values[type.type_index].plain_value || bool(math_type(type)));
+    }
     static bool floating(ValueType type) noexcept {
         return type == ValueType::f32 || type == ValueType::f64;
     }
@@ -118,6 +158,7 @@ private:
         return name == "math" || math_named_type(name) != ValueType::void_value;
     }
     ValueType named_type(std::string_view name, SourcePosition position) const {
+        if (name == "bool") return ValueType::boolean;
         if (name == "float") return ValueType::f32;
         if (name == "double") return ValueType::f64;
         if (name == "uint") return ValueType::u32;
@@ -168,8 +209,9 @@ private:
     void signature() {
         function_.is_coroutine = accept("async");
         function_.result = accept("void") ? ValueType::void_value : result_type();
-        if (function_.is_coroutine && math_type(function_.result))
-            reject(function_.position, "async math results are not supported by the task result contract.");
+        if (function_.is_coroutine && aggregate(function_.result))
+            reject(function_.position, "async aggregate results are not supported by the task result contract.");
+        if (plain_record(function_.result) && !math_type(function_.result)) function_.uses_scoped_values = true;
         const auto name = identifier();
         if (math_reserved_name(name.text)) reject(name.position, "Source functions cannot replace math constructors or the math namespace.");
         function_.function_name = name.text;
@@ -185,8 +227,10 @@ private:
                 const auto passing = reference ? (read_only ? ParameterPassing::read_only : ParameterPassing::reference) : ParameterPassing::value;
                 if (function_.is_coroutine && reference) reject(position, "async parameters cannot borrow caller storage.");
                 if (aggregate(type)) {
-                    if (function_.is_coroutine && math_type(type)) reject(position, "async math parameters are not supported by the task argument contract.");
-                    if (!reference && !math_type(type)) reject(position, "Native values require a borrowed parameter; use Type& or const Type&.");
+                    if (function_.is_coroutine) reject(position, "async aggregate parameters are not supported by the task argument contract.");
+                    if (!reference && !plain_record(type)) reject(position, "Only plain records support value parameters; other native values require Type& or const Type&.");
+                    if (!reference && !math_type(type) && !environment_.values[type.type_index].can_own)
+                        reject(position, "Plain record value parameters require borrow-preserving copy and lifecycle operations.");
                     if (type.kind == ValueType::string && !read_only) reject(position, "String borrowing requires const String&.");
                     if (reference || !math_type(type)) function_.uses_scoped_values = true;
                 }
@@ -265,6 +309,10 @@ private:
                 const auto argument = expression();
                 const auto& parameter = parameters[arguments.size()];
                 same_type(argument, parameter.type);
+                if (parameter.passing == ParameterPassing::value && plain_record(parameter.type) &&
+                    !math_type(parameter.type) && !environment_.values[parameter.type.type_index].can_own)
+                    reject(function_.expressions[argument].position,
+                        "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
                 if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
                     reject(function_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
                 arguments.push_back(argument);
@@ -298,7 +346,7 @@ private:
         }
     }
     bool scalar(ValueType type) const {
-        return floating(type) || type == ValueType::u32 || type == ValueType::i32 ||
+        return type == ValueType::boolean || floating(type) || type == ValueType::u32 || type == ValueType::i32 ||
             (type.kind == ValueType::enumeration && type.type_index < environment_.enumerations.size());
     }
     bool supported_value(ValueType type) const {
@@ -306,10 +354,10 @@ private:
             environment_.values[type.type_index].kind == type.kind);
     }
     std::size_t value_size(ValueType type) const {
-        return aggregate(type) ? environment_.values[type.type_index].size : type == ValueType::f64 ? 8 : 4;
+        return aggregate(type) ? environment_.values[type.type_index].size : type == ValueType::boolean ? 1 : type == ValueType::f64 ? 8 : 4;
     }
     std::size_t value_alignment(ValueType type) const {
-        return aggregate(type) ? environment_.values[type.type_index].alignment : type == ValueType::f64 ? 8 : 4;
+        return aggregate(type) ? environment_.values[type.type_index].alignment : type == ValueType::boolean ? 1 : type == ValueType::f64 ? 8 : 4;
     }
     void validate_environment() const {
         validate_name(environment_.object_type_name, true);
@@ -386,10 +434,10 @@ private:
             if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
                 reject({}, "Host parameter list exceeds its index range.");
             for (const auto& parameter : method.parameters)
-                if (!supported_value(parameter.type) || (aggregate(parameter.type) && !math_type(parameter.type) && parameter.passing == ParameterPassing::value) || (parameter.passing != ParameterPassing::value &&
+                if (!supported_value(parameter.type) || (aggregate(parameter.type) && parameter.passing == ParameterPassing::value && !plain_record(parameter.type)) || (parameter.passing != ParameterPassing::value &&
                     parameter.passing != ParameterPassing::read_only && parameter.passing != ParameterPassing::reference))
                     reject({}, "Host method has an unsupported parameter type or passing mode.");
-            if (method.result != ValueType::void_value && !scalar(method.result) && !math_type(method.result))
+            if (method.result != ValueType::void_value && !scalar(method.result) && !plain_record(method.result))
                 reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.methods[j].name == method.name) reject({}, "Ambiguous host method binding.");
@@ -438,6 +486,8 @@ private:
     }
     void unused_name(const Token& name) const {
         if (math_reserved_name(name.text)) reject(name.position, "Locals cannot replace math constructors or the math namespace.");
+        for (const auto& value : constants_)
+            if (value.name == name.text) reject(name.position, "A module constant with this name is already visible; shadowing is not supported.");
         for (const auto index : visible_)
             if (function_.locals[index].name == name.text)
                 reject(name.position, "A local or parameter with this name is already visible; shadowing is not supported.");
@@ -455,7 +505,12 @@ private:
         const auto position = token_.position;
         const auto type = parameter_type();
         if (scalar(type) || math_type(type)) return type;
-        reject(position, "Function results require a scalar, enum or built-in math value type.");
+        if (plain_record(type)) {
+            if (!environment_.values[type.type_index].can_own)
+                reject(position, "Plain record results require borrow-preserving copy and lifecycle operations.");
+            return type;
+        }
+        reject(position, "Function results require a scalar, enum or plain record value type.");
     }
     ValueType parameter_type() {
         Depth guard(depth_, token_.position);
@@ -493,13 +548,14 @@ private:
     }
     bool owned_storage(NodeId id) const {
         const auto& node = function_.expressions[id];
-        if (node.kind == Expression::Kind::local) return node.value >= function_.parameters.size() && !function_.locals[node.value].read_only;
+        if (node.kind == Expression::Kind::local) return !function_.locals[node.value].read_only && (node.value >= function_.parameters.size() ||
+            function_.parameters[node.value].passing == ParameterPassing::value);
         if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index) return owned_storage(node.left);
         return false;
     }
     bool integer_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
-        if (node.type != ValueType::u32) return false;
+        if (node.type != ValueType::u32 || node.typed_constant) return false;
         if (node.kind == Expression::Kind::literal) return node.bits <= 2147483647u;
         return (node.kind == Expression::Kind::unary && integer_constant(node.left)) ||
             (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right));
@@ -519,6 +575,134 @@ private:
                 "Type mismatch; references require the same strong/weak form or null and cannot mix with scalars.");
         reject(function_.expressions[expression].position, "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
     }
+    static long double numeric_value(ValueType type, std::uint64_t bits) {
+        if (type == ValueType::f64) return std::bit_cast<double>(bits);
+        if (type == ValueType::f32) return std::bit_cast<float>(static_cast<std::uint32_t>(bits));
+        if (type == ValueType::i32) return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(bits));
+        return static_cast<std::uint32_t>(bits);
+    }
+    static std::uint64_t convert_constant(ValueType from, ValueType to, std::uint64_t bits, SourcePosition position) {
+        if (from == to) return bits;
+        auto value = numeric_value(from, bits);
+        if (to == ValueType::f32) return std::bit_cast<std::uint32_t>(static_cast<float>(value));
+        if (to == ValueType::f64) return std::bit_cast<std::uint64_t>(static_cast<double>(value));
+        value = std::trunc(value);
+        const auto minimum = to == ValueType::i32 ? -2147483648.0L : 0.0L;
+        const auto maximum = to == ValueType::i32 ? 2147483647.0L : 4294967295.0L;
+        if (!std::isfinite(value) || value < minimum || value > maximum)
+            reject(position, "Constant numeric conversion exceeds its integer destination range.");
+        return to == ValueType::i32 ? static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) : static_cast<std::uint32_t>(value);
+    }
+    template<class T>
+    static std::uint64_t fold_arithmetic(Operation operation, T left, T right, SourcePosition position) {
+        if (operation == Operation::equal) return left == right;
+        if (operation == Operation::not_equal) return left != right;
+        if (operation == Operation::less) return left < right;
+        if (operation == Operation::less_equal) return left <= right;
+        if (operation == Operation::greater) return left > right;
+        if (operation == Operation::greater_equal) return left >= right;
+        if constexpr (std::is_floating_point_v<T>) {
+            T result{};
+            switch (operation) {
+            case Operation::add: result = left + right; break;
+            case Operation::subtract: result = left - right; break;
+            case Operation::multiply: result = left * right; break;
+            case Operation::divide: result = left / right; break;
+            default: reject(position, "Unsupported constant floating operation.");
+            }
+            if constexpr (sizeof(T) == 8) return std::bit_cast<std::uint64_t>(result);
+            else return std::bit_cast<std::uint32_t>(result);
+        } else {
+            const auto a = static_cast<std::uint32_t>(left), b = static_cast<std::uint32_t>(right);
+            switch (operation) {
+            case Operation::add: return a + b;
+            case Operation::subtract: return a - b;
+            case Operation::multiply: return a * b;
+            case Operation::bitwise_and: return a & b;
+            case Operation::bitwise_or: return a | b;
+            case Operation::bitwise_xor: return a ^ b;
+            case Operation::divide:
+            case Operation::remainder:
+                if (right == 0) reject(position, "Constant integer division or remainder by zero.");
+                if constexpr (std::is_signed_v<T>)
+                    if (left == std::numeric_limits<std::int32_t>::min() && right == -1)
+                        reject(position, "Constant signed division or remainder overflows.");
+                return static_cast<std::uint32_t>(operation == Operation::divide ? left / right : left % right);
+            default: reject(position, "Unsupported constant integer operation.");
+            }
+        }
+    }
+    void validate_constant(NodeId id) const {
+        const auto& node = function_.expressions[id];
+        if (node.kind != Expression::Kind::literal && node.kind != Expression::Kind::unary &&
+            node.kind != Expression::Kind::binary && node.kind != Expression::Kind::scalar_cast)
+            reject(node.position, "Module constant initializers require compile-time pure scalar expressions.");
+        if (node.left != no_node) validate_constant(node.left);
+        if (node.right != no_node) validate_constant(node.right);
+    }
+    std::uint64_t fold_constant(NodeId id) const {
+        const auto& node = function_.expressions[id];
+        if (node.kind == Expression::Kind::literal) return node.bits;
+        const auto left = fold_constant(node.left);
+        const auto input = function_.expressions[node.left].type;
+        if (node.kind == Expression::Kind::scalar_cast) return convert_constant(input, node.type, left, node.position);
+        if (node.kind == Expression::Kind::unary) {
+            switch (node.operation) {
+            case Operation::positive: return left;
+            case Operation::logical_not: return !left;
+            case Operation::bitwise_not: return ~static_cast<std::uint32_t>(left);
+            case Operation::negate:
+                if (input == ValueType::f32) return std::bit_cast<std::uint32_t>(-std::bit_cast<float>(static_cast<std::uint32_t>(left)));
+                if (input == ValueType::f64) return std::bit_cast<std::uint64_t>(-std::bit_cast<double>(left));
+                return 0u - static_cast<std::uint32_t>(left);
+            default: reject(node.position, "Unsupported constant unary operation.");
+            }
+        }
+        if (node.operation == Operation::logical_and && !left) return 0;
+        if (node.operation == Operation::logical_or && left) return 1;
+        const auto right = fold_constant(node.right);
+        if (node.operation == Operation::logical_and || node.operation == Operation::logical_or) return right != 0;
+        if (node.operation == Operation::shift_left || node.operation == Operation::shift_right) {
+            const auto count_type = function_.expressions[node.right].type;
+            if (right > 31 || (count_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(right)) < 0))
+                reject(node.position, "Constant shift count is outside 0..31.");
+            const auto value = static_cast<std::uint32_t>(left), count = static_cast<std::uint32_t>(right);
+            if (node.operation == Operation::shift_left) return value << count;
+            if (input == ValueType::i32) return static_cast<std::uint32_t>(std::bit_cast<std::int32_t>(value) >> count);
+            return value >> count;
+        }
+        if (input == ValueType::f32) return fold_arithmetic(node.operation, std::bit_cast<float>(static_cast<std::uint32_t>(left)), std::bit_cast<float>(static_cast<std::uint32_t>(right)), node.position);
+        if (input == ValueType::f64) return fold_arithmetic(node.operation, std::bit_cast<double>(left), std::bit_cast<double>(right), node.position);
+        if (input == ValueType::i32) return fold_arithmetic(node.operation, std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(left)), std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(right)), node.position);
+        return fold_arithmetic(node.operation, static_cast<std::uint32_t>(left), static_cast<std::uint32_t>(right), node.position);
+    }
+    void resolve_constant(std::size_t index) {
+        auto& value = constants_[index];
+        if (value.state == Constant::State::complete) return;
+        if (value.state == Constant::State::active) reject(value.position, "Circular module constant dependency.");
+        value.state = Constant::State::active;
+        const auto saved_lexer = lexer_;
+        const auto saved_token = token_;
+        auto saved_function = std::move(function_);
+        auto saved_heights = std::move(expression_heights_);
+        auto saved_visible = std::move(visible_);
+        function_ = {};
+        expression_heights_.clear();
+        visible_.clear();
+        lexer_ = value.lexer;
+        token_ = value.token;
+        const auto initializer = expression();
+        same_type(initializer, value.type);
+        expect(";");
+        validate_constant(initializer);
+        value.bits = fold_constant(initializer);
+        value.state = Constant::State::complete;
+        lexer_ = saved_lexer;
+        token_ = saved_token;
+        function_ = std::move(saved_function);
+        expression_heights_ = std::move(saved_heights);
+        visible_ = std::move(saved_visible);
+    }
     NodeId block() {
         Depth guard(depth_, token_.position);
         Statement result{Statement::Kind::block, expect("{").position, no_node, no_node, no_node, no_node, {}};
@@ -532,17 +716,22 @@ private:
         visible_.resize(visible_before);
         return add(std::move(result));
     }
-    NodeId statement() {
-        Depth guard(depth_, token_.position);
+    bool starts_declaration() const {
+        return token_.text == "const" || token_.text == "bool" || token_.text == "float" || token_.text == "double" ||
+            token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration();
+    }
+    NodeId simple_statement(std::string_view terminator, bool allow_declaration = true) {
         const auto position = token_.position;
-        if (token_.text == "{") return block();
-        if (token_.text == "float" || token_.text == "double" || token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration()) {
+        if (starts_declaration()) {
+            if (!allow_declaration) reject(position, "A for step accepts assignment, call or an empty clause.");
+            const bool read_only = accept("const");
             const bool weak = accept("weak");
             auto type = parameter_type();
             if (weak) {
                 if (type != ValueType::strong_reference) reject(position, "weak requires an object type.");
                 type = ValueType::weak_reference;
             }
+            if (read_only && reference_type(type)) reject(position, "const object reference locals are not supported.");
             if (aggregate(type) && !math_type(type)) {
                 if (!environment_.values[type.type_index].can_own)
                     reject(position, "Owned locals require values with borrow-preserving copy and lifecycle operations.");
@@ -551,20 +740,40 @@ private:
             const auto name = identifier();
             unused_name(name);
             const auto initialized = accept("=");
+            if (read_only && !initialized) reject(token_.position, "const locals require an initializer.");
             if (!initialized && !reference_type(type) && !aggregate(type)) reject(token_.position, "Expected '='.");
             NodeId initializer = no_node;
             if (initialized) initializer = expression();
             else if (reference_type(type)) initializer = add(Expression{Expression::Kind::null_reference, ValueType::null_reference, name.position});
             if (initializer != no_node) same_type(initializer, type);
-            expect(";");
+            expect(terminator);
             const auto index = local(name, type);
+            function_.locals[index].read_only = read_only;
             return add(Statement{Statement::Kind::declare, position, index, initializer, no_node, no_node, {}});
         }
+        const auto target = expression();
+        if (accept("=")) {
+            if (!writable(target)) reject(position, "Assignment requires a writable local or field.");
+            const auto value = expression();
+            same_type(value, function_.expressions[target].type);
+            expect(terminator);
+            return add(Statement{Statement::Kind::assign, position, target, value, no_node, no_node, {}});
+        }
+        if (function_.expressions[target].kind != Expression::Kind::call && function_.expressions[target].kind != Expression::Kind::source_call && function_.expressions[target].kind != Expression::Kind::sequence_mutation)
+            reject(position, "Only calls and sequence modifications can be used as expression statements.");
+        expect(terminator);
+        return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
+    }
+    NodeId statement() {
+        Depth guard(depth_, token_.position);
+        const auto position = token_.position;
+        if (token_.text == "{") return block();
+        if (starts_declaration()) return simple_statement(";");
         if (accept("if")) {
             expect("(");
             const auto condition = expression();
-            if (function_.expressions[condition].type != ValueType::predicate)
-                reject(position, "An if condition requires a comparison, not numeric truthiness.");
+            if (function_.expressions[condition].type != ValueType::boolean)
+                reject(position, "An if condition requires bool.");
             expect(")");
             const auto body = block();
             NodeId alternative = no_node;
@@ -574,11 +783,39 @@ private:
         if (accept("while")) {
             expect("(");
             const auto condition = expression();
-            if (function_.expressions[condition].type != ValueType::predicate)
-                reject(position, "A while condition requires a comparison, not numeric truthiness.");
+            if (function_.expressions[condition].type != ValueType::boolean)
+                reject(position, "A while condition requires bool.");
             expect(")");
+            ++loop_depth_;
             const auto body = block();
+            --loop_depth_;
             return add(Statement{Statement::Kind::loop, position, no_node, condition, body, no_node, {}});
+        }
+        if (accept("for")) {
+            expect("(");
+            const auto visible_before = visible_.size();
+            Statement scope{Statement::Kind::block, position, no_node, no_node, no_node, no_node, {}};
+            if (!accept(";")) scope.children.push_back(simple_statement(";"));
+            const auto condition = token_.text == ";" ? literal(ValueType::boolean, token_.position, 1) : expression();
+            if (function_.expressions[condition].type != ValueType::boolean) reject(position, "A for condition requires bool.");
+            expect(";");
+            const auto step = accept(")") ? no_node : simple_statement(")", false);
+            ++loop_depth_;
+            const auto body = block();
+            --loop_depth_;
+            Statement loop{Statement::Kind::loop, position, no_node, condition, body, no_node, {}};
+            loop.step = step;
+            scope.children.push_back(add(std::move(loop)));
+            scope.locals.assign(visible_.begin() + visible_before, visible_.end());
+            visible_.resize(visible_before);
+            return add(std::move(scope));
+        }
+        if (token_.text == "break" || token_.text == "continue") {
+            const auto keyword = consume();
+            if (loop_depth_ == 0) reject(position, "break and continue require an enclosing loop.");
+            expect(";");
+            return add(Statement{keyword.text == "break" ? Statement::Kind::break_loop : Statement::Kind::continue_loop,
+                position, no_node, no_node, no_node, no_node, {}});
         }
         if (accept("yield")) {
             if (!function_.is_coroutine) reject(position, "yield requires an async entry.");
@@ -597,19 +834,7 @@ private:
             expect(";");
             return add(Statement{Statement::Kind::return_value, position, no_node, value, no_node, no_node, {}});
         }
-        const auto target = expression();
-        if (accept("=")) {
-            if (!writable(target))
-                reject(position, "Assignment requires a writable local or field.");
-            const auto value = expression();
-            same_type(value, function_.expressions[target].type);
-            expect(";");
-            return add(Statement{Statement::Kind::assign, position, target, value, no_node, no_node, {}});
-        }
-        if (function_.expressions[target].kind != Expression::Kind::call && function_.expressions[target].kind != Expression::Kind::source_call && function_.expressions[target].kind != Expression::Kind::sequence_mutation)
-            reject(position, "Only calls and sequence modifications can be used as expression statements.");
-        expect(";");
-        return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
+        return simple_statement(";");
     }
     NodeId expression(int minimum = 0) {
         Depth guard(depth_, token_.position);
@@ -619,12 +844,20 @@ private:
             if (operation.precedence < minimum) return left;
             const auto symbol = consume();
             const auto right = expression(operation.precedence + 1);
-            if (function_.expressions[left].type == ValueType::i32 && integer_constant(right)) signed_constant(right);
-            if (function_.expressions[right].type == ValueType::i32 && integer_constant(left)) signed_constant(left);
+            const bool shift = operation.operation == Operation::shift_left || operation.operation == Operation::shift_right;
+            if (!shift && function_.expressions[left].type == ValueType::i32 && integer_constant(right)) signed_constant(right);
+            if (!shift && function_.expressions[right].type == ValueType::i32 && integer_constant(left)) signed_constant(left);
             const auto type = function_.expressions[left].type;
             const auto right_type = function_.expressions[right].type;
-            auto result_type = operation.comparison ? ValueType{ValueType::predicate} : type;
-            if (reference_type(type) || reference_type(right_type)) {
+            auto result_type = operation.comparison ? ValueType{ValueType::boolean} : type;
+            if (operation.operation == Operation::logical_and || operation.operation == Operation::logical_or) {
+                if (type != ValueType::boolean || right_type != ValueType::boolean)
+                    reject(symbol.position, "Logical operators require bool operands.");
+                result_type = ValueType::boolean;
+            } else if (shift) {
+                if ((type != ValueType::i32 && type != ValueType::u32) || (right_type != ValueType::i32 && right_type != ValueType::u32))
+                    reject(symbol.position, "Shift operands require int or uint.");
+            } else if (reference_type(type) || reference_type(right_type)) {
                 if (!reference_type(type) || !reference_type(right_type) ||
                     (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
                     reject(symbol.position, "References support only == and != with another reference or null.");
@@ -645,20 +878,32 @@ private:
                     result_type = right_type;
                 } else reject(symbol.position, "Unsupported math operation or mismatched component precision.");
             } else if (!scalar(type) || right_type != type ||
-                (type.kind == ValueType::enumeration && operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
-                reject(symbol.position, "Binary operands require matching numeric types; enums support equality only.");
-            } else if (operation.operation == Operation::divide && !floating(type))
-                reject(symbol.position, "Division requires matching float or double operands.");
+                ((type.kind == ValueType::enumeration || type == ValueType::boolean) && operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
+                reject(symbol.position, "Binary operands require matching numeric types; bool and enums support equality only.");
+            } else if ((operation.operation == Operation::remainder || operation.operation == Operation::bitwise_and ||
+                operation.operation == Operation::bitwise_or || operation.operation == Operation::bitwise_xor) &&
+                type != ValueType::i32 && type != ValueType::u32)
+                reject(symbol.position, "Remainder and bitwise operators require int or uint.");
             left = add(Expression{Expression::Kind::binary,
                 result_type, symbol.position, left, right, 0, operation.operation});
         }
     }
     NodeId unary() {
         Depth guard(depth_, token_.position);
+        if (token_.text == "!" || token_.text == "~") {
+            const auto symbol = consume();
+            const auto operand = unary();
+            const auto type = function_.expressions[operand].type;
+            if (symbol.text == "!" && type != ValueType::boolean) reject(symbol.position, "Logical negation requires bool.");
+            if (symbol.text == "~" && type != ValueType::i32 && type != ValueType::u32) reject(symbol.position, "Bitwise negation requires int or uint.");
+            return add(Expression{Expression::Kind::unary, type, symbol.position, operand, no_node, 0,
+                symbol.text == "!" ? Operation::logical_not : Operation::bitwise_not});
+        }
         if (token_.text == "+" || token_.text == "-") {
             const auto symbol = consume();
             const auto operand = unary();
             if (symbol.text == "-" && function_.expressions[operand].kind == Expression::Kind::literal &&
+                !function_.expressions[operand].typed_constant &&
                 function_.expressions[operand].type == ValueType::u32 && function_.expressions[operand].bits == 2147483648u)
                 return literal(ValueType::i32, symbol.position, 2147483648u);
             if (symbol.text == "-" && integer_constant(operand)) signed_constant(operand);
@@ -746,9 +991,12 @@ private:
                 const MethodBinding* method{};
                 for (const auto& candidate : environment_.methods) if (candidate.name == member) method = &candidate;
                 if (!method) reject(position, "Unknown native method '" + member + "'.");
+                if (plain_record(method->result) && !math_type(method->result) && !environment_.values[method->result.type_index].can_own)
+                    reject(position, "Native plain record results require borrow-preserving copy and lifecycle operations.");
                 auto arguments = call_arguments(method->parameters);
                 Expression call{Expression::Kind::call, method->result, position,
                     no_node, no_node, static_cast<std::uint32_t>(method - environment_.methods.data()), Operation::add, receiver};
+                if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
                 call.arguments = std::move(arguments);
                 for (const auto& parameter : method->parameters) call.argument_passing.push_back(parameter.passing);
                 receiver = add(std::move(call));
@@ -908,14 +1156,14 @@ private:
             return numeric_literal(token);
         }
         if (token.kind != Token::Kind::identifier) reject(token.position, "Expected an expression.");
-        if (token.text == "float" || token.text == "double") {
+        if (token.text == "float" || token.text == "double" || token.text == "int" || token.text == "uint") {
             consume(); expect("(");
             const auto argument = expression();
             expect(")");
             const auto type = function_.expressions[argument].type;
             if (!floating(type) && type != ValueType::i32 && type != ValueType::u32)
                 reject(token.position, "Numeric conversion requires float, double, int or uint.");
-            return add(Expression{Expression::Kind::scalar_cast, token.text == "double" ? ValueType::f64 : ValueType::f32,
+            return add(Expression{Expression::Kind::scalar_cast, named_type(token.text, token.position),
                 token.position, argument});
         }
         {
@@ -948,6 +1196,8 @@ private:
             }
         }
         consume();
+        if (token.text == "true" || token.text == "false")
+            return literal(ValueType::boolean, token.position, token.text == "true" ? 1 : 0);
         if (token.text == "self")
             return add(Expression{Expression::Kind::receiver, ValueType::strong_reference, token.position});
         if (token.text == "null")
@@ -979,12 +1229,20 @@ private:
                 return add(Expression{Expression::Kind::local, local_value.type, token.position,
                     no_node, no_node, *iterator});
         }
+        for (std::size_t i = 0; i < constants_.size(); ++i) {
+            if (constants_[i].name != token.text) continue;
+            resolve_constant(i);
+            const auto node = literal(constants_[i].type, token.position, constants_[i].bits);
+            function_.expressions[node].typed_constant = true;
+            return node;
+        }
         if (accept("(")) {
             for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
                 const auto& target = module_.functions[i];
                 if (target.function_name != token.text) continue;
                 if (target.is_coroutine) reject(token.position, "Source calls require a synchronous function; async entries are started by the host.");
                 Expression call{Expression::Kind::source_call, target.result, token.position, no_node, no_node, i};
+                if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
                 call.arguments = call_arguments(target.parameters);
                 for (std::size_t parameter = 0; parameter < target.parameters.size(); ++parameter) {
                     const auto mode = target.parameters[parameter].passing;
@@ -1000,11 +1258,22 @@ private:
     }
 
     Environment environment_;
+    struct Constant {
+        std::string name;
+        ValueType type;
+        SourcePosition position;
+        Lexer lexer;
+        Token token;
+        enum class State { fresh, active, complete } state{};
+        std::uint64_t bits{};
+    };
+    std::vector<Constant> constants_;
     Function function_;
     Program module_;
     std::vector<std::uint32_t> visible_;
     std::vector<std::size_t> expression_heights_;
     std::size_t depth_{};
+    std::size_t loop_depth_{};
 };
 }
 

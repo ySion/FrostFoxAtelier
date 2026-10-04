@@ -9,7 +9,7 @@
 | 模块 | 当前能力 | 详细说明 |
 | --- | --- | --- |
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
-| 源码与 JIT | 同模块函数、enum/struct 声明与值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
+| 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、同模块函数、enum/struct 声明与值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | Flex/Grid、虚拟列表、Unicode 编辑、参数行、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
@@ -169,6 +169,8 @@ cmake --build --preset release --target ui_layout_acceptance
 
 [类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型在注册封闭前发布，代码更新保持类型定义与身份；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
+同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
+
 单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。配置时设置 `-DATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收及后端故障注入，正式源码库和该最小消费者仍可构建；默认 ON 保留既有完整验收入口。
 
 同一入口包含[连续会话验收](acceptance/source/session.cpp)：原生与描述型对象各在同一个 Runtime 中交错运行任务、取消、分步 GC 和兼容更新，核对预热后的资源变化、旧版本集中退休及最后关停。工作负载和实际结果见[阶段收尾](docs/research/runtime-stage-closeout.md#连续运行补充验收)。
@@ -186,15 +188,17 @@ cmake --build --preset release --target atelier_source_measure
 - 顶层以 `ExecutionScope` 覆盖入场至帧清理，内部准入检查拒绝原生借用或遍历内重入；同一 Runtime 的活动调用统一计数。真正原生调用仍保留 `Runtime::call` 的保护；普通函数的生成安全点按宿主请求与单步预算推进同一个 GC；原生聚合借用及拥有值区间把收集留到返回宿主后，不引入另一个收集器或 Tick 调度器。
 - 错误通过定型 thunk 的状态与固定诊断返回；IR 显式清根，宿主在 RAII 兜底之前验证清理完成。跨 Runtime、错类型、失效代际与槽位复用均按原身份规则拒绝，已发生的业务修改不回滚。
 - LLVM 与 C++ 所有权继续隔离。活动调用在 DLL 内持有代码；已实际验证原生回调销毁外层代码句柄后继续执行，返回后释放代码页和展开表。两条生成路径共用 [Windows 展开机制](src/jit/windows_unwind.cpp)。
-- 源码入口接受零个或多个 float/double/uint/int/枚举参数，支持值、只读引用及可写引用，同步入口另支持已注册原生记录/Array 的引用和只读 String 引用，同步入口另支持内建数学值的按值参数与结果，返回为 void、标量/枚举值或数学值；已定型数值不隐式转换。调用先校验数量、类型和结果存储；失败状态与成功标量分开，只有原生调用、结束回调和生成清理全部成功才提交结果，失败不覆盖调用方结果。
+- 源码入口接受零个或多个 bool/float/double/uint/int/枚举参数，支持值、只读引用及可写引用，同步入口另支持已注册原生记录/Array 的引用和只读 String 引用，同步入口另支持内建数学值及 plain struct 的按值参数与结果，返回为 void、标量/枚举值、数学值或 plain struct；已定型数值不隐式转换。调用先校验数量、类型和结果存储；失败状态与成功标量分开，只有原生调用、结束回调和生成清理全部成功才提交结果，失败不覆盖调用方结果。
 - 成员名称、字段路径和原生方法签名来自同一 Runtime 的元数据；前端/后端只使用宿主绑定表索引，不知道机器字段名字。机器快照的创建、轮询后刷新与结果根交接归宿主验收适配器；不访问对象的标量或原生值借用入口无需接收者、快照或登记对象根。
 - 原生注册和源码发布共用 `FunctionSignature` 及 Runtime 解析规则；原生 void 或标量/枚举值结果已经贯通动态调用、源码表达式和 LLVM 降低，保留原生成员的 const 接收者信息。嵌套实参先顺序求值再打包，原生失败、漏写或错误种类的结果不提交给源码调用方。
 
-开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单一公开入口与模块内同步函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#已实现的最小业务执行协议)。新增引用在原生/描述型对象上各执行 12 个独立场景；其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。旧数值、错误、GC、展开和代码退休验收继续通过。
+开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单一公开入口与模块内同步函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/for/break/continue/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#已实现的最小业务执行协议)。新增引用在原生/描述型对象上各执行 12 个独立场景；其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。旧数值、错误、GC、展开和代码退休验收继续通过。
+
+语言基础沿同一 Runtime/source/JIT 入口支持 `core.bool`、短路逻辑、受检查的整数除余/移位、四种数值类型的显式转换、局部只读 const 与编译期模块常量，以及带作用域清理的 for/break/continue。[语言基础消费者](acceptance/source/foundations.cpp)通过 `source_acceptance` 覆盖这些执行与拒绝场景；[bool 调用边界消费者](acceptance/jit/bool_abi.cpp)通过 `jit_acceptance` 覆盖布尔值、借用及结果契约。运行入口为 `cmake --build --preset dev --target source_acceptance jit_acceptance`，release 使用同名目标；语义以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
 构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。这不等于已有文件监视、机器码源码行映射或断点调试。
 
-当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，固定数学值已支持同步按值参数与结果；一般记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
+当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
 
 前端与源码执行链已完成一轮[专项审查及真实机器批量基线](docs/research/jit-industrial-research.md#v001-源码专项审查与真实机器基线)：修复业务链接根因诊断丢失，补充 owner 撤销后原生异常的组合验收，执行固定种子源码变异/数值对照，并分别测量编译、批量调用和回收。已有基线不等于完成业务吞吐优化或全面安全审计。
 
@@ -263,10 +267,10 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 类型先注册后使用，实例首次创建成功后关闭注册。支持原生与描述型定义成组发布，前向依赖和引用环不要求按依赖顺序提交；整组验证与布局计算成功后才公开，失败不会留下半注册类型。单条注册复用同一路径。
 - `TypeId`、`FieldId`、`MethodId` 和 `ObjectId` 都限于所属运行时；限定类型名是声明名称，进程内标识不是存档 ID。
 - `create` 交付已登记的 `ObjectRoot`，`ObjectId` 仍只标识身份。根复制增加独立登记，移动转移登记；释放根不立即销毁目标，也不延长 `Runtime` 自身的生命。显式销毁及运行时退出仍释放对象；不可达对象由宿主显式推进 GC 回收。
-- 当前支持 float/double/u32/i32、i32/u32 底层枚举、含引用内联记录与单继承对象；原生成员方法支持标量/枚举的值、只读引用及可写引用参数；原生方法与源码入口还支持无 GC 引用的原生记录/Array/String 借用，源码入口的 String 参数限于只读。对象强引用序列见上方合同；一般记录按值调用、对象引用参数与结果、借用返回、通用值容器及记录方法尚未实现；内建数学记录支持同步按值调用。
+- 当前支持 bool/float/double/u32/i32、i32/u32 底层枚举、含引用内联记录与单继承对象；原生成员方法支持标量/枚举的值、只读引用及可写引用参数；原生方法与源码入口还支持无 GC 引用的原生记录/Array/String 借用，源码入口的 String 参数限于只读。对象强引用序列见上方合同；资源记录按值调用、对象引用参数与结果、借用返回、通用值容器及记录方法尚未实现；内建数学记录与 plain struct 支持同步按值调用。
 - 标量和记录支持调用方存储上的初始化、复制构造、赋值和销毁。含引用记录的复制保持共享目标，不克隆对象；原生记录执行 C++ 操作，描述型记录按字段执行。`TypeInfo` 分别提供复制构造和赋值能力，缺少能力时在操作开始前拒绝。
 - `root_value` 用可移动的 `ValueRoot` 登记调用方的活值存储，不接管或延长存储寿命。登记撤销前禁止重建或销毁该存储；赋值仍可更新其中的引用。值接口检查类型、容量、对齐和重叠，调用方负责实际表示、构造状态和存续期。这仍是可信原生接口，不是任意字节的安全验证器，见[值操作入口](docs/runtime-model.md#已实现的值操作入口)。
-- `Scalar` 是保存 float/double/u32/i32 或带类型身份枚举值的无堆分配值载体，不承担语言对象或通用动态值的存储。
+- `Scalar` 是保存 bool/float/double/u32/i32 或带类型身份枚举值的无堆分配值载体，不承担语言对象或通用动态值的存储。bool 使用独立的 `core.bool` 身份，值存储大小与对齐为 1 字节。
 - 通过名称查找成员后可缓存成员标识。类型/成员名称查询目前是线性扫描，定位于注册和发现阶段；缓存后的字段路径访问与方法调用不重新查名字，不分配堆内存（错误报告除外）。
 - `read/write` 的终字段必须是标量，`read_reference/write_reference` 操作引用字段；字段路径只穿过内联记录，不隐式解引用对象。引用写入检查目标类型和形式，弱引用不能直接写入持有字段；`try_acquire` 对活的观察目标交付根句柄，空或失效目标返回空结果。已定型的失效引用仍可复制，旧身份不自动清空，也不绑定复用槽位的新对象。
 - `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根，异常转换为调用错误。

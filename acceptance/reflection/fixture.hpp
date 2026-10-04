@@ -39,9 +39,20 @@ enum class OtherMode : std::int32_t { active = 2 };
 AENUM(Name = "reflection.UnsignedMode")
 enum class UnsignedMode : std::uint32_t { high = 0xffffffffu };
 
+ASTRUCT(Name = "reflection.PlainRecord")
+struct alignas(64) PlainRecord {
+    AGENERATED_BODY(PlainRecord)
+    AFIELD() bool enabled;
+    AFIELD() Mode mode;
+    AFIELD() math::Matrix4d transform;
+    AFIELD() std::uint32_t count;
+};
 ACLASS(Name = "reflection.CallProbe")
 struct CallProbe {
     AGENERATED_BODY(CallProbe)
+    AFUNCTION(BorrowSafe) PlainRecord record_alias(PlainRecord copy, PlainRecord& target) const {
+        target.count += 10; copy.enabled = !copy.enabled; return copy;
+    }
     AFIELD() int value{};
     AFIELD() Mode mode{Mode::idle};
     AFIELD() Sample sample;
@@ -49,6 +60,13 @@ struct CallProbe {
     AFIELD() double precise_value{};
     AFIELD() math::Vector3d direction;
     AFIELD() Array<double> samples;
+    AFIELD() bool enabled{};
+    AFIELD() bool before{true};
+    AFIELD() bool after{true};
+    AFIELD() Array<bool> flags;
+    AFUNCTION() bool bool_alias(bool copy, const bool& read, bool& write) { write = copy; return read; }
+    AFUNCTION() bool append_flag(Array<bool>& values, bool value) { values.add(value); return values[values.size() - 1]; }
+    AFUNCTION() bool fail_bool(bool& value) { value = true; throw std::runtime_error("generated bool failure"); }
     AFUNCTION() int aliases(const int& read, int& write) { write = 10; write += read; return read; }
     AFUNCTION() int mixed(int copy, const int& read, int& write) { write += copy + read; return write; }
     AFUNCTION() int read_only(const int& v) const noexcept { return v; }

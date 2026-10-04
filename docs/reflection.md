@@ -35,15 +35,17 @@ public:
 
 ### 字段与方法
 
-- 内联字段支持 float、double、int/int32_t、uint32_t、本生成组中的反射枚举与记录，以及内建数学值、引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
+- 内联字段支持 bool、float、double、int/int32_t、uint32_t、本生成组中的反射枚举与记录，以及内建数学值、引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
 - `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标须为本组反射对象或 `core.Object`。这些选项不能用于普通内联值。
 - `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。
 - 漏标直接引用槽、序列或内嵌包含引用存储的记录/数组会报错，避免遗漏 GC 边。未标记的普通原生状态不自动成为反射字段；任意外部资源的所有权仍由原生实现负责。
 - 对象支持一个 public、非 virtual 的原生反射基类，基类须在本组中；记录不支持继承。继承反射成员重名会报错。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。
-- 方法支持 void、标量/枚举或内建数学值结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数。静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值支持同步按值参数/结果；一般聚合值按值参数/结果与借用视图参数尚未开放。生成器使用完整成员指针类型和完全限定的原生类型名消除重载与命名空间歧义。
+- 方法支持 void、标量（含 bool）/枚举、内建数学值或 plain struct 结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数。静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值与递归 plain struct 支持同步按值参数/结果；资源记录与容器按值参数/结果与借用视图参数尚未开放。生成的定型 C++ thunk 负责实际平台 ABI。生成器使用完整成员指针类型和完全限定的原生类型名消除重载与命名空间歧义。
 - `AFUNCTION(BorrowSafe)` 发布 `MethodInfo::preserves_borrows`，允许同步原生值区间调用该方法。它是开发者对完整调用链的保证，不是自动效果分析；具体约束见[语言规则](../LANGUAGE.md#拥有型-stringarray-与原生算法)。普通方法无需此标记，已有调用行为保持。
 - 满足自然对齐的标准布局类型中，公开反射字段额外生成 `offsetof`，由同一 Runtime 发布并校验，供源码借用直接访问。隐藏、非标准布局或不能保证自然对齐的字段继续使用既有成员访问器，不推测偏移；这一限制不影响原有反射能力。详见[原生值借用](native-value-borrows.md)。
 - 构造、析构和记录复制能力沿用 `NativeRegistration`。生成代码带原头文件的 `#line`，编译器继续验证默认构造及不抛异常析构等约束。
+
+bool 反射字段和方法使用 Runtime 的 `core.bool` 身份与当前目标的 1 字节 C++ bool 存储。bool/const bool&/bool& 及 bool 结果沿既有 `NativeRegistration`、共享签名与结果提交入口处理，保留真实地址和别名；不将 bool 转成 uint 另建调用路径。动态调用及源码调用的错误类型或缺失结果仍按[共享函数契约](runtime-model.md#共享函数签名与结果)拒绝。
 
 ### 枚举与引用示例
 

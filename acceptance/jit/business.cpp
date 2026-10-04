@@ -2057,7 +2057,7 @@ void verify_source_rejections(BusinessCode* existing) {
         {"void bad(float a, uint n) { uint x = x; }", "Unknown identifier"},
         {"void bad(float a, uint n) { { uint x = 1; } self.state.cycles = x; }", "Unknown identifier"},
         {"void bad(float a, uint n) { uint n = 0; }", "already visible"},
-        {"void bad(float a, uint n) { if (n) { return; } }", "requires a comparison"},
+        {"void bad(float a, uint n) { if (n) { return; } }", "requires bool"},
         {"void bad(float a, uint n) { if (a > n) { return; } }", "matching numeric types"},
         {"void bad(float a, uint n) { 1 = 2; }", "Assignment requires"},
         {"void bad(float a, uint n) { +n = 1; }", "Assignment requires"},
@@ -2067,7 +2067,7 @@ void verify_source_rejections(BusinessCode* existing) {
         {"void bad(float a, uint n) { uint x = 4294967296; }", "outside 0..4294967295"},
         {"void bad(float a, uint n) { float x = 1.0e999; }", "out of range"},
         {"void bad(float a, uint n) { uint x = -1; }", "Type mismatch"},
-        {"void bad(float a, uint n) { uint x = n / 2; }", "Division requires matching float or double"},
+        {"void bad(float a, uint n) { bool x = true / false; }", "bool and enums support equality only"},
         {"void bad(float a, uint n) { float x = 1.0e; }", "exponent requires digits"},
         {"void bad(float a, uint n) { uint x = 1word; }", "Invalid numeric literal suffix"},
         {"void bad(float a, uint n) { /* unfinished", "Unterminated block comment"},
@@ -2105,9 +2105,11 @@ void verify_source_rejections(BusinessCode* existing) {
 }
 
 void verify_math_abi();
+void verify_bool_abi();
 
 void verify_business_execution() {
     verify_math_abi();
+    verify_bool_abi();
     const auto native_values = NativeState::live;
     auto code = compile_business();
     verify_business_state(code.get());
