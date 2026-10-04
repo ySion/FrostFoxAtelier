@@ -21,6 +21,106 @@ Context open_context() {
     return take(Context::open(options));
 }
 
+void root_budget_graphics() {
+    auto owner = open_context();
+    const auto gfx = owner.borrow();
+    auto debug = debug_queue(gfx);
+    PipelineDesc desc;
+    desc.kind = PipelineKind::vertex;
+    // Each stage has only 32 DWORDs, but together with the SRV table costs 65.
+    // The shared field deliberately has different reflected offsets per stage.
+    desc.source.vs = R"(
+uint4 shared_value; uint4 vertex_values[7];
+struct Output { float4 position : SV_Position; nointerpolation uint value : COLOR; };
+Output main(uint id : SV_VertexID) {
+    Output output;
+    float2 p = id == 0 ? float2(-1,-1) : id == 1 ? float2(-1,3) : float2(3,-1);
+    output.position = float4(p,0.25,1);
+    output.value = vertex_values[6].x + shared_value.x;
+    return output;
+}
+)";
+    desc.source.ps = R"(
+uint4 pixel_values[7]; uint4 shared_value;
+StructuredBuffer<uint> extra;
+float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) : SV_Target {
+    return float4(float(value), float(pixel_values[6].x + shared_value.y), float(extra[0]), 255) / 255.0;
+}
+)";
+    check(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM));
+    check(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
+    auto pipeline = take(owner.prepare(desc));
+    const std::uint32_t blue = 37;
+    auto extra = gfxCreateBuffer<std::uint32_t>(gfx, 1, &blue);
+    auto readback = gfxCreateBuffer(gfx, 64 * 32 * 4, nullptr, kGfxCpuAccess_Read);
+    auto texture = gfxCreateTexture2D(gfx, 64, 32, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr,
+                                      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    require(extra && readback && texture, "root budget graphics resources unavailable");
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "extra", extra));
+    for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
+        const std::array<std::uint32_t, 4> shared = {iteration + 3, iteration + 7, 0, 0};
+        std::array<std::uint32_t, 28> vertex_values{}, pixel_values{};
+        vertex_values[24] = 61 + iteration;
+        pixel_values[24] = 103 + iteration;
+        check(gfxProgramSetParameter(gfx, pipeline.program(), "shared_value", shared));
+        check(gfxProgramSetParameter(gfx, pipeline.program(), "vertex_values", vertex_values));
+        check(gfxProgramSetParameter(gfx, pipeline.program(), "pixel_values", pixel_values));
+        check(gfxCommandBindColorTarget(gfx, 0, texture));
+        check(gfxCommandBindKernel(gfx, pipeline.kernel()));
+        check(gfxCommandDraw(gfx, 3));
+        check(gfxCommandCopyTextureToBuffer(gfx, readback, texture));
+        complete(owner.finish());
+        const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
+        require(pixels != nullptr, "root budget graphics readback unavailable");
+        for (std::size_t i = 0; i < 64 * 32; ++i)
+            require(pixels[4 * i] == vertex_values[24] + shared[0] &&
+                    pixels[4 * i + 1] == pixel_values[24] + shared[1] &&
+                    pixels[4 * i + 2] == blue && pixels[4 * i + 3] == 255,
+                    "cross-stage root constant fallback corrupted GPU pixels");
+    }
+    check(gfxDestroyBuffer(gfx, extra));
+    check(gfxDestroyBuffer(gfx, readback));
+    check(gfxDestroyTexture(gfx, texture));
+    pipeline = {};
+    complete(owner.close());
+    check_debug(debug.Get());
+    std::puts("root-budget-graphics: VS/PS-globals=32+32 SRV-table=1 shared-offsets/updates/pixels=PASS");
+}
+
+void root_budget_compute() {
+    auto owner = open_context();
+    const auto gfx = owner.borrow();
+    auto debug = debug_queue(gfx);
+    PipelineDesc desc;
+    desc.source.cs = R"(
+uint4 values[16];
+RWStructuredBuffer<uint> output_value;
+[numthreads(1,1,1)] void main() { output_value[0] = values[15].x; }
+)";
+    auto pipeline = take(owner.prepare(desc));
+    auto output = gfxCreateBuffer<std::uint32_t>(gfx, 1);
+    auto readback = gfxCreateBuffer<std::uint32_t>(gfx, 1, nullptr, kGfxCpuAccess_Read);
+    require(output && readback, "root budget compute resources unavailable");
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "output_value", output));
+    for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
+        std::array<std::uint32_t, 64> values{};
+        values[60] = 121 + iteration;
+        check(gfxProgramSetParameter(gfx, pipeline.program(), "values", values));
+        check(gfxCommandBindKernel(gfx, pipeline.kernel()));
+        check(gfxCommandDispatch(gfx, 1, 1, 1));
+        check(gfxCommandCopyBuffer(gfx, readback, output));
+        complete(owner.finish());
+        const auto* value = gfxBufferGetData<std::uint32_t>(gfx, readback);
+        require(value && *value == values[60], "256-byte globals plus UAV fallback corrupted GPU output");
+    }
+    check(gfxDestroyBuffer(gfx, output));
+    check(gfxDestroyBuffer(gfx, readback));
+    pipeline = {};
+    complete(owner.close());
+    check_debug(debug.Get());
+    std::puts("root-budget-compute: globals=64 UAV-table=1 updates/GPU-values=PASS");
+}
+
 void indirect_constants() {
     auto owner = open_context();
     const auto gfx = owner.borrow();
@@ -155,6 +255,8 @@ void texture_ranges() {
 } // namespace
 
 void resource_cases() {
+    root_budget_graphics();
+    root_budget_compute();
     indirect_constants();
     indirect_graphics(PipelineKind::vertex, false);
     indirect_graphics(PipelineKind::vertex, true);

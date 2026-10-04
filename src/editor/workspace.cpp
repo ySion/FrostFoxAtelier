@@ -92,6 +92,21 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
     std::iter_swap(bindings_.begin()+static_cast<std::ptrdiff_t>(binding_cursor_),bindings_.end()-1);
     return bindings_[binding_cursor_++].key;
 }
+bool Workspace::apply_view(const ui::Action& action) {
+    if (action.kind!=ui::ActionKind::activate) return false;
+    const auto key=action.key;
+    if (key>=control::shading_first && key<control::shading_first+3)
+        view.shading=static_cast<renderer::Shading>(key-control::shading_first);
+    else if (key>=control::edges_first && key<control::edges_first+4) {
+        const auto option=key-control::edges_first;
+        view.wireframe=option<2?static_cast<renderer::Wireframe>(option):renderer::Wireframe::only;
+        view.hidden_lines=option!=3;
+    } else if (key>=control::topology_first && key<control::topology_first+2)
+        view.triangle_edges=key!=control::topology_first;
+    else return false;
+    status=L"Viewport display updated";
+    return true;
+}
 std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project) {
     const auto take = []<class T>(Result<T> value) -> T {
         if (!value) throw std::runtime_error(value.error().message);
@@ -99,6 +114,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     };
     using namespace ui_layout;
     using ui::ControlKind;
+    constexpr std::array shading_titles{L"Smooth",L"Flat",L"MatCap"};
+    constexpr std::array edge_titles{L"Edges: Off",L"Edges: Overlay",L"Lines: Visible",L"Lines: All"};
+    constexpr std::array topology_titles{L"Polygons",L"Triangles"};
+    const auto edge_option=view.wireframe==renderer::Wireframe::only?
+        (view.hidden_lines?2u:3u):static_cast<unsigned>(view.wireframe);
     auto& runtime = session.world().runtime();
     const auto members = take(session.world().members());
     std::unordered_set<ObjectId> live; live.reserve(members.size()*3);
@@ -186,6 +206,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         auto contents=NodeInput::column(); contents.width=contents.height=Axis::expand();
         add(control::scene_content,parent,ControlKind::container,contents);
         ui::append_path_bar(result,{641,control::scene_content,control::scene_path,control::scene_back,control::scene_forward,L"World",can_navigate(-1),can_navigate(1)});
+        auto display_bar=NodeInput::row(4); display_bar.height=Axis::fixed(30); display_bar.padding={4,2,4,2};
+        add(control::scene_display_bar,control::scene_content,ControlKind::container,display_bar).role=ui::Role::panel;
+        auto choice=NodeInput::box(0,26); choice.width=Axis::expand();
+        add(control::scene_shading,control::scene_display_bar,ControlKind::combo,choice,
+            shading_titles[static_cast<unsigned>(this->view.shading)]);
+        add(control::scene_edges,control::scene_display_bar,ControlKind::combo,choice,edge_titles[edge_option]);
+        add(control::scene_topology,control::scene_display_bar,ControlKind::combo,choice,topology_titles[this->view.triangle_edges?1:0]);
         auto viewport=NodeInput::box(0,0); viewport.width=viewport.height=Axis::expand();
         add(control::viewport,control::scene_content,ControlKind::viewport,viewport);
         return;
@@ -323,7 +350,16 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 for (const auto& member:members) items.push_back({bind(member.id(),{},Binding::Kind::navigation),
                     std::wstring(session.name(member.id())),true,selected==member.id(),{},L"",items.size()==1});
             } else if (source->key==browser_control::filter) items=assets.filter_menu();
-            else if (!items.empty()) {}
+            else if (source->key==control::scene_shading) {
+                for (std::size_t i=0;i<shading_titles.size();++i)
+                    items.push_back({control::shading_first+i,shading_titles[i],true,static_cast<unsigned>(view.shading)==i,{}});
+            } else if (source->key==control::scene_edges) {
+                for (std::size_t i=0;i<edge_titles.size();++i)
+                    items.push_back({control::edges_first+i,edge_titles[i],true,edge_option==i,{}});
+            } else if (source->key==control::scene_topology) {
+                for (std::size_t i=0;i<topology_titles.size();++i)
+                    items.push_back({control::topology_first+i,topology_titles[i],true,view.triangle_edges==(i!=0),{}});
+            } else if (!items.empty()) {}
             else if (source->kind==ControlKind::combo && source->key==workbench_control::mode) {
                 for (std::size_t i=0;i<ControlWorkbench::mode_names.size();++i)
                     items.push_back({workbench_control::mode_first+i,ControlWorkbench::mode_names[i],true,workbench.values().mode==i,{}});

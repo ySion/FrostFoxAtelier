@@ -3,6 +3,7 @@
 #include "rhi/rhi.hpp"
 #include "geometry/mesh.hpp"
 #include "ui/frame.hpp"
+#include "renderer/view_settings.hpp"
 
 #include <array>
 #include <memory>
@@ -49,6 +50,7 @@ struct Frame {
     Camera camera;
     ui::Rect scene_viewport;     // Physical pixels, top-left origin.
     std::span<const MeshInstance> meshes; // Borrowed draw snapshots; no business object ownership.
+    ViewSettings view{};
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts

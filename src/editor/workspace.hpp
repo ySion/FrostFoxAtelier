@@ -6,6 +6,7 @@
 #include "editor/asset_browser.hpp"
 #include "ui/session.hpp"
 #include "ui/docking.hpp"
+#include "renderer/view_settings.hpp"
 
 namespace atelier::editor {
 namespace control {
@@ -19,6 +20,8 @@ inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=60
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey shelf=730, shelf_tabs=731, shelf_create=732, shelf_view=733, shelf_body=734, shelf_handle=735, shelf_contents=736;
 inline constexpr ui::ControlKey scene_content=640;
+inline constexpr ui::ControlKey scene_shading=646, scene_edges=647, scene_topology=648, scene_display_bar=649;
+inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_first=767;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
@@ -62,6 +65,8 @@ struct Workspace {
     Result<void> navigate(Session&,int direction);
     Result<void> select_tree(Session&,ui::ControlKey);
     bool command_enabled(Command,const Session&) const;
+    bool apply_view(const ui::Action&);
+    renderer::ViewSettings view{.shading=renderer::Shading::matcap};
     ui::ControlKey shelf_page{control::shelf_create};
     AssetBrowser assets;
     bool project_open{};

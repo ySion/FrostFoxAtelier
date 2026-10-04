@@ -6,11 +6,13 @@ namespace {
 geometry::MeshRef plane() {
     return std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
         {{-1,0,-1},{0,1,0}},{{-1,0,1},{0,1,0}},{{1,0,1},{0,1,0}},
-        {{-1,0,-1},{0,1,0}},{{1,0,1},{0,1,0}},{{1,0,-1},{0,1,0}}});
+        {{-1,0,-1},{0,1,0}},{{1,0,1},{0,1,0}},{{1,0,-1},{0,1,0}}},
+        std::vector<std::uint8_t>{5,3});
 }
 geometry::MeshRef sphere() {
     constexpr unsigned rings=12, segments=24;
     std::vector<geometry::Vertex> vertices; vertices.reserve(6*segments*(rings-1));
+    std::vector<std::uint8_t> edges; edges.reserve(2*segments*(rings-1));
     const auto vertex=[](unsigned y,unsigned x) {
         const auto latitude=std::numbers::pi_v<float>*static_cast<float>(y)/rings;
         const auto longitude=2*std::numbers::pi_v<float>*static_cast<float>(x)/segments;
@@ -19,10 +21,10 @@ geometry::MeshRef sphere() {
     };
     for (unsigned y=0;y<rings;++y) for (unsigned x=0;x<segments;++x) {
         const auto a=vertex(y,x),b=vertex(y+1,x),c=vertex(y+1,x+1),d=vertex(y,x+1);
-        if (y) vertices.insert(vertices.end(),{a,d,b});
-        if (y+1<rings) vertices.insert(vertices.end(),{d,c,b});
+        if (y) { vertices.insert(vertices.end(),{a,d,b}); edges.push_back(y+1==rings?7:6); }
+        if (y+1<rings) { vertices.insert(vertices.end(),{d,c,b}); edges.push_back(y==0?7:5); }
     }
-    return std::make_shared<const geometry::Mesh>(std::move(vertices));
+    return std::make_shared<const geometry::Mesh>(std::move(vertices),std::move(edges));
 }
 }
 std::span<const MeshAsset> mesh_assets() {

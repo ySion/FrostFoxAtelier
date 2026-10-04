@@ -4,6 +4,16 @@
 
 2026-09-28 更新：编辑器 renderer 新增单窗口、显式 RGBA8、backbuffer 与独立深度同时绑定、带行距读回和 Present 状态。本页原 RHI 矩阵已在 dev/release 重新通过；新增窗口验收、641/703 宽度和未覆盖范围见 [renderer 验收](../renderer/acceptance.md)。以下保留 2026-09-27 的证据边界，不将其旧的窗口“未覆盖”列表当作当前全部能力。
 
+## 2026-10-05：跨阶段根参数预算
+
+固定候选 `495bf513c4f3cb7e7a2a0ab9506559e34ee3f3c7` 的 Dev `renderer_acceptance` 实际复现：纯 UI 先通过，随后 `editor surface` 在 `CreateRootSignature` 因超过 64 DWORD 失败。原 gfx 只检查单个 `$Globals` 是否超过 256 字节，未计算跨阶段常量和描述符表的总成本。修正进入同一 `atelier.patch`，复用原有反射变量填充、CBV 绑定、常量池与退休机制；Renderer/shader 无需参数旁路。
+
+正式离屏消费者增加两个 GPU 回归，均在旧后端会超过预算：VS/PS 各 32 DWORD 加一个 SRV 表；单个 CS 恰为 64 DWORD 加一个 UAV 表。前者还让同名字段在 VS/PS 位于不同偏移。每项连续更新四次并核对实际像素或整数读回，覆盖混合根常量/CBV 绑定与完成后常量池复用。跨阶段场景已在修复前观察到同一 D3D12 超限错误。
+
+修正后 dev/release `rhi_acceptance` 均通过，含新增回归及既有间接常量、Mesh PS、range 复制、null-list、timeout 回归；真实 RX 6800 XT，主消费者启用 D3D12 debug/GBV。Dev `renderer_acceptance` 也完整通过，含 UI-only、矩阵/mesh、UI 图片与 viewport MatCap/线框/选择/退休。Release Renderer 与编辑器视口组合验收由渲染负责人在最终集成树执行，此处不记为已通过。
+
+本机证据保留在 `out/dev/root-budget-renderer-before.log`、`out/dev/root-budget-rhi-before.log`、`out/dev/root-budget-renderer-after.log` 及 `out/{dev,release}/root-budget-rhi-after.log`；常规 `rhi-acceptance.log` 和三个 `rhi-regression-*.log` 同时保留详细结果。以下历史证据范围不变。
+
 ## 命令与环境
 
 在 worktree 根目录执行 `. ./tools/enter-dev.ps1`，分别 `cmake --preset dev`、`cmake --preset release`，再运行：
