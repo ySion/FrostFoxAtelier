@@ -274,6 +274,7 @@ struct Runtime::Impl {
     TypeId f64;
     TypeId u32;
     TypeId i32;
+    TypeId boolean;
     TypeId object;
     CollectionPhase phase{CollectionPhase::idle};
     std::uint64_t epoch{};
@@ -656,6 +657,7 @@ struct Runtime::Impl {
         if (std::holds_alternative<double>(scalar)) return f64;
         if (std::holds_alternative<std::uint32_t>(scalar)) return u32;
         if (std::holds_alternative<std::int32_t>(scalar)) return i32;
+        if (std::holds_alternative<bool>(scalar)) return boolean;
         return std::get<EnumValue>(scalar).type;
     }
 
@@ -672,6 +674,7 @@ struct Runtime::Impl {
         else if (type.scalar_leaf->info.id == f32) initialize_scalars<float>(storage, type.info.size);
         else if (type.scalar_leaf->info.id == f64) initialize_scalars<double>(storage, type.info.size);
         else if (type.scalar_leaf->info.id == i32) initialize_scalars<std::int32_t>(storage, type.info.size);
+        else if (type.scalar_leaf->info.id == boolean) initialize_scalars<bool>(storage, type.info.size);
         else initialize_scalars<std::uint32_t>(storage, type.info.size);
     }
 
@@ -886,6 +889,8 @@ Runtime::Runtime() : impl_(std::make_unique<Impl>()) {
     impl_->u32 = impl_->add_scalar<std::uint32_t>("core.u32");
     impl_->i32 = impl_->add_scalar<std::int32_t>("core.i32");
     impl_->f64 = impl_->add_scalar<double>("core.f64");
+    static_assert(sizeof(bool) == 1 && alignof(bool) == 1);
+    impl_->boolean = impl_->add_scalar<bool>("core.bool");
     impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
     auto root = std::make_unique<Impl::Type>();
     root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
@@ -2140,6 +2145,7 @@ Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) con
     if (address->value.type == impl_->f64) return Scalar{*static_cast<const double*>(address->data)};
     if (address->value.type == impl_->u32) return Scalar{*static_cast<const std::uint32_t*>(address->data)};
     if (address->value.type == impl_->i32) return Scalar{*static_cast<const std::int32_t*>(address->data)};
+    if (address->value.type == impl_->boolean) return Scalar{*static_cast<const bool*>(address->data)};
     const auto* type = impl_->lookup(address->value.type);
     if (type && type->info.kind == TypeKind::enumeration && address->value.form == ValueForm::inline_value) {
         std::uint32_t bits;
@@ -2162,6 +2168,7 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
     else if (address->value.type == impl_->f64) *static_cast<double*>(address->data) = std::get<double>(value);
     else if (address->value.type == impl_->u32) *static_cast<std::uint32_t*>(address->data) = std::get<std::uint32_t>(value);
     else if (address->value.type == impl_->i32) *static_cast<std::int32_t*>(address->data) = std::get<std::int32_t>(value);
+    else if (address->value.type == impl_->boolean) *static_cast<bool*>(address->data) = std::get<bool>(value);
     else {
         const auto* type = impl_->lookup(address->value.type);
         if (!type || type->info.kind != TypeKind::enumeration || !std::holds_alternative<EnumValue>(value))

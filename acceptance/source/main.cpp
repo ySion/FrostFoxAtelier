@@ -14,6 +14,7 @@ void verify_source_owned_values();
 void verify_source_modules();
 void verify_source_types();
 void verify_source_value_fields();
+void verify_source_foundations();
 
 namespace {
 using namespace atelier;
@@ -106,6 +107,7 @@ void measure_source_math();
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--math-measure") { measure_source_math(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--foundations") { verify_source_foundations(); return 0; }
         verify_source_math();
         verify_public_program();
         verify_native_value_borrows();
@@ -113,6 +115,7 @@ int main(int argc, char** argv) {
         verify_source_modules();
         verify_source_types();
         verify_source_value_fields();
+        verify_source_foundations();
         verify_source_inheritance();
         verify_source_shutdown();
         verify_source_session();

@@ -74,6 +74,50 @@ void verify_math_calls(Runtime& runtime) {
         })), "Generated Array<double> field/reference method did not preserve precision.");
     std::puts("[pass] Generated double/math fields, value/reference parameters, typed results and Array<double>");
 }
+void verify_bool_calls(Runtime& runtime) {
+    const auto type = take(runtime.native_type<CallProbe>());
+    const auto boolean = take(runtime.native_type<bool>());
+    const auto info = take(runtime.describe(boolean));
+    require(info->size == sizeof(bool) && info->alignment == alignof(bool),
+        "Runtime bool storage did not match native bool layout.");
+    const auto object = take(runtime.create(type));
+    const auto enabled = take(runtime.find_field(type, "enabled"));
+    take(runtime.write(object.id(), enabled, Scalar{true}));
+    require(std::get<bool>(take(runtime.read(object.id(), enabled))) &&
+        take(runtime.with_native<CallProbe>(object.id(), [](const CallProbe& probe) -> Result<bool> {
+            return probe.enabled && probe.before && probe.after;
+        })), "Generated bool field access overwrote an adjacent native field.");
+    struct Guarded { bool value{}; bool before{true}; bool after{true}; std::uint32_t guard{0x12345678}; } guarded;
+    const auto alias = take(runtime.find_method(type, "bool_alias"));
+    const std::array arguments{Argument{Scalar{true}}, Argument::borrow(std::as_const(guarded.value)),
+        Argument::borrow(guarded.value)};
+    Scalar output{false};
+    take(runtime.call(object.id(), alias, arguments, &output));
+    require(std::get<bool>(output) && guarded.value && guarded.before && guarded.after && guarded.guard == 0x12345678,
+        "Generated bool value/result or readonly/writable aliases lost native byte storage.");
+    auto readonly = arguments;
+    readonly[2] = Argument::borrow(std::as_const(guarded.value));
+    output = false;
+    require(!runtime.call(object.id(), alias, readonly, &output) && !std::get<bool>(output),
+        "Generated writable bool reference accepted readonly storage or overwrote failed output.");
+    const auto flags = take(runtime.find_field(type, "flags"));
+    const std::array path{flags};
+    const std::array append_arguments{Argument::field(object.id(), path), Argument{Scalar{true}}};
+    take(runtime.call(object.id(), take(runtime.find_method(type, "append_flag")), append_arguments, &output));
+    require(std::get<bool>(output) && take(runtime.with_native<CallProbe>(object.id(), [](const CallProbe& probe) -> Result<bool> {
+        return probe.flags.size() == 1 && probe.flags.data()[0] && &probe.flags[0] == probe.flags.data();
+    })), "Generated Array<bool> field/reference method lost contiguous native storage.");
+    guarded.value = false;
+    output = false;
+    const auto failed = runtime.call(object.id(), take(runtime.find_method(type, "fail_bool")),
+        std::array{Argument::borrow(guarded.value)}, &output);
+    require(!failed && failed.error().message.find("generated bool failure") != std::string::npos &&
+        guarded.value && !std::get<bool>(output) && guarded.before && guarded.after,
+        "Generated bool failure lost committed reference writes, first cause or staged output.");
+    take(runtime.call(object.id(), alias, arguments, &output));
+    require(std::get<bool>(output), "Generated bool failure left execution admission closed.");
+    std::puts("[pass] Generated bool fields, scalar/results, native reference aliases and Array<bool>");
+}
 }
 int main() {
     try {
@@ -85,7 +129,8 @@ int main() {
             atelier::reflection::Definition<Mode>::build(runtime),
             atelier::reflection::Definition<OtherMode>::build(runtime),
             atelier::reflection::Definition<UnsignedMode>::build(runtime),
-            array_definition<double>(runtime, "reflection.DoubleArray")}));
+            array_definition<double>(runtime, "reflection.DoubleArray"),
+            array_definition<bool>(runtime, "reflection.BoolArray")}));
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);
@@ -101,6 +146,7 @@ int main() {
         require(runtime.find_field(types[1], "release_only").has_value() && !runtime.find_field(types[1], "debug_only"), "Generator lost release preprocessing context.");
 #endif
         verify_math_calls(runtime);
+        verify_bool_calls(runtime);
         verify_shared_calls(runtime);
         const auto destroyed = runtime.destroy(object.id());
         if (!destroyed) throw std::runtime_error(destroyed.error().message);

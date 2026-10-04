@@ -35,7 +35,25 @@
 
 namespace atelier::source::detail {
 namespace {
-enum class EntryFailure : std::uint32_t { none, invalid_call_result, sequence_bounds, sequence_layout, sequence_size };
+enum class EntryFailure : std::uint32_t {
+    none, invalid_call_result, sequence_bounds, sequence_layout, sequence_size,
+    integer_division, integer_shift, integer_conversion
+};
+
+const char* failure_message(EntryFailure reason) noexcept {
+    switch (reason) {
+    case EntryFailure::none: return nullptr;
+    case EntryFailure::invalid_call_result:
+        return "Native call result contract violation: successful callback omitted the result or returned an invalid scalar value.";
+    case EntryFailure::sequence_bounds: return "Borrowed Array/String index is out of range.";
+    case EntryFailure::sequence_layout: return "Borrowed sequence has invalid storage, alignment or size beyond uint range.";
+    case EntryFailure::sequence_size: return "Sequence size cannot be negative.";
+    case EntryFailure::integer_division: return "Integer division or remainder requires a nonzero divisor and a representable quotient.";
+    case EntryFailure::integer_shift: return "Integer shift count must be in the range 0 through 31.";
+    case EntryFailure::integer_conversion: return "Integer conversion requires a finite value representable after truncation toward zero.";
+    }
+    return "Unknown source execution failure.";
+}
 // Keep generated failure reasons separate from opaque host service status codes.
 // This entry is private to the DLL; the exported invocation ABI stays unchanged.
 using Entry = std::uint32_t (*)(void*, const BusinessValue*, void*, EntryFailure*) noexcept;
@@ -94,6 +112,7 @@ BusinessType business_type(language::ValueType type) {
     case language::ValueType::f64: return ValueKind::f64;
     case language::ValueType::u32: return ValueKind::u32;
     case language::ValueType::i32: return ValueKind::i32;
+    case language::ValueType::boolean: return ValueKind::boolean;
     case language::ValueType::enumeration: return {ValueKind::enumeration, type.type_index};
     case language::ValueType::record: return {ValueKind::record, type.type_index};
     case language::ValueType::array: return {ValueKind::array, type.type_index};
@@ -110,6 +129,7 @@ language::ValueType source_type(BusinessType kind) {
     case ValueKind::f64: return language::ValueType::f64;
     case ValueKind::u32: return language::ValueType::u32;
     case ValueKind::i32: return language::ValueType::i32;
+    case ValueKind::boolean: return language::ValueType::boolean;
     case ValueKind::enumeration: return {language::ValueType::enumeration, kind.type_index};
     case ValueKind::record: return {language::ValueType::record, kind.type_index};
     case ValueKind::array: return {language::ValueType::array, kind.type_index};
@@ -190,6 +210,8 @@ public:
         write_math_ = declare("business_write_math", i32, {ptr, i32, i32, ptr});
         read_uint_ = declare("business_read_uint", i32, {ptr, i32, i32, ptr});
         write_uint_ = declare("business_write_uint", i32, {ptr, i32, i32, i32});
+        read_bool_ = declare("business_read_bool", i32, {ptr, i32, i32, ptr});
+        write_bool_ = declare("business_write_bool", i32, {ptr, i32, i32, i32});
         call_ = declare("business_call", i32, {ptr, i32, i32, ptr, i32, ptr});
         poll_ = declare("business_poll", i32, {ptr});
         finish_call_ = declare("business_finish", i32, {ptr});
@@ -302,8 +324,11 @@ public:
             else ir_.CreateUnreachable(); // The typed tree rejects every reachable scalar fallthrough.
         }
         ir_.SetInsertPoint(finish_);
+        // Every normal exit releases user resources before the host finish
+        // policy; keep the receiver alive until that policy has completed.
+        clear_user_values();
         if (public_entry_ && !protected_values_) checked_call(finish_call_, {invocation_});
-        clear_execution_resources();
+        if (public_entry_) clear_slot(receiver_slot);
         complete(ir_.getInt32(0));
         ir_.SetInsertPoint(failure_);
         clear_execution_resources();
@@ -321,15 +346,19 @@ private:
     }
     bool managed_value(language::ValueType type) const { return language::aggregate(type) && !math_type(type); }
     llvm::Type* storage_type(language::ValueType type) {
+        if (type == language::ValueType::boolean) return ir_.getInt8Ty();
         if (const auto math = math_type(type)) return llvm::ArrayType::get(
             MathLowering::scalar_type(*context_, math), math.components());
         return value_type(type);
     }
     llvm::Value* load_value(llvm::Value* address, language::ValueType type) {
         if (const auto math = math_type(type)) return MathLowering{ir_, *module_}.load(address, math);
+        if (type == language::ValueType::boolean)
+            return ir_.CreateTrunc(ir_.CreateAlignedLoad(ir_.getInt8Ty(), address, llvm::Align(1)), ir_.getInt1Ty());
         return ir_.CreateAlignedLoad(value_type(type), address, llvm::Align(storage_alignment(type)));
     }
     void store_value(llvm::Value* value, llvm::Value* address, language::ValueType type) {
+        if (type == language::ValueType::boolean) value = ir_.CreateZExt(value, ir_.getInt8Ty());
         if (const auto math = math_type(type)) MathLowering{ir_, *module_}.store(value, address, math);
         else ir_.CreateAlignedStore(value, address, llvm::Align(storage_alignment(type)));
     }
@@ -340,6 +369,7 @@ private:
     }
     llvm::Value* decode_bits(llvm::Value* bits, language::ValueType type) {
         if (type == language::ValueType::f64) return ir_.CreateBitCast(bits, ir_.getDoubleTy());
+        if (type == language::ValueType::boolean) return ir_.CreateTrunc(bits, ir_.getInt1Ty());
         auto* value = ir_.CreateTrunc(bits, ir_.getInt32Ty());
         return type == language::ValueType::f32 ? ir_.CreateBitCast(value, ir_.getFloatTy()) : value;
     }
@@ -445,7 +475,7 @@ private:
         case language::ValueType::u32:
         case language::ValueType::i32:
         case language::ValueType::enumeration: return ir_.getInt32Ty();
-        case language::ValueType::predicate: return ir_.getInt1Ty();
+        case language::ValueType::boolean: return ir_.getInt1Ty();
         case language::ValueType::void_value: return ir_.getVoidTy();
         case language::ValueType::record:
         case language::ValueType::array:
@@ -558,6 +588,12 @@ private:
             checked_call(read_double_, {invocation_, slot, ir_.getInt32(field), double_result_});
             return ir_.CreateLoad(ir_.getDoubleTy(), double_result_);
         }
+        if (type == language::ValueType::boolean) {
+            checked_call(read_bool_, {invocation_, slot, ir_.getInt32(field), uint_result_});
+            auto* value = ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
+            check_value(ir_.CreateICmpULE(value, ir_.getInt32(1)), EntryFailure::invalid_call_result);
+            return ir_.CreateTrunc(value, ir_.getInt1Ty());
+        }
         if (type != language::ValueType::u32 && type != language::ValueType::i32 && type.kind != language::ValueType::enumeration) throw std::logic_error("Unsupported business field binding.");
         checked_call(read_uint_, {invocation_, slot, ir_.getInt32(field), uint_result_});
         return ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
@@ -572,6 +608,8 @@ private:
             checked_call(write_float_, {invocation_, slot, ir_.getInt32(field), value});
         } else if (type == language::ValueType::f64) {
             checked_call(write_double_, {invocation_, slot, ir_.getInt32(field), value});
+        } else if (type == language::ValueType::boolean) {
+            checked_call(write_bool_, {invocation_, slot, ir_.getInt32(field), ir_.CreateZExt(value, ir_.getInt32Ty())});
         } else {
             if (type != language::ValueType::u32 && type != language::ValueType::i32 && type.kind != language::ValueType::enumeration) throw std::logic_error("Unsupported business field binding.");
             checked_call(write_uint_, {invocation_, slot, ir_.getInt32(field), value});
@@ -609,10 +647,12 @@ private:
         return result;
     }
     std::size_t storage_size(language::ValueType type) const {
-        return language::aggregate(type) ? source_.value_layouts.at(type.type_index).size : type == language::ValueType::f64 ? 8 : 4;
+        return language::aggregate(type) ? source_.value_layouts.at(type.type_index).size :
+            type == language::ValueType::boolean ? 1 : type == language::ValueType::f64 ? 8 : 4;
     }
     std::size_t storage_alignment(language::ValueType type) const {
-        return language::aggregate(type) ? source_.value_layouts.at(type.type_index).alignment : type == language::ValueType::f64 ? 8 : 4;
+        return language::aggregate(type) ? source_.value_layouts.at(type.type_index).alignment :
+            type == language::ValueType::boolean ? 1 : type == language::ValueType::f64 ? 8 : 4;
     }
     Sequence sequence(language::NodeId id) {
         const auto& node = function_.expressions[id];
@@ -646,9 +686,25 @@ private:
             auto* value = expression(node.left);
             const auto input = function_.expressions[node.left].type;
             if (input == node.type) return value;
-            if (floating_type(input)) return ir_.CreateFPCast(value, value_type(node.type));
-            return input == language::ValueType::i32 ? ir_.CreateSIToFP(value, value_type(node.type)) :
-                ir_.CreateUIToFP(value, value_type(node.type));
+            if (floating_type(node.type)) {
+                if (floating_type(input)) return ir_.CreateFPCast(value, value_type(node.type));
+                return input == language::ValueType::i32 ? ir_.CreateSIToFP(value, value_type(node.type)) :
+                    ir_.CreateUIToFP(value, value_type(node.type));
+            }
+            const bool signed_result = node.type == language::ValueType::i32;
+            if (floating_type(input)) {
+                // Check the interval whose truncation is representable. Extend
+                // f32 first so the lower int boundary is not rounded to INT_MIN.
+                auto* wide = ir_.CreateFPCast(value, ir_.getDoubleTy());
+                auto* lower = llvm::ConstantFP::get(ir_.getDoubleTy(), signed_result ? -2147483649.0 : -1.0);
+                auto* upper = llvm::ConstantFP::get(ir_.getDoubleTy(), signed_result ? 2147483648.0 : 4294967296.0);
+                check_value(ir_.CreateAnd(ir_.CreateFCmpOGT(wide, lower), ir_.CreateFCmpOLT(wide, upper)),
+                    EntryFailure::integer_conversion);
+                return signed_result ? ir_.CreateFPToSI(value, ir_.getInt32Ty()) : ir_.CreateFPToUI(value, ir_.getInt32Ty());
+            }
+            check_value(signed_result ? ir_.CreateICmpULE(value, ir_.getInt32(INT32_MAX)) :
+                ir_.CreateICmpSGE(value, ir_.getInt32(0)), EntryFailure::integer_conversion);
+            return value;
         }
         case Kind::math_construct:
         case Kind::math_intrinsic: {
@@ -663,6 +719,7 @@ private:
                 return llvm::ConstantFP::get(ir_.getFloatTy(), std::bit_cast<float>(static_cast<std::uint32_t>(node.bits)));
             if (node.type == language::ValueType::f64)
                 return llvm::ConstantFP::get(ir_.getDoubleTy(), std::bit_cast<double>(node.bits));
+            if (node.type == language::ValueType::boolean) return ir_.getInt1(node.bits != 0);
             return ir_.getInt32(static_cast<std::uint32_t>(node.bits));
         case Kind::string_literal: {
             const auto slot = literal_slots_.at(index);
@@ -821,7 +878,8 @@ private:
                 valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(data, call_math_result_));
             } else if (node.type != language::ValueType::f64) {
                 auto* bits = ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, output, 2));
-                valid = ir_.CreateAnd(valid, ir_.CreateICmpULE(bits, ir_.getInt64(UINT32_MAX)));
+                valid = ir_.CreateAnd(valid, ir_.CreateICmpULE(bits,
+                    ir_.getInt64(node.type == language::ValueType::boolean ? 1 : UINT32_MAX)));
             }
             ir_.CreateCondBr(valid, next, failure_);
             ir_.SetInsertPoint(next);
@@ -831,14 +889,32 @@ private:
         }
         case Kind::unary: {
             auto* value = expression(node.left);
+            if (node.operation == language::Operation::logical_not || node.operation == language::Operation::bitwise_not)
+                return ir_.CreateNot(value);
             return node.operation == language::Operation::positive ? value : (floating_type(node.type) || math_type(node.type)) ? ir_.CreateFNeg(value) : ir_.CreateNeg(value);
         }
         case Kind::binary: break;
         }
         auto* left = expression(node.left);
+        using Op = language::Operation;
+        if (node.operation == Op::logical_and || node.operation == Op::logical_or) {
+            auto* left_end = ir_.GetInsertBlock();
+            auto* evaluate = block("logical.rhs");
+            auto* merge = block("logical.end");
+            if (node.operation == Op::logical_and) ir_.CreateCondBr(left, evaluate, merge);
+            else ir_.CreateCondBr(left, merge, evaluate);
+            ir_.SetInsertPoint(evaluate);
+            auto* right = expression(node.right);
+            auto* right_end = ir_.GetInsertBlock();
+            ir_.CreateBr(merge);
+            ir_.SetInsertPoint(merge);
+            auto* result = ir_.CreatePHI(ir_.getInt1Ty(), 2, "logical.result");
+            result->addIncoming(left, left_end);
+            result->addIncoming(right, right_end);
+            return result;
+        }
         auto* right = expression(node.right);
         const auto left_type = function_.expressions[node.left].type;
-        using Op = language::Operation;
         if (is_reference(left_type)) {
             if (node.operation != Op::equal && node.operation != Op::not_equal)
                 throw std::logic_error("Invalid typed reference comparison.");
@@ -854,7 +930,25 @@ private:
         case Op::add: return floating ? ir_.CreateFAdd(left, right) : ir_.CreateAdd(left, right);
         case Op::subtract: return floating ? ir_.CreateFSub(left, right) : ir_.CreateSub(left, right);
         case Op::multiply: return floating ? ir_.CreateFMul(left, right) : ir_.CreateMul(left, right);
-        case Op::divide: return ir_.CreateFDiv(left, right);
+        case Op::divide:
+        case Op::remainder: {
+            if (floating) return ir_.CreateFDiv(left, right);
+            auto* valid = ir_.CreateICmpNE(right, ir_.getInt32(0));
+            const bool signed_integer = left_type == language::ValueType::i32;
+            if (signed_integer) valid = ir_.CreateAnd(valid, ir_.CreateNot(ir_.CreateAnd(
+                ir_.CreateICmpEQ(left, ir_.getInt32(0x80000000u)), ir_.CreateICmpEQ(right, ir_.getInt32(UINT32_MAX)))));
+            check_value(valid, EntryFailure::integer_division);
+            if (node.operation == Op::remainder) return signed_integer ? ir_.CreateSRem(left, right) : ir_.CreateURem(left, right);
+            return signed_integer ? ir_.CreateSDiv(left, right) : ir_.CreateUDiv(left, right);
+        }
+        case Op::bitwise_and: return ir_.CreateAnd(left, right);
+        case Op::bitwise_or: return ir_.CreateOr(left, right);
+        case Op::bitwise_xor: return ir_.CreateXor(left, right);
+        case Op::shift_left:
+        case Op::shift_right:
+            check_value(ir_.CreateICmpULT(right, ir_.getInt32(32)), EntryFailure::integer_shift);
+            if (node.operation == Op::shift_left) return ir_.CreateShl(left, right);
+            return left_type == language::ValueType::i32 ? ir_.CreateAShr(left, right) : ir_.CreateLShr(left, right);
         case Op::equal: return floating ? ir_.CreateFCmpOEQ(left, right) : ir_.CreateICmpEQ(left, right);
         case Op::not_equal: return floating ? ir_.CreateFCmpUNE(left, right) : ir_.CreateICmpNE(left, right);
         case Op::less: return floating ? ir_.CreateFCmpOLT(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSLT(left, right) : ir_.CreateICmpULT(left, right);
@@ -862,25 +956,32 @@ private:
         case Op::greater: return floating ? ir_.CreateFCmpOGT(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSGT(left, right) : ir_.CreateICmpUGT(left, right);
         case Op::greater_equal: return floating ? ir_.CreateFCmpOGE(left, right) : left_type == language::ValueType::i32 ? ir_.CreateICmpSGE(left, right) : ir_.CreateICmpUGE(left, right);
         case Op::positive:
-        case Op::negate: break;
+        case Op::negate:
+        case Op::logical_not:
+        case Op::bitwise_not:
+        case Op::logical_and:
+        case Op::logical_or: break;
         }
         throw std::logic_error("Invalid typed binary operation.");
+    }
+    void clear_scope(const language::Statement& scope) {
+        for (auto local = scope.locals.rbegin(); local != scope.locals.rend(); ++local) {
+            if (is_reference(function_.locals[*local].type)) clear_slot(local_slots_[*local]);
+            else if (owned_local_slots_[*local] != language::no_node) destroy_owned(owned_local_slots_[*local]);
+        }
     }
     void statement(language::NodeId index) {
         const auto& node = function_.statements[index];
         using Kind = language::Statement::Kind;
         switch (node.kind) {
         case Kind::block:
+            scopes_.push_back(index);
             for (const auto child : node.children) {
                 if (terminated()) break;
                 statement(child);
             }
-            if (!terminated()) {
-                for (auto local = node.locals.rbegin(); local != node.locals.rend(); ++local) {
-                    if (is_reference(function_.locals[*local].type)) clear_slot(local_slots_[*local]);
-                    else if (owned_local_slots_[*local] != language::no_node) destroy_owned(owned_local_slots_[*local]);
-                }
-            }
+            if (!terminated()) clear_scope(node);
+            scopes_.pop_back();
             return;
         case Kind::declare: {
             if (owned_local_slots_[node.target] != language::no_node) {
@@ -938,17 +1039,9 @@ private:
                 else ir_.CreateStore(encode_bits(value, function_.result), result_output_);
             }
             clear_temporaries();
-            // Stage before shared cleanup; public result storage is untouched
-            // until finish and all-root cleanup have both succeeded.
-            if (!return_cleanup_) {
-                auto* origin = ir_.GetInsertBlock();
-                return_cleanup_ = block("cleanup.return");
-                ir_.SetInsertPoint(return_cleanup_);
-                clear_user_values();
-                ir_.CreateBr(finish_);
-                ir_.SetInsertPoint(origin);
-            }
-            ir_.CreateBr(return_cleanup_);
+            // Public result storage stays untouched until shared cleanup and
+            // the host finish policy have both succeeded.
+            ir_.CreateBr(finish_);
             return;
         case Kind::condition: {
             auto* condition = expression(node.expression);
@@ -967,18 +1060,37 @@ private:
             return;
         }
         case Kind::loop: {
-            auto* condition = block("while.condition");
-            auto* body = block("while.body");
-            auto* end = block("while.end");
+            auto* condition = block("loop.condition");
+            auto* body = block("loop.body");
+            auto* step = block("loop.step");
+            auto* end = block("loop.end");
             ir_.CreateBr(condition);
             ir_.SetInsertPoint(condition);
             auto* value = expression(node.expression);
             clear_temporaries();
             ir_.CreateCondBr(value, body, end);
             ir_.SetInsertPoint(body);
+            loops_.push_back({end, step, scopes_.size()});
             statement(node.body);
-            if (!terminated()) { safe_point(); ir_.CreateBr(condition); }
+            loops_.pop_back();
+            if (!terminated()) ir_.CreateBr(step);
+            ir_.SetInsertPoint(step);
+            if (node.step != language::no_node) statement(node.step);
+            safe_point();
+            ir_.CreateBr(condition);
             ir_.SetInsertPoint(end);
+            return;
+        }
+        case Kind::break_loop:
+        case Kind::continue_loop: {
+            if (loops_.empty()) throw std::logic_error("Loop transfer has no enclosing loop.");
+            const auto target = loops_.back();
+            clear_temporaries();
+            // The for initializer lives in its enclosing block. Only the body
+            // scopes being left end here; continue reaches step before polling.
+            for (auto scope = scopes_.size(); scope > target.scope_depth;)
+                clear_scope(function_.statements[scopes_[--scope]]);
+            ir_.CreateBr(node.kind == Kind::break_loop ? target.end : target.step);
             return;
         }
         }
@@ -995,7 +1107,6 @@ private:
     llvm::Value *invocation_{}, *result_output_{}, *failure_output_{};
     llvm::BasicBlock* failure_{};
     llvm::BasicBlock* finish_{};
-    llvm::BasicBlock* return_cleanup_{};
     llvm::PHINode* failure_status_{};
     llvm::PHINode* failure_reason_{};
     llvm::BasicBlock *coroutine_return_{}, *coroutine_final_{}, *coroutine_cancel_{}, *coroutine_free_{};
@@ -1014,6 +1125,9 @@ private:
     std::vector<std::uint32_t> local_slots_;
     std::vector<std::uint32_t> temporary_slots_;
     std::vector<std::uint32_t> temporaries_;
+    struct LoopTarget { llvm::BasicBlock *end, *step; std::size_t scope_depth; };
+    std::vector<LoopTarget> loops_;
+    std::vector<language::NodeId> scopes_;
     std::uint32_t strong_slots_{business_root_slots};
     std::uint32_t weak_slots_{};
     const std::uint32_t first_strong_slot_, first_weak_slot_;
@@ -1021,6 +1135,7 @@ private:
     std::uint32_t max_call_arguments_{};
     bool has_call_result_{}, has_source_calls_{};
     llvm::FunctionCallee begin_, create_, read_float_, write_float_, read_double_, write_double_, read_math_, write_math_, read_uint_, write_uint_;
+    llvm::FunctionCallee read_bool_, write_bool_;
     llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
     llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
 };
@@ -1049,6 +1164,7 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
                     parameters.push_back(MathLowering::value_type(*context, program.value_layouts.at(parameter.type.type_index).math));
                 else if (parameter.type == language::ValueType::f32) parameters.push_back(llvm::Type::getFloatTy(*context));
                 else if (parameter.type == language::ValueType::f64) parameters.push_back(llvm::Type::getDoubleTy(*context));
+                else if (parameter.type == language::ValueType::boolean) parameters.push_back(llvm::Type::getInt1Ty(*context));
                 else parameters.push_back(i32);
             }
         }
@@ -1213,6 +1329,8 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     if (services.write_double) bind("business_write_double", services.write_double);
     if (services.read_math) bind("business_read_math", services.read_math);
     if (services.write_math) bind("business_write_math", services.write_math);
+    if (services.read_bool) bind("business_read_bool", services.read_bool);
+    if (services.write_bool) bind("business_write_bool", services.write_bool);
     bind("business_read_uint", state->services.read_uint);
     bind("business_write_uint", state->services.write_uint);
     bind("business_call", state->services.call);
@@ -1444,14 +1562,15 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         const auto mode = signature.parameters[index].passing;
         const auto& argument = arguments[index];
         const auto type = signature.parameters[index].type;
-        const auto alignment = atelier::source::detail::aggregate(type) ? active_code->values.at(type.type_index).alignment : type == ValueKind::f64 ? 8 : 4;
+        const auto alignment = atelier::source::detail::aggregate(type) ? active_code->values.at(type.type_index).alignment :
+            type == ValueKind::boolean ? 1 : type == ValueKind::f64 ? 8 : 4;
         const bool valid_storage = mode == atelier::ParameterPassing::value ? argument.storage == atelier::source::detail::ArgumentStorage::value :
             argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0 &&
             (argument.storage == atelier::source::detail::ArgumentStorage::reference || (mode == atelier::ParameterPassing::read_only && argument.storage == atelier::source::detail::ArgumentStorage::read_only));
         const bool math_value = atelier::source::detail::aggregate(type);
         const bool valid_value = mode != atelier::ParameterPassing::value || (math_value ?
             argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0 :
-            type == ValueKind::f64 || argument.bits <= UINT32_MAX);
+            type == ValueKind::f64 || argument.bits <= (type == ValueKind::boolean ? 1 : UINT32_MAX));
         if (argument.kind != signature.parameters[index].type || !valid_storage || !valid_value) {
             std::snprintf(error, error_capacity, "Business argument %u does not match its compiled scalar kind.", index);
             return 1;
@@ -1468,15 +1587,8 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
     auto failure_reason = atelier::source::detail::EntryFailure::none;
     const auto status = active_code->entry(invocation, arguments,
         math_result ? static_cast<void*>(staged_math) : &staged_bits, &failure_reason);
-    if (failure_reason == atelier::source::detail::EntryFailure::invalid_call_result)
-        std::snprintf(error, error_capacity, "%s",
-            "Native call result contract violation: successful callback omitted the result or returned the wrong scalar kind.");
-    if (failure_reason == atelier::source::detail::EntryFailure::sequence_bounds)
-        std::snprintf(error, error_capacity, "%s", "Borrowed Array/String index is out of range.");
-    if (failure_reason == atelier::source::detail::EntryFailure::sequence_layout)
-        std::snprintf(error, error_capacity, "%s", "Borrowed sequence has invalid storage, alignment or size beyond uint range.");
-    if (failure_reason == atelier::source::detail::EntryFailure::sequence_size)
-        std::snprintf(error, error_capacity, "%s", "Sequence size cannot be negative.");
+    if (const auto* message = atelier::source::detail::failure_message(failure_reason))
+        std::snprintf(error, error_capacity, "%s", message);
     if (status == 0 && result) {
         if (math_result) {
             std::memcpy(const_cast<void*>(result->data), staged_math, math_result.size());
@@ -1505,7 +1617,8 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
     }
     for (std::uint32_t i = 0; i < argument_count; ++i) {
         if (arguments[i].kind != active->signature.parameters[i].type || arguments[i].storage != ArgumentStorage::value ||
-            (arguments[i].kind != ValueKind::f64 && arguments[i].bits > UINT32_MAX) || aggregate(arguments[i].kind)) {
+            (arguments[i].kind != ValueKind::f64 && arguments[i].bits > (arguments[i].kind == ValueKind::boolean ? 1 : UINT32_MAX)) ||
+            aggregate(arguments[i].kind)) {
             std::snprintf(error, error_capacity, "%s", "Coroutine argument has the wrong scalar kind.");
             return 1;
         }
@@ -1543,9 +1656,8 @@ std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::Busines
     active->running = true;
     active->code->resume(active->handle);
     active->running = false;
-    if (active->failure == atelier::source::detail::EntryFailure::invalid_call_result)
-        std::snprintf(error, error_capacity, "%s",
-            "Native call result contract violation: successful callback omitted the result or returned the wrong scalar kind.");
+    if (const auto* message = atelier::source::detail::failure_message(active->failure))
+        std::snprintf(error, error_capacity, "%s", message);
     if (active->status != 0) return active->status;
     *suspended = active->completed == 0;
     if (active->completed) *result = {active->code->signature.result, active->bits};

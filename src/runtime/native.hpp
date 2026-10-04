@@ -15,7 +15,7 @@ namespace detail {
 
 template<class T>
 concept ScalarType = std::same_as<T, float> || std::same_as<T, double> || std::same_as<T, std::uint32_t> ||
-    std::same_as<T, std::int32_t> || (std::is_enum_v<T> && sizeof(T) == 4);
+    std::same_as<T, std::int32_t> || std::same_as<T, bool> || (std::is_enum_v<T> && sizeof(T) == 4);
 
 template<class T>
 concept MathValueType = static_cast<bool>(math::type_of<T>);

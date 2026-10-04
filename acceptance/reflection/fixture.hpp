@@ -49,6 +49,13 @@ struct CallProbe {
     AFIELD() double precise_value{};
     AFIELD() math::Vector3d direction;
     AFIELD() Array<double> samples;
+    AFIELD() bool enabled{};
+    AFIELD() bool before{true};
+    AFIELD() bool after{true};
+    AFIELD() Array<bool> flags;
+    AFUNCTION() bool bool_alias(bool copy, const bool& read, bool& write) { write = copy; return read; }
+    AFUNCTION() bool append_flag(Array<bool>& values, bool value) { values.add(value); return values[values.size() - 1]; }
+    AFUNCTION() bool fail_bool(bool& value) { value = true; throw std::runtime_error("generated bool failure"); }
     AFUNCTION() int aliases(const int& read, int& write) { write = 10; write += read; return read; }
     AFUNCTION() int mixed(int copy, const int& read, int& write) { write += copy + read; return write; }
     AFUNCTION() int read_only(const int& v) const noexcept { return v; }

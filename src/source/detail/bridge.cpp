@@ -34,7 +34,8 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     binding.f64 = take(runtime.native_type<double>());
     binding.u32 = take(runtime.native_type<std::uint32_t>());
     binding.i32 = take(runtime.native_type<std::int32_t>());
-    binding.dependencies = {binding.f32, binding.f64, binding.u32, binding.i32};
+    binding.boolean = take(runtime.native_type<bool>());
+    binding.dependencies = {binding.f32, binding.f64, binding.u32, binding.i32, binding.boolean};
     for (const auto* enumeration : catalog) {
         const auto id = enumeration->id;
         if (!enumeration->enumeration) continue;
@@ -142,6 +143,7 @@ BusinessType value_kind(const Binding& binding, TypeId type) {
     if (type == binding.f64) return ValueKind::f64;
     if (type == binding.u32) return ValueKind::u32;
     if (type == binding.i32) return ValueKind::i32;
+    if (type == binding.boolean) return ValueKind::boolean;
     for (std::uint32_t i = 0; i < binding.enumerations.size(); ++i)
         if (type == binding.enumerations[i].type) return {ValueKind::enumeration, i};
     for (std::uint32_t i = 0; i < binding.values.size(); ++i)
@@ -153,6 +155,7 @@ TypeId value_type_id(const Binding& binding, BusinessType type) {
     if (type == ValueKind::f64) return binding.f64;
     if (type == ValueKind::u32) return binding.u32;
     if (type == ValueKind::i32) return binding.i32;
+    if (type == ValueKind::boolean) return binding.boolean;
     if (type.kind == ValueKind::enumeration && type.type_index < binding.enumerations.size())
         return binding.enumerations[type.type_index].type;
     if (aggregate(type) && type.type_index < binding.values.size() && type.kind == binding.values[type.type_index].kind)
@@ -197,6 +200,11 @@ BusinessEnvironment EnvironmentView::view(const char* object_type_name) const {
         values.data(), static_cast<std::uint32_t>(values.size())};
 }
 std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) {
+    if (value.storage != ArgumentStorage::value) return std::nullopt;
+    if (value.kind == ValueKind::boolean) {
+        if (value.bits > 1) return std::nullopt;
+        return value.bits != 0;
+    }
     if (value.kind != ValueKind::f64 && value.bits > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
     if (value.kind == ValueKind::f32) return std::bit_cast<float>(static_cast<std::uint32_t>(value.bits));
     if (value.kind == ValueKind::f64) return std::bit_cast<double>(value.bits);
@@ -227,6 +235,7 @@ void AbiArguments::initialize(const Binding& binding, const FunctionSignature& s
         values[i].kind = value_kind(binding, views[i].type);
         if (signature.parameters[i].passing == ParameterPassing::value) {
             if (aggregate(values[i].kind)) values[i].data = views[i].data;
+            else if (values[i].kind == ValueKind::boolean) values[i].bits = *static_cast<const bool*>(views[i].data) ? 1u : 0u;
             else std::memcpy(&values[i].bits, views[i].data, values[i].kind == ValueKind::f64 ? 8 : 4);
         }
         else {
@@ -303,6 +312,29 @@ std::uint32_t write_double(void* context, std::uint32_t slot, std::uint32_t fiel
         auto object = invocation.frame.object(slot);
         if (!object) return std::unexpected(std::move(object.error()));
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f64), value);
+    });
+}
+std::uint32_t read_bool(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        require(output && reinterpret_cast<std::uintptr_t>(output) % alignof(std::uint32_t) == 0,
+            "Host boolean result storage is null or misaligned.");
+        auto object = invocation.frame.object(slot);
+        if (!object) return std::unexpected(std::move(object.error()));
+        auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::boolean));
+        if (!value) return std::unexpected(std::move(value.error()));
+        *output = std::get<bool>(*value) ? 1u : 0u;
+        return {};
+    });
+}
+std::uint32_t write_bool(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        if (value > 1)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Host boolean value must be 0 or 1."});
+        auto object = invocation.frame.object(slot);
+        if (!object) return std::unexpected(std::move(object.error()));
+        return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::boolean), value != 0);
     });
 }
 const BoundField& math_field(const Binding& binding, std::uint32_t field) {
@@ -584,7 +616,7 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
 }
 const BusinessServices services{begin, create_slot, read_float, write_float, read_uint,
     write_uint, call_method, poll, finish, clear_slot, change_reference, same_reference,
-    construct_value, assign_value, destroy_value, mutate_sequence, read_double, write_double, read_math, write_math};
+    construct_value, assign_value, destroy_value, mutate_sequence, read_double, write_double, read_math, write_math, read_bool, write_bool};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count || binding.enumerations.size() != environment.enumeration_count) return false;
@@ -625,13 +657,14 @@ Result<void> check_source_arguments(const Binding& binding, const BusinessSignat
         const auto mode = signature.parameters[i].passing;
         const BoundValue* value = aggregate(argument.kind) && argument.kind.type_index < binding.values.size() ?
             &binding.values[argument.kind.type_index] : nullptr;
-        const auto alignment = value ? value->alignment : argument.kind == ValueKind::f64 ? 8u : 4u;
+        const auto alignment = value ? value->alignment : argument.kind == ValueKind::boolean ? 1u : argument.kind == ValueKind::f64 ? 8u : 4u;
         const bool has_storage = argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0;
         const bool valid = mode == ParameterPassing::value ? argument.storage == ArgumentStorage::value &&
             (!aggregate(argument.kind) || (value && value->math && has_storage)) :
             has_storage &&
             (argument.storage == ArgumentStorage::reference || (mode == ParameterPassing::read_only && argument.storage == ArgumentStorage::read_only));
         if (argument.kind != signature.parameters[i].type || !valid ||
+            (mode == ParameterPassing::value && argument.kind == ValueKind::boolean && argument.bits > 1) ||
             (mode == ParameterPassing::value && !aggregate(argument.kind) && argument.kind != ValueKind::f64 &&
                 argument.bits > std::numeric_limits<std::uint32_t>::max()))
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Source argument type or storage does not match its signature."});

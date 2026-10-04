@@ -12,7 +12,8 @@ inline bool letter(char value) noexcept {
 }
 inline bool digit(char value) noexcept { return value >= '0' && value <= '9'; }
 inline bool reserved(std::string_view value) noexcept {
-    return value == "void" || value == "float" || value == "double" || value == "uint" || value == "int" || value == "const" || value == "if" ||
+    return value == "bool" || value == "true" || value == "false" || value == "for" || value == "break" || value == "continue" ||
+        value == "void" || value == "float" || value == "double" || value == "uint" || value == "int" || value == "const" || value == "if" ||
         value == "else" || value == "while" || value == "return" || value == "self" ||
         value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
         value == "async" || value == "yield" || value == "struct" || value == "enum";
@@ -78,8 +79,17 @@ public:
         if (first == '=' || first == '!' || first == '<' || first == '>') {
             advance();
             if (peek() == '=') advance();
-            if (first == '!' && position_.offset == start.offset + 1)
-                reject(start, "Logical negation is not supported in this source slice.");
+            else if ((first == '<' || first == '>') && peek() == first) advance();
+            return token(Token::Kind::punctuation, start);
+        }
+        if (first == '+' || first == '-') {
+            advance();
+            if (peek() == first) reject(start, "Increment and decrement operators are not supported; use assignment.");
+            return token(Token::Kind::punctuation, start);
+        }
+        if (first == '&' || first == '|') {
+            advance();
+            if (peek() == first) advance();
             return token(Token::Kind::punctuation, start);
         }
         if (first == ':') {
@@ -87,7 +97,7 @@ public:
             if (peek() == ':') advance();
             return token(Token::Kind::punctuation, start);
         }
-        if (std::string_view("(){}[];.,+-*/&").find(first) != std::string_view::npos) {
+        if (std::string_view("(){}[];.,*/%^~").find(first) != std::string_view::npos) {
             advance();
             return token(Token::Kind::punctuation, start);
         }
@@ -120,6 +130,14 @@ public:
         return true;
     }
     Token expect(std::string_view text) {
+        if (text == ">" && token_.text == ">>") {
+            auto first = token_;
+            first.text = first.text.substr(0, 1);
+            token_.text.remove_prefix(1);
+            ++token_.position.offset;
+            ++token_.position.column;
+            return first;
+        }
         if (token_.text != text) reject(token_.position, "Expected '" + std::string(text) + "'.");
         return consume();
     }

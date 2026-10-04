@@ -135,7 +135,7 @@ struct EnumValue {
     std::uint32_t bits{};
     bool operator==(const EnumValue&) const = default;
 };
-using Scalar = std::variant<float, std::uint32_t, std::int32_t, EnumValue, double>;
+using Scalar = std::variant<float, std::uint32_t, std::int32_t, EnumValue, double, bool>;
 
 // Validated, call-scoped storage. Invokers must not retain these addresses.
 struct ArgumentView {

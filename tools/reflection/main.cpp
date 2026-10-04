@@ -347,6 +347,7 @@ std::optional<std::string> scalar(QualType type, State& state, ASTContext& conte
     if (type->isSpecificBuiltinType(BuiltinType::Int) && context.getTypeSize(type) == 32) return "::std::int32_t";
     if (type->isSpecificBuiltinType(BuiltinType::Float)) return "float";
     if (type->isSpecificBuiltinType(BuiltinType::Double)) return "double";
+    if (type->isSpecificBuiltinType(BuiltinType::Bool)) return "bool";
     if (type->isSpecificBuiltinType(BuiltinType::UInt) && context.getTypeSize(type) == 32) return "::std::uint32_t";
     return {};
 }

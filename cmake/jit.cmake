@@ -95,7 +95,8 @@ function(atelier_add_source)
     add_executable(atelier_source_minimal
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
         acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp
-        acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp)
+        acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp
+        acceptance/source/foundations.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
@@ -120,7 +121,8 @@ function(atelier_add_source)
 
         configure_file("${PROJECT_SOURCE_DIR}/acceptance/jit/advance_machine.source"
             "${CMAKE_BINARY_DIR}/advance_machine.source" COPYONLY)
-        add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp acceptance/jit/math_abi.cpp)
+        add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp
+            acceptance/jit/math_abi.cpp acceptance/jit/bool_abi.cpp)
         atelier_target(atelier_jit_acceptance)
         target_compile_definitions(atelier_jit_acceptance PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
         target_include_directories(atelier_jit_acceptance PRIVATE acceptance)

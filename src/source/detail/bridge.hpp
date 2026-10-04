@@ -60,7 +60,7 @@ struct Binding {
     std::vector<TypeId> dependencies;
     std::vector<BoundEnum> enumerations{};
     std::vector<BoundValue> values{};
-    TypeId f32{}, f64{}, u32{}, i32{};
+    TypeId f32{}, f64{}, u32{}, i32{}, boolean{};
 };
 Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});
 BusinessType value_kind(const Binding&, TypeId);
@@ -79,6 +79,7 @@ inline BusinessValue scalar(float value) { return {ValueKind::f32, std::bit_cast
 inline BusinessValue scalar(double value) { return {ValueKind::f64, std::bit_cast<std::uint64_t>(value)}; }
 inline BusinessValue scalar(std::uint32_t value) { return {ValueKind::u32, value}; }
 inline BusinessValue scalar(std::int32_t value) { return {ValueKind::i32, std::bit_cast<std::uint32_t>(value)}; }
+inline BusinessValue scalar(bool value) { return {ValueKind::boolean, value ? 1u : 0u}; }
 BusinessValue scalar(const Scalar&, const Binding&);
 std::optional<Scalar> scalar_value(BusinessValue, const Binding* = nullptr);
 struct AbiArguments {
@@ -150,6 +151,8 @@ std::uint32_t read_math(void*, std::uint32_t, std::uint32_t, void*) noexcept;
 std::uint32_t write_math(void*, std::uint32_t, std::uint32_t, const void*) noexcept;
 std::uint32_t read_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
 std::uint32_t write_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
+std::uint32_t read_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
+std::uint32_t write_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
 std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t, BusinessValue*) noexcept;
 std::uint32_t begin(void*) noexcept;
 std::uint32_t poll(void*) noexcept;

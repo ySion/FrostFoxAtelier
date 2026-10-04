@@ -42,6 +42,7 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                     else if (type.name == "double") resolved = binding.f64;
                     else if (type.name == "uint") resolved = binding.u32;
                     else if (type.name == "int") resolved = binding.i32;
+                    else if (type.name == "bool") resolved = binding.boolean;
                     for (const auto& value : binding.enumerations) if (value.name == type.name) resolved = value.type;
                     for (const auto& value : binding.values)
                         if (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string) ||
@@ -223,7 +224,8 @@ struct Program::Version {
         auto result = invoke(receiver, encoded.values, {}, budget);
         if (!result) return std::unexpected(result.error());
         auto decoded = detail::scalar_value(*result, &contract->binding);
-        if (info.signature.result != ValueKind::void_value && !decoded)
+        if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
+            (info.signature.result != ValueKind::void_value && !decoded))
             return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled source returned an invalid scalar value."});
         return decoded;
     }
@@ -295,12 +297,17 @@ struct Program::Frame final : CoroutineFrame {
     Result<CoroutineStep> resume() override {
         char diagnostic[512];
         bool suspended{};
-        BusinessValue output;
+        BusinessValue output{};
         const auto status = atelier_resume_business_coroutine(code_frame.get(), &suspended, &output,
             diagnostic, sizeof(diagnostic));
+        const auto decoded = status == 0 && !suspended && !invocation.failed ?
+            scalar_value(output, &version->contract->binding) : std::optional<Scalar>{};
+        const bool invalid_result = status == 0 && !suspended && !invocation.failed &&
+            (output.kind != version->info.signature.result || output.storage != ArgumentStorage::value ||
+                (version->info.signature.result != ValueKind::void_value && !decoded));
         if (status != 0 || !suspended || invocation.failed) {
             const bool cleared = invocation.resources_cleared();
-            complete(cleared && status == 0 && !invocation.failed);
+            complete(cleared && status == 0 && !invocation.failed && !invalid_result);
             if (!cleared)
                 return std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine left execution resources alive."});
         }
@@ -308,7 +315,9 @@ struct Program::Frame final : CoroutineFrame {
             return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
                 invocation.failed ? invocation.error : diagnostic});
         if (suspended) return CoroutineStep{CoroutineState::suspended};
-        return CoroutineStep{CoroutineState::completed, scalar_value(output, &version->contract->binding)};
+        if (invalid_result)
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine returned an invalid scalar value."});
+        return CoroutineStep{CoroutineState::completed, decoded};
     }
 };
 struct Program::Prepared {

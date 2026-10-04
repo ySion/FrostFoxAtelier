@@ -13,7 +13,7 @@ inline constexpr std::uint32_t business_root_slots = 1;
 inline constexpr std::uint32_t observation_slot_bit = 0x80000000u;
 inline constexpr std::uint32_t null_reference_slot = 0xffffffffu;
 
-enum class ValueKind : std::uint32_t { void_value, f32, u32, i32, enumeration, record, array, string, f64 };
+enum class ValueKind : std::uint32_t { void_value, f32, u32, i32, enumeration, record, array, string, f64, boolean };
 struct BusinessType {
     ValueKind kind;
     std::uint32_t type_index;
@@ -28,7 +28,7 @@ struct BusinessParameter {
 };
 enum class ArgumentStorage : std::uint32_t { value, read_only, reference, field };
 // Fixed-layout operand. Native values borrow original storage; bits only carry
-// scalars. Addresses/field locators last through a synchronous call. Math value
+// scalars; boolean bits must be exactly 0 or 1. Addresses/field locators last through a synchronous call. Math value
 // arguments point at independent input storage; math results use caller-owned
 // exact typed storage. This is not an aggregate serialization format.
 struct BusinessValue {
@@ -130,6 +130,9 @@ struct BusinessServices {
     std::uint32_t (*write_double)(void*, std::uint32_t, std::uint32_t, double) noexcept{};
     std::uint32_t (*read_math)(void*, std::uint32_t, std::uint32_t, void*) noexcept{};
     std::uint32_t (*write_math)(void*, std::uint32_t, std::uint32_t, const void*) noexcept{};
+    // Numeric ABI operands are canonical 0/1; native bool storage remains one byte.
+    std::uint32_t (*read_bool)(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept{};
+    std::uint32_t (*write_bool)(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept{};
     bool operator==(const BusinessServices&) const = default;
 };
 
