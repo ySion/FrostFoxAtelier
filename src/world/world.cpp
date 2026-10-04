@@ -1,8 +1,8 @@
 #include "world/detail.hpp"
+#include "foundation/set.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-#include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
@@ -198,11 +198,11 @@ Result<Commit> World::attach(ObjectId object, std::size_t index) {
     if (!root) return std::unexpected(root.error());
     auto group = components(runtime(), object);
     if (!group) return std::unexpected(group.error());
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
     std::vector<std::size_t> buckets;
     buckets.reserve(group->size());
     for (const auto& component : *group) {
-        if (!seen.insert(component.id()).second) return error(ErrorCode::invalid_member, "Actor contains duplicate component identities.");
+        if (!seen.add(component.id())) return error(ErrorCode::invalid_member, "Actor contains duplicate component identities.");
         auto owned = detail::component_data(runtime(), component.id());
         if (!owned) return std::unexpected(owned.error());
         if (owned->owner != object) return error(ErrorCode::invalid_member, "Component has a different owner.");
@@ -297,11 +297,11 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
     std::vector<ObjectRoot> roots;
     std::vector<ObjectReference> references;
     std::vector<std::size_t> buckets;
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
     std::unordered_map<ObjectId, ObjectId> parents;
     roots.reserve(incoming.size()); references.reserve(incoming.size()); buckets.reserve(incoming.size());
     for (const auto& item : *existing) {
-        seen.insert(item.id());
+        seen.add(item.id());
         auto scene = detail::is(runtime(), item.id(), types().scene_component);
         if (!scene) return std::unexpected(scene.error());
         if (*scene) {
@@ -311,7 +311,7 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
         }
     }
     for (const auto& item : incoming) {
-        if (!seen.insert(item.component).second) return error(ErrorCode::invalid_member, "Component is already present or duplicated.");
+        if (!seen.add(item.component)) return error(ErrorCode::invalid_member, "Component is already present or duplicated.");
         auto data = detail::component_data(runtime(), item.component);
         if (!data) return std::unexpected(data.error());
         if (data->owner != ObjectId{}) return error(ErrorCode::invalid_member, "Component already has an owner.");

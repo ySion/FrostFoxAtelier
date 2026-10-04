@@ -67,8 +67,15 @@ void verify_project_workspace(editor::Project& project) {
         click(browser::project);present({static_cast<std::uint32_t>(size.width*scale),static_cast<std::uint32_t>(size.height*scale)},scale);
         require(take(document.world().members()).empty() && !document.dirty(),"Browsing changed the scene document.");
     }
+    const std::wstring unicode_name=L"Entry00000_材质\U0001F98A.txt";
+    const auto unicode_resource="Source/"+editor::utf8(unicode_name);
+    std::ofstream(project.root()/"Source"/unicode_name)<<"// Unicode catalog fixture\n";
     for (unsigned i=0;i<2600;++i) std::ofstream(project.root()/"Source"/("Entry"+std::to_string(10000+i)+".txt"))<<"// Catalog acceptance fixture\n";
     take(project.refresh());workspace.assets.navigate(L"Source");present({1600,1000},1);present({1600,1000},1);
+    const auto unicode_key=workspace.assets.control(unicode_resource);
+    require(unicode_key && surface.presented()->find(unicode_key),"Unicode resource key was not owned by the asset browser.");
+    require(workspace.assets.control(std::string_view{"\xff",1})==0 && workspace.assets.control(std::string_view{"Source/\0missing",15})==0,
+        "Arbitrary-byte missing key lookup changed its contract.");
     require(surface.presented()->controls.size()<500,"Asset browser instantiated the whole directory as controls.");
     const auto bar=std::ranges::max_element(surface.presented()->scrollbars,{},&ui::ScrollbarGeometry::maximum);
     require(bar!=surface.presented()->scrollbars.end() && bar->maximum>50000,"Large directory did not retain its complete scroll extent.");
@@ -76,5 +83,10 @@ void verify_project_workspace(editor::Project& project) {
     present({1600,1000},1);present({1600,1000},1);
     const auto last=workspace.assets.control("Source/Entry12599.txt");
     require(last && surface.presented()->find(last) && surface.presented()->controls.size()<500,"Virtual asset browsing could not reach the last real file.");
-    std::puts("Project workspace acceptance: PASS (real folder data, three views, hit selection, 1/1.5/2 DPI)");
+    take(project.refresh());workspace.assets.navigate(L"Source");present({1600,1000},1);present({1600,1000},1);
+    require(workspace.assets.control(unicode_resource)==unicode_key && surface.presented()->find(unicode_key),
+        "Refresh or temporary invisibility changed a resource's ControlKey.");
+    workspace.assets.reset(true);workspace.assets.navigate(L"Source");present({1600,1000},1);present({1600,1000},1);
+    require(workspace.assets.control(unicode_resource)>unicode_key,"Reset reused a previous resource identity.");
+    std::puts("Project workspace acceptance: PASS (real folder data, owned UTF-8 keys, refresh/reset identity, three views, hit selection, 1/1.5/2 DPI)");
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "editor/project.hpp"
+#include "foundation/map.hpp"
 #include "ui/controls.hpp"
 
 namespace atelier::editor {
@@ -21,7 +22,8 @@ public:
     void navigate(std::filesystem::path path) { directory_=std::move(path); query_.clear(); selected_.reset(); invalidate_items(); }
     bool engine() const noexcept { return engine_; }
     ui::ControlKey control(std::string_view resource) const {
-        const auto found=keys_.find("item:"+std::string(resource));return found==keys_.end()?0:found->second;
+        const auto key="item:"+std::string(resource);
+        const auto* found=keys_.find(StringView{key});return found?*found:0;
     }
 private:
     View view_{View::details};
@@ -32,7 +34,7 @@ private:
     std::optional<Item> selected_;
     struct Target { ui::ControlKey key; Item item; bool navigation{}; };
     std::vector<Target> targets_;
-    std::unordered_map<std::string,ui::ControlKey> keys_;
+    Map<String,ui::ControlKey> keys_;
     ui::ControlKey next_key_{browser_control::root+1000};
     ui::ControlKey scroll_key_{browser_control::root+99};
     std::vector<Item> items_;
