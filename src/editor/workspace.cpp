@@ -151,11 +151,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     auto menu_body=NodeInput::row(); menu_body.padding={0,1,0,1};
     const auto menu_height=ui::append_collapsible_bar(result,
         {2,1,control::menu_bar_handle,control::menu_bar_body,32,menu_bar_collapsed,menu_body,"menubar"});
-    constexpr std::array titles{L"File",L"Edit",L"Create",L"View",L"Window"};
-    for (std::size_t index=0;index<titles.size();++index) {
+    for (const auto& group:command_groups) {
         auto shape=NodeInput::box(0,0); shape.height=Axis::expand(); shape.width=Axis::content(38);
-        const auto key=control::file_menu+index;
-        auto& title=add(key,control::menu_bar_body,ControlKind::button,shape,titles[index]);
+        const auto key=group.key;
+        auto& title=add(key,control::menu_bar_body,ControlKind::button,shape,std::wstring(group.title));
         title.classes={"menubar-item"}; title.context_target=key;
         title.selected=menu && menu->source==key;
     }
@@ -315,9 +314,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if (!available) menu.reset();
         else {
             std::vector<ui::MenuItem> items=dock.menu_items(source->key,frame);
-            if (control::is_menu(source->key)) {
-                const auto group=static_cast<CommandGroup>(source->key-control::file_menu);
-                for (const auto& definition:command_definitions) if (definition.group==group)
+            if (const auto* group=command_group(source->key)) {
+                for (const auto& definition:command_definitions) if (definition.group==group->id)
                     items.push_back({static_cast<ui::ControlKey>(definition.id),std::wstring(definition.title),
                         command_enabled(definition.id,session),false,{},std::wstring(definition.shortcut),definition.separator});
             } else if (control::is_path(source->key)) {

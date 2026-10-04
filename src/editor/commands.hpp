@@ -10,9 +10,36 @@ enum class Command : std::uint64_t {
     show_scene=710, show_parameters=711, show_controls=712, show_actors=713, maximize_pane=714,
     show_assets=721, previous_tab=722, next_tab=723, close_tab=724,
     new_project=750, open_project=751, save_scene=752, save_scene_as=753, open_scene=754,
-    import_mesh=755, refresh_assets=756
+    import_mesh=755, refresh_assets=756, about=757
 };
-enum class CommandGroup { file, edit, create, view, window };
+enum class CommandGroup { file, edit, create, view, window, help };
+struct CommandGroupDefinition {
+    CommandGroup id;
+    std::uint64_t key;
+    std::wstring_view title;
+    wchar_t access_key;
+};
+inline constexpr std::array command_groups{
+    CommandGroupDefinition{CommandGroup::file,700,L"File",L'F'},
+    CommandGroupDefinition{CommandGroup::edit,701,L"Edit",L'E'},
+    CommandGroupDefinition{CommandGroup::create,702,L"Create",L'C'},
+    CommandGroupDefinition{CommandGroup::view,703,L"View",L'V'},
+    CommandGroupDefinition{CommandGroup::window,704,L"Window",L'W'},
+    CommandGroupDefinition{CommandGroup::help,706,L"Help",L'H'}
+};
+constexpr const CommandGroupDefinition* command_group(std::uint64_t key) {
+    for (const auto& group:command_groups) if (group.key==key) return &group;
+    return nullptr;
+}
+constexpr std::uint64_t menu_key(CommandGroup id) {
+    for (const auto& group:command_groups) if (group.id==id) return group.key;
+    return 0;
+}
+constexpr std::uint64_t cycle_menu(std::uint64_t key,bool previous) {
+    for (std::size_t i=0;i<command_groups.size();++i) if (command_groups[i].key==key)
+        return command_groups[(i+(previous?command_groups.size()-1:1))%command_groups.size()].key;
+    return 0;
+}
 struct CommandDefinition {
     Command id;
     CommandGroup group;
@@ -45,7 +72,8 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::next_tab,CommandGroup::window,L"Next Pane Tab",L"Ctrl+Tab"},
     CommandDefinition{Command::close_tab,CommandGroup::window,L"Close Pane Tab",L"Ctrl+W"},
     CommandDefinition{Command::maximize_pane,CommandGroup::window,L"Maximize / Restore Pane",L"Ctrl+B",true},
-    CommandDefinition{Command::reset_layout,CommandGroup::window,L"Reset Layout",L""}
+    CommandDefinition{Command::reset_layout,CommandGroup::window,L"Reset Layout",L""},
+    CommandDefinition{Command::about,CommandGroup::help,L"About FrostFox Atelier",L""}
 };
 constexpr const CommandDefinition* command_definition(std::uint64_t key) {
     for (const auto& item:command_definitions) if (static_cast<std::uint64_t>(item.id)==key) return &item;

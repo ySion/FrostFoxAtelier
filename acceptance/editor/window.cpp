@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "atelier/build_info.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <msctf.h>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
@@ -416,7 +418,8 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(current_caret.x >= original_bounds.x && current_caret.x <= original_bounds.x + original_bounds.width &&
         original->find(field)->bounds == original_bounds && original_coverage->pixels == original_pixels,
         "Font update changed old-frame geometry/content or misplaced the new caret.");
-    for (const auto command : {control::file_menu, control::edit_menu, control::create_menu, control::view_menu, control::window_menu}) {
+    for (const auto& group : atelier::editor::command_groups) {
+        const auto command=group.key;
         const auto* box = app.presented()->find(command);
         const auto coverage = text_coverage(*app.presented(), command);
         require(box && coverage && box->bounds.x + box->bounds.width <= app.presented()->drawing->extent.width,

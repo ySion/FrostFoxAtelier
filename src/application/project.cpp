@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
 
@@ -63,7 +64,9 @@ Result<void> Application::open_project(const std::filesystem::path& folder,bool 
     const auto content=editor::read_file(*path);if (!content) return std::unexpected(content.error());
     auto candidate=editor::Session::deserialize(*content,*project);if (!candidate) return std::unexpected(candidate.error());
     project_=std::move(*project);scene_path_=project_->startup_scene();workspace_.project_open=true;
-    publish_document(std::move(*candidate));return {};
+    publish_document(std::move(*candidate));
+    std::printf("Project: %s\n",editor::utf8(project_->root().wstring()).c_str());
+    return {};
 }
 Result<void> Application::open_scene(const std::filesystem::path& relative) {
     if (!project_) return failed("Open a project folder first.");

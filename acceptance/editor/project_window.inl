@@ -6,6 +6,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output)
     access::EditorAcceptanceAccess::mark_saved(app);
     model(access::EditorAcceptanceAccess::command(app,Command::new_project,atelier::editor::utf8(folder.wstring())));tick(app,4);
     require(actors(app).empty() && !app.document().dirty(),"New project did not publish a clean empty scene.");
+    verify_about(app,folder.wstring());
     click(app,control::add_static_mesh);
     const auto actor=app.document().selected();
     const auto field=property_control(app,actor,0);

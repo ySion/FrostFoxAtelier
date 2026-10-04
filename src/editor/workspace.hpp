@@ -32,15 +32,17 @@ inline constexpr ui::ControlKey parameter_search = 54;
 inline constexpr ui::ControlKey parameter_transform=81, parameter_components=82, parameter_pages=83, parameter_list=84;
 inline constexpr ui::ControlKey empty_field_base = 200;
 inline constexpr ui::ControlKey parameter_menu=500, menu_group_reset=501, menu_reset=502, menu_copy=503, menu_paste=504;
-inline constexpr ui::ControlKey file_menu=700, edit_menu=701, create_menu=702, view_menu=703, window_menu=704;
+inline constexpr auto file_menu=menu_key(CommandGroup::file), edit_menu=menu_key(CommandGroup::edit),
+    create_menu=menu_key(CommandGroup::create), view_menu=menu_key(CommandGroup::view),
+    window_menu=menu_key(CommandGroup::window), help_menu=menu_key(CommandGroup::help);
 inline constexpr auto exit=command_key(Command::exit), show_scene=command_key(Command::show_scene),
     show_parameters=command_key(Command::show_parameters), show_controls=command_key(Command::show_controls),
     show_actors=command_key(Command::show_actors), maximize_pane=command_key(Command::maximize_pane);
 inline constexpr ui::ControlKey menu_bar_handle=715, menu_bar_body=716;
-constexpr bool is_menu(ui::ControlKey key) { return key>=file_menu && key<=window_menu; }
+constexpr bool is_menu(ui::ControlKey key) { return command_group(key)!=nullptr; }
 constexpr ui::ControlKey command_menu(ui::ControlKey key) {
     const auto* definition=command_definition(key);
-    return definition?file_menu+static_cast<ui::ControlKey>(definition->group):0;
+    return definition?menu_key(definition->group):0;
 }
 }
 struct Workspace {
