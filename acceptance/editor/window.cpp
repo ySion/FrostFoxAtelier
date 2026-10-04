@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "atelier/build_info.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <msctf.h>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
@@ -416,7 +418,8 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(current_caret.x >= original_bounds.x && current_caret.x <= original_bounds.x + original_bounds.width &&
         original->find(field)->bounds == original_bounds && original_coverage->pixels == original_pixels,
         "Font update changed old-frame geometry/content or misplaced the new caret.");
-    for (const auto command : {control::file_menu, control::edit_menu, control::create_menu, control::view_menu, control::window_menu}) {
+    for (const auto& group : atelier::editor::command_groups) {
+        const auto command=group.key;
         const auto* box = app.presented()->find(command);
         const auto coverage = text_coverage(*app.presented(), command);
         require(box && coverage && box->bounds.x + box->bounds.width <= app.presented()->drawing->extent.width,
@@ -689,33 +692,83 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
 #include "controls.inl"
 #include "docking.inl"
 #include "shelf.inl"
+RECT await_acceptance_activation(Application& app,const std::filesystem::path& output,const char* kind) {
+    const auto label=std::string("Editor ")+kind+" acceptance";
+    std::ofstream(output/"acceptance.txt")<<label<<": WAITING FOR ACTIVATION (no synthetic input)\n";
+    std::printf("%s: waiting up to 120 seconds; click the editor title bar to begin. No synthetic input has started.\n",label.c_str());
+    std::fflush(stdout);
+    SetForegroundWindow(app.window());SetFocus(app.window());tick(app);
+    const auto deadline=GetTickCount64()+120000;
+    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<deadline)
+        require(app.step(),"Editor closed while waiting for initial foreground.");
+    if (GetFocus()!=app.window() || GetForegroundWindow()!=app.window()) {
+        const auto foreground=GetForegroundWindow();
+        DWORD process{};GetWindowThreadProcessId(foreground,&process);
+        std::ofstream(output/"acceptance.txt")<<label<<": BLOCKED before input; initial activation timed out\n"
+            <<"editor="<<app.window()<<"; foreground="<<foreground<<"; focus="<<GetFocus()<<"; foreground PID="<<process<<'\n';
+        throw std::runtime_error("Initial foreground activation was not granted within 120 seconds; no synthetic input was sent.");
+    }
+    std::ofstream(output/"acceptance.txt")<<label<<": RUNNING (activation acquired)\n";
+    std::printf("%s: activation acquired; starting input checks.\n",label.c_str());std::fflush(stdout);
+    // Keep native pointer movement away from menu headings during message-driven gestures.
+    RECT host{};GetWindowRect(app.window(),&host);
+    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
+    return host;
+}
+
 #include "menus.inl"
 #include "tree.inl"
 #include "project_window.inl"
+#include "viewport.inl"
 }
 
-int verify_editor_window(Application& app, const char* output_directory) {
+int verify_editor_project(Application& app,const char* output_directory,const wchar_t* source_project) {
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
+    const auto base=std::filesystem::weakly_canonical(atelier::editor::wide(output_directory));
+    const auto output=base/(L"run-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+    if (source_project) {
+        const auto source=std::filesystem::canonical(source_project);
+        const auto relative=base.lexically_relative(source);
+        require(relative.empty() || *relative.begin()==L"..","Project acceptance output must be outside the source project.");
+        const auto folder=output/L"项目";
+        std::filesystem::create_directories(folder);
+        for (const auto name:{L"Config",L"Content",L"Source"}) if (std::filesystem::exists(source/name))
+            std::filesystem::copy(source/name,folder/name,std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
+    } else std::filesystem::create_directories(output);
+    await_acceptance_activation(app,output,"project");
+    require(actors(app).empty(),"The production editor did not start with an empty scene.");
+    verify_viewport_display(app,output);
+    verify_project_window(app,output,source_project!=nullptr);
+    atelier::application::EditorAcceptanceAccess::mark_saved(app);
+    SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Project acceptance did not close the editor.");
+    std::ofstream report(output/"acceptance.txt");
+    report<<"Editor project acceptance: PASS\nBuild: "<<atelier::build_info::revision<<"\nConfiguration: "<<atelier::build_info::configuration
+        <<"\nSource project: "<<(source_project?atelier::editor::utf8(source_project):"new fixture")
+        <<"\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
+        <<"Shared viewport display/TRS checks followed by project commands, About identity/current root, Actor creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n";
+    std::printf("Editor project acceptance: PASS; evidence: %s\n",atelier::editor::utf8(output.wstring()).c_str());
+    return 0;
+}
+
+int verify_editor_window(Application& app, const char* output_directory, bool viewport_only) {
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     hr(com);
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    std::ofstream(output / "acceptance.txt") << "Editor window acceptance: RUNNING\n";
-    SetForegroundWindow(app.window()); SetFocus(app.window());
-    tick(app);
-    // Launching from a background build process may not grant foreground rights.
-    // Wait once for activation; subsequent focus loss still stops every input.
-    const auto foreground_deadline=GetTickCount64()+20000;
-    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<foreground_deadline)
-        require(app.step(),"Editor closed while waiting for initial foreground.");
-    require_input_focus(app);
-    // SendMessage gestures deliberately keep the OS cursor off the client.
-    // Capture/show can synthesize movement there; parking on the title bar
-    // prevents those messages from switching a menu to an unrelated heading.
-    RECT host{}; GetWindowRect(app.window(),&host);
-    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the acceptance pointer.");
+    const auto host=await_acceptance_activation(app,output,viewport_only?"viewport":"window");
     tick(app);
     require(actors(app).empty(),"The production editor did not start with an empty scene.");
+    if (viewport_only) {
+        verify_viewport_display(app,output);
+        atelier::application::EditorAcceptanceAccess::mark_saved(app);
+        SendMessageW(app.window(),WM_CLOSE,0,0);
+        require(!app.step(),"Viewport acceptance did not close normally.");
+        std::ofstream(output/"acceptance.txt")<<"Editor viewport acceptance: PASS\n";
+        std::puts("Editor viewport acceptance: PASS");
+        return 0;
+    }
     click(app,control::file_menu);
     const auto first_open_us=app.menu_open_cpu_us(); const auto retained_popup=app.menu_window(); key(app,VK_ESCAPE);
     click(app,control::file_menu);

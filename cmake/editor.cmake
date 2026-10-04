@@ -1,6 +1,13 @@
 include(${CMAKE_CURRENT_LIST_DIR}/json.cmake)
 
 function(atelier_add_editor)
+    find_package(Git QUIET)
+    set(build_info "${CMAKE_BINARY_DIR}/generated/atelier/build_info.hpp")
+    add_custom_target(atelier_editor_build_info
+        COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DOUTPUT=${build_info}"
+            "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}" "-DCONFIGURATION=$<CONFIG>"
+            -P "${PROJECT_SOURCE_DIR}/cmake/editor-build-info.cmake"
+        BYPRODUCTS "${build_info}" VERBATIM)
     configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ss" "${CMAKE_BINARY_DIR}/editor.ss" COPYONLY)
     foreach(font_asset SarasaUiSC-Regular.ttf SarasaUiSC-SemiBold.ttf
             SourceCodePro-Regular.otf SourceCodePro-Bold.otf sarasa-LICENSE.txt source-code-pro-LICENSE.md sources.json)
@@ -24,6 +31,8 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/project.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/control_workbench.cpp")
     atelier_target(atelier_editor_application)
+    add_dependencies(atelier_editor_application atelier_editor_build_info)
+    target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
     target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi)
     add_executable(atelier_editor
@@ -44,5 +53,11 @@ function(atelier_add_editor)
         DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_ime_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-ime "${CMAKE_BINARY_DIR}/editor-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_project_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-project "${CMAKE_BINARY_DIR}/project-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_viewport_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-viewport "${CMAKE_BINARY_DIR}/viewport-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
 endfunction()

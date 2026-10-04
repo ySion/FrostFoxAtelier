@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "atelier/build_info.hpp"
 #include <windowsx.h>
 #include <algorithm>
 #include <chrono>
@@ -138,6 +139,7 @@ Result<void> Application::action(const ui::Action& event) {
     if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) return {};
+    if (workspace_.apply_view(event)) return {};
     if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
         const auto selected=workspace_.assets.selected();
         if (!selected) return {};
@@ -254,6 +256,15 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case previous_tab: case next_tab: workspace_.dock.cycle(command==previous_tab?-1:1); break;
     case close_tab: workspace_.dock.close(workspace_.dock.focused_tab()); break;
     case reset_layout: workspace_.reset_layout(); break;
+    case about: {
+        close_menu(false);
+        const auto details=L"FrostFox Atelier\n\nBuild: "+editor::wide(build_info::revision)+
+            L"\nConfiguration: "+editor::wide(build_info::configuration)+L"\n\nProject:\n"+
+            (project_?project_->root().wstring():L"No project open")+L"\n\nScene:\n"+
+            (scene_path_.empty()?L"Untitled":scene_path_.generic_wstring());
+        MessageBoxW(window(),details.c_str(),L"About FrostFox Atelier",MB_OK|MB_ICONINFORMATION);
+        break;
+    }
     }
     if (result) workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
     return result;
@@ -419,7 +430,7 @@ bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
     }
     if (input.kind==ui::EventKind::key_down && (input.key==ui::Key::f10 || native_key==VK_MENU)) { close_menu(); return true; }
     if (top && menu_path_.empty() && input.kind==ui::EventKind::key_down && (input.key==ui::Key::left || input.key==ui::Key::right)) {
-        change(editor::control::file_menu+(source-editor::control::file_menu+5+(input.key==ui::Key::left?-1:1))%5); return true;
+        change(editor::cycle_menu(source,input.key==ui::Key::left)); return true;
     }
     if (!menu_window()) return true; // Opening transition is modal before the first accepted popup frame.
     const bool pointer=input.kind==ui::EventKind::pointer_down || input.kind==ui::EventKind::pointer_up ||
@@ -511,10 +522,14 @@ void Application::native(NativeEvent message) {
     }
     if (event.kind==ui::EventKind::focus_lost || event.kind==ui::EventKind::capture_lost) close_menu(false);
     if (menu_input(event,message.wparam)) return;
-    if (event.kind==ui::EventKind::key_down && ((event.key==ui::Key::f10 && !event.shift) ||
-        (event.alt && (message.wparam=='F' || message.wparam=='E' || message.wparam=='C' || message.wparam=='V' || message.wparam=='W')))) {
-        const auto menu=message.wparam=='E'?editor::control::edit_menu:message.wparam=='C'?editor::control::create_menu:
-            message.wparam=='V'?editor::control::view_menu:message.wparam=='W'?editor::control::window_menu:editor::control::file_menu;
+    ui::ControlKey requested_menu{};
+    if (event.kind==ui::EventKind::key_down) {
+        if (event.key==ui::Key::f10 && !event.shift) requested_menu=editor::control::file_menu;
+        else if (event.alt) for (const auto& group:editor::command_groups)
+            if (message.wparam==static_cast<WPARAM>(group.access_key)) { requested_menu=group.key; break; }
+    }
+    if (requested_menu) {
+        const auto menu=requested_menu;
         menu_return_focus_=ui_.focused_control();
         if (workspace_.menu_bar_collapsed) { workspace_.menu_bar_collapsed=false; pending_menu_=menu; }
         else { effects(ui_.focus(menu)); request_menu({menu,0,0,0}); }
@@ -619,7 +634,7 @@ bool Application::step(renderer::Capture* capture) {
     for (const auto& item : items)
         meshes_.push_back({item.world.elements, {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1}, item.actor == document_->selected(),item.geometry});
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds, meshes_};
+    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds, meshes_, workspace_.view};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;

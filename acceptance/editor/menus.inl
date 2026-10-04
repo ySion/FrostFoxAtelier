@@ -1,3 +1,48 @@
+void verify_about(Application& app,std::wstring_view expected_project) {
+    const auto history=app.document().undo_count();
+    key(app,VK_F10);key(app,VK_LEFT);
+    require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
+        "File/Help keyboard navigation did not wrap across the menu registry.");
+    key(app,VK_RIGHT);
+    require(app.menu_frame() && app.menu_frame()->find(control::exit),"Help/File keyboard navigation did not wrap back.");
+    key(app,VK_ESCAPE);
+    click(app,control::help_menu);
+    require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
+        "Help omitted the About command.");
+    struct DialogLookup { HWND owner{},found{}; } lookup{app.window()};
+    const auto thread_id=GetWindowThreadProcessId(app.window(),nullptr);
+    std::wstring title,content;
+    std::jthread dismiss([&](std::stop_token stop) {
+        while (!stop.stop_requested() && !lookup.found && IsWindow(lookup.owner)) {
+            EnumThreadWindows(thread_id,[](HWND window,LPARAM parameter)->BOOL {
+                auto& state=*reinterpret_cast<DialogLookup*>(parameter);
+                wchar_t name[32]{};GetClassNameW(window,name,32);
+                if (GetWindow(window,GW_OWNER)==state.owner && IsWindowVisible(window) && std::wstring_view(name)==L"#32770") {
+                    state.found=window;return FALSE;
+                }
+                return TRUE;
+            },reinterpret_cast<LPARAM>(&lookup));
+            if (!lookup.found) Sleep(10);
+        }
+        if (!lookup.found) return;
+        const auto text=[](HWND window) {
+            std::wstring value(static_cast<std::size_t>(GetWindowTextLengthW(window)),L'\0');
+            const auto size=GetWindowTextW(window,value.data(),static_cast<int>(value.size()+1));
+            value.resize(static_cast<std::size_t>(size));return value;
+        };
+        title=text(lookup.found);
+        for (auto child=GetWindow(lookup.found,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) content+=text(child);
+        PostMessageW(lookup.found,WM_COMMAND,IDOK,0);
+    });
+    click(app,static_cast<ControlKey>(atelier::editor::Command::about));
+    dismiss.request_stop();dismiss.join();tick(app);
+    require(lookup.found && title==L"About FrostFox Atelier" &&
+        content.contains(atelier::editor::wide(atelier::build_info::revision)) &&
+        content.contains(atelier::editor::wide(atelier::build_info::configuration)) && content.contains(expected_project),
+        "About did not show this binary's build identity and current project.");
+    require(!app.menu_window() && app.document().undo_count()==history,"About changed document history or retained its menu.");
+}
+
 void verify_native_menus(Application& app,const std::filesystem::path& output,atelier::ObjectId actor) {
     const auto live_menu=[&]() {
         require(app.menu_frame()!=nullptr,"Expected a live accepted native menu frame.");
@@ -5,7 +50,8 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     };
     const auto closed_titles=[&] {
         require(!app.menu_window(),"Menu remained open after dismissal.");
-        for (const auto key:{control::file_menu,control::edit_menu,control::create_menu,control::view_menu,control::window_menu}) {
+        for (const auto& group:atelier::editor::command_groups) {
+            const auto key=group.key;
             const auto* box=app.presented()->find(key);
             const auto& style=*box->style;
             require(!box->selected && !style.image && (!style.background || style.background->a==0) && style.border_width==0,
@@ -31,7 +77,12 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     click(app,control::menu_bar_handle); key(app,VK_F10);
     require(app.presented()->find(control::file_menu) && app.menu_frame() && live_menu()->find(control::exit),
         "F10 did not reveal the stowed menubar and open File.");
+    key(app,VK_LEFT);
+    require(live_menu()->find(static_cast<ControlKey>(atelier::editor::Command::about)),"Left from File did not wrap to Help.");
+    key(app,VK_RIGHT);
+    require(live_menu()->find(control::exit),"Right from Help did not wrap to File.");
     key(app,VK_ESCAPE);
+    verify_about(app,L"No project open");closed_titles();
     for (const bool middle:{false,true}) {
         key(app,VK_ESCAPE);
         const auto original=x(app,actor);

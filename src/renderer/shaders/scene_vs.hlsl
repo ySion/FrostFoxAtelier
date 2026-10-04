@@ -1,4 +1,5 @@
 struct Vertex { float3 position; float3 normal; };
+struct Triangle { Vertex vertices[3]; uint edge_mask; float3 face_normal; };
 struct Instance {
     row_major float4x4 world;
     float3 normal_x;
@@ -7,19 +8,22 @@ struct Instance {
     float selected;
     float4 color;
 };
-StructuredBuffer<Vertex> vertices;
+StructuredBuffer<Triangle> triangles;
 StructuredBuffer<Instance> instances;
 uint first_instance;
-row_major float4x4 view;
 row_major float4x4 projection;
-struct Output { float4 position : SV_Position; float3 normal : NORMAL; float4 color : COLOR; };
-Output main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID) {
-    Vertex vertex = vertices[vertex_id];
+SceneOutput main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID) {
+    Triangle face = triangles[vertex_id / 3];
+    uint corner = vertex_id % 3;
+    Vertex vertex = face.vertices[corner];
     Instance instance = instances[first_instance + instance_id];
-    Output o;
+    SceneOutput o;
     o.position = mul(mul(mul(float4(vertex.position, 1), instance.world), view), projection);
-    o.normal = vertex.normal.x * instance.normal_x + vertex.normal.y * instance.normal_y
-             + vertex.normal.z * instance.normal_z;
-    o.color = float4(lerp(instance.color.rgb, float3(1, 0.58, 0.08), instance.selected * 0.7), 1);
+    float3 normal = display.x == 1 ? face.face_normal : vertex.normal;
+    o.normal = normal.x * instance.normal_x + normal.y * instance.normal_y + normal.z * instance.normal_z;
+    o.color = instance.color;
+    o.barycentric = float3(corner == 0, corner == 1, corner == 2);
+    o.edge_mask = display.z != 0 ? 7 : face.edge_mask;
+    o.selected = instance.selected;
     return o;
 }
