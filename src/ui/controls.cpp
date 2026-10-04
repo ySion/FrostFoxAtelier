@@ -98,6 +98,8 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
 }
 void append_number_row(std::vector<Control>& controls, ParameterRow row, std::span<const NumberField> fields) {
     if (fields.empty() || fields.size()>4) throw std::invalid_argument("A number row requires 1–4 fields.");
+    for (const auto& field:fields) if (static_cast<unsigned>(field.axis)>static_cast<unsigned>(VectorAxis::w))
+        throw std::invalid_argument("A number field requires a valid vector axis.");
     row.group_modified=row.group_modified.value_or(
         std::any_of(fields.begin(),fields.end(),[](const auto& field){return field.value!=field.default_value;}));
     constexpr float field_minimum=24;

@@ -197,6 +197,10 @@ struct Error {
     std::uint32_t native_code{};
 };
 template<class T> using Result = std::expected<T, Error>;
+
+// Validate a producer's descriptor before publishing it. This does not inspect
+// tree references or solve layout; Session remains the complete batch boundary.
+Result<void> validate_control_properties(const Control&);
 enum class Capture { unchanged, acquire, release };
 enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan };
 struct Reply {

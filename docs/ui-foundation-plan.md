@@ -1,16 +1,16 @@
-# 原生 UI 阶段计划与历史合同
+# 原生 UI 历史方案与输入合同
 
-状态：**S1、S2 主持已收口；历史证据归档于 `out/{dev,release}/editor-evidence-s2/`。SS 与基础控件增量已接入；原 S3 中的修改提示、整向量重置现已实现，菜单浮层、下拉和数值阶梯已实现，固定目标仍未实施。共享树视图及 [Actors 投影](modules/editor/README.md#actors-树视图)已接入。**
+状态：**S1、S2 主持已收口；历史证据归档于 `out/{dev,release}/editor-evidence-s2/`。SS 与基础控件增量已接入；原 S3 中的修改提示、整向量重置现已实现，菜单浮层、下拉和数值阶梯已实现，固定目标仍未实施。共享树视图及 [Scene Tree 投影](modules/editor/README.md#scene-tree)已接入。**
 
 2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
 
-2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。随后批准基础控件优先的编辑器改进：共享参数行、Vector3、默认值/修改状态、checkbox、foldout 与同宿主 Controls 实验台已接入，见[当前控件合同](modules/ui/README.md#可组合参数控件)和[Houdini 实机调研](research/houdini-controls-20261001.md)。当前保留既有场景历史选择政策；单宿主停靠、标签移动/分栏/最大化已接入，见[工作区](modules/editor/README.md#工作区与停靠)；follow/pin、原生浮动窗口、布局文件保存、非矩形后代裁剪及语言 UI 语法仍未实施。下文 S1/S2 的旧排期、当时的 S3 限制与主持派发记录属于历史，不覆盖本次用户授权。
+2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。随后批准基础控件优先的编辑器改进：共享参数行、Vector3、默认值/修改状态、checkbox、foldout 与同宿主 Controls 实验台已接入，见[当前控件合同](modules/ui/README.md#可组合参数控件)和[Houdini 实机调研](research/houdini-controls-20261001.md)。当前保留既有场景历史选择政策；单宿主停靠、标签移动/分栏/最大化已接入，见[工作区](modules/editor/README.md#工作区与停靠)；follow/pin、原生浮动窗口、布局文件保存与非矩形后代裁剪仍未实施。原生 UI 声明现已接入首个 Position 组件，当前实现和后续范围见[声明式 UI](modules/editor/declarative-ui-proposal.md)。下文保留历史设计取舍与有效输入合同，不维护另一份当前排期。
 
 以下为 2026-09-28 至 2026-09-29 的原始计划与交接记录。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；当时集成分支：`codex/ui-foundation`。
-本页维护阶段边界，当前能力和验收以[UI 模块](modules/ui/README.md)和[编辑器模块](modules/editor/README.md)为准。[首版记录](first-editor-plan.md)保留 M0/M1 与 M2 历史目标；保存重开、JIT 单步仍在后续范围。
+本页记录历史取舍，当前能力和验收以[UI 模块](modules/ui/README.md)和[编辑器模块](modules/editor/README.md)为准。[首版记录](first-editor-plan.md)保留 M0/M1 与 M2 历史目标；保存重开已接入工程目录；JIT 单步仍未接入编辑器。
 初轮研究汇总参数、工作区、UI 结构三个角度及 UI/RHI 负责人反馈，当时未运行 Houdini。2026-10-01 的实机观察与基础控件收口另见上方链接。
 
-## 1. 本轮可观察结果
+## 1. 当时拟定的可观察结果
 
 用户在同一正式编辑器中创建 A、B，固定参数面板查看 A，再选择 B；修改 A 的 XYZ、恢复默认值及撤销重做时，场景仍选中 B。取消固定后面板跟随 B。
 参数区具有统一状态样式、通用单行文本与数值编辑、真实参数搜索、非默认值提示和一层参数菜单。搜索可用中文输入法输入“位置”并匹配位置参数；复制、剪切、粘贴、选择和光标沿同一文字路径工作。
@@ -21,7 +21,7 @@
 | 本轮实施 | 统一样式与控件状态；共享 TextEdit；参数搜索；Unicode 剪贴板与中文 IME 接线；XYZ 默认值/修改提示/重置；一个参数面板 follow/pin；一层菜单及完整输入优先级 |
 | 延后 | 无真实字段的 checkbox/enum 参数；value ladder；表达式/参数引用；多行/富文本；完整国际化；动态面板/自由停靠/联动通道；节点图、gizmo、拾取；RGBA 图片、非矩形裁剪 |
 
-Pin 按钮是查看状态，菜单项是命令，均不冒充 bool/enum 业务参数。搜索属于 Workspace 查看状态，不新增 Runtime 字符串字段。位置仍用现有专用事务；出现真实第二类业务参数后再评估通用化。
+Pin 按钮是查看状态，菜单项是命令，均不冒充 bool/enum 业务参数。搜索属于 Workspace 查看状态，不新增 Runtime 字符串字段。当时的位置专用事务已由 World 接入时的统一字段事务替代。
 
 ## 2. 官方观察与本项目取舍
 
@@ -81,41 +81,19 @@ S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合�
 
 平台接线归 `Window`/`Application`，UI 不持 HWND/HIMC。产品沿唯一 IMM32 接线和系统候选窗推进，本机搜狗真实输入验收是完成条件；不放隐藏 EDIT，也不并存第二种文本后端。平台接口、失败与清理顺序见第 9 节。
 
-## 6. 文件归属与替换清单
+## 6. 当前模块归属
 
-应用负责人拥有 Window/Application、Workspace/编辑事务、整体窗口验收和根接线；UI 负责人拥有 `src/ui/`、UI 模块 CMake/验收及唯一 CPU 绘制协议；RHI 负责人保持 renderer 消费合同并协助测量。Runtime 线仅在真实接口缺口出现时介入。本轮未发现必须先扩展 Runtime 或 RHI 的需求。
+应用层负责窗口、编辑器命令、工程与 Workspace；UI/Layout 负责控件、输入状态、文本、SS 和布局；Renderer 负责帧消费与渲染资源缓存，RHI 负责 GPU 提交和在途资源。声明式 UI 的语言接线与编辑器迁移见[当前实现](modules/editor/declarative-ui-proposal.md)。各模块的当前文档是行为和所有权的权威入口。
 
-| 旧入口/真实消费者 | 同一入口的变化 | 删除时点 |
-| --- | --- | --- |
-| [Workspace::describe](../src/editor/workspace.cpp) 与 [Session::prepare](../src/ui/session.cpp) 的颜色/字体分支；`Control::font_size/background`；UI/编辑器验收描述符 | 统一 Style/角色/状态解析，消费者全部迁移 | S1，删除散落覆盖字段及硬编码状态分支 |
-| [TextStore::set/measure](../src/ui/text.cpp)、Session 文字更新；固定字体与 `provider_revision != 1` | 字体键、样式度量版本与同一缓存失效链 | S1，删除固定 provider 合同 |
-| `Session::prepare` 对屏外控件直接 raster/emit | 候选 bounds∩clip 可见性检查，保留布局/滚动/身份信息 | S1，替换原生成位置，无第二遍兜底绘制 |
-| `Session::input/change_text/finish_edit` 的 ASCII 专用分支、单位置 caret；[Event/Action](../src/ui/session.hpp)；[Window::receive](../src/application/window.cpp)/`Application::native/action` 与验收消费者 | 共享 TextEdit、字符串/组合事件、typed value、同一 TextStore 查询和平台往返 | S2，删除旧 `character`/纯 double 处理及专用编辑缓冲，不留兼容入口 |
-| `Reply.actions`、`Application::effects/action` 失败仍继续发动作、错误被后续状态覆盖 | 原地迁移到有序 `effects`、有结果的顺序派发和同一取消回路 | S2，所有消费者同时删除旧 actions 入口 |
-| [Workspace](../src/editor/workspace.cpp) 的当前 Actor 查看目标；[Session::begin_edit/replay](../src/editor/session.cpp)；[文档验收](../acceptance/editor/document.cpp) | IV 已使用显式组件字段目标；未来 follow/pin、默认值与重置继续复用它 | S3 未启动；不再保留旧 selected-only/位置专用兼容路径 |
-| `Session::hit` 先过滤当前存活性、`prepare` 统一继承父 clip；`Application::native` UI 前相机抢占 | 同帧 overlay/拦截，先拦截后活性校验，已有 capture 优先、未消费事件导航 | S3，替换原路由；普通子控件仍保留正常父裁剪 |
+## 7. 验收入口
 
-数值解析器、Layout、已有焦点/capture/incarnation、DrawQuad/R8、Runtime 根和历史都是继续使用的有效机制。无需为迁移新增别名、第二种主题、备用输入后端或独立演示产品。
+使用 README 中的正式构建与验收目标。当前消费者和阶段证据见[编辑器模块](modules/editor/README.md)与[UI 模块](modules/ui/README.md)。真实 IME 体验不能用合成消息或普通窗口通过代替。已结束的 S1/S2 派发指令、旧分支和串行排期已移除。
 
-## 7. 实施切片与端到端终点
+## 8. 性能证据边界
 
-主持已收口 **S1** 并正式派发 **S2**，授权必要生产修改、dev/release 端到端验收及本地提交/集成。双方从包含 `ec6a118` 和已通过共同合同的本次派发提交开工；UI 使用新分支 `codex/ui-foundation-s2-ui`，统一集成至 `codex/ui-foundation`，不重复 cherry-pick S1。S3 不启动；每片迁移完全部消费者并清除旧路径后交付。
+早期 S1 的逐 quad 提交已被相邻合批替代。当前 Renderer 的资源拥有权、批次和提交行为以[Renderer 合同](modules/renderer/contract.md)为准；原生 UI 的增量更新范围见[Session 属性更新](modules/ui/updates.md)。
 
-| 切片/主责 | 正式应用中的可观察终点 | 必须一起完成的清除与验收 |
-| --- | --- | --- |
-| S1 样式与可见内容；UI 主责，应用迁移描述符 | 对象列表、按钮、数值字段、分隔和状态文字具有一致状态表达；改变统一字体后测量、caret、像素仍对齐；滚出视区不生成无用文字内容 | 清除表中样式/provider/屏外生成旧路径；dev/release 真实 HWND 覆盖焦点、非法值、hover/pressed/selected/disabled、滚动、resize/DPI 过渡与原有编辑链 |
-| S2 同一文本/数值编辑；UI+应用平台接线 | 参数搜索接受中文 IME；文本/数字均可选择、移动光标、横滚、复制剪切粘贴；数字拖动、提交、Esc 和一次 undo 保持可用 | 删除 ASCII 专用缓冲和旧事件/载荷处理；dev/release 同应用验收真实输入法确认/取消/候选位置、不重复插入、非法粘贴、剪贴板失败/过期、控件移除/失焦、代理对/组合字符/ZWJ/双向文本；记录实际 IME/系统与字符覆盖限制 |
-| S3 参数查看和上下文命令；应用主责，UI 提供 overlay/路由 | pin A/select B→编辑/重置/undo/redo A，B 保持选中；删除固定 A 显示无效态，undo 恢复可查看；unpin 跟随；菜单操作不驱动相机 | 删除 selected-only 参数绑定/无参 begin/位置回放选中副作用及相机抢占分支；dev/release 覆盖合法/非法草稿切目标、整向量一次 undo、无变化无历史、菜单外点击/键盘/失效/旧帧、相机捕获释放、清理事件和关闭 |
-
-端到端都从 README 的同一 `atelier_editor` 入口及现有窗口验收扩展，不建立单元/mock 框架。真实 IME 体验不能用合成 WM_IME 消息冒充；必要的故障注入只补充正式路径的失败分支证据。报告区分实机、消息注入和静态检查。
-每片交付更新对应模块的当前合同及 README 实际能力；除本页明确裁决的 S2 输入政策与 S3 位置历史选择语义外，保留原有增删、拖动、相机、尺寸过渡和关停行为。已知缺陷或遗留双路径阻止切片结项；延后的新功能不宣称完成。
-
-## 8. 性能边界与验收证据
-
-现有 renderer 每个 quad 一次 draw，使用不可变 R8 内容身份/版本缓存，帧末淘汰不用的 GPU 内容；滚出再滚回可能重新上传。普通 tint/位置/clip 变化无需新纹理；整段文字变化仍可能重栅格与上传。不预建 atlas、保留预算缓存或批处理框架。
-S1 在 UI 生成候选内容时先检查 bounds∩clip，再 raster/emit；布局与输入身份仍保留，绘制、命中和菜单拦截随同一完整帧发布。renderer 的 accepted/skipped/终态合同不变。
-集成后用真实场景对象列表（现有上限 256）滚动和连续参数编辑采样 release 的 prepare/render 时间分布、栅格次数、上传字节/draw 数及持有资源量；只加完成该测量所需的计数。根据结果决定是否存在下一项优化，报告推断与实测分开。
-当前真实业务参数只有位置 XYZ，不能由此宣称已验证高密度参数面板；出现真实更密集参数消费者后再测量，不制造假字段或另建 benchmark 产品。本轮尚无性能改善测量结论。
+历史 256 成员滚动与位置拖动采样见[编辑器模块](modules/editor/README.md)。这些数据不能证明高密度参数面板或当前全部编辑器的性能；测量须注明源码与构建、场景和包含的阶段。
 
 ## 9. S2 共同合同（应用与 UI，2026-09-29）
 

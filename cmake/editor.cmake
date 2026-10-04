@@ -9,6 +9,7 @@ function(atelier_add_editor)
             -P "${PROJECT_SOURCE_DIR}/cmake/editor-build-info.cmake"
         BYPRODUCTS "${build_info}" VERBATIM)
     configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ss" "${CMAKE_BINARY_DIR}/editor.ss" COPYONLY)
+    configure_file("${PROJECT_SOURCE_DIR}/assets/position.ui.source" "${CMAKE_BINARY_DIR}/position.ui.source" COPYONLY)
     foreach(font_asset SarasaUiSC-Regular.ttf SarasaUiSC-SemiBold.ttf
             SourceCodePro-Regular.otf SourceCodePro-Bold.otf sarasa-LICENSE.txt source-code-pro-LICENSE.md sources.json)
         configure_file("${PROJECT_SOURCE_DIR}/assets/fonts/${font_asset}" "${CMAKE_BINARY_DIR}/fonts/${font_asset}" COPYONLY)
@@ -21,7 +22,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")
     atelier_target(atelier_editor_core)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_world PRIVATE ole32 nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language PRIVATE ole32 nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"

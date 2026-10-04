@@ -20,9 +20,13 @@ void Workspace::reset_layout() {
     dock.select(control::parameters_tab); menu.reset(); menu_bar_collapsed=shelf_collapsed=false;
 }
 void Workspace::reset_document() {
+    parameter_instance_.reset();parameter_component_.reset();parameter_error_.clear();parameter_error_key_=0;
     bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;
     navigation_={ObjectId{}}; navigation_cursor_=0; query.clear(); tree_query.clear();
     menu.reset(); assets.reset(project_open);
+}
+Result<bool> Workspace::apply_parameter(const ui::Action& action) {
+    return parameter_instance_?parameter_instance_->event(action):Result<bool>{false};
 }
 const Workspace::Binding* Workspace::binding(ui::ControlKey key) const noexcept {
     const auto found = std::find_if(bindings_.begin(), bindings_.end(), [key](const auto& item) { return item.key == key; });
@@ -148,7 +152,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         result.push_back(std::move(item));
         return result.back();
     };
-    const auto selected = session.selected();
+    const auto requested_selection=session.selected();
+    const auto selected=std::ranges::any_of(members,[&](const auto& member){return member.id()==requested_selection;})?
+        requested_selection:ObjectId{};
     const auto old_cursor=navigation_cursor_;
     std::size_t destination{};
     for (std::size_t i=0;i<navigation_.size();++i) {
@@ -296,12 +302,6 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     for (std::size_t axis = 0; axis < matches.size(); ++axis)
         matches[axis] = std::wstring_view(aliases[axis]).find(folded) != std::wstring_view::npos;
     const bool any = std::any_of(matches.begin(), matches.end(), [](bool match) { return match; });
-    if (!any || !transform) add(53,85,ControlKind::label,heading,any ? L"No scene root" : L"No matching parameters");
-    auto section=NodeInput::box(0,28); section.width=Axis::expand();
-    auto& fold=add(control::position_fold,85,ControlKind::foldout,section,L"Scene root");
-    fold.selected=position_expanded; fold.classes={"section"}; fold.layout.collapsed=!any;
-    auto contents=NodeInput::column(7); contents.collapsed=!position_expanded || !any;
-    add(58,85,ControlKind::container,contents).classes={"parameter-inset"};
     constexpr std::array names{L"X", L"Y", L"Z"};
     const auto definitions = session.parameters();
     std::array<ui::NumberField,3> fields;
@@ -315,12 +315,41 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if (!matches[axis]) continue;
         fields[field_count++]={field,names[axis],value,definition.default_value,definition.minimum,definition.maximum,definition.drag_step,.001,static_cast<ui::VectorAxis>(axis+1)};
     }
-    if (field_count) ui::append_number_row(result,{70,72,73,transform?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},58,
-        L"Position (m)",actor_status.can_edit && transform.has_value(),group_modified},std::span(fields).first(field_count));
+    ui_language::EditBinding position{transform?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},
+        actor_status.can_edit && transform.has_value(),group_modified,{fields.begin(),fields.begin()+static_cast<std::ptrdiff_t>(field_count)}};
+    const std::array<ui_language::InputValue,3> inputs{transform.has_value(),any,std::move(position)};
+    if (!parameter_component_ && parameter_error_.empty()) {
+        auto source=read_file(asset_directory()/"position.ui.source");
+        if (!source) parameter_error_=source.error().message;
+        else {
+            auto component=ui_language::Component::compile(runtime,"position.ui.source",*source);
+            if (!component) parameter_error_=component.error().message;
+            else parameter_component_=std::move(*component);
+        }
+    }
+    if (parameter_component_ && !parameter_instance_ && parameter_error_.empty()) {
+        const std::array<ui_language::KeyBinding,6> keys{{{"no_root",53},{"section",control::position_fold},
+            {"contents",58},{"position",70,72,73},{"drag_hint",90},{"menu_hint",91}}};
+        auto instance=ui_language::Instance::create(parameter_component_,85,next_binding_,keys,inputs);
+        if (!instance) parameter_error_=instance.error().message;
+        else parameter_instance_=std::move(*instance);
+    }
+    if (parameter_instance_) {
+        auto published=parameter_instance_->publish(inputs);
+        auto updated=published?parameter_instance_->update():published;
+        if (!updated) parameter_error_=updated.error().message;
+        else parameter_error_.clear();
+        const auto controls=parameter_instance_->controls();result.insert(result.end(),controls.begin(),controls.end());
+    }
+    if (!parameter_error_.empty()) {
+        if (!parameter_error_key_) {
+            if (next_binding_==std::numeric_limits<ui::ControlKey>::max()) throw std::runtime_error("Editor control identities exhausted.");
+            parameter_error_key_=next_binding_++;
+        }
+        add(parameter_error_key_,85,ControlKind::label,heading,wide(parameter_error_));
+    }
     auto hint=NodeInput::box(0,0); hint.width=Axis::expand(); hint.height=Axis::content();
     hint.padding.left=8;
-    add(90,85,ControlKind::label,hint,L"Middle drag: value ladder · Shift: fine steps").role = ui::Role::caption;
-    add(91,85,ControlKind::label,hint,L"Right click: parameter menu · Ctrl + middle: defaults").role = ui::Role::caption;
     auto info=hint; info.collapsed=parameter_page!=control::parameter_components;
     add(92,control::parameter_list,ControlKind::label,info,L"Components owned by the selected Actor.").role=ui::Role::caption;
     });

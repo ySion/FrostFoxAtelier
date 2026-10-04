@@ -33,6 +33,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_workspace.inl"
 #include "project_document.inl"
 #include "project_profile.inl"
+#include "declarative_ui.inl"
 }
 int main(int argc, char** argv) {
     try {
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
         }
         require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory]");
         verify_project_document();
+        verify_declarative_parameters();
         {
             editor::Session single;
             changed(single.create_static_mesh(editor::mesh_assets().front()));

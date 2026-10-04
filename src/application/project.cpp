@@ -51,8 +51,9 @@ void Application::publish_document(std::unique_ptr<editor::Session> next) {
     close_menu(false);effects(ui_.cancel_interaction());
     auto cleared=ui_.set_controls({});if (!cleared) throw std::runtime_error("Cannot retire the previous document UI.");effects(*cleared);
     sync_text_input();
+    workspace_.reset_document(); // Retire UI contexts and JIT leases while their Runtime still exists.
     const auto closed=document_->close();if (!closed) throw std::runtime_error(closed.error().message);
-    document_=std::move(next);workspace_.reset_document();camera_.reset();invalidate_surface();
+    document_=std::move(next);camera_.reset();invalidate_surface();
 }
 Result<void> Application::open_project(const std::filesystem::path& folder,bool create) {
     // A save decision can change the file we are about to open. Read only after

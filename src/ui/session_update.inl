@@ -1,22 +1,10 @@
-    // Both description producers enter the same validation and lifetime path.
+    // Producers share property validation; Session also validates tree references.
     template<class Lookup> static Result<void> validate_control(const Control& control, Lookup lookup) {
+        if (auto valid=validate_control_properties(control);!valid) return valid;
         const auto* parent=lookup(control.parent);
-        if (!control.key || (control.parent && !parent) ||
-            static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::tree_item) ||
-            static_cast<unsigned>(control.role)>static_cast<unsigned>(Role::caption) || control.text.size()>4096 ||
-            !std::isfinite(control.value) || !std::isfinite(control.minimum) || !std::isfinite(control.maximum) ||
-            control.minimum>control.maximum || !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) ||
-            control.drag_step<=0 || control.fine_step<=0 ||
-            static_cast<unsigned>(control.drag_axis)>static_cast<unsigned>(DragAxis::vertical))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::folder) ||
-            (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
-             control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if ((control.click_action && control.kind!=ControlKind::splitter) ||
-            (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent ||
-                !parent || parent->kind!=ControlKind::container)) ||
-            (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
+        if (control.parent && !parent) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent ||
+            !parent || parent->kind!=ControlKind::container))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.kind==ControlKind::tree_item) {
             const auto* branch=lookup(control.tree_parent);
@@ -24,11 +12,6 @@
                 (!branch || branch->kind!=ControlKind::tree_item || branch->parent!=control.parent)))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         } else if (control.tree_parent) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 ||
-            !detail::valid_text(control.tree_filter,false) || !detail::valid_text(control.text,control.kind==ControlKind::text_edit))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum ||
-            *control.default_value>control.maximum)) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.kind==ControlKind::popup) {
             if (control.parent || (control.popup_owner && !lookup(control.popup_owner)))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
@@ -42,15 +25,9 @@
                 (control.edit_command->kind==EditCommandKind::reset && !target->default_value))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         }
-        if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
-            !std::all_of(control.classes.begin(),control.classes.end(),[](const auto& name){return StyleSheet::valid_class(name);}))
-            return std::unexpected(Error{ErrorCode::invalid_style,control.key});
         if (parent && ((parent->kind==ControlKind::tree && control.kind!=ControlKind::tree_item) ||
             (parent->kind!=ControlKind::container && parent->kind!=ControlKind::list && parent->kind!=ControlKind::popup &&
              parent->kind!=ControlKind::tree))) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (editable(control.kind) && control.kind!=ControlKind::slider &&
-            (control.value<control.minimum || control.value>control.maximum))
-            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         return {};
     }
     static bool same_structure(const Control& a,const Control& b) {

@@ -7,6 +7,7 @@
 #include "ui/session.hpp"
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
+#include "ui_language/component.hpp"
 
 namespace atelier::editor {
 namespace control {
@@ -66,11 +67,15 @@ struct Workspace {
     Result<void> select_tree(Session&,ui::ControlKey);
     bool command_enabled(Command,const Session&) const;
     bool apply_view(const ui::Action&);
+    Result<bool> apply_parameter(const ui::Action&);
+    std::string_view parameter_error() const noexcept { return parameter_error_; }
+    std::optional<ui_language::Statistics> parameter_statistics() const noexcept {
+        return parameter_instance_?std::optional{parameter_instance_->statistics()}:std::nullopt;
+    }
     renderer::ViewSettings view{.shading=renderer::Shading::matcap};
     ui::ControlKey shelf_page{control::shelf_create};
     AssetBrowser assets;
     bool project_open{};
-    bool position_expanded{true};
     ui::ControlKey parameter_page{control::parameter_transform};
     bool menu_bar_collapsed{}, shelf_collapsed{};
     ControlWorkbench workbench;
@@ -87,6 +92,10 @@ struct Workspace {
     ui::ControlKey reset_control(ObjectId) const noexcept;
     ui::ControlKey name_control(ObjectId) const noexcept;
 private:
+    std::shared_ptr<ui_language::Component> parameter_component_;
+    std::unique_ptr<ui_language::Instance> parameter_instance_;
+    std::string parameter_error_;
+    ui::ControlKey parameter_error_key_{};
     std::vector<Binding> bindings_;
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};
