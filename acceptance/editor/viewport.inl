@@ -1,6 +1,10 @@
 void verify_viewport_display(Application& app,const std::filesystem::path& output) {
     click(app,atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere"));
     click(app,atelier::editor::browser_control::add);
+    // Inspect actual faces at a useful scale, beyond the selected edge coverage.
+    click(app,control::focus);
+    require_input_focus(app);
+    wheel(app,control::viewport,5);
     const auto actor=app.document().selected();
     const auto history=app.document().undo_count();
     const auto items=model(app.document().world().render_items());
@@ -39,7 +43,9 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     for (unsigned y=static_cast<unsigned>(scene.y);y<static_cast<unsigned>(scene.y+scene.height);++y)
         for (unsigned x=static_cast<unsigned>(scene.x);x<static_cast<unsigned>(scene.x+scene.width);++x) {
             const auto offset=(std::size_t(y)*flat.extent.width+x)*4;
-            if (std::abs(int(flat.rgba[offset])-smooth.rgba[offset])>3) ++changed;
+            if (std::abs(int(flat.rgba[offset])-smooth.rgba[offset])>3 ||
+                std::abs(int(flat.rgba[offset+1])-smooth.rgba[offset+1])>3 ||
+                std::abs(int(flat.rgba[offset+2])-smooth.rgba[offset+2])>3) ++changed;
         }
     require(changed>100,"Flat/Smooth controls did not change the actual sphere shading.");
     choose(control::scene_shading,control::shading_first+2);
