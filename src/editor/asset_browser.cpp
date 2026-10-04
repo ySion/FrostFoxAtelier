@@ -78,7 +78,7 @@ void AssetBrowser::append(std::vector<ui::Control>& controls,ui::ControlKey pare
     add(body,parent,ControlKind::container,horizontal);
     targets_.clear();
     const auto key_for=[&](const std::string& value) {
-        const auto [it,inserted]=keys_.try_emplace(value,next_key_);if (inserted) ++next_key_;return it->second;
+        const auto [key,inserted]=keys_.try_emplace(StringView{value},next_key_);if (inserted) ++next_key_;return *key;
     };
     const auto directories=auxiliary++;auto tree=NodeInput::column();tree.width=Axis::fixed(104);tree.height=Axis::expand();
     tree.collapsed=engine_ || !project;

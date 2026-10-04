@@ -46,9 +46,11 @@ function(atelier_target target)
     endif()
 endfunction()
 
-add_library(atelier_foundation STATIC src/foundation/string.cpp)
+include(cmake/unordered_dense.cmake)
+add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp)
 target_include_directories(atelier_foundation PUBLIC src)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
+target_link_libraries(atelier_foundation PUBLIC unordered_dense::unordered_dense)
 atelier_target(atelier_foundation)
 
 add_executable(atelier_math_acceptance acceptance/math/main.cpp)

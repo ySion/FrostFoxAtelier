@@ -1,6 +1,6 @@
 # 引擎 C++ 基础库
 
-当前提供 `atelier::Array<T>`、`Span<T>`、`String`、`StringView`。它们服务于连续数据、临时计算、文本传递与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。完整 STL 兼容、关联容器与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
+当前提供 `atelier::Array<T>`、`Span<T>`、`String`、`StringView`、`Map<K,V>`、`Set<T>` 和 `Hash/Equal`。它们服务于连续数据、文本、唯一键索引与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map/Set 当前服务原生 C++ 消费者，尚未开放反射或源码容器定义。完整 STL 兼容与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
 
 ## 类型与所有权
 
@@ -10,10 +10,14 @@
 | `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../src/foundation/span.hpp) |
 | `String` | 独占、有效 UTF-8，保证尾部零字符；复制拥有独立缓冲，移动后源为空 | [string.hpp](../src/foundation/string.hpp) |
 | `StringView` | 指针与字节数量；允许外部未验证 UTF-8 与局部字节切片，不保证尾部零字符 | 同上 |
+| `Map<K,V>` | 独占键和值；复制独立拥有，移动转移存储；键只读、值可修改，无遍历顺序保证 | [map.hpp](../src/foundation/map.hpp) |
+| `Set<T>` | 独占唯一成员；复制独立拥有，移动转移存储；成员只读，无遍历顺序保证 | [set.hpp](../src/foundation/set.hpp) |
 
 String 使用 32 字节对象及 15 字节短字符串内联存储（SSO），长文本由独占堆缓冲持有。字节复制直接搬移连续缓冲，不构造随后会被覆盖的字符。Array 使用标准分配原语取得正确对齐的未初始化存储；宿主的 String 和 Array 均沿现有全局 new/delete 接入 mimalloc，无额外分配器注册表。取舍与同机采样见[字符串研究与测量](research/string-storage-performance.md)。
 
 原生容器可持有普通 C++ 资源；复制指针或句柄不复制其指向对象。Runtime 对象引用的存活仍由根、字段与写屏障管理。普通 `Array<ObjectId>` 不会自动成为 GC 根。
+
+Array/String/Map/Set 自复制、自移动和自交换保持原值；移动后的源为空且可复用。重复 clear/release、重复删除缺失键不改变逻辑内容；reserve 不减少容量。Array/Map/Set 的移动赋值先接管来源，再释放旧内容，因此来源即使由目标内某个资源间接拥有，也不会在转移前被析构。元素构析、Hash/Equal 或谓词不得重入并结构修改正在执行操作的同一容器。
 
 ## Array 常用操作
 
@@ -41,6 +45,56 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 - 预留容量中的单元素 emplace 直接构造并在成功后增加大小；实际扩容仍先构造新增后缀，再处理旧前缀，保留自身元素或视图作为来源的合同。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
 - `emplace/add` 构造新增元素可能由调用者提供任意参数；若元素构造主动修改参数，包括移动自身元素，失败时不能撤销这些用户行为。保序删除和 `remove_if` 若元素赋值或谓词抛异常，容器仍可析构，但部分元素可能已改变。
 - 非法索引/切片/删除范围抛 `std::out_of_range`，容量溢出抛 `std::length_error`，分配失败沿 C++ 分配异常传播。通过 Runtime 调用的异常按原有边界转为 `Result` 错误。
+
+## Map、Set 与哈希
+
+```cpp
+atelier::Map<atelier::String, unsigned> resources;
+resources.reserve(128);                    // 可容纳的总条目数
+auto [value, inserted] = resources.try_emplace("材质/stone", 7u);
+if (const auto* found = resources.find(atelier::StringView{"材质/stone"})) {
+    // found 借用表中的值；本次查询不创建拥有型 String。
+}
+resources.insert_or_assign("材质/stone", 9u);
+for (auto [key, current] : resources) {      // 两个绑定都借用元素
+    current += 1;                          // key 只读
+}
+resources.remove("材质/stone");
+resources.clear();                         // 析构元素、保留容量
+resources.release();                       // 释放存储
+
+atelier::Set<unsigned> seen;
+bool first = seen.add(7u);                  // 首次为 true，重复为 false
+seen.remove(7u);                            // 返回是否移除了成员
+```
+
+### 接口、拥有与失效
+
+- `size/empty` 查询状态；`find` 返回借用指针或空，查询缺失不插入。const Map 返回 `const V*`，Set 始终返回 `const T*`。Map 的 `try_emplace` 和 `insert_or_assign` 返回 `{value, inserted}`；Set 的 `add` 返回是否新增。
+- `try_emplace` 先查键，命中时不构造键/值，不消费转入的资源；C++ 实参表达式本身仍先求值。`insert_or_assign` 先构造完整替换值，再以不抛移动提交。支持 move-only 元素，此时容器复制接口不可用；复制赋值先构造副本再替换，不依赖元素复制赋值。
+- Map 遍历返回只读键、可写值的借用代理；推荐示例中的结构化绑定。const Map 遍历的值也只读；Set 遍历仅只读成员。普通遍历期间不得结构修改容器。迭代器不暴露上游类型，也不承诺随机访问。
+- 插入、删除、预留容量、clear/release、赋值、移动和 swap 后，调用者重新取得迭代器、元素指针与引用；结构操作失败也可能已经搬动缓冲。即使部分操作在当前容量下没有搬移，也不额外保证借用稳定。删除会以尾元素填洞，遍历顺序和地址不作为业务身份。
+- `reserve(n)` 按总条目数准备存储，不构造元素。删除和 clear 不自动缩容，release 释放存储。超过底层可索引范围的 reserve 抛 `std::length_error`，不静默截断。默认空表不动态分配索引；沿既有全局 new/delete 使用 mimalloc。
+- 不提供并发保护；同一容器不能在读/遍历时被另一线程修改。复制指针或身份值不复制其目标，也不自动登记 Runtime 根。
+
+### Hash/Equal 与失败合同
+
+[Hash/Equal](../src/foundation/hash.hpp) 是共同入口。一般类型复用现有 `std::hash<T>` 与 `operator==`，因此 ObjectId 继续包含 Runtime 上下文、槽位和代际。自定义策略作为 Map/Set 的模板参数提供，当前由容器默认构造；策略本身的默认/复制/移动/交换/析构及 Hash/Equal 调用必须不抛，检查包含结果到 size_t/bool 的转换。移动容器时源获得新默认策略，不要求其已移空的旧策略仍可调用。元素必须具备不抛移动构造、移动赋值和析构，编译期拒绝不满足的类型。标准类型的相等运算若未声明 noexcept，也需提供满足该合同的比较策略。
+
+非透明策略只接受实际键类型，必要的类型转换在调用之前显式完成，例如 `Set<unsigned>::contains(1u)`。异构查询要求 Hash/Equal 同时声明 `is_transparent`，并且实际 Q→哈希结果、Q/K→相等结果的完整调用均不抛；不以策略中存在某个重载来推断后端会跳过键构造。这样查询不会在 noexcept 包装内部隐式执行可抛键转换。
+
+Equal 必须是键域上的等价关系，相等键必须同哈希；键留在表内期间，这些结果必须稳定，包括策略访问的间接状态。普通浮点相等对 NaN 不满足该要求，使用浮点键时须排除 NaN 或提供成对一致的 Hash/Equal。编译期 noexcept 检查不证明这些语义规律。
+
+String/StringView 共用同一按长度的字节哈希和比较，包含嵌入零，不做大小写折叠或 Unicode 规范化；零结尾字符指针作为便利用法，在首个零处结束，空指针按空串处理。透明查询不创建拥有存储，也不验证 UTF-8；插入 String 键时才建立其 UTF-8 不变量。持久文本键使用 String，StringView 作为键则仍由调用方保证外部字节存续且内容不变。自定义透明策略必须使查询表示与拥有键的相等和哈希一致；结构体不能默认哈希含 padding 的原始表示。
+
+构造/复制/分配失败沿 C++ 异常传播。插入失败不发布新成员；复制赋值或替换值构造失败保留目标的原值，部分构造的资源会清理。reserve 失败保留成员内容，但可能已经改变缓冲与容量。调用者主动移动表内资源或构造函数修改实参属于用户副作用，不由容器回滚。Hash/Equal 不保存输入借用、不修改表、不重入结构操作；不能通过错误的 noexcept 声明掩盖会抛异常的实现。
+
+底层使用锁定的 `ankerl::unordered_dense` 分组索引与连续值存储，不暴露 bucket/load-factor、持久化私有布局或后端入口。版本、下载与校验值统一在[依赖锁文件](../cmake/dependencies-lock.json)，构建复制 `LICENSE.unordered_dense.txt`，当前无上游补丁。内部复用上游标准容器，不另建分配器注册表。哈希值与遍历顺序不属于持久格式或跨版本协议；确定性输出显式排序。
+
+### 正式消费者
+
+- AssetBrowser 的 String→ControlKey 字典维护既有 nav/item/row/type/size 身份域；刷新、过滤和临时不可见不更换已有键，reset 清表而计数继续增长。查询自身不构造 String，调用者的前缀拼接仍可能分配，不宣称整条路径零分配。
+- World 接纳 Actor/组件时的临时 `Set<ObjectId>` 拒绝重复身份，沿原顺序完成准备、验证与发布；Set 不保活对象。World 持久成员索引、Renderer 缓存及其他容器不在本片迁移范围。
 
 ## 文本与视图
 
@@ -96,6 +150,10 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 cmake --build --preset dev --target foundation_acceptance reflection_acceptance
 cmake --build --preset release --target foundation_acceptance reflection_acceptance
 ```
+
+Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删和 ObjectId 跨上下文/代际及 GC 不保活。业务接入同时使用 `world_acceptance` 和 `editor_document_acceptance`；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。以上均在 dev/release 执行，不依赖 assert，也不新增单元测试框架。本片未测量性能收益；未执行 GPU/原生窗口或输入法验收，原有窗口待验与剪贴板问题不由此关闭。
+
+[生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
 
 [消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 增量覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
 

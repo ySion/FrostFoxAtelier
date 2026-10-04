@@ -7,6 +7,9 @@
 #include <stdexcept>
 #include <string>
 
+void verify_associative_containers();
+void verify_container_lifecycle();
+
 namespace {
 using namespace atelier;
 using namespace atelier::acceptance::foundation;
@@ -374,8 +377,8 @@ void reflection_workload() {
 
 int main() {
     try {
-        native_workload(); reflection_workload();
-        std::puts("Foundation acceptance: PASS (RAII, bulk storage, capacity reuse, aliasing, UTF-8, failure cleanup, generated fields, shared value operations)");
+        native_workload(); reflection_workload(); verify_associative_containers(); verify_container_lifecycle();
+        std::puts("Foundation acceptance: PASS (RAII, Array/String, Map/Set resource catalog, aliasing, UTF-8, failure cleanup, generated fields, shared value operations)");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Foundation acceptance: FAIL: %s\n", error.what()); return 1;
