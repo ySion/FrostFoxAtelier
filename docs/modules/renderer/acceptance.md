@@ -8,12 +8,15 @@
 | --- | --- | --- |
 | 正式 editor、renderer、专项验收消费者编译 | PASS | PASS |
 | Project/Workspace/editor 文档端到端链 | PASS | PASS |
+| World 生命周期、空间树与 StaticMeshActor | PASS（8/8） | PASS（8/8） |
 | 视口显示栏 1×/1.5×/2× DPI 布局 | PASS | PASS |
 | 新场景 VS/PS，DXC Shader Model 6.5 编译及 GPU 结构布局核对 | PASS（两配置共享同一 HLSL） | 同左 |
 | Renderer 真实 GPU 颜色/深度与模式矩阵 | 待执行 | 待执行 |
 | 正式编辑器原生菜单切换、MatCap/线框画面与 World TRS 投影 | 待执行 | 待执行 |
 
 GPU 项待确认可使用桌面的时段；当前窗口 fixture 会显示/恢复窗口，编辑器消费者还会执行窗口内输入。本记录不将编译、CPU 布局或历史 GPU PASS 当作新视口的 GPU 验收结果。日志在本工作区 `out/viewport-integration/`。
+
+阶段冻结时已正常合入固定主线 `a57cb0ca5cd15aef61e79cef42513105b1c9bd3e`，无冲突。实际双配置后台验证的代码提交为 `f70d4e5e5f1059764a6ea35c6f2c1f3205a97d36`；其后的本节收口只修改文档。执行目标为 `atelier_renderer_acceptance atelier_editor editor_document_acceptance world_acceptance`：前两项仅编译，后两项编译并运行。日志为 `stage-sync-dev.log`、`stage-sync-release.log`，两种配置均退出 0。没有使用其他树的可执行文件。World 负责人已确认边标记与现有资源来源键恢复兼容，无需更改 Scene 格式；RHI 接口与后端均未修改。最终组合 Runtime/应用等其他成果后的 GPU 验收仍须在应用负责人指定的同一固定候选上执行。
 
 已接好的可重复入口（会显示真实窗口，需依次执行）：
 
