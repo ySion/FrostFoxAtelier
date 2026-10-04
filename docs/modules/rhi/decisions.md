@@ -22,7 +22,7 @@
 - 整体复用仍需要履行实际契约。普通绑定、资源导入、外部队列和并发录制的责任不同，不能将某条路径的延迟退休扩展成所有使用方式都安全。
 - 宿主选择 owned context；原生 interop 会把持久 queue/list、状态恢复和同步责任交回消费者。当前业务需求没有要求承担这套额外执行模式。
 - gfx 的快速原型定位或第三方采用记录不能替代本项目验证；选型依据是所需语义、真实消费者和修正后的行为矩阵，没有性能胜出声明。
-- Renderer/RDG 将来可以组织依赖与工作，不复制 gfx 的底层状态与退休权威。业务资源的未实现设计另见[资源连接提案](../resources/design-proposal.md)。
+- 现有 Renderer 组织场景、视口与 UI 绘制，gfx 保持底层状态和资源退休的唯一权威；将来引入 RDG 也遵守这一边界。业务资源的未实现设计另见[资源连接提案](../resources/design-proposal.md)。
 
 ## 补丁与依赖维护
 
@@ -34,6 +34,6 @@ gfx 的 AVX2 baseline 编译选项已移除，保持项目 x64 基线；不因�
 
 ## 当前范围
 
-不同时维护原生自建后端、NVRHI 或 Diligent。OMM 专题提交没有本阶段需求，不自动升级。窗口输入保留 gfx 路线，但 Present/resize/HDR 的源码存在不构成已验收能力。
+不同时维护原生自建后端、NVRHI 或 Diligent。OMM 专题提交没有本阶段需求，不自动升级。窗口输入由 Application 管理；Present/resize 已通过现有 Context 接入 Renderer，证据见[模块验收](acceptance.md)与[Renderer 验收](../renderer/acceptance.md)。这不扩展为 HDR 或同一执行域承载多个窗口的验收结论。
 
-并发录制、多 queue、生产原生导入、设备恢复、完整 renderer/RDG、语言资源绑定和性能基线均不在当前交付中。将来改变执行模式或升级 gfx，应重新核对所有权、同步和现有行为矩阵；准确未覆盖项见 [acceptance](acceptance.md#未覆盖不计作-pass)。
+并发录制、多 queue、生产原生导入、设备恢复、通用 RDG、业务资源的语言接线和性能基线均不在当前交付中。将来改变执行模式或升级 gfx，应重新核对所有权、同步和现有行为矩阵；历史验收范围见 [acceptance](acceptance.md)，当前接口边界见 [contract](contract.md)。
