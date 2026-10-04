@@ -14,9 +14,8 @@
 namespace atelier::language {
 
 // Compiler classifications, not a separate registry of business types.
-// A predicate is internal to conditions, not a new Runtime value type.
 struct ValueType {
-    enum Kind { f32, u32, i32, predicate, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string, f64 };
+    enum Kind { f32, u32, i32, boolean, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string, f64 };
     Kind kind{void_value};
     std::uint32_t type_index{}; // index in the enum or value catalog, selected by kind
     constexpr ValueType(Kind value = void_value, std::uint32_t index = 0) : kind(value), type_index(index) {}
@@ -36,6 +35,7 @@ struct ValueLayout {
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
     bool can_own{}, can_mutate{};
     math::Type math{};
+    bool plain_value{};
 };
 inline bool aggregate(ValueType type) noexcept {
     return type.kind == ValueType::record || type.kind == ValueType::array || type.kind == ValueType::string;
@@ -59,7 +59,11 @@ struct Diagnostic { SourcePosition position; std::string message; };
 
 using NodeId = std::size_t;
 inline constexpr NodeId no_node = std::numeric_limits<NodeId>::max();
-enum class Operation { add, subtract, multiply, positive, negate, equal, not_equal, less, less_equal, greater, greater_equal, divide };
+enum class Operation {
+    add, subtract, multiply, positive, negate, equal, not_equal, less, less_equal, greater, greater_equal, divide,
+    remainder, bitwise_and, bitwise_or, bitwise_xor, bitwise_not, shift_left, shift_right,
+    logical_not, logical_and, logical_or
+};
 enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root };
 struct Expression {
     enum class Kind {
@@ -81,14 +85,16 @@ struct Expression {
     SequenceMutation mutation{};
     std::uint64_t bits{}; // literal payload, including exact double representation
     MathOperation math_operation{MathOperation::dot};
+    bool typed_constant{}; // module constant substitutions retain their declared type
 };
 struct Statement {
-    enum class Kind { block, declare, assign, call, condition, loop, return_value, yield };
+    enum class Kind { block, declare, assign, call, condition, loop, return_value, yield, break_loop, continue_loop };
     Kind kind;
     SourcePosition position;
     NodeId target{no_node}, expression{no_node}, body{no_node}, alternative{no_node};
     std::vector<NodeId> children;
     std::vector<std::uint32_t> locals{}; // declarations directly owned by this block
+    NodeId step{no_node}; // optional loop step, also executed after continue
 };
 struct Local {
     std::string name;
@@ -121,8 +127,8 @@ struct Program {
     std::vector<bool> reachable;
 };
 
-// One module with a host-selected entry: scalar/enum/math values or borrowed value
-// parameters, an optional scalar/math result and implicit self. Async cannot borrow
+// One module with a host-selected entry: scalar/enum/plain record values or borrowed
+// parameters, an optional scalar/plain record result and implicit self. Async cannot borrow
 // caller storage or expose aggregate parameters/results.
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during

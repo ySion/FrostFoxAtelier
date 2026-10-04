@@ -126,8 +126,9 @@ void typed_value(BusinessValue actual, BusinessValue expected, const char* messa
     require(actual.kind == expected.kind && actual.bits == expected.bits, message);
 }
 struct TypedTrace {
-    std::uint32_t begins{}, finishes{};
+    std::uint32_t begins{}, finishes{}, clears{}, clears_after_finish{};
     bool fail_begin{}, fail_poll{}, fail_finish{};
+    bool receiver_at_finish{};
 };
 BusinessServices typed_trace_services() {
     auto callbacks = services;
@@ -143,6 +144,7 @@ BusinessServices typed_trace_services() {
         const auto status = bridge(invocation, [&]() -> Result<void> {
             auto& trace = *static_cast<TypedTrace*>(fixture(invocation).hook_state);
             ++trace.finishes;
+            trace.receiver_at_finish = invocation.roots[receiver_slot].registered();
             for (std::size_t index = business_root_slots; index < invocation.roots.size(); ++index)
                 require(!invocation.roots[index].registered(), "Typed return retained a user root into finish.");
             for (const auto& observation : invocation.observations)
@@ -154,8 +156,11 @@ BusinessServices typed_trace_services() {
         return status == 0 ? finish(context) : 37;
     };
     callbacks.clear = [](void* context, std::uint32_t slot) noexcept {
-        clear_slot(context, slot);
         auto& invocation = *static_cast<Invocation*>(context);
+        auto& trace = *static_cast<TypedTrace*>(fixture(invocation).hook_state);
+        ++trace.clears;
+        if (trace.finishes != 0) ++trace.clears_after_finish;
+        clear_slot(context, slot);
         if (invocation.failed) invocation.fail(ErrorCode::invalid_object, "Secondary cleanup diagnostic.");
     };
     return callbacks;
@@ -304,7 +309,7 @@ void verify_typed_source_errors() {
         "\nuint invalid(float value) { return value; }",
         "\nfloat invalid(uint flag) { if (flag == 0) { return 1.0; } }",
         "\nuint invalid() { while (1 == 1) { return 1; } }",
-        "\nvoid invalid(bool value) {}",
+        "\nbool invalid(bool value) { return value + true; }",
         "\nvoid invalid(void value) {}",
         "\nvoid invalid(float value, uint value) {}",
         "\nuint invalid() { return 1.0; }",
@@ -485,6 +490,50 @@ void verify_typed_reference_results(Runtime& runtime, const Binding& binding) {
         collect(runtime);
         require(runtime.root_count() == 0 && runtime.live_objects() == 0, "Typed reference scenario leaked its receiver.");
     }
+}
+void verify_typed_return_cleanup(Runtime& runtime, const Binding& binding) {
+    const auto callbacks = typed_trace_services();
+    auto direct = compile_bound(binding, reference_source(
+        "float focus(float value) { $T held = self; return value; }", binding.name),
+        "typed-return-cleanup.source", callbacks);
+    auto fallthrough = compile_bound(binding, reference_source(
+        "void focus() { $T held = self; }", binding.name), "typed-fallthrough-cleanup.source", callbacks);
+    auto receiver = take(runtime.create(binding.type));
+    const std::array arguments{scalar(4.0f)};
+    const BusinessValue sentinel{ValueKind::u32, 0xbad00badu};
+    std::uint32_t success_clears{}, failure_clears{};
+    for (const bool fail : {false, true, false, false}) {
+        TypedTrace trace;
+        trace.fail_finish = fail;
+        auto output = sentinel;
+        const auto result = typed_raw(runtime, binding, direct.get(), receiver.id(), arguments.data(),
+            static_cast<std::uint32_t>(arguments.size()), &output, trace);
+        require(trace.begins == 1 && trace.finishes == 1 && trace.receiver_at_finish && result.polls == 1 &&
+            runtime.root_count() == 1, "Return cleanup changed receiver lifetime or retained an invocation root.");
+        if (fail) {
+            require(result.status != 0 && result.error == "Typed finish failure." &&
+                trace.clears == 3 && trace.clears_after_finish == 2,
+                "Failed finish lost its first error or skipped idempotent cleanup.");
+            typed_value(output, sentinel, "Failed finish committed a staged return value.");
+            failure_clears = trace.clears;
+        } else {
+            require(result.status == 0 && trace.clears == 2 && trace.clears_after_finish == 1,
+                "Successful return repeated user-root cleanup or failed after a previous invocation.");
+            typed_value(output, arguments[0], "Repeated return changed the scalar result.");
+            success_clears = trace.clears;
+        }
+    }
+    TypedTrace trace;
+    const auto result = typed_raw(runtime, binding, fallthrough.get(), receiver.id(), nullptr, 0, nullptr, trace);
+    require(result.status == 0 && trace.finishes == 1 && trace.receiver_at_finish &&
+        trace.clears == 3 && trace.clears_after_finish == 1 && runtime.root_count() == 1,
+        "Implicit return changed lexical cleanup or receiver lifetime.");
+    receiver.reset();
+    collect(runtime);
+    require(runtime.root_count() == 0 && runtime.live_objects() == 0,
+        "Return cleanup left resources after repeated calls and finish failure.");
+    std::printf("JIT return cleanup (%.*s): success=%u, failed finish=%u; retry and fallthrough=PASS\n",
+        static_cast<int>(binding.name.size()), binding.name.data(), success_clears, failure_clears);
 }
 void verify_typed_active_owner() {
     Runtime runtime;
@@ -847,6 +896,7 @@ void verify_typed_business() {
         const auto binding = bind_type(runtime, type);
         verify_typed_ui(runtime, binding);
         verify_typed_reference_results(runtime, binding);
+        verify_typed_return_cleanup(runtime, binding);
         verify_typed_reload(runtime, binding);
         verify_native_result_consumers(runtime, binding);
         verify_native_result_abi(runtime, binding);

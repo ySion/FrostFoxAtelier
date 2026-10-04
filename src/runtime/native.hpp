@@ -15,13 +15,18 @@ namespace detail {
 
 template<class T>
 concept ScalarType = std::same_as<T, float> || std::same_as<T, double> || std::same_as<T, std::uint32_t> ||
-    std::same_as<T, std::int32_t> || (std::is_enum_v<T> && sizeof(T) == 4);
+    std::same_as<T, std::int32_t> || std::same_as<T, bool> || (std::is_enum_v<T> && sizeof(T) == 4);
 
 template<class T>
 concept MathValueType = static_cast<bool>(math::type_of<T>);
 
 template<class T>
-concept NativeParameter = (ScalarType<std::remove_cvref_t<T>> || MathValueType<std::remove_cvref_t<T>> ||
+concept PlainNativeValue = std::is_class_v<T> && std::is_standard_layout_v<T> &&
+    std::is_trivially_copy_constructible_v<T> && std::is_trivially_copy_assignable_v<T> &&
+    std::is_trivially_destructible_v<T>;
+
+template<class T>
+concept NativeParameter = (ScalarType<std::remove_cvref_t<T>> || MathValueType<std::remove_cvref_t<T>> || PlainNativeValue<std::remove_cvref_t<T>> ||
     std::is_lvalue_reference_v<T>) && !std::is_rvalue_reference_v<T> &&
     !std::is_volatile_v<std::remove_reference_t<T>>;
 static_assert(sizeof(int) == 4);
@@ -36,8 +41,8 @@ struct Method<R (C::*)(A...)> {
     using Arguments = std::tuple<A...>;
     using Return = R;
     static constexpr bool receiver_read_only = false;
-    static_assert(std::same_as<R, void> || ScalarType<R> || MathValueType<R>,
-        "Method results must be void or supported scalar/math values returned by value.");
+    static_assert(std::same_as<R, void> || ScalarType<R> || MathValueType<R> || PlainNativeValue<R>,
+        "Method results must be void or supported scalar/plain record values returned by value.");
     static_assert((NativeParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
 };
 template<class R, class C, class... A>
@@ -68,6 +73,8 @@ public:
         definition_.native.value_operations_preserve_borrows = std::is_trivially_default_constructible_v<T> &&
             std::is_trivially_copy_constructible_v<T> && std::is_trivially_copy_assignable_v<T> && std::is_trivially_destructible_v<T> &&
             std::is_trivially_constructible_v<T, decltype(std::move_if_noexcept(std::declval<T&>()))>;
+        definition_.native.plain_value = std::is_standard_layout_v<T> &&
+            std::is_trivially_copy_constructible_v<T> && std::is_trivially_copy_assignable_v<T> && std::is_trivially_destructible_v<T>;
         if constexpr (std::is_enum_v<T>) {
             definition_.enumeration = TypeDefinition::Enumeration{TypeReference::native<std::underlying_type_t<T>>(), {}};
         }
@@ -160,11 +167,11 @@ public:
                     call.arguments[I].get<std::tuple_element_t<I, Args>>()...);
             };
             if constexpr (std::same_as<Return, void>) invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
-            else if constexpr (detail::MathValueType<Return>) {
+            else if constexpr ((detail::MathValueType<Return> || detail::PlainNativeValue<Return>)) {
                 const auto type = call.runtime.native_type<Return>();
                 if (!type) return std::unexpected(type.error());
                 if (call.result_value.type != *type || !call.result_value.data)
-                    return std::unexpected(Error{ErrorCode::invalid_storage, "Native math result requires exact typed output storage."});
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Native plain value result requires exact typed output storage."});
                 *static_cast<Return*>(call.result_value.data) = invoke(std::make_index_sequence<std::tuple_size_v<Args>>{});
                 call.result_written = true;
             }

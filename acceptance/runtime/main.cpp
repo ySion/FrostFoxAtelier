@@ -533,7 +533,7 @@ void verify_signature_publication() {
         "Native scalar/void results or mutable receiver information were misinferred.");
 
     const std::vector<ValueDefinition> invalid_values{
-        {record}, {native}, {native, ValueForm::strong_reference}, {native, ValueForm::weak_reference},
+        {record, ValueForm::strong_reference}, {native}, {native, ValueForm::strong_reference}, {native, ValueForm::weak_reference},
         {u32, ValueForm::strong_reference}, {u32, static_cast<ValueForm>(99)},
         {take(other.native_type<std::uint32_t>())}, {TypeReference{"signature.Missing"}}
     };
@@ -567,7 +567,7 @@ void verify_signature_publication() {
     TypeDefinition later = pending;
     later.name = "signature.Later";
     later.methods[0].signature.receiver.reset();
-    later.methods[0].signature.result = ValueDefinition{record};
+    later.methods[0].signature.result = ValueDefinition{native};
     reject(runtime.register_types({pending, later}), ErrorCode::invalid_definition,
         "Batch accepted an unsupported result after resolving an earlier receiver.");
     for (const auto* name : {"signature.Pending", "signature.Later"})
@@ -1606,7 +1606,7 @@ void verify_publication_failures() {
     rejected(std::move(definitions), ErrorCode::invalid_definition);
     definitions = batch();
     definitions[0].kind = TypeKind::object;
-    definitions[0].methods = {{"bad_parameter", {{{TypeReference{"transaction.B"}}}}, advance_described}};
+    definitions[0].methods = {{"bad_parameter", {{{TypeReference{"transaction.A"}}}}, advance_described}};
     rejected(std::move(definitions), ErrorCode::invalid_definition);
     definitions = batch();
     definitions[0].kind = TypeKind::object;

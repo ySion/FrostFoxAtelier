@@ -62,7 +62,7 @@ public:
     public:
         Lease() = default;
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
-        // Math results require live, aligned storage of the exact declared type.
+        // Math and plain record results require live, aligned storage of the exact declared type.
         // Failure preserves the complete output; scalar results use the overload above.
         Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}) const;
         template<std::ranges::contiguous_range R>
