@@ -11,8 +11,8 @@
 | World 生命周期、空间树与 StaticMeshActor | PASS（8/8） | PASS（8/8） |
 | 视口显示栏 1×/1.5×/2× DPI 布局 | PASS | PASS |
 | 新场景 VS/PS，DXC Shader Model 6.5 编译及 GPU 结构布局核对 | PASS（两配置共享同一 HLSL） | 同左 |
-| Renderer 真实 GPU 颜色/深度与模式矩阵 | PASS（2026-10-05，fb77b6a） | 待执行 |
-| 正式编辑器原生菜单切换、MatCap/线框画面与 World TRS 投影 | 前台检查中断，未完成 | 待执行 |
+| Renderer 真实 GPU 颜色/深度与模式矩阵 | PASS（2026-10-05，5c1f21a） | PASS（2026-10-05，5c1f21a） |
+| 正式编辑器原生菜单切换、MatCap/线框画面与 World TRS 投影 | 已修正着色比较场景，重启未获初始前台，未完成 | 待执行 |
 
 窗口 fixture 会显示/恢复窗口，编辑器消费者还会执行窗口内输入。本记录不将编译、CPU 布局或历史 GPU PASS 当作新视口的 GPU 验收结果。原后台日志在视口工作树 `out/viewport-integration/`；2026-10-05 的同树 GPU 执行情况与中断边界见下。
 
@@ -37,9 +37,13 @@ Renderer 消费者检查 MatCap 对基础色的覆盖与视空间响应、Flat/�
 
 首次 Dev Renderer 的纯 UI 部分通过，场景管线创建因根签名超过 64 DWORD 失败。RHI 负责人修复了各 shader stage 根常量与描述符表成本没有聚合的缺口，复用既有 CBV 常量池回退；修复提交为 `fb77b6a04063cb3e1df7f6d6e1872a9804890cc2`，直接父为上述固定候选。集成树正常快进该提交后双配置重新编译，Dev `renderer_acceptance` 完整 PASS，真实硬件为 AMD Radeon RX 6800 XT，启用 D3D12 debug/GBV。覆盖矩阵、任意网格、MatCap、线框、隐藏线、选择、线宽及资源寿命；日志未报告 D3D12 warning/error。
 
-随后 Dev `editor_viewport_acceptance` 因前台焦点检查退出 1，未生成模式 PNG。原错误共用于初始激活失败和运行中失焦，因此本次日志不能断言用户曾切走；停止后没有强抢焦点或自动重试。验收诊断提交 `e9c2210010fcf9d8f66d671e92c6898deab7132e` 仅区分初始 20 秒未获前台与运行中失焦，原输入保护不变，已通过 Dev/Release 编译；尚未再次执行窗口验收。待确认可保持前台的时段后完成两配置正式视口及 Release Renderer，不能据本次 Dev Renderer PASS 声称四项全部完成。
+随后 Dev `editor_viewport_acceptance` 因前台焦点检查退出 1，未生成模式 PNG。原错误共用于初始激活失败和运行中失焦，因此该次日志不能断言用户曾切走。验收诊断提交 `e9c2210010fcf9d8f66d671e92c6898deab7132e` 仅区分初始 20 秒未获前台与运行中失焦，原输入保护不变。
 
-证据目录为该集成树 `out/viewport-validation-20261005/`：首次失败 `dev-renderer-initial.log`、修复后 `dev-renderer.log`、编辑器中断 `dev-viewport.log`、两配置重建 `{dev,release}-build-rhi-fix.log` 和 `{dev,release}-activation-diagnostic-build.log`。RHI 自有树的双配置离屏回归是底层补丁证据，不代替本集成树的窗口结果。旧 Project 普通窗口和 Unicode 剪贴板问题未在本专项修复或验收。
+用户确认时段后，重跑成功执行原生菜单并生成 MatCap、Smooth、Flat PNG，在 Flat/Smooth 画面断言失败。截图中的球体约 70 像素宽，选中边线覆盖大量表面；实际 RGB 各通道差异大于 3 的像素分别为 33、180、366，而原判据只统计红色通道，要求超过 100。提交 `5c1f21a29fd281cca6e9b87545d46e7c318dd48d` 通过既有 Focus 命令和滚轮放大验收球体，比较全部 RGB 通道，保留差异阈值与文档/深度不变检查；没有修改生产渲染行为。两配置编译通过。其后正式窗口启动明确报告初始 20 秒未获前台，未发送合成输入；该结果与前一次画面断言失败分别记录，等待手动激活后继续。
+
+同一固定 `5c1f21a` 上 Dev/Release `renderer_acceptance` 均完整 PASS，日志未报告 D3D12 warning/error；正式编辑器双配置专项尚未完成，不能将 Renderer 消费者结果代作编辑器输入链 PASS。
+
+证据目录为该集成树 `out/viewport-validation-20261005/`：首次失败 `dev-renderer-initial.log`、修复后 `dev-renderer.log`、最终双配置 `dev-renderer-final.log` / `release-renderer.log`、首次编辑器中断 `dev-viewport.log`、真实画面断言失败 `dev-viewport-retry.log` 与 `small-sphere-evidence/`、放大 fixture 后初始前台拒绝 `dev-viewport-framed.log`，以及两配置重建 `{dev,release}-build-rhi-fix.log` 和 `{dev,release}-activation-diagnostic-build.log`。RHI 自有树的双配置离屏回归是底层补丁证据，不代替本集成树的窗口结果。旧 Project 普通窗口和 Unicode 剪贴板问题未在本专项修复或验收。
 
 ## 历史验收
 
