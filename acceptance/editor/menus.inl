@@ -1,5 +1,11 @@
 void verify_about(Application& app,std::wstring_view expected_project) {
     const auto history=app.document().undo_count();
+    key(app,VK_F10);key(app,VK_LEFT);
+    require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
+        "File/Help keyboard navigation did not wrap across the menu registry.");
+    key(app,VK_RIGHT);
+    require(app.menu_frame() && app.menu_frame()->find(control::exit),"Help/File keyboard navigation did not wrap back.");
+    key(app,VK_ESCAPE);
     click(app,control::help_menu);
     require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
         "Help omitted the About command.");

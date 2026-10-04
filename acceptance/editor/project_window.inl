@@ -1,11 +1,12 @@
-void verify_project_window(Application& app,const std::filesystem::path& output) {
+void verify_project_window(Application& app,const std::filesystem::path& output,bool existing=false) {
     namespace access=atelier::application;
     namespace browser=atelier::editor::browser_control;
     using atelier::editor::Command;
     const auto folder=std::filesystem::absolute(output/L"项目");
     access::EditorAcceptanceAccess::mark_saved(app);
-    model(access::EditorAcceptanceAccess::command(app,Command::new_project,atelier::editor::utf8(folder.wstring())));tick(app,4);
-    require(actors(app).empty() && !app.document().dirty(),"New project did not publish a clean empty scene.");
+    model(access::EditorAcceptanceAccess::command(app,existing?Command::open_project:Command::new_project,atelier::editor::utf8(folder.wstring())));tick(app,4);
+    const auto initial_count=actors(app).size();
+    require((existing || initial_count==0) && !app.document().dirty(),"Project did not publish its clean initial scene.");
     verify_about(app,folder.wstring());
     click(app,control::add_static_mesh);
     const auto actor=app.document().selected();
@@ -14,14 +15,14 @@ void verify_project_window(Application& app,const std::filesystem::path& output)
     require(!app.document().dirty() && x(app,actor)==7,"Save did not commit the active field and mark the scene clean.");
     auto saved=app.document().serialize();require(saved.has_value(),"Cannot inspect the saved scene.");
     model(app.open_project(folder));tick(app,4);
-    require(actors(app).size()==1 && !app.document().dirty() && model(app.document().serialize())==*saved,
+    require(actors(app).size()==initial_count+1 && !app.document().dirty() && model(app.document().serialize())==*saved,
         "Opening the saved project lost scene data.");
-    const auto current=model(app.document().world().members()).front().id();
+    const auto current=model(app.document().world().members())[initial_count].id();
     click(app,app.object_control(current));
     click(app,browser::engine);
     const auto sphere=access::EditorAcceptanceAccess::asset_key(app,"builtin/sphere");
     click(app,sphere);
-    require(app.document().selected()==current && actors(app).size()==1,"Resource selection changed the scene selection or created an Actor.");
+    require(app.document().selected()==current && actors(app).size()==initial_count+1,"Resource selection changed the scene selection or created an Actor.");
     for (const auto view:{browser::tiles,browser::list,browser::details}) {
         click(app,view);require(app.presented()->find(sphere)->selected,"Switching asset views lost resource selection.");
     }
@@ -51,10 +52,12 @@ void verify_project_window(Application& app,const std::filesystem::path& output)
         model(atelier::editor::read_file(folder/"Content/Scenes/Main.scene"))==*saved,
         "A failed catalog refresh misreported or undid the successful scene save.");
     model(atelier::editor::write_file(metadata,metadata_text));
+    std::filesystem::create_directories(folder/"Cache");
     model(atelier::editor::write_file(folder/"Cache/disposable.txt","Derived data only"));
     std::filesystem::remove(folder/"Cache/disposable.txt");std::filesystem::remove(folder/"Cache");
     const auto moved=std::filesystem::absolute(output/L"工程搬移");std::filesystem::rename(folder,moved);
     model(app.open_project(moved));tick(app,4);
     require(model(app.document().serialize())==*saved,"Moved project depended on its old root or Cache.");
+    verify_about(app,moved.wstring());
     capture(app,output/"project-reopened.png");
 }

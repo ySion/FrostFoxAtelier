@@ -697,6 +697,40 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
 #include "project_window.inl"
 }
 
+int verify_editor_project(Application& app,const char* output_directory,const wchar_t* source_project) {
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
+    const auto base=std::filesystem::weakly_canonical(atelier::editor::wide(output_directory));
+    const auto output=base/(L"run-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+    if (source_project) {
+        const auto source=std::filesystem::canonical(source_project);
+        const auto relative=base.lexically_relative(source);
+        require(relative.empty() || *relative.begin()==L"..","Project acceptance output must be outside the source project.");
+        const auto folder=output/L"项目";
+        std::filesystem::create_directories(folder);
+        for (const auto name:{L"Config",L"Content",L"Source"}) if (std::filesystem::exists(source/name))
+            std::filesystem::copy(source/name,folder/name,std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
+    } else std::filesystem::create_directories(output);
+    std::ofstream(output/"acceptance.txt")<<"Editor project acceptance: RUNNING\n";
+    SetForegroundWindow(app.window());SetFocus(app.window());tick(app);
+    const auto deadline=GetTickCount64()+20000;
+    while ((GetForegroundWindow()!=app.window() || GetFocus()!=app.window()) && GetTickCount64()<deadline)
+        require(app.step(),"Editor closed while waiting for project acceptance foreground.");
+    require_input_focus(app);
+    RECT host{};GetWindowRect(app.window(),&host);
+    require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the project acceptance pointer.");
+    verify_project_window(app,output,source_project!=nullptr);
+    atelier::application::EditorAcceptanceAccess::mark_saved(app);
+    SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Project acceptance did not close the editor.");
+    std::ofstream report(output/"acceptance.txt");
+    report<<"Editor project acceptance: PASS\nBuild: "<<atelier::build_info::revision<<"\nConfiguration: "<<atelier::build_info::configuration
+        <<"\nSource project: "<<(source_project?atelier::editor::utf8(source_project):"new fixture")
+        <<"\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
+        <<"Shared commands, About identity/current root, Actor creation, active-field save, reopen, asset views/search/filter, OBJ import, failed open, refresh failure after save, movable project and disposable Cache.\n";
+    std::printf("Editor project acceptance: PASS; evidence: %s\n",atelier::editor::utf8(output.wstring()).c_str());
+    return 0;
+}
+
 int verify_editor_window(Application& app, const char* output_directory) {
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     hr(com);
