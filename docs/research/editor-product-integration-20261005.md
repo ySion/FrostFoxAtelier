@@ -1,6 +1,6 @@
 # 2026-10-05 编辑器完整操作链
 
-状态：统一候选，等待最终窗口验收。后台通过不代表本页列出的窗口操作已经通过；本轮最终发布由主持统一执行。
+状态：固定代码 `aa9b310c619beec1cc3c21a1b000f047ce2f3233` 的 Dev（Debug）和 Release 完整窗口验收均通过。本轮主线发布与各工作树同步由主持统一执行。
 
 ## 范围与来源
 
@@ -35,8 +35,11 @@ About 显示实时工程根目录与场景路径；工程成功打开后记录�
 ## 验收状态与证据
 
 - 合并 `5cd7304` 的 Dev／Release 正式 editor 编译、World 8／8、Project／Workspace／editor_document 均通过，日志为 `out/product-integration-20261005/{dev,release}-merged-build.log`。
-- 后续完整工程链已编入同一 editor，尚待串行窗口验收。程序在每次运行的报告中写入其实际构建标识和配置。
+- `aa9b310` 的 Dev／Release 正式 editor 均重新编译，实际二进制的 `--version` 与窗口报告均对应这一干净提交。两次窗口串行执行并正常退出，报告均为 PASS；共享视口／TRS、About、完整工程操作及失败路径全部通过。
+- 本次窗口证据根目录为 `out/product-integration-20261005/`：Dev 为 `dev-window-evidence-resume2/run-63520-332969390/`，Release 为 `release-window-evidence-resume2/run-73296-332990718/`；每个目录含 `acceptance.txt`、实际 GPU PNG 及独立工程副本。对应启动日志为 `{dev,release}-product-window-resume2.log`，构建日志为 `{dev,release}-overlay-fixture-build.log`。
+- 已查看 MatCap、Flat、纯线框、导入网格叠线及保存重开截图。两配置在同一视口内部区域 `(0,290)-(1152,907)` 比较导入网格 Off／Overlay，RGB 任一通道差值大于 3 的像素均为 1126；自动验收另检查深度、选择、序列化文档和撤销历史保持一致。
+- 原 `E:/ffa_testproj` 的 Config／Content／Source 文件集合与 SHA256 均与验收前快照一致。`candidate-manifest.json` 记录实际验收提交、可执行文件 SHA256、配置、报告和日志；旧 `f0052b2` 的清单与首错证据另行保留。
 - `f0052b2` 的 Dev 普通窗口已完成共享视口／TRS、About、工程打开、导入及参数撤销重做；随后导入网格的叠线像素检查失败。截图与 Renderer 合同确认：选中对象在 Off 和 Overlay 均保留同样的橙色轮廓。验收改为通过 Scene Tree 选择 World 后比较同一未选中网格，保持原像素阈值，并独立检查深度、选择和文档不变；保留两帧截图与变化像素数。生产渲染行为未修改。首错日志为 `out/product-integration-20261005/dev-product-window-resume1.log`。
 - Renderer 在固定 `5c1f21a29fd281cca6e9b87545d46e7c318dd48d` 的 Dev／Release `renderer_acceptance` 均通过，覆盖 MatCap、线框、矩阵和资源寿命；后续到 `4722d2` 仅改变窗口验收初始等待和记录。本轮应用候选的 Renderer／Geometry／RHI／gfx 生产代码与该版本一致。
-- 正式视口专项先因小球体的单 R 通道采样不足而失败，已改为通过现有相机放大球体并比较 RGB，保留原差异阈值。后续启动遭遇初始前台拒绝；该结果没有证明运行期间发生了失焦。当前同一窗口最多等待激活 120 秒，分别记录 WAITING、RUNNING 或启动超时；运行后失焦仍停止输入。
+- 正式视口专项先因小球体的单 R 通道采样不足而失败，已改为通过现有相机放大球体并比较 RGB，保留原差异阈值。此前的初始前台拒绝单独保留；本次两配置均实际获得前台后完成验收。当前同一窗口最多等待激活 120 秒，运行后失焦仍停止输入。
 - 本阶段不宣称普通 Project 确认对话框和间歇性 Unicode 剪贴板问题已解决；按实际覆盖结果更新，不以 Renderer 专项代替。
