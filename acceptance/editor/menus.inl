@@ -12,8 +12,8 @@ void verify_about(Application& app,std::wstring_view expected_project) {
     struct DialogLookup { HWND owner{},found{}; } lookup{app.window()};
     const auto thread_id=GetWindowThreadProcessId(app.window(),nullptr);
     std::wstring title,content;
-    std::jthread dismiss([&] {
-        for (unsigned attempt=0;attempt<500 && !lookup.found;++attempt) {
+    std::jthread dismiss([&](std::stop_token stop) {
+        while (!stop.stop_requested() && !lookup.found && IsWindow(lookup.owner)) {
             EnumThreadWindows(thread_id,[](HWND window,LPARAM parameter)->BOOL {
                 auto& state=*reinterpret_cast<DialogLookup*>(parameter);
                 wchar_t name[32]{};GetClassNameW(window,name,32);
@@ -35,7 +35,7 @@ void verify_about(Application& app,std::wstring_view expected_project) {
         PostMessageW(lookup.found,WM_COMMAND,IDOK,0);
     });
     click(app,static_cast<ControlKey>(atelier::editor::Command::about));
-    dismiss.join();tick(app);
+    dismiss.request_stop();dismiss.join();tick(app);
     require(lookup.found && title==L"About FrostFox Atelier" &&
         content.contains(atelier::editor::wide(atelier::build_info::revision)) &&
         content.contains(atelier::editor::wide(atelier::build_info::configuration)) && content.contains(expected_project),
