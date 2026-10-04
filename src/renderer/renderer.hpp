@@ -61,6 +61,7 @@ struct FrameStats {
     std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
     std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
+    std::uint64_t viewport_draw_calls{}; // Background and reference guides; excludes scene geometry.
     std::uint64_t coverage_upload_count{};
     std::uint64_t coverage_upload_bytes{}; // Tight R8 payload; excludes copy padding/scratch.
     // Current renderer cache only, excluding gfx's in-flight retirement queue.

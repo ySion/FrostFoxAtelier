@@ -22,6 +22,7 @@ inline constexpr ui::ControlKey shelf=730, shelf_tabs=731, shelf_create=732, she
 inline constexpr ui::ControlKey scene_content=640;
 inline constexpr ui::ControlKey scene_shading=646, scene_edges=647, scene_topology=648, scene_display_bar=649;
 inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_first=767;
+inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
@@ -66,7 +67,8 @@ struct Workspace {
     Result<void> select_tree(Session&,ui::ControlKey);
     bool command_enabled(Command,const Session&) const;
     bool apply_view(const ui::Action&);
-    renderer::ViewSettings view{.shading=renderer::Shading::matcap};
+    renderer::ViewSettings view{.shading=renderer::Shading::matcap,
+        .background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true};
     ui::ControlKey shelf_page{control::shelf_create};
     AssetBrowser assets;
     bool project_open{};

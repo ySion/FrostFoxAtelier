@@ -1,4 +1,8 @@
 void verify_viewport_display(Application& app,const std::filesystem::path& output) {
+    atelier::renderer::Capture empty;
+    require(app.step(&empty) && std::ranges::all_of(empty.depth,[](float z){return z==1;}),
+            "Empty viewport guides changed geometry depth.");
+    png(empty,output/"empty-reference-grid.png");
     click(app,atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere"));
     click(app,atelier::editor::browser_control::add);
     // Inspect actual faces at a useful scale, beyond the selected edge coverage.
@@ -48,6 +52,23 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
                 std::abs(int(flat.rgba[offset+2])-smooth.rgba[offset+2])>3) ++changed;
         }
     require(changed>100,"Flat/Smooth controls did not change the actual sphere shading.");
+    choose(control::scene_guides,control::guide_grid);
+    const auto no_grid=capture_mode("reference-grid-off.png");
+    choose(control::scene_guides,control::guide_grid);
+    const auto with_grid=capture_mode("reference-grid-on.png");
+    changed=0;
+    for (unsigned y=static_cast<unsigned>(scene.y);y<static_cast<unsigned>(scene.y+scene.height);++y)
+        for (unsigned x=static_cast<unsigned>(scene.x);x<static_cast<unsigned>(scene.x+scene.width);++x) {
+            const auto offset=(std::size_t(y)*with_grid.extent.width+x)*4;
+            if (std::abs(int(with_grid.rgba[offset])-no_grid.rgba[offset])>3 ||
+                std::abs(int(with_grid.rgba[offset+1])-no_grid.rgba[offset+1])>3 ||
+                std::abs(int(with_grid.rgba[offset+2])-no_grid.rgba[offset+2])>3) ++changed;
+        }
+    require(changed>100,"Reference Grid menu did not change actual viewport pixels.");
+    choose(control::scene_guides,control::guide_axes); capture_mode("origin-axes-off.png");
+    choose(control::scene_guides,control::guide_axes);
+    choose(control::scene_guides,control::guide_background); capture_mode("gradient-off.png");
+    choose(control::scene_guides,control::guide_background);
     choose(control::scene_shading,control::shading_first+2);
     choose(control::scene_edges,control::edges_first+1); capture_mode("matcap-edges.png");
     choose(control::scene_topology,control::topology_first+1); capture_mode("matcap-triangles.png");

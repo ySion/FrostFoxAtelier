@@ -103,6 +103,10 @@ bool Workspace::apply_view(const ui::Action& action) {
         view.hidden_lines=option!=3;
     } else if (key>=control::topology_first && key<control::topology_first+2)
         view.triangle_edges=key!=control::topology_first;
+    else if (key==control::guide_background)
+        view.background=view.background==renderer::Background::none?renderer::Background::gradient:renderer::Background::none;
+    else if (key==control::guide_grid) view.reference_grid=!view.reference_grid;
+    else if (key==control::guide_axes) view.origin_axes=!view.origin_axes;
     else return false;
     status=L"Viewport display updated";
     return true;
@@ -213,6 +217,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             shading_titles[static_cast<unsigned>(this->view.shading)]);
         add(control::scene_edges,control::scene_display_bar,ControlKind::combo,choice,edge_titles[edge_option]);
         add(control::scene_topology,control::scene_display_bar,ControlKind::combo,choice,topology_titles[this->view.triangle_edges?1:0]);
+        add(control::scene_guides,control::scene_display_bar,ControlKind::combo,choice,L"Guides");
         auto viewport=NodeInput::box(0,0); viewport.width=viewport.height=Axis::expand();
         add(control::viewport,control::scene_content,ControlKind::viewport,viewport);
         return;
@@ -359,6 +364,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             } else if (source->key==control::scene_topology) {
                 for (std::size_t i=0;i<topology_titles.size();++i)
                     items.push_back({control::topology_first+i,topology_titles[i],true,view.triangle_edges==(i!=0),{}});
+            } else if (source->key==control::scene_guides) {
+                items.push_back({control::guide_background,L"Gradient Background",true,view.background==renderer::Background::gradient,{}});
+                items.push_back({control::guide_grid,L"Reference Grid",true,view.reference_grid,{}});
+                items.push_back({control::guide_axes,L"Origin Axes",true,view.origin_axes,{}});
             } else if (!items.empty()) {}
             else if (source->kind==ControlKind::combo && source->key==workbench_control::mode) {
                 for (std::size_t i=0;i<ControlWorkbench::mode_names.size();++i)

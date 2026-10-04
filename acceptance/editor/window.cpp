@@ -448,6 +448,7 @@ struct TimingSeries {
         const auto& stats = app.frame_statistics();
         total.ui_draw_calls += stats.ui_draw_calls;
         total.scene_draw_calls += stats.scene_draw_calls;
+        total.viewport_draw_calls += stats.viewport_draw_calls;
         total.coverage_upload_count += stats.coverage_upload_count;
         total.coverage_upload_bytes += stats.coverage_upload_bytes;
         total.cached_coverage_count = std::max(total.cached_coverage_count, stats.cached_coverage_count);
@@ -473,7 +474,7 @@ struct TimingSeries {
         report << name << ',' << prepare.size() << ',' << finish.prepares - start.prepares << ','
                << finish.rasterizations - start.rasterizations << ',' << finish.raster_bytes - start.raster_bytes << ','
                << finish.culled_text_controls - start.culled_text_controls << ','
-               << total.ui_draw_calls << ',' << total.scene_draw_calls << ',' << total.coverage_upload_count << ','
+               << total.ui_draw_calls << ',' << total.scene_draw_calls << ',' << total.viewport_draw_calls << ',' << total.coverage_upload_count << ','
                << total.coverage_upload_bytes << ',' << peak_live_coverages << ',' << peak_live_bytes << ','
                << total.cached_coverage_count << ',' << total.cached_coverage_texel_bytes << ',' << total.cached_coverage_cpu_bytes << '\n';
     }
@@ -684,7 +685,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     editing.write(report, "256_actors_field_drag");
     require(report.good(), "Cannot save window sampling evidence.");
     std::ofstream resources(output / "s1-resources.csv");
-    resources << "workload,accepted_samples,prepare_calls,rasterizations,raster_bytes,culled_text_controls,ui_draw_calls,scene_draw_calls,coverage_upload_count,coverage_payload_bytes,peak_live_cpu_coverages,peak_live_cpu_bytes,peak_renderer_cache_count,peak_renderer_cache_texel_bytes,peak_renderer_cache_cpu_bytes\n";
+    resources << "workload,accepted_samples,prepare_calls,rasterizations,raster_bytes,culled_text_controls,ui_draw_calls,scene_draw_calls,viewport_draw_calls,coverage_upload_count,coverage_payload_bytes,peak_live_cpu_coverages,peak_live_cpu_bytes,peak_renderer_cache_count,peak_renderer_cache_texel_bytes,peak_renderer_cache_cpu_bytes\n";
     scroll.resources(resources, "256_actors_scroll");
     editing.resources(resources, "256_actors_field_drag");
     require(resources.good(), "Cannot save resource sampling evidence.");
