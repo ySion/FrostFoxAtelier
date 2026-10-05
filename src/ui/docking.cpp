@@ -314,8 +314,10 @@ std::vector<MenuItem> DockSpace::menu_items(ControlKey source,const UiFrame* fra
     menu_pane_=node->key;
     menu_add_=source==add_tab_button(node->key); menu_type_=!menu_add_;
     std::vector<MenuItem> types;
-    for (std::size_t index=0;index<tabs_.size();++index)
+    for (std::size_t index=0;index<tabs_.size();++index) {
         types.push_back({base_+open_offset+index,tabs_[index].title,true,node->active==tabs_[index].key,{}});
+        types.back().behavior=MenuBehavior::radio; types.back().radio_group=node->key;
+    }
     if (menu_add_) return types;
     // Choosing a registered view moves its existing state to this pane.
     std::vector<MenuItem> result;

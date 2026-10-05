@@ -7,6 +7,8 @@
 #include <map>
 #include <set>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace atelier::ui {
@@ -14,6 +16,15 @@ namespace {
 constexpr std::array ladder_steps{100.,10.,1.,.1,.01,.001,.0001};
 constexpr std::array ladder_labels{L"100",L"10",L"1",L".1",L".01",L".001",L".0001"};
 constexpr float ladder_tick_distance=4;
+detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
+    using Icon=ControlIcon; using Symbol=detail::TextStore::Symbol;
+    return icon==Icon::close?Symbol::close:icon==Icon::maximize?Symbol::maximize:icon==Icon::restore?Symbol::restore:icon==Icon::plus?Symbol::plus:
+        icon==Icon::back?Symbol::back:icon==Icon::forward?Symbol::forward:icon==Icon::world?Symbol::world:icon==Icon::object?Symbol::object:
+        icon==Icon::axes?Symbol::axes:icon==Icon::component?Symbol::component:icon==Icon::mesh?Symbol::mesh:icon==Icon::folder?Symbol::folder:
+        icon==Icon::search?Symbol::search:icon==Icon::view_list?Symbol::view_list:icon==Icon::view_details?Symbol::view_details:
+        icon==Icon::view_tiles?Symbol::view_tiles:icon==Icon::filter?Symbol::filter:icon==Icon::more?Symbol::more:
+        icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
+}
 bool text_kind(ControlKind kind) {
     return kind == ControlKind::label || kind == ControlKind::button || kind == ControlKind::item || kind == ControlKind::tree_item ||
         kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::checkbox || kind == ControlKind::foldout ||
@@ -28,7 +39,7 @@ Rect slider_track(Rect bounds,float scale) {
     const auto inset=std::min(7*scale,bounds.width*.5f);
     return {bounds.x+inset,bounds.y+bounds.height*.5f-scale,std::max(0.f,bounds.width-2*inset),2*scale};
 }
-bool focusable(ControlKind kind) { return (text_kind(kind) && kind != ControlKind::label) || kind==ControlKind::slider; }
+bool focusable(ControlKind kind) { return (text_kind(kind) && kind != ControlKind::label) || kind==ControlKind::slider || kind==ControlKind::table; }
 bool contains(Rect rect, float x, float y) {
     return x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height;
 }
@@ -70,17 +81,25 @@ std::optional<double> number(std::wstring_view text, const Control& control) {
 }
 
 Result<void> validate_control_properties(const Control& control) {
-    if (!control.key || static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::tree_item) ||
+    if (!control.key || static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::table) ||
         static_cast<unsigned>(control.role)>static_cast<unsigned>(Role::caption) || control.text.size()>4096 ||
         !std::isfinite(control.value) || !std::isfinite(control.minimum) || !std::isfinite(control.maximum) ||
         control.minimum>control.maximum || !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) ||
         control.drag_step<=0 || control.fine_step<=0 ||
-        static_cast<unsigned>(control.drag_axis)>static_cast<unsigned>(DragAxis::vertical))
+        static_cast<unsigned>(control.drag_axis)>static_cast<unsigned>(DragAxis::vertical) ||
+        static_cast<unsigned>(control.button_behavior)>static_cast<unsigned>(ButtonBehavior::toggle) ||
+        static_cast<unsigned>(control.menu_behavior)>static_cast<unsigned>(MenuBehavior::radio))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::folder) ||
+    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::more) ||
         (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
-         control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item) ||
+         control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item && control.kind!=ControlKind::menu_item) ||
         (control.click_action && control.kind!=ControlKind::splitter) ||
+        (control.action_target && control.kind!=ControlKind::button && control.kind!=ControlKind::table) ||
+        ((control.kind==ControlKind::table)!=static_cast<bool>(control.table)) ||
+        (control.kind!=ControlKind::table && control.table_selection!=TableSelection{}) ||
+        (control.button_behavior!=ButtonBehavior::command && control.kind!=ControlKind::button) ||
+        (control.menu_behavior!=MenuBehavior::command && (control.kind!=ControlKind::menu_item || control.menu_branch || control.edit_command)) ||
+        ((control.menu_behavior==MenuBehavior::radio)!=(control.radio_group!=0)) ||
         (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
     if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 ||
@@ -103,10 +122,15 @@ const TextGeometry* UiFrame::find_text(ControlKey key) const noexcept {
     const auto found=std::find_if(text_geometry.begin(),text_geometry.end(),[key](const auto& value){return value.key==key;});
     return found==text_geometry.end()?nullptr:&*found;
 }
+const TableGeometry* UiFrame::find_table(ControlKey key) const noexcept {
+    const auto found=std::find_if(tables.begin(),tables.end(),[key](const auto& table){return table.key==key;});
+    return found==tables.end()?nullptr:&*found;
+}
 
 struct Session::Impl {
+    using TableIndex=std::unordered_map<TableKey,std::size_t>;
     struct TreeState {
-        bool tree_expanded{true}, tree_branch{}, tree_hidden{}, tree_match{}, tree_enabled{true};
+        bool tree_expanded{true}, tree_branch{}, tree_hidden{}, tree_match{}, tree_enabled{true}, tree_reveal{};
         unsigned tree_depth{};
         ControlKey tree_next{};
     };
@@ -115,6 +139,10 @@ struct Session::Impl {
         ui_layout::LayoutNodeId node;
         std::uint64_t incarnation{};
         double scroll{}, scroll_limit{};
+        double scroll_x{}, scroll_x_limit{};
+        bool table_reveal{true};
+        std::vector<detail::TextKey> table_text; // Visible cells only; old frames retain their own coverage.
+        TableIndex table_index;
         float content_bottom{};
         bool baseline_content{};
         std::size_t frame_index{std::numeric_limits<std::size_t>::max()};
@@ -147,6 +175,10 @@ struct Session::Impl {
         float slider_span{1}; // Accepted physical track width, frozen until release.
         bool tree_disclosure{};
         bool scrollbar{}; // Scroll offset belongs to the UI, never a document edit.
+        bool horizontal{};
+        TableSelection table_cell{};
+        TableKey table_column{};
+        bool table_resize{}, table_activate{};
     };
     struct Edit {
         struct Composition {
@@ -206,7 +238,9 @@ struct Session::Impl {
     bool current(const ControlBox& box) const {
         const auto found = states.find(box.key);
         if (found == states.end() || found->second.incarnation != box.incarnation ||
-            found->second.control.kind != box.kind || !box.enabled) return false;
+            found->second.control.kind != box.kind || found->second.control.action_target!=box.action_target ||
+            found->second.control.button_behavior!=box.button_behavior || found->second.control.menu_behavior!=box.menu_behavior ||
+            found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table || !box.enabled) return false;
         if (box.kind==ControlKind::tree_item) {
             if (found->second.tree_hidden || !found->second.tree_enabled) return false;
             if (box.tree_parent!=found->second.control.tree_parent || box.parent!=found->second.control.parent) return false;
@@ -228,6 +262,7 @@ struct Session::Impl {
 #include "ui/session_edit.inl"
 #include "ui/session_popup.inl"
 #include "ui/session_tree.inl"
+#include "ui/session_table.inl"
 #include "ui/session_update.inl"
     void resolve(State& state) {
         const auto& control=state.control;
@@ -269,7 +304,7 @@ struct Session::Impl {
             input.content_revision = text_field(state.control.kind) ?
                 text.set(state.control.key, display(state), appearance.font,false,appearance.text_align) :
                 text.set(state.control.key, state.control.text, appearance.font,state.control.kind == ControlKind::label,appearance.text_align);
-        } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter || state.control.kind==ControlKind::slider) {
+        } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter || state.control.kind==ControlKind::slider || state.control.kind==ControlKind::table) {
             input.kind = ui_layout::Kind::box;
         } else if (scrolling(state.control.kind)) {
             input.kind = ui_layout::Kind::column;
@@ -443,6 +478,16 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     state.scroll = std::clamp(state.scroll,0.0,state.scroll_limit);
                 }
         }
+        for (auto key:self.order) {
+            auto& state=self.states.at(key);
+            if (state.control.kind!=ControlKind::tree_item || !state.tree_reveal || state.tree_hidden) continue;
+            auto& tree=self.states.at(state.control.parent);
+            const auto* row=geometry->find(state.node); const auto* owner=geometry->find(tree.node);
+            if (!row || !owner || owner->height<=0) continue;
+            if (row->y<tree.scroll) tree.scroll=row->y;
+            if (row->y+row->height>tree.scroll+owner->height) tree.scroll=row->y+row->height-owner->height;
+            tree.scroll=std::clamp(tree.scroll,0.0,tree.scroll_limit); state.tree_reveal=false;
+        }
         auto quad = [&](Rect bounds, Clip clip, Color color, std::shared_ptr<const Coverage> coverage = {}) {
             clip = intersect(clip,target);
             if (visible(bounds,clip) && color.a > 0)
@@ -476,6 +521,50 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (square && inner) {
                 if (has_edge(edges,BorderEdges::top)) quad({bounds.x+border,bounds.y+border,std::max(0.f,bounds.width-2*border),border},clip,*inner);
                 if (has_edge(edges,BorderEdges::left)) quad({bounds.x+border,bounds.y+2*border,border,std::max(0.f,bounds.height-3*border)},clip,*inner);
+            }
+        };
+        const auto paint_scrollbar=[&](ScrollbarGeometry bar,const ResolvedStyle& appearance,bool enabled) {
+            const auto width=bar.horizontal?bar.bounds.height:bar.bounds.width;
+            const auto span=bar.horizontal?bar.bounds.width:bar.bounds.height;
+            if (bar.maximum<=0 || width<=0 || span<=0) return;
+            const auto step=std::min(appearance.scrollbar_button_size>0?appearance.scrollbar_button_size*scale:
+                (width>=8*scale?width:0.f),span/3);
+            const auto segment=[&](float offset,float length) {
+                return bar.horizontal?Rect{bar.bounds.x+offset,bar.bounds.y,length,width}:
+                    Rect{bar.bounds.x,bar.bounds.y+offset,width,length};
+            };
+            const auto track_span=span-2*step;
+            bar.track=segment(0,track_span); bar.decrement=segment(track_span,step); bar.increment=segment(track_span+step,step);
+            const auto length=std::min(track_span,std::max(appearance.scrollbar_min_thumb*scale,
+                track_span*static_cast<float>(bar.page/(bar.page+bar.maximum))));
+            bar.thumb=segment(static_cast<float>(bar.value/bar.maximum)*(track_span-length),length);
+            output->scrollbars.push_back(bar);
+            const auto stroke=std::max(1.f,std::round(scale*2.f/3));
+            const Color shadow{0,0,0,appearance.indicator_border.a};
+            paint_box(bar.track,bar.clip,appearance.indicator_background,{},{},stroke,shadow,BorderStyle::solid);
+            paint_box(bar.thumb,bar.clip,appearance.scrollbar,appearance.scrollbar_image,{},stroke,appearance.indicator_border,BorderStyle::solid);
+            if (length>12*scale && width>7*scale) {
+                const auto pitch=std::max(2.f,std::round(scale*4.f/3));
+                const auto center_x=bar.thumb.x+bar.thumb.width*.5f,center_y=bar.thumb.y+bar.thumb.height*.5f;
+                for (int row=0;row<4;++row) for (int column=0;column<3;++column) {
+                    const auto across=(column-1)*pitch,along=(row-1.5f)*pitch;
+                    const auto x=std::round(center_x+(bar.horizontal?along:across)),y=std::round(center_y+(bar.horizontal?across:along));
+                    quad({x+stroke,y+stroke,stroke,stroke},bar.clip,appearance.indicator_border);
+                    quad({x,y,stroke,stroke},bar.clip,shadow);
+                }
+            }
+            for (const auto [button,decrement]:{std::pair{bar.decrement,true},std::pair{bar.increment,false}}) {
+                if (step<=0) continue;
+                const bool available=enabled && (decrement?bar.value>0:bar.value<bar.maximum);
+                paint_box(button,bar.clip,appearance.scrollbar,available?appearance.scrollbar_image:nullptr,{},stroke,
+                    available?appearance.indicator_border:appearance.scrollbar,BorderStyle::solid);
+                const auto size=std::min(16.f*scale,std::min(step,width));
+                auto arrow=appearance.foreground;
+                const auto tone=available?.5f:.085f; arrow.r*=tone; arrow.g*=tone; arrow.b*=tone;
+                const auto symbol=bar.horizontal?(decrement?detail::TextStore::Symbol::left:detail::TextStore::Symbol::right):
+                    (decrement?detail::TextStore::Symbol::up:detail::TextStore::Symbol::down);
+                quad({button.x+(button.width-size)*.5f,button.y+(button.height-size)*.5f,size,size},bar.clip,arrow,
+                    self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
             }
         };
         std::size_t popup_draw_begin=std::numeric_limits<std::size_t>::max();
@@ -512,7 +601,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection});
             const auto kind = state.control.kind;
             if (kind==ControlKind::tree_item) {
                 const auto indent=self.states.at(state.control.parent).resolved->tree_indent*scale;
@@ -589,7 +678,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     slider_clip,appearance.indicator_background,{}, {},scale,appearance.indicator_border,BorderStyle::outset);
             }
             if (state.control.icon!=ControlIcon::none) {
-                using Icon=ControlIcon; using Symbol=detail::TextStore::Symbol;
+                using Icon=ControlIcon;
                 const auto icon=state.control.icon;
                 const auto icon_clip=intersect(clip,clip_rect(bounds));
                 if (icon==Icon::grip_horizontal || icon==Icon::grip_vertical) {
@@ -604,9 +693,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                         quad({x,y,dot,dot},icon_clip,appearance.foreground);
                     }
                 } else {
-                    const auto symbol=icon==Icon::close?Symbol::close:icon==Icon::maximize?Symbol::maximize:icon==Icon::restore?Symbol::restore:icon==Icon::plus?Symbol::plus:
-                        icon==Icon::back?Symbol::back:icon==Icon::forward?Symbol::forward:icon==Icon::world?Symbol::world:icon==Icon::object?Symbol::object:icon==Icon::axes?Symbol::axes:icon==Icon::component?Symbol::component:icon==Icon::mesh?Symbol::mesh:icon==Icon::folder?Symbol::folder:
-                        icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
+                    const auto symbol=icon_symbol(icon);
                     auto padding=self.padding_for(state);
                     const bool captioned=!state.control.text.empty();
                     const bool above=captioned && appearance.icon_placement==IconPlacement::above;
@@ -645,6 +732,25 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                         self.text.symbol(state.control.selected?detail::TextStore::Symbol::disclosure_down:detail::TextStore::Symbol::disclosure_right,
                             static_cast<std::uint32_t>(std::ceil(size))));
                 }
+            }
+            if (kind==ControlKind::table) {
+#include "ui/session_table_draw.inl"
+                continue;
+            }
+            if (kind==ControlKind::menu_item && state.control.menu_behavior!=MenuBehavior::command) {
+                using Symbol=detail::TextStore::Symbol;
+                const auto size=appearance.indicator_size*scale;
+                const auto x=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
+                const auto y=bounds.y+(bounds.height-size)*.5f;
+                const auto symbol=state.control.menu_behavior==MenuBehavior::radio?
+                    (state.control.selected?Symbol::radio_checked:Symbol::radio):(state.control.selected?Symbol::checkbox_checked:Symbol::checkbox);
+                if (size>0) quad({x,y,size,size},intersect(clip,clip_rect(bounds)),appearance.foreground,
+                    self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
+            }
+            if (kind==ControlKind::combo && state.control.icon!=ControlIcon::none && state.control.text.empty()) {
+                const auto size=std::min({7.f*scale,bounds.width*.3f,bounds.height*.3f});
+                if (size>0) quad({bounds.x+bounds.width-size-2*scale,bounds.y+bounds.height-size-2*scale,size,size},intersect(clip,clip_rect(bounds)),
+                    appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
             }
             if (kind==ControlKind::combo && (state.control.icon==ControlIcon::none || !state.control.text.empty())) {
                 const float size=std::min(appearance.indicator_size,14.f)*scale;
@@ -748,40 +854,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             const auto width=appearance.scrollbar_width*scale;
             const auto inset=appearance.scrollbar_inset*scale;
             bar.bounds={bounds.bounds.x+bounds.bounds.width-width-inset,bounds.bounds.y+inset,width,std::max(0.f,bounds.bounds.height-2*inset)};
-            const auto step=std::min(appearance.scrollbar_button_size>0?appearance.scrollbar_button_size*scale:
-                (width>=8*scale?width:0.f),bar.bounds.height/3);
-            bar.track={bar.bounds.x,bar.bounds.y,width,bar.bounds.height-2*step};
-            bar.decrement={bar.bounds.x,bar.track.y+bar.track.height,width,step};
-            bar.increment={bar.bounds.x,bar.decrement.y+step,width,step};
             bar.maximum=state.scroll_limit; bar.value=state.scroll; bar.page=bounds.bounds.height/scale;
-            const auto length=std::min(bar.track.height,std::max(appearance.scrollbar_min_thumb*scale,
-                bar.track.height*static_cast<float>(bar.page/(bar.page+bar.maximum))));
-            bar.thumb={bar.track.x,bar.track.y+static_cast<float>(bar.value/bar.maximum)*(bar.track.height-length),width,length};
-            output->scrollbars.push_back(bar);
-            const auto stroke=std::max(1.f,std::round(scale*2.f/3));
-            const Color shadow{0,0,0,appearance.indicator_border.a};
-            paint_box(bar.track,bar.clip,appearance.indicator_background,{}, {},stroke,shadow,BorderStyle::solid);
-            paint_box(bar.thumb,bar.clip,appearance.scrollbar,appearance.scrollbar_image,{},stroke,appearance.indicator_border,BorderStyle::solid);
-            const auto centre=bar.thumb.y+bar.thumb.height*.5f;
-            if (bar.thumb.height>12*scale && width>7*scale) {
-                const auto pitch=std::max(2.f,std::round(scale*4.f/3));
-                const auto x=std::round(bar.thumb.x+width*.5f-pitch),y=std::round(centre-pitch*1.5f);
-                for (int row=0;row<4;++row) for (int column=0;column<3;++column) {
-                    quad({x+column*pitch+stroke,y+row*pitch+stroke,stroke,stroke},bar.clip,appearance.indicator_border);
-                    quad({x+column*pitch,y+row*pitch,stroke,stroke},bar.clip,shadow);
-                }
-            }
-            for (const auto [button,up]:{std::pair{bar.decrement,true},std::pair{bar.increment,false}}) {
-                if (step<=0) continue;
-                const bool available=bounds.enabled && (up?bar.value>0:bar.value<bar.maximum);
-                paint_box(button,bar.clip,appearance.scrollbar,available?appearance.scrollbar_image:nullptr,{},stroke,
-                    available?appearance.indicator_border:appearance.scrollbar,BorderStyle::solid);
-                const auto size=std::min(16.f*scale,std::min(step,width));
-                auto arrow=appearance.foreground;
-                const auto tone=available?.5f:.085f; arrow.r*=tone; arrow.g*=tone; arrow.b*=tone;
-                quad({button.x+(width-size)*.5f,button.y+(step-size)*.5f,size,size},bar.clip,arrow,
-                    self.text.symbol(up?detail::TextStore::Symbol::up:detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
-            }
+            paint_scrollbar(bar,appearance,bounds.enabled);
         };
         for (auto key:self.order) if (scrolling(self.states.at(key).control.kind) && self.states.at(key).control.kind!=ControlKind::popup) scrollbar(self.states.at(key));
         if (popup_draw_begin!=std::numeric_limits<std::size_t>::max()) {

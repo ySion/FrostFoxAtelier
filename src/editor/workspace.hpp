@@ -21,7 +21,7 @@ inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=60
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey shelf=730, shelf_tabs=731, shelf_create=732, shelf_view=733, shelf_body=734, shelf_handle=735, shelf_contents=736;
 inline constexpr ui::ControlKey scene_content=640;
-inline constexpr ui::ControlKey scene_shading=646, scene_edges=647, scene_topology=648, scene_display_bar=649;
+inline constexpr ui::ControlKey scene_shading=646;
 inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_first=767;
 inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
@@ -110,6 +110,7 @@ private:
     std::vector<Binding> bindings_;
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};
+    std::array<ui::ControlKey,command_definitions.size()> shelf_items_{}; // Visual item identities, separate from command IDs.
     std::vector<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
     std::size_t navigation_cursor_{};
     std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.

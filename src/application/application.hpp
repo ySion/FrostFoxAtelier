@@ -101,6 +101,7 @@ private:
     bool confirm_discard();
     Result<void> project_command(editor::Command,std::string_view);
     void publish_document(std::unique_ptr<editor::Session>);
+    void cancel_interaction(const ui::Reply&);
     void invalidate_surface();
     bool pointer_ready() const noexcept;
     bool over_viewport(float, float) const noexcept;

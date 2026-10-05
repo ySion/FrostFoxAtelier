@@ -59,6 +59,19 @@ void shared_tree_view() {
         require(c.frame->find(4)->incarnation!=incarnation && old->find(4),"retired tree row retained identity or mutated an old frame");
         auto invalid=c.controls; invalid[2].tree_parent=5;
         require(!c.ui.set_controls(invalid),"tree accepted a forward/cyclic logical parent");
+        toggle(3); c.prepare(); require(!c.frame->find(4),"programmatic selection fixture did not collapse its ancestor");
+        c.controls[3].selected=true; c.prepare();
+        require(c.frame->find(4) && c.frame->find(4)->bounds.y>=c.frame->find(4)->clip.top,
+            "host selection did not expand and reveal its logical ancestry");
+        toggle(3); c.prepare(); c.prepare();
+        require(!c.frame->find(4),"stable selected projection reopened a manually collapsed ancestor");
+        c.controls[3].selected=false; c.controls.back().selected=true; c.prepare();
+        require(c.frame->find(29)->bounds.y+c.frame->find(29)->bounds.height<=c.frame->find(29)->clip.bottom+1,
+            "host selection did not scroll to its final row");
+        c.controls.back().selected=false; c.controls[3].selected=true; c.prepare();
+        require(c.frame->find(4) && c.frame->find(4)->bounds.y>=c.frame->find(4)->clip.top &&
+            c.frame->find(4)->bounds.y+c.frame->find(4)->bounds.height<=c.frame->find(4)->clip.bottom+1,
+            "a new host selection did not reopen its ancestor and scroll back to the row");
         c.controls[0].tree_filter=L"nothing matches"; c.prepare();
         require(c.frame->tree_rows.empty() && c.frame->scrollbars.empty(),"empty filter result kept interactive rows");
     }

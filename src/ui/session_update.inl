@@ -56,13 +56,29 @@
             return state?&state->control:nullptr;
         };
         std::vector<ControlKey> next_order;
+        std::map<ControlKey,TableIndex> table_indices;
         std::map<ControlKey,const Control*> preceding;
         std::vector<ControlKey> tree_path;
         ControlKey next_popup=sparse?popup:0,tree_owner{};
-        bool check_commands=false;
+        bool check_commands=false,check_radio=false;
         if (!sparse) next_order.reserve(controls.size());
         for (const auto& control:controls) {
             if (auto checked=validate_control(control,lookup);!checked) return std::unexpected(checked.error());
+            if (control.table) {
+                const auto* previous=live(control.key);
+                if (!previous || previous->control.table!=control.table) {
+                    auto checked=validate_table(control);
+                    if (!checked) return std::unexpected(checked.error());
+                    table_indices.emplace(control.key,std::move(*checked));
+                }
+                const auto changed=table_indices.find(control.key);
+                const auto& index=changed!=table_indices.end()?changed->second:previous->table_index;
+                if ((control.table_selection.row && !index.contains(control.table_selection.row)) ||
+                    (control.table_selection.column && std::none_of(control.table->columns.begin(),control.table->columns.end(),
+                        [&](const auto& column){return column.key==control.table_selection.column;})))
+                    return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+            }
+            check_radio|=control.menu_behavior==MenuBehavior::radio;
             if (sparse) {
                 check_commands|=live(control.key)->control.default_value!=control.default_value;
                 continue;
@@ -92,17 +108,30 @@
         // A target property can invalidate an unchanged reset menu item.
         if (check_commands) for (const auto& [key,state]:states) if (state.control.edit_command)
             if (auto checked=validate_control(*lookup(key),lookup);!checked) return std::unexpected(checked.error());
+        if (check_radio) {
+            std::map<ControlKey,ControlKey> selected_groups;
+            const auto admit=[&](const Control& control) {
+                return control.menu_behavior!=MenuBehavior::radio || !control.selected || selected_groups.emplace(control.radio_group,control.key).second;
+            };
+            if (sparse) {
+                for (auto key:order) if (!admit(*lookup(key))) return std::unexpected(Error{ErrorCode::invalid_control,key});
+            } else for (const auto& control:controls) if (!admit(control)) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        }
 
         struct Change { State* state; Control value; };
         std::vector<Change> changes;
         std::map<ControlKey,State> additions,removed;
         std::vector<ControlKey> added_keys,removed_keys;
+        std::vector<ControlKey> tree_selections;
         bool structural=!sparse && next_order!=order;
         bool tree_change=trees_dirty || structural;
         for (const auto& control:controls) {
             if (auto* previous=live(control.key)) {
                 if (previous->control==control) continue;
                 changes.push_back({previous,control});
+                if (control.kind==ControlKind::tree_item && control.selected &&
+                    (previous->control.kind!=ControlKind::tree_item || !previous->control.selected)) tree_selections.push_back(control.key);
+                tree_change|=control.kind==ControlKind::tree_item && previous->control.selected!=control.selected;
                 structural|=previous->control.parent!=control.parent || previous->control.kind!=control.kind;
                 const auto& before=previous->control;
                 tree_change|=(before.kind!=control.kind && (before.kind==ControlKind::tree || before.kind==ControlKind::tree_item ||
@@ -113,6 +142,7 @@
             } else {
                 auto& value=additions[control.key];
                 value.control=control; value.incarnation=detail::new_identity();
+                if (control.kind==ControlKind::tree_item && control.selected) tree_selections.push_back(control.key);
                 value.tree_expanded=control.tree_initially_expanded;
                 added_keys.push_back(control.key);
             }
@@ -126,7 +156,9 @@
                 const auto* future=lookup(key);
                 const auto* previous=live(key);
                 if (!future || !future->enabled || future->layout.collapsed || (previous &&
-                    (future->kind!=previous->control.kind || (future->kind==ControlKind::tree_item &&
+                    (future->kind!=previous->control.kind || future->action_target!=previous->control.action_target ||
+                     future->button_behavior!=previous->control.button_behavior || future->menu_behavior!=previous->control.menu_behavior ||
+                     future->radio_group!=previous->control.radio_group || (future->kind==ControlKind::tree_item &&
                      (future->tree_parent!=previous->control.tree_parent || future->parent!=previous->control.parent))))) return true;
                 key=future->parent;
             }
@@ -136,8 +168,13 @@
         // A collapsed popup can be re-opened through a sparse property update.
         if (sparse) for (const auto& control:controls) if (control.kind==ControlKind::popup)
             next_popup=control.layout.collapsed?0:control.key;
-        const bool cancelling=(press && absent(press->key)) || (edit && absent(edit->key));
-        const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed);
+        const auto table_changed=[&](ControlKey key,bool selection) {
+            const auto* future=lookup(key); const auto* previous=live(key);
+            return future && previous && (future->table!=previous->control.table ||
+                (selection && future->table_selection!=previous->control.table_selection));
+        };
+        const bool cancelling=(press && (absent(press->key) || table_changed(press->key,false))) || (edit && absent(edit->key));
+        const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed) || table_changed(keyboard_pressed,true);
         const auto* future_edit=edit?lookup(edit->key):nullptr;
         const bool refresh_edit=edit && future_edit && !edit->buffer.active() && !edit->composition &&
             (future_edit->kind==ControlKind::number?edit->original_value!=future_edit->value:edit->buffer.original()!=future_edit->text);
@@ -164,13 +201,18 @@
             // interaction and tree metadata until those fallible steps finish.
             if (cancelling) { reply=cancel(); edit.reset(); }
             if (clear_focus) focus=0;
-            if (clear_keyboard) keyboard_pressed=0;
+            if (clear_keyboard) {
+                keyboard_pressed=0; keyboard_key=Key::none;
+                if (const auto* previous=live(old_keyboard);previous && previous->control.kind==ControlKind::table)
+                    terminal_key=old_keyboard_key; // Held native repeats cannot rearm a cancelled table activation.
+            }
             for (auto key:removed_keys) removed.insert(states.extract(key));
             states.merge(additions); inserted=true;
             static_assert(std::is_nothrow_swappable_v<Control>);
             for (auto& change:changes) {
                 std::swap(change.state->control,change.value); ++applied;
                 const auto& control=change.state->control;
+                if (control.kind==ControlKind::tree_item && !control.selected) change.state->tree_reveal=false;
                 if (control.kind==ControlKind::tree_item && (change.value.kind!=control.kind ||
                     change.value.parent!=control.parent || change.value.tree_parent!=control.tree_parent))
                     change.state->tree_expanded=control.tree_initially_expanded;
@@ -181,7 +223,12 @@
                 const auto key=edit->key; const bool mode=edit->text_mode;
                 begin_edit(key,mode); edit->buffer.select(anchor,false); edit->buffer.select(caret,true);
             }
-            trees_dirty|=tree_change;
+            for (auto key:tree_selections) {
+                auto& selected=states.at(key); selected.tree_reveal=true;
+                for (auto parent=selected.control.tree_parent;parent;parent=states.at(parent).control.tree_parent)
+                    states.at(parent).tree_expanded=true;
+            }
+            trees_dirty|=tree_change || !tree_selections.empty();
             update_trees();
             if (press && (states.at(press->key).tree_hidden || !states.at(press->key).tree_enabled)) reply=cancel();
             if (const auto* focused=live(focus);focused && (focused->tree_hidden || !focused->tree_enabled)) {
@@ -212,10 +259,24 @@
         for (const auto& [key,state]:removed) {
             if (state.node) retired.push_back(state.node);
             text.erase(key);
+            for (auto text_key:state.table_text) text.erase(text_key);
+        }
+        for (auto& [key,index]:table_indices) {
+            auto& state=states.at(key);
+            if (state.table_index!=index) {
+                if (!state.control.table_selection.row) state.scroll=state.scroll_x=0;
+                else state.table_reveal=true;
+            }
+            state.table_index.swap(index);
         }
         for (auto& change:changes) {
             auto& state=*change.state;
             const auto& before=change.value; const auto& after=state.control;
+            state.table_reveal|=before.table_selection!=after.table_selection;
+            if (before.table && !after.table) {
+                for (auto text_key:state.table_text) text.erase(text_key);
+                state.table_text.clear(); state.table_index.clear(); state.scroll_x=state.scroll_x_limit=0;
+            }
             if (text_kind(before.kind) && !text_kind(after.kind)) text.erase(after.key);
             state.style_dirty|=before.parent!=after.parent || before.kind!=after.kind || before.role!=after.role ||
                 before.classes!=after.classes || before.style!=after.style || before.style_scope!=after.style_scope;

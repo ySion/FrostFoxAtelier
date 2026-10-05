@@ -1,18 +1,14 @@
-ui Position(in bool has_root, in bool matches, in EditBinding position, in TextEditBinding filter) {
+double choose(bool condition, double yes, double no) {
+    if (condition) { return yes; }
+    return no;
+}
+double shelf_expanded_height() { return 56.0d; }
+
+ui Position(in bool matches, in EditBinding position) {
     state bool expanded = true;
-
-    Column search {
-        classes: "parameter-inset";
-        QueryRow query { edit: input.filter; label_width: 48; gap: 8; caption: true; }
-    }
-
-    Text no_root {
-        text: "No scene root!!!";
-        height: 26;
-        collapsed: input.has_root || !input.matches;
-    }
     Text no_matches {
         text: "No matching parameters";
+        classes: "empty-state";
         height: 26;
         collapsed: input.matches;
     }
@@ -31,16 +27,6 @@ ui Position(in bool has_root, in bool matches, in EditBinding position, in TextE
             text: "Position (m)";
             edit: input.position;
         }
-    }
-    Text drag_hint {
-        text: "Middle drag: value ladder · Shift: fine steps";
-        caption: true;
-        padding_left: 8;
-    }
-    Text menu_hint {
-        text: "Right click: parameter menu · Ctrl + middle: defaults";
-        caption: true;
-        padding_left: 8;
     }
 }
 
@@ -100,5 +86,189 @@ ui SceneTree(in Items<ActorRow> actors, in TextEditBinding filter,
         padding_right: 3;
         padding_bottom: 2;
         QueryRow query { edit: input.filter; label_width: 36; gap: 6; caption: false; }
+    }
+}
+
+ui ShelfTool(in Text title, in double icon, in ActionBinding action) {
+    Button tool {
+        text: input.title;
+        icon: input.icon;
+        action: input.action;
+        classes: "shelf-tool";
+        width: 64;
+        expand_height: true;
+    }
+}
+
+ui ToolShelf(in bool collapsed, in bool create_selected,
+             in Items<ShelfTool> create_tools, in Items<ShelfTool> view_tools,
+             in ActionBinding toggle, in ActionBinding create, in ActionBinding view,
+             in double rail_width, in double closed_height, in double arrow_height,
+             in double up_icon, in double down_icon) {
+    Row shelf {
+        classes: "tool-shelf";
+        height: choose(input.collapsed, input.closed_height, shelf_expanded_height());
+        ToggleButton stow {
+            classes: "bar-stow";
+            width: input.rail_width;
+            expand_height: true;
+            padding_bottom: choose(input.collapsed, 0.0d, shelf_expanded_height() - input.arrow_height);
+            icon: choose(input.collapsed, input.down_icon, input.up_icon);
+            selected: input.collapsed;
+            action: input.toggle;
+        }
+        Column contents {
+            expand_height: true;
+            collapsed: input.collapsed;
+            Row tabs {
+                classes: "parameter-tabs shelf-tabs";
+                content_height: 18;
+                padding_bottom: 2.0d / 3.0d;
+                wrap: true;
+                ChoiceButton create {
+                    text: "Create";
+                    classes: "parameter-tab shelf-tab";
+                    height: 17.0d + 1.0d / 3.0d;
+                    selected: input.create_selected;
+                    selection_group: node.tabs;
+                    action: input.create;
+                }
+                ChoiceButton view {
+                    text: "View";
+                    classes: "parameter-tab joined shelf-tab";
+                    height: 17.0d + 1.0d / 3.0d;
+                    selected: !input.create_selected;
+                    selection_group: node.tabs;
+                    action: input.view;
+                }
+            }
+            Column body {
+                expand_height: true;
+                padding_left: 2;
+                padding_right: 2;
+                padding_top: 1;
+                padding_bottom: 1;
+                Row create_tools {
+                    expand_height: true;
+                    collapsed: !input.create_selected;
+                    Repeat buttons { items: input.create_tools; }
+                }
+                Row view_tools {
+                    expand_height: true;
+                    collapsed: input.create_selected;
+                    Repeat view_buttons { items: input.view_tools; }
+                }
+            }
+        }
+    }
+}
+
+ui PanePath(in Text title, in ActionBinding back, in ActionBinding forward,
+            in double back_icon, in double forward_icon, in double path_icon) {
+    Row bar {
+        classes: "path-bar";
+        gap: 2;
+        height: 40;
+        padding_left: 4;
+        padding_top: 4;
+        padding_right: 6;
+        padding_bottom: 4;
+        Button back { icon: input.back_icon; action: input.back; width: 26; height: 28; classes: "path-navigation"; }
+        Button forward { icon: input.forward_icon; action: input.forward; width: 26; height: 28; classes: "path-navigation"; }
+        Combo path { text: input.title; icon: input.path_icon; expand_width: true; min_width: 32; height: 28; classes: "pane-path"; }
+    }
+}
+
+ui ObjectHeader(in Text type_name, in TextEditBinding name) {
+    Row row {
+        classes: "object-header";
+        gap: 6;
+        align_center: true;
+        padding_left: 6;
+        padding_top: 3;
+        padding_right: 6;
+        padding_bottom: 3;
+        Text type { text: input.type_name; content_width: 0; single_line: true; classes: "object-type"; }
+        TextField name { edit: input.name; min_width: 32; classes: "object-name"; }
+    }
+}
+
+ui PropertyPage(in Text title, in bool selected, in ActionBinding action, in Key group, in Text style) {
+    ChoiceButton tab {
+        text: input.title; height: 26; classes: input.style;
+        selected: input.selected; selection_group: input.group; action: input.action;
+    }
+}
+
+ui ViewportTools(in double display_icon, in double guides_icon, in bool display_open, in bool guides_open) {
+    Row tools {
+        content_width: 60;
+        height: 28;
+        gap: 2;
+        Combo display { icon: input.display_icon; width: 28; height: 28; selected: input.display_open; classes: "icon-menu"; }
+        Combo guides { icon: input.guides_icon; width: 28; height: 28; selected: input.guides_open; classes: "icon-menu"; }
+    }
+}
+
+ui Parameters(in Text type_name, in TextEditBinding name,
+              in ActionBinding back, in ActionBinding forward,
+              in double back_icon, in double forward_icon, in double path_icon,
+              in bool has_selection, in bool transform_selected, in Items<PropertyPage> property_pages,
+              in Items<ComponentRow> components, in bool matches,
+              in EditBinding position, in TextEditBinding filter, in bool components_empty, in Text component_empty) {
+    Column pane {
+        classes: "parameter-pane";
+        panel: true;
+        expand_height: true;
+        PanePath path {
+            title: "World";
+            back: input.back; forward: input.forward;
+            back_icon: input.back_icon; forward_icon: input.forward_icon; path_icon: input.path_icon;
+        }
+        ObjectHeader header { type_name: input.type_name; name: input.name; }
+        Column search {
+            classes: "parameter-search";
+            collapsed: !input.has_selection;
+            QueryRow query { edit: input.filter; label_width: 48; gap: 8; caption: true; }
+        }
+        Text no_selection {
+            text: "Select an Actor to inspect its properties.";
+            classes: "empty-state";
+            caption: true;
+            padding_left: 8;
+            single_line: true;
+            collapsed: input.has_selection;
+        }
+        Column pages {
+            classes: "parameter-page";
+            expand_height: true;
+            collapsed: !input.has_selection;
+            Row tabs {
+                classes: "parameter-tabs";
+                content_height: 26.0d + 2.0d / 3.0d;
+                padding_bottom: 2.0d / 3.0d;
+                wrap: true;
+                Repeat choices { items: input.property_pages; }
+            }
+            List scroll {
+                classes: "parameter-list";
+                expand_height: true;
+                gap: 7;
+                padding_top: 7.333;
+                padding_bottom: 8;
+                Column components {
+                    classes: "parameter-inset";
+                    gap: 3;
+                    collapsed: input.transform_selected;
+                    Components rows { rows: input.components; }
+                    Text empty { text: input.component_empty; classes: "empty-state"; single_line: true; caption: true; collapsed: !input.components_empty; }
+                }
+                Column transform {
+                    gap: 7;
+                    collapsed: !input.transform_selected;
+                    Position position { matches: input.matches; position: input.position; }
+                }
+            }
+        }
     }
 }

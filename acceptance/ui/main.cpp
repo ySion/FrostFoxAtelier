@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace atelier;
@@ -268,6 +269,8 @@ void visible_range_and_accounting() {
 #include "style_snapshots.inl"
 #include "style_sheets.inl"
 #include "tree.inl"
+#include "menus.inl"
+#include "table.inl"
 void styled_baseline_placement() {
     for (unsigned mode=0;mode<3;++mode) {
         Consumer consumer;
@@ -304,6 +307,45 @@ void styled_baseline_placement() {
 void prepare_current(Consumer& consumer,bool publish=true) {
     consumer.frame=accepted(consumer.ui.prepare());
     if (publish) require(consumer.ui.accept(consumer.frame),"updated candidate rejected");
+}
+void button_activation_semantics() {
+    Consumer c; c.controls={leaf(1,ui::ControlKind::button,10,L"Toggle")}; c.controls[0].action_target=90;
+    c.prepare(); const auto command_frame=c.frame;
+    c.controls[0].button_behavior=ui::ButtonBehavior::toggle; c.prepare();
+    require(c.frame->find(1)->kind==ui::ControlKind::button && c.frame->drawing->draws.size()==command_frame->drawing->draws.size() &&
+        first_text(*c.frame).bounds==first_text(*command_frame).bounds,"Toggle behavior added an indicator or changed the button layout");
+    auto actions=actions_of(c.click(1));
+    require(actions.size()==1 && actions[0].key==1 && actions[0].target==90 && std::get<bool>(actions[0].value),
+        "Toggle click did not request the inverse selected value through its host route");
+    c.controls[0].selected=true; accepted(c.ui.update_controls(c.controls));
+    actions=actions_of(c.click(1));
+    require(actions.size()==1 && std::get<bool>(actions[0].value),"Toggle click used an unaccepted selected value");
+    prepare_current(c);
+    c.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::space});
+    actions=actions_of(c.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::space}));
+    require(actions.size()==1 && actions[0].target==90 && !std::get<bool>(actions[0].value),"Keyboard toggle did not use the accepted selected value");
+    for (bool retarget : {false,true}) for (bool keyboard : {false,true}) {
+        c.controls[0].button_behavior=ui::ButtonBehavior::toggle; c.controls[0].action_target=90; c.prepare();
+        if (keyboard) {
+            c.ui.focus(1);
+            require(c.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::space}).consumed,"Button did not accept the held key");
+        } else require(c.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).capture==ui::Capture::acquire,
+            "Button did not capture the held press");
+        if (retarget) c.controls[0].action_target=91; else c.controls[0].button_behavior=ui::ButtonBehavior::command;
+        const auto cancelled=accepted(c.ui.update_controls(c.controls));
+        require((keyboard || cancelled.capture==ui::Capture::release) && actions_of(cancelled).empty(),
+            "Changing button semantics retained its press or emitted an activation");
+        require(actions_of(c.ui.input({.kind=ui::EventKind::pointer_up,.x=20,.y=20})).empty() &&
+            actions_of(c.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::space})).empty(),"Retired button input activated its replacement");
+        require(c.ui.input({.kind=ui::EventKind::pointer_down,.x=20,.y=20}).capture!=ui::Capture::acquire,
+            "Old accepted geometry used a new button behavior or route");
+        prepare_current(c); actions=actions_of(c.click(1));
+        require(actions.size()==1 && actions[0].target==(retarget?91:90) &&
+            (retarget?std::holds_alternative<bool>(actions[0].value):std::holds_alternative<std::monostate>(actions[0].value)),
+            "Accepted button semantics did not recover after replacement");
+    }
+    auto invalid=c.controls[0]; invalid.kind=ui::ControlKind::combo; invalid.action_target=0;
+    require(!c.ui.set_controls(std::span(&invalid,1)),"Toggle behavior was accepted for a non-button control");
 }
 void persistent_control_updates() {
     Consumer c;
@@ -515,7 +557,9 @@ int main() {
         {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor},
         {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets},{"shared_tree_view",shared_tree_view},
         {"persistent_control_updates",persistent_control_updates},{"control_batch_validation",control_batch_validation},
-        {"control_update_cleanup",control_update_cleanup},{"control_candidate_revision",control_candidate_revision}};
+        {"control_update_cleanup",control_update_cleanup},{"control_candidate_revision",control_candidate_revision},
+        {"button_activation_semantics",button_activation_semantics},{"shared_menu_semantics",shared_menu_semantics},
+        {"shared_table_view",shared_table_view}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;

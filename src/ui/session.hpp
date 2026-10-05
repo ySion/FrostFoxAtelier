@@ -3,6 +3,7 @@
 #include "ui/frame.hpp"
 #include "ui/style.hpp"
 #include "ui/style_sheet.hpp"
+#include "ui/table.hpp"
 #include "ui_layout/layout.hpp"
 #include <expected>
 #include <limits>
@@ -16,6 +17,8 @@ namespace detail { class TextSnapshot; }
 
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
 enum class DragAxis { horizontal, vertical };
+enum class ButtonBehavior { command, toggle };
+enum class MenuBehavior { command, checkbox, radio };
 enum class EditCommandKind { copy, paste, reset };
 struct EditCommand {
     EditCommandKind kind{};
@@ -42,15 +45,23 @@ struct Control {
     std::optional<double> default_value;
     ControlKey context_target{}, context_group{}; // Context request target and optional group reset command.
     ControlKey selection_group{}; // Button group: arrow navigation; Tab visits the selected member.
+    ControlKey action_target{}; // Button/table activation route; zero uses this control's key. Never a UI identity.
     // Tree rows are direct layout children of a tree, in depth-first order.
     // tree_parent references an earlier row in that same tree (zero for roots).
     // Expansion belongs to Session; initialize on insertion or kind/parent changes.
+    // A host selected false-to-true transition expands logical ancestors and
+    // reveals the row once; stable selected input preserves manual collapse.
     ControlKey tree_parent{};
     bool tree_initially_expanded{true};
     std::wstring tree_filter; // tree only: substring with ASCII case folding; retains matching ancestry.
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
+    ButtonBehavior button_behavior{ButtonBehavior::command}; // button only: request the inverse selected value.
+    MenuBehavior menu_behavior{MenuBehavior::command}; // menu_item only; selected is the authoritative checked value.
+    ControlKey radio_group{}; // Nonzero for radio menu items; at most one selected item per group.
+    std::shared_ptr<const TableData> table; // table only; no layout children or synthetic row controls.
+    TableSelection table_selection; // Lightweight host selection, independent of immutable row storage.
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -70,6 +81,12 @@ struct ControlBox {
     std::shared_ptr<const ResolvedStyle> style;
     bool selected{}; // Accepted toggle value; activation requests its inverse.
     ControlKey tree_parent{}; // Logical parent snapshot, independent of the layout parent.
+    ControlKey action_target{}; // Accepted route; retargeting invalidates input against this frame.
+    ButtonBehavior button_behavior{ButtonBehavior::command}; // Accepted activation semantics.
+    MenuBehavior menu_behavior{MenuBehavior::command};
+    ControlKey radio_group{};
+    std::shared_ptr<const TableData> table; // Exact immutable content accepted with this geometry.
+    TableSelection table_selection;
 };
 struct EditToken {
     ControlKey key{};
@@ -106,6 +123,7 @@ struct ScrollbarGeometry {
     Rect bounds, track, thumb, decrement, increment;
     Clip clip;
     double maximum{}, value{}, page{};
+    bool horizontal{};
 };
 struct ValueLadderGeometry {
     ControlKey key{};
@@ -119,6 +137,25 @@ struct TreeRowGeometry {
     Rect disclosure; // Accepted physical hit area; empty on leaves.
     bool expanded{}, filtering{}; // Retained expansion; filtering temporarily reveals matching descendants.
 };
+struct TableColumnGeometry {
+    TableKey column{};
+    Rect bounds, resize;
+    Clip clip;
+};
+struct TableCellGeometry {
+    TableKey row{}, column{}, cell{};
+    Rect bounds;
+    Clip clip;
+};
+struct TableGeometry {
+    ControlKey key{};
+    std::shared_ptr<const TableData> data;
+    TableSelection selection;
+    Rect header, body;
+    Clip clip;
+    std::vector<TableColumnGeometry> columns{};
+    std::vector<TableCellGeometry> cells{}; // Only visible cells; stable data identities, never ControlKeys.
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
@@ -130,20 +167,23 @@ struct UiFrame {
     std::vector<TextGeometry> text_geometry;
     std::vector<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
     std::vector<TreeRowGeometry> tree_rows;
+    std::vector<TableGeometry> tables;
     std::optional<ValueLadderGeometry> value_ladder;
     ControlKey popup{};
     const ControlBox* find(ControlKey) const noexcept;
     const TextGeometry* find_text(ControlKey) const noexcept;
+    const TableGeometry* find_table(ControlKey) const noexcept;
 };
 
-enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel };
-struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; }; // Accepted client pixels.
+enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize };
+struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; std::optional<TableSelection> table{}; }; // Accepted client pixels.
 struct DragPoint { float x{}, y{}; }; // Accepted-frame client pixels.
-using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint>;
+using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint,TableSelection,TableSort,TableColumnResize>;
 struct Action {
     ActionKind kind{};
     ControlKey key{};
     ActionValue value; // Cancel returns the original value; toggles activate with the requested bool.
+    ControlKey target{}; // Optional host route. key always identifies the control that emitted the action.
 };
 enum class ClipboardKind { read, copy, cut };
 struct ClipboardRequest {
@@ -199,7 +239,7 @@ struct Error {
 template<class T> using Result = std::expected<T, Error>;
 
 // Validate a producer's descriptor before publishing it. This does not inspect
-// tree references or solve layout; Session remains the complete batch boundary.
+// tree references, table contents or solve layout; Session remains the complete batch boundary.
 Result<void> validate_control_properties(const Control&);
 enum class Capture { unchanged, acquire, release };
 enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan };
@@ -214,7 +254,7 @@ enum class EventKind { pointer_move, pointer_down, pointer_up, wheel, key_down, 
                        text, focus_lost, capture_lost, clipboard_result, ime_result, composition };
 enum class PointerButton { primary, secondary, middle };
 enum class Key { none, backspace, delete_key, enter, escape, tab, left, right, home, end,
-                 space, a, z, y, c, x, v, up, down, menu, f10 };
+                 space, a, z, y, c, x, v, up, down, menu, f10, page_up, page_down };
 using InputData = std::variant<std::monostate,std::wstring,ClipboardResult,ImeResult,CompositionEvent>;
 struct Event {
     EventKind kind{};
@@ -224,6 +264,7 @@ struct Event {
     Key key{Key::none};
     InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
     bool shift{}, control{}, alt{};
+    unsigned clicks{1}; // Native click count; two activates the accepted table row.
 };
 struct Statistics {
     // Cumulative since Session construction. prepares/rasterizations count

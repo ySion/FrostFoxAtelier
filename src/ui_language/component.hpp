@@ -21,19 +21,28 @@ struct TextEditBinding {
     bool enabled{true};
     bool operator==(const TextEditBinding&) const = default;
 };
+// A sampled host action. The host owns its nonzero target and revalidates the
+// command when invoked; the binding never retains a business object.
+struct ActionBinding {
+    ui::ControlKey target{};
+    bool enabled{true};
+    bool operator==(const ActionBinding&) const = default;
+};
 struct Item;
 struct ItemList {
     // An immutable snapshot: relinquish all mutable aliases before update().
     std::shared_ptr<const std::vector<Item>> values;
     bool operator==(const ItemList&) const;
 };
-using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList>;
+using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding>;
 struct Item {
     ui::ControlKey key{}; // Host-allocated stable item identity; never the list index.
     std::vector<InputValue> inputs;
     bool operator==(const Item&) const = default;
 };
 struct KeyBinding {
+    // A node in this component, or a dotted path through named static component
+    // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.
     std::string node; ui::ControlKey key{}, label{}, body{};
     bool operator==(const KeyBinding&) const = default;
 };

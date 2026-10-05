@@ -13,6 +13,9 @@
 namespace atelier::ui_language {
 namespace {
 constexpr std::size_t composition_limit=10000;
+bool button_node(NodeKind kind) {
+    return kind==NodeKind::button || kind==NodeKind::choice_button || kind==NodeKind::toggle_button;
+}
 auto failure(std::string message) { return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)}); }
 std::wstring wide(const String& value) {
     const auto text=value.view();
@@ -29,6 +32,7 @@ struct TextReference { std::uint32_t slot; };
 struct TextEditReference { std::uint32_t slot; };
 struct KeyReference { std::uint32_t slot; };
 struct ItemsReference { std::uint32_t slot; };
+struct ActionReference { std::uint32_t slot; };
 InputValue initial(InputKind kind) {
     switch (kind) {
     case InputKind::boolean:return false;
@@ -38,6 +42,7 @@ InputValue initial(InputKind kind) {
     case InputKind::text_edit:return TextEditBinding{};
     case InputKind::key:return ui::ControlKey{};
     case InputKind::items:return ItemList{};
+    case InputKind::action:return ActionBinding{};
     }
     throw std::logic_error("Unknown UI input kind.");
 }
@@ -49,7 +54,10 @@ struct NodeState {
     ui::ControlKey label{},body{};
     EditBinding edit;
     TextEditBinding text_edit;
+    ActionBinding action;
+    std::optional<float> minimum_width;
     std::vector<InputValue> arguments;
+    std::vector<KeyBinding> aliases;
     ItemList items;
     bool mounted{true};
     std::unique_ptr<Instance> child;
@@ -129,6 +137,7 @@ struct Context {
     TextEditReference read_text_edit(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<TextEditBinding>(d.inputs.at(index)));return {index}; }
     KeyReference read_key(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<ui::ControlKey>(d.inputs.at(index)));return {index}; }
     ItemsReference read_items(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<ItemList>(d.inputs.at(index)));return {index}; }
+    ActionReference read_action(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<ActionBinding>(d.inputs.at(index)));return {index}; }
     KeyReference node_key(std::uint32_t slot) const {
         auto& d=data();static_cast<void>(d.nodes.at(slot));return {static_cast<std::uint32_t>(d.inputs.size()+slot)};
     }
@@ -160,12 +169,15 @@ struct Context {
         const auto type=static_cast<NodeKind>(kind);
         node.kind=type==NodeKind::text?ui::ControlKind::label:type==NodeKind::foldout?ui::ControlKind::foldout:
             type==NodeKind::text_field?ui::ControlKind::text_edit:type==NodeKind::tree?ui::ControlKind::tree:
-            type==NodeKind::tree_item?ui::ControlKind::tree_item:ui::ControlKind::container;
+            type==NodeKind::tree_item?ui::ControlKind::tree_item:button_node(type)?ui::ControlKind::button:
+            type==NodeKind::list?ui::ControlKind::list:type==NodeKind::combo?ui::ControlKind::combo:ui::ControlKind::container;
+        if (type==NodeKind::toggle_button) node.button_behavior=ui::ButtonBehavior::toggle;
         node.layout=type==NodeKind::row?ui_layout::NodeInput::row():type==NodeKind::foldout?ui_layout::NodeInput::box(0,28):
             type==NodeKind::text?ui_layout::NodeInput::box(0,0):ui_layout::NodeInput::column();
         node.layout.width=ui_layout::Axis::expand();
         if (type==NodeKind::text) node.layout.height=ui_layout::Axis::content();
         if (type==NodeKind::text_field) {node.layout=ui::single_line_layout();node.layout.width=ui_layout::Axis::expand();}
+        if (button_node(type) || type==NodeKind::combo) {node.layout=ui::single_line_layout();node.layout.width=ui_layout::Axis::content();}
         if (type==NodeKind::tree_item) node.layout.height=ui_layout::Axis::fixed(20);
     }
     NodeState& target(std::uint32_t slot) {
@@ -201,14 +213,19 @@ struct Context {
         auto& d=data();target(slot).text_edit=std::get<TextEditBinding>(d.inputs.at(reference.slot));
     }
     void set_tree_parent(std::uint32_t slot,std::uint32_t,KeyReference reference) { target(slot).control.tree_parent=key(reference); }
+    void set_selection_group(std::uint32_t slot,std::uint32_t,KeyReference reference) {
+        const auto group=key(reference);
+        if (!group) throw std::runtime_error("ChoiceButton requires a nonzero selection group.");
+        target(slot).control.selection_group=group;
+    }
     void set_items(std::uint32_t slot,std::uint32_t,ItemsReference reference) {
         auto& d=data();target(slot).items=std::get<ItemList>(d.inputs.at(reference.slot));
     }
     void set_number(std::uint32_t slot,std::uint32_t property,double value) {
         if (!std::isfinite(value) || value<0 || value>32768) throw std::runtime_error("UI layout value is outside its supported range.");
-        auto& node=target(slot).control;
+        auto& state=target(slot);auto& node=state.control;
         if (static_cast<Property>(property)==Property::icon) {
-            if (std::floor(value)!=value || value>static_cast<double>(ui::ControlIcon::folder)) throw std::runtime_error("Invalid UI icon.");
+            if (std::floor(value)!=value || value>static_cast<double>(ui::ControlIcon::more)) throw std::runtime_error("Invalid UI icon.");
             node.icon=static_cast<ui::ControlIcon>(static_cast<unsigned>(value));return;
         }
         auto& layout=node.layout;
@@ -217,6 +234,9 @@ struct Context {
         case Property::gap: layout.gap=scalar;break;
         case Property::height:layout.height=ui_layout::Axis::fixed(scalar);break;
         case Property::width:layout.width=ui_layout::Axis::fixed(scalar);break;
+        case Property::content_width:layout.width=ui_layout::Axis::content(scalar);break;
+        case Property::content_height:layout.height=ui_layout::Axis::content(scalar);break;
+        case Property::min_width:state.minimum_width=scalar;break;
         case Property::padding_left:layout.padding.left=scalar;break;
         case Property::padding_top:layout.padding.top=scalar;break;
         case Property::padding_right:layout.padding.right=scalar;break;
@@ -231,12 +251,17 @@ struct Context {
         case Property::selected:node.selected=value;break;
         case Property::collapsed:node.layout.collapsed=value;break;
         case Property::caption:node.role=value?ui::Role::caption:ui::Role::normal;break;
+        case Property::panel:node.role=value?ui::Role::panel:ui::Role::normal;break;
         case Property::expand_height:node.layout.height=value?ui_layout::Axis::expand():ui_layout::Axis::content();break;
+        case Property::expand_width:node.layout.width=value?ui_layout::Axis::expand():ui_layout::Axis::content();break;
         case Property::expanded:node.tree_initially_expanded=value;break;
         case Property::mounted:state.mounted=value;break;
         case Property::align_center:
             if (!node.layout.flow) node.layout.flow=ui_layout::FlexSpec{};
             node.layout.flow->align_items=ui_layout::Alignment::fit(value?.5f:0.f);break;
+        case Property::wrap:
+            if (!node.layout.flow) node.layout.flow=ui_layout::FlexSpec{};
+            node.layout.flow->wrap=value?ui_layout::Wrap::wrap:ui_layout::Wrap::no_wrap;break;
         case Property::single_line:node.layout.height=ui_layout::Axis::content(value?ui::single_line_height:0.f);break;
         default:throw std::runtime_error("Invalid boolean UI property.");
         }
@@ -244,6 +269,9 @@ struct Context {
     void set_edit(std::uint32_t slot,std::uint32_t,EditReference reference) {
         auto& d=data(); auto& node=target(slot);
         node.edit=std::get<EditBinding>(d.inputs.at(reference.slot));
+    }
+    void set_action(std::uint32_t slot,std::uint32_t,ActionReference reference) {
+        auto& d=data();target(slot).action=std::get<ActionBinding>(d.inputs.at(reference.slot));
     }
     void argument(std::uint32_t slot,std::uint32_t index,InputValue value) {
         target(slot).arguments.at(index)=std::move(value);
@@ -256,6 +284,7 @@ struct Context {
     void set_argument_text_reference(std::uint32_t slot,std::uint32_t index,TextReference value) { argument(slot,index,std::get<std::wstring>(data().inputs.at(value.slot))); }
     void set_argument_text_edit(std::uint32_t slot,std::uint32_t index,TextEditReference value) { argument(slot,index,std::get<TextEditBinding>(data().inputs.at(value.slot))); }
     void set_argument_items(std::uint32_t slot,std::uint32_t index,ItemsReference value) { argument(slot,index,std::get<ItemList>(data().inputs.at(value.slot))); }
+    void set_argument_action(std::uint32_t slot,std::uint32_t index,ActionReference value) { argument(slot,index,std::get<ActionBinding>(data().inputs.at(value.slot))); }
     void set_argument_text_from_edit(std::uint32_t slot,std::uint32_t index,TextEditReference value) { argument(slot,index,std::get<TextEditBinding>(data().inputs.at(value.slot)).text); }
 
 };
@@ -286,6 +315,8 @@ Result<TypeId> register_types(Runtime& runtime) {
         .field<&KeyReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(KeyReference,slot)).build());
     definitions.push_back(NativeRegistration<ItemsReference>(runtime,"ui.ItemsReference",TypeKind::record)
         .field<&ItemsReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(ItemsReference,slot)).build());
+    definitions.push_back(NativeRegistration<ActionReference>(runtime,"ui.ActionReference",TypeKind::record)
+        .field<&ActionReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(ActionReference,slot)).build());
     using C=detail::Context;
     definitions.push_back(NativeRegistration<C>(runtime,"ui.ComponentContext",TypeKind::object)
         .method<&C::read_bool>("read_bool",true).method<&C::read_number>("read_number",true).method<&C::read_edit>("read_edit",true)
@@ -298,12 +329,15 @@ Result<TypeId> register_types(Runtime& runtime) {
         .method<&C::read_text_edit>("read_text_edit",true)
         .method<&C::read_key>("read_key",true)
         .method<&C::read_items>("read_items",true)
+        .method<&C::read_action>("read_action",true)
         .method<&C::node_key>("node_key",true)
         .method<&C::set_text_reference>("set_text_reference",true)
         .method<&C::set_text_from_edit>("set_text_from_edit",true)
         .method<&C::set_text_edit>("set_text_edit",true)
         .method<&C::set_tree_parent>("set_tree_parent",true)
+        .method<&C::set_selection_group>("set_selection_group",true)
         .method<&C::set_items>("set_items",true)
+        .method<&C::set_action>("set_action",true)
         .method<&C::set_argument_bool>("set_argument_bool",true)
         .method<&C::set_argument_number>("set_argument_number",true)
         .method<&C::set_argument_text>("set_argument_text",true)
@@ -312,6 +346,7 @@ Result<TypeId> register_types(Runtime& runtime) {
         .method<&C::set_argument_text_reference>("set_argument_text_reference",true)
         .method<&C::set_argument_text_edit>("set_argument_text_edit",true)
         .method<&C::set_argument_items>("set_argument_items",true)
+        .method<&C::set_argument_action>("set_argument_action",true)
         .method<&C::set_argument_text_from_edit>("set_argument_text_from_edit",true)
         .build());
     auto registered=runtime.register_types(std::move(definitions));
@@ -459,6 +494,8 @@ Result<void> detail::DefinitionState::publish(std::span<const InputValue> values
     for (std::size_t i=0;i<values.size();++i) {
         if (values[i].index()!=static_cast<std::size_t>(definitions[i].kind)) return failure("UI component input type mismatch: "+definitions[i].name);
         if (const auto* number=std::get_if<double>(&values[i]);number && !std::isfinite(*number)) return failure("UI numeric inputs must be finite.");
+        if (const auto* action=std::get_if<ActionBinding>(&values[i]);action && !action->target)
+            return failure("UI action bindings require a nonzero host target: "+definitions[i].name);
     }
     if (inputs.size()!=values.size()) {inputs.assign(values.begin(),values.end());return {};}
     std::vector<std::pair<std::size_t,InputValue>> changes;
@@ -477,13 +514,39 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
     const auto& declaration=definition->declaration();
     if (declaration.nodes.size()>budget) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
     const bool source_changed=value && definition!=value->component;
+    const bool aliases_changed=!value || !std::ranges::equal(aliases,value->aliases);
+    if (source_changed || aliases_changed) {
+        std::vector<std::string_view> paths;paths.reserve(aliases.size());
+        for (const auto& alias:aliases) {
+            const std::string_view path=alias.node;
+            if (std::ranges::find(paths,path)!=paths.end()) return failure("Duplicate UI key alias path: "+alias.node);
+            paths.push_back(path);
+            auto remaining=path;const auto* component=definition.get();
+            for (;;) {
+                const auto dot=remaining.find('.');const auto name=remaining.substr(0,dot);
+                const auto& nodes=component->declaration().nodes;
+                const auto node=std::ranges::find_if(nodes,[&](const auto& item){return item.name==name;});
+                if (node==nodes.end()) return failure("Unknown UI key alias path: "+alias.node);
+                if (dot==remaining.npos) {
+                    if (node->kind==NodeKind::component || node->kind==NodeKind::repeat ||
+                        (node->kind==NodeKind::text_field && path.find('.')!=path.npos))
+                        return failure("UI key alias requires a concrete node with a declaration-owned key: "+alias.node);
+                    break;
+                }
+                if (node->kind!=NodeKind::component)
+                    return failure("UI key alias paths may cross only static component instances: "+alias.node);
+                component=component->impl_->children[static_cast<std::size_t>(node-nodes.begin())].get();
+                remaining.remove_prefix(dot+1);
+            }
+        }
+    }
     const auto same_shape=[&] {
         const auto& before=value->declaration();
         return before.inputs==declaration.inputs && before.states==declaration.states && before.nodes==declaration.nodes &&
             std::ranges::equal(before.bindings,declaration.bindings,[](const auto& a,const auto& b){return a.node==b.node && a.operation==b.operation && a.property==b.property;}) &&
             std::ranges::equal(before.events,declaration.events,[](const auto& a,const auto& b){return a.node==b.node && a.operation==b.operation;});
     };
-    const bool replace=!value || parent!=value->parent || !std::ranges::equal(aliases,value->aliases) ||
+    const bool replace=!value || parent!=value->parent || aliases_changed ||
         (source_changed && (definition->impl_->program!=value->component->impl_->program || !same_shape()));
     std::unique_ptr<DefinitionState> next;
     if (replace) {
@@ -505,6 +568,11 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             }
             node.control.key=alias!=aliases.end() && alias->key?alias->key:node.previous?node.previous->control.key:allocate();
             if (const auto& type=definition->impl_->children[i]) for (const auto& input:type->declaration().inputs) node.arguments.push_back(initial(input.kind));
+            if (declared.kind==NodeKind::component) {
+                const auto prefix=declared.name+'.';
+                for (const auto& key:aliases) if (key.node.starts_with(prefix))
+                    node.aliases.push_back({key.node.substr(prefix.size()),key.key,key.label,key.body});
+            }
             if (declared.kind==NodeKind::number_row) {
                 node.label=alias!=aliases.end() && alias->label?alias->label:node.previous?node.previous->label:allocate();
                 node.body=alias!=aliases.end() && alias->body?alias->body:node.previous?node.previous->body:allocate();
@@ -545,6 +613,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         }
         PreparedUpdate::Change change;change.node=i;auto& output=change.controls;
         const auto kind=declaration.nodes[i].kind;const auto& type=definition->impl_->children[i];
+        if (node.minimum_width) node.control.layout.width.minimum=*node.minimum_width;
         const auto append_existing=[&](Instance& child,std::span<const InputValue> values,std::span<const KeyBinding> keys)->Result<void> {
             auto prepared=child.data_->prepare(type,node.control.parent,keys,values,remaining);
             if (!prepared) return std::unexpected(prepared.error());
@@ -560,9 +629,9 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         if (kind==NodeKind::component) {
             if (!node.mounted) change.unmount=owners.child!=nullptr;
             else if (owners.child) {
-                if (auto result=append_existing(*owners.child,node.arguments,{});!result) return std::unexpected(result.error());
+                if (auto result=append_existing(*owners.child,node.arguments,node.aliases);!result) return std::unexpected(result.error());
             } else {
-                auto child=Instance::create_bounded(type,node.control.parent,*next_key,{},node.arguments,remaining,lifetime);
+                auto child=Instance::create_bounded(type,node.control.parent,*next_key,node.aliases,node.arguments,remaining,lifetime);
                 if (!child) return std::unexpected(child.error());change.child=std::move(*child);append_new(change.child);
             }
         } else if (kind==NodeKind::repeat) {
@@ -584,6 +653,9 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 }
             }
             for (const auto& [key,child]:owners.repeated) if (!std::binary_search(present.begin(),present.end(),key)) change.removals.push_back(key);
+        } else if (button_node(kind)) {
+            auto control=node.control;control.action_target=node.action.target;control.enabled&=node.action.enabled;
+            output.push_back(std::move(control));
         } else if (kind==NodeKind::text_field) {
             auto control=node.control;control.key=node.text_edit.key;control.text=node.text_edit.text;control.enabled&=node.text_edit.enabled;
             if (!control.key) return failure("TextField requires a nonzero host edit key.");output.push_back(std::move(control));
@@ -683,7 +755,7 @@ Result<void> Instance::update() {
     return data_->pending?Result<void>{}:update(data_->value->inputs);
 }
 Result<bool> Instance::event(const ui::Action& action) {
-    auto& scope=*data_;if (!scope.open || action.kind!=ui::ActionKind::activate) return false;
+    auto& scope=*data_;if (!scope.open || action.target || action.kind!=ui::ActionKind::activate) return false;
     if (scope.pending) return failure("Commit or reject the prepared UI snapshot before accepting new input.");
     auto& data=*scope.value;
     const auto at=std::ranges::find_if(data.declaration().events,[&](const auto& value){return data.nodes[value.node].control.key==action.key;});
@@ -697,8 +769,14 @@ Result<bool> Instance::event(const ui::Action& action) {
         }
         return false;
     }
-    const auto* checked=std::get_if<bool>(&action.value);if (!checked) return failure("Foldout activation requires a bool value.");
-    const auto before=data.states;data.handling_event=true;data.event_checked=*checked;
+    bool checked{};
+    const auto kind=data.declaration().nodes[at->node].kind;
+    if (kind==NodeKind::foldout || kind==NodeKind::toggle_button) {
+        const auto* value=std::get_if<bool>(&action.value);
+        if (!value) return failure(kind==NodeKind::foldout?"Foldout activation requires a bool value.":"ToggleButton activation requires a bool value.");
+        checked=*value;
+    } else if (!std::holds_alternative<std::monostate>(action.value)) return failure("Button activation does not accept a value.");
+    const auto before=data.states;data.handling_event=true;data.event_checked=checked;
     auto handled=data.invoke(at->operation);data.handling_event=false;++scope.statistics.event_evaluations;
     if (!handled) {data.states=before;return std::unexpected(handled.error());}
     if (data.states!=before && !data.state_undo) data.state_undo=before;return true;

@@ -29,6 +29,9 @@ struct EditorAcceptanceAccess {
     static auto asset_key(const Application& app,std::string_view resource) {
         return app.workspace_.assets.control(resource);
     }
+    static auto directory_key(const Application& app,const std::filesystem::path& path) {
+        return app.workspace_.assets.directory_control(path);
+    }
 
     static auto name_control(const Application& app,ObjectId actor) { return app.workspace_.name_control(actor); }
     static void frame_failure(Application& app) {
@@ -39,6 +42,34 @@ struct EditorAcceptanceAccess {
                 view->bounds.x,view->bounds.y,view->bounds.width,view->bounds.height);
     }
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
+    static void require_camera(const Application& app,bool passed,UINT reason,const char* message) {
+        if (!passed) throw std::runtime_error(std::string(message)+"; reason="+std::to_string(reason)+
+            "; orbit="+std::to_string(app.orbiting_)+"; last=("+std::to_string(app.last_x_)+","+std::to_string(app.last_y_)+")");
+    }
+    static void move_camera_pointer(Application& app,POINT target,UINT reason=0) {
+        POINT before{}; require_camera(app,GetCursorPos(&before)!=FALSE,reason,"Cannot read the camera pointer");
+        ScreenToClient(app.window(),&before);
+        const bool changed=before.x!=target.x || before.y!=target.y;
+        auto screen=target; ClientToScreen(app.window(),&screen);
+        require_camera(app,SetCursorPos(screen.x,screen.y)!=FALSE,reason,"Cannot move the camera pointer");
+        // SetCursorPos updates the physical position before its queued movement is
+        // delivered. Use that single move source and wait for the actual target event.
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        bool delivered=false;
+        do {
+            app.window_.poll([&](NativeEvent&& event) {
+                if (event.message==WM_MOUSEMOVE) delivered=
+                    static_cast<short>(LOWORD(event.lparam))==target.x && static_cast<short>(HIWORD(event.lparam))==target.y;
+                app.native(std::move(event));
+            });
+            if (delivered || !changed) break;
+            MsgWaitForMultipleObjectsEx(0,nullptr,10,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+        } while (std::chrono::steady_clock::now()<deadline);
+        require_camera(app,delivered || !changed,reason,"Camera pointer move was not delivered before the deadline");
+        POINT actual{}; require_camera(app,GetCursorPos(&actual)!=FALSE,reason,"Cannot verify the camera pointer");
+        ScreenToClient(app.window(),&actual);
+        require_camera(app,actual.x==target.x && actual.y==target.y,reason,"Camera pointer moved outside the requested target");
+    }
     static void menu_items(Application& app,std::span<const ui::MenuItem> items) {
         if (!app.popup_ || !app.workspace_.menu) throw std::runtime_error("Menu fixture needs an open native host.");
         RECT anchor{};
@@ -98,28 +129,60 @@ void tick(Application& app, unsigned count = 2) {
     if (app.accepted_frames()<before+count) atelier::application::EditorAcceptanceAccess::frame_failure(app);
     require(app.accepted_frames() >= before + count, "Editor did not accept a frame within 180 iterations.");
 }
+const atelier::ui::ControlBox* command_tool(Application& app,ControlKey target) {
+    if (!app.presented()) return nullptr;
+    for (const auto& control:app.presented()->controls)
+        if (control.kind==atelier::ui::ControlKind::button && control.action_target==target) return &control;
+    return nullptr;
+}
+const atelier::ui::TableGeometry* row_table(Application& app,ControlKey row) {
+    if (!app.presented()) return nullptr;
+    for (const auto& table:app.presented()->tables)
+        if (table.data && std::ranges::find(table.data->rows,row,&atelier::ui::TableRow::key)!=table.data->rows.end()) return &table;
+    return nullptr;
+}
 POINT centre(Application& app, ControlKey key) {
     require(app.presented() != nullptr, "Missing presented UI frame.");
     auto* box = app.presented()->find(key);
-    const bool popup=!box && app.menu_frame();
+    if (!box) box=command_tool(app,key);
+    const atelier::ui::TableCellGeometry* cell{};
+    if (!box) if (const auto* table=row_table(app,key)) {
+        const auto found=std::ranges::find(table->cells,key,&atelier::ui::TableCellGeometry::row);
+        if (found!=table->cells.end()) cell=&*found;
+    }
+    const bool popup=!box && !cell && app.menu_frame();
     if (popup) box=app.menu_frame()->find(key);
-    if (!box) {
+    if (!box && !cell) {
         std::string menu;
         if (app.menu_frame()) for (const auto& item:app.menu_frame()->controls) menu+=" "+std::to_string(item.key);
         POINT pointer{}; GetCursorPos(&pointer); ScreenToClient(app.window(),&pointer);
         throw std::runtime_error("Missing control "+std::to_string(key)+" in presented main/menu frames; popup keys:"+menu+
             "; OS pointer="+std::to_string(pointer.x)+","+std::to_string(pointer.y));
     }
-    const auto left = std::max(box->bounds.x, static_cast<float>(box->clip.left));
-    const auto right = std::min(box->bounds.x + box->bounds.width, static_cast<float>(box->clip.right));
-    const auto top = std::max(box->bounds.y, static_cast<float>(box->clip.top));
-    const auto bottom = std::min(box->bounds.y + box->bounds.height, static_cast<float>(box->clip.bottom));
+    const auto bounds=box?box->bounds:cell->bounds;
+    const auto clip=box?box->clip:cell->clip;
+    const auto left = std::max(bounds.x, static_cast<float>(clip.left));
+    const auto right = std::min(bounds.x + bounds.width, static_cast<float>(clip.right));
+    const auto top = std::max(bounds.y, static_cast<float>(clip.top));
+    const auto bottom = std::min(bounds.y + bounds.height, static_cast<float>(clip.bottom));
     if (!(right>left && bottom>top)) throw std::runtime_error("Control "+std::to_string(key)+
-        " has no visible hit area (y="+std::to_string(box->bounds.y)+", height="+std::to_string(box->bounds.height)+
-        ", clip="+std::to_string(box->clip.top)+".."+std::to_string(box->clip.bottom)+").");
+        " has no visible hit area (y="+std::to_string(bounds.y)+", height="+std::to_string(bounds.height)+
+        ", clip="+std::to_string(clip.top)+".."+std::to_string(clip.bottom)+").");
     POINT result{static_cast<LONG>((left + right) * .5f), static_cast<LONG>((top + bottom) * .5f)};
     if (popup) MapWindowPoints(app.menu_window(),app.window(),&result,1);
     return result;
+}
+POINT table_header_centre(Application& app,ControlKey owner,atelier::ui::TableKey column) {
+    const auto* table=app.presented()?app.presented()->find_table(owner):nullptr;
+    require(table,"Missing accepted Table for header input.");
+    const auto header=std::ranges::find(table->columns,column,&atelier::ui::TableColumnGeometry::column);
+    require(header!=table->columns.end(),"Table header has no accepted visible geometry.");
+    const auto left=std::max(header->bounds.x,static_cast<float>(header->clip.left));
+    const auto right=std::min(header->bounds.x+header->bounds.width,static_cast<float>(header->clip.right));
+    const auto top=std::max(header->bounds.y,static_cast<float>(header->clip.top));
+    const auto bottom=std::min(header->bounds.y+header->bounds.height,static_cast<float>(header->clip.bottom));
+    require(right>left && bottom>top,"Table header has no visible hit area.");
+    return {static_cast<LONG>((left+right)*.5f),static_cast<LONG>((top+bottom)*.5f)};
 }
 void mouse(Application& app, UINT message, POINT point) {
     require_input_focus(app);
@@ -149,12 +212,35 @@ void click_at(Application& app, POINT point) {
     tick(app,2);
 }
 void click(Application& app, ControlKey key) {
-    if (!app.presented()->find(key) && (!app.menu_frame() || !app.menu_frame()->find(key)))
-        if (const auto menu=control::command_menu(key)) click(app,menu);
+    if (!app.presented()->find(key) && !command_tool(app,key) && !row_table(app,key) && (!app.menu_frame() || !app.menu_frame()->find(key))) {
+        namespace browser=atelier::editor::browser_control;
+        if (key==browser::open || key==browser::add) click(app,browser::actions);
+        else if (key==browser::list || key==browser::details || key==browser::tiles) click(app,browser::view_menu);
+        else if (const auto menu=control::command_menu(key)) click(app,menu);
+    }
     // Docked views can be shorter than their content. Reach the target through
     // actual wheel messages, using the same accepted clip as a user would see.
     for (unsigned attempt=0;attempt<40;++attempt) {
-        const auto* box=app.presented()->find(key); if (!box) break;
+        const auto* box=app.presented()->find(key);
+        if (!box) {
+            const auto* table=row_table(app,key); if (!table) break;
+            const auto cell=std::ranges::find(table->cells,key,&atelier::ui::TableCellGeometry::row);
+            if (cell!=table->cells.end() && cell->bounds.y>=cell->clip.top &&
+                cell->bounds.y+cell->bounds.height<=cell->clip.bottom) break;
+            require(!table->cells.empty(),"Table row has no visible viewport to scroll.");
+            const auto row=std::ranges::find(table->data->rows,key,&atelier::ui::TableRow::key);
+            const auto first=std::ranges::find(table->data->rows,table->cells.front().row,&atelier::ui::TableRow::key);
+            const bool above=cell!=table->cells.end()?cell->bounds.y<cell->clip.top:row<first;
+            const auto left=std::max(table->body.x,static_cast<float>(table->clip.left));
+            const auto right=std::min(table->body.x+table->body.width,static_cast<float>(table->clip.right));
+            const auto top=std::max(table->body.y,static_cast<float>(table->clip.top));
+            const auto bottom=std::min(table->body.y+table->body.height,static_cast<float>(table->clip.bottom));
+            require(right>left && bottom>top,"Table row has no visible body to scroll.");
+            POINT point{static_cast<LONG>((left+right)*.5f),static_cast<LONG>((top+bottom)*.5f)};
+            ClientToScreen(app.window(),&point);
+            SendMessageW(app.window(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(above?WHEEL_DELTA:-WHEEL_DELTA)),MAKELPARAM(point.x,point.y));
+            tick(app,1);continue;
+        }
         if (box->bounds.y>=box->clip.top && box->bounds.y+box->bounds.height<=box->clip.bottom) break;
         auto parent=box->parent;
         while (parent) {
@@ -170,6 +256,16 @@ void click(Application& app, ControlKey key) {
     }
     const auto point = centre(app, key);
     mouse(app, WM_MOUSEMOVE, point); click_at(app, point);
+}
+void double_click(Application& app,ControlKey key) {
+    require((GetClassLongPtrW(app.window(),GCL_STYLE)&CS_DBLCLKS)!=0,"Editor window does not request native double-click messages.");
+    click(app,key);
+    require_input_focus(app);
+    KeyStateScope modifiers;
+    const auto point=centre(app,key);
+    SendMessageW(app.window(),WM_LBUTTONDBLCLK,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+    SendMessageW(app.window(),WM_LBUTTONUP,0,MAKELPARAM(point.x,point.y));
+    tick(app,2);
 }
 void key(Application& app, WPARAM code, bool ctrl = false, bool shift = false) {
     require_input_focus(app);
@@ -277,14 +373,17 @@ void capture(Application& app, const std::filesystem::path& path) {
         png(popup,path.parent_path()/(path.stem().wstring()+L"-popup.png"));
     }
 }
+void require_gray_pixel(const atelier::renderer::Capture& pixels,int x,int y,int gray) {
+    require(x>=0 && y>=0 && x<static_cast<int>(pixels.extent.width) && y<static_cast<int>(pixels.extent.height),"Chrome probe left the surface.");
+    const auto offset=(static_cast<std::size_t>(y)*pixels.extent.width+static_cast<std::size_t>(x))*4;
+    for (std::size_t channel=0;channel<3;++channel)
+        require(std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)<=1,"Chrome pixel did not match the reference sRGB value.");
+}
 void verify_chrome_pixels(Application& app,const std::filesystem::path& output) {
     atelier::renderer::Capture pixels;
     require(app.step(&pixels) && pixels.frame_id,"Chrome pixel capture failed.");
     const auto pixel=[&](int x,int y,int gray) {
-        require(x>=0 && y>=0 && x<static_cast<int>(pixels.extent.width) && y<static_cast<int>(pixels.extent.height),"Chrome probe left the surface.");
-        const auto offset=(static_cast<std::size_t>(y)*pixels.extent.width+static_cast<std::size_t>(x))*4;
-        for (std::size_t channel=0;channel<3;++channel)
-            require(std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)<=1,"Chrome edge did not match the reference sRGB value.");
+        require_gray_pixel(pixels,x,y,gray);
     };
     const auto field=app.presented()->find(control::parameter_search)->bounds;
     for (const auto& control:app.presented()->controls)
@@ -300,10 +399,20 @@ void verify_chrome_pixels(Application& app,const std::filesystem::path& output) 
     pixel(tx+5*stroke,ty,38); pixel(tx+5*stroke,ty+2*stroke,79);
     pixel(tx+5*stroke,static_cast<int>(std::round(selected.y+selected.height))-1,79);
     const auto tab_bar=app.presented()->find(control::parameter_pages)->bounds;
+    const auto unselected=app.presented()->find(control::parameter_components)->bounds;
     const auto list=app.presented()->find(control::parameter_list)->bounds;
     const auto fold=app.presented()->find(control::position_fold)->bounds;
+    const auto header=app.presented()->find(51)->bounds;
+    require(field.y>=header.y+header.height-.1f && field.y+field.height<=tab_bar.y+.1f &&
+        field.y+field.height<=list.y+.1f,"Parameter Filter must remain between the object header and page tabs, outside scrolling content.");
     require(std::abs(selected.x-tab_bar.x)<.1f && std::abs(fold.x-list.x)<.1f,
         "Parameter tabs or fold header added an independent left inset.");
+    pixel(static_cast<int>(std::round(unselected.x))+5*stroke,static_cast<int>(std::round(unselected.y))+2*stroke,46);
+    require(tab_bar.x+tab_bar.width>unselected.x+unselected.width+6*stroke,"Tab-bar color probe has no uncovered strip.");
+    pixel(static_cast<int>(std::round(tab_bar.x+tab_bar.width))-3*stroke,static_cast<int>(std::round(tab_bar.y))+2*stroke,46);
+    const auto footer=app.presented()->find(100)->bounds;
+    pixel(static_cast<int>(std::round(footer.x+footer.width))-4*stroke,
+        static_cast<int>(std::round(footer.y+footer.height))-3*stroke,25);
     pixel(static_cast<int>(std::round(fold.x))+stroke,static_cast<int>(std::round(fold.y))+stroke,51);
     for (const auto key:{control::scene_tab,control::parameters_tab}) {
         const auto* tab=app.presented()->find(key);
@@ -360,9 +469,13 @@ void verify_control_states(Application& app, const std::filesystem::path& output
 
     const auto before = x(app, object);
     click(app, control::remove_actor);
-    const auto* disabled = app.presented()->find(property_control(app, {}, 0));
-    require(disabled && !disabled->enabled && text_coverage(*app.presented(), disabled->key),
-        "Unselected parameter state did not retain disabled text and geometry.");
+    const auto disabled=std::ranges::find_if(app.presented()->controls,[](const auto& control) {
+        return control.parent==51 && control.kind==atelier::ui::ControlKind::text_edit;
+    });
+    require(disabled!=app.presented()->controls.end() && !disabled->enabled && text_coverage(*app.presented(),disabled->key) &&
+        !app.presented()->find(field) && !app.presented()->find(control::parameter_search) &&
+        !app.presented()->find(control::parameter_transform) && !app.presented()->find(control::parameter_components),
+        "No selection lost its disabled name field or retained Actor-specific property controls.");
     capture(app, output / "s1-disabled.png");
     click(app, control::undo);
     require(app.document().selected() == object && x(app, object) == before, "State verification did not restore the edited object.");
@@ -617,6 +730,9 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     click(app, control::add_static_mesh);
     const auto first = actors(app).front().id();
     const auto last = actors(app).back().id();
+    require(text_coverage(*app.presented(),app.object_control(last))!=nullptr,
+        "Creating an Actor did not reveal its selected Scene Tree row.");
+    wheel(app,control::actor_tree,240);
     require(app.presented()->find(app.object_control(last)) &&
         !text_coverage(*app.presented(), app.object_control(last)),
         "Offscreen list row lost geometry or emitted text before scrolling.");
@@ -656,7 +772,15 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     key(app,VK_ESCAPE);
     require(GetCapture()!=app.window() && app.document().undo_count()==history_before_scroll,"Scrollbar cancellation changed document history or retained capture.");
     require(app.presented()->find(app.object_control(last))->clip.right<=bar().bounds.x,"Actor rows overlapped the scrollbar gutter.");
-    capture(app,output/"scrollbar-thumb-end.png");
+    atelier::renderer::Capture track_pixels;
+    require(app.step(&track_pixels) && track_pixels.frame_id,"Scrollbar color capture failed.");
+    const auto accepted_bar=bar();
+    const auto stroke=std::max(1.f,std::round(app.presented()->drawing->dpi_scale*2.f/3));
+    const auto probe_y=accepted_bar.track.y+3*stroke;
+    require(probe_y<accepted_bar.thumb.y,"Scrollbar track probe overlaps the thumb.");
+    require_gray_pixel(track_pixels,static_cast<int>(std::round(accepted_bar.track.x+accepted_bar.track.width*.5f)),
+        static_cast<int>(std::round(probe_y)),46);
+    png(track_pixels,output/"scrollbar-thumb-end.png");
     wheel(app,23,240);
 
     TimingSeries scroll(app);
@@ -824,6 +948,8 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     const auto navigation_history=app.document().undo_count();
     click(app,control::parameter_back);
     require(app.document().selected()==atelier::ObjectId{} && app.presented()->find(control::scene_forward)->enabled,"Path back did not reach World context.");
+    require(!app.presented()->find(control::parameter_transform) && !app.presented()->find(control::parameter_components) &&
+        !app.presented()->find(control::parameter_search),"World context retained Actor-specific property pages or Filter.");
     click(app,control::scene_forward);
     require(app.document().selected()==named_actor,"Path forward did not restore the selected Actor.");
     click(app,control::actor_path); capture(app,output/"path-context-menu.png");
@@ -929,23 +1055,45 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     verify_transform_projection(app, output, object);
 
     atelier::renderer::Capture camera_before, camera_orbit, camera_zoom;
+    using CameraInput=atelier::application::EditorAcceptanceAccess;
     require(app.step(&camera_before), "Camera capture failed.");
     auto view = centre(app, control::viewport);
+    CameraInput::move_camera_pointer(app,view); tick(app,1);
     SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
     view.x += 42; view.y += 18;
-    SendMessageW(app.window(), WM_MOUSEMOVE, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
+    CameraInput::move_camera_pointer(app,view); tick(app,1);
     SendMessageW(app.window(), WM_RBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
     require(app.step(&camera_orbit) && camera_orbit.depth != camera_before.depth, "Right-drag orbit did not change the rendered scene.");
     ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), MAKELPARAM(view.x, view.y)); tick(app, 1);
     require(app.step(&camera_zoom) && camera_zoom.depth != camera_orbit.depth, "Wheel zoom did not change the rendered scene.");
     click(app, control::reset);
-    view = centre(app, control::viewport);
-    SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
-    require(GetCapture() == app.window(), "Orbit did not acquire window capture.");
-    SetFocus(nullptr); tick(app, 2);
-    require(GetCapture() != app.window(), "Focus loss retained camera-owned capture.");
-    SetFocus(app.window()); tick(app, 1);
+    for (const auto reason : {WM_CANCELMODE, WM_ACTIVATEAPP, WM_CAPTURECHANGED, WM_KILLFOCUS}) {
+        require_input_focus(app);
+        view = centre(app, control::viewport);
+        CameraInput::move_camera_pointer(app,view,reason); tick(app,1);
+        SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
+        CameraInput::require_camera(app,GetCapture()==app.window(),reason,"Orbit did not acquire window capture");
+        const auto before = CameraInput::camera_view(app);
+        view.x += 18; view.y += 9;
+        CameraInput::move_camera_pointer(app,view,reason); tick(app,1);
+        CameraInput::require_camera(app,CameraInput::camera_view(app)!=before,reason,"Camera cancellation did not start a real orbit");
+        if (reason == WM_CAPTURECHANGED) ReleaseCapture();
+        else if (reason == WM_KILLFOCUS) SetFocus(nullptr);
+        else SendMessageW(app.window(), reason, 0, 0);
+        tick(app, 2);
+        CameraInput::require_camera(app,GetCapture()!=app.window(),reason,"Native cancellation retained camera-owned capture");
+        const auto stopped = CameraInput::camera_view(app);
+        view.x += 24; view.y += 12;
+        CameraInput::move_camera_pointer(app,view,reason); tick(app,1);
+        CameraInput::require_camera(app,CameraInput::camera_view(app)==stopped,reason,
+            "Native cancellation left camera orbit active after capture release");
+        SendMessageW(app.window(), WM_RBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
+        CameraInput::require_camera(app,CameraInput::camera_view(app)==stopped,reason,"Late button release changed a cancelled orbit");
+        if (reason == WM_KILLFOCUS) SetFocus(app.window());
+        else if (reason == WM_ACTIVATEAPP) SendMessageW(app.window(), WM_ACTIVATEAPP, TRUE, 0);
+        tick(app, 1);
+    }
 
     const auto before_loss = x(app, object);
     point = centre(app, field); mouse(app, WM_LBUTTONDOWN, point); point.x += 20; mouse(app, WM_MOUSEMOVE, point);
@@ -1008,14 +1156,14 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
            << "World: empty Actor; typed StaticMeshActor creation from shelf; one-step creation undo/redo preserves component identity; Actor delete/GC/undo same composition/new bindings; AttachedInactive presentation/editing\n"
            << "TRS: actual Session field transactions set rotation/nonuniform scale, World value matrices alter captured GPU depth, two UI undo commands restore the original value and depth; XYZ controls remain position-only\n"
-           << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; capture/focus loss; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
+           << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; cancel mode/deactivation/capture/focus loss with stopped orbit and late release; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "Scene Tree: actual World membership and Actor types; Actor-only rows; World expansion; type/name filtering; close/reopen retains expansion; no scene history changes.\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
            << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
            << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
            << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, Home/End and Shift keyboard steps, disabled input; shared axis-accent SS and GPU capture.\n"
-           << "Chrome: GPU pixels match ordinary field outer/inner/fill and selected tab open-bottom colors; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
+           << "Chrome: GPU pixels match ordinary field outer/inner/fill, selected tab open-bottom colors, #2E2E2E unselected tabs/tab strip/scroll track and #191919 status bar; Filter remains above property pages; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
            << "Shelf: 56 DIP expanded / 6 DIP stowed; 64 DIP single command hit target with icon above short caption; category and scene state retained across pointer/keyboard stow.\n"
            << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"

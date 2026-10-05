@@ -4,9 +4,15 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，splitter/slider/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，splitter/slider/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
+
+普通 button 可提供 `action_target`，把宿主动作身份与控件实例 key 分开。激活 Action 保留来源 `key`，另外携带 `target`（零表示沿用 key）；宿主在现有分发入口解析一次，继续检查业务可用性。该绑定与其他属性同批提交；改变 target 会取消旧鼠标/键盘按下状态，接受帧也保存 target，尚未绘制的新目标不能被旧画面触发。多个按钮可以指向同一命令，UI 不持有命令回调或业务对象。
+
+`button_behavior` 显式区分 `command`（默认、空激活负载）与 `toggle`（请求接受帧 selected 的反值）。两者共用按钮外观；toggle 不绘制 Checkbox 指示器。行为改变与动作换绑一样取消在途鼠标/键盘按压，并使旧接受帧失效。选项组继续使用 `selection_group` 的导航合同，布尔开关值、组选中项与暂时按压不混为一个状态。
+
+`MenuItem::behavior` / `Control::menu_behavior` 区分普通命令、checkbox 和 radio。`selected` 是唯一权威勾选/单选值；checkbox 请求其反值，radio 请求 true，同一 `radio_group` 至多选中一个条目。空方框/空心圆与选中标记始终可观察，hover/focus 只高亮当前菜单行。图标拥有独立槽，不替代勾选标记。菜单行为、组或目标变化会取消旧按压；关闭菜单清理打开和悬浮状态，不更改业务值。只含图标的 Combo 在右下保留下拉角标。
 
 调用顺序：
 
@@ -58,9 +64,25 @@
 
 Session 管理展开状态；`tree_initially_expanded` 只在行进入或更换父关系时初始化。折叠隐藏后代但保留身份；删除再出现仍使用新 incarnation。`UiFrame::tree_rows` 发布展开按钮命中区、保留的展开值和临时过滤标记；鼠标与绘制共用这份已接受几何。宿主可从接受帧保存视图状态，在面板重新创建时作为初值恢复。
 
+宿主将某行 `selected` 从 false 改为 true 时，Session 展开其祖先，并按新几何滚动显露该行；进入时已选中的新行遵循相同规则。稳定的 selected 投影不会反复展开用户手动折叠的分支，过滤也不因此清空。
+
 展开按钮只改变视图；点击行或 Enter/Space 发出普通 `select`。上下/Home/End 在当前可见层级移动，越出视口会滚动显露；左键折叠或返回父行，右键展开或进入首个子项。Tab 将整个树作为一个停靠点。禁用逻辑祖先同时禁用后代；隐藏、移除、重挂父节点取消旧捕获。
 
 `tree_filter` 是名称子串过滤（ASCII 大小写折叠，其他字符原样匹配），匹配子节点保留祖先，匹配父节点保留其子树。过滤临时显露匹配路径，清空恢复保留的展开状态；空结果不产生虚假滚动条。固定行高、层级间距、交替底色和连接线通过 SS 表达；交替行覆盖空白区，复用现有文字与图标 Coverage 缓存、裁剪、滚动条及绘制协议。
+
+### 表格
+
+`ControlKind::table` 使用 `Control.table` 引用不可变 `TableData`：列提供稳定 key、标题、DIP 列宽/最小宽度、对齐和是否可排序；行提供稳定 key、启用状态及按列排列的单元格，每格有独立 key、文字和可选图标。宿主负责数据顺序、业务值、排序状态和已提交列宽。`Control.table_selection` 单独保存当前行与列，更新选择复用同一数据快照，不复制全表。
+
+Session 在同一输入入口管理滚动、焦点和在途列宽预览。固定表头、单元格、分隔线和命中区域共用列几何；`UiFrame::find_table(key)` 发布本次接受帧的数据快照、选择、表头及可见单元格。虚拟行/格 key 是数据身份，不是假造的 ControlKey；整表只有一个布局节点，文字复用现有 TextStore，可见范围以外的缓存及时释放。
+
+单击单元格产生 `select` + `TableSelection{row,column}`，选中行和当前格分别可见。整表是一个 Tab 停靠点；上下、Home/End、PageUp/PageDown 选行，左右选列，越界时显露当前格。双击或 Enter 产生 `activate`，可通过原 `action_target` 路由；平台用 `Event.clicks` 保留原生双击信息。单击与激活不混用，资源创建仍由宿主明确命令执行。
+
+表头释放产生 `table_sort` + `TableSort`，宿主按实际类型排序，再提交新数据快照。列边界拖动使用捕获和 resize 指针，预览只在 Session 中，释放一次产生 `table_column_resize` + `TableColumnResize`；Esc、失焦、捕获丢失、隐藏或目标失效取消预览，不要求宿主回滚列宽。窄表保留列宽，横向滚动使用同一 ScrollbarGeometry，Shift+滚轮可横移；纵向滚动不移动表头。
+
+行、列和手势均核对当前身份及接受帧数据。新数据的校验和行索引建立仅发生在数据快照变化时，选格不重新扫描整表。右键先发选择，再用真实 Table Control 作为 `ContextMenuRequest.source`，`table` 载荷记录原行/列；宿主菜单在原行消失、禁用或选择改变后关闭，不对后来的选择执行旧菜单动作。表格没有私有业务对象、命令入口或第二套文字编辑会话。
+
+首个消费者是 Asset Browser Details。当前不提供单元格编辑、范围多选、冻结列或 DSL Table 作者语法；这些能力需由实际业务和既有编辑事务继续驱动。
 
 ### 滚动与指针
 
@@ -130,7 +152,7 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 - 普通换焦点合法提交、非法取消；OS失焦、Surface失效、控件失效取消。数值拖调提交后回仅聚焦，下一次Ctrl+Z交业务。仅聚焦时新的权威投影更新被动缓冲，不能被旧文字覆盖。
 - 字段聚焦时Delete/Backspace由共享文字编辑消费，不能删除场景对象。Tab按可见呈现控件顺序导航，Ctrl+A全选，Left/Right按视觉方向移动或折叠选择，Shift扩选，Home/End到视觉行端。
 
-Action.value为`ActionValue = variant<monostate,double,wstring,bool,ContextMenuRequest,DragPoint>`：普通activate/select无值，checkbox/foldout的activate携带请求的bool值，number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
+Action.value为`ActionValue = variant<monostate,double,wstring,bool,ContextMenuRequest,DragPoint>`：普通activate/select无值；checkbox、foldout、toggle按钮及checkbox/radio菜单项携带请求的bool值；number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
 
 本地历史保存文字和选择快照；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 
@@ -160,7 +182,7 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 可编辑字段还由`UiFrame`持有不可变段落和最终文字原点、宽度、DPI与横滚。指针命中始终查询接受帧的文字快照，未接受的字体/布局改变不会重解释旧画面的坐标。内容已不同则请求重绘；连续键盘导航用接受帧的字体与宽度策略排布当前草稿。详细发布行为见 [文字一致性](style-sheets.md#发布与文字一致性)。
 
-所有未collapsed且成功布局的控件保留`ControlBox`、身份、父子变换及滚动位置。只有最终物理bounds与祖先clip相交时才栅格化文字、输出绘制；子树仍按正常顺序处理，不以屏外父项替代语义遍历。滚回屏内会正常生成或复用文字。此裁剪减少栅格化和绘制成本，未将描述、布局或输入遍历改为可见行数量；大型逻辑集合仍应由消费者使用现有VirtualList控制实例数。
+所有未collapsed且成功布局的控件保留`ControlBox`、身份、父子变换及滚动位置。只有最终物理bounds与祖先clip相交时才栅格化文字、输出绘制；子树仍按正常顺序处理，不以屏外父项替代语义遍历。滚回屏内会正常生成或复用文字。普通控件的裁剪减少栅格化和绘制成本，描述、布局及输入仍遍历实例；大型列表消费者使用 VirtualList 控制实例数。Table 内部按可见行列产生绘制与命中几何，不为每个数据格建立控件。
 
 `Session::statistics()`提供常数时间观测：`prepares/measure_calls/text_layouts/rasterizations/raster_bytes/coverage_cache_hits/culled_text_controls`为Session创建以来累计值，窗口采样使用差值。prepare和rasterization计尝试次数，text_layouts计成功创建的原生段落，raster_bytes计完成的R8像素字节。符号 Coverage 同样计入 rasterizations/raster_bytes 和 live_coverages，text_layouts 仍只统计 DirectWrite 段落。`provider_revision`是版本标识，不是数量。
 

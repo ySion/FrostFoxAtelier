@@ -5,6 +5,7 @@
     text: #cccccc;
     field-focus: #777777;
     menu-active: #b36600;
+    chrome-recess: #2e2e2e;
     button-face: linear-gradient(#555555, #3b3b3b);
     button-hover: linear-gradient(#626262, #414141);
     button-down: linear-gradient(#3a3a3a, #4d4d4d);
@@ -66,14 +67,22 @@ combo:disabled { indicator-color: #616161; }
 .parameter-body { padding: 7.333dip 0dip 0dip 8dip; background: #3d3d3d; }
 .parameter-nested-body { background: #363636; }
 .parameter-pane { background: token(panel); }
+.parameter-search { padding: 3dip 8dip; }
+.status-bar { background: #191919; }
 .parameter-label { padding: 1dip 0dip; text-align: right; text-vertical-align: center; }
 .field-label { text-vertical-align: center; }
-list, popup, tree {
+list, popup, tree, table {
     scrollbar-color: #3b3b3b; scrollbar-width: 16dip; scrollbar-inset: 1dip; scrollbar-min-thumb: 24dip;
     scrollbar-button-size: 21.333dip; scrollbar-image: linear-gradient(to right, #555555, #3b3b3b);
-    indicator-background: #262626; indicator-border-color: #494949;
+    indicator-background: token(chrome-recess); indicator-border-color: #494949;
 }
 list { background: #2d2d2d; }
+table {
+    background: #2d2d2d; tree-alternate-color: #353535; tree-line-color: #454545;
+    selection-color: #55564c; border-color: #858585; border-width: 0dip;
+    padding: 0dip; text-vertical-align: center; indicator-size: 16dip; indicator-color: #a7c0cb;
+}
+table:focus { border-color: #a0a0a0; }
 item { padding: 2dip 6dip; border-width: 0dip; }
 item:hover, item:focus { background: #424242; }
 item:selected { background: #565656; color: #ffffff; }
@@ -100,14 +109,14 @@ popup.menu {
 }
 menu_item { padding: 0dip 9dip; background: transparent; border-width: 0dip; text-vertical-align: center; }
 menu_item:hover, menu_item:focus { background: token(menu-active); color: #ffffff; }
-menu_item:selected { color: #eeeeee; font-weight: 600; }
+menu_item:selected { color: #eeeeee; }
 :disabled { color: #808080; }
 button:disabled, combo:disabled { background-image: token(button-face); }
 
 /* Pane chrome: one tab strip, one content area, no duplicate panel heading. */
-.dock-tabs { background: #2e2e2e; border-color: #262626; border-width: 0.667dip; border-edges: bottom; border-style: solid; }
+.dock-tabs { background: token(chrome-recess); border-color: #262626; border-width: 0.667dip; border-edges: bottom; border-style: solid; }
 .dock-tab-group {
-    background: #2e2e2e; border-color: #171717; border-width: 0.667dip; border-style: solid;
+    background: token(chrome-recess); border-color: #171717; border-width: 0.667dip; border-style: solid;
     border-edges: right bottom; padding: 0dip 1dip;
 }
 .dock-tab-group:selected { background: #494949; border-edges: right; }
@@ -155,10 +164,10 @@ popup.value-ladder {
     color: #cccccc; selection-color: #b88c1c; font-family: 'Sarasa UI SC'; font-weight: 400;
     text-align: center;
 }
-.parameter-tabs { background: transparent; accent-color: #565656; accent-width: 0.667dip; }
+.parameter-tabs { background: token(chrome-recess); accent-color: #565656; accent-width: 0.667dip; }
 button.parameter-tab { padding: 2dip 9dip; }
 button.parameter-tab, button.parameter-tab:hover, button.parameter-tab:focus {
-    background-image: linear-gradient(#555555,#2f2f2f); border-color: #262626; border-style: solid;
+    background: token(chrome-recess); background-image: none; border-color: #262626; border-style: solid;
     border-width: 0.667dip; color: #cccccc;
 }
 button.parameter-tab.joined { border-edges: top right bottom; }
@@ -225,10 +234,20 @@ tree_item.mesh-actor { indicator-color: #a7c0cb; }
 
 /* File browser: shared selection and geometry across list/details/tiles. */
 .browser-tool { padding: 1dip 5dip; font-size: 11dip; }
-.browser-path { padding: 0dip 5dip; }
+.icon-menu, .browser-icon {
+    background: transparent; background-image: none; border-width: 0dip;
+    padding: 0dip; indicator-size: 20dip; indicator-color: #a7c0cb; combo-indicator: down;
+}
+combo.icon-menu:hover, .browser-icon:hover { background: #484848; background-image: none; }
+combo.icon-menu:selected, combo.icon-menu:pressed, .browser-icon:pressed, .browser-icon:selected { background: #555555; background-image: none; }
+.browser-icon { indicator-size: 16dip; }
+.browser-icon:disabled, .icon-menu:disabled { background: transparent; background-image: none; indicator-color: #686868; }
+.browser-toolbar { background: #343434; }
+.browser-path { padding: 0dip 4dip; combo-indicator: down; }
+.browser-search-icon { padding: 0dip; indicator-size: 14dip; indicator-color: #aaaaaa; }
+.browser-search-input { padding: 1dip 3dip; }
+.browser-status { background: #343434; text-vertical-align: center; }
 .browser-directories { background: #303030; }
 .asset-tile { background: transparent; background-image: none; border-width: 0dip; padding: 4dip; icon-placement: above; indicator-size: 24dip; text-align: center; text-vertical-align: bottom; }
 button.asset-tile:hover { background: #444444; }
 button.asset-entry:selected, button.asset-tile:selected { background: #55564c; background-image: none; }
-.asset-column { text-align: right; text-vertical-align: center; padding: 0dip; font-size: 11dip; }
-label.asset-column:disabled { color: #a3a3a3; }

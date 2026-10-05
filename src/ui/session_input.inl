@@ -64,7 +64,8 @@ Reply Session::input(const Event& event) {
             if (!state) return self.cancel();
             reply.consumed=true; reply.cursor=Cursor::arrow;
             if (event.kind==EventKind::pointer_move) {
-                state->scroll=std::clamp(press.original+(event.y-press.y)*press.value/std::max(1.f,press.slider_span),0.0,state->scroll_limit);
+                auto& offset=press.horizontal?state->scroll_x:state->scroll;
+                offset=std::clamp(press.original+(press.horizontal?event.x-press.x:event.y-press.y)*press.value/std::max(1.f,press.slider_span),0.0,press.value);
                 reply.redraw=true;
             } else if (event.kind==EventKind::pointer_up && event.button==press.button) {
                 self.press.reset(); reply.capture=Capture::release; reply.redraw=true;
@@ -81,19 +82,22 @@ Reply Session::input(const Event& event) {
             if (event.kind==EventKind::pointer_down && event.button==PointerButton::primary && !self.press) {
                 self.finish_edit(reply,true);
                 auto& state=self.states.at(bar.key);
+                auto& offset=bar.horizontal?state.scroll_x:state.scroll;
                 if (contains(bar.thumb,event.x,event.y)) {
-                    self.press=Impl::Press{bar.key,event.x,event.y,event.x,event.y,state.scroll,bar.maximum};
-                    self.press->scrollbar=true; self.press->slider_span=bar.track.height-bar.thumb.height;
+                    self.press=Impl::Press{bar.key,event.x,event.y,event.x,event.y,bar.value,bar.maximum};
+                    self.press->scrollbar=true; self.press->horizontal=bar.horizontal;
+                    self.press->slider_span=bar.horizontal?bar.track.width-bar.thumb.width:bar.track.height-bar.thumb.height;
                     reply.capture=Capture::acquire;
                 } else {
                     const auto step=contains(bar.decrement,event.x,event.y)?-24.0:contains(bar.increment,event.x,event.y)?24.0:
-                        (event.y<bar.thumb.y?-bar.page:bar.page);
-                    state.scroll=std::clamp(state.scroll+step,0.0,state.scroll_limit);
+                        ((bar.horizontal?event.x<bar.thumb.x:event.y<bar.thumb.y)?-bar.page:bar.page);
+                    offset=std::clamp(offset+step,0.0,bar.maximum);
                 }
                 reply.cursor=Cursor::arrow; reply.consumed=reply.redraw=true; return reply;
             }
             break;
         }
+        if (self.table_input(reply,event,hit)) return reply;
         if (event.kind==EventKind::pointer_move) {
             const auto key=hit?hit->key:0;
             reply.redraw=self.hover!=key; self.hover=key;

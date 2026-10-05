@@ -123,7 +123,7 @@ struct TextStore::Impl {
     };
     ComPtr<IDWriteFactory2> factory;
     ComPtr<IDWriteFontCollection1> font_collection;
-    std::map<std::uint64_t, Entry> entries;
+    std::map<TextKey, Entry> entries;
     std::map<Font, ComPtr<IDWriteTextFormat>, FontLess> formats;
     std::map<std::pair<TextStore::Symbol,std::uint32_t>,std::shared_ptr<const Coverage>> symbols;
     std::vector<DWRITE_LINE_METRICS> lines;
@@ -146,7 +146,7 @@ struct TextStore::Impl {
             check(loader->CreateFontCollectionFromFontSet(fonts.Get(),&font_collection));
         }
     }
-    Paragraph& resolve(std::uint64_t key, std::optional<float> width) {
+    Paragraph& resolve(TextKey key, std::optional<float> width) {
         auto found = entries.find(key);
         if (found == entries.end()) throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
         auto& entry = found->second;
@@ -212,7 +212,7 @@ bool TextSnapshot::matches(std::wstring_view text) const noexcept { return impl_
 
 TextStore::TextStore(std::span<const std::wstring> files) : impl_(std::make_unique<Impl>(files)) {}
 TextStore::~TextStore() = default;
-std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment) {
+std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment) {
     auto& entry = impl_->entries[key];
     if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment!=alignment) {
         entry.text = text; entry.font = font; entry.wrap = wrap; entry.alignment=alignment;
@@ -220,7 +220,7 @@ std::uint64_t TextStore::set(std::uint64_t key, std::wstring_view text, const Fo
     }
     return entry.revision;
 }
-void TextStore::erase(std::uint64_t key) { impl_->entries.erase(key); }
+void TextStore::erase(TextKey key) { impl_->entries.erase(key); }
 std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t pixels) {
     if (!pixels || pixels>256) throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
     const auto key=std::pair{symbol,pixels};
@@ -232,7 +232,7 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         const auto dx=bx-ax,dy=by-ay;
         const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
         const auto px=x-ax-t*dx,py=y-ay-t*dy;
-        return px*px+py*py<=((symbol==Symbol::world || symbol==Symbol::mesh || symbol==Symbol::folder)?.0016f:.0064f);
+        return px*px+py*py<=((symbol==Symbol::world || symbol==Symbol::mesh || symbol==Symbol::folder || symbol>=Symbol::search)?.0016f:.0064f);
     };
     for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
         unsigned inside{};
@@ -256,6 +256,18 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                     segment(px,py,.16f,.30f,.50f,.49f) || segment(px,py,.50f,.49f,.84f,.30f) ||
                     segment(px,py,.16f,.30f,.16f,.70f) || segment(px,py,.84f,.30f,.84f,.70f) ||
                     segment(px,py,.50f,.49f,.50f,.89f) || segment(px,py,.16f,.70f,.50f,.89f) || segment(px,py,.50f,.89f,.84f,.70f)):
+                symbol==Symbol::search?(std::abs(std::hypot(px-.4f,py-.4f)-.25f)<.04f || segment(px,py,.59f,.59f,.86f,.86f)):
+                symbol==Symbol::view_list?(segment(px,py,.33f,.25f,.86f,.25f) || segment(px,py,.33f,.5f,.86f,.5f) || segment(px,py,.33f,.75f,.86f,.75f) ||
+                    (px>=.12f && px<=.22f && (std::abs(py-.25f)<.05f || std::abs(py-.5f)<.05f || std::abs(py-.75f)<.05f))):
+                symbol==Symbol::view_details?(outline(.12f,.16f,.88f,.84f) || segment(px,py,.12f,.39f,.88f,.39f) || segment(px,py,.12f,.62f,.88f,.62f) || segment(px,py,.63f,.16f,.63f,.84f)):
+                symbol==Symbol::view_tiles?(outline(.12f,.12f,.43f,.43f) || outline(.57f,.12f,.88f,.43f) || outline(.12f,.57f,.43f,.88f) || outline(.57f,.57f,.88f,.88f)):
+                symbol==Symbol::filter?(segment(px,py,.13f,.2f,.87f,.2f) || segment(px,py,.13f,.2f,.43f,.55f) || segment(px,py,.87f,.2f,.57f,.55f) ||
+                    segment(px,py,.43f,.55f,.43f,.83f) || segment(px,py,.43f,.83f,.57f,.73f) || segment(px,py,.57f,.73f,.57f,.55f)):
+                symbol==Symbol::more?(std::hypot(px-.2f,py-.5f)<.075f || std::hypot(px-.5f,py-.5f)<.075f || std::hypot(px-.8f,py-.5f)<.075f):
+                (symbol==Symbol::radio || symbol==Symbol::radio_checked)?(std::abs(std::hypot(px-.5f,py-.5f)-.33f)<.04f ||
+                    (symbol==Symbol::radio_checked && std::hypot(px-.5f,py-.5f)<.15f)):
+                (symbol==Symbol::checkbox || symbol==Symbol::checkbox_checked)?(outline(.13f,.13f,.87f,.87f) ||
+                    (symbol==Symbol::checkbox_checked && (segment(px,py,.28f,.51f,.44f,.68f) || segment(px,py,.44f,.68f,.74f,.32f)))):
                 symbol==Symbol::object?((px>=.18f && px<=.82f && py>=.28f && py<=.75f) || (py>=.12f && py<.28f && std::abs(px-.5f)<(py-.08f)*2)):
                 symbol==Symbol::axes?(segment(px,py,.45f,.55f,.85f,.75f) || segment(px,py,.45f,.55f,.15f,.85f) || segment(px,py,.45f,.55f,.45f,.10f)):
                 symbol==Symbol::component?((px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)<.16f && (px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)>.06f):
@@ -299,8 +311,8 @@ ui_layout::MeasureResult TextStore::measure(void* context, const ui_layout::Meas
     try { return impl.resolve(query.content_key, query.width).metrics; }
     catch (const TextFailure& failure) { return std::unexpected(ui_layout::MeasureError{failure.code}); }
 }
-ui_layout::MeasuredSize TextStore::metrics(std::uint64_t key, float width) { return impl_->resolve(key,width).metrics; }
-RasterText TextStore::raster(std::uint64_t key, float width, float dpi, std::optional<Clip> viewport) {
+ui_layout::MeasuredSize TextStore::metrics(TextKey key, float width) { return impl_->resolve(key,width).metrics; }
+RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<Clip> viewport) {
     auto& paragraph = impl_->resolve(key, width);
     if (paragraph.raster_scale == dpi && paragraph.raster_viewport==viewport) { ++impl_->statistics.coverage_cache_hits; return paragraph.raster; }
     ++impl_->statistics.rasterizations;

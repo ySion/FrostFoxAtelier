@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <unordered_set>
+#include <cwctype>
 
 namespace atelier::editor {
 Workspace::Workspace() : dock(1ULL<<48,{
@@ -126,10 +127,13 @@ bool Workspace::apply_view(const ui::Action& action) {
         view.hidden_lines=option!=3;
     } else if (key>=control::topology_first && key<control::topology_first+2)
         view.triangle_edges=key!=control::topology_first;
-    else if (key==control::guide_background)
-        view.background=view.background==renderer::Background::none?renderer::Background::gradient:renderer::Background::none;
-    else if (key==control::guide_grid) view.reference_grid=!view.reference_grid;
-    else if (key==control::guide_axes) view.origin_axes=!view.origin_axes;
+    else if (key==control::guide_background || key==control::guide_grid || key==control::guide_axes) {
+        const auto* checked=std::get_if<bool>(&action.value);
+        if (!checked) return false;
+        if (key==control::guide_background) view.background=*checked?renderer::Background::gradient:renderer::Background::none;
+        else if (key==control::guide_grid) view.reference_grid=*checked;
+        else view.origin_axes=*checked;
+    }
     else return false;
     status=L"Viewport display updated";
     return true;
@@ -141,9 +145,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     };
     using namespace ui_layout;
     using ui::ControlKind;
-    constexpr std::array shading_titles{L"Smooth",L"Flat",L"MatCap"};
-    constexpr std::array edge_titles{L"Edges: Off",L"Edges: Overlay",L"Lines: Visible",L"Lines: All"};
-    constexpr std::array topology_titles{L"Polygons",L"Triangles"};
+    constexpr std::array shading_titles{L"Smooth Shaded",L"Flat Shaded",L"MatCap Shaded"};
+    constexpr std::array edge_titles{L"Shading Only",L"Shading + Wireframe",L"Wireframe · Visible Edges",L"Wireframe · All Edges"};
+    constexpr std::array topology_titles{L"Polygon Edges",L"Triangle Edges"};
     const auto edge_option=view.wireframe==renderer::Wireframe::only?
         (view.hidden_lines?2u:3u):static_cast<unsigned>(view.wireframe);
     auto& runtime = session.world().runtime();
@@ -209,50 +213,57 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         title.classes={"menubar-item"}; title.context_target=key;
         title.selected=menu && menu->source==key;
     }
-    const auto shelf_height=ui::append_collapsible_bar(result,
-        {control::shelf,1,control::shelf_handle,control::shelf_contents,56,shelf_collapsed,NodeInput::column(),"tool-shelf"});
-    const std::array shelf_tabs{ui::ParameterTab{control::shelf_create,L"Create"},ui::ParameterTab{control::shelf_view,L"View"}};
-    const auto tab_start=result.size();
-    ui::append_parameter_tabs(result,control::shelf_tabs,control::shelf_contents,shelf_page,shelf_tabs,17+1.f/3);
-    for (auto index=tab_start;index<result.size();++index)
-        result[index].classes.push_back(result[index].kind==ControlKind::button?"shelf-tab":"shelf-tabs");
-    auto tools=NodeInput::row(); tools.height=Axis::expand(); tools.padding={2,1,2,1};
-    add(control::shelf_body,control::shelf_contents,ControlKind::container,tools);
-    for (const auto& definition:command_definitions) {
-        const auto group=shelf_page==control::shelf_create?CommandGroup::create:CommandGroup::view;
-        if (definition.group!=group) continue;
-        auto shape=NodeInput::box(64,0); shape.height=Axis::expand();
+    auto create_tools=std::make_shared<std::vector<ui_language::Item>>();
+    auto view_tools=std::make_shared<std::vector<ui_language::Item>>();
+    for (std::size_t index=0;index<command_definitions.size();++index) {
+        const auto& definition=command_definitions[index];
+        if (definition.group!=CommandGroup::create && definition.group!=CommandGroup::view) continue;
+        if (!shelf_items_[index]) shelf_items_[index]=next_binding_++;
         const auto title=definition.shelf_title.empty()?definition.title:definition.shelf_title;
-        auto& tool=add(static_cast<ui::ControlKey>(definition.id),control::shelf_body,ControlKind::button,shape,std::wstring(title));
-        tool.classes={"shelf-tool"}; tool.enabled=command_enabled(definition.id,session);
-        tool.icon=definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
+        const auto icon=definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
             definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
+        auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
+        items->push_back({shelf_items_[index],{std::wstring(title),static_cast<double>(icon),
+            ui_language::ActionBinding{static_cast<ui::ControlKey>(definition.id),command_enabled(definition.id,session)}}});
+    }
+    const std::array<ui_language::InputValue,12> shelf_inputs{shelf_collapsed,shelf_page==control::shelf_create,
+        ui_language::ItemList{std::move(create_tools)},ui_language::ItemList{std::move(view_tools)},
+        ui_language::ActionBinding{control::shelf_handle},ui_language::ActionBinding{control::shelf_create},ui_language::ActionBinding{control::shelf_view},
+        static_cast<double>(ui::stow_rail_width),static_cast<double>(ui::stow_collapsed_height),static_cast<double>(ui::stow_arrow_region_height),
+        static_cast<double>(ui::ControlIcon::up),static_cast<double>(ui::ControlIcon::down)};
+    const std::array<ui_language::KeyBinding,7> shelf_keys{{{"shelf",control::shelf},{"stow",control::shelf_handle},
+        {"contents",control::shelf_contents},{"tabs",control::shelf_tabs},{"create",control::shelf_create},
+        {"view",control::shelf_view},{"body",control::shelf_body}}};
+    static_cast<void>(ui_document_->append("ToolShelf",1,shelf_keys,shelf_inputs,result));
+    // DockSpace still consumes an explicit extent. Read the authored root's
+    // height; the C++ shell does not maintain a second shelf size formula.
+    float shelf_height{};
+    if (const auto shelf=std::ranges::find(result,control::shelf,&ui::Control::key);shelf!=result.end()) {
+        if (shelf->layout.height.rule!=ui_layout::SizeRule::fixed) {
+            if (reject_ui_controls("ToolShelf root requires a fixed height until the shell supplies layout slots."))
+                return describe(session,size,frame,project);
+        } else shelf_height=shelf->layout.height.value;
     }
     auto body = NodeInput::column(); body.height = Axis::expand();
     add(20, 1, ControlKind::container, body);
-    constexpr float footer_height=26;
+    constexpr float footer_height=ui::single_line_height;
     dock.append(result,20,{size.width,std::max(0.f,size.height-menu_height-shelf_height-footer_height)},[&](const ui::DockTab& view,std::vector<ui::Control>&,ui::ControlKey parent) {
-    auto heading=NodeInput::box(0,26); heading.width=Axis::expand();
     if (view.key==control::scene_tab) {
         auto contents=NodeInput::column(); contents.width=contents.height=Axis::expand();
         add(control::scene_content,parent,ControlKind::container,contents);
         ui::append_path_bar(result,{641,control::scene_content,control::scene_path,control::scene_back,control::scene_forward,L"World",can_navigate(-1),can_navigate(1)});
-        auto display_bar=NodeInput::row(4); display_bar.height=Axis::fixed(30); display_bar.padding={4,2,4,2};
-        add(control::scene_display_bar,control::scene_content,ControlKind::container,display_bar).role=ui::Role::panel;
-        auto choice=NodeInput::box(0,26); choice.width=Axis::expand();
-        add(control::scene_shading,control::scene_display_bar,ControlKind::combo,choice,
-            shading_titles[static_cast<unsigned>(this->view.shading)]);
-        add(control::scene_edges,control::scene_display_bar,ControlKind::combo,choice,edge_titles[edge_option]);
-        add(control::scene_topology,control::scene_display_bar,ControlKind::combo,choice,topology_titles[this->view.triangle_edges?1:0]);
-        add(control::scene_guides,control::scene_display_bar,ControlKind::combo,choice,L"Guides");
+        const std::array<ui_language::InputValue,4> inputs{static_cast<double>(ui::ControlIcon::mesh),
+            static_cast<double>(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,
+            menu && menu->source==control::scene_guides};
+        const std::array<ui_language::KeyBinding,2> keys{{{"display",control::scene_shading},{"guides",control::scene_guides}}};
+        static_cast<void>(ui_document_->append("ViewportTools",641,keys,inputs,result));
         auto viewport=NodeInput::box(0,0); viewport.width=viewport.height=Axis::expand();
         add(control::viewport,control::scene_content,ControlKind::viewport,viewport);
         return;
     }
     auto panel=NodeInput::column(); panel.width=panel.height=Axis::expand();
-    auto& pane_content=add(view.content,parent,ControlKind::container,panel);
-    pane_content.role=ui::Role::panel;
-    if (view.key==control::parameters_tab) pane_content.classes={"parameter-pane"};
+    auto& content_slot=add(view.content,parent,ControlKind::container,panel);
+    if (view.key!=control::parameters_tab) content_slot.role=ui::Role::panel;
     if (view.key==control::workbench) { workbench.append(result,view.content); return; }
     if (view.key==control::assets_tab) {
         assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame);
@@ -282,35 +293,37 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         static_cast<void>(ui_document_->append("SceneTree",21,keys,inputs,result));
         return;
     }
-    ui::append_path_bar(result,{75,50,control::parameter_path,control::parameter_back,control::parameter_forward,L"World",can_navigate(-1),can_navigate(1)});
-    ui::append_object_header(result,51,50,52,selected==ObjectId{}?ui::ControlKey{77}:bind(selected,{},Binding::Kind::name),
-        selected==ObjectId{}?L"Actor":([&] { auto name=take(runtime.describe(actor_status.type))->name;
+    const auto type_name=selected==ObjectId{}?L"Actor":([&] { auto name=take(runtime.describe(actor_status.type))->name;
             if (const auto dot=name.find_last_of('.');dot!=name.npos) name=name.substr(dot+1);
-            return std::wstring(name.begin(),name.end()); })(),selected==ObjectId{}?L"No selection":std::wstring(session.name(selected)),actor_status.can_edit);
-    const std::array tabs{ui::ParameterTab{control::parameter_transform,L"Transform"},ui::ParameterTab{control::parameter_components,L"Components"}};
-    auto page_stack=NodeInput::column(); page_stack.height=Axis::expand();
-    add(93,50,ControlKind::container,page_stack).classes={"parameter-page"};
-    ui::append_parameter_tabs(result,control::parameter_pages,93,parameter_page,tabs);
-    auto scroll=NodeInput::column(7); scroll.height=Axis::expand(); scroll.padding={0,7.333f,0,8};
-    add(control::parameter_list,93,ControlKind::list,scroll).classes={"parameter-list"};
-    auto composition=NodeInput::column(3); composition.collapsed=parameter_page!=control::parameter_components;
-    add(56,control::parameter_list,ControlKind::container,composition).classes={"parameter-inset"};
+            return std::wstring(name.begin(),name.end()); })();
+    const auto lowercase=[](std::wstring value) {
+        for (auto& c:value) c=static_cast<wchar_t>(std::towlower(c));
+        return value;
+    };
+    const auto folded=lowercase(query);
     auto components=std::make_shared<std::vector<ui_language::Item>>();
+    bool has_components{};
     if (selected!=ObjectId{}) for (const auto& component:take(world::components(runtime,selected))) {
         const auto state=take(world::inspect_component(runtime,component.id()));
         auto type=take(runtime.describe(state.type))->name;
         if (const auto dot=type.find_last_of('.');dot!=type.npos) type=type.substr(dot+1);
-        components->push_back({bind(component.id()),{std::wstring(type.begin(),type.end()),static_cast<double>(ui::ControlIcon::component)}});
+        has_components=true;
+        const auto title=std::wstring(type.begin(),type.end());
+        if (lowercase(title+L" components 组件").find(folded)!=std::wstring::npos)
+            components->push_back({bind(component.id()),{title,static_cast<double>(ui::ControlIcon::component)}});
     }
-    const std::array<ui_language::InputValue,1> component_inputs{ui_language::ItemList{std::move(components)}};
-    static_cast<void>(ui_document_->append("Components",56,{},component_inputs,result));
-    auto page=NodeInput::column(7); page.collapsed=parameter_page!=control::parameter_transform;
-    add(85,control::parameter_list,ControlKind::container,page);
-    auto folded = query;
-    std::transform(folded.begin(), folded.end(), folded.begin(), [](wchar_t c) {
-        return c >= L'A' && c <= L'Z' ? static_cast<wchar_t>(c + (L'a' - L'A')) : c;
-    });
-    constexpr std::array aliases{L"position 位置 x", L"position 位置 y", L"position 位置 z"};
+    const bool components_empty=components->empty();
+    const bool transform_selected=parameter_page==control::parameter_transform && transform.has_value();
+    auto pages=std::make_shared<std::vector<ui_language::Item>>();
+    const auto page=[&](ui::ControlKey key,std::wstring title,bool active) {
+        pages->push_back({key,{std::move(title),active,ui_language::ActionBinding{key},control::parameter_pages,
+            std::wstring(pages->empty()?L"parameter-tab":L"parameter-tab joined")}});
+    };
+    if (selected!=ObjectId{}) {
+        if (transform) page(control::parameter_transform,L"Transform",transform_selected);
+        page(control::parameter_components,L"Components",!transform_selected);
+    }
+    constexpr std::array aliases{L"transform scene root position 变换 位置 x", L"transform scene root position 变换 位置 y", L"transform scene root position 变换 位置 z"};
     std::array<bool, 3> matches{};
     for (std::size_t axis = 0; axis < matches.size(); ++axis)
         matches[axis] = std::wstring_view(aliases[axis]).find(folded) != std::wstring_view::npos;
@@ -330,19 +343,24 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     ui_language::EditBinding position{transform?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},
         actor_status.can_edit && transform.has_value(),group_modified,{fields.begin(),fields.begin()+static_cast<std::ptrdiff_t>(field_count)}};
-    const std::array<ui_language::InputValue,4> inputs{transform.has_value(),any,std::move(position),
-        ui_language::TextEditBinding{control::parameter_search,query}};
-    const std::array<ui_language::KeyBinding,6> keys{{{"no_root",53},{"section",control::position_fold},
-        {"contents",58},{"position",70,72,73},{"drag_hint",90},{"menu_hint",91}}};
-    static_cast<void>(ui_document_->append("Position",85,keys,inputs,result));
-    auto hint=NodeInput::box(0,0); hint.width=Axis::expand(); hint.height=Axis::content();
-    hint.padding.left=8;
-    auto info=hint; info.collapsed=parameter_page!=control::parameter_components;
-    add(92,control::parameter_list,ControlKind::label,info,L"Components owned by the selected Actor.").role=ui::Role::caption;
+    const std::array<ui_language::InputValue,16> inputs{std::wstring(type_name),
+        ui_language::TextEditBinding{selected==ObjectId{}?ui::ControlKey{77}:bind(selected,{},Binding::Kind::name),
+            selected==ObjectId{}?L"No selection":std::wstring(session.name(selected)),actor_status.can_edit},
+        ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
+        static_cast<double>(ui::ControlIcon::back),static_cast<double>(ui::ControlIcon::forward),static_cast<double>(ui::ControlIcon::world),
+        selected!=ObjectId{},transform_selected,ui_language::ItemList{std::move(pages)},ui_language::ItemList{std::move(components)},
+        any,std::move(position),ui_language::TextEditBinding{control::parameter_search,query},components_empty,
+        std::wstring(has_components?L"No matching components":L"No components")};
+    const std::array<ui_language::KeyBinding,14> keys{{{"path.bar",75},
+        {"path.path",control::parameter_path},{"path.back",control::parameter_back},{"path.forward",control::parameter_forward},
+        {"header.row",51},{"header.type",52},{"pages",93},{"tabs",control::parameter_pages},
+        {"scroll",control::parameter_list},{"components",56},{"transform",85},
+        {"position.section",control::position_fold},{"position.contents",58},{"position.position",70,72,73}}};
+    static_cast<void>(ui_document_->append("Parameters",view.content,keys,inputs,result));
     });
-    auto footer = NodeInput::row(); footer.height = Axis::fixed(footer_height); footer.padding = {8, 2, 8, 0};
-    add(100, 1, ControlKind::container, footer).role = ui::Role::panel;
-    auto status_box = NodeInput::box(0, 26); status_box.width = Axis::expand();
+    auto footer = NodeInput::row(); footer.height = Axis::fixed(footer_height); footer.padding = {8, 0, 8, 0};
+    add(100, 1, ControlKind::container, footer).classes={"status-bar"};
+    auto status_box = ui::single_line_layout(); status_box.width = Axis::expand();
     auto status_text=status;
     if (!ui_error().empty()) {
         auto diagnostic=wide(std::string(ui_error()));
@@ -371,24 +389,29 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 items.push_back({control::world_context,L"World",true,selected==ObjectId{},{}});
                 for (const auto& member:members) items.push_back({bind(member.id(),{},Binding::Kind::navigation),
                     std::wstring(session.name(member.id())),true,selected==member.id(),{},L"",items.size()==1});
-            } else if (source->key==browser_control::filter) items=assets.filter_menu();
+                for (auto& item:items) {item.behavior=ui::MenuBehavior::radio;item.radio_group=source->key;}
+            } else if (auto asset_items=assets.menu_items(source->key);!asset_items.empty()) items=std::move(asset_items);
             else if (source->key==control::scene_shading) {
-                for (std::size_t i=0;i<shading_titles.size();++i)
-                    items.push_back({control::shading_first+i,shading_titles[i],true,static_cast<unsigned>(view.shading)==i,{}});
-            } else if (source->key==control::scene_edges) {
-                for (std::size_t i=0;i<edge_titles.size();++i)
-                    items.push_back({control::edges_first+i,edge_titles[i],true,edge_option==i,{}});
-            } else if (source->key==control::scene_topology) {
-                for (std::size_t i=0;i<topology_titles.size();++i)
-                    items.push_back({control::topology_first+i,topology_titles[i],true,view.triangle_edges==(i!=0),{}});
+                const auto group=[&](ui::ControlKey first,const auto& titles,std::size_t selected) {
+                    for (std::size_t i=0;i<titles.size();++i) {
+                        ui::MenuItem item{first+i,titles[i],true,selected==i,{}};
+                        item.behavior=ui::MenuBehavior::radio;item.radio_group=first;
+                        item.separator_before=i==0 && !items.empty();items.push_back(std::move(item));
+                    }
+                };
+                group(control::shading_first,shading_titles,static_cast<unsigned>(this->view.shading));
+                group(control::edges_first,edge_titles,edge_option);
+                group(control::topology_first,topology_titles,this->view.triangle_edges?1u:0u);
             } else if (source->key==control::scene_guides) {
                 items.push_back({control::guide_background,L"Gradient Background",true,view.background==renderer::Background::gradient,{}});
                 items.push_back({control::guide_grid,L"Reference Grid",true,view.reference_grid,{}});
                 items.push_back({control::guide_axes,L"Origin Axes",true,view.origin_axes,{}});
+                for (auto& item:items) item.behavior=ui::MenuBehavior::checkbox;
             } else if (!items.empty()) {}
             else if (source->kind==ControlKind::combo && source->key==workbench_control::mode) {
                 for (std::size_t i=0;i<ControlWorkbench::mode_names.size();++i)
                     items.push_back({workbench_control::mode_first+i,ControlWorkbench::mode_names[i],true,workbench.values().mode==i,{}});
+                for (auto& item:items) {item.behavior=ui::MenuBehavior::radio;item.radio_group=source->key;}
             } else {
                 if (source->kind==ControlKind::number)
                     items.push_back({control::menu_reset,L"Revert to Default",source->modified,false,ui::EditCommand{ui::EditCommandKind::reset,source->key}});

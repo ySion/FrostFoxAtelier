@@ -15,13 +15,23 @@ struct Initializer { std::uint32_t slot{}; Fragment source; };
 constexpr std::pair<std::string_view,NodeKind> builtin_nodes[]{
     {"Column",NodeKind::column},{"Row",NodeKind::row},{"Text",NodeKind::text},
     {"Foldout",NodeKind::foldout},{"NumberRow",NodeKind::number_row},{"TextField",NodeKind::text_field},
-    {"Tree",NodeKind::tree},{"TreeItem",NodeKind::tree_item},{"Repeat",NodeKind::repeat}};
+    {"Tree",NodeKind::tree},{"TreeItem",NodeKind::tree_item},{"Repeat",NodeKind::repeat},{"Button",NodeKind::button},
+    {"List",NodeKind::list},{"Combo",NodeKind::combo},{"ChoiceButton",NodeKind::choice_button},{"ToggleButton",NodeKind::toggle_button}};
 std::optional<NodeKind> builtin_node(std::string_view name) {
     const auto at=std::ranges::find_if(builtin_nodes,[&](const auto& item){return item.first==name;});
     return at==std::end(builtin_nodes)?std::nullopt:std::optional{at->second};
 }
 bool height_strategy(std::string_view name) {
-    return name=="height" || name=="expand_height" || name=="single_line";
+    return name=="height" || name=="expand_height" || name=="single_line" || name=="content_height";
+}
+bool width_strategy(std::string_view name) {
+    return name=="width" || name=="expand_width" || name=="content_width";
+}
+bool button_node(NodeKind kind) {
+    return kind==NodeKind::button || kind==NodeKind::choice_button || kind==NodeKind::toggle_button;
+}
+bool container_node(NodeKind kind) {
+    return kind==NodeKind::column || kind==NodeKind::row || kind==NodeKind::tree || kind==NodeKind::list;
 }
 
 struct Header {
@@ -38,6 +48,7 @@ Input parse_input(Tokens& tokens) {
         if (type.text=="EditBinding") value.kind=InputKind::edit;
         else if (type.text=="Text") value.kind=InputKind::text;
         else if (type.text=="TextEditBinding") value.kind=InputKind::text_edit;
+        else if (type.text=="ActionBinding") value.kind=InputKind::action;
         else if (type.text=="Key") value.kind=InputKind::key;
         else if (type.text=="Items") {
             value.kind=InputKind::items;tokens.expect("<");value.item_type=tokens.identifier().text;tokens.expect(">");
@@ -122,13 +133,16 @@ public:
                 const bool numeric=property==Property::gap || property==Property::height || property==Property::width ||
                     property==Property::padding_left || property==Property::icon ||
                     property==Property::padding_top || property==Property::padding_right || property==Property::padding_bottom ||
+                    property==Property::content_width || property==Property::content_height || property==Property::min_width ||
                     (property==Property::argument && evaluation.kind==InputKind::number);
                 std::string sink;
                 if (property==Property::argument) sink="set_argument_"+suffix(evaluation.kind);
                 else if (text) sink="set_text";
                 else if (property==Property::edit) sink=result_.nodes[evaluation.node].kind==NodeKind::text_field?"set_text_edit":"set_edit";
+                else if (property==Property::action) sink="set_action";
                 else if (property==Property::items) sink="set_items";
                 else if (property==Property::tree_parent) sink="set_tree_parent";
+                else if (property==Property::selection_group) sink="set_selection_group";
                 else sink=numeric?"set_number":"set_bool";
                 if (text && reference==InputKind::text) sink+="_reference";
                 else if (text && reference==InputKind::text_edit) sink+="_from_edit";
@@ -138,7 +152,11 @@ public:
                 rewrite(evaluation.source,false);
                 if (numeric) append(")",evaluation.source.position);
                 append(");\n",evaluation.source.position);
-            } else { rewrite(evaluation.source,true); append("\n",evaluation.source.position); }
+            } else {
+                const auto kind=result_.nodes[evaluation.node].kind;
+                rewrite(evaluation.source,true,kind==NodeKind::foldout || kind==NodeKind::toggle_button);
+                append("\n",evaluation.source.position);
+            }
             append("}\n",evaluation.source.position);
         }
         append("void __ui_dispatch(uint operation) {\nif (operation == 0) { __ui_create(); return; }\n",{});
@@ -167,7 +185,7 @@ private:
         reject(token.position,"Component state requires bool or double.");
     }
     static std::string suffix(InputKind kind) {
-        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items"};
+        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action"};
         return std::string(names[static_cast<std::size_t>(kind)]);
     }
     Fragment fragment(std::string_view terminator) {
@@ -208,8 +226,8 @@ private:
         while (!accept("}")) {
             if (accept("on")) {
                 const auto event=identifier();
-                if (event.text!="activate" || kind!=NodeKind::foldout || has_event)
-                    reject(event.position,"Expected one activate handler on a Foldout.");
+                if (event.text!="activate" || (kind!=NodeKind::foldout && !button_node(kind)) || has_event)
+                    reject(event.position,"Expected one activate handler on a Foldout or button.");
                 has_event=true;expect("{");const auto body=fragment("}");expect("}");
                 const auto operation=static_cast<std::uint32_t>(evaluations_.size()+1);
                 evaluations_.push_back({body,slot,operation,{}});result_.events.push_back({slot,operation});continue;
@@ -218,13 +236,17 @@ private:
             const auto property=identifier();
             if (!accept(":")) {
                 lexer_=saved_lexer;token_=saved_token;
-                if (kind!=NodeKind::column && kind!=NodeKind::row && kind!=NodeKind::tree)
-                    reject(type.position,"Only layout containers and Tree accept child nodes.");
+                if (!container_node(kind)) reject(type.position,"Only layout containers, List and Tree accept child nodes.");
                 node(slot+1,depth+1);continue;
             }
             if (std::ranges::find(properties,property.text)!=properties.end()) reject(property.position,"Duplicate UI property or argument.");
             if (kind!=NodeKind::component && height_strategy(property.text) && std::ranges::any_of(properties,height_strategy))
-                reject(property.position,"height, expand_height and single_line are mutually exclusive height strategies.");
+                reject(property.position,"height, expand_height, content_height and single_line are mutually exclusive height strategies.");
+            if (kind!=NodeKind::component && width_strategy(property.text) && std::ranges::any_of(properties,width_strategy))
+                reject(property.position,"width, expand_width and content_width are mutually exclusive width strategies.");
+            if (kind!=NodeKind::component && (property.text=="panel" || property.text=="caption") &&
+                std::ranges::any_of(properties,[](auto name){return name=="panel" || name=="caption";}))
+                reject(property.position,"panel and caption are mutually exclusive roles.");
             properties.push_back(property.text);
             Property value{};InputKind value_kind{InputKind::boolean};std::uint32_t argument{};
             if (kind==NodeKind::component && property.text!="mounted") {
@@ -234,7 +256,8 @@ private:
             } else {
                 constexpr std::string_view names[]{"text","classes","gap","height","width","padding_left","enabled","selected","collapsed","caption","edit",
                     "expand_height","icon","tree_parent","initially_expanded","filter","mounted","items",
-                    "padding_top","padding_right","padding_bottom","align_center","single_line"};
+                    "padding_top","padding_right","padding_bottom","align_center","single_line","action",
+                    "selection_group","content_width","content_height","expand_width","min_width","wrap","panel"};
                 const auto at=std::ranges::find(names,property.text);
                 if (at==std::end(names)) reject(property.position,"Unknown UI property.");
                 value=static_cast<Property>(at-std::begin(names));
@@ -242,14 +265,19 @@ private:
                     (kind==NodeKind::repeat && value!=Property::mounted && value!=Property::items))
                     reject(property.position,"This structural scope accepts only mounted and its typed input.");
                 if (value==Property::edit && kind!=NodeKind::number_row && kind!=NodeKind::text_field) reject(property.position,"edit requires NumberRow or TextField.");
-                if (value==Property::selected && kind!=NodeKind::foldout && kind!=NodeKind::tree_item) reject(property.position,"selected requires Foldout or TreeItem.");
+                if (value==Property::action && !button_node(kind)) reject(property.position,"action requires a button.");
+                if (value==Property::selection_group && kind!=NodeKind::choice_button) reject(property.position,"selection_group requires ChoiceButton.");
+                if (value==Property::selected && kind!=NodeKind::foldout && kind!=NodeKind::tree_item &&
+                    kind!=NodeKind::choice_button && kind!=NodeKind::toggle_button && kind!=NodeKind::combo)
+                    reject(property.position,"selected requires Foldout, TreeItem, ChoiceButton, ToggleButton or Combo.");
                 if (value==Property::caption && kind!=NodeKind::text) reject(property.position,"caption requires Text.");
-                if (value==Property::align_center && kind!=NodeKind::row && kind!=NodeKind::column && kind!=NodeKind::tree)
-                    reject(property.position,"align_center requires a layout container.");
-                if (value==Property::text && (kind==NodeKind::column || kind==NodeKind::row || kind==NodeKind::tree || kind==NodeKind::text_field))
+                if ((value==Property::align_center || value==Property::wrap) && !container_node(kind))
+                    reject(property.position,"align_center and wrap require a layout container.");
+                if (value==Property::text && (container_node(kind) || kind==NodeKind::text_field))
                     reject(property.position,"Use Text or a typed text edit binding.");
                 if (kind==NodeKind::number_row && ((value>=Property::gap && value<=Property::padding_left) ||
-                    value==Property::expand_height || (value>=Property::padding_top && value<=Property::single_line)))
+                    value==Property::expand_height || (value>=Property::padding_top && value<=Property::single_line) ||
+                    (value>=Property::content_width && value<=Property::panel)))
                     reject(property.position,"NumberRow uses the shared parameter layout; put outer layout on its parent.");
                 if ((value==Property::tree_parent || value==Property::expanded) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
                 if (value==Property::filter && kind!=NodeKind::tree) reject(property.position,"filter requires Tree.");
@@ -257,6 +285,17 @@ private:
                 if (value==Property::items && kind!=NodeKind::repeat) reject(property.position,"items requires Repeat.");
             }
             const auto expression=fragment(";");expect(";");
+            if (value==Property::selection_group && reference_kind(expression)!=InputKind::key) {
+                Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));
+                if (!tokens.accept("node") || !tokens.accept(".") || tokens.token_.kind!=Token::Kind::identifier)
+                    reject(expression.position,"selection_group requires node.name or a direct Key input.");
+                tokens.consume();
+                if (tokens.token_.kind!=Token::Kind::end)
+                    reject(expression.position,"selection_group requires node.name or a direct Key input.");
+            }
+            if ((value==Property::action || (value==Property::argument && value_kind==InputKind::action)) &&
+                reference_kind(expression)!=InputKind::action)
+                reject(expression.position,"Action bindings require a direct ActionBinding input.");
             if (value==Property::argument && value_kind==InputKind::items) {
                 if (reference_kind(expression)!=InputKind::items) reject(expression.position,"Items arguments require a direct typed input.");
                 Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));tokens.expect("input");tokens.expect(".");const auto input=tokens.identifier();
@@ -275,6 +314,10 @@ private:
         }
         if ((kind==NodeKind::number_row || kind==NodeKind::text_field) && std::ranges::find(properties,"edit")==properties.end())
             reject(name.position,"Editable controls require a typed edit binding.");
+        if (button_node(kind) && has_event && std::ranges::find(properties,"action")!=properties.end())
+            reject(name.position,"A button cannot combine action with a local activate handler.");
+        if (kind==NodeKind::choice_button && std::ranges::find(properties,"selection_group")==properties.end())
+            reject(name.position,"ChoiceButton requires an explicit selection_group.");
         if (kind==NodeKind::repeat && result_.nodes[slot].component_type.empty()) reject(name.position,"Repeat requires items.");
         if (kind==NodeKind::component) for (const auto& input:child->inputs)
             if (std::ranges::find(properties,input.name)==properties.end()) reject(name.position,"Missing component input: "+input.name);
@@ -283,7 +326,7 @@ private:
         const auto begin=result_.generated_source.size(); result_.generated_source+=value;
         if (!value.empty()) result_.mappings.push_back({begin,result_.generated_source.size(),origin});
     }
-    void rewrite(Fragment fragment,bool event) {
+    void rewrite(Fragment fragment,bool event,bool checked=false) {
         const auto position=[&](SourcePosition local) {
             local.offset+=fragment.begin;
             local.column+=local.line==1?fragment.position.column-1:0;
@@ -331,6 +374,7 @@ private:
                     append("self.node_key("+std::to_string(at-result_.nodes.begin())+") ",origin);
                 } else if (token.text=="event") {
                     if (!event) reject(token.position,"event is reserved and only available inside an event handler.");
+                    if (!checked) reject(token.position,"Button and ChoiceButton activation do not expose event values.");
                     tokens.expect("."); const auto name=tokens.identifier();
                     if (name.text!="checked") reject(name.position,"This event exposes checked: bool.");
                     append("self.event_bool() ",origin);

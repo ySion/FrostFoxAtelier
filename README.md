@@ -34,12 +34,14 @@ cmake --build --preset dev --target atelier_editor
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
 World 提供同 Actor 空间树、显式根、完整 TRS，以及 Actor/Component 共用的有序 Begin/Tick/End 和任务取消；Actor 可以先完成 Detached 组件组装，再注册到 World。renderer 消费矩阵、共享网格资源与基础色快照。当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 
-Scene View 的显示栏提供 **MatCap / Smooth / Flat**、**Edges: Off / Overlay / Lines: Visible / Lines: All**、**Polygons / Triangles**，以及 **Guides** 中独立的渐变背景、参考网格和原点轴线开关。默认使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，已三角化 OBJ 保留其三角形边。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
+Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。默认使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，已三角化 OBJ 保留其三角形边。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，历史输入合同见[原生 UI 记录](docs/ui-foundation-plan.md)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui-proposal.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui-proposal.md)。
 
 菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前阶段验收与 review 修复见 [2026-10-02 编辑器 UI 收口](docs/research/editor-ui-20261002-closeout.md)。
+
+完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询位于属性页签之前，页签按当前 Actor 的真实组成提供。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。菜单内容、停靠、Asset Browser 的 DSL 声明继续迁移；跨区域资源拖放尚未实现。
 
 其后与 Runtime 冻结交付的同候选双配置重建和消费者验收见 [Runtime／编辑器集成记录](docs/research/runtime-editor-integration-20261002.md)；原 2870 帧窗口记录仍归属集成前的编辑器版本。
 
@@ -87,7 +89,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先完成基础库、反射（含 CLI）和 RHI 验收依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (20/20)`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口先完成基础库、反射（含 CLI）和 RHI 验收依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS (23/23)`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
