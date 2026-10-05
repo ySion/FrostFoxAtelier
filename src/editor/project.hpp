@@ -1,5 +1,6 @@
 #pragma once
 #include "runtime/runtime.hpp"
+#include "math/math.hpp"
 #include "editor/assets.hpp"
 #include <filesystem>
 #include <unordered_map>
@@ -29,6 +30,8 @@ public:
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
     Result<MeshAsset> mesh(std::string_view);
     Result<std::string> import_mesh(const std::filesystem::path&);
+    Result<std::filesystem::path> cook_collision(std::string_view mesh_key, math::Vector3 scale);
+    Result<std::shared_ptr<const std::string>> collision(std::string_view mesh_key, math::Vector3 scale);
 private:
     std::filesystem::path root_, startup_;
     std::wstring name_;

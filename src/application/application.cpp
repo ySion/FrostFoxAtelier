@@ -133,6 +133,67 @@ Result<void> Application::action(const ui::Action& event) {
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) return {};
     if (workspace_.apply_view(event)) return {};
+    if (event.kind==ui::ActionKind::activate && event.key==physics_root_add)
+        return done(document_->add_component(document_->types().scene_component),L"Scene root added");
+    if (event.kind==ui::ActionKind::activate && event.key==physics_add)
+        return done(document_->add_component(document_->physics_types().body_component),L"Physics body added");
+    if (event.kind==ui::ActionKind::activate && event.key==physics_remove)
+        return done(document_->remove_component(workspace_.physics_component()),L"Physics body removed");
+    const bool physics_choice=event.kind==ui::ActionKind::activate &&
+        ((event.key>=physics_shape_first && event.key<physics_shape_first+4) ||
+         (event.key>=physics_motion_first && event.key<physics_motion_first+3) || event.key==physics_sensor);
+    const bool physics_number=event.key>=physics_friction && event.key<=physics_extent_z;
+    if (physics_choice || physics_number) {
+        if (physics_number && event.kind!=ui::ActionKind::edit_commit) return {};
+        const auto body=workspace_.physics_component();
+        if (body==ObjectId{}) return invalid();
+        auto settings=physics::read_settings(document_->world().runtime(),body);
+        if (!settings) return std::unexpected(settings.error());
+        if (event.key>=physics_shape_first && event.key<physics_shape_first+4) {
+            settings->shape=static_cast<physics::ShapeKind>(event.key-physics_shape_first);
+            if (settings->shape==physics::ShapeKind::triangle_mesh) settings->motion=physics::MotionKind::stationary;
+            else settings->cooked_shape.reset();
+        } else if (event.key>=physics_motion_first && event.key<physics_motion_first+3)
+            settings->motion=static_cast<physics::MotionKind>(event.key-physics_motion_first);
+        else if (event.key==physics_sensor) {
+            const auto* selected=std::get_if<bool>(&event.value);
+            if (!selected) return invalid();
+            settings->sensor=*selected;
+        } else {
+            const auto* value=std::get_if<double>(&event.value);
+            if (!value || !std::isfinite(*value)) return invalid();
+            const auto number=static_cast<float>(*value);
+            switch (event.key) {
+            case physics_friction: settings->material.friction=number; break;
+            case physics_restitution: settings->material.restitution=number; break;
+            case physics_radius: settings->radius=number; break;
+            case physics_capsule_height: settings->capsule_half_height=number; break;
+            case physics_extent_x: settings->half_extents.x=number; break;
+            case physics_extent_y: settings->half_extents.y=number; break;
+            case physics_extent_z: settings->half_extents.z=number; break;
+            default: return invalid();
+            }
+        }
+        if (settings->shape==physics::ShapeKind::triangle_mesh && !settings->cooked_shape) {
+            auto root=world::root_component(document_->world().runtime(),document_->selected());
+            if (!root) return std::unexpected(root.error());
+            if (!*root) return invalid();
+            auto mesh=world::read_static_mesh(document_->world().runtime(),**root);
+            if (!mesh) return std::unexpected(mesh.error());
+            if (!mesh->mesh.resolved) return invalid();
+            if (mesh->mesh.source.starts_with("project/")) {
+                if (!project_) return invalid();
+                auto transform=world::read_transform(document_->world().runtime(),**root);
+                if (!transform) return std::unexpected(transform.error());
+                auto cooked=project_->cook_collision(mesh->mesh.source,transform->scale);
+                if (!cooked) return std::unexpected(cooked.error());
+                auto bytes=project_->collision(mesh->mesh.source,transform->scale);
+                if (!bytes) return std::unexpected(bytes.error());
+                settings->cooked_shape=std::move(*bytes);
+            }
+        }
+        return done(document_->configure_body(body,std::move(*settings)),L"Physics body configured");
+    }
     const auto parameter_event=workspace_.apply_ui(event);
     if (!parameter_event) return std::unexpected(parameter_event.error());
     if (*parameter_event) return {};

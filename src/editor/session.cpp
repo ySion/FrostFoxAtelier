@@ -16,7 +16,7 @@ template<class T> T take(Result<T> result) {
 Session::Session() : types_([&] {
     take(ui_language::register_types(runtime_));
     return take(world::register_types(runtime_));
-}()), world_(runtime_, types_),
+}()), physics_types_(take(physics::register_types(runtime_))), world_(runtime_, types_),
     parameters_{Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
                 Parameter{"Z", "m", types_.position_fields[2]}} {
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);
@@ -134,10 +134,14 @@ Result<world::Commit> Session::add_component(TypeId type) {
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (auto ready = admit_actor_edit(selected_); !ready) return std::unexpected(ready.error());
-    if (type != types_.scene_component && type != types_.static_mesh_component) return invalid("This editor does not expose that component type.");
+    if (type != types_.scene_component && type != types_.static_mesh_component &&
+        type != physics_types_.body_component) return invalid("This editor does not expose that component type.");
     const auto members=world::components(runtime_,selected_);
     if (!members) return std::unexpected(members.error());
     if (members->size()>=maximum_components) return invalid("Editor Component limit reached.");
+    if (type == physics_types_.body_component) for (const auto& member:*members)
+        if (take(runtime_.type_of(member.id())) == type)
+            return invalid("An Actor can have only one physics BodyComponent.");
     auto root = world::create_component(runtime_, type);
     if (!root) return std::unexpected(root.error());
     auto actor_root = world::root_component(runtime_, selected_);
@@ -146,7 +150,9 @@ Result<world::Commit> Session::add_component(TypeId type) {
     change.added = true;
     change.removal.root = std::move(*root);
     change.removal.owner = selected_;
-    const std::array attachments{world::Attachment{change.removal.id(), actor_root->value_or(ObjectId{}), !actor_root->has_value()}};
+    const bool spatial = type != physics_types_.body_component;
+    const std::array attachments{world::Attachment{change.removal.id(),
+        spatial ? actor_root->value_or(ObjectId{}) : ObjectId{}, spatial && !actor_root->has_value()}};
     auto attached = world_.attach_components(selected_, attachments);
     if (!attached) return attached;
     if (attached->changed) remember(std::move(change));
@@ -161,6 +167,21 @@ Result<world::Commit> Session::remove_component(ObjectId component) {
     auto result = std::move(removed->commit);
     if (result.changed) remember(ComponentChange{false, std::move(*removed)});
     return result;
+}
+Result<void> Session::configure_body(ObjectId component, physics::BodySettings settings) {
+    if (auto cancelled=cancel_edit(); !cancelled) return cancelled;
+    auto state=admit_component_edit(component);
+    if (!state) return std::unexpected(state.error());
+    if (state->type != physics_types_.body_component)
+        return invalid("Selected Component is not a physics body.");
+    auto before=physics::read_settings(runtime_,component);
+    if (!before) return std::unexpected(before.error());
+    if (*before==settings) return {};
+    auto held=runtime_.hold(component);
+    if (!held) return std::unexpected(held.error());
+    if (auto changed=physics::configure(runtime_,component,settings); !changed) return changed;
+    remember(BodyChange{std::move(*held),state->owner,std::move(*before),std::move(settings)});
+    return {};
 }
 Result<void> Session::begin_edit(ObjectId component, std::span<const FieldId> path, std::uint64_t control_session) {
     if (active_) return invalid("A field edit is already active.");
@@ -252,6 +273,15 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             if (!written) return std::unexpected(written.error());
             selected_ = item.actor; // Retain the existing document-history selection policy.
             return world::Commit{true, {}};
+        } else if constexpr (std::is_same_v<T, BodyChange>) {
+            auto state=admit_component_edit(item.root.id());
+            if (!state) return std::unexpected(state.error());
+            if (state->owner != item.actor || state->type != physics_types_.body_component)
+                return invalid("The physics body's owning Actor changed.");
+            auto changed=physics::configure(runtime_,item.root.id(),forward?item.after:item.before);
+            if (!changed) return std::unexpected(changed.error());
+            selected_=item.actor;
+            return world::Commit{true,{}};
         } else {
             const bool attach = item.added == forward;
             if (attach) {

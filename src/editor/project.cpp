@@ -1,9 +1,11 @@
 #include "editor/project.hpp"
 #include "editor/json_format.hpp"
+#include "physics/physics.hpp"
 #include <Windows.h>
 #include <objbase.h>
 #include <algorithm>
 #include <charconv>
+#include <bit>
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
@@ -232,5 +234,39 @@ Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
         if (created_target) {std::filesystem::remove(target,cleanup);if (cleanup) message+="; mesh cleanup failed: "+cleanup.message();}
         return failure(std::move(message));
     }
+}
+namespace {
+std::filesystem::path collision_path(std::string_view key, math::Vector3 scale) {
+    // The key is a validated project GUID; float bits keep distinct import scales apart.
+    std::ostringstream name;
+    name << "Cache/Physics/" << key.substr(8) << '-' << std::hex
+        << std::bit_cast<std::uint32_t>(scale.x) << '-'
+        << std::bit_cast<std::uint32_t>(scale.y) << '-'
+        << std::bit_cast<std::uint32_t>(scale.z) << ".jolt-shape";
+    return name.str();
+}
+}
+Result<std::filesystem::path> Project::cook_collision(std::string_view key, math::Vector3 scale) {
+    if (!key.starts_with("project/")) return failure("Collision Cook requires a project mesh identity.");
+    auto asset = mesh(key);
+    if (!asset) return std::unexpected(asset.error());
+    auto cooked = physics::cook_triangle_mesh(asset->mesh, scale, key);
+    if (!cooked) return std::unexpected(cooked.error());
+    auto path = resolve(collision_path(key, scale));
+    if (!path) return std::unexpected(path.error());
+    if (auto written = write_file(*path, *cooked); !written) return std::unexpected(written.error());
+    return *path;
+}
+Result<std::shared_ptr<const std::string>> Project::collision(std::string_view key, math::Vector3 scale) {
+    if (!key.starts_with("project/")) return failure("Collision asset requires a project mesh identity.");
+    auto asset = mesh(key);
+    if (!asset) return std::unexpected(asset.error());
+    auto path = resolve(collision_path(key, scale));
+    if (!path) return std::unexpected(path.error());
+    auto bytes = read_file(*path, 128ull * 1024 * 1024 + 8192);
+    if (!bytes) return std::unexpected(bytes.error());
+    auto valid = physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, key);
+    if (!valid) return std::unexpected(valid.error());
+    return std::make_shared<const std::string>(std::move(*bytes));
 }
 }

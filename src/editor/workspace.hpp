@@ -35,6 +35,11 @@ constexpr int navigation_direction(ui::ControlKey key) {
 }
 inline constexpr ui::ControlKey parameter_search = 54;
 inline constexpr ui::ControlKey parameter_transform=81, parameter_components=82, parameter_pages=83, parameter_list=84;
+inline constexpr ui::ControlKey physics_add=800, physics_remove=801, physics_panel=802,
+    physics_shape=803, physics_motion=804, physics_sensor=805,
+    physics_friction=806, physics_restitution=807, physics_radius=808,
+    physics_capsule_height=809, physics_extent_x=810, physics_extent_y=811,
+    physics_extent_z=812, physics_root_add=813, physics_shape_first=820, physics_motion_first=824;
 inline constexpr ui::ControlKey empty_field_base = 200;
 inline constexpr ui::ControlKey parameter_menu=500, menu_group_reset=501, menu_reset=502, menu_copy=503, menu_paste=504;
 inline constexpr auto file_menu=menu_key(CommandGroup::file), edit_menu=menu_key(CommandGroup::edit),
@@ -104,6 +109,7 @@ struct Workspace {
     ui::ControlKey field_control(ObjectId, std::span<const FieldId>) const noexcept;
     ui::ControlKey reset_control(ObjectId) const noexcept;
     ui::ControlKey name_control(ObjectId) const noexcept;
+    ObjectId physics_component() const noexcept { return physics_component_; }
 private:
     std::unique_ptr<ui_language::LiveDocument> ui_document_;
     std::filesystem::path ui_source_;
@@ -114,6 +120,7 @@ private:
     std::size_t navigation_cursor_{};
     std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.
     std::uint64_t tree_frame_{}; // Consume each accepted snapshot once, including across hidden frames.
+    ObjectId physics_component_{};
     ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
 };
 }

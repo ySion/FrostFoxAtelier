@@ -23,7 +23,7 @@ void Workspace::reset_document() {
     ui_document_.reset();
     bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;
     navigation_={ObjectId{}}; navigation_cursor_=0; query.clear(); tree_query.clear();
-    menu.reset(); assets.reset(project_open);
+    menu.reset(); assets.reset(project_open); physics_component_={};
 }
 Result<bool> Workspace::apply_ui(const ui::Action& action) {
     return ui_document_?ui_document_->event(action):Result<bool>{false};
@@ -197,6 +197,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     const auto actor_status = selected == ObjectId{} ? world::ActorStatus{} : take(world::inspect_actor(runtime, selected));
     const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_component(runtime, selected));
+    physics_component_={};
+    if (selected!=ObjectId{}) for (const auto& component:take(world::components(runtime,selected)))
+        if (take(runtime.type_of(component.id()))==session.physics_types().body_component)
+            physics_component_=component.id();
     auto root = NodeInput::column(); root.width = root.height = Axis::expand();
     add(1, 0, ControlKind::container, root);
     auto menu_body=NodeInput::row(); menu_body.padding={0,1,0,1};
@@ -304,6 +308,39 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     const std::array<ui_language::InputValue,1> component_inputs{ui_language::ItemList{std::move(components)}};
     static_cast<void>(ui_document_->append("Components",56,{},component_inputs,result));
+    auto physics_layout=NodeInput::column(6); physics_layout.padding={8,8,8,8};
+    physics_layout.collapsed=parameter_page!=control::parameter_components || selected==ObjectId{};
+    add(control::physics_panel,control::parameter_list,ControlKind::container,physics_layout).classes={"parameter-inset"};
+    auto full=[](float height) { auto box=NodeInput::box(0,height); box.width=Axis::expand(); return box; };
+    if (!transform)
+        add(control::physics_root_add,control::physics_panel,ControlKind::button,full(26),L"Add scene root");
+    if (physics_component_==ObjectId{}) {
+        add(control::physics_add,control::physics_panel,ControlKind::button,full(26),L"Add physics body").enabled=transform.has_value();
+    } else {
+        const auto settings=take(physics::read_settings(runtime,physics_component_));
+        add(control::physics_remove,control::physics_panel,ControlKind::button,full(26),L"Remove physics body");
+        constexpr std::array shapes{L"Box",L"Sphere",L"Triangle mesh",L"Capsule"};
+        constexpr std::array motions{L"Static",L"Kinematic",L"Dynamic"};
+        add(control::physics_shape,control::physics_panel,ControlKind::combo,full(26),
+            shapes[static_cast<unsigned>(settings.shape)]);
+        add(control::physics_motion,control::physics_panel,ControlKind::combo,full(26),
+            motions[static_cast<unsigned>(settings.motion)]);
+        add(control::physics_sensor,control::physics_panel,ControlKind::checkbox,full(26),L"Trigger sensor").selected=settings.sensor;
+        const auto number=[&](ui::ControlKey key,std::wstring label,double value,double minimum,double maximum) {
+            auto& field=add(key,control::physics_panel,ControlKind::number,full(26),std::move(label));
+            field.value=value; field.minimum=minimum; field.maximum=maximum; field.drag_step=.01;
+        };
+        if (settings.shape==physics::ShapeKind::box) {
+            number(control::physics_extent_x,L"Half width (m)",settings.half_extents.x,.001,10000);
+            number(control::physics_extent_y,L"Half height (m)",settings.half_extents.y,.001,10000);
+            number(control::physics_extent_z,L"Half depth (m)",settings.half_extents.z,.001,10000);
+        } else if (settings.shape==physics::ShapeKind::sphere || settings.shape==physics::ShapeKind::capsule)
+            number(control::physics_radius,L"Radius (m)",settings.radius,.001,10000);
+        if (settings.shape==physics::ShapeKind::capsule)
+            number(control::physics_capsule_height,L"Capsule half height (m)",settings.capsule_half_height,.001,10000);
+        number(control::physics_friction,L"Friction",settings.material.friction,0,10);
+        number(control::physics_restitution,L"Restitution",settings.material.restitution,0,1);
+    }
     auto page=NodeInput::column(7); page.collapsed=parameter_page!=control::parameter_transform;
     add(85,control::parameter_list,ControlKind::container,page);
     auto folded = query;
@@ -385,6 +422,27 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 items.push_back({control::guide_background,L"Gradient Background",true,view.background==renderer::Background::gradient,{}});
                 items.push_back({control::guide_grid,L"Reference Grid",true,view.reference_grid,{}});
                 items.push_back({control::guide_axes,L"Origin Axes",true,view.origin_axes,{}});
+            } else if (source->key==control::physics_shape) {
+                constexpr std::array shapes{L"Box",L"Sphere",L"Triangle mesh",L"Capsule"};
+                const auto current=take(physics::read_settings(runtime,physics_component_)).shape;
+                const auto root=take(world::root_component(runtime,selected));
+                bool has_mesh=false;
+                if (root) {
+                    const auto type=take(runtime.type_of(*root));
+                    if (type==session.types().static_mesh_component)
+                        has_mesh=bool(take(world::read_static_mesh(runtime,*root)).mesh.resolved);
+                }
+                for (std::size_t i=0;i<shapes.size();++i)
+                    items.push_back({control::physics_shape_first+i,shapes[i],
+                        i!=static_cast<unsigned>(physics::ShapeKind::triangle_mesh) || has_mesh,
+                        static_cast<unsigned>(current)==i,{}});
+            } else if (source->key==control::physics_motion) {
+                constexpr std::array motions{L"Static",L"Kinematic",L"Dynamic"};
+                const auto settings=take(physics::read_settings(runtime,physics_component_));
+                for (std::size_t i=0;i<motions.size();++i)
+                    items.push_back({control::physics_motion_first+i,motions[i],
+                        i==0 || settings.shape!=physics::ShapeKind::triangle_mesh,
+                        static_cast<unsigned>(settings.motion)==i,{}});
             } else if (!items.empty()) {}
             else if (source->kind==ControlKind::combo && source->key==workbench_control::mode) {
                 for (std::size_t i=0;i<ControlWorkbench::mode_names.size();++i)

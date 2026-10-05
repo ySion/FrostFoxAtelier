@@ -11,7 +11,7 @@
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
 | 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、同模块函数、enum/struct 声明与值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
-| Jolt 物理依赖 | 固定上游源码、静态库目标；独立刚体落地验收，尚未接入 World/编辑器 | [接入与更新](#jolt-物理依赖) |
+| Jolt 物理 | 固定上游源码、World 刚体/查询/触发、Cook 资产、编辑器 Body 配置与角色/布娃娃/车辆场景 API | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | Flex/Grid、虚拟列表、Unicode 编辑、参数行、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Actor/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -116,7 +116,7 @@ git submodule update --init --recursive third_party/jolt
 git submodule status third_party/jolt
 ```
 
-当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 提供同一 Runtime 类型体系中的 `BodyComponent`、World 根 Transform 同步与接触事件；静态网格三角形、普通 Actor 盒/球碰撞、动态刚体、重力、力和冲量已接通。创建、步进和生命周期契约见[物理模块](docs/modules/physics/README.md)。编辑器操作和专用服务器程序尚未接入。
+当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃/车辆基础场景 API；编辑器可配置 Body 属性。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
 
 按上方准备工具链并配置后，独立无窗口验收为：
 
@@ -125,7 +125,7 @@ cmake --build --preset dev --target physics_acceptance
 cmake --build --preset release --target physics_acceptance
 ```
 
-该验收也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查网格地面、普通 Actor 刚体、重力、力、冲量、接触身份与退出清理；成功输出 `Physics acceptance: PASS (Jolt, World mesh/Actor bodies, gravity, force, impulse, contact, cleanup)`。检查不依赖 `assert`，发布配置同样有效。
+该验收也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查刚体、触发与查询、Cook 资产、角色/约束/布娃娃/车辆及退出清理；成功输出 `Physics acceptance: PASS`。检查不依赖 `assert`，发布配置同样有效。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 

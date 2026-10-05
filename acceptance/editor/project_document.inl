@@ -50,6 +50,17 @@ void verify_project_document() {
     take(editor::write_file(external,"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
     const auto resource=take(project.import_mesh(external));
     const auto original_mesh=take(project.mesh(resource)).mesh;
+    const math::Vector3 collision_scale{2,3,4};
+    const auto collision_file=take(project.cook_collision(resource,collision_scale));
+    const auto collision_bytes=take(project.collision(resource,collision_scale));
+    require(fs::is_regular_file(collision_file) && !collision_bytes->empty(),
+        "Imported mesh collision was not cooked into the project cache.");
+    take(editor::write_file(collision_file,"broken"));
+    require(!project.collision(resource,collision_scale),"Corrupt collision cache was accepted.");
+    take(project.cook_collision(resource,collision_scale));
+    require(*take(project.collision(resource,collision_scale))==*collision_bytes,
+        "Re-cooking did not restore the project collision asset.");
+    require(!project.collision(resource,{1,1,1}),"Collision cache accepted a different scale.");
     const auto revision=project.revision();
     take(project.refresh());take(project.refresh());
     require(project.revision()==revision && take(project.mesh(resource)).mesh==original_mesh,
@@ -71,6 +82,61 @@ void verify_project_document() {
     changed(document.undo());require(!document.dirty(),"Undo to the saved history position remained dirty.");
     auto loaded=take(editor::Session::deserialize(saved,project));
     require(take(loaded->serialize())==saved,"Scene roundtrip lost identity relations, names, transforms or null meshes.");
+    {
+        editor::Session built_in;
+        changed(built_in.create_static_mesh(take(project.mesh("builtin/sphere"))));
+        const auto built_in_actor=built_in.selected();
+        changed(built_in.add_component(built_in.physics_types().body_component));
+        const auto body=component(built_in,built_in_actor,built_in.physics_types().body_component);
+        physics::BodySettings settings;
+        settings.shape=physics::ShapeKind::triangle_mesh;
+        take(built_in.configure_body(body,settings));
+        auto reopened=take(editor::Session::deserialize(take(built_in.serialize()),project));
+        const auto restored_body=component(*reopened,take(reopened->world().members()).front().id(),
+            reopened->physics_types().body_component);
+        const auto restored_settings=take(physics::read_settings(reopened->world().runtime(),restored_body));
+        require(restored_settings.shape==physics::ShapeKind::triangle_mesh && !restored_settings.cooked_shape,
+            "Built-in triangle collision required a project Cook cache after reopening.");
+        auto& simulation=const_cast<world::World&>(reopened->world());
+        auto physics_scene=take(physics::PhysicsScene::create(simulation,reopened->physics_types()));
+        changed(simulation.start());
+        take(physics_scene->update(1.f/60.f));
+        require(physics_scene->body_count()==1,"Reopened built-in triangle collision did not create a body.");
+        changed(simulation.stop());
+    }
+    {
+        editor::Session physical;
+        changed(physical.create_static_mesh(take(project.mesh(resource))));
+        const auto physical_actor=physical.selected();
+        const auto physical_root=component(physical,physical_actor,physical.types().static_mesh_component);
+        take(const_cast<world::World&>(physical.world()).set_transform(physical_root,
+            {{0,0,0},{0,0,0,1},collision_scale}));
+        changed(physical.add_component(physical.physics_types().body_component));
+        const auto body=component(physical,physical_actor,physical.physics_types().body_component);
+        physics::BodySettings settings;
+        settings.shape=physics::ShapeKind::triangle_mesh;
+        settings.material.friction=.65f;
+        take(physical.configure_body(body,settings));
+        changed(physical.undo());
+        require(take(physics::read_settings(physical.world().runtime(),body)).shape==physics::ShapeKind::box,
+            "Physics configuration undo did not restore the previous body.");
+        changed(physical.redo());
+        const auto physical_scene=take(physical.serialize());
+        auto restored_physics=take(editor::Session::deserialize(physical_scene,project));
+        require(take(restored_physics->serialize())==physical_scene,
+            "Physics body settings changed across scene save and reopen.");
+        auto& simulation=const_cast<world::World&>(restored_physics->world());
+        auto physics_scene=take(physics::PhysicsScene::create(simulation,restored_physics->physics_types()));
+        changed(simulation.start());
+        take(physics_scene->update(1.f/60.f));
+        require(physics_scene->body_count()==1,"Reopened collision asset did not create a World body.");
+        changed(simulation.stop());
+        physics_scene.reset();
+        take(editor::write_file(collision_file,"invalid"));
+        require(!editor::Session::deserialize(physical_scene,project),
+            "Scene accepted a corrupt cooked collision asset.");
+        take(project.cook_collision(resource,collision_scale));
+    }
     require(!editor::Session::deserialize("{\"version\":999,\"actors\":[]}",project),"Unknown scene version was accepted.");
     require(!editor::Session::deserialize("{broken",project),"Broken scene was accepted.");
     const auto serialized=nlohmann::json::parse(saved);
@@ -145,9 +211,16 @@ void verify_project_document() {
     const auto updated_mesh=take(project.mesh(resource)).mesh;
     require(updated_mesh!=original_mesh && updated_mesh->vertices()[1].position[0]==4 && original_mesh->vertices()[1].position[0]==1,
         "Changed mesh did not create a new resource version while preserving old live geometry.");
-    fs::remove(folder/"Cache"); // Empty, rebuildable directory only.
+    require(!project.collision(resource,collision_scale),"Collision cache accepted changed source geometry.");
+    take(project.cook_collision(resource,collision_scale));
+    require(*take(project.collision(resource,collision_scale))!=*collision_bytes,
+        "Changed geometry produced the old cooked shape.");
+    fs::remove_all(folder/"Cache"); // Rebuildable data cannot be required to open the project.
     const auto moved=evidence/L"搬移后";fs::rename(folder,moved);
     auto reopened=take(editor::Project::open(moved));
+    require(!reopened.collision(resource,collision_scale),"Removed collision cache was silently reused.");
+    take(reopened.cook_collision(resource,collision_scale));
+    require(bool(reopened.collision(resource,collision_scale)),"Reopened project could not rebuild collision cache.");
     auto restored=take(editor::Session::deserialize(take(editor::read_file(take(reopened.resolve(reopened.startup_scene())))),reopened));
     require(take(restored->serialize())==saved,"Moving a project or removing Cache broke the scene.");
     fs::rename(moved/"Content/Meshes/Renamed.obj",moved/"Content/Meshes/Renamed.missing");

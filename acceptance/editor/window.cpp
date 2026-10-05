@@ -871,6 +871,28 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     click(app,control::redo);
     require(contains(app,mesh_actor) && component(app,mesh_actor,app.document().types().static_mesh_component)==mesh_component,
         "Redo changed the created Actor/component identity.");
+    click(app,control::parameter_components);
+    click(app,control::physics_add);
+    const auto physics_body=component(app,mesh_actor,app.document().physics_types().body_component);
+    click(app,control::physics_shape);
+    click(app,control::physics_shape_first+2);
+    const auto triangle= model(atelier::physics::read_settings(app.document().world().runtime(),physics_body));
+    require(triangle.shape==atelier::physics::ShapeKind::triangle_mesh && !triangle.cooked_shape,
+        "Built-in mesh did not select uncooked triangle collision.");
+    click(app,control::physics_shape);
+    click(app,control::physics_shape_first+1);
+    require(model(atelier::physics::read_settings(app.document().world().runtime(),physics_body)).shape==
+        atelier::physics::ShapeKind::sphere,"Physics shape menu did not configure the World body.");
+    click(app,control::physics_sensor);
+    require(model(atelier::physics::read_settings(app.document().world().runtime(),physics_body)).sensor,
+        "Physics sensor checkbox did not update the body.");
+    click(app,control::undo);
+    require(!model(atelier::physics::read_settings(app.document().world().runtime(),physics_body)).sensor,
+        "Undo did not restore the physics sensor setting.");
+    capture(app,output/"physics-components.png");
+    click(app,control::physics_remove);
+    require(model(atelier::world::components(app.document().world().runtime(),mesh_actor)).size()==1,
+        "Physics body removal left a component attached.");
     const auto object = actors(app).front().id();
     click(app,control::parameter_transform);
     click(app, app.object_control(object));
