@@ -118,7 +118,7 @@ git submodule update --init --recursive third_party/jolt
 git submodule status third_party/jolt
 ```
 
-当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。这是依赖接入增量，尚未提供 World/Actor 物理组件、Transform 同步、编辑器操作或专用服务器程序。
+当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 提供同一 Runtime 类型体系中的 `BodyComponent`、World 根 Transform 同步与接触事件；静态网格三角形、普通 Actor 盒/球碰撞、动态刚体、重力、力和冲量已接通。创建、步进和生命周期契约见[物理模块](docs/modules/physics/README.md)。编辑器操作和专用服务器程序尚未接入。
 
 按上方准备工具链并配置后，独立无窗口验收为：
 
@@ -127,7 +127,7 @@ cmake --build --preset dev --target physics_acceptance
 cmake --build --preset release --target physics_acceptance
 ```
 
-该验收也包含在总 `acceptance` 中，使用真实 Jolt 单线程模拟检查动态球体受重力下落、与静态地面碰撞、休眠及刚体清理；成功输出 `Physics acceptance: PASS (gravity, collision, sleep, cleanup)`。检查不依赖 `assert`，发布配置同样有效。
+该验收也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查网格地面、普通 Actor 刚体、重力、力、冲量、接触身份与退出清理；成功输出 `Physics acceptance: PASS (Jolt, World mesh/Actor bodies, gravity, force, impulse, contact, cleanup)`。检查不依赖 `assert`，发布配置同样有效。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 

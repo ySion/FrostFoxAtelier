@@ -112,19 +112,29 @@ void World::Impl::cancel_tasks(ObjectId target, bool actor) noexcept {
 }
 void World::Impl::halt() noexcept { running = false; updates.clear(); cancel_tasks(); }
 std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
-    if (!observer) return {};
+    if (!observer && subscriptions.empty()) return {};
     auto scope = ExecutionScope::enter(runtime);
     if (!scope) return scope.error();
     detail::DispatchScope dispatch{dispatch_depth};
-    try {
-        auto result = observer(world, event, object);
-        if (!result) return result.error();
-    } catch (const std::exception& exception) {
-        return Error{ErrorCode::invocation_failed, exception.what()};
-    } catch (...) {
-        return Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
+    std::optional<Error> failure;
+    const auto invoke = [&](const LifecycleObserver& callback) {
+        if (!callback) return;
+        try {
+            auto result = callback(world, event, object);
+            if (!result && !failure) failure = result.error();
+        } catch (const std::exception& exception) {
+            if (!failure) failure = Error{ErrorCode::invocation_failed, exception.what()};
+        } catch (...) {
+            if (!failure) failure = Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
+        }
+    };
+    invoke(observer);
+    for (const auto& entry : subscriptions) {
+        // A callback may unsubscribe itself; this reference keeps it alive until it returns.
+        const auto callback = entry.observer;
+        if (callback) invoke(*callback);
     }
-    return {};
+    return failure;
 }
 std::optional<Error> World::Impl::notify_group(Lifecycle event, ObjectId actor, std::span<const ObjectRoot> group) {
     std::optional<Error> failure;
@@ -471,6 +481,25 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
     if (!canonical) return std::unexpected(canonical.error());
     return runtime().with_native<SceneComponent>(object, [&](SceneComponent& transform) -> Result<void> {
         transform.position = canonical->position; transform.rotation = canonical->rotation; transform.scale = canonical->scale;
+        return {};
+    });
+}
+Result<void> World::apply_simulation_transform(ObjectId object, math::Vector3 position,
+    math::Quaternion rotation) {
+    if (auto ready = impl_->admit(); !ready) return std::unexpected(ready.error());
+    if (!impl_->running) return error(ErrorCode::busy, "Simulation writes require a running World.");
+    auto owner = impl_->component_owner(object);
+    if (!owner) return std::unexpected(owner.error());
+    auto root = root_component(runtime(), *owner);
+    if (!root) return std::unexpected(root.error());
+    if (!*root || **root != object) return error(ErrorCode::invalid_member, "Simulation writes require the Actor root.");
+    auto current = read_transform(runtime(), object);
+    if (!current) return std::unexpected(current.error());
+    auto canonical = canonical_transform({position, rotation, current->scale});
+    if (!canonical) return std::unexpected(canonical.error());
+    return runtime().with_native<SceneComponent>(object, [&](SceneComponent& transform) -> Result<void> {
+        transform.position = canonical->position;
+        transform.rotation = canonical->rotation;
         return {};
     });
 }

@@ -223,6 +223,26 @@ Result<void> World::observe_lifecycle(LifecycleObserver observer) {
     impl_->observer = std::move(observer);
     return {};
 }
+Result<std::uint64_t> World::subscribe_lifecycle(LifecycleObserver observer) {
+    if (auto ready = impl_->admit(); !ready) return std::unexpected(ready.error());
+    if (!observer) return error(ErrorCode::argument_mismatch, "Lifecycle subscription is empty.");
+    if (impl_->next_subscription == std::numeric_limits<std::uint64_t>::max())
+        return error(ErrorCode::capacity_exceeded, "Lifecycle subscription identity space is exhausted.");
+    std::erase_if(impl_->subscriptions, [](const Impl::Subscription& entry) { return !entry.observer; });
+    const auto id = impl_->next_subscription++;
+    impl_->subscriptions.push_back({id, std::make_shared<LifecycleObserver>(std::move(observer))});
+    return id;
+}
+void World::unsubscribe_lifecycle(std::uint64_t id) noexcept {
+    if (impl_->dispatch_depth) {
+        for (auto& entry : impl_->subscriptions) {
+            if (entry.id != id) continue;
+            entry.observer.reset();
+            return;
+        }
+    }
+    std::erase_if(impl_->subscriptions, [id](const Impl::Subscription& entry) { return entry.id == id; });
+}
 Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return ready;

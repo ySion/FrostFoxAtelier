@@ -287,6 +287,10 @@ public:
     [[nodiscard]] Result<Scalar> read(ObjectId component, std::span<const FieldId>) const;
     [[nodiscard]] Result<void> write(ObjectId component, std::span<const FieldId>, Scalar);
     [[nodiscard]] Result<void> set_transform(ObjectId scene_component, Trs);
+    // A host-driven simulation may write an attached Actor's root between
+    // dispatch phases. Scale stays authored; ordinary editing remains stopped-only.
+    [[nodiscard]] Result<void> apply_simulation_transform(ObjectId root, math::Vector3 position,
+        math::Quaternion rotation);
     // Root remains explicit. Non-root nodes must stay below that same Actor root.
     // Removing a node with children is rejected; reparent its children first.
     [[nodiscard]] Result<Commit> reparent(ObjectId scene_component, ObjectId parent, ReparentRule);
@@ -297,6 +301,10 @@ public:
     // Native method and source/JIT adapters run outside every native borrow.
     [[nodiscard]] Result<void> bind_behavior(TypeId actor_or_component_type, Behavior);
     [[nodiscard]] Result<void> observe_lifecycle(LifecycleObserver);
+    // Unsubscribing during dispatch immediately prevents later calls, including
+    // calls still pending in the current notification.
+    [[nodiscard]] Result<std::uint64_t> subscribe_lifecycle(LifecycleObserver);
+    void unsubscribe_lifecycle(std::uint64_t) noexcept;
     [[nodiscard]] Result<void> update(float amount);
     // The trusted starter uses the provided Runtime/receiver. World owns the
     // resulting task; deactivate/detach/stop/close cancels it before exit completes.
