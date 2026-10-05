@@ -16,6 +16,7 @@ void verify_project_workspace(editor::Project& project) {
         const auto controls=workspace.describe(document,{extent.width/scale,extent.height/scale},surface.presented().get(),&project);
         auto described=surface.set_controls(controls);
         if (!described) throw std::runtime_error("Project UI invalid control "+std::to_string(described.error().key));
+        workspace.commit_ui_controls();
         auto frame=surface.prepare();
         if (!frame) throw std::runtime_error("Project UI layout failure "+std::to_string(frame.error().key)+" at "+std::to_string(extent.width)+"x"+std::to_string(extent.height)+" scale "+std::to_string(scale));
         require(surface.accept(*frame),"Project UI rejected the current prepared frame.");

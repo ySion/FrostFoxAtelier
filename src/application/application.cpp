@@ -133,7 +133,7 @@ Result<void> Application::action(const ui::Action& event) {
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) return {};
     if (workspace_.apply_view(event)) return {};
-    const auto parameter_event=workspace_.apply_parameter(event);
+    const auto parameter_event=workspace_.apply_ui(event);
     if (!parameter_event) return std::unexpected(parameter_event.error());
     if (*parameter_event) return {};
     if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
@@ -600,8 +600,13 @@ bool Application::step(renderer::Capture* capture) {
     effects(*updated);
     auto controls = workspace_.describe(*document_,{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale},ui_.presented().get(),project_?&*project_:nullptr);
     auto described = ui_.set_controls(controls);
+    if (!described && workspace_.reject_ui_controls("UI candidate rejected at control "+std::to_string(described.error().key))) {
+        controls=workspace_.describe(*document_,{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale},ui_.presented().get(),project_?&*project_:nullptr);
+        described=ui_.set_controls(controls);
+    }
     if (!described) throw std::runtime_error("UI rejected editor controls (key " + std::to_string(described.error().key) + ").");
     effects(*described);
+    workspace_.commit_ui_controls();
     auto gc = document_->collect_step();
     if (!gc) throw std::runtime_error(gc.error().message);
     if (!target.drawable) { MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }

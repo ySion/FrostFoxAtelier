@@ -1,0 +1,104 @@
+ui Position(in bool has_root, in bool matches, in EditBinding position, in TextEditBinding filter) {
+    state bool expanded = true;
+
+    Column search {
+        classes: "parameter-inset";
+        QueryRow query { edit: input.filter; label_width: 48; gap: 8; caption: true; }
+    }
+
+    Text no_root {
+        text: "No scene root!!!";
+        height: 26;
+        collapsed: input.has_root || !input.matches;
+    }
+    Text no_matches {
+        text: "No matching parameters";
+        height: 26;
+        collapsed: input.matches;
+    }
+    Foldout section {
+        text: "Scene root content";
+        classes: "section";
+        selected: state.expanded;
+        collapsed: !input.matches;
+        on activate { state.expanded = event.checked; }
+    }
+    Column contents {
+        gap: 7;
+        classes: "parameter-inset";
+        collapsed: !state.expanded || !input.matches;
+        NumberRow position {
+            text: "Position (m)";
+            edit: input.position;
+        }
+    }
+    Text drag_hint {
+        text: "Middle drag: value ladder · Shift: fine steps";
+        caption: true;
+        padding_left: 8;
+    }
+    Text menu_hint {
+        text: "Right click: parameter menu · Ctrl + middle: defaults";
+        caption: true;
+        padding_left: 8;
+    }
+}
+
+ui QueryRow(in TextEditBinding edit, in double label_width, in double gap, in bool caption) {
+    Row row {
+        single_line: true;
+        align_center: true;
+        gap: input.gap;
+        Text label {
+            text: "Filter";
+            width: input.label_width;
+            single_line: true;
+            caption: input.caption;
+            classes: "field-label";
+        }
+        TextField field { edit: input.edit; }
+    }
+}
+
+ui ComponentRow(in Text title, in double icon) {
+    Text row { text: input.title; icon: input.icon; single_line: true; }
+}
+
+ui Components(in Items<ComponentRow> rows) {
+    Repeat items { items: input.rows; }
+}
+
+ui ActorRow(in Text title, in bool enabled, in bool selected, in double icon,
+            in Key parent, in bool expanded, in Text style) {
+    TreeItem row {
+        text: input.title;
+        enabled: input.enabled;
+        selected: input.selected;
+        icon: input.icon;
+        tree_parent: input.parent;
+        initially_expanded: input.expanded;
+        classes: input.style;
+    }
+}
+
+ui SceneTree(in Items<ActorRow> actors, in TextEditBinding filter,
+             in bool world_selected, in bool world_expanded, in double world_icon) {
+    Tree tree {
+        expand_height: true;
+        filter: input.filter;
+        TreeItem world {
+            text: "World";
+            icon: input.world_icon;
+            selected: input.world_selected;
+            initially_expanded: input.world_expanded;
+        }
+        Repeat rows { items: input.actors; }
+    }
+    Column filter_area {
+        padding_left: 4;
+        padding_top: 2;
+        padding_right: 3;
+        padding_bottom: 2;
+        QueryRow query { edit: input.filter; label_width: 36; gap: 6; caption: false; }
+    }
+}

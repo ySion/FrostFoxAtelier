@@ -5,7 +5,7 @@
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
 模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
-UI 作者层正在迁移到[引擎原生声明式 UI](declarative-ui-proposal.md)：真实 Position 区由 `position.ui.source` 定义，经现有 Source/JIT 创建持久实例并更新绑定，样式和字段编辑继续使用 SS 与原编辑事务。其余工作区面板仍使用现有 C++ 描述；当前实现与验收边界见该文档。
+UI 作者层已将 Parameters 的查询、Position、组件列表和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui-proposal.md)。
 
 ## 工程与文件
 

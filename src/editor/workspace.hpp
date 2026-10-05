@@ -7,7 +7,7 @@
 #include "ui/session.hpp"
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
-#include "ui_language/component.hpp"
+#include "ui_language/live_document.hpp"
 
 namespace atelier::editor {
 namespace control {
@@ -59,6 +59,10 @@ struct Workspace {
         Kind kind{};
     };
     Workspace();
+    Workspace(const Workspace&)=delete;
+    Workspace& operator=(const Workspace&)=delete;
+    Workspace(Workspace&&)=delete; // Live scopes borrow this workspace's key authority.
+    Workspace& operator=(Workspace&&)=delete;
     ui::DockSpace dock;
     void reset_layout();
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
@@ -68,11 +72,18 @@ struct Workspace {
     Result<void> select_tree(Session&,ui::ControlKey);
     bool command_enabled(Command,const Session&) const;
     bool apply_view(const ui::Action&);
-    Result<bool> apply_parameter(const ui::Action&);
-    std::string_view parameter_error() const noexcept { return parameter_error_; }
-    std::optional<ui_language::Statistics> parameter_statistics() const noexcept {
-        return parameter_instance_?std::optional{parameter_instance_->statistics()}:std::nullopt;
+    Result<bool> apply_ui(const ui::Action&);
+    std::string_view ui_error() const noexcept {return ui_document_?ui_document_->diagnostic():std::string_view{};}
+    std::optional<ui_language::Statistics> ui_statistics(std::string_view component) const noexcept {
+        return ui_document_?ui_document_->statistics(component):std::nullopt;
     }
+    void commit_ui_controls();
+    bool reject_ui_controls(std::string message);
+    // Choose an authoring file before this document's first projection.
+    void set_ui_source(std::filesystem::path);
+    std::filesystem::path ui_source() const;
+    std::uint64_t ui_revision() const noexcept {return ui_document_?ui_document_->revision():0;}
+    double ui_compile_milliseconds() const noexcept {return ui_document_?ui_document_->compile_milliseconds():0;}
     renderer::ViewSettings view{.shading=renderer::Shading::matcap,
         .background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true};
     ui::ControlKey shelf_page{control::shelf_create};
@@ -94,10 +105,8 @@ struct Workspace {
     ui::ControlKey reset_control(ObjectId) const noexcept;
     ui::ControlKey name_control(ObjectId) const noexcept;
 private:
-    std::shared_ptr<ui_language::Component> parameter_component_;
-    std::unique_ptr<ui_language::Instance> parameter_instance_;
-    std::string parameter_error_;
-    ui::ControlKey parameter_error_key_{};
+    std::unique_ptr<ui_language::LiveDocument> ui_document_;
+    std::filesystem::path ui_source_;
     std::vector<Binding> bindings_;
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};

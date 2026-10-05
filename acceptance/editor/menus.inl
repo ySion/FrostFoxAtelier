@@ -32,14 +32,24 @@ void verify_about(Application& app,std::wstring_view expected_project) {
         };
         title=text(lookup.found);
         for (auto child=GetWindow(lookup.found,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) content+=text(child);
-        PostMessageW(lookup.found,WM_COMMAND,IDOK,0);
+        // Close the native dialog through its lifecycle message. A synthesized
+        // WM_COMMAND/IDOK is not a portable substitute for a button notification.
+        const auto deadline=GetTickCount64()+5000;
+        while (!stop.stop_requested() && IsWindow(lookup.found) && GetTickCount64()<deadline) {
+            DWORD_PTR ignored{};
+            SendMessageTimeoutW(lookup.found,WM_CLOSE,0,0,SMTO_ABORTIFHUNG,500,&ignored);
+            Sleep(10);
+        }
     });
     click(app,static_cast<ControlKey>(atelier::editor::Command::about));
     dismiss.request_stop();dismiss.join();tick(app);
-    require(lookup.found && title==L"About FrostFox Atelier" &&
+    const bool valid=lookup.found && !IsWindow(lookup.found) && title==L"About FrostFox Atelier" &&
         content.contains(atelier::editor::wide(atelier::build_info::revision)) &&
-        content.contains(atelier::editor::wide(atelier::build_info::configuration)) && content.contains(expected_project),
-        "About did not show this binary's build identity and current project.");
+        content.contains(atelier::editor::wide(atelier::build_info::configuration)) && content.contains(expected_project);
+    if (!valid) std::fprintf(stderr,"About verification: found=%d closed=%d title=%d revision=%d configuration=%d project=%d\n",
+        lookup.found!=nullptr,!IsWindow(lookup.found),title==L"About FrostFox Atelier",
+        content.contains(atelier::editor::wide(atelier::build_info::revision)),content.contains(atelier::editor::wide(atelier::build_info::configuration)),content.contains(expected_project));
+    require(valid,"About did not show this binary's build identity and current project.");
     require(!app.menu_window() && app.document().undo_count()==history,"About changed document history or retained its menu.");
 }
 
