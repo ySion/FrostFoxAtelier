@@ -11,6 +11,7 @@
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
 | 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、同模块函数、enum/struct 声明与值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
+| Jolt 物理依赖 | 固定上游源码、静态库目标；独立刚体落地验收，尚未接入 World/编辑器 | [接入与更新](#jolt-物理依赖) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | Flex/Grid、虚拟列表、Unicode 编辑、参数行、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Actor/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -22,6 +23,7 @@
 在仓库根目录的 PowerShell 中执行唯一产品入口：
 
 ```powershell
+git submodule update --init --recursive
 . ./tools/enter-dev.ps1
 cmake --preset dev
 cmake --build --preset dev --target atelier_editor
@@ -73,6 +75,8 @@ cmake --build --preset release --target editor_acceptance
 在项目根目录的 PowerShell 中执行：
 
 ```powershell
+# 首次克隆或切换到更新了子模块的提交后执行。
+git submodule update --init --recursive
 # 每个新会话执行一次。缺少 LLVM 时，增加 -InstallToolchain 参数。
 . ./tools/enter-dev.ps1
 
@@ -97,9 +101,41 @@ cmake --build --preset release --target acceptance
 
 唯一版本清单位于 [cmake/toolchain-lock.json](cmake/toolchain-lock.json)，版本升级同时更新锁文件并验证构建环境，不在文档中维护第二份版本表。
 
-第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、Foundation 的 unordered_dense、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库；压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。不要求编译 LLVM 或 compiler-rt 全量源码。
+通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、Foundation 的 unordered_dense、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库；压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
 
 原生代码使用 C++23，警告视为错误；编译使用 clang-cl，静态归档使用 llvm-lib，链接使用 lld-link。只维护 CMake 构建定义。IDE 应使用相同 preset 和准备好的工具链环境。
+
+## Jolt 物理依赖
+
+[Jolt Physics](https://github.com/jrouwe/JoltPhysics) 官方源码以 Git 子模块接入 [third_party/jolt](third_party/jolt)，来源记录在 [.gitmodules](.gitmodules)，主仓库的 gitlink 是其唯一版本锁。[cmake/jolt.cmake](cmake/jolt.cmake) 直接通过 `add_subdirectory` 编译该源码，提供 `Jolt::Jolt` 静态库目标；构建产物位于 `out/<配置>/third_party/jolt/`，输出目录保留 MIT 许可证 `LICENSE.jolt.txt`。
+
+新克隆可使用 `git clone --recurse-submodules`。已有工作区执行以下命令，取得主仓库固定的源码提交；CMake 在子模块缺失时会提示初始化命令：
+
+```powershell
+git submodule update --init --recursive third_party/jolt
+git submodule status third_party/jolt
+```
+
+当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。这是依赖接入增量，尚未提供 World/Actor 物理组件、Transform 同步、编辑器操作或专用服务器程序。
+
+按上方准备工具链并配置后，独立无窗口验收为：
+
+```powershell
+cmake --build --preset dev --target physics_acceptance
+cmake --build --preset release --target physics_acceptance
+```
+
+该验收也包含在总 `acceptance` 中，使用真实 Jolt 单线程模拟检查动态球体受重力下落、与静态地面碰撞、休眠及刚体清理；成功输出 `Physics acceptance: PASS (gravity, collision, sleep, cleanup)`。检查不依赖 `assert`，发布配置同样有效。
+
+升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
+
+```powershell
+git -C third_party/jolt fetch origin --tags
+$joltRevision = 'vX.Y.Z' # 替换为要升级的正式 tag 或提交 SHA
+git -C third_party/jolt switch --detach $joltRevision
+```
+
+检查上游构建选项/API 变化，重新配置并执行 dev/release 的 `physics_acceptance`，然后将子模块指针与必要的适配改动一同记录到项目提交。合并其他项目增量不会自动跟随 Jolt 上游最新提交；切换或拉取包含子模块版本更新的项目提交后，再执行 `git submodule update --init --recursive` 同步源码。
 
 ## RHI 图形验收
 

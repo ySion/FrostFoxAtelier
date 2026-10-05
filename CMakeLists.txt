@@ -106,6 +106,9 @@ include(cmake/foundation.cmake)
 include(cmake/world.cmake)
 atelier_add_world()
 
+include(cmake/jolt.cmake)
+atelier_add_jolt()
+
 include(cmake/rhi.cmake)
 atelier_add_rhi()
 
@@ -129,13 +132,14 @@ add_custom_target(acceptance
     COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
     COMMAND $<TARGET_FILE:atelier_source_minimal>
     COMMAND $<TARGET_FILE:atelier_world_acceptance>
+    COMMAND $<TARGET_FILE:atelier_physics_acceptance>
     ${_jit_acceptance_commands}
     COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
     COMMAND $<TARGET_FILE:atelier_ui_acceptance>
     COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
     COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
-    DEPENDS math_acceptance atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance ${_jit_acceptance_dependencies}
+    DEPENDS math_acceptance atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance atelier_physics_acceptance ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
         atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance foundation_acceptance
     USES_TERMINAL VERBATIM)
