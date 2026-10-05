@@ -9,7 +9,7 @@ function(atelier_add_editor)
             -P "${PROJECT_SOURCE_DIR}/cmake/editor-build-info.cmake"
         BYPRODUCTS "${build_info}" VERBATIM)
     configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ss" "${CMAKE_BINARY_DIR}/editor.ss" COPYONLY)
-    configure_file("${PROJECT_SOURCE_DIR}/assets/position.ui.source" "${CMAKE_BINARY_DIR}/position.ui.source" COPYONLY)
+    configure_file("${PROJECT_SOURCE_DIR}/assets/editor.ui.source" "${CMAKE_BINARY_DIR}/editor.ui.source" COPYONLY)
     foreach(font_asset SarasaUiSC-Regular.ttf SarasaUiSC-SemiBold.ttf
             SourceCodePro-Regular.otf SourceCodePro-Bold.otf sarasa-LICENSE.txt source-code-pro-LICENSE.md sources.json)
         configure_file("${PROJECT_SOURCE_DIR}/assets/fonts/${font_asset}" "${CMAKE_BINARY_DIR}/fonts/${font_asset}" COPYONLY)
@@ -35,6 +35,7 @@ function(atelier_add_editor)
     add_dependencies(atelier_editor_application atelier_editor_build_info)
     target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
+    target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
     target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi)
     add_executable(atelier_editor
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"

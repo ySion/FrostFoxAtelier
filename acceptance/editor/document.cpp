@@ -8,6 +8,8 @@
 #include <fstream>
 #include <cstdio>
 #include <stdexcept>
+#include <windows.h>
+#include <psapi.h>
 
 namespace {
 using namespace atelier;
@@ -34,6 +36,9 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_document.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
+#include "composed_ui.inl"
+#include "ui_reload_transaction.inl"
+#include "ui_reload_profile.inl"
 }
 int main(int argc, char** argv) {
     try {
@@ -41,9 +46,16 @@ int main(int argc, char** argv) {
             profile_project_json(argv[2]);
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory]");
+        if (argc == 3 && std::string_view(argv[1]) == "--profile-ui-reload") {
+            profile_ui_reload(argv[2]);
+            return 0;
+        }
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory | --profile-ui-reload output.csv]");
         verify_project_document();
         verify_declarative_parameters();
+        verify_composed_ui();
+        verify_ui_reload_transaction();
+        verify_ui_code_reuse();
         {
             editor::Session single;
             changed(single.create_static_mesh(editor::mesh_assets().front()));

@@ -15,6 +15,15 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static void ui_source(Application& app,const std::filesystem::path& path) {
+        auto source=editor::read_file(app.workspace_.ui_source());
+        if (!source) throw std::runtime_error(source.error().message);
+        auto saved=editor::write_file(path,*source);if (!saved) throw std::runtime_error(saved.error().message);
+        app.workspace_.set_ui_source(path);
+    }
+    static auto ui_revision(const Application& app) {return app.workspace_.ui_revision();}
+    static auto ui_error(const Application& app) {return app.workspace_.ui_error();}
+    static auto ui_compile_milliseconds(const Application& app) {return app.workspace_.ui_compile_milliseconds();}
     static void mark_saved(Application& app) { app.effects(app.ui_.cancel_interaction()); app.document_->mark_saved(); }
     static Result<void> command(Application& app,editor::Command command,std::string_view argument={}) { return app.execute(command,argument); }
     static auto asset_key(const Application& app,std::string_view resource) {
@@ -720,6 +729,7 @@ RECT await_acceptance_activation(Application& app,const std::filesystem::path& o
 #include "menus.inl"
 #include "tree.inl"
 #include "project_window.inl"
+#include "ui_authoring_window.inl"
 #include "viewport.inl"
 }
 
@@ -737,17 +747,21 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
         for (const auto name:{L"Config",L"Content",L"Source"}) if (std::filesystem::exists(source/name))
             std::filesystem::copy(source/name,folder/name,std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     } else std::filesystem::create_directories(output);
+    const auto ui_source=output/"editor.ui.source";
+    atelier::application::EditorAcceptanceAccess::ui_source(app,ui_source);
     await_acceptance_activation(app,output,"project");
     require(actors(app).empty(),"The production editor did not start with an empty scene.");
     verify_viewport_display(app,output);
     verify_project_window(app,output,source_project!=nullptr);
+    verify_ui_authoring_window(app,output,ui_source);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Project acceptance did not close the editor.");
     std::ofstream report(output/"acceptance.txt");
     report<<"Editor project acceptance: PASS\nBuild: "<<atelier::build_info::revision<<"\nConfiguration: "<<atelier::build_info::configuration
         <<"\nSource project: "<<(source_project?atelier::editor::utf8(source_project):"new fixture")
         <<"\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
-        <<"Shared viewport display/TRS checks followed by project commands, About identity/current root, Actor creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n";
+        <<"Shared viewport display/TRS checks followed by project commands, About identity/current root, Actor creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
+        <<"Native UI authoring: real file save/recompile/present, compile-error retention/recovery, repeated tree rows, foldout state and active text token retained.\n";
     std::printf("Editor project acceptance: PASS; evidence: %s\n",atelier::editor::utf8(output.wstring()).c_str());
     return 0;
 }

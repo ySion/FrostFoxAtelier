@@ -3,46 +3,102 @@
 #include <algorithm>
 #include <charconv>
 #include <optional>
+#include <utility>
 
 namespace atelier::ui_language {
 namespace {
 using namespace language;
 using namespace language::detail;
 struct Fragment { std::size_t begin{}, end{}; SourcePosition position; };
-struct Evaluation { Fragment source; std::uint32_t node{}, operation{}; std::optional<Property> property; };
+struct Evaluation { Fragment source; std::uint32_t node{}, operation{}; std::optional<Property> property; InputKind kind{InputKind::boolean}; std::uint32_t argument{}; };
 struct Initializer { std::uint32_t slot{}; Fragment source; };
+constexpr std::pair<std::string_view,NodeKind> builtin_nodes[]{
+    {"Column",NodeKind::column},{"Row",NodeKind::row},{"Text",NodeKind::text},
+    {"Foldout",NodeKind::foldout},{"NumberRow",NodeKind::number_row},{"TextField",NodeKind::text_field},
+    {"Tree",NodeKind::tree},{"TreeItem",NodeKind::tree_item},{"Repeat",NodeKind::repeat}};
+std::optional<NodeKind> builtin_node(std::string_view name) {
+    const auto at=std::ranges::find_if(builtin_nodes,[&](const auto& item){return item.first==name;});
+    return at==std::end(builtin_nodes)?std::nullopt:std::optional{at->second};
+}
+bool height_strategy(std::string_view name) {
+    return name=="height" || name=="expand_height" || name=="single_line";
+}
 
+struct Header {
+    std::string name;
+    std::vector<Input> inputs;
+    SourcePosition begin, body;
+};
+Input parse_input(Tokens& tokens) {
+    Input value;
+    if (tokens.accept("bool")) value.kind=InputKind::boolean;
+    else if (tokens.accept("double")) value.kind=InputKind::number;
+    else {
+        const auto type=tokens.identifier();
+        if (type.text=="EditBinding") value.kind=InputKind::edit;
+        else if (type.text=="Text") value.kind=InputKind::text;
+        else if (type.text=="TextEditBinding") value.kind=InputKind::text_edit;
+        else if (type.text=="Key") value.kind=InputKind::key;
+        else if (type.text=="Items") {
+            value.kind=InputKind::items;tokens.expect("<");value.item_type=tokens.identifier().text;tokens.expect(">");
+        } else reject(type.position,"Unknown UI input type.");
+    }
+    const auto name=tokens.identifier();value.name=name.text;
+    if (name.text=="input" || name.text=="state" || name.text=="event" || name.text=="node" || name.text=="mounted" || name.text.starts_with("__ui_"))
+        reject(name.position,"Reserved UI input name.");
+    return value;
+}
+std::vector<Header> headers(std::string_view source) {
+    Tokens tokens(source);std::size_t braces{};
+    while (tokens.token_.kind!=Token::Kind::end && (tokens.token_.text!="ui" || braces)) {
+        const auto token=tokens.consume();
+        if (token.text=="{") ++braces;
+        else if (token.text=="}") {if (!braces) reject(token.position,"Unexpected closing brace.");--braces;}
+    }
+    std::vector<Header> result;
+    while (tokens.token_.kind!=Token::Kind::end) {
+        Header header;header.begin=tokens.expect("ui").position;const auto name=tokens.identifier();header.name=name.text;
+        if (builtin_node(name.text)) reject(name.position,"UI component names cannot replace built-in node types.");
+        if (result.size()>=64 || std::ranges::any_of(result,[&](const auto& item){return item.name==header.name;}))
+            reject(header.begin,"Duplicate or excessive UI component type.");
+        tokens.expect("(");
+        if (!tokens.accept(")")) do {
+            tokens.expect("in");auto input=parse_input(tokens);
+            if (header.inputs.size()>=1024 || std::ranges::any_of(header.inputs,[&](const auto& item){return item.name==input.name;}))
+                reject(tokens.token_.position,"Duplicate or excessive UI input.");
+            header.inputs.push_back(std::move(input));
+            if (tokens.accept(")")) break;
+            tokens.expect(",");
+        } while (true);
+        tokens.expect("{");header.body=tokens.token_.position;braces=1;
+        while (braces && tokens.token_.kind!=Token::Kind::end) {
+            const auto token=tokens.consume();if (token.text=="{") ++braces;else if (token.text=="}") --braces;
+        }
+        if (braces) reject(header.begin,"Unterminated UI component.");
+        result.push_back(std::move(header));
+    }
+    if (result.empty()) reject(tokens.token_.position,"Expected a ui component.");
+    for (const auto& header:result) for (const auto& input:header.inputs) if (input.kind==InputKind::items &&
+        std::ranges::none_of(result,[&](const auto& item){return item.name==input.item_type;}))
+        reject(header.begin,"Unknown item component type: "+input.item_type);
+    return result;
+}
 class Parser : private Tokens {
 public:
-    Parser(std::string_view name, std::string_view source) : Tokens(source), source_(source) { result_.source_name=name; }
+    Parser(std::string_view name,std::string_view source,const Header& header,const std::vector<Header>& all)
+        :Tokens(source),source_(source),headers_(all) {
+        result_.source_name=name;result_.name=header.name;result_.inputs=header.inputs;
+        while (token_.position.offset<header.body.offset) consume();
+    }
     Declaration run() {
-        // Helpers are ordinary Source functions. They share this component's input
-        // accessors, but cannot mutate state; mutation belongs to event blocks.
-        const auto helper_begin=token_.position;
-        std::size_t braces{};
-        while (token_.kind!=Token::Kind::end && (token_.text!="ui" || braces)) {
-            if (token_.text=="{") ++braces;
-            if (token_.text=="}") { if (!braces) reject(token_.position,"Unexpected closing brace."); --braces; }
-            consume();
-        }
-        const Fragment helpers{helper_begin.offset,token_.position.offset,helper_begin};
-        expect("ui"); result_.name=std::string(identifier().text); expect("(");
-        if (!accept(")")) do {
-            expect("in"); const auto kind=input_kind(true); const auto name=identifier();
-            unique(name,result_.inputs);
-            result_.inputs.push_back({std::string(name.text),kind});
-            if (accept(")")) break;
-            expect(",");
-        } while (true);
-        expect("{");
+        const Fragment helpers{0,headers_.front().begin.offset,{}};
         while (accept("state")) {
-            const auto kind=input_kind(false); const auto name=identifier(); unique(name,result_.states);
+            const auto kind=state_kind(); const auto name=identifier(); unique(name,result_.states);
             expect("="); const auto initial=fragment(";"); expect(";");
             initializers_.push_back({static_cast<std::uint32_t>(result_.states.size()),initial});
             result_.states.push_back({std::string(name.text),kind});
         }
         while (!accept("}")) node(0,0);
-        if (token_.kind!=Token::Kind::end) reject(token_.position,"Only one ui component is supported per module.");
         if (result_.nodes.empty()) reject(token_.position,"A ui component needs at least one node.");
         rewrite(helpers,false);
         append("\nvoid __ui_create() {\n",{});
@@ -60,11 +116,24 @@ public:
             append("void __ui_op_"+std::to_string(evaluation.operation)+"() {\n",evaluation.source.position);
             if (evaluation.property) {
                 const auto property=*evaluation.property;
-                const char* sink=property==Property::text || property==Property::classes?"set_text":
-                    property==Property::edit?"set_edit":property>=Property::enabled?"set_bool":"set_number";
-                append(std::string("self.")+sink+"("+std::to_string(evaluation.node)+", "+
-                    std::to_string(static_cast<unsigned>(property))+", ",evaluation.source.position);
-                const bool numeric=property>=Property::gap && property<=Property::padding_left;
+                const auto reference=reference_kind(evaluation.source);
+                const bool text=property==Property::text || property==Property::filter || property==Property::classes ||
+                    (property==Property::argument && evaluation.kind==InputKind::text);
+                const bool numeric=property==Property::gap || property==Property::height || property==Property::width ||
+                    property==Property::padding_left || property==Property::icon ||
+                    property==Property::padding_top || property==Property::padding_right || property==Property::padding_bottom ||
+                    (property==Property::argument && evaluation.kind==InputKind::number);
+                std::string sink;
+                if (property==Property::argument) sink="set_argument_"+suffix(evaluation.kind);
+                else if (text) sink="set_text";
+                else if (property==Property::edit) sink=result_.nodes[evaluation.node].kind==NodeKind::text_field?"set_text_edit":"set_edit";
+                else if (property==Property::items) sink="set_items";
+                else if (property==Property::tree_parent) sink="set_tree_parent";
+                else sink=numeric?"set_number":"set_bool";
+                if (text && reference==InputKind::text) sink+="_reference";
+                else if (text && reference==InputKind::text_edit) sink+="_from_edit";
+                append("self."+sink+"("+std::to_string(evaluation.node)+", "+
+                    std::to_string(property==Property::argument?evaluation.argument:static_cast<unsigned>(property))+", ",evaluation.source.position);
                 if (numeric) append("double(",evaluation.source.position);
                 rewrite(evaluation.source,false);
                 if (numeric) append(")",evaluation.source.position);
@@ -82,6 +151,7 @@ public:
 private:
     std::string_view source_;
     Declaration result_;
+    const std::vector<Header>& headers_;
     std::vector<Evaluation> evaluations_;
     std::vector<Initializer> initializers_;
 
@@ -90,15 +160,15 @@ private:
             std::ranges::any_of(items,[&](const auto& item){return item.name==name.text;}))
             reject(name.position,"Duplicate, reserved or excessive UI declaration.");
     }
-    InputKind input_kind(bool edit) {
+    InputKind state_kind() {
         if (accept("bool")) return InputKind::boolean;
         if (accept("double")) return InputKind::number;
         const auto token=identifier();
-        if (token.text=="EditBinding" && edit) return InputKind::edit;
-        reject(token.position,"Expected bool, double or an EditBinding input.");
+        reject(token.position,"Component state requires bool or double.");
     }
     static std::string suffix(InputKind kind) {
-        return kind==InputKind::boolean?"bool":kind==InputKind::number?"number":"edit";
+        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items"};
+        return std::string(names[static_cast<std::size_t>(kind)]);
     }
     Fragment fragment(std::string_view terminator) {
         const auto begin=token_.position;
@@ -116,53 +186,98 @@ private:
         }
         reject(begin,"Unterminated UI expression or handler.");
     }
+    std::optional<InputKind> reference_kind(Fragment source) const {
+        Tokens tokens(source_.substr(source.begin,source.end-source.begin));
+        if (!tokens.accept("input") || !tokens.accept(".")) return {};
+        const auto name=tokens.consume();
+        if (tokens.token_.kind!=Token::Kind::end) return {};
+        const auto at=std::ranges::find_if(result_.inputs,[&](const auto& input){return input.name==name.text;});
+        return at==result_.inputs.end()?std::nullopt:std::optional{at->kind};
+    }
     void node(std::uint32_t parent,std::size_t depth) {
         if (depth>=64) reject(token_.position,"UI nesting exceeds 64 levels.");
         const auto type=identifier();
-        const auto kind=type.text=="Column"?NodeKind::column:type.text=="Row"?NodeKind::row:
-            type.text=="Text"?NodeKind::text:type.text=="Foldout"?NodeKind::foldout:NodeKind::number_row;
-        if (kind==NodeKind::number_row && type.text!="NumberRow") reject(type.position,"Unknown UI node type.");
-        const auto name=identifier(); unique(name,result_.nodes);
+        const auto builtin=builtin_node(type.text);
+        const auto child=std::ranges::find_if(headers_,[&](const auto& value){return value.name==type.text;});
+        const auto kind=builtin.value_or(NodeKind::component);
+        if (kind==NodeKind::component && child==headers_.end()) reject(type.position,"Unknown UI node or component type.");
+        const auto name=identifier();unique(name,result_.nodes);
         const auto slot=static_cast<std::uint32_t>(result_.nodes.size());
-        result_.nodes.push_back({std::string(name.text),kind,parent}); expect("{");
-        std::vector<std::string_view> properties;
-        bool has_event{};
+        result_.nodes.push_back({std::string(name.text),kind,parent,kind==NodeKind::component?std::string(type.text):std::string{}});expect("{");
+        std::vector<std::string_view> properties;bool has_event{};
         while (!accept("}")) {
             if (accept("on")) {
                 const auto event=identifier();
                 if (event.text!="activate" || kind!=NodeKind::foldout || has_event)
                     reject(event.position,"Expected one activate handler on a Foldout.");
-                has_event=true; expect("{"); const auto body=fragment("}"); expect("}");
+                has_event=true;expect("{");const auto body=fragment("}");expect("}");
                 const auto operation=static_cast<std::uint32_t>(evaluations_.size()+1);
-                evaluations_.push_back({body,slot,operation,{}}); result_.events.push_back({slot,operation});
-                continue;
+                evaluations_.push_back({body,slot,operation,{}});result_.events.push_back({slot,operation});continue;
             }
-            const auto saved_lexer=lexer_; const auto saved_token=token_;
+            const auto saved_lexer=lexer_;const auto saved_token=token_;
             const auto property=identifier();
             if (!accept(":")) {
-                lexer_=saved_lexer; token_=saved_token;
-                if (kind!=NodeKind::column && kind!=NodeKind::row) reject(type.position,"Only containers accept child nodes.");
-                node(slot+1,depth+1); continue;
+                lexer_=saved_lexer;token_=saved_token;
+                if (kind!=NodeKind::column && kind!=NodeKind::row && kind!=NodeKind::tree)
+                    reject(type.position,"Only layout containers and Tree accept child nodes.");
+                node(slot+1,depth+1);continue;
             }
-            if (std::ranges::find(properties,property.text)!=properties.end()) reject(property.position,"Duplicate UI property.");
+            if (std::ranges::find(properties,property.text)!=properties.end()) reject(property.position,"Duplicate UI property or argument.");
+            if (kind!=NodeKind::component && height_strategy(property.text) && std::ranges::any_of(properties,height_strategy))
+                reject(property.position,"height, expand_height and single_line are mutually exclusive height strategies.");
             properties.push_back(property.text);
-            constexpr std::string_view names[]{"text","classes","gap","height","width","padding_left","enabled","selected","collapsed","caption","edit"};
-            const auto at=std::ranges::find(names,property.text);
-            if (at==std::end(names)) reject(property.position,"Unknown UI property.");
-            const auto value=static_cast<Property>(at-std::begin(names));
-            if (value==Property::edit && kind!=NodeKind::number_row) reject(property.position,"edit requires a NumberRow.");
-            if (value==Property::selected && kind!=NodeKind::foldout) reject(property.position,"selected requires a Foldout.");
-            if (value==Property::caption && kind!=NodeKind::text) reject(property.position,"caption requires Text.");
-            if (value==Property::text && (kind==NodeKind::column || kind==NodeKind::row)) reject(property.position,"Use a Text child to display container text.");
-            if (kind==NodeKind::number_row && value>=Property::gap && value<=Property::padding_left)
-                reject(property.position,"NumberRow uses the shared parameter layout; put outer layout on its parent.");
-            const auto expression=fragment(";"); expect(";");
+            Property value{};InputKind value_kind{InputKind::boolean};std::uint32_t argument{};
+            if (kind==NodeKind::component && property.text!="mounted") {
+                const auto at=std::ranges::find_if(child->inputs,[&](const auto& input){return input.name==property.text;});
+                if (at==child->inputs.end()) reject(property.position,"Unknown component input.");
+                value=Property::argument;value_kind=at->kind;argument=static_cast<std::uint32_t>(at-child->inputs.begin());
+            } else {
+                constexpr std::string_view names[]{"text","classes","gap","height","width","padding_left","enabled","selected","collapsed","caption","edit",
+                    "expand_height","icon","tree_parent","initially_expanded","filter","mounted","items",
+                    "padding_top","padding_right","padding_bottom","align_center","single_line"};
+                const auto at=std::ranges::find(names,property.text);
+                if (at==std::end(names)) reject(property.position,"Unknown UI property.");
+                value=static_cast<Property>(at-std::begin(names));
+                if ((kind==NodeKind::component && value!=Property::mounted) ||
+                    (kind==NodeKind::repeat && value!=Property::mounted && value!=Property::items))
+                    reject(property.position,"This structural scope accepts only mounted and its typed input.");
+                if (value==Property::edit && kind!=NodeKind::number_row && kind!=NodeKind::text_field) reject(property.position,"edit requires NumberRow or TextField.");
+                if (value==Property::selected && kind!=NodeKind::foldout && kind!=NodeKind::tree_item) reject(property.position,"selected requires Foldout or TreeItem.");
+                if (value==Property::caption && kind!=NodeKind::text) reject(property.position,"caption requires Text.");
+                if (value==Property::align_center && kind!=NodeKind::row && kind!=NodeKind::column && kind!=NodeKind::tree)
+                    reject(property.position,"align_center requires a layout container.");
+                if (value==Property::text && (kind==NodeKind::column || kind==NodeKind::row || kind==NodeKind::tree || kind==NodeKind::text_field))
+                    reject(property.position,"Use Text or a typed text edit binding.");
+                if (kind==NodeKind::number_row && ((value>=Property::gap && value<=Property::padding_left) ||
+                    value==Property::expand_height || (value>=Property::padding_top && value<=Property::single_line)))
+                    reject(property.position,"NumberRow uses the shared parameter layout; put outer layout on its parent.");
+                if ((value==Property::tree_parent || value==Property::expanded) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
+                if (value==Property::filter && kind!=NodeKind::tree) reject(property.position,"filter requires Tree.");
+                if (value==Property::mounted && kind!=NodeKind::component && kind!=NodeKind::repeat) reject(property.position,"mounted requires a component or Repeat scope.");
+                if (value==Property::items && kind!=NodeKind::repeat) reject(property.position,"items requires Repeat.");
+            }
+            const auto expression=fragment(";");expect(";");
+            if (value==Property::argument && value_kind==InputKind::items) {
+                if (reference_kind(expression)!=InputKind::items) reject(expression.position,"Items arguments require a direct typed input.");
+                Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));tokens.expect("input");tokens.expect(".");const auto input=tokens.identifier();
+                const auto at=std::ranges::find_if(result_.inputs,[&](const auto& item){return item.name==input.text;});
+                if (at->item_type!=child->inputs[argument].item_type) reject(expression.position,"Component Items argument has a different element type.");
+            }
+            if (value==Property::items) {
+                if (reference_kind(expression)!=InputKind::items) reject(expression.position,"Repeat requires a direct Items input.");
+                Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));tokens.expect("input");tokens.expect(".");const auto input=tokens.identifier();
+                const auto at=std::ranges::find_if(result_.inputs,[&](const auto& item){return item.name==input.text;});
+                result_.nodes[slot].component_type=at->item_type;
+            }
             const auto operation=static_cast<std::uint32_t>(evaluations_.size()+1);
-            evaluations_.push_back({expression,slot,operation,value});
+            evaluations_.push_back({expression,slot,operation,value,value_kind,argument});
             result_.bindings.push_back({slot,operation,value,property.position});
         }
-        if (kind==NodeKind::number_row && std::ranges::find(properties,"edit")==properties.end())
-            reject(name.position,"A NumberRow requires a typed edit binding.");
+        if ((kind==NodeKind::number_row || kind==NodeKind::text_field) && std::ranges::find(properties,"edit")==properties.end())
+            reject(name.position,"Editable controls require a typed edit binding.");
+        if (kind==NodeKind::repeat && result_.nodes[slot].component_type.empty()) reject(name.position,"Repeat requires items.");
+        if (kind==NodeKind::component) for (const auto& input:child->inputs)
+            if (std::ranges::find(properties,input.name)==properties.end()) reject(name.position,"Missing component input: "+input.name);
     }
     void append(std::string_view value,SourcePosition origin) {
         const auto begin=result_.generated_source.size(); result_.generated_source+=value;
@@ -207,6 +322,13 @@ private:
                         assignment=parentheses;
                         append("self.write_"+suffix(kind)+"("+std::to_string(*index)+", ",origin);
                     } else append("self."+std::string(state?"state_":"read_")+suffix(kind)+"("+std::to_string(*index)+") ",origin);
+                } else if (token.text=="node") {
+                    tokens.expect(".");const auto name=tokens.identifier();
+                    const auto at=std::ranges::find_if(result_.nodes,[&](const auto& item){return item.name==name.text;});
+                    if (at==result_.nodes.end()) reject(name.position,"Unknown declaration node.");
+                    if (at->kind==NodeKind::component || at->kind==NodeKind::repeat || at->kind==NodeKind::text_field)
+                        reject(name.position,"node references require a concrete node with a declaration-owned key.");
+                    append("self.node_key("+std::to_string(at-result_.nodes.begin())+") ",origin);
                 } else if (token.text=="event") {
                     if (!event) reject(token.position,"event is reserved and only available inside an event handler.");
                     tokens.expect("."); const auto name=tokens.identifier();
@@ -224,9 +346,18 @@ private:
 };
 }
 
+std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::string_view name,std::string_view source) {
+    try {
+        const auto all=headers(source);std::vector<Declaration> result;
+        for (const auto& header:all) result.push_back(Parser(name,source,header,all).run());
+        return result;
+    } catch (const language::detail::Rejected& error) {return std::unexpected(error.diagnostic);}
+}
 std::expected<Declaration, language::Diagnostic> lower(std::string_view name,std::string_view source) {
-    try { return Parser(name,source).run(); }
-    catch (const language::detail::Rejected& error) { return std::unexpected(error.diagnostic); }
+    auto all=lower_module(name,source);
+    if (!all) return std::unexpected(all.error());
+    if (all->size()!=1) return std::unexpected(language::Diagnostic{{},"Choose a named component from this UI module."});
+    return std::move(all->front());
 }
 
 std::string Declaration::diagnostic(std::string_view message) const {
