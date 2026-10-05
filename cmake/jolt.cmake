@@ -38,9 +38,15 @@ function(atelier_add_jolt)
     configure_file("${_jolt_source}/LICENSE"
         "${CMAKE_BINARY_DIR}/LICENSE.jolt.txt" COPYONLY)
 
+    add_library(atelier_physics STATIC
+        "${PROJECT_SOURCE_DIR}/src/physics/physics.cpp")
+    atelier_target(atelier_physics)
+    target_include_directories(atelier_physics PUBLIC "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(atelier_physics PUBLIC atelier_world PRIVATE Jolt::Jolt)
+
     add_executable(atelier_physics_acceptance "${PROJECT_SOURCE_DIR}/acceptance/physics/main.cpp")
     atelier_target(atelier_physics_acceptance)
-    target_link_libraries(atelier_physics_acceptance PRIVATE Jolt::Jolt)
+    target_link_libraries(atelier_physics_acceptance PRIVATE atelier_physics Jolt::Jolt)
     add_custom_target(physics_acceptance
         COMMAND $<TARGET_FILE:atelier_physics_acceptance>
         DEPENDS atelier_physics_acceptance USES_TERMINAL VERBATIM)

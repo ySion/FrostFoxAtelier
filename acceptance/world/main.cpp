@@ -288,6 +288,46 @@ void worlds_and_requests() {
     std::puts("[pass] World isolation: context/type errors, detached reattachment, history provenance and queued identity/World revalidation");
 }
 
+void lifecycle_subscription_unsubscribe() {
+    Runtime runtime;
+    const auto types = take(w::register_types(runtime));
+    w::World world(runtime, types);
+    auto actor = take(w::create_actor(runtime));
+    auto component = take(w::create_component(runtime, types.scene_component));
+    std::uint64_t skipped{}, self{};
+    std::size_t first_calls{}, skipped_calls{}, self_calls{}, stateful_calls{};
+    const auto first = take(world.subscribe_lifecycle([&](w::World& current, w::Lifecycle, ObjectId) -> Result<void> {
+        ++first_calls;
+        current.unsubscribe_lifecycle(skipped);
+        return {};
+    }));
+    skipped = take(world.subscribe_lifecycle([&](w::World&, w::Lifecycle, ObjectId) -> Result<void> {
+        ++skipped_calls;
+        return {};
+    }));
+    self = take(world.subscribe_lifecycle([&](w::World& current, w::Lifecycle, ObjectId) -> Result<void> {
+        ++self_calls;
+        current.unsubscribe_lifecycle(self);
+        return {};
+    }));
+    const auto stateful = take(world.subscribe_lifecycle(
+        [count = std::size_t{}, &stateful_calls](w::World&, w::Lifecycle, ObjectId) mutable -> Result<void> {
+            stateful_calls = ++count;
+            return {};
+        }));
+    committed(world.attach(actor.id()));
+    const std::array attachments{w::Attachment{component.id(), {}, true}};
+    committed(world.attach_components(actor.id(), attachments));
+    require(first_calls == 2 && skipped_calls == 0 && self_calls == 1 && stateful_calls == 2,
+        "Lifecycle unsubscription during dispatch left a callback active.");
+    world.unsubscribe_lifecycle(first);
+    world.unsubscribe_lifecycle(stateful);
+    auto removed = take(world.detach(actor.id()));
+    require(!removed.commit.notification_error, "Lifecycle detach notification failed.");
+    require(first_calls == 2 && skipped_calls == 0 && self_calls == 1,
+        "Lifecycle callbacks ran after unsubscription.");
+}
+
 void failures_and_reentry() {
     Runtime runtime;
     const auto types = take(w::register_types(runtime));
@@ -477,6 +517,7 @@ int main() {
         editing_and_execution();
         reference_lifetime();
         worlds_and_requests();
+        lifecycle_subscription_unsubscribe();
         failures_and_reentry();
         ordered_lifecycle();
         actor_lifecycle_and_detached_graph();

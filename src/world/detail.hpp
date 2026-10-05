@@ -79,6 +79,9 @@ struct World::Impl {
     std::vector<Binding> behaviors;
     Result<const Behavior*> behavior(TypeId) const;
     LifecycleObserver observer;
+    struct Subscription { std::uint64_t id; std::shared_ptr<LifecycleObserver> observer; };
+    std::vector<Subscription> subscriptions;
+    std::uint64_t next_subscription{1};
 
     Impl(Runtime& r, const Types& t, World& w) : runtime(r), types(t), world(w) {}
     Result<void> admit(bool mutation = true) const;
