@@ -49,24 +49,38 @@ struct NodeState {
     ui::ControlKey label{},body{};
     EditBinding edit;
     TextEditBinding text_edit;
-    std::shared_ptr<Component> type;
     std::vector<InputValue> arguments;
     ItemList items;
     bool mounted{true};
     std::unique_ptr<Instance> child;
     std::map<ui::ControlKey,std::unique_ptr<Instance>> repeated;
-    const NodeState* previous{};
+    NodeState* previous{}; // Borrowed accepted owner; transferred only at commit.
     std::size_t begin{},count{};
     bool dirty{true};
 };
+struct ScopeLifetime {std::uint64_t created{},retired{};};
+struct DefinitionState;
 struct InstanceData {
-    std::shared_ptr<Component> component;
     Runtime* runtime{};
     ObjectRoot context;
+    ui::ControlKey* next_key{};
+    std::unique_ptr<DefinitionState> value;
+    DefinitionState* executing{};
+    std::unique_ptr<PreparedUpdate> pending;
+    std::shared_ptr<ScopeLifetime> lifetime;
+    Statistics statistics;
+    bool open{true};
+    Result<std::unique_ptr<PreparedUpdate>> prepare(std::shared_ptr<Component>,ui::ControlKey,
+        std::span<const KeyBinding>,std::span<const InputValue>,std::size_t);
+};
+// Definition-dependent data can be replaced while its Instance/Context stays
+// alive. A source candidate borrows child owners until the shared commit point.
+struct DefinitionState {
+    InstanceData& scope;
+    std::shared_ptr<Component> component;
     source::Program::Lease code;
     ui::ControlKey parent{};
-    ui::ControlKey* next_key{};
-    std::unique_ptr<PreparedUpdate> pending;
+    std::vector<KeyBinding> aliases;
     std::vector<NodeState> nodes;
     std::vector<InputValue> inputs;
     std::vector<std::pair<std::size_t,InputValue>> input_undo;
@@ -75,21 +89,26 @@ struct InstanceData {
     std::vector<std::vector<bool>> dependencies;
     std::vector<bool> dirty,reads;
     std::vector<ui::Control> published;
-    Statistics statistics;
     std::size_t subtree_nodes{};
-    bool evaluating{},initializing{},handling_event{},event_checked{},open{true},publication_pending{true};
+    bool evaluating{},initializing{},handling_event{},event_checked{},publication_pending{true};
+    explicit DefinitionState(InstanceData& owner):scope(owner) {}
     const Declaration& declaration() const { return component->declaration(); }
     void read(std::size_t index) { if (evaluating) reads.at(index)=true; }
     void invalidate(std::size_t index) {
         for (std::size_t i=0;i<dependencies.size();++i) if (dependencies[i][index]) dirty[i]=true;
     }
-    Result<void> invoke(std::uint32_t operation) {
+    Result<void> invoke(std::uint32_t operation,const Declaration* source=nullptr) {
+        struct Execution {
+            InstanceData& scope;DefinitionState* previous;
+            ~Execution() {scope.executing=previous;}
+        } guard{scope,scope.executing};
+        scope.executing=this;
         const Scalar argument=operation;
-        auto result=code.invoke(context.id(),std::span{&argument,1});
-        if (!result) return failure(declaration().diagnostic(result.error().message));
+        auto result=code.invoke(scope.context.id(),std::span{&argument,1});
+        if (!result) return failure((source?*source:declaration()).diagnostic(result.error().message));
         return {};
     }
-    Result<std::unique_ptr<PreparedUpdate>> prepare(std::size_t budget);
+    Result<void> publish(std::span<const InputValue>);
 };
 
 // Source's self is this UI scope, never an Actor wrapper. All callbacks copy
@@ -97,9 +116,9 @@ struct InstanceData {
 // objects, reenters JIT, or executes World/editor commands.
 struct Context {
     InstanceData* owner{};
-    InstanceData& data() const {
-        if (!owner || !owner->open) throw std::runtime_error("UI component has been unmounted.");
-        return *owner;
+    DefinitionState& data() const {
+        if (!owner || !owner->open || !owner->executing) throw std::runtime_error("UI component has no active invocation.");
+        return *owner->executing;
     }
     bool read_bool(std::uint32_t index) const { auto& d=data(); d.read(index); return std::get<bool>(d.inputs.at(index)); }
     double read_number(std::uint32_t index) const { auto& d=data(); d.read(index); return std::get<double>(d.inputs.at(index)); }
@@ -366,9 +385,8 @@ Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime,std::stri
     return result;
 }
 
-// Preparation may evaluate values, but never removes an accepted scope. Child
-// plans belong to their parent plan; a late failure drops the whole prepared
-// tree. Only the root materializes its contiguous borrowed view before Session.
+// One plan covers data, definition and topology changes. Accepted child owners
+// remain available until Session has consumed its cleanup effects.
 struct detail::PreparedUpdate {
     struct Change {
         std::size_t node{},next_count{};
@@ -379,14 +397,18 @@ struct detail::PreparedUpdate {
         std::vector<std::unique_ptr<PreparedUpdate>> children;
         bool unmount{},controls_changed{};
     };
-    InstanceData& data;
+    InstanceData& scope;
+    std::unique_ptr<DefinitionState> replacement;
+    DefinitionState& data;
+    std::shared_ptr<Component> definition;
     std::vector<Change> changes;
     std::vector<ui::Control> reordered;
     std::uint64_t creations{},removals{};
     std::size_t subtree_nodes{};
     bool resized{},control_changes{},materialized{},committed{};
-    explicit PreparedUpdate(InstanceData& value):data(value) {}
-    ~PreparedUpdate() { if (materialized && !committed) swap_view(); }
+    PreparedUpdate(InstanceData& owner,std::unique_ptr<DefinitionState> next,std::shared_ptr<Component> type)
+        :scope(owner),replacement(std::move(next)),data(replacement?*replacement:*owner.value),definition(std::move(type)) {}
+    ~PreparedUpdate() {if (materialized && !committed) swap_view();}
     void append(std::vector<ui::Control>& output) const {
         if (materialized) {output.insert(output.end(),data.published.begin(),data.published.end());return;}
         std::size_t change{};
@@ -404,125 +426,186 @@ struct detail::PreparedUpdate {
             std::swap_ranges(change.controls.begin(),change.controls.end(),at);
         }
     }
-    void materialize() noexcept { if (!materialized) {swap_view();materialized=true;} }
+    void materialize() noexcept {if (!materialized) {swap_view();materialized=true;}}
     void commit() noexcept {
+        // Borrowed owners move only now; removed nodes stay in the old definition
+        // until every child plan and descriptor change has been committed.
+        for (auto& node:data.nodes) if (node.previous) {
+            node.child=std::move(node.previous->child);node.repeated=std::move(node.previous->repeated);node.previous=nullptr;
+        }
         for (auto& change:changes) {
             for (auto& child:change.children) child->commit();
             auto& node=data.nodes[change.node];
             if (change.unmount) node.child.reset();
             if (change.child) node.child=std::move(change.child);
             for (const auto key:change.removals) node.repeated.erase(key);
-            node.repeated.merge(change.additions); // Existing allocator and noexcept integral comparator; no allocation.
+            node.repeated.merge(change.additions);
         }
         materialize();
         for (const auto& change:changes) if (change.controls_changed) data.nodes[change.node].count=change.next_count;
         std::size_t begin{};
         for (auto& node:data.nodes) {node.begin=begin;begin+=node.count;node.dirty=false;}
-        data.statistics.node_creations+=creations;data.statistics.node_removals+=removals;
-        if (control_changes) ++data.statistics.publications;
-        data.subtree_nodes=subtree_nodes;
-        data.input_undo.clear();data.state_undo.reset();data.publication_pending=false;committed=true;
+        scope.statistics.node_creations+=creations;scope.statistics.node_removals+=removals;
+        if (control_changes) ++scope.statistics.publications;
+        data.subtree_nodes=subtree_nodes;data.component=std::move(definition);
+        data.input_undo.clear();data.state_undo.reset();data.publication_pending=false;
+        committed=true;
+        if (replacement) scope.value=std::move(replacement);
     }
 };
-Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(std::size_t budget) {
-    if (nodes.size()>budget) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
-    for (std::size_t i=0;i<dirty.size();++i) if (dirty[i]) {
-        std::fill(reads.begin(),reads.end(),false);evaluating=true;
-        auto evaluated=invoke(declaration().bindings[i].operation);evaluating=false;
-        ++statistics.binding_evaluations;
-        if (!evaluated) return std::unexpected(evaluated.error());
-        dependencies[i]=reads;dirty[i]=false;publication_pending=true;
+Result<void> detail::DefinitionState::publish(std::span<const InputValue> values) {
+    const auto& definitions=declaration().inputs;
+    if (values.size()!=definitions.size()) return failure("UI component input count does not match its declaration.");
+    for (std::size_t i=0;i<values.size();++i) {
+        if (values[i].index()!=static_cast<std::size_t>(definitions[i].kind)) return failure("UI component input type mismatch: "+definitions[i].name);
+        if (const auto* number=std::get_if<double>(&values[i]);number && !std::isfinite(*number)) return failure("UI numeric inputs must be finite.");
     }
-    if (!publication_pending && input_undo.empty() && !state_undo) {
-        if (subtree_nodes>budget) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
+    if (inputs.size()!=values.size()) {inputs.assign(values.begin(),values.end());return {};}
+    std::vector<std::pair<std::size_t,InputValue>> changes;
+    for (std::size_t i=0;i<values.size();++i) if (values[i]!=inputs[i]) changes.emplace_back(i,values[i]);
+    input_undo.reserve(input_undo.size()+changes.size());
+    for (auto& [index,value]:changes) {
+        if (std::ranges::none_of(input_undo,[&](const auto& old){return old.first==index;})) input_undo.emplace_back(index,std::move(inputs[index]));
+        inputs[index]=std::move(value);invalidate(index);
+    }
+    return {};
+}
+Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(std::shared_ptr<Component> definition,
+    ui::ControlKey parent,std::span<const KeyBinding> aliases,std::span<const InputValue> inputs,std::size_t budget) {
+    if (!definition || &definition->impl_->runtime!=runtime || (value && value->declaration().name!=definition->declaration().name))
+        return failure("A UI scope keeps its Runtime and component type.");
+    const auto& declaration=definition->declaration();
+    if (declaration.nodes.size()>budget) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
+    const bool source_changed=value && definition!=value->component;
+    const auto same_shape=[&] {
+        const auto& before=value->declaration();
+        return before.inputs==declaration.inputs && before.states==declaration.states && before.nodes==declaration.nodes &&
+            std::ranges::equal(before.bindings,declaration.bindings,[](const auto& a,const auto& b){return a.node==b.node && a.operation==b.operation && a.property==b.property;}) &&
+            std::ranges::equal(before.events,declaration.events,[](const auto& a,const auto& b){return a.node==b.node && a.operation==b.operation;});
+    };
+    const bool replace=!value || parent!=value->parent || !std::ranges::equal(aliases,value->aliases) ||
+        (source_changed && (definition->impl_->program!=value->component->impl_->program || !same_shape()));
+    std::unique_ptr<DefinitionState> next;
+    if (replace) {
+        next=std::make_unique<DefinitionState>(*this);next->component=definition;next->parent=parent;
+        next->aliases.assign(aliases.begin(),aliases.end());
+        auto code=definition->impl_->program->pin();if (!code) return std::unexpected(code.error());next->code=std::move(*code);
+        next->nodes.resize(declaration.nodes.size());
+        const auto allocate=[&] {
+            if (!*next_key || *next_key==std::numeric_limits<ui::ControlKey>::max()) throw std::runtime_error("UI control keys exhausted.");
+            return (*next_key)++;
+        };
+        for (std::size_t i=0;i<next->nodes.size();++i) {
+            auto& node=next->nodes[i];const auto& declared=declaration.nodes[i];
+            const auto alias=std::ranges::find_if(aliases,[&](const auto& key){return key.node==declared.name;});
+            if (value) {
+                const auto& before=value->declaration().nodes;
+                const auto old=std::ranges::find_if(before,[&](const auto& n){return n.name==declared.name && n.kind==declared.kind && n.component_type==declared.component_type;});
+                if (old!=before.end()) node.previous=&value->nodes[static_cast<std::size_t>(old-before.begin())];
+            }
+            node.control.key=alias!=aliases.end() && alias->key?alias->key:node.previous?node.previous->control.key:allocate();
+            if (const auto& type=definition->impl_->children[i]) for (const auto& input:type->declaration().inputs) node.arguments.push_back(initial(input.kind));
+            if (declared.kind==NodeKind::number_row) {
+                node.label=alias!=aliases.end() && alias->label?alias->label:node.previous?node.previous->label:allocate();
+                node.body=alias!=aliases.end() && alias->body?alias->body:node.previous?node.previous->body:allocate();
+            }
+        }
+        for (const auto& state:declaration.states) next->states.push_back(state.kind==InputKind::boolean?std::variant<bool,double>{false}:std::variant<bool,double>{0.0});
+        next->dependencies.resize(declaration.bindings.size(),std::vector<bool>(declaration.inputs.size()+declaration.states.size()));
+        next->dirty.resize(declaration.bindings.size(),true);next->reads.resize(declaration.inputs.size()+declaration.states.size());
+        if (auto result=next->publish(inputs);!result) return std::unexpected(result.error());
+        next->initializing=true;auto initialized=next->invoke(0);next->initializing=false;
+        if (!initialized) return std::unexpected(initialized.error());
+        if (value) for (std::size_t i=0;i<declaration.states.size();++i) {
+            const auto& old=value->declaration().states;const auto& state=declaration.states[i];
+            const auto at=std::ranges::find_if(old,[&](const auto& s){return s.name==state.name && s.kind==state.kind;});
+            if (at!=old.end()) next->states[i]=value->states[static_cast<std::size_t>(at-old.begin())];
+        }
+    } else if (auto result=value->publish(inputs);!result) return std::unexpected(result.error());
+    auto& data=next?*next:*value;
+    for (std::size_t i=0;i<data.dirty.size();++i) if (data.dirty[i]) {
+        std::fill(data.reads.begin(),data.reads.end(),false);data.evaluating=true;
+        auto evaluated=data.invoke(declaration.bindings[i].operation,&declaration);data.evaluating=false;++statistics.binding_evaluations;
+        if (!evaluated) return std::unexpected(evaluated.error());
+        data.dependencies[i]=data.reads;data.dirty[i]=false;data.publication_pending=true;
+    }
+    if (!replace && !source_changed && !data.publication_pending && data.input_undo.empty() && !data.state_undo) {
+        if (data.subtree_nodes>budget) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
         return std::unique_ptr<PreparedUpdate>{};
     }
-    auto update=std::make_unique<PreparedUpdate>(*this);
-    auto remaining=budget-nodes.size();
-    bool keys_changed{};
-    for (std::size_t i=0;i<nodes.size();++i) {
-        auto& node=nodes[i];
-        if (!node.dirty) {
-            auto retained=node.child?node.child->data_->subtree_nodes:0;
-            for (const auto& [key,child]:node.repeated) retained+=child->data_->subtree_nodes;
+    auto update=std::make_unique<PreparedUpdate>(*this,std::move(next),definition);
+    auto remaining=budget-data.nodes.size();bool keys_changed{};
+    for (std::size_t i=0;i<data.nodes.size();++i) {
+        auto& node=data.nodes[i];auto& owners=node.previous?*node.previous:node;
+        if (!node.dirty && !source_changed) {
+            auto retained=node.child?node.child->data_->value->subtree_nodes:0;
+            for (const auto& [key,child]:node.repeated) retained+=child->data_->value->subtree_nodes;
             if (retained>remaining) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
             remaining-=retained;continue;
         }
-        PreparedUpdate::Change change;change.node=i;
-        auto& next=change.controls;
-        const auto kind=declaration().nodes[i].kind;
-        const auto append_new=[&](const Instance& child) {
-            const auto controls=child.controls();next.insert(next.end(),controls.begin(),controls.end());
-        };
-        const auto append_existing=[&](Instance& child,std::span<const InputValue> values)->Result<void> {
-            if (auto published=child.publish(values);!published) return published;
-            auto prepared=child.data_->prepare(remaining);if (!prepared) return std::unexpected(prepared.error());
-            remaining-=(*prepared?(*prepared)->subtree_nodes:child.data_->subtree_nodes);
-            if (*prepared) {(*prepared)->append(next);change.children.push_back(std::move(*prepared));}
-            else append_new(child);
+        PreparedUpdate::Change change;change.node=i;auto& output=change.controls;
+        const auto kind=declaration.nodes[i].kind;const auto& type=definition->impl_->children[i];
+        const auto append_existing=[&](Instance& child,std::span<const InputValue> values,std::span<const KeyBinding> keys)->Result<void> {
+            auto prepared=child.data_->prepare(type,node.control.parent,keys,values,remaining);
+            if (!prepared) return std::unexpected(prepared.error());
+            remaining-=(*prepared?(*prepared)->subtree_nodes:child.data_->value->subtree_nodes);
+            if (*prepared) {(*prepared)->append(output);change.children.push_back(std::move(*prepared));}
+            else {const auto controls=child.controls();output.insert(output.end(),controls.begin(),controls.end());}
             return {};
         };
+        const auto append_new=[&](std::unique_ptr<Instance>& child) {
+            remaining-=child->data_->value->subtree_nodes;
+            const auto controls=child->controls();output.insert(output.end(),controls.begin(),controls.end());
+        };
         if (kind==NodeKind::component) {
-            if (!node.mounted) change.unmount=node.child!=nullptr;
-            else if (node.child) {
-                if (auto result=append_existing(*node.child,node.arguments);!result) return std::unexpected(result.error());
+            if (!node.mounted) change.unmount=owners.child!=nullptr;
+            else if (owners.child) {
+                if (auto result=append_existing(*owners.child,node.arguments,{});!result) return std::unexpected(result.error());
             } else {
-                auto child=Instance::create_bounded(node.type,node.control.parent,*next_key,{},node.arguments,
-                    node.previous?node.previous->child.get():nullptr,remaining);
-                if (!child) return std::unexpected(child.error());
-                remaining-=(*child)->data_->subtree_nodes;
-                change.child=std::move(*child);append_new(*change.child);
+                auto child=Instance::create_bounded(type,node.control.parent,*next_key,{},node.arguments,remaining,lifetime);
+                if (!child) return std::unexpected(child.error());change.child=std::move(*child);append_new(change.child);
             }
         } else if (kind==NodeKind::repeat) {
             std::vector<ui::ControlKey> present;
             if (node.mounted && node.items.values) {
-                if (node.items.values->size()>10000) return failure("UI repeat exceeds 10000 items.");
-                present.reserve(node.items.values->size());
-                for (const auto& item:*node.items.values) present.push_back(item.key);
+                if (node.items.values->size()>composition_limit) return failure("UI repeat exceeds 10000 items.");
+                present.reserve(node.items.values->size());for (const auto& item:*node.items.values) present.push_back(item.key);
                 std::sort(present.begin(),present.end());
                 if ((!present.empty() && !present.front()) || std::adjacent_find(present.begin(),present.end())!=present.end())
                     return failure("UI repeat requires distinct nonzero item keys.");
                 for (const auto& item:*node.items.values) {
-                    const auto at=node.repeated.find(item.key);
-                    if (at==node.repeated.end()) {
-                        const Instance* previous{};
-                        if (node.previous) if (const auto old=node.previous->repeated.find(item.key);old!=node.previous->repeated.end()) previous=old->second.get();
-                        const KeyBinding key{node.type->declaration().nodes.front().name,item.key};
-                        auto child=Instance::create_bounded(node.type,node.control.parent,*next_key,std::span{&key,1},item.inputs,previous,remaining);
-                        if (!child) return std::unexpected(child.error());
-                        remaining-=(*child)->data_->subtree_nodes;
-                        append_new(**child);change.additions.emplace(item.key,std::move(*child));
-                    } else if (auto result=append_existing(*at->second,item.inputs);!result) return std::unexpected(result.error());
-                    if (next.size()>10000) return failure("UI composition exceeds 10000 controls.");
+                    const KeyBinding key{type->declaration().nodes.front().name,item.key};
+                    const auto at=owners.repeated.find(item.key);
+                    if (at==owners.repeated.end()) {
+                        auto child=Instance::create_bounded(type,node.control.parent,*next_key,std::span{&key,1},item.inputs,remaining,lifetime);
+                        if (!child) return std::unexpected(child.error());append_new(*child);change.additions.emplace(item.key,std::move(*child));
+                    } else if (auto result=append_existing(*at->second,item.inputs,std::span{&key,1});!result) return std::unexpected(result.error());
+                    if (output.size()>composition_limit) return failure("UI composition exceeds 10000 controls.");
                 }
             }
-            for (const auto& [key,child]:node.repeated) if (!std::binary_search(present.begin(),present.end(),key)) change.removals.push_back(key);
+            for (const auto& [key,child]:owners.repeated) if (!std::binary_search(present.begin(),present.end(),key)) change.removals.push_back(key);
         } else if (kind==NodeKind::text_field) {
             auto control=node.control;control.key=node.text_edit.key;control.text=node.text_edit.text;control.enabled&=node.text_edit.enabled;
-            if (!control.key) return failure("TextField requires a nonzero host edit key.");
-            next.push_back(std::move(control));
-        } else if (kind!=NodeKind::number_row) next.push_back(node.control);
+            if (!control.key) return failure("TextField requires a nonzero host edit key.");output.push_back(std::move(control));
+        } else if (kind!=NodeKind::number_row) output.push_back(node.control);
         else if (!node.edit.fields.empty()) {
-            try {
-                ui::append_number_row(next,{node.control.key,node.label,node.body,node.edit.group,node.control.parent,
-                    node.control.text,node.control.enabled && node.edit.enabled,node.edit.modified},node.edit.fields);
-            } catch (const std::invalid_argument& error) {
-                return failure(declaration().source_name+": "+declaration().nodes[i].name+": "+error.what());
-            }
-            next.front().layout.collapsed=node.control.layout.collapsed;
-            next.front().classes.insert(next.front().classes.end(),node.control.classes.begin(),node.control.classes.end());
+            try {ui::append_number_row(output,{node.control.key,node.label,node.body,node.edit.group,node.control.parent,
+                node.control.text,node.control.enabled && node.edit.enabled,node.edit.modified},node.edit.fields);}
+            catch (const std::invalid_argument& error) {return failure(declaration.source_name+": "+declaration.nodes[i].name+": "+error.what());}
+            output.front().layout.collapsed=node.control.layout.collapsed;
+            output.front().classes.insert(output.front().classes.end(),node.control.classes.begin(),node.control.classes.end());
         }
-        for (const auto& control:next) if (auto valid=ui::validate_control_properties(control);!valid)
-            return failure(declaration().source_name+": "+declaration().nodes[i].name+
+        for (const auto& control:output) if (auto valid=ui::validate_control_properties(control);!valid)
+            return failure(declaration.source_name+": "+declaration.nodes[i].name+
                 (valid.error().code==ui::ErrorCode::invalid_style?": Invalid UI style.":": Invalid UI text or numeric properties."));
-        const auto previous=std::span(published).subspan(node.begin,node.count);
-        change.next_count=next.size();change.controls_changed=!std::ranges::equal(previous,next);
-        update->resized|=next.size()!=node.count;update->control_changes|=change.controls_changed;
-        if (!std::ranges::equal(previous,next,{},&ui::Control::key,&ui::Control::key)) {
+        const auto previous=std::span(data.published).subspan(node.begin,node.count);
+        change.next_count=output.size();change.controls_changed=!std::ranges::equal(previous,output);
+        update->resized|=output.size()!=node.count;update->control_changes|=change.controls_changed;
+        if (!std::ranges::equal(previous,output,{},&ui::Control::key,&ui::Control::key)) {
             keys_changed=true;
-            std::vector<ui::ControlKey> before,after;before.reserve(previous.size());after.reserve(next.size());
+            std::vector<ui::ControlKey> before,after;
             for (const auto& item:previous) before.push_back(item.key);
-            for (const auto& item:next) after.push_back(item.key);
+            for (const auto& item:output) after.push_back(item.key);
             std::sort(before.begin(),before.end());std::sort(after.begin(),after.end());
             for (const auto key:after) if (!std::binary_search(before.begin(),before.end(),key)) ++update->creations;
             for (const auto key:before) if (!std::binary_search(after.begin(),after.end(),key)) ++update->removals;
@@ -532,11 +615,11 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
     }
     if (keys_changed) {
         std::vector<ui::ControlKey> keys;std::size_t change{};
-        for (std::size_t i=0;i<nodes.size();++i) {
+        for (std::size_t i=0;i<data.nodes.size();++i) {
             const auto* next=change<update->changes.size() && update->changes[change].node==i?&update->changes[change++]:nullptr;
             const auto values=next && next->controls_changed?std::span<const ui::Control>(next->controls):
-                std::span<const ui::Control>(published).subspan(nodes[i].begin,nodes[i].count);
-            if (keys.size()+values.size()>10000) return failure("UI composition exceeds 10000 controls.");
+                std::span<const ui::Control>(data.published).subspan(data.nodes[i].begin,data.nodes[i].count);
+            if (keys.size()+values.size()>composition_limit) return failure("UI composition exceeds 10000 controls.");
             for (const auto& control:values) keys.push_back(control.key);
         }
         std::sort(keys.begin(),keys.end());
@@ -545,114 +628,69 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
     }
     update->subtree_nodes=budget-remaining;
     if (update->resized) update->append(update->reordered);
+    if (replace && value) {
+        // A changed definition can reorder/remove declared slots. Account by
+        // accepted control identities, not by the new slots' initially empty slices.
+        const auto candidate=update->resized?std::span<const ui::Control>(update->reordered):std::span<const ui::Control>(data.published);
+        update->control_changes=!std::ranges::equal(value->published,candidate);
+        std::vector<ui::ControlKey> before,after;
+        for (const auto& control:value->published) before.push_back(control.key);
+        for (const auto& control:candidate) after.push_back(control.key);
+        std::sort(before.begin(),before.end());std::sort(after.begin(),after.end());update->creations=0;update->removals=0;
+        for (const auto key:after) if (!std::binary_search(before.begin(),before.end(),key)) ++update->creations;
+        for (const auto key:before) if (!std::binary_search(after.begin(),after.end(),key)) ++update->removals;
+    }
     return update;
 }
 
 Instance::Instance(std::unique_ptr<detail::InstanceData> data):data_(std::move(data)) {}
 Instance::~Instance() {close();}
 Result<std::unique_ptr<Instance>> Instance::create(std::shared_ptr<Component> component,ui::ControlKey parent,
-    ui::ControlKey& next_key,std::span<const KeyBinding> keys,std::span<const InputValue> inputs,const Instance* previous) {
-    return create_bounded(std::move(component),parent,next_key,keys,inputs,previous,composition_limit);
+    ui::ControlKey& next_key,std::span<const KeyBinding> keys,std::span<const InputValue> inputs) {
+    return create_bounded(std::move(component),parent,next_key,keys,inputs,composition_limit,std::make_shared<detail::ScopeLifetime>());
 }
 Result<std::unique_ptr<Instance>> Instance::create_bounded(std::shared_ptr<Component> component,ui::ControlKey parent,
-    ui::ControlKey& next_key,std::span<const KeyBinding> keys,std::span<const InputValue> inputs,const Instance* previous,std::size_t budget) {
+    ui::ControlKey& next_key,std::span<const KeyBinding> keys,std::span<const InputValue> inputs,std::size_t budget,std::shared_ptr<detail::ScopeLifetime> lifetime) {
     if (!component) return failure("A UI instance needs a compiled component.");
     if (component->declaration().nodes.size()>budget) return failure("UI composition exceeds 10000 instantiated declaration nodes.");
-    auto data=std::make_unique<detail::InstanceData>(); data->component=std::move(component);
-    data->runtime=&data->component->impl_->runtime;data->parent=parent;data->next_key=&next_key;
-    const auto& declaration=data->declaration();
-    const auto* old=previous && previous->data_->open && previous->data_->runtime==data->runtime &&
-        previous->data_->declaration().name==declaration.name?previous->data_.get():nullptr;
-    data->nodes.resize(declaration.nodes.size());
-    const auto allocate=[&] {
-        if (!next_key || next_key==std::numeric_limits<ui::ControlKey>::max()) throw std::runtime_error("UI control keys exhausted.");
-        return next_key++;
-    };
-    for (std::size_t i=0;i<data->nodes.size();++i) {
-        const auto at=std::ranges::find_if(keys,[&](const auto& key){return key.node==declaration.nodes[i].name;});
-        auto& node=data->nodes[i];
-        if (old) {
-            const auto found=std::ranges::find_if(old->declaration().nodes,[&](const auto& value) {
-                return value.name==declaration.nodes[i].name && value.kind==declaration.nodes[i].kind && value.component_type==declaration.nodes[i].component_type;
-            });
-            if (found!=old->declaration().nodes.end()) node.previous=&old->nodes[static_cast<std::size_t>(found-old->declaration().nodes.begin())];
-        }
-        node.control.key=at!=keys.end() && at->key?at->key:node.previous?node.previous->control.key:allocate();
-        node.type=data->component->impl_->children[i];
-        if (node.type) for (const auto& input:node.type->declaration().inputs) node.arguments.push_back(initial(input.kind));
-        if (declaration.nodes[i].kind==NodeKind::number_row) {
-            node.label=at!=keys.end() && at->label?at->label:node.previous?node.previous->label:allocate();
-            node.body=at!=keys.end() && at->body?at->body:node.previous?node.previous->body:allocate();
-        }
-    }
-    for (const auto& state:declaration.states)
-        data->states.push_back(state.kind==InputKind::boolean?std::variant<bool,double>{false}:std::variant<bool,double>{0.0});
-    data->dependencies.resize(declaration.bindings.size(),std::vector<bool>(declaration.inputs.size()+declaration.states.size()));
-    data->dirty.resize(declaration.bindings.size(),true);data->reads.resize(declaration.inputs.size()+declaration.states.size());
-    auto code=data->component->impl_->program->pin();if (!code) return std::unexpected(code.error());data->code=std::move(*code);
+    auto data=std::make_unique<detail::InstanceData>();data->runtime=&component->impl_->runtime;data->next_key=&next_key;data->lifetime=std::move(lifetime);
     auto context=data->runtime->create(*data->runtime->native_type<detail::Context>());
-    if (!context) return std::unexpected(context.error());data->context=std::move(*context);
-    auto result=std::unique_ptr<Instance>(new Instance(std::move(data)));
-    auto& mounted=*result->data_;
-    auto bound=mounted.runtime->with_native<detail::Context>(mounted.context.id(),[&](auto& value)->Result<void>{value.owner=&mounted;return {};});
+    if (!context) return std::unexpected(context.error());data->context=std::move(*context);++data->lifetime->created;
+    auto result=std::unique_ptr<Instance>(new Instance(std::move(data)));auto& scope=*result->data_;
+    auto bound=scope.runtime->with_native<detail::Context>(scope.context.id(),[&](auto& value)->Result<void>{value.owner=&scope;return {};});
     if (!bound) return std::unexpected(bound.error());
-    if (auto published=result->publish(inputs);!published) return std::unexpected(published.error());
-    result->data_->initializing=true;
-    auto initialized=result->data_->invoke(0);result->data_->initializing=false;
-    if (!initialized) return std::unexpected(initialized.error());
-    if (old) for (std::size_t i=0;i<declaration.states.size();++i) {
-        const auto& state=declaration.states[i];
-        const auto found=std::ranges::find_if(old->declaration().states,[&](const auto& value){return value.name==state.name && value.kind==state.kind;});
-        if (found!=old->declaration().states.end()) mounted.states[i]=old->states[static_cast<std::size_t>(found-old->declaration().states.begin())];
-    }
-    auto prepared=mounted.prepare(budget);if (!prepared) return std::unexpected(prepared.error());
-    mounted.pending=std::move(*prepared);
-    result->commit_controls(); // A newly constructed scope has never been exposed to Session.
-    for (auto& node:mounted.nodes) node.previous=nullptr;
-    return result;
+    auto prepared=scope.prepare(std::move(component),parent,keys,inputs,budget);if (!prepared) return std::unexpected(prepared.error());
+    scope.pending=std::move(*prepared);result->commit_controls();return result;
 }
-Result<void> Instance::publish(std::span<const InputValue> inputs) {
-    auto& d=*data_;if (!d.open) return failure("UI component is unmounted.");
-    const auto& definitions=d.declaration().inputs;
-    if (inputs.size()!=definitions.size()) return failure("UI component input count does not match its declaration.");
-    for (std::size_t i=0;i<inputs.size();++i) {
-        if (inputs[i].index()!=static_cast<std::size_t>(definitions[i].kind)) return failure("UI component input type mismatch: "+definitions[i].name);
-        if (const auto* number=std::get_if<double>(&inputs[i]);number && !std::isfinite(*number)) return failure("UI numeric inputs must be finite.");
+Result<void> Instance::update(std::span<const InputValue> values,std::shared_ptr<Component> definition) {
+    auto& scope=*data_;if (!scope.open) return failure("UI component is unmounted.");
+    if (!definition) definition=scope.value->component;
+    const bool source_changed=definition!=scope.value->component;
+    if (scope.pending && scope.pending->definition==definition && std::ranges::equal(scope.pending->data.inputs,values)) return {};
+    // LiveDocument may reuse the prepared inputs. Keep that borrow alive if a
+    // different definition supersedes its owning candidate before commit.
+    std::vector<InputValue> retained;
+    if (scope.pending && scope.pending->replacement && values.data()==scope.pending->data.inputs.data()) {
+        retained.assign(values.begin(),values.end());values=retained;
     }
-    if (d.inputs.size()!=inputs.size()) {
-        d.pending.reset();d.inputs.assign(inputs.begin(),inputs.end());return {};
-    }
-    std::vector<std::pair<std::size_t,InputValue>> changes;
-    for (std::size_t i=0;i<inputs.size();++i) if (inputs[i]!=d.inputs[i]) changes.emplace_back(i,inputs[i]);
-    if (changes.empty()) return {};
-    d.input_undo.reserve(d.input_undo.size()+changes.size()); // Allocate before mutating the current view or inputs.
-    d.pending.reset();
-    for (auto& [index,value]:changes) {
-        if (std::ranges::none_of(d.input_undo,[&](const auto& prior){return prior.first==index;}))
-            d.input_undo.emplace_back(index,std::move(d.inputs[index]));
-        d.inputs[index]=std::move(value);d.invalidate(index);
-    }
-    return {};
+    scope.pending.reset();
+    auto prepared=scope.prepare(std::move(definition),scope.value->parent,scope.value->aliases,values,composition_limit);
+    if (!prepared) {reject_controls(source_changed);return std::unexpected(prepared.error());}
+    scope.pending=std::move(*prepared);if (scope.pending) scope.pending->materialize();return {};
 }
 Result<void> Instance::update() {
-    auto& d=*data_;if (!d.open) return failure("UI component is unmounted.");
-    if (d.pending) return {};
-    auto update=d.prepare(composition_limit);
-    if (!update) {reject_controls();return std::unexpected(update.error());}
-    d.pending=std::move(*update);if (d.pending) d.pending->materialize();
-    return {};
+    if (!data_->open) return failure("UI component is unmounted.");
+    return data_->pending?Result<void>{}:update(data_->value->inputs);
 }
 Result<bool> Instance::event(const ui::Action& action) {
-    auto& d=*data_;if (!d.open) return false;
-    if (action.kind!=ui::ActionKind::activate) return false;
-    if (d.pending) return failure("Commit or reject the prepared UI snapshot before accepting new input.");
-    const auto at=std::ranges::find_if(d.declaration().events,[&](const auto& value){return d.nodes[value.node].control.key==action.key;});
-    if (at==d.declaration().events.end()) {
-        for (auto& node:d.nodes) {
+    auto& scope=*data_;if (!scope.open || action.kind!=ui::ActionKind::activate) return false;
+    if (scope.pending) return failure("Commit or reject the prepared UI snapshot before accepting new input.");
+    auto& data=*scope.value;
+    const auto at=std::ranges::find_if(data.declaration().events,[&](const auto& value){return data.nodes[value.node].control.key==action.key;});
+    if (at==data.declaration().events.end()) {
+        for (auto& node:data.nodes) {
             const auto dispatch=[&](Instance& child)->Result<bool> {
-                auto handled=child.event(action);
-                if (handled && *handled) {node.dirty=true;d.publication_pending=true;}
-                return handled;
+                auto handled=child.event(action);if (handled && *handled) {node.dirty=true;data.publication_pending=true;}return handled;
             };
             if (node.child) {auto handled=dispatch(*node.child);if (!handled || *handled) return handled;}
             for (auto& [key,child]:node.repeated) {auto handled=dispatch(*child);if (!handled || *handled) return handled;}
@@ -660,45 +698,39 @@ Result<bool> Instance::event(const ui::Action& action) {
         return false;
     }
     const auto* checked=std::get_if<bool>(&action.value);if (!checked) return failure("Foldout activation requires a bool value.");
-    const auto before=d.states;d.handling_event=true;d.event_checked=*checked;
-    auto handled=d.invoke(at->operation);d.handling_event=false;++d.statistics.event_evaluations;
-    if (!handled) {d.states=before;return std::unexpected(handled.error());}
-    if (d.states!=before && !d.state_undo) d.state_undo=before;
-    return true;
+    const auto before=data.states;data.handling_event=true;data.event_checked=*checked;
+    auto handled=data.invoke(at->operation);data.handling_event=false;++scope.statistics.event_evaluations;
+    if (!handled) {data.states=before;return std::unexpected(handled.error());}
+    if (data.states!=before && !data.state_undo) data.state_undo=before;return true;
 }
-std::span<const ui::Control> Instance::controls() const noexcept {return data_->published;}
+std::span<const ui::Control> Instance::controls() const noexcept {
+    if (data_->pending) return data_->pending->data.published;
+    return data_->value?std::span<const ui::Control>(data_->value->published):std::span<const ui::Control>{};
+}
 Statistics Instance::statistics() const noexcept {
-    auto result=data_->statistics;
+    auto result=data_->statistics;result.instance=data_->context.id();
+    result.scope_creations=data_->lifetime->created;result.scope_retirements=data_->lifetime->retired;
     const auto add=[&](const Instance& child) {const auto stats=child.statistics();result.binding_evaluations+=stats.binding_evaluations;result.event_evaluations+=stats.event_evaluations;};
-    for (const auto& node:data_->nodes) {if (node.child) add(*node.child);for (const auto& [key,child]:node.repeated) add(*child);}
+    if (data_->value) for (const auto& node:data_->value->nodes) {if (node.child) add(*node.child);for (const auto& [key,child]:node.repeated) add(*child);}
     return result;
 }
-void Instance::commit_controls() noexcept {
-    if (data_->pending) {data_->pending->commit();data_->pending.reset();}
+void Instance::commit_controls() noexcept {if (data_->pending) {data_->pending->commit();data_->pending.reset();}}
+void Instance::reject_controls() noexcept {reject_controls(false);}
+void Instance::reject_controls(bool retain_events) noexcept {
+    auto& scope=*data_;scope.pending.reset();if (!scope.value) return;auto& data=*scope.value;
+    const bool changed=!data.input_undo.empty() || (!retain_events && data.state_undo.has_value());
+    for (auto& [index,value]:data.input_undo) data.inputs[index]=std::move(value);data.input_undo.clear();
+    if (!retain_events && data.state_undo) {data.states=std::move(*data.state_undo);data.state_undo.reset();}
+    if (changed) {std::fill(data.dirty.begin(),data.dirty.end(),true);data.publication_pending=true;for (auto& node:data.nodes) node.dirty=true;}
+    for (auto& node:data.nodes) {if (node.child) node.child->reject_controls(retain_events);for (auto& [key,child]:node.repeated) child->reject_controls(retain_events);}
 }
-void Instance::reject_controls() noexcept {
-    auto& d=*data_;d.pending.reset();
-    const bool changed=!d.input_undo.empty() || d.state_undo.has_value();
-    for (auto& [index,value]:d.input_undo) d.inputs[index]=std::move(value);
-    d.input_undo.clear();
-    if (d.state_undo) {d.states=std::move(*d.state_undo);d.state_undo.reset();}
-    if (changed) {std::fill(d.dirty.begin(),d.dirty.end(),true);d.publication_pending=true;for (auto& node:d.nodes) node.dirty=true;}
-    for (auto& node:d.nodes) {
-        if (node.child) node.child->reject_controls();
-        for (auto& [key,child]:node.repeated) child->reject_controls();
-    }
-}
-std::span<const InputValue> Instance::inputs() const noexcept {return data_->inputs;}
+std::span<const InputValue> Instance::inputs() const noexcept {return data_->pending?data_->pending->data.inputs:data_->value->inputs;}
 bool Instance::has_pending() const noexcept {return data_->pending!=nullptr;}
 bool Instance::changes_controls() const noexcept {return data_->pending && data_->pending->control_changes;}
-
 void Instance::close() noexcept {
-    if (!data_ || !data_->open) return;
-    auto& d=*data_;d.open=false;d.pending.reset();
-    for (auto& node:d.nodes) {node.child.reset();node.repeated.clear();}
-    static_cast<void>(d.runtime->with_native<detail::Context>(d.context.id(),[](auto& value)->Result<void>{value.owner=nullptr;return {};}));
-    static_cast<void>(d.runtime->destroy(d.context.id()));d.context.reset();
-    d.code={};d.statistics.node_removals+=d.published.size();d.published.clear();d.dependencies.clear();d.dirty.clear();
-    d.nodes.clear();d.inputs.clear();d.input_undo.clear();d.states.clear();d.state_undo.reset();d.component.reset();
+    if (!data_ || !data_->open) return;auto& scope=*data_;scope.open=false;scope.pending.reset();
+    if (scope.value) scope.statistics.node_removals+=scope.value->published.size();scope.value.reset();
+    static_cast<void>(scope.runtime->with_native<detail::Context>(scope.context.id(),[](auto& value)->Result<void>{value.owner=nullptr;return {};}));
+    static_cast<void>(scope.runtime->destroy(scope.context.id()));scope.context.reset();++scope.lifetime->retired;
 }
 } // namespace atelier::ui_language

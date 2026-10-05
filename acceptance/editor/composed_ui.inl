@@ -106,6 +106,13 @@ ui Board(in bool visible, in Items<Card> rows) {
         "Removing the authoring file invalidated the running UI.");
     save(updated+"\n// recovered\n");
     require(live.revision()==4 && live.diagnostic().empty(),"Restoring identical file content retained an obsolete IO error.");
+    const auto before_rename=*live.statistics("Board");
+    updated.replace(updated.find("Column root"),11,"Column renamed_root");save(updated);
+    const auto after_rename=*live.statistics("Board");
+    require(after_rename.instance==before_rename.instance && after_rename.scope_creations==before_rename.scope_creations &&
+        after_rename.scope_retirements==before_rename.scope_retirements && toggle(1001)==first_toggle &&
+        surface.presented()->find(1001)->incarnation==incarnation && surface.text_input()->token==edit_token,
+        "Repeated root rename recreated scopes, changed the host key or discarded input state.");
     route(surface.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter}));
     require(std::ranges::any_of(actions,[](const auto& action){return action.kind==ui::ActionKind::edit_commit &&
         action.key==6002 && std::get<std::wstring>(action.value)==L"draft 中文";}),"Saved code discarded the text draft before commit.");

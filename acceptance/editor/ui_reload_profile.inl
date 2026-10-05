@@ -15,13 +15,13 @@ void verify_ui_code_reuse() {
     auto old=take(language::Instance::create(first->find("Host"),0,keys,{},initial));
     auto second=take(language::Module::compile(runtime,"reuse.ui.source",reload_source(2),first.get()));
     require(second->compilation().compiled==1 && second->compilation().reused==1,"Leaf edit recompiled unchanged Host dispatch.");
-    auto current=take(language::Instance::create(second->find("Host"),0,keys,{},initial,old.get()));
+    auto current=take(language::Instance::create(second->find("Host"),0,keys,{},initial));
     const auto has_text=[](const language::Instance& instance,std::wstring_view text) {
         return std::ranges::any_of(instance.controls(),[&](const auto& control){return control.text==text;});
     };
     require(has_text(*current,L"Version 2") && has_text(*old,L"Version 1"),"Reused parent retained stale child links or changed old leased code.");
     const std::array<language::InputValue,1> flipped{7.0};
-    take(old->publish(flipped));take(old->update());
+    take(old->update(flipped));
     require(has_text(*old,L"Version 1") && std::ranges::any_of(old->controls(),[](const auto& control){return control.text==L"Version 1" && control.layout.height.value==8;}),
         "Old instance lost its executable lease after replacement.");
 
@@ -82,7 +82,7 @@ void profile_ui_reload(const std::filesystem::path& path) {
     using Clock=std::chrono::steady_clock;
     std::ofstream output(path,std::ios::binary);
     require(static_cast<bool>(output),"Cannot create UI reload profile CSV.");
-    output<<"round,phase,compile_ms,compiled,reused,roots,live_objects,private_bytes,executable_committed_bytes\n";
+    output<<"round,phase,compile_ms,publish_ms,compiled,reused,scope_creations,scope_retirements,roots,live_objects,private_bytes,executable_committed_bytes\n";
     editor::Session document;auto& runtime=document.world().runtime();
     const auto baseline_roots=runtime.root_count(),baseline_live=runtime.live_objects();
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
@@ -91,33 +91,43 @@ void profile_ui_reload(const std::filesystem::path& path) {
     ui::ControlKey keys=40000;
     std::shared_ptr<language::Module> active;
     std::unique_ptr<language::Instance> instance;
+    ObjectId identity;
     const std::array<language::InputValue,1> inputs{0.0};
-    const auto sample=[&](unsigned round,const char* phase,double elapsed,language::Module::Compilation counts) {
+    const auto sample=[&](unsigned round,const char* phase,double elapsed,double publish,language::Module::Compilation counts,language::Statistics scopes) {
         const auto memory=ui_reload_resources();
-        output<<round<<','<<phase<<','<<elapsed<<','<<counts.compiled<<','<<counts.reused<<','<<runtime.root_count()<<','
+        output<<round<<','<<phase<<','<<elapsed<<','<<publish<<','<<counts.compiled<<','<<counts.reused<<','
+            <<scopes.scope_creations<<','<<scopes.scope_retirements<<','<<runtime.root_count()<<','
             <<runtime.live_objects()<<','<<memory.private_bytes<<','<<memory.executable_bytes<<'\n';
     };
-    sample(0,"baseline",0,{});
+    sample(0,"baseline",0,0,{},{});
     for (unsigned round=0;round<120;++round) {
         const auto started=Clock::now();
         auto candidate=take(language::Module::compile(runtime,"profile.ui.source",reload_source(round),active.get()));
         const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-started).count();
-        auto replacement=take(language::Instance::create(candidate->find("Host"),0,keys,{},inputs,instance.get()));
-        auto reply=surface.set_controls(replacement->controls());
+        const auto publish_started=Clock::now();
+        if (instance) take(instance->update(inputs,candidate->find("Host")));
+        else {instance=take(language::Instance::create(candidate->find("Host"),0,keys,{},inputs));identity=instance->statistics().instance;}
+        take(instance->update()); // An idempotent retry must keep the source candidate.
+        auto reply=surface.set_controls(instance->controls());
         require(reply.has_value() && !reply->error && reply->effects.empty(),"UI profile replacement descriptors failed.");
-        replacement->commit_controls();instance=std::move(replacement);active=std::move(candidate);
+        instance->commit_controls();active=std::move(candidate);
+        const auto publish=std::chrono::duration<double,std::milli>(Clock::now()-publish_started).count();
         auto frame=surface.prepare();require(frame.has_value() && surface.accept(*frame),"UI profile replacement frame failed.");
         require(runtime.root_count()==baseline_roots+2 && runtime.live_objects()==baseline_live+2,"UI replacement retained old scopes.");
-        sample(round,active->compilation().reused?"replace":"cold",elapsed,active->compilation());
+        const auto scopes=instance->statistics();
+        require(scopes.instance==identity && scopes.scope_creations==2 && !scopes.scope_retirements,
+            "Source patch rebuilt compatible Runtime scopes.");
+        sample(round,active->compilation().reused?"replace":"cold",elapsed,publish,active->compilation(),scopes);
         require(!language::Module::compile(runtime,"profile.ui.source",reload_source(round)+"\nui Broken() { Text bad { height: missing(); } }",active.get()),
             "UI profile invalid candidate unexpectedly compiled.");
         require(runtime.root_count()==baseline_roots+2 && runtime.live_objects()==baseline_live+2,"Failed UI candidate retained Runtime scopes.");
-        sample(round,"failure",0,{});
+        sample(round,"failure",0,0,{},instance->statistics());
         if (round%30==29) {
             auto removed=surface.set_controls({});require(removed.has_value() && !removed->error && removed->effects.empty(),"UI profile unmount failed.");
-            instance.reset();active.reset();collect(document);
+            instance->close();const auto closed=instance->statistics();instance.reset();active.reset();collect(document);
             require(runtime.root_count()==baseline_roots && runtime.live_objects()==baseline_live,"Closed UI retained roots or live objects.");
-            sample(round,"closed",0,{});
+            require(closed.scope_creations==2 && closed.scope_retirements==2,"UI close did not retire exactly the mounted scopes.");
+            sample(round,"closed",0,0,{},closed);
         }
     }
     output.flush();require(static_cast<bool>(output),"Cannot finish UI reload profile CSV.");

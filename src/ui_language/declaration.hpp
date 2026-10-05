@@ -7,8 +7,8 @@
 namespace atelier::ui_language {
 
 enum class InputKind { boolean, number, edit, text, text_edit, key, items };
-struct Input { std::string name; InputKind kind; std::string item_type; };
-struct State { std::string name; InputKind kind; };
+struct Input { std::string name; InputKind kind; std::string item_type; bool operator==(const Input&) const = default; };
+struct State { std::string name; InputKind kind; bool operator==(const State&) const = default; };
 enum class NodeKind { column, row, text, foldout, number_row, text_field, tree, tree_item, component, repeat };
 enum class Property { text, classes, gap, height, width, padding_left, enabled, selected, collapsed, caption, edit,
     expand_height, icon, tree_parent, expanded, filter, mounted, items,
@@ -18,6 +18,7 @@ struct Node {
     NodeKind kind;
     std::uint32_t parent{}; // Parent slot + 1; zero is the host parent.
     std::string component_type;
+    bool operator==(const Node&) const = default;
 };
 struct Binding { std::uint32_t node{}, operation{}; Property property{}; language::SourcePosition position; };
 struct Event { std::uint32_t node{}, operation{}; };

@@ -121,11 +121,11 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
     take(instance->update());require(surface.set_controls(instance->controls()).has_value(),"Direct transaction snapshot rejected.");instance->commit_controls();
     const std::vector<ui::Control> direct_accepted(instance->controls().begin(),instance->controls().end());
     for (unsigned attempt=0;attempt<3;++attempt) {
-        take(instance->publish(inputs(false,7001,999999)));take(instance->update());
+        take(instance->update(inputs(false,7001,999999)));
         require(!surface.set_controls(instance->controls()),"Invalid tree topology was accepted.");
         instance->reject_controls();instance->reject_controls();instance->commit_controls();
         require(std::ranges::equal(instance->controls(),direct_accepted),"Session refusal changed accepted scopes or controls.");
-        take(instance->publish(inputs(true)));take(instance->update());
+        take(instance->update(inputs(true)));
         require(surface.set_controls(instance->controls()).has_value(),"Direct transaction snapshot rejected.");instance->commit_controls();
         require(find_toggle().key==direct_key && !find_toggle().selected,"Session recovery lost accepted inputs or state.");
     }
@@ -147,11 +147,11 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
     const std::array<language::InputValue,2> hidden{false,language::EditBinding{}},shown{true,language::EditBinding{}};
     auto limited=take(language::Instance::create(limited_type,0,next_key,{},hidden));
     const auto roots=runtime.root_count(),objects=runtime.live_objects();
-    take(limited->publish(shown));const auto excessive=limited->update();
+    const auto excessive=limited->update(shown);
     require(!excessive && excessive.error().message.find("instantiated declaration nodes")!=std::string::npos &&
         runtime.root_count()==roots && runtime.live_objects()==objects && limited->controls().empty(),
         "Empty composition bypassed capacity or retained rejected scopes.");
-    take(limited->publish(hidden));take(limited->update());
+    take(limited->update(hidden));
     require(surface.set_controls(limited->controls()).has_value(),"Capacity refusal did not recover.");limited->commit_controls();
     std::printf("UI reload transaction acceptance: PASS (failed unmount, retained events, repeated refusal, topology recovery, closed code ownership)\n");
 }

@@ -17,7 +17,7 @@ ui PositionRead(in bool choose_left, in double left, in double right) {
     ui::Session surface;
     require(surface.set_surface({{640,480},1,1}).has_value(),"Dynamic UI read surface failed.");
     const auto publish=[&] {
-        take(instance->publish(inputs()));take(instance->update());
+        take(instance->update(inputs()));
         require(surface.set_controls(instance->controls()).has_value(),"Dynamic UI read controls failed.");instance->commit_controls();
         auto frame=surface.prepare();require(frame.has_value() && surface.accept(*frame),"Dynamic UI read layout/draw failed.");
     };
@@ -93,12 +93,11 @@ void verify_ui_boundary_validation(editor::Session& document,ObjectId root,ui::S
     invalid[3].fields.front().slider=ui::SliderRange{7002,10,5};
     invalid[4].fields.front().axis=static_cast<ui::VectorAxis>(255);
     for (const auto& input:invalid) {
-        take(instance->publish(std::array<ui_language::InputValue,1>{input}));
-        const auto rejected=instance->update();
+        const auto rejected=instance->update(std::array<ui_language::InputValue,1>{input});
         require(!rejected && std::ranges::equal(instance->controls(),previous),
             "Invalid EditBinding escaped Result or replaced the last valid component snapshot.");
         draw();
-        take(instance->publish(std::array<ui_language::InputValue,1>{valid}));take(instance->update());draw();
+        take(instance->update(std::array<ui_language::InputValue,1>{valid}));draw();
     }
     const std::array bodies{std::string{"text: \"A\\0B\";"},std::string{"classes: \"1foo\";"},
         std::string{"classes: \""}+std::string(65,'x')+"\";",std::string{"classes: \"a b c d e f g h i j k l m n o p q\";"}};

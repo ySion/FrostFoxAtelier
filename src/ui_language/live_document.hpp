@@ -37,10 +37,6 @@ private:
         std::optional<std::vector<InputValue>> rejected_inputs;
         bool accepted{};
     };
-    struct Version {
-        std::shared_ptr<Module> module;
-        std::map<std::string,Region,std::less<>> regions;
-    };
     struct Stamp {
         std::filesystem::file_time_type time{};
         std::uintmax_t size{};
@@ -50,8 +46,8 @@ private:
     Runtime& runtime_;
     std::filesystem::path path_;
     ui::ControlKey& next_key_;
-    Version active_;
-    std::optional<Version> candidate_;
+    std::map<std::string,Region,std::less<>> regions_;
+    std::shared_ptr<Module> active_,candidate_;
     std::optional<Stamp> stamp_;
     Clock::time_point next_poll_{},changed_at_{};
     std::optional<std::string> attempted_source_;

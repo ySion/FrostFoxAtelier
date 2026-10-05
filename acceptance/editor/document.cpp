@@ -38,6 +38,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "declarative_ui.inl"
 #include "composed_ui.inl"
 #include "ui_reload_transaction.inl"
+#include "ui_source_patch.inl"
 #include "ui_reload_profile.inl"
 }
 int main(int argc, char** argv) {
@@ -55,6 +56,7 @@ int main(int argc, char** argv) {
         verify_declarative_parameters();
         verify_composed_ui();
         verify_ui_reload_transaction();
+        verify_ui_source_patch();
         verify_ui_code_reuse();
         {
             editor::Session single;

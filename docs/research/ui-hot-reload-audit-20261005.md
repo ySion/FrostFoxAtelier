@@ -8,6 +8,8 @@
 
 当前契约与作者用法以[原生声明式 UI](../modules/editor/declarative-ui-proposal.md)为准。本文件记录发现、取舍与验收证据，不另立长期规则。
 
+本记录对应 `404b2e6` 的审计交付。随后保存时整片克隆实例的路径已被[稳定实例上的源码 patch](ui-source-patch-20261005.md)替换；更新调度已定稿为[默认同步更新](../modules/editor/declarative-ui-proposal.md#默认更新策略)。下列性能、结构描述和后续候选项保留为本次审计的历史证据，不代表当前任务优先级。
+
 ## Spec：边界、行为和生命周期
 
 | 严重度 | 问题与触发 | 处理与证据 |
