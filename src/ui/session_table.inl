@@ -2,8 +2,6 @@
         const auto& data=*control.table;
         const auto invalid=[&] { return std::unexpected(Error{ErrorCode::invalid_control,control.key}); };
         if (data.columns.empty() || data.columns.size()>128 || data.rows.size()>1000000 ||
-            !std::isfinite(data.row_height) || data.row_height<12 || data.row_height>256 ||
-            !std::isfinite(data.header_height) || data.header_height<12 || data.header_height>256 ||
             static_cast<unsigned>(data.sort.direction)>static_cast<unsigned>(TableSortDirection::descending)) return invalid();
         std::unordered_set<TableKey> columns,cells;
         TableIndex rows; rows.reserve(data.rows.size());
@@ -123,12 +121,14 @@
             (event.kind!=EventKind::key_down && event.kind!=EventKind::key_up)) return false;
         const auto& data=*box->table;
         const auto selected=box->table_selection;
+        const bool details=box->table_layout.view==TableView::details;
+        const auto selected_column=details && selected.column?selected.column:data.columns.front().key;
         if (event.key==Key::tab) return false; // A table contributes one stop to the ordinary focus order.
         if (event.kind==EventKind::key_up) {
             if (event.key==keyboard_key && keyboard_pressed==focus) {
                 keyboard_pressed=0; keyboard_key=Key::none;
                 if (event.key==Key::enter && selected.row && table_row_enabled(states.at(focus),selected.row))
-                    action(reply,ActionKind::activate,focus,TableSelection{selected.row,selected.column?selected.column:data.columns.front().key},box->action_target);
+                    action(reply,ActionKind::activate,focus,TableSelection{selected.row,selected_column},box->action_target);
                 reply.consumed=reply.redraw=true; return true;
             }
             return false;
@@ -139,7 +139,7 @@
         }
         if (event.key==Key::menu || (event.key==Key::f10 && event.shift)) {
             if (states.at(focus).control.context_target) {
-                const TableSelection selection{selected.row,selected.column?selected.column:data.columns.front().key};
+                const TableSelection selection{selected.row,selected_column};
                 const auto* geometry=published->find_table(focus);
                 float x=box->bounds.x,y=box->bounds.y;
                 if (geometry) for (const auto& cell:geometry->cells) if (cell.row==selection.row && cell.column==selection.column) {
@@ -159,15 +159,17 @@
         const auto row=index.find(selected.row);
         const auto column=std::find_if(data.columns.begin(),data.columns.end(),[&](const auto& column){return column.key==selected.column;});
         auto r=row==index.end()?0:static_cast<int>(row->second);
-        auto c=column==data.columns.end()?0:static_cast<int>(column-data.columns.begin());
-        const auto direction=event.key==Key::up || event.key==Key::page_up || event.key==Key::home?-1:1;
-        if (horizontal) c=std::clamp(c+(event.key==Key::left?-1:1),0,static_cast<int>(data.columns.size())-1);
+        auto c=!details || column==data.columns.end()?0:static_cast<int>(column-data.columns.begin());
+        const auto direction=event.key==Key::left || event.key==Key::up || event.key==Key::page_up || event.key==Key::home?-1:1;
+        if (horizontal && details) c=std::clamp(c+direction,0,static_cast<int>(data.columns.size())-1);
         else if (event.key==Key::home) r=0;
         else if (event.key==Key::end) r=static_cast<int>(data.rows.size())-1;
         else if (row!=index.end()) {
             const auto* geometry=published->find_table(focus);
-            const auto step=(event.key==Key::page_up || event.key==Key::page_down) && geometry?
-                std::max(1,static_cast<int>(geometry->body.height/(data.row_height*surface.dpi_scale))):1;
+            const auto columns=geometry?static_cast<int>(geometry->columns_per_row):1;
+            const auto page=(event.key==Key::page_up || event.key==Key::page_down) && geometry?
+                std::max(1,static_cast<int>(geometry->body.height/geometry->row_stride)):1;
+            const auto step=horizontal?1:page*columns;
             r=std::clamp(r+direction*step,0,static_cast<int>(data.rows.size())-1);
         }
         if (!data.rows[r].enabled) {

@@ -72,6 +72,8 @@ private:
     bool gpu_validation_{};
     std::uint64_t menu_incarnation_{};
     ui::ControlKey menu_return_focus_{};
+    ui::ControlKey menu_context_target_{},menu_context_group_{};
+    ui::TableLayout menu_table_layout_;
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
     renderer::Renderer renderer_;
     std::vector<renderer::MeshInstance> meshes_;

@@ -74,6 +74,8 @@ Session 管理展开状态；`tree_initially_expanded` 只在行进入或更换�
 
 `ControlKind::table` 使用 `Control.table` 引用不可变 `TableData`：列提供稳定 key、标题、DIP 列宽/最小宽度、对齐和是否可排序；行提供稳定 key、启用状态及按列排列的单元格，每格有独立 key、文字和可选图标。宿主负责数据顺序、业务值、排序状态和已提交列宽。`Control.table_selection` 单独保存当前行与列，更新选择复用同一数据快照，不复制全表。
 
+`Control.table_layout` 独立保存 details/list/tiles 呈现及行高、表头高度、卡片宽高和间距。List/Tiles 投影每行首列，Details 显示各列；三者共用一个控件、数据校验、选择、动作和可见文字缓存。卡片列数由当前接受帧的可用宽度决定，窄视图至少一列，首尾部分可见行参与裁剪，末行无额外滚动间距。TableGeometry 记录实际列数和行距供键盘导航使用；呈现改变取消旧按压、列宽拖动与键盘待激活状态，旧帧在接受新几何前不能继续输入。空模型使用 `Control.text` 绘制提示，不伪造资源行。
+
 Session 在同一输入入口管理滚动、焦点和在途列宽预览。固定表头、单元格、分隔线和命中区域共用列几何；`UiFrame::find_table(key)` 发布本次接受帧的数据快照、选择、表头及可见单元格。虚拟行/格 key 是数据身份，不是假造的 ControlKey；整表只有一个布局节点，文字复用现有 TextStore，可见范围以外的缓存及时释放。
 
 单击单元格产生 `select` + `TableSelection{row,column}`，选中行和当前格分别可见。整表是一个 Tab 停靠点；上下、Home/End、PageUp/PageDown 选行，左右选列，越界时显露当前格。双击或 Enter 产生 `activate`，可通过原 `action_target` 路由；平台用 `Event.clicks` 保留原生双击信息。单击与激活不混用，资源创建仍由宿主明确命令执行。
@@ -82,7 +84,7 @@ Session 在同一输入入口管理滚动、焦点和在途列宽预览。固定
 
 行、列和手势均核对当前身份及接受帧数据。新数据的校验和行索引建立仅发生在数据快照变化时，选格不重新扫描整表。右键先发选择，再用真实 Table Control 作为 `ContextMenuRequest.source`，`table` 载荷记录原行/列；宿主菜单在原行消失、禁用或选择改变后关闭，不对后来的选择执行旧菜单动作。表格没有私有业务对象、命令入口或第二套文字编辑会话。
 
-首个消费者是 Asset Browser Details。当前不提供单元格编辑、范围多选、冻结列或 DSL Table 作者语法；这些能力需由实际业务和既有编辑事务继续驱动。
+首个消费者是 Asset Browser Details，通过 DSL 的 `Table` 与 `TableBinding` 接入；[声明式表格合同](../editor/declarative-ui-proposal.md#表格与宿主)说明作者语法和宿主路由。当前不提供单元格编辑、范围多选或冻结列，这些能力需由实际业务和既有编辑事务继续驱动。
 
 ### 滚动与指针
 

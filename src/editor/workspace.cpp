@@ -266,7 +266,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     if (view.key!=control::parameters_tab) content_slot.role=ui::Role::panel;
     if (view.key==control::workbench) { workbench.append(result,view.content); return; }
     if (view.key==control::assets_tab) {
-        assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame);
+        assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame,*ui_document_);
         return;
     }
     if (view.key==control::actors_tab) {

@@ -1,40 +1,57 @@
                 const auto& data=*state.control.table;
+                const auto& layout=state.control.table_layout;
+                const bool details=layout.view==TableView::details,tiles=layout.view==TableView::tiles;
                 const auto selection=state.control.table_selection;
                 const auto padding=effective_padding(state.control,appearance);
                 Rect inner{bounds.x+(padding.left+border/scale)*scale,bounds.y+(padding.top+border/scale)*scale,
                     std::max(0.f,bounds.width-(padding.left+padding.right)*scale-2*border),
                     std::max(0.f,bounds.height-(padding.top+padding.bottom)*scale-2*border)};
                 const auto table_clip=intersect(clip,clip_rect(inner));
-                const auto header_height=std::min(data.header_height*scale,inner.height);
-                const auto row_height=data.row_height*scale;
+                const auto header_height=details?std::min(layout.header_height*scale,inner.height):0.f;
+                const auto row_height=(tiles?layout.tile_height:layout.row_height)*scale;
+                const auto gap=details?0.f:layout.item_gap*scale;
+                const auto stride=row_height+gap;
                 const auto gutter=(appearance.scrollbar_width+2*appearance.scrollbar_inset)*scale;
                 std::vector<float> widths; widths.reserve(data.columns.size());
                 float content_width{};
-                for (const auto& column:data.columns) {
+                if (details) for (const auto& column:data.columns) {
                     const auto width=self.press && self.press->key==key && self.press->table_resize && self.press->table_column==column.key?
                         static_cast<float>(self.press->value):column.width;
                     widths.push_back(width*scale); content_width+=width*scale;
                 }
-                const auto content_height=static_cast<double>(data.rows.size())*row_height;
-                bool vertical=content_height>inner.height-header_height;
                 const bool stable=appearance.scrollbar_gutter==ScrollbarGutter::stable;
-                auto body_width=std::max(0.f,inner.width-((vertical || stable)?gutter:0.f));
-                bool horizontal=content_width>body_width;
-                auto body_height=std::max(0.f,inner.height-header_height-(horizontal?gutter:0.f));
+                auto body_width=std::max(0.f,inner.width-(stable?gutter:0.f));
+                auto body_height=std::max(0.f,inner.height-header_height);
+                std::size_t columns_per_row=1;
+                double content_height{};
+                const auto measure_rows=[&] {
+                    columns_per_row=tiles?std::max(std::size_t{1},static_cast<std::size_t>((body_width+gap)/(layout.tile_width*scale+gap))):1;
+                    const auto rows=(data.rows.size()+columns_per_row-1)/columns_per_row;
+                    content_height=rows?static_cast<double>(rows)*stride-gap:0;
+                };
+                measure_rows();
+                bool vertical=content_height>body_height;
+                bool horizontal=details && content_width>body_width;
+                if (vertical && !stable) body_width=std::max(0.f,inner.width-gutter);
+                horizontal=details && content_width>body_width;
+                body_height=std::max(0.f,inner.height-header_height-(horizontal?gutter:0.f));
+                measure_rows();
                 vertical=content_height>body_height;
                 body_width=std::max(0.f,inner.width-((vertical || stable)?gutter:0.f));
-                horizontal=content_width>body_width;
-                body_height=std::max(0.f,inner.height-header_height-(horizontal?gutter:0.f));
+                measure_rows();
+                if (!details) content_width=body_width;
                 state.scroll_limit=std::max(0.0,static_cast<double>((content_height-body_height)/scale));
                 state.scroll_x_limit=std::max(0.0,static_cast<double>((content_width-body_width)/scale));
+                if (const auto* previous=self.published?self.published->find_table(key):nullptr;
+                    previous && previous->columns_per_row!=columns_per_row) state.table_reveal=true;
                 if (state.table_reveal && body_height>0 && body_width>0) {
                     if (const auto row=state.table_index.find(selection.row);row!=state.table_index.end()) {
-                        const auto top=row->second*static_cast<double>(data.row_height);
+                        const auto top=(row->second/columns_per_row)*static_cast<double>(stride/scale);
                         if (top<state.scroll) state.scroll=top;
-                        if (top+data.row_height>state.scroll+body_height/scale) state.scroll=top+data.row_height-body_height/scale;
+                        if (top+row_height/scale>state.scroll+body_height/scale) state.scroll=top+(row_height-body_height)/scale;
                     }
                     float left{};
-                    for (std::size_t column=0;column<data.columns.size();++column) {
+                    if (details) for (std::size_t column=0;column<data.columns.size();++column) {
                         if (data.columns[column].key==selection.column) {
                             if (widths[column]>=body_width || left/scale<state.scroll_x) state.scroll_x=left/scale;
                             else if ((left+widths[column])/scale>state.scroll_x+body_width/scale)
@@ -49,12 +66,13 @@
                 state.scroll_x=std::clamp(state.scroll_x,0.0,state.scroll_x_limit);
                 TableGeometry table{key,state.control.table,selection,
                     {inner.x,inner.y,body_width,header_height},{inner.x,inner.y+header_height,body_width,body_height},table_clip};
+                table.columns_per_row=columns_per_row;table.row_stride=stride;
                 const auto header_clip=intersect(table_clip,clip_rect(table.header));
                 const auto body_clip=intersect(table_clip,clip_rect(table.body));
                 quad(table.header,header_clip,appearance.indicator_background);
                 std::vector<detail::TextKey> visible_text;
                 const auto paint_text=[&](TableKey id,bool header,std::wstring_view value,Rect cell,Clip cell_clip,
-                    TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f) {
+                    TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) {
                     float x=cell.x+std::max(4.f,appearance.padding.left)*scale;
                     auto width=std::max(0.f,cell.width-(std::max(4.f,appearance.padding.left)+std::max(4.f,appearance.padding.right)+trailing)*scale);
                     const auto color=row_enabled?appearance.foreground:self.style.palette.muted;
@@ -66,10 +84,11 @@
                                 const auto dot=std::max(1.f,scale),pitch=size/4;
                                 for (int i=1;i<=3;++i) quad({x+(icon==Icon::grip_horizontal?i*pitch:size*.5f),
                                     cell.y+cell.height*.5f+(icon==Icon::grip_vertical?(i-2)*pitch:0.f),dot,dot},cell_clip,color);
-                            } else quad({x,cell.y+(cell.height-size)*.5f,size,size},cell_clip,
+                            } else quad({above?cell.x+(cell.width-size)*.5f:x,above?cell.y+4*scale:cell.y+(cell.height-size)*.5f,size,size},cell_clip,
                                 row_enabled?appearance.indicator_foreground.value_or(color):color,
                                 self.text.symbol(icon_symbol(icon),static_cast<std::uint32_t>(std::ceil(size))));
-                            x+=size+4*scale; width=std::max(0.f,width-size-4*scale);
+                            if (above) {const auto used=std::min(cell.height,size+8*scale);cell.y+=used;cell.height-=used;}
+                            else {x+=size+4*scale; width=std::max(0.f,width-size-4*scale);}
                         }
                     }
                     if (value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return;
@@ -85,7 +104,7 @@
                         static_cast<float>(raster.coverage->height)},text_clip,color,raster.coverage);
                 };
                 float column_x=inner.x-static_cast<float>(state.scroll_x)*scale;
-                for (std::size_t column=0;column<data.columns.size();++column) {
+                if (details) for (std::size_t column=0;column<data.columns.size();++column) {
                     const auto& descriptor=data.columns[column];
                     const Rect header{column_x,inner.y,widths[column],header_height};
                     if (visible(header,header_clip)) {
@@ -103,11 +122,25 @@
                     column_x+=widths[column];
                 }
                 const auto first=std::min(data.rows.size(),static_cast<std::size_t>(std::max(0.0,
-                    std::floor((static_cast<double>(body_clip.top)-table.body.y+state.scroll*scale)/row_height))));
+                    std::floor((static_cast<double>(body_clip.top)-table.body.y+state.scroll*scale)/stride)))*columns_per_row);
                 for (auto row=first;row<data.rows.size();++row) {
-                    const auto y=table.body.y+static_cast<float>(row*static_cast<double>(row_height)-state.scroll*scale);
+                    const auto y=table.body.y+static_cast<float>((row/columns_per_row)*static_cast<double>(stride)-state.scroll*scale);
                     if (y>=body_clip.bottom) break;
                     const auto& descriptor=data.rows[row];
+                    if (!details) {
+                        const auto width=tiles?std::min(layout.tile_width*scale,body_width):body_width;
+                        const Rect cell{table.body.x+static_cast<float>(row%columns_per_row)*(layout.tile_width*scale+gap),y,width,row_height};
+                        if (!visible(cell,body_clip)) continue;
+                        const auto cell_clip=intersect(body_clip,clip_rect(cell));
+                        const auto& content=descriptor.cells.front();
+                        table.cells.push_back({descriptor.key,data.columns.front().key,content.key,cell,cell_clip});
+                        if (descriptor.key==selection.row) quad(cell,cell_clip,appearance.selection);
+                        paint_text(content.key,false,content.text,cell,cell_clip,tiles?TextAlign::center:TextAlign::left,content.icon,
+                            enabled && descriptor.enabled,0,tiles);
+                        if (self.focus==key && descriptor.key==selection.row)
+                            paint_box(cell,cell_clip,{0,0,0,0},{},{},std::max(1.f,scale),appearance.border,BorderStyle::solid);
+                        continue;
+                    }
                     if (row%2) quad({table.body.x,y,body_width,row_height},body_clip,appearance.tree_alternate);
                     if (descriptor.key==selection.row) quad({table.body.x,y,body_width,row_height},body_clip,appearance.selection);
                     float x=inner.x-static_cast<float>(state.scroll_x)*scale;
@@ -128,7 +161,9 @@
                     column_x+=width;
                     quad({column_x-scale,inner.y,scale,header_height+body_height},intersect(table_clip,clip_rect({inner.x,inner.y,body_width,header_height+body_height})),appearance.tree_line);
                 }
-                quad({inner.x,inner.y+header_height-scale,body_width,scale},header_clip,appearance.tree_line);
+                if (details) quad({inner.x,inner.y+header_height-scale,body_width,scale},header_clip,appearance.tree_line);
+                if (data.rows.empty()) paint_text(0,false,state.control.text,
+                    {table.body.x,table.body.y,body_width,layout.row_height*scale},body_clip,TextAlign::left,ControlIcon::none,false);
                 const auto paint_bar=[&](bool horizontal_bar,Rect bar_bounds,double maximum,double value,double page) {
                     if (maximum<=0 || bar_bounds.width<=0 || bar_bounds.height<=0) return;
                     ScrollbarGeometry bar;

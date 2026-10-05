@@ -33,11 +33,10 @@
         reply.redraw=true;
     }
     void context_request(Reply& reply, const ControlBox& box, float x, float y, std::optional<TableSelection> table={}) {
-        const auto& control=states.at(box.key).control;
         finish_edit(reply,true);
         if (focusable(box.kind)) focus=box.key;
-        action(reply,ActionKind::context_menu,control.context_target?control.context_target:box.key,
-            ContextMenuRequest{box.key,control.context_group,x,y,table});
+        action(reply,ActionKind::context_menu,box.context_target?box.context_target:box.key,
+            ContextMenuRequest{box.key,box.context_group,x,y,table});
         reply.consumed=reply.redraw=true;
     }
     void execute_edit_command(Reply& reply, EditCommand command) {

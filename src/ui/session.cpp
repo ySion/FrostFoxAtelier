@@ -96,7 +96,13 @@ Result<void> validate_control_properties(const Control& control) {
         (control.click_action && control.kind!=ControlKind::splitter) ||
         (control.action_target && control.kind!=ControlKind::button && control.kind!=ControlKind::table) ||
         ((control.kind==ControlKind::table)!=static_cast<bool>(control.table)) ||
-        (control.kind!=ControlKind::table && control.table_selection!=TableSelection{}) ||
+        (control.kind!=ControlKind::table && (control.table_selection!=TableSelection{} || control.table_layout!=TableLayout{})) ||
+        static_cast<unsigned>(control.table_layout.view)>static_cast<unsigned>(TableView::tiles) ||
+        !std::isfinite(control.table_layout.row_height) || control.table_layout.row_height<12 || control.table_layout.row_height>256 ||
+        !std::isfinite(control.table_layout.header_height) || control.table_layout.header_height<12 || control.table_layout.header_height>256 ||
+        !std::isfinite(control.table_layout.tile_width) || control.table_layout.tile_width<12 || control.table_layout.tile_width>4096 ||
+        !std::isfinite(control.table_layout.tile_height) || control.table_layout.tile_height<12 || control.table_layout.tile_height>4096 ||
+        !std::isfinite(control.table_layout.item_gap) || control.table_layout.item_gap<0 || control.table_layout.item_gap>256 ||
         (control.button_behavior!=ButtonBehavior::command && control.kind!=ControlKind::button) ||
         (control.menu_behavior!=MenuBehavior::command && (control.kind!=ControlKind::menu_item || control.menu_branch || control.edit_command)) ||
         ((control.menu_behavior==MenuBehavior::radio)!=(control.radio_group!=0)) ||
@@ -239,8 +245,10 @@ struct Session::Impl {
         const auto found = states.find(box.key);
         if (found == states.end() || found->second.incarnation != box.incarnation ||
             found->second.control.kind != box.kind || found->second.control.action_target!=box.action_target ||
+            found->second.control.context_target!=box.context_target || found->second.control.context_group!=box.context_group ||
             found->second.control.button_behavior!=box.button_behavior || found->second.control.menu_behavior!=box.menu_behavior ||
-            found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table || !box.enabled) return false;
+            found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table ||
+            found->second.control.table_layout!=box.table_layout || !box.enabled) return false;
         if (box.kind==ControlKind::tree_item) {
             if (found->second.tree_hidden || !found->second.tree_enabled) return false;
             if (box.tree_parent!=found->second.control.tree_parent || box.parent!=found->second.control.parent) return false;
@@ -601,7 +609,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout});
             const auto kind = state.control.kind;
             if (kind==ControlKind::tree_item) {
                 const auto indent=self.states.at(state.control.parent).resolved->tree_indent*scale;

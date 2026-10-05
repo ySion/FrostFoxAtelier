@@ -157,6 +157,7 @@
                 const auto* previous=live(key);
                 if (!future || !future->enabled || future->layout.collapsed || (previous &&
                     (future->kind!=previous->control.kind || future->action_target!=previous->control.action_target ||
+                     future->context_target!=previous->control.context_target || future->context_group!=previous->control.context_group ||
                      future->button_behavior!=previous->control.button_behavior || future->menu_behavior!=previous->control.menu_behavior ||
                      future->radio_group!=previous->control.radio_group || (future->kind==ControlKind::tree_item &&
                      (future->tree_parent!=previous->control.tree_parent || future->parent!=previous->control.parent))))) return true;
@@ -170,7 +171,7 @@
             next_popup=control.layout.collapsed?0:control.key;
         const auto table_changed=[&](ControlKey key,bool selection) {
             const auto* future=lookup(key); const auto* previous=live(key);
-            return future && previous && (future->table!=previous->control.table ||
+            return future && previous && (future->table!=previous->control.table || future->table_layout!=previous->control.table_layout ||
                 (selection && future->table_selection!=previous->control.table_selection));
         };
         const bool cancelling=(press && (absent(press->key) || table_changed(press->key,false))) || (edit && absent(edit->key));
@@ -272,7 +273,7 @@
         for (auto& change:changes) {
             auto& state=*change.state;
             const auto& before=change.value; const auto& after=state.control;
-            state.table_reveal|=before.table_selection!=after.table_selection;
+            state.table_reveal|=before.table_selection!=after.table_selection || before.table_layout!=after.table_layout;
             if (before.table && !after.table) {
                 for (auto text_key:state.table_text) text.erase(text_key);
                 state.table_text.clear(); state.table_index.clear(); state.scroll_x=state.scroll_x_limit=0;

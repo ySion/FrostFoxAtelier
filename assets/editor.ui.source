@@ -272,3 +272,123 @@ ui Parameters(in Text type_name, in TextEditBinding name,
         }
     }
 }
+
+ui AssetBrowserShell(in Items<ActorRow> directories, in TextEditBinding query,
+                     in Text path, in Text status,
+                     in ActionBinding back, in ActionBinding up, in ActionBinding clear,
+                     in bool filter_selected, in double view_icon,
+                     in double back_icon, in double up_icon, in double search_icon,
+                     in double clear_icon, in double filter_icon, in double more_icon) {
+    Row toolbar {
+        classes: "browser-toolbar";
+        gap: 2;
+        wrap: false;
+        padding_left: 4;
+        padding_top: 3;
+        padding_right: 4;
+        padding_bottom: 3;
+        Button back {
+            icon: input.back_icon;
+            action: input.back;
+            width: 23;
+            classes: "browser-tool browser-icon";
+        }
+        Button up {
+            icon: input.up_icon;
+            action: input.up;
+            width: 23;
+            classes: "browser-tool browser-icon";
+        }
+        Combo path {
+            text: input.path;
+            context: node.path;
+            expand_width: true;
+            min_width: 32;
+            classes: "browser-path";
+        }
+        Row search_area {
+            expand_width: true;
+            min_width: 44;
+            classes: "browser-search";
+            Text search_icon {
+                icon: input.search_icon;
+                width: 18;
+                height: 23;
+                classes: "browser-search-icon";
+            }
+            TextField query {
+                edit: input.query;
+                min_width: 8;
+                classes: "browser-search-input";
+            }
+            Button clear {
+                icon: input.clear_icon;
+                action: input.clear;
+                width: 18;
+                classes: "browser-tool browser-icon";
+            }
+        }
+        Combo filter {
+            icon: input.filter_icon;
+            selected: input.filter_selected;
+            context: node.filter;
+            width: 23;
+            classes: "browser-tool browser-icon";
+        }
+        Combo view {
+            icon: input.view_icon;
+            context: node.view;
+            width: 23;
+            classes: "browser-tool browser-icon";
+        }
+        Combo actions {
+            icon: input.more_icon;
+            context: node.actions;
+            width: 23;
+            classes: "browser-tool browser-icon";
+        }
+    }
+    Row body {
+        gap: 1;
+        wrap: false;
+        expand_height: true;
+        Tree tree {
+            classes: "browser-directories";
+            shrink_width: 144;
+            min_width: 96;
+            expand_height: true;
+            Repeat directories { items: input.directories; }
+        }
+        Column content {
+            min_width: 64;
+            expand_height: true;
+        }
+    }
+    Text status {
+        text: input.status;
+        height: 18;
+        padding_left: 5;
+        padding_right: 5;
+        caption: true;
+        classes: "browser-status";
+    }
+}
+
+ui AssetResults(in TableBinding model, in ActionBinding open, in Key context, in Text view, in Text empty) {
+    Table results {
+        model: input.model;
+        action: input.open;
+        context: input.context;
+        view: input.view;
+        empty_text: input.empty;
+        row_height: 23;
+        header_height: 25;
+        tile_width: 90;
+        tile_height: 66;
+        item_gap: 2;
+        classes: "asset-table";
+        expand_height: true;
+        min_width: 64;
+        padding_left: 0;
+    }
+}

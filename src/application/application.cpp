@@ -161,7 +161,7 @@ Result<void> Application::action(const ui::Action& source) {
         const auto selected=workspace_.assets.selected();
         if (!selected) return {};
         if (const auto* cell=std::get_if<ui::TableSelection>(&event.value);
-            cell && workspace_.assets.control(selected->key)!=cell->row) return {};
+            cell && workspace_.assets.row_key(selected->key)!=cell->row) return {};
         if (event.key==editor::browser_control::add && selected->kind==editor::AssetKind::mesh)
             return execute(editor::Command::create_static_mesh,selected->key);
         if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
@@ -383,8 +383,9 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     effects(ui_.cancel_interaction());
     for (auto& submenu:submenus_) submenu->hide();
     menu_path_.clear();
-    workspace_.assets.select_context(request.source);
     workspace_.menu=request; menu_incarnation_=source->incarnation;
+    menu_context_target_=source->context_target; menu_context_group_=source->context_group;
+    menu_table_layout_=source->table_layout;
     orbiting_=false; window_.capture(false);
 }
 void Application::close_menu(bool restore_focus) {
@@ -400,12 +401,16 @@ void Application::close_menu(bool restore_focus) {
         if (restore_focus) effects(ui_.focus(menu_return_focus_));
     }
     menu_return_focus_=0; menu_incarnation_=0;
+    menu_context_target_=menu_context_group_=0;
+    menu_table_layout_={};
 }
 void Application::update_menu() {
     if (!workspace_.menu || workspace_.menu_items.empty()) { close_menu(); return; }
     const auto request=*workspace_.menu;
     const auto* source=ui_.presented()->find(request.source);
     if (!source || source->incarnation!=menu_incarnation_ || !source->enabled ||
+        source->context_target!=menu_context_target_ || source->context_group!=menu_context_group_ ||
+        source->table_layout!=menu_table_layout_ ||
         !live_table_context(*ui_.presented(),request,true) ||
         source->bounds.y>=source->clip.bottom || source->bounds.y+source->bounds.height<=source->clip.top) { close_menu(); return; }
     const bool below=editor::control::is_menu(source->key) || source->kind==ui::ControlKind::combo;

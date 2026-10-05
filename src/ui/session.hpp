@@ -62,6 +62,7 @@ struct Control {
     ControlKey radio_group{}; // Nonzero for radio menu items; at most one selected item per group.
     std::shared_ptr<const TableData> table; // table only; no layout children or synthetic row controls.
     TableSelection table_selection; // Lightweight host selection, independent of immutable row storage.
+    TableLayout table_layout;
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -87,6 +88,8 @@ struct ControlBox {
     ControlKey radio_group{};
     std::shared_ptr<const TableData> table; // Exact immutable content accepted with this geometry.
     TableSelection table_selection;
+    ControlKey context_target{}, context_group{}; // Accepted menu route, including group actions.
+    TableLayout table_layout;
 };
 struct EditToken {
     ControlKey key{};
@@ -155,6 +158,8 @@ struct TableGeometry {
     Clip clip;
     std::vector<TableColumnGeometry> columns{};
     std::vector<TableCellGeometry> cells{}; // Only visible cells; stable data identities, never ControlKeys.
+    std::size_t columns_per_row{1}; // Actual accepted grid width for keyboard navigation.
+    float row_stride{}; // Physical pixels between visual rows.
 };
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;

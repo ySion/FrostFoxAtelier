@@ -27,7 +27,7 @@ struct EditorAcceptanceAccess {
     static void mark_saved(Application& app) { app.effects(app.ui_.cancel_interaction()); app.document_->mark_saved(); }
     static Result<void> command(Application& app,editor::Command command,std::string_view argument={}) { return app.execute(command,argument); }
     static auto asset_key(const Application& app,std::string_view resource) {
-        return app.workspace_.assets.control(resource);
+        return app.workspace_.assets.row_key(resource);
     }
     static auto directory_key(const Application& app,const std::filesystem::path& path) {
         return app.workspace_.assets.directory_control(path);
@@ -46,12 +46,16 @@ struct EditorAcceptanceAccess {
         if (!passed) throw std::runtime_error(std::string(message)+"; reason="+std::to_string(reason)+
             "; orbit="+std::to_string(app.orbiting_)+"; last=("+std::to_string(app.last_x_)+","+std::to_string(app.last_y_)+")");
     }
-    static void move_camera_pointer(Application& app,POINT target,UINT reason=0) {
-        POINT before{}; require_camera(app,GetCursorPos(&before)!=FALSE,reason,"Cannot read the camera pointer");
+    static void move_pointer(Application& app,POINT target,UINT reason=0) {
+        const auto verify=[&](bool passed,const char* message) {
+            if (!passed) throw std::runtime_error(std::string(message)+"; reason="+std::to_string(reason)+
+                "; target=("+std::to_string(target.x)+","+std::to_string(target.y)+")");
+        };
+        POINT before{}; verify(GetCursorPos(&before)!=FALSE,"Cannot read the acceptance pointer");
         ScreenToClient(app.window(),&before);
         const bool changed=before.x!=target.x || before.y!=target.y;
         auto screen=target; ClientToScreen(app.window(),&screen);
-        require_camera(app,SetCursorPos(screen.x,screen.y)!=FALSE,reason,"Cannot move the camera pointer");
+        verify(SetCursorPos(screen.x,screen.y)!=FALSE,"Cannot move the acceptance pointer");
         // SetCursorPos updates the physical position before its queued movement is
         // delivered. Use that single move source and wait for the actual target event.
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(1);
@@ -65,10 +69,10 @@ struct EditorAcceptanceAccess {
             if (delivered || !changed) break;
             MsgWaitForMultipleObjectsEx(0,nullptr,10,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
         } while (std::chrono::steady_clock::now()<deadline);
-        require_camera(app,delivered || !changed,reason,"Camera pointer move was not delivered before the deadline");
-        POINT actual{}; require_camera(app,GetCursorPos(&actual)!=FALSE,reason,"Cannot verify the camera pointer");
+        verify(delivered || !changed,"Pointer move was not delivered before the deadline");
+        POINT actual{}; verify(GetCursorPos(&actual)!=FALSE,"Cannot verify the acceptance pointer");
         ScreenToClient(app.window(),&actual);
-        require_camera(app,actual.x==target.x && actual.y==target.y,reason,"Camera pointer moved outside the requested target");
+        verify(actual.x==target.x && actual.y==target.y,"Pointer moved outside the requested target");
     }
     static void menu_items(Application& app,std::span<const ui::MenuItem> items) {
         if (!app.popup_ || !app.workspace_.menu) throw std::runtime_error("Menu fixture needs an open native host.");
@@ -187,12 +191,13 @@ POINT table_header_centre(Application& app,ControlKey owner,atelier::ui::TableKe
 void mouse(Application& app, UINT message, POINT point) {
     require_input_focus(app);
     KeyStateScope modifiers;
-    // Unlike atomic click_at(), this helper deliberately holds gestures across
-    // rendered frames. Capture-generated native movement must start at the same point.
+    // Held gestures use one native movement source, including the initial point.
+    // Mixing SendMessage movement with capture-generated movement can reverse a drag.
     if (message==WM_LBUTTONDOWN) {
-        auto native_point=point; ClientToScreen(app.window(),&native_point);
-        require(SetCursorPos(native_point.x,native_point.y)!=FALSE,"Cannot align the held gesture pointer.");
-        tick(app,2);
+        atelier::application::EditorAcceptanceAccess::move_pointer(app,point);
+    } else if (message==WM_MOUSEMOVE && GetCapture()==app.window() && !app.menu_window()) {
+        atelier::application::EditorAcceptanceAccess::move_pointer(app,point);
+        tick(app,1); return;
     }
     SendMessageW(app.window(), message, message == WM_LBUTTONUP ? 0 : MK_LBUTTON, MAKELPARAM(point.x, point.y));
     tick(app, 1);
@@ -721,6 +726,15 @@ void verify_transform_projection(Application& app, const std::filesystem::path& 
         app.step(&restored) && restored.depth == original.depth, "TRS history did not restore the original value and GPU projection.");
 }
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
+    // Resize/DPI cases can leave the restored fixture partly off screen. Native
+    // scrollbar and field gestures need their whole accepted area to be reachable.
+    MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
+    require(GetMonitorInfoW(MonitorFromWindow(app.window(),MONITOR_DEFAULTTONEAREST),&monitor)!=FALSE,
+        "Cannot query the list workload monitor.");
+    const auto area=monitor.rcWork;
+    require(SetWindowPos(app.window(),nullptr,area.left,area.top,area.right-area.left,area.bottom-area.top,
+        SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"Cannot fit the list workload window on its monitor.");
+    tick(app,4);
     // Populate through the real Create menu and its native popup surface.
     while (actors(app).size() + 1 < atelier::editor::Session::maximum_actors) {
         const auto before_count = actors(app).size();
@@ -1058,10 +1072,10 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     using CameraInput=atelier::application::EditorAcceptanceAccess;
     require(app.step(&camera_before), "Camera capture failed.");
     auto view = centre(app, control::viewport);
-    CameraInput::move_camera_pointer(app,view); tick(app,1);
+    CameraInput::move_pointer(app,view); tick(app,1);
     SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
     view.x += 42; view.y += 18;
-    CameraInput::move_camera_pointer(app,view); tick(app,1);
+    CameraInput::move_pointer(app,view); tick(app,1);
     SendMessageW(app.window(), WM_RBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
     require(app.step(&camera_orbit) && camera_orbit.depth != camera_before.depth, "Right-drag orbit did not change the rendered scene.");
     ClientToScreen(app.window(), &view);
@@ -1071,12 +1085,12 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     for (const auto reason : {WM_CANCELMODE, WM_ACTIVATEAPP, WM_CAPTURECHANGED, WM_KILLFOCUS}) {
         require_input_focus(app);
         view = centre(app, control::viewport);
-        CameraInput::move_camera_pointer(app,view,reason); tick(app,1);
+        CameraInput::move_pointer(app,view,reason); tick(app,1);
         SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
         CameraInput::require_camera(app,GetCapture()==app.window(),reason,"Orbit did not acquire window capture");
         const auto before = CameraInput::camera_view(app);
         view.x += 18; view.y += 9;
-        CameraInput::move_camera_pointer(app,view,reason); tick(app,1);
+        CameraInput::move_pointer(app,view,reason); tick(app,1);
         CameraInput::require_camera(app,CameraInput::camera_view(app)!=before,reason,"Camera cancellation did not start a real orbit");
         if (reason == WM_CAPTURECHANGED) ReleaseCapture();
         else if (reason == WM_KILLFOCUS) SetFocus(nullptr);
@@ -1085,7 +1099,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
         CameraInput::require_camera(app,GetCapture()!=app.window(),reason,"Native cancellation retained camera-owned capture");
         const auto stopped = CameraInput::camera_view(app);
         view.x += 24; view.y += 12;
-        CameraInput::move_camera_pointer(app,view,reason); tick(app,1);
+        CameraInput::move_pointer(app,view,reason); tick(app,1);
         CameraInput::require_camera(app,CameraInput::camera_view(app)==stopped,reason,
             "Native cancellation left camera orbit active after capture release");
         SendMessageW(app.window(), WM_RBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);

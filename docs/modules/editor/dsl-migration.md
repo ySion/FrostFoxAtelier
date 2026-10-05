@@ -30,11 +30,11 @@
 | Scene View | 相机环绕/缩放；路径栏末尾两个 DSL 图标菜单，模式/边线/拓扑使用三组单选，Guides 使用独立勾选 | 对象拾取、变换工具、落点预览尚缺 | Viewport 是渲染槽。拾取/gizmo/吸附需要 renderer + World 合同，不能由按钮外观伪装已实现 |
 | Parameters | 类型+名称、Position、Foldout、随 Actor 组成提供的属性页签；公共查询位于页签之前，筛选字段与组件 | 完整 TRS、组件增加/删除、真实资源引用字段；统一 label/field 中心、窄宽换行策略、禁用原因 | 现有结构已迁移；控件编辑继续走同一事务 |
 | Scene Tree | World→Actor、类型图标、过滤、展开、选择和键盘导航；已部分 DSL | 空/无匹配区分；行上下文动作和重命名入口；多选需先定义业务选择模型 | 保持只展示 Actor 关系与类型；Component 不塞回树。过滤/展开由共享 Tree 管理 |
-| Asset Browser | 常驻 Project/Engine 目录树、同行路径/搜索、紧凑菜单；Details 共享 Table，支持排序/列宽/键盘选择及双击/Enter 打开 | 导航外壳与三种视图的 DSL 声明、真实缩略图 | 复用已完成的 Table 和选择合同，继续迁移，保留虚拟化 |
+| Asset Browser | 工具行、目录树、状态行和 List/Details/Tiles 全部结果由 DSL 声明；共享 Table 支持排序/列宽、网格导航、虚拟绘制及双击/Enter 打开 | 真实缩略图、资产拖放 | 后续按业务补齐缩略图与放置；继续复用数据、选择及资源操作入口 |
 | Controls 实验台 | 数值、文本、颜色元组、下拉、勾选、页签、禁用和窄宽案例 | 加入语义不同的 Button/Icon/Toggle/Choice/Menu、表格键盘和长内容；与真实面板共用组合 | 最终迁入 DSL，作为真实控件工作台，不能保留一套仅用于展示的特殊实现 |
 | 状态与诊断 | 状态文字、Actor 数量、源码编译错误摘要 | 错误需要可展开的完整诊断、定位入口；成功状态不永久覆盖当前任务信息 | 结构与文本组合迁入 DSL，错误来源仍是实际服务结果 |
 
-目前“没有控件”与“控件存在但 DSL 未开放”必须分别处理：Checkbox、Combo、Slider、参数页签和 Table 已有原生实现；Table 尚未开放 DSL 作者语法；对象拾取、跨区资源放置需要业务与渲染配合。不能为迁移再实现一个文本编辑器或第二套参数拖调。
+目前“没有控件”与“控件存在但 DSL 未开放”必须分别处理：Table 和 Combo 已开放 DSL；Checkbox、Slider 等已有原生实现，但尚无直接作者节点；对象拾取、跨区资源放置需要业务与渲染配合。不能为迁移再实现一个文本编辑器或第二套参数拖调。
 
 ## 按钮与状态模型
 
@@ -51,7 +51,7 @@
 
 hover、pressed、focus、checked、selected、open、disabled、invalid、modified 不应共用一个 active 标记。键盘焦点仍须可辨认，但无需恢复全局黄色描边；颜色、标记和字重服务各自含义。关闭菜单后清除 open，不能把焦点当菜单仍开着。普通菜单项与勾选/单选项在同一 MenuItem 模型中表达，复用现有输入和绘制链。
 
-DSL 现已开放 `Button`、`ToggleButton`、`ChoiceButton` 和 `Combo`，分别接入命令、布尔请求、互斥组选项和既有弹出菜单入口。`List` 复用共享滚动容器。菜单 check/radio 和 Table 已在共享控件链实现，菜单内容与 Table 的作者语法仍待开放。
+DSL 现已开放 `Button`、`ToggleButton`、`ChoiceButton` 和 `Combo`，分别接入命令、布尔请求、互斥组选项和既有弹出菜单入口。`List` 复用共享滚动容器，`Table` 接收有类型的 TableBinding。菜单 check/radio 已在共享控件链实现，菜单内容的作者语法仍待开放。
 
 ## 表格应达到的最低完整度
 
@@ -129,7 +129,7 @@ flowchart LR
 | 5：完整 Editor 根 | 壳层、DockSpace/Viewport 槽、footer、Controls、可重复 pane 实例 | 根布局分配唯一尺寸；删除剩余旧界面构造；不会以类型名代替任意实例身份 |
 | 后续操作扩展 | 内部资产拖放，再到外部文件导入 | 渲染拾取/落点、业务载荷、取消、一次撤销有完整合同和端到端结果 |
 
-当前完整工具架与现有参数区结构已迁入 DSL。参数区的业务能力仍是名称、Position、组件清单；完整 TRS 与组件增删入口继续按真实消费者补齐。菜单、Asset Browser、Controls、总外壳与停靠内容槽仍未完成迁移。
+当前完整工具架、现有参数区、Asset Browser 外壳与全部结果视图已迁入 DSL。参数区的业务能力仍是名称、Position、组件清单；完整 TRS 与组件增删入口继续按真实消费者补齐。菜单内容、Controls、总外壳与停靠内容槽仍未完成迁移。
 
 ## 当前落实与验收
 
@@ -140,17 +140,19 @@ flowchart LR
 - ViewportTools 将显示设置收进路径栏末尾的两个图标菜单，释放原整行空间；共享 MenuItem 明确表达普通命令、勾选和互斥组。参数搜索位于属性页签之前，同时筛选字段与组件；页签由当前 Actor 的组成提供，移除常驻操作说明。
 - 统一相机和 UI 的取消清理，覆盖取消模式、应用失活、失焦及捕获丢失，避免无按键移动继续旋转。
 - 源码保存可同时修改工具和参数外壳布局，按原同步事务准备/提交；合法草稿换焦点仍提交，非法草稿切页回滚，不改变既有编辑约定。
-- Details 的原多列按钮与覆盖标签已替换为共享 Table；行/单元格身份、表头、列宽、排序与输入共用接受帧几何。列宽由浏览器保存，拖动预览由 Session 拥有，取消不修改已提交列宽。Table 与菜单 DSL、跨区拖放仍按上表排期。
+- Details 通过 `TableBinding` 接入原生 Table，行/单元格身份、表头、列宽、排序与输入共用接受帧几何。列宽由浏览器保存，拖动预览由 Session 拥有，取消不修改已提交列宽。
+- AssetBrowserShell 声明工具行、目录树、内容槽与状态行，AssetResults 的一个 Table 节点声明全部结果视图。浏览器不再构造 Control；旧 VirtualList、可见范围估算、滚动 key 轮换、逐项 Button、逐项菜单选择及旧样式均已删除。目录 Items 按目录、导航和已接受展开状态更新，空闲帧复用。
+- TableData 负责共享行列快照，TableLayout 负责视图与密度；切换 List/Details/Tiles 保留同一个控件和数据。绘制、点击、网格键盘移动、重排与末行显露采用同一份当帧几何；呈现变更取消旧按压和旧菜单。DSL 保存可以修改卡片宽高和间距，非法尺寸拒绝整批候选。
+- `context` 使用类型化 Key 并保存接受帧路由；换绑取消旧按压和旧菜单。`shrink_width` 复用既有 Flex，目录栏可由 144 DIP 收缩到 96 DIP；布局由 DSL 表达，宿主不再覆盖其尺寸。
 
-2026-10-06 共享 Table 与 Details 接入后的验收：
+2026-10-06 资源浏览器三种结果视图迁入 DSL 后的验收：
 
 | 验收 | Dev | Release | 覆盖 |
 | --- | --- | --- | --- |
 | UI 公共端到端 | 23/23 PASS | 23/23 PASS | 表格固定表头、1500 行可见绘制与文字缓存、键盘分页/列显露、排序、列宽捕获/最小值/取消、旧数据拒绝、Enter 换绑后的自动重复取消；原输入、菜单与树合同 |
-| 编辑器文档与 DSL | PASS | PASS | Name/Type/原始字节数排序、目录优先/稳定身份、列宽及跨视图状态、2600 文件分页/末行显露、不复制选择数据；240/420/560 DIP 与 1/1.5/2 DPI；原 Source/JIT 与业务链 |
-| 正式编辑器普通窗口 | PASS | PASS | 原生表头点击、单元格导航、Enter/双击/菜单 Open、网格选择不创建 Actor、删除行后关闭旧菜单；工程操作、参数、停靠、相机取消及主题；3771 / 3753 接受帧 |
-| 独立工程窗口与保存热更 | PASS | PASS | 同一工程/资源/World 操作链，真实文件保存后重新编译/发布；编译错误保留旧版及恢复，折叠状态、查询/数值草稿与文本 token 保留 |
+| 编辑器文档与 DSL | PASS | PASS | TableBinding 经 Source/JIT、嵌套组件和 Repeat 传递；三种呈现共享模型/实例；1005 行的网格方向键、分页、末行、44 DIP 窄视图与 1/1.5/2 DPI；视图切换取消旧按压、非法布局拒绝、空结果无假滚动条；2600 个真实工程文件的 List/Tiles/Details 导航 |
+| 独立工程窗口与保存热更 | PASS | PASS | 原生菜单切换 List/Details/Tiles；真实保存修改表格内边距、状态行和 Tiles 宽高，接受帧几何生效；保留实例、模型、排序、列宽、当前选择和搜索草稿/token；语法、宿主绑定与卡片尺寸错误均拒绝并恢复；原工程/资源/World 操作链 |
 
-两种配置的受影响目标均编译通过。本轮证据位于工作树 `out/table-details-20261006/`：完整窗口为 `dev-window/`、`release-window/`，工程与热更为 `dev-project-final/run-63848-417947890/`、`release-project/run-87588-418019921/`，工程与 DSL 日志为 `dev-document.log`、`release-document.log`。`dev-project/` 保留早期验收驱动诊断，不计入通过结果。
+两种配置的受影响目标均编译通过。本轮证据位于工作树 `out/asset-views-dsl-20261006/`：开发版真实窗口为 `dev-project-resumed/run-13444-422827406/`，发布版为 `release-project-resumed/run-21584-422915656/`；公共 UI 输出位于 `dev-build.log`、`release-build.log`，最终工程与 DSL 输出位于 `dev-document.log`、`release-build.log`。窗口目录的 `asset-ui-authoring.csv` 记录八次保存及对应版本，`tiles_invalid` 保留原版本，恢复后递增；`asset-list-dsl.png`、`asset-tiles-dsl.png` 和 `asset-tiles-live-updated.png` 展示真实呈现。早期中断和诊断目录不计入通过结果。
 
-验收驱动使用接受帧中的真实表头/单元格几何；仅窗口坐标映射变化时更新 Surface 版本，普通命令按钮的定位不会将 Table 的激活路由误认成按钮。大目录滚动范围使用双精度，避免末行累计精度损失。独立验收使用临时工程和作者文件。本轮未运行真实系统 IME 或物理跨屏 DPI 验收；保存采样不构成性能优化前后对比。
+验收驱动使用接受帧中的真实表头/单元格几何；数值持按拖动和相机沿同一个原生指针移动入口，等待目标事件后继续，避免混用合成移动与捕获产生的移动。窗口缩放/DPI 检查后，先将验收窗口放回屏幕工作区再检查大场景拖动，保证目标物理可达。独立验收使用临时工程和作者文件。本轮未运行真实系统 IME 或物理跨屏 DPI 验收；保存采样不构成性能优化前后对比。

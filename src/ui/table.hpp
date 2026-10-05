@@ -6,6 +6,15 @@
 namespace atelier::ui {
 
 using TableKey = std::uint64_t; // Stable identity inside one table; zero means no selection.
+enum class TableView { details, list, tiles };
+// Presentation is independent of the immutable model; changing a view or its
+// density keeps the same row storage and selection identity.
+struct TableLayout {
+    TableView view{TableView::details};
+    float row_height{23}, header_height{25};
+    float tile_width{90}, tile_height{66}, item_gap{3};
+    bool operator==(const TableLayout&) const = default;
+};
 enum class TableSortDirection { ascending, descending };
 struct TableSort {
     TableKey column{};
@@ -48,7 +57,6 @@ struct TableData {
     std::vector<TableColumn> columns;
     std::vector<TableRow> rows;
     TableSort sort;
-    float row_height{23}, header_height{25};
     bool operator==(const TableData&) const = default;
 };
 

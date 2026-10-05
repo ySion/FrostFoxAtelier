@@ -227,9 +227,6 @@ number:disabled { accent-color: #616161; }
 }
 button.shelf-tool:hover { background: #484848; }
 button.shelf-tool:pressed { background: #555555; }
-.asset-entry { background: transparent; background-image: none; border-width: 0dip; text-align: left; padding: 2dip 5dip; indicator-size: 18dip; indicator-color: #a7c0cb; }
-button.asset-entry:hover { background: #484848; }
-button.asset-entry:pressed { background: #555555; }
 tree_item.mesh-actor { indicator-color: #a7c0cb; }
 
 /* File browser: shared selection and geometry across list/details/tiles. */
@@ -248,6 +245,3 @@ combo.icon-menu:selected, combo.icon-menu:pressed, .browser-icon:pressed, .brows
 .browser-search-input { padding: 1dip 3dip; }
 .browser-status { background: #343434; text-vertical-align: center; }
 .browser-directories { background: #303030; }
-.asset-tile { background: transparent; background-image: none; border-width: 0dip; padding: 4dip; icon-placement: above; indicator-size: 24dip; text-align: center; text-vertical-align: bottom; }
-button.asset-tile:hover { background: #444444; }
-button.asset-entry:selected, button.asset-tile:selected { background: #55564c; background-image: none; }

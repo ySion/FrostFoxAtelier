@@ -41,7 +41,7 @@ Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含
 
 菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前阶段验收与 review 修复见 [2026-10-02 编辑器 UI 收口](docs/research/editor-ui-20261002-closeout.md)。
 
-完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询位于属性页签之前，页签按当前 Actor 的真实组成提供。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。菜单内容、停靠、Asset Browser 的 DSL 声明继续迁移；跨区域资源拖放尚未实现。
+完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询位于属性页签之前，页签按当前 Actor 的真实组成提供。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。资源浏览器的工具行、目录树、状态行和 List/Details/Tiles 全部结果视图已迁入 DSL；三种呈现共享数据、选择和虚拟绘制，菜单内容、Controls、停靠与总外壳继续迁移，跨区域资源拖放尚未实现。
 
 其后与 Runtime 冻结交付的同候选双配置重建和消费者验收见 [Runtime／编辑器集成记录](docs/research/runtime-editor-integration-20261002.md)；原 2870 帧窗口记录仍归属集成前的编辑器版本。
 
