@@ -7,7 +7,7 @@ ui Position(in bool has_root, in bool matches, in EditBinding position, in TextE
     }
 
     Text no_root {
-        text: "No scene root";
+        text: "No scene root!!!";
         height: 26;
         collapsed: input.has_root || !input.matches;
     }
@@ -17,7 +17,7 @@ ui Position(in bool has_root, in bool matches, in EditBinding position, in TextE
         collapsed: input.matches;
     }
     Foldout section {
-        text: "Scene root Hello";
+        text: "Scene root content";
         classes: "section";
         selected: state.expanded;
         collapsed: !input.matches;
