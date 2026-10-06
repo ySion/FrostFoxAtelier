@@ -33,12 +33,18 @@ enum class ErrorCode {
     invalid_type, invalid_definition, duplicate_name, invalid_object,
     invalid_member, type_mismatch, argument_mismatch, construction_failed,
     invocation_failed, busy, capacity_exceeded, invalid_storage,
-    unsupported_operation, assignment_failed
+    unsupported_operation, assignment_failed, rebuild_required
 };
 
+struct SourceLocation {
+    std::string path;
+    std::uint64_t version{};
+    std::size_t offset{}, line{1}, column{1};
+};
 struct Error {
     ErrorCode code;
     std::string message;
+    std::optional<SourceLocation> source{};
 };
 
 template<class T>
@@ -451,6 +457,9 @@ struct FieldDefinition {
     // Optional direct access to standard-layout native fields, supplied by
     // generated offsetof expressions. Native bindings are trusted producers.
     std::optional<std::size_t> native_offset{};
+    // Described scalar fields only. Construction applies this before publication;
+    // copy construction copies the source instead. Native constructors own defaults.
+    std::optional<Scalar> default_value{};
 };
 
 struct MethodDefinition {
@@ -483,6 +492,7 @@ struct FieldInfo {
     std::string name;
     ValueDescription value;
     std::optional<std::size_t> offset{};
+    std::optional<Scalar> default_value{};
 };
 
 struct MethodInfo {

@@ -164,6 +164,7 @@ struct TextStore::Impl {
         check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
             width.value_or(0), 0, &paragraph.layout));
         ++statistics.text_layouts;
+        check(paragraph.layout->SetIncrementalTabStop(entry.font.size*2.4f));
         check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
         if (width) check(paragraph.layout->SetTextAlignment(entry.alignment==TextAlign::right?DWRITE_TEXT_ALIGNMENT_TRAILING:
             entry.alignment==TextAlign::center?DWRITE_TEXT_ALIGNMENT_CENTER:DWRITE_TEXT_ALIGNMENT_LEADING));
@@ -349,7 +350,7 @@ RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<
     paragraph.raster = output; paragraph.raster_scale = dpi; paragraph.raster_viewport=viewport;
     return output;
 }
-std::shared_ptr<const TextSnapshot> TextStore::snapshot(std::uint64_t key, float width) {
+std::shared_ptr<const TextSnapshot> TextStore::snapshot(TextKey key, float width) {
     auto& paragraph=impl_->resolve(key,width);
     if (!paragraph.snapshot) {
         auto data=std::make_shared<TextSnapshot::Impl>();

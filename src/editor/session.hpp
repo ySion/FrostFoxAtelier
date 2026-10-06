@@ -4,6 +4,7 @@
 #include "editor/assets.hpp"
 #include <unordered_map>
 
+namespace atelier::physics { class PhysicsScene; }
 namespace atelier::editor {
 class Project;
 struct Parameter {
@@ -13,26 +14,41 @@ struct Parameter {
     float minimum{-10000.f}, maximum{10000.f}, drag_step{.01f};
     float default_value{};
 };
+struct ComponentType { TypeId type; std::string name; };
+struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; };
+struct Selection {
+    ObjectId actor, object; // Actor context and inspected Actor/Component, in this document only.
+    bool operator==(const Selection&) const = default;
+};
 
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
 class Session final {
 public:
-    Session();
+    // Runs after engine registration, before any object exists. The returned
+    // code owner is released after World End, always before its Runtime.
+    using Prepare = std::function<Result<std::shared_ptr<void>>(world::World&)>;
+    explicit Session(Prepare = {});
+    ~Session();
     const world::World& world() const noexcept { return world_; }
     const world::Types& types() const noexcept { return types_; }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
-    ObjectId selected() const noexcept { return selected_; }
+    Selection selection() const noexcept { return selection_; }
     std::wstring_view name(ObjectId) const noexcept;
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
-    Result<world::Commit> add_actor();
+    Result<world::Commit> add_actor(TypeId actual = {});
     Result<world::Commit> create_static_mesh(const MeshAsset&);
     Result<world::Commit> erase_selected();
     Result<world::Commit> add_component(TypeId);
     Result<world::Commit> remove_component(ObjectId);
+    Result<std::vector<ComponentType>> component_types() const;
+    Result<std::vector<Property>> properties(ObjectId) const;
+    Result<Scalar> read_property(ObjectId, std::span<const FieldId>) const;
     Result<void> begin_edit(ObjectId component, std::span<const FieldId>, std::uint64_t control_session);
+    Result<void> set_property(ObjectId, std::span<const FieldId>, Scalar, std::uint64_t control_session);
     Result<void> preview_edit(std::uint64_t control_session, float);
+    Result<void> preview_edit(std::uint64_t control_session, Scalar);
     Result<void> commit_edit(std::uint64_t control_session);
     Result<void> cancel_edit();
     Result<void> reset_position(ObjectId component); // One group change and one history entry.
@@ -40,11 +56,15 @@ public:
     Result<world::Commit> undo();
     Result<world::Commit> redo();
     Result<world::Commit> close();
+    Result<world::Commit> start();
+    Result<void> update(float);
+    Result<world::Commit> stop();
     Result<void> collect_step();
     Result<std::string> serialize() const;
-    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&);
+    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {});
     bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_.has_value(); }
     void mark_saved() noexcept { saved_cursor_=cursor_; }
+    void mark_modified() noexcept { saved_cursor_.reset(); }
     bool editing() const noexcept { return active_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
@@ -58,24 +78,29 @@ private:
         ObjectId actor;
         world::FieldPath path;
         std::uint64_t control_session{};
-        world::Trs before, after; // Quaternion field writes may normalize other components.
+        // TRS is one invariant group; ordinary business properties keep exact scalar types.
+        std::variant<world::Trs,Scalar> before, after;
     };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
+    std::shared_ptr<void> prepared_;
     world::World world_;
+    std::unique_ptr<physics::PhysicsScene> physics_;
     std::array<Parameter, 3> parameters_;
     std::vector<Change> history_;
     std::size_t cursor_{};
     std::optional<std::size_t> saved_cursor_{0};
-    ObjectId selected_;
+    Selection selection_;
     std::optional<FieldChange> active_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
     std::uint64_t next_name_{1};
     Result<void> admit_actor_edit(ObjectId) const;
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
+    Result<ObjectId> admit_property_edit(ObjectId) const;
+    Result<void> apply_field(const FieldChange&, bool forward);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
     void remember(Change);
     static Result<void> validate_name(std::wstring_view);

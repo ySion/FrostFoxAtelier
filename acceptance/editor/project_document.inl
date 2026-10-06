@@ -32,8 +32,13 @@ void verify_scene_v1(editor::Project& project) {
         "Scene v1 lost its mesh source or material.");
     take(editor::write_file(path,take(document->serialize())));
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
-    require(nlohmann::json::parse(take(reopened->serialize()))==nlohmann::json::parse(source),
-        "Scene v1 reopen changed its stored schema or values after the math migration.");
+    auto upgraded=nlohmann::json::parse(source); upgraded["version"]=2;
+    for (auto& actor:upgraded["actors"]) {
+        actor["properties"]=nlohmann::json::object();
+        for (auto& component:actor["components"]) component["properties"]=nlohmann::json::object();
+    }
+    require(nlohmann::json::parse(take(reopened->serialize()))==upgraded,
+        "Scene v1 migration lost authored values or did not write the explicit v2 schema.");
 }
 
 void verify_project_document() {
@@ -59,7 +64,7 @@ void verify_project_document() {
     require(!project.import_mesh(external),"Import silently overwrote an existing asset.");
     editor::Session document;
     changed(document.create_static_mesh(take(project.mesh(resource))));
-    const auto actor=document.selected();
+    const auto actor=document.selection().actor;
     take(document.rename(actor,L"主角 Triangle"));
     const auto mesh=component(document,actor,document.types().static_mesh_component);
     take(const_cast<world::World&>(document.world()).set_transform(mesh,{{1,2,3},{0,0,0,1},{2,3,4}}));

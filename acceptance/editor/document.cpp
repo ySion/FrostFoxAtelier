@@ -24,6 +24,10 @@ void changed(Result<world::Commit> result) {
 }
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 void collect(editor::Session& document) { for (unsigned step = 0; step < 96; ++step) take(document.collect_step()); }
+void collect(Runtime& runtime) {
+    if (runtime.collection_phase()==CollectionPhase::idle) take(runtime.begin_collection());
+    while (runtime.collection_phase()!=CollectionPhase::idle) take(runtime.collect_step({1024}));
+}
 ObjectId component(editor::Session& document, ObjectId actor, TypeId type) {
     for (const auto& root : take(world::components(document.world().runtime(), actor)))
         if (take(document.world().runtime().type_of(root.id())) == type) return root.id();
@@ -36,15 +40,18 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_document.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
+#include "object_inspection.inl"
 #include "ui_actions.inl"
 #include "table_dsl.inl"
 #include "composed_ui.inl"
 #include "ui_reload_transaction.inl"
 #include "ui_source_patch.inl"
 #include "ui_reload_profile.inl"
+#include "source_editor.inl"
 }
 int main(int argc, char** argv) {
     try {
+        if (argc==2 && std::string_view(argv[1])=="--source-editor") {verify_source_editor();return 0;}
         if (argc == 3 && std::string_view(argv[1]) == "--profile-json") {
             profile_project_json(argv[2]);
             return 0;
@@ -56,6 +63,7 @@ int main(int argc, char** argv) {
         require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory | --profile-ui-reload output.csv]");
         verify_project_document();
         verify_declarative_parameters();
+        verify_object_inspection();
         verify_ui_actions();
     verify_table_dsl();
     verify_table_views();
@@ -63,12 +71,13 @@ int main(int argc, char** argv) {
         verify_ui_reload_transaction();
         verify_ui_source_patch();
         verify_ui_code_reuse();
+        verify_source_editor();
         {
             editor::Session single;
             changed(single.create_static_mesh(editor::mesh_assets().front()));
-            require(single.undo_count()==1 && take(single.world().runtime().type_of(single.selected()))==single.types().static_mesh_actor,
+            require(single.undo_count()==1 && take(single.world().runtime().type_of(single.selection().actor))==single.types().static_mesh_actor,
                 "Static mesh factory did not enter document history as one typed Actor creation.");
-            const auto actor = single.selected();
+            const auto actor = single.selection().actor;
             auto& rt = single.world().runtime();
             const auto mesh = *take(world::root_component(rt, actor));
             require(take(world::components(rt, actor)).size() == 1 && take(rt.type_of(mesh)) == single.types().static_mesh_component,
@@ -77,7 +86,7 @@ int main(int argc, char** argv) {
             require(take(single.world().members()).empty() && take(single.world().render_items()).empty(),
                 "Creation undo retained the Actor or its rendering.");
             changed(single.redo());
-            require(single.selected()==actor && take(world::root_component(rt,actor))==mesh &&
+            require(single.selection().actor==actor && take(world::root_component(rt,actor))==mesh &&
                 take(single.world().render_items()).front().geometry==editor::mesh_assets().front().mesh,
                 "Creation redo changed Actor/component identity or mesh resource.");
             take(single.begin_edit(mesh, single.types().position_fields[0], 91));
@@ -109,7 +118,7 @@ int main(int argc, char** argv) {
         }
         editor::Session document;
         changed(document.add_actor());
-        const auto actor = document.selected();
+        const auto actor = document.selection().actor;
         auto& runtime = document.world().runtime();
         require(take(document.world().members()).size() == 1 && take(world::components(runtime, actor)).empty() &&
             take(document.world().render_items()).empty(), "An empty Actor acquired implicit components or rendering.");
@@ -157,11 +166,11 @@ int main(int argc, char** argv) {
         require(value(document, transform, 1) == 0 && document.undo_count() == history + 1,
             "Field cancellation changed history or the committed value.");
         changed(document.add_actor());
-        const auto other = document.selected();
+        const auto other = document.selection().actor;
         take(document.begin_edit(transform, path, 14));
         take(document.preview_edit(14, 34)); take(document.commit_edit(14));
         changed(document.undo());
-        require(document.selected() == actor && value(document, transform) == 63,
+        require(document.selection().actor == actor && value(document, transform) == 63,
             "Property undo failed to select its recorded owner or wrote another component.");
         changed(document.redo());
         const auto original_transform = take(world::read_transform(runtime, transform));
@@ -180,7 +189,7 @@ int main(int argc, char** argv) {
             !document.begin_edit(transform, path, 15) && !document.rename(actor,L"Detached"), "A detached Actor remained editable or presentable in the World.");
         collect(document);
         changed(document.undo());
-        require(document.selected() == actor && take(document.world().members()).front().id() == actor &&
+        require(document.selection().actor == actor && take(document.world().members()).front().id() == actor &&
             component(document, actor, document.types().scene_component) == transform && component(document, actor, document.types().static_mesh_component) == cube &&
             value(document, transform) == 34 && document.name(actor)==L"主角 Hero", "Actor delete/GC/undo did not restore identities, composition, order, names and values.");
         take(document.begin_edit(transform, path, 16)); take(document.preview_edit(16, 88));

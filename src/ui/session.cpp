@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cwctype>
 #include <map>
 #include <set>
 #include <type_traits>
@@ -33,13 +34,13 @@ bool text_kind(ControlKind kind) {
 bool toggle_kind(ControlKind kind) { return kind == ControlKind::checkbox || kind == ControlKind::foldout; }
 bool activatable(ControlKind kind) { return kind == ControlKind::button || kind == ControlKind::item || kind == ControlKind::tree_item || toggle_kind(kind) || kind==ControlKind::menu_item || kind==ControlKind::combo || kind==ControlKind::tab; }
 bool scrolling(ControlKind kind) { return kind==ControlKind::tree || kind==ControlKind::list || kind==ControlKind::popup; }
-bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit; }
+bool text_field(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::text_edit || kind==ControlKind::code_editor; }
 bool editable(ControlKind kind) { return kind == ControlKind::number || kind == ControlKind::splitter || kind == ControlKind::slider; }
 Rect slider_track(Rect bounds,float scale) {
     const auto inset=std::min(7*scale,bounds.width*.5f);
     return {bounds.x+inset,bounds.y+bounds.height*.5f-scale,std::max(0.f,bounds.width-2*inset),2*scale};
 }
-bool focusable(ControlKind kind) { return (text_kind(kind) && kind != ControlKind::label) || kind==ControlKind::slider || kind==ControlKind::table; }
+bool focusable(ControlKind kind) { return (text_kind(kind) && kind != ControlKind::label) || kind==ControlKind::slider || kind==ControlKind::table || kind==ControlKind::code_editor; }
 bool contains(Rect rect, float x, float y) {
     return x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height;
 }
@@ -81,7 +82,7 @@ std::optional<double> number(std::wstring_view text, const Control& control) {
 }
 
 Result<void> validate_control_properties(const Control& control) {
-    if (!control.key || static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::table) ||
+    if (!control.key || static_cast<unsigned>(control.kind)>static_cast<unsigned>(ControlKind::code_editor) ||
         static_cast<unsigned>(control.role)>static_cast<unsigned>(Role::caption) || control.text.size()>4096 ||
         !std::isfinite(control.value) || !std::isfinite(control.minimum) || !std::isfinite(control.maximum) ||
         control.minimum>control.maximum || !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) ||
@@ -94,8 +95,9 @@ Result<void> validate_control_properties(const Control& control) {
         (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
          control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item && control.kind!=ControlKind::menu_item) ||
         (control.click_action && control.kind!=ControlKind::splitter) ||
-        (control.action_target && control.kind!=ControlKind::button && control.kind!=ControlKind::table) ||
+        (control.action_target && control.kind!=ControlKind::button && control.kind!=ControlKind::checkbox && control.kind!=ControlKind::table) ||
         ((control.kind==ControlKind::table)!=static_cast<bool>(control.table)) ||
+        ((control.kind==ControlKind::code_editor)!=static_cast<bool>(control.code)) ||
         (control.kind!=ControlKind::table && (control.table_selection!=TableSelection{} || control.table_layout!=TableLayout{})) ||
         static_cast<unsigned>(control.table_layout.view)>static_cast<unsigned>(TableView::tiles) ||
         !std::isfinite(control.table_layout.row_height) || control.table_layout.row_height<12 || control.table_layout.row_height>256 ||
@@ -133,6 +135,11 @@ const TableGeometry* UiFrame::find_table(ControlKey key) const noexcept {
     return found==tables.end()?nullptr:&*found;
 }
 
+const CodeGeometry* UiFrame::find_code(ControlKey key) const noexcept {
+    const auto at=std::find_if(code_editors.begin(),code_editors.end(),[&](const auto& code){return code.key==key;});
+    return at==code_editors.end()?nullptr:&*at;
+}
+
 struct Session::Impl {
     using TableIndex=std::unordered_map<TableKey,std::size_t>;
     struct TreeState {
@@ -147,6 +154,8 @@ struct Session::Impl {
         double scroll{}, scroll_limit{};
         double scroll_x{}, scroll_x_limit{};
         bool table_reveal{true};
+        std::uint64_t code_selection_revision{},code_revision{};
+        float code_width{};
         std::vector<detail::TextKey> table_text; // Visible cells only; old frames retain their own coverage.
         TableIndex table_index;
         float content_bottom{};
@@ -196,7 +205,11 @@ struct Session::Impl {
         };
         ControlKey key;
         EditToken token;
-        detail::TextEdit buffer;
+        std::optional<detail::TextEdit> field_buffer;
+        std::shared_ptr<CodeDocument> document;
+        std::uint64_t document_selection{};
+        detail::TextEdit& buffer() { return document?document->edit():*field_buffer; }
+        const detail::TextEdit& buffer() const { return document?document->edit():*field_buffer; }
         double original_value{}, preview_value{};
         bool text_mode{};
         float scroll{};
@@ -206,8 +219,10 @@ struct Session::Impl {
         bool commit_paste{};
         Edit(const State& state, std::wstring value, double numeric, bool mode, bool select_all)
             : key(state.control.key),token{key,state.incarnation,detail::new_identity(),detail::new_identity()},
-              buffer(std::move(value),state.control.kind==ControlKind::number?64:4096,select_all),
-              original_value(numeric),preview_value(numeric),text_mode(mode) {}
+              document(state.control.code),original_value(numeric),preview_value(numeric),text_mode(mode || document!=nullptr) {
+            if (document) document_selection=buffer().selection_revision();
+            else field_buffer.emplace(std::move(value),state.control.kind==ControlKind::number?64:4096,select_all);
+        }
     };
     std::uint64_t identity{detail::new_identity()};
     Style style;
@@ -248,7 +263,7 @@ struct Session::Impl {
             found->second.control.context_target!=box.context_target || found->second.control.context_group!=box.context_group ||
             found->second.control.button_behavior!=box.button_behavior || found->second.control.menu_behavior!=box.menu_behavior ||
             found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table ||
-            found->second.control.table_layout!=box.table_layout || !box.enabled) return false;
+            found->second.control.table_layout!=box.table_layout || found->second.control.code!=box.code || !box.enabled) return false;
         if (box.kind==ControlKind::tree_item) {
             if (found->second.tree_hidden || !found->second.tree_enabled) return false;
             if (box.tree_parent!=found->second.control.tree_parent || box.parent!=found->second.control.parent) return false;
@@ -268,6 +283,7 @@ struct Session::Impl {
         return nullptr;
     }
 #include "ui/session_edit.inl"
+#include "ui/session_code.inl"
 #include "ui/session_popup.inl"
 #include "ui/session_tree.inl"
 #include "ui/session_table.inl"
@@ -449,6 +465,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
     } attempt{self.failed_frame_id,frame_id};
     if (!self.surface.extent.width || !self.surface.extent.height) return std::unexpected(Error{ErrorCode::unavailable_surface});
     try {
+        self.sync_code_edit();
         if (auto synced = self.synchronize(); !synced) return std::unexpected(synced.error());
         const float scale = self.surface.dpi_scale;
         const auto geometry = self.layout.compute({self.surface.extent.width / scale,self.surface.extent.height / scale}, self.text.provider_revision());
@@ -609,7 +626,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code});
             const auto kind = state.control.kind;
             if (kind==ControlKind::tree_item) {
                 const auto indent=self.states.at(state.control.parent).resolved->tree_indent*scale;
@@ -711,7 +728,9 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     const float width=std::max(0.f,bounds.width-(padding.left+padding.right)*scale);
                     const float height=std::max(0.f,bounds.height-(padding.top+padding.bottom)*scale);
                     const float size=std::min({appearance.indicator_size*scale,width,height});
-                    const float x=bounds.x+padding.left*scale+(leading?0:(width-size)*.5f), y=bounds.y+padding.top*scale+(above?0:(height-size)*.5f);
+                    const auto alignment=captioned?TextAlign::center:appearance.icon_align;
+                    const float offset=alignment==TextAlign::left?0:alignment==TextAlign::right?width-size:(width-size)*.5f;
+                    const float x=bounds.x+padding.left*scale+(leading?0:offset), y=bounds.y+padding.top*scale+(above?0:(height-size)*.5f);
                     if (size>0) {
                         if (icon==Icon::maximize) quad({x+size*.15f,y+size*.225f,size*.7f,size*.55f},icon_clip,appearance.indicator_background);
                         if (icon==Icon::back || icon==Icon::forward) {
@@ -773,6 +792,9 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f+3.5f*scale);
                 } else arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f);
             }
+            if (kind==ControlKind::code_editor) {
+#include "ui/session_code_draw.inl"
+            }
             if (text_kind(kind)) {
                 const auto padding = self.padding_for(state);
                 const float width = std::max(0.f, box->width - (padding.left + padding.right));
@@ -800,7 +822,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     if (caret.x+appearance.caret_width>scroll+width) scroll=std::max(0.f,caret.x+appearance.caret_width-width);
                     x-=scroll*scale;
                     if (!self.edit->composition) {
-                        const auto& s=self.edit->buffer.current();
+                        const auto& s=self.edit->buffer().current();
                         for (auto range:paragraph->selection(std::min(s.caret.offset,s.anchor.offset),std::max(s.caret.offset,s.anchor.offset)))
                             quad({x+range.x*scale,y+range.y*scale,range.width*scale,range.height*scale},text_clip,appearance.selection);
                     } else {
@@ -841,7 +863,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                         anchor.composition_id=c.id; anchor.composition_revision=c.revision;
                         start=c.preedit.text.empty()?paragraph->caret({c.first,false}):paragraph->character(c.first);
                     } else {
-                        const auto& selection=self.edit->buffer.current();
+                        const auto& selection=self.edit->buffer().current();
                         const auto position=selection.caret.offset==selection.anchor.offset?selection.caret:
                             detail::TextPosition{std::min(selection.caret.offset,selection.anchor.offset),false};
                         start=paragraph->caret(position);
@@ -885,6 +907,11 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
         frame->drawing->dpi_scale != self.surface.dpi_scale || frame->drawing->surface_revision != self.surface.revision ||
         frame->drawing->id<=self.failed_frame_id ||
         (self.published && frame->drawing->id < self.published->drawing->id)) return false;
+    for (const auto& geometry:frame->code_editors) {
+        const auto* state=self.live(geometry.key);
+        if (!state || !state->control.code || state->control.code->revision()!=geometry.revision ||
+            state->control.code->edit().selection_revision()!=geometry.selection_revision) return false;
+    }
     if (self.edit) if (const auto* geometry=frame->find_text(self.edit->key); geometry && geometry->token==self.edit->token)
         self.edit->scroll=geometry->scroll;
     self.published = std::move(frame); self.failed_frame_id=0; return true;

@@ -49,6 +49,7 @@ Result<void> clear_component(Runtime&, ObjectId actor, ObjectId component, std::
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
 Result<void> validate_material(const Material&);
+Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 
 }
 
@@ -73,6 +74,11 @@ struct World::Impl {
     std::vector<Scheduled> ordered, updates;
     std::vector<ObjectId> presentation;
     std::vector<Task> tasks;
+    struct Translation { ObjectId component, actor, root; math::Vector3 delta; };
+    std::vector<Translation> translations;
+    struct TranslationChange { ObjectId root; Trs value; };
+    std::vector<TranslationChange> translation_changes;
+    Result<void> apply_translations();
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
     struct Binding { TypeId type; Behavior behavior; };

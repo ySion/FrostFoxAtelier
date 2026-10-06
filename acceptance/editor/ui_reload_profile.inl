@@ -6,8 +6,7 @@ std::string reload_source(unsigned version) {
 }
 void verify_ui_code_reuse() {
     namespace language=ui_language;
-    editor::Session document;
-    auto& runtime=document.world().runtime();
+    Runtime runtime;take(ui_language::register_types(runtime));
     auto first=take(language::Module::compile(runtime,"reuse.ui.source",reload_source(1)));
     require(first->compilation().compiled==2 && first->compilation().reused==0,"Cold UI compile counts are wrong.");
     ui::ControlKey keys=30000;
@@ -49,8 +48,8 @@ void verify_ui_code_reuse() {
     auto helper_old=take(language::Module::compile(runtime,"helper.ui.source",helpers(1)));
     auto helper_new=take(language::Module::compile(runtime,"helper.ui.source",helpers(2),helper_old.get()));
     require(helper_new->compilation().compiled==2 && helper_new->compilation().reused==0,"Changed helper body reused stale generated dispatch.");
-    editor::Session other;
-    auto foreign=take(language::Module::compile(other.world().runtime(),"reuse.ui.source",reload_source(2),second.get()));
+    Runtime other;take(ui_language::register_types(other));
+    auto foreign=take(language::Module::compile(other,"reuse.ui.source",reload_source(2),second.get()));
     require(foreign->compilation().compiled==2 && foreign->compilation().reused==0,"Compiled UI code crossed Runtime ownership.");
     auto acyclic=take(language::Module::compile(runtime,"cycle.ui.source","ui A() { B b {} } ui B() { Text b {} }"));
     require(!language::Module::compile(runtime,"cycle.ui.source","ui A() { B b {} } ui B() { A a {} }",acyclic.get()),
@@ -83,7 +82,7 @@ void profile_ui_reload(const std::filesystem::path& path) {
     std::ofstream output(path,std::ios::binary);
     require(static_cast<bool>(output),"Cannot create UI reload profile CSV.");
     output<<"round,phase,compile_ms,publish_ms,compiled,reused,scope_creations,scope_retirements,roots,live_objects,private_bytes,executable_committed_bytes\n";
-    editor::Session document;auto& runtime=document.world().runtime();
+    Runtime runtime;take(ui_language::register_types(runtime));
     const auto baseline_roots=runtime.root_count(),baseline_live=runtime.live_objects();
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
@@ -124,7 +123,7 @@ void profile_ui_reload(const std::filesystem::path& path) {
         sample(round,"failure",0,0,{},instance->statistics());
         if (round%30==29) {
             auto removed=surface.set_controls({});require(removed.has_value() && !removed->error && removed->effects.empty(),"UI profile unmount failed.");
-            instance->close();const auto closed=instance->statistics();instance.reset();active.reset();collect(document);
+            instance->close();const auto closed=instance->statistics();instance.reset();active.reset();collect(runtime);
             require(runtime.root_count()==baseline_roots && runtime.live_objects()==baseline_live,"Closed UI retained roots or live objects.");
             require(closed.scope_creations==2 && closed.scope_retirements==2,"UI close did not retire exactly the mounted scopes.");
             sample(round,"closed",0,0,{},closed);

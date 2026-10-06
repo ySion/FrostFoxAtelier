@@ -88,6 +88,7 @@ void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.scrollbar_gutter) value.scrollbar_gutter=*p.scrollbar_gutter;
     if (p.combo_indicator) value.combo_indicator=*p.combo_indicator;
     if (p.icon_placement) value.icon_placement=*p.icon_placement;
+    if (p.icon_align) value.icon_align=*p.icon_align;
     if (p.indicator_size) value.indicator_size=*p.indicator_size;
     if (p.indicator_background) value.indicator_background=*p.indicator_background;
     if (p.indicator_border) value.indicator_border=*p.indicator_border;

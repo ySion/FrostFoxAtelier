@@ -20,6 +20,9 @@ struct NativeEvent {
 struct NativeInputStatistics {
     std::uint64_t compositions{}, updates{}, results{}, cancellations{}, candidate_opens{}, candidate_changes{};
 };
+// Shared translation for editor and project windows. The caller handles
+// surface changes and application commands before dispatching UI input.
+std::optional<ui::Event> input_event(NativeEvent,HWND);
 
 // Owns only the native window. WM_CLOSE requests shutdown; the application must
 // close the renderer before this owner destroys the HWND.

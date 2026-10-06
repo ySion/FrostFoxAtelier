@@ -189,7 +189,7 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         radio(id::engine,L"Engine",true,engine_,ui::ControlIcon::mesh);
     } else {
         if (source!=id::actions && source!=id::results) return {};
-        items.push_back({id::open,L"Open",selected_ && (selected_->kind==AssetKind::folder || selected_->kind==AssetKind::scene),false,{}});
+        items.push_back({id::open,L"Open",selected_ && (selected_->kind==AssetKind::folder || selected_->kind==AssetKind::scene || selected_->kind==AssetKind::source),false,{}});
         items.back().icon=ui::ControlIcon::folder;
         items.push_back({id::add,L"Add to Scene",can_create_ && selected_ && selected_->kind==AssetKind::mesh,false,{}});
         items.back().icon=ui::ControlIcon::plus;

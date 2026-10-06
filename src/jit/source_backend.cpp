@@ -65,7 +65,7 @@ using llvm::orc::LLJIT;
 using llvm::orc::ExecutorAddr;
 
 struct CompiledBusiness {
-    std::string diagnostic;
+    std::shared_ptr<std::string> diagnostic{std::make_shared<std::string>()};
     std::string object_type_name;
     std::string function_name;
     std::string source_name;
@@ -88,7 +88,7 @@ struct CompiledBusiness {
     BusinessEnvironment environment{};
     bool requires_receiver{};
     BusinessFrameLayout layout{};
-    std::unique_ptr<LLJIT> jit;
+    std::shared_ptr<LLJIT> jit;
     Entry entry{};
     CoroutineEntry coroutine_entry{};
     CoroutineAction resume{}, destroy{};
@@ -173,7 +173,7 @@ public:
           entry_(functions[function]), local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot),
           strong_slots_(strong_base), weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
-          public_entry_(function == source.entry), protected_values_(source.functions[source.entry].uses_scoped_values) {
+          public_entry_(source.exported(function)), protected_values_(function_.uses_scoped_values) {
         for (std::size_t index = 0; index < function_.locals.size(); ++index) {
             const auto type = function_.locals[index].type;
             if (is_reference(type)) local_slots_[index] = allocate_reference(type);
@@ -226,6 +226,11 @@ public:
         invocation_ = entry_->getArg(0);
         result_output_ = entry_->getArg(public_entry_ ? 2 : 1);
         failure_output_ = entry_->getArg(public_entry_ ? 3 : 2);
+        // A shared helper can run under either a borrowed-value entry or an
+        // ordinary entry. Carry that call-chain effect through the internal ABI;
+        // O2 folds it when the helper is inlined into a known entry.
+        if (public_entry_ || protected_values_) borrow_active_ = ir_.getInt1(protected_values_);
+        else borrow_active_ = entry_->getArg(3);
     }
 
     BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr, max_call_arguments_}; }
@@ -312,7 +317,7 @@ public:
         }
         for (std::size_t index = 0; index < function_.parameters.size(); ++index) {
             if (!public_entry_) {
-                auto* argument = entry_->getArg(static_cast<unsigned>(index + 3));
+                auto* argument = entry_->getArg(static_cast<unsigned>(index + 4));
                 // Internal record arguments already own a caller-created
                 // snapshot. It cannot escape this synchronous call chain.
                 if (function_.parameters[index].passing == ParameterPassing::value && !managed_value(function_.parameters[index].type))
@@ -651,7 +656,17 @@ private:
             checked_call(write_uint_, {invocation_, slot, ir_.getInt32(field), value});
         }
     }
-    void safe_point() { if (!protected_values_) checked_call(poll_, {invocation_}); }
+    void safe_point() {
+        if (protected_values_) return;
+        if (public_entry_) { checked_call(poll_, {invocation_}); return; }
+        auto* poll = block("safe_point.poll");
+        auto* next = block("safe_point.continue");
+        ir_.CreateCondBr(borrow_active_, next, poll);
+        ir_.SetInsertPoint(poll);
+        checked_call(poll_, {invocation_});
+        ir_.CreateBr(next);
+        ir_.SetInsertPoint(next);
+    }
     void check_value(llvm::Value* valid, EntryFailure reason) {
         failure_status_->addIncoming(ir_.getInt32(1), ir_.GetInsertBlock());
         failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(reason)), ir_.GetInsertBlock());
@@ -818,7 +833,7 @@ private:
         }
         case Kind::field: return read_field(expression(node.receiver), node.type, node.value);
         case Kind::source_call: {
-            llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_};
+            llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_, borrow_active_};
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto id = node.arguments[i];
                 const auto& argument = function_.expressions[id];
@@ -1192,6 +1207,7 @@ private:
     std::uint32_t weak_slots_{};
     const std::uint32_t first_strong_slot_, first_weak_slot_;
     const bool public_entry_, protected_values_;
+    llvm::Value* borrow_active_{};
     std::uint32_t max_call_arguments_{};
     bool has_call_result_{}, has_source_calls_{};
     llvm::FunctionCallee begin_, create_, read_float_, write_float_, read_double_, write_double_, read_value_, write_value_, read_uint_, write_uint_;
@@ -1212,12 +1228,13 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
     std::vector<llvm::Function*> functions(program.functions.size());
     for (std::size_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i]) continue;
-        const bool entry = i == program.entry;
+        const bool entry = program.exported(static_cast<std::uint32_t>(i));
         const bool coroutine = program.functions[i].is_coroutine;
         llvm::SmallVector<llvm::Type*, 8> parameters;
         if (entry) parameters.assign(coroutine ? 6 : 4, ptr);
         else {
             parameters.assign(3, ptr); // invocation, scalar result bits, failure reason
+            parameters.push_back(llvm::Type::getInt1Ty(*context)); // caller's active borrow scope
             for (const auto& parameter : program.functions[i].parameters) {
                 if (parameter.passing != ParameterPassing::value) parameters.push_back(ptr);
                 else if (parameter.type.kind == language::ValueType::record) {
@@ -1232,7 +1249,8 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         }
         auto* type = llvm::FunctionType::get(coroutine ? static_cast<llvm::Type*>(ptr) : i32, parameters, false);
         auto* function = llvm::Function::Create(type, entry ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage,
-            entry ? "atelier_source_entry" : "atelier_source_function_" + std::to_string(i), *module);
+            entry ? (program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(i))
+                : "atelier_source_function_" + std::to_string(i), *module);
         if (entry) function->addFnAttr(llvm::Attribute::NoInline);
         function->addFnAttr(llvm::Attribute::NoUnwind);
         function->addFnAttr("disable-tail-calls", "true");
@@ -1291,23 +1309,8 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
     , bool omit_poll_for_verification = false
 #endif
+    , const std::shared_ptr<CompiledBusiness>& shared = {}
 ) {
-    if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter())
-        throw std::runtime_error("LLVM native target initialization failed.");
-    auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
-    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
-    target.setCodeModel(llvm::CodeModel::Large);
-    target.setRelocationModel(llvm::Reloc::PIC_);
-    llvm::orc::LLJITBuilder builder;
-    builder.setJITTargetMachineBuilder(std::move(target));
-    builder.setObjectLinkingLayerCreator(
-        [](llvm::orc::ExecutionSession& session, llvm::jitlink::JITLinkMemoryManager& memory)
-            -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
-            auto layer = std::make_unique<llvm::orc::ObjectLinkingLayer>(session, memory);
-            layer->addPlugin(atelier::jit::make_windows_unwind_plugin());
-            return layer;
-        });
-    builder.setPlatformSetUp(llvm::orc::setUpInactivePlatform);
     const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
     state->function_name = entry.function_name;
@@ -1374,51 +1377,71 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         state->enumerations.data(), static_cast<std::uint32_t>(state->enumerations.size()),
         state->values.data(), static_cast<std::uint32_t>(state->values.size())};
     state->requires_receiver = entry.requires_receiver;
-    state->jit = take(builder.create());
-    state->jit->getExecutionSession().setErrorReporter([owner = state.get()](llvm::Error error) {
-        owner->diagnostic = llvm::toString(std::move(error));
-    });
-    llvm::orc::SymbolMap symbols;
-    const auto bind = [&](const char* name, auto address) {
-        symbols[state->jit->mangleAndIntern(name)] =
-            llvm::orc::ExecutorSymbolDef(ExecutorAddr::fromPtr(address), llvm::JITSymbolFlags::Exported);
-    };
-    bind("business_begin", state->services.begin);
-    bind("business_create", state->services.create);
-    bind("business_read_float", state->services.read_float);
-    bind("business_write_float", state->services.write_float);
-    if (services.read_double) bind("business_read_double", services.read_double);
-    if (services.write_double) bind("business_write_double", services.write_double);
-    if (services.read_value) bind("business_read_value", services.read_value);
-    if (services.write_value) bind("business_write_value", services.write_value);
-    if (services.read_bool) bind("business_read_bool", services.read_bool);
-    if (services.write_bool) bind("business_write_bool", services.write_bool);
-    bind("business_read_uint", state->services.read_uint);
-    bind("business_write_uint", state->services.write_uint);
-    bind("business_call", state->services.call);
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-    if (!omit_poll_for_verification)
-#endif
-        bind("business_poll", state->services.poll);
-    bind("business_finish", state->services.finish);
-    bind("business_clear", state->services.clear);
-    bind("business_reference", state->services.reference);
-    bind("business_same_reference", state->services.same_reference);
-    if (services.construct_value) bind("business_construct_value", services.construct_value);
-    if (services.assign_value) bind("business_assign_value", services.assign_value);
-    if (services.destroy_value) bind("business_destroy_value", services.destroy_value);
-    if (services.mutate_sequence) bind("business_mutate_sequence", services.mutate_sequence);
-    if (entry.is_coroutine) {
-        bind("business_coroutine_allocate", &allocate_coroutine);
-        bind("business_coroutine_free", &free_coroutine);
+    if (shared) {
+        state->jit = shared->jit; state->layout = shared->layout; state->diagnostic = shared->diagnostic;
+    } else {
+        if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter())
+            throw std::runtime_error("LLVM native target initialization failed.");
+        auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+        target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
+        target.setCodeModel(llvm::CodeModel::Large);
+        target.setRelocationModel(llvm::Reloc::PIC_);
+        llvm::orc::LLJITBuilder builder;
+        builder.setJITTargetMachineBuilder(std::move(target));
+        builder.setObjectLinkingLayerCreator(
+            [](llvm::orc::ExecutionSession& session, llvm::jitlink::JITLinkMemoryManager& memory)
+                -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
+                auto layer = std::make_unique<llvm::orc::ObjectLinkingLayer>(session, memory);
+                layer->addPlugin(atelier::jit::make_windows_unwind_plugin());
+                return layer;
+            });
+        builder.setPlatformSetUp(llvm::orc::setUpInactivePlatform);
+        state->jit = take(builder.create());
+        state->jit->getExecutionSession().setErrorReporter([diagnostic = state->diagnostic](llvm::Error error) {
+            *diagnostic = llvm::toString(std::move(error));
+        });
+        llvm::orc::SymbolMap symbols;
+        const auto bind = [&](const char* name, auto address) {
+            symbols[state->jit->mangleAndIntern(name)] =
+                llvm::orc::ExecutorSymbolDef(ExecutorAddr::fromPtr(address), llvm::JITSymbolFlags::Exported);
+        };
+        bind("business_begin", state->services.begin);
+        bind("business_create", state->services.create);
+        bind("business_read_float", state->services.read_float);
+        bind("business_write_float", state->services.write_float);
+        if (services.read_double) bind("business_read_double", services.read_double);
+        if (services.write_double) bind("business_write_double", services.write_double);
+        if (services.read_value) bind("business_read_value", services.read_value);
+        if (services.write_value) bind("business_write_value", services.write_value);
+        if (services.read_bool) bind("business_read_bool", services.read_bool);
+        if (services.write_bool) bind("business_write_bool", services.write_bool);
+        bind("business_read_uint", state->services.read_uint);
+        bind("business_write_uint", state->services.write_uint);
+        bind("business_call", state->services.call);
+    #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+        if (!omit_poll_for_verification)
+    #endif
+            bind("business_poll", state->services.poll);
+        bind("business_finish", state->services.finish);
+        bind("business_clear", state->services.clear);
+        bind("business_reference", state->services.reference);
+        bind("business_same_reference", state->services.same_reference);
+        if (services.construct_value) bind("business_construct_value", services.construct_value);
+        if (services.assign_value) bind("business_assign_value", services.assign_value);
+        if (services.destroy_value) bind("business_destroy_value", services.destroy_value);
+        if (services.mutate_sequence) bind("business_mutate_sequence", services.mutate_sequence);
+        if (entry.is_coroutine) {
+            bind("business_coroutine_allocate", &allocate_coroutine);
+            bind("business_coroutine_free", &free_coroutine);
+        }
+        check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
+        check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout)));
     }
-    check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
-    check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout)));
     state->layout.object_type_name = state->object_type_name.c_str();
-    auto address = state->jit->lookup("atelier_source_entry");
+    auto address = state->jit->lookup(program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(program.entry));
     if (!address) {
         auto diagnostic = llvm::toString(address.takeError());
-        if (!state->diagnostic.empty()) diagnostic += "\n" + state->diagnostic;
+        if (!state->diagnostic->empty()) diagnostic += "\n" + *state->diagnostic;
         throw std::runtime_error(diagnostic_source_name(program.source_name) + ": JIT materialization: " + diagnostic);
     }
     if (entry.is_coroutine) {
@@ -1453,17 +1476,22 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
     , bool omit_poll_for_verification = false
 #endif
+    , const char* const* entries = nullptr, std::uint32_t entry_count = 0, bool receiver = false,
+    atelier::source::detail::CompileLocation* location = nullptr, bool declarations_only = false
 ) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     try {
-        if (!services || !source_name || !source || !output || !services->begin || !services->create ||
+        if (!services || !source_name || !source || (!output && !declarations_only) || !services->begin || !services->create ||
             !services->read_float || !services->write_float || !services->read_uint || !services->write_uint ||
             !services->call || !services->poll || !services->finish || !services->clear ||
             !services->reference || !services->same_reference)
             throw std::runtime_error("Invalid business compiler input, callbacks or output storage.");
         using namespace atelier;
         using namespace atelier::source::detail;
+        if (entry_count && !entries) throw std::runtime_error("Missing source export names.");
+        for (std::uint32_t i = 0; i < entry_count; ++i)
+            if (!entries[i] || !*entries[i]) throw std::runtime_error("Source export names must not be empty.");
         std::vector<language::FieldBinding> fields;
         std::vector<std::vector<language::ParameterType>> method_parameters;
         std::vector<language::MethodBinding> methods;
@@ -1524,13 +1552,29 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
         }
         const language::Environment source_environment{fields, methods,
             environment && environment->object_type_name ? std::string_view(environment->object_type_name) : std::string_view{}, enumerations, values};
-        auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment, entry_name ? entry_name : "");
+        auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment, entry_name ? entry_name : "", declarations_only);
         if (!program) {
             const auto& diagnostic = program.error();
+            if (location) *location = {diagnostic.position.offset, diagnostic.position.line, diagnostic.position.column};
             const auto display_name = diagnostic_source_name(source_name);
-            std::snprintf(error, error_capacity, "%s:%zu:%zu: %s", display_name.c_str(),
-                diagnostic.position.line, diagnostic.position.column, diagnostic.message.c_str());
+            if (location) std::snprintf(error, error_capacity, "%s", diagnostic.message.c_str());
+            else std::snprintf(error, error_capacity, "%s:%zu:%zu: %s", display_name.c_str(),
+                    diagnostic.position.line, diagnostic.position.column, diagnostic.message.c_str());
             return 1;
+        }
+        if (declarations_only) {
+            if (!program->functions.empty()) throw std::runtime_error("Source functions require declared exports.");
+            return 0;
+        }
+        if (entry_count) {
+            std::vector<std::string_view> names;
+            for (std::uint32_t i = 0; i < entry_count; ++i) names.emplace_back(entries[i]);
+            auto exported = language::export_functions(*program, names, receiver);
+            if (!exported) {
+                if (location) *location = {exported.error().position.offset, exported.error().position.line, exported.error().position.column};
+                std::snprintf(error, error_capacity, "%s", exported.error().message.c_str());
+                return 1;
+            }
         }
         bool owns_values = false;
         bool mutates_sequences = false;
@@ -1542,7 +1586,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             };
             for (std::size_t local = 0; local < function.locals.size(); ++local)
                 owns_values |= owned_type(function.locals[local].type) && (local >= function.parameters.size() ||
-                    (i == program->entry && function.parameters[local].passing == ParameterPassing::value));
+                    (program->exported(static_cast<std::uint32_t>(i)) && function.parameters[local].passing == ParameterPassing::value));
             owns_values |= !function.strings.empty();
             mutates_sequences |= !function.strings.empty();
             for (const auto& expression : function.expressions) {
@@ -1566,7 +1610,18 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             , omit_poll_for_verification
 #endif
         );
-        *output = new atelier::source::detail::BusinessCode{std::move(state)};
+        std::vector<std::unique_ptr<BusinessCode>> codes;
+        codes.push_back(std::make_unique<BusinessCode>(state));
+        for (std::uint32_t i = 1; i < entry_count; ++i) {
+            program->entry = program->exports[i];
+            auto next = atelier::source::detail::compile(*services, *program, source_environment
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+                , false
+#endif
+                , state);
+            codes.push_back(std::make_unique<BusinessCode>(std::move(next)));
+        }
+        for (std::size_t i = 0; i < codes.size(); ++i) output[i] = codes[i].release();
         return 0;
     } catch (const std::exception& failure) {
         std::snprintf(error, error_capacity, "%s", failure.what());
@@ -1575,6 +1630,19 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
     }
     return 1;
 }
+}
+
+std::uint32_t atelier_compile_business_entries(const atelier::source::detail::BusinessServices* services,
+    const char* name, const char* source, std::uint32_t size,
+    const atelier::source::detail::BusinessEnvironment* environment, const char* const* entries,
+    std::uint32_t count, bool receiver, atelier::source::detail::BusinessCode** output,
+    atelier::source::detail::CompileLocation* location, char* error, std::uint32_t capacity) noexcept {
+    if (location) *location = {};
+    return compile_business_impl(services, name, source, size, environment, output, error, capacity, entries && count ? entries[0] : nullptr
+#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
+        , false
+#endif
+        , entries, count, receiver, location, count == 0);
 }
 
 std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessServices* services,

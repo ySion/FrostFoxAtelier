@@ -72,8 +72,9 @@ function(atelier_add_source)
     atelier_llvm_target(atelier_jit_llvm_support)
     target_link_libraries(atelier_jit_llvm_support PUBLIC ${_llvm_libraries} mimalloc)
 
-    add_library(atelier_source_backend SHARED
-        src/jit/source_backend.cpp
+    # The same frontend is compiled on each side of the isolation boundary;
+    # its STL state stays within the host or the LLVM DLL's own CRT ABI.
+    add_library(atelier_source_backend SHARED src/jit/source_backend.cpp
         src/language/source.cpp src/language/declarations.cpp)
     atelier_llvm_target(atelier_source_backend)
     target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
@@ -83,7 +84,8 @@ function(atelier_add_source)
         target_include_directories(atelier_source_backend PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
     endif()
 
-    add_library(atelier_source STATIC src/source/program.cpp src/source/detail/bridge.cpp src/language/declarations.cpp)
+    add_library(atelier_source STATIC src/source/program.cpp src/source/detail/bridge.cpp
+        src/language/source.cpp src/language/declarations.cpp src/language/module.cpp)
     atelier_target(atelier_source)
     target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
     target_compile_features(atelier_source PUBLIC cxx_std_23)
@@ -96,7 +98,7 @@ function(atelier_add_source)
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
         acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp
         acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp
-        acceptance/source/foundations.cpp acceptance/source/plain_records.cpp)
+        acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")

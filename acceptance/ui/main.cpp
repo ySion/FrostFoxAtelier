@@ -42,6 +42,22 @@ ui::Control leaf(std::uint64_t key, ui::ControlKind kind, float y, std::wstring 
     if (kind == ui::ControlKind::label) value.layout.padding = {6,4,6,4};
     return value;
 }
+// The primitive consumer supplies descriptors directly. Editor menu composition
+// is exercised through PopupMenu's real Source/JIT path in editor acceptance.
+std::vector<ui::Control> menu_controls(std::span<const ui::MenuItem> items,float width) {
+    ui::Control menu;menu.key=500;menu.kind=ui::ControlKind::popup;menu.classes={"menu"};
+    menu.layout=ui_layout::NodeInput::column();menu.layout.width=ui_layout::Axis::fixed(width);
+    menu.layout.padding={2.f/3,2.f/3,2.f/3,2.f/3};menu.layout.out_of_flow=true;
+    std::vector<ui::Control> result{std::move(menu)};
+    for (const auto& item:items) {
+        ui::Control row;row.key=item.key;row.parent=500;row.kind=ui::ControlKind::menu_item;
+        row.text=item.text;row.enabled=item.enabled;row.selected=item.selected;
+        row.menu_behavior=item.behavior;row.radio_group=item.radio_group;row.icon=item.icon;
+        row.layout=ui_layout::NodeInput::column();row.layout.height=ui_layout::Axis::content(25+1.f/3);
+        result.push_back(std::move(row));
+    }
+    return result;
+}
 struct Consumer {
     ui::Session ui;
     std::vector<ui::Control> controls;

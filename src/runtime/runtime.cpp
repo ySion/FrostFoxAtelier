@@ -228,6 +228,7 @@ struct Runtime::Impl {
         void* (*address)(void*) noexcept{};
         ValueDescription value;
         const Type* type{};
+        std::optional<Scalar> default_value{};
     };
     struct Type {
         TypeInfo info;
@@ -715,6 +716,10 @@ struct Runtime::Impl {
                         walk_stack.push_back({field.type, destination, origin});
                         continue;
                     }
+                    if (!origin && field.default_value) std::visit([&](const auto& value) {
+                        using T = std::remove_cvref_t<decltype(value)>;
+                        if constexpr (!std::same_as<T, EnumValue>) *reinterpret_cast<T*>(destination) = value;
+                    }, *field.default_value);
                 } else if (field.value.form == ValueForm::strong_sequence) {
                     std::construct_at(reinterpret_cast<ReferenceSequence*>(destination));
                 } else if (origin) {
@@ -1260,8 +1265,12 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
             const auto index = static_cast<std::uint32_t>(type.fields.size());
             const ValueDescription value{target->info.id, form};
-            type.fields.push_back({0, field.native_address, value});
-            if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset});
+            if (field.default_value && (is_native || type.info.kind != TypeKind::object ||
+                form != ValueForm::inline_value || target->info.kind != TypeKind::scalar ||
+                std::holds_alternative<EnumValue>(*field.default_value) || impl_->scalar_type(*field.default_value) != target->info.id))
+                return failure(ErrorCode::invalid_definition, "Default value requires a described object's exact scalar field type.");
+            type.fields.push_back({0, field.native_address, value, nullptr, field.default_value});
+            if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset, field.default_value});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());
@@ -1393,7 +1402,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     const auto* scalar = type.fields.front().type->scalar_leaf;
                     std::size_t end = 0;
                     for (const auto& field : type.fields) {
-                        if (!scalar || field.value.form != ValueForm::inline_value ||
+                        if (!scalar || field.default_value || field.value.form != ValueForm::inline_value ||
                             field.type->scalar_leaf != scalar || field.offset != end) {
                             scalar = nullptr;
                             break;

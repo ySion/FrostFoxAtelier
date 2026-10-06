@@ -7,7 +7,7 @@ void shared_menu_semantics() {
     for (auto index:{2,3,5}) { items[index].behavior=ui::MenuBehavior::radio; items[index].radio_group=index==5?80:70; }
     items[2].icon=ui::ControlIcon::mesh; items[3].icon=ui::ControlIcon::world; items[4].icon=ui::ControlIcon::search;
     const auto open=[&] {
-        accepted(c.ui.set_controls({})); c.controls.clear(); ui::append_menu(c.controls,500,0,0,0,240,items); c.prepare();
+        accepted(c.ui.set_controls({})); c.controls.clear(); c.controls=menu_controls(items,240); c.prepare();
     };
     const auto marker=[&](ui::ControlKey key)->std::shared_ptr<const ui::Coverage> {
         const auto& box=*c.frame->find(key); const auto scale=c.frame->drawing->dpi_scale;

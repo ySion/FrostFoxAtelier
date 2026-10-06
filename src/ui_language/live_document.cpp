@@ -7,8 +7,15 @@ namespace {
 auto failure(std::string message) {return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)});}
 std::string utf8(const std::filesystem::path& path) {const auto value=path.u8string();return {value.begin(),value.end()};}
 }
-LiveDocument::LiveDocument(Runtime& runtime,std::filesystem::path path,ui::ControlKey& keys)
-    :runtime_(runtime),path_(std::move(path)),next_key_(keys) {}
+LiveDocument::LiveDocument(Runtime& runtime,std::filesystem::path path,ui::ControlKey& keys,std::optional<std::string> recovery)
+    :runtime_(runtime),path_(std::move(path)),next_key_(keys),recovery_source_(std::move(recovery)) {}
+void LiveDocument::recover_initial() {
+    if (active_ || candidate_ || !recovery_source_) return;
+    auto source=std::string_view(*recovery_source_);if (source.starts_with("\xef\xbb\xbf")) source.remove_prefix(3);
+    auto fallback=Module::compile(runtime_,utf8(path_.filename()),source);
+    if (!fallback) {diagnostic_+=" Recovery UI: "+fallback.error().message;return;}
+    candidate_=std::move(*fallback);candidate_source_=std::move(recovery_source_);recovery_source_.reset();candidate_failed_=false;
+}
 void LiveDocument::poll(Clock::time_point now) {
     if (candidate_ || pending_submission_ || now<next_poll_) return;
     next_poll_=now+std::chrono::milliseconds(100);
@@ -19,21 +26,23 @@ void LiveDocument::poll(Clock::time_point now) {
     if (!stamp_ || current!=*stamp_) {stamp_=current;changed_at_=now;changed_=true;}
     if (!changed_ || (attempted_ && now-changed_at_<std::chrono::milliseconds(200))) return;
     changed_=false;
-    if (error) {attempted_=true;attempted_source_.reset();diagnostic_=utf8(path_)+": Cannot inspect UI authoring file ("+std::to_string(error.value())+").";return;}
-    if (current.size>1024*1024) {attempted_=true;attempted_source_.reset();diagnostic_="UI authoring file exceeds 1 MiB.";return;}
+    if (error) {attempted_=true;attempted_source_.reset();diagnostic_=utf8(path_)+": Cannot inspect UI authoring file ("+std::to_string(error.value())+").";recover_initial();return;}
+    if (current.size>1024*1024) {attempted_=true;attempted_source_.reset();diagnostic_="UI authoring file exceeds 1 MiB.";recover_initial();return;}
     std::ifstream stream(path_,std::ios::binary);
     std::string source(static_cast<std::size_t>(current.size),'\0');
     if (!stream || !stream.read(source.data(),static_cast<std::streamsize>(source.size()))) {
         attempted_=true;attempted_source_.reset();changed_=true;changed_at_=now;
-        diagnostic_="Cannot read UI authoring file: "+utf8(path_);return;
+        diagnostic_="Cannot read UI authoring file: "+utf8(path_);recover_initial();return;
     }
     if (attempted_source_ && source==*attempted_source_) return;
     attempted_=true;attempted_source_=source;failed_region_.clear();submission_failed_=false;
     const auto start=Clock::now();
-    auto module=Module::compile(runtime_,utf8(path_.filename()),source,active_.get());
+    auto compile_source=std::string_view(source);
+    if (compile_source.starts_with("\xef\xbb\xbf")) compile_source.remove_prefix(3);
+    auto module=Module::compile(runtime_,utf8(path_.filename()),compile_source,active_.get());
     compile_ms_=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
-    if (!module) {diagnostic_=module.error().message;return;}
-    candidate_=std::move(*module);candidate_failed_=false;
+    if (!module) {diagnostic_=module.error().message;recover_initial();return;}
+    candidate_=std::move(*module);candidate_source_=std::move(source);candidate_failed_=false;
     for (auto& [name,region]:regions_) {
         if (!region.accepted) continue;
         auto type=candidate_->find(name);
@@ -124,15 +133,15 @@ bool LiveDocument::reject_controls(std::string message) {
             if (!source && std::ranges::equal(*region.rejected_inputs,region.instance->inputs())) region.rejected_inputs.reset();
         }
     }
-    candidate_.reset();
-    candidate_failed_=false;pending_submission_=false;return true;
+    candidate_.reset();candidate_source_.reset();
+    candidate_failed_=false;pending_submission_=false;recover_initial();return true;
 }
 void LiveDocument::commit_controls() {
     if (candidate_failed_) return;
     if (candidate_ || pending_submission_) for (auto& [name,region]:regions_) if (region.instance) {
         region.instance->commit_controls();region.accepted=true;
     }
-    if (candidate_) {active_=std::move(candidate_);++revision_;}
+    if (candidate_) {active_=std::move(candidate_);active_source_=std::move(candidate_source_);recovery_source_.reset();++revision_;}
     pending_submission_=false;
 }
 std::optional<Statistics> LiveDocument::statistics(std::string_view name) const {

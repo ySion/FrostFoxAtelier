@@ -67,7 +67,7 @@ combo:disabled { indicator-color: #616161; }
 .parameter-body { padding: 7.333dip 0dip 0dip 8dip; background: #3d3d3d; }
 .parameter-nested-body { background: #363636; }
 .parameter-pane { background: token(panel); }
-.parameter-search { padding: 3dip 8dip; }
+.parameter-search { padding: 2dip 4dip 3dip 4dip; }
 .status-bar { background: #191919; }
 .parameter-label { padding: 1dip 0dip; text-align: right; text-vertical-align: center; }
 .field-label { text-vertical-align: center; }
@@ -157,8 +157,17 @@ button.path-navigation, button.path-navigation:hover, button.path-navigation:pre
     indicator-border-color: #263235; color: #bbcdcf;
 }
 button.path-navigation:disabled { color: #646b6c; }
-.object-header { background: #343434; accent-color: #202020; accent-width: 1dip; }
-.object-type { font-weight: 600; padding: 1dip 0dip; text-vertical-align: center; }
+.object-header { background: #3d3d3d; accent-color: #202020; accent-width: 0.667dip; }
+.object-type { font-weight: 600; padding: 1dip 0dip; text-vertical-align: center; indicator-size: 20dip; indicator-color: #a7c0cb; }
+button.parameter-tool {
+    background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
+    indicator-size: 22dip; color: #bacbd0;
+}
+button.parameter-tool:hover { background: #484848; background-image: none; color: #d9e1e4; }
+button.parameter-tool:selected { background: #536976; background-image: none; color: #d9e1e4; }
+button.parameter-tool:pressed { background: #455965; background-image: none; }
+button.parameter-tool:focus { color: #ffffff; }
+button.parameter-tool:disabled { background: transparent; background-image: none; color: #686868; }
 popup.value-ladder {
     background: #131313; border-color: #818181; border-width: 0.667dip; border-style: solid;
     color: #cccccc; selection-color: #b88c1c; font-family: 'Sarasa UI SC'; font-weight: 400;
@@ -188,10 +197,14 @@ button.parameter-tab.joined:selected { border-edges: top right; }
 .bar-stow {
     background-image: linear-gradient(#555555, #3b3b3b);
     border-color: #111111; border-inner-color: #575757; border-width: 0.667dip; border-style: solid;
-    padding: 0dip; indicator-size: 6dip; color: #101010;
+    padding: 0dip 2dip; indicator-size: 8dip; icon-align: left; color: #101010;
 }
-.bar-stow:hover { background-image: linear-gradient(#666666, #4a4a4a); color: #dddddd; }
-.bar-stow:focus { color: #dddddd; }
+.bar-stow:hover, .bar-stow:focus, .bar-stow:selected {
+    background-image: token(button-face); border-style: solid; color: #101010;
+}
+.bar-stow:pressed {
+    background-image: linear-gradient(#5d7389, #748ca5); border-style: solid; color: #101010;
+}
 button.menubar-item, button.menubar-item:hover, button.menubar-item:focus {
     background: transparent; background-image: none; color: token(text);
 }
@@ -245,3 +258,19 @@ combo.icon-menu:selected, combo.icon-menu:pressed, .browser-icon:pressed, .brows
 .browser-search-input { padding: 1dip 3dip; }
 .browser-status { background: #343434; text-vertical-align: center; }
 .browser-directories { background: #303030; }
+
+
+code_editor.source-code {
+    background: #242424; color: #cccccc; font-family: "Source Code Pro"; font-size: 12dip;
+    padding: 0dip; border-width: 0dip; selection-color: #40566b;
+    indicator-color: #868686; indicator-background: #2e2e2e;
+    tree-alternate-color: #2b2b2b; scrollbar-width: 12dip;
+}
+.source-status { font-size: 10.5dip; padding: 0dip 4dip; }
+button.source-problem {
+    background: #3a2e29; background-image: none; color: #dfb38b;
+    border-width: 0dip; padding: 1dip 4dip; text-align: left; font-size: 11dip;
+}
+button.source-problem:hover { background: #463b34; }
+
+button.source-problem:disabled { color: #dfb38b; background: #3a2e29; }

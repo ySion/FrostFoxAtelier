@@ -16,7 +16,7 @@ inline bool reserved(std::string_view value) noexcept {
         value == "void" || value == "float" || value == "double" || value == "uint" || value == "int" || value == "const" || value == "if" ||
         value == "else" || value == "while" || value == "return" || value == "self" ||
         value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
-        value == "async" || value == "yield" || value == "struct" || value == "enum";
+        value == "async" || value == "yield" || value == "struct" || value == "enum" || value == "class";
 }
 struct Token {
     enum class Kind { end, identifier, number, punctuation, string };

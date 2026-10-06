@@ -1,6 +1,6 @@
 # 原生 UI 第二阶段：组件与保存更新
 
-日期：2026-10-05。验收基线 `e42c383`，本阶段随 `codex/world-editor-integration` 分支交付，主线合并单独进行。当前语义的权威说明见[声明式 UI](../modules/editor/declarative-ui-proposal.md)。
+日期：2026-10-05。验收基线 `e42c383`，本阶段随 `codex/world-editor-integration` 分支交付，主线合并单独进行。当前语义的权威说明见[声明式 UI](../modules/editor/declarative-ui.md)。
 
 本记录保留第二阶段首次落地的验收和性能样本。随后发现的生命周期问题、修复、增量代码复用及最新测量见[热更审计](ui-hot-reload-audit-20261005.md)；以下整模块重编数字是优化前的证据。
 

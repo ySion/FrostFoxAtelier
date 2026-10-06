@@ -156,7 +156,7 @@
                 const auto* future=lookup(key);
                 const auto* previous=live(key);
                 if (!future || !future->enabled || future->layout.collapsed || (previous &&
-                    (future->kind!=previous->control.kind || future->action_target!=previous->control.action_target ||
+                    (future->kind!=previous->control.kind || future->code!=previous->control.code || future->action_target!=previous->control.action_target ||
                      future->context_target!=previous->control.context_target || future->context_group!=previous->control.context_group ||
                      future->button_behavior!=previous->control.button_behavior || future->menu_behavior!=previous->control.menu_behavior ||
                      future->radio_group!=previous->control.radio_group || (future->kind==ControlKind::tree_item &&
@@ -177,8 +177,8 @@
         const bool cancelling=(press && (absent(press->key) || table_changed(press->key,false))) || (edit && absent(edit->key));
         const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed) || table_changed(keyboard_pressed,true);
         const auto* future_edit=edit?lookup(edit->key):nullptr;
-        const bool refresh_edit=edit && future_edit && !edit->buffer.active() && !edit->composition &&
-            (future_edit->kind==ControlKind::number?edit->original_value!=future_edit->value:edit->buffer.original()!=future_edit->text);
+        const bool refresh_edit=edit && !edit->document && future_edit && !edit->buffer().active() && !edit->composition &&
+            (future_edit->kind==ControlKind::number?edit->original_value!=future_edit->value:edit->buffer().original()!=future_edit->text);
         const bool popup_invalid=next_popup && absent(lookup(next_popup)->popup_owner);
         const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit || tree_change ||
             next_popup!=popup || popup_invalid;
@@ -220,9 +220,9 @@
             }
             if (!sparse && next_order!=order) { order.swap(next_order); reordered=true; }
             if (refresh_edit && edit) {
-                const auto caret=edit->buffer.current().caret,anchor=edit->buffer.current().anchor;
+                const auto caret=edit->buffer().current().caret,anchor=edit->buffer().current().anchor;
                 const auto key=edit->key; const bool mode=edit->text_mode;
-                begin_edit(key,mode); edit->buffer.select(anchor,false); edit->buffer.select(caret,true);
+                begin_edit(key,mode); edit->buffer().select(anchor,false); edit->buffer().select(caret,true);
             }
             for (auto key:tree_selections) {
                 auto& selected=states.at(key); selected.tree_reveal=true;
@@ -274,7 +274,8 @@
             auto& state=*change.state;
             const auto& before=change.value; const auto& after=state.control;
             state.table_reveal|=before.table_selection!=after.table_selection || before.table_layout!=after.table_layout;
-            if (before.table && !after.table) {
+            if (before.code!=after.code) {state.scroll=state.scroll_x=0;state.code_width=0;state.code_selection_revision=0;}
+            if ((before.table && !after.table) || (before.code && before.code!=after.code)) {
                 for (auto text_key:state.table_text) text.erase(text_key);
                 state.table_text.clear(); state.table_index.clear(); state.scroll_x=state.scroll_x_limit=0;
             }

@@ -167,6 +167,7 @@ static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_
 
 struct BusinessCode;
 struct BusinessCoroutine;
+struct CompileLocation { std::uint64_t offset{}, line{}, column{}; };
 
 }
 
@@ -194,6 +195,16 @@ extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business(
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
     char* error, std::uint32_t error_capacity, const char* entry_name = nullptr) noexcept;
+
+// One synchronous compilation with multiple typed host entries. Each output is
+// a view owning the same JIT module; failure leaves every output untouched.
+// Zero entries validates a declaration-only module without generating code.
+extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business_entries(
+    const atelier::source::detail::BusinessServices*, const char* source_name,
+    const char* source, std::uint32_t source_size,
+    const atelier::source::detail::BusinessEnvironment*, const char* const* entries,
+    std::uint32_t entry_count, bool receiver, atelier::source::detail::BusinessCode** output,
+    atelier::source::detail::CompileLocation*, char* error, std::uint32_t error_capacity) noexcept;
 
 // Actual compiled metadata, not caller-provided claims. Null code returns null
 // names/tables, a zero address and null callbacks. Querying acquires no owner.

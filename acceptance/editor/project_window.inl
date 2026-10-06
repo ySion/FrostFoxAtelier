@@ -14,7 +14,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require((existing || initial_count==0) && !app.document().dirty(),"Project did not publish its clean initial scene.");
     verify_about(app,folder.wstring());
     click(app,control::add_static_mesh);
-    const auto actor=app.document().selected();
+    const auto actor=app.document().selection().actor;
     const auto field=property_control(app,actor,0);
     click(app,field);type(app,L"7");key(app,'S',true);tick(app,2);
     require(!app.document().dirty() && x(app,actor)==7,"Save did not commit the active field and mark the scene clean.");
@@ -41,7 +41,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     key(app,VK_END);
     const auto sphere=access::EditorAcceptanceAccess::asset_key(app,"builtin/sphere");
     click(app,sphere);
-    require(app.document().selected()==current && actors(app).size()==initial_count+1,"Resource selection changed the scene selection or created an Actor.");
+    require(app.document().selection().actor==current && actors(app).size()==initial_count+1,"Resource selection changed the scene selection or created an Actor.");
     for (const auto view:{browser::tiles,browser::list,browser::details}) {
         click(app,view);require(selected_resource(sphere),"Switching asset views lost resource selection.");
         require(!app.presented()->find(view),"A view choice remained as a duplicate toolbar button.");
@@ -58,7 +58,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(app.presented()->find_table(browser::results)->selection==atelier::ui::TableSelection{sphere,browser::type_column} &&
         app.presented()->find_table(browser::results)->data==table_data,"Moving the current resource cell rebuilt its rows or changed selection.");
     key(app,VK_RETURN);double_click(app,sphere);
-    require(actors(app).size()==initial_count+1 && app.document().selected()==current && app.document().undo_count()==resource_history,
+    require(actors(app).size()==initial_count+1 && app.document().selection().actor==current && app.document().undo_count()==resource_history,
         "Enter or double-click on a mesh created an Actor or changed the scene.");
     click_at(app,table_header_centre(app,browser::results,browser::name_column));
     require(app.presented()->find_table(browser::results)->data->sort==atelier::ui::TableSort{browser::name_column,atelier::ui::TableSortDirection::descending} &&
@@ -116,7 +116,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(std::filesystem::remove(folder/selection_folder),"Cannot remove the context-menu directory fixture.");
     model(access::EditorAcceptanceAccess::command(app,Command::refresh_assets));tick(app,2);
     require(!app.menu_frame() && !has_resource(directory) && !action_enabled(browser::open) &&
-        actors(app).size()==initial_count+1 && app.document().selected()==current,
+        actors(app).size()==initial_count+1 && app.document().selection().actor==current,
         "A refreshed table retained a stale row menu or changed the scene.");
     std::filesystem::create_directories(folder/selection_folder);
     model(access::EditorAcceptanceAccess::command(app,Command::refresh_assets));tick(app,2);
@@ -141,10 +141,10 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(imported_entry!=catalog.entries().end(),"Imported OBJ did not publish a project mesh entry.");
     click(app,access::EditorAcceptanceAccess::asset_key(app,imported_entry->key));
     click(app,browser::add);
-    const auto imported_actor=app.document().selected();
+    const auto imported_actor=app.document().selection().actor;
     require(actors(app).size()==initial_count+2 && imported_actor!=current,"Adding the imported resource did not create a distinct Actor.");
     click(app,app.object_control(current));click(app,app.object_control(imported_actor));
-    require(app.document().selected()==imported_actor,"Scene Tree did not select the imported Actor.");
+    require(app.document().selection().actor==imported_actor,"Scene Tree did not select the imported Actor.");
     const auto import_history=app.document().undo_count();
     click(app,property_control(app,imported_actor,0));type(app,L"2.5");key(app,VK_RETURN);
     require(x(app,imported_actor)==2.5f && app.document().undo_count()==import_history+1,
@@ -155,7 +155,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     click(app,control::focus);
     // Selected geometry keeps its orange edges even when the display overlay is off.
     click(app,control::tree_world);
-    require(app.document().selected()==atelier::ObjectId{},"World selection did not clear the imported Actor's outline.");
+    require(app.document().selection().actor==atelier::ObjectId{},"World selection did not clear the imported Actor's outline.");
     const auto display_document=model(app.document().serialize());
     const auto display_history=app.document().undo_count();
     const auto choose=[&](ControlKey source,ControlKey option) {click(app,source);click(app,option);tick(app);};
@@ -182,7 +182,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     std::printf("Project overlay changed %zu viewport pixels.\n",changed);
     require(changed>8,"Wireframe did not change the unselected imported mesh's scene pixels.");
     require(outlined.depth==shaded.depth,"Project wireframe changed scene depth.");
-    require(app.document().selected()==atelier::ObjectId{} && model(app.document().serialize())==display_document &&
+    require(app.document().selection().actor==atelier::ObjectId{} && model(app.document().serialize())==display_document &&
         app.document().undo_count()==display_history,"Wireframe changed selection or persistent project state.");
     choose(control::scene_shading,control::edges_first);
     model(access::EditorAcceptanceAccess::command(app,Command::save_scene));tick(app,2);

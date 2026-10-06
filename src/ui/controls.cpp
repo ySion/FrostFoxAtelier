@@ -9,68 +9,6 @@ ui_layout::NodeInput single_line_layout(float width) {
     layout.height=ui_layout::Axis::content(single_line_height);
     return layout;
 }
-float append_collapsible_bar(std::vector<Control>& controls,const CollapsibleBar& bar) {
-    using namespace ui_layout;
-    const float height=bar.collapsed?stow_collapsed_height:bar.expanded_height;
-    Control root; root.key=bar.key; root.parent=bar.parent;
-    root.layout=NodeInput::row(); root.layout.height=Axis::fixed(height);
-    if (!bar.style_class.empty()) root.classes.emplace_back(bar.style_class);
-    controls.push_back(std::move(root));
-    Control handle; handle.key=bar.handle_key; handle.parent=bar.key; handle.kind=ControlKind::button;
-    handle.layout=NodeInput::box(stow_rail_width,height);
-    // Keep the arrow near the top while the whole rail remains clickable.
-    handle.layout.padding.bottom=std::max(0.f,height-stow_arrow_region_height);
-    handle.icon=bar.collapsed?ControlIcon::down:ControlIcon::up; handle.classes={"bar-stow"};
-    controls.push_back(std::move(handle));
-    Control body; body.key=bar.body_key; body.parent=bar.key; body.layout=bar.body;
-    body.layout.width=body.layout.height=Axis::expand(); body.layout.collapsed=bar.collapsed;
-    controls.push_back(std::move(body));
-    return height;
-}
-void append_parameter_tabs(std::vector<Control>& controls,ControlKey key,ControlKey parent,
-                           ControlKey selected,std::span<const ParameterTab> tabs,float tab_height) {
-    Control bar; bar.key=key; bar.parent=parent; bar.layout=ui_layout::NodeInput::row();
-    bar.layout.height=ui_layout::Axis::content(tab_height+2.f/3); bar.layout.padding={0,0,0,2.f/3}; bar.layout.flow=ui_layout::FlexSpec{};
-    bar.layout.flow->wrap=ui_layout::Wrap::wrap; bar.classes={"parameter-tabs"};
-    controls.push_back(std::move(bar));
-    bool first=true;
-    for (const auto& tab:tabs) {
-        Control item; item.key=tab.key; item.parent=key; item.kind=ControlKind::button; item.text=tab.text;
-        item.layout=ui_layout::NodeInput::box(0,tab_height); item.layout.width=ui_layout::Axis::content(0);
-        item.selected=tab.key==selected; item.selection_group=key; item.classes={"parameter-tab"};
-        if (!first) item.classes.push_back("joined");
-        controls.push_back(std::move(item)); first=false;
-    }
-}
-Control& append_object_header(std::vector<Control>& controls,ControlKey key,ControlKey parent,
-                              ControlKey type_key,ControlKey name_key,std::wstring type,std::wstring name,bool enabled) {
-    Control row; row.key=key; row.parent=parent; row.layout=ui_layout::NodeInput::row(6);
-    row.layout.padding={6,3,6,3}; row.classes={"object-header"};
-    row.layout.flow=ui_layout::FlexSpec{}; row.layout.flow->align_items=ui_layout::Alignment::fit(.5f);
-    controls.push_back(std::move(row));
-    Control caption; caption.key=type_key; caption.parent=key; caption.kind=ControlKind::label; caption.text=std::move(type);
-    caption.layout=single_line_layout(); caption.layout.width=ui_layout::Axis::content(); caption.classes={"object-type"};
-    controls.push_back(std::move(caption));
-    Control field; field.key=name_key; field.parent=key; field.kind=ControlKind::text_edit; field.text=std::move(name);
-    field.layout=single_line_layout(); field.layout.width=ui_layout::Axis::expand(1,32);
-    field.enabled=enabled; field.context_target=name_key; field.classes={"object-name"};
-    controls.push_back(std::move(field)); return controls.back();
-}
-void append_path_bar(std::vector<Control>& controls,const PathBar& bar) {
-    Control row; row.key=bar.key; row.parent=bar.parent; row.layout=ui_layout::NodeInput::row(2);
-    row.layout.height=ui_layout::Axis::fixed(40); row.layout.padding={4,4,6,4}; row.classes={"path-bar"};
-    row.layout.flow=ui_layout::FlexSpec{}; row.layout.flow->align_items=ui_layout::Alignment::fit(.5f);
-    controls.push_back(std::move(row));
-    for (bool back:{true,false}) {
-        Control button; button.key=back?bar.back_key:bar.forward_key; button.parent=bar.key; button.kind=ControlKind::button;
-        button.icon=back?ControlIcon::back:ControlIcon::forward; button.enabled=back?bar.can_back:bar.can_forward;
-        button.layout=ui_layout::NodeInput::box(26,28); button.classes={"path-navigation"}; controls.push_back(std::move(button));
-    }
-    Control label; label.key=bar.path_key; label.parent=bar.key; label.kind=ControlKind::combo; label.text=bar.path;
-    label.icon=ControlIcon::world;
-    label.layout=ui_layout::NodeInput::box(0,28); label.layout.width=ui_layout::Axis::expand(1,32); label.classes={"pane-path"};
-    controls.push_back(std::move(label));
-}
 void append_parameter_row(std::vector<Control>& controls, const ParameterRow& row, float body_minimum) {
     using namespace ui_layout;
     const auto append = [&](ControlKey key, ControlKey parent, ControlKind kind, NodeInput layout,
@@ -126,57 +64,6 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
             slider.value=field.value; slider.minimum=field.slider->minimum; slider.maximum=field.slider->maximum;
             slider.drag_step=field.drag_step; slider.fine_step=field.fine_step;
             slider.classes={"parameter-slider"}; controls.push_back(std::move(slider));
-        }
-    }
-}
-void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owner,
-                 float x, float y, float width, std::span<const MenuItem> items) {
-    using namespace ui_layout;
-    Control popup;
-    popup.key=key; popup.kind=ControlKind::popup; popup.popup_owner=owner;
-    popup.classes={"menu"};
-    popup.layout=NodeInput::column(); popup.layout.width=Axis::fixed(width);
-    popup.layout.padding={2.f/3,2.f/3,2.f/3,2.f/3}; popup.layout.out_of_flow=true;
-    popup.layout.offset_x=x; popup.layout.offset_y=y;
-    controls.push_back(std::move(popup));
-    auto auxiliary=std::numeric_limits<ControlKey>::max();
-    const auto allocate=[&] {
-        while (std::any_of(controls.begin(),controls.end(),[&](const auto& c){return c.key==auxiliary;}) ||
-               std::any_of(items.begin(),items.end(),[&](const auto& item){return item.key==auxiliary;})) --auxiliary;
-        return auxiliary--;
-    };
-    for (const auto& item:items) {
-        if (item.separator_before) {
-            Control separator; separator.key=allocate(); separator.parent=key;
-            separator.layout=NodeInput::overlay(); separator.layout.height=Axis::fixed(14); separator.layout.width=Axis::expand();
-            separator.enabled=false;
-            const auto separator_key=separator.key;
-            controls.push_back(std::move(separator));
-            Control line; line.key=allocate(); line.parent=separator_key;
-            line.layout=NodeInput::box(0,2.f/3); line.layout.width=Axis::expand();
-            line.layout.out_of_flow=true; line.layout.anchor_y=line.layout.pivot_y=.5f;
-            line.classes={"menu-separator"}; line.enabled=false;
-            controls.push_back(std::move(line));
-        }
-        Control row; row.key=allocate(); row.parent=key;
-        row.layout=NodeInput::column(); row.layout.height=Axis::content(25+1.f/3);
-        const auto row_key=row.key; controls.push_back(std::move(row));
-        Control control;
-        control.key=item.key; control.parent=row_key; control.kind=ControlKind::menu_item;
-        control.layout=NodeInput::box(0,25+1.f/3); control.layout.height=Axis::content(25+1.f/3); control.layout.width=Axis::expand();
-        control.text=item.text; control.enabled=item.enabled; control.selected=item.selected;
-        control.edit_command=item.edit_command; control.menu_branch=!item.children.empty();
-        control.menu_behavior=item.behavior; control.radio_group=item.radio_group; control.icon=item.icon;
-        controls.push_back(std::move(control));
-        if (!item.shortcut.empty() || !item.children.empty()) {
-            Control shortcut; shortcut.key=allocate(); shortcut.parent=row_key; shortcut.kind=ControlKind::label;
-            shortcut.text=item.children.empty()?item.shortcut:L"";
-            if (!item.children.empty()) shortcut.icon=ControlIcon::right; shortcut.enabled=false; shortcut.classes={"menu-shortcut"};
-            if (!item.enabled) shortcut.classes.push_back("unavailable");
-            shortcut.layout=NodeInput::box(0,0); shortcut.layout.width=Axis::content(item.children.empty()?0.f:12.f); shortcut.layout.height=Axis::expand();
-            shortcut.layout.out_of_flow=true; shortcut.layout.anchor_x=shortcut.layout.pivot_x=1;
-            shortcut.layout.offset_x=-10;
-            controls.push_back(std::move(shortcut));
         }
     }
 }

@@ -1,8 +1,7 @@
 // Exercise reversible publication with the real compiler, scopes and Session.
 void verify_ui_reload_transaction() {
     namespace language=ui_language;
-    editor::Session document;
-    auto& runtime=document.world().runtime();
+    Runtime runtime;take(ui_language::register_types(runtime));
     const std::string source=R"(
 ui Stateful() {
     state bool expanded = true;

@@ -4,7 +4,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，splitter/slider/viewport是盒。viewport不自动填色。
+[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
 
@@ -26,13 +26,17 @@
 
 `UiFrame.controls_revision`标识候选使用的描述批次；描述或SS版本改变后，`accept`拒绝旧候选。颜色改变保留控件incarnation。`prepare`失败仍保有旧帧，但暂停交互激活，直到修复后的帧被接受；已提交描述及已返回的取消effects不会因出帧失败自动撤回。
 
+## 多行源码编辑
+
+`ControlKind::code_editor` 使用 `Control::code` 指向宿主持有的 `CodeDocument`。文档跨控件挂载保持文本和增量历史；Session 共用原有焦点、捕获、Clipboard/IME token 与平台请求。`UiFrame::find_code` 返回可见行、文档版本和接受帧几何。单行字段继续使用其原有事务，源码已确认输入不会因失焦或隐藏回滚。作者与文件层契约见[源码工作流](../editor/source-editor.md)。
+
 ## 可组合参数控件
 
-`append_path_bar`、`append_object_header` 和 `append_parameter_tabs` 用普通 row/column、label、text_edit、button 组合路径、类型＋名称与内容页签。对象字段仍由宿主绑定实际身份和历史。内容页签使用 `selection_group`：左右键/Home/End 切换，Tab 只访问组内选中项；宿主保存选择并折叠对应内容容器。它与可拖动的工作区 `tab` 职责分开，多层页签和折叠组可直接嵌套在同一布局树中。
+DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label、text_edit、button 组合路径、类型＋名称与内容页签。对象字段仍由宿主绑定实际身份和历史。内容页签使用 `selection_group`：左右键/Home/End 切换，Tab 只访问组内选中项；宿主保存选择并折叠对应内容容器。它与可拖动的工作区 `tab` 职责分开，多层页签和折叠组可直接嵌套在同一布局树中。
 
-布局缩进由父容器负责。`append_parameter_tabs` 本身没有左、右或顶部缩进，只保留底部细分隔线的空间；调用方通过普通 column 的 padding 安排顶层位置和嵌套内容。折叠标题铺满所属内容区，字段缩进放在其内容容器。编辑器 SS 用 `parameter-page`、`parameter-body`、`parameter-inset` 表达这些现有容器的角色，不引入独立布局节点或另一个页面状态系统。
+布局缩进由父容器负责。内容页签本身没有左、右或顶部缩进，只保留底部细分隔线的空间；调用方通过普通 column 的 padding 安排顶层位置和嵌套内容。折叠标题铺满所属内容区，字段缩进放在其内容容器。编辑器 SS 用 `parameter-page`、`parameter-body`、`parameter-inset` 表达这些现有容器的角色，不引入独立布局节点或另一个页面状态系统。
 
-`PathBar` 提供宿主拥有的路径 combo、后退/前进按钮身份及可用状态；路径图标与文字使用同一测量入口。`Control.icon` 可与文字并存，前置图标保留 indicator-size 加 6 DIP 的空间；没有文字时仍是居中图标。下拉的方向标记限制在右侧预留区域内，较大的前置图标不会放大右侧箭头。路径菜单与普通下拉继续调用原菜单入口。
+`PathBar` 提供宿主拥有的路径 combo、后退/前进按钮身份及可用状态；路径图标与文字使用同一测量入口。`Control.icon` 可与文字并存，前置图标保留 indicator-size 加 6 DIP 的空间；没有文字时默认居中，可通过 `icon-align` 左/中/右对齐。下拉的方向标记限制在右侧预留区域内，较大的前置图标不会放大右侧箭头。路径菜单与普通下拉继续调用原菜单入口。
 
 [controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 23 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
 
@@ -52,7 +56,7 @@
 
 `checkbox` 和 `foldout` 是共享焦点、按压、禁用及 Tab 导航的文字叶。`selected` 分别表示勾选、展开；鼠标释放或 Enter/Space 抬起产生 `activate`，其 bool 值为已接受画面中 selected 的反值。宿主接受请求后重新描述控件，UI 不私自修改权威值。文字测量和绘制共同预留 indicator-size 加 6 DIP 的指示区域。勾号和三角形使用按形状/像素尺寸缓存的抗锯齿 R8 Coverage，沿同一 DrawQuad、上传和资源记账路径绘制。
 
-`append_collapsible_bar` 用普通容器、按钮和 `collapsed` 组成可收起栏：统一轨道宽度、顶部箭头位置、恢复条高度和 `bar-stow` 样式，返回本次占用高度供宿主分配剩余空间。宿主提供稳定的栏/按钮/内容 key、展开高度及内容布局，仍通过原激活入口管理展开状态；没有独立控件生命周期或第二套输入逻辑。
+DSL 的 EditorShell 和 ToolShelf 用普通容器、按钮和 `collapsed` 组成可收起栏：共享 12 DIP 轨道宽度、顶部箭头区域和恢复条高度，声明本次占用高度供宿主分配剩余空间。恢复条由同一个按钮横向展开，整行绘制和命中使用同一接受几何，图标通过 `icon-align: left` 留在左端。宿主提供稳定的栏/按钮/内容 key、展开高度及内容布局，仍通过原激活入口管理展开状态；没有独立控件生命周期或第二套输入逻辑。编辑器工具架已迁到 DSL，消费同一组尺寸、共享样式和普通按钮能力。
 
 折叠标题与内容容器是两个控件；宿主将展开状态映射到内容容器的 `layout.collapsed`。现有祖先有效性检查统一取消隐藏/禁用字段的草稿、组合和捕获；展开后复用仍存续的 key。宿主替换目标时仍须退役旧绑定。
 
@@ -84,7 +88,7 @@ Session 在同一输入入口管理滚动、焦点和在途列宽预览。固定
 
 行、列和手势均核对当前身份及接受帧数据。新数据的校验和行索引建立仅发生在数据快照变化时，选格不重新扫描整表。右键先发选择，再用真实 Table Control 作为 `ContextMenuRequest.source`，`table` 载荷记录原行/列；宿主菜单在原行消失、禁用或选择改变后关闭，不对后来的选择执行旧菜单动作。表格没有私有业务对象、命令入口或第二套文字编辑会话。
 
-首个消费者是 Asset Browser Details，通过 DSL 的 `Table` 与 `TableBinding` 接入；[声明式表格合同](../editor/declarative-ui-proposal.md#表格与宿主)说明作者语法和宿主路由。当前不提供单元格编辑、范围多选或冻结列，这些能力需由实际业务和既有编辑事务继续驱动。
+首个消费者是 Asset Browser Details，通过 DSL 的 `Table` 与 `TableBinding` 接入；[声明式表格合同](../editor/declarative-ui.md#表格与宿主)说明作者语法和宿主路由。当前不提供单元格编辑、范围多选或冻结列，这些能力需由实际业务和既有编辑事务继续驱动。
 
 ### 滚动与指针
 
@@ -94,7 +98,7 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 
 ### 菜单与下拉
 
-`append_menu` 组合根级 `popup`、普通 `menu_item`、快捷键提示和分隔线。每个 Session 只允许一个 popup；同一 surface 内的非零 owner 必须先出现，浮层子树放在描述末尾。owner=0 表示独立菜单 surface，外部目标的身份与生命周期由宿主管理。Session 只负责本 surface 的布局、滚动、绘制和接受帧，不假定它是主窗口。
+DSL 的 PopupMenu / PopupEntry 组合根级 `popup`、普通 `menu_item`、快捷键提示和分隔线。每个 Session 只允许一个 popup；同一 surface 内的非零 owner 必须先出现，浮层子树放在描述末尾。owner=0 表示独立菜单 surface，外部目标的身份与生命周期由宿主管理。Session 只负责本 surface 的布局、滚动、绘制和接受帧，不假定它是主窗口。
 
 `context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 通过点击、Enter/Space 或上下键请求菜单。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
 
@@ -106,13 +110,13 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 
 ## 停靠与标签
 
-[docking.hpp](../../../src/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，并通过 `append` 的内容回调描述已有视图。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
+[docking.hpp](../../../src/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，通过 `presentation` 提供分割尺寸、页签与内容槽数据，由编辑器 DSL 描述全部界面结构。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
 
 - 分割是横/纵方向、比例和两个孩子；叶子是标签组。移动后清理空组与单子分割；最后一组可为空，并仍能从菜单打开内容。最大化不改动原树。
 - `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。
 - 标签栏落点改变顺序或合并，内容四边落点分割；空间不足时不接受边缘分割，菜单也禁用对应项。分隔线复用普通 splitter 的数值预览/取消链路。每叶最低尺寸取已注册视图的最大需求，并沿树合成；窗口不足时按最低需求比例压缩，由内容自己的滚动/换行保持可达。
 - `focused_control()` 供宿主依据已接受父链选择业务历史上下文；它不把键盘焦点等同于业务对象选择。`visible(tab)` 与 `focused_tab()` 分别表示实际显示和最近操作的视图。
-- 每个分割节点保留展开比例及独立的收起侧。分隔条两端箭头收起对应侧，留下 8 DIP 细条，再点恢复。隐藏子树停止描述，业务视图身份、值和历史仍归宿主所有；菜单 Show 会展开目标的全部隐藏祖先。Tab 栏没有前置收拢按钮；菜单栏与工具架使用 `append_collapsible_bar` 共享收起结构。
+- 每个分割节点保留展开比例及独立的收起侧。分隔条两端箭头收起对应侧，留下 8 DIP 细条，再点恢复。隐藏子树停止描述，业务视图身份、值和历史仍归宿主所有；菜单 Show 会展开目标的全部隐藏祖先。Tab 栏没有前置收拢按钮；菜单栏与工具架在 DSL 中共享收起尺度和按钮语义。
 - Tab 栏的“＋”是带图标的 combo，紧跟最后一个标签；复用 context_menu 和宿主原生弹窗。选择已有视图将它移到当前组，关闭视图重新打开；右侧 Pane 菜单的 Show 保持跳转到原组的语义。`DockTab.classes` 进入原标签控件的 SS 匹配。
 - 中央点阵握柄单击交换两侧，Alt+单击旋转分割方向；比例保持不变。握柄和其余分隔条都可拖动，普通 splitter 的 `click_action` 将未拖动释放转为 activate（bool 为 Alt）；超过拖动阈值只走一次编辑手势。收起期间拖动不覆盖展开比例。
 - `Control.icon` 支持关闭、最大化、恢复、加号及四向箭头，可用于纯图标 button、splitter、combo。符号尺寸取 `indicator-size`，在 padding 后的内容区居中并限制尺寸；颜色取前景，最大化对角底色取 `indicator-background`，使用缓存 R8 Coverage。点阵握柄用可相邻合批的实色小方块绘制。
@@ -156,7 +160,7 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 
 Action.value为`ActionValue = variant<monostate,double,wstring,bool,ContextMenuRequest,DragPoint>`：普通activate/select无值；checkbox、foldout、toggle按钮及checkbox/radio菜单项携带请求的bool值；number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
 
-本地历史保存文字和选择快照；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
+本地历史保存插入/删除片段及前后选区，避免每次编辑复制整份文字；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 
 索引为UTF-16码元，编辑端点来自系统ICU的extended grapheme边界。DirectWrite同一layout负责点命中、带视觉affinity的caret和`HitTestTextRange`多矩形选择，不能用两个x表示双向选区。Windows SDK的`icu.h/icu.lib`仅为UI私有依赖，不新建文字渲染器或系统控件镜像。当前实机报告ICU 72.1、Unicode 15.1；覆盖非BMP代理对、组合重音、variation selector、明确ZWJ序列和双向混排，不据此宣称所有Unicode版本与字体均已验收。一手依据：[Windows ICU](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)、[ICU边界分析](https://unicode-org.github.io/icu/userguide/boundaryanalysis/)。
 
@@ -208,6 +212,6 @@ S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回�
 
 ### 原生宿主的菜单链
 
-`MenuItem::children` 描述子菜单，`append_menu` 将分支投影为带箭头的 `menu_item`。`Control::menu_branch` 只允许用于无 EditCommand 的菜单条目：点击或 Right 发出 activate 并保留父菜单，宿主按条目 key 打开子窗口；叶条目沿既有 activate/dismiss 路径执行。通用 UI Session 不持有平台窗口。
+`MenuItem::children` 描述子菜单，PopupEntry 将分支投影为带箭头的 `menu_item`。`Control::menu_branch` 只允许用于无 EditCommand 的菜单条目：点击或 Right 发出 activate 并保留父菜单，宿主按条目 key 打开子窗口；叶条目沿既有 activate/dismiss 路径执行。通用 UI Session 不持有平台窗口。
 
 将 popup 根的 layout.collapsed 设为 true 会退出其 modal 状态，再展开会初始化菜单焦点。此路径保留控件/文字缓存，供原生 PopupHost 隐藏与暖重开使用；隐藏期间不能接受旧显示帧的输入。窗口链与来源失效策略由 Application 负责。

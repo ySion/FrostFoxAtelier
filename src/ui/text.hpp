@@ -57,7 +57,7 @@ public:
     void erase(TextKey key);
     ui_layout::MeasuredSize metrics(TextKey key, float width);
     RasterText raster(TextKey key, float width, float dpi, std::optional<Clip> viewport = {});
-    std::shared_ptr<const TextSnapshot> snapshot(std::uint64_t key, float width);
+    std::shared_ptr<const TextSnapshot> snapshot(TextKey key, float width);
     // Keyboard edits may arrive before repaint. Shape the current draft using
     // the displayed paragraph's font/width policy, never the pending style.
     std::shared_ptr<const TextSnapshot> edited_snapshot(std::uint64_t key, const TextSnapshot&, std::wstring_view);

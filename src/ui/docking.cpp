@@ -5,15 +5,10 @@
 
 namespace atelier::ui {
 namespace {
-constexpr float tab_height=22, divider_width=8;
+constexpr float divider_width=8;
 constexpr ControlKey close_offset=1'000'000, wrapper_offset=2'000'000, open_offset=3'000'000, preview_offset=4'000'000, command_offset=5'000'000;
 bool inside(Rect r,float x,float y) { return x>=r.x && y>=r.y && x<r.x+r.width && y<r.y+r.height; }
-Control& add(std::vector<Control>& controls,ControlKey key,ControlKey parent,ControlKind kind,
-             ui_layout::NodeInput layout,std::wstring text={}) {
-    Control control; control.key=key; control.parent=parent; control.kind=kind;
-    control.layout=std::move(layout); control.text=std::move(text);
-    controls.push_back(std::move(control)); return controls.back();
-}
+
 }
 DockSpace::DockSpace(ControlKey base,std::vector<DockTab> tabs) : base_(base),next_(base),tabs_(std::move(tabs)) {
     if (!base || base>std::numeric_limits<ControlKey>::max()-command_offset-256 || tabs_.empty() || tabs_.size()>64)
@@ -203,6 +198,8 @@ std::optional<DockSpace::Drop> DockSpace::destination(ControlKey source,const Dr
         const auto* box=frame.find(node.key); if (!box || !inside(box->bounds,point.x,point.y)) return {};
         const auto b=box->bounds;
         Drop drop{node.key,0,DockSide::tabs,{b.x/scale,b.y/scale,b.width/scale,b.height/scale}};
+        const auto* strip=frame.find(node.key+2);
+        const float tab_height=strip?strip->bounds.height/scale:0.f;
         if (point.y<b.y+tab_height*scale) {
             for (auto key:node.tabs) if (key!=source) if (const auto* item=frame.find(key))
                 if (point.x<item->bounds.x+item->bounds.width*.5f) { drop.before=key; break; }
@@ -337,101 +334,43 @@ std::vector<MenuItem> DockSpace::menu_items(ControlKey source,const UiFrame* fra
     result.push_back({node->key+8,L"Split Pane Top/Bottom",vertical,false,{}});
     return result;
 }
-void DockSpace::append_node(std::vector<Control>& controls,const Node& node,ControlKey parent,
-                           ui_layout::Size size,const Describe& describe) {
-    using namespace ui_layout;
-    auto layout=node.split()?(node.axis==DragAxis::horizontal?NodeInput::row():NodeInput::column()):NodeInput::column();
-    layout.width=Axis::fixed(size.width); layout.height=Axis::fixed(size.height);
-    add(controls,node.key,parent,ControlKind::container,layout).classes={"dock-pane"};
-    if (node.split()) {
-        const bool horizontal=node.axis==DragAxis::horizontal;
-        const auto a=minimum(*node.first),b=minimum(*node.second);
-        const auto span=std::max(0.f,(horizontal?size.width:size.height)-divider_width);
-        const auto low=horizontal?a.width:a.height, high=horizontal?b.width:b.height;
-        const auto floor=span>=low+high?low:span*low/(low+high);
-        const auto ceiling=span>=low+high?span-high:floor;
-        const auto cut=node.collapsed==1?0.f:node.collapsed==2?span:std::clamp(span*node.fraction,floor,ceiling);
-        auto first_size=size,second_size=size;
-        (horizontal?first_size.width:first_size.height)=cut;
-        (horizontal?second_size.width:second_size.height)=std::max(0.f,span-cut);
-        if (node.collapsed!=1) append_node(controls,*node.first,node.key,first_size,describe);
-        auto bar=NodeInput::overlay(); bar.width=Axis::fixed(horizontal?std::min(divider_width,size.width):size.width);
-        bar.height=Axis::fixed(horizontal?size.height:std::min(divider_width,size.height));
-        const auto orientation=horizontal?"vertical":"horizontal";
-        add(controls,node.key+15,node.key,ControlKind::container,bar);
-        const auto append_splitter=[&](ControlKey key,NodeInput shape,bool grip) {
-            auto& divider=add(controls,key,node.key+15,ControlKind::splitter,shape);
-            divider.value=span?cut/span:.5f; divider.minimum=span?floor/span:.5f; divider.maximum=span?ceiling/span:.5f;
-            divider.drag_axis=node.axis; divider.drag_step=divider.fine_step=1/std::max(span,1.f);
-            divider.classes={grip?"dock-grip":"dock-divider",orientation}; divider.click_action=grip;
-            // Collapsed geometry must not overwrite the remembered fraction.
-            if (node.collapsed) { divider.value=divider.minimum=divider.maximum=node.fraction; }
-            if (grip) divider.icon=horizontal?ControlIcon::grip_vertical:ControlIcon::grip_horizontal;
-        };
-        auto fill=NodeInput::box(0,0); fill.width=fill.height=Axis::expand();
-        append_splitter(node.key+1,fill,false);
-        // Keep the rail narrow; give all three actions equal, contiguous hit areas.
-        // Compress the group together if a small host cannot fit its usual length.
-        const float action_length=std::min(36.f,(horizontal?size.height:size.width)/3);
-        const float action_width=std::max(0.f,std::min(divider_width,horizontal?size.width:size.height)-4.f/3);
-        for (unsigned part=0;part<3;++part) {
-            auto shape=NodeInput::box(horizontal?action_width:action_length,horizontal?action_length:action_width);
-            shape.out_of_flow=true; shape.anchor_x=shape.anchor_y=shape.pivot_x=shape.pivot_y=.5f;
-            const float offset=(static_cast<float>(part)-1)*action_length;
-            (horizontal?shape.offset_y:shape.offset_x)=offset;
-            if (part==1) append_splitter(node.key+14,shape,true);
-            else {
-                const bool first=part==0, hidden=node.collapsed==(first?1u:2u);
-                auto& button=add(controls,node.key+(first?12:13),node.key+15,ControlKind::button,shape);
-                button.icon=horizontal?(first!=hidden?ControlIcon::left:ControlIcon::right):(first!=hidden?ControlIcon::up:ControlIcon::down);
-                button.classes={"dock-collapse"}; button.selected=hidden;
-            }
+void DockSpace::present_node(Presentation& result,const Node& node,ControlKey parent,Rect bounds) const {
+    Pane pane;pane.key=node.key;pane.parent=parent;pane.bounds=bounds;
+    pane.split=node.split();pane.horizontal=node.axis==DragAxis::horizontal;
+    pane.maximized=maximized_!=0;pane.collapsed=node.collapsed;
+    if (!node.split()) {
+        for (auto key:node.tabs) {
+            const auto* view=tab(key);const auto index=static_cast<ControlKey>(view-tabs_.data());
+            pane.tabs.push_back({view,base_+wrapper_offset+index,base_+close_offset+index});
         }
-        if (node.collapsed!=2) append_node(controls,*node.second,node.key,second_size,describe);
-        return;
+        pane.active=tab(node.active);result.panes.push_back(std::move(pane));return;
     }
-    auto strip=NodeInput::row(); strip.height=Axis::fixed(tab_height); strip.flow=FlexSpec{};
-    add(controls,node.key+2,node.key,ControlKind::container,strip).classes={"dock-tabs"};
-    auto tabs=NodeInput::row(); tabs.width=Axis::flex(Basis::content(),0,1,0); tabs.height=Axis::expand();
-    tabs.flow=FlexSpec{};
-    add(controls,node.key+9,node.key+2,ControlKind::container,tabs);
-    for (auto key:node.tabs) {
-        const auto* view=tab(key); const auto index=static_cast<ControlKey>(view-tabs_.data());
-        auto group=NodeInput::row(); group.width=Axis::flex(Basis::content(),0,1,44); group.height=Axis::expand(); group.flow=FlexSpec{};
-        auto& row=add(controls,base_+wrapper_offset+index,node.key+9,ControlKind::container,group);
-        row.classes={"dock-tab-group"}; row.selected=key==node.active;
-        auto text=NodeInput::box(0,0); text.height=Axis::expand(); text.width=Axis::flex(Basis::content(),1,1,12);
-        auto& button=add(controls,key,row.key,ControlKind::tab,text,view->title);
-        button.selected=key==node.active; button.context_target=key; button.classes={"dock-tab"};
-        button.classes.insert(button.classes.end(),view->classes.begin(),view->classes.end());
-        auto close_shape=NodeInput::box(20,0); close_shape.height=Axis::expand();
-        auto& close_button=add(controls,base_+close_offset+index,base_+wrapper_offset+index,ControlKind::button,close_shape);
-        close_button.icon=ControlIcon::close; close_button.classes={"dock-close"}; close_button.selected=key==node.active;
-    }
-    auto& add_button=add(controls,add_tab_button(node.key),node.key+2,ControlKind::combo,NodeInput::box(24,tab_height));
-    add_button.icon=ControlIcon::plus; add_button.classes={"dock-add"}; add_button.context_target=add_button.key;
-    // The elastic gap follows Add, keeping tools reachable when tab text overflows.
-    auto gap=NodeInput::box(0,tab_height); gap.width=Axis::expand();
-    add(controls,node.key+15,node.key+2,ControlKind::container,gap);
-    auto& maximize_button=add(controls,node.key+3,node.key+2,ControlKind::button,NodeInput::box(22,tab_height));
-    maximize_button.icon=maximized_?ControlIcon::restore:ControlIcon::maximize; maximize_button.classes={"dock-tool"}; maximize_button.enabled=node.active!=0;
-    auto& menu_button=add(controls,node.key+4,node.key+2,ControlKind::combo,NodeInput::box(22,tab_height));
-    menu_button.classes={"dock-menu"}; menu_button.icon=ControlIcon::down; menu_button.context_target=node.key+4;
-    if (const auto* active=tab(node.active)) describe(*active,controls,node.key);
-    else {
-        auto blank=NodeInput::box(0,0); blank.width=blank.height=Axis::expand(); blank.padding={12,12,12,12};
-        add(controls,node.key+10,node.key,ControlKind::label,blank,L"Open a view from the pane menu.").role=Role::caption;
-    }
+    const bool horizontal=pane.horizontal;
+    const auto a=minimum(*node.first),b=minimum(*node.second);
+    const auto span=std::max(0.f,(horizontal?bounds.width:bounds.height)-divider_width);
+    const auto low=horizontal?a.width:a.height,high=horizontal?b.width:b.height;
+    const auto floor=span>=low+high?low:span*low/(low+high);
+    const auto ceiling=span>=low+high?span-high:floor;
+    const auto cut=node.collapsed==1?0.f:node.collapsed==2?span:std::clamp(span*node.fraction,floor,ceiling);
+    pane.value=span?cut/span:.5f;pane.minimum=span?floor/span:.5f;pane.maximum=span?ceiling/span:.5f;
+    pane.step=1/std::max(span,1.f);
+    if (node.collapsed) pane.value=pane.minimum=pane.maximum=node.fraction;
+    pane.divider={horizontal?cut:0.f,horizontal?0.f:cut,
+        horizontal?std::min(divider_width,bounds.width):bounds.width,
+        horizontal?bounds.height:std::min(divider_width,bounds.height)};
+    result.panes.push_back(std::move(pane));
+    Rect first{0,0,bounds.width,bounds.height},second=first;
+    (horizontal?first.width:first.height)=cut;
+    (horizontal?second.x:second.y)=cut+divider_width;
+    (horizontal?second.width:second.height)=std::max(0.f,span-cut);
+    if (node.collapsed!=1) present_node(result,*node.first,node.key,first);
+    if (node.collapsed!=2) present_node(result,*node.second,node.key,second);
 }
-void DockSpace::append(std::vector<Control>& controls,ControlKey parent,ui_layout::Size size,const Describe& describe) {
-    auto* node=maximized_?find(maximized_):root_.get(); if (!node) node=root_.get();
-    append_node(controls,*node,parent,size,describe);
-    if (drag_ && drag_->target) {
-        const auto area=drag_->target->preview;
-        auto layout=ui_layout::NodeInput::box(area.width,area.height); layout.out_of_flow=true;
-        layout.offset_x=area.x; layout.offset_y=area.y;
-        auto& preview=add(controls,base_+preview_offset,0,ControlKind::container,layout);
-        preview.enabled=false; preview.classes={"dock-preview"};
-    }
+DockSpace::Presentation DockSpace::presentation(ControlKey parent,ui_layout::Size size) const {
+    Presentation result;result.preview_key=base_+preview_offset;
+    auto* node=maximized_?find(maximized_):root_.get();if (!node) node=root_.get();
+    present_node(result,*node,parent,{0,0,size.width,size.height});
+    if (drag_ && drag_->target) result.preview=drag_->target->preview;
+    return result;
 }
 } // namespace atelier::ui

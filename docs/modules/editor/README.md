@@ -2,16 +2,26 @@
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
 
-完整 DSL 迁移的当前评估、区域需求、控件语义、手势边界和实施次序见[迁移计划](dsl-migration.md)。完整工具架、现有参数区结构和 Scene Tree 主体已使用当前[声明式 UI](declarative-ui-proposal.md)，其余外壳与控件能力按计划逐步迁移。
+完整 DSL 迁移的当前评估、区域需求、控件语义、手势边界和实施次序见[迁移计划](dsl-migration.md)。完整工具架、现有参数区结构和 Scene Tree 主体已使用当前[声明式 UI](declarative-ui.md)，现有外壳、菜单、停靠、Controls 和资源浏览器的装配也已迁入同一声明。
 启动日志和 Help → About 使用构建时生成的同一提交标识及配置；未提交改动标为 `local changes`。`atelier_editor --version` 可在不创建窗口的情况下读取该二进制的标识。工程打开成功后记录实际根目录，About 同时显示当前工程目录和场景路径。标识在构建时刷新，运行时不读取当前目录的 Git 状态。
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
-模型与渲染消费完整 TRS；业务面板暴露位置 Vector3，已接入默认值恢复、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转/缩放业务字段、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
+模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录，根位置使用 Vector3，其余 TRS 分量通过实际字段编辑。已接入已声明默认值、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转欧拉角专用控件、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
-UI 作者层已将 Parameters 的查询、Position、组件列表和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui-proposal.md)。
+UI 作者层已将 Parameters 的查询、Position、属性组、Actor Structure 和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
+
+本波次审查、对象模型判断和验收见[工程工作流审查](../../research/editor-project-review-20261006.md)。
 
 ## 工程与文件
 
-工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ 几何导入；Source 的跨文件编译仍是后续语言接点。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
+工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ 几何导入；Source 文件已接入编辑器内创建、跨文件编译、真实组件类型、属性持久化、独立运行与兼容热更；项目 UI 采用同一工程配置并支持独立预览。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
+
+## 源码编辑
+
+File → Edit Editor UI Source 可直接打开并修改当前 UI 声明；Code 面板支持持久文档、独立撤销、保存、编译诊断定位和失败恢复。用法、边界与验收见[源码工作流](source-editor.md)。
+
+## 当前 UI 作者入口
+
+现有编辑器界面统一由 [editor.ui.source](../../../assets/editor.ui.source) 描述，包含总外壳、顶部菜单栏、工具架、状态栏、停靠栏/分隔条、Scene View、Parameters、Scene Tree、Actor Structure、Asset Browser、Controls、Code、Project Output 和原生窗口内的弹出菜单。C++ 提供数据与身份、业务命令和原生机制；各区域不再保留另一条 C++ 界面组装路径。支持范围、动态内容槽和更新事务见[声明式 UI](declarative-ui.md)。
 
 ## 正式执行链
 
@@ -29,8 +39,8 @@ WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入�
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
 [World](../../../src/world/world.hpp)和 Runtime 管理唯一 Actor/Component 身份、组成与成员资格。编辑 World 保持 stopped；Actor 的 AttachedInactive 状态仍可呈现和编辑，renderer 不按 Active 状态筛除编辑内容。
-World 的类型与字段元数据由[自动反射](../../reflection.md)生成，仍经 `world::register_types` 发布到 Session 拥有的 Runtime。编辑器使用该入口返回的类型和字段路径；生成头、World 库及正式编辑器均由当前工作树、当前配置的 CMake 依赖链构建。
-[Session](../../../src/editor/session.hpp)是文档唯一写入口，保存 Actor 选择和统一的 Actor、组件、字段历史。字段事务捕获具体组件 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。SceneComponent 字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 继续选中记录的 owner Actor。
+World 的原生类型与字段元数据由[自动反射](../../reflection.md)生成，经 `world::register_types` 发布到 Session 拥有的 Runtime；项目 Source 派生类型在 Session::Prepare 中由同一 Runtime 类型系统发布。编辑器使用该入口返回的类型和字段路径；生成头、World 库及正式编辑器均由当前工作树、当前配置的 CMake 依赖链构建。
+[Session](../../../src/editor/session.hpp)是文档唯一写入口，保存 `{actor, object}` 选择和统一的 Actor、组件、字段历史。字段事务捕获具体对象 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。SceneComponent 字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 恢复该字段所属对象作为检查目标，并保留其 Actor 上下文。同一目标重复选择不取消草稿；换目标先取消事务。
 Actor 删除记录保存普通 Actor 根及 World 成员位置，组件独立移除记录保存组件根及 owner/顺序/空间父节点/根身份恢复资料。Undo 恢复同一 ObjectId 的当前组成与成员资格，重新生成 UI 绑定。裁剪历史/redo 与关闭文档只释放持有，不隐式 destroy。历史最多128项，编辑器最多256个 Actor；只有 World 成员可编辑，没有离线写入或多写者冲突机制。
 World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notification_error 表示关系已改变。Session 先记录变化并更新选择，应用再报告通知错误并停止后续动作，不把它当成未提交或重做一次。成员 span 只在结构变化前借用，UI/renderer 不持有它。
 宿主同线程逐帧以32工作单位推进 GC；普通根保活不表示对象仍参与 World。文档关闭先结束活动编辑，再关闭 World、释放历史；World close 撤成员/参与和根，Runtime 生命周期随后由宿主管理。
@@ -41,7 +51,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 范围、默认值、单位与拖调步长由[应用参数描述](../../../src/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
 控件 key 独立单调分配，绑定具体 ObjectId 和 FieldId 路径；稳定控件复用其键，失效后退役且不再分配。Actor/组件恢复保留业务身份，但不会恢复旧控件会话、IME 或剪贴板请求。
 
-位置使用共享 `append_number_row` 组合三个 number；标题和字段随宽度自动换行，分量共用一行。修改状态逐分量比较 `Parameter.default_value`。数值菜单可恢复当前分量，标题或菜单的整组命令恢复完整位置（包括搜索过滤隐藏的分量）。标题绑定具体 SceneComponent 身份，`Session::reset_position` 经 World 一次应用完整 TRS，再记录一次现有 FieldChange。无变化不增加历史，旋转和缩放保持原值，undo/redo 沿用已有 owner 选择政策。
+位置使用共享 `append_number_row` 组合三个 number；标题和字段随宽度自动换行，分量共用一行。修改状态逐分量比较 `Parameter.default_value`。数值菜单可恢复当前分量，标题或菜单的整组命令恢复完整位置（包括搜索过滤隐藏的分量）。标题绑定具体 SceneComponent 身份，`Session::reset_position` 经 World 一次应用完整 TRS，再记录一次现有 FieldChange。无变化不增加历史，旋转和缩放保持原值，undo/redo 恢复对应组件及 Actor 上下文。
 
 - 左手坐标系，+Y向上，单位米；方块各轴范围 `[-0.5, 0.5]`。World 组合局部 `S * R * T` 与父世界矩阵；renderer 不自行重算 TRS。空间换父 API 在 World 提供，当前面板编辑根位置。
 - 默认相机 eye `(6,5,-8)`、target `(0,0,0)`、up `(0,1,0)`；使用 LookAtLH/PerspectiveFovLH。
@@ -51,20 +61,22 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 工作区与停靠
 
-默认布局参照 Houdini 的分区：Scene View 在左，Parameters/Controls 共用右上标签组，Actors 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域。
+主窗体只组织四个区域：顶部菜单栏、工具架、中间 DockSpace 内容区和底部状态栏。业务功能以可停靠的 Tab 子页组成，不将页面业务提升为固定外壳控件。
+
+默认布局参照 Houdini 的分区：Scene View/Code 在左上，Asset Browser/Project Output 在左下，Parameters/Controls 共用右上标签组，Scene Tree/Actor Structure 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域。
 
 固定视图标签统一使用正体，包括 Scene View；选中状态仅通过灰色底面区分，不使用斜体或焦点描边。标签只绘制右侧分隔边，首标签直接衔接分隔条的收边，不叠加左边框。
 
 - 拖标签到另一个标签栏可合并/重排；拖到内容的左、右、上、下边缘可分栏，松开前有预览，Esc 取消。分隔条可拖动改变两侧比例。两侧箭头收起对应面板为 8 DIP 细条，重按恢复原比例；Tab 栏直接从标签开始。中央单排方点单击交换两侧，Alt+单击切换横竖方向，拖动仍调整比例。
 - 分隔条的三个按钮沿条方向各占 36 DIP，连续居中排列，窄小宿主内等比例缩短。背景为 `#494949`，靠前边为黑色、靠后边为 `#333333`；横竖方向共用 SS 边框规则，悬停和按下反馈限制在按钮内部，保持外侧细边连续。
 - “＋”紧跟最后一个标签，打开原生菜单，将已有视图移到当前组，或重新打开已关闭的视图；视图的值和历史保留。右端下拉菜单的 Show 则跳转到视图当前所在组。
-- 标签的关闭按钮移除其显示；右侧菜单可以重新打开四种视图，并把当前标签移到右方/下方的新区域。空间不足或组中只有一个标签时，对应分割菜单不可用。
-- 面板右上角切换最大化/还原；Ctrl+B 对最近操作的面板执行同一动作。Ctrl+Tab / Ctrl+Shift+Tab 切换组内标签，Ctrl+W 关闭当前标签；菜单打开期间由菜单独占键盘。
+- 标签的关闭按钮移除其显示；右侧菜单可以重新打开已注册视图，并把当前标签移到右方/下方的新区域。空间不足或组中只有一个标签时，对应分割菜单不可用。
+- 面板右上角切换最大化/还原；Ctrl+B 对最近操作的面板执行同一动作。Ctrl+Tab / Ctrl+Shift+Tab 切换组内标签，Ctrl+W 关闭当前标签（Code 中先关闭源码文档）；菜单打开期间由菜单独占键盘。
 - **Window → Reset layout** 恢复默认位置及标签；场景、相机、筛选、样本值和历史不因恢复布局而重置。最后一个视图关闭后也可恢复。
 - 样本与场景历史按照最近操作的视图选择，允许 Controls 与 Parameters 同时显示。视图隐藏/移动时，未提交交互仍通过 Session 的取消/失焦合同结束；业务字段 key 依对象实际成员生命周期退役，隐藏面板不退役对象绑定。
-- Scene View 隐藏时提交空场景矩形，不生成场景实例；其他 UI 继续走原窗口、renderer 和接受帧。参数面板与实验台的标题和内容页签固定，下方内容滚动以适应较矮的区域；窄参数行仍使用公共 Flex 换行。
+- Scene View 隐藏时提交空场景矩形，不生成场景实例；其他 UI 继续走原窗口、renderer 和接受帧。参数面板标题与可选搜索固定，实验台另外保留示例内容页签；下方内容滚动以适应较矮的区域；窄参数行仍使用公共 Flex 换行。
 
-以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。按 2026-10-02 用户截图复测，菜单栏为 32 DIP，Tab 栏为 22 DIP。菜单栏与工具架统一使用 8 DIP 左侧收起轨道、6 DIP 箭头和 6 DIP 恢复条；轨道完整高度均可点击，正文从同一条右边界开始。当前中英文正文与 Tab 使用 13 DIP Sarasa UI SC，菜单栏文字为 13.5 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。原始观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)，栏结构与实现边界见[栏结构校准](../../research/houdini-chrome-20261002.md)。独立原生浮窗、多份同类视图和持久布局属于后续增量。
+以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。菜单栏为 32 DIP，Tab 栏为 22 DIP；菜单栏与工具架的最新收起把手和整行恢复条尺寸见下方[首版操作](#首版操作)。当前中英文正文与 Tab 使用 12.5 DIP Sarasa UI SC，菜单栏文字为 13.5 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。早期观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)与[栏结构校准](../../research/houdini-chrome-20261002.md)，当前行为以本页为准。独立原生浮窗、多份同类视图和持久布局属于后续增量。
 
 布局与参数的本轮参照、原生观察及验收记录见 [Pane 细节](../../research/houdini-pane-details-20261001.md)。
 
@@ -86,13 +98,13 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 首版操作
 
-顶部菜单栏提供 File / Edit / Create / View / Window。Create 快捷区创建 Actor 或 Static Mesh Actor，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。应用启动为空场景。Parameters 通过真实类型显示对象标题，位置字段编辑根 SceneComponent；Components 页展示实际组成。没有场景根时不提供 Transform 页且 Focus 停用；没有对象选择时显示空状态。
+顶部菜单栏提供 File / Edit / Create / View / Window。Create 快捷区创建 Actor 或 Static Mesh Actor，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。应用启动为空场景。Parameters 通过真实类型显示检查目标及其连续属性区。Actor Structure 展示 Actor 归属下的组件，负责选择、添加和删除；Scene Tree 保持 Actor 列表。没有根组件时不显示根位置，Focus 停用；没有检查目标时显示空状态。
 
 `commands.hpp` 是编辑器命令描述入口，`Workspace::command_enabled` 判定当前可用性，`Application::execute` 执行。菜单和顶部快捷区读取同一描述，快捷键与资源点击进入同一个执行函数。执行时再次检查可用性；UI 只产生通用 Action，不直接修改 World。输入字段和拖动仍通过 Session 事务入口。
 
-菜单栏和工具架通过共享 `append_collapsible_bar` 描述轨道、箭头位置及内容隐藏；工作区高度预算使用该入口返回的实际占用高度。窗口验收比较两栏在展开、分别收起、同时收起、悬停和窗口变化后的物理边界与样式，避免分别固定两个互不一致的尺寸。
+菜单栏通过 `EditorShell`、工具架通过 `ToolShelf` DSL 描述同一套收起交互，共用 `stow_*` 尺寸和 `bar-stow` 样式。展开把手宽 12 DIP，当前 150% 缩放下为 18px；箭头位于顶部 12 DIP 方形区。收起时同一个按钮铺满整条横栏，高 12 DIP，任何位置均可点击恢复，箭头保持左对齐。展开把手和收起横条的常态、悬停、焦点均为灰色渐变；仅按住时采用灰蓝渐变 `#5D7389 → #748CA5`，松开即恢复灰色，箭头始终为黑色。两栏分别使用自身实际占用高度分配剩余工作区；窗口验收覆盖单独/同时收起、横条中部与末端点击和键盘恢复。
 
-顶部工具架使用 18 DIP 分类行与紧凑图标区，总高 56 DIP；左侧窄轨可收起到 6 DIP，保留展开箭头和键盘激活。分类选择跨收起/展开保留，收起不会改变场景历史，Reset Layout 恢复展开。工具按钮统一宽 64 DIP、18 DIP 图标与 10.5 DIP 短标签，菜单保留完整指令名。图标和文字由同一按钮绘制/命中，`icon-placement: above` 由共享 SS 测量与绘制处理。
+顶部工具架使用 18 DIP 分类行与紧凑图标区，总高 56 DIP；收起后为上述整行恢复条。分类选择跨收起/展开保留，收起不会改变场景历史，Reset Layout 恢复展开。工具按钮统一宽 64 DIP、18 DIP 图标与 10.5 DIP 短标签，菜单保留完整指令名。图标和文字由同一按钮绘制/命中，`icon-placement: above` 由共享 SS 测量与绘制处理。
 
 Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单击选择，Add to Scene 执行共享创建命令，支持名称/类型过滤与 List/Details/Tiles。工具行、目录树、状态行和全部结果视图由 DSL 声明；List/Details/Tiles 通过 TableBinding 接入共享 Table，提供排序、列宽拖动、当前单元格、键盘导航和双击/Enter Open。三种呈现复用同一数据快照和选择状态，详见[工程与资源浏览](projects.md)。顶部快捷创建继续引用相同内置资源。World/renderer 不按 Cube 名字分支；拖放、吸附和模型缩略图尚未实施。
 数值控件支持普通拖动和中键七档数值阶梯；上下移动选步长，左右移动调值，Shift 细调，释放提交一次、Esc 取消。右键或 Menu/Shift+F10 打开参数菜单；Ctrl+中键恢复分量或标题对应整组默认值。菜单期间视口输入暂停，外部点击只关闭菜单，Esc/Tab 返回原焦点。普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
@@ -121,11 +133,20 @@ Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单
 
 ### 参数面板组合
 
-路径栏显示 World 上下文；固定对象标题用类型＋名称输入框表达当前 Actor。名称是 editor::Session 的文档标签，通过对象身份索引，重命名、删除恢复和撤销重做共用场景历史；标签本身不持有运行时对象，GC 完成后清理失效索引。它尚无磁盘持久化，也不是新增的 World 反射字段。
+路径栏显示 World 上下文；固定对象标题用类型图标、类型和名称输入框表达当前 Actor，右侧放大镜控制参数搜索。名称是 editor::Session 的文档标签，通过对象身份索引，重命名、删除恢复和撤销重做共用场景历史；标签本身不持有运行时对象，GC 完成后清理失效索引。名称随场景 JSON 持久化，不是新增的 World 反射字段。
 
 路径栏的下拉通过同一原生菜单选择 World 或 Actor；前后箭头浏览最近的选择。导航历史属于 Workspace，最多保存 64 个不保活的身份，保留 World 入口并清理失效对象；导航调用现有 Session::select，不增加场景撤销条目。路径框、普通输入框、内容页签和滚动条的像素色值与共享样式扩展见[细节校准](../../research/houdini-chrome-pixels-20261002.md)。
 
-Parameters 的内容页签由当前 Actor 的组成提供；对象标题、公共过滤器与页签固定，仅下方参数区滚动。同一过滤器筛选各页的字段和组件，切页不会更换查询身份。Controls 的 Parameters / Appearance 使用同一组合，Appearance 内的 Color / Channels 是独立嵌套组：RGB 元组、三条逐通道滑条和色块消费同一组样本值，支持折叠、禁用、默认值及样本撤销。所有行、组和伸展继续使用现有 row/column/Flex，未引入第二套布局器。
+Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。选择 Actor 时展示 Actor 自身字段和所拥有组件的属性分组；选择组件时只展示该组件，标题中的组件类型只读。Actor 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。结构增删只在 Actor Structure 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。图标来源见[参数面板与图标研究](../../research/parameter-header-icons-20261006.md)。
+
+Actor Structure 是可移动、关闭、重开的独立子页：Actor 作为父行，组件按拥有顺序列为子行，根组件标为 Root。它表达组成归属，不冒充空间树或 Houdini SOP 网络。选择组件保留 Actor 上下文，视口和 Scene Tree 仍指向其拥有者；Delete 删除检查目标，删除组件后回到 Actor，Undo 恢复组件身份与选择。树行、属性分组和字段分别持有稳定 UI key，避免两个可见页对同一对象复用控件身份。当前没有重排、空间换父或跨面板拖放手势。
+
+### 类定义、实例与默认值
+
+目前支持原生及 Source 类定义，实例通过同一个 Runtime 创建，字段声明默认值参与初始化。Scene 持久化限定类型名和实例值。当前没有 Class 资产、组件模板或显式 override 集，也没有模板默认值编辑器；Parameters 始终编辑当前场景实例。现有值与默认值的比较仅用于显示修改状态。没有声明默认值的原生字段不假定为零，也不伪造恢复默认值能力。修改 Source 字段默认值需重建类型，已保存实例值会恢复，不自动随新默认值传播。未来 Class 资产必须先明确持久身份、组件模板、覆盖和传播规则，再复用同一个检查入口。
+
+
+Controls 的 Parameters / Appearance 使用同一组合，Appearance 内的 Color / Channels 是独立嵌套组：RGB 元组、三条逐通道滑条和色块消费同一组样本值，支持折叠、禁用、默认值及样本撤销。所有行、组和伸展继续使用现有 row/column/Flex，未引入第二套布局器。
 
 折叠标题以常规字重显示，鼠标悬停使用 `#4f4f4f` 灰底，按下使用 `#464646`；展开状态由箭头方向表示。焦点仅轻微提亮文字，不增加边框或黄色下划线，Enter/Space 仍可切换展开状态。
 

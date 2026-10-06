@@ -1,3 +1,43 @@
+void verify_parameter_search(Application& app,const std::filesystem::path& output) {
+    const auto actor=app.document().selection().actor;
+    const auto field=property_control(app,actor,0);
+    const auto incarnation=app.presented()->find(field)->incarnation;
+    const auto history=app.document().undo_count();
+    const auto closed_list=app.presented()->find(control::parameter_list)->bounds;
+    const auto name=atelier::application::EditorAcceptanceAccess::name_control(app,actor);
+    const auto name_bounds=app.presented()->find(name)->bounds;
+    const auto button=app.presented()->find(control::parameter_search_toggle)->bounds;
+    require(!app.presented()->find(control::parameter_search) &&
+        !app.presented()->find(control::parameter_search_toggle)->selected &&
+        std::abs(name_bounds.y+name_bounds.height*.5f-button.y-button.height*.5f)<.1f &&
+        name_bounds.height==app.presented()->find(field)->bounds.height,
+        "Parameter header did not align the shared single-line editor and collapsed search button.");
+    capture(app,output/"parameters-search-closed.png");
+    click(app,control::parameter_search_toggle);
+    require(app.text_input() && app.text_input()->token.key==control::parameter_search &&
+        app.presented()->find(control::parameter_search_toggle)->selected &&
+        app.presented()->find(field)->incarnation==incarnation,
+        "Opening parameter search did not focus the presented field or select its magnifier.");
+    const auto search=app.presented()->find(control::parameter_search)->bounds;
+    const auto header=app.presented()->find(51)->bounds;
+    const auto list=app.presented()->find(control::parameter_list)->bounds;
+    require(search.y>=header.y+header.height-.1f && search.y+search.height<=list.y+.1f,
+        "Search did not open between the object header and flat property list.");
+    type(app,L"no-such-parameter");
+    require(!app.presented()->find(field),"Expanded search did not filter the real property.");
+    capture(app,output/"parameters-search-open.png");
+    click(app,control::parameter_search_toggle);
+    require(!app.presented()->find(control::parameter_search) && app.presented()->find(field) &&
+        property_control(app,actor,0)==field && app.query()==L"no-such-parameter" &&
+        app.presented()->find(control::parameter_list)->bounds==closed_list && !app.text_input(),
+        "Closing search lost text or field identity, kept hidden filtering/focus, or retained row space.");
+    key(app,VK_SPACE);
+    require(app.text_input() && app.text_input()->token.key==control::parameter_search && !app.presented()->find(field),
+        "Keyboard reopening did not restore and focus the retained query.");
+    type(app,L"");key(app,VK_RETURN);
+    require(app.presented()->find(field) && app.document().undo_count()==history,
+        "Search visibility or filtering changed scene history.");
+}
 void parameter_menu(Application& app, ControlKey source) {
     require_input_focus(app);
     KeyStateScope modifiers;
@@ -5,7 +45,7 @@ void parameter_menu(Application& app, ControlKey source) {
     SendMessageW(app.window(),WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(at.x,at.y));
     SendMessageW(app.window(),WM_RBUTTONUP,0,MAKELPARAM(at.x,at.y));
     tick(app,2);
-    require(app.menu_frame() && app.menu_frame()->popup==control::parameter_menu,"Parameter menu did not enter the accepted frame.");
+    if (!app.menu_frame() || app.menu_frame()->popup!=control::parameter_menu) throw std::runtime_error("Parameter menu did not enter the accepted frame (source "+std::to_string(source)+", status: "+atelier::editor::utf8(app.status_text())+").");
 }
 bool tuple_reset_available(Application& app, ControlKey group) {
     parameter_menu(app,group);

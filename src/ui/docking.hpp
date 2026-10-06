@@ -1,6 +1,5 @@
 #pragma once
 #include "ui/controls.hpp"
-#include <functional>
 #include <memory>
 
 namespace atelier::ui {
@@ -38,8 +37,25 @@ public:
     void focus_control(ControlKey, const UiFrame&);
     bool apply(const Action&, const UiFrame&);
     std::vector<MenuItem> menu_items(ControlKey source,const UiFrame*);
-    using Describe = std::function<void(const DockTab&,std::vector<Control>&,ControlKey)>;
-    void append(std::vector<Control>&, ControlKey parent, ui_layout::Size, const Describe&);
+    struct PresentedTab { const DockTab* view{}; ControlKey wrapper{}, close{}; };
+    struct Pane {
+        ControlKey key{}, parent{};
+        Rect bounds;
+        bool split{}, horizontal{}, maximized{};
+        unsigned collapsed{};
+        double value{.5}, minimum{.5}, maximum{.5}, step{1};
+        Rect divider;
+        std::vector<PresentedTab> tabs;
+        const DockTab* active{};
+    };
+    struct Presentation {
+        std::vector<Pane> panes;
+        ControlKey preview_key{};
+        std::optional<Rect> preview;
+    };
+    // Logical placement, bounded gestures and host slots. All chrome is authored
+    // by the consumer; this model no longer assembles controls or styles.
+    Presentation presentation(ControlKey parent, ui_layout::Size) const;
     bool dragging() const noexcept { return drag_.has_value(); }
 private:
     struct Node {
@@ -72,6 +88,6 @@ private:
     void remove(Node&,ControlKey);
     ui_layout::Size minimum(const Node&) const;
     std::optional<Drop> destination(ControlKey,const DragPoint&,const UiFrame&) const;
-    void append_node(std::vector<Control>&,const Node&,ControlKey,ui_layout::Size,const Describe&);
+    void present_node(Presentation&,const Node&,ControlKey,Rect) const;
 };
 } // namespace atelier::ui

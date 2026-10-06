@@ -103,12 +103,15 @@ void verify_public_program() {
 }
 
 void verify_source_math();
+void verify_source_projects();
 void measure_source_math();
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--projects") { verify_source_projects(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--math-measure") { measure_source_math(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--foundations") { verify_source_foundations(); return 0; }
+        verify_source_projects();
         verify_source_math();
         verify_source_plain_records();
         verify_public_program();

@@ -74,7 +74,7 @@ ui Results(in TableBinding model, in Text view, in double width) {
 
 void verify_table_dsl() {
     namespace language=ui_language;
-    editor::Session document;auto& runtime=document.world().runtime();
+    Runtime runtime;take(ui_language::register_types(runtime));
     std::string source=R"(
 ui Grid(in TableBinding model, in ActionBinding open, in Key context, in bool available, in double preferred) {
     Table grid {

@@ -138,7 +138,8 @@ void verify_asset_ui_authoring_window(Application& app,const std::filesystem::pa
 void verify_ui_authoring_window(Application& app,const std::filesystem::path& output,const std::filesystem::path& path) {
     using Access=atelier::application::EditorAcceptanceAccess;
     model(Access::command(app,atelier::editor::Command::create_static_mesh));tick(app,3);
-    const auto actor=app.document().selected();
+    if (!app.presented()->find(control::parameter_search)) click(app,control::parameter_search_toggle);
+    const auto actor=app.document().selection().actor;
     const auto field=property_control(app,actor,0);
     const auto field_incarnation=app.presented()->find(field)->incarnation;
     const auto path_bar=app.presented()->find(control::parameter_path)->parent;
@@ -147,13 +148,11 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     const auto verify_hierarchy=[&] {
         const auto* filter=app.presented()->find(control::parameter_search);
         const auto* header=app.presented()->find(51);
-        const auto* tabs=app.presented()->find(control::parameter_pages);
         const auto* list=app.presented()->find(control::parameter_list);
-        require(filter && header && tabs && list && filter->incarnation==filter_incarnation &&
+        require(filter && header && list && filter->incarnation==filter_incarnation &&
             filter->bounds.y>=header->bounds.y+header->bounds.height-.1f &&
-            filter->bounds.y+filter->bounds.height<=tabs->bounds.y+.1f &&
-            tabs->bounds.y+tabs->bounds.height<=list->bounds.y+.1f,
-            "Native source update recreated Filter or moved it below the property pages.");
+            filter->bounds.y+filter->bounds.height<=list->bounds.y+.1f,
+            "Native source update recreated Filter or moved it into the property list.");
     };
     verify_hierarchy();
     click(app,control::position_fold);
@@ -210,6 +209,14 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     save("valid",changed,true,path_height+4,verify_query);capture(app,output/"ui-live-updated.png");
     save("syntax_error",changed+"\n?",false,path_height+4,verify_query);capture(app,output/"ui-live-error.png");
     save("recovered",changed+"\n// recovered\n",true,path_height+4,verify_query);
+    // Both values are legal DSL properties, but this height cannot contain the
+    // path bar's existing padding. Only the real layout preparation rejects it.
+    auto invalid_layout=changed;invalid_layout.replace(height,std::string_view("height: 44;").size(),"height: 1;");
+    save("layout_error",invalid_layout,false,path_height+4,verify_query);
+    require(Access::ui_error(app).find("layout candidate rejected")!=std::string_view::npos,
+        "Saved layout fixture failed before reaching the real frame preparation boundary.");
+    capture(app,output/"ui-live-layout-rejected.png");
+    save("layout_recovered",changed+"\n// layout recovered\n",true,path_height+4,verify_query);
     key(app,VK_RETURN);click(app,control::position_fold);click(app,field);
     const auto field_history=app.document().undo_count();type(app,L"4.25");
     require(app.text_input() && app.document().editing(),"Authoring fixture did not start a real numeric draft.");
@@ -224,6 +231,26 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     key(app,VK_RETURN);
     require(x(app,actor)==4.25f && !app.document().editing() && app.document().undo_count()==field_history+1,
         "World field editing after live Source replacement did not commit exactly once.");
+    auto minimized_source=draft_source;minimized_source.replace(height,std::string_view("height: 48;").size(),"height: 52;");
+    require_input_focus(app);
+    const auto minimized_revision=Access::ui_revision(app);
+    ShowWindow(app.window(),SW_MINIMIZE);require(app.step() && IsIconic(app.window()),"Could not minimize the live authoring window.");
+    const auto minimized_frames=app.accepted_frames();
+    model(atelier::editor::write_file(path,minimized_source));
+    const auto minimized_start=GetTickCount64();
+    do {require(app.step(),"Editor closed while a saved UI awaited a drawable surface.");} while(GetTickCount64()-minimized_start<400);
+    require(Access::ui_revision(app)==minimized_revision && app.accepted_frames()==minimized_frames,
+        "Minimized authoring published a UI candidate without preparing its layout.");
+    ShowWindow(app.window(),SW_RESTORE);
+    const auto restored_start=GetTickCount64();
+    do {tick(app,1);if(Access::ui_revision(app)>minimized_revision) break;} while(GetTickCount64()-restored_start<10000);
+    require(Access::ui_revision(app)==minimized_revision+1 && Access::ui_error(app).empty() &&
+        std::abs(app.presented()->find(path_bar)->bounds.height/app.presented()->drawing->dpi_scale-path_height-12)<.1f &&
+        x(app,actor)==4.25f && app.document().undo_count()==field_history+1,
+        "Restoring the surface did not prepare and publish the saved layout once while retaining scene values.");
+    verify_hierarchy();
+    timings<<"minimized_restore,"<<Access::ui_compile_milliseconds(app)<<','<<GetTickCount64()-restored_start<<','<<Access::ui_revision(app)<<'\n';
+    capture(app,output/"ui-live-minimized-recovered.png");
     const auto count=actors(app).size(),history=app.document().undo_count();
     click(app,control::add_static_mesh);
     require(actors(app).size()==count+1 && app.document().undo_count()==history+1,

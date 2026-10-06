@@ -32,8 +32,32 @@ struct EditorAcceptanceAccess {
     static auto directory_key(const Application& app,const std::filesystem::path& path) {
         return app.workspace_.assets.directory_control(path);
     }
+    static ui::ControlKey menu_item(const Application& app,std::wstring_view text) {
+        for(const auto& item:app.workspace_.menu_items) if(item.text==text) return item.key;
+        return 0;
+    }
+    static const auto& project_build(const Application& app) {return app.workspace_.project_build;}
+    static bool project_running(const Application& app) {return app.play_.running();}
+    static bool output_contains(const Application& app,std::wstring_view text) {
+        for(const auto& row:app.workspace_.output->rows) if(row.cells.front().text.find(text)!=std::wstring::npos) return true;
+        return false;
+    }
 
     static auto name_control(const Application& app,ObjectId actor) { return app.workspace_.name_control(actor); }
+    static ui::ControlKey structure_control(const Application& app,ObjectId object) {
+        if(app.presented()) for(const auto& row:app.presented()->tree_rows) {
+            const auto* binding=app.workspace_.binding(row.key);
+            if(binding && binding->kind==editor::Workspace::Binding::Kind::structure && binding->object==object) return row.key;
+        }
+        return 0;
+    }
+    static bool property_group(const Application& app,ObjectId object) {
+        if(app.presented()) for(const auto& control:app.presented()->controls) {
+            const auto* binding=app.workspace_.binding(control.key);
+            if(binding && binding->kind==editor::Workspace::Binding::Kind::property_group && binding->object==object) return true;
+        }
+        return false;
+    }
     static void frame_failure(Application& app) {
         const auto frame=app.ui_.prepare();
         std::fprintf(stderr,"Status: %ls\n",app.status_text().c_str());
@@ -79,7 +103,7 @@ struct EditorAcceptanceAccess {
         RECT anchor{};
         if (!GetWindowRect(app.menu_window(),&anchor)) throw std::runtime_error("Cannot locate native menu fixture.");
         anchor.bottom=anchor.top;
-        app.popup_->update(app.workspace_.menu->source,anchor,false,items,app.ui_.style(),app.style_sheet_);
+        app.popup_->update(app.workspace_.menu->source,anchor,false,items,app.ui_.style(),app.style_sheet_,app.workspace_.ui_component("PopupMenu"));
     }
     static void menu_end(Application& app) {
         static_cast<void>(app.popup_->input({.kind=ui::EventKind::key_down,.key=ui::Key::end}));
@@ -304,9 +328,9 @@ atelier::ObjectId component(const Application& app, atelier::ObjectId actor, ate
     throw std::runtime_error("Required component is absent.");
 }
 ControlKey property_control(const Application& app, atelier::ObjectId actor, std::size_t axis) {
-    if (actor == atelier::ObjectId{}) return control::empty_field_base + axis;
+    if (actor == atelier::ObjectId{}) return 0;
     const auto target = model(atelier::world::root_component(app.document().world().runtime(), actor));
-    if (!target) return control::empty_field_base + axis;
+    if (!target) return 0;
     const auto key = app.field_control(*target, app.document().parameters()[axis].path);
     require(key != 0, "Missing live component-field control binding.");
     return key;
@@ -399,19 +423,19 @@ void verify_chrome_pixels(Application& app,const std::filesystem::path& output) 
     const auto stroke=std::max(1,static_cast<int>(std::round(.667f*app.presented()->drawing->dpi_scale)));
     pixel(x,y+4*stroke,36); pixel(x+stroke,y+4*stroke,46); pixel(x+3*stroke,y+4*stroke,19);
     pixel(x+8*stroke,y,36); pixel(x+8*stroke,y+stroke,46);
-    const auto selected=app.presented()->find(control::parameter_transform)->bounds;
+    const auto selected=app.presented()->find(control::shelf_create)->bounds;
     const auto tx=static_cast<int>(std::round(selected.x)),ty=static_cast<int>(std::round(selected.y));
     pixel(tx+5*stroke,ty,38); pixel(tx+5*stroke,ty+2*stroke,79);
     pixel(tx+5*stroke,static_cast<int>(std::round(selected.y+selected.height))-1,79);
-    const auto tab_bar=app.presented()->find(control::parameter_pages)->bounds;
-    const auto unselected=app.presented()->find(control::parameter_components)->bounds;
+    const auto tab_bar=app.presented()->find(control::shelf_tabs)->bounds;
+    const auto unselected=app.presented()->find(control::shelf_view)->bounds;
     const auto list=app.presented()->find(control::parameter_list)->bounds;
     const auto fold=app.presented()->find(control::position_fold)->bounds;
     const auto header=app.presented()->find(51)->bounds;
-    require(field.y>=header.y+header.height-.1f && field.y+field.height<=tab_bar.y+.1f &&
-        field.y+field.height<=list.y+.1f,"Parameter Filter must remain between the object header and page tabs, outside scrolling content.");
+    require(field.y>=header.y+header.height-.1f && field.y+field.height<=list.y+.1f,
+        "Parameter Filter must remain between the object header and flat properties, outside scrolling content.");
     require(std::abs(selected.x-tab_bar.x)<.1f && std::abs(fold.x-list.x)<.1f,
-        "Parameter tabs or fold header added an independent left inset.");
+        "Shelf tabs or parameter fold header added an independent left inset.");
     pixel(static_cast<int>(std::round(unselected.x))+5*stroke,static_cast<int>(std::round(unselected.y))+2*stroke,46);
     require(tab_bar.x+tab_bar.width>unselected.x+unselected.width+6*stroke,"Tab-bar color probe has no uncovered strip.");
     pixel(static_cast<int>(std::round(tab_bar.x+tab_bar.width))-3*stroke,static_cast<int>(std::round(tab_bar.y))+2*stroke,46);
@@ -473,17 +497,18 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     key(app, VK_ESCAPE);
 
     const auto before = x(app, object);
-    click(app, control::remove_actor);
+    click(app,app.object_control(object));
+    click(app, control::remove_selected);
     const auto disabled=std::ranges::find_if(app.presented()->controls,[](const auto& control) {
         return control.parent==51 && control.kind==atelier::ui::ControlKind::text_edit;
     });
     require(disabled!=app.presented()->controls.end() && !disabled->enabled && text_coverage(*app.presented(),disabled->key) &&
         !app.presented()->find(field) && !app.presented()->find(control::parameter_search) &&
-        !app.presented()->find(control::parameter_transform) && !app.presented()->find(control::parameter_components),
+        !app.presented()->find(control::parameter_list) && !app.presented()->find(control::position_fold),
         "No selection lost its disabled name field or retained Actor-specific property controls.");
     capture(app, output / "s1-disabled.png");
     click(app, control::undo);
-    require(app.document().selected() == object && x(app, object) == before, "State verification did not restore the edited object.");
+    require(app.document().selection().actor == object && x(app, object) == before, "State verification did not restore the edited object.");
     const auto* selected = app.presented()->find(app.object_control(object));
     require(selected && selected->enabled, "Selected object row lost its enabled control geometry.");
 }
@@ -868,7 +893,68 @@ RECT await_acceptance_activation(Application& app,const std::filesystem::path& o
 #include "tree.inl"
 #include "project_window.inl"
 #include "ui_authoring_window.inl"
+#include "project_authoring_window.inl"
 #include "viewport.inl"
+}
+
+int verify_editor_source(Application& app,const char* output_directory) {
+    using Access=atelier::application::EditorAcceptanceAccess;
+    using atelier::editor::Command;
+    namespace source=atelier::editor::source_control;
+    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));
+    std::filesystem::create_directories(output);
+    const auto path=output/"editor.ui.source";
+    Access::ui_source(app,path);
+    await_acceptance_activation(app,output,"source");
+    click(app,control::add_static_mesh);const auto scene_history=app.document().undo_count();
+    click(app,static_cast<ControlKey>(Command::edit_ui_source));tick(app,3);
+    const auto* code=app.presented()->find(source::buffer);
+    require(code && code->enabled && code->code,"The real menu did not open the active UI module in Code.");
+    const auto document=code->code;
+    const auto original=document->text();
+    const auto marker=original.find(L"Scene root content");require(marker!=original.npos,"Source fixture marker is missing.");
+    const auto row=static_cast<unsigned>(std::count(original.begin(),original.begin()+static_cast<std::ptrdiff_t>(marker),L'\n'));
+    key(app,VK_HOME,true);
+    for (unsigned i=0;i<row;++i) key(app,VK_DOWN);
+    key(app,VK_HOME);key(app,VK_END,false,true);
+    {
+        KeyStateScope modifiers;
+        for (const auto c:std::wstring_view(L"        text: \"Edited inside Atelier\";")) SendMessageW(app.window(),WM_CHAR,c,0);
+        tick(app,2);
+    }
+    require(document->text().find(L"Edited inside Atelier")!=std::wstring::npos && app.document().undo_count()==scene_history,"Native source input missed its document or edited scene history.");
+    const auto revision=Access::ui_revision(app);
+    key(app,'S',true);
+    const auto wait=[&](auto predicate,const char* message) {
+        const auto deadline=GetTickCount64()+10000;
+        do {tick(app,1);if (predicate()) return;} while (GetTickCount64()<deadline);
+        throw std::runtime_error(std::string(message)+": "+std::string(Access::ui_error(app)));
+    };
+    wait([&]{return Access::ui_revision(app)>revision;},"Native Ctrl+S did not publish the edited UI");
+    require(model(atelier::editor::read_file(path)).find("Edited inside Atelier")!=std::string::npos,"Native save did not write the actual file.");
+    capture(app,output/"source-editor.png");
+    key(app,VK_END,true);key(app,VK_RETURN);
+    {KeyStateScope modifiers;for (const auto c:std::wstring_view(L"ui Broken( {")) SendMessageW(app.window(),WM_CHAR,c,0);tick(app,2);}
+    const auto valid_revision=Access::ui_revision(app);key(app,'S',true);
+    wait([&]{return !Access::ui_error(app).empty();},"Native invalid source produced no diagnostic");
+    require(Access::ui_revision(app)==valid_revision && app.presented()->find(source::problem)->enabled,"Invalid source replaced the live UI or disabled error navigation.");
+    click(app,source::problem);tick(app,2);
+    require(app.text_input() && app.text_input()->token.key==source::buffer && document->edit().line_at(document->edit().current().caret.offset)>500,
+        "Clicking the compiler diagnostic did not focus the source location.");
+    capture(app,output/"source-diagnostic.png");
+    key(app,'Z',true);key(app,'S',true);
+    wait([&]{return Access::ui_revision(app)>valid_revision && Access::ui_error(app).empty();},"Native source correction did not recover");
+    const auto saved=document->text();
+    key(app,'A',true);key(app,'C',true);key(app,VK_END,true);key(app,'V',true);
+    require(document->text().size()==2*saved.size(),"Native source clipboard retained the single-line 4096-character limit.");
+    key(app,'Z',true);require(document->text()==saved,"Native document undo failed after a large paste.");
+    key(app,'S',true);key(app,'W',true);tick(app,2);
+    require(app.presented()->find(source::buffer) && !app.presented()->find(source::buffer)->enabled,"Closing a source document left a live edit target.");
+    verify_project_authoring_window(app,output);
+    Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Source acceptance did not close cleanly.");
+    std::ofstream(output/"acceptance.txt")<<"Editor source window acceptance: PASS\nConfiguration: "<<atelier::build_info::configuration
+        <<"\nAccepted frames: "<<app.accepted_frames()<<"\nNative menu/open, caret/selection, source edit, Ctrl+S/JIT publication, invalid-save retention, diagnostic click, correction, large clipboard, undo, project component/typed properties/save/reopen, multi-file diagnostic, isolated play and UI preview, close.\n";
+    std::puts("Editor source window acceptance: PASS");return 0;
 }
 
 int verify_editor_project(Application& app,const char* output_directory,const wchar_t* source_project) {
@@ -930,12 +1016,13 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     std::ofstream(output/"popup-open.csv") << "path,cpu_us\nfirst," << first_open_us << "\nwarm," << warm_open_us << "\n";
     click(app,control::add_static_mesh);
     require(actors(app).size()==1 && app.document().undo_count()==1,"Static mesh creation was not a single document command.");
-    require(model(app.document().world().runtime().type_of(app.document().selected()))==app.document().types().static_mesh_actor,
+    require(model(app.document().world().runtime().type_of(app.document().selection().actor))==app.document().types().static_mesh_actor,
         "Create shelf did not construct the real StaticMeshActor type.");
+    verify_parameter_search(app,output);
     verify_tool_shelf(app,output);
     capture(app, output / "m0.png");
     verify_chrome_pixels(app,output);
-    const auto named_actor=app.document().selected();
+    const auto named_actor=app.document().selection().actor;
     const auto name_key=atelier::application::EditorAcceptanceAccess::name_control(app,named_actor);
     const std::wstring original_name(app.document().name(named_actor));
     click(app,name_key); type(app,L"主角 Hero"); key(app,VK_RETURN);
@@ -961,15 +1048,15 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     tick(app,3);
     const auto navigation_history=app.document().undo_count();
     click(app,control::parameter_back);
-    require(app.document().selected()==atelier::ObjectId{} && app.presented()->find(control::scene_forward)->enabled,"Path back did not reach World context.");
-    require(!app.presented()->find(control::parameter_transform) && !app.presented()->find(control::parameter_components) &&
-        !app.presented()->find(control::parameter_search),"World context retained Actor-specific property pages or Filter.");
+    require(app.document().selection().actor==atelier::ObjectId{} && app.presented()->find(control::scene_forward)->enabled,"Path back did not reach World context.");
+    require(!app.presented()->find(control::parameter_list) && !app.presented()->find(control::position_fold) &&
+        !app.presented()->find(control::parameter_search),"World context retained object properties or Filter.");
     click(app,control::scene_forward);
-    require(app.document().selected()==named_actor,"Path forward did not restore the selected Actor.");
+    require(app.document().selection().actor==named_actor,"Path forward did not restore the selected Actor.");
     click(app,control::actor_path); capture(app,output/"path-context-menu.png");
     click(app,control::world_context);
     click(app,control::parameter_path); key(app,VK_DOWN); key(app,VK_RETURN);
-    require(app.document().selected()==named_actor && app.document().undo_count()==navigation_history,"Path menu selection changed document history or chose the wrong Actor.");
+    require(app.document().selection().actor==named_actor && app.document().undo_count()==navigation_history,"Path menu selection changed document history or chose the wrong Actor.");
     click(app, control::reset);
     const auto original_width = app.parameter_width();
     auto divider = centre(app, app.parameter_splitter());
@@ -985,7 +1072,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     const auto initial_count = actors(app).size();
     click(app, control::add_actor); click(app, control::add_actor);
     require(actors(app).size() == initial_count + 2, "Create command did not enter the scene.");
-    const auto added_key = app.document().selected();
+    const auto added_key = app.document().selection().actor;
     const auto added_id = added_key;
     click(app, control::undo);
     require(!contains(app, added_key), "Undo add did not remove membership.");
@@ -998,13 +1085,13 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     click(app,atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere"));
     require(app.document().undo_count()==creation_history,"Browsing a resource created a scene object.");
     click(app,atelier::editor::browser_control::add);
-    const auto mesh_actor=app.document().selected();
+    const auto mesh_actor=app.document().selection().actor;
     const auto mesh_component=component(app,mesh_actor,app.document().types().static_mesh_component);
     require(app.document().undo_count()==creation_history+1 &&
         model(app.document().world().render_items()).size()==render_count+1 &&
         model(app.document().world().runtime().type_of(mesh_actor))==app.document().types().static_mesh_actor,
         "Asset shelf did not create one complete typed Actor through scene history.");
-    click(app,control::parameter_components); capture(app,output/"world-components.png");
+    capture(app,output/"world-properties.png");
     click(app,control::undo);
     require(!contains(app,mesh_actor) && model(app.document().world().render_items()).size()==render_count,
         "Undo did not remove the whole Actor created by the shelf.");
@@ -1012,9 +1099,8 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     require(contains(app,mesh_actor) && component(app,mesh_actor,app.document().types().static_mesh_component)==mesh_component,
         "Redo changed the created Actor/component identity.");
     const auto object = actors(app).front().id();
-    click(app,control::parameter_transform);
     click(app, app.object_control(object));
-    require(app.document().selected() == object, "List selection did not select the clicked object.");
+    require(app.document().selection().actor == object, "List selection did not select the clicked object.");
     auto field = property_control(app, object, 0);
     const auto before = x(app, object);
     const auto history = app.document().undo_count();
@@ -1055,7 +1141,8 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     const auto identity = object;
     const auto old_actor_control = app.object_control(object);
     const auto old_field_control = field;
-    click(app, control::remove_actor);
+    click(app,app.object_control(object));
+    click(app, control::remove_selected);
     require(!contains(app, object), "Deleted object remained a member.");
     tick(app, 64); // host GC crosses complete cycles while only history holds this object
     click(app, control::undo);
@@ -1173,12 +1260,13 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
            << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; cancel mode/deactivation/capture/focus loss with stopped orbit and late release; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
            << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Actors/culling/scroll-back\n"
            << "Scene Tree: actual World membership and Actor types; Actor-only rows; World expansion; type/name filtering; close/reopen retains expansion; no scene history changes.\n"
+           << "Actor Structure: separate dock tab; Actor context plus inspected Component identity; keyboard expansion/navigation and type filtering; native add/delete/undo/redo restore the same component; Scene Tree remains Actor-only.\n"
            << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
            << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
            << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
            << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, Home/End and Shift keyboard steps, disabled input; shared axis-accent SS and GPU capture.\n"
-           << "Chrome: GPU pixels match ordinary field outer/inner/fill, selected tab open-bottom colors, #2E2E2E unselected tabs/tab strip/scroll track and #191919 status bar; Filter remains above property pages; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
-           << "Shelf: 56 DIP expanded / 6 DIP stowed; 64 DIP single command hit target with icon above short caption; category and scene state retained across pointer/keyboard stow.\n"
+           << "Chrome: GPU pixels match ordinary field outer/inner/fill, selected shelf tab open-bottom colors, #2E2E2E unselected tabs/tab strip/scroll track and #191919 status bar; Filter remains above one flat property list; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
+           << "Shelf: 56 DIP expanded; shared 12 DIP rail and full-width 12 DIP restore strip; leading arrow, neutral idle/hover/focus and blue pressed gradient; middle/far-end click and keyboard expansion retain category, control identity and scene state.\n"
            << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
@@ -1243,6 +1331,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     while (GetForegroundWindow() != app.window() && GetTickCount64() < foreground_deadline)
         require(app.step(), "Editor closed while waiting for initial foreground.");
     require_foreground(); // Wait for the user once; never repeatedly seize foreground.
+    click(app, control::parameter_search_toggle);
     click(app, control::parameter_search);
     ComPtr<ITfInputProcessorProfileMgr> manager;
     require(SUCCEEDED(languages.As(&manager)), "Cannot inspect active input profile.");
@@ -1444,7 +1533,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     physical_key(VK_ESCAPE);
     require(app.query() == L"位置", "Clean-state Space cancellation did not restore the committed query.");
     if (actors(app).empty()) click(app,control::add_static_mesh);
-    const auto object = app.document().selected();
+    const auto object = app.document().selection().actor;
     click(app, property_control(app, object, 0));
     compose_position(); physical_key(VK_SPACE); // The captured local Sogou candidate page shows position as item 1.
     wait_for([&] { return app.text_input() && !app.text_input()->composing; }, "Numeric Pinyin result did not end composition.");
@@ -1502,12 +1591,12 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(!app.document().editing(), "Space in the search field retained a numeric business edit.");
     physical_key(VK_ESCAPE);
     click(app, control::add_static_mesh);
-    const auto other = app.document().selected();
+    const auto other = app.document().selection().actor;
     const auto other_x = x(app, other);
     click(app, app.object_control(object));
     click(app, property_control(app, object, 0)); compose_position();
     click(app, app.object_control(other));
-    require(app.document().selected() == other && !app.document().editing() && x(app, object) == 0 &&
+    require(app.document().selection().actor == other && !app.document().editing() && x(app, object) == 0 &&
         x(app, other) == other_x && (!app.text_input() || !app.text_input()->composing),
         "Changing the parameter target retained composition or edited either object.");
 

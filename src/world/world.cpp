@@ -110,7 +110,7 @@ void World::Impl::cancel_tasks(ObjectId target, bool actor) noexcept {
         return true;
     });
 }
-void World::Impl::halt() noexcept { running = false; updates.clear(); cancel_tasks(); }
+void World::Impl::halt() noexcept { running = false; updates.clear(); translations.clear(); cancel_tasks(); }
 std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     if (!observer && subscriptions.empty()) return {};
     auto scope = ExecutionScope::enter(runtime);
@@ -152,6 +152,10 @@ std::optional<Error> World::Impl::notify_group(Lifecycle event, ObjectId actor, 
     return failure;
 }
 Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
+    if (!failure && running) {
+        auto applied=apply_translations();
+        if (!applied) failure=applied.error();
+    }
     if (failure) (void)shutdown();
     return {changed, std::move(failure)};
 }
@@ -466,10 +470,67 @@ Result<Commit> World::restore(const ComponentRemoval& removal) {
     return attach_components(removal.owner, incoming, removal.index);
 }
 
+namespace detail {
+Result<void> queue_translation(Runtime& runtime,ObjectId object,math::Vector3 delta) {
+    if (!std::isfinite(delta.x) || !std::isfinite(delta.y) || !std::isfinite(delta.z))
+        return error(ErrorCode::argument_mismatch,"Translation must be finite.");
+    auto component=component_data(runtime,object); if (!component) return std::unexpected(component.error());
+    if (component->owner==ObjectId{}) return error(ErrorCode::invalid_member,"Translation requires an owned Component.");
+    auto actor=actor_data(runtime,component->owner); if (!actor) return std::unexpected(actor.error());
+    if (!actor->world) return error(ErrorCode::invalid_member,"Translation requires World membership.");
+    auto& state=Access::state(*actor->world);
+    if (!state.running || state.closing || state.transitioning || !state.dispatch_depth)
+        return error(ErrorCode::busy,"translate_owner requires a running World behavior phase.");
+    auto root=root_component(runtime,component->owner); if (!root) return std::unexpected(root.error());
+    if (!*root) return error(ErrorCode::invalid_member,"Translation requires an explicit Actor root.");
+    state.translations.push_back({object,component->owner,**root,delta});
+    return {};
+}
+}
+Result<void> World::Impl::apply_translations() {
+    if (translations.empty()) return {};
+    // No callbacks execute while applying. Retain buffers between frames, and
+    // discard the batch on every exit so a rejected action cannot replay later.
+    struct Cleanup { Impl& state; ~Cleanup() { state.translations.clear(); state.translation_changes.clear(); } } cleanup{*this};
+    auto& changes=translation_changes; changes.reserve(translations.size());
+    const auto body_type=runtime.find_type("physics.BodyComponent");
+    for (const auto& command:translations) {
+        auto owner=component_owner(command.component);
+        if (!owner) return std::unexpected(owner.error());
+        if (*owner!=command.actor) return error(ErrorCode::invalid_member,"Translation receiver changed owner.");
+        auto root=root_component(runtime,command.actor); if (!root) return std::unexpected(root.error());
+        if (*root!=command.root) return error(ErrorCode::invalid_member,"Translation target root changed.");
+        if (body_type) {
+            auto group=components(runtime,command.actor); if (!group) return std::unexpected(group.error());
+            for (const auto& component:*group) {
+                auto type=runtime.type_of(component.id()); if (!type) return std::unexpected(type.error());
+                auto physical=runtime.is_a(*type,*body_type); if (!physical) return std::unexpected(physical.error());
+                if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move an Actor with a physics body; use physics actions.");
+            }
+        }
+        auto found=std::ranges::find(changes,command.root,&TranslationChange::root);
+        if (found==changes.end()) {
+            auto value=read_transform(runtime,command.root); if (!value) return std::unexpected(value.error());
+            changes.push_back({command.root,*value}); found=std::prev(changes.end());
+        }
+        auto& value=found->value;
+        value.position.x+=command.delta.x; value.position.y+=command.delta.y; value.position.z+=command.delta.z;
+        auto canonical=canonical_transform(value); if (!canonical) return std::unexpected(canonical.error());
+        value=*canonical;
+    }
+    for (const auto& change:changes) {
+        auto applied=world.apply_simulation_transform(change.root,change.value.position,change.value.rotation);
+        if (!applied) return applied;
+    }
+    return {};
+}
+
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
-    auto data = impl_->composition_component(component);
-    if (!data) return std::unexpected(data.error());
+    auto actor = detail::is(runtime(),component,types().actor);
+    if (!actor) return std::unexpected(actor.error());
+    if (*actor) { auto data=impl_->composition_actor(component); if (!data) return std::unexpected(data.error()); }
+    else { auto data=impl_->composition_component(component); if (!data) return std::unexpected(data.error()); }
     return runtime().read(component, path);
 }
 Result<void> World::set_transform(ObjectId object, Trs value) {
@@ -506,8 +567,23 @@ Result<void> World::apply_simulation_transform(ObjectId object, math::Vector3 po
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
     if (auto ready = impl_->admit(); !ready) return std::unexpected(ready.error());
     if (impl_->running) return error(ErrorCode::busy, "Editing is disabled while the World runs.");
-    auto component = impl_->composition_component(object);
-    if (!component) return std::unexpected(component.error());
+    auto actor = detail::is(runtime(),object,types().actor);
+    if (!actor) return std::unexpected(actor.error());
+    if (*actor) { auto data=impl_->composition_actor(object); if (!data) return std::unexpected(data.error()); }
+    else { auto data=impl_->composition_component(object); if (!data) return std::unexpected(data.error()); }
+    auto mesh=detail::is(runtime(),object,types().static_mesh_component);
+    if (!mesh) return std::unexpected(mesh.error());
+    if (*mesh && path.size()==3) {
+        auto material=runtime().find_field(types().static_mesh_component,"material");
+        auto color=runtime().find_field(types().material,"base_color");
+        if (!material) return std::unexpected(material.error());
+        if (!color) return std::unexpected(color.error());
+        if (path[0]==*material && path[1]==*color) {
+            const auto* number=std::get_if<float>(&value);
+            if (!number || !std::isfinite(*number) || *number<0.f || *number>1.f)
+                return error(ErrorCode::argument_mismatch,"Material color must be a finite float within [0,1].");
+        }
+    }
     auto transform = detail::is(runtime(), object, types().scene_component);
     if (!transform) return std::unexpected(transform.error());
     if (*transform) {

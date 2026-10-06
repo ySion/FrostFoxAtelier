@@ -162,7 +162,7 @@ void style_sheets() {
     for (const auto dpi:{1.f,1.25f,1.5f,1.75f,2.f}) {
         menu.controls.clear(); accepted(menu.ui.set_controls({}));
         accepted(menu.ui.set_surface({{1920,1080},dpi,++revision}));
-        ui::append_menu(menu.controls,500,0,0,0,160,entries); menu.prepare();
+        menu.controls=menu_controls(entries,160); menu.prepare();
         const auto bounds=menu.frame->find(500)->bounds;
         if (!menu.frame->scrollbars.empty()) throw std::runtime_error("Fitting four-item menu has scroll range "+
             std::to_string(menu.frame->scrollbars.front().maximum)+" DIP at DPI "+std::to_string(dpi));

@@ -2,6 +2,7 @@
 #include "source/detail/bridge.hpp"
 #include "runtime/detail/type_publication.hpp"
 #include "language/declarations.hpp"
+#include "language/module.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -15,6 +16,17 @@ namespace {
 template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     return std::move(*value);
+}
+bool same_default(const std::optional<Scalar>& a, const std::optional<Scalar>& b) {
+    if (!a || !b) return a.has_value() == b.has_value();
+    return std::visit([&](const auto& value) {
+        using T = std::remove_cvref_t<decltype(value)>;
+        const auto* other = std::get_if<T>(&*b);
+        if (!other) return false;
+        if constexpr (std::same_as<T, float>) return std::bit_cast<std::uint32_t>(value) == std::bit_cast<std::uint32_t>(*other);
+        else if constexpr (std::same_as<T, double>) return std::bit_cast<std::uint64_t>(value) == std::bit_cast<std::uint64_t>(*other);
+        else return value == *other;
+    }, *a);
 }
 }
 namespace {
@@ -87,7 +99,7 @@ struct Program::Metadata {
         for (std::size_t i = 0; i < value.fields.size(); ++i) {
             const auto& a = actual.fields[i];
             const auto& b = value.fields[i];
-            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset) return false;
+            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset || !same_default(a.default_value, b.default_value)) return false;
         }
         for (std::size_t i = 0; i < value.methods.size(); ++i) {
             const auto& a = actual.methods[i];
@@ -147,7 +159,7 @@ struct Program::Contract {
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source result."});
             definition.result = ValueDefinition{reference(value->type), value->form};
         }
-        if (info.requires_receiver) definition.receiver = ReceiverDefinition{binding.type};
+        if (info.requires_receiver) definition.receiver = ReceiverDefinition{reference(binding.type)};
         return publication ? publication->resolve_signature(*binding.runtime, definition) : binding.runtime->resolve_signature(definition);
     }
     Result<void> compatible(BusinessCode* code, std::string_view source_name,
@@ -266,13 +278,26 @@ struct Program::Version {
             declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data);
     }
 };
+#include "source/detail/module_state.inl"
+
 struct Program::State {
     std::shared_ptr<const Contract> contract;
     std::shared_ptr<const Declaration> declaration;
     std::shared_ptr<const Version> current;
+    std::shared_ptr<const ModuleVersion> module;
     std::uint64_t latest_request{}, published_request{};
     bool open{true};
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
+    std::optional<std::size_t> find(std::string_view name) const {
+        if (!module) return {};
+        for (std::size_t i = 0; i < module->entries.size(); ++i)
+            if (module->entries[i].name == name) return i;
+        return {};
+    }
+    std::shared_ptr<const Version> select(std::optional<std::size_t> index) const {
+        if (!index) return module ? nullptr : current;
+        return module && *index < module->versions.size() ? module->versions[*index] : nullptr;
+    }
 };
 struct Program::Frame final : CoroutineFrame {
     std::shared_ptr<const Version> version;
@@ -329,6 +354,7 @@ struct Program::Prepared {
     std::uint64_t sequence;
     CodeOwner code;
     std::string source_name;
+    std::shared_ptr<ModuleVersion> module;
 };
 
 Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Version> version, ObjectId receiver,
@@ -369,12 +395,18 @@ Program::Candidate::Candidate(std::unique_ptr<Prepared> prepared) : prepared_(st
 Program::Candidate::~Candidate() = default;
 Program::Candidate::Candidate(Candidate&&) noexcept = default;
 Program::Candidate& Program::Candidate::operator=(Candidate&&) noexcept = default;
-Program::Candidate::operator bool() const noexcept { return prepared_ && prepared_->code; }
+Program::Candidate::operator bool() const noexcept { return prepared_ && (prepared_->code || prepared_->module); }
+std::span<const ClassInfo> Program::Candidate::classes() const noexcept {
+    return prepared_ && prepared_->module ? std::span<const ClassInfo>{prepared_->module->classes} : std::span<const ClassInfo>{};
+}
+std::span<const EntryInfo> Program::Candidate::entries() const noexcept {
+    return prepared_ && prepared_->module ? std::span<const EntryInfo>{prepared_->module->entries} : std::span<const EntryInfo>{};
+}
 std::uintptr_t Program::Candidate::address() const noexcept {
     return *this ? atelier_business_info(prepared_->code.get()).entry_address : 0;
 }
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
-Program::Entry::Entry(std::weak_ptr<State> owner) : owner_(std::move(owner)) {}
+Program::Entry::Entry(std::weak_ptr<State> owner, std::optional<std::size_t> index) : owner_(std::move(owner)), index_(index) {}
 std::uintptr_t Program::Lease::address() const noexcept { return version_ ? version_->info.entry_address : 0; }
 
 Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectId receiver,
@@ -389,7 +421,7 @@ Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectI
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-    const auto version = owner->current;
+    const auto version = owner->select(entry.index_);
     if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
     // Select once and never access the entry or program after callbacks start.
     return version->invoke(receiver, arguments, observer, budget);
@@ -403,7 +435,7 @@ Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId rec
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-    return start_version(owner->current, receiver, arguments, observer, budget);
+    return start_version(owner->select(entry.index_), receiver, arguments, observer, budget);
 }
 BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept {
     return lease.version_ ? lease.version_->layout : BusinessFrameLayout{};
@@ -411,17 +443,17 @@ BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept 
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {
     const auto owner = owner_.lock();
-    if (!owner || !owner->open || !owner->current)
+    const auto version = owner && owner->open ? owner->select(index_) : nullptr;
+    if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    const auto version = owner->current;
     return version->invoke_values(receiver, arguments, budget);
 }
 Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
     CollectionBudget budget) const {
     const auto owner = owner_.lock();
-    if (!owner || !owner->open || !owner->current)
+    const auto version = owner && owner->open ? owner->select(index_) : nullptr;
+    if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    const auto version = owner->current;
     return version->invoke_values(receiver, arguments, budget);
 }
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
@@ -439,17 +471,17 @@ Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver
 Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
     ValueOutput output, CollectionBudget budget) const {
     const auto owner = owner_.lock();
-    if (!owner || !owner->open || !owner->current)
+    const auto version = owner && owner->open ? owner->select(index_) : nullptr;
+    if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    const auto version = owner->current;
     return version->invoke_values(receiver, arguments, output, budget);
 }
 Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
     ValueOutput output, CollectionBudget budget) const {
     const auto owner = owner_.lock();
-    if (!owner || !owner->open || !owner->current)
+    const auto version = owner && owner->open ? owner->select(index_) : nullptr;
+    if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    const auto version = owner->current;
     return version->invoke_values(receiver, arguments, output, budget);
 }
 Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
@@ -467,9 +499,9 @@ Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments,
     CollectionBudget budget) const {
     const auto owner = owner_.lock();
-    if (!owner || !owner->open || !owner->current)
+    const auto version = owner && owner->open ? owner->select(index_) : nullptr;
+    if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    const auto version = owner->current;
     const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
     if (!encoded.status) return std::unexpected(encoded.status.error());
     return ProgramAccess::start(*this, receiver, encoded.values, {}, budget);
@@ -485,7 +517,7 @@ Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scala
 Program::Program(Runtime& runtime, TypeId type)
     : state_(std::make_shared<State>(std::make_shared<const Contract>(runtime, type))) {}
 Program::~Program() { close(); }
-void Program::close() noexcept { state_->open = false; state_->current.reset(); }
+void Program::close() noexcept { state_->open = false; state_->current.reset(); state_->module.reset(); }
 Program::Entry Program::entry() const { return Entry{state_}; }
 Result<FunctionSignature> Program::describe() const {
     if (!state_->open || !state_->declaration)
@@ -511,6 +543,7 @@ Result<Program::Lease> Program::pin() const {
 }
 Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name) {
     if (!state_->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
+    if (state_->module) return std::unexpected(Error{ErrorCode::invalid_definition, "A project program requires a complete source snapshot."});
     if (state_->latest_request == std::numeric_limits<std::uint64_t>::max())
         return std::unexpected(Error{ErrorCode::capacity_exceeded, "Business request sequence exhausted."});
     if (source.size() > std::numeric_limits<std::uint32_t>::max() || name.find('\0') != std::string_view::npos || entry_name.find('\0') != std::string_view::npos)
@@ -554,6 +587,7 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request belongs to a closed program."});
     if (request->declaration_error_) return std::unexpected(*request->declaration_error_);
+    if (request->module_) return Program::prepare_module(request);
     BusinessCode* output{};
     char diagnostic[2048];
     const auto& contract = *request->compilation_contract_;
@@ -576,6 +610,7 @@ Result<void> Program::try_publish(Candidate& candidate) {
     const auto owner = state_;
     if (!owner->open || !candidate)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Program closed or candidate already consumed."});
+    if (candidate.prepared_->module) return publish_module(candidate);
     auto& prepared = *candidate.prepared_;
     if (prepared.owner.lock() != owner || prepared.contract != owner->contract)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate belongs to another program/Runtime contract."});
@@ -607,6 +642,8 @@ Result<void> Program::try_publish(Candidate& candidate) {
     owner->current = std::move(version);
     return {};
 }
+#include "source/detail/program_module.inl"
+
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 Result<void> ProgramAccess::compatible(const Program& program, BusinessCode* code, std::string_view source_name) {
     return program.state_->contract->compatible(code, source_name);

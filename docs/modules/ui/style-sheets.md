@@ -54,7 +54,8 @@ text_edit:focus { border-color: token(accent); }
 | `border-edges` | `all`（默认）、`none`，或不重复的 `top right bottom left` 子集；可表达共边页签及选中页签的开口底边 |
 | `border-inner-color` | 方角框上侧、左侧的内沿颜色；厚度同 border-width，透明值关闭，不影响文字测量 |
 | `border-shadow-color` | inset/outset 边框的独立暗边颜色；省略时沿用 border-color 推导的暗边，solid 忽略此属性 |
-| `indicator-size` | 4–32 DIP，控制勾选/折叠/下拉及图标。纯图标按钮在 padding 后的内容区居中，空间不足时缩小 |
+| `indicator-size` | 4–32 DIP，控制勾选/折叠/下拉及图标。纯图标按钮在 padding 后的内容区默认居中，空间不足时缩小 |
+| `icon-align` | `left / center / right`；纯内容图标的水平对齐，默认 center，不继承，仅影响绘制。带文字图标仍遵循 icon-placement，分隔条点阵等专用标记保持自己的几何 |
 | `indicator-background / indicator-border-color` | 勾选框、滑条拇指的背景与边缘颜色；最大化图标也使用 indicator-background 绘制对角底色 |
 | `indicator-color` | 勾选/折叠标记及下拉箭头的颜色；缺省跟随文字前景，tree_item 的类型图标也使用此属性，其他内容图标使用 color |
 | `combo-indicator` | `down`（默认）或 `arrows`；上下双箭头仍开启同一原生菜单，右侧预留宽度不变 |

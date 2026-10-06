@@ -1,8 +1,8 @@
 # UI 源码 patch：稳定实例与子树事务
 
-日期：2026-10-05。实现起点 `404b2e66c8c2452161ad0817205763b8902c4146`。这是按[更新机制研究](ui-dsl-update-comparison-20261005.md)推进的后续实现与实际验收记录；长期用法以[DSL 文档](../modules/editor/declarative-ui-proposal.md)为准。
+日期：2026-10-05。实现起点 `404b2e66c8c2452161ad0817205763b8902c4146`。这是按[更新机制研究](ui-dsl-update-comparison-20261005.md)推进的后续实现与实际验收记录；长期用法以[DSL 文档](../modules/editor/declarative-ui.md)为准。
 
-随后确认的正式默认模式为保存触发、同步准备、事务提交。后台调度按实际使用中的卡顿证据另行评估；决定统一记录在[默认更新策略](../modules/editor/declarative-ui-proposal.md#默认更新策略)。
+随后确认的正式默认模式为保存触发、同步准备、事务提交。后台调度按实际使用中的卡顿证据另行评估；决定统一记录在[默认更新策略](../modules/editor/declarative-ui.md#默认更新策略)。
 
 ## 结果
 

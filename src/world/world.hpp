@@ -283,9 +283,10 @@ public:
 
     // Editing requires an open, stopped World. Same-context detached objects
     // may be prepared; objects registered in another World are rejected.
-    // Transform scalar writes use the same finite/positive-scale TRS validation.
-    [[nodiscard]] Result<Scalar> read(ObjectId component, std::span<const FieldId>) const;
-    [[nodiscard]] Result<void> write(ObjectId component, std::span<const FieldId>, Scalar);
+    // Actor and Component properties use the same Runtime field paths. Transform
+    // scalar writes preserve TRS validation; material color writes remain [0,1].
+    [[nodiscard]] Result<Scalar> read(ObjectId actor_or_component, std::span<const FieldId>) const;
+    [[nodiscard]] Result<void> write(ObjectId actor_or_component, std::span<const FieldId>, Scalar);
     [[nodiscard]] Result<void> set_transform(ObjectId scene_component, Trs);
     // A host-driven simulation may write an attached Actor's root between
     // dispatch phases. Scale stays authored; ordinary editing remains stopped-only.

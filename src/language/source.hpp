@@ -125,6 +125,13 @@ struct Program {
     std::vector<Function> functions;
     std::uint32_t entry{};
     std::vector<bool> reachable;
+    // Public wrappers share internal typed function bodies in one JIT module.
+    std::vector<std::uint32_t> exports;
+    bool exported(std::uint32_t index) const {
+        if (exports.empty()) return index == entry;
+        for (auto item : exports) if (item == index) return true;
+        return false;
+    }
 };
 
 // One module with a host-selected entry: scalar/enum/plain record values or borrowed
@@ -134,6 +141,8 @@ struct Program {
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.
 [[nodiscard]] std::expected<Program, Diagnostic> compile_source(
-    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name = {});
+    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name = {},
+    bool allow_declarations = false);
+[[nodiscard]] std::expected<void, Diagnostic> export_functions(Program&, std::span<const std::string_view>, bool receiver);
 
 }

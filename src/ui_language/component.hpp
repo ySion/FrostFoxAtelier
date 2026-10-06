@@ -36,23 +36,32 @@ struct TableBinding {
     bool enabled{true};
     bool operator==(const TableBinding&) const = default;
 };
+struct CodeBinding {
+    std::shared_ptr<ui::CodeDocument> document;
+    bool enabled{true};
+    bool operator==(const CodeBinding&) const = default;
+};
 struct Item;
 struct ItemList {
     // An immutable snapshot: relinquish all mutable aliases before update().
     std::shared_ptr<const std::vector<Item>> values;
     bool operator==(const ItemList&) const;
 };
-using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding>;
-struct Item {
-    ui::ControlKey key{}; // Host-allocated stable item identity; never the list index.
-    std::vector<InputValue> inputs;
-    bool operator==(const Item&) const = default;
-};
+using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding,CodeBinding>;
 struct KeyBinding {
     // A node in this component, or a dotted path through named static component
     // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.
     std::string node; ui::ControlKey key{}, label{}, body{};
     bool operator==(const KeyBinding&) const = default;
+};
+struct Item {
+    ui::ControlKey key{}; // Host-allocated stable item identity; never the list index.
+    std::vector<InputValue> inputs;
+    // Optional host slots and named native interaction identities. The root key
+    // always comes from key. Reparenting uses the same reversible scope update.
+    std::vector<KeyBinding> keys{};
+    std::optional<ui::ControlKey> parent{};
+    bool operator==(const Item&) const = default;
 };
 struct Statistics {
     std::uint64_t binding_evaluations{}, event_evaluations{}, publications{}, node_creations{}, node_removals{};

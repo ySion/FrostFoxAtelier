@@ -75,7 +75,7 @@ Qt 以 6.8 文档为准，Unity 以 6.0 的 UIDocument 路径为主；Flutter �
 5. 基础 `Session::update_controls(changed_controls)` 只接收已有 key 的完整属性值，不能新增、删除或改变 kind、parent、结构引用。源码 patch 已在实例层落实，Session 层继续使用支持结构变化的完整快照入口。
 6. 普通输入更新时，`Instance` 只求值实际依赖的 dirty 绑定；`Repeat` 的 child 复用按 item key 进行。这条已有运行期增量能力应与源码保存路径分开陈述。
 
-上述结论的本地依据是 [LiveDocument::poll/commit_controls](../../src/ui_language/live_document.cpp)、[Module::compile 与 Instance](../../src/ui_language/component.cpp)、[Application::step](../../src/application/application.cpp) 及 [Session 控件差分](../../src/ui/session_update.inl)。当前用法与限制统一放在[DSL 文档](../modules/editor/declarative-ui-proposal.md)，实际身份、状态及拒绝行为由[源码 patch 端到端验收](../../acceptance/editor/ui_source_patch.inl)覆盖。
+上述结论的本地依据是 [LiveDocument::poll/commit_controls](../../src/ui_language/live_document.cpp)、[Module::compile 与 Instance](../../src/ui_language/component.cpp)、[Application::step](../../src/application/application.cpp) 及 [Session 控件差分](../../src/ui/session_update.inl)。当前用法与限制统一放在[DSL 文档](../modules/editor/declarative-ui.md)，实际身份、状态及拒绝行为由[源码 patch 端到端验收](../../acceptance/editor/ui_source_patch.inl)覆盖。
 
 当前源码保存链路可以压缩为：
 
@@ -96,7 +96,7 @@ Qt 以 6.8 文档为准，Unity 以 6.0 的 UIDocument 路径为主；Flutter �
 3. **兼容性明确。**state 按名称/类型保留；具名子组件按节点名称/种类/组件类型保留；Repeat 按 Item.key 保留。移除属性恢复默认值，新子实例正常初始化。
 4. **优化边界继续按测量推进。**未变子树跳过、稀疏 Session 提交和后台 JIT 尚未接入。后台 JIT 尤其依赖 Runtime 的并发准备与关停契约；实例 patch 不自动提供线程安全。
 
-本轮具体变更与本机采样见[源码 patch 验收记录](ui-source-patch-20261005.md)。后续已确定长期支持同步更新，后台化按真实负载评估，详见[默认更新策略](../modules/editor/declarative-ui-proposal.md#默认更新策略)。本文不以这些结果推断对 Qt、Unity 或 Flutter 的性能优势。
+本轮具体变更与本机采样见[源码 patch 验收记录](ui-source-patch-20261005.md)。后续已确定长期支持同步更新，后台化按真实负载评估，详见[默认更新策略](../modules/editor/declarative-ui.md#默认更新策略)。本文不以这些结果推断对 Qt、Unity 或 Flutter 的性能优势。
 
 ## 官方来源
 

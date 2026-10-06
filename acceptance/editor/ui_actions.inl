@@ -1,6 +1,7 @@
 void verify_ui_actions() {
     namespace language=ui_language;
     editor::Session document;
+    Runtime runtime;take(language::register_types(runtime));
     constexpr auto source=R"(
 ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     state double count = 0.0d;
@@ -12,7 +13,7 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     }
 }
 )";
-    auto component=take(language::Component::compile(document.world().runtime(),"actions.ui.source",source));
+    auto component=take(language::Component::compile(runtime,"actions.ui.source",source));
     ui::ControlKey next=2000;
     const std::array<language::KeyBinding,4> keys{{{"first",501},{"second",502},{"local",503},{"value",504}}};
     const auto create=static_cast<ui::ControlKey>(editor::Command::create_actor);
@@ -80,10 +81,10 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     require(!instance->update(invalid),"An empty host action route was accepted.");
     instance->reject_controls();accept();click(501);
     require(take(document.world().members()).size()==2,"Refusing an invalid binding damaged the live command.");
-    require(!language::Component::compile(document.world().runtime(),"checked-button.ui.source",
+    require(!language::Component::compile(runtime,"checked-button.ui.source",
         "ui Invalid() { state bool flag = false; Button b { on activate { state.flag = event.checked; } } }"),
         "An ordinary Button accepted a toggle payload.");
-    require(!language::Component::compile(document.world().runtime(),"ambiguous-button.ui.source",
+    require(!language::Component::compile(runtime,"ambiguous-button.ui.source",
         "ui Invalid(in ActionBinding action) { Button b { action: input.action; on activate {} } }"),
         "Button accepted competing local and host actions.");
     require(surface.set_controls({}).has_value(),"Action unmount failed.");instance->close();

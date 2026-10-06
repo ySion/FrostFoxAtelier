@@ -80,7 +80,7 @@ class Parser {
             if (take('*')) any=true;
             else {
                 const auto type=identifier(); any=true;
-                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab","slider","tree","tree_item","table"};
+                constexpr std::string_view kinds[]={"container","label","button","list","item","number","splitter","viewport","text_edit","checkbox","foldout","popup","menu_item","combo","tab","slider","tree","tree_item","table","code_editor"};
                 const auto found=std::find(std::begin(kinds),std::end(kinds),type);
                 if (found==std::end(kinds)) fail("Unknown control type: "+type);
                 result.kind=static_cast<ControlKind>(found-std::begin(kinds));
@@ -243,11 +243,12 @@ class Parser {
             else if (value=="italic") p.font_style=FontStyle::italic;
             else fail("Expected normal or italic",v.position);
         }
-        else if (name=="text-align") {
+        else if (name=="text-align" || name=="icon-align") {
             const auto value=resolve(v).text;
-            if (value=="left") p.text_align=TextAlign::left;
-            else if (value=="center") p.text_align=TextAlign::center;
-            else if (value=="right") p.text_align=TextAlign::right;
+            auto& alignment=name=="text-align"?p.text_align:p.icon_align;
+            if (value=="left") alignment=TextAlign::left;
+            else if (value=="center") alignment=TextAlign::center;
+            else if (value=="right") alignment=TextAlign::right;
             else fail("Expected left, center or right",v.position);
         }
         else if (name=="text-vertical-align") {
@@ -357,6 +358,7 @@ bool StyleSheet::valid_class(std::string_view name) noexcept {
 bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.font_style && static_cast<unsigned>(*p.font_style)>static_cast<unsigned>(FontStyle::italic)) return false;
     if (p.text_align && static_cast<unsigned>(*p.text_align)>static_cast<unsigned>(TextAlign::right)) return false;
+    if (p.icon_align && static_cast<unsigned>(*p.icon_align)>static_cast<unsigned>(TextAlign::right)) return false;
     if (p.text_vertical_align && static_cast<unsigned>(*p.text_vertical_align)>static_cast<unsigned>(TextVerticalAlign::bottom)) return false;
     if (p.border_style && static_cast<unsigned>(*p.border_style)>static_cast<unsigned>(BorderStyle::outset)) return false;
     if (p.border_edges && static_cast<unsigned>(*p.border_edges)>15) return false;
@@ -389,7 +391,7 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     for (auto& rule:rules) {
         auto& s=rule.selector;
         const auto bits=static_cast<unsigned>(s.states);
-        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::table)) ||
+        if (!valid_properties(rule.properties) || (s.kind && static_cast<unsigned>(*s.kind)>static_cast<unsigned>(ControlKind::code_editor)) ||
             (s.role && static_cast<unsigned>(*s.role)>static_cast<unsigned>(Role::caption)) || bits>255 || (bits&3)==3 ||
             invalid_state_properties(rule.properties,s.states) || s.classes.size()>16 ||
             !std::all_of(s.classes.begin(),s.classes.end(),[](const auto& id){return valid_class(id);}))

@@ -1,4 +1,5 @@
 void verify_dynamic_ui_reads(editor::Session& document,ObjectId root) {
+    Runtime runtime;take(ui_language::register_types(runtime));
     constexpr auto declaration=R"(
 double chosen() {
     if (input.choose_left) { return input.left; }
@@ -8,7 +9,7 @@ ui PositionRead(in bool choose_left, in double left, in double right) {
     Text position { text: "Runtime position"; width: 128.0d + chosen(); }
 }
 )";
-    auto component=take(ui_language::Component::compile(document.world().runtime(),"position-read.ui.source",declaration));
+    auto component=take(ui_language::Component::compile(runtime,"position-read.ui.source",declaration));
     bool choose_left=true;
     const auto inputs=[&] { return std::array<ui_language::InputValue,3>{choose_left,
         static_cast<double>(value(document,root,0)),static_cast<double>(value(document,root,1))}; };
@@ -37,13 +38,13 @@ ui PositionRead(in bool choose_left, in double left, in double right) {
     require(surface.set_controls({}).has_value(),"Dynamic UI read unmount failed.");
     instance->close();instance->close();
     require(instance->controls().empty() && !instance->update(),"An unmounted instance still evaluated bindings.");
-    auto empty_component=take(ui_language::Component::compile(document.world().runtime(),"empty.ui.source","ui Empty() { Column root {} }"));
+    auto empty_component=take(ui_language::Component::compile(runtime,"empty.ui.source","ui Empty() { Column root {} }"));
     auto empty=take(ui_language::Instance::create(empty_component,0,next_key,{},{}));
     require(empty->controls().size()==1 && empty->statistics().node_creations==1 && empty->statistics().binding_evaluations==0,
         "A component without bindings failed to publish its static structure.");
     take(empty->update());require(empty->statistics().publications==1,"A stable static component was published again.");
 
-    auto loop_component=take(ui_language::Component::compile(document.world().runtime(),"loop.ui.source",R"(
+    auto loop_component=take(ui_language::Component::compile(runtime,"loop.ui.source",R"(
 double increment(double value) { return value + 1.0d; }
 ui Loop() {
     state double count = 0.0d;
@@ -76,7 +77,8 @@ ui Loop() {
 }
 
 void verify_ui_boundary_validation(editor::Session& document,ObjectId root,ui::Session& surface) {
-    auto component=take(ui_language::Component::compile(document.world().runtime(),"boundary.ui.source",
+    Runtime runtime;take(ui_language::register_types(runtime));
+    auto component=take(ui_language::Component::compile(runtime,"boundary.ui.source",
         "ui Boundary(in EditBinding data) { NumberRow row { text: \"Position\"; edit: input.data; } }"));
     ui_language::EditBinding valid{7000,true,false,{{7001,L"X",value(document,root),0,-10000,10000,.01,.001,ui::VectorAxis::x}}};
     ui::ControlKey next_key=100;
@@ -102,13 +104,13 @@ void verify_ui_boundary_validation(editor::Session& document,ObjectId root,ui::S
     const std::array bodies{std::string{"text: \"A\\0B\";"},std::string{"classes: \"1foo\";"},
         std::string{"classes: \""}+std::string(65,'x')+"\";",std::string{"classes: \"a b c d e f g h i j k l m n o p q\";"}};
     for (const auto& body:bodies) {
-        auto invalid_component=take(ui_language::Component::compile(document.world().runtime(),"invalid-properties.ui.source",
+        auto invalid_component=take(ui_language::Component::compile(runtime,"invalid-properties.ui.source",
             "ui Invalid() { Text label { "+body+" } }"));
         const auto rejected=ui_language::Instance::create(invalid_component,0,next_key,{},{});
         require(!rejected && rejected.error().message.starts_with("invalid-properties.ui.source:"),
             "Invalid text/style reached Session instead of component diagnostics.");
     }
-    auto overflow=take(ui_language::Component::compile(document.world().runtime(),"row-classes.ui.source",
+    auto overflow=take(ui_language::Component::compile(runtime,"row-classes.ui.source",
         "ui Invalid(in EditBinding data) { NumberRow row { classes: \"a b c d e f g h i j k l m n o p\"; edit: input.data; } }"));
     require(!ui_language::Instance::create(overflow,0,next_key,{},std::array<ui_language::InputValue,1>{valid}),
         "NumberRow's built-in class was omitted from the final style limit.");
@@ -118,6 +120,7 @@ void verify_ui_boundary_validation(editor::Session& document,ObjectId root,ui::S
 // Real document -> Source/JIT component -> shared UI/layout and input -> document.
 // This is the same asset and Workspace path used by the windowed editor.
 void verify_declarative_parameters() {
+    Runtime runtime;take(ui_language::register_types(runtime));
     editor::Session document;
     editor::Workspace workspace;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
@@ -125,7 +128,7 @@ void verify_declarative_parameters() {
     auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
     require(theme.has_value() && ui.set_style_sheet(*theme).has_value(),"Declarative Parameters theme failed.");
     changed(document.create_static_mesh(editor::mesh_assets().front()));
-    const auto actor=document.selected();
+    const auto actor=document.selection().actor;
     const auto root=*take(world::root_component(document.world().runtime(),actor));
     const auto surface=ui.set_surface({{1600,1000},1,1});
     require(surface.has_value(),"Declarative UI surface failed.");
@@ -145,21 +148,43 @@ void verify_declarative_parameters() {
     };
     publish();
     require(workspace.ui_statistics("Parameters").has_value(),"Parameters did not create its complete Source/JIT region.");
+    for (const bool menu_closed:{false,true}) for (const bool shelf_closed:{false,true}) {
+        workspace.menu_bar_collapsed=menu_closed;workspace.shelf_collapsed=shelf_closed;publish();
+        for (const auto key:{editor::control::menu_bar_handle,editor::control::shelf_handle}) {
+            const auto* handle=ui.presented()->find(key);
+            const auto* bar=ui.presented()->find(handle->parent);
+            const bool closed=key==editor::control::menu_bar_handle?menu_closed:shelf_closed;
+            require(handle->selected==closed &&
+                std::abs(handle->bounds.width-(closed?bar->bounds.width:12))<.1f &&
+                (!closed || std::abs(handle->bounds.height-12)<.1f) && handle->style->icon_align==ui::TextAlign::left,
+                "Native and DSL bars disagree on rail size, full-width restore geometry or arrow alignment.");
+        }
+    }
+    workspace.menu_bar_collapsed=workspace.shelf_collapsed=false;publish();
+    require(!ui.presented()->find(editor::control::parameter_search) &&
+        ui.presented()->find(editor::control::parameter_search_toggle) &&
+        !ui.presented()->find(editor::control::parameter_search_toggle)->selected,
+        "Parameter search must start collapsed with a visible inactive magnifier.");
+    const auto closed_properties=ui.presented()->find(editor::control::parameter_list)->bounds;
+    workspace.parameter_search_visible=true;publish();
     const auto first=*workspace.ui_statistics("Parameters");
     require(first.binding_evaluations>0 && first.node_creations>0,"UI component did not evaluate or create nodes.");
     for (const auto key:{ui::ControlKey{50},ui::ControlKey{75},editor::control::parameter_path,editor::control::parameter_back,
-             editor::control::parameter_forward,ui::ControlKey{51},ui::ControlKey{52},editor::control::parameter_pages,
-             editor::control::parameter_search,editor::control::parameter_transform,editor::control::parameter_components,editor::control::parameter_list,
+             editor::control::parameter_forward,ui::ControlKey{51},ui::ControlKey{52},
+             editor::control::parameter_search,editor::control::parameter_list,
              editor::control::position_fold,ui::ControlKey{70},ui::ControlKey{73}})
         require(ui.presented()->find(key),"The composed Parameters region lost a stable host key alias.");
-    require(workspace.ui_statistics("ViewportTools").has_value() &&
+    require(workspace.ui_statistics("SceneViewport").has_value() &&
         ui.presented()->find(editor::control::scene_shading) && ui.presented()->find(editor::control::scene_guides),
         "The compact viewport menus did not come from their Source/JIT region.");
     const auto search=ui.presented()->find(editor::control::parameter_search)->bounds;
     const auto header=ui.presented()->find(51)->bounds;
-    const auto tabs=ui.presented()->find(editor::control::parameter_pages)->bounds;
-    require(search.y>=header.y+header.height-.1f && search.y+search.height<=tabs.y+.1f,
-        "The shared Parameters Filter did not precede its content pages.");
+    const auto properties=ui.presented()->find(editor::control::parameter_list)->bounds;
+    require(search.y>=header.y+header.height-.1f && search.y+search.height<=properties.y+.1f,
+        "The shared Parameters Filter did not precede its continuous property list.");
+    require(properties.y>closed_properties.y && ui.presented()->find(editor::control::parameter_search_toggle)->selected,
+        "Opening search did not reserve space above properties or select its magnifier.");
+    require(!ui.presented()->find(editor::control::add_component),"Parameters retained a structural Add Component action.");
     require(ui.presented()->find(workspace.reset_control(root)),"Position lost its typed group-reset binding.");
     require(ui.presented()->find(workspace.name_control(actor)),"ObjectHeader lost the typed Actor name binding.");
     require(workspace.ui_statistics("ToolShelf").has_value() && !workspace.ui_statistics("ToolShelfTools"),
@@ -250,37 +275,46 @@ void verify_declarative_parameters() {
             return false;
         });
     };
-    const auto page_history=document.undo_count();
-    const auto root_row=workspace.object_control(root);
-    workspace.parameter_page=editor::control::parameter_components;workspace.query=L"staticmesh";publish();
-    require(root_row && ui.presented()->find(root_row) && !ui.presented()->find(x),
-        "The shared Filter failed to match the actual selected component type.");
+    const auto inspection_history=document.undo_count();
+    const auto root_group=std::ranges::find_if(controls,[&](const auto& control) {
+        const auto* binding=workspace.binding(control.key);
+        return binding && binding->kind==editor::Workspace::Binding::Kind::property_group && binding->object==root;
+    });
+    require(root_group!=controls.end(),"The actual root component has no property group.");
+    const auto root_group_key=root_group->key;
+    workspace.query=L"staticmesh";publish();
+    require(ui.presented()->find(root_group_key) && !ui.presented()->find(x),
+        "The shared Filter failed to match the inspected component's property group.");
     workspace.query=L"no-such-property";publish();
-    require(!ui.presented()->find(root_row) && empty_state() && ui.presented()->find(editor::control::parameter_search),
+    require(!ui.presented()->find(root_group_key) && empty_state() && ui.presented()->find(editor::control::parameter_search),
         "Unmatched components lost their empty state or retained rows.");
-    workspace.parameter_page=editor::control::parameter_transform;publish();
     require(!ui.presented()->find(x) && !ui.presented()->find(editor::control::position_fold) && empty_state(),
-        "Changing property pages discarded the shared query or its no-match state.");
+        "An unmatched query retained a fixed transform section.");
+    workspace.parameter_search_visible=false;publish();
+    require(!ui.presented()->find(editor::control::parameter_search) && ui.presented()->find(x) &&
+        workspace.query==L"no-such-property" && ui.presented()->find(editor::control::parameter_list)->bounds==closed_properties,
+        "Closing search retained invisible filtering, erased its query, or failed to reclaim the row.");
+    workspace.parameter_search_visible=true;publish();
+    require(!ui.presented()->find(x) && ui.presented()->find(editor::control::parameter_search),
+        "Reopening search lost its retained query or failed to reapply it.");
     workspace.query.clear();publish();
     require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
-        document.undo_count()==page_history,"Clearing Filter changed the World field key or document history.");
+        document.undo_count()==inspection_history,"Clearing Filter changed the World field key or document history.");
     changed(document.add_actor());publish();
-    require(!ui.presented()->find(editor::control::parameter_transform) &&
-        ui.presented()->find(editor::control::parameter_components) && ui.presented()->find(editor::control::parameter_components)->selected &&
-        workspace.parameter_page==editor::control::parameter_transform && empty_state(),
-        "An Actor without a scene root did not temporarily expose only Components.");
+    require(!ui.presented()->find(editor::control::position_fold) && !ui.presented()->find(x) && empty_state() &&
+        !ui.presented()->find(editor::control::add_component),"An Actor without a root acquired assumed transform or structure controls.");
     changed(document.undo());take(document.select(actor));publish();
-    require(ui.presented()->find(editor::control::parameter_transform) && ui.presented()->find(editor::control::parameter_transform)->selected &&
-        ui.presented()->find(editor::control::parameter_components),"Returning to a rooted Actor lost the preferred Transform page.");
+    require(ui.presented()->find(editor::control::position_fold) && ui.presented()->find(x),
+        "Returning to a rooted Actor did not expose its actual spatial properties.");
     take(document.select({}));publish();
-    require(!ui.presented()->find(editor::control::parameter_transform) && !ui.presented()->find(editor::control::parameter_components) &&
-        !ui.presented()->find(editor::control::parameter_search) && !ui.presented()->find(x) && empty_state(),
+    require(!ui.presented()->find(editor::control::position_fold) && !ui.presented()->find(editor::control::parameter_search) &&
+        !ui.presented()->find(x) && empty_state(),
         "No selection retained Actor-specific controls or lost its neutral empty state.");
     take(document.select(actor));publish();
     require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
-        document.undo_count()==page_history,"Property page availability changed World field routing or scene history.");
+        document.undo_count()==inspection_history,"Object inspection availability changed World field routing or scene history.");
     changed(document.create_static_mesh(editor::mesh_assets()[1]));
-    const auto other=document.selected();const auto other_root=*take(world::root_component(document.world().runtime(),other));
+    const auto other=document.selection().actor;const auto other_root=*take(world::root_component(document.world().runtime(),other));
     publish();
     const auto other_x=workspace.field_control(other_root,document.parameters()[0].path);
     require(other_x!=x && !ui.presented()->find(x) && ui.presented()->find(other_x),"Changing the selected Actor reused an old field route.");
@@ -302,29 +336,85 @@ void verify_declarative_parameters() {
         "Restoring World membership failed to rebind the selected Actor with fresh field keys.");
     changed(document.erase_selected());publish();
     require(!ui.presented()->find(restored_x),"Deleting the selected Actor kept a live field route.");
+    // Exercise the remaining editor regions through the real authoring file,
+    // accepted hit geometry and native workbench/dock state owners.
+    require(workspace.ui_statistics("EditorShell") && workspace.ui_statistics("DockWorkspace") && workspace.ui_statistics("SceneTree"),
+        "Editor chrome or pane navigation did not originate in the authoring document.");
+    require(workspace.dock.select(editor::control::workbench),"Cannot expose authored Controls.");publish();
+    const auto sample_instance=workspace.ui_statistics("Controls")->instance;
+    const auto click_sample=[&](ui::ControlKey key) {
+        const auto* box=ui.presented()->find(key);require(box && box->enabled,"Missing live sample control.");
+        const float x=box->bounds.x+box->bounds.width*.5f,y=box->bounds.y+box->bounds.height*.5f;
+        static_cast<void>(ui.input({.kind=ui::EventKind::pointer_down,.x=x,.y=y}));
+        const auto reply=ui.input({.kind=ui::EventKind::pointer_up,.x=x,.y=y});bool handled{};
+        for (const auto& effect:reply.effects) if (const auto* action=std::get_if<ui::Action>(&effect)) handled|=workspace.workbench.apply(*action);
+        require(handled,"Authored Controls lost its accepted native action route.");publish();
+    };
+    click_sample(editor::workbench_control::disable);
+    require(!ui.presented()->find(editor::workbench_control::position_x)->enabled,"Checkbox did not disable the authored parameter body.");
+    click_sample(editor::workbench_control::disable);
+    click_sample(editor::workbench_control::long_labels);
+    require(std::ranges::find(controls,std::wstring{L"Local position in metres"},&ui::Control::text)!=controls.end(),"Long parameter labels were lost in migration.");
+    click_sample(editor::workbench_control::appearance_page);
+    require(ui.presented()->find(editor::workbench_control::red),"Authored RGB tuple did not mount.");
+    click_sample(editor::workbench_control::channels_page);
+    require(ui.presented()->find(480) && ui.presented()->find(481) && ui.presented()->find(482),"Authored channel sliders did not mount.");
+    click_sample(editor::workbench_control::rgb_page);
+    click_sample(editor::workbench_control::general_page);
+    require(workspace.dock.move(editor::control::workbench,editor::control::scene_tab,ui::DockSide::right),"Cannot move the authored pane.");publish();
+    require(ui.presented()->find(editor::control::viewport) && ui.presented()->find(editor::workbench_control::position_x) &&
+        workspace.ui_statistics("Controls")->instance==sample_instance,"Docking remounted a business scope or lost a native host slot.");
+    workspace.dock.maximize(editor::control::workbench);publish();
+    require(!ui.presented()->find(editor::control::viewport),"DSL dock maximization kept the other pane interactive.");
+    workspace.dock.maximize(editor::control::workbench);publish();
+    workspace.reset_layout();publish();
+    {
+        auto rows=std::make_shared<std::vector<ui_language::Item>>();
+        rows->push_back({9100,{std::wstring{L"Grid"},std::wstring{},true,true,false,false,std::wstring{L"checkbox"},ui::ControlKey{},0.0,0.0,std::wstring{L"menu-shortcut"}},{{"item",9101}}});
+        rows->push_back({9200,{std::wstring{L"Flat"},std::wstring{L"Ctrl+F"},true,true,false,true,std::wstring{L"radio"},ui::ControlKey{9300},0.0,0.0,std::wstring{L"menu-shortcut"}},{{"item",9201}}});
+        ui::ControlKey next=1ULL<<62;
+        const std::array<ui_language::KeyBinding,1> keys{{{"menu",500}}};
+        auto popup=take(ui_language::Instance::create(workspace.ui_component("PopupMenu"),0,next,keys,
+            std::array<ui_language::InputValue,1>{ui_language::ItemList{rows}}));
+        ui::Session surface(fonts);require(surface.set_surface({{600,500},1,1}).has_value(),"Popup surface failed.");
+        require(surface.set_controls(popup->controls()).has_value(),"Authored popup descriptors were rejected.");popup->commit_controls();
+        auto frame=surface.prepare();require(frame.has_value() && surface.accept(*frame),"Authored popup did not draw.");
+        require((*frame)->find(9101)->menu_behavior==ui::MenuBehavior::checkbox && (*frame)->find(9201)->radio_group==9300,
+            "Menu DSL lost checked/radio semantics.");
+        const auto box=(*frame)->find(9101)->bounds;
+        static_cast<void>(surface.input({.kind=ui::EventKind::pointer_down,.x=box.x+8,.y=box.y+8}));
+        const auto reply=surface.input({.kind=ui::EventKind::pointer_up,.x=box.x+8,.y=box.y+8});
+        require(std::ranges::any_of(reply.effects,[](const auto& effect){const auto* action=std::get_if<ui::Action>(&effect);
+            return action && action->key==9101 && action->kind==ui::ActionKind::activate && std::get_if<bool>(&action->value) && !std::get<bool>(action->value);}),
+            "Authored menu failed to request the unchecked value through native input.");
+        require(surface.set_controls({}).has_value(),"Popup retirement failed.");popup->close();
+    }
+    std::puts("Editor shell DSL acceptance: PASS (root, native slots, keyed dock reparent/maximize, Controls checkbox/tabs/sliders, popup check/radio)");
     const auto source=take(editor::read_file(editor::asset_directory()/"editor.ui.source"));
     auto invalid=source;const auto expression=invalid.find("selected: state.expanded;");
     require(expression!=std::string::npos,"Cannot locate the diagnostic fixture.");
     invalid.replace(expression,std::string_view("selected: state.expanded;").size(),"selected: state.expanded = true;");
-    auto rejected=ui_language::Module::compile(document.world().runtime(),"invalid-ui.source",invalid);
+    auto rejected=ui_language::Module::compile(runtime,"invalid-ui.source",invalid);
     require(!rejected && rejected.error().message.find("invalid-ui.source:")!=std::string::npos &&
         rejected.error().message.find("Only event blocks")!=std::string::npos,"Illegal binding effects lacked a source diagnostic.");
     auto text_error=source;const auto selected=text_error.find("selected: state.expanded;");
     text_error.replace(selected,std::string_view("selected: state.expanded;").size(),"selected: 42;");
-    rejected=ui_language::Module::compile(document.world().runtime(),"typed-ui.source",text_error);
+    rejected=ui_language::Module::compile(runtime,"typed-ui.source",text_error);
     require(!rejected && rejected.error().message.find("typed-ui.source:")!=std::string::npos,
         "UI expression type errors bypassed the ordinary Source compiler or lost their source location.");
     constexpr auto missing_member="ui Broken(in bool active) {\n  Text label {\n    collapsed: input.;\n  }\n}";
-    rejected=ui_language::Module::compile(document.world().runtime(),"member-ui.source",missing_member);
+    rejected=ui_language::Module::compile(runtime,"member-ui.source",missing_member);
     require(!rejected && rejected.error().message.starts_with("member-ui.source:3:22:"),
         "Fragment syntax errors lost their original declaration line/column.");
-    rejected=ui_language::Module::compile(document.world().runtime(),"reserved-ui.source",
+    rejected=ui_language::Module::compile(runtime,"reserved-ui.source",
         "double scale(double input) { return input; }\nui Reserved() { Text label { text: \"Test\"; } }");
     require(!rejected && rejected.error().message.find("reserved UI identifiers")!=std::string::npos,
         "Reserved UI context identifiers lacked a useful diagnostic in helpers.");
     verify_dynamic_ui_reads(document,root);
     verify_ui_boundary_validation(document,root,ui);
     auto cleared=ui.set_controls({});require(cleared.has_value(),"UI scope unmount failed.");
-    workspace.reset_document();take(document.close());
-    std::puts("Declarative Parameters acceptance: PASS (real Source/JIT, typed World editing, sparse bindings, dynamic pages/shared filter, state/input, rebinding, unmount, diagnostics)");
+    workspace.reset_document();
+    require(!workspace.parameter_search_visible && workspace.query.empty(),"A new document inherited parameter search state.");
+    take(document.close());
+    std::puts("Declarative Parameters acceptance: PASS (real Source/JIT, typed World editing, sparse bindings, flat properties/shared filter, state/input, rebinding, unmount, diagnostics)");
 }

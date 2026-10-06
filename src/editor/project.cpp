@@ -126,7 +126,7 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
             return failure("Create Project requires an empty folder; existing files were not changed.");
         for (const auto* directory:{L"Config",L"Content/Scenes",L"Source",L"Cache"}) std::filesystem::create_directories(folder/directory);
         const Json config={{"version",1},{"name",utf8(std::filesystem::canonical(folder).filename().wstring())},{"startup_scene","Content/Scenes/Main.scene"}};
-        take(write_file(folder/"Content/Scenes/Main.scene",Json{{"version",1},{"actors",Json::array()}}.dump(2)+"\n",WriteMode::create));
+        take(write_file(folder/"Content/Scenes/Main.scene",Json{{"version",2},{"actors",Json::array()}}.dump(2)+"\n",WriteMode::create));
         take(write_file(folder/".gitignore","/Cache/\n",WriteMode::create));
         take(write_file(folder/"Config/Project.json",config.dump(2)+"\n",WriteMode::create)); // Marker is published last.
         return open(folder);
@@ -136,16 +136,63 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
     try {
         Project project; project.root_=std::filesystem::canonical(folder);
         const auto config=read_json(take(project.resolve("Config/Project.json")));
-        json_format::fields(config,{"version","name","startup_scene"});
+        json_format::fields(config,{"version","name","startup_scene","ui_source"});
         if (json_format::identity(config.at("version"))!=1) return failure("Unsupported project format version.");
         project.name_=wide(config.at("name").get<std::string>());
         project.startup_=wide(config.at("startup_scene").get<std::string>());
+        if (config.contains("ui_source")) {
+            project.ui_source_=wide(config.at("ui_source").get<std::string>());
+            if (!project.ui_source_.empty() && (*project.ui_source_.begin()!=L"Source" ||
+                !project.ui_source_.filename().wstring().ends_with(L".ui.source"))) return failure("Project UI must be a .ui.source file inside Source.");
+            if (!project.ui_source_.empty()) take(project.resolve(project.ui_source_));
+        }
         if (project.name_.empty() || project.name_.size()>256 || std::ranges::any_of(project.name_,[](wchar_t c){return c<32 || c==127;}) ||
             project.startup_.empty() || project.startup_.extension()!=L".scene" || *project.startup_.begin()!=L"Content") return failure("Invalid project name or startup scene.");
         take(project.resolve(project.startup_));
         for (const auto* directory:{L"Config",L"Content",L"Source"}) if (!std::filesystem::is_directory(take(project.resolve(directory)))) return failure("Project is missing Config, Content or Source.");
         take(project.refresh()); return project;
     } catch (const std::exception& error) { return failure(error.what()); }
+}
+Result<std::vector<std::filesystem::path>> Project::source_paths() const {
+    try {
+        std::vector<std::filesystem::path> paths;
+        const auto directory=take(resolve("Source"));
+        for (const auto& entry:std::filesystem::recursive_directory_iterator(directory)) {
+            if (entry.is_symlink() || !entry.is_regular_file()) continue;
+            if (entry.path().extension()!=L".source" || entry.path().filename().wstring().ends_with(L".ui.source")) continue;
+            const auto relative=entry.path().lexically_relative(root_);
+            take(resolve(relative));
+            if (paths.size()>=256) return failure("Project exceeds the 256 Source file limit.");
+            paths.push_back(relative);
+        }
+        std::ranges::sort(paths);
+        return paths;
+    } catch (const std::exception& error) { return failure(error.what()); }
+}
+Result<void> Project::create_source(const std::filesystem::path& relative,std::string_view text) {
+    if (relative.empty() || *relative.begin()!=L"Source" || relative.extension()!=L".source")
+        return failure("Create source files inside the project's Source directory.");
+    const auto path=resolve(relative);if (!path) return std::unexpected(path.error());
+    if (text.size()>1024*1024) return failure("Source file exceeds the 1 MiB limit.");
+    try { static_cast<void>(wide(text)); }
+    catch (const std::exception& error) { return failure(error.what()); }
+    return write_file(*path,text,WriteMode::create);
+}
+Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
+    if (!relative.empty() && (*relative.begin()!=L"Source" || !relative.filename().wstring().ends_with(L".ui.source")))
+        return failure("Project UI must be a .ui.source file inside Source.");
+    if (!relative.empty()) {auto path=resolve(relative);if (!path) return std::unexpected(path.error());}
+    try {
+        const auto path=take(resolve("Config/Project.json"));auto config=read_json(path);
+        json_format::fields(config,{"version","name","startup_scene","ui_source"});
+        if (json_format::identity(config.at("version"))!=1 || config.at("name")!=utf8(name_) ||
+            config.at("startup_scene")!=utf8(startup_.generic_wstring()) ||
+            config.value("ui_source",std::string{})!=utf8(ui_source_.generic_wstring()))
+            return failure("Project configuration changed on disk. Reopen the project before changing its UI entry.");
+        if (relative.empty()) config.erase("ui_source");else config["ui_source"]=utf8(relative.generic_wstring());
+        auto saved=write_file(path,config.dump(2)+"\n");if (!saved) return saved;
+        ui_source_=relative;return {};
+    } catch (const std::exception& error) {return failure(error.what());}
 }
 Result<void> Project::refresh() {
     try {

@@ -70,17 +70,17 @@ Actor 或 Component Begin 失败停止后续 Begin，并逆序结束已经成功
 
 LifecycleObserver 的 attached/detached 表达 World 注册/注销：Actor 整组注册按 Actor、组件正序通知，注销按组件逆序、Actor 最后；World close 还反转 Actor 顺序。动态组件增删采用相同规则；Detached 组成变动不产生这些通知。注册通知可以看到已提交完整图；注销通知可以看到已撤参与关系的完整对象，通知期间根仍保活。通知出错继续交付整组事件，并以 `Commit.notification_error` 报告。activated/deactivated 继续表达启用资格变化，所有通知均不代替 Begin/End。回调中同步结构修改失败，可用 `request/flush` 在宿主边界延后执行。
 
-正式创建路径为 `create_actor/create_component` 建立默认存储，`attach_components` 与字段写入准备 Detached 图，`attach` 校验并注册，之后由 start 开始运行。构造不访问尚未建立的 owner/World，GC 与析构不执行业务 End。本片没有额外 Initialize/PostLoad 钩子；文件解码及加载就绪协议仍待序列化增量。
+正式创建路径为 `create_actor/create_component` 建立默认存储，`attach_components` 与字段写入准备 Detached 图，`attach` 校验并注册，之后由 start 开始运行。构造不访问尚未建立的 owner/World，GC 与析构不执行业务 End。本片没有额外 Initialize/PostLoad 钩子；工程场景的类型准备、v1/v2 读写与运行会话合同见[项目场景](project-scenes.md)。
 
 ## 状态、编辑与历史
 
 Actor 的私有非拥有 `member_world` 是成员关系权威。`inspect_actor` 返回 Detached、AttachedInactive、Active 或 Invalid，以及 enabled/can_edit/can_present。`inspect_component` 还报告 owner 和独立激活资格。外部 Runtime 身份或错误类型是错误，本 Runtime 的已终结身份是 Invalid。
 
 - 空 Actor 仍可选择和编辑；`can_present` 表示实际网格呈现注册。静止编辑 World 仍渲染已有网格。
-- `read/write/set_transform` 使用实际 Component 和正式 FieldPath；编辑写要求 World 停止，也允许准备同 Runtime 的 Detached/未归属组件，拒绝其他 World 的成员。字段级 TRS 写与整值写使用同一验证。`remove_component/reparent/set_enabled` 同样支持 Detached 组成；编辑器 can_edit 仍以自身文档成员资格决定。
+- `read/write` 使用实际 Actor 或 Component 和正式 FieldPath，`set_transform` 使用 SceneComponent；编辑写要求 World 停止，也允许准备同 Runtime 的 Detached/未归属组件，拒绝其他 World 的成员。字段级 TRS 写与整值写使用同一验证。`remove_component/reparent/set_enabled` 同样支持 Detached 组成；编辑器 can_edit 仍以自身文档成员资格决定。
 - `attach_components` 一次提交组成、owner、root、parent 引用；普通验证失败不半写。`detach` 只撤 World 成员资格，保留整个对象图。
 - ActorRemoval 保存普通根与成员位置；ComponentRemoval 保存组件根、owner、组成位置、parent 和根身份。restore 恢复同一 ObjectId，重新验证全部关系及 World 来源，不抢占其他归属。
-- 历史来源凭证不保持 World；关闭后失效。裁剪历史只释放根，不隐式 destroy。TRS 编辑历史保存完整前后值，因为四元数单字段写会规范化其他分量。
+- 历史来源凭证不保持 World；关闭后失效。裁剪历史只释放根，不隐式 destroy。TRS 编辑历史保存完整前后值，因为四元数单字段写会规范化其他分量；业务标量沿同一编辑事务保存精确 Scalar 类型及前后值。
 - `Commit.notification_error` 表示关系已提交、通知或清理出错。消费者先记录已完成变化，再报告错误，不能把它当作未提交。构造、副作用及进程级内存耗尽不提供通用回滚。
 
 同一 Runtime 内完全离场的 Actor 可加入另一个 World。排队请求仅持 ObjectId 与原 World/owner 条件，flush 重新验证，不跟随对象迁入另一 World。回执只有 Commit，不返回移除历史或保活根；回调中新排的请求在下一次 flush 执行。
@@ -102,3 +102,12 @@ World 八组真实消费者覆盖 JIT 与协程、普通引用与 GC、World/历
 ## 可保存的网格来源
 
 `StaticMeshComponent` 的隐藏反射字段 `mesh_source` 保存资源来源键，`set_mesh_binding` 整体替换来源及不可变 MeshRef；直接 `set_geometry` 清除来源。`read_static_mesh` 返回拥有的来源、MeshRef 和 Material 快照，支持 Detached 和空网格，供完整场景存档读取；不以 presentation 列表代替组成。资源位置解析与文件格式仍由[工程模块](../editor/projects.md)负责。来源字段使用同一 `core.String`，没有另建对象身份或按组件 ID 建立来源副表。
+
+
+## 运行期平移命令
+
+Component 的共享类型定义注册 `translate_owner(float dx, float dy, float dz)`，所有派生 Component 经真实接收者继承该方法。Source 可调用 `self.translate_owner(...)`；原生调用适配只读取身份并保存拥有值命令，不持有字段地址、不重入编辑 setter。
+
+该方法要求已归属、已注册、有显式根且正在 World 行为阶段执行。命令在 Begin/注册阶段成功结束或本帧 Tick/协程全部返回后，于宿主边界重新校验接收者、Actor、根和有限 TRS，再合并同一根的平移。它修改根的世界位置，保留旋转、scale；当前空间树只允许同 Actor 层级，根没有父节点。批次先完整验证再写入，失败或 shutdown 清除未应用命令，后续 start 不会重放。
+
+含 `physics.BodyComponent`（含派生）的 Actor 拒绝此命令，即使 Body 停用也不绕开物理所有权。物理动作沿 PhysicsScene 的正式接口处理。此命令不改变停止状态的 `set_transform`、`apply_simulation_transform` 或结构 `request/flush` 的准入合同。

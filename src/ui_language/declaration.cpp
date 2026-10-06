@@ -17,7 +17,9 @@ constexpr std::pair<std::string_view,NodeKind> builtin_nodes[]{
     {"Foldout",NodeKind::foldout},{"NumberRow",NodeKind::number_row},{"TextField",NodeKind::text_field},
     {"Tree",NodeKind::tree},{"TreeItem",NodeKind::tree_item},{"Repeat",NodeKind::repeat},{"Button",NodeKind::button},
     {"List",NodeKind::list},{"Combo",NodeKind::combo},{"ChoiceButton",NodeKind::choice_button},{"ToggleButton",NodeKind::toggle_button},
-    {"Table",NodeKind::table}};
+    {"Table",NodeKind::table},{"Checkbox",NodeKind::checkbox},{"ParameterRow",NodeKind::parameter_row},
+    {"Viewport",NodeKind::viewport},{"Tab",NodeKind::tab},{"Splitter",NodeKind::splitter},
+    {"Popup",NodeKind::popup},{"MenuItem",NodeKind::menu_item},{"Overlay",NodeKind::overlay},{"CodeEditor",NodeKind::code_editor}};
 std::optional<NodeKind> builtin_node(std::string_view name) {
     const auto at=std::ranges::find_if(builtin_nodes,[&](const auto& item){return item.first==name;});
     return at==std::end(builtin_nodes)?std::nullopt:std::optional{at->second};
@@ -26,13 +28,13 @@ bool height_strategy(std::string_view name) {
     return name=="height" || name=="expand_height" || name=="single_line" || name=="content_height";
 }
 bool width_strategy(std::string_view name) {
-    return name=="width" || name=="expand_width" || name=="content_width" || name=="shrink_width";
+    return name=="width" || name=="expand_width" || name=="content_width" || name=="shrink_width" || name=="flex_width" || name=="grow_width";
 }
 bool button_node(NodeKind kind) {
-    return kind==NodeKind::button || kind==NodeKind::choice_button || kind==NodeKind::toggle_button;
+    return kind==NodeKind::button || kind==NodeKind::choice_button || kind==NodeKind::toggle_button || kind==NodeKind::checkbox || kind==NodeKind::foldout;
 }
 bool container_node(NodeKind kind) {
-    return kind==NodeKind::column || kind==NodeKind::row || kind==NodeKind::tree || kind==NodeKind::list;
+    return kind==NodeKind::column || kind==NodeKind::row || kind==NodeKind::tree || kind==NodeKind::list || kind==NodeKind::parameter_row || kind==NodeKind::popup || kind==NodeKind::overlay;
 }
 
 struct Header {
@@ -51,6 +53,7 @@ Input parse_input(Tokens& tokens) {
         else if (type.text=="TextEditBinding") value.kind=InputKind::text_edit;
         else if (type.text=="ActionBinding") value.kind=InputKind::action;
         else if (type.text=="TableBinding") value.kind=InputKind::table;
+        else if (type.text=="CodeBinding") value.kind=InputKind::code;
         else if (type.text=="Key") value.kind=InputKind::key;
         else if (type.text=="Items") {
             value.kind=InputKind::items;tokens.expect("<");value.item_type=tokens.identifier().text;tokens.expect(">");
@@ -131,13 +134,14 @@ public:
                 const auto property=*evaluation.property;
                 const auto reference=reference_kind(evaluation.source);
                 const bool text=property==Property::text || property==Property::filter || property==Property::classes ||
-                    property==Property::view || property==Property::empty_text ||
+                    property==Property::view || property==Property::empty_text || property==Property::menu_behavior ||
                     (property==Property::argument && evaluation.kind==InputKind::text);
                 const bool numeric=property==Property::gap || property==Property::height || property==Property::width ||
                     property==Property::padding_left || property==Property::icon ||
                     property==Property::padding_top || property==Property::padding_right || property==Property::padding_bottom ||
                     property==Property::content_width || property==Property::content_height || property==Property::min_width || property==Property::shrink_width ||
                     (property>=Property::row_height && property<=Property::item_gap) ||
+                    (property>=Property::offset_x && property<=Property::step) ||
                     (property==Property::argument && evaluation.kind==InputKind::number);
                 std::string sink;
                 if (property==Property::argument) sink="set_argument_"+suffix(evaluation.kind);
@@ -145,9 +149,11 @@ public:
                 else if (property==Property::edit) sink=result_.nodes[evaluation.node].kind==NodeKind::text_field?"set_text_edit":"set_edit";
                 else if (property==Property::action) sink="set_action";
                 else if (property==Property::model) sink="set_model";
-                else if (property==Property::context) sink="set_context";
+                else if (property==Property::document) sink="set_document";
+                else if (property==Property::context) sink=reference==InputKind::text_edit?"set_context_from_edit":"set_context";
                 else if (property==Property::items) sink="set_items";
                 else if (property==Property::tree_parent) sink="set_tree_parent";
+                else if (property==Property::radio_group) sink="set_radio_group";
                 else if (property==Property::selection_group) sink="set_selection_group";
                 else sink=numeric?"set_number":"set_bool";
                 if (text && reference==InputKind::text) sink+="_reference";
@@ -160,7 +166,7 @@ public:
                 append(");\n",evaluation.source.position);
             } else {
                 const auto kind=result_.nodes[evaluation.node].kind;
-                rewrite(evaluation.source,true,kind==NodeKind::foldout || kind==NodeKind::toggle_button);
+                rewrite(evaluation.source,true,kind==NodeKind::foldout || kind==NodeKind::toggle_button || kind==NodeKind::checkbox);
                 append("\n",evaluation.source.position);
             }
             append("}\n",evaluation.source.position);
@@ -191,7 +197,7 @@ private:
         reject(token.position,"Component state requires bool or double.");
     }
     static std::string suffix(InputKind kind) {
-        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action","table"};
+        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action","table","code"};
         return std::string(names[static_cast<std::size_t>(kind)]);
     }
     Fragment fragment(std::string_view terminator) {
@@ -264,7 +270,10 @@ private:
                     "expand_height","icon","tree_parent","initially_expanded","filter","mounted","items",
                     "padding_top","padding_right","padding_bottom","align_center","single_line","action",
                     "selection_group","content_width","content_height","expand_width","min_width","wrap","panel","model","context","shrink_width",
-                    "view","row_height","header_height","tile_width","tile_height","item_gap","empty_text"};
+                    "view","row_height","header_height","tile_width","tile_height","item_gap","empty_text",
+                    "modified","out_of_flow","offset_x","offset_y","anchor_x","anchor_y","pivot_x","pivot_y",
+                    "flex_width","grow_width","red","green","blue","value","minimum","maximum","step","vertical","click_action",
+                    "menu_branch","menu_behavior","radio_group","document"};
                 const auto at=std::ranges::find(names,property.text);
                 if (at==std::end(names)) reject(property.position,"Unknown UI property.");
                 value=static_cast<Property>(at-std::begin(names));
@@ -272,7 +281,8 @@ private:
                     (kind==NodeKind::repeat && value!=Property::mounted && value!=Property::items))
                     reject(property.position,"This structural scope accepts only mounted and its typed input.");
                 if (value==Property::edit && kind!=NodeKind::number_row && kind!=NodeKind::text_field) reject(property.position,"edit requires NumberRow or TextField.");
-                if (value==Property::action && !button_node(kind) && kind!=NodeKind::table) reject(property.position,"action requires a button or Table.");
+                if (value==Property::action && ((!button_node(kind) && kind!=NodeKind::table) || kind==NodeKind::foldout)) reject(property.position,"action requires a button, Checkbox or Table.");
+                if (value==Property::document && kind!=NodeKind::code_editor) reject(property.position,"document requires CodeEditor.");
                 if (value==Property::model && kind!=NodeKind::table) reject(property.position,"model requires Table.");
                 if (value>=Property::view && value<=Property::empty_text && kind!=NodeKind::table)
                     reject(property.position,"Table presentation properties require Table.");
@@ -280,24 +290,32 @@ private:
                     reject(property.position,"NumberRow context is owned by its EditBinding.");
                 if (value==Property::selection_group && kind!=NodeKind::choice_button) reject(property.position,"selection_group requires ChoiceButton.");
                 if (value==Property::selected && kind!=NodeKind::foldout && kind!=NodeKind::tree_item &&
-                    kind!=NodeKind::choice_button && kind!=NodeKind::toggle_button && kind!=NodeKind::combo)
+                    kind!=NodeKind::choice_button && kind!=NodeKind::toggle_button && kind!=NodeKind::combo && kind!=NodeKind::checkbox && kind!=NodeKind::tab &&
+                    kind!=NodeKind::menu_item && kind!=NodeKind::button && !container_node(kind))
                     reject(property.position,"selected requires Foldout, TreeItem, ChoiceButton, ToggleButton or Combo.");
+                if ((value==Property::menu_branch || value==Property::menu_behavior || value==Property::radio_group) && kind!=NodeKind::menu_item)
+                    reject(property.position,"Menu properties require MenuItem.");
+                if ((value==Property::value || value==Property::minimum || value==Property::maximum || value==Property::step || value==Property::vertical || value==Property::click_action) && kind!=NodeKind::splitter)
+                    reject(property.position,"Drag properties require Splitter.");
                 if (value==Property::caption && kind!=NodeKind::text) reject(property.position,"caption requires Text.");
                 if ((value==Property::align_center || value==Property::wrap) && !container_node(kind))
                     reject(property.position,"align_center and wrap require a layout container.");
-                if (value==Property::text && (container_node(kind) || kind==NodeKind::text_field || kind==NodeKind::table))
+                if (value==Property::text && ((container_node(kind) && kind!=NodeKind::parameter_row) || kind==NodeKind::text_field || kind==NodeKind::table || kind==NodeKind::code_editor))
                     reject(property.position,"Use Text or a typed text edit binding.");
-                if (kind==NodeKind::number_row && ((value>=Property::gap && value<=Property::padding_left) ||
-                    value==Property::expand_height || (value>=Property::padding_top && value<=Property::single_line) ||
-                    (value>=Property::content_width && value<=Property::panel) || value==Property::shrink_width))
-                    reject(property.position,"NumberRow uses the shared parameter layout; put outer layout on its parent.");
+                if (kind==NodeKind::number_row && value!=Property::text && value!=Property::classes &&
+                    value!=Property::enabled && value!=Property::collapsed && value!=Property::edit)
+                    reject(property.position,"NumberRow layout and field state are owned by the shared parameter row and EditBinding.");
+                if (kind==NodeKind::parameter_row && value!=Property::text && value!=Property::classes &&
+                    value!=Property::enabled && value!=Property::collapsed && value!=Property::modified)
+                    reject(property.position,"ParameterRow owns its shared layout; put outer layout on its parent.");
                 if ((value==Property::tree_parent || value==Property::expanded) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
                 if (value==Property::filter && kind!=NodeKind::tree) reject(property.position,"filter requires Tree.");
                 if (value==Property::mounted && kind!=NodeKind::component && kind!=NodeKind::repeat) reject(property.position,"mounted requires a component or Repeat scope.");
                 if (value==Property::items && kind!=NodeKind::repeat) reject(property.position,"items requires Repeat.");
             }
             const auto expression=fragment(";");expect(";");
-            if ((value==Property::selection_group || value==Property::context) && reference_kind(expression)!=InputKind::key) {
+            if ((value==Property::selection_group || value==Property::context || value==Property::radio_group) && reference_kind(expression)!=InputKind::key &&
+                !(value==Property::context && reference_kind(expression)==InputKind::text_edit)) {
                 Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));
                 if (!tokens.accept("node") || !tokens.accept(".") || tokens.token_.kind!=Token::Kind::identifier)
                     reject(expression.position,std::string(property.text)+" requires node.name or a direct Key input.");
@@ -311,6 +329,8 @@ private:
             if ((value==Property::model || (value==Property::argument && value_kind==InputKind::table)) &&
                 reference_kind(expression)!=InputKind::table)
                 reject(expression.position,"Table models require a direct TableBinding input.");
+            if ((value==Property::document || (value==Property::argument && value_kind==InputKind::code)) && reference_kind(expression)!=InputKind::code)
+                reject(expression.position,"CodeEditor requires a direct CodeBinding input.");
             if (value==Property::argument && value_kind==InputKind::items) {
                 if (reference_kind(expression)!=InputKind::items) reject(expression.position,"Items arguments require a direct typed input.");
                 Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));tokens.expect("input");tokens.expect(".");const auto input=tokens.identifier();
@@ -329,6 +349,8 @@ private:
         }
         if ((kind==NodeKind::number_row || kind==NodeKind::text_field) && std::ranges::find(properties,"edit")==properties.end())
             reject(name.position,"Editable controls require a typed edit binding.");
+        if (kind==NodeKind::code_editor && std::ranges::find(properties,"document")==properties.end())
+            reject(name.position,"CodeEditor requires a typed document binding.");
         if (kind==NodeKind::table && std::ranges::find(properties,"model")==properties.end())
             reject(name.position,"Table requires a typed model binding.");
         if (button_node(kind) && has_event && std::ranges::find(properties,"action")!=properties.end())

@@ -45,7 +45,7 @@ public:
     Parser(std::string_view name, std::string_view source, Environment environment)
         : Tokens(source), environment_(environment) { module_.source_name = name; }
 
-    Program parse(std::string_view entry_name) {
+    Program parse(std::string_view entry_name, bool allow_declarations) {
         validate_environment();
         module_.object_type_name = environment_.object_type_name;
         module_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
@@ -98,7 +98,7 @@ public:
                 consume();
             }
         }
-        if (module_.functions.empty()) reject(token_.position, "Source module requires an entry function.");
+        if (module_.functions.empty() && !allow_declarations) reject(token_.position, "Source module requires an entry function.");
         for (const auto& function : module_.functions)
             if (std::ranges::find(type_names, function.function_name) != type_names.end())
                 reject(function.position, "A source function and type cannot have the same name.");
@@ -111,6 +111,7 @@ public:
                     if (parameter.name == value.name) reject(function.position, "Parameters cannot shadow a module constant.");
         }
         for (std::size_t i = 0; i < constants_.size(); ++i) resolve_constant(i);
+        if (module_.functions.empty()) return std::move(module_);
         if (entry_name.empty() && module_.functions.size() != 1)
             reject({}, "A multi-function module requires an explicit host entry name.");
         bool found = entry_name.empty();
@@ -1278,12 +1279,63 @@ private:
 }
 
 std::expected<Program, Diagnostic> compile_source(
-    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name) {
+    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name, bool allow_declarations) {
     try {
-        return Parser(source_name, source, environment).parse(entry_name);
+        return Parser(source_name, source, environment).parse(entry_name, allow_declarations);
     } catch (Rejected& rejected) {
         return std::unexpected(std::move(rejected.diagnostic));
     }
+}
+
+std::expected<void, Diagnostic> export_functions(Program& program, std::span<const std::string_view> names, bool receiver) {
+    if (names.empty() || !program.exports.empty())
+        return std::unexpected(Diagnostic{{}, "Source exports require a nonempty, previously unexported module."});
+    const auto count = program.functions.size();
+    for (const auto name : names) {
+        if (std::ranges::any_of(program.exports, [&](auto i) { return program.functions[i].function_name == name; }))
+            return std::unexpected(Diagnostic{{}, "Duplicate source export: " + std::string(name)});
+        const auto found = std::find_if(program.functions.begin(), program.functions.begin() + count,
+            [&](const auto& f) { return f.function_name == name; });
+        if (found == program.functions.begin() + count)
+            return std::unexpected(Diagnostic{{}, "Exported source function was not declared: " + std::string(name)});
+        if (found->is_coroutine)
+            return std::unexpected(Diagnostic{found->position, "Project exports must be synchronous."});
+        const auto target = static_cast<std::uint32_t>(found - program.functions.begin());
+        Function wrapper;
+        wrapper.function_name = found->function_name;
+        wrapper.position = found->position;
+        wrapper.parameters = found->parameters; wrapper.result = found->result;
+        wrapper.locals.assign(found->locals.begin(), found->locals.begin() + found->parameters.size());
+        wrapper.uses_scoped_values = found->uses_scoped_values;
+        wrapper.preserves_borrows = found->preserves_borrows;
+        wrapper.requires_receiver = receiver || found->requires_receiver;
+        Expression call{Expression::Kind::source_call, wrapper.result, wrapper.position};
+        call.value = target;
+        for (std::uint32_t i = 0; i < wrapper.parameters.size(); ++i) {
+            Expression argument{Expression::Kind::local, wrapper.parameters[i].type, wrapper.position};
+            argument.value = i; wrapper.expressions.push_back(std::move(argument));
+            call.arguments.push_back(i); call.argument_passing.push_back(wrapper.parameters[i].passing);
+        }
+        const auto call_id = wrapper.expressions.size(); wrapper.expressions.push_back(std::move(call));
+        Statement action{}; action.kind = wrapper.result == ValueType::void_value ? Statement::Kind::call : Statement::Kind::return_value;
+        action.position = wrapper.position;
+        action.expression = call_id; wrapper.statements.push_back(std::move(action));
+        Statement block{}; block.kind = Statement::Kind::block; block.position = wrapper.position; block.children = {0};
+        wrapper.body = 1; wrapper.statements.push_back(std::move(block));
+        program.exports.push_back(static_cast<std::uint32_t>(program.functions.size()));
+        program.functions.push_back(std::move(wrapper));
+    }
+    program.reachable.assign(program.functions.size(), false);
+    auto pending = program.exports;
+    while (!pending.empty()) {
+        const auto index = pending.back(); pending.pop_back();
+        if (program.reachable[index]) continue;
+        program.reachable[index] = true;
+        for (const auto& node : program.functions[index].expressions)
+            if (node.kind == Expression::Kind::source_call) pending.push_back(node.value);
+    }
+    program.entry = program.exports.front();
+    return {};
 }
 
 }

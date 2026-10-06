@@ -10,7 +10,7 @@
 - 卸载顺序改为清理输入和旧控件、卸载组件及租约、关闭旧文档 Runtime。补齐无属性绑定组件的首次挂载，以及绑定上下文时的异常所有权处理。
 - 合入布局负责人交付的 `Session::update_controls`、描述 revision、失败恢复和统计；`set_controls` 复用同一校验及清理实现。
 
-当前语法、调用链和限制统一维护于[声明式 UI 文档](../modules/editor/declarative-ui-proposal.md)。
+当前语法、调用链和限制统一维护于[声明式 UI 文档](../modules/editor/declarative-ui.md)。
 
 ## 执行与证据
 

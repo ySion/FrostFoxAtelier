@@ -40,7 +40,7 @@ cmake --build --preset release --parallel 8 --target atelier_editor editor_docum
 
 ## 文档与旧描述清理
 
-- [声明式 UI 方案](../modules/editor/declarative-ui-proposal.md)按已交付的 bool、控制流、plain record 按值调用和容器能力更新，明确类 UXML 标记、现有 SS、自有语言与同一 Runtime 的关系。第一片仍建议从真实 Position 参数区开始，尚未派发实施。
+- [声明式 UI 方案](../modules/editor/declarative-ui.md)按已交付的 bool、控制流、plain record 按值调用和容器能力更新，明确类 UXML 标记、现有 SS、自有语言与同一 Runtime 的关系。第一片仍建议从真实 Position 参数区开始，尚未派发实施。
 - [基础容器研究](compact-stl-direction.md)将已交付能力与后续方向分开，容器合同继续以现有 Foundation 文档为准。归档文件的规范化 Git blob 为 `09e32d0383099c30f243034f8355b7520c6bd86c`；源文件与归档的 SHA256 均为 `6BB22A1BC55E29EF3C5C71158DC4F9BFD0E3D9819BA7A212FBAA058816554147`。
 - `LANGUAGE.md` 的内部同步调用与原生成员方法两处旧枚举已补上合格 plain record，引用原有参数及临时值规则，没有改变语言合同。
 - 原应用工作树的 UI 方案已形成正常提交；没有隐藏、重置或删除其他负责人的未提交工作。

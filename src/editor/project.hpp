@@ -22,6 +22,7 @@ public:
     static Result<Project> open(const std::filesystem::path&);
     const std::filesystem::path& root() const noexcept { return root_; }
     const std::filesystem::path& startup_scene() const noexcept { return startup_; }
+    const std::filesystem::path& ui_source() const noexcept { return ui_source_; }
     const std::wstring& name() const noexcept { return name_; }
     std::span<const ProjectEntry> entries() const noexcept { return entries_; }
     std::uint64_t revision() const noexcept { return revision_; }
@@ -29,8 +30,13 @@ public:
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
     Result<MeshAsset> mesh(std::string_view);
     Result<std::string> import_mesh(const std::filesystem::path&);
+    // Fresh, deterministic compiler inputs. UI declarations have their own
+    // configured entry and are not parsed as gameplay Source functions.
+    Result<std::vector<std::filesystem::path>> source_paths() const;
+    Result<void> create_source(const std::filesystem::path& relative,std::string_view);
+    Result<void> set_ui_source(const std::filesystem::path& relative);
 private:
-    std::filesystem::path root_, startup_;
+    std::filesystem::path root_, startup_, ui_source_;
     std::wstring name_;
     std::vector<ProjectEntry> entries_;
     std::uint64_t revision_{};

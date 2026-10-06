@@ -313,6 +313,10 @@ Result<void> World::update(float amount) {
             }
         }
     }
+    if (!failure) {
+        auto applied=state.apply_translations();
+        if (!applied) failure=applied.error();
+    }
     if (failure) { (void)state.shutdown(); return std::unexpected(std::move(*failure)); }
     std::erase_if(state.tasks, [](const Impl::Task& task) {
         const auto phase = task.coroutine.state();

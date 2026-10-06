@@ -33,7 +33,7 @@ void profile_project_json(const std::filesystem::path& output) {
         editor::Session document;
         for (int actor = 0; actor < actors; ++actor) {
             changed(document.create_static_mesh(editor::mesh_assets()[static_cast<std::size_t>(actor) % editor::mesh_assets().size()]));
-            take(document.rename(document.selected(), L"测量 Actor " + std::to_wstring(actor)));
+            take(document.rename(document.selection().actor, L"测量 Actor " + std::to_wstring(actor)));
             for (int component = 1; component < components; ++component)
                 changed(document.add_component(document.types().scene_component));
         }

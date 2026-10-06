@@ -2,6 +2,7 @@ Reply Session::input(const Event& event) {
     auto& self=*impl_;
     Reply reply;
     try {
+        self.sync_code_edit();
         if (event.kind==EventKind::capture_lost && !self.press) return reply;
         if (event.kind==EventKind::focus_lost || event.kind==EventKind::capture_lost) {
             reply=self.cancel();
@@ -48,7 +49,7 @@ Reply Session::input(const Event& event) {
             const auto* state=self.press?self.live(self.press->key):(hit?self.live(hit->key):nullptr);
             if (state) {
                 const auto& control=state->control;
-                if (control.kind==ControlKind::text_edit || (control.kind==ControlKind::number && self.edit && self.edit->key==control.key && self.edit->text_mode)) return Cursor::text;
+                if (control.kind==ControlKind::text_edit || control.kind==ControlKind::code_editor || (control.kind==ControlKind::number && self.edit && self.edit->key==control.key && self.edit->text_mode)) return Cursor::text;
                 if (control.kind==ControlKind::number || control.kind==ControlKind::slider) return Cursor::drag_horizontal;
                 if (control.kind==ControlKind::splitter) return control.drag_axis==DragAxis::horizontal?Cursor::resize_horizontal:Cursor::resize_vertical;
                 if (control.kind==ControlKind::tab && self.press && self.press->dragging) return Cursor::move;
@@ -97,6 +98,7 @@ Reply Session::input(const Event& event) {
             }
             break;
         }
+        if (self.code_input(reply,event,hit)) return reply;
         if (self.table_input(reply,event,hit)) return reply;
         if (event.kind==EventKind::pointer_move) {
             const auto key=hit?hit->key:0;
@@ -198,7 +200,7 @@ Reply Session::input(const Event& event) {
             if (text_field(control.kind) && (!self.edit || self.edit->key!=hit->key))
                 self.begin_edit(hit->key,control.kind==ControlKind::text_edit);
             const bool selecting=self.edit && self.edit->key==hit->key && self.edit->text_mode;
-            if (self.edit) self.edit->buffer.break_group();
+            if (self.edit) self.edit->buffer().break_group();
             if (selecting) self.select_at(reply,event.x,event.y,event.shift);
             self.press=Impl::Press{hit->key,event.x,event.y,event.x,event.y,control.value,control.value,false,selecting};
             self.press->button=event.button;
@@ -251,7 +253,7 @@ Reply Session::input(const Event& event) {
                         self.expand_tree(reply,hit->key,!row->expanded);
                 } else if (hit->kind==ControlKind::number && press.button==PointerButton::primary) {
                     if (!self.edit) self.begin_edit(hit->key,true,true);
-                    else { self.edit->text_mode=true; if (self.edit->buffer.select_all()) self.revise(); }
+                    else { self.edit->text_mode=true; if (self.edit->buffer().select_all()) self.revise(); }
                 } else if (hit->kind==ControlKind::splitter && self.states.at(hit->key).control.click_action)
                     Impl::action(reply,ActionKind::activate,hit->key,event.alt);
                 else if (activatable(hit->kind)) self.activate(reply,*hit);
@@ -337,7 +339,7 @@ Reply Session::input(const Event& event) {
             if (!self.edit) self.begin_edit(self.focus,focused->control.kind==ControlKind::text_edit);
             auto& edit=*self.edit;
             const bool history_key=event.control && (event.key==Key::z || event.key==Key::y);
-            if (history_key && !edit.buffer.active()) { edit.buffer.break_group(); return reply; }
+            if (history_key && !edit.document && !edit.buffer().active()) { edit.buffer().break_group(); return reply; }
             reply.consumed=true;
             if (event.kind==EventKind::text && !event.control && !event.alt) {
                 if (const auto* value=std::get_if<std::wstring>(&event.data)) {
@@ -349,23 +351,23 @@ Reply Session::input(const Event& event) {
                 if (event.key==Key::enter) {
                     self.terminal_key=Key::enter;
                     if (!edit.text_mode && focused->control.kind==ControlKind::number) {
-                        edit.text_mode=true; if (edit.buffer.select_all()) self.revise(); reply.redraw=true;
+                        edit.text_mode=true; if (edit.buffer().select_all()) self.revise(); reply.redraw=true;
                     } else self.finish_edit(reply,true,true,true);
                 } else if (history_key) {
-                    const bool was_active=edit.buffer.active();
-                    self.changed(reply,edit.buffer.history(event.key==Key::y || event.shift),was_active);
+                    const bool was_active=edit.buffer().active();
+                    self.changed(reply,edit.buffer().history(event.key==Key::y || event.shift),was_active);
                 } else if (event.control && event.key==Key::a) {
-                    reply.redraw|=!edit.text_mode; edit.text_mode=true; if (edit.buffer.select_all()) { self.revise(); reply.redraw=true; }
+                    reply.redraw|=!edit.text_mode; edit.text_mode=true; if (edit.buffer().select_all()) { self.revise(); reply.redraw=true; }
                 } else if (event.control && (event.key==Key::c || event.key==Key::x || event.key==Key::v)) {
                     self.clipboard_command(reply,event.key==Key::v?ClipboardKind::read:event.key==Key::x?ClipboardKind::cut:ClipboardKind::copy);
                 } else if (!event.control && (event.key==Key::delete_key || event.key==Key::backspace)) {
-                    reply.redraw|=!edit.text_mode; edit.text_mode=true; const bool was_active=edit.buffer.active();
-                    self.changed(reply,edit.buffer.erase(event.key==Key::backspace),was_active);
+                    reply.redraw|=!edit.text_mode; edit.text_mode=true; const bool was_active=edit.buffer().active();
+                    self.changed(reply,edit.buffer().erase(event.key==Key::backspace),was_active);
                 } else if (!event.control && (event.key==Key::left || event.key==Key::right || event.key==Key::home || event.key==Key::end)) {
                     reply.redraw|=!edit.text_mode; edit.text_mode=true; const auto* geometry=self.edit_geometry();
-                    edit.buffer.break_group();
+                    edit.buffer().break_group();
                     if (!geometry) { reply.redraw=true; return reply; }
-                    const auto& selected=edit.buffer.current();
+                    const auto& selected=edit.buffer().current();
                     const auto paragraph=geometry->paragraph->matches(selected.text)?geometry->paragraph:
                         self.text.edited_snapshot(edit.key,*geometry->paragraph,selected.text);
                     const bool left=event.key==Key::left || event.key==Key::home, edge=event.key==Key::home || event.key==Key::end;
@@ -379,8 +381,8 @@ Reply Session::input(const Event& event) {
                             position=paragraph->hit(x,0);
                         }
                     } else position=paragraph->move(position,left?-1:1,edge);
-                    if (edit.buffer.select(position,event.shift)) { self.revise(); reply.redraw=true; }
-                } else edit.buffer.break_group();
+                    if (edit.buffer().select(position,event.shift)) { self.revise(); reply.redraw=true; }
+                } else edit.buffer().break_group();
             }
             return reply;
         }

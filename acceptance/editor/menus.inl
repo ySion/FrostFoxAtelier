@@ -79,7 +79,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     click(app,control::menu_bar_handle);
     verify_stow_alignment(app);
     require(!app.presented()->find(control::file_menu) && app.presented()->find(field) &&
-        app.presented()->find(pane)->bounds.y<expanded.y-20*dpi_before && app.document().undo_count()==history,
+        std::abs(app.presented()->find(pane)->bounds.y-expanded.y+20*dpi_before)<.1f && app.document().undo_count()==history,
         "Stowing the menubar did not release space or changed the document.");
     capture(app,output/"menubar-stowed.png");
     click(app,control::menu_bar_handle);
@@ -174,17 +174,25 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
     require(GetMonitorInfoW(MonitorFromWindow(app.window(),MONITOR_DEFAULTTONEAREST),&monitor)!=FALSE,"Cannot query menu acceptance monitor.");
     const auto area=monitor.rcWork; const auto dpi=app.presented()->drawing->dpi_scale;
-    SetWindowPos(app.window(),nullptr,area.left+12,area.top+12,static_cast<int>(1000*dpi),static_cast<int>(650*dpi),SWP_NOZORDER|SWP_NOACTIVATE);
+    // Leave enough monitor space beyond the owner for an unconstrained popup.
+    const auto test_width=std::min(static_cast<int>(1000*dpi),static_cast<int>((area.right-area.left)*.6f));
+    SetWindowPos(app.window(),nullptr,area.left+12,area.top+12,test_width,static_cast<int>(650*dpi),SWP_NOZORDER|SWP_NOACTIVATE);
     tick(app,4);
-    auto point=centre(app,field);
-    point.x=static_cast<LONG>(app.presented()->find(field)->bounds.x+app.presented()->find(field)->bounds.width-3);
+    // Anchor at the rightmost tuple field; its position is independent of the
+    // inspector's caption width and field wrapping.
+    const auto edge_field=property_control(app,app.document().selection().actor,2);
+    auto point=centre(app,edge_field);
+    point.x=static_cast<LONG>(app.presented()->find(edge_field)->bounds.x+app.presented()->find(edge_field)->bounds.width-3);
     const auto context_at=[&] {
         require_input_focus(app); KeyStateScope modifiers;
         SendMessageW(app.window(),WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(point.x,point.y));
         SendMessageW(app.window(),WM_RBUTTONUP,0,MAKELPARAM(point.x,point.y)); tick(app,2);
     };
     context_at();
+    require(app.menu_window() && app.menu_frame(),"The numeric field context menu did not open.");
     RECT owner{},popup{}; GetWindowRect(app.window(),&owner); GetWindowRect(app.menu_window(),&popup);
+    if(popup.right<=owner.right) std::fprintf(stderr,"Menu edge fixture: owner=(%ld,%ld,%ld,%ld), popup=(%ld,%ld,%ld,%ld), work=(%ld,%ld,%ld,%ld), dpi=%.2f, point=(%ld,%ld)\n",
+        owner.left,owner.top,owner.right,owner.bottom,popup.left,popup.top,popup.right,popup.bottom,area.left,area.top,area.right,area.bottom,dpi,point.x,point.y);
     require(popup.right>owner.right,"Context menu remained confined to the editor rectangle.");
     require(!app.presented()->find(control::parameter_menu),"Native menu still has a clipped copy in the main surface.");
     app.capture_menu(menu_pixels); png(menu_pixels,output/"native-menu-parameter.png");

@@ -4,7 +4,7 @@
 
 2026-09-30：当前 Actor/Component/World 接入按[对象模型合同](research/game-world-object-model.md)的 IV 推进；本页保留已验收的 S1/S2 UI 合同和尚未实施的 S3 方向，不作为另一套 World 实施计划。ObjectKey、旧 Scene 和位置专用业务 API 已退出；当前消费者与验收状态见[编辑器模块](modules/editor/README.md)。
 
-2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。随后批准基础控件优先的编辑器改进：共享参数行、Vector3、默认值/修改状态、checkbox、foldout 与同宿主 Controls 实验台已接入，见[当前控件合同](modules/ui/README.md#可组合参数控件)和[Houdini 实机调研](research/houdini-controls-20261001.md)。当前保留既有场景历史选择政策；单宿主停靠、标签移动/分栏/最大化已接入，见[工作区](modules/editor/README.md#工作区与停靠)；follow/pin、原生浮动窗口、布局文件保存与非矩形后代裁剪仍未实施。原生 UI 声明现已接入首个 Position 组件，当前实现和后续范围见[声明式 UI](modules/editor/declarative-ui-proposal.md)。下文保留历史设计取舍与有效输入合同，不维护另一份当前排期。
+2026-10-01：用户批准的样式/绘制基础增量已接入接受帧文字快照、SS、圆角盒、RGBA 图片和相邻合批，详见 [当前 SS 合同](modules/ui/style-sheets.md)。随后批准基础控件优先的编辑器改进：共享参数行、Vector3、默认值/修改状态、checkbox、foldout 与同宿主 Controls 实验台已接入，见[当前控件合同](modules/ui/README.md#可组合参数控件)和[Houdini 实机调研](research/houdini-controls-20261001.md)。当前保留既有场景历史选择政策；单宿主停靠、标签移动/分栏/最大化已接入，见[工作区](modules/editor/README.md#工作区与停靠)；follow/pin、原生浮动窗口、布局文件保存与非矩形后代裁剪仍未实施。原生 UI 声明现已接入首个 Position 组件，当前实现和后续范围见[声明式 UI](modules/editor/declarative-ui.md)。下文保留历史设计取舍与有效输入合同，不维护另一份当前排期。
 
 以下为 2026-09-28 至 2026-09-29 的原始计划与交接记录。首版代码基线：`9d294866b035a40a09abecbd8540c04cdcd826b0`；S2 实施基线：`ec6a118130c6c96000e99d4d8296176e3d8c5c88`；当时集成分支：`codex/ui-foundation`。
 本页记录历史取舍，当前能力和验收以[UI 模块](modules/ui/README.md)和[编辑器模块](modules/editor/README.md)为准。[首版记录](first-editor-plan.md)保留 M0/M1 与 M2 历史目标；保存重开已接入工程目录；JIT 单步仍未接入编辑器。
@@ -83,7 +83,7 @@ S2 的状态、事件、平台往返及输入验收统一由第 9 节共同合�
 
 ## 6. 当前模块归属
 
-应用层负责窗口、编辑器命令、工程与 Workspace；UI/Layout 负责控件、输入状态、文本、SS 和布局；Renderer 负责帧消费与渲染资源缓存，RHI 负责 GPU 提交和在途资源。声明式 UI 的语言接线与编辑器迁移见[当前实现](modules/editor/declarative-ui-proposal.md)。各模块的当前文档是行为和所有权的权威入口。
+应用层负责窗口、编辑器命令、工程与 Workspace；UI/Layout 负责控件、输入状态、文本、SS 和布局；Renderer 负责帧消费与渲染资源缓存，RHI 负责 GPU 提交和在途资源。声明式 UI 的语言接线与编辑器迁移见[当前实现](modules/editor/declarative-ui.md)。各模块的当前文档是行为和所有权的权威入口。
 
 ## 7. 验收入口
 

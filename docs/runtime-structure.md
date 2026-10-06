@@ -1,6 +1,6 @@
 # Runtime、源码与 JIT 的结构和执行链
 
-状态：正式源码执行结构，包含对象单继承、强引用序列、受保护原生借用、成组引用修改、基类接收者视图、`async/yield`、共享签名绑定、String/Array/记录拥有型局部、源码 enum/struct、同模块函数及受控原生算法调用和单入口兼容方法体发布。本页维护模块分工、调用链及结构性技术债；具体行为以[运行时协议](runtime-model.md)和[语言契约](language-contract.md)为准，构建命令见 [README](../README.md)。
+状态：正式源码执行结构，包含对象单继承、强引用序列、受保护原生借用、成组引用修改、基类接收者视图、`async/yield`、共享签名绑定、String/Array/记录拥有型局部、源码 enum/struct、原生派生 class、跨文件与同模块函数、受控原生算法调用及兼容方法体整组发布。本页维护模块分工、调用链及结构性技术债；具体行为以[运行时协议](runtime-model.md)和[语言契约](language-contract.md)为准，构建命令见 [README](../README.md)。
 
 ## 结构判断
 
@@ -15,7 +15,7 @@
 | 类型与对象 Runtime | [runtime.hpp](../src/runtime/runtime.hpp)、[runtime.cpp](../src/runtime/runtime.cpp)：类型发布、对象身份、值操作、根、GC 和原生调用 | 正式静态目标 `atelier_runtime`；不依赖 LLVM、语言前端或验收代码 |
 | 执行协议 | [execution.hpp](../src/runtime/execution.hpp)、[execution.cpp](../src/runtime/execution.cpp)：ExecutionScope、根槽执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
 | 原生定义生产者 | [native.hpp](../src/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition；[自动反射工具](../tools/reflection/main.cpp)产生这些注册调用 | `atelier_reflect` 是构建期工具，薄宏入口为 [reflection.hpp](../src/runtime/reflection.hpp)；生成代码使用同一 Runtime 定义与 Invoker 协议 |
-| 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：类型检查和定型 AST；[declarations.cpp](../src/language/declarations.cpp)、[lexer.hpp](../src/language/lexer.hpp)：共享声明解析与词法，字段/参数/局部共用类型名称解析 | 声明解析分别编入宿主和后端，STL 对象不跨 DLL；完整定型和 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
+| 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：类型检查和定型 AST；[declarations.cpp](../src/language/declarations.cpp)、[lexer.hpp](../src/language/lexer.hpp)：共享声明解析与词法，字段/参数/局部共用类型名称解析 | 同一前端按宿主与 LLVM DLL 各自 ABI 编译，STL 对象不跨 DLL；宿主复用定型常量求值，完整方法编译与 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
 | LLVM 降低与代码资源 | [source_backend.cpp](../src/jit/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
 | Windows 展开信息 | [windows_unwind.cpp](../src/jit/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
 | 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar 或数学值的 ValueOutput，使用已有 Coroutine 表达协程拥有关系 |
@@ -45,13 +45,15 @@ flowchart TD
     Split --> JIT
     JIT --> Candidate[Candidate: 代码拥有者及兼容性检查]
     Candidate --> Publish[try_publish: 最新请求、准入、依赖复核]
-    Publish --> Current[提交类型与 State.current 的 Version]
+    Publish --> Current[提交类型与当前单入口或项目版本]
 ```
 
-1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号；新增 enum/struct 经 Runtime 内部类型批次解析和计算布局，暂不发布，也不运行源码。
+1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号；新增 enum/struct/class 经 Runtime 内部类型批次解析和计算布局，暂不发布，也不运行源码。
 2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端通过服务索引降低成员访问；同步与协程共用 SourceLowering，只有协程经过协程转换。
 3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布通过 Runtime 的共享签名解析器建立不可变声明；有新类型时，解析器使用同一未发布批次。
-4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。签名、版本分配和类型容器预留完成后，无回调提交新类型与 current。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
+4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。签名、版本分配和类型容器预留完成后，无回调提交新类型与当前代码版本。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
+
+项目快照的文件映射与类结构由 [module.cpp](../src/language/module.cpp) 收集，方法体继续交给同一定型前端。每个接收者环境共享一个 LLVM 模块；项目版本一次持有并切换全部入口，公共源码只保留一份，准备每个环境时临时拼接。具名 Entry 按稳定槽位取版本，原调用、错误及资源清理入口不变。详见[项目快照发布](source-function-modules.md#项目快照与多个公开入口)。
 
 **线程边界：** 当前整个适配器按单线程使用。prepare 的编译与兼容检查主要使用快照，但也检查程序拥有者的存活状态；这不足以授权与程序关闭/发布并发执行。后台编译需要单独确定请求、关闭和提交的同步契约。
 

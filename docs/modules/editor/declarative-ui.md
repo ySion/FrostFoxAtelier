@@ -1,8 +1,9 @@
 # 引擎原生声明式 UI
 
-完整 ToolShelf（收折、类别页签、工具内容）和 Parameters（路径栏、名称栏、内容页签、滚动区、查询、Position、组件列表），以及 Scene Tree 的树行和查询、ViewportTools 图标菜单入口、Asset Browser 的工具行/目录树/状态行和全部结果视图，已由 [editor.ui.source](../../../assets/editor.ui.source) 定义。它们使用同一份 Source/JIT、文档 Runtime、SS、Session、布局与绘制设施。停靠、菜单内容、Controls 与总外壳继续迁移。区域评估与后续次序见[编辑器 DSL 迁移](dsl-migration.md)。
+编辑器现有界面的装配已统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Actor Structure、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。迁移范围与尚未实现的业务能力见[迁移清单](dsl-migration.md)。
 
-Parameters 的过滤器位于对象标题之后、属性页签之前，同一查询筛选字段和组件。`Items<PropertyPage>` 由当前 Actor 的真实组成提供：有根组件时提供 Transform，Components 展示组成；无选择时显示空状态。字段页与浏览器功能不由编辑器外壳固定挂按钮。ViewportTools 在场景路径栏末尾提供显示与辅助图标菜单，复用同一原生 popup 和命令链。
+Parameters 在对象标题下按需展开过滤器，连续展示检查目标的 Position 和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、Checkbox 或枚举 Combo。ActorStructure 用同一 Tree/Repeat 展示归属关系并提供组成命令；SceneTree 只展示 Actor。ViewportTools 在路径栏末尾提供图标菜单。所有视图沿同一原生控件和命令链工作。
+
 
 本文是当前实现的用法与契约说明，包含 2026-10-05 的源码局部更新。Qt/QML、Unity UI Toolkit 与 Flutter 的官方资料比对及演进起点见[更新机制研究](../../research/ui-dsl-update-comparison-20261005.md)。
 
@@ -12,11 +13,13 @@ Parameters 的过滤器位于对象标题之后、属性页签之前，同一查
 
 ## 编辑与保存
 
+Code 面板的文档、保存与定位操作见[编辑器内源码工作流](source-editor.md)。原生 `CodeEditor` 通过 `document: input.document` 接收 `CodeBinding`；输入持有工作区提供的 `shared_ptr<ui::CodeDocument>`，不复制文本，不将文档放入 Runtime。控件类型 `code_editor` 可使用同一 SS；面板工具、文件菜单和诊断仍由 DSL 组合。
+
 ### 默认更新策略
 
 **正式默认方案是保存触发、同步准备、事务提交。** 源码更新在当前输入处理完成后的安全点，由 Runtime 所在线程顺序执行；准备期间暂停推进界面，完成后继续。允许保存操作产生可测量的短暂停顿，优先保证更新顺序、对象身份和失败恢复清楚可控。
 
-- 编译、定义检查和子树准备形成可拒绝的候选；失败继续使用已接受版本。Session 接受并结算旧交互 effects 后，统一提交新定义与成员关系。
+- 编译、定义检查和子树准备形成可拒绝的候选；失败继续使用已接受版本。Session 接受控件、结算旧交互 effects，并成功准备真实布局后，统一提交新定义与成员关系。
 - 优先减少实际工作量：复用未变 Program、保留兼容 Instance / Context、避免无关绑定求值，并优化实际昂贵的准备或提交阶段。
 - 编译准备与运行时发布职责分开，但共享一套候选、校验、提交和回收机制。保持 `request → prepare → publish` 的清楚顺序，不另建一套热更状态或生命周期入口。
 - 后台编译由实际工程中的持续卡顿证据决定，当前不列为既定后续任务。需要时先明确不可变编译输入、过期结果拒绝、关闭时在途任务收束与所属线程提交，再调整同一条链的调度方式。
@@ -26,7 +29,7 @@ Parameters 的过滤器位于对象标题之后、属性页签之前，同一查
 
 ### 保存流程
 
-Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source`；该文件不存在时读取可执行文件旁部署的同名文件。在 VS Code 保存这份文件即可更新运行中的面板，无需重新编译 C++ 或重开工程。
+Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source`；该文件不存在时读取可执行文件旁部署的同名文件。在 Code 面板或 VS Code 保存这份文件即可更新运行中的面板，无需重新编译 C++ 或重开工程。
 
 - 每 100 ms 检查文件时间与大小，变化稳定 200 ms 后读取；相同内容不重复编译。单文件上限 1 MiB。
 - 候选成功后在下一次控件提交中替换。状态栏显示版本和本次编译耗时。
@@ -113,7 +116,7 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 
 | 节点 | 作用与组合方式 |
 | --- | --- |
-| `Column` / `Row` | 纵向/横向容器，可嵌套具体控件、组件和 Repeat；通过父容器控制缩进 |
+| `Column` / `Row` / `Overlay` | 纵向、横向及覆盖容器，可嵌套具体控件、组件和 Repeat；通过父容器控制缩进 |
 | `Table` | model 必填，直接接收 TableBinding；支持 details/list/tiles 呈现，共享选择、虚拟绘制、滚动与键盘交互，Details 另有表头排序和列宽 |
 | `Text` | 文字叶，可设置 text、caption、classes 和布局属性 |
 | `Button` | 普通动作按钮；可绑定 ActionBinding 或本地 on activate，二者互斥；支持既有图标与 SS 呈现 |
@@ -121,6 +124,12 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | `ChoiceButton` | 互斥选项；必须声明 selection_group，支持方向键/Home/End，Tab 只访问当前选项 |
 | `Combo` | 显示当前文字/图标并请求现有上下文菜单；不接受 action 或本地事件，菜单模型仍由宿主提供 |
 | `List` | 带裁剪与滚动的纵向容器，可组合 Row/Column/组件；不意味着任意 Repeat 已自动虚拟化 |
+| `Checkbox` | 原生勾选框；selected 为权威值，激活输出 bool，可使用本地 on activate |
+| `ParameterRow` | 共享标签＋内容区域，直接子节点进入统一的参数内容槽；保留单行尺寸和窄面板换行 |
+| `Viewport` | 原生视口挂载位置；相机、渲染和输入由既有宿主负责 |
+| `Tab` | 工作区可拖动页签，使用原生捕获、拖动、取消链；内容页签继续使用 ChoiceButton |
+| `Splitter` | 有界拖动控件，value/minimum/maximum/step 表达范围，vertical 选择拖动方向 |
+| `Popup` / `MenuItem` | 独立菜单根和菜单项；支持普通命令、checkbox、radio、子菜单分支 |
 | `Foldout` | 可激活的折叠标题叶；不接受子节点，展开内容由另一个 Column 的 collapsed 表达 |
 | `NumberRow` | 共享参数行；必填 EditBinding，0 个字段不产生控件，非空时接受 1–4 个数值字段 |
 | `TextField` | 共享单行编辑器；必填 TextEditBinding，实际控件 key 必须非零且在完整快照内唯一 |
@@ -129,12 +138,13 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | `Repeat` | 类型化动态子作用域；items 必填，必须直接引用 Items 输入；自身不额外生成容器 |
 | 用户定义的 `ui` 类型 | 命名组件调用；实例拥有独立 state；输出直接放入所属内容区 |
 
-底层 UI 还有 Checkbox、Slider、工作区 Tab 等能力，当前 DSL 没有对应的直接节点声明。NumberRow 可消费宿主配置的数值滑条。不要将底层控件全集误认为已开放的 DSL 语法。
+Slider 仍通过 NumberRow 的 EditBinding 提供，和数值字段共享同一属性与事务；目前没有独立 Slider 声明。
 
 - `Column`、`Row`、`Text`、`Button`、`Foldout`、`NumberRow`、`TextField`、`Tree`、`TreeItem` 复用已有控件。`single_line: true` 使用同一个单行高度原语；文字编辑器和普通按钮默认使用它。
-- 同一具体节点的 `height`、`expand_height`、`content_height`、`single_line` 互斥，`width`、`expand_width`、`content_width`、`shrink_width` 同样互斥。`min_width` 独立约束最后形成的宽度策略，尺寸绑定单独更新不会丢失这个约束。组件输入使用这些名字时仍按普通类型化参数处理。
+- 同一具体节点的 `height`、`expand_height`、`content_height`、`single_line` 互斥，`width`、`expand_width`、`content_width`、`shrink_width`、`flex_width`、`grow_width` 同样互斥。`min_width` 独立约束最后形成的宽度策略，尺寸绑定单独更新不会丢失这个约束。组件输入使用这些名字时仍按普通类型化参数处理。
 - `input.name` 只读；`state bool`、`state double` 属于实例。绑定记录实际执行的 getter，每次成功求值替换依赖集。未读取的输入变化不求值该绑定；稳定输入不重建节点。
-- `on activate` 用于 Foldout、Button、ChoiceButton、ToggleButton；Foldout/ToggleButton 的 `event.checked` 为 bool，Button/ChoiceButton 没有事件值。事件允许修改局部 state，支持 Source 的普通语句、辅助函数与循环。表达式不能直接访问 native context、创建业务对象或启动异步任务。
+- `on activate` 用于 Foldout、Checkbox、Button、ChoiceButton、ToggleButton；Foldout/Checkbox/ToggleButton 的 `event.checked` 为 bool，Button/ChoiceButton 没有事件值。事件允许修改局部 state，支持 Source 的普通语句、辅助函数与循环。表达式不能直接访问 native context、创建业务对象或启动异步任务。
+- `Checkbox.action` 可接收 `ActionBinding`，发送带 bool 值的宿主动作，供真实属性事务使用；与 `on activate` 局部事件互斥，遵循同一接受帧换绑和取消合同。
 - `NumberRow.edit` 使用公共 `append_number_row`，保留 XYZ、默认值、菜单、拖调、文字草稿和原编辑事务。`TextField.edit` 使用已有文字编辑路由，保留 Unicode、IME、选区和历史。
 - `TreeItem.tree_parent` 表达逻辑关系，物理 parent 仍为 Tree。可用 `node.name` 引用声明拥有的具体节点 key。树行必须按父先子后的顺序提交；状态、过滤与可见范围绘制仍归 Session。
 - 字体、颜色和边框继续使用 SS；UI 声明负责结构、数据绑定及布局组合。
@@ -151,13 +161,13 @@ ui Tool(in Text title, in ActionBinding command) {
 
 宿主提供 `ActionBinding{target, enabled}`；target 必须非零，沿现有 Application 命令/绑定入口执行。Button 的声明 key（Repeat 中为 Item.key）独立于 target，因此多个工具可以指向同一命令。动作绑定只能直接来自有类型的输入，不能用任意数字或地址构造。生成的 Control 与 target 同批准备/拒绝/提交；按下或键盘激活期间换绑会取消旧交互，旧接受帧不能触发新目标。`enabled` 与绑定的 enabled 取 AND；执行时还须重新检查业务可用性。
 
-本地 `Button { on activate { ... } }` 可以更新局部 state，没有 `event.checked`。三个按钮节点都不能同时绑定 action 与本地 handler。图标与图文上下布局继续由 `icon`、SS 的 `icon-placement` 和字体规则决定。ToggleButton 输出明确 bool 请求；ChoiceButton 通过共同 selection_group 表达互斥选项。菜单内容（包括 check/radio）已由宿主 MenuItem 支持，尚不能直接在 DSL 声明。
+本地 `Button { on activate { ... } }` 可以更新局部 state，没有 `event.checked`。三个按钮节点都不能同时绑定 action 与本地 handler。图标与图文上下布局继续由 `icon`、SS 的 `icon-placement` 和字体规则决定。ToggleButton 输出明确 bool 请求；ChoiceButton 通过共同 selection_group 表达互斥选项。菜单内容由 PopupMenu / PopupEntry 声明，宿主 MenuItem 提供命令数据和当前值。
 
 属性采用命名赋值，没有 CSS 选择器或任意字段反射。未列出的属性会被拒绝。组件调用上的名称按子组件输入解析，只有 `mounted` 是结构属性。
 
 | 属性 | 值与主要适用节点 | 当前含义 |
 | --- | --- | --- |
-| `text` | 字符串字面量、直接 Text/TextEditBinding 输入；文字叶及 NumberRow | 文字或参数行标题；TextField 的文字使用 edit 输入 |
+| `text` | 字符串字面量、直接 Text/TextEditBinding 输入；文字叶及 NumberRow/ParameterRow | 文字或参数行标题；TextField 的文字使用 edit 输入 |
 | `classes` | 同上，内容为空格分隔的 SS 类名 | 使用同一 SS 解析和样式链；NumberRow 应用到其参数行根 |
 | `enabled` | bool；具体控件 | 控件启用状态；编辑控件与宿主 edit.enabled、动作按钮与 action.enabled 共同约束 |
 | `action` | 直接 ActionBinding 输入；Button/ChoiceButton/ToggleButton/Table | 宿主激活动作，target 必须非零；按钮与本地 on activate 互斥，Table 不支持本地 handler |
@@ -167,7 +177,7 @@ ui Tool(in Text title, in ActionBinding command) {
 | `tile_width`、`tile_height` | number；Table | DIP，默认 90/66，范围 12–4096；Tiles 按实际可用宽度自动换行，窄于一格时缩至内容宽度 |
 | `item_gap` | number；Table | DIP，默认 3，范围 0–256；List 行间距、Tiles 行列间距，末行不附加尾间距 |
 | `empty_text` | Text；Table | 空模型的提示文字，由同一控件绘制；不创建虚拟资源行 |
-| `context` | 直接 Key 输入或 node 引用；具体单控件 | 设置既有上下文菜单路由，输入的零 Key 关闭右键入口；请求 source 始终是真实来源控件；NumberRow 的分组菜单继续由 EditBinding 决定 |
+| `context` | 直接 Key/TextEditBinding 输入或 node 引用；具体单控件 | 设置既有上下文菜单路由，输入的零 Key 关闭右键入口；请求 source 始终是真实来源控件；NumberRow 的分组菜单继续由 EditBinding 决定 |
 | `selected` | bool；Foldout、TreeItem、ChoiceButton、ToggleButton、Combo | 展开、行选择、组选项、开关或 Combo 打开态；不会自动写业务状态。Combo 的打开态由宿主菜单来源同步，关闭后清除 |
 | `selection_group` | node 引用或直接 Key 输入；ChoiceButton | 非零组 key，最终须指向按钮的直接容器父节点 |
 | `collapsed` | bool；具体控件 | 退出布局并沿现有规则结算失效交互，保留 DSL 实例 |
@@ -195,6 +205,17 @@ ui Tool(in Text title, in ActionBinding command) {
 布局数值须有限且在 0–32768 范围内；坐标和长度按 DIP。NumberRow 的外部布局放在父容器；内部文字与边框走 SS。常用图标建议由宿主从 [ControlIcon](../../../src/ui/style.hpp) 转成数值输入，避免在声明里散布易变编号。
 
 支持事件的节点均只允许一个 `on activate { ... }`；Foldout 和 ToggleButton 提供本次请求的 bool `event.checked`，可写 `state.expanded = event.checked;`。文字、数值提交和树选择继续走宿主的原 Action/命令路由，目前没有 `on change`、`on click` 或任意宿主函数调用语法。
+
+### 外壳、停靠和独立菜单
+
+- EditorShell 声明菜单栏、工具架内容槽、工作区和状态栏。菜单栏、工具架、状态栏是固定高度的外围区域；宿主读取声明产生的实际高度，为 DockSpace 提供剩余空间。该约束会在源码发布前检查，不在 C++ 复制高度公式。
+- DockSpace::presentation 只提供分割位置、比例范围、稳定页签和内容槽身份。DockWorkspace 通过 Repeat 组合 DockPane、PaneTabs、PaneDivider 和 PaneSlot；分隔条三个动作的尺寸与排布属于 DSL。拖放使用接受帧中的实际页签栏高度。
+- `Item.keys` 可为重复组件内部的具体节点提供命名 KeyBinding，根节点始终由 Item.key 持有。`Item.parent` 可指定既有宿主内容槽；省略时使用 Repeat 的父节点。父节点必须在完整控件批次中先出现，重复身份和非法父链由 Session 拒绝。换父节点复用同一可回滚实例准备链，不另建控件注册入口。
+- `out_of_flow`、`offset_x/y`、`anchor_x/y`、`pivot_x/y` 直接使用现有布局合同；只有 offset 允许负数。`flex_width` 是可收缩的内容宽度，`grow_width` 同时允许扩张，值表示最小宽度。
+- `context` 可直接引用 Key、node.name 或 TextEditBinding；文字编辑菜单通过同一编辑绑定取得目标身份，和字段换绑一起更新。
+- `modified` 绑定已有修改状态；`red/green/blue` 为 0–1 的线性颜色通道，用于 Controls 的动态色块。固定视觉继续使用 SS。
+- MenuItem 的 `menu_behavior` 接受 `command`、`checkbox`、`radio`；radio_group 为 Key，radio 组保持唯一选择；menu_branch 表示宿主子菜单。命令内容仍来自同一业务命令目录，快捷键和分隔线由 PopupEntry 组合。
+- PopupHost 复用原生窗口、交换链和 Source 实例，消费 LiveDocument 最近已提交的组件定义；菜单测量、屏幕边界和焦点仍由原生设施处理。主窗口与菜单分别提交自身 Session 的接受帧。菜单候选失败时取消该菜单并报告诊断，不执行旧菜单目标；工程切换先关闭菜单并释放所有菜单 JIT scope，再销毁旧 Runtime。
 
 ### 表格与宿主
 
@@ -260,7 +281,7 @@ flowchart LR
     E --> F[旧 effects 结算后提交版本]
 ```
 
-`LiveDocument::poll` 在稳定的区域表上调用原实例的 `update(inputs, candidate_type)`。修改 Position 的 Text 时，Position 保留 Context 并准备新定义；SceneTree、Components 的原实例和无变化绑定保留。只改注释且输入无变化时，更新本版元数据和源码位置，零 JIT 编译、零绑定求值、零实例创建/回收。未挂载的新类型只会编译，不会自动出现在界面上。
+`LiveDocument::poll` 在稳定的区域表上调用原实例的 `update(inputs, candidate_type)`。修改 Position 的 Text 时，Position 保留 Context 并准备新定义；SceneTree、PropertyGroup 的原实例和无变化绑定保留。只改注释且输入无变化时，更新本版元数据和源码位置，零 JIT 编译、零绑定求值、零实例创建/回收。未挂载的新类型只会编译，不会自动出现在界面上。
 
 普通数据和源码更新共用 `Instance::update`：输入变化时，实际读取过变化输入的绑定才失效；控制流切换后依赖集合会更新。Repeat 保留相同项 key 对应的 child，mounted/collapsed 遵循各自生命周期。公开的 `publish` 和 `create(previous)` 路径已移除。
 
@@ -318,7 +339,7 @@ Notice notice { title: "Additional settings"; }
 | 修改现有组件并让它的多个实例一起变化 | 可以；所有已挂载实例在同一次提交中接纳新定义，各自保留兼容的局部 state |
 | 只声明一个新 ui 类型，希望它自动显示 | 不可以，需要在已有组件中实例化，或由宿主挂载 |
 | 给新字段增加文字/数值编辑与撤销 | 需要宿主提供新的 edit binding 和业务路由 |
-| 增加一个全新的停靠面板类型、菜单命令或 Combo DSL 节点 | 需要对应宿主或原语接入；不是添加一个声明即可获得 |
+| 增加一个全新的停靠面板类型、菜单命令或新的原生控件类型 | 需要对应宿主或原语接入；不是添加一个声明即可获得 |
 
 ## 源码 patch 契约
 
@@ -347,19 +368,19 @@ Notice notice { title: "Additional settings"; }
 
 这条链独立于 World Tick。业务字段的写入仍是 `Action → editor::Session::begin/preview/commit/cancel → World`；JIT 回调只复制 UI 值，不重入 JIT，不调用 World 命令，不构造或销毁 Runtime 对象。
 
-原生注册和 Source 共用文档 Runtime。每个 Instance 创建一个 UI Context；不持有 Actor 根或业务地址。C++ 按当前 World 成员采样，即使撤销历史保活了已删除 Actor，也不会继续投影为可编辑目标。
+编辑器的 UI 原生类型和 UI Source 共用 Workspace 独立拥有的 Runtime，与场景 Runtime 分开。项目 UI 使用运行进程自己的 UI Runtime。每个 Instance 创建一个 UI Context；不持有 Actor 根或业务地址。C++ 按当前 World 成员采样，即使撤销历史保活了已删除 Actor，也不会继续投影为可编辑目标。
 
 一个 LiveDocument 管理一个作者文件及稳定的具名宿主区域表。区域的 parent 和 key aliases 在其生命周期内固定，变化会明确拒绝。候选 Module 在原实例上准备新定义，旧定义与待移除子实例在完整 Session 批次被接受且取消 effects 消费后释放。隐藏的宿主区域保留实例，以便重新显示时沿用状态。
 
 当前宿主区域以组件类型名作为键，同一 LiveDocument 中不能通过换 parent 或 aliases 再挂载一份同名根区域。组件内部的命名组合与 Repeat 可以创建同类型的多个独立子实例；两者的身份规则不同。
 
-`KeyBinding.node` 可写 `path.bar`、`header.type`、`position.section`，按命名的静态组件逐层找到具体声明节点。路径不包含普通布局容器，也不能穿过 Repeat；动态项仍由 Item.key 决定身份。未知、重复、指向结构作用域的别名会拒绝候选，包括当前未挂载的子组件路径。点分路径不能接管 TextField 身份，后者由 TextEditBinding.key 持有。别名随同一准备/拒绝/提交链传播，不另建控件查找或动作入口。
+`KeyBinding.node` 可写 `path.bar`、`header.type`、`position.section`，按命名的静态组件逐层找到具体声明节点。路径不包含普通布局容器，也不能穿过 Repeat；动态项由 Item.key 决定根身份，其余原生交互节点可由 Item.keys 指定别名。未知、重复、指向结构作用域的别名会拒绝候选，包括当前未挂载的子组件路径。点分路径不能接管 TextField 身份，后者由 TextEditBinding.key 持有。别名随同一准备/拒绝/提交链传播，不另建控件查找或动作入口。
 
-当前 Parameters 根挂在 DockSpace 的稳定内容槽内；停靠移动改变槽的位置，不改变 DSL region 的 parent。工具架 root 的高度由 DSL 声明，C++ 读取这一固定高度给现有 DockSpace 分配剩余空间；源文件将 root 改成非固定高度时拒绝候选并保留旧版本。这个边界在整个 Editor 根接管布局时解除，当前没有第二份 56/6 高度公式。收折轨道宽度、恢复高度和箭头区域复用 UI 的同一组常量。
+Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动改变槽的位置，保留业务 region 的 parent。EditorShell 的外围栏使用已声明的固定高度，宿主据此提供 DockSpace 的可用尺寸；修改为不满足该宿主合同的尺寸策略会拒绝候选并保留旧版本。收折轨道、恢复高度和箭头区域使用同一组 UI 尺度常量。
 
 普通输入更新也遵循同一事务：`update` 准备整棵子树，不移除已接受的 owner；`reject_controls` 恢复输入、局部状态和快照；`commit_controls` 在取消 effects 后一次提交成员关系。重复 commit/reject/close 安全。相同的失败输入暂缓重试，已有区域仍可响应局部事件；首次挂载被拒绝时保留空视图并释放候选实例，修正输入或源码后恢复。关闭 Instance 会释放代码、元数据和子实例，即使其 C++ 外壳仍由调用方保留。
 
-控件 key 来自宿主同一个单调分配器。Runtime 和 key 分配器必须晚于实例销毁；Workspace 保持地址稳定。文档切换先取消输入、移除旧控件及结算 effects，再关闭 UI scopes、代码租约与文档 Runtime。
+每个宿主 surface 使用自己的单调 key 分配器；主界面和独立菜单各自拥有唯一的分配入口。Runtime 和 key 分配器必须晚于实例销毁；Workspace 保持地址稳定。文档切换先取消输入、移除旧控件及结算 effects，再关闭 UI scopes、代码租约与文档 Runtime。
 
 旧 UiFrame 自持文字、样式和图片，没有 JIT 回调或依赖 JIT 的资源 deleter。GPU 在途数据仍按 Renderer/RHI 完成条件退休，UI accepted 不代表 GPU 已完成。
 
@@ -388,4 +409,4 @@ Notice notice { title: "Additional settings"; }
 
 可选真实热更采样入口为 `atelier_editor_document_acceptance --profile-ui-reload output.csv`，在对应构建目录运行。它执行 120 轮编译、替换、失败和关闭，记录编译量、编译/准备提交耗时、实际 Context 创建/回收、Runtime 存活数和进程内存。准备提交耗时包括 Instance 与 Session 控件提交，不含后续布局和渲染。演进前的测量见[热更审计](../../research/ui-hot-reload-audit-20261005.md)，本轮结果见[源码 patch 验收](../../research/ui-source-patch-20261005.md)。
 
-第一阶段的历史证据见[原生 UI 首片](../../research/native-ui-language-20261005.md)。第二阶段起点结果见[组件与保存更新验收](../../research/native-ui-authoring-20261005.md)。后续按实际需求迁移资产浏览器和更多 Inspector 控件，再建设插槽/跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。
+第一阶段的历史证据见[原生 UI 首片](../../research/native-ui-language-20261005.md)。第二阶段起点结果见[组件与保存更新验收](../../research/native-ui-authoring-20261005.md)。现有界面已完成装配迁移；后续按实际需求补齐 Inspector 业务能力、多窗格实例、跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。

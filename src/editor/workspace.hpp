@@ -4,6 +4,8 @@
 #include "editor/commands.hpp"
 #include "editor/control_workbench.hpp"
 #include "editor/asset_browser.hpp"
+#include "editor/source_editor.hpp"
+#include "editor/project_code.hpp"
 #include "ui/session.hpp"
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
@@ -12,13 +14,15 @@
 namespace atelier::editor {
 namespace control {
 constexpr ui::ControlKey command_key(Command command) { return static_cast<ui::ControlKey>(command); }
-inline constexpr auto add_actor=command_key(Command::create_actor), remove_actor=command_key(Command::erase_actor),
+inline constexpr auto add_actor=command_key(Command::create_actor), remove_selected=command_key(Command::erase_selected),
     undo=command_key(Command::undo), redo=command_key(Command::redo), focus=command_key(Command::focus), reset=command_key(Command::reset_camera),
     add_static_mesh=command_key(Command::create_static_mesh);
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
+inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
+inline constexpr ui::ControlKey structure_tab=608,structure_content=694,structure_tree=695,structure_filter=696;
 inline constexpr ui::ControlKey shelf=730, shelf_tabs=731, shelf_create=732, shelf_view=733, shelf_body=734, shelf_handle=735, shelf_contents=736;
 inline constexpr ui::ControlKey scene_content=640;
 inline constexpr ui::ControlKey scene_shading=646;
@@ -33,9 +37,9 @@ constexpr int navigation_direction(ui::ControlKey key) {
     return key==scene_back || key==actor_back || key==parameter_back?-1:
         key==scene_forward || key==actor_forward || key==parameter_forward?1:0;
 }
-inline constexpr ui::ControlKey parameter_search = 54;
-inline constexpr ui::ControlKey parameter_transform=81, parameter_components=82, parameter_pages=83, parameter_list=84;
-inline constexpr ui::ControlKey empty_field_base = 200;
+inline constexpr ui::ControlKey parameter_search = 54, parameter_search_toggle=86;
+inline constexpr ui::ControlKey add_component=87,component_choice_first=1ULL<<40,property_choice_first=1ULL<<39;
+inline constexpr ui::ControlKey parameter_list=84;
 inline constexpr ui::ControlKey parameter_menu=500, menu_group_reset=501, menu_reset=502, menu_copy=503, menu_paste=504;
 inline constexpr auto file_menu=menu_key(CommandGroup::file), edit_menu=menu_key(CommandGroup::edit),
     create_menu=menu_key(CommandGroup::create), view_menu=menu_key(CommandGroup::view),
@@ -52,10 +56,10 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 }
 struct Workspace {
     struct Binding {
-        enum class Kind { object, field, position_default, name, navigation };
+        enum class Kind { object, structure, property_group, field, property_row, position_default, name, navigation };
         ui::ControlKey key{};
         ObjectId object;
-        std::vector<FieldId> path; // Empty for an Actor row; otherwise an actual component field.
+        std::vector<FieldId> path; // Empty for object rows; fields address the actual inspected object.
         Kind kind{};
     };
     Workspace();
@@ -84,17 +88,27 @@ struct Workspace {
     std::filesystem::path ui_source() const;
     std::uint64_t ui_revision() const noexcept {return ui_document_?ui_document_->revision():0;}
     double ui_compile_milliseconds() const noexcept {return ui_document_?ui_document_->compile_milliseconds():0;}
+    std::shared_ptr<ui_language::Component> ui_component(std::string_view name) const {
+        return ui_document_?ui_document_->component(name):nullptr;
+    }
     renderer::ViewSettings view{.shading=renderer::Shading::matcap,
         .background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true};
     ui::ControlKey shelf_page{control::shelf_create};
     AssetBrowser assets;
+    SourceEditor source_editor;
+    std::shared_ptr<const ProjectBuild> project_build;
+    void log(std::wstring);
+    std::shared_ptr<const ui::TableData> output;
+    bool source_history() const noexcept {return dock.focused_tab()==source_control::tab;}
     bool project_open{};
-    ui::ControlKey parameter_page{control::parameter_transform};
+    bool scene_available{true},project_running{},project_stopping{},project_ui_configured{};
     bool menu_bar_collapsed{}, shelf_collapsed{};
+    bool parameter_search_visible{};
     ControlWorkbench workbench;
     std::wstring status{L"Ready"};
     std::wstring query;
     std::wstring tree_query;
+    std::wstring structure_query;
     std::optional<ui::ContextMenuRequest> menu;
     std::vector<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
     std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*,const Project* = nullptr);
@@ -104,9 +118,15 @@ struct Workspace {
     ui::ControlKey field_control(ObjectId, std::span<const FieldId>) const noexcept;
     ui::ControlKey reset_control(ObjectId) const noexcept;
     ui::ControlKey name_control(ObjectId) const noexcept;
+    std::optional<TypeId> component_choice(ui::ControlKey) const noexcept;
+    struct PropertyChoice { ObjectId object; std::vector<FieldId> path; EnumValue value; ui::ControlKey field; };
+    std::optional<PropertyChoice> property_choice(ui::ControlKey) const;
+    Selection menu_selection() const noexcept {return menu_selection_;}
 private:
+    Runtime ui_runtime_; // Editor authoring scopes outlive individual scene documents.
     std::unique_ptr<ui_language::LiveDocument> ui_document_;
     std::filesystem::path ui_source_;
+    std::optional<std::string> ui_checkpoint_; // Source only; never keeps another Runtime alive.
     std::vector<Binding> bindings_;
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};
@@ -115,6 +135,10 @@ private:
     std::size_t navigation_cursor_{};
     std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.
     std::uint64_t tree_frame_{}; // Consume each accepted snapshot once, including across hidden frames.
+    ui::ControlKey next_output_{1};
+    std::vector<ComponentType> component_choices_;
+    std::vector<PropertyChoice> property_choices_;
+    Selection menu_selection_;
     ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
 };
 }

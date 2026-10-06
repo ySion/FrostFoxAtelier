@@ -26,8 +26,13 @@ PopupHost::PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validat
     renderer_=graphics(renderer::Renderer::open(window_.handle(),options));
 }
 void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<const ui::MenuItem> items,
-                       const ui::Style& style,std::shared_ptr<const ui::StyleSheet> sheet) {
-    if (visible_ && source_==source && std::ranges::equal(items,items_) && style==ui_.style() && sheet_==sheet) return;
+                       const ui::Style& style,std::shared_ptr<const ui::StyleSheet> sheet,std::shared_ptr<ui_language::Component> component) {
+    const auto reject=[&](std::string message) {
+        diagnostic_=std::move(message);if (instance_) instance_->reject_controls();hide();
+        measured_dpi_=0; // A refused projection must never reuse the old geometry for new items.
+    };
+    if (!component) {reject("PopupMenu is missing from the accepted UI authoring module.");return;}
+    if (visible_ && source_==source && std::ranges::equal(items,items_) && style==ui_.style() && sheet_==sheet && component_==component) return;
     const auto start=std::chrono::steady_clock::now();
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
     if (!GetMonitorInfoW(MonitorFromRect(&anchor,MONITOR_DEFAULTTONEAREST),&monitor))
@@ -39,29 +44,50 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
         throw std::runtime_error("Cannot position popup window.");
     const auto dpi=window_.dpi_scale();
     const bool measure=controls_.empty() || !std::ranges::equal(items,items_) || style!=ui_.style() || sheet_!=sheet ||
-        measured_dpi_!=dpi || measured_area_!=work_area;
+        measured_dpi_!=dpi || measured_area_!=work_area || component_!=component;
     source_=source;
     LONG width=static_cast<LONG>(extent_.width), height=static_cast<LONG>(extent_.height);
     if (measure) {
     suspend();
     take(ui_.set_style(style)); take(ui_.set_style_sheet(sheet)); sheet_=std::move(sheet);
-    items_.assign(items.begin(),items.end());
     take(ui_.set_surface({work_area,dpi,++revision_}));
-    auto display=items_;
-    // Edit commands execute in the origin Session after validating its lifetime.
-    for (auto& item:display) item.edit_command.reset();
-    std::vector<ui::Control> controls;
-    ui::append_menu(controls,500,0,0,0,280,display);
+    auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(items.size());
+    std::erase_if(row_keys_,[&](const auto& entry){return std::ranges::none_of(items,[&](const auto& item){return item.key==entry.first;});});
+    for (const auto& item:items) {
+        auto [at,inserted]=row_keys_.try_emplace(item.key,0);
+        if (inserted) at->second=next_key_++;
+        const bool branch=!item.children.empty();
+        rows->push_back({at->second,{item.text,branch?std::wstring{}:item.shortcut,item.enabled,item.selected,branch,item.separator_before,
+            std::wstring(item.behavior==ui::MenuBehavior::radio?L"radio":item.behavior==ui::MenuBehavior::checkbox?L"checkbox":L"command"),item.radio_group,
+            double(item.icon),double(branch?ui::ControlIcon::right:ui::ControlIcon::none),
+            std::wstring(item.enabled?L"menu-shortcut":L"menu-shortcut unavailable")},{{"item",item.key}}});
+    }
+    const std::array<ui_language::InputValue,1> inputs{ui_language::ItemList{std::move(rows)}};
+    if (!instance_) {
+        const std::array<ui_language::KeyBinding,1> keys{{{"menu",500}}};
+        auto instance=ui_language::Instance::create(component,0,next_key_,keys,inputs);
+        if (!instance) {reject(instance.error().message);return;}
+        instance_=std::move(*instance);
+    } else if (auto update=instance_->update(inputs,component);!update) {reject(update.error().message);return;}
+    std::vector<ui::Control> controls(instance_->controls().begin(),instance_->controls().end());
+    if (controls.empty() || controls.front().key!=500 || controls.front().kind!=ui::ControlKind::popup || controls.front().parent) {
+        reject("PopupMenu requires its named root to be a standalone Popup.");return;
+    }
     // Measure both text columns with the same SS/font/layout path used to draw.
     for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item)
         control.layout.width=ui_layout::Axis::content();
-    take(ui_.set_controls(controls));
-    const auto measurement=take(ui_.prepare());
+    if (auto accepted=ui_.set_controls(controls);!accepted) {
+        reject("PopupMenu controls were rejected at key "+std::to_string(accepted.error().key));return;
+    }
+    const auto prepared=ui_.prepare();
+    if (!prepared) {reject("PopupMenu layout failed at key "+std::to_string(prepared.error().key));return;}
+    const auto& measurement=*prepared;
     const auto* menu=measurement->find(500);
-    if (!menu) throw std::runtime_error("Popup measurement has no live menu root.");
+    if (!menu) {reject("PopupMenu requires a visible menu root.");return;}
     float title_width{},shortcut_width{};
     for (const auto& control:controls) {
         const auto* box=measurement->find(control.key);
+        if (!box) continue;
         if (control.kind==ui::ControlKind::menu_item) title_width=std::max(title_width,box->bounds.width/dpi);
         if (control.kind==ui::ControlKind::label) shortcut_width=std::max(shortcut_width,box->bounds.width/dpi);
     }
@@ -78,7 +104,9 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
         control.layout.width=ui_layout::Axis::expand();
         control.layout.padding.right=shortcut_width+gap;
     }
+    items_.assign(items.begin(),items.end());
     controls_=std::move(controls); measured_dpi_=dpi; measured_area_=work_area;
+    instance_->commit_controls();component_=std::move(component);diagnostic_.clear();
     }
     auto x=below?anchor.left:anchor.right, y=below?anchor.bottom:anchor.top;
     if (!below && x+width>area.right) x=anchor.left-width;
@@ -143,9 +171,13 @@ void PopupHost::hide() {
     static_cast<void>(ui_.input(loss));
     suspend();
 }
+void PopupHost::reset_document() {
+    hide();take(ui_.set_controls({}));controls_.clear();items_.clear();row_keys_.clear();
+    instance_.reset();component_.reset();diagnostic_.clear();
+}
 void PopupHost::close() {
     if (closed_) return;
-    hide(); const auto result=renderer_.close(); closed_=true;
+    reset_document(); const auto result=renderer_.close(); closed_=true;
     if (!result) throw std::runtime_error(result.error().cause.message);
 }
 }

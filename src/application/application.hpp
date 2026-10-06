@@ -2,6 +2,7 @@
 
 #include "application/window.hpp"
 #include "application/popup.hpp"
+#include "application/play_process.hpp"
 #include "editor/camera.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
@@ -18,7 +19,13 @@ public:
     bool step(renderer::Capture* = nullptr);
     Result<void> open_project(const std::filesystem::path&,bool create=false);
     Result<void> open_scene(const std::filesystem::path&);
+    Result<void> open_source(const std::filesystem::path&);
     Result<void> save_scene(const std::filesystem::path& relative = {});
+    Result<void> build_project(bool rebuild=false);
+    Result<void> run_project();
+    Result<void> preview_project_ui();
+    Result<void> create_source(const std::filesystem::path& relative,bool project_ui=false);
+    void stop_project() noexcept {play_.stop();}
     void close();
     HWND window() const noexcept { return window_.handle(); }
     const editor::Session& document() const noexcept { return *document_; }
@@ -60,6 +67,13 @@ private:
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
     std::optional<editor::Project> project_;
+    editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.
+    PlayProcess play_;
+    std::string pending_scene_;
+    std::filesystem::path play_snapshot_;
+    std::string play_output_;
+    std::chrono::steady_clock::time_point next_project_poll_{};
+    bool source_build_pending_{};
     std::filesystem::path scene_path_;
     std::wstring window_title_;
     editor::Camera camera_;
@@ -75,6 +89,8 @@ private:
     ui::ControlKey menu_context_target_{},menu_context_group_{};
     ui::TableLayout menu_table_layout_;
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
+    bool pending_source_focus_{};
+    bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
     renderer::Renderer renderer_;
     std::vector<renderer::MeshInstance> meshes_;
     ui::Surface surface_;
@@ -100,9 +116,15 @@ private:
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
-    bool confirm_discard();
+    bool confirm_discard(bool sources=true);
+    bool confirm_source(editor::SourceEditor::File&);
+    Result<void> save_source(editor::SourceEditor::File&);
+    Result<void> source_command(editor::Command,std::string_view);
     Result<void> project_command(editor::Command,std::string_view);
-    void publish_document(std::unique_ptr<editor::Session>);
+    Result<void> execution_command(editor::Command);
+    void poll_project();
+    void publish_build(std::shared_ptr<const editor::ProjectBuild>);
+    void publish_document(std::unique_ptr<editor::Session>,editor::ProjectCode* = nullptr);
     void cancel_interaction(const ui::Reply&);
     void invalidate_surface();
     bool pointer_ready() const noexcept;

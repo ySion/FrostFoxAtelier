@@ -4,6 +4,7 @@
 #include "ui/style.hpp"
 #include "ui/style_sheet.hpp"
 #include "ui/table.hpp"
+#include "ui/code_document.hpp"
 #include "ui_layout/layout.hpp"
 #include <expected>
 #include <limits>
@@ -63,6 +64,7 @@ struct Control {
     std::shared_ptr<const TableData> table; // table only; no layout children or synthetic row controls.
     TableSelection table_selection; // Lightweight host selection, independent of immutable row storage.
     TableLayout table_layout;
+    std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -90,6 +92,7 @@ struct ControlBox {
     TableSelection table_selection;
     ControlKey context_target{}, context_group{}; // Accepted menu route, including group actions.
     TableLayout table_layout;
+    std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
 };
 struct EditToken {
     ControlKey key{};
@@ -161,6 +164,19 @@ struct TableGeometry {
     std::size_t columns_per_row{1}; // Actual accepted grid width for keyboard navigation.
     float row_stride{}; // Physical pixels between visual rows.
 };
+struct CodeLineGeometry {
+    std::size_t row{};
+    std::uint32_t start{};
+    std::shared_ptr<const detail::TextSnapshot> paragraph;
+    float x{}, y{};
+};
+struct CodeGeometry {
+    ControlKey key{};
+    std::uint64_t revision{}, selection_revision{};
+    Rect body;
+    float line_height{}, scale{1};
+    std::vector<CodeLineGeometry> lines; // Accepted visible lines only.
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
@@ -172,12 +188,14 @@ struct UiFrame {
     std::vector<TextGeometry> text_geometry;
     std::vector<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
     std::vector<TreeRowGeometry> tree_rows;
+    std::vector<CodeGeometry> code_editors;
     std::vector<TableGeometry> tables;
     std::optional<ValueLadderGeometry> value_ladder;
     ControlKey popup{};
     const ControlBox* find(ControlKey) const noexcept;
     const TextGeometry* find_text(ControlKey) const noexcept;
     const TableGeometry* find_table(ControlKey) const noexcept;
+    const CodeGeometry* find_code(ControlKey) const noexcept;
 };
 
 enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize };
@@ -196,6 +214,7 @@ struct ClipboardRequest {
     std::uint64_t operation_id{};
     EditToken token;
     std::wstring text; // Owned selected text for copy/cut.
+    std::size_t limit{4096}; // Bounded by the active editor; native adapters cap at 1 MiB UTF-16 units.
 };
 struct ClipboardResult {
     ClipboardKind kind{};

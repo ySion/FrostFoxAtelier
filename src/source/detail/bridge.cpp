@@ -118,8 +118,13 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     }
     for (const auto& method : info->methods) {
         const auto& signature = method.signature;
-        require(signature.receiver && take(runtime.is_a(type, signature.receiver->type)),
-            "Source host method receiver does not match its owning type.");
+        require(signature.receiver.has_value(), "Source host method requires a receiver.");
+        // The catalog may contain unpublished producer identities. Follow its
+        // validated ancestry without passing preview IDs into live operations.
+        const auto* receiver = info;
+        while (receiver && receiver->id != signature.receiver->type)
+            receiver = receiver->base ? describe(*receiver->base) : nullptr;
+        require(receiver != nullptr, "Source host method receiver does not match its owning type.");
         // As with fields, methods whose values have no source projection stay
         // native-only without preventing unrelated source functions from binding.
         if (std::any_of(signature.parameters.begin(), signature.parameters.end(), [&](const auto& parameter) {

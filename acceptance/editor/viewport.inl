@@ -29,7 +29,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     click(app,control::focus);
     require_input_focus(app);
     wheel(app,control::viewport,5);
-    const auto actor=app.document().selected();
+    const auto actor=app.document().selection().actor;
     const auto history=app.document().undo_count();
     const auto items=model(app.document().world().render_items());
     require(items.size()==1,"Viewport fixture did not create a real sphere.");
@@ -74,7 +74,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
         atelier::renderer::Capture image;
         require(app.step(&image),"Viewport mode failed to render.");
         require(image.depth==initial.depth,"A display-only switch changed scene depth.");
-        require(app.document().selected()==actor && app.document().undo_count()==history,
+        require(app.document().selection().actor==actor && app.document().undo_count()==history,
                 "A viewport option changed selection or document history.");
         const auto current=model(app.document().world().render_items());
         require(current.size()==items.size() && current[0].geometry==items[0].geometry &&

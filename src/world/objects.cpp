@@ -17,6 +17,14 @@ Result<Types> register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;
     definitions.push_back(reflection::Definition<Actor>::build(runtime));
     definitions.push_back(reflection::Definition<Component>::build(runtime));
+    SignatureDefinition translation;
+    translation.parameters.resize(3, ParameterDefinition{{TypeReference::native<float>()}});
+    // The native method collects values only: safe for a generated caller with
+    // borrowed fields. World applies them after every generated call has returned.
+    definitions.back().methods.push_back({"translate_owner",std::move(translation),[](CallContext& call)->Result<void> {
+        return detail::queue_translation(call.runtime,call.self,
+            {call.arguments[0].get<float>(),call.arguments[1].get<float>(),call.arguments[2].get<float>()});
+    },true});
     definitions.push_back(reflection::Definition<SceneComponent>::build(runtime));
     definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));

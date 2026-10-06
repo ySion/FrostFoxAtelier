@@ -7,11 +7,13 @@
 namespace atelier::ui_language {
 // One authoring file, one Runtime and one host key authority. Compilation and
 // publication run on that Runtime's thread. The host owns Session submission:
-// append -> set_controls -> route cancellation effects -> commit_controls.
+// append -> set_controls -> route cancellation effects -> prepare layout ->
+// commit_controls. Reject a failed submission/layout before staging the old
+// scopes again; a surface that cannot be prepared cannot publish a candidate.
 class LiveDocument {
 public:
     using Clock=std::chrono::steady_clock;
-    LiveDocument(Runtime&,std::filesystem::path,ui::ControlKey&);
+    LiveDocument(Runtime&,std::filesystem::path,ui::ControlKey&,std::optional<std::string> recovery_source={});
     void poll(Clock::time_point now=Clock::now());
     // Parent and key aliases are immutable region configuration. On an input
     // error, output contains the accepted snapshot and that input is suppressed
@@ -26,9 +28,14 @@ public:
     void commit_controls();
     std::optional<Statistics> statistics(std::string_view component) const;
     std::string_view diagnostic() const noexcept {return diagnostic_;}
+    const std::optional<std::string>& committed_source() const noexcept {return active_source_;}
+    std::optional<std::string_view> attempted_source() const noexcept {return attempted_source_?std::optional<std::string_view>{*attempted_source_}:std::nullopt;}
     const std::filesystem::path& path() const noexcept {return path_;}
     std::uint64_t revision() const noexcept {return revision_;}
     double compile_milliseconds() const noexcept {return compile_ms_;}
+    // Auxiliary native surfaces share only the last committed authoring module.
+    // Their Instances and accepted frames retain their own publication lifetimes.
+    std::shared_ptr<Component> component(std::string_view name) const {return active_?active_->find(name):nullptr;}
 private:
     struct Region {
         ui::ControlKey parent{};
@@ -50,7 +57,8 @@ private:
     std::shared_ptr<Module> active_,candidate_;
     std::optional<Stamp> stamp_;
     Clock::time_point next_poll_{},changed_at_{};
-    std::optional<std::string> attempted_source_;
+    std::optional<std::string> attempted_source_,active_source_,candidate_source_,recovery_source_;
+    void recover_initial();
     std::string diagnostic_,failed_region_;
     bool changed_{},attempted_{},candidate_failed_{},pending_submission_{},submission_failed_{};
     std::uint64_t revision_{};

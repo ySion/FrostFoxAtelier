@@ -2,7 +2,7 @@
 // compatible objects alive, not merely recreate objects with matching UI keys.
 void verify_ui_source_patch() {
     namespace language=ui_language;
-    editor::Session document;auto& runtime=document.world().runtime();
+    Runtime runtime;take(ui_language::register_types(runtime));
     const auto roots=runtime.root_count(),objects=runtime.live_objects();
     const auto folder=std::filesystem::temp_directory_path()/
         ("atelier-ui-patch-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -156,6 +156,6 @@ ui Late() { Text label { text: "Late"; height: 17; } }
         require(live.statistics("Late").has_value(),"Candidate-only failure poisoned the accepted source's input cache.");
         auto removed=surface.set_controls({});require(removed.has_value(),"Patch unmount failed.");route(*removed);
     }
-    collect(document);require(runtime.root_count()==roots && runtime.live_objects()==objects,"Patch close retained Runtime scopes.");
+    collect(runtime);require(runtime.root_count()==roots && runtime.live_objects()==objects,"Patch close retained Runtime scopes.");
     std::puts("UI source patch acceptance: PASS (stable contexts, unrelated region, child add/remove/type, state schema, new events, atomic refusal, draft, close)");
 }

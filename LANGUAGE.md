@@ -1,16 +1,16 @@
 # FrostFoxAtelier 当前源码语言规范
 
-状态：记录当前编译器已经实现的单入口子集；尚未冻结为稳定语言版本。编译器只有一种语言模式，没有版本选择开关。本文整合原 v0.0.1～v0.0.3 的有效规则，旧增量文本保留在 Git 历史中。
+状态：记录当前编译器已经实现的语言子集；尚未冻结为稳定语言版本。编译器只有一种语言模式，没有版本选择开关。本文整合原 v0.0.1～v0.0.3 的有效规则，旧增量文本保留在 Git 历史中。
 
 本文是现行词法、语法和源码执行语义的唯一入口。[语言设计契约](docs/language-contract.md)记录更长期的方向与待定问题，[Runtime 协议](docs/runtime-model.md)负责公共宿主、对象及代码生命周期，[README](README.md)负责构建和验收。长期设计目标不自动成为已实现语法。
 
 ## 能力范围
 
-每份源码是一个包含枚举/结构体声明、顶层标量/枚举常量和一至多个函数的模块，由宿主选定一个公开入口。函数可接受 bool/float/double/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还支持内建数学值和 plain record 的按值参数与结果、原生或描述型记录和 Array 的借用、只读 String，以及具备生命周期能力的拥有型局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、同模块函数调用、原生成员调用、块、`if/else`、`while`、`for`、`break/continue` 和 `return`。
+单源码请求包含枚举/结构体声明、顶层标量/枚举常量和一至多个函数，由宿主选定公开入口。项目快照还支持跨文件收集和继承原生对象的 class，并统一发布多个具名同步入口。函数可接受 bool/float/double/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还支持内建数学值和 plain record 的按值参数与结果、原生或描述型记录和 Array 的借用、只读 String，以及具备生命周期能力的拥有型局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、同模块函数调用、原生成员调用、块、`if/else`、`while`、`for`、`break/continue` 和 `return`。
 
 对象环境至多包含一个宿主已注册的绑定对象类型，目录包含其继承的公开成员。接收者可为该类型的派生实例；源码的声明视图仍是绑定类型。源码可使用该视图的持有/观察局部、`null`、`new`、身份比较和已绑定的标量/数学字段及原生方法。原生与描述型对象沿用同一 Runtime 类型和身份。
 
-尚未支持：源码 class、源码结构体中的对象引用、以源码结构体为元素的新数组类型、跨文件声明收集、递归调用、内部 async 调用、多对象类型目录、对象引用字段、对象引用参数与返回、const 对象引用局部、String/Array/资源记录的按值参数与返回、async 聚合参数与结果、借用返回与借用局部声明、源码显式销毁、通用泛型、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移，以及 `+=` 等复合赋值、`++/--`、`foreach`、`switch`、`?:` 和其他整数宽度。本文不把这些边界转成必须立即实施的计划。
+尚未支持：源码 class 继承另一源码 class、源码结构体中的对象引用、以源码结构体为元素的新数组类型、递归调用、内部 async 调用、多对象类型目录、对象引用字段、对象引用参数与返回、const 对象引用局部、String/Array/资源记录的按值参数与返回、async 聚合参数与结果、借用返回与借用局部声明、源码显式销毁、通用泛型、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移，以及 `+=` 等复合赋值、`++/--`、`foreach`、`switch`、`?:` 和其他整数宽度。本文不把这些边界转成必须立即实施的计划。
 
 ## 源码与词法
 
@@ -25,10 +25,10 @@
 保留字不能用于函数、参数、局部、类型名段或成员路径段：
 
 ```text
-void bool true false float double uint int const if else while for break continue return self weak null new observe try_acquire async yield enum struct
+void bool true false float double uint int const if else while for break continue return self weak null new observe try_acquire async yield enum struct class
 ```
 
-`class` 等不在上述集合中的名字没有内建含义；符合标识符规则时可作为普通名字，不代表已实现同名特性。
+`class` 声明由项目快照入口收集。未列出的名字没有内建含义；符合标识符规则时可作为普通名字。
 
 记号包括 `+ - * / % = == != < <= > >= << >> ! && || & | ^ ~ ( ) { } [ ] ; , . : ::`。`>>` 在表达式中表示右移，也可在类型上下文中结束嵌套 `Array<Array<T>>`。相邻 `++/--` 明确拒绝，不再解释为连续的一元运算；用空白或括号分开的 `+ +value`、`- -value` 仍按一元运算检查。复合赋值和自增自减没有语法。
 
@@ -160,14 +160,44 @@ uint process(combat.DamageInfo& damage) {
 
 执行链、C++ 同存储访问及验收见[源码类型声明](docs/source-type-declarations.md)。
 
+## 项目快照与原生派生类
+
+宿主向同一个 `Program` 提交 `SourceSnapshot{name, version, files}`。每个文件拥有项目相对路径、版本和完整正文；路径用 `/`，拒绝绝对路径、重复路径、空段及 `.`/`..` 段。文件身份区分大小写，文件系统扫描与路径归一化由宿主负责。快照允许空文件集合，最多 1024 个文件、1024 个类、32 MiB 正文。空集合发布无类型、无入口的模块；后续增加类型仍遵循重建上下文的合同。诊断包含原文件路径、版本、字节偏移和行列。
+
+```cpp
+// Source/Math.source
+float distance(float speed, float dt) { return speed * dt; }
+
+// Source/Move.source
+class game.Move : world.SceneComponent {
+    float speed = 2.0f;
+    void begin() {}
+    void tick(float dt) { self.translate_owner(distance(self.speed, dt), 0.0f, 0.0f); }
+    void end() {}
+}
+```
+
+- 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段只能是 bool/float/double/int/uint。没有初始化器时取对应零值；初始化器支持不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查。原生基类仍由原生构造函数初始化。
+- 类方法为同步函数。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void end()`；缺省方法不导出。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
+- 全局函数导出为函数名，类方法导出为 `完整类名.方法名`。类方法始终要求当前类视图的活接收者，即使方法体为空。宿主从 `Program::entries/describe/entry/pin` 取得签名和代码。
+- 整份快照共用类型发布事务。每个接收者环境的所有入口和助手共用一个 LLVM 模块；无方法类及仅声明的文件也须通过语义检查，不生成占位函数。一个方法失败会保留整个旧版本。
+- 首次发布须在创建 Runtime 对象前完成。之后可兼容修改方法体，入口声明顺序可调整；类型、字段顺序/类型、默认值、公开入口集合或签名变化返回 `rebuild_required`，由宿主重建上下文。默认值按浮点位表示比较，区分正负零。
+- `Entry` 跟随整个项目的新版本，`Lease` 固定旧入口及其模块。共享助手沿实际调用链传播借用保护，无关入口使用 String/Array 不会关闭普通循环的 GC 安全点。所有操作仍在 Runtime 线程执行。
+
+快照不能与同一 Program 的单源码入口模式混用。项目入口暂不支持 async；单源码请求继续支持既有 async/yield。宿主 API 和发布顺序见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+
 ## 语法与静态规则
 
 下列文法与本页类型、名称和能力限制共同适用；句法可解析不等于通过静态检查。
 
 ```ebnf
-program        = { type_declaration | module_constant | function }, end_of_input ; (* 至少一个函数 *)
+program        = { type_declaration | module_constant | function }, end_of_input ; (* 单源码请求至少一个函数；项目快照允许仅声明 *)
 module_constant = "const", scalar_type, identifier, "=", expression, ";" ;
-type_declaration = struct_declaration | enum_declaration ;
+type_declaration = struct_declaration | enum_declaration | class_declaration ;
+class_declaration = "class", qualified_name, ":", qualified_name, "{",
+                    { class_field | function }, "}", [ ";" ] ; (* 仅项目快照；方法必须同步 *)
+class_field    = ( "bool" | "float" | "double" | "uint" | "int" ), identifier,
+                 [ "=", expression ], ";" ;
 struct_declaration = "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
 field_declaration = ( scalar_type | aggregate_type ), identifier, ";" ;
 enum_declaration = "enum", qualified_name, [ ":", ( "int" | "uint" ) ], "{",
@@ -255,7 +285,7 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 
 ## 同模块函数与入口
 
-函数使用 `sum(values)` 形式直接调用同一模块中的函数，允许调用在后面声明的函数。函数名唯一，当前没有重载或函数值。所有函数体均须通过类型检查；机器码只包含选定入口可达的函数。
+函数使用 `sum(values)` 形式直接调用同一模块中的函数，允许调用在后面声明的函数。函数名唯一，当前没有重载或函数值。所有函数体均须通过类型检查；机器码只包含公开入口可达的函数。
 
 宿主使用 `program.request(source_name, source, "process")` 选定入口。首次发布前只有一个函数时可省略名称；多个函数必须明确选择。首次发布后，省略名称沿用已冻结的入口，不依赖声明顺序。入口名称、参数/结果、接收者要求和同步/async 种类沿原发布契约固定；私有助手可随整模块版本改变名称、顺序及签名。
 

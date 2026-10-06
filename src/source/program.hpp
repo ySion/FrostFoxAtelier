@@ -1,12 +1,13 @@
 #pragma once
 
 #include "runtime/execution.hpp"
+#include "source/snapshot.hpp"
 #include <type_traits>
 
 namespace atelier::source {
 namespace detail { struct ProgramAccess; }
 
-// One selected module entry with replaceable compatible module code. All operations use
+// A selected entry or a project snapshot with atomically replaceable code. All operations use
 // the Runtime thread. Runtime and the backend DLL outlive programs, leases and
 // nonterminal coroutines. Closing a program invalidates entries; leases and
 // already-created coroutines retain their own version.
@@ -18,6 +19,8 @@ class Program final {
     struct State;
     struct Prepared;
     struct Frame;
+    struct ModuleRequest;
+    struct ModuleVersion;
     friend struct detail::ProgramAccess;
 public:
     class SourceRequest {
@@ -29,6 +32,7 @@ public:
         std::shared_ptr<atelier::detail::TypePublication> type_publication_;
         std::optional<Error> declaration_error_;
         std::shared_ptr<const Declaration> declaration_;
+        std::shared_ptr<ModuleRequest> module_;
         SourceRequest(std::weak_ptr<State>, std::shared_ptr<const Contract>,
             std::shared_ptr<const Declaration>, std::uint64_t, std::string, std::string, std::string);
     public:
@@ -36,6 +40,7 @@ public:
         const std::string source_name;
         const std::string source;
         const std::string entry_name;
+        std::shared_ptr<const SourceSnapshot> snapshot() const;
     };
     using Request = std::shared_ptr<const SourceRequest>;
     class Candidate {
@@ -51,6 +56,11 @@ public:
         Candidate(const Candidate&) = delete;
         Candidate& operator=(const Candidate&) = delete;
         explicit operator bool() const noexcept;
+        // Project metadata for host validation before commit. Preview class IDs
+        // are not live Runtime identities; base IDs already name native types.
+        // Views expire on move, destruction or successful publication.
+        std::span<const ClassInfo> classes() const noexcept;
+        std::span<const EntryInfo> entries() const noexcept;
         // Diagnostic only; this address is not a callable or owning handle.
         std::uintptr_t address() const noexcept;
     };
@@ -86,7 +96,8 @@ public:
         friend class Program;
         friend struct detail::ProgramAccess;
         std::weak_ptr<State> owner_;
-        explicit Entry(std::weak_ptr<State>);
+        std::optional<std::size_t> index_;
+        explicit Entry(std::weak_ptr<State>, std::optional<std::size_t> = {});
     public:
         Entry() = default;
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
@@ -110,7 +121,7 @@ public:
 
     // TypeId{} declares a receiverless typed value environment. Binding errors are
     // reported by exception during construction; execution errors use Result.
-    Program(Runtime&, TypeId);
+    Program(Runtime&, TypeId = {});
     ~Program();
     // Idempotently closes entries, requests and publication. Existing leases
     // and coroutines retain their version; their owner must finish/cancel them
@@ -119,6 +130,12 @@ public:
     Program(const Program&) = delete;
     Program& operator=(const Program&) = delete;
     Entry entry() const;
+    Result<Entry> entry(std::string_view name) const;
+    Result<Lease> pin(std::string_view name) const;
+    Result<FunctionSignature> describe(std::string_view name) const;
+    // Views remain valid until the next successful publication or close.
+    std::span<const ClassInfo> classes() const noexcept;
+    std::span<const EntryInfo> entries() const noexcept;
     Result<FunctionSignature> describe() const;
     template<class R, class... Args>
         requires ((!std::is_rvalue_reference_v<Args> && !std::is_volatile_v<std::remove_reference_t<Args>>) && ...) &&
@@ -137,11 +154,14 @@ public:
     // Multiple functions require an entry name before
     // first publication; later requests default to the frozen declaration name.
     Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {});
+    Result<Request> request(SourceSnapshot);
     static Result<Candidate> prepare(const Request&);
     // Busy does not consume the candidate. Publishing requires the latest
     // request, unchanged dependencies and the declaration's frozen signature.
     Result<void> try_publish(Candidate&);
 private:
+    static Result<Candidate> prepare_module(const Request&);
+    Result<void> publish_module(Candidate&);
     Result<Entry> bind_signature(SignatureDefinition) const;
     std::shared_ptr<State> state_;
 };

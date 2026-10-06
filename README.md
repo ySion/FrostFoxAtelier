@@ -9,14 +9,14 @@
 | 模块 | 当前能力 | 详细说明 |
 | --- | --- | --- |
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
-| 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、同模块函数、enum/struct 声明与值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
+| 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、跨文件与同模块函数、enum/struct 和原生派生 class、值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Jolt 物理依赖 | 固定上游源码、静态库目标；独立刚体落地验收，尚未接入 World/编辑器 | [接入与更新](#jolt-物理依赖) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | Flex/Grid、虚拟列表、Unicode 编辑、参数行、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Actor/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
 
-源码 class、对象引用参数与返回、布局迁移，以及参数面板固定目标、可浮动的编辑器视图与布局文件保存等能力仍待后续增量。Runtime 中已有的对象或值能力不自动代表源码已开放对应语法，实际范围以 [LANGUAGE.md](LANGUAGE.md) 为准。
+源码类之间的继承、对象引用参数与返回、布局迁移，以及参数面板固定目标、可浮动的编辑器视图与布局文件保存等能力仍待后续增量。Runtime 中已有的对象或值能力不自动代表源码已开放对应语法，实际范围以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
 ## 启动首个场景编辑器
 
@@ -35,13 +35,13 @@ cmake --build --preset dev --target atelier_editor
 World 提供同 Actor 空间树、显式根、完整 TRS，以及 Actor/Component 共用的有序 Begin/Tick/End 和任务取消；Actor 可以先完成 Detached 组件组装，再注册到 World。renderer 消费矩阵、共享网格资源与基础色快照。当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 
 Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。默认使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，已三角化 OBJ 保留其三角形边。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
-共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，历史输入合同见[原生 UI 记录](docs/ui-foundation-plan.md)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui-proposal.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
+共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，历史输入合同见[原生 UI 记录](docs/ui-foundation-plan.md)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
-样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui-proposal.md)。
+样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
 
 菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前阶段验收与 review 修复见 [2026-10-02 编辑器 UI 收口](docs/research/editor-ui-20261002-closeout.md)。
 
-完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询位于属性页签之前，页签按当前 Actor 的真实组成提供。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。资源浏览器的工具行、目录树、状态行和 List/Details/Tiles 全部结果视图已迁入 DSL；三种呈现共享数据、选择和虚拟绘制，菜单内容、Controls、停靠与总外壳继续迁移，跨区域资源拖放尚未实现。
+完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询在对象标题下按需展开，Parameters 连续展示实例属性，Actor Structure 独立维护组件组成。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。资源浏览器的工具行、目录树、状态行和 List/Details/Tiles 全部结果视图已迁入 DSL；三种呈现共享数据、选择和虚拟绘制，菜单内容、Controls、停靠界面与总外壳也已迁入同一 DSL，旧 C++ 界面组装路径已移除；跨区域资源拖放尚未实现。
 
 其后与 Runtime 冻结交付的同候选双配置重建和消费者验收见 [Runtime／编辑器集成记录](docs/research/runtime-editor-integration-20261002.md)；原 2870 帧窗口记录仍归属集成前的编辑器版本。
 
@@ -49,17 +49,17 @@ Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含
 
 本阶段菜单、交互边界与树视图的审查、清理和验收边界见 [UI 边界与生命周期审查](docs/research/ui-boundary-state-lifecycle-audit-20261002.md)。
 
-顶部菜单栏通过 File / Edit / Create / View / Window 组织现有命令，左侧窄收拢区可将它收成细条；再次点击或使用 F10/Alt 菜单快捷键恢复。Tab 栏直接从标签开始，“＋”将已有视图加入当前组。下拉、参数右键和 Pane 菜单共用独立原生弹出窗口，可超出编辑器边界，支持键盘导航、菜单切换与焦点恢复，见[独立菜单窗口](docs/modules/editor/README.md#独立菜单窗口)。
+顶部菜单栏通过 File / Edit / Create / Project / View / Window 组织现有命令，左侧窄收拢区可将它收成细条；再次点击或使用 F10/Alt 菜单快捷键恢复。Tab 栏直接从标签开始，“＋”将已有视图加入当前组。下拉、参数右键和 Pane 菜单共用独立原生弹出窗口，可超出编辑器边界，支持键盘导航、菜单切换与焦点恢复，见[独立菜单窗口](docs/modules/editor/README.md#独立菜单窗口)。
 
 **Controls** 标签打开同宿主的控件实验台，可操作数值、Vector3/Vector4、Unicode 文本、下拉、勾选和折叠，检查禁用、长标签与窄面板。实际位置参数复用同一参数行和 Houdini 风格 SS：中英文统一使用 Sarasa UI SC，数字使用 Source Code Pro，配合黑色字段、细凹凸边缘、轻渐变按钮与灰色编辑边界；Tab 以灰色选中底面区分，不显示焦点描边。右键菜单提供复制、粘贴与默认值恢复，中键支持数值阶梯，整组恢复只记一次撤销。字体依据见[字体说明](assets/fonts/README.md)，实验台的样本历史独立于场景，详见[控件实验台](docs/modules/editor/README.md#控件实验台)。
 
-工作区采用 Scene View、Parameters、Controls、Scene Tree、Asset Browser 五个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
+工作区采用 Scene View、Parameters、Controls、Scene Tree、Actor Structure、Asset Browser、Code 和 Project Output 八个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
 
 Scene Tree 展示 World → Actor 关系和实际 Actor 类型，具有类型图标、层级线、交替行、键盘导航和底部过滤；组件由 Parameters 展示，详见[编辑器模块](docs/modules/editor/README.md)。
 
-参数面板使用固定的类型＋可编辑名称标题、内容页签和独立滚动区。Actor 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
+参数面板使用类型图标＋对象标题及连续属性滚动区，名称右侧的放大镜按需展开搜索。Actor 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
 
-工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存场景；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。
+工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 
@@ -71,6 +71,10 @@ cmake --build --preset release --target editor_acceptance
 
 每种配置输出 `Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`；只运行无窗口文档链使用 `editor_document_acceptance`。GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，包括状态/字体/256 Actor 列表、组件增删和完整 TRS 投影。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
 窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。运行目录须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证，以及 editor.ss、fonts/ 中的字体和许可证。
+
+## 编辑器内编写源码
+
+**File → Edit Editor UI Source** 打开正在使用的 UI DSL，编辑后 Ctrl+S 保存并进入原有同步热更新。**File → Open Source…** 或 Asset Browser 打开项目 Source 文件。Code 面板支持行号、选区、缩进、剪贴板、独立撤销、错误定位与外部修改冲突处理；工程 Source 已接入跨文件构建、真实组件和属性、场景保存、独立运行及兼容热更；项目 UI 可独立预览。F6 构建、F8 运行、Shift+F8 停止；类型变化使用 Project → Rebuild Types and Scene。补全和断点调试尚未接入。详见[源码工作流](docs/modules/editor/source-editor.md)。
 
 ## 构建与端到端验收
 
@@ -207,6 +211,8 @@ cmake --build --preset release --target ui_layout_acceptance
 
 [模块函数消费者](acceptance/source/modules.cpp)覆盖前向/嵌套调用、直接定型参数、跨函数引用别名、逐层资源清理、对象根与 GC，以及 async 入口调用同步助手。宿主通过 `Program::request(name, source, entry_name)` 选择公开入口；整模块随代码版本一起发布和退休。当前内部调用图无环，不支持递归或调用 async 函数。详见[同模块多函数](docs/source-function-modules.md)。
 
+[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量默认值和具名多入口。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+
 [类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型在注册封闭前发布，代码更新保持类型定义与身份；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
 同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
@@ -232,13 +238,13 @@ cmake --build --preset release --target atelier_source_measure
 - 成员名称、字段路径和原生方法签名来自同一 Runtime 的元数据；前端/后端只使用宿主绑定表索引，不知道机器字段名字。机器快照的创建、轮询后刷新与结果根交接归宿主验收适配器；不访问对象的标量或原生值借用入口无需接收者、快照或登记对象根。
 - 原生注册和源码发布共用 `FunctionSignature` 及 Runtime 解析规则；原生 void 或标量/枚举值结果已经贯通动态调用、源码表达式和 LLVM 降低，保留原生成员的 const 接收者信息。嵌套实参先顺序求值再打包，原生失败、漏写或错误种类的结果不提交给源码调用方。
 
-开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单一公开入口与模块内同步函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/for/break/continue/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#已实现的最小业务执行协议)。新增引用在原生/描述型对象上各执行 12 个独立场景；其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。旧数值、错误、GC、展开和代码退休验收继续通过。
+开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单源码选定入口、项目快照的多个同步入口与模块内函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/for/break/continue/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#已实现的最小业务执行协议)。新增引用在原生/描述型对象上各执行 12 个独立场景；其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。旧数值、错误、GC、展开和代码退休验收继续通过。
 
 语言基础沿同一 Runtime/source/JIT 入口支持 `core.bool`、短路逻辑、受检查的整数除余/移位、四种数值类型的显式转换、局部只读 const 与编译期模块常量，以及带作用域清理的 for/break/continue。[语言基础消费者](acceptance/source/foundations.cpp)通过 `source_acceptance` 覆盖这些执行与拒绝场景；[bool 调用边界消费者](acceptance/jit/bool_abi.cpp)通过 `jit_acceptance` 覆盖布尔值、借用及结果契约。运行入口为 `cmake --build --preset dev --target source_acceptance jit_acceptance`，release 使用同名目标；语义以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
 构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。这不等于已有文件监视、机器码源码行映射或断点调试。
 
-当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、通用跨方法热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
+当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
 
 前端与源码执行链已完成一轮[专项审查及真实机器批量基线](docs/research/jit-industrial-research.md#v001-源码专项审查与真实机器基线)：修复业务链接根因诊断丢失，补充 owner 撤销后原生异常的组合验收，执行固定种子源码变异/数值对照，并分别测量编译、批量调用和回收。已有基线不等于完成业务吞吐优化或全面安全审计。
 
@@ -314,7 +320,7 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 通过名称查找成员后可缓存成员标识。类型/成员名称查询目前是线性扫描，定位于注册和发现阶段；缓存后的字段路径访问与方法调用不重新查名字，不分配堆内存（错误报告除外）。
 - `read/write` 的终字段必须是标量，`read_reference/write_reference` 操作引用字段；字段路径只穿过内联记录，不隐式解引用对象。引用写入检查目标类型和形式，弱引用不能直接写入持有字段；`try_acquire` 对活的观察目标交付根句柄，空或失效目标返回空结果。已定型的失效引用仍可复制，旧身份不自动清空，也不绑定复用槽位的新对象。
 - `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根，异常转换为调用错误。
-- `begin_collection` 开始一轮非移动增量标记—清扫；宿主在同一运行时线程的安全点调用 `collect_step`，按根处理、标记、清扫分步推进。分配、普通值操作和撤根不隐式触发收集；尚无引擎 Tick 调度接入。
+- `begin_collection` 开始一轮非移动增量标记—清扫；宿主在同一运行时线程的安全点调用 `collect_step`，按根处理、标记、清扫分步推进。分配、普通值操作和撤根不隐式触发收集；编辑器与项目运行宿主在各自帧安全点推进收集。
 - 标记完成时统一提交死亡判定，`live_objects` 立即排除待回收对象，`pending_reclamation` 单独报告待析构数量。即使内存尚未释放，观察取得和对象访问也不能复活已判死目标；旧引用保留身份。
 - 收集步支持工作量上限和可选的软时间上限，返回阶段、实际工作量、回收数量、待回收数量与耗时。单次原生析构不可中断；写入屏障与值操作不计入 GC 步预算，不承诺硬帧时间。具体计量与存活规则见[分步回收](docs/runtime-model.md#已实现的分步回收)。
 - 方法参数或非 void 输出存储检查失败不会进入用户代码。成功值先在 `CallContext::result` 暂存，核对声明后才写 output；缺值、错类型、未声明结果或异常不覆盖调用方原值。已发生的业务修改不自动回滚。

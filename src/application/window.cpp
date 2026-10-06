@@ -328,6 +328,7 @@ ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
     ui::ClipboardResult result{request.kind, request.operation_id, request.token, false, 0, {}};
     if (!OpenClipboard(handle_)) { result.native_error = native_error(); return result; }
     ClipboardScope close;
+    const auto limit=std::min<std::size_t>(request.limit,1024*1024);
     if (request.kind == ui::ClipboardKind::read) {
         const auto memory = GetClipboardData(CF_UNICODETEXT);
         if (!memory) { result.native_error = native_error(); return result; }
@@ -335,12 +336,12 @@ ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
         MemoryLock lock(memory);
         const auto* text = static_cast<const wchar_t*>(lock.data);
         if (!text) { result.native_error = native_error(); return result; }
-        const auto units = std::min<std::size_t>(bytes / sizeof(wchar_t), text_limit + 1);
+        const auto units = std::min<std::size_t>(bytes / sizeof(wchar_t), limit + 1);
         const auto end = std::find(text, text + units, L'\0');
-        if (end == text + units || static_cast<std::size_t>(end - text) > text_limit) result.native_error = ERROR_BUFFER_OVERFLOW;
+        if (end == text + units || static_cast<std::size_t>(end - text) > limit) result.native_error = ERROR_BUFFER_OVERFLOW;
         else { result.text.assign(text, end); result.success = true; }
     } else {
-        if (request.text.size() > text_limit) { result.native_error = ERROR_BUFFER_OVERFLOW; return result; }
+        if (request.text.size() > limit) { result.native_error = ERROR_BUFFER_OVERFLOW; return result; }
         const auto bytes = (request.text.size() + 1) * sizeof(wchar_t);
         const auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
         if (!memory) { result.native_error = native_error(); return result; }
