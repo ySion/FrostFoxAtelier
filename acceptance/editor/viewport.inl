@@ -1,9 +1,29 @@
 void verify_viewport_display(Application& app,const std::filesystem::path& output) {
+    const auto* path=app.presented()->find(control::scene_path);
+    const auto* shading=app.presented()->find(control::scene_shading);
+    const auto* guides=app.presented()->find(control::scene_guides);
+    require(path && shading && guides,"Viewport path lost its compact display menus.");
+    const auto* path_bar=app.presented()->find(path->parent);
+    const auto dpi=app.presented()->drawing->dpi_scale;
+    require(path_bar && shading->kind==atelier::ui::ControlKind::combo && guides->kind==atelier::ui::ControlKind::combo &&
+        std::abs(shading->bounds.width/dpi-28)<.1f && std::abs(shading->bounds.height/dpi-28)<.1f &&
+        std::abs(guides->bounds.width/dpi-28)<.1f && std::abs(guides->bounds.height/dpi-28)<.1f &&
+        shading->bounds.x>=path->bounds.x+path->bounds.width-.1f && guides->bounds.x>=shading->bounds.x+shading->bounds.width-.1f &&
+        guides->bounds.x+guides->bounds.width<=path_bar->bounds.x+path_bar->bounds.width+.1f &&
+        std::abs(shading->bounds.y-path->bounds.y)<.1f && std::abs(guides->bounds.y-path->bounds.y)<.1f,
+        "Viewport menus must remain two compact targets at the end of the existing path row.");
     atelier::renderer::Capture empty;
     require(app.step(&empty) && std::ranges::all_of(empty.depth,[](float z){return z==1;}),
             "Empty viewport guides changed geometry depth.");
     png(empty,output/"empty-reference-grid.png");
-    click(app,atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere"));
+    const auto browser_history=app.document().undo_count();
+    const auto resource=atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere");
+    click(app,resource);
+    require(actors(app).empty() && app.document().undo_count()==browser_history,
+        "Selecting a resource row created a scene object or changed document history.");
+    double_click(app,resource);key(app,VK_RETURN);
+    require(actors(app).empty() && app.document().undo_count()==browser_history,
+        "Resource Open gestures implicitly created a scene object.");
     click(app,atelier::editor::browser_control::add);
     // Inspect actual faces at a useful scale, beyond the selected edge coverage.
     click(app,control::focus);
@@ -19,8 +39,36 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     const auto choose=[&](ControlKey source,ControlKey option) {
         click(app,source);
         require(app.menu_frame() && app.menu_frame()->find(option),"Viewport choice did not use the native shared menu.");
+        const auto frame=app.menu_frame();
+        if (source==control::scene_shading) {
+            const std::array starts{control::shading_first,control::edges_first,control::topology_first};
+            const std::array counts{3u,4u,2u};
+            std::array<ControlKey,3> groups{};
+            for (std::size_t group=0;group<starts.size();++group) {
+                unsigned selected{};
+                for (unsigned index=0;index<counts[group];++index) {
+                    const auto* item=frame->find(starts[group]+index);
+                    require(item && item->menu_behavior==atelier::ui::MenuBehavior::radio && item->radio_group,
+                        "Display menu lost a radio option or its group identity.");
+                    if (!index) groups[group]=item->radio_group;
+                    require(item->radio_group==groups[group],"Related display options split across radio groups.");
+                    selected+=item->selected?1u:0u;
+                }
+                require(selected==1,"A display radio group must show exactly one current option.");
+            }
+            require(groups[0]!=groups[1] && groups[0]!=groups[2] && groups[1]!=groups[2],
+                "Shading, edges and topology shared one mutually exclusive radio group.");
+        } else {
+            for (const auto key:{control::guide_background,control::guide_grid,control::guide_axes}) {
+                const auto* item=frame->find(key);
+                require(item && item->menu_behavior==atelier::ui::MenuBehavior::checkbox && !item->radio_group,
+                    "Viewport guides must expose independent checkbox options.");
+            }
+        }
+        const bool was_selected=frame->find(option)->selected;
         click(app,option); tick(app);
         require(!app.menu_frame(),"Viewport choice left its menu open.");
+        return was_selected;
     };
     const auto capture_mode=[&](const char* name) {
         atelier::renderer::Capture image;
@@ -52,9 +100,10 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
                 std::abs(int(flat.rgba[offset+2])-smooth.rgba[offset+2])>3) ++changed;
         }
     require(changed>100,"Flat/Smooth controls did not change the actual sphere shading.");
-    choose(control::scene_guides,control::guide_grid);
+    const auto grid_selected=choose(control::scene_guides,control::guide_grid);
     const auto no_grid=capture_mode("reference-grid-off.png");
-    choose(control::scene_guides,control::guide_grid);
+    require(choose(control::scene_guides,control::guide_grid)!=grid_selected,
+        "Reopening Guides did not show the accepted checkbox change.");
     const auto with_grid=capture_mode("reference-grid-on.png");
     changed=0;
     for (unsigned y=static_cast<unsigned>(scene.y);y<static_cast<unsigned>(scene.y+scene.height);++y)
@@ -70,11 +119,11 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     choose(control::scene_guides,control::guide_background); capture_mode("gradient-off.png");
     choose(control::scene_guides,control::guide_background);
     choose(control::scene_shading,control::shading_first+2);
-    choose(control::scene_edges,control::edges_first+1); capture_mode("matcap-edges.png");
-    choose(control::scene_topology,control::topology_first+1); capture_mode("matcap-triangles.png");
-    choose(control::scene_topology,control::topology_first);
-    choose(control::scene_edges,control::edges_first+2); capture_mode("hidden-lines.png");
-    choose(control::scene_edges,control::edges_first+3); capture_mode("all-lines.png");
-    choose(control::scene_edges,control::edges_first); capture_mode("restored-matcap.png");
+    choose(control::scene_shading,control::edges_first+1); capture_mode("matcap-edges.png");
+    choose(control::scene_shading,control::topology_first+1); capture_mode("matcap-triangles.png");
+    choose(control::scene_shading,control::topology_first);
+    choose(control::scene_shading,control::edges_first+2); capture_mode("hidden-lines.png");
+    choose(control::scene_shading,control::edges_first+3); capture_mode("all-lines.png");
+    choose(control::scene_shading,control::edges_first); capture_mode("restored-matcap.png");
     verify_transform_projection(app,output,actor);
 }

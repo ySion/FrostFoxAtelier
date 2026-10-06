@@ -11,16 +11,15 @@ ui_layout::NodeInput single_line_layout(float width) {
 }
 float append_collapsible_bar(std::vector<Control>& controls,const CollapsibleBar& bar) {
     using namespace ui_layout;
-    constexpr float rail_width=8, collapsed_height=6, arrow_region_height=18;
-    const float height=bar.collapsed?collapsed_height:bar.expanded_height;
+    const float height=bar.collapsed?stow_collapsed_height:bar.expanded_height;
     Control root; root.key=bar.key; root.parent=bar.parent;
     root.layout=NodeInput::row(); root.layout.height=Axis::fixed(height);
     if (!bar.style_class.empty()) root.classes.emplace_back(bar.style_class);
     controls.push_back(std::move(root));
     Control handle; handle.key=bar.handle_key; handle.parent=bar.key; handle.kind=ControlKind::button;
-    handle.layout=NodeInput::box(rail_width,height);
+    handle.layout=NodeInput::box(stow_rail_width,height);
     // Keep the arrow near the top while the whole rail remains clickable.
-    handle.layout.padding.bottom=std::max(0.f,height-arrow_region_height);
+    handle.layout.padding.bottom=std::max(0.f,height-stow_arrow_region_height);
     handle.icon=bar.collapsed?ControlIcon::down:ControlIcon::up; handle.classes={"bar-stow"};
     controls.push_back(std::move(handle));
     Control body; body.key=bar.body_key; body.parent=bar.key; body.layout=bar.body;
@@ -167,6 +166,7 @@ void append_menu(std::vector<Control>& controls, ControlKey key, ControlKey owne
         control.layout=NodeInput::box(0,25+1.f/3); control.layout.height=Axis::content(25+1.f/3); control.layout.width=Axis::expand();
         control.text=item.text; control.enabled=item.enabled; control.selected=item.selected;
         control.edit_command=item.edit_command; control.menu_branch=!item.children.empty();
+        control.menu_behavior=item.behavior; control.radio_group=item.radio_group; control.icon=item.icon;
         controls.push_back(std::move(control));
         if (!item.shortcut.empty() || !item.children.empty()) {
             Control shortcut; shortcut.key=allocate(); shortcut.parent=row_key; shortcut.kind=ControlKind::label;

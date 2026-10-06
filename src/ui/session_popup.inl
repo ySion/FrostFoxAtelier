@@ -4,7 +4,7 @@
     }
     void dismiss_popup(Reply& reply) {
         if (!popup || popup_dismissed) return;
-        popup_dismissed=true; keyboard_pressed=0;
+        popup_dismissed=true; keyboard_pressed=0; keyboard_key=Key::none; hover=0;
         if (press) { press.reset(); reply.capture=Capture::release; }
         restore_popup_focus();
         action(reply,ActionKind::dismiss,popup); reply.redraw=reply.consumed=true;
@@ -20,20 +20,23 @@
         if (!popup) { popup_return_focus=0; return; }
         finish_edit(reply,true);
         popup_return_focus=focus; focus=0; keyboard_pressed=0; hover=0;
+        bool selected_radio=false;
         for (auto key:order) {
             const auto& control=states.at(key).control;
             if (control.kind==ControlKind::menu_item && control.enabled) {
-                if (!focus || control.selected) focus=key;
+                if (!focus) focus=key;
+                if (!selected_radio && control.menu_behavior==MenuBehavior::radio && control.selected) {
+                    focus=key; selected_radio=true;
+                }
             }
         }
         reply.redraw=true;
     }
-    void context_request(Reply& reply, const ControlBox& box, float x, float y) {
-        const auto& control=states.at(box.key).control;
+    void context_request(Reply& reply, const ControlBox& box, float x, float y, std::optional<TableSelection> table={}) {
         finish_edit(reply,true);
         if (focusable(box.kind)) focus=box.key;
-        action(reply,ActionKind::context_menu,control.context_target?control.context_target:box.key,
-            ContextMenuRequest{box.key,control.context_group,x,y});
+        action(reply,ActionKind::context_menu,box.context_target?box.context_target:box.key,
+            ContextMenuRequest{box.key,box.context_group,x,y,table});
         reply.consumed=reply.redraw=true;
     }
     void execute_edit_command(Reply& reply, EditCommand command) {
@@ -62,8 +65,11 @@
             dismiss_popup(reply);
             execute_edit_command(reply,*command);
         } else {
+            const bool toggle=toggle_kind(box.kind) || (box.kind==ControlKind::button && box.button_behavior==ButtonBehavior::toggle) ||
+                (box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::checkbox);
+            const bool radio=box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::radio;
             action(reply,(box.kind==ControlKind::item || box.kind==ControlKind::tree_item)?ActionKind::select:ActionKind::activate,box.key,
-                toggle_kind(box.kind)?ActionValue{!box.selected}:ActionValue{});
+                radio?ActionValue{true}:toggle?ActionValue{!box.selected}:ActionValue{},box.action_target);
             if (box.kind==ControlKind::menu_item && !states.at(box.key).control.menu_branch) dismiss_popup(reply);
         }
     }

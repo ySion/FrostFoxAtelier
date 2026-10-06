@@ -5,6 +5,7 @@
 #include "ui_layout/layout.hpp"
 #include <string_view>
 #include <exception>
+#include <compare>
 
 namespace atelier::ui::detail {
 struct TextFailure final : std::exception {
@@ -14,6 +15,13 @@ struct TextFailure final : std::exception {
 };
 std::uint64_t new_identity();
 struct RasterText { std::shared_ptr<const Coverage> coverage; float left{}, top{}; };
+struct TextKey {
+    std::uint64_t owner{}, key{};
+    bool header{};
+    TextKey(std::uint64_t value) : key(value) {}
+    TextKey(std::uint64_t owner_value,std::uint64_t value,bool is_header) : owner(owner_value),key(value),header(is_header) {}
+    auto operator<=>(const TextKey&) const = default;
+};
 struct TextStatistics {
     std::uint64_t measure_calls{}, text_layouts{}, rasterizations{}, raster_bytes{}, coverage_cache_hits{};
     std::uint64_t live_coverages{}, live_coverage_bytes{};
@@ -40,15 +48,15 @@ class TextStore {
 public:
     explicit TextStore(std::span<const std::wstring> font_files = {});
     ~TextStore();
-    std::uint64_t set(std::uint64_t key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left);
-    enum class Symbol { check, right, down, close, maximize, restore, left, up, plus, back, forward, world, disclosure_right, disclosure_down, object, axes, component, mesh, folder };
+    std::uint64_t set(TextKey key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left);
+    enum class Symbol { check, right, down, close, maximize, restore, left, up, plus, back, forward, world, disclosure_right, disclosure_down, object, axes, component, mesh, folder, search, view_list, view_details, view_tiles, filter, more, radio, radio_checked, checkbox, checkbox_checked };
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);
     std::uint64_t provider_revision() const noexcept;
     void set_provider_revision(std::uint64_t) noexcept;
     TextStatistics statistics() const noexcept;
-    void erase(std::uint64_t key);
-    ui_layout::MeasuredSize metrics(std::uint64_t key, float width);
-    RasterText raster(std::uint64_t key, float width, float dpi, std::optional<Clip> viewport = {});
+    void erase(TextKey key);
+    ui_layout::MeasuredSize metrics(TextKey key, float width);
+    RasterText raster(TextKey key, float width, float dpi, std::optional<Clip> viewport = {});
     std::shared_ptr<const TextSnapshot> snapshot(std::uint64_t key, float width);
     // Keyboard edits may arrive before repaint. Shape the current draft using
     // the displayed paragraph's font/width policy, never the pending style.

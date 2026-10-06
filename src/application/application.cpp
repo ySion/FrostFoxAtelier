@@ -31,12 +31,22 @@ template<class T> T graphics(renderer::Result<T> result) {
     return std::move(*result);
 }
 std::wstring widen(const std::string& value) { return {value.begin(), value.end()}; }
+bool live_table_context(const ui::UiFrame& frame,const ui::ContextMenuRequest& request,bool require_selection) {
+    if (!request.table) return true;
+    const auto* table=frame.find_table(request.source);
+    if (!table || !table->data || (require_selection && table->selection.row!=request.table->row)) return false;
+    const auto& rows=table->data->rows;
+    const auto row=std::ranges::find(rows,request.table->row,&ui::TableRow::key);
+    return row!=rows.end() && row->enabled &&
+        std::ranges::find(table->data->columns,request.table->column,&ui::TableColumn::key)!=table->data->columns.end();
+}
 ui::Key key(WPARAM value) {
     switch (value) {
     case VK_BACK: return ui::Key::backspace; case VK_DELETE: return ui::Key::delete_key;
     case VK_RETURN: return ui::Key::enter; case VK_ESCAPE: return ui::Key::escape;
     case VK_TAB: return ui::Key::tab; case VK_LEFT: return ui::Key::left; case VK_RIGHT: return ui::Key::right;
     case VK_UP: return ui::Key::up; case VK_DOWN: return ui::Key::down;
+    case VK_PRIOR: return ui::Key::page_up; case VK_NEXT: return ui::Key::page_down;
     case VK_APPS: return ui::Key::menu; case VK_F10: return ui::Key::f10;
     case VK_HOME: return ui::Key::home; case VK_END: return ui::Key::end; case VK_SPACE: return ui::Key::space;
     case 'A': return ui::Key::a; case 'Z': return ui::Key::z; case 'Y': return ui::Key::y;
@@ -103,7 +113,12 @@ Result<void> Application::focus_selected() {
     camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
     return {};
 }
-Result<void> Application::action(const ui::Action& event) {
+Result<void> Application::action(const ui::Action& source) {
+    // UI instance keys and host command/target keys occupy different roles.
+    // Resolve once at the existing dispatch boundary; business checks stay below.
+    std::optional<ui::Action> routed;
+    if (source.target) routed.emplace(source.kind,source.target,source.value);
+    const auto& event=routed?*routed:source;
     using namespace editor::control;
     const auto invalid = [] { return std::unexpected(Error{ErrorCode::invalid_definition, "UI action does not match its live binding or value type."}); };
     const auto done = [&](auto result, const wchar_t* message) -> Result<void> {
@@ -119,8 +134,12 @@ Result<void> Application::action(const ui::Action& event) {
     if (event.kind==ui::ActionKind::dismiss) { close_menu(); return {}; }
     if (event.kind==ui::ActionKind::activate && (event.key==menu_bar_handle || event.key==shelf_handle)) {
         close_menu();
-        auto& collapsed=event.key==shelf_handle?workspace_.shelf_collapsed:workspace_.menu_bar_collapsed;
-        collapsed=!collapsed; return {};
+        if (event.key==shelf_handle) {
+            const auto* collapsed=std::get_if<bool>(&event.value);
+            if (!collapsed) return invalid();
+            workspace_.shelf_collapsed=*collapsed;
+        } else workspace_.menu_bar_collapsed=!workspace_.menu_bar_collapsed;
+        return {};
     }
     if (event.kind==ui::ActionKind::activate && is_menu(event.key)) {
         request_menu({event.key,0,0,0}); return {};
@@ -133,73 +152,16 @@ Result<void> Application::action(const ui::Action& event) {
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) return {};
     if (workspace_.apply_view(event)) return {};
-    if (event.kind==ui::ActionKind::activate && event.key==physics_root_add)
-        return done(document_->add_component(document_->types().scene_component),L"Scene root added");
-    if (event.kind==ui::ActionKind::activate && event.key==physics_add)
-        return done(document_->add_component(document_->physics_types().body_component),L"Physics body added");
-    if (event.kind==ui::ActionKind::activate && event.key==physics_remove)
-        return done(document_->remove_component(workspace_.physics_component()),L"Physics body removed");
-    const bool physics_choice=event.kind==ui::ActionKind::activate &&
-        ((event.key>=physics_shape_first && event.key<physics_shape_first+4) ||
-         (event.key>=physics_motion_first && event.key<physics_motion_first+3) || event.key==physics_sensor);
-    const bool physics_number=event.key>=physics_friction && event.key<=physics_extent_z;
-    if (physics_choice || physics_number) {
-        if (physics_number && event.kind!=ui::ActionKind::edit_commit) return {};
-        const auto body=workspace_.physics_component();
-        if (body==ObjectId{}) return invalid();
-        auto settings=physics::read_settings(document_->world().runtime(),body);
-        if (!settings) return std::unexpected(settings.error());
-        if (event.key>=physics_shape_first && event.key<physics_shape_first+4) {
-            settings->shape=static_cast<physics::ShapeKind>(event.key-physics_shape_first);
-            if (settings->shape==physics::ShapeKind::triangle_mesh) settings->motion=physics::MotionKind::stationary;
-            else settings->cooked_shape.reset();
-        } else if (event.key>=physics_motion_first && event.key<physics_motion_first+3)
-            settings->motion=static_cast<physics::MotionKind>(event.key-physics_motion_first);
-        else if (event.key==physics_sensor) {
-            const auto* selected=std::get_if<bool>(&event.value);
-            if (!selected) return invalid();
-            settings->sensor=*selected;
-        } else {
-            const auto* value=std::get_if<double>(&event.value);
-            if (!value || !std::isfinite(*value)) return invalid();
-            const auto number=static_cast<float>(*value);
-            switch (event.key) {
-            case physics_friction: settings->material.friction=number; break;
-            case physics_restitution: settings->material.restitution=number; break;
-            case physics_radius: settings->radius=number; break;
-            case physics_capsule_height: settings->capsule_half_height=number; break;
-            case physics_extent_x: settings->half_extents.x=number; break;
-            case physics_extent_y: settings->half_extents.y=number; break;
-            case physics_extent_z: settings->half_extents.z=number; break;
-            default: return invalid();
-            }
-        }
-        if (settings->shape==physics::ShapeKind::triangle_mesh && !settings->cooked_shape) {
-            auto root=world::root_component(document_->world().runtime(),document_->selected());
-            if (!root) return std::unexpected(root.error());
-            if (!*root) return invalid();
-            auto mesh=world::read_static_mesh(document_->world().runtime(),**root);
-            if (!mesh) return std::unexpected(mesh.error());
-            if (!mesh->mesh.resolved) return invalid();
-            if (mesh->mesh.source.starts_with("project/")) {
-                if (!project_) return invalid();
-                auto transform=world::read_transform(document_->world().runtime(),**root);
-                if (!transform) return std::unexpected(transform.error());
-                auto cooked=project_->cook_collision(mesh->mesh.source,transform->scale);
-                if (!cooked) return std::unexpected(cooked.error());
-                auto bytes=project_->collision(mesh->mesh.source,transform->scale);
-                if (!bytes) return std::unexpected(bytes.error());
-                settings->cooked_shape=std::move(*bytes);
-            }
-        }
-        return done(document_->configure_body(body,std::move(*settings)),L"Physics body configured");
+    if (!source.target) {
+        const auto local_event=workspace_.apply_ui(source);
+        if (!local_event) return std::unexpected(local_event.error());
+        if (*local_event) return {};
     }
-    const auto parameter_event=workspace_.apply_ui(event);
-    if (!parameter_event) return std::unexpected(parameter_event.error());
-    if (*parameter_event) return {};
     if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
         const auto selected=workspace_.assets.selected();
         if (!selected) return {};
+        if (const auto* cell=std::get_if<ui::TableSelection>(&event.value);
+            cell && workspace_.assets.row_key(selected->key)!=cell->row) return {};
         if (event.key==editor::browser_control::add && selected->kind==editor::AssetKind::mesh)
             return execute(editor::Command::create_static_mesh,selected->key);
         if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
@@ -386,14 +348,20 @@ void Application::sync_text_input() {
     const auto error = window_.text_input(ui_.text_input());
     if (error) workspace_.status = L"Text input unavailable (Windows " + std::to_wstring(error) + L").";
 }
-void Application::invalidate_surface() {
-    close_menu(false);
-    ++surface_revision_;
+void Application::cancel_interaction(const ui::Reply& reply) {
+    // Session distinguishes native focus/capture loss from a forced UI cancellation.
+    // Application-owned gestures must end for either kind before capture is released.
     orbiting_ = false;
-    effects(ui_.cancel_interaction());
+    close_menu(false);
+    effects(reply);
     const auto cancelled = document_->cancel_edit();
     if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
     window_.capture(false);
+    window_.cursor(ui::Cursor::arrow);
+}
+void Application::invalidate_surface() {
+    ++surface_revision_;
+    cancel_interaction(ui_.cancel_interaction());
 }
 bool Application::pointer_ready() const noexcept {
     const auto& frame = ui_.presented();
@@ -408,7 +376,7 @@ bool Application::over_viewport(float x, float y) const noexcept {
 }
 void Application::request_menu(const ui::ContextMenuRequest& request) {
     const auto* source=ui_.presented()?ui_.presented()->find(request.source):nullptr;
-    if (!source || !source->enabled) return;
+    if (!source || !source->enabled || !live_table_context(*ui_.presented(),request,false)) return;
     if (!editor::control::is_menu(request.source)) menu_return_focus_=ui_.focused_control();
     // The native menu owns subsequent mouse-up events. Retire the previous
     // gesture through its UI/business transaction before transferring capture.
@@ -416,6 +384,8 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     for (auto& submenu:submenus_) submenu->hide();
     menu_path_.clear();
     workspace_.menu=request; menu_incarnation_=source->incarnation;
+    menu_context_target_=source->context_target; menu_context_group_=source->context_group;
+    menu_table_layout_=source->table_layout;
     orbiting_=false; window_.capture(false);
 }
 void Application::close_menu(bool restore_focus) {
@@ -431,12 +401,17 @@ void Application::close_menu(bool restore_focus) {
         if (restore_focus) effects(ui_.focus(menu_return_focus_));
     }
     menu_return_focus_=0; menu_incarnation_=0;
+    menu_context_target_=menu_context_group_=0;
+    menu_table_layout_={};
 }
 void Application::update_menu() {
     if (!workspace_.menu || workspace_.menu_items.empty()) { close_menu(); return; }
     const auto request=*workspace_.menu;
     const auto* source=ui_.presented()->find(request.source);
     if (!source || source->incarnation!=menu_incarnation_ || !source->enabled ||
+        source->context_target!=menu_context_target_ || source->context_group!=menu_context_group_ ||
+        source->table_layout!=menu_table_layout_ ||
+        !live_table_context(*ui_.presented(),request,true) ||
         source->bounds.y>=source->clip.bottom || source->bounds.y+source->bounds.height<=source->clip.top) { close_menu(); return; }
     const bool below=editor::control::is_menu(source->key) || source->kind==ui::ControlKind::combo;
     POINT points[2];
@@ -533,7 +508,7 @@ void Application::native(NativeEvent message) {
     if (message.message == WM_SIZE || message.message == WM_DPICHANGED) { invalidate_surface(); return; }
     if (message.message==WM_MOVE) { close_menu(false); return; }
     if (message.message==WM_CANCELMODE || (message.message==WM_ACTIVATEAPP && !message.wparam)) {
-        close_menu(false); effects(ui_.cancel_interaction()); window_.capture(false); return;
+        cancel_interaction(ui_.cancel_interaction()); return;
     }
     if (message.message == WM_SETFOCUS) return;
     if (message.ime_owned) return;
@@ -552,7 +527,8 @@ void Application::native(NativeEvent message) {
     bool pointer = false;
     switch (message.message) {
     case WM_MOUSEMOVE: event.kind = ui::EventKind::pointer_move; pointer = true; break;
-    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: event.kind = ui::EventKind::pointer_down; pointer = true; break;
+    case WM_LBUTTONDOWN: event.kind = ui::EventKind::pointer_down; pointer = true; break;
+    case WM_LBUTTONDBLCLK: event.kind = ui::EventKind::pointer_down; event.clicks = 2; pointer = true; break;
     case WM_LBUTTONUP: event.kind = ui::EventKind::pointer_up; pointer = true; break;
     case WM_RBUTTONDOWN: event.kind = ui::EventKind::pointer_down; event.button = ui::PointerButton::secondary; pointer = true; break;
     case WM_RBUTTONUP: event.kind = ui::EventKind::pointer_up; event.button = ui::PointerButton::secondary; pointer = true; break;
@@ -568,11 +544,15 @@ void Application::native(NativeEvent message) {
     case WM_KEYDOWN: event.kind = ui::EventKind::key_down; event.key = key(message.wparam); break;
     case WM_KEYUP: event.kind = ui::EventKind::key_up; event.key = key(message.wparam); break;
     case WM_CHAR: event.kind = ui::EventKind::text; event.data = std::move(message.text); break;
-    case WM_KILLFOCUS: event.kind = ui::EventKind::focus_lost; orbiting_ = false; break;
-    case WM_CAPTURECHANGED: event.kind = ui::EventKind::capture_lost; orbiting_ = false; window_.cursor(ui::Cursor::arrow); break;
+    case WM_KILLFOCUS: event.kind = ui::EventKind::focus_lost; break;
+    case WM_CAPTURECHANGED: event.kind = ui::EventKind::capture_lost; break;
     default: return;
     }
-    if (event.kind==ui::EventKind::focus_lost || event.kind==ui::EventKind::capture_lost) close_menu(false);
+    if (event.kind==ui::EventKind::focus_lost || event.kind==ui::EventKind::capture_lost) {
+        auto reply=ui_.input(event);
+        if (ui_.presented()) workspace_.dock.focus_control(ui_.focused_control(),*ui_.presented());
+        cancel_interaction(reply); return;
+    }
     if (menu_input(event,message.wparam)) return;
     ui::ControlKey requested_menu{};
     if (event.kind==ui::EventKind::key_down) {
@@ -623,12 +603,6 @@ void Application::native(NativeEvent message) {
     auto reply = ui_.input(event);
     if (ui_.presented()) workspace_.dock.focus_control(ui_.focused_control(),*ui_.presented());
     effects(reply);
-    if (event.kind == ui::EventKind::focus_lost || event.kind == ui::EventKind::capture_lost) {
-        window_.capture(false); // Includes camera capture, which is owned outside UI.
-        const auto cancelled = document_->cancel_edit();
-        if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
-        return;
-    }
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
         std::optional<editor::Command> command;
         if (event.control && (event.key==ui::Key::z || event.key==ui::Key::y))

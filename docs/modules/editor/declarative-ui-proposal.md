@@ -1,6 +1,8 @@
 # 引擎原生声明式 UI
 
-Parameters 的查询、Position、组件列表，以及 Scene Tree 的树行和查询，已由 [editor.ui.source](../../../assets/editor.ui.source) 定义。它们使用同一份 Source/JIT、文档 Runtime、SS、Session、布局与绘制设施。停靠、资产浏览器、菜单和编辑器外壳继续使用现有 C++ 描述。
+完整 ToolShelf（收折、类别页签、工具内容）和 Parameters（路径栏、名称栏、内容页签、滚动区、查询、Position、组件列表），以及 Scene Tree 的树行和查询、ViewportTools 图标菜单入口、Asset Browser 的工具行/目录树/状态行和全部结果视图，已由 [editor.ui.source](../../../assets/editor.ui.source) 定义。它们使用同一份 Source/JIT、文档 Runtime、SS、Session、布局与绘制设施。停靠、菜单内容、Controls 与总外壳继续迁移。区域评估与后续次序见[编辑器 DSL 迁移](dsl-migration.md)。
+
+Parameters 的过滤器位于对象标题之后、属性页签之前，同一查询筛选字段和组件。`Items<PropertyPage>` 由当前 Actor 的真实组成提供：有根组件时提供 Transform，Components 展示组成；无选择时显示空状态。字段页与浏览器功能不由编辑器外壳固定挂按钮。ViewportTools 在场景路径栏末尾提供显示与辅助图标菜单，复用同一原生 popup 和命令链。
 
 本文是当前实现的用法与契约说明，包含 2026-10-05 的源码局部更新。Qt/QML、Unity UI Toolkit 与 Flutter 的官方资料比对及演进起点见[更新机制研究](../../research/ui-dsl-update-comparison-20261005.md)。
 
@@ -67,7 +69,7 @@ ui Inspector(in TextEditBinding query, in bool visible) {
 - `state bool name = ...;` 和 `state double name = ...;` 必须位于组件体开头、节点之前。没有字符串、集合或对象类型的局部 state。
 - 节点写作 `Type node_name { property: expression; }`。属性和 state 初始化以分号结束；节点和事件体以花括号结束。
 - 一个组件至少有一个节点，可有多个根节点。节点名在整个组件内唯一，嵌套容器不会另开命名空间；两个不同组件可使用同样的内部节点名。
-- `input.name` 是只读宿主数据；`state.name` 是局部状态；`node.name` 是当前组件内声明拥有的控件 key；`event.checked` 只在 Foldout 的激活事件中可用。
+- `input.name` 是只读宿主数据；`state.name` 是局部状态；`node.name` 是当前组件内声明拥有的控件 key；`event.checked` 只在 Foldout、ToggleButton 的激活事件中可用。
 - `node.name` 不接受组件、Repeat 或 TextField 节点。TextField 的实际 key 来自宿主 `TextEditBinding`。
 - 组件属性按子组件的输入名称传参，所有声明输入都必须提供，没有默认实参、隐式捕获父输入、插槽或属性继承。
 
@@ -79,12 +81,14 @@ ui Inspector(in TextEditBinding query, in bool visible) {
 | `Text` | 拥有式文字快照，用于 text、classes 或 filter |
 | `EditBinding` | 既有类型化数值字段、分组重置与事务路由 |
 | `TextEditBinding` | 稳定编辑 key、权威文字和 enabled；走共享单行编辑器 |
+| `ActionBinding` | 非零宿主动作 target 和 enabled；控件实例 key 独立，业务执行仍走现有命令入口 |
+| `TableBinding` | 共享不可变 TableData、当前行/列和 enabled；表格几何、输入及可见绘制复用原生 Table |
 | `Key` | 宿主分配的 UI 身份；例如树的逻辑父行 |
 | `Items<RowType>` | 不可变项列表，每项有稳定宿主 key 和 RowType 的完整输入 |
 
 `Text` 经 plain `TextReference` 与 typed sink 复制到控件；不是 Source String 返回值的新规则。文字属性接受字符串字面量、直接 `input.text` 或直接文字编辑输入；类名仍经过 SS 的公共校验。列表转发必须保持声明的元素类型。
 
-`TextEditBinding` 用在文字属性上时取其权威 `text`，不是 Session 中尚未提交的编辑草稿。文字引用目前不能直接参与字符串拼接、任意函数返回或条件表达式；数值/布尔绑定的表达式能力不能直接套用到 Text 引用上。`Key`、EditBinding 和 Items 是有类型的宿主引用值，不是可填写任意整数或对象地址的字段。
+`TextEditBinding` 用在文字属性上时取其权威 `text`，不是 Session 中尚未提交的编辑草稿。文字引用目前不能直接参与字符串拼接、任意函数返回或条件表达式；数值/布尔绑定的表达式能力不能直接套用到 Text 引用上。`Key`、EditBinding、TableBinding 和 Items 是有类型的宿主引用值，不是可填写任意整数或对象地址的字段。
 
 宿主 `InputValue` 按声明顺序传入，数量与类型必须匹配。只读文字可以在 DSL 中新增；新增业务编辑字段需要宿主提供稳定字段 key、当前值和原有命令/撤销路由。
 
@@ -110,7 +114,13 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | 节点 | 作用与组合方式 |
 | --- | --- |
 | `Column` / `Row` | 纵向/横向容器，可嵌套具体控件、组件和 Repeat；通过父容器控制缩进 |
+| `Table` | model 必填，直接接收 TableBinding；支持 details/list/tiles 呈现，共享选择、虚拟绘制、滚动与键盘交互，Details 另有表头排序和列宽 |
 | `Text` | 文字叶，可设置 text、caption、classes 和布局属性 |
+| `Button` | 普通动作按钮；可绑定 ActionBinding 或本地 on activate，二者互斥；支持既有图标与 SS 呈现 |
+| `ToggleButton` | 按钮外观的布尔开关；selected 表示当前值，激活请求接受帧中的反值，不自动改变权威数据 |
+| `ChoiceButton` | 互斥选项；必须声明 selection_group，支持方向键/Home/End，Tab 只访问当前选项 |
+| `Combo` | 显示当前文字/图标并请求现有上下文菜单；不接受 action 或本地事件，菜单模型仍由宿主提供 |
+| `List` | 带裁剪与滚动的纵向容器，可组合 Row/Column/组件；不意味着任意 Repeat 已自动虚拟化 |
 | `Foldout` | 可激活的折叠标题叶；不接受子节点，展开内容由另一个 Column 的 collapsed 表达 |
 | `NumberRow` | 共享参数行；必填 EditBinding，0 个字段不产生控件，非空时接受 1–4 个数值字段 |
 | `TextField` | 共享单行编辑器；必填 TextEditBinding，实际控件 key 必须非零且在完整快照内唯一 |
@@ -119,30 +129,57 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | `Repeat` | 类型化动态子作用域；items 必填，必须直接引用 Items 输入；自身不额外生成容器 |
 | 用户定义的 `ui` 类型 | 命名组件调用；实例拥有独立 state；输出直接放入所属内容区 |
 
-底层 UI 还有 Button、Checkbox、Combo、Slider、工作区 Tab 等能力，当前 DSL 没有对应的直接节点声明。NumberRow 可消费宿主配置的数值滑条。不要将底层控件全集误认为已开放的 DSL 语法。
+底层 UI 还有 Checkbox、Slider、工作区 Tab 等能力，当前 DSL 没有对应的直接节点声明。NumberRow 可消费宿主配置的数值滑条。不要将底层控件全集误认为已开放的 DSL 语法。
 
-- `Column`、`Row`、`Text`、`Foldout`、`NumberRow`、`TextField`、`Tree`、`TreeItem` 复用已有控件。`single_line: true` 使用同一个单行高度原语；文字编辑器默认使用它。
-- 同一具体节点的 `height`、`expand_height`、`single_line` 互斥，避免高度策略依赖绑定更新顺序。组件输入使用这些名字时仍按普通类型化参数处理。
+- `Column`、`Row`、`Text`、`Button`、`Foldout`、`NumberRow`、`TextField`、`Tree`、`TreeItem` 复用已有控件。`single_line: true` 使用同一个单行高度原语；文字编辑器和普通按钮默认使用它。
+- 同一具体节点的 `height`、`expand_height`、`content_height`、`single_line` 互斥，`width`、`expand_width`、`content_width`、`shrink_width` 同样互斥。`min_width` 独立约束最后形成的宽度策略，尺寸绑定单独更新不会丢失这个约束。组件输入使用这些名字时仍按普通类型化参数处理。
 - `input.name` 只读；`state bool`、`state double` 属于实例。绑定记录实际执行的 getter，每次成功求值替换依赖集。未读取的输入变化不求值该绑定；稳定输入不重建节点。
-- `on activate` 用于 Foldout，`event.checked` 为 bool。事件允许修改局部 state，支持 Source 的普通语句、辅助函数与循环。表达式不能直接访问 native context、创建业务对象或启动异步任务。
+- `on activate` 用于 Foldout、Button、ChoiceButton、ToggleButton；Foldout/ToggleButton 的 `event.checked` 为 bool，Button/ChoiceButton 没有事件值。事件允许修改局部 state，支持 Source 的普通语句、辅助函数与循环。表达式不能直接访问 native context、创建业务对象或启动异步任务。
 - `NumberRow.edit` 使用公共 `append_number_row`，保留 XYZ、默认值、菜单、拖调、文字草稿和原编辑事务。`TextField.edit` 使用已有文字编辑路由，保留 Unicode、IME、选区和历史。
 - `TreeItem.tree_parent` 表达逻辑关系，物理 parent 仍为 Tree。可用 `node.name` 引用声明拥有的具体节点 key。树行必须按父先子后的顺序提交；状态、过滤与可见范围绘制仍归 Session。
 - 字体、颜色和边框继续使用 SS；UI 声明负责结构、数据绑定及布局组合。
 
 ### 属性参考
 
+普通宿主动作写作：
+
+```text
+ui Tool(in Text title, in ActionBinding command) {
+    Button run { text: input.title; action: input.command; }
+}
+```
+
+宿主提供 `ActionBinding{target, enabled}`；target 必须非零，沿现有 Application 命令/绑定入口执行。Button 的声明 key（Repeat 中为 Item.key）独立于 target，因此多个工具可以指向同一命令。动作绑定只能直接来自有类型的输入，不能用任意数字或地址构造。生成的 Control 与 target 同批准备/拒绝/提交；按下或键盘激活期间换绑会取消旧交互，旧接受帧不能触发新目标。`enabled` 与绑定的 enabled 取 AND；执行时还须重新检查业务可用性。
+
+本地 `Button { on activate { ... } }` 可以更新局部 state，没有 `event.checked`。三个按钮节点都不能同时绑定 action 与本地 handler。图标与图文上下布局继续由 `icon`、SS 的 `icon-placement` 和字体规则决定。ToggleButton 输出明确 bool 请求；ChoiceButton 通过共同 selection_group 表达互斥选项。菜单内容（包括 check/radio）已由宿主 MenuItem 支持，尚不能直接在 DSL 声明。
+
 属性采用命名赋值，没有 CSS 选择器或任意字段反射。未列出的属性会被拒绝。组件调用上的名称按子组件输入解析，只有 `mounted` 是结构属性。
 
 | 属性 | 值与主要适用节点 | 当前含义 |
 | --- | --- | --- |
-| `text` | 字符串字面量、直接 Text/TextEditBinding 输入；Text、Foldout、TreeItem、NumberRow | 文字或参数行标题；TextField 的文字使用 edit 输入 |
+| `text` | 字符串字面量、直接 Text/TextEditBinding 输入；文字叶及 NumberRow | 文字或参数行标题；TextField 的文字使用 edit 输入 |
 | `classes` | 同上，内容为空格分隔的 SS 类名 | 使用同一 SS 解析和样式链；NumberRow 应用到其参数行根 |
-| `enabled` | bool；具体控件 | 控件启用状态；编辑控件还与宿主 edit.enabled 共同约束 |
-| `selected` | bool；Foldout、TreeItem | 展开标题或树行的选中标记；不会自动写业务状态 |
+| `enabled` | bool；具体控件 | 控件启用状态；编辑控件与宿主 edit.enabled、动作按钮与 action.enabled 共同约束 |
+| `action` | 直接 ActionBinding 输入；Button/ChoiceButton/ToggleButton/Table | 宿主激活动作，target 必须非零；按钮与本地 on activate 互斥，Table 不支持本地 handler |
+| `model` | 直接 TableBinding 输入；Table | 必填，快照指针有效，允许空行集；宿主保存行列数据、选择和已提交列宽，绑定本身只复制共享引用与小值 |
+| `view` | Text；Table | `details`（默认）、`list` 或 `tiles`；List/Tiles 展示每行首列的名称和图标，保留完整模型 |
+| `row_height`、`header_height` | number；Table | DIP，默认 23/25，范围 12–256；Details 使用二者，List 使用行高 |
+| `tile_width`、`tile_height` | number；Table | DIP，默认 90/66，范围 12–4096；Tiles 按实际可用宽度自动换行，窄于一格时缩至内容宽度 |
+| `item_gap` | number；Table | DIP，默认 3，范围 0–256；List 行间距、Tiles 行列间距，末行不附加尾间距 |
+| `empty_text` | Text；Table | 空模型的提示文字，由同一控件绘制；不创建虚拟资源行 |
+| `context` | 直接 Key 输入或 node 引用；具体单控件 | 设置既有上下文菜单路由，输入的零 Key 关闭右键入口；请求 source 始终是真实来源控件；NumberRow 的分组菜单继续由 EditBinding 决定 |
+| `selected` | bool；Foldout、TreeItem、ChoiceButton、ToggleButton、Combo | 展开、行选择、组选项、开关或 Combo 打开态；不会自动写业务状态。Combo 的打开态由宿主菜单来源同步，关闭后清除 |
+| `selection_group` | node 引用或直接 Key 输入；ChoiceButton | 非零组 key，最终须指向按钮的直接容器父节点 |
 | `collapsed` | bool；具体控件 | 退出布局并沿现有规则结算失效交互，保留 DSL 实例 |
 | `caption` | bool；Text | 在 normal / caption 样式角色之间选择 |
 | `width` / `height` | 数值表达式 | 固定 DIP 尺寸；NumberRow 由共享参数布局决定，不接受这些覆盖 |
-| `expand_height` | bool | true 使用伸展高度，false 使用内容高度；与另外两种高度策略互斥 |
+| `expand_height` | bool | true 使用伸展高度，false 使用内容高度；与同轴其他高度策略互斥 |
+| `expand_width` | bool | true 使用伸展宽度，false 使用内容宽度 |
+| `content_width` / `content_height` | 数值表达式 | 使用内容尺寸，并指定该轴最小值；与同轴其他尺寸策略互斥 |
+| `shrink_width` | 数值表达式 | 首选宽度，可收缩而不额外增长；映射既有 Flex 的固定 basis、grow=0、shrink=1，与其他宽度策略互斥 |
+| `min_width` | 数值表达式 | 独立覆盖所选宽度策略的 minimum；不依赖绑定求值顺序 |
+| `wrap` | bool；Row/Column/List/Tree | 使用既有 Flex 换行，子项尺寸和所属容器决定何时换行 |
+| `panel` | bool；具体控件 | 在 panel / normal 样式角色间选择，与 caption 互斥 |
 | `single_line` | bool | 内容高度下限为 23 DIP / 0 DIP；不是强行裁成固定 23 DIP，字体和内距仍参与测量 |
 | `gap` | 数值表达式；容器 | 流式布局子项间距 |
 | `padding_left/top/right/bottom` | 数值表达式；容器布局 | 所属容器的内容缩进；不同于 SS 的文字/绘制内距 |
@@ -157,7 +194,31 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 
 布局数值须有限且在 0–32768 范围内；坐标和长度按 DIP。NumberRow 的外部布局放在父容器；内部文字与边框走 SS。常用图标建议由宿主从 [ControlIcon](../../../src/ui/style.hpp) 转成数值输入，避免在声明里散布易变编号。
 
-事件仅支持 Foldout 的一个 `on activate { ... }`；`event.checked` 为本次请求的 bool，可写 `state.expanded = event.checked;`。文字、数值提交和树选择继续走宿主的原 Action/命令路由，目前没有 `on change`、`on click` 或任意宿主函数调用语法。
+支持事件的节点均只允许一个 `on activate { ... }`；Foldout 和 ToggleButton 提供本次请求的 bool `event.checked`，可写 `state.expanded = event.checked;`。文字、数值提交和树选择继续走宿主的原 Action/命令路由，目前没有 `on change`、`on click` 或任意宿主函数调用语法。
+
+### 表格与宿主
+
+```text
+ui AssetResults(in TableBinding model, in ActionBinding open, in Key menu, in Text view) {
+    Table results {
+        model: input.model;
+        view: input.view;
+        action: input.open;
+        context: input.menu;
+        classes: "asset-table";
+        expand_height: true;
+        min_width: 64;
+    }
+}
+```
+
+宿主提供 `TableBinding{data, selection, enabled}`，并用普通 KeyBinding 固定 `results` 身份。数据保持不可变，切换当前单元格只更新轻量 selection。嵌套组件和 Repeat 沿同一有类型的参数传递机制，不为每个数据格创建 Source 实例。
+
+Table 不接受子节点或本地 `on activate`。`select`、`table_sort`、`table_column_resize` 仍以真实 Table key 派给宿主；只有 Enter/双击的 `activate` 转入 action。右键请求记录真实来源与行列身份。节点 enabled、model.enabled 和 action.enabled 共同约束可用状态。
+
+Session 是 TableData 完整校验与交互的唯一入口。非法快照使同一候选批次被拒绝，原实例与界面仍可继续使用；源码 patch 保留兼容 Table key、共享数据和当前选择。菜单路由和 TableLayout 也保存在接受帧中，换绑或切换呈现后旧画面不能触发新动作，旧按压及已打开的旧菜单会取消。浏览器外壳与三种结果视图的保存更新复用同一个 LiveDocument。
+
+行列内容保存在 TableData，呈现尺寸保存在 Control.table_layout；改变视图或密度不复制、重新校验整个目录。List/Tiles 为每个可见资源产生一个单元格几何，不创建 Button 或 Source 子实例。左右键在 List/Tiles 中移动资源，上下键按接受帧的网格列数移动，PageUp/PageDown 按可见行分页；Details 的左右键继续选列。三种呈现均使用同一个 TableSelection 与激活/菜单路由。浏览器保留 Details 当前列，切回 Details 后恢复。尺寸重排和滚动显露由 Session 按当前布局计算，宿主不再估算上一帧的可见范围。
 
 ### 容量与失败提示
 
@@ -253,11 +314,11 @@ Notice notice { title: "Additional settings"; }
 
 | 想做的事 | 是否只改当前 DSL 即可 |
 | --- | --- |
-| 在已有容器添加文字、布局组或已有控件的组合 | 可以，使用当前公开节点与已有输入 |
+| 在已有容器添加文字、布局组、按钮或已有控件的组合 | 可以，使用当前公开节点与已有输入；业务按钮需要已有 ActionBinding |
 | 修改现有组件并让它的多个实例一起变化 | 可以；所有已挂载实例在同一次提交中接纳新定义，各自保留兼容的局部 state |
 | 只声明一个新 ui 类型，希望它自动显示 | 不可以，需要在已有组件中实例化，或由宿主挂载 |
 | 给新字段增加文字/数值编辑与撤销 | 需要宿主提供新的 edit binding 和业务路由 |
-| 增加一个全新的停靠面板类型、菜单命令、Button 或 Combo DSL 节点 | 需要对应宿主或原语接入；不是添加一个声明即可获得 |
+| 增加一个全新的停靠面板类型、菜单命令或 Combo DSL 节点 | 需要对应宿主或原语接入；不是添加一个声明即可获得 |
 
 ## 源码 patch 契约
 
@@ -291,6 +352,10 @@ Notice notice { title: "Additional settings"; }
 一个 LiveDocument 管理一个作者文件及稳定的具名宿主区域表。区域的 parent 和 key aliases 在其生命周期内固定，变化会明确拒绝。候选 Module 在原实例上准备新定义，旧定义与待移除子实例在完整 Session 批次被接受且取消 effects 消费后释放。隐藏的宿主区域保留实例，以便重新显示时沿用状态。
 
 当前宿主区域以组件类型名作为键，同一 LiveDocument 中不能通过换 parent 或 aliases 再挂载一份同名根区域。组件内部的命名组合与 Repeat 可以创建同类型的多个独立子实例；两者的身份规则不同。
+
+`KeyBinding.node` 可写 `path.bar`、`header.type`、`position.section`，按命名的静态组件逐层找到具体声明节点。路径不包含普通布局容器，也不能穿过 Repeat；动态项仍由 Item.key 决定身份。未知、重复、指向结构作用域的别名会拒绝候选，包括当前未挂载的子组件路径。点分路径不能接管 TextField 身份，后者由 TextEditBinding.key 持有。别名随同一准备/拒绝/提交链传播，不另建控件查找或动作入口。
+
+当前 Parameters 根挂在 DockSpace 的稳定内容槽内；停靠移动改变槽的位置，不改变 DSL region 的 parent。工具架 root 的高度由 DSL 声明，C++ 读取这一固定高度给现有 DockSpace 分配剩余空间；源文件将 root 改成非固定高度时拒绝候选并保留旧版本。这个边界在整个 Editor 根接管布局时解除，当前没有第二份 56/6 高度公式。收折轨道宽度、恢复高度和箭头区域复用 UI 的同一组常量。
 
 普通输入更新也遵循同一事务：`update` 准备整棵子树，不移除已接受的 owner；`reject_controls` 恢复输入、局部状态和快照；`commit_controls` 在取消 effects 后一次提交成员关系。重复 commit/reject/close 安全。相同的失败输入暂缓重试，已有区域仍可响应局部事件；首次挂载被拒绝时保留空视图并释放候选实例，修正输入或源码后恢复。关闭 Instance 会释放代码、元数据和子实例，即使其 C++ 外壳仍由调用方保留。
 

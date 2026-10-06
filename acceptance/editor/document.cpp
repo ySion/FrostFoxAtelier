@@ -36,6 +36,8 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_document.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
+#include "ui_actions.inl"
+#include "table_dsl.inl"
 #include "composed_ui.inl"
 #include "ui_reload_transaction.inl"
 #include "ui_source_patch.inl"
@@ -54,6 +56,9 @@ int main(int argc, char** argv) {
         require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory | --profile-ui-reload output.csv]");
         verify_project_document();
         verify_declarative_parameters();
+        verify_ui_actions();
+    verify_table_dsl();
+    verify_table_views();
         verify_composed_ui();
         verify_ui_reload_transaction();
         verify_ui_source_patch();

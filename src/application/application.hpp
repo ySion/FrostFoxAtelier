@@ -72,6 +72,8 @@ private:
     bool gpu_validation_{};
     std::uint64_t menu_incarnation_{};
     ui::ControlKey menu_return_focus_{};
+    ui::ControlKey menu_context_target_{},menu_context_group_{};
+    ui::TableLayout menu_table_layout_;
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
     renderer::Renderer renderer_;
     std::vector<renderer::MeshInstance> meshes_;
@@ -101,6 +103,7 @@ private:
     bool confirm_discard();
     Result<void> project_command(editor::Command,std::string_view);
     void publish_document(std::unique_ptr<editor::Session>);
+    void cancel_interaction(const ui::Reply&);
     void invalidate_surface();
     bool pointer_ready() const noexcept;
     bool over_viewport(float, float) const noexcept;

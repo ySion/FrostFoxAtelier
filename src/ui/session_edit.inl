@@ -1,6 +1,6 @@
     static void action(Reply& reply, ActionKind kind, ControlKey key,
-                       ActionValue value = {}) {
-        reply.effects.emplace_back(Action{kind,key,std::move(value)});
+                       ActionValue value = {}, ControlKey target = 0) {
+        reply.effects.emplace_back(Action{kind,key,std::move(value),target});
     }
     static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace_back(std::move(request)); }
     void begin_edit(ControlKey key, bool mode, bool select_all = false) {

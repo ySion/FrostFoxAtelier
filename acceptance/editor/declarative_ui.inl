@@ -144,22 +144,83 @@ void verify_declarative_parameters() {
         require(ui.accept(*frame),"Declarative parameter frame was rejected.");
     };
     publish();
-    require(workspace.ui_statistics("Position").has_value(),"Parameters did not create the Source/JIT component.");
-    const auto first=*workspace.ui_statistics("Position");
+    require(workspace.ui_statistics("Parameters").has_value(),"Parameters did not create its complete Source/JIT region.");
+    const auto first=*workspace.ui_statistics("Parameters");
     require(first.binding_evaluations>0 && first.node_creations>0,"UI component did not evaluate or create nodes.");
+    for (const auto key:{ui::ControlKey{50},ui::ControlKey{75},editor::control::parameter_path,editor::control::parameter_back,
+             editor::control::parameter_forward,ui::ControlKey{51},ui::ControlKey{52},editor::control::parameter_pages,
+             editor::control::parameter_search,editor::control::parameter_transform,editor::control::parameter_components,editor::control::parameter_list,
+             editor::control::position_fold,ui::ControlKey{70},ui::ControlKey{73}})
+        require(ui.presented()->find(key),"The composed Parameters region lost a stable host key alias.");
+    require(workspace.ui_statistics("ViewportTools").has_value() &&
+        ui.presented()->find(editor::control::scene_shading) && ui.presented()->find(editor::control::scene_guides),
+        "The compact viewport menus did not come from their Source/JIT region.");
+    const auto search=ui.presented()->find(editor::control::parameter_search)->bounds;
+    const auto header=ui.presented()->find(51)->bounds;
+    const auto tabs=ui.presented()->find(editor::control::parameter_pages)->bounds;
+    require(search.y>=header.y+header.height-.1f && search.y+search.height<=tabs.y+.1f,
+        "The shared Parameters Filter did not precede its content pages.");
+    require(ui.presented()->find(workspace.reset_control(root)),"Position lost its typed group-reset binding.");
+    require(ui.presented()->find(workspace.name_control(actor)),"ObjectHeader lost the typed Actor name binding.");
+    require(workspace.ui_statistics("ToolShelf").has_value() && !workspace.ui_statistics("ToolShelfTools"),
+        "Only the tool buttons, rather than the complete shelf, came from the Source/JIT region.");
+    const auto shelf_first=*workspace.ui_statistics("ToolShelf");
+    const auto in_shelf=[&](ui::ControlKey key) {
+        while (key) {
+            if (key==editor::control::shelf) return true;
+            const auto at=std::ranges::find(controls,key,&ui::Control::key);
+            if (at==controls.end()) break;
+            key=at->parent;
+        }
+        return false;
+    };
+    const auto shelf_nodes=std::ranges::count_if(controls,[&](const auto& control){return in_shelf(control.key);});
+    require(shelf_first.node_creations==static_cast<std::uint64_t>(shelf_nodes),
+        "ToolShelf's Source node statistics did not account for the complete shelf subtree.");
+    struct ShelfIdentity {ui::ControlKey target,key;editor::CommandGroup group;};
+    std::vector<ShelfIdentity> tools;
+    for (const auto& definition:editor::command_definitions) {
+        if (definition.group!=editor::CommandGroup::create && definition.group!=editor::CommandGroup::view) continue;
+        const auto target=static_cast<ui::ControlKey>(definition.id);
+        const auto tool=std::ranges::find(controls,target,&ui::Control::action_target);
+        require(tool!=controls.end() && std::ranges::count(controls,target,&ui::Control::action_target)==1 &&
+            in_shelf(tool->key) && tool->key!=target,"The complete DSL shelf lost or duplicated a command route.");
+        tools.push_back({target,tool->key,definition.group});
+    }
+    for (const auto page:{editor::control::shelf_view,editor::control::shelf_create}) {
+        workspace.shelf_page=page;publish();
+        for (const auto& tool:tools) {
+            const auto item=std::ranges::find(controls,tool.key,&ui::Control::key);
+            const bool visible=tool.group==(page==editor::control::shelf_create?editor::CommandGroup::create:editor::CommandGroup::view);
+            require(item!=controls.end() && item->action_target==tool.target && (ui.presented()->find(tool.key)!=nullptr)==visible,
+                "Shelf category switching recreated its tools or published a hidden category.");
+        }
+        const auto current=*workspace.ui_statistics("ToolShelf");
+        require(current.instance==shelf_first.instance && current.node_creations==shelf_first.node_creations &&
+            current.scope_creations==shelf_first.scope_creations && current.scope_retirements==shelf_first.scope_retirements,
+            "Shelf category switching changed Source Context or control lifetimes.");
+    }
     const auto x=workspace.field_control(root,document.parameters()[0].path);
     require(x && ui.presented()->find(x),"The generated NumberRow lost the real typed property binding.");
     const auto incarnation=ui.presented()->find(x)->incarnation;
     publish();
-    require(workspace.ui_statistics("Position")->binding_evaluations==first.binding_evaluations &&
-        workspace.ui_statistics("Position")->node_creations==first.node_creations,"A stable UI projection reevaluated bindings or recreated nodes.");
+    require(workspace.ui_statistics("Parameters")->binding_evaluations==first.binding_evaluations &&
+        workspace.ui_statistics("Parameters")->node_creations==first.node_creations,"A stable UI projection reevaluated bindings or recreated nodes.");
+    const auto shelf_before=*workspace.ui_statistics("ToolShelf");
     take(document.begin_edit(root,document.parameters()[0].path,x));
     take(document.preview_edit(x,1));take(document.preview_edit(x,2));take(document.preview_edit(x,3));take(document.commit_edit(x));
     publish();
-    require(workspace.ui_statistics("Position")->binding_evaluations==first.binding_evaluations+1 &&
-        ui.presented()->find(x)->incarnation==incarnation,"A property batch reevaluated unrelated bindings or replaced the field identity.");
+    const auto edited=*workspace.ui_statistics("Parameters");
+    require(edited.binding_evaluations>first.binding_evaluations && edited.instance==first.instance &&
+        edited.node_creations==first.node_creations && edited.scope_creations==first.scope_creations &&
+        edited.scope_retirements==first.scope_retirements && ui.presented()->find(x)->incarnation==incarnation,
+        "A property batch failed to update the composed bindings or replaced live field/Context identities.");
+    require(workspace.ui_statistics("ToolShelf")->binding_evaluations==shelf_before.binding_evaluations,
+        "A World field change reevaluated the unrelated tool shelf.");
     const auto value_control=std::ranges::find_if(controls,[&](const auto& item){return item.key==x;});
     require(value_control!=controls.end() && value_control->value==3,"Source/JIT edit binding did not publish the actual World value.");
+    publish();require(workspace.ui_statistics("Parameters")->binding_evaluations==edited.binding_evaluations,
+        "A settled property batch kept reevaluating composed bindings.");
     changed(document.undo());publish();require(value(document,root)==0,"Declarative property undo lost the model value.");
     changed(document.redo());publish();require(value(document,root)==3,"Declarative property redo lost the model value.");
     const auto box=ui.presented()->find(editor::control::position_fold)->bounds;
@@ -171,26 +232,69 @@ void verify_declarative_parameters() {
     publish();
     require(!ui.presented()->find(editor::control::position_fold)->selected && !ui.presented()->find(x),
         "The Source event did not retain local state or collapse its actual content.");
-    const auto collapsed=*workspace.ui_statistics("Position");publish();
-    require(workspace.ui_statistics("Position")->binding_evaluations==collapsed.binding_evaluations,
+    const auto collapsed=*workspace.ui_statistics("Parameters");publish();
+    require(workspace.ui_statistics("Parameters")->binding_evaluations==collapsed.binding_evaluations,
         "Local state was reinitialized during an ordinary refresh.");
     take(workspace.apply_ui({ui::ActionKind::activate,editor::control::position_fold,true}));publish();
+    const auto empty_state=[&] {
+        return std::ranges::any_of(controls,[&](const auto& control) {
+            if (control.text.empty() || !std::ranges::contains(control.classes,std::string{"empty-state"}) ||
+                !ui.presented()->find(control.key)) return false;
+            auto parent=control.parent;
+            while (parent) {
+                if (parent==50) return true;
+                const auto at=std::ranges::find(controls,parent,&ui::Control::key);
+                if (at==controls.end()) break;
+                parent=at->parent;
+            }
+            return false;
+        });
+    };
+    const auto page_history=document.undo_count();
+    const auto root_row=workspace.object_control(root);
+    workspace.parameter_page=editor::control::parameter_components;workspace.query=L"staticmesh";publish();
+    require(root_row && ui.presented()->find(root_row) && !ui.presented()->find(x),
+        "The shared Filter failed to match the actual selected component type.");
+    workspace.query=L"no-such-property";publish();
+    require(!ui.presented()->find(root_row) && empty_state() && ui.presented()->find(editor::control::parameter_search),
+        "Unmatched components lost their empty state or retained rows.");
+    workspace.parameter_page=editor::control::parameter_transform;publish();
+    require(!ui.presented()->find(x) && !ui.presented()->find(editor::control::position_fold) && empty_state(),
+        "Changing property pages discarded the shared query or its no-match state.");
+    workspace.query.clear();publish();
+    require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
+        document.undo_count()==page_history,"Clearing Filter changed the World field key or document history.");
+    changed(document.add_actor());publish();
+    require(!ui.presented()->find(editor::control::parameter_transform) &&
+        ui.presented()->find(editor::control::parameter_components) && ui.presented()->find(editor::control::parameter_components)->selected &&
+        workspace.parameter_page==editor::control::parameter_transform && empty_state(),
+        "An Actor without a scene root did not temporarily expose only Components.");
+    changed(document.undo());take(document.select(actor));publish();
+    require(ui.presented()->find(editor::control::parameter_transform) && ui.presented()->find(editor::control::parameter_transform)->selected &&
+        ui.presented()->find(editor::control::parameter_components),"Returning to a rooted Actor lost the preferred Transform page.");
+    take(document.select({}));publish();
+    require(!ui.presented()->find(editor::control::parameter_transform) && !ui.presented()->find(editor::control::parameter_components) &&
+        !ui.presented()->find(editor::control::parameter_search) && !ui.presented()->find(x) && empty_state(),
+        "No selection retained Actor-specific controls or lost its neutral empty state.");
+    take(document.select(actor));publish();
+    require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
+        document.undo_count()==page_history,"Property page availability changed World field routing or scene history.");
     changed(document.create_static_mesh(editor::mesh_assets()[1]));
     const auto other=document.selected();const auto other_root=*take(world::root_component(document.world().runtime(),other));
     publish();
     const auto other_x=workspace.field_control(other_root,document.parameters()[0].path);
     require(other_x!=x && !ui.presented()->find(x) && ui.presented()->find(other_x),"Changing the selected Actor reused an old field route.");
     take(document.begin_edit(root,document.parameters()[0].path,9999));take(document.preview_edit(9999,9));take(document.commit_edit(9999));
-    const auto selected_evaluations=workspace.ui_statistics("Position")->binding_evaluations;publish();
-    require(workspace.ui_statistics("Position")->binding_evaluations==selected_evaluations,"An old Actor invalidated the new Inspector.");
+    const auto selected_evaluations=workspace.ui_statistics("Parameters")->binding_evaluations;publish();
+    require(workspace.ui_statistics("Parameters")->binding_evaluations==selected_evaluations,"An old Actor invalidated the new Inspector.");
     // Exercise a World lifecycle change outside the editor's history writer.
     auto& external_world=const_cast<world::World&>(document.world());
     auto removal=take(external_world.detach(other));publish();
     require(!ui.presented()->find(other_x) && !workspace.field_control(other_root,document.parameters()[0].path),
         "An externally detached Actor remained an Inspector target.");
-    const auto detached=*workspace.ui_statistics("Position");publish();
-    require(workspace.ui_statistics("Position")->node_creations==detached.node_creations &&
-        workspace.ui_statistics("Position")->binding_evaluations==detached.binding_evaluations,
+    const auto detached=*workspace.ui_statistics("Parameters");publish();
+    require(workspace.ui_statistics("Parameters")->node_creations==detached.node_creations &&
+        workspace.ui_statistics("Parameters")->binding_evaluations==detached.binding_evaluations,
         "A detached selection kept retiring and recreating its field routes.");
     changed(external_world.restore(removal));publish();
     const auto restored_x=workspace.field_control(other_root,document.parameters()[0].path);
@@ -222,5 +326,5 @@ void verify_declarative_parameters() {
     verify_ui_boundary_validation(document,root,ui);
     auto cleared=ui.set_controls({});require(cleared.has_value(),"UI scope unmount failed.");
     workspace.reset_document();take(document.close());
-    std::puts("Declarative Parameters acceptance: PASS (real Source/JIT, typed World editing, sparse bindings, state/input, rebinding, unmount, diagnostics)");
+    std::puts("Declarative Parameters acceptance: PASS (real Source/JIT, typed World editing, sparse bindings, dynamic pages/shared filter, state/input, rebinding, unmount, diagnostics)");
 }

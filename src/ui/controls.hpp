@@ -6,6 +6,7 @@ namespace atelier::ui {
 
 enum class VectorAxis { none, x, y, z, w };
 inline constexpr float single_line_height=23;
+inline constexpr float stow_rail_width=8, stow_collapsed_height=6, stow_arrow_region_height=18;
 // Shared number/text editor geometry. Content may grow for larger fonts.
 ui_layout::NodeInput single_line_layout(float width=0);
 struct CollapsibleBar {
@@ -71,6 +72,9 @@ struct MenuItem {
     std::wstring shortcut{};
     bool separator_before{};
     std::vector<MenuItem> children{};
+    MenuBehavior behavior{MenuBehavior::command};
+    ControlKey radio_group{};
+    ControlIcon icon{ControlIcon::none};
     bool operator==(const MenuItem&) const = default;
 };
 // Append last: a root popup and its items. Coordinates and width are DIPs;

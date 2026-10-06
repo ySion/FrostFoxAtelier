@@ -32,7 +32,7 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     value.scrollbar_width=style.scrollbar_width; value.scrollbar_inset=style.scrollbar_inset; value.scrollbar_min_thumb=style.scrollbar_min_thumb;
     value.foreground = p.text; value.border = p.border; value.selection = p.selection; value.caret = p.text;
     value.scrollbar=p.muted;
-    if (scrolling(kind)) { value.indicator_background=p.field; value.indicator_border=p.border; }
+    if (scrolling(kind) || kind==ControlKind::table) { value.indicator_background=p.field; value.indicator_border=p.border; }
     if (kind==ControlKind::slider) { value.indicator_background=p.button; value.indicator_border=p.border; }
     if (role == Role::title) { value.font.size *= style.title_scale; value.font.weight = style.title_weight; }
     if (role == Role::caption) { value.font.size *= style.caption_scale; value.foreground = p.muted; }
@@ -45,13 +45,13 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     if (button) value.background = p.button;
     if (number) value.background = p.field;
     if (splitter) value.background = p.splitter;
-    if (kind == ControlKind::list || kind==ControlKind::tree) value.background = p.list;
+    if (kind == ControlKind::list || kind==ControlKind::tree || kind==ControlKind::table) value.background = p.list;
     if (kind == ControlKind::popup) { value.background=p.panel; value.border_width=style.border_width; }
     if (button || item || number || toggle) value.padding = style.control_padding;
     if (button || number || splitter) value.border_width = style.border_width;
-    if (state.selected && (button || item)) value.background = p.selected;
+    if (state.selected && (button || (item && kind!=ControlKind::menu_item))) value.background = p.selected;
     if (state.enabled) {
-        if (state.hover && (button || item || splitter || toggle) && (!state.selected || toggle)) value.background = p.hover;
+        if (state.hover && (button || item || splitter || toggle) && (!state.selected || toggle || kind==ControlKind::menu_item)) value.background = p.hover;
         if (state.hover && number) value.border = p.hover;
         if (state.pressed && (button || item || splitter || toggle)) value.background = p.pressed;
         if (state.focus) { value.border = p.focus; if (item || toggle) value.border_width = style.border_width; }
@@ -62,7 +62,7 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
 }
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
-    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ? style.indicator_size+6 : 0.f;
+    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout || control.kind==ControlKind::menu_item ? style.indicator_size+6 : 0.f;
     const bool captioned=control.icon!=ControlIcon::none && !control.text.empty();
     const float leading=captioned && style.icon_placement==IconPlacement::leading?style.indicator_size+6:0.f;
     const float above=captioned && style.icon_placement==IconPlacement::above?style.indicator_size+2:0.f;

@@ -22,7 +22,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 视口显示策略
 
-应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 的 Shading、Edges、Topology、Guides 下拉框使用既有 CPU UI、独立菜单窗口和 accepted 输入链；模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。正式编辑器默认 MatCap；直接调用 Renderer 的默认设置仍为 Smooth。
+应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。正式编辑器默认 MatCap；直接调用 Renderer 的默认设置仍为 Smooth。
 
 - **Shading**：Smooth 使用已有顶点法线和基础色；Flat 使用几何面法线，并依据输入法线的总体方向确定正反，保留当前双面绘制。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
 - **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。

@@ -38,6 +38,7 @@ Window::Window(HWND popup_owner) : popup_(popup_owner!=nullptr) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     WNDCLASSEXW cls{};
     cls.cbSize = sizeof(cls);
+    cls.style = CS_DBLCLKS;
     cls.hInstance = GetModuleHandleW(nullptr);
     cls.lpfnWndProc = procedure;
     cls.lpszClassName = window_class;
