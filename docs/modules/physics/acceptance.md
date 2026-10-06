@@ -7,8 +7,8 @@
 先按[根 README](../../../README.md#构建与端到端验收)准备锁定工具链并配置 dev/release。以下目标同时构建和执行，失败返回非零；所有检查在 Release 中仍生效。
 
 ```powershell
-cmake --build --preset dev --target physics_acceptance world_acceptance editor_document_acceptance
-cmake --build --preset release --target physics_acceptance world_acceptance editor_document_acceptance
+cmake --build --preset dev --target physics_acceptance world_acceptance editor_document_acceptance editor_physics_project_acceptance
+cmake --build --preset release --target physics_acceptance world_acceptance editor_document_acceptance editor_physics_project_acceptance
 
 ./out/dev/atelier_physics_acceptance.exe --list
 ./out/dev/atelier_physics_acceptance.exe --scenario vehicle
@@ -41,12 +41,14 @@ cmake --build --preset release --target physics_acceptance world_acceptance edit
 
 2026-10-06 在当前工作区修改上，使用 `cmake/toolchain-lock.json` 锁定工具链完成以下验收，两个构建命令退出码均为 0：
 
-| 配置 | 物理 | World | 编辑器文档 |
-| --- | --- | --- | --- |
-| dev | 15/15 PASS | 8/8 PASS | PASS |
-| release | 15/15 PASS | 8/8 PASS | PASS |
+| 配置 | 物理 | World | 编辑器文档 | Physics Test 工程 |
+| --- | --- | --- | --- | --- |
+| dev | 15/15 PASS | 8/8 PASS | PASS | PASS |
+| release | 15/15 PASS | 8/8 PASS | PASS | PASS |
 
 两种配置的 `--list` 均列出 15 项；分别执行 `vehicle`、`world_ownership` 均为 1/1 PASS；未知场景和未知参数均返回非零。完整本地日志为 `out/review/physics-scenarios/dev.log`、`release.log`、`cli.log`，属于可重新生成的构建产物，不随源码提交。
+
+Physics Test 工程使用正式 Project/Session 加载并保存重开，再由真实 Jolt 步进 90 帧检查 Body、重力、力、冲量、运动学目标及 Sensor 接触；本轮 dev/release 的独立目标与完整编辑器文档验收均退出 0。自动窗口检查未完成，不能据此断言场景在视口中的显示与操作已验收。
 
 真实场景已复现并加入回归的修复：
 
@@ -56,6 +58,6 @@ cmake --build --preset release --target physics_acceptance world_acceptance edit
 
 ## 边界
 
-这些是无窗口、可重跑的真实模拟场景，尚未提供编辑器可视化测试关卡。本轮不证明物理面板鼠标输入、碰撞调试绘制或专用服务器宿主。`world_acceptance` 验证 World 契约，`editor_document_acceptance` 补充工程 Cook 缓存及场景文档往返，不能替代窗口验收。
+这些是无窗口、可重跑的真实模拟场景。[Physics Test 工程](../../../examples/physics-test/README.md)提供编辑器可打开的基础 Body 配置场景；`editor_physics_project_acceptance` 从该工程加载场景并用真实 Jolt 检查重力、力、冲量、运动学目标和 Sensor 接触。编辑器仍不提供物理运行预览，因此该工程不是可在视口播放的完整测试关卡。本轮不证明物理面板鼠标输入、碰撞调试绘制或专用服务器宿主。`world_acceptance` 验证 World 契约，文档验收不能替代窗口验收。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。

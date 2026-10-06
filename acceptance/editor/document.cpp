@@ -53,7 +53,13 @@ int main(int argc, char** argv) {
             profile_ui_reload(argv[2]);
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--profile-json output-directory | --profile-ui-reload output.csv]");
+        if (argc == 2 && std::string_view(argv[1]) == "--physics-test-project") {
+            verify_physics_test_project();
+            std::puts("Editor physics project acceptance: PASS");
+            return 0;
+        }
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--physics-test-project | --profile-json output-directory | --profile-ui-reload output.csv]");
+        verify_physics_test_project();
         verify_project_document();
         verify_declarative_parameters();
         verify_ui_actions();

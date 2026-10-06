@@ -49,6 +49,9 @@ function(atelier_add_editor)
     add_custom_target(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_physics_project_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-test-project
+        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"

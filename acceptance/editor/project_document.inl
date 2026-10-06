@@ -36,6 +36,65 @@ void verify_scene_v1(editor::Project& project) {
         "Scene v1 reopen changed its stored schema or values after the math migration.");
 }
 
+void verify_physics_test_project() {
+    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"examples/physics-test";
+    auto project=take(editor::Project::open(folder));
+    auto document=take(editor::Session::deserialize(
+        take(editor::read_file(take(project.resolve(project.startup_scene())))),project));
+    require(take(document->world().members()).size()==7,
+        "The sample physics project lost an Actor.");
+    const auto find_actor=[&](std::wstring_view name) {
+        for (const auto& actor:take(document->world().members()))
+            if (document->name(actor.id())==name) return actor.id();
+        throw std::runtime_error("The sample physics project lost a named Actor.");
+    };
+    const auto ground=find_actor(L"Static Triangle Ground");
+    const auto box=find_actor(L"Dynamic Box");
+    const auto sphere=find_actor(L"Dynamic Sphere Through Sensor");
+    const auto capsule=find_actor(L"Actor Capsule Body");
+    const auto sensor=find_actor(L"Contact Sensor");
+    const auto platform=find_actor(L"Kinematic Platform");
+    const auto target=find_actor(L"Force And Impulse Target");
+    auto& world=const_cast<world::World&>(document->world());
+    const auto body_settings=[&](ObjectId actor) {
+        return take(physics::read_settings(world.runtime(),component(*document,actor,
+            document->physics_types().body_component)));
+    };
+    require(body_settings(ground).shape==physics::ShapeKind::triangle_mesh &&
+        body_settings(box).motion==physics::MotionKind::dynamic &&
+        body_settings(sphere).shape==physics::ShapeKind::sphere &&
+        body_settings(capsule).shape==physics::ShapeKind::capsule &&
+        body_settings(sensor).sensor &&
+        body_settings(platform).motion==physics::MotionKind::kinematic,
+        "The sample physics project lost its Body configurations.");
+    const auto saved=take(document->serialize());
+    auto reopened=take(editor::Session::deserialize(saved,project));
+    require(take(reopened->serialize())==saved,
+        "The sample physics scene changed after an editor save and reopen.");
+    auto scene=take(physics::PhysicsScene::create(world,document->physics_types()));
+    bool entered_sensor=false;
+    scene->on_contact([&](const physics::ContactEvent& event)->Result<void> {
+        if (event.phase==physics::ContactPhase::began && event.trigger &&
+            ((event.first_actor==sphere && event.second_actor==sensor) ||
+             (event.second_actor==sphere && event.first_actor==sensor))) entered_sensor=true;
+        return {};
+    });
+    changed(world.start());
+    require(scene->body_count()==7,"The sample physics project did not activate every Body.");
+    take(scene->add_force(target,{10,0,0}));
+    take(scene->add_impulse(target,{1,0,0}));
+    const auto platform_handle=take(scene->body_handle(platform));
+    take(scene->set_kinematic_target(platform_handle,{-1,.5f,2},{0,0,0,1}));
+    take(scene->update(1.f/60.f));
+    require(take(scene->read_body_state(take(scene->body_handle(target)))).linear_velocity.x>0 &&
+        take(scene->read_body_state(platform_handle)).position.x==-1.f,
+        "The sample physics commands did not affect the first completed step.");
+    for (unsigned step=1;step<90;++step) take(scene->update(1.f/60.f));
+    require(take(scene->read_body_state(take(scene->body_handle(box)))).position.y<1.f &&
+        entered_sensor,"The sample physics project did not exercise gravity and sensor contact.");
+    changed(world.stop());
+}
+
 void verify_project_document() {
     namespace fs=std::filesystem;
     const auto evidence=fs::current_path()/"project-document-evidence"/std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
