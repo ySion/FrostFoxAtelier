@@ -11,6 +11,7 @@
 namespace atelier::editor {
 namespace {
 using json_format::Json;
+using json_format::fields;
 template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     if constexpr (!std::is_void_v<T>) return std::move(*value);
@@ -22,9 +23,82 @@ Json vector(math::Vector3 value) { return Json::array({value.x,value.y,value.z})
 math::Vector3 vector(const Json& value) {
     const auto v=json_format::vector<3>(value); return {v[0],v[1],v[2]};
 }
+Json body_settings(const physics::BodySettings& value) {
+    constexpr std::array shapes{"box","sphere","triangle_mesh","capsule"};
+    constexpr std::array motions{"stationary","kinematic","dynamic"};
+    if (static_cast<unsigned>(value.shape)>=shapes.size() || static_cast<unsigned>(value.motion)>=motions.size() ||
+        !math::is_finite(value.half_extents) || value.half_extents.x<=0 || value.half_extents.y<=0 || value.half_extents.z<=0 ||
+        !std::isfinite(value.radius) || value.radius<=0 || !std::isfinite(value.capsule_half_height) || value.capsule_half_height<=0 ||
+        value.category>=value.responses.size() || !std::isfinite(value.material.friction) || value.material.friction<0 ||
+        !std::isfinite(value.material.restitution) || value.material.restitution<0 || value.material.restitution>1 ||
+        (value.shape==physics::ShapeKind::triangle_mesh && value.motion!=physics::MotionKind::stationary) ||
+        (value.cooked_shape && value.shape!=physics::ShapeKind::triangle_mesh))
+        throw std::runtime_error("Invalid physical body settings.");
+    Json responses=Json::array();
+    for (auto response:value.responses) {
+        if (static_cast<unsigned>(response)>static_cast<unsigned>(physics::Response::block))
+            throw std::runtime_error("Invalid physics collision response.");
+        responses.push_back(static_cast<unsigned>(response));
+    }
+    return {{"shape",shapes[static_cast<unsigned>(value.shape)]},
+        {"motion",motions[static_cast<unsigned>(value.motion)]},
+        {"half_extents",vector(value.half_extents)},
+        {"radius",value.radius},{"capsule_half_height",value.capsule_half_height},
+        {"category",value.category},{"responses",std::move(responses)},
+        {"sensor",value.sensor},{"friction",value.material.friction},
+        {"restitution",value.material.restitution}};
+}
+physics::BodySettings body_settings(const Json& value,bool legacy) {
+    fields(value,{"shape","motion","half_extents","radius","capsule_half_height",
+        "category","responses","sensor","friction","restitution"});
+    if (legacy) for (const auto key:{"capsule_half_height","category","responses","sensor","friction","restitution"})
+        (void)value.at(key);
+    physics::BodySettings settings;
+    const auto enumeration=[&](const char* key,auto names) {
+        if (legacy) return json_format::identity(value.at(key));
+        const auto name=value.at(key).get<std::string>();
+        const auto found=std::ranges::find(names,name);
+        if (found==names.end()) throw std::runtime_error(std::string("Unknown physics ")+key);
+        return static_cast<std::size_t>(found-names.begin());
+    };
+    const auto shape=enumeration("shape",std::array{"box","sphere","triangle_mesh","capsule"});
+    const auto motion=enumeration("motion",std::array{"stationary","kinematic","dynamic"});
+    if (shape>static_cast<unsigned>(physics::ShapeKind::capsule) ||
+        motion>static_cast<unsigned>(physics::MotionKind::dynamic))
+        throw std::runtime_error("Invalid physics shape or motion.");
+    settings.shape=static_cast<physics::ShapeKind>(shape);
+    settings.motion=static_cast<physics::MotionKind>(motion);
+    settings.half_extents=vector(value.at("half_extents"));
+    const auto number=[&](const char* key,float fallback) {
+        const auto found=value.find(key);
+        if (found==value.end()) return fallback;
+        const auto& item=*found;
+        if (!item.is_number()) throw std::runtime_error(std::string("Expected numeric physics field: ")+key);
+        return item.get<float>();
+    };
+    if (!value.contains("radius")) throw std::runtime_error("Missing physics radius.");
+    settings.radius=number("radius",settings.radius);
+    settings.capsule_half_height=number("capsule_half_height",settings.capsule_half_height);
+    const auto category=value.contains("category")?json_format::identity(value.at("category")):settings.category;
+    if (category>=settings.responses.size()) throw std::runtime_error("Invalid physics category.");
+    settings.category=static_cast<std::uint8_t>(category);
+    if (value.contains("responses")) {
+        const auto& responses=value.at("responses");
+        if (!responses.is_array() || responses.size()!=settings.responses.size())
+            throw std::runtime_error("Physics responses require 16 entries.");
+        for (std::size_t i=0;i<settings.responses.size();++i) {
+            const auto response=json_format::identity(responses[i]);
+            if (response>static_cast<unsigned>(physics::Response::block))
+                throw std::runtime_error("Invalid physics collision response.");
+            settings.responses[i]=static_cast<physics::Response>(response);
+        }
+    }
+    settings.sensor=value.value("sensor",settings.sensor);
+    settings.material={number("friction",settings.material.friction),number("restitution",settings.material.restitution)};
+    return settings;
+}
 std::string type_name(Runtime& runtime,TypeId type) { return std::string(take(runtime.describe(type))->name); }
 auto failed(const std::exception& error) { return std::unexpected(Error{ErrorCode::invalid_storage,error.what()}); }
-using json_format::fields;
 void validate_color(math::Vector3 color) {
     if (!std::isfinite(color.x) || !std::isfinite(color.y) || !std::isfinite(color.z) || color.x<0 || color.y<0 || color.z<0 || color.x>1 || color.y>1 || color.z>1)
         throw std::runtime_error("Invalid scene material color.");
@@ -42,37 +116,6 @@ std::vector<detail::ScalarField> business_fields(Runtime& runtime,const world::T
     if (derives(runtime,type,types.static_mesh_component)) reserved.push_back(take(runtime.find_field(types.static_mesh_component,"material")));
     std::erase_if(fields,[&](const auto& field) { return std::ranges::find(reserved,field.path.front())!=reserved.end(); });
     return fields;
-}
-Json write_body(Runtime& runtime,ObjectId object) {
-    const auto settings=take(physics::read_settings(runtime,object));
-    const auto shape=settings.shape==physics::ShapeKind::box?"box":settings.shape==physics::ShapeKind::sphere?"sphere":
-        settings.shape==physics::ShapeKind::triangle_mesh?"triangle_mesh":nullptr;
-    const auto motion=settings.motion==physics::MotionKind::stationary?"stationary":settings.motion==physics::MotionKind::kinematic?"kinematic":
-        settings.motion==physics::MotionKind::dynamic?"dynamic":nullptr;
-    if (!shape || !motion) throw std::runtime_error("Unknown physical body shape or motion.");
-    if (!std::isfinite(settings.radius) || settings.radius<=0 ||
-        !std::isfinite(settings.half_extents.x) || !std::isfinite(settings.half_extents.y) || !std::isfinite(settings.half_extents.z) ||
-        settings.half_extents.x<=0 || settings.half_extents.y<=0 || settings.half_extents.z<=0 ||
-        (settings.shape==physics::ShapeKind::triangle_mesh && settings.motion!=physics::MotionKind::stationary))
-        throw std::runtime_error("Invalid physical body settings.");
-    return {{"shape",shape},{"motion",motion},{"half_extents",vector(settings.half_extents)},{"radius",settings.radius}};
-}
-void read_body(Runtime& runtime,ObjectId object,const Json& value) {
-    fields(value,{"shape","motion","half_extents","radius"});
-    const auto shape=value.at("shape").get<std::string>(), motion=value.at("motion").get<std::string>();
-    physics::BodySettings settings;
-    if (shape=="box") settings.shape=physics::ShapeKind::box;
-    else if (shape=="sphere") settings.shape=physics::ShapeKind::sphere;
-    else if (shape=="triangle_mesh") settings.shape=physics::ShapeKind::triangle_mesh;
-    else throw std::runtime_error("Unknown physical body shape.");
-    if (motion=="stationary") settings.motion=physics::MotionKind::stationary;
-    else if (motion=="kinematic") settings.motion=physics::MotionKind::kinematic;
-    else if (motion=="dynamic") settings.motion=physics::MotionKind::dynamic;
-    else throw std::runtime_error("Unknown physical body motion.");
-    settings.half_extents=vector(value.at("half_extents"));
-    if (!value.at("radius").is_number()) throw std::runtime_error("Expected a numeric body radius.");
-    settings.radius=value.at("radius").get<float>();
-    take(physics::configure(runtime,object,settings));
 }
 Json encode_scalar(Runtime& runtime,const Scalar& value) {
     if (!detail::finite_scalar(value)) throw std::runtime_error("Scene property values must be finite.");
@@ -185,7 +228,7 @@ Result<std::string> Session::serialize() const {
                     if (mesh.mesh.resolved && mesh.mesh.source.empty()) throw std::runtime_error("A procedural mesh has no persistent resource source. Save/import the mesh first.");
                     value["mesh"]=mesh.mesh.source; value["base_color"]=vector(mesh.material.base_color);
                 }
-                if (physical_type(runtime,state.type)) value["body"]=write_body(runtime,component.id());
+                if (physical_type(runtime,state.type)) value["body"]=body_settings(take(physics::read_settings(runtime,component.id())));
                 values.push_back(std::move(value));
             }
             actors.push_back({{"type",type_name(runtime,actor.type)},{"name",utf8(name(member.id()))},{"enabled",actor.enabled},
@@ -231,13 +274,12 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                 Json structural=component;
                 if (version==2) structural.erase("properties");
                 const bool physical=physical_type(runtime,component_type);
-                if (version==2 && physical) structural.erase("body");
+                if (physical) structural.erase(version==1?"physics":"body");
                 if (mesh) fields(structural,{"id","type","enabled","position","rotation","scale","parent","mesh","base_color"});
                 else if (spatial) fields(structural,{"id","type","enabled","position","rotation","scale","parent"});
                 else fields(structural,{"id","type","enabled"});
                 auto value=take(world::create_component(runtime,component_type));
                 read_properties(runtime,types,value.id(),component_type,component.value("properties",Json::object()));
-                if (physical) read_body(runtime,value.id(),component.at("body"));
                 const auto key=json_format::identity(component.at("id"));
                 if (!key || !ids.emplace(key,value.id()).second) throw std::runtime_error("Duplicate or empty scene Component identity.");
                 roots.push_back(std::move(value));
@@ -264,6 +306,24 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                 }
                 committed(world.set_enabled(id,component.at("enabled").get<bool>()));
                 attachments.push_back({id,parent,id==scene_root});
+            }
+            for (std::size_t i=0;i<components.size();++i) {
+                const auto& component=components[i]; const auto id=roots[i].id();
+                const auto component_type=take(runtime.type_of(id));
+                if (physical_type(runtime,component_type)) {
+                    auto settings=body_settings(component.at(version==1?"physics":"body"),version==1);
+                    if (settings.shape==physics::ShapeKind::triangle_mesh) {
+                        if (scene_root==ObjectId{}) throw std::runtime_error("Triangle collision needs a root mesh.");
+                        const auto mesh=take(world::read_static_mesh(runtime,scene_root));
+                        if (mesh.mesh.source.empty()) throw std::runtime_error("Triangle collision needs a persistent mesh source.");
+                        if (mesh.mesh.source.starts_with("project/"))
+                            settings.cooked_shape=take(project.collision(mesh.mesh.source,
+                                take(world::read_transform(runtime,scene_root)).scale));
+                        else if (!mesh.mesh.source.starts_with("builtin/"))
+                            throw std::runtime_error("Triangle collision has an unsupported mesh source.");
+                    }
+                    take(physics::configure(runtime,id,std::move(settings)));
+                }
             }
             if (!attachments.empty()) committed(world.attach_components(root.id(),attachments));
             committed(world.set_enabled(root.id(),actor.at("enabled").get<bool>()));

@@ -23,7 +23,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")
     atelier_target(atelier_editor_core)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language PRIVATE atelier_physics ole32 nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language atelier_physics PRIVATE ole32 nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"
@@ -70,6 +70,9 @@ function(atelier_add_editor)
     add_custom_target(project_integration_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
         DEPENDS atelier_project_integration_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_physics_project_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-test-project
+        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"

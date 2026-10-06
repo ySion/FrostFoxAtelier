@@ -71,3 +71,11 @@ UE 的 UClass 包含类默认对象及生成来源，Blueprint 的 Class Default
 源码窗口专项覆盖真实菜单、光标与选区、Ctrl+S/JIT 发布、错误保存与诊断点击、修正、大段剪贴板和撤销；随后验证 Actor Structure 添加 Source 组件、数值/bool 属性、场景保存重开、跨文件诊断、独立游戏运行和 UI 预览以及关闭。本次没有重跑系统 IME；此前的用户中止记录不计入通过结果。
 
 窗口复验还捕获并修复了枚举菜单路由拦截数值字段右键菜单的问题：枚举分支限定于 Combo，数值框继续走既有复制、粘贴和默认值菜单。窗口菜单边界用例改为选取最右侧字段，并留出明确的显示器工作区余量；不再依赖旧参数页布局。
+
+## 主线同步补验（2026-10-07）
+
+编辑器交付 `ba03dee` 与物理主线 `1f6d28c` 合并。Session 统一注册 World/Physics，Source Prepare 消费已注册的引擎类型；Body 配置事务接入实际组件选择与撤销。Scene v2 保存完整 Body 设置，读取兼容主线的 v1 物理测试工程和早期 v2 设置，工程碰撞缓存在恢复根网格后校验。Actor Structure 沿通用组件入口增删 Body，没有恢复旧 Parameters 页签和未接线的物理控件键。
+
+Dev／Release 均完成受影响目标编译，并通过 15/15 物理场景、项目场景生命周期、完整编辑器文档（含 Physics Test 工程）、Source→场景→热更→独立运行及 UI 拒绝/恢复验收。日志为 `out/sync-{dev,release}-{build,physics,scenes,documents,integration}.log`。
+
+本次合并未重新运行前台窗口驱动。上述窗口证据属于合并前的编辑器交付；当前 Body 窗口用例已改用 Actor Structure 的真实添加/删除及撤销入口，不能据编译通过宣称新组合的窗口操作已复验。

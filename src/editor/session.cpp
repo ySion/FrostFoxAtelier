@@ -14,7 +14,8 @@ template<class T> T take(Result<T> result) {
     return std::move(*result);
 }
 }
-Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))), world_(runtime_, types_),
+Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))),
+    physics_types_(take(physics::register_types(runtime_))), world_(runtime_, types_),
     parameters_{Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
                 Parameter{"Z", "m", types_.position_fields[2]}} {
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);
@@ -147,6 +148,15 @@ Result<world::Commit> Session::add_component(TypeId type) {
     const auto members=world::components(runtime_,actor);
     if (!members) return std::unexpected(members.error());
     if (members->size()>=maximum_components) return invalid("Editor Component limit reached.");
+    auto physical=runtime_.is_a(type,physics_types_.body_component);
+    if (!physical) return std::unexpected(physical.error());
+    if (*physical) for (const auto& member:*members) {
+        auto existing=runtime_.type_of(member.id());
+        if (!existing) return std::unexpected(existing.error());
+        auto body=runtime_.is_a(*existing,physics_types_.body_component);
+        if (!body) return std::unexpected(body.error());
+        if (*body) return invalid("An Actor can have only one physics BodyComponent.");
+    }
     auto root = world::create_component(runtime_, type);
     if (!root) return std::unexpected(root.error());
     auto actor_root = world::root_component(runtime_, actor);
@@ -217,6 +227,23 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
 Result<Scalar> Session::read_property(ObjectId object,std::span<const FieldId> path) const {
     if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
     return world_.read(object,path);
+}
+Result<void> Session::configure_body(ObjectId component, physics::BodySettings settings) {
+    if (auto cancelled=cancel_edit(); !cancelled) return cancelled;
+    auto state=admit_component_edit(component);
+    if (!state) return std::unexpected(state.error());
+    auto physical=runtime_.is_a(state->type,physics_types_.body_component);
+    if (!physical) return std::unexpected(physical.error());
+    if (!*physical)
+        return invalid("Selected Component is not a physics body.");
+    auto before=physics::read_settings(runtime_,component);
+    if (!before) return std::unexpected(before.error());
+    if (*before==settings) return {};
+    auto held=runtime_.hold(component);
+    if (!held) return std::unexpected(held.error());
+    if (auto changed=physics::configure(runtime_,component,settings); !changed) return changed;
+    remember(BodyChange{std::move(*held),state->owner,std::move(*before),std::move(settings)});
+    return {};
 }
 Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path, std::uint64_t control_session) {
     if (active_) return invalid("A field edit is already active.");
@@ -329,6 +356,15 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             if (!written) return std::unexpected(written.error());
             selection_ = {item.actor,item.root.id()};
             return world::Commit{true, {}};
+        } else if constexpr (std::is_same_v<T, BodyChange>) {
+            auto state=admit_component_edit(item.root.id());
+            if (!state) return std::unexpected(state.error());
+            if (state->owner != item.actor)
+                return invalid("The physics body's owning Actor changed.");
+            auto changed=physics::configure(runtime_,item.root.id(),forward?item.after:item.before);
+            if (!changed) return std::unexpected(changed.error());
+            selection_={item.actor,item.root.id()};
+            return world::Commit{true,{}};
         } else {
             const bool attach = item.added == forward;
             if (attach) {
@@ -387,11 +423,9 @@ Result<world::Commit> Session::close() {
 Result<world::Commit> Session::start() {
     if (active_) return invalid("Finish the active edit before starting the World.");
     if (world_.running() || world_.closed()) return world_.start();
-    if (const auto body=runtime_.find_type("physics.BodyComponent")) {
-        auto scene=physics::PhysicsScene::create(world_,{*body});
-        if (!scene) return std::unexpected(scene.error());
-        physics_=std::move(*scene);
-    }
+    auto scene=physics::PhysicsScene::create(world_,physics_types_);
+    if (!scene) return std::unexpected(scene.error());
+    physics_=std::move(*scene);
     auto started=world_.start();
     if (!world_.running()) physics_.reset();
     return started;

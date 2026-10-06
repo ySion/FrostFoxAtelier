@@ -1,5 +1,6 @@
 /.tools/
 /out/
+/project-document-evidence/
 /CMakeUserPresets.json
 /.vs/
 /compile_commands.json

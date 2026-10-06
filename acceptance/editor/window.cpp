@@ -1098,6 +1098,24 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     click(app,control::redo);
     require(contains(app,mesh_actor) && component(app,mesh_actor,app.document().types().static_mesh_component)==mesh_component,
         "Redo changed the created Actor/component identity.");
+    click(app,static_cast<ControlKey>(atelier::editor::Command::show_structure));
+    click(app,control::add_component);
+    const auto body_choice=atelier::application::EditorAcceptanceAccess::menu_item(app,L"physics.BodyComponent");
+    require(body_choice,"Actor Structure omitted the physical Body type.");
+    click(app,body_choice);
+    const auto physics_body=component(app,mesh_actor,app.document().physics_types().body_component);
+    require(app.document().selection()==atelier::editor::Selection{mesh_actor,physics_body},
+        "Adding a physical Body did not inspect the new Component.");
+    capture(app,output/"physics-components.png");
+    click(app,atelier::application::EditorAcceptanceAccess::structure_control(app,physics_body));
+    key(app,VK_DELETE);
+    require(model(atelier::world::components(app.document().world().runtime(),mesh_actor)).size()==1,
+        "Physics body removal left a component attached.");
+    key(app,'Z',true);
+    require(component(app,mesh_actor,app.document().physics_types().body_component)==physics_body,
+        "Undo physical Body removal changed identity.");
+    key(app,'Y',true);
+    click(app,control::show_actors);
     const auto object = actors(app).front().id();
     click(app, app.object_control(object));
     require(app.document().selection().actor == object, "List selection did not select the clicked object.");

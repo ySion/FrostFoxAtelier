@@ -2,9 +2,9 @@
 
 #include "world/world.hpp"
 #include "editor/assets.hpp"
+#include "physics/physics.hpp"
 #include <unordered_map>
 
-namespace atelier::physics { class PhysicsScene; }
 namespace atelier::editor {
 class Project;
 struct Parameter {
@@ -32,6 +32,7 @@ public:
     ~Session();
     const world::World& world() const noexcept { return world_; }
     const world::Types& types() const noexcept { return types_; }
+    const physics::Types& physics_types() const noexcept { return physics_types_; }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     Selection selection() const noexcept { return selection_; }
     std::wstring_view name(ObjectId) const noexcept;
@@ -45,6 +46,7 @@ public:
     Result<std::vector<ComponentType>> component_types() const;
     Result<std::vector<Property>> properties(ObjectId) const;
     Result<Scalar> read_property(ObjectId, std::span<const FieldId>) const;
+    Result<void> configure_body(ObjectId component, physics::BodySettings);
     Result<void> begin_edit(ObjectId component, std::span<const FieldId>, std::uint64_t control_session);
     Result<void> set_property(ObjectId, std::span<const FieldId>, Scalar, std::uint64_t control_session);
     Result<void> preview_edit(std::uint64_t control_session, float);
@@ -82,10 +84,12 @@ private:
         std::variant<world::Trs,Scalar> before, after;
     };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
-    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange>;
+    struct BodyChange { ObjectRoot root; ObjectId actor; physics::BodySettings before, after; };
+    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange, BodyChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
+    physics::Types physics_types_;
     std::shared_ptr<void> prepared_;
     world::World world_;
     std::unique_ptr<physics::PhysicsScene> physics_;

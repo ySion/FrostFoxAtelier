@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "actors": [
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Static Triangle Ground",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [5, 1, 5],
+          "mesh": "builtin/plane",
+          "base_color": [0.36, 0.42, 0.43]
+        },
+        {
+          "id": 2,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 2,
+            "motion": 0,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": false,
+            "friction": 0.75,
+            "restitution": 0
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Dynamic Box",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [-2, 2.5, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "mesh": "builtin/cube",
+          "base_color": [0.83, 0.38, 0.22]
+        },
+        {
+          "id": 2,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 0,
+            "motion": 2,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Dynamic Sphere Through Sensor",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [0, 3, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "mesh": "builtin/sphere",
+          "base_color": [0.21, 0.68, 0.78]
+        },
+        {
+          "id": 2,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 1,
+            "motion": 2,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": false,
+            "friction": 0.2,
+            "restitution": 0.2
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Actor Capsule Body",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [2, 2.5, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        {
+          "id": 2,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 2, 1],
+          "mesh": "builtin/sphere",
+          "base_color": [0.72, 0.73, 0.28]
+        },
+        {
+          "id": 3,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 3,
+            "motion": 2,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.35,
+            "capsule_half_height": 0.6,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": false,
+            "friction": 0.5,
+            "restitution": 0
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Contact Sensor",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [0, 1.25, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "mesh": "builtin/cube",
+          "base_color": [0.64, 0.33, 0.66]
+        },
+        {
+          "id": 2,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 0,
+            "motion": 0,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": true,
+            "friction": 0.2,
+            "restitution": 0
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Kinematic Platform",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [-2, 0.5, 2],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "mesh": "builtin/cube",
+          "base_color": [0.35, 0.55, 0.72]
+        },
+        {
+          "id": 2,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 0,
+            "motion": 1,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": false,
+            "friction": 0.6,
+            "restitution": 0
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Force And Impulse Target",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [3, 2.5, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "mesh": "builtin/sphere",
+          "base_color": [0.88, 0.68, 0.20]
+        },
+        {
+          "id": 2,
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "physics": {
+            "shape": 1,
+            "motion": 2,
+            "half_extents": [0.5, 0.5, 0.5],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "sensor": false,
+            "friction": 0.2,
+            "restitution": 0
+          }
+        }
+      ]
+    }
+  ]
+}

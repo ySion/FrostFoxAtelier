@@ -26,14 +26,13 @@ struct Code {
     Code(Runtime& r,TypeId type,std::shared_ptr<Evidence> e):runtime(r),program(r,type),evidence(std::move(e)) {}
     ~Code() { evidence->live_runtime_on_release &= !runtime.types().empty(); ++evidence->destroyed; }
 };
-editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence,bool physical=false) {
-    return [evidence,physical](world::World& world)->Result<std::shared_ptr<void>> {
+editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
+    return [evidence](world::World& world)->Result<std::shared_ptr<void>> {
         auto& runtime=world.runtime(); ++evidence->prepared;
         take(NativeRegistration<Actor>{runtime,"game.Actor",TypeKind::object}.base<world::Actor>().field<&Actor::health>("health").publish());
         const auto move=take(NativeRegistration<Move>{runtime,"game.Move",TypeKind::object}.base<world::Component>()
             .field<&Move::speed>("speed").field<&Move::mass>("mass").field<&Move::count>("count").field<&Move::allowed>("allowed").publish());
         take(NativeRegistration<Spatial>{runtime,"game.Spatial",TypeKind::object}.base<world::SceneComponent>().field<&Spatial::offset>("offset").publish());
-        if (physical) take(physics::register_types(runtime));
         auto code=std::make_shared<Code>(runtime,move,evidence);
         auto candidate=take(source::Program::prepare(take(code->program.request("Move.source",
             "void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); }"))));
@@ -130,13 +129,16 @@ void run() {
     const auto migrated_json=Json::parse(take(migrated->serialize()));
     upgraded["actors"][0]["components"][0]["base_color"]=migrated_json["actors"][0]["components"][0]["base_color"];
     require(migrated_json==upgraded,"Legacy scene did not preserve spatial/resource data while upgrading to v2.");
-    auto physical=take(editor::Session::deserialize(saved,project,prepare(evidence,true)));
+    auto physical=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     const auto physical_actor=take(physical->world().members()).front().id();take(physical->select(physical_actor));
     auto& physical_runtime=physical->world().runtime();
     const auto body_type=take(physical_runtime.find_type("physics.BodyComponent"));changed(physical->add_component(body_type));
     const auto body=member(*physical,body_type);
-    take(physics::configure(physical_runtime,body,{physics::ShapeKind::sphere,physics::MotionKind::dynamic,{1,2,3},.75f}));
-    auto physical_reopened=take(editor::Session::deserialize(take(physical->serialize()),project,prepare(evidence,true)));
+    physics::BodySettings settings;
+    settings.shape=physics::ShapeKind::sphere;settings.motion=physics::MotionKind::dynamic;
+    settings.half_extents={1,2,3};settings.radius=.75f;
+    take(physical->configure_body(body,settings));
+    auto physical_reopened=take(editor::Session::deserialize(take(physical->serialize()),project,prepare(evidence)));
     take(physical_reopened->select(take(physical_reopened->world().members()).front().id()));
     const auto reopened_body_type=take(physical_reopened->world().runtime().find_type("physics.BodyComponent"));
     require(take(physics::read_settings(physical_reopened->world().runtime(),member(*physical_reopened,reopened_body_type)))==
