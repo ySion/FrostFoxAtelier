@@ -53,6 +53,16 @@ std::atomic<std::uint64_t> next_scene_id{1};
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
     return std::unexpected(Error{code, message});
 }
+Result<void> validate_active_actor(world::World& world, ObjectId actor) {
+    auto state = world::inspect_actor(world.runtime(), actor);
+    if (!state) return std::unexpected(state.error());
+    auto members = world.members();
+    if (!members) return std::unexpected(members.error());
+    if (state->state != world::ActorState::active ||
+        std::ranges::none_of(*members, [actor](const auto& member) { return member.id() == actor; }))
+        return failure(ErrorCode::invalid_member, "Physics Actor must be active in this World.");
+    return {};
+}
 Result<void> acquire_jolt() {
     std::lock_guard lock(registration_mutex);
     if (scene_count == 0) {
@@ -521,8 +531,9 @@ void PhysicsScene::remove(ObjectId actor) noexcept {
     remove_special(actor);
     for (auto it = impl_->distances.begin(); it != impl_->distances.end();) {
         if (it->second.first.actor == actor || it->second.second.actor == actor) {
-            impl_->system.RemoveConstraint(it->second.constraint);
-            it = impl_->distances.erase(it);
+            const auto revision = it->first;
+            ++it;
+            (void)destroy_constraint({scene_id_, revision});
         } else ++it;
     }
     auto id = found->second.id;
@@ -688,7 +699,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
     }
     auto& bodies = impl_->system.GetBodyInterface();
     const bool stepping_once = paused_ && single_step_;
-    single_step_ = false;
+    if (!paused_) single_step_ = false;
     while (((stepping_once && result.steps == 0) ||
         (!paused_ && remaining_ + 1e-7f >= fixed)) && result.steps < maximum_steps) {
         if (before_step_) {
@@ -768,6 +779,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
             if (!written) return std::unexpected(written.error());
         }
         if (!stepping_once) remaining_ = std::max(0.f, remaining_ - fixed);
+        else single_step_ = false;
         ++result.steps;
         result.completed_step = ++completed_step_;
         impl_->collect_contacts(completed_step_, result);
@@ -896,6 +908,11 @@ Result<void> PhysicsScene::destroy_constraint(ConstraintHandle handle) {
     if (handle.scene != scene_id_ || found == impl_->distances.end())
         return failure(ErrorCode::invalid_member, "Distance constraint handle is stale.");
     impl_->system.RemoveConstraint(found->second.constraint);
+    // Removing support must resume sleeping endpoints as well as active ones.
+    // Jolt removes the constraint without waking its bodies.
+    auto& bodies = impl_->system.GetBodyInterface();
+    bodies.ActivateBody(impl_->bodies.at(found->second.first.actor).id);
+    bodies.ActivateBody(impl_->bodies.at(found->second.second.actor).id);
     impl_->distances.erase(found);
     return {};
 }
@@ -909,10 +926,7 @@ Result<SpecialHandle> PhysicsScene::create_character(ObjectId actor, CharacterSe
     if (!world_.running() || impl_->characters.contains(actor) || impl_->bodies.contains(actor) ||
         impl_->ragdolls.contains(actor))
         return failure(ErrorCode::invalid_member, "Character requires an active Actor without another physics body.");
-    auto state = world::inspect_actor(world_.runtime(), actor);
-    if (!state) return std::unexpected(state.error());
-    if (state->state != world::ActorState::active)
-        return failure(ErrorCode::invalid_member, "Character Actor must be active in this World.");
+    if (auto valid = validate_active_actor(world_, actor); !valid) return std::unexpected(valid.error());
     auto root = world::root_component(world_.runtime(), actor);
     if (!root) return std::unexpected(root.error());
     if (!*root) return failure(ErrorCode::invalid_member, "Character Actor needs a root SceneComponent.");
@@ -966,10 +980,7 @@ Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId actor,
     if (parts.empty() || parts.size() > 128 || !world_.running() ||
         impl_->bodies.contains(actor) || impl_->characters.contains(actor) || impl_->ragdolls.contains(actor))
         return failure(ErrorCode::argument_mismatch, "Ragdoll requires 1-128 parts and an unused active Actor.");
-    auto state = world::inspect_actor(world_.runtime(), actor);
-    if (!state) return std::unexpected(state.error());
-    if (state->state != world::ActorState::active)
-        return failure(ErrorCode::invalid_member, "Ragdoll Actor must be active in this World.");
+    if (auto valid = validate_active_actor(world_, actor); !valid) return std::unexpected(valid.error());
     auto root = world::root_component(world_.runtime(), actor);
     if (!root) return std::unexpected(root.error());
     if (!*root) return failure(ErrorCode::invalid_member, "Ragdoll Actor needs a root SceneComponent.");

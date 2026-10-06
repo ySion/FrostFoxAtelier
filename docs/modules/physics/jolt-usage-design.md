@@ -58,13 +58,13 @@
 -> Gameplay/渲染读取完成态；下一帧再消费事件回调的命令
 ```
 
-`step_id` 独立于渲染帧号；查询结果、体状态和事件都标明来源步号。没有子步时继续读上次完成态；场景初建的静态/运动学体可视为初始步 `0`。固定步目前是 `1/60 s`、最多 8 步且积压会被截断；先在 `StepResult` 增加丢弃时长/补步计数，决定是否变更上限前用真实负载测量。暂停时不推进 Jolt，单步只推进一个固定步；这两个控制需在宿主接入时实现并验收。
+`step_id` 独立于渲染帧号；查询结果、体状态和事件都标明来源步号。没有子步时继续读上次完成态；场景初建的静态/运动学体可视为初始步 `0`。固定步目前是 `1/60 s`、最多 8 步且积压会被截断；`StepResult` 已提供剩余/丢弃时长和子步计数，决定是否变更上限前仍需真实负载测量。暂停时不推进 Jolt，单步只推进一个固定步；前回调失败保留单步请求，后回调失败不回滚或重复已完成步。`fixed_step` 场景已验证这些边界及 30/120 Hz 宿主得到相同固定步结果；编辑器尚未提供运行时模拟控制。
 
 现有 `World::update` 只按显示帧执行一次，不能把多次物理子步中的角色控制、动画根运动或持续施力伪称为每步 Gameplay Tick。`PhysicsScene::on_before_step` 和 `on_after_step` 为宿主提供每子步的业务阶段；前者提交的命令在当前步执行，后者可读取该步完成态并向后续步提交命令。World 业务系统尚未自动绑定这些阶段，持续力需由宿主在前回调逐步提交。若未来改为异步物理，先定义输入快照、发布屏障、查询锁/快照与关闭等待，再开放工作线程调用。
 
 ## 5. 碰撞配置、形状与场景查询
 
-UE 的 `CollisionEnabled`、`ObjectType`、`TraceChannel`、Profile 和 `Ignore/Overlap/Block` 可借鉴为**使用语义**，但 Jolt Object Layer/BroadPhase Layer 不是 UE 通道的同构类型。项目配置先分别回答：是否参与查询、是否参与求解、对象类别、双向响应、是否通知事件；Profile 只是这组配置的具名预设。暂定双方均 Block 才有求解阻挡，任一 Ignore 不相遇，至少一方 Overlap 且无 Ignore 只通知重叠。过滤规则必须集中生成模拟过滤和查询过滤，不能仅靠当前 `stationary/moving` 两层表达所有响应。Sensor 的 Overlap、查询专用代理和仅模拟体是否进入查询都须用 Jolt 5.6.0 的实际过滤 API 验证；不承诺仅设置 `IsSensor` 就等价于 UE 的 QueryOnly。
+UE 的 `CollisionEnabled`、`ObjectType`、`TraceChannel`、Profile 和 `Ignore/Overlap/Block` 可借鉴为**使用语义**，但 Jolt Object Layer/BroadPhase Layer 不是 UE 通道的同构类型。当前公开对象类别、双向响应、Sensor 和查询过滤；具名 Profile、独立查询/模拟参与开关仍未实现。双方均 Block 且非 Sensor 才有求解阻挡，任一 Ignore 不相遇，至少一方 Overlap 且无 Ignore 只通知重叠，已通过 18 组双向响应与 Sensor 组合验证。过滤规则在模拟和查询适配中执行，后端 `stationary/moving` 两层仅用于粗分。Sensor 可被查询；查询专用代理、仅模拟体仍需另行定义，不把 `IsSensor` 等同于 UE 的 QueryOnly。
 
 | 用途 | 推荐形状/运动 | 调用方应配置或检查 |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ UE 的 `CollisionEnabled`、`ObjectType`、`TraceChannel`、Profile 和 `Ignore/
 
 查询从 `PhysicsScene` 暴露 Ray、Shape Sweep、Overlap 三类值接口，返回引擎身份而非 Jolt 指针。请求明确场景、起终点/形状、过滤配置、忽略 Actor/组件、`any/closest/all` 模式和容量；结果包含 `step_id`、命中列表、`has_block`、`overflow`。`all` 结果按距离比例、体代际和子形状 ID 稳定排序；截断必须显式报告。Hit 区分阻挡与重叠、初始穿透、位置/法线、形状子 ID、可选物理材质。未命中和初始穿透不得伪造普通表面接触点。首次实现先提供同步安全阶段查询，之后才考虑异步查询和持久快照。
 
-形状使用顺序：当前 Box/Sphere 参数化，静态三角网格读取不可变 CPU MeshRef；下一增量先补 Capsule/Convex 与局部形状偏移，按玩法需要再增加 Compound/Heightfield。动态三角网格仍拒绝。根 TRS 位置、xyzw 旋转、严格正缩放遵循 World 规则；当前原始 Box/Sphere 根须单位缩放，三角网格在创建时烘入根缩放。将来支持非均匀缩放时，逐形状定义可烘焙组合，不能偷偷改变质量或惯性。
+形状使用顺序：当前 Box/Sphere/Capsule 参数化，静态三角网格读取不可变 CPU MeshRef；Convex、局部形状偏移、Compound/Heightfield 按后续玩法需求扩展。动态三角网格仍拒绝。根 TRS 位置、xyzw 旋转、严格正缩放遵循 World 规则；当前原始 Box/Sphere/Capsule 根须单位缩放，三角网格在创建时烘入根缩放。将来支持非均匀缩放时，逐形状定义可烘焙组合，不能偷偷改变质量或惯性。
 
 资源导入链建立后再增加离线 `ShapeAsset` Cook：源网格及碰撞配置 -> 版本化碰撞资产 -> 场景加载。缓存键至少包括源内容、导入/Cook 版本、Jolt 版本、平台与缩放；文件验证格式版本、长度和内容摘要。编辑器和运行时共享资产描述，但不在场景加载关键路径上临时对大型网格做复杂 Cook。`MeshRef` 目前不是持久资产 ID，存档需保存可解析资源来源而不是进程内指针。
 
@@ -93,7 +93,7 @@ UE 的 `CollisionEnabled`、`ObjectType`、`TraceChannel`、Profile 和 `Ignore/
 | 接触/触发 | `ContactListener` 的 Added/Persisted/Removed | 配对归并、退出原因、完成步派发和事件预算 |
 | 运动控制 | `MoveKinematic`、力/冲量及位姿接口 | 固定步目标、传送速度策略、动态体回写 |
 
-Jolt 回调只收集原始 BodyID/子形状及必要的值数据，不访问 World/Runtime、脚本、音频或编辑器，也不在回调中删 Body。完成 `Update` 后按当前映射复验，多个接触点归并成稳定的对象对；区分 `contact_enter/stay/exit` 与 `trigger_enter/stay/exit`。当前 began/ended 是 Jolt 原始通知级别，过渡到对象对事件时须验证多个接触点、睡眠、重建、停用和卸载；销毁导致的 Exit 应带原因，且不得重新引用已终结对象。求解后的冲量若无法可靠获取，就不在公共事件中承诺其数值。监听器或队列容量溢出要计数并标记该步事件不完整，不能静默丢失。
+Jolt 回调只收集原始 BodyID/子形状及必要的值数据，不访问 World/Runtime、脚本、音频或编辑器，也不在回调中删 Body。完成 `Update` 后多个接触点归并成对象对，公开 began/persisted/ended 与 trigger 标志；停用和卸载 Exit 带 `body_removed` 原因。`contacts` 与 `collision_matrix` 已覆盖配对通知、触发响应和停用退出；更多接触拓扑与容量压力仍需专门场景，不能从基础验收推断已全部覆盖。求解后的冲量不在当前公共事件中承诺数值；通知溢出通过 `StepResult` 计数并标记不完整。
 
 无效尺寸、NaN、动态三角网格、跨 World 身份、无活动动态体施力、缺失/损坏形状资产等都返回可定位错误。查询容量截断不是“无命中”。后端升级必须重跑开发与发布构建中的真实物理验收，以及过滤、查询、事件、Cook 兼容性和代表性性能场景；不假定旧 Cook 二进制可读或跨机器浮点逐位一致。
 
@@ -107,7 +107,7 @@ Jolt 回调只收集原始 BodyID/子形状及必要的值数据，不访问 Wor
 | P3 资产与工具 | 基本物理材质、离线 Cook、编辑器配置/可视化 | 资产版本升级/损坏报错；场景反复加载；编辑器与无窗口宿主同结果 |
 | P4 玩法专用 | 角色运动；随后按游戏需求增加约束/布娃娃、车辆等 | 坡度/台阶/跳跃/移动平台；约束限位与生命周期；对应专用场景 |
 
-验收使用真实 Jolt、World 和资源路径，不建立 mock 物理世界。每阶段至少覆盖创建、推进、查询/事件、卸载及再加载，并在 dev/release 均执行。专用服务器宿主出现后，使用相同场景输入比较可观察状态与事件顺序；结果允许声明过的浮点容差，不承诺跨平台位级确定。统计每步活动/休眠体、接触对、查询量、丢时、事件溢出和耗时，性能预算由目标机器测量后确定。
+验收使用真实 Jolt、World 和资源路径，不建立 mock 物理世界。当前 15 个可独立运行的场景及 dev/release 证据见[物理验收](acceptance.md)，覆盖已公开的基础 API；上表包含尚未实现的目标，不代表 Profile、可视化或全部关节限位已交付。专用服务器宿主出现后，使用相同场景输入比较可观察状态与事件顺序；结果允许声明过的浮点容差，不承诺跨平台位级确定。后续性能工作再补充每步活动/休眠体、接触对、查询量和耗时统计，性能预算由目标机器测量后确定。
 
 ## 8. 实施前需要锁定的决策
 

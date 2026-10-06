@@ -21,4 +21,6 @@ cmake --build --preset dev --target physics_acceptance editor_document_acceptanc
 cmake --build --preset release --target physics_acceptance editor_document_acceptance
 ```
 
-`physics_acceptance` 覆盖刚体、过滤/触发、查询、Cook 损坏与重载、角色坡道/台阶/移动平台、距离约束、布娃娃、车辆及生命周期。`editor_document_acceptance` 覆盖工程缓存和场景文档；物理面板的真实窗口输入属于 `editor_acceptance`，运行时需要可授予前台焦点的桌面会话。目前没有专用服务器可执行宿主，验收仅证明无窗口场景消费者。
+`physics_acceptance` 提供 15 个独立场景，逐项输出 RUN/PASS/FAIL。完整覆盖矩阵、单场景重跑方法和本轮结果见[物理验收](acceptance.md)。`editor_document_acceptance` 覆盖工程缓存和场景文档；物理面板的真实窗口输入属于 `editor_acceptance`，运行时需要可授予前台焦点的桌面会话。目前没有专用服务器可执行宿主，验收仅证明无窗口场景消费者。
+
+暂停下重复 `step_once` 合并为一次请求；前回调失败时请求保留，修复回调后可重试；求解完成后的回调失败不重复执行已完成步。显式删除距离约束或移除任一端点都会唤醒幸存端点，解除支撑后继续受重力影响。角色、布娃娃创建同时检查 Actor 活跃状态和所属 World；共享同一 Runtime 不代表可以跨 World 使用 Actor，detach/转移后须在新场景重新创建专用句柄。

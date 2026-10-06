@@ -127,7 +127,7 @@ cmake --build --preset dev --target physics_acceptance
 cmake --build --preset release --target physics_acceptance
 ```
 
-该验收也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查刚体、触发与查询、Cook 资产、角色/约束/布娃娃/车辆及退出清理；成功输出 `Physics acceptance: PASS`。检查不依赖 `assert`，发布配置同样有效。
+该验收也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口执行 15 个可独立运行的场景，检查刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃/车辆；成功输出 `Physics acceptance: PASS (15/15 scenarios)`。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 

@@ -176,7 +176,9 @@ public:
         math::Quaternion rotation, bool preserve_velocity = false);
     [[nodiscard]] Result<ConstraintHandle> create_distance_constraint(BodyHandle first,
         BodyHandle second, float minimum, float maximum);
+    // Explicit removal or endpoint removal wakes the surviving endpoints.
     [[nodiscard]] Result<void> destroy_constraint(ConstraintHandle);
+    // Character and ragdoll Actors must be active members of this scene's World.
     [[nodiscard]] Result<SpecialHandle> create_character(ObjectId actor, CharacterSettings = {});
     [[nodiscard]] Result<void> set_character_input(SpecialHandle, math::Vector3 planar_velocity,
         bool jump = false);
@@ -199,6 +201,8 @@ public:
     [[nodiscard]] Result<QueryResult> overlap_sphere(math::Vector3 center,
         float radius, QueryFilter filter = {}) const;
     void set_paused(bool paused) noexcept { paused_ = paused; }
+    // Paused requests coalesce. A failed before-step preserves the request;
+    // a completed solve consumes it even if the after-step callback fails.
     void step_once() noexcept { single_step_ = true; }
     [[nodiscard]] std::uint64_t completed_step() const noexcept { return completed_step_; }
     void on_contact(ContactHandler handler) { handler_ = std::move(handler); }
