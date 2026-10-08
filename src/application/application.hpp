@@ -124,6 +124,7 @@ private:
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
+    Result<void> frame_actors(bool selected_only);
     bool confirm_discard(bool sources=true);
     bool confirm_source(editor::SourceEditor::File&);
     Result<void> save_source(editor::SourceEditor::File&);

@@ -18,6 +18,11 @@ void Camera::set_view(CameraView view) noexcept {
     else {yaw_=view==CameraView::right?DirectX::XM_PIDIV2:DirectX::XM_PI;pitch_=view==CameraView::top?DirectX::XM_PIDIV2:0;}
 }
 void Camera::focus(math::Vector3 target) noexcept { target_ = target; distance_ = 5.f; }
+void Camera::frame(math::Vector3 center, float radius) noexcept {
+    target_ = center;
+    // Fit the sphere to the vertical field with a small margin; orthographic views share the distance.
+    distance_ = std::clamp(std::max(radius, .05f) * 1.15f / std::sin(field_of_view * .5f), .5f, 2000.f);
+}
 void Camera::orbit(float dx, float dy) noexcept {
     view_=CameraView::perspective;
     yaw_ -= dx * .006f;

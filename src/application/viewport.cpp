@@ -34,6 +34,22 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
             request_menu({editor::control::viewport,0,pointer_position_.x,pointer_position_.y});return true;
         }
         if(event.key==ui::Key::tab && event.shift) {status(execute(editor::Command::snap_toggle),L"Grid snapping toggled");return true;}
+        // Blender navigation keys while the pointer is over the scene.
+        using enum editor::Command;
+        const auto view=[&](editor::Command command,const wchar_t* text){status(execute(command),text);return true;};
+        if(native_key==VK_NUMPAD1 && !event.shift) return view(view_front,L"Front view");
+        if(native_key==VK_NUMPAD3 && !event.shift) return view(view_right,L"Right view");
+        if(native_key==VK_NUMPAD7 && !event.shift) return view(view_top,L"Top view");
+        if((native_key==VK_NUMPAD5 || native_key==VK_NUMPAD0) && !event.shift) return view(view_perspective,L"Perspective view");
+        if(native_key==VK_DECIMAL && !event.shift) {status(frame_actors(true),L"View Selected");return true;}
+        if(native_key==VK_HOME && !event.shift) {status(frame_actors(false),L"View All");return true;}
+        // Shift+A / Shift+S open the Add and Snap menus at the pointer.
+        if(event.shift && (native_key=='A' || native_key=='S')) {
+            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            // The scene is the anchor; group selects which pointer menu to build.
+            request_menu({editor::control::viewport,native_key=='A'?editor::control::viewport_add_menu:editor::control::viewport_snap_menu,pointer_position_.x,pointer_position_.y});
+            return true;
+        }
     }
     if(viewport_tool_.active() && event.kind==ui::EventKind::key_down && event.control && (native_key=='Z' || native_key=='Y')) {
         auto cancelled=viewport_tool_.cancel(*document_);

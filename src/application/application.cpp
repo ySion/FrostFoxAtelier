@@ -87,13 +87,30 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
     status(completion(std::move(result)), success);
 }
 
-Result<void> Application::focus_selected() {
-    auto transform = world::root_component(document_->world().runtime(), document_->selection().actor);
-    if (!transform) return std::unexpected(transform.error());
-    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no root SceneComponent to focus."});
-    auto matrix = world::world_matrix(document_->world().runtime(), **transform);
-    if (!matrix) return std::unexpected(matrix.error());
-    camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
+Result<void> Application::focus_selected() { return frame_actors(true); }
+Result<void> Application::frame_actors(bool selected_only) {
+    // Bounds of the rendered geometry (Blender View Selected / View All); locators count as points.
+    auto& runtime=document_->world().runtime();
+    math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;
+    bool any{};
+    const auto include=[&](math::Vector3 p) {for(int i=0;i<3;++i) {low[i]=std::min(low[i],p[i]);high[i]=std::max(high[i],p[i]);} any=true;};
+    const auto wanted=[&](ObjectId actor){return !selected_only || document_->is_selected(actor) || actor==document_->selection().actor;};
+    auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    std::vector<ObjectId> rendered;
+    for(const auto& item:*items) {
+        rendered.push_back(item.actor);if(!wanted(item.actor)) continue;
+        for(const auto& vertex:item.geometry->vertices())
+            include(math::transform_point(math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world));
+    }
+    auto members=document_->world().members();if(!members) return std::unexpected(members.error());
+    for(const auto& member:*members) {
+        if(!wanted(member.id()) || std::ranges::find(rendered,member.id())!=rendered.end()) continue;
+        auto root=world::root_component(runtime,member.id());if(!root || !*root) continue;
+        auto matrix=world::world_matrix(runtime,**root);if(!matrix) continue;
+        include({(*matrix)[12],(*matrix)[13],(*matrix)[14]});
+    }
+    if(!any) return std::unexpected(Error{ErrorCode::invalid_definition,selected_only?"Select an Actor with a root SceneComponent to frame.":"The scene has nothing to frame."});
+    camera_.frame((low+high)*.5f,math::length(high-low)*.5f);camera_cut_=true;
     return {};
 }
 Result<void> Application::action(const ui::Action& source) {

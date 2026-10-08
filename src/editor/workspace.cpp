@@ -744,6 +744,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     items.push_back(command_item(Command::viewport_options));
                 } else for (const auto& definition:command_definitions) if (definition.group==group->id)
                     items.push_back(command_item(definition.id));
+            } else if(source->key==control::viewport && menu->group==control::viewport_add_menu) {
+                // Blender Shift+A: everything the Create group can place at the 3D cursor.
+                for(const auto& definition:command_definitions) if(definition.group==CommandGroup::create)
+                    items.push_back(command_item(definition.id));
+            } else if(source->key==control::viewport && menu->group==control::viewport_snap_menu) {
+                items=viewport_commands(control::viewport_snap);
             } else if(source->key==control::viewport || source->key==control::viewport_tools_menu) {
                 using enum Command;
                 items=viewport_commands(control::viewport_tools_menu);

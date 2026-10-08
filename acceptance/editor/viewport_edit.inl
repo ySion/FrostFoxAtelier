@@ -187,6 +187,20 @@ void verify_viewport_editing() {
     require(step!=workspace.menu_items.end() && step->selected && step->behavior==ui::MenuBehavior::radio &&
         std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::snap_toggle) && item.behavior==ui::MenuBehavior::checkbox;}),
         "The shared snap menu lost its active step or toggle semantics.");
+    // Blender Shift+A / Shift+S: pointer menus anchored on the scene, built from shared commands.
+    workspace.menu=ui::ContextMenuRequest{control::viewport,control::viewport_add_menu,0,0};publish();
+    require(std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::create_static_mesh);}) &&
+        std::ranges::none_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::erase_selected);}),
+        "Shift+A menu did not list exactly the Create commands.");
+    workspace.menu=ui::ContextMenuRequest{control::viewport,control::viewport_snap_menu,0,0};publish();
+    require(std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::cursor_selected);}),
+        "Shift+S menu did not expose cursor/selection snapping.");
+    {
+        // View Selected frames the actual geometry bounds.
+        Camera framing;framing.frame({1,2,3},.5f);
+        require(framing.target()==math::Vector3{1,2,3} && math::length(framing.eye()-framing.target())>.5f &&
+            math::length(framing.eye()-framing.target())<2.f,"Camera framing did not fit a unit-size bound.");
+    }
     workspace.menu.reset();publish();
     require(workspace.assets.apply({ui::ActionKind::select,browser_control::results,
         ui::TableSelection{workspace.assets.row_key("builtin/cube"),browser_control::name_column}}),"Resource selection failed.");

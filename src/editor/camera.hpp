@@ -17,6 +17,8 @@ public:
     void set_view(CameraView) noexcept;
     CameraView view() const noexcept { return view_; }
     void focus(math::Vector3) noexcept;
+    // Frame a world-space sphere so it fills the view (Blender View Selected / View All).
+    void frame(math::Vector3 center, float radius) noexcept;
     void orbit(float logical_dx, float logical_dy) noexcept;
     void zoom(float wheel_steps) noexcept;
     // Moves the target in the view plane so the grabbed point follows the pointer.
