@@ -265,6 +265,37 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                 symbol==Symbol::filter?(segment(px,py,.13f,.2f,.87f,.2f) || segment(px,py,.13f,.2f,.43f,.55f) || segment(px,py,.87f,.2f,.57f,.55f) ||
                     segment(px,py,.43f,.55f,.43f,.83f) || segment(px,py,.43f,.83f,.57f,.73f) || segment(px,py,.57f,.73f,.57f,.55f)):
                 symbol==Symbol::more?(std::hypot(px-.2f,py-.5f)<.075f || std::hypot(px-.5f,py-.5f)<.075f || std::hypot(px-.8f,py-.5f)<.075f):
+                symbol==Symbol::pointer?(segment(px,py,.23f,.12f,.23f,.79f) || segment(px,py,.23f,.12f,.78f,.59f) ||
+                    segment(px,py,.23f,.79f,.44f,.59f) || segment(px,py,.44f,.59f,.78f,.59f) || segment(px,py,.47f,.64f,.61f,.9f)):
+                symbol==Symbol::translate?(segment(px,py,.5f,.1f,.5f,.9f) || segment(px,py,.1f,.5f,.9f,.5f) ||
+                    segment(px,py,.5f,.1f,.35f,.27f) || segment(px,py,.5f,.1f,.65f,.27f) ||
+                    segment(px,py,.9f,.5f,.73f,.35f) || segment(px,py,.9f,.5f,.73f,.65f) ||
+                    segment(px,py,.5f,.9f,.35f,.73f) || segment(px,py,.1f,.5f,.27f,.65f)):
+                symbol==Symbol::rotate?((std::abs(std::hypot(px-.5f,py-.5f)-.32f)<.04f && !(px>.5f && py<.35f)) ||
+                    segment(px,py,.8f,.33f,.61f,.32f) || segment(px,py,.8f,.33f,.81f,.14f)):
+                symbol==Symbol::scale?(outline(.1f,.61f,.38f,.89f) || outline(.66f,.1f,.9f,.34f) ||
+                    segment(px,py,.34f,.66f,.72f,.28f)):
+                symbol==Symbol::cursor3d?(std::abs(std::hypot(px-.5f,py-.5f)-.25f)<.04f ||
+                    segment(px,py,.5f,.07f,.5f,.93f) || segment(px,py,.07f,.5f,.93f,.5f)):
+                // Houdini-style two-tone handle icons: a small cube body plus an accent layer.
+                symbol==Symbol::translate_accent?(segment(px,py,.5f,.36f,.5f,.06f) || segment(px,py,.5f,.06f,.38f,.2f) || segment(px,py,.5f,.06f,.62f,.2f) ||
+                    segment(px,py,.36f,.62f,.08f,.78f) || segment(px,py,.08f,.78f,.25f,.82f) || segment(px,py,.08f,.78f,.15f,.64f) ||
+                    segment(px,py,.64f,.62f,.92f,.78f) || segment(px,py,.92f,.78f,.75f,.82f) || segment(px,py,.92f,.78f,.85f,.64f)):
+                symbol==Symbol::rotate_accent?((std::abs(std::hypot((px-.5f)*.8f,(py-.66f)*1.6f)-.3f)<.05f && py>.56f) ||
+                    segment(px,py,.18f,.62f,.08f,.5f) || segment(px,py,.18f,.62f,.31f,.56f)):
+                symbol==Symbol::scale_accent?(segment(px,py,.5f,.36f,.5f,.08f) || (std::abs(px-.5f)<.08f && py>=.03f && py<=.16f) ||
+                    segment(px,py,.36f,.62f,.12f,.76f) || (std::abs(px-.12f)<.08f && std::abs(py-.78f)<.08f) ||
+                    segment(px,py,.64f,.62f,.88f,.76f) || (std::abs(px-.88f)<.08f && std::abs(py-.78f)<.08f)):
+                symbol==Symbol::transform_accent?(segment(px,py,.5f,.3f,.5f,.06f) || segment(px,py,.5f,.06f,.4f,.17f) || segment(px,py,.5f,.06f,.6f,.17f) ||
+                    segment(px,py,.36f,.62f,.1f,.77f) || segment(px,py,.64f,.62f,.9f,.77f) ||
+                    (std::abs(std::hypot((px-.5f)*.8f,(py-.72f)*1.6f)-.3f)<.045f && py>.74f)):
+                // Neutral body shared by the two-tone handle icons: an isometric cube at the centre.
+                symbol==Symbol::transform?((std::abs(px-.5f)<=.17f && py>=.42f && py<=.68f) ||
+                    (py>=.3f && py<.42f && std::abs(px-.5f)<=.17f-(.42f-py)*.2f)):
+                symbol==Symbol::caret?(py>=.42f && py<=.68f && std::abs(px-.5f)<=(.68f-py)*1.15f):
+                symbol==Symbol::magnet?((py>=.5f && std::abs(std::hypot(px-.5f,py-.5f)-.28f)<.09f) ||
+                    (py>=.3f && py<=.5f && ((px>=.13f && px<=.31f) || (px>=.69f && px<=.87f)))):
+                symbol==Symbol::magnet_tips?(py>=.12f && py<.3f && ((px>=.13f && px<=.31f) || (px>=.69f && px<=.87f))):
                 (symbol==Symbol::radio || symbol==Symbol::radio_checked)?(std::abs(std::hypot(px-.5f,py-.5f)-.33f)<.04f ||
                     (symbol==Symbol::radio_checked && std::hypot(px-.5f,py-.5f)<.15f)):
                 (symbol==Symbol::checkbox || symbol==Symbol::checkbox_checked)?(outline(.13f,.13f,.87f,.87f) ||

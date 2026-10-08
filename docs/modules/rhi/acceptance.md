@@ -14,6 +14,22 @@
 
 本机证据保留在 `out/dev/root-budget-renderer-before.log`、`out/dev/root-budget-rhi-before.log`、`out/dev/root-budget-renderer-after.log` 及 `out/{dev,release}/root-budget-rhi-after.log`；常规 `rhi-acceptance.log` 和三个 `rhi-regression-*.log` 同时保留详细结果。以下历史证据范围不变。
 
+## 2026-10-08：Scene Lit 所需 RHI 能力
+
+以 `402fab075bb2aa6605b51fdb767387ebd0e08869` 为基线，本次增量在 RX 6800 XT、驱动 `32.0.21045.5002` 上通过 dev/release `rhi_acceptance`，两者退出 0。新增场景全部为无窗口、真实 GPU、D3D12 debug layer + GBV；没有输入自动化或前台窗口验收。
+
+- 公开 `ContextInfo::inline_ray_query`，由固定 gfx 的 DXR 1.1 门槛及设备 SM 6.5 查询决定；本机为 true，实际 SM 6.5 compute RayQuery 编译与执行成功。
+- [RayQuery 场景](../../../acceptance/rhi/ray_query_cases.cpp)：同一命令列表内 BLAS/TLAS build → trace → BLAS 顶点更新及 TLAS 变换更新 → trace，只在末尾 `finish`。两份读回各含五条射线，检查命中/未命中、instance mask、InstanceID、primitive、重心坐标和最近距离；二值 first-hit 遮挡单独查询。TLAS、instance、BLAS、Geometry、原始 mesh buffers、输出 buffer 和 Pipeline 都在提交前释放，结果仍匹配。Geometry 接管独立 range 句柄，原始 mesh 句柄保留至各自 owner 清理。
+- [离屏资源场景](../../../acceptance/rhi/scene_lit_cases.cpp)：64×32 双 FP16 MRT，检查每个像素的 half 位型及后续 compute 采样；颜色含大于 1 的值与负法线分量，D32 深度 SRV 值为 0.25。mip 2 顺序 UAV 写/SRV 读的 128 个值、GPU 生成间接派发的 64 个输出均匹配。三个帧槽回收后得到有限正 timestamp duration。
+- 原始 timestamp：8 个 query 连续复用 6 个提交帧，共发布 48 个原始样本。首次回收前 sequence 为 0，录制新计时及重复 getter 均不改变已缓存样本；回收后各 pass 的 sequence 一致且逐帧递增。检查原始值有限非负、每帧存在正耗时，并核对旧 getter 的首次平滑结果仍约为原始值的 5%。排空后的空闲帧不伪造新样本。计时验收中只使用正常 `frame` 回收，无逐帧 `finish` 或原生等待。
+- 录制标识与 GPU 读回：在此前已有帧推进的同一个 Context 内，从 `gfxGetRecordingFrameSequence` 取得标识，验证额外一次诊断 `finish` 不推进它。后续六个计时帧分别将该标识传入真实 compute，编码结果读回；每帧回收时核对 sample sequence 与录制标识完全一致，并核对对应读回的 64 个 GPU 值。由此验证 timestamp 和普通 GPU 结果的关联，不依赖 Renderer 估算 `frame` 次数。
+- gfx 补丁补齐 BLAS/TLAS build/update 前后的 AS UAV 屏障与失败执行域录制门禁。AS 屏障缺口由源码及 DXR 同步契约确认；修复前后的小场景均可通过，未声称复现了硬件可见错误。D32 SRV 实测原路径可用，没有增加格式转换补丁。
+- 既有 root-budget、间接常量、Mesh/Vertex、range copy、owner/close、null-list、Mesh PS 和 timeout 场景也全部通过。D3D12 InfoQueue 的 warning/error 均为 0。日志中的故意无效 HLSL、timeout 及 null-list 对象清理诊断沿既有回归预期，不代表新增场景失败。
+
+命令：环境脚本后，依次 `cmake --preset dev` / `cmake --build --preset dev --target rhi_acceptance`，以及对应 release 命令。日志保存在 `out/scene-lit-{dev,release}.log`；每个配置也有正式 `rhi-acceptance.log` 与三份 `rhi-regression-*.log`。最终补丁分别在两种配置中从 pristine gfx 重放；Dev 重放后源码 hash 与已验收源码一致。
+
+范围：验证上述 RHI 调用链，不代表 Scene Lit 产品画质、1440p/60 性能、不同 GPU、透明/程序化几何、AS compaction 或 DispatchRays 已验收。整纹理状态跟踪禁止同一 dispatch 同时 SRV/UAV 访问同一 texture；性能采样使用新增原始 sample 接口，旧 duration getter 保留平滑行为，详见[当前契约](contract.md#scene-litinline-rayquery-与离屏资源)。
+
 ## 命令与环境
 
 在 worktree 根目录执行 `. ./tools/enter-dev.ps1`，分别 `cmake --preset dev`、`cmake --preset release`，再运行：

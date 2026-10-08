@@ -20,6 +20,7 @@ struct NumberField {
     double drag_step{.01}, fine_step{.001};
     VectorAxis axis{VectorAxis::none};
     std::optional<SliderRange> slider{};
+    bool single_precision{};
     bool operator==(const NumberField&) const = default;
 };
 struct ParameterRow {

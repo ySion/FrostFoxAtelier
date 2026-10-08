@@ -31,6 +31,25 @@
 
 普通 gfx 资源由消费者显式释放，Context 不复制资源管理器，也不追踪第二份资源 owner 表。`close` 的 busy 检查针对 Pipeline；原始资源退出由消费者履行 gfx 契约。
 
+## Scene Lit：inline RayQuery 与离屏资源
+
+- `Context::info().inline_ray_query` 表示当前执行域同时满足固定 gfx 的 DXR 1.1 门槛及设备 Shader Model 6.5。能力为 false 时消费者不得准备或执行 RayQuery 路径；普通非 RT Context 仍可使用。不新增 DispatchRays 管线种类，使用 `PipelineKind::compute`、`shader_model="6_5"` 和普通 `prepare`；HLSL 通过 `RaytracingAccelerationStructure` / `RayQuery` 访问。
+- AS 沿同一个 `borrow()`：`gfxCreateGeometryTriangles` → `gfxCreateBottomLevelAccelerationStructure` / AddGeometry → `gfxBuildBottomLevelAccelerationStructures` → instance SetBottomLevelAccelerationStructure / SetTransform / SetInstanceID / SetInstanceMask → TLAS AddInstance / Build → `gfxProgramSetParameter(gfx, program, name, tlas)` → compute dispatch。变换是 row-major 3×4；InstanceID 由 Renderer 映射到自身场景数据，RHI 不保存 World 对象。
+- **Geometry 接收 buffer 句柄的所有权**，update 会销毁旧输入句柄，destroy 会销毁当前输入句柄。共享 raster 顶点/索引存储时，把 `gfxCreateBufferRange` 创建的独立 range 句柄交给 Geometry；原始 buffer 由原 owner 保持，不得将同一句柄交给多个 Geometry 或再重复销毁。BLAS 的 geometry 列表、TLAS 的 instance 列表及 instance 的 BLAS 引用均不转移对应对象所有权。
+- 可更新 BLAS 首次 build 使用 `kGfxBuildBottomLevelASFlag_Updateable`。update 只改变允许的顶点位置/输入地址，不改变 geometry 数量、顶点数量、索引内容与格式等拓扑条件；条件变化调用 build。TLAS update 保持 instance 数量，增删 instance 后调用 build。任何被 TLAS 引用的 BLAS 更新后，先更新或重建对应 TLAS，再执行查询。
+- gfx 在 AS build/update 前后处理 AS 自身的 UAV 屏障及 scratch 复用；AS 始终处于专用 AS 状态，消费者不手工改状态。AS 对象、输入 range、结果 buffer 和 Pipeline 可在最后一次 GPU 使用已编码后释放，物理退休沿 gfx 帧槽；后续录制仍需访问的 Geometry/BLAS/instance/TLAS 必须保持有效。退出按 TLAS → instance → BLAS → Geometry → 原始 buffer 清理，再释放 Pipeline 并 `close`。
+- 不透明二值遮挡可以使用 `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`；需要最近遮挡距离、命中 primitive、重心坐标或 ray-hit 材质查找时遍历至完成并读取 committed hit，不能把 first-hit 距离当作最近距离。当前接入只验收三角形、不透明 compute inline 查询。
+- 离屏 FP16 使用 `DXGI_FORMAT_R16G16B16A16_FLOAT`；多颜色附件通过同一个 draw state 和 `gfxCommandBindColorTarget` 绑定。`DXGI_FORMAT_D32_FLOAT` 深度可在后续 compute 阶段作为 `Texture2D<float>` 采样。离屏颜色值可大于 1，不改变窗口 SDR/HDR 策略。
+- `gfxProgramSetParameter(..., texture, mip)` 选择 mip，UAV 只访问该 mip，SRV 从该 mip 开始暴露剩余 mip。状态跟踪粒度是整张 texture：允许顺序 UAV 写 → SRV 读，禁止同一次 draw/dispatch 将同一 texture 同时绑定为 SRV 和 UAV，即使选择不同 mip。逐级缩减可使用不同 texture 交替读写。
+- `gfxCommandDispatchIndirect` 消费 GPU 生成的三个 uint（X/Y/Z group count），仍由 gfx 处理 UAV → indirect 状态。
+- `gfxCommandBeginTimestampQuery` / End 沿现有帧槽录制；`gfxTimestampQueryGetSample(gfx, query)` 返回最新已完成的 `GfxTimestampQuerySample { double duration_ms; uint64_t frame_sequence; }`。`frame_sequence == 0` 表示尚未发布样本，duration 0 本身可以是有效测量。原始 duration 先对 uint64 GPU ticks 作差再换算为毫秒，不做平滑。
+- 样本仅在 owned Context 的 `frame` 等待并回收对应帧槽之后发布；getter 不录制、不提交、不等待、不消费样本。开始/结束新计时仍保留上次完成值；重复读取同一 sequence 不得重复计入统计。`finish` 不推进或发布这些查询，关闭 Context 前需要最后几帧统计时可显式推进剩余帧槽。
+- sequence 从 1 开始，按该 Context 的 `frame` 提交单调递增，未计时的提交也计数；同一次提交中全部查询共享同一 sequence。它不是应用的 accepted frame、Present 完成或跨 Context 全局序号。同一 query 每次提交只能记录一次。Renderer 在每次 `frame` 返回后读取各 pass，仅将相同非零 sequence 的原始值归为一帧；跳过某个 pass 时它保留旧 sequence，应标为缺失。getter 只保留最新完成样本，不保留未读取的历史；要收齐样本应每次 `frame` 后读取。
+- `gfxGetRecordingFrameSequence(gfx)` 返回当前正在录制、下一次 `Context::frame` 将使用的同一个 sequence；无效、失败、非录制或 interop context 返回 0。重复查询、普通录制及 `finish` 不推进序号，`frame` 才推进；Renderer 不自行镜像调用次数。录制 timestamp 与 raycounter 拷贝时取得该标识并存入读回 ring，收到相同 sequence 的完成样本后读取对应槽。拷贝须在该次 `frame` 前编码，且槽在消费前不能被新 GPU 写入覆盖；同一 DIRECT queue 的已完成帧 fence 覆盖二者。如果多个 render 只调用 `finish`、未调用 `frame`，它们属于同一 RHI 帧区间，消费者另存自身 render 标识来区分，不能把 sequence 当每次 render 的编号。
+- 旧 `gfxTimestampQueryGetDuration` 继续返回原有平滑值，首次结果也与初值 0 混合；p95/p99 使用新 sample 接口的去重原始值。新接口复用原有 query heap、readback buffer 和帧槽回收，不增加每帧等待或原生提交。验证模式耗时仅用于确认计时路径，不作为产品性能指标。
+
+DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_ShaderModel6_5.html) 和 [AS 更新及同步规范](https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#synchronizing-acceleration-structure-memory-writesreads)。实际硬件证据见 [验收](acceptance.md)。
+
 ## 窗口与读回
 
 - `Context::target()` 在 owner 线程返回实际 backbuffer 尺寸和窗口可绘制状态；隐藏、最小化或零 client 尺寸不可绘制。它不执行 resize。

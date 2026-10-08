@@ -68,6 +68,7 @@ void Window::cursor(ui::Cursor intent) {
     else if (intent==ui::Cursor::resize_vertical) standard=IDC_SIZENS;
     else if (intent==ui::Cursor::move) standard=IDC_SIZEALL;
     else if (intent==ui::Cursor::pan) standard=IDC_HAND;
+    else if (intent==ui::Cursor::crosshair) standard=IDC_CROSS;
     cursor_=LoadCursorW(nullptr,standard);
     if (intent==ui::Cursor::drag_horizontal) {
         const int size=GetSystemMetricsForDpi(SM_CXCURSOR,GetDpiForWindow(handle_));
@@ -96,8 +97,8 @@ void Window::cursor(ui::Cursor intent) {
     }
     SetCursor(cursor_);
 }
-void Window::show() {
-    if (popup_) { ShowWindow(handle_,SW_SHOWNOACTIVATE); return; }
+void Window::show(bool activate) {
+    if (popup_ || !activate) { ShowWindow(handle_,SW_SHOWNOACTIVATE); UpdateWindow(handle_); return; }
     // The first call can honor a launcher's hidden STARTUPINFO instead of SW_SHOW.
     ShowWindow(handle_, SW_SHOW); ShowWindow(handle_, SW_SHOW); UpdateWindow(handle_);
 }
@@ -234,9 +235,11 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         events_.push_back(std::move(value)); return 0;
     }
     case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-        // Keep system shortcuts such as Alt+F4 with Windows; menu mnemonics
-        // and F10 use the same queued key ownership as ordinary controls.
-        if (wparam!=VK_F10 && wparam!=VK_MENU && wparam!='F' && wparam!='E' && wparam!='C' && wparam!='V' && wparam!='W')
+        // Keep system shortcuts such as Alt+F4 with Windows; menu mnemonics,
+        // F10 and the Blender viewport chords (Alt+A/G/R/S) use the same queued
+        // key ownership as ordinary controls.
+        if (wparam!=VK_F10 && wparam!=VK_MENU && wparam!='F' && wparam!='E' && wparam!='C' && wparam!='V' && wparam!='W' &&
+            wparam!='A' && wparam!='G' && wparam!='R' && wparam!='S')
             return DefWindowProcW(handle_,message,wparam,lparam);
         [[fallthrough]];
     case WM_KEYDOWN: case WM_KEYUP: {

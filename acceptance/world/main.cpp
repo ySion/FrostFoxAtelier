@@ -449,6 +449,7 @@ void ordered_lifecycle() {
 
 #include "lifecycle.inl"
 #include "static_mesh_actor.inl"
+#include "lighting.inl"
 
 void spatial_tree_and_mesh() {
     Runtime runtime;
@@ -523,7 +524,8 @@ int main() {
         actor_lifecycle_and_detached_graph();
         spatial_tree_and_mesh();
         static_mesh_actor_creation();
-        std::puts("World acceptance: PASS (8/8)");
+        lit_materials_and_lights();
+        std::puts("World acceptance: PASS (9/9)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

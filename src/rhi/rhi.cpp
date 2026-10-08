@@ -165,6 +165,10 @@ Result<Context> Context::open(const ContextOptions& options) {
         &capabilities, sizeof(capabilities))) && capabilities.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
     if (!state->info.mesh_shader)
         return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation, "created device lacks Mesh Shader support"});
+    D3D12_FEATURE_DATA_SHADER_MODEL shader_model{D3D_SHADER_MODEL_6_5};
+    state->info.inline_ray_query = gfxIsRaytracingSupported(state->context) &&
+        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shader_model, sizeof(shader_model))) &&
+        shader_model.HighestShaderModel >= D3D_SHADER_MODEL_6_5;
     ComPtr<ID3D12InfoQueue> queue;
     state->info.debug_layer = SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue)));
     if (debug && !state->info.debug_layer)

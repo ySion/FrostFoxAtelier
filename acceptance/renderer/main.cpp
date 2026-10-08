@@ -5,7 +5,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <limits>
+#include <stdexcept>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -13,15 +16,13 @@ namespace render = atelier::renderer;
 namespace ui = atelier::ui;
 void check(bool condition, const char *text) {
     if (!condition) {
-        std::fprintf(stderr, "Renderer acceptance FAILED: %s\n", text);
-        std::exit(1);
+        throw std::runtime_error(text);
     }
 }
 template <class T> T take(render::Result<T> result) {
     if (!result) {
-        std::fprintf(stderr, "Renderer error: %s (terminal=%d)\n", result.error().cause.message.c_str(),
-                     result.error().terminal);
-        std::exit(1);
+        throw std::runtime_error("Renderer error: " + result.error().cause.message +
+            " (terminal=" + std::to_string(result.error().terminal) + ")");
     }
     return std::move(*result);
 }
@@ -37,7 +38,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lpar
 }
 struct Window {
     HWND hwnd{};
-    Window() {
+    Window(int width = 641, int height = 385) {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         WNDCLASSW wc{};
         wc.lpfnWndProc = procedure;
@@ -47,7 +48,7 @@ struct Window {
         hwnd = CreateWindowExW(0, wc.lpszClassName, L"Atelier renderer acceptance", WS_OVERLAPPEDWINDOW, 40,
                                40, 680, 440, nullptr, nullptr, wc.hInstance, nullptr);
         check(hwnd != nullptr, "create fixture window");
-        resize(641, 385);
+        resize(width, height);
         ShowWindow(hwnd, SW_SHOW);
         // CMake may start the fixture with STARTF_USESHOWWINDOW/SW_HIDE; Windows
         // applies that override to the first ShowWindow regardless of its argument.
@@ -267,11 +268,22 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
 #include "ui_shapes.inl"
 #include "viewport_modes.inl"
 #include "reference_guides.inl"
+#include "scene_lit.inl"
 } // namespace
 #include "materials.inl"
 
-int main() {
+int main(int argc, char** argv) try {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (argc > 1) {
+        const std::string_view mode{argv[1]};
+        check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal [--output <absolute-directory>]]");
+        const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
+                                                     : std::filesystem::path{"out/scene-lit-20261008"};
+        check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
+        return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal");
+    }
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
@@ -445,4 +457,7 @@ int main() {
     check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");
     std::puts("Renderer acceptance: PASS (GPU validation, scene/depth, UI coverage/blend/clip, revisions, "
               "resize, minimize/restore, lifetime)");
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "Renderer acceptance FAILED: %s\n", error.what());
+    return 1;
 }

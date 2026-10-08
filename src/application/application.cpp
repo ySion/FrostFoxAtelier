@@ -64,7 +64,7 @@ ui::PixelExtent client_extent(HWND window) {
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
 }
-Application::Application(bool validation) : ui_(editor_fonts()),gpu_validation_(validation) {
+Application::Application(bool validation,bool activate) : ui_(editor_fonts()),gpu_validation_(validation) {
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
@@ -74,7 +74,7 @@ Application::Application(bool validation) : ui_(editor_fonts()),gpu_validation_(
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
     popup_=std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_);
     submenus_.push_back(std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_));
-    window_.show();
+    window_.show(activate);
 }
 Application::~Application() {
     try { close(); }
@@ -87,13 +87,30 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
     status(completion(std::move(result)), success);
 }
 
-Result<void> Application::focus_selected() {
-    auto transform = world::root_component(document_->world().runtime(), document_->selection().actor);
-    if (!transform) return std::unexpected(transform.error());
-    if (!*transform) return std::unexpected(Error{ErrorCode::invalid_definition, "The Actor has no root SceneComponent to focus."});
-    auto matrix = world::world_matrix(document_->world().runtime(), **transform);
-    if (!matrix) return std::unexpected(matrix.error());
-    camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
+Result<void> Application::focus_selected() { return frame_actors(true); }
+Result<void> Application::frame_actors(bool selected_only) {
+    // Bounds of the rendered geometry (Blender View Selected / View All); locators count as points.
+    auto& runtime=document_->world().runtime();
+    math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;
+    bool any{};
+    const auto include=[&](math::Vector3 p) {for(int i=0;i<3;++i) {low[i]=std::min(low[i],p[i]);high[i]=std::max(high[i],p[i]);} any=true;};
+    const auto wanted=[&](ObjectId actor){return !selected_only || document_->is_selected(actor) || actor==document_->selection().actor;};
+    auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    std::vector<ObjectId> rendered;
+    for(const auto& item:*items) {
+        rendered.push_back(item.actor);if(!wanted(item.actor)) continue;
+        for(const auto& vertex:item.geometry->vertices())
+            include(math::transform_point(math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world));
+    }
+    auto members=document_->world().members();if(!members) return std::unexpected(members.error());
+    for(const auto& member:*members) {
+        if(!wanted(member.id()) || std::ranges::find(rendered,member.id())!=rendered.end()) continue;
+        auto root=world::root_component(runtime,member.id());if(!root || !*root) continue;
+        auto matrix=world::world_matrix(runtime,**root);if(!matrix) continue;
+        include({(*matrix)[12],(*matrix)[13],(*matrix)[14]});
+    }
+    if(!any) return std::unexpected(Error{ErrorCode::invalid_definition,selected_only?"Select an Actor with a root SceneComponent to frame.":"The scene has nothing to frame."});
+    camera_.frame((low+high)*.5f,math::length(high-low)*.5f);camera_cut_=true;
     return {};
 }
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading) {
@@ -152,7 +169,10 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
     if (workspace_.workbench.apply(event)) return {};
-    if (workspace_.assets.apply(event)) return {};
+    if (workspace_.assets.apply(event)) {
+        if(event.key==editor::browser_control::results && event.kind==ui::ActionKind::select) workspace_.inspecting_asset=true;
+        return {};
+    }
     if (workspace_.apply_view(event)) return {};
     if (!source.target) {
         const auto local_event=workspace_.apply_ui(source);
@@ -184,10 +204,12 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (event.kind==ui::ActionKind::activate) {
         if (const auto direction=navigation_direction(event.key)) return done(workspace_.navigate(*document_,direction),L"Selection history");
-        if (event.key==world_context) return done(document_->select({}),L"World context");
+        if (event.key==world_context) {workspace_.inspecting_asset=false;return done(document_->select({}),L"World context");}
     }
     if (event.kind==ui::ActionKind::select && event.key==tree_world)
         return done(workspace_.select_tree(*document_,event.key),L"World context");
+    // The rail snap toggle is a second view of the shared snapping command.
+    if (event.kind==ui::ActionKind::activate && event.key==viewport_rail_snap) return execute(editor::Command::snap_toggle);
     if (event.kind==ui::ActionKind::activate && (event.key==shelf_create || event.key==shelf_view)) {
         workspace_.shelf_page=event.key; return {};
     }
@@ -206,9 +228,9 @@ Result<void> Application::action(const ui::Action& source) {
         return document_->owns_edit(event.key) ? done(document_->cancel_edit(), L"Edit cancelled") : Result<void>{};
     if (const auto* binding = workspace_.binding(event.key)) {
         if (event.kind==ui::ActionKind::select && (binding->kind==editor::Workspace::Binding::Kind::object || binding->kind==editor::Workspace::Binding::Kind::structure) && binding->path.empty())
-            return done(workspace_.select_tree(*document_,event.key),L"Tree selection updated");
+            return done(workspace_.select_tree(*document_,event.key,std::get_if<ui::SelectionModifiers>(&event.value)?std::get<ui::SelectionModifiers>(event.value):ui::SelectionModifiers{},ui_.presented().get()),L"Tree selection updated");
         if (binding->kind==editor::Workspace::Binding::Kind::navigation) {
-            if (event.kind==ui::ActionKind::activate) return done(document_->select(binding->object),L"Actor selected");
+            if (event.kind==ui::ActionKind::activate) {workspace_.inspecting_asset=false;return done(document_->select(binding->object),L"Actor selected");}
             return {};
         }
         if (binding->kind==editor::Workspace::Binding::Kind::name) {
@@ -219,6 +241,31 @@ Result<void> Application::action(const ui::Action& source) {
         if (binding->kind==editor::Workspace::Binding::Kind::position_default) {
             if (event.kind!=ui::ActionKind::reset) return invalid();
             return done(document_->reset_position(binding->object),L"Position restored to default / Undo restores the vector");
+        }
+        if(binding->kind==editor::Workspace::Binding::Kind::rotation_default || binding->kind==editor::Workspace::Binding::Kind::scale_default) {
+            if(event.kind!=ui::ActionKind::reset) return invalid();
+            auto value=world::read_transform(document_->world().runtime(),binding->object);if(!value) return std::unexpected(value.error());
+            if(binding->kind==editor::Workspace::Binding::Kind::rotation_default) value->rotation={};else value->scale={1,1,1};
+            const std::array objects{binding->object};const std::array values{*value};
+            auto result=document_->begin_transform(objects,event.key);if(!result) return result;
+            result=document_->preview_transform(event.key,values);
+            if(result) result=document_->commit_edit(event.key);
+            if(!result) {const auto cancelled=document_->cancel_edit();if(!cancelled) return cancelled;}
+            return done(result,L"Transform tuple restored");
+        }
+        if(binding->kind==editor::Workspace::Binding::Kind::rotation) {
+            if(event.kind==ui::ActionKind::edit_begin) {
+                const std::array objects{binding->object};return document_->begin_transform(objects,event.key);
+            }
+            if(event.kind!=ui::ActionKind::edit_preview && event.kind!=ui::ActionKind::edit_commit) return {};
+            const auto* number=std::get_if<double>(&event.value);if(!number || !std::isfinite(*number) || std::abs(*number)>360000) return invalid();
+            auto value=document_->original_transform(event.key,binding->object);if(!value) return std::unexpected(value.error());
+            auto angles=editor::euler_degrees(value->rotation);
+            for(std::size_t axis=0;axis<3;++axis) if(std::ranges::equal(binding->path,document_->types().rotation_fields[axis])) angles[axis]=float(*number);
+            value->rotation=editor::from_euler_degrees(angles);const std::array values{*value};
+            auto result=document_->preview_transform(event.key,values);
+            if(result && event.kind==ui::ActionKind::edit_commit) result=document_->commit_edit(event.key);
+            return done(result,L"Rotation updated");
         }
         if (binding->path.empty()) {
             return invalid();
@@ -250,8 +297,28 @@ Result<void> Application::action(const ui::Action& source) {
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
     using enum editor::Command;
     if (!workspace_.command_enabled(command,*document_)) return {};
+    if(auto cancelled=viewport_tool_.cancel(*document_);!cancelled) return cancelled;
+    if(!workspace_.menu) window_.capture(false);
     Result<void> result;
     switch (command) {
+    case tool_select: case tool_transform: case tool_move: case tool_rotate: case tool_scale:
+        workspace_.viewport_settings.tool=static_cast<editor::TransformTool>(static_cast<unsigned>(command)-static_cast<unsigned>(tool_select));
+        workspace_.status=std::wstring(editor::command_definition(static_cast<std::uint64_t>(command))->title);break;
+    case pivot_median:workspace_.viewport_settings.pivot=editor::PivotMode::median;break;
+    case pivot_cursor:workspace_.viewport_settings.pivot=editor::PivotMode::cursor;break;
+    case cursor_origin:viewport_tool_.cursor={};viewport_tool_.cursor_rotation={};break;
+    case snap_toggle:workspace_.viewport_settings.grid_snap=!workspace_.viewport_settings.grid_snap;break;
+    case snap_grid_01:case snap_grid_02:case snap_grid_05:case snap_grid_1: {
+        constexpr std::array steps{.1f,.2f,.5f,1.f};
+        workspace_.viewport_settings.grid_spacing=steps[static_cast<unsigned>(command)-static_cast<unsigned>(snap_grid_01)];break;
+    }
+    case selection_grid:case selection_cursor: result=viewport_tool_.snap_selection(*document_,workspace_.viewport_settings,command==selection_cursor);break;
+    case cursor_selected:result=viewport_tool_.cursor_to_selection(*document_);break;
+    case cursor_grid:viewport_tool_.cursor_to_grid(workspace_.viewport_settings);break;
+    case cursor_surface:workspace_.viewport_settings.cursor_surface=!workspace_.viewport_settings.cursor_surface;break;
+    case view_perspective:case view_top:case view_front:case view_right:
+        camera_.set_view(static_cast<editor::CameraView>(static_cast<unsigned>(command)-static_cast<unsigned>(view_perspective)));camera_cut_=true;break;
+    case viewport_options:workspace_.viewport_options_collapsed=!workspace_.viewport_options_collapsed;break;
     case open_source: case edit_ui_source: case save_document: case close_source: case reload_source: case save_all:
     case new_source: case new_project_ui: case edit_project_ui:
         return source_command(command,asset_key);
@@ -262,29 +329,37 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
-    case create_actor: result=completion(document_->add_actor()); break;
+    case create_actor: workspace_.inspecting_asset=false;result=completion(document_->add_actor()); break;
+    case create_point_light:case create_rectangle_light:case create_directional_light: {
+        workspace_.inspecting_asset=false;
+        const auto kind=command==create_point_light?world::LightKind::point:
+            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
+        result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
+    }
     case create_static_mesh: {
+        workspace_.inspecting_asset=false;
         const auto catalog=editor::mesh_assets();
         if (asset_key.empty()) asset_key=catalog.front().key;
         if (project_) {
             auto asset=project_->mesh(asset_key);if (!asset) return std::unexpected(asset.error());
-            result=completion(document_->create_static_mesh(*asset));
+            result=completion(document_->create_static_mesh(*asset,viewport_tool_.cursor));
         } else {
             const auto* asset=editor::mesh_asset(asset_key);
             if (!asset) return std::unexpected(Error{ErrorCode::invalid_definition,"Unknown mesh asset."});
-            result=completion(document_->create_static_mesh(*asset));
+            result=completion(document_->create_static_mesh(*asset,viewport_tool_.cursor));
         }
         break;
     }
-    case erase_selected: result=completion(document_->erase_selected()); break;
+    case erase_selected: workspace_.inspecting_asset=false;result=completion(document_->erase_selected()); break;
     case undo: case redo:
+        workspace_.inspecting_asset=false;
         if (workspace_.source_history()) {
             workspace_.source_editor.active()->document->edit().history(command==redo);pending_source_focus_=true;
         } else if (workspace_.sample_history()) { if (command==undo) workspace_.workbench.undo(); else workspace_.workbench.redo(); }
         else result=completion(command==undo?document_->undo():document_->redo());
         break;
-    case focus: result=focus_selected(); break;
-    case reset_camera: camera_.reset(); break;
+    case focus: result=focus_selected();if(result) camera_cut_=true;break;
+    case reset_camera: camera_.reset();camera_cut_=true;break;
     case show_scene: workspace_.dock.select(editor::control::scene_tab); break;
     case show_parameters: workspace_.dock.select(editor::control::parameters_tab); break;
     case show_controls: workspace_.dock.select(editor::control::workbench); break;
@@ -383,6 +458,8 @@ void Application::cancel_interaction(const ui::Reply& reply) {
     effects(reply);
     const auto cancelled = document_->cancel_edit();
     if (!cancelled) workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
+    const auto tool_cancelled=viewport_tool_.cancel(*document_);
+    if(!tool_cancelled) workspace_.status=L"Viewport rollback failed: "+widen(tool_cancelled.error().message);
     window_.capture(false);
     window_.cursor(ui::Cursor::arrow);
 }
@@ -404,6 +481,7 @@ bool Application::over_viewport(float x, float y) const noexcept {
 void Application::request_menu(const ui::ContextMenuRequest& request) {
     const auto* source=ui_.presented()?ui_.presented()->find(request.source):nullptr;
     if (!source || !source->enabled || !live_table_context(*ui_.presented(),request,false)) return;
+    if(auto cancelled=viewport_tool_.cancel(*document_);!cancelled) {status(cancelled,L"");return;}
     if (!editor::control::is_menu(request.source)) menu_return_focus_=ui_.focused_control();
     // The native menu owns subsequent mouse-up events. Retire the previous
     // gesture through its UI/business transaction before transferring capture.
@@ -565,6 +643,8 @@ void Application::native(NativeEvent message) {
         cancel_interaction(reply); return;
     }
     if (menu_input(event,native_key)) return;
+    if(pointer) pointer_position_={event.x,event.y};
+    if(viewport_tool_.active() && viewport_input(event,static_cast<std::uint32_t>(native_key))) return;
     ui::ControlKey requested_menu{};
     if (event.kind==ui::EventKind::key_down) {
         if (event.key==ui::Key::f10 && !event.shift) requested_menu=editor::control::file_menu;
@@ -603,19 +683,7 @@ void Application::native(NativeEvent message) {
         if (auto result=execute(command);!result) status(result,L"");
         return;
     }
-    if (pointer && !workspace_.menu && !workspace_.dock.dragging() && over_viewport(event.x, event.y)) {
-        if (event.kind==ui::EventKind::pointer_down) workspace_.dock.select(editor::control::scene_tab);
-        if (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::secondary) {
-            effects(ui_.cancel_interaction());
-            orbiting_ = true; last_x_ = event.x; last_y_ = event.y; window_.capture(true); window_.cursor(ui::Cursor::pan); return;
-        }
-        if (event.kind == ui::EventKind::wheel) { camera_.zoom(event.wheel); return; }
-    }
-    if (orbiting_ && event.kind == ui::EventKind::pointer_move) {
-        const auto dpi = window_.dpi_scale(); camera_.orbit((event.x - last_x_) / dpi, (event.y - last_y_) / dpi);
-        last_x_ = event.x; last_y_ = event.y; return;
-    }
-    if (orbiting_ && release && event.button == ui::PointerButton::secondary) { orbiting_ = false; window_.capture(false); window_.cursor(ui::Cursor::arrow); return; }
+    if(viewport_input(event,static_cast<std::uint32_t>(native_key))) return;
     auto reply = ui_.input(event);
     if (ui_.presented()) workspace_.dock.focus_control(ui_.focused_control(),*ui_.presented());
     effects(reply);
@@ -656,6 +724,12 @@ bool Application::step(renderer::Capture* capture) {
     // validate a new layout or make its controls available for interaction.
     if (!target.drawable) { MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
+    workspace_.viewport_mode=viewport_tool_.displayed_tool(workspace_.viewport_settings);
+    workspace_.viewport_readout=viewport_tool_.readout();
+    workspace_.camera_view=camera_.view();
+    workspace_.view.grid_spacing=workspace_.viewport_settings.grid_spacing;
+    workspace_.view.grid_plane=camera_.view()==editor::CameraView::front?renderer::GridPlane::xy:
+        camera_.view()==editor::CameraView::right?renderer::GridPlane::yz:renderer::GridPlane::xz;
     const auto describe=[&] {return workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr);};
     auto controls = describe();
     auto described = ui_.set_controls(controls);
@@ -687,13 +761,20 @@ bool Application::step(renderer::Capture* capture) {
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};
-    meshes_.clear();
-    const auto items = viewport?take(document_->world().render_items()):std::vector<world::RenderItem>{};
-    meshes_.reserve(items.size());
-    for (const auto& item : items)
-        meshes_.push_back({item.world.elements, {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1}, item.actor == document_->selection().actor,item.geometry});
+    const bool had_viewport_gesture=viewport_tool_.active();
+    if(had_viewport_gesture && accepted_view_ && accepted_view_->bounds!=scene_bounds)
+        status(viewport_tool_.cancel(*document_),L"Viewport changed; edit cancelled");
+    viewport_tool_.forget(*document_);
+    if(had_viewport_gesture && !viewport_tool_.active()) window_.capture(false);
+    if(viewport) take(scene_.refresh(*document_));
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
-    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds, meshes_, workspace_.view};
+    const auto viewport_view=editor::ViewportView::make(camera_,scene_bounds,window_.dpi_scale());
+    overlay_.clear();
+    if(viewport) viewport_tool_.overlay(*document_,viewport_view,workspace_.viewport_settings,overlay_);
+    const bool projection_cut=accepted_view_ && accepted_view_->orthographic!=viewport_view.orthographic;
+    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
+        viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},workspace_.view,overlay_,
+        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
@@ -706,6 +787,15 @@ bool Application::step(renderer::Capture* capture) {
         if (rendered->accepted_id != frame.drawing->id || rendered->accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
+        accepted_view_=viewport?std::optional(viewport_view):std::nullopt;
+        if(viewport) camera_cut_=false;
+        workspace_.render_notice.clear();
+        if(viewport && workspace_.view.shading==renderer::Shading::scene_lit && workspace_.view.lit.shadows &&
+            workspace_.view.wireframe!=renderer::Wireframe::only) {
+            const auto requested=std::ranges::count_if(scene_.lights,[](const auto& light){return light.casts_shadow;});
+            if(std::uint64_t(requested)>workspace_.view.lit.shadow_light_budget)
+                workspace_.render_notice=L"Shadows "+std::to_wstring(rendered->stats.scene_lit_shadow_lights)+L"/"+std::to_wstring(requested);
+        }
         ++accepted_frames_;
         if (pending_source_focus_) {
             pending_source_focus_=false;
@@ -738,6 +828,7 @@ void Application::close() {
     window_.capture(false);
     project_code_=nullptr;
     take(completion(document_->close()));
+    scene_.reset();
     const auto stopped = renderer_.close();
     if (!stopped) throw std::runtime_error(stopped.error().cause.message);
 }

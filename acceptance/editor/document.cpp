@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
+#include "application/scene_snapshot.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
@@ -49,10 +50,16 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "ui_source_patch.inl"
 #include "ui_reload_profile.inl"
 #include "source_editor.inl"
+#include "viewport_edit.inl"
+#include "scene_lit.inl"
 }
 int main(int argc, char** argv) {
     try {
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--viewport-edit") {verify_viewport_editing();return 0;}
+        if((argc==2 || argc==3) && std::string_view(argv[1])=="--scene-lit") {
+            verify_scene_lit_application(argc==3?std::filesystem::path{argv[2]}:std::filesystem::path{});return 0;
+        }
         if (argc==2 && std::string_view(argv[1])=="--source-editor") {verify_source_editor();return 0;}
         if (argc == 3 && std::string_view(argv[1]) == "--profile-json") {
             profile_project_json(argv[2]);
@@ -67,12 +74,14 @@ int main(int argc, char** argv) {
             std::puts("Editor physics project acceptance: PASS");
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--physics-test-project | --profile-json output-directory | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
         verify_physics_test_project();
         verify_project_document();
         verify_textured_obj();
         verify_declarative_parameters();
         verify_object_inspection();
+        verify_viewport_editing();
+        verify_scene_lit_application();
         verify_ui_actions();
     verify_table_dsl();
     verify_table_views();

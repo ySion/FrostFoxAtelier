@@ -53,13 +53,13 @@
         if (const auto* focused=live(focus);focused && focused->tree_hidden) focus=key;
         keyboard_pressed=0; reply.redraw=reply.consumed=true;
     }
-    void select_tree(Reply& reply,const ControlBox& box) {
+    void select_tree(Reply& reply,const ControlBox& box,SelectionModifiers modifiers={}) {
         focus=box.key; keyboard_pressed=0;
         auto& tree=states.at(states.at(box.key).control.parent);
         if (box.bounds.y<box.clip.top) tree.scroll-=(box.clip.top-box.bounds.y)/surface.dpi_scale;
         if (box.bounds.y+box.bounds.height>box.clip.bottom) tree.scroll+=(box.bounds.y+box.bounds.height-box.clip.bottom)/surface.dpi_scale;
         tree.scroll=std::clamp(tree.scroll,0.0,tree.scroll_limit);
-        action(reply,ActionKind::select,box.key);
+        action(reply,ActionKind::select,box.key,modifiers);
         reply.redraw=reply.consumed=true;
     }
     bool tree_keyboard(Reply& reply,const Event& event,State& focused) {
@@ -85,6 +85,6 @@
         else if (event.key==Key::end) target=rows.end()-1;
         else if (event.key==Key::up && at!=rows.begin()) --target;
         else if (event.key==Key::down && at+1!=rows.end()) ++target;
-        if (target!=at && target!=rows.end()) select_tree(reply,**target);
+        if (target!=at && target!=rows.end()) select_tree(reply,**target,{event.shift,event.control});
         return true;
     }

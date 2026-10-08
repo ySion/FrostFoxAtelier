@@ -14,9 +14,9 @@
 :role(panel) { background: token(panel); }
 :role(caption) { color: #a3a3a3; }
 .menubar {
-    background-image: linear-gradient(#3d3d3d, #303030);
-    border-color: #111111;
-    border-inner-color: #575757;
+    background-image: linear-gradient(#3a3a3a, #323232);
+    border-color: #030303;
+    border-inner-color: #424242;
     border-width: 0.667dip;
     border-style: solid;
 }
@@ -68,7 +68,7 @@ combo:disabled { indicator-color: #616161; }
 .parameter-nested-body { background: #363636; }
 .parameter-pane { background: token(panel); }
 .parameter-search { padding: 2dip 4dip 3dip 4dip; }
-.status-bar { background: #191919; }
+.status-bar { background: #191919; border-width: 0.667dip; border-edges: top; border-color: #030303; border-style: solid; }
 .parameter-label { padding: 1dip 0dip; text-align: right; text-vertical-align: center; }
 .field-label { text-vertical-align: center; }
 list, popup, tree, table {
@@ -86,9 +86,10 @@ table:focus { border-color: #a0a0a0; }
 item { padding: 2dip 6dip; border-width: 0dip; }
 item:hover, item:focus { background: #424242; }
 item:selected { background: #565656; color: #ffffff; }
+/* Houdini Tree View: 26 px rows at UI scale 1.75 alternating #2e2e2e / #3a3a3a. */
 tree {
-    background: #2d2d2d; tree-alternate-color: #363636; tree-line-color: #686868;
-    tree-row-height: 20dip; tree-indent: 18dip; padding: 0dip;
+    background: #2e2e2e; tree-alternate-color: #3a3a3a; tree-line-color: #686868;
+    tree-row-height: 17.333dip; tree-indent: 17dip; padding: 0dip;
 }
 tree_item {
     background: transparent; border-width: 0dip; padding: 0dip 2dip;
@@ -274,3 +275,52 @@ button.source-problem {
 button.source-problem:hover { background: #463b34; }
 
 button.source-problem:disabled { color: #dfb38b; background: #3a2e29; }
+
+/* Scene view chrome, sampled from Houdini 22 at UI scale 1.75 (2026-10-08).
+   Operation band: #2e2e2e between a black top line and #424242/#666666 bevel.
+   Tool rail: #3a3a3a with a black right separator; selected tools #5d7289. */
+.viewport-options { background: #2e2e2e; border-color: #030303; border-inner-color: #424242; border-width: 0.667dip; border-edges: top; }
+.viewport-option-label { padding: 0dip 3dip; text-vertical-align: center; color: #cccccc; }
+.viewport-option-divider { background: #1f1f1f; }
+combo.viewport-option-menu { padding: 0dip 8dip 0dip 10dip; combo-indicator: arrows; text-vertical-align: center; }
+combo.viewport-option-menu { border-width: 0.667dip; border-style: solid; }
+combo.viewport-option-menu, combo.viewport-option-menu:hover {
+    background-image: linear-gradient(#555555, #424242); border-color: #1c1c1c;
+}
+combo.viewport-option-menu:hover { background-image: linear-gradient(#5f5f5f, #4a4a4a); color: #ffffff; }
+checkbox.viewport-option-check { padding: 0dip 3dip; text-vertical-align: center; }
+.viewport-rail { background: #3a3a3a; border-width: 0.667dip; border-edges: right; border-color: #000000; }
+.viewport-rail-separator { background: #4d4d4d; }
+/* First handle tool opens a new rail group: hairline above, like Houdini. */
+button.viewport-mode.grouped { border-edges: top; border-width: 0.667dip; border-color: #4d4d4d; }
+button.viewport-mode.grouped:selected { border-edges: all; }
+.viewport-mode, .viewport-operation {
+    background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
+    indicator-size: 24dip; indicator-color: #c4ccd0; indicator-background: #e04a1c;
+}
+button.viewport-mode:hover, combo.viewport-operation:hover { background: #4b4b4b; background-image: none; }
+button.viewport-mode { border-style: solid; }
+button.viewport-mode:selected, button.viewport-mode:selected:hover {
+    background: #5d7289; background-image: none; border-color: #374552; indicator-color: #eeeeee;
+}
+button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #738ba4; background-image: none; }
+/* Passive HUD: white semibold title with a dark drop shadow over the scene. */
+.viewport-mode-label {
+    color: #ffffff; font-size: 15.5dip; font-weight: 600; indicator-size: 26dip; indicator-color: #e8eef0; indicator-background: #e04a1c;
+    padding: 0dip; text-vertical-align: center; text-shadow-color: #00000099;
+}
+.viewport-mode-label:disabled { color: #ffffff; }
+/* Floating view pill: translucent slate fill, light hairline, inline caret. */
+combo.viewport-view-menu {
+    border-width: 0.667dip; border-radius: 11dip; padding: 0dip 9dip 0dip 11dip; combo-indicator: caret; indicator-size: 9dip;
+}
+combo.viewport-view-menu, combo.viewport-view-menu:hover {
+    background: #5e6d75cc; background-image: none; color: #e6e6e6; border-color: #a1a4a5; indicator-color: #e6e6e6;
+}
+combo.viewport-view-menu:hover { background: #6e7e87dd; color: #ffffff; }
+combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background: #44535bdd; background-image: none; }
+.viewport-readout { color: #e6e6e6; text-vertical-align: center; font-size: 12.5dip; }
+.parameter-swatch { border-color: #131313; border-width: 0.667dip; border-style: solid; }
+.viewport-tool-hint { color: #1a1a1a; font-size: 12dip; padding: 0dip; text-vertical-align: bottom; }
+.viewport-tool-hint:disabled { color: #1a1a1a; }
+.viewport-frame { background: transparent; border-width: 0.667dip; border-edges: right bottom; border-style: solid; border-color: #424242; border-inner-color: #666666; }

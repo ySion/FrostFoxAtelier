@@ -19,7 +19,8 @@ double rail_button_height(bool vertical, double width, double height) {
     return choose(vertical, rail_button_thickness(height), rail_button_length(height));
 }
 
-ui Position(in bool matches, in EditBinding position) {
+ui Position(in bool matches, in EditBinding position, in EditBinding rotation, in EditBinding scale,
+            in bool show_position, in bool show_rotation, in bool show_scale) {
     state bool expanded = true;
     Foldout section {
         text: "Scene root content";
@@ -35,7 +36,10 @@ ui Position(in bool matches, in EditBinding position) {
         NumberRow position {
             text: "Position (m)";
             edit: input.position;
+            collapsed: !input.show_position;
         }
+        NumberRow rotation { text: "Rotation (°)"; edit: input.rotation; collapsed: !input.show_rotation; }
+        NumberRow scale { text: "Scale"; edit: input.scale; collapsed: !input.show_scale; }
     }
 }
 
@@ -55,8 +59,12 @@ ui QueryRow(in TextEditBinding edit, in double label_width, in double gap, in bo
     }
 }
 
-ui NumericProperty(in Text title, in EditBinding edit) {
-    Column row { NumberRow number { text: input.title; edit: input.edit; } }
+ui NumericProperty(in Text title, in EditBinding edit, in bool swatch, in double r, in double g, in double b) {
+    // Houdini colour tuples end with a live swatch of the current value.
+    Row row { align_center: true; gap: 4;
+        Column fields { expand_width: true; NumberRow number { text: input.title; edit: input.edit; } }
+        Column swatch { width: 23; height: 21; collapsed: !input.swatch; red: input.r; green: input.g; blue: input.b; classes: "color-swatch parameter-swatch"; }
+    }
 }
 
 ui BooleanProperty(in Text title, in bool checked, in bool enabled, in ActionBinding change) {
@@ -72,9 +80,11 @@ ui EnumProperty(in Text title, in Text choice, in bool enabled, in Key target) {
 }
 
 ui PropertyRow(in Text title, in EditBinding edit, in bool boolean, in bool checked, in bool enabled,
-               in ActionBinding change, in bool enumeration, in Text choice, in Key target) {
+               in ActionBinding change, in bool enumeration, in Text choice, in Key target,
+               in bool swatch, in double r, in double g, in double b) {
     Column row {
-        NumericProperty numeric { mounted: !input.boolean && !input.enumeration; title: input.title; edit: input.edit; }
+        NumericProperty numeric { mounted: !input.boolean && !input.enumeration; title: input.title; edit: input.edit;
+            swatch: input.swatch; r: input.r; g: input.g; b: input.b; }
         BooleanProperty boolean { mounted: input.boolean; title: input.title; checked: input.checked; enabled: input.enabled; change: input.change; }
         EnumProperty enumeration { mounted: input.enumeration; title: input.title; choice: input.choice; enabled: input.enabled; target: input.target; }
     }
@@ -83,12 +93,8 @@ ui PropertyRow(in Text title, in EditBinding edit, in bool boolean, in bool chec
 ui PropertyGroup(in Text title, in double icon, in Items<PropertyRow> properties) {
     state bool expanded = true;
     Column component {
-        Row heading {
-            height: 24;
-            Text type_icon { icon: input.icon; width: 18; height: 23; }
-            Foldout title { text: input.title; selected: state.expanded; flex_width: 1; classes: "section";
-                on activate { state.expanded = event.checked; }
-            }
+        Foldout title { text: input.title; selected: state.expanded; height: 24; classes: "section";
+            on activate { state.expanded = event.checked; }
         }
         Column properties { gap: 5; collapsed: !state.expanded; Repeat rows { items: input.properties; } }
     }
@@ -275,7 +281,8 @@ ui Parameters(in Text type_name, in TextEditBinding name,
               in double back_icon, in double forward_icon, in double path_icon,
               in bool has_selection, in Items<PropertyGroup> groups, in bool matches,
               in EditBinding position, in TextEditBinding filter, in bool empty,
-              in double type_icon, in double search_icon, in bool search_visible, in ActionBinding search) {
+              in double type_icon, in double search_icon, in bool search_visible, in ActionBinding search,
+              in EditBinding rotation, in EditBinding scale, in bool show_position, in bool show_rotation, in bool show_scale) {
     Column pane {
         classes: "parameter-pane"; panel: true; expand_height: true;
         PanePath path { title: "World"; back: input.back; forward: input.forward;
@@ -294,7 +301,9 @@ ui Parameters(in Text type_name, in TextEditBinding name,
             classes: "parameter-list"; expand_height: true; gap: 7; padding_top: 7.333; padding_bottom: 8;
             collapsed: !input.has_selection;
             Column transform { collapsed: !input.matches; gap: 7;
-                Position position { mounted: input.matches; matches: input.matches; position: input.position; }
+                Position position { mounted: input.matches; matches: input.matches; position: input.position;
+                    rotation: input.rotation; scale: input.scale; show_position: input.show_position;
+                    show_rotation: input.show_rotation; show_scale: input.show_scale; }
             }
             Column properties { classes: "parameter-inset"; gap: 5; Repeat groups { items: input.groups; } }
             Text empty { text: "No matching parameters"; classes: "empty-state"; single_line: true; caption: true; collapsed: !input.empty; }
@@ -302,6 +311,25 @@ ui Parameters(in Text type_name, in TextEditBinding name,
     }
 }
 
+ui ResourceProperty(in Text title, in Text value) {
+    ParameterRow row { text: input.title;
+        Row value_area { height: 23; expand_width: true; align_center: true;
+            Text value { text: input.value; expand_width: true; single_line: true; classes: "resource-value"; }
+        }
+    }
+}
+ui ResourceParameters(in Text kind, in Text name, in double icon, in Items<ResourceProperty> properties) {
+    Column pane { expand_height: true; panel: true; classes: "parameter-pane";
+        Row header { height: 32; align_center: true; gap: 4; padding_left: 6;
+            Text icon { icon: input.icon; width: 22; height: 24; }
+            Text kind { text: input.kind; single_line: true; }
+            Text name { text: input.name; expand_width: true; single_line: true; }
+        }
+        List properties { expand_height: true; gap: 5; padding_top: 7; classes: "parameter-inset";
+            Repeat rows { items: input.properties; }
+        }
+    }
+}
 ui AssetBrowserShell(in Items<ActorRow> directories, in TextEditBinding query,
                      in Text path, in Text status,
                      in ActionBinding back, in ActionBinding up, in ActionBinding clear,
@@ -452,9 +480,25 @@ ui EditorShell(in bool menu_collapsed, in Items<MenuTitle> menus, in Text status
         }
     }
 }
+// Houdini rail cells are 32 DIP squares; a hairline groups selection apart
+// from the handle tools (measured: #4d4d4d over #3a3a3a, 8 DIP breathing room).
+ui ViewportMode(in ActionBinding choose, in double icon, in bool selected, in Key group, in Text style) {
+    // Selection-group buttons stay direct children of the rail; the group gap is
+    // drawn as a top border on the first handle tool instead of a wrapper.
+    ChoiceButton mode { icon: input.icon; action: input.choose; selected: input.selected;
+        selection_group: input.group; width: 32; height: 32; classes: input.style; }
+}
+// Houdini scene view: one operation-controls band, a full-height tool rail on
+// the left, and passive/interactive annotations floating over the scene.
 ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in double back_icon, in double forward_icon, in double path_icon,
-                 in double display_icon, in double guides_icon, in bool display_open, in bool guides_open) {
+                 in double display_icon, in double guides_icon, in bool display_open, in bool guides_open,
+                 in Items<ViewportMode> modes, in double pivot_icon, in bool pivot_open,
+                 in Text mode_name, in double mode_icon, in Text basis, in Text pivot_name,
+                 in ActionBinding snap, in double snap_icon, in bool snapping, in Text grid_step, in bool snap_open,
+                 in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
+                 in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon,
+                 in Text readout, in bool modal, in ActionBinding rail_snap, in Text tool_hint) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -465,7 +509,46 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
             Combo path { text: "World"; icon: input.path_icon; min_width: 32; expand_width: true; height: 28; classes: "pane-path"; }
             ViewportTools tools { display_icon: input.display_icon; guides_icon: input.guides_icon; display_open: input.display_open; guides_open: input.guides_open; }
         }
-        Viewport viewport { expand_height: true; }
+        Row options { height: choose(input.collapsed, 12.0d, 32.0d); wrap: false; classes: "viewport-options";
+            ToggleButton stow { action: input.collapse_toggle; icon: choose(input.collapsed, input.down_icon, input.up_icon);
+                selected: input.collapsed; min_width: 12; expand_width: input.collapsed; expand_height: true;
+                padding_bottom: choose(input.collapsed, 0.0d, 20.0d); classes: "bar-stow"; }
+            Text readout { text: input.readout; collapsed: input.collapsed || !input.modal; expand_width: true; expand_height: true;
+                padding_left: 10; classes: "viewport-readout"; }
+            Row settings { collapsed: input.collapsed || input.modal; expand_width: true; expand_height: true; align_center: true; gap: 6;
+                padding_left: 4; padding_right: 6;
+                Combo actions { icon: input.mode_icon; width: 30; height: 28; classes: "icon-menu viewport-operation"; }
+                Text basis { text: input.basis; content_width: 0; single_line: true; classes: "viewport-option-label"; }
+                Combo pivot { text: input.pivot_name; selected: input.pivot_open; content_width: 0; height: 26; classes: "viewport-option-menu"; }
+                Column divider { width: 1; height: 20; classes: "viewport-option-divider"; }
+                ToggleButton snapping { icon: input.snap_icon; action: input.snap; selected: input.snapping; width: 28; height: 28; classes: "viewport-mode"; }
+                Combo step { text: input.grid_step; selected: input.snap_open; content_width: 0; height: 26; classes: "viewport-option-menu"; }
+                Checkbox surface { text: "Surface Cursor"; action: input.surface_toggle; selected: input.surface; content_width: 0; height: 26; classes: "viewport-option-check"; }
+            }
+        }
+        Row content { expand_height: true;
+            Column edit_tools { width: 38; expand_height: true; gap: 2; padding_top: 6; padding_left: 3; classes: "viewport-rail";
+                Repeat modes { items: input.modes; }
+                Column snap_separator { height: 1; classes: "viewport-rail-separator"; }
+                Column snap_spacing { height: 6; }
+                // Houdini keeps snapping beside the handles; here it shares the options toggle.
+                ToggleButton rail_snap { icon: input.snap_icon; action: input.rail_snap; selected: input.snapping;
+                    width: 32; height: 32; classes: "viewport-mode"; }
+            }
+            Overlay scene { expand_width: true; expand_height: true;
+                Viewport viewport { expand_width: true; expand_height: true; }
+                // Houdini closes the scene with a recessed bevel; drawn over the
+                // edge so the viewport rectangle and its hit area stay unchanged.
+                Column frame { expand_width: true; expand_height: true; enabled: false; classes: "viewport-frame"; }
+                Text mode { text: input.mode_name; icon: input.mode_icon; enabled: false;
+                    out_of_flow: true; offset_x: 12; offset_y: 10; width: 200; height: 26; classes: "viewport-mode-label"; }
+                // Houdini prints the active tool's mouse bindings on the scene's lower edge.
+                Text tool_hint { text: input.tool_hint; enabled: false; out_of_flow: true; anchor_y: 1; pivot_y: 1;
+                    offset_x: 12; offset_y: -8; width: 640; height: 20; classes: "viewport-tool-hint"; }
+                Combo camera { text: input.view_name; selected: input.view_open; content_width: 0; height: 22;
+                    out_of_flow: true; anchor_x: 1; pivot_x: 1; offset_x: -10; offset_y: 12; classes: "viewport-view-menu"; }
+            }
+        }
     }
 }
 ui PaneTab(in Text title, in bool selected, in Text style, in Key target, in double close_icon) {

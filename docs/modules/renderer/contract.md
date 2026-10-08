@@ -10,7 +10,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 场景和 UI
 
-- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。当前为基础光照与漫反射贴图、Alpha Test，不含阴影、DDGI、拾取或着色器图。
+- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry；Scene Lit 还消费粗糙度、金属度、HDR 自发光及稳定组件键。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。基础显示支持漫反射贴图与 Alpha Test；不透明场景光照的具体范围见 [Scene Lit](scene-lit.md)。
 - 场景管线和深度纹理在首次绘制非空场景且 viewport 非零时创建；后续按原生命周期复用，深度尺寸在实际场景绘制时跟随目标更新。纯 UI 窗口仍使用同一 Renderer/Context，无场景管线创建、深度分配或清除。UI 管线在 `open` 时准备，应用可提前创建并保留隐藏的弹出窗口以移出首次点击的初始化成本。
 - 相机为左手系，+Y 向上，D3D 深度 `[0,1]`。矩阵为 row-major，行向量按 `p * world * view * projection` 执行，匹配 LookAtLH/PerspectiveFovLH。renderer 不维护相机控制状态。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
@@ -43,9 +43,9 @@ CPU 在编码前复用数学模块计算一次 inverse view-projection。有限�
 
 ### 运行状态与着色模式的独立性
 
-Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用未来的场景光照模式（Scene Lit）。场景光照将消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
+Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用 Scene Lit。Scene Lit 消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
 
-背景与参考辅助显示处于独立的视口策略中，可用于上述任意着色模式；场景天空/环境属于场景光照的画面内容，视口渐变不能在其后覆盖场景环境。本轮只实现背景与参考网格，没有加入未实现的 Scene Lit 枚举、Play 状态或空渲染管线。
+背景与参考辅助显示处于独立的视口策略中，可用于上述任意着色模式。当前 Scene Lit 的均匀环境辐射参与光照，渐变只填充没有几何的视口像素；参考网格继续消费同一场景深度且不写深度。环境照明与视口背景设置各有明确用途，曝光不改变辅助背景。带方向的环境贴图和天空资产尚未接入。
 
 每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 
@@ -65,7 +65,7 @@ Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场�
 
 ### 每帧计数
 
-`FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照，各项均为 `uint64_t`。它不持有额外资源，也不增加 GPU 查询、等待或动态分配。
+`FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
 | 字段 | 统计边界 |
 | --- | --- |

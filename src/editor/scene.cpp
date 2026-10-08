@@ -99,10 +99,6 @@ physics::BodySettings body_settings(const Json& value,bool legacy) {
 }
 std::string type_name(Runtime& runtime,TypeId type) { return std::string(take(runtime.describe(type))->name); }
 auto failed(const std::exception& error) { return std::unexpected(Error{ErrorCode::invalid_storage,error.what()}); }
-void validate_color(math::Vector3 color) {
-    if (!std::isfinite(color.x) || !std::isfinite(color.y) || !std::isfinite(color.z) || color.x<0 || color.y<0 || color.z<0 || color.x>1 || color.y>1 || color.z>1)
-        throw std::runtime_error("Invalid scene material color.");
-}
 bool derives(Runtime& runtime,TypeId type,TypeId base) { return take(runtime.is_a(type,base)); }
 bool physical_type(Runtime& runtime,TypeId type) {
     const auto body=runtime.find_type("physics.BodyComponent");
@@ -189,7 +185,7 @@ void read_properties(Runtime& runtime,const world::Types& types,ObjectId object,
 }
 Result<std::string> Session::serialize() const {
     try {
-        if (active_) throw std::runtime_error("Finish the active field edit before saving.");
+        if (editing()) throw std::runtime_error("Finish the active edit before saving.");
         auto& runtime=world_.runtime();
         Json actors=Json::array();
         const auto members=take(world_.members());
@@ -224,10 +220,13 @@ Result<std::string> Session::serialize() const {
                 }
                 if (derives(runtime,state.type,types_.static_mesh_component)) {
                     const auto mesh=take(world::read_static_mesh(runtime,component.id()));
-                    validate_color(mesh.material.base_color);
+                    take(world::validate_material(mesh.material));
                     if (mesh.mesh.resolved && mesh.mesh.source.empty()) throw std::runtime_error("A procedural mesh has no persistent resource source. Save/import the mesh first.");
                     value["mesh"]=mesh.mesh.source; value["base_color"]=vector(mesh.material.base_color);
+                    value["roughness"]=mesh.material.roughness;value["metallic"]=mesh.material.metallic;
+                    value["emissive"]=vector(mesh.material.emissive);
                 }
+                if(derives(runtime,state.type,types_.light_component)) take(world::validate_light(take(world::read_light(runtime,component.id()))));
                 if (physical_type(runtime,state.type)) value["body"]=body_settings(take(physics::read_settings(runtime,component.id())));
                 values.push_back(std::move(value));
             }
@@ -275,7 +274,7 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                 if (version==2) structural.erase("properties");
                 const bool physical=physical_type(runtime,component_type);
                 if (physical) structural.erase(version==1?"physics":"body");
-                if (mesh) fields(structural,{"id","type","enabled","position","rotation","scale","parent","mesh","base_color"});
+                if (mesh) fields(structural,{"id","type","enabled","position","rotation","scale","parent","mesh","base_color","roughness","metallic","emissive"});
                 else if (spatial) fields(structural,{"id","type","enabled","position","rotation","scale","parent"});
                 else fields(structural,{"id","type","enabled"});
                 auto value=take(world::create_component(runtime,component_type));
@@ -300,10 +299,14 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                     const auto source=component.at("mesh").get<std::string>();
                     geometry::MeshRef mesh; if (!source.empty()) mesh=take(project.mesh(source)).mesh;
                     take(world::set_mesh_binding(runtime,id,{source,std::move(mesh)}));
-                    const auto color=vector(component.at("base_color"));
-                    validate_color(color);
-                    take(runtime.with_native<world::StaticMeshComponent>(id,[&](auto& value)->Result<void>{ value.material.base_color=color; return {}; }));
+                    world::Material material;material.base_color=vector(component.at("base_color"));
+                    if(component.contains("roughness")) material.roughness=std::get<float>(decode_scalar(runtime,Scalar{material.roughness},component.at("roughness")));
+                    if(component.contains("metallic")) material.metallic=std::get<float>(decode_scalar(runtime,Scalar{material.metallic},component.at("metallic")));
+                    if(component.contains("emissive")) material.emissive=vector(component.at("emissive"));
+                    take(world::validate_material(material));
+                    take(runtime.with_native<world::StaticMeshComponent>(id,[&](auto& value)->Result<void>{ value.material=material; return {}; }));
                 }
+                if(derives(runtime,component_type,types.light_component)) take(world::validate_light(take(world::read_light(runtime,id))));
                 committed(world.set_enabled(id,component.at("enabled").get<bool>()));
                 attachments.push_back({id,parent,id==scene_root});
             }

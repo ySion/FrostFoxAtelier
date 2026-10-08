@@ -21,13 +21,15 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")
+        "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/viewport_tool.cpp")
     atelier_target(atelier_editor_core)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
     target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language atelier_physics PRIVATE ole32 windowscodecs nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/viewport.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/presentation.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/play_process.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/project_runner.cpp"
@@ -91,4 +93,12 @@ function(atelier_add_editor)
     add_custom_target(editor_viewport_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-viewport "${CMAKE_BINARY_DIR}/viewport-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_edit_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-edit "${CMAKE_BINARY_DIR}/edit-mode-evidence"
+        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_scene_lit_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --scene-lit "${PROJECT_SOURCE_DIR}/examples/scene-lit"
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-scene-lit "${CMAKE_BINARY_DIR}/scene-lit-editor-evidence" "${PROJECT_SOURCE_DIR}/examples/scene-lit"
+        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
 endfunction()

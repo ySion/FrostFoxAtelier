@@ -80,6 +80,8 @@ function(atelier_add_rhi)
 
     add_executable(atelier_rhi_acceptance
         "${PROJECT_SOURCE_DIR}/acceptance/rhi/main.cpp"
+        "${PROJECT_SOURCE_DIR}/acceptance/rhi/ray_query_cases.cpp"
+        "${PROJECT_SOURCE_DIR}/acceptance/rhi/scene_lit_cases.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/rhi/resource_cases.cpp")
     atelier_target(atelier_rhi_acceptance)
     target_link_libraries(atelier_rhi_acceptance PRIVATE atelier_rhi)

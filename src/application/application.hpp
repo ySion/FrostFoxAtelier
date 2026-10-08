@@ -3,6 +3,7 @@
 #include "application/window.hpp"
 #include "application/popup.hpp"
 #include "application/play_process.hpp"
+#include "application/scene_snapshot.hpp"
 #include "editor/camera.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
@@ -14,7 +15,7 @@ struct FrameTiming {
 };
 class Application final {
 public:
-    explicit Application(bool gpu_validation = false);
+    explicit Application(bool gpu_validation = false, bool activate = true);
     ~Application();
     bool step(renderer::Capture* = nullptr);
     Result<void> open_project(const std::filesystem::path&,bool create=false);
@@ -78,6 +79,9 @@ private:
     std::filesystem::path scene_path_;
     std::wstring window_title_;
     editor::Camera camera_;
+    editor::ViewportTool viewport_tool_;
+    std::optional<editor::ViewportView> accepted_view_;
+    math::Vector2 pointer_position_{};
     editor::Workspace workspace_;
     ui::Session ui_;
     std::shared_ptr<const ui::StyleSheet> style_sheet_;
@@ -93,10 +97,14 @@ private:
     bool pending_source_focus_{};
     bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
     renderer::Renderer renderer_;
-    std::vector<renderer::MeshInstance> meshes_;
+    SceneSnapshot scene_;
+    bool camera_cut_{true}; // Retained until the renderer accepts the new view.
+    std::vector<renderer::OverlayShape> overlay_;
     ui::Surface surface_;
     std::uint64_t surface_revision_{1}, accepted_frames_{};
     bool closed_{}, orbiting_{}, sampling_{};
+    bool panning_{};
+    ui::PointerButton camera_button_{ui::PointerButton::secondary};
     FrameTiming frame_timing_;
     renderer::FrameStats frame_statistics_;
     float last_x_{}, last_y_{};
@@ -117,6 +125,7 @@ private:
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
+    Result<void> frame_actors(bool selected_only);
     bool confirm_discard(bool sources=true);
     bool confirm_source(editor::SourceEditor::File&);
     Result<void> save_source(editor::SourceEditor::File&);
@@ -130,5 +139,6 @@ private:
     void invalidate_surface();
     bool pointer_ready() const noexcept;
     bool over_viewport(float, float) const noexcept;
+    bool viewport_input(const ui::Event&,std::uint32_t native_key);
 };
 }

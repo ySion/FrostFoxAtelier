@@ -4,6 +4,8 @@
 
 Compute、Mesh、Vertex 三类管线共用这一执行域，支持离屏执行和现有 Renderer 的窗口呈现。现行行为以 [contract.md](contract.md) 为准，逐项运行证据以 [acceptance.md](acceptance.md) 为准。
 
+Scene Lit 的 RHI 接入已验证 compute inline RayQuery、BLAS/TLAS build/update/退休、FP16 MRT、D32 深度 SRV、非零 mip UAV/SRV、GPU 生成间接派发及带完成帧序号的原始 GPU 时间戳。调用入口、Geometry 接管 range 句柄的所有权、整纹理状态限制见 [Scene Lit 契约](contract.md#scene-litinline-rayquery-与离屏资源)。
+
 2026-09-27 的[模块审计](audit-2026-09-27.md)所列九项缺陷已修正，新增间接大常量、range 复制及输入边界回归通过 dev/release；生命周期观察与覆盖边界见[验收证据](acceptance.md#审计修正的生命周期观察)。
 
 ## 入口
@@ -37,6 +39,6 @@ cmake --build --preset release --target rhi_acceptance
 验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
 
 现有 Renderer 已接入 Present/resize、显式尺寸深度与最终帧结果，并通过 dev/release 的[renderer验收](../renderer/acceptance.md)及[编辑器窗口链](../editor/README.md)。主窗口与原生弹出窗口分别持有自己的 Renderer/Context；现行呈现和失败语义见[renderer合同](../renderer/contract.md)。
-尚未实现或未验收：通用 RDG、业务 Texture 语言接线、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、HDR、同一执行域承载多个窗口、ray tracing 与性能基线；驱动故障及原生 DXGI 遮挡状态未动态注入。
+尚未实现或未验收：通用 RDG、业务 Texture 语言接线、并发 RHI、多 queue、透明设备恢复、WARP/其他 GPU 支持矩阵、HDR 显示、同一执行域承载多个窗口、DispatchRays 管线、透明/程序化光追几何、AS 压缩与性能基线；驱动故障及原生 DXGI 遮挡状态未动态注入。
 
 共享 Runtime Texture 类型及跨模块图片消费者仍未接通，见[资源连接提案](../resources/design-proposal.md)。Runtime 已提供受保护的 `with_native` 载荷访问；提案中的历史缺口清单须对照[当前 Runtime 接口](../../../src/runtime/runtime.hpp)。现有 UI 的不可变 CPU 图片和 Renderer 上传/退休路径可继续复用，声明式 UI 前端无需等待这条业务资源接线。

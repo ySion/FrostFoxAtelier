@@ -98,6 +98,10 @@ Result<void> World::Impl::refresh() {
                 });
                 if (!present) return std::unexpected(present.error());
                 if (*present) { ++positions.at(member.id()).presentations; presentation.push_back(object); }
+            } else {
+                auto light=runtime.is_a(*type,types.light_component);
+                if (!light) return std::unexpected(light.error());
+                if (*light) { ++positions.at(member.id()).presentations; presentation.push_back(object); }
             }
         }
     }
@@ -571,19 +575,9 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
     if (!actor) return std::unexpected(actor.error());
     if (*actor) { auto data=impl_->composition_actor(object); if (!data) return std::unexpected(data.error()); }
     else { auto data=impl_->composition_component(object); if (!data) return std::unexpected(data.error()); }
-    auto mesh=detail::is(runtime(),object,types().static_mesh_component);
-    if (!mesh) return std::unexpected(mesh.error());
-    if (*mesh && path.size()==3) {
-        auto material=runtime().find_field(types().static_mesh_component,"material");
-        auto color=runtime().find_field(types().material,"base_color");
-        if (!material) return std::unexpected(material.error());
-        if (!color) return std::unexpected(color.error());
-        if (path[0]==*material && path[1]==*color) {
-            const auto* number=std::get_if<float>(&value);
-            if (!number || !std::isfinite(*number) || *number<0.f || *number>1.f)
-                return error(ErrorCode::argument_mismatch,"Material color must be a finite float within [0,1].");
-        }
-    }
+    auto lighting=detail::write_lighting_property(*this,object,path,value);
+    if (!lighting) return std::unexpected(lighting.error());
+    if (*lighting) return {};
     auto transform = detail::is(runtime(), object, types().scene_component);
     if (!transform) return std::unexpected(transform.error());
     if (*transform) {
@@ -661,12 +655,15 @@ Result<std::vector<RenderItem>> World::render_items() const {
     std::vector<RenderItem> result;
     result.reserve(impl_->presentation.size());
     for (const auto object : impl_->presentation) {
+        auto mesh=detail::is(runtime(),object,types().static_mesh_component);
+        if (!mesh) return std::unexpected(mesh.error());
+        if (!*mesh) continue;
         auto owner = impl_->component_owner(object);
         if (!owner) return std::unexpected(owner.error());
         auto matrix = world_matrix(runtime(), object);
         if (!matrix) return std::unexpected(matrix.error());
         auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<RenderItem> {
-            if (auto valid = detail::validate_material(component.material); !valid) return std::unexpected(valid.error());
+            if (auto valid = validate_material(component.material); !valid) return std::unexpected(valid.error());
             return RenderItem{*owner, object, *matrix, Access::geometry(component), component.material};
         });
         if (!item) return std::unexpected(item.error());

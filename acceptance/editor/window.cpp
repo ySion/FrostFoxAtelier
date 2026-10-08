@@ -1,5 +1,6 @@
 #include "application/application.hpp"
 #include "atelier/build_info.hpp"
+#include "ui/text.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <msctf.h>
@@ -28,6 +29,10 @@ struct EditorAcceptanceAccess {
     static Result<void> command(Application& app,editor::Command command,std::string_view argument={}) { return app.execute(command,argument); }
     static auto asset_key(const Application& app,std::string_view resource) {
         return app.workspace_.assets.row_key(resource);
+    }
+    static bool inspecting_resource(const Application& app,std::string_view resource) {
+        const auto& selected=app.workspace_.assets.selected();
+        return app.workspace_.inspecting_asset && selected && selected->key==resource;
     }
     static auto directory_key(const Application& app,const std::filesystem::path& path) {
         return app.workspace_.assets.directory_control(path);
@@ -66,6 +71,45 @@ struct EditorAcceptanceAccess {
                 view->bounds.x,view->bounds.y,view->bounds.width,view->bounds.height);
     }
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
+    static auto camera_mode(const Application& app) {return app.camera_.view();}
+    static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
+    static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
+    static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
+    static const auto& scene_snapshot(const Application& app) {return app.scene_;}
+    static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
+    static Result<void> simulate(Application& app,bool running) {
+        const auto result=running?app.document_->start():app.document_->stop();
+        if (!result) return std::unexpected(result.error());
+        if (result->notification_error) return std::unexpected(*result->notification_error);
+        return {};
+    }
+    static Result<void> simulate_tick(Application& app,float seconds) {return app.document_->update(seconds);}
+    static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}
+    static void set_cursor(Application& app,math::Vector3 at) {app.viewport_tool_.cursor=at;}
+    static ui::ControlKey viewport_readout_key(const Application&) {return editor::control::viewport_readout;}
+    // Drive the real tool entry points without OS input (snapshot only).
+    static void tool_key(Application& app,std::uint32_t vk,math::Vector2 pointer) {
+        ui::Event event;event.kind=ui::EventKind::key_down;
+        if(!app.viewport_tool_.key(*app.document_,*app.accepted_view_,event,vk,app.workspace_.viewport_settings,pointer))
+            throw std::runtime_error("Snapshot tool key failed.");
+    }
+    static void tool_move(Application& app,math::Vector2 pointer) {
+        ui::Event event;event.kind=ui::EventKind::pointer_move;event.x=pointer.x;event.y=pointer.y;
+        if(!app.viewport_tool_.pointer(*app.document_,*app.accepted_view_,event,app.workspace_.viewport_settings))
+            throw std::runtime_error("Snapshot tool move failed.");
+    }
+    static void tool_cancel(Application& app) {if(!app.viewport_tool_.cancel(*app.document_)) throw std::runtime_error("Snapshot cancel failed.");}
+    static void place_cursor(Application& app,math::Vector2 pointer) {
+        ui::Event event;event.kind=ui::EventKind::pointer_down;event.button=ui::PointerButton::primary;event.x=pointer.x;event.y=pointer.y;
+        auto settings=app.workspace_.viewport_settings;settings.tool=editor::TransformTool::select;
+        if(!app.viewport_tool_.pointer(*app.document_,*app.accepted_view_,event,settings)) throw std::runtime_error("Snapshot cursor placement failed.");
+        event.kind=ui::EventKind::pointer_up;static_cast<void>(app.viewport_tool_.pointer(*app.document_,*app.accepted_view_,event,settings));
+    }
+    static POINT viewport_point(const Application& app,math::Vector3 point) {
+        if(!app.accepted_view_) throw std::runtime_error("Viewport has no accepted camera.");
+        const auto projected=app.accepted_view_->project(point);if(!projected) throw std::runtime_error("Viewport point is outside the camera.");
+        return {static_cast<LONG>(std::round(projected->x)),static_cast<LONG>(std::round(projected->y))};
+    }
     static void require_camera(const Application& app,bool passed,UINT reason,const char* message) {
         if (!passed) throw std::runtime_error(std::string(message)+"; reason="+std::to_string(reason)+
             "; orbit="+std::to_string(app.orbiting_)+"; last=("+std::to_string(app.last_x_)+","+std::to_string(app.last_y_)+")");
@@ -217,15 +261,16 @@ void mouse(Application& app, UINT message, POINT point) {
     KeyStateScope modifiers;
     // Held gestures use one native movement source, including the initial point.
     // Mixing SendMessage movement with capture-generated movement can reverse a drag.
-    if (message==WM_LBUTTONDOWN) {
+    if (message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_MBUTTONDOWN) {
         atelier::application::EditorAcceptanceAccess::move_pointer(app,point);
     } else if (message==WM_MOUSEMOVE && GetCapture()==app.window() && !app.menu_window()) {
         atelier::application::EditorAcceptanceAccess::move_pointer(app,point);
         tick(app,1); return;
     }
-    SendMessageW(app.window(), message, message == WM_LBUTTONUP ? 0 : MK_LBUTTON, MAKELPARAM(point.x, point.y));
+    const bool released=message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP;
+    SendMessageW(app.window(),message,released?0:message==WM_RBUTTONDOWN?MK_RBUTTON:message==WM_MBUTTONDOWN?MK_MBUTTON:MK_LBUTTON,MAKELPARAM(point.x,point.y));
     tick(app, 1);
-    if (message==WM_LBUTTONUP) {
+    if (released) {
         RECT host{}; GetWindowRect(app.window(),&host);
         require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park the pointer after the held gesture.");
         tick(app,1);
@@ -895,6 +940,73 @@ RECT await_acceptance_activation(Application& app,const std::filesystem::path& o
 #include "ui_authoring_window.inl"
 #include "project_authoring_window.inl"
 #include "viewport.inl"
+#include "viewport_edit_window.inl"
+#include "scene_lit_window.inl"
+}
+
+int verify_editor_scene_lit(Application& app,const char* output_directory,const wchar_t* source_project) {
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
+    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));
+    std::filesystem::create_directories(output);
+    await_acceptance_activation(app,output,"Scene Lit");
+    verify_scene_lit_window(app,output,source_project?std::filesystem::path{source_project}:std::filesystem::path{});
+    atelier::application::EditorAcceptanceAccess::mark_saved(app);
+    SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Scene Lit acceptance did not close normally.");
+    std::ofstream report(output/"acceptance.txt");
+    report<<"Editor Scene Lit window acceptance: PASS\nBuild: "<<atelier::build_info::revision
+        <<"\nConfiguration: "<<atelier::build_info::configuration
+        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three light creation menus and typed Parameters, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
+        <<"Simulation uses formal Session start/update/stop on the displayed World; no Simulate UI exists. Display choices leave authored history/data unchanged.\n"
+        <<"GPU validation/vsync enabled; this window run is not a performance benchmark.\n";
+    require(report.good(),"Cannot save Scene Lit window acceptance evidence.");
+    std::puts("Editor Scene Lit window acceptance: PASS");return 0;
+}
+
+// Visual-only capture for design review: direct document/API calls, GPU
+// readback PNGs, no activation and no synthetic OS input. Not an acceptance.
+int capture_editor_snapshot(Application& app,const char* output_directory) {
+    using Access=atelier::application::EditorAcceptanceAccess;
+    using atelier::editor::Command;
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
+    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));std::filesystem::create_directories(output);
+    const auto settle=[&]{for(int i=0;i<6;++i) require(app.step(),"Snapshot editor closed.");};
+    const auto shot=[&](const char* name) {
+        settle();atelier::renderer::Capture image;
+        for(int attempt=0;attempt<30 && !image.frame_id;++attempt) require(app.step(&image),"Snapshot editor closed.");
+        require(image.frame_id!=0,"Snapshot frame was not accepted (window occluded?).");png(image,output/name);
+    };
+    settle();
+    model(Access::command(app,Command::create_static_mesh));
+    Access::set_cursor(app,{1.4f,0,-1.1f});
+    Access::set_tool(app,atelier::editor::TransformTool::rotate);shot("snapshot-rotate.png");
+    Access::set_tool(app,atelier::editor::TransformTool::move);shot("snapshot-move.png");
+    Access::set_tool(app,atelier::editor::TransformTool::scale);shot("snapshot-scale.png");
+    Access::set_tool(app,atelier::editor::TransformTool::transform);shot("snapshot-transform.png");
+    const auto at=[&](atelier::math::Vector3 p){const auto q=Access::viewport_point(app,p);return atelier::math::Vector2{float(q.x),float(q.y)};};
+    // Surface-aligned cursor on the cube's +X face, then modal feedback.
+    Access::place_cursor(app,at({.5f,.15f,-.15f}));shot("snapshot-cursor-surface.png");
+    auto pointer=at({0,0,0});pointer.x+=60;pointer.y-=40;
+    Access::tool_key(app,'G',pointer);Access::tool_key(app,'Z',pointer);pointer.y-=50;Access::tool_move(app,pointer);shot("snapshot-modal-grab.png");
+    Access::tool_cancel(app);
+    Access::tool_key(app,'R',pointer);Access::tool_key(app,'X',pointer);pointer.x+=70;Access::tool_move(app,pointer);shot("snapshot-modal-rotate.png");
+    Access::tool_cancel(app);
+    Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);
+    while(app.step()) {}
+    std::puts("Editor snapshot: written");return 0;
+}
+int verify_editor_edit_mode(Application& app,const char* output_directory) {
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
+    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));std::filesystem::create_directories(output);
+    await_acceptance_activation(app,output,"edit mode");tick(app);
+    verify_viewport_edit_window(app,output);
+    atelier::application::EditorAcceptanceAccess::mark_saved(app);
+    SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Edit-mode acceptance did not close normally.");
+    std::ofstream(output/"acceptance.txt")<<"Editor edit-mode window acceptance: PASS\nBuild: "<<atelier::build_info::revision
+        <<"\nConfiguration: "<<atelier::build_info::configuration<<"\nNative selection, grouped transforms, parameter tuples, undo/redo, cancellation and resource inspection.\n";
+    std::puts("Editor edit-mode window acceptance: PASS");return 0;
 }
 
 int verify_editor_source(Application& app,const char* output_directory) {
@@ -1178,11 +1290,11 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     require(app.step(&camera_before), "Camera capture failed.");
     auto view = centre(app, control::viewport);
     CameraInput::move_pointer(app,view); tick(app,1);
-    SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
+    SendMessageW(app.window(), WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
     view.x += 42; view.y += 18;
     CameraInput::move_pointer(app,view); tick(app,1);
-    SendMessageW(app.window(), WM_RBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
-    require(app.step(&camera_orbit) && camera_orbit.depth != camera_before.depth, "Right-drag orbit did not change the rendered scene.");
+    SendMessageW(app.window(), WM_MBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
+    require(app.step(&camera_orbit) && camera_orbit.depth != camera_before.depth, "Middle-drag orbit did not change the rendered scene.");
     ClientToScreen(app.window(), &view);
     SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), MAKELPARAM(view.x, view.y)); tick(app, 1);
     require(app.step(&camera_zoom) && camera_zoom.depth != camera_orbit.depth, "Wheel zoom did not change the rendered scene.");
@@ -1191,7 +1303,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
         require_input_focus(app);
         view = centre(app, control::viewport);
         CameraInput::move_pointer(app,view,reason); tick(app,1);
-        SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
+        SendMessageW(app.window(), WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(view.x, view.y)); tick(app, 1);
         CameraInput::require_camera(app,GetCapture()==app.window(),reason,"Orbit did not acquire window capture");
         const auto before = CameraInput::camera_view(app);
         view.x += 18; view.y += 9;
@@ -1207,7 +1319,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
         CameraInput::move_pointer(app,view,reason); tick(app,1);
         CameraInput::require_camera(app,CameraInput::camera_view(app)==stopped,reason,
             "Native cancellation left camera orbit active after capture release");
-        SendMessageW(app.window(), WM_RBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
+        SendMessageW(app.window(), WM_MBUTTONUP, 0, MAKELPARAM(view.x, view.y)); tick(app, 1);
         CameraInput::require_camera(app,CameraInput::camera_view(app)==stopped,reason,"Late button release changed a cancelled orbit");
         if (reason == WM_KILLFOCUS) SetFocus(app.window());
         else if (reason == WM_ACTIVATEAPP) SendMessageW(app.window(), WM_ACTIVATEAPP, TRUE, 0);

@@ -49,6 +49,7 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
         number.key=field.key; number.parent=row.body_key; number.kind=ControlKind::number; number.text=field.label;
         number.layout=single_line_layout(); number.layout.width=ui_layout::Axis::expand(1,field_minimum);
         number.value=field.value; number.minimum=field.minimum; number.maximum=field.maximum;
+        number.single_precision=field.single_precision;
         number.default_value=field.default_value;
         number.context_target=field.key; number.context_group=row.group_key;
         number.drag_step=field.drag_step; number.fine_step=field.fine_step;

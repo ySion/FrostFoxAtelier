@@ -5,7 +5,7 @@
     static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace_back(std::move(request)); }
     void begin_edit(ControlKey key, bool mode, bool select_all = false) {
         const auto& state=states.at(key);
-        edit.emplace(state,state.control.kind==ControlKind::number?format(state.control.value):state.control.text,
+        edit.emplace(state,state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text,
             state.control.value,mode,select_all);
     }
     void revise() {
@@ -45,7 +45,7 @@
             numeric?ActionValue{value}:
                 ActionValue{content});
         edit.reset();
-        if (keep_context && focus==key) edit.emplace(state,numeric?format(value):std::move(content),value,!numeric,false);
+        if (keep_context && focus==key) edit.emplace(state,numeric?format(value,state.control.single_precision):std::move(content),value,!numeric,false);
         reply.redraw=true; return true;
     }
     Reply cancel() {
@@ -59,7 +59,7 @@
                     action(reply,ActionKind::drag_cancel,old.key,DragPoint{old.last_x,old.last_y});
                 else action(reply,ActionKind::edit_cancel,old.key,old.original);
                 if (focus==old.key && states.at(old.key).control.kind==ControlKind::number)
-                    edit.emplace(states.at(old.key),format(old.original),old.original,false,false);
+                    edit.emplace(states.at(old.key),format(old.original,states.at(old.key).control.single_precision),old.original,false,false);
             }
         }
         finish_edit(reply,false,true); keyboard_pressed=0; keyboard_key=terminal_key=Key::none; hover=0; dismiss_popup(reply);
@@ -101,7 +101,7 @@
         changed(reply,change,was_active);
     }
     std::wstring display(const State& state) const {
-        if (press && press->key==state.control.key && press->dragging) return format(press->value);
+        if (press && press->key==state.control.key && press->dragging) return format(press->value,state.control.single_precision);
         if (edit && edit->key==state.control.key) {
             auto value=edit->buffer().current().text;
             if (edit->composition) {
@@ -110,7 +110,7 @@
             }
             return value;
         }
-        return state.control.kind==ControlKind::number?format(state.control.value):state.control.text;
+        return state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text;
     }
     detail::TextPosition display_caret() const {
         if (!edit->composition) return edit->buffer().current().caret;
