@@ -369,7 +369,7 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
         for(auto& value:values) value.position+=delta;
         if(g.axis>=0 && !g.plane) {
             const auto d=delta[g.axis];readout=L"D: "+number(d,4)+L" m ("+number(d,4)+L" m)"+basis();
-        } else readout=L"D: "+number(delta.x,4)+L"  "+number(delta.y,4)+L"  "+number(delta.z,4)+L" ("+number(math::length(delta),4)+L" m)"+basis();
+        } else readout=L"Dx: "+number(delta.x,4)+L" m   Dy: "+number(delta.y,4)+L" m   Dz: "+number(delta.z,4)+L" m ("+number(math::length(delta),4)+L" m)"+basis();
     } else if(g.operation==Operation::rotate) {
         const auto axis=g.axis>=0?axes[g.axis]:-view.forward;
         const auto a=on_plane(view,g.last,g.pivot,axis),b=on_plane(view,p,g.pivot,axis);
@@ -401,7 +401,9 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
             for(int axis=0;axis<3;++axis) {value.scale[axis]*=factors[axis];offset[axis]*=factors[axis];}
             value.position=g.pivot+math::rotate(orientation,offset);
         }
-        readout=L"Scale: "+(g.axis>=0 && !g.plane?number(amount,4):number(factors.x,4)+L"  "+number(factors.y,4)+L"  "+number(factors.z,4))+basis();
+        // Blender: "Scale X: 1.8273   Y: 1.8273  Z: 1.8273", or "Scale: 1.8273 along global X".
+        readout=g.axis>=0 && !g.plane?L"Scale: "+number(amount,4)+basis():
+            L"Scale X: "+number(factors.x,4)+L"   Y: "+number(factors.y,4)+L"  Z: "+number(factors.z,4)+basis();
     }
     g.last=p;
     auto changed=session.preview_transform(g.session,values);if(!changed) return changed;g.valid=true;
