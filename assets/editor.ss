@@ -68,7 +68,7 @@ combo:disabled { indicator-color: #616161; }
 .parameter-nested-body { background: #363636; }
 .parameter-pane { background: token(panel); }
 .parameter-search { padding: 2dip 4dip 3dip 4dip; }
-.status-bar { background: #191919; }
+.status-bar { background: #191919; border-width: 0.667dip; border-edges: top; border-color: #030303; border-style: solid; }
 .parameter-label { padding: 1dip 0dip; text-align: right; text-vertical-align: center; }
 .field-label { text-vertical-align: center; }
 list, popup, tree, table {
@@ -86,9 +86,10 @@ table:focus { border-color: #a0a0a0; }
 item { padding: 2dip 6dip; border-width: 0dip; }
 item:hover, item:focus { background: #424242; }
 item:selected { background: #565656; color: #ffffff; }
+/* Houdini Tree View: 26 px rows at UI scale 1.75 alternating #2e2e2e / #3a3a3a. */
 tree {
-    background: #2d2d2d; tree-alternate-color: #363636; tree-line-color: #686868;
-    tree-row-height: 20dip; tree-indent: 18dip; padding: 0dip;
+    background: #2e2e2e; tree-alternate-color: #3a3a3a; tree-line-color: #686868;
+    tree-row-height: 17.333dip; tree-indent: 17dip; padding: 0dip;
 }
 tree_item {
     background: transparent; border-width: 0dip; padding: 0dip 2dip;
