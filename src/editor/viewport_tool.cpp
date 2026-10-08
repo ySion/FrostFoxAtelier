@@ -15,8 +15,13 @@ using Shape=renderer::OverlayShape;
 constexpr float pi=std::numbers::pi_v<float>;
 constexpr std::array<V3,3> axes{{{1,0,0},{0,1,0},{0,0,1}}};
 // Houdini handle palette, sampled from the Move/Rotate/Scale handles: #ff1414 / #14ff14 / #1414ff, #ffd900 when picked.
-constexpr std::array<ui::Color,3> colors{{{1,.078f,.078f,1},{.078f,1,.078f,1},{.078f,.078f,1,1}}};
-constexpr ui::Color picked{1,.851f,0,1};
+// ui::Color is linear; reference colours are sampled as sRGB bytes.
+ui::Color srgb(int r,int g,int b,float a=1) {
+    const auto f=[](int v){const double c=v/255.;return float(c<=.04045?c/12.92:std::pow((c+.055)/1.055,2.4));};
+    return {f(r),f(g),f(b),a};
+}
+const std::array<ui::Color,3> colors{srgb(0xff,0x14,0x14),srgb(0x14,0xff,0x14),srgb(0x14,0x14,0xff)};
+const ui::Color picked=srgb(0xff,0xd9,0x00);
 auto invalid(const char* text) {return std::unexpected(Error{ErrorCode::invalid_definition,text});}
 float length(V2 v) {return std::hypot(v.x,v.y);}
 float distance(V2 p,V2 a,V2 b) {
@@ -26,6 +31,14 @@ float distance(V2 p,V2 a,V2 b) {
 math::Quaternion rotation(V3 axis,float angle) {
     const auto s=std::sin(angle*.5f);return {axis.x*s,axis.y*s,axis.z*s,std::cos(angle*.5f)};
 }
+math::Quaternion frame_rotation(V3 x,V3 y,V3 z) {
+    const float trace=x.x+y.y+z.z;math::Quaternion q;
+    if(trace>0) {const float s=std::sqrt(trace+1)*2;q={(y.z-z.y)/s,(z.x-x.z)/s,(x.y-y.x)/s,s*.25f};}
+    else if(x.x>y.y && x.x>z.z) {const float s=std::sqrt(1+x.x-y.y-z.z)*2;q={s*.25f,(y.x+x.y)/s,(z.x+x.z)/s,(y.z-z.y)/s};}
+    else if(y.y>z.z) {const float s=std::sqrt(1+y.y-x.x-z.z)*2;q={(y.x+x.y)/s,s*.25f,(z.y+y.z)/s,(z.x-x.z)/s};}
+    else {const float s=std::sqrt(1+z.z-x.x-y.y)*2;q={(z.x+x.z)/s,(z.y+y.z)/s,s*.25f,(x.y-y.x)/s};}
+    return math::try_normalize(q).value_or(math::Quaternion{});
+}
 std::optional<V3> on_plane(const ViewportView& view,V2 point,V3 origin,V3 normal) {
     const auto ray=view.ray(point.x,point.y);const auto denominator=math::dot(ray.direction,normal);
     if (std::abs(denominator)<1e-5f) return {};
@@ -33,50 +46,71 @@ std::optional<V3> on_plane(const ViewportView& view,V2 point,V3 origin,V3 normal
     if (!std::isfinite(t) || t<0) return {};
     return ray.origin+ray.direction*t;
 }
-// Drawing and hit testing visit exactly the same physical geometry.
+// Drawing and hit testing visit exactly the same physical geometry. Proportions
+// follow Houdini 22's object handles at 1x: 1 px axis lines reaching ~84 px,
+// solid 15 px tip markers, outlined plane diamonds at 0.3 of the axis, and a
+// rotate ball whose rings fade on the far hemisphere inside a purple view ring.
 template<class Emit> void handles(const ViewportView& view,V3 pivot,math::Quaternion orientation,TransformTool tool,Emit emit) {
     const auto center=view.project(pivot);if (!center || tool==TransformTool::select) return;
     const float scale=view.dpi_scale, unit=view.pixel_size(pivot)*scale;
-    const auto line=[&](Handle h,V2 a,V2 b,ui::Color color,float width=1.5f) {
+    const auto line=[&](Handle h,V2 a,V2 b,ui::Color color,float width=1.f) {
         emit(h,Shape{Shape::Kind::segment,{a.x,a.y,b.x,b.y},width*scale,color});
     };
-    const auto box=[&](Handle h,V2 at,float size,ui::Color color) {
-        emit(h,Shape{Shape::Kind::rectangle,{at.x-size*scale*.5f,at.y-size*scale*.5f,size*scale,size*scale},scale,color,{.1f,.1f,.1f,1}});
+    const auto box=[&](Handle h,V2 at,float size,ui::Color color,ui::Color edge={0,0,0,.55f}) {
+        emit(h,Shape{Shape::Kind::rectangle,{at.x-size*scale*.5f,at.y-size*scale*.5f,size*scale,size*scale},scale,color,edge});
     };
-    if (tool==TransformTool::transform || tool==TransformTool::rotate) {
-        for (int axis=0;axis<3;++axis) {
-            const auto u=axes[(axis+1)%3],v=axes[(axis+2)%3];
-            for (int step=0;step<64;++step) {
-                const auto at=[&](int n) {const auto a=2*pi*float(n)/64;return view.project(pivot+(u*std::cos(a)+v*std::sin(a))*(unit*58));};
-                const auto a=at(step),b=at(step+1);
-                if(a&&b) line(static_cast<Handle>(int(Handle::rotate_x)+axis),*a,*b,colors[axis],1.25f);
-            }
+    const auto shade=[](ui::Color c,float k){return ui::Color{c.r*k,c.g*k,c.b*k,c.a};};
+    const auto ring=[&](Handle h,V3 u,V3 v,float radius,ui::Color color,float width) {
+        for (int step=0;step<96;++step) {
+            const auto at=[&](int n) {const auto a=2*pi*float(n)/96;return pivot+(u*std::cos(a)+v*std::sin(a))*(unit*radius);};
+            const auto a=at(step),b=at(step+1);const auto pa=view.project(a),pb=view.project(b);if(!pa || !pb) continue;
+            // Front arcs are opaque; arcs behind the ball's silhouette plane read as faded.
+            const bool front=math::dot((a+b)*.5f-pivot,view.forward)<=0;
+            line(h,*pa,*pb,front?color:ui::Color{color.r,color.g,color.b,.42f},front?width:width*.8f);
         }
-        if(tool==TransformTool::rotate) for(int step=0;step<64;++step) {
-            const auto at=[&](int n){const auto a=2*pi*float(n)/64;return *center+V2{std::cos(a),std::sin(a)}*(76*scale);};
-            line(Handle::rotate_view,at(step),at(step+1),{.75f,.75f,.75f,1});
+    };
+    if (tool==TransformTool::rotate || tool==TransformTool::transform) {
+        const float radius=tool==TransformTool::rotate?78.f:62.f;
+        for (int axis=0;axis<3;++axis)
+            ring(static_cast<Handle>(int(Handle::rotate_x)+axis),axes[(axis+1)%3],axes[(axis+2)%3],radius,colors[axis],1.5f);
+        if (tool==TransformTool::rotate) for(int step=0;step<96;++step) {
+            const auto at=[&](int n){const auto a=2*pi*float(n)/96;return *center+V2{std::cos(a),std::sin(a)}*(radius*1.18f*scale);};
+            line(Handle::rotate_view,at(step),at(step+1),srgb(0x80,0x33,0x80,.95f),1.5f);
         }
     }
+    const float reach=tool==TransformTool::transform?92.f:84.f;
     for(int axis=0;axis<3;++axis) {
         const auto color=colors[axis];
         if(tool==TransformTool::transform || tool==TransformTool::move) {
-            const auto tip=view.project(pivot+axes[axis]*(84*unit));if(!tip) continue;
+            const auto tip=view.project(pivot+axes[axis]*(reach*unit));if(!tip) continue;
             const auto d=*tip-*center;const auto size=length(d);if(size<8*scale) continue;
             const auto direction=d/size,side=V2{-direction.y,direction.x};
             const auto h=static_cast<Handle>(int(Handle::move_x)+axis);
-            line(h,*center,*tip,color,2);
-            line(h,*tip,*tip-direction*(9*scale)+side*(4*scale),color,2);
-            line(h,*tip,*tip-direction*(9*scale)-side*(4*scale),color,2);
-            const auto a=axes[(axis+1)%3]*(unit*25),b=axes[(axis+2)%3]*(unit*25);
-            const auto corner=view.project(pivot+a+b);
-            if(corner) box(static_cast<Handle>(int(Handle::plane_yz)+axis),*corner,8,{color.r,color.g,color.b,.65f});
+            line(h,*center,*tip,shade(color,.62f),1.25f);
+            // Solid cone: filled by a fan of strokes from the tip to the base.
+            const auto base=*tip-direction*(15*scale);
+            for(int k=-4;k<=4;++k) line(h,*tip,base+side*(float(k)*1.f*scale),color,1.5f);
+            line(h,base-side*(5*scale),base+side*(5*scale),shade(color,.45f),1.25f);
+            // Plane handle: a diamond centred at 0.3 of the two other axes.
+            const auto u=axes[(axis+1)%3],v=axes[(axis+2)%3];const float at=reach*.3f,half=reach*.045f;
+            const std::array corners{pivot+(u*at+v*(at-half))*unit,pivot+(u*(at+half)+v*at)*unit,
+                pivot+(u*at+v*(at+half))*unit,pivot+(u*(at-half)+v*at)*unit};
+            std::array<std::optional<V2>,4> p{};for(int i=0;i<4;++i) p[i]=view.project(corners[i]);
+            const auto plane=static_cast<Handle>(int(Handle::plane_yz)+axis);
+            if(p[0]&&p[1]&&p[2]&&p[3]) for(int i=0;i<4;++i) line(plane,*p[i],*p[(i+1)%4],{color.r*.62f+.24f,color.g*.62f+.24f,color.b*.62f+.24f,1},1.25f);
         }
         if(tool==TransformTool::transform || tool==TransformTool::scale) {
-            const auto tip=view.project(pivot+math::rotate(orientation,axes[axis])*((tool==TransformTool::transform?108.f:84.f)*unit));
-            if(tip) {const auto h=static_cast<Handle>(int(Handle::scale_x)+axis);line(h,*center,*tip,{color.r,color.g,color.b,.5f},1);box(h,*tip,7,color);}
+            const float length=tool==TransformTool::transform?reach*.62f:reach;
+            const auto tip=view.project(pivot+math::rotate(orientation,axes[axis])*(length*unit));
+            if(tip) {
+                const auto h=static_cast<Handle>(int(Handle::scale_x)+axis);
+                if(tool==TransformTool::scale) line(h,*center,*tip,shade(color,.62f),1.25f);
+                box(h,*tip,tool==TransformTool::scale?13.f:9.f,color);
+            }
         }
     }
-    if(tool!=TransformTool::rotate) box(tool==TransformTool::scale?Handle::scale_uniform:Handle::move_view,*center,8,{.85f,.85f,.8f,1});
+    if(tool==TransformTool::scale) box(Handle::scale_uniform,*center,11,srgb(0xae,0x8b,0xd2));
+    else if(tool!=TransformTool::rotate) box(Handle::move_view,*center,7,srgb(0xee,0xee,0xe6));
 }
 std::optional<float> triangle(const ViewportView::Ray& ray,V3 a,V3 b,V3 c) {
     const auto edge1=b-a,edge2=c-a,h=math::cross(ray.direction,edge2);const auto det=math::dot(edge1,h);
@@ -171,7 +205,13 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,cons
             const auto t=triangle(local,at(i),at(i+1),at(i+2));
             if(t && *t<nearest) {
                 const auto point=ray.origin+ray.direction**t;
-                if(view.project(point)) {nearest=*t;found=Hit{item.actor,point};}
+                if(view.project(point)) {
+                    // World normal of the hit face, facing the viewer.
+                    const auto edge1=math::transform_direction(at(i+1)-at(i),item.world),edge2=math::transform_direction(at(i+2)-at(i),item.world);
+                    auto normal=math::try_normalize(math::cross(edge1,edge2)).value_or(V3{0,1,0});
+                    if(math::dot(normal,ray.direction)>0) normal=-normal;
+                    nearest=*t;found=Hit{item.actor,point,normal};
+                }
             }
         }
     }
@@ -187,15 +227,23 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,cons
     return found;
 }
 Result<void> ViewportTool::place_cursor(const Session& session,const ViewportView& view,V2 p,Settings settings,bool control) {
-    std::optional<V3> position;
-    if(settings.cursor_surface) if(const auto hit=trace(session,view,p.x,p.y,false)) position=hit->position;
+    std::optional<V3> position;V3 normal=view.construction_normal;
+    if(settings.cursor_surface) if(const auto hit=trace(session,view,p.x,p.y,false)) {position=hit->position;normal=hit->normal;}
     if(!position) position=on_plane(view,p,{},view.construction_normal);
     if(!position) position=on_plane(view,p,cursor,view.forward);
     if(!position) return invalid("The cursor cannot be placed on the current construction plane.");
     if(settings.grid_snap!=control) for(int axis=0;axis<3;++axis) (*position)[axis]=std::round((*position)[axis]/settings.grid_spacing)*settings.grid_spacing;
     for(int axis=0;axis<3;++axis) if(!std::isfinite((*position)[axis]) || std::abs((*position)[axis])>10000)
         return invalid("Cursor position is outside the editor range.");
-    cursor=*position;hint_=L"3D Cursor placed · Right click selects · W opens the viewport menu";return {};
+    cursor=*position;
+    // Blender's "Surface Project" orientation: Z follows the surface normal, X stays
+    // as close to the view's right vector as the plane allows.
+    const auto z=math::try_normalize(normal).value_or(V3{0,1,0});
+    auto x=math::try_normalize(view.right-z*math::dot(view.right,z));
+    if(!x) x=math::try_normalize(math::cross(V3{0,0,1},z));
+    const auto y=math::cross(z,*x);
+    cursor_rotation=frame_rotation(*x,y,z);
+    hint_=L"3D Cursor placed · Right click selects · W opens the viewport menu";return {};
 }
 TransformTool ViewportTool::displayed_tool(Settings settings) const noexcept {
     if(gesture_) return gesture_->operation==Operation::move?TransformTool::move:gesture_->operation==Operation::rotate?TransformTool::rotate:TransformTool::scale;
@@ -288,6 +336,14 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
         typed=value;
     }
     const float precision=fine?.1f:1.f;std::vector<world::Trs> values=g.before;
+    std::wstring readout; // Blender header text, e.g. "D: 0.95 m (0.95 m) along global Z".
+    const auto number=[](double value,int digits) {
+        wchar_t text[48];std::swprintf(text,48,L"%.*f",digits,value);return std::wstring(text);
+    };
+    const auto basis=[&]{
+        if(g.axis<0) return std::wstring{};
+        return std::wstring(g.plane?L" locking global ":L" along global ")+L"XYZ"[g.axis];
+    };
     if(g.operation==Operation::move) {
         V3 delta{};
         if(g.axis>=0 && !g.plane) {
@@ -311,6 +367,9 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
             delta[axis]=std::round((origin+delta[axis])/step)*step-origin;
         }
         for(auto& value:values) value.position+=delta;
+        if(g.axis>=0 && !g.plane) {
+            const auto d=delta[g.axis];readout=L"D: "+number(d,4)+L" m ("+number(d,4)+L" m)"+basis();
+        } else readout=L"D: "+number(delta.x,4)+L"  "+number(delta.y,4)+L"  "+number(delta.z,4)+L" ("+number(math::length(delta),4)+L" m)"+basis();
     } else if(g.operation==Operation::rotate) {
         const auto axis=g.axis>=0?axes[g.axis]:-view.forward;
         const auto a=on_plane(view,g.last,g.pivot,axis),b=on_plane(view,p,g.pivot,axis);
@@ -322,6 +381,7 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
         if(snap && !typed) angle=std::round(angle/(pi/12))*(pi/12);
         const auto q=rotation(axis,angle);
         for(auto& value:values) {value.position=g.pivot+math::rotate(q,value.position-g.pivot);value.rotation=q*value.rotation;}
+        readout=L"Rotation: "+number(angle*180/pi,2)+(g.axis>=0?basis():std::wstring{});
     } else {
         float amount=1+(p.x-g.start.x-(p.y-g.start.y))*.007f*precision;
         const auto orientation=g.before.back().rotation;
@@ -341,13 +401,26 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
             for(int axis=0;axis<3;++axis) {value.scale[axis]*=factors[axis];offset[axis]*=factors[axis];}
             value.position=g.pivot+math::rotate(orientation,offset);
         }
+        readout=L"Scale: "+(g.axis>=0 && !g.plane?number(amount,4):number(factors.x,4)+L"  "+number(factors.y,4)+L"  "+number(factors.z,4))+basis();
     }
     g.last=p;
     auto changed=session.preview_transform(g.session,values);if(!changed) return changed;g.valid=true;
-    hint_=(g.operation==Operation::move?L"Move":g.operation==Operation::rotate?L"Rotate":L"Scale");
-    if(g.axis>=0) {hint_+=g.plane?L" · Plane ":L" · ";hint_+=L"XYZ"[g.axis];}
-    if(!g.typed.empty()) hint_+=L" · "+g.typed;
-    hint_+=L" · Enter confirm / Esc cancel";return {};
+    // Typed input shows the raw entry in brackets like Blender: "[2|]".
+    hint_=g.typed.empty()?readout:readout+L"  ["+g.typed+L"|]";return {};
+}
+Result<void> ViewportTool::clear_channel(Session& session,Operation channel) {
+    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Actor with a spatial root.");
+    auto values=selected->transforms;
+    for(auto& value:values) {
+        if(channel==Operation::move) value.position={};
+        else if(channel==Operation::rotate) value.rotation={};
+        else value.scale={1,1,1};
+    }
+    const auto token=next_session_++;auto result=session.begin_transform(selected->components,token);if(!result) return result;
+    result=session.preview_transform(token,values);
+    if(result) result=session.commit_edit(token);
+    if(!result) {const auto cancelled=session.cancel_edit();return cancelled?result:cancelled;}
+    hint_=channel==Operation::move?L"Clear Location":channel==Operation::rotate?L"Clear Rotation":L"Clear Scale";return {};
 }
 Result<void> ViewportTool::finish(Session& session) {
     if(!gesture_) return {};
@@ -429,16 +502,39 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
         } else if(event.key==ui::Key::backspace && !gesture_->typed.empty()) gesture_->typed.pop_back();
         const auto result=update(session,view,pointer,event.control);if(!result) return std::unexpected(result.error());return true;
     }
-    if(event.kind!=ui::EventKind::key_down || event.control || event.alt) return false;
+    if(event.kind!=ui::EventKind::key_down) return false;
+    const auto members=[&]()->Result<std::vector<ObjectId>> {
+        std::vector<ObjectId> all;const auto items=session.world().members();if(!items) return std::unexpected(items.error());
+        for(const auto& actor:*items) all.push_back(actor.id());return all;
+    };
+    // Blender object mode: Alt+A deselects, Ctrl+I inverts, Alt+G/R/S clear one TRS
+    // channel of every selected root as a single history entry.
+    if(event.alt && !event.control && vk=='A') {
+        const auto result=session.select_actors({},{});if(!result) return std::unexpected(result.error());hint_=L"Deselect All";return true;
+    }
+    if(event.control && !event.alt && vk=='I') {
+        auto all=members();if(!all) return std::unexpected(all.error());
+        std::erase_if(*all,[&](ObjectId actor){return session.is_selected(actor);});
+        const auto result=session.select_actors(*all,all->empty()?ObjectId{}:all->back());if(!result) return std::unexpected(result.error());
+        hint_=L"Invert Selection";return true;
+    }
+    if(event.alt && !event.control && (vk=='G' || vk=='R' || vk=='S')) {
+        const auto result=clear_channel(session,vk=='G'?Operation::move:vk=='R'?Operation::rotate:Operation::scale);
+        if(!result) return std::unexpected(result.error());return true;
+    }
+    if(event.control || event.alt) return false;
     if(vk=='G' || vk=='R' || vk=='S') {
         const auto result=begin(session,view,settings,vk=='G'?Operation::move:vk=='R'?Operation::rotate:Operation::scale,Handle::none,true,pointer);
         if(!result) return std::unexpected(result.error());return true;
     }
     if(vk=='B') {marquee_=Marquee{pointer,pointer,false,event.shift,false,true};hint_=L"Box select · Drag to select · Esc cancel";return true;}
     if(vk=='A') {
-        std::vector<ObjectId> all;const auto members=session.world().members();if(!members) return std::unexpected(members.error());
-        for(const auto& actor:*members) all.push_back(actor.id());const auto result=session.select_actors(all,all.empty()?ObjectId{}:all.back());
-        if(!result) return std::unexpected(result.error());return true;
+        // Blender 2.8+ keymap: A selects all; A again with everything selected clears.
+        auto all=members();if(!all) return std::unexpected(all.error());
+        const bool everything=!all->empty() && std::ranges::all_of(*all,[&](ObjectId actor){return session.is_selected(actor);});
+        if(everything) all->clear();
+        const auto result=session.select_actors(*all,all->empty()?ObjectId{}:all->back());
+        if(!result) return std::unexpected(result.error());hint_=everything?L"Deselect All":L"Select All";return true;
     }
     return false;
 }
@@ -451,7 +547,7 @@ void ViewportTool::overlay(const Session& session,const ViewportView& view,Setti
         const auto root=world::root_component(session.world().runtime(),actor.id());if(!root || !*root) continue;
         const auto matrix=world::world_matrix(session.world().runtime(),**root);if(!matrix) continue;
         const auto p=view.project({(*matrix)[12],(*matrix)[13],(*matrix)[14]});if(!p) continue;
-        const float r=6*view.dpi_scale;const ui::Color color=session.is_selected(actor.id())?ui::Color{1,.65f,.1f,1}:ui::Color{.65f,.7f,.75f,1};
+        const float r=6*view.dpi_scale;const ui::Color color=session.is_selected(actor.id())?picked:srgb(0xd8,0xdc,0xe0);
         stroke(*p-V2{r,0},*p+V2{r,0},1.5f,color);stroke(*p-V2{0,r},*p+V2{0,r},1.5f,color);
     }
     if(const auto selected=targets(session,settings.pivot,cursor))
@@ -493,8 +589,16 @@ void ViewportTool::overlay(const Session& session,const ViewportView& view,Setti
             const auto point=[&](int n){const auto angle=2*pi*float(n)/48;return *p+V2{std::cos(angle),std::sin(angle)}*r;};
             stroke(point(segment),point(segment+1),1.5f,(segment/3)%2?ui::Color{1,1,1,1}:ui::Color{1,0,0,1});
         }
-        for(const auto direction:{V2{1,0},V2{-1,0},V2{0,1},V2{0,-1}})
-            stroke(*p+direction*(r*.55f),*p+direction*(r*1.85f),1.25f,{0,0,0,1});
+        // Ticks are the cursor frame's X and Y axes in 3D, so a surface-aligned
+        // cursor visibly lies on that surface. The ring stays screen-facing.
+        const float metres=view.pixel_size(cursor)*scale;
+        for(const auto local:{V3{1,0,0},V3{0,1,0}}) {
+            const auto axis=math::rotate(cursor_rotation,local);
+            const auto tip=view.project(cursor+axis*(metres*10));if(!tip) continue;
+            auto direction=math::try_normalize(*tip-*p);if(!direction) continue;
+            for(const float sign:{1.f,-1.f})
+                stroke(*p+*direction*(sign*r*.55f),*p+*direction*(sign*r*1.85f),1.25f,{0,0,0,1});
+        }
     }
     {
         // Houdini orientation triad: fixed lower-left corner, world axes projected
@@ -509,8 +613,8 @@ void ViewportTool::overlay(const Session& session,const ViewportView& view,Setti
         }
         // Painter's order: the axis pointing away from the viewer is drawn first.
         std::ranges::sort(arms,std::greater{},&Arm::depth);
-        constexpr std::array<ui::Color,3> discs{{{.882f,.404f,.404f,1},{.4f,.882f,.416f,1},{.357f,.506f,.859f,1}}};
-        constexpr std::array<ui::Color,3> lines{{{.95f,.25f,.25f,1},{.25f,.95f,.25f,1},{.2f,.4f,.9f,1}}};
+        const std::array discs{srgb(0xe1,0x67,0x67),srgb(0x66,0xe1,0x6a),srgb(0x5b,0x81,0xdb)};
+        const std::array lines{srgb(0xf2,0x40,0x40),srgb(0x40,0xf2,0x40),srgb(0x33,0x66,0xe5)};
         for(const auto& item:arms) {
             stroke(origin,item.tip,1.5f,lines[item.axis]);
             stroke(item.tip,item.tip,disc*2/scale,discs[item.axis]);

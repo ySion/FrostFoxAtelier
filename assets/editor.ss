@@ -314,3 +314,4 @@ combo.viewport-view-menu, combo.viewport-view-menu:hover {
 }
 combo.viewport-view-menu:hover { background: #6e7e87dd; color: #ffffff; }
 combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background: #44535bdd; background-image: none; }
+.viewport-readout { color: #e6e6e6; text-vertical-align: center; font-family: 'Source Code Pro'; font-size: 12dip; }

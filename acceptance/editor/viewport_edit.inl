@@ -16,6 +16,10 @@ void verify_viewport_editing() {
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
         ui::Event event;event.kind=ui::EventKind::key_down;event.key=key;return tool.key(document,view,event,code,settings,point(second));
     };
+    const auto chord=[&](std::uint32_t code,bool control,bool alt) {
+        ui::Event event;event.kind=ui::EventKind::key_down;event.control=control;event.alt=alt;
+        return tool.key(document,view,event,code,settings,point(second));
+    };
     const auto text=[&](std::wstring value) {
         ui::Event event;event.kind=ui::EventKind::text;event.data=std::move(value);return tool.key(document,view,event,0,settings,point(second));
     };
@@ -88,6 +92,42 @@ void verify_viewport_editing() {
     require(take(document.world().members()).size()==2 && document.is_selected(first) && document.is_selected(second) && document.selection().actor==second,
         "Multi-delete undo lost Actor identity, active member or membership.");
     changed(document.redo());require(document.selected_actors().empty(),"Delete redo retained a stale selection.");changed(document.undo());
+    // Blender object-mode chords: A toggles all, Alt+A clears, Ctrl+I inverts.
+    take(document.select(first));
+    take(key('A'));require(document.selected_actors().size()==2,"A did not select every Actor.");
+    take(key('A'));require(document.selected_actors().empty(),"A with everything selected did not deselect all.");
+    take(chord('A',false,false));take(chord('A',false,true));require(document.selected_actors().empty(),"Alt+A did not deselect.");
+    take(document.select(first));take(chord('I',true,false));
+    require(document.selected_actors().size()==1 && document.is_selected(second),"Ctrl+I did not invert the Actor selection.");
+    take(key('A'));
+    {
+        // Alt+G/R/S clear one channel of every selected root, one undo entry each.
+        auto moved=transform(first);moved.position={1,2,3};moved.rotation=from_euler_degrees({30,0,0});moved.scale={2,2,2};
+        const std::array root_one{first_root};const std::array value_one{moved};
+        take(document.begin_transform(root_one,930));take(document.preview_transform(930,value_one));take(document.commit_edit(930));
+        const auto history=document.undo_count();
+        take(chord('G',false,true));
+        require(transform(first).position==math::Vector3{} && transform(first).rotation==moved.rotation && document.undo_count()==history+1,
+            "Alt+G did not clear only location as one history entry.");
+        take(chord('R',false,true));take(chord('S',false,true));
+        const auto cleared=transform(first);
+        if(!(cleared.rotation==math::Quaternion{} && cleared.scale==math::Vector3{1,1,1} && document.undo_count()==history+3))
+            throw std::runtime_error("Alt+R/S did not clear rotation and scale: q=("+std::to_string(cleared.rotation.x)+","+std::to_string(cleared.rotation.y)+","+
+                std::to_string(cleared.rotation.z)+","+std::to_string(cleared.rotation.w)+") s="+std::to_string(cleared.scale.x)+
+                " history="+std::to_string(document.undo_count()-history)+" selected="+std::to_string(document.selected_actors().size()));
+        changed(document.undo());changed(document.undo());changed(document.undo());
+        require(transform(first)==moved,"Clear channel undo did not restore the full TRS.");
+        changed(document.undo());require(transform(first)==before_first,"Fixture transform was not undone.");
+    }
+    {
+        // Surface placement orients the cursor frame: local Z follows the hit face normal.
+        settings.cursor_surface=true;
+        const auto face=view.project(transform(second).position+math::Vector3{0,.5f,0});require(face.has_value(),"Top face is off screen.");
+        take(pointer(ui::EventKind::pointer_down,*face,false,false,ui::PointerButton::primary));
+        const auto normal=math::rotate(tool.cursor_rotation,math::Vector3{0,0,1});
+        require(std::abs(tool.cursor.y-.5f)<.01f && normal.y>.999f,"Surface cursor did not land on and align with the top face.");
+        settings.cursor_surface=false;
+    }
     const math::Vector3 angles{23,47,-12};const auto converted=euler_degrees(from_euler_degrees(angles));
     require(std::abs(converted.x-angles.x)<.001f && std::abs(converted.y-angles.y)<.001f && std::abs(converted.z-angles.z)<.001f,
         "Euler parameter conversion disagrees with native XYZ rotation.");

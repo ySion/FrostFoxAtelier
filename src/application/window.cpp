@@ -235,9 +235,11 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         events_.push_back(std::move(value)); return 0;
     }
     case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-        // Keep system shortcuts such as Alt+F4 with Windows; menu mnemonics
-        // and F10 use the same queued key ownership as ordinary controls.
-        if (wparam!=VK_F10 && wparam!=VK_MENU && wparam!='F' && wparam!='E' && wparam!='C' && wparam!='V' && wparam!='W')
+        // Keep system shortcuts such as Alt+F4 with Windows; menu mnemonics,
+        // F10 and the Blender viewport chords (Alt+A/G/R/S) use the same queued
+        // key ownership as ordinary controls.
+        if (wparam!=VK_F10 && wparam!=VK_MENU && wparam!='F' && wparam!='E' && wparam!='C' && wparam!='V' && wparam!='W' &&
+            wparam!='A' && wparam!='G' && wparam!='R' && wparam!='S')
             return DefWindowProcW(handle_,message,wparam,lparam);
         [[fallthrough]];
     case WM_KEYDOWN: case WM_KEYUP: {

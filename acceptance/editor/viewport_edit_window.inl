@@ -109,6 +109,28 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     require(std::abs(x(app,second)-2)<.001f,"Native grid drag did not align the active Actor to a world cell.");
     key(app,VK_RETURN);capture(app,output/"front-grid-snapping.png");key(app,'Z',true);
     require(std::abs(x(app,second)-1.5f)<.001f,"Grid drag did not undo as one edit.");
+    {
+        // Native Alt chords arrive as WM_SYSKEYDOWN and must reach the viewport, not the system menu.
+        hover(position(second));
+        const auto system_key=[&](WPARAM code) {
+            require_input_focus(app);KeyStateScope modifiers(false,false,true);
+            SendMessageW(app.window(),WM_SYSKEYDOWN,code,1u<<29);tick(app,1);
+            SendMessageW(app.window(),WM_SYSKEYUP,code,(1u<<29)|(3u<<30));tick(app,1);
+        };
+        const auto chord_history=app.document().undo_count();
+        system_key('G');
+        require(x(app,second)==0 && app.document().undo_count()==chord_history+1 && !app.menu_window(),"Native Alt+G did not clear location as one edit.");
+        key(app,'Z',true);require(std::abs(x(app,second)-1.5f)<.001f,"Alt+G did not undo.");
+        system_key('A');require(app.document().selected_actors().empty(),"Native Alt+A did not deselect all.");
+        click(app,static_cast<ControlKey>(Command::tool_select));
+        mouse(app,WM_RBUTTONDOWN,Access::viewport_point(app,position(second)));mouse(app,WM_RBUTTONUP,Access::viewport_point(app,position(second)));
+        // A modal gesture swaps the tool options for Blender's live header readout.
+        hover({0,0,0});key(app,'G');key(app,'Z');
+        const auto* readout=app.presented()->find(Access::viewport_readout_key(app));
+        require(readout && readout->bounds.width>0,"Modal readout band is not visible during G.");
+        capture(app,output/"modal-readout.png");key(app,VK_ESCAPE);
+        require(std::abs(x(app,second)-1.5f)<.001f && !app.document().editing(),"Esc after readout capture left a draft.");
+    }
     const auto expanded_height=app.presented()->find(control::viewport)->bounds.height;
     click(app,static_cast<ControlKey>(Command::viewport_options));
     require(app.presented()->find(control::viewport)->bounds.height>expanded_height,"Collapsing tool options did not return height to the viewport.");

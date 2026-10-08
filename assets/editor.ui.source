@@ -491,7 +491,8 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in Text mode_name, in double mode_icon, in Text basis, in Text pivot_name,
                  in ActionBinding snap, in double snap_icon, in bool snapping, in Text grid_step, in bool snap_open,
                  in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
-                 in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon) {
+                 in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon,
+                 in Text readout, in bool modal) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -506,7 +507,9 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
             ToggleButton stow { action: input.collapse_toggle; icon: choose(input.collapsed, input.down_icon, input.up_icon);
                 selected: input.collapsed; min_width: 12; expand_width: input.collapsed; expand_height: true;
                 padding_bottom: choose(input.collapsed, 0.0d, 20.0d); classes: "bar-stow"; }
-            Row settings { collapsed: input.collapsed; expand_width: true; expand_height: true; align_center: true; gap: 6;
+            Text readout { text: input.readout; collapsed: input.collapsed || !input.modal; expand_width: true; expand_height: true;
+                padding_left: 10; classes: "viewport-readout"; }
+            Row settings { collapsed: input.collapsed || input.modal; expand_width: true; expand_height: true; align_center: true; gap: 6;
                 padding_left: 4; padding_right: 6;
                 Combo actions { icon: input.mode_icon; width: 30; height: 28; classes: "icon-menu viewport-operation"; }
                 Text basis { text: input.basis; content_width: 0; single_line: true; classes: "viewport-option-label"; }

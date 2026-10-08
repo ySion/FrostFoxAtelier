@@ -282,7 +282,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         workspace_.status=std::wstring(editor::command_definition(static_cast<std::uint64_t>(command))->title);break;
     case pivot_median:workspace_.viewport_settings.pivot=editor::PivotMode::median;break;
     case pivot_cursor:workspace_.viewport_settings.pivot=editor::PivotMode::cursor;break;
-    case cursor_origin:viewport_tool_.cursor={};break;
+    case cursor_origin:viewport_tool_.cursor={};viewport_tool_.cursor_rotation={};break;
     case snap_toggle:workspace_.viewport_settings.grid_snap=!workspace_.viewport_settings.grid_snap;break;
     case snap_grid_01:case snap_grid_02:case snap_grid_05:case snap_grid_1: {
         constexpr std::array steps{.1f,.2f,.5f,1.f};
@@ -701,6 +701,7 @@ bool Application::step(renderer::Capture* capture) {
     if (!target.drawable) { MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
     workspace_.viewport_mode=viewport_tool_.displayed_tool(workspace_.viewport_settings);
+    workspace_.viewport_readout=viewport_tool_.readout();
     workspace_.camera_view=camera_.view();
     workspace_.view.grid_spacing=workspace_.viewport_settings.grid_spacing;
     workspace_.view.grid_plane=camera_.view()==editor::CameraView::front?renderer::GridPlane::xy:

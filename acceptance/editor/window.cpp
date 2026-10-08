@@ -86,6 +86,25 @@ struct EditorAcceptanceAccess {
     static Result<void> simulate_tick(Application& app,float seconds) {return app.document_->update(seconds);}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}
     static void set_cursor(Application& app,math::Vector3 at) {app.viewport_tool_.cursor=at;}
+    static ui::ControlKey viewport_readout_key(const Application&) {return editor::control::viewport_readout;}
+    // Drive the real tool entry points without OS input (snapshot only).
+    static void tool_key(Application& app,std::uint32_t vk,math::Vector2 pointer) {
+        ui::Event event;event.kind=ui::EventKind::key_down;
+        if(!app.viewport_tool_.key(*app.document_,*app.accepted_view_,event,vk,app.workspace_.viewport_settings,pointer))
+            throw std::runtime_error("Snapshot tool key failed.");
+    }
+    static void tool_move(Application& app,math::Vector2 pointer) {
+        ui::Event event;event.kind=ui::EventKind::pointer_move;event.x=pointer.x;event.y=pointer.y;
+        if(!app.viewport_tool_.pointer(*app.document_,*app.accepted_view_,event,app.workspace_.viewport_settings))
+            throw std::runtime_error("Snapshot tool move failed.");
+    }
+    static void tool_cancel(Application& app) {if(!app.viewport_tool_.cancel(*app.document_)) throw std::runtime_error("Snapshot cancel failed.");}
+    static void place_cursor(Application& app,math::Vector2 pointer) {
+        ui::Event event;event.kind=ui::EventKind::pointer_down;event.button=ui::PointerButton::primary;event.x=pointer.x;event.y=pointer.y;
+        auto settings=app.workspace_.viewport_settings;settings.tool=editor::TransformTool::select;
+        if(!app.viewport_tool_.pointer(*app.document_,*app.accepted_view_,event,settings)) throw std::runtime_error("Snapshot cursor placement failed.");
+        event.kind=ui::EventKind::pointer_up;static_cast<void>(app.viewport_tool_.pointer(*app.document_,*app.accepted_view_,event,settings));
+    }
     static POINT viewport_point(const Application& app,math::Vector3 point) {
         if(!app.accepted_view_) throw std::runtime_error("Viewport has no accepted camera.");
         const auto projected=app.accepted_view_->project(point);if(!projected) throw std::runtime_error("Viewport point is outside the camera.");
@@ -965,6 +984,14 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     Access::set_tool(app,atelier::editor::TransformTool::move);shot("snapshot-move.png");
     Access::set_tool(app,atelier::editor::TransformTool::scale);shot("snapshot-scale.png");
     Access::set_tool(app,atelier::editor::TransformTool::transform);shot("snapshot-transform.png");
+    const auto at=[&](atelier::math::Vector3 p){const auto q=Access::viewport_point(app,p);return atelier::math::Vector2{float(q.x),float(q.y)};};
+    // Surface-aligned cursor on the cube's +X face, then modal feedback.
+    Access::place_cursor(app,at({.5f,.15f,-.15f}));shot("snapshot-cursor-surface.png");
+    auto pointer=at({0,0,0});pointer.x+=60;pointer.y-=40;
+    Access::tool_key(app,'G',pointer);Access::tool_key(app,'Z',pointer);pointer.y-=50;Access::tool_move(app,pointer);shot("snapshot-modal-grab.png");
+    Access::tool_cancel(app);
+    Access::tool_key(app,'R',pointer);Access::tool_key(app,'X',pointer);pointer.x+=70;Access::tool_move(app,pointer);shot("snapshot-modal-rotate.png");
+    Access::tool_cancel(app);
     Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;

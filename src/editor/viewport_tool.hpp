@@ -47,10 +47,15 @@ public:
         bool grid_snap{}, cursor_surface{true}; float grid_spacing{.2f};
     };
     math::Vector3 cursor{}; // Blender-style 3D cursor: pivot option and creation point.
+    // The cursor is a full 3D frame like Blender's: surface placement aligns its
+    // local Z with the hit normal; the drawn ticks are its X/Y axes in 3D.
+    math::Quaternion cursor_rotation{};
 
     bool active() const noexcept { return gesture_.has_value() || marquee_.has_value(); }
     bool modal() const noexcept { return gesture_ && gesture_->modal; }
     std::wstring_view hint() const noexcept { return hint_; }
+    // Live modal readout (Blender's header line); empty outside a modal gesture.
+    std::wstring_view readout() const noexcept { return gesture_ && gesture_->modal?std::wstring_view(hint_):std::wstring_view{}; }
     TransformTool displayed_tool(Settings) const noexcept;
     Result<void> snap_selection(Session&,Settings,bool to_cursor);
     Result<void> cursor_to_selection(const Session&);
@@ -109,13 +114,14 @@ private:
     std::uint64_t next_session_{(1ULL<<62)+1};
 
     static std::optional<Targets> targets(const Session&, PivotMode, math::Vector3 cursor);
-    struct Hit { ObjectId actor; math::Vector3 position; };
+    struct Hit { ObjectId actor; math::Vector3 position, normal{0,1,0}; };
     static std::optional<Hit> trace(const Session&,const ViewportView&,float x,float y,bool locators);
     Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,Settings,bool control);
     Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2) const;
     Result<void> begin(Session&, const ViewportView&, Settings, Operation, Handle, bool modal, math::Vector2);
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine=false);
     Result<void> finish(Session&);
+    Result<void> clear_channel(Session&, Operation);
     Result<void> select_click(Session&, const ViewportView&, math::Vector2, bool shift, bool control);
     Result<void> select_box(Session&, const ViewportView&, const Marquee&);
 };

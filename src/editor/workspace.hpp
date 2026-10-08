@@ -21,7 +21,7 @@ inline constexpr auto add_actor=command_key(Command::create_actor), remove_selec
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
 inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes=846;
-inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850;
+inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850, viewport_readout=851;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
@@ -76,6 +76,7 @@ struct Workspace {
     ui::DockSpace dock;
     ViewportTool::Settings viewport_settings;
     TransformTool viewport_mode{TransformTool::transform}; // Current operation, including a modal gesture.
+    std::wstring viewport_readout; // Modal G/R/S header text; empty hides the band.
     CameraView camera_view{CameraView::perspective};
     bool viewport_options_collapsed{};
     bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Actor instance.

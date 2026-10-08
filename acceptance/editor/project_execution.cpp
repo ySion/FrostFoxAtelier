@@ -77,7 +77,7 @@ void run(const std::filesystem::path& root) {
     display(std::move(described));workspace.commit_ui_controls();auto prepared=display(ui.prepare());require(ui.accept(prepared),"Could not accept project property UI.");
     require(workspace.ui_error().empty(),"Editor UI failed while projecting source properties.");
     require(std::ranges::any_of(controls,[](const auto& item){return item.kind==ui::ControlKind::number && item.value==2;}),"Source number field did not reach the shared editor.");
-    require(std::ranges::any_of(controls,[](const auto& item){return item.kind==ui::ControlKind::checkbox && item.text==L"moving" && item.selected;}),"Source boolean field did not reach its checkbox.");
+    require(std::ranges::any_of(controls,[](const auto& item){return item.kind==ui::ControlKind::checkbox && item.text==L"Moving" && item.selected;}),"Source boolean field did not reach its checkbox.");
 
     auto playing=editor::load_project_scene(project,original);require(playing.session!=nullptr,"Play snapshot failed to load.");
     auto& play=*playing.session;const auto moving_actor=actor(play);

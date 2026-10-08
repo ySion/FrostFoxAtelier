@@ -229,6 +229,19 @@ bool Workspace::apply_view(const ui::Action& action) {
     status=L"Viewport display updated";
     return true;
 }
+namespace {
+// Houdini-style parameter label from a reflected field path: "material.base_color"
+// becomes "Base Color". The path still identifies the field; only the caption changes.
+std::wstring parameter_label(std::string_view path) {
+    if(const auto dot=path.rfind('.');dot!=path.npos) path=path.substr(dot+1);
+    std::wstring label;bool start=true;
+    for(const char c:path) {
+        if(c=='_') {label+=L' ';start=true;continue;}
+        label+=static_cast<wchar_t>(start && c>='a' && c<='z'?c-'a'+'A':c);start=false;
+    }
+    return label;
+}
+}
 std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project) {
     const auto take = []<class T>(Result<T> value) -> T {
         if (!value) throw std::runtime_error(value.error().message);
@@ -386,7 +399,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         constexpr std::array view_names{L"Persp",L"Top",L"Front",L"Right"};
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,29> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,31> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
@@ -397,8 +410,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             step_name,menu && menu->source==control::viewport_snap,viewport_settings.cursor_surface,
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},std::wstring(view_names[std::size_t(camera_view)]),
             menu && menu->source==control::viewport_camera,ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
-            viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down)};
-        const std::array<ui_language::KeyBinding,13> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},
+            viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down),viewport_readout,!viewport_readout.empty()};
+        const std::array<ui_language::KeyBinding,14> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
             {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},
             {"actions",control::viewport_tools_menu},{"step",control::viewport_snap},{"camera",control::viewport_camera},{"mode",control::viewport_hud}}};
@@ -554,12 +567,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 if(matches) {
                     const auto field_key=tuple.front().key;
                     properties->push_back({bind(object,prefix,Binding::Kind::property_row),
-                        {spatial_rotation?std::wstring(L"Rotation (°)"):wide(name),ui_language::EditBinding{0,actor_status.can_edit,false,std::move(tuple)},
+                        {spatial_rotation?std::wstring(L"Rotation (°)"):parameter_label(name),ui_language::EditBinding{0,actor_status.can_edit,false,std::move(tuple)},
                         false,false,actor_status.can_edit,ui_language::ActionBinding{field_key,actor_status.can_edit},false,std::wstring{},field_key}});
                 }
                 continue;
             }
-            auto caption=wide(property.name);
+            auto caption=parameter_label(property.name);
             if(light && property.name.starts_with("settings.")) {
                 const auto field=std::string_view(property.name).substr(9);
                 if(field=="kind") caption=L"Light Type";
