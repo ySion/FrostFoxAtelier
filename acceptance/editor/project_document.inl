@@ -35,7 +35,14 @@ void verify_scene_v1(editor::Project& project) {
     auto upgraded=nlohmann::json::parse(source); upgraded["version"]=2;
     for (auto& actor:upgraded["actors"]) {
         actor["properties"]=nlohmann::json::object();
-        for (auto& component:actor["components"]) component["properties"]=nlohmann::json::object();
+        for (auto& component:actor["components"]) {
+            component["properties"]=nlohmann::json::object();
+            if(component["type"]=="world.StaticMeshComponent") {
+                const world::Material material;
+                component["roughness"]=material.roughness;component["metallic"]=material.metallic;
+                component["emissive"]=nlohmann::json::array({0.f,0.f,0.f});
+            }
+        }
     }
     require(nlohmann::json::parse(take(reopened->serialize()))==upgraded,
         "Scene v1 migration lost authored values or did not write the explicit v2 schema.");

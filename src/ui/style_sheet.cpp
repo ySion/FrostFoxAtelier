@@ -194,6 +194,7 @@ class Parser {
         else if (name=="border-color") p.border=color(v);
         else if (name=="border-inner-color") p.border_inner=color(v);
         else if (name=="border-shadow-color") p.border_shadow=color(v);
+        else if (name=="text-shadow-color") p.text_shadow=color(v);
         else if (name=="border-edges") {
             auto input=resolve(v).text;
             unsigned edges{};
@@ -210,7 +211,8 @@ class Parser {
             const auto value=resolve(v).text;
             if (value=="down") p.combo_indicator=ComboIndicator::down;
             else if (value=="arrows") p.combo_indicator=ComboIndicator::arrows;
-            else fail("Expected down or arrows",v.position);
+            else if (value=="caret") p.combo_indicator=ComboIndicator::caret;
+            else fail("Expected down, arrows or caret",v.position);
         }
         else if (name=="icon-placement") {
             const auto value=resolve(v).text;
@@ -363,7 +365,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.border_style && static_cast<unsigned>(*p.border_style)>static_cast<unsigned>(BorderStyle::outset)) return false;
     if (p.border_edges && static_cast<unsigned>(*p.border_edges)>15) return false;
     if (p.scrollbar_gutter && static_cast<unsigned>(*p.scrollbar_gutter)>static_cast<unsigned>(ScrollbarGutter::overlay)) return false;
-    if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::arrows)) return false;
+    if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::caret)) return false;
     if (p.tree_row_height && !bounded(*p.tree_row_height,12,128)) return false;
     if (p.tree_indent && !bounded(*p.tree_indent,8,64)) return false;
     if (p.icon_placement && static_cast<unsigned>(*p.icon_placement)>static_cast<unsigned>(IconPlacement::above)) return false;
@@ -378,7 +380,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     }
     if ((p.font_family && !name_valid(*p.font_family)) || (p.font_locale && !name_valid(*p.font_locale)) ||
         (p.font_size && !bounded(*p.font_size,4,256)) || (p.font_weight && (!*p.font_weight || *p.font_weight>999))) return false;
-    for (const auto* color:{&p.tree_alternate,&p.tree_line,&p.foreground,&p.background,&p.border,&p.border_inner,&p.border_shadow,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border,&p.indicator_foreground}) if (*color && !color_valid(**color)) return false;
+    for (const auto* color:{&p.tree_alternate,&p.tree_line,&p.foreground,&p.background,&p.border,&p.border_inner,&p.border_shadow,&p.text_shadow,&p.selection,&p.caret,&p.scrollbar,&p.indicator_background,&p.indicator_border,&p.indicator_foreground}) if (*color && !color_valid(**color)) return false;
     if (p.padding) for (auto n:{p.padding->left,p.padding->top,p.padding->right,p.padding->bottom}) if (!bounded(n,0,128)) return false;
     if (p.radius) for (auto n:{p.radius->top_left,p.radius->top_right,p.radius->bottom_right,p.radius->bottom_left}) if (!bounded(n,0,32768)) return false;
     return (!p.border_width || bounded(*p.border_width,0,128)) && (!p.caret_width || bounded(*p.caret_width,.25f,16)) &&

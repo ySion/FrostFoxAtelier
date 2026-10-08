@@ -206,6 +206,7 @@ void verify_declarative_parameters() {
     std::vector<ShelfIdentity> tools;
     for (const auto& definition:editor::command_definitions) {
         if (definition.group!=editor::CommandGroup::create && definition.group!=editor::CommandGroup::view) continue;
+        if (definition.group==editor::CommandGroup::view && definition.shelf_title.empty()) continue;
         const auto target=static_cast<ui::ControlKey>(definition.id);
         const auto tool=std::ranges::find(controls,target,&ui::Control::action_target);
         require(tool!=controls.end() && std::ranges::count(controls,target,&ui::Control::action_target)==1 &&

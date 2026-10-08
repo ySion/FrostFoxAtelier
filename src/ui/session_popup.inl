@@ -48,7 +48,7 @@
         begin_edit(command.target,true,true);
         if (command.kind==EditCommandKind::reset) {
             if (!state->control.default_value) return;
-            insert(reply,format(*state->control.default_value),detail::TextEdit::Group::isolated);
+            insert(reply,format(*state->control.default_value,state->control.single_precision),detail::TextEdit::Group::isolated);
             finish_edit(reply,true,true);
         } else {
             edit->commit_paste=command.kind==EditCommandKind::paste;
@@ -56,7 +56,7 @@
         }
         reply.redraw=true;
     }
-    void activate(Reply& reply, const ControlBox& box) {
+    void activate(Reply& reply, const ControlBox& box,SelectionModifiers modifiers={}) {
         const auto command=states.at(box.key).control.edit_command;
         if (box.kind==ControlKind::combo) {
             context_request(reply,box,box.bounds.x,box.bounds.y+box.bounds.height); return;
@@ -69,7 +69,7 @@
                 (box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::checkbox);
             const bool radio=box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::radio;
             action(reply,(box.kind==ControlKind::item || box.kind==ControlKind::tree_item)?ActionKind::select:ActionKind::activate,box.key,
-                radio?ActionValue{true}:toggle?ActionValue{!box.selected}:ActionValue{},box.action_target);
+                radio?ActionValue{true}:toggle?ActionValue{!box.selected}:box.kind==ControlKind::tree_item?ActionValue{modifiers}:ActionValue{},box.action_target);
             if (box.kind==ControlKind::menu_item && !states.at(box.key).control.menu_branch) dismiss_popup(reply);
         }
     }

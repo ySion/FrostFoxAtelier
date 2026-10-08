@@ -10,11 +10,12 @@ core.Object
 │  └─ StaticMeshActor
 └─ Component
    └─ SceneComponent
-      └─ StaticMeshComponent
+      ├─ StaticMeshComponent
+      └─ LightComponent
 ```
 
 - Actor/Component 是世界的业务模型。所有对象沿用 Runtime 的 TypeId、ObjectId、继承、引用与 GC；类型桶只提供查询索引，不决定执行顺序。
-- `register_types` 一次发布 Material 值类型与上述五个对象类型，复用 Runtime 已初始化的 `math.vector3`、`math.quaternion` 身份。业务元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
+- `register_types` 一次发布 Material、LightSettings 值类型、LightKind 枚举与上述六个对象类型，复用 Runtime 已初始化的 `math.vector3`、`math.quaternion` 身份。业务元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
 - Actor 的隐藏强引用序列决定组成顺序，Component 强持 owner。一个组件的普通强引用会保住 Actor 和兄弟组件；没有外部根的组成环可被 GC 回收。
 - Actor 的显式根引用和 SceneComponent 的空间父引用均为弱引用。组成负责拥有，空间关系负责坐标继承，两种顺序独立。
 - StaticMeshComponent 继承完整局部 TRS，持有不可变 geometry::Mesh 资源和 Material 值。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。
@@ -26,7 +27,7 @@ Runtime 必须晚于 World、相关对象操作及任务结束。对象可以活
 
 `create_static_mesh_actor(World&, const StaticMeshActorDesc&)` 返回普通 ObjectRoot，指向已组装、尚未注册的 StaticMeshActor。描述包含 `mesh`（MeshRef）、`transform`（Trs）与 `material`（Material）；结果仅包含一个作为显式根的 StaticMeshComponent，没有独立 Transform。`root_component` 与 `components` 沿既有入口查询真实组成。
 
-工厂先验证 TRS 与基础色，再沿现有 Runtime 创建和 World 组成机制组装对象。失败清理本次未发布对象；成功返回不会修改 World 成员、查询或呈现目录，也不产生生命周期通知或 Begin。开放的运行中 World 同样可以准备 Detached 图；随后 `World::attach` 才注册整组并按当前运行状态决定 Begin。关闭 World 或回调内重入会在创建前拒绝。
+工厂先验证 TRS 与完整 Material，再沿现有 Runtime 创建和 World 组成机制组装对象。失败清理本次未发布对象；成功返回不会修改 World 成员、查询或呈现目录，也不产生生命周期通知或 Begin。开放的运行中 World 同样可以准备 Detached 图；随后 `World::attach` 才注册整组并按当前运行状态决定 Begin。关闭 World 或回调内重入会在创建前拒绝。
 
 MeshRef 可为空，此时根组件依然存在但不产生绘制项。工厂没有内置方块分支；快捷创建或资源条目按需要传入 `geometry::cube_mesh()` 或其他共享网格。MeshRef 是不可变 CPU 内容的共享引用，不是持久资产 ID；World 的组件和提取快照按各自生命周期保有内容，renderer 消费同一协议。
 
@@ -45,7 +46,7 @@ MeshRef 可为空，此时根组件依然存在但不产生绘制项。工厂没
 
 Trs 使用 position、xyzw 四元数、每轴严格为正的 scale；输入有限，四元数非零并规范化，不设置任意缩放下限。Matrix4 为行主序、行向量，`local = S * R * T`，平移位于 12–14；`world = local * parent_world`。世界矩阵可含层级复合形成的剪切，不重新分解成 TRS，也不保存第二份可编辑状态。溢出或无效身份不返回伪造的单位矩阵。
 
-`set_geometry(Runtime&, component, resource)` 是网格资源的写入口：可在 Detached 对象加入世界前配置，也可在宿主边界替换成员资源；回调内重入失败。空资源撤下呈现注册，替换资源不改变 Component 身份或创建 Tick。geometry::Mesh 构造时验证非空三角形列表、有限坐标和有效法线；多个对象可共享同一不可变资源。当前 Material 表达线性不透明基础色，不包含资产导入、着色器图或资源预算系统。
+`set_geometry(Runtime&, component, resource)` 是网格资源的写入口：可在 Detached 对象加入世界前配置，也可在宿主边界替换成员资源；回调内重入失败。空资源撤下呈现注册，替换资源不改变 Component 身份或创建 Tick。geometry::Mesh 构造时验证非空三角形列表、有限坐标和有效法线；多个对象可共享同一不可变资源。Material 表达线性不透明基础色、roughness、metallic 和线性 HDR emissive。其验证与灯光合同见[Lit 数据](lighting.md)。
 
 ## 生命周期与执行顺序
 
@@ -76,7 +77,7 @@ LifecycleObserver 的 attached/detached 表达 World 注册/注销：Actor 整�
 
 Actor 的私有非拥有 `member_world` 是成员关系权威。`inspect_actor` 返回 Detached、AttachedInactive、Active 或 Invalid，以及 enabled/can_edit/can_present。`inspect_component` 还报告 owner 和独立激活资格。外部 Runtime 身份或错误类型是错误，本 Runtime 的已终结身份是 Invalid。
 
-- 空 Actor 仍可选择和编辑；`can_present` 表示实际网格呈现注册。静止编辑 World 仍渲染已有网格。
+- 空 Actor 仍可选择和编辑；`can_present` 表示实际网格或灯光呈现注册；停用不销毁注册。静止编辑 World 仍可提取网格与启用灯光。
 - `read/write` 使用实际 Actor 或 Component 和正式 FieldPath，`set_transform` 使用 SceneComponent；编辑写要求 World 停止，也允许准备同 Runtime 的 Detached/未归属组件，拒绝其他 World 的成员。字段级 TRS 写与整值写使用同一验证。`remove_component/reparent/set_enabled` 同样支持 Detached 组成；编辑器 can_edit 仍以自身文档成员资格决定。
 - `attach_components` 一次提交组成、owner、root、parent 引用；普通验证失败不半写。`detach` 只撤 World 成员资格，保留整个对象图。
 - ActorRemoval 保存普通根与成员位置；ComponentRemoval 保存组件根、owner、组成位置、parent 和根身份。restore 恢复同一 ObjectId，重新验证全部关系及 World 来源，不抢占其他归属。
@@ -97,7 +98,7 @@ cmake --preset release
 cmake --build --preset release --target world_acceptance editor_document_acceptance
 ```
 
-World 八组真实消费者覆盖 JIT 与协程、普通引用与 GC、World/历史/队列隔离、提交后失败、Actor/Component 有序生命周期、Detached 组成、空间树和通用网格资源，以及 StaticMeshActor 完整工厂、真实类型、材质/网格投影和整组身份恢复。编辑器文档链还覆盖一个根 StaticMeshComponent 的创建、继承字段编辑、整组位置恢复、旋转/缩放保留、根移除及同身份撤销。工厂增量的双配置记录为 `out/static-mesh-actor-dev-build.log` 和 `out/static-mesh-actor-release-build.log`；GPU 和窗口行为由各自实际窗口验收单独证明，之前的 `out/scene-candidate.json` 仍只记录其原冻结候选。
+World 九组真实消费者覆盖 JIT 与协程、普通引用与 GC、World/历史/队列隔离、提交后失败、Actor/Component 有序生命周期、Detached 组成、空间树和通用网格资源，以及 StaticMeshActor 完整工厂、真实类型、材质/网格投影和整组身份恢复。Lit 数据组覆盖反射参数验证、真实 Source 派生灯行为、层级提取、启停、删除恢复及快照寿命。编辑器文档链还覆盖一个根 StaticMeshComponent 的创建、继承字段编辑、整组位置恢复、旋转/缩放保留、根移除及同身份撤销。工厂增量的双配置记录为 `out/static-mesh-actor-dev-build.log` 和 `out/static-mesh-actor-release-build.log`；GPU 和窗口行为由各自实际窗口验收单独证明，之前的 `out/scene-candidate.json` 仍只记录其原冻结候选。
 
 ## 可保存的网格来源
 

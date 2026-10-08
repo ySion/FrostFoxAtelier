@@ -274,3 +274,43 @@ button.source-problem {
 button.source-problem:hover { background: #463b34; }
 
 button.source-problem:disabled { color: #dfb38b; background: #3a2e29; }
+
+/* Scene view chrome, sampled from Houdini 22 at UI scale 1.75 (2026-10-08).
+   Operation band: #2e2e2e between a black top line and #424242/#666666 bevel.
+   Tool rail: #3a3a3a with a black right separator; selected tools #5d7289. */
+.viewport-options { background: #2e2e2e; border-color: #030303; border-inner-color: #424242; border-width: 0.667dip; border-edges: top; }
+.viewport-option-label { padding: 0dip 3dip; text-vertical-align: center; color: #cccccc; }
+.viewport-option-divider { background: #1f1f1f; }
+combo.viewport-option-menu { padding: 0dip 8dip 0dip 10dip; combo-indicator: arrows; text-vertical-align: center; }
+combo.viewport-option-menu { border-width: 0.667dip; border-style: solid; }
+combo.viewport-option-menu, combo.viewport-option-menu:hover {
+    background-image: linear-gradient(#555555, #424242); border-color: #1c1c1c;
+}
+combo.viewport-option-menu:hover { background-image: linear-gradient(#5f5f5f, #4a4a4a); color: #ffffff; }
+checkbox.viewport-option-check { padding: 0dip 3dip; text-vertical-align: center; }
+.viewport-rail { background: #3a3a3a; border-width: 0.667dip; border-edges: right; border-color: #000000; }
+.viewport-mode, .viewport-operation {
+    background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
+    indicator-size: 22dip; indicator-color: #c4ccd0;
+}
+button.viewport-mode:hover, combo.viewport-operation:hover { background: #4b4b4b; background-image: none; }
+button.viewport-mode { border-style: solid; }
+button.viewport-mode:selected, button.viewport-mode:selected:hover {
+    background: #5d7289; background-image: none; border-color: #374552; indicator-color: #eeeeee;
+}
+button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #738ba4; background-image: none; }
+/* Passive HUD: white semibold title with a dark drop shadow over the scene. */
+.viewport-mode-label {
+    color: #ffffff; font-size: 15.5dip; font-weight: 600; indicator-size: 24dip; indicator-color: #e8eef0;
+    padding: 0dip; text-vertical-align: center; text-shadow-color: #00000099;
+}
+.viewport-mode-label:disabled { color: #ffffff; }
+/* Floating view pill: translucent slate fill, light hairline, inline caret. */
+combo.viewport-view-menu {
+    border-width: 0.667dip; border-radius: 11dip; padding: 0dip 9dip 0dip 11dip; combo-indicator: caret; indicator-size: 9dip;
+}
+combo.viewport-view-menu, combo.viewport-view-menu:hover {
+    background: #5e6d75cc; background-image: none; color: #e6e6e6; border-color: #a1a4a5; indicator-color: #e6e6e6;
+}
+combo.viewport-view-menu:hover { background: #6e7e87dd; color: #ffffff; }
+combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background: #44535bdd; background-image: none; }

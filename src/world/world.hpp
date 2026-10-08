@@ -77,6 +77,13 @@ struct Material {
 public:
     AFIELD()
     math::Vector3 base_color{.19f, .42f, .57f};
+    AFIELD()
+    float roughness{.65f};
+    AFIELD()
+    float metallic{};
+    AFIELD()
+    math::Vector3 emissive{};
+    bool operator==(const Material&) const = default;
 };
 ACLASS(Name="world.StaticMeshComponent")
 class StaticMeshComponent : public SceneComponent {
@@ -91,11 +98,56 @@ private:
     geometry::MeshRef geometry_;
 };
 
+AENUM(Name="world.LightKind")
+enum class LightKind : std::uint32_t { point, rectangle, directional };
+
+ASTRUCT(Name="world.LightSettings")
+struct LightSettings {
+    AGENERATED_BODY(LightSettings)
+public:
+    AFIELD()
+    LightKind kind{LightKind::point};
+    AFIELD()
+    math::Vector3 color{1.f,1.f,1.f};
+    // Reference-white intensity: point cd, rectangle cd/m^2, directional lux.
+    AFIELD()
+    float intensity{1.f};
+    AFIELD()
+    float range{10.f};
+    // Point: metres. Directional: angular radius in radians, below pi/2.
+    // Rectangle emission size uses width/height instead.
+    AFIELD()
+    float source_radius{};
+    AFIELD()
+    float width{1.f};
+    AFIELD()
+    float height{1.f};
+    AFIELD()
+    bool two_sided{};
+    AFIELD()
+    bool casts_shadow{true};
+    bool operator==(const LightSettings&) const = default;
+};
+
+ACLASS(Name="world.LightComponent")
+class LightComponent : public SceneComponent {
+    AGENERATED_BODY(LightComponent)
+public:
+    AFIELD()
+    LightSettings settings;
+};
+
+[[nodiscard]] Result<void> validate_material(const Material&);
+[[nodiscard]] Result<void> validate_light(const LightSettings&);
+// Reads authored settings, including detached/disabled objects. Does not root them.
+[[nodiscard]] Result<LightSettings> read_light(Runtime&, ObjectId light_component);
+
 using FieldPath = std::vector<FieldId>;
 struct Types {
     TypeId actor, component, scene_component, static_mesh_component, material;
     TypeId static_mesh_actor;
     TypeId vector3, quaternion;
+    TypeId light_kind, light_settings, light_component;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
@@ -194,6 +246,16 @@ struct RenderItem {
     geometry::MeshRef geometry;
     Material material;
 };
+struct LightRenderItem {
+    ObjectId actor, component;
+    math::Vector3 position;
+    // Orthonormal world axes from the rotation chain, excluding scale/shear.
+    // direction is propagation along local +Z; rectangle lies in local XY.
+    math::Vector3 direction, right, up;
+    // Range and physical dimensions are world metres, not scaled. Directional
+    // source_radius is angular (radians); see LightSettings.
+    LightSettings settings;
+};
 
 enum class ReparentRule { keep_local, keep_world };
 [[nodiscard]] Result<ObjectId> scene_parent(Runtime&, ObjectId scene_component);
@@ -288,6 +350,9 @@ public:
     [[nodiscard]] Result<Scalar> read(ObjectId actor_or_component, std::span<const FieldId>) const;
     [[nodiscard]] Result<void> write(ObjectId actor_or_component, std::span<const FieldId>, Scalar);
     [[nodiscard]] Result<void> set_transform(ObjectId scene_component, Trs);
+    // Validated whole-value authoring. Same stopped/ownership policy as set_transform.
+    [[nodiscard]] Result<void> set_material(ObjectId static_mesh_component, Material);
+    [[nodiscard]] Result<void> set_light(ObjectId light_component, LightSettings);
     // A host-driven simulation may write an attached Actor's root between
     // dispatch phases. Scale stays authored; ordinary editing remains stopped-only.
     [[nodiscard]] Result<void> apply_simulation_transform(ObjectId root, math::Vector3 position,
@@ -296,6 +361,8 @@ public:
     // Removing a node with children is rejected; reparent its children first.
     [[nodiscard]] Result<Commit> reparent(ObjectId scene_component, ObjectId parent, ReparentRule);
     [[nodiscard]] Result<std::vector<RenderItem>> render_items() const;
+    // Enabled members, in Actor/composition order. Stopped Worlds also present.
+    [[nodiscard]] Result<std::vector<LightRenderItem>> light_items() const;
 
     // Stopped-only scheduling configuration, keyed by the Runtime's existing
     // type identity. The nearest ancestor binding is inherited as a whole.

@@ -6,6 +6,7 @@
 #include "editor/asset_browser.hpp"
 #include "editor/source_editor.hpp"
 #include "editor/project_code.hpp"
+#include "editor/viewport_tool.hpp"
 #include "ui/session.hpp"
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
@@ -19,6 +20,8 @@ inline constexpr auto add_actor=command_key(Command::create_actor), remove_selec
     add_static_mesh=command_key(Command::create_static_mesh);
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
+inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes=846;
+inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
@@ -28,6 +31,9 @@ inline constexpr ui::ControlKey scene_content=640;
 inline constexpr ui::ControlKey scene_shading=646;
 inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_first=767;
 inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
+inline constexpr ui::ControlKey shading_scene_lit=772;
+inline constexpr ui::ControlKey lit_menu=860,lit_effects_first=861,lit_exposure_first=867,lit_exposure_menu=872;
+inline constexpr ui::ControlKey lit_shadow_budget_menu=873,lit_shadow_budget_first=874;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
@@ -56,7 +62,7 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 }
 struct Workspace {
     struct Binding {
-        enum class Kind { object, structure, property_group, field, property_row, position_default, name, navigation };
+        enum class Kind { object, structure, property_group, field, rotation, property_row, position_default, rotation_default, scale_default, name, navigation };
         ui::ControlKey key{};
         ObjectId object;
         std::vector<FieldId> path; // Empty for object rows; fields address the actual inspected object.
@@ -68,12 +74,17 @@ struct Workspace {
     Workspace(Workspace&&)=delete; // Live scopes borrow this workspace's key authority.
     Workspace& operator=(Workspace&&)=delete;
     ui::DockSpace dock;
+    ViewportTool::Settings viewport_settings;
+    TransformTool viewport_mode{TransformTool::transform}; // Current operation, including a modal gesture.
+    CameraView camera_view{CameraView::perspective};
+    bool viewport_options_collapsed{};
+    bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Actor instance.
     void reset_layout();
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }
     bool can_navigate(int direction) const noexcept;
     Result<void> navigate(Session&,int direction);
-    Result<void> select_tree(Session&,ui::ControlKey);
+    Result<void> select_tree(Session&,ui::ControlKey,ui::SelectionModifiers = {},const ui::UiFrame* = nullptr);
     bool command_enabled(Command,const Session&) const;
     bool apply_view(const ui::Action&);
     Result<bool> apply_ui(const ui::Action&);
@@ -107,6 +118,7 @@ struct Workspace {
     ControlWorkbench workbench;
     std::wstring status{L"Ready"};
     std::wstring query;
+    std::wstring render_notice; // Derived from the last accepted renderer frame.
     std::wstring tree_query;
     std::wstring structure_query;
     std::optional<ui::ContextMenuRequest> menu;
@@ -131,6 +143,7 @@ private:
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};
     std::array<ui::ControlKey,command_definitions.size()> shelf_items_{}; // Visual item identities, separate from command IDs.
+    std::array<ui::ControlKey,5> resource_properties_{};
     std::vector<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
     std::size_t navigation_cursor_{};
     std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.

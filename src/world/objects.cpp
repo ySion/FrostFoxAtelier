@@ -29,6 +29,9 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshActor>::build(runtime));
+    definitions.push_back(reflection::Definition<LightKind>::build(runtime));
+    definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
+    definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
     if (!runtime.find_type("core.String")) definitions.push_back(string_definition(runtime));
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
@@ -36,6 +39,7 @@ Result<Types> register_types(Runtime& runtime) {
     types.vector3 = *vector; types.quaternion = *quaternion; types.actor = (*ids)[0];
     types.component = (*ids)[1]; types.scene_component = (*ids)[2]; types.material = (*ids)[3]; types.static_mesh_component = (*ids)[4];
     types.static_mesh_actor = (*ids)[5];
+    types.light_kind = (*ids)[6]; types.light_settings = (*ids)[7]; types.light_component = (*ids)[8];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
         auto outer = runtime.find_field(types.scene_component, name);
         if (!outer) return std::unexpected(outer.error());
@@ -75,13 +79,7 @@ Result<void> validate_object(Runtime& runtime, ObjectId object, TypeId expected)
     if (!*matches) return error(ErrorCode::type_mismatch, "Object does not derive from the required World type.");
     return {};
 }
-Result<void> validate_material(const Material& material) {
-    const auto color = material.base_color;
-    for (float channel : {color.x, color.y, color.z})
-        if (!std::isfinite(channel) || channel < 0 || channel > 1)
-            return error(ErrorCode::argument_mismatch, "Material color must be finite and within [0,1].");
-    return {};
-}
+
 }
 
 Result<ObjectRoot> create_actor(Runtime& runtime, TypeId actual) {
@@ -108,7 +106,7 @@ Result<ObjectRoot> create_static_mesh_actor(World& world, const StaticMeshActorD
     if (auto ready = Access::state(world).admit(); !ready) return std::unexpected(ready.error());
     auto transform = canonical_transform(description.transform);
     if (!transform) return std::unexpected(transform.error());
-    if (auto valid = detail::validate_material(description.material); !valid) return std::unexpected(valid.error());
+    if (auto valid = validate_material(description.material); !valid) return std::unexpected(valid.error());
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;
