@@ -44,7 +44,8 @@ private:
     std::vector<ProjectEntry> entries_;
     std::uint64_t revision_{};
     std::unordered_map<std::string,std::size_t> mesh_entries_;
-    std::unordered_map<std::string,geometry::MeshRef> meshes_;
+    struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; };
+    std::unordered_map<std::string,CachedMesh> meshes_;
 };
 // Same-directory temporary + flush + replacement. Failed writes leave the old
 // file intact. Strings and on-disk paths use validated UTF-8.

@@ -106,7 +106,9 @@ Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset) {
     auto members=world_.members();
     if (!members) return std::unexpected(members.error());
     if (members->size()>=maximum_actors) return invalid("Editor Actor limit reached.");
-    auto root=world::create_static_mesh_actor(world_,{asset.mesh,{},{},asset.key});
+    world::Material material;
+    if(asset.mesh && asset.mesh->has_materials()) material.base_color={1,1,1};
+    auto root=world::create_static_mesh_actor(world_,{asset.mesh,{},material,asset.key});
     if (!root) return std::unexpected(root.error());
     return attach_created(std::move(*root),asset.name);
 }

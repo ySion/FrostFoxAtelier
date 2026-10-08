@@ -1,0 +1,291 @@
+{
+  "source": "https://casual-effects.com/g3d/data10/common/model/crytek_sponza/sponza.zip",
+  "archive_sha256": "da005cbee0be2df2abc8513f3ceb61bcb6f69aac112babcd9c00169a27c2770c",
+  "files": [
+    {
+      "path": "copyright.txt",
+      "bytes": 1498,
+      "sha256": "59967ef952128e385570c651d966871776c296a6a6a057487690d55ac11b70f6"
+    },
+    {
+      "path": "sponza.mtl",
+      "bytes": 6723,
+      "sha256": "7e5d765a00bf2af1c0cae1696051fdf04c5bb358cf2bc5cc2634ea8715669d9b"
+    },
+    {
+      "path": "sponza.obj",
+      "bytes": 21109957,
+      "sha256": "dc9d77fa783772e92f47e67ddef8344858fa14e224711b5dd7d39f7db7042493"
+    },
+    {
+      "path": "textures/background.png",
+      "bytes": 1279899,
+      "sha256": "21f5955648b003a0046ca16054aef2db07901d73662e8b8141e73ba551e06f87"
+    },
+    {
+      "path": "textures/background_bump.png",
+      "bytes": 211001,
+      "sha256": "c816df0108455787a9ffba973b01788d3cd2724dbfe1ff148dd1a51df37b2baa"
+    },
+    {
+      "path": "textures/chain_texture.png",
+      "bytes": 374829,
+      "sha256": "5745cf634538333bcad860e5da4bd57d288166631aadc4b0268fc2103b152242"
+    },
+    {
+      "path": "textures/chain_texture_bump.png",
+      "bytes": 37014,
+      "sha256": "2bcb283948533a96100cb90f1bffa4edb609c887b336ba21be12ec713430933e"
+    },
+    {
+      "path": "textures/chain_texture_mask.png",
+      "bytes": 1150,
+      "sha256": "43c246a2de3b9bea28add7b188324765443e30223fcee13061719e2d357194e1"
+    },
+    {
+      "path": "textures/floor_gloss.png",
+      "bytes": 1419271,
+      "sha256": "de0f989550e4cf7e0753c7480cd2b533ecb9d61b395033fbc3dbe71140aebaf2"
+    },
+    {
+      "path": "textures/lion.png",
+      "bytes": 1685074,
+      "sha256": "13c763cb8d01e781121180a2f0c7ddc6c672d0a146ffc1359a5795dba99db5c2"
+    },
+    {
+      "path": "textures/lion2_bump.png",
+      "bytes": 287706,
+      "sha256": "fcca6af06b7c7ca9b5ef0829db9ad7f2437ddaa2d6484d3811ad9a8b21a81ea3"
+    },
+    {
+      "path": "textures/lion_bump.png",
+      "bytes": 283932,
+      "sha256": "8c9c6c4e42a9160f518f27af3755e8b45e0342882e422d3c6ecb397efcdc8acd"
+    },
+    {
+      "path": "textures/spnza_bricks_a_bump.png",
+      "bytes": 613084,
+      "sha256": "5ce6e00a0d90f377b8f922f006b8078d72272259b1816e24d511302c0822dfd8"
+    },
+    {
+      "path": "textures/spnza_bricks_a_diff.png",
+      "bytes": 1850821,
+      "sha256": "6653d814e78df5b1d72bff0bc4f055b19f40c60125368c66f706862a77b11e19"
+    },
+    {
+      "path": "textures/spnza_bricks_a_spec.png",
+      "bytes": 789292,
+      "sha256": "07e6c0d154316dca9f06ac8f30e155786d1b4c9f4f75a5f57901f96338d452f7"
+    },
+    {
+      "path": "textures/sponza_arch_bump.png",
+      "bytes": 72484,
+      "sha256": "7ed13ea591ff9d0c4e950a372e59de8e95dd58af9d0f1fcc5794b87927e8d9ab"
+    },
+    {
+      "path": "textures/sponza_arch_diff.png",
+      "bytes": 1545689,
+      "sha256": "1a2e127ce784d2d4f061eae58a780cdcc8daba6c0f254d06e5494e41d4874ff2"
+    },
+    {
+      "path": "textures/sponza_arch_spec.png",
+      "bytes": 519758,
+      "sha256": "cff3751f78b5d8c59eb599477187c7ff2874a76140f442ed52a45e7def08e412"
+    },
+    {
+      "path": "textures/sponza_ceiling_a_diff.png",
+      "bytes": 1748205,
+      "sha256": "6d6ff12242bd2b0680c45b27d0234cb4fc636959a2575f29dd6eb02251348f4c"
+    },
+    {
+      "path": "textures/sponza_ceiling_a_spec.png",
+      "bytes": 611209,
+      "sha256": "2d8ae36a72774c51128a2810035377b08c7214b9fa1db6d0d4d2229162339828"
+    },
+    {
+      "path": "textures/sponza_column_a_bump.png",
+      "bytes": 314193,
+      "sha256": "d88c0f98ac0d37a6c0759962bb797c3f1e9dbf976035308cde4cba92a1156b40"
+    },
+    {
+      "path": "textures/sponza_column_a_diff.png",
+      "bytes": 1743092,
+      "sha256": "13c3511250c790ad260845ffd5d56f4622bb3760316831403c3cc182bcf40095"
+    },
+    {
+      "path": "textures/sponza_column_a_spec.png",
+      "bytes": 624131,
+      "sha256": "66f596b9e37fdaf84b581bb671c40942d59f0dda3470f743b8cbe7928cbc4cab"
+    },
+    {
+      "path": "textures/sponza_column_b_bump.png",
+      "bytes": 306062,
+      "sha256": "a5f818c01f960fc43258e5be57c77b717209078a50758d43c6c61b89253c0395"
+    },
+    {
+      "path": "textures/sponza_column_b_diff.png",
+      "bytes": 2127842,
+      "sha256": "e893c9f0a8ca1cb7b649476eaa6ce98ece4d82b447f2a9858dbf0be4ce05c8e1"
+    },
+    {
+      "path": "textures/sponza_column_b_spec.png",
+      "bytes": 625709,
+      "sha256": "6850e2de861b79d48722fd286f3726755d8d5f5f7c459e0600bc9f9f03c6f5fe"
+    },
+    {
+      "path": "textures/sponza_column_c_bump.png",
+      "bytes": 322713,
+      "sha256": "25badc8f4f8ecb7f982265534d60fd0f0da961ee4f64abfafa8b31ec07534e27"
+    },
+    {
+      "path": "textures/sponza_column_c_diff.png",
+      "bytes": 2021589,
+      "sha256": "eaf9050e0cb05bc5184b4fc7108085036e049ca6a3a93c0b11ed8e920831472d"
+    },
+    {
+      "path": "textures/sponza_column_c_spec.png",
+      "bytes": 662176,
+      "sha256": "77641f66babf57ef10d36d4f4357d39b38c510779f87a3e63c0d797c40c425b7"
+    },
+    {
+      "path": "textures/sponza_curtain_blue_diff.png",
+      "bytes": 9202020,
+      "sha256": "267f19cc7b95d665965f49117e6ef5cabc62ae65b5c921ca86c5f53ab5f55f97"
+    },
+    {
+      "path": "textures/sponza_curtain_diff.png",
+      "bytes": 8834304,
+      "sha256": "dbe47dc0d50b3b5917d94f92c667a1068de776cf1b1af9f931358671a8e8a677"
+    },
+    {
+      "path": "textures/sponza_curtain_green_diff.png",
+      "bytes": 8325274,
+      "sha256": "2a1141c908bbbcc66064ef0cd1888d26e4493560ca1a8add94ba96e4413ef0b5"
+    },
+    {
+      "path": "textures/sponza_details_diff.png",
+      "bytes": 1342967,
+      "sha256": "01012e0e81c20b10856dd34476069aadf1270cedd47e13b2760ae7dec341a7ab"
+    },
+    {
+      "path": "textures/sponza_details_spec.png",
+      "bytes": 618549,
+      "sha256": "405eb35e24f254a9ff4de6f8021f847e92af5d95ad91dfd5c88c239c0bbfeec0"
+    },
+    {
+      "path": "textures/sponza_fabric_blue_diff.png",
+      "bytes": 2097497,
+      "sha256": "b7398d4f96ac101b92a42f8e093754fa239bb80e0038727e49574abed5473c20"
+    },
+    {
+      "path": "textures/sponza_fabric_diff.png",
+      "bytes": 2208126,
+      "sha256": "1fe1ee45005ddcbcde414096c1018c9296e5dfed528ecc99f9ce7d82862fd963"
+    },
+    {
+      "path": "textures/sponza_fabric_green_diff.png",
+      "bytes": 2162350,
+      "sha256": "eb009dd943c52da29e3d7dd4d30e12a912769ffc7659e97dba7a2483fa79c6c3"
+    },
+    {
+      "path": "textures/sponza_fabric_purple.png",
+      "bytes": 1104562,
+      "sha256": "1de10bfe0c410f33e3a54aa4987bf7e7c209b3f00190779d1ce73001261bb294"
+    },
+    {
+      "path": "textures/sponza_fabric_spec.png",
+      "bytes": 462762,
+      "sha256": "f44c12f0749297ec5cfa73a6d867b8771cb366eb47233ff989c15f674e3573a0"
+    },
+    {
+      "path": "textures/sponza_flagpole_diff.png",
+      "bytes": 1314735,
+      "sha256": "c65b8651f12a05063118a91bd2c1ebb37a403936bb2b79226cf842917ebfbcbe"
+    },
+    {
+      "path": "textures/sponza_flagpole_spec.png",
+      "bytes": 597329,
+      "sha256": "e19367ea4099b185b86e9cbf932b54d2c7ec24ec4d7ed281adf8467d9be85af2"
+    },
+    {
+      "path": "textures/sponza_floor_a_diff.png",
+      "bytes": 1881715,
+      "sha256": "ec677f8d95abc307a7551a501ed20c9cd79bbc38d41963a7d74a35d096d2f1c4"
+    },
+    {
+      "path": "textures/sponza_floor_a_spec.png",
+      "bytes": 730796,
+      "sha256": "1a46518c046ccb196bb25bc72c89546dca8625fc278de6a34256789e84d3cfdc"
+    },
+    {
+      "path": "textures/sponza_roof_diff.png",
+      "bytes": 2280888,
+      "sha256": "be5c0e86671a709c5d2f87820f92414bf4c069c5041d2fb548f8bf130f7616dd"
+    },
+    {
+      "path": "textures/sponza_thorn_bump.png",
+      "bytes": 35900,
+      "sha256": "fddd9ab74a4ca2b63feba790102407aaeb1c3c675595f8836e9b97b783f7019c"
+    },
+    {
+      "path": "textures/sponza_thorn_diff.png",
+      "bytes": 450994,
+      "sha256": "fbe4564dcfbba7f225f6df00caa92365cf653d6bf496bb3da59b164fa1c84aac"
+    },
+    {
+      "path": "textures/sponza_thorn_mask.png",
+      "bytes": 68251,
+      "sha256": "57f195177f3ff443e43eb7590859feb4c89164107ea69d6f26ee0a1deefa5c7b"
+    },
+    {
+      "path": "textures/sponza_thorn_spec.png",
+      "bytes": 360991,
+      "sha256": "1576e5befee26cebb25be28626980e34d4cfd306968772b1359a8713c7d5cebc"
+    },
+    {
+      "path": "textures/vase_bump.png",
+      "bytes": 431658,
+      "sha256": "e93b7ae479ffee85ea789c75cd4d12e96c813db73d914d13d3403ca379c0eb1f"
+    },
+    {
+      "path": "textures/vase_dif.png",
+      "bytes": 1739865,
+      "sha256": "141d957726bb80708e3210d481c82d4038016cc31e414c541eea76d61e600bd5"
+    },
+    {
+      "path": "textures/vase_hanging.png",
+      "bytes": 1240906,
+      "sha256": "310b171c5508c7f1df97cc87ebb2139141f4fbf6cd65d6cf1675e92ed64521b6"
+    },
+    {
+      "path": "textures/vase_plant.png",
+      "bytes": 817124,
+      "sha256": "2e3e7cdcc544beec19338b7e3f33e7814847b1e73294f4bae4c18d3740a7b1e1"
+    },
+    {
+      "path": "textures/vase_plant_mask.png",
+      "bytes": 85746,
+      "sha256": "1d179d56d0750c9e64200bdc17b65c11ff8bda6a593f4d1453df05ade1a70927"
+    },
+    {
+      "path": "textures/vase_plant_spec.png",
+      "bytes": 716987,
+      "sha256": "b2332e35c817e17fe0185a6c246ac68bd38ad73c33372b86a887362a2e485402"
+    },
+    {
+      "path": "textures/vase_round.png",
+      "bytes": 1798469,
+      "sha256": "5ee2138dc016aff582e50c2725b7749cdf0681537147d3cd9034e0d10414fb7c"
+    },
+    {
+      "path": "textures/vase_round_bump.png",
+      "bytes": 77501,
+      "sha256": "0bf21985bf48a5392f7faba4e043b77582512cd88866c9b1cff4ec0939c19b1f"
+    },
+    {
+      "path": "textures/vase_round_spec.png",
+      "bytes": 1697907,
+      "sha256": "dfe9e52cae7cf1fe654ca7088916e29405bde0150812ac419f0da74467c4db0a"
+    }
+  ]
+}

@@ -1697,3 +1697,5 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         << "Sogou Pinyin acceptance: " << outcome << '\n' << error.what() << '\n';
     throw;
 }
+
+#include "sponza_window.inl"

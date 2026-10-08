@@ -268,11 +268,14 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
 #include "viewport_modes.inl"
 #include "reference_guides.inl"
 } // namespace
+#include "materials.inl"
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    material_cases(renderer);
     ui_only_cases(renderer, window);
     auto target = take(renderer.target());
     check(target.drawable && target.extent == ui::PixelExtent{641, 385}, "actual initial target");

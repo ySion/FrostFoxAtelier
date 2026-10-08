@@ -3,6 +3,10 @@
 #include "atelier/build_info.hpp"
 #include <cstdio>
 #include <string_view>
+#include <array>
+#include <cmath>
+
+int verify_sponza_window(atelier::application::Application&, const char* output_directory);
 
 int verify_editor_window(atelier::application::Application&, const char* output_directory, bool viewport_only = false);
 int verify_editor_source(atelier::application::Application&, const char* output_directory);
@@ -15,22 +19,36 @@ int wmain(int argc, wchar_t** argv) {
         if (argc==2 && std::wstring_view(argv[1])==L"--version") return 0;
         if (argc>=3 && std::wstring_view(argv[1])==L"--run-project")
             return atelier::application::run_project_command({argv+2,static_cast<std::size_t>(argc-2)});
+        const bool sponza=argc==3 && std::wstring_view(argv[1])==L"--acceptance-sponza";
+        const bool preview=argc==12 && std::wstring_view(argv[1])==L"--project" &&
+            std::wstring_view(argv[3])==L"--scene" && std::wstring_view(argv[5])==L"--material-camera";
+        std::array<float,6> camera{};
+        if(preview) for(unsigned i=0;i<6;++i) {
+            wchar_t* end{};camera[i]=std::wcstof(argv[i+6],&end);
+            if(end==argv[i+6] || *end || !std::isfinite(camera[i])) throw std::runtime_error("Camera values must be finite numbers.");
+        }
         const bool acceptance = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance";
         const bool source=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-source";
         const bool ime = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-ime";
         const bool project_acceptance=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-project";
         const bool viewport = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-viewport";
-        const bool project=argc==3 && std::wstring_view(argv[1])==L"--project";
+        const bool project=(argc==3 || preview) && std::wstring_view(argv[1])==L"--project";
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
-        if (argc != 1 && !((acceptance || source || ime || viewport || project || create) && argc == 3) &&
+        if (argc != 1 && !sponza && !preview && !((acceptance || source || ime || viewport || project || create) && argc == 3) &&
             !(project_acceptance && (argc==3 || argc==4))) {
-            std::fprintf(stderr, "Usage: atelier_editor [--version] [--project|--new-project folder] [--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source output-directory] [--acceptance-project output-directory [source-project]]\n"); return 2;
+            std::fprintf(stderr, "Usage: atelier_editor [--version] [--project|--new-project folder] [--scene relative.scene --material-camera eye-x eye-y eye-z target-x target-y target-z] [--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-sponza output-directory] [--acceptance-project output-directory [source-project]]\n"); return 2;
         }
-        atelier::application::Application app(acceptance || source || ime || viewport || project_acceptance);
+        atelier::application::Application app(acceptance || source || ime || viewport || project_acceptance || sponza);
         if (project || create) {
             const auto opened=app.open_project(argv[2],create);
             if (!opened) throw std::runtime_error(opened.error().message);
         }
+        if(preview) {
+            auto opened=app.open_scene(argv[4]);if(!opened) throw std::runtime_error(opened.error().message);
+            auto view=app.configure_view({camera[0],camera[1],camera[2]},{camera[3],camera[4],camera[5]},atelier::renderer::Shading::smooth);
+            if(!view) throw std::runtime_error(view.error().message);
+        }
+        if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());
         if (source) return verify_editor_source(app,atelier::editor::utf8(argv[2]).c_str());
         if (acceptance) return verify_editor_window(app, atelier::editor::utf8(argv[2]).c_str());
         if (viewport) return verify_editor_window(app, atelier::editor::utf8(argv[2]).c_str(), true);

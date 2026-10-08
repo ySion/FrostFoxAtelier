@@ -12,6 +12,14 @@ void Camera::reset() noexcept {
     pitch_ = std::asin(5.f / distance_);
 }
 void Camera::focus(math::Vector3 target) noexcept { target_ = target; distance_ = 5.f; }
+bool Camera::look_at(math::Vector3 eye, math::Vector3 target) noexcept {
+    const double dx=double(eye.x)-target.x,dy=double(eye.y)-target.y,dz=double(eye.z)-target.z;
+    const auto distance=std::hypot(dx,dy,dz);
+    if(!std::isfinite(target.x) || !std::isfinite(target.y) || !std::isfinite(target.z) ||
+        !std::isfinite(distance) || distance<.5 || distance>2000 || std::hypot(dx,dz)<1e-6) return false;
+    target_=target;distance_=static_cast<float>(distance);yaw_=static_cast<float>(std::atan2(dx,dz));
+    pitch_=static_cast<float>(std::asin(dy/distance));return true;
+}
 void Camera::orbit(float dx, float dy) noexcept {
     yaw_ -= dx * .006f;
     pitch_ = std::clamp(pitch_ + dy * .006f, -1.45f, 1.45f);

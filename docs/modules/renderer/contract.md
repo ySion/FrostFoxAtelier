@@ -10,7 +10,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 场景和 UI
 
-- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。当前为不透明基础光照，不含资产导入、拾取或着色器图。
+- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。当前为基础光照与漫反射贴图、Alpha Test，不含阴影、DDGI、拾取或着色器图。
 - 场景管线和深度纹理在首次绘制非空场景且 viewport 非零时创建；后续按原生命周期复用，深度尺寸在实际场景绘制时跟随目标更新。纯 UI 窗口仍使用同一 Renderer/Context，无场景管线创建、深度分配或清除。UI 管线在 `open` 时准备，应用可提前创建并保留隐藏的弹出窗口以移出首次点击的初始化成本。
 - 相机为左手系，+Y 向上，D3D 深度 `[0,1]`。矩阵为 row-major，行向量按 `p * world * view * projection` 执行，匹配 LookAtLH/PerspectiveFovLH。renderer 不维护相机控制状态。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
@@ -24,9 +24,9 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。正式编辑器默认 MatCap；直接调用 Renderer 的默认设置仍为 Smooth。
 
-- **Shading**：Smooth 使用已有顶点法线和基础色；Flat 使用几何面法线，并依据输入法线的总体方向确定正反，保留当前双面绘制。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
+- **Shading**：Smooth 使用已有顶点法线、实例基础色与 Mesh 漫反射材质贴图；Flat 使用几何面法线，并依据输入法线的总体方向确定正反，保留当前双面绘制。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
 - **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。
-- **Topology**：Polygons 尊重生产者提交的边标记；Triangles 显示全部三角形边。每个三角形的三位 mask 中，bit i 表示顶点 i 对边。没有 mask 的既有资源按全部三角形边处理；不通过位置焊接或共面关系猜测原始拓扑。内置 cube、plane、sphere 提供边标记，过滤三角化对角线。OBJ 仍只接受已三角化输入，无法恢复文件中已经丢失的多边形边。
+- **Topology**：Polygons 尊重生产者提交的边标记；Triangles 显示全部三角形边。每个三角形的三位 mask 中，bit i 表示顶点 i 对边。没有 mask 的既有资源按全部三角形边处理；不通过位置焊接或共面关系猜测原始拓扑。内置 cube、plane、sphere 提供边标记，过滤三角化对角线。OBJ 导入器对简单多边形三角化并保留边界；已三角化源文件无法恢复丢失的原始边。
 - 线宽以物理像素计，默认 1.25，接受范围 (0,8]；叠线不透明度默认 0.7，范围 [0,1]。线框用无透视插值重心坐标的屏幕导数估算像素距离，并平滑覆盖边界。选中边至少 2 像素，显示橙色；表面不再整体染黄。仅线模式的可见线为不透明浅灰（抗锯齿边缘除外）。
 
 全部资源仍在当前 Context 的借用 gfx 合同内创建、绑定和录制。深度预通道使用 gfx 的 ZERO/ONE 混合保持颜色，线通道使用 LESS_EQUAL 或 ALWAYS 比较且关闭深度写入。没有新建原生设备、队列、提交或等待入口。pipeline 和 MatCap 随 Renderer 保有、关闭时沿原机制退休；纯 UI 窗口继续不创建场景资源。
@@ -47,7 +47,7 @@ Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场�
 
 背景与参考辅助显示处于独立的视口策略中，可用于上述任意着色模式；场景天空/环境属于场景光照的画面内容，视口渐变不能在其后覆盖场景环境。本轮只实现背景与参考网格，没有加入未实现的 Scene Lit 枚举、Play 状态或空渲染管线。
 
-每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
+每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 
 ## 帧接受与失败
 
@@ -70,7 +70,9 @@ Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场�
 | 字段 | 统计边界 |
 | --- | --- |
 | `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
-| `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享批次。实体/叠线每批一次，纯线框深度与边线每批各一次，空场景为 0 |
+| `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享批次。实体/叠线每批的每个材质组一次，纯线框深度与边线各一次，空场景为 0 |
+| `material_upload_count` | 本帧新场景图片上传次数，包括首次使用的白图；复用版本不上传，不含 UI 图片 |
+| `cached_material_images` | 当前场景 Image/颜色空间缓存项数，不含 UI 图片或 gfx 等待退休的资源 |
 | `viewport_draw_calls` | 实际成功编码的视口辅助 draw 次数；渐变一次，网格与轴线共用一次；不计入物体或 UI draw，不代表 GPU 时间 |
 | `coverage_upload_count` | 本次新建内容版本后成功编码的 R8 上传次数；命中已有版本为 0 |
 | `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含网格实例上传 |
@@ -89,3 +91,13 @@ Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场�
 本帧没有场景绘制时，capture 的深度数组直接填充为 1，不创建或读回 GPU 深度资源，也不返回之前场景残留的深度；颜色仍从实际 backbuffer 读回。场景首次创建失败沿既有 GPU 阶段终态规则处理。
 
 捕获命令经现有 gfx 录制，使用 256 字节对齐的 GPU 行距，完成后拆成紧密 CPU 行。读回源是 resize 前真正绘制的目标。没有原生队列逃生口，也不改变原有紧密 texture copy 入口。
+
+## 场景材质与贴图
+
+共享不可变 Mesh 同时拥有 UV、Material、连续的 MeshPart 和共享 RGBA8 Image。分组覆盖全部三角形且不重叠；无材质的既有网格使用白色默认材质，原实例基础色与 MatCap 行为保持。World 的 Material 基础色仍是实例 tint，场景文件继续只保存网格 UUID 和 tint，不保存 GPU 对象或图像像素。
+
+每个材质组显式传入顶点起点，使用同一 Mesh 三角形缓冲；相邻同 Mesh 的实例继续合批。颜色纹理使用 sRGB SRV，透明度纹理使用线性 SRV；各向异性 wrap 采样保留负 UV，首次上传后通过 gfx 生成 mip。漫反射 alpha × MTL opacity × 遮罩红通道小于 0.5 的像素在实体、MatCap、线框和深度预通道均裁弃。
+
+GPU 图像缓存以不可变 Image owner 与颜色空间为键并持有 CPU 所有者；未使用版本随帧退休，关闭时沿原 Context 合同释放。无材质贴图使用共享白图。场景图片与 UI 图片统计分开：`material_upload_count` 为本帧新增图片上传数（包括首次白图），`cached_material_images` 为当前场景图片缓存项数；不含 gfx 等待退休的资源。不增加原生设备/队列或帧内磁盘读取。
+
+此路径使用既有基础方向光和环境项，没有复现参考 DDGI 图中的间接光、阴影和 PBR；未使用的高度/高光贴图仍保留在源资产中。

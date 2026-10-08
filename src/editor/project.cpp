@@ -1,4 +1,5 @@
 #include "editor/project.hpp"
+#include "editor/obj_import.hpp"
 #include "editor/json_format.hpp"
 #include "physics/physics.hpp"
 #include <Windows.h>
@@ -7,6 +8,7 @@
 #include <charconv>
 #include <bit>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <unordered_set>
 
@@ -27,49 +29,7 @@ bool within(const std::filesystem::path& root,const std::filesystem::path& path)
     const auto relative=path.lexically_relative(root);
     return !relative.empty() && !relative.is_absolute() && *relative.begin()!=L"..";
 }
-geometry::MeshRef parse_obj(std::string text) {
-    std::istringstream input(std::move(text)); input.imbue(std::locale::classic());
-    std::vector<std::array<float,3>> positions,normals;
-    std::vector<geometry::Vertex> vertices;
-    std::string line,kind;
-    const auto index=[](std::string_view text,std::size_t size) {
-        int value{}; const auto [end,error]=std::from_chars(text.data(),text.data()+text.size(),value);
-        if (error!=std::errc{} || end!=text.data()+text.size() || !value) throw std::runtime_error("Invalid OBJ index.");
-        const auto resolved=value>0?value-1:static_cast<int>(size)+value;
-        if (resolved<0 || static_cast<std::size_t>(resolved)>=size) throw std::runtime_error("OBJ index is out of range.");
-        return static_cast<std::size_t>(resolved);
-    };
-    while (std::getline(input,line)) {
-        if (const auto comment=line.find('#');comment!=line.npos) line.resize(comment);
-        std::istringstream row(line); row.imbue(std::locale::classic()); if (!(row>>kind)) continue;
-        if (kind=="v" || kind=="vn") {
-            std::array<float,3> v{}; if (!(row>>v[0]>>v[1]>>v[2])) throw std::runtime_error("Invalid OBJ vertex/normal.");
-            auto& target=kind=="v"?positions:normals;
-            if (target.size()>=1000000) throw std::runtime_error("OBJ exceeds the import vertex limit.");
-            target.push_back(v);
-        } else if (kind=="f") {
-            std::array<geometry::Vertex,3> face{}; std::array<bool,3> has_normal{};
-            std::string token;
-            for (std::size_t i=0;i<3;++i) {
-                if (!(row>>token)) throw std::runtime_error("OBJ faces must be triangles. Triangulate before importing.");
-                const auto slash=token.find('/'); std::ranges::copy(positions.at(index(std::string_view(token).substr(0,slash),positions.size())),face[i].position);
-                const auto normal=slash==token.npos?token.npos:token.find('/',slash+1);
-                if (normal!=token.npos && normal+1<token.size()) {
-                    std::ranges::copy(normals.at(index(std::string_view(token).substr(normal+1),normals.size())),face[i].normal); has_normal[i]=true;
-                }
-            }
-            if (row>>token) throw std::runtime_error("OBJ faces must be triangles. Triangulate before importing.");
-            std::array<float,3> a{},b{},normal{};
-            for (std::size_t i=0;i<3;++i) { a[i]=face[1].position[i]-face[0].position[i]; b[i]=face[2].position[i]-face[0].position[i]; }
-            normal={a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
-            for (std::size_t i=0;i<3;++i) if (!has_normal[i]) std::ranges::copy(normal,face[i].normal);
-            if (vertices.size()>3000000-3) throw std::runtime_error("OBJ exceeds the triangle limit.");
-            vertices.insert(vertices.end(),face.begin(),face.end());
-        } else if (kind!="vt" && kind!="o" && kind!="g" && kind!="s" && kind!="usemtl" && kind!="mtllib")
-            throw std::runtime_error("Unsupported OBJ record: "+kind);
-    }
-    return std::make_shared<const geometry::Mesh>(std::move(vertices));
-}
+
 }
 std::string utf8(std::wstring_view value) {
     if (value.empty()) return {};
@@ -229,19 +189,28 @@ Result<void> Project::refresh() {
                     if (!keys.insert(key).second) return failure("Duplicate resource identity; copy assets through Import Mesh.");
                 }
                 entries.push_back({relative,std::move(key),kind,kind==AssetKind::folder?0:entry.file_size(),
-                    kind==AssetKind::mesh?entry.last_write_time():std::filesystem::file_time_type{}});
+                    kind!=AssetKind::folder?entry.last_write_time():std::filesystem::file_time_type{}});
             }
         }
         std::sort(entries.begin(),entries.end(),[](const auto& a,const auto& b) { return a.path<b.path; });
         if (entries==entries_) return {};
         std::unordered_map<std::string,std::size_t> mesh_entries;
         for (std::size_t i=0;i<entries.size();++i) if (entries[i].kind==AssetKind::mesh) mesh_entries.emplace(entries[i].key,i);
+        std::map<std::filesystem::path,const ProjectEntry*> previous_files,next_files;
+        for(const auto& entry:entries_) previous_files.emplace(entry.path,&entry);
+        for(const auto& entry:entries) next_files.emplace(entry.path,&entry);
         std::erase_if(meshes_,[&](const auto& cached) {
             const auto before=mesh_entries_.find(cached.first),after=mesh_entries.find(cached.first);
             if (after==mesh_entries.end()) return true;
             if (before==mesh_entries_.end()) return false; // Prepared, newly published import.
             const auto& old=entries_[before->second];const auto& next=entries[after->second];
-            return old.bytes!=next.bytes || old.modified!=next.modified;
+            if(old.bytes!=next.bytes || old.modified!=next.modified) return true;
+            for(const auto& path:cached.second.dependencies) {
+                const auto a=previous_files.find(path),b=next_files.find(path);
+                if(a==previous_files.end() || b==next_files.end() || a->second->bytes!=b->second->bytes ||
+                    a->second->modified!=b->second->modified) return true;
+            }
+            return false;
         });
         entries_=std::move(entries);mesh_entries_=std::move(mesh_entries);++revision_;return {};
     } catch (const std::exception& error) { return failure(error.what()); }
@@ -252,36 +221,52 @@ Result<MeshAsset> Project::mesh(std::string_view key) {
         const auto found=mesh_entries_.find(std::string(key));
         if (found==mesh_entries_.end()) return failure("Missing mesh resource: "+std::string(key));
         const auto& entry=entries_[found->second];
-        auto& cached=meshes_[entry.key];if (!cached) cached=parse_obj(take(read_file(take(resolve(entry.path)))));
-        return MeshAsset{entry.key,entry.path.stem().wstring(),cached};
+        auto found_mesh=meshes_.find(entry.key);
+        if(found_mesh==meshes_.end()) {
+            auto loaded=load_obj(take(resolve(entry.path)));CachedMesh cached{loaded.mesh,{}};
+            for(const auto& file:loaded.files) if(file.relative!=entry.path.filename()) cached.dependencies.push_back(entry.path.parent_path()/file.relative);
+            found_mesh=meshes_.emplace(entry.key,std::move(cached)).first;
+        }
+        return MeshAsset{entry.key,entry.path.stem().wstring(),found_mesh->second.mesh};
     } catch (const std::exception& error) { return failure(error.what()); }
 }
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
-    std::filesystem::path target,metadata;
+    std::vector<std::filesystem::path> created;
     std::string resource;
-    bool created_target{},created_metadata{};
     try {
-        if (source.extension()!=L".obj") return failure("Import Mesh accepts triangulated Wavefront OBJ geometry.");
-        const auto text=take(read_file(source));const auto loaded=parse_obj(text);
-        take(refresh()); // A broken existing catalog cannot leave a half-imported file.
-        target=take(resolve(std::filesystem::path("Content/Meshes")/source.filename()));
-        auto meta_relative=target.lexically_relative(root_);meta_relative+=L".asset.json";metadata=take(resolve(meta_relative));
-        if (std::filesystem::exists(target) || std::filesystem::exists(metadata)) return failure("A mesh or its metadata already exists with this name in Content/Meshes.");
-        resource="project/"+identity();
-        meshes_.emplace(resource,loaded); // Allocate before publishing either file.
-        take(write_file(target,text,WriteMode::create));created_target=true;
-        take(write_file(metadata,Json{{"version",1},{"id",resource.substr(8)}}.dump(2)+"\n",WriteMode::create));created_metadata=true;
+        if (source.extension()!=L".obj") return failure("Import Mesh accepts Wavefront OBJ geometry and its material dependencies.");
+        auto loaded=load_obj(std::filesystem::absolute(source));
         take(refresh());
-        return resource;
+        // A dependency bundle gets its own namespace. Existing single-file OBJ
+        // imports retain their established location and exclusive-create contract.
+        auto relative=std::filesystem::path("Content/Meshes");
+        if(loaded.files.size()>1) relative/=source.stem();
+        const auto target_relative=relative/source.filename();
+        auto meta_relative=target_relative;meta_relative+=L".asset.json";
+        auto metadata=take(resolve(meta_relative));
+        if(std::filesystem::exists(metadata)) return failure("Mesh metadata already exists at the import destination.");
+        for(const auto& file:loaded.files) if(std::filesystem::exists(take(resolve(relative/file.relative))))
+            return failure("A file already exists at the import destination; no files were changed.");
+        resource="project/"+identity();CachedMesh cached{loaded.mesh,{}};
+        for(const auto& file:loaded.files) if(file.relative!=source.filename()) cached.dependencies.push_back(relative/file.relative);
+        meshes_.emplace(resource,std::move(cached));
+        created.reserve(loaded.files.size()+1);
+        for(const auto& file:loaded.files) {
+            auto path=take(resolve(relative/file.relative));take(write_file(path,file.bytes,WriteMode::create));created.push_back(std::move(path));
+        }
+        take(write_file(metadata,Json{{"version",1},{"id",resource.substr(8)}}.dump(2)+"\n",WriteMode::create));created.push_back(std::move(metadata));
+        take(refresh());return resource;
     } catch (const std::exception& error) {
-        if (!resource.empty()) meshes_.erase(resource);
-        std::string message=error.what();std::error_code cleanup;
-        if (created_metadata) {std::filesystem::remove(metadata,cleanup);if (cleanup) message+="; metadata cleanup failed: "+cleanup.message();}
-        cleanup.clear();
-        if (created_target) {std::filesystem::remove(target,cleanup);if (cleanup) message+="; mesh cleanup failed: "+cleanup.message();}
+        if(!resource.empty()) meshes_.erase(resource);
+        std::string message=error.what();
+        for(auto it=created.rbegin();it!=created.rend();++it) {
+            std::error_code cleanup;std::filesystem::remove(*it,cleanup);
+            if(cleanup) message+="; import cleanup failed: "+cleanup.message();
+        }
         return failure(std::move(message));
     }
 }
+
 namespace {
 std::filesystem::path collision_path(std::string_view key, math::Vector3 scale) {
     // The key is a validated project GUID; float bits keep distinct import scales apart.

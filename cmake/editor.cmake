@@ -17,13 +17,14 @@ function(atelier_add_editor)
     add_library(atelier_editor_core STATIC
         "${PROJECT_SOURCE_DIR}/src/editor/assets.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/obj_import.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp")
     atelier_target(atelier_editor_core)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language atelier_physics PRIVATE ole32 nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language atelier_physics PRIVATE ole32 windowscodecs nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"
@@ -73,6 +74,10 @@ function(atelier_add_editor)
     add_custom_target(editor_physics_project_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-test-project
         DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_sponza_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --textured-obj
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-sponza "${CMAKE_BINARY_DIR}/sponza-evidence"
+        DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"

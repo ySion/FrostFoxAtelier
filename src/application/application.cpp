@@ -96,6 +96,11 @@ Result<void> Application::focus_selected() {
     camera_.focus({(*matrix)[12], (*matrix)[13], (*matrix)[14]});
     return {};
 }
+Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading) {
+    if(shading>renderer::Shading::matcap || !camera_.look_at(eye,target))
+        return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
+    workspace_.view.shading=shading;invalidate_surface();return {};
+}
 Result<void> Application::action(const ui::Action& source) {
     // UI instance keys and host command/target keys occupy different roles.
     // Resolve once at the existing dispatch boundary; business checks stay below.

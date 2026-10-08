@@ -20,7 +20,7 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner,Pick kind,const std
     if (kind==Pick::folder) {options|=FOS_PICKFOLDERS;dialog->SetTitle(L"Choose a project folder");}
     else {
         const bool source=kind==Pick::source || kind==Pick::source_save;
-        const COMDLG_FILTERSPEC type{source?L"Source and text files":kind==Pick::mesh?L"Triangulated OBJ geometry":L"Atelier scene",source?L"*.source;*.ss;*.txt;*.json":kind==Pick::mesh?L"*.obj":L"*.scene"};
+        const COMDLG_FILTERSPEC type{source?L"Source and text files":kind==Pick::mesh?L"OBJ models and materials":L"Atelier scene",source?L"*.source;*.ss;*.txt;*.json":kind==Pick::mesh?L"*.obj":L"*.scene"};
         dialog->SetFileTypes(1,&type);dialog->SetDefaultExtension(source?L"source":kind==Pick::mesh?L"obj":L"scene");
         if (!save) options|=FOS_FILEMUSTEXIST;
         if(kind==Pick::source_save) dialog->SetFileName(filename);

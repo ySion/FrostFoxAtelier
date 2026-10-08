@@ -34,7 +34,7 @@ cmake --build --preset dev --target atelier_editor
 右键拖动视口观察，滚轮缩放；操作与数值/坐标约定见[编辑器模块](docs/modules/editor/README.md)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
 World 提供同 Actor 空间树、显式根、完整 TRS，以及 Actor/Component 共用的有序 Begin/Tick/End 和任务取消；Actor 可以先完成 Detached 组件组装，再注册到 World。renderer 消费矩阵、共享网格资源与基础色快照。当前面板仍只提供位置 XYZ，尚无旋转/缩放控件、JIT 单步、节点图、视口拾取或 gizmo。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)，菜单栏、独立原生菜单窗口和单宿主停靠已接入，参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 
-Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。默认使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，已三角化 OBJ 保留其三角形边。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
+Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。默认使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，OBJ 简单多边形经三角化后保留原边界。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，历史输入合同见[原生 UI 记录](docs/ui-foundation-plan.md)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
@@ -59,7 +59,7 @@ Scene Tree 展示 World → Actor 关系和实际 Actor 类型，具有类型图
 
 参数面板使用类型图标＋对象标题及连续属性滚动区，名称右侧的放大镜按需展开搜索。Actor 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
 
-工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。
+工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。完整 Sponza 模型与材质贴图已放入 [Physics Test 工程](examples/physics-test/README.md)，可用其 `Open-Sponza.ps1` 直接打开；当前显示使用基础光照，未实现 DDGI。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 

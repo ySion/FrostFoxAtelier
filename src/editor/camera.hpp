@@ -13,6 +13,7 @@ public:
     Camera() { reset(); }
     void reset() noexcept;
     void focus(math::Vector3) noexcept;
+    bool look_at(math::Vector3 eye, math::Vector3 target) noexcept;
     void orbit(float logical_dx, float logical_dy) noexcept;
     void zoom(float wheel_steps) noexcept;
     CameraMatrices matrices(float aspect) const noexcept;

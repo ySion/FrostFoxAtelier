@@ -33,11 +33,16 @@ Details 使用共享 Table 的 Name / Type / Size 列，列头显示排序方向
 
 工具行、目录树、内容槽和状态行由 `AssetBrowserShell` 声明，List/Details/Tiles 均由 `AssetResults` 的同一个 Table 节点声明，均位于 [editor.ui.source](../../../assets/editor.ui.source)。保存可更新这些区域的布局，同时保留兼容的控件身份、选择、排序列宽和搜索草稿。浏览器只提供目录/资源快照和既有命令；目录模板按实际变化缓存。全部结果由共享 Table 按当前视图虚拟绘制，原浏览器虚拟列表、合成资源按钮与逐项菜单选择路径已移除。
 
-Import OBJ 导入三角化的 Wavefront OBJ 几何到 Content/Meshes；支持正/负位置索引、可选顶点法线，缺少法线时生成面法线。当前不导入 UV、MTL 材质、纹理或动画，面必须已三角化；不支持的几何记录报错。导入使用同一份源字节完成验证和写入，先检查现有目录，再独占创建网格与身份文件；同名文件或残留身份文件不覆盖。发布后目录检查失败时，仅回滚本轮创建的文件，允许修复原因后重试；回滚本身失败会明确报告。
+Import OBJ 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Actor 使用白色实例颜色，避免默认蓝色染色。
 
-Refresh/F5 重新扫描目录并更新目录索引；不在 UI 每帧访问磁盘。未变化目录保留 revision，网格按 UUID、文件大小和修改时间保留缓存，资源改名也继续共享相同 MeshRef。变化或消失的资源才淘汰解析缓存；已有 Actor 持有的旧几何版本保持有效，不自动替换。外部工具应正常更新文件修改时间；刻意同时保持大小和修改时间的内容改写无法通过该检查识别。
+MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。其他常见 MTL 光照参数及贴图保留源文件但不参与当前着色；尚无法线/高度贴图、PBR、半透明混合、动态阴影或 DDGI。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
-每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据属于 Content，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
+依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录，再独占创建依赖、网格与身份文件；已有同名文件不覆盖。发布后目录检查失败时仅删除本轮创建的文件，允许修复后重试；空目录可能保留，清理失败明确报告。
+
+Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Actor 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
+
+
+每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据属于 Content，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
 
 ## 持久格式与责任
 
@@ -165,3 +170,9 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 `project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期和物理设置往返。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。断点、单步、语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写不在本次实现范围。
+
+## Sponza 完整模型
+
+[Physics Test](../../../examples/physics-test/README.md) 的 `Content/Scenes/Sponza.scene` 引用完整 Crytek Sponza，原始 OBJ、MTL、54 张 PNG 和版权说明位于 `Content/Sponza/`。执行 `examples/physics-test/Open-Sponza.ps1` 打开内庭视角与 Smooth 材质显示。启动相机选项为 `--project <工程> --scene <相对场景> --material-camera <eye xyz> <target xyz>`，只设置当前视口，不写场景数据；普通打开仍使用现有 MatCap 默认值。
+
+`editor_sponza_acceptance` 运行真实依赖导入/重试/刷新/资源寿命、完整模型保存重开和正式编辑器 GPU 捕获。窗口证据在 `out/<配置>/sponza-evidence/`；基础材质像素与深度/线框检查由 `renderer_acceptance` 执行。

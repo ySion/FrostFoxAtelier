@@ -1,7 +1,14 @@
 Texture2D<float4> matcap;
 SamplerState matcap_sampler;
+Texture2D<float4> diffuse_texture;
+Texture2D<float4> opacity_texture;
+SamplerState material_sampler;
+float4 material_color;
 
 float4 main(SceneOutput input) : SV_Target {
+    float4 diffuse = diffuse_texture.Sample(material_sampler, input.uv) * material_color;
+    float opacity = diffuse.a * opacity_texture.Sample(material_sampler, input.uv).r;
+    clip(opacity - .5); // Identical coverage for surfaces, depth and both line passes.
     if (display.w == 2) return 0;
     float3 color = 0;
     if (display.w == 0) {
@@ -11,7 +18,7 @@ float4 main(SceneOutput input) : SV_Target {
             color = matcap.SampleLevel(matcap_sampler, eye_normal.xy * float2(.5, -.5) + .5, 0).rgb;
         } else {
             float light = .3 + .7 * saturate(dot(normal, normalize(float3(.4, .8, -.6))));
-            color = input.color.rgb * light;
+            color = input.color.rgb * diffuse.rgb * light;
         }
         if (display.y != 1 && input.selected == 0) return float4(color, 1);
     }

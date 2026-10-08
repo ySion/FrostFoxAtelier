@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
 #include <thread>
 #include <type_traits>
@@ -88,7 +89,7 @@ struct Instance {
     float selected;
     ui::Color color;
 };
-static_assert(sizeof(Instance) == 120 && sizeof(geometry::Vertex) == 24);
+static_assert(sizeof(Instance) == 120 && sizeof(geometry::Vertex) == 32);
 struct SceneTriangle {
     std::array<geometry::Vertex, 3> vertices;
     std::uint32_t edge_mask;
@@ -118,7 +119,7 @@ std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     return result;
 }
 enum class PipelineStyle { ui, surface, depth, visible_lines, all_lines, background, grid, grid_depth };
-static_assert(sizeof(SceneTriangle) == 88);
+static_assert(sizeof(SceneTriangle) == 112);
 SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
     const auto vertices = mesh.vertices().subspan(index * 3, 3);
     SceneTriangle result{{vertices[0], vertices[1], vertices[2]}, mesh.edge_mask(index), {}};
@@ -233,6 +234,10 @@ struct Renderer::State {
     std::optional<GridCamera> grid_camera;
     GfxTexture matcap;
     GfxSamplerState sampler;
+    GfxSamplerState material_sampler;
+    struct MaterialImage { geometry::ImageRef owner; GfxTexture texture; bool used{}; };
+    std::map<std::pair<const geometry::Image*,bool>,MaterialImage> material_images;
+    geometry::ImageRef white_image;
     struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
     struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
@@ -275,6 +280,18 @@ struct Renderer::State {
             image.texture = {};
         }
         images.clear();
+        for(auto& [key,image]:material_images) {
+            (void)key;
+            const auto r=gfxDestroyTexture(gfx,image.texture);
+            if(r) return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material texture retirement failed",true,r));
+            image.texture={};
+        }
+        material_images.clear();white_image.reset();
+        if(material_sampler) {
+            const auto r=gfxDestroySamplerState(gfx,material_sampler);
+            if(r) return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material sampler retirement failed",true,r));
+            material_sampler={};
+        }
         if (matcap) {
             const auto r = gfxDestroyTexture(gfx, matcap);
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
@@ -404,6 +421,24 @@ struct Renderer::State {
         }
         debug->ClearStoredMessages();
     }
+    GfxTexture material_texture(geometry::ImageRef source,bool srgb) {
+        if(!source) {
+            if(!white_image) white_image=std::make_shared<const geometry::Image>(1,1,std::vector<std::uint8_t>{255,255,255,255});
+            source=white_image;
+        }
+        auto [found,inserted]=material_images.try_emplace({source.get(),srgb},MaterialImage{source,{},true});
+        auto& image=found->second;image.used=true;
+        if(!inserted) return image.texture;
+        image.texture=gfxCreateTexture2D(gfx,source->width(),source->height(),
+            srgb?DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:DXGI_FORMAT_R8G8B8A8_UNORM,
+            gfxCalculateMipCount(source->width(),source->height()));
+        allocation(bool(image.texture));
+        BufferOwner upload{gfx,gfxCreateBuffer(gfx,source->pixels().size(),source->pixels().data(),kGfxCpuAccess_Write)};
+        allocation(bool(upload.buffer));
+        require(gfxCommandCopyBufferToTexture(gfx,image.texture,upload.buffer),"Upload material texture");
+        require(gfxCommandGenerateMips(gfx,image.texture),"Generate material mipmaps");
+        ++stats.material_upload_count;return image.texture;
+    }
     template<class Pixels> GfxTexture texture(const std::shared_ptr<const Pixels> &owner) {
         constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
         constexpr unsigned channels = color ? 4 : 1;
@@ -495,7 +530,13 @@ struct Renderer::State {
             }
         }
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
+        for(auto& [key,image]:material_images) { (void)key;image.used=false; }
         if (draw_scene) {
+            if(!material_sampler) {
+                material_sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_ANISOTROPIC,
+                    D3D12_TEXTURE_ADDRESS_MODE_WRAP,D3D12_TEXTURE_ADDRESS_MODE_WRAP);
+                allocation(bool(material_sampler));
+            }
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             if (!lines_only && !scene)
                 prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, PipelineStyle::surface);
@@ -548,14 +589,21 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
+                require(gfxProgramSetParameter(gfx, program, "material_sampler", material_sampler), "Bind material sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
                 for (const auto& batch : mesh_batches) {
                     const auto& geometry = geometries.at(batch.geometry.get());
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
                     require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set mesh instance offset");
-                    require(gfxCommandDraw(gfx, static_cast<std::uint32_t>(geometry.source->vertices().size()),
-                                           batch.count), "Draw mesh batch");
-                    ++stats.scene_draw_calls;
+                    for(const auto& part:geometry.source->parts()) {
+                        const auto& material=geometry.source->materials()[part.material];
+                        require(gfxProgramSetParameter(gfx,program,"material_color",material.diffuse),"Set diffuse material");
+                        require(gfxProgramSetParameter(gfx,program,"diffuse_texture",material_texture(material.color,true)),"Bind diffuse texture");
+                        require(gfxProgramSetParameter(gfx,program,"opacity_texture",material_texture(material.opacity,false)),"Bind opacity texture");
+                        require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
+                        require(gfxCommandDraw(gfx,part.vertex_count,batch.count),"Draw material part");
+                        ++stats.scene_draw_calls;
+                    }
                 }
             };
             if (lines_only) {
@@ -567,6 +615,11 @@ struct Renderer::State {
                 draw_grid(frame, true);
             }
         } else if (has_viewport) draw_grid(frame, false);
+        for(auto it=material_images.begin();it!=material_images.end();) {
+            if(it->second.used) {++it;continue;}
+            require(gfxDestroyTexture(gfx,it->second.texture),"Retire unused material texture");it=material_images.erase(it);
+        }
+        stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
             require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
@@ -711,6 +764,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.ui_quads = 0;
     s.stats.ui_instance_upload_bytes = 0;
     s.stats.scene_draw_calls = 0;
+    s.stats.material_upload_count = 0;
     s.stats.viewport_draw_calls = 0;
     s.stats.coverage_upload_count = 0;
     s.stats.coverage_upload_bytes = 0;

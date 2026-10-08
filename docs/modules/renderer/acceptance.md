@@ -1,5 +1,26 @@
 # 编辑器 renderer 验收
 
+## Sponza 完整模型与材质（2026-10-08）
+
+本次增量基于 `402fab075bb2aa6605b51fdb767387ebd0e08869`，在 Windows x64 / AMD Radeon RX 6800 XT 完成以下真实端到端验收；基线 SHA 不包含本次 Sponza 实现。
+
+| 验证 | Dev | Release |
+| --- | --- | --- |
+| 正式 editor、document、renderer、physics、World 构建 | PASS | PASS |
+| 完整 editor_document 链，含原工程导入回滚和物理示例 | PASS | PASS |
+| Textured OBJ 与完整 Sponza 资源、场景序列化往返 | PASS | PASS |
+| renderer_acceptance：材质像素/深度及全部既有 GPU 场景 | PASS | PASS |
+| 正式 editor 的 Sponza 内庭、外观全景与 MatCap 捕获 | PASS | PASS |
+| Physics 15 个场景 / World 8 个场景 | PASS | PASS |
+
+源资产逐文件 SHA-256 验证通过：57 个原始文件、95,882,276 字节，与 [source.json](../../../examples/physics-test/Content/Sponza/source.json) 一致。解析结果为 262,267 个三角形、103 个连续材质组、25 个命名材质及 24 个漫反射贴图材质；源文件未改动，Scene 保持相对资源引用与 0.01 实例比例。
+
+真实导入链验证凹多边形面积、负索引/负 UV、共享 WIC 图像、重复导入拒绝、刷新幂等、图片/MTL 改写和删除、旧 Mesh/图像 owner 保持，以及缺依赖和目录逃逸拒绝。GPU 像素读回区分两组几何，验证顶点起点、sRGB 漫反射、UV 重复与左上原点、漫反射 alpha 和独立线性透明遮罩、背景深度、线框/MatCap 轮廓、暖帧零上传、替换与移除后的 owner 释放。完整窗口开启 D3D12 debug/GBV，捕获实际场景颜色与深度；最终渲染器和窗口日志未报告 D3D12 warning/error。
+
+可重复入口为 `editor_sponza_acceptance` 与 `renderer_acceptance`，使用现有 dev/release presets。证据为 `out/<配置>/sponza-{document,import,renderer,window,physics}.log`；图片和窗口报告在 `out/<配置>/sponza-evidence/`，包括 `sponza-interior.png`、`sponza-overview.png`、`sponza-matcap.png` 和 `acceptance.txt`。正式打开方式见 [Physics Test](../../../examples/physics-test/README.md#sponza-场景)。
+
+当前为完整几何、漫反射/遮罩、mip 和基础方向光，没有实现参考图的 DDGI、阴影或 PBR，也没有附加 Sponza 物理 Body。未测量 GPU 帧耗时或显存性能收益。OBJ/MTL 来源贴图中暂未使用的凹凸/高光数据仍保留。
+
 ## 背景与参考网格（2026-10-05）
 
 Guides 生产者提交为 `d2dafe49298b2e67617e270df788c050badc246d`。它与原生 UI 语言 M1、Session 更新及 RHI 文档在 `acae7b90784c7a1ad6a76e077a9ee5a3b6592530` 完成组合，开发/发布版 Renderer、UI、文档消费者与正式项目窗口均通过，见[组合验收](../../research/native-ui-language-20261005.md#正式组合验收)。
@@ -52,7 +73,7 @@ cmake --build --preset dev --target editor_viewport_acceptance
 
 Renderer 消费者检查 MatCap 对基础色的覆盖与视空间响应、Flat/顶点法线差异、多边形对角线过滤、全场景遮挡、纯线模式深度、线宽与透视距离、无效参数的编码前拒绝、异步模式切换；沿原消费者继续执行矩阵、网格版本、UI 与关停验收。正式编辑器专项仍使用 `atelier_editor`，通过真实资源浏览器创建 sphere、点击共享原生下拉菜单切换各显示模式，检查几何/材质引用、矩阵、选中对象与撤销历史保持不变，并复验 World TRS 到 GPU 的投影。专项图片将保存在 `out/<配置>/viewport-evidence/`。
 
-当前只内置一张程序生成的中性陶土 MatCap；没有新增自定义图片导入、Ghost 淡显、AO 或 PBR。OBJ 输入继续沿原三角形合同，不能恢复源文件未保留的多边形边。尚无本轮帧耗时或显存性能测量结论。
+该阶段只内置一张程序生成的中性陶土 MatCap；当时没有新增自定义图片导入、Ghost 淡显、AO 或 PBR，OBJ 输入仍限定三角形。2026-10-08 的导入器已支持简单多边形与材质贴图，见上方 Sponza 验收；仍不能恢复源文件未保留的多边形边。没有该历史阶段的帧耗时或显存性能测量结论。
 
 ### 2026-10-05 集成历史：首错、修复与最终收口
 

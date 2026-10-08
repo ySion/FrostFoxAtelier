@@ -5,6 +5,7 @@ struct SceneOutput {
     noperspective float3 barycentric : TEXCOORD0;
     nointerpolation uint edge_mask : TEXCOORD1;
     nointerpolation float selected : TEXCOORD2;
+    float2 uv : TEXCOORD3;
 };
 // Shading, wireframe, triangle edges, pass (surface / lines / depth).
 uint4 display;

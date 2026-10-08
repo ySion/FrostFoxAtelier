@@ -38,6 +38,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 }
 #include "project_workspace.inl"
 #include "project_document.inl"
+#include "textured_obj.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
 #include "object_inspection.inl"
@@ -51,6 +52,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 }
 int main(int argc, char** argv) {
     try {
+        if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}
         if (argc==2 && std::string_view(argv[1])=="--source-editor") {verify_source_editor();return 0;}
         if (argc == 3 && std::string_view(argv[1]) == "--profile-json") {
             profile_project_json(argv[2]);
@@ -68,6 +70,7 @@ int main(int argc, char** argv) {
         require(argc == 1, "Usage: atelier_editor_document_acceptance [--physics-test-project | --profile-json output-directory | --profile-ui-reload output.csv]");
         verify_physics_test_project();
         verify_project_document();
+        verify_textured_obj();
         verify_declarative_parameters();
         verify_object_inspection();
         verify_ui_actions();
