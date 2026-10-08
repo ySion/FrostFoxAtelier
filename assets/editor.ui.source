@@ -478,9 +478,13 @@ ui EditorShell(in bool menu_collapsed, in Items<MenuTitle> menus, in Text status
         }
     }
 }
-ui ViewportMode(in ActionBinding choose, in double icon, in bool selected, in Key group) {
+// Houdini rail cells are 32 DIP squares; a hairline groups selection apart
+// from the handle tools (measured: #4d4d4d over #3a3a3a, 8 DIP breathing room).
+ui ViewportMode(in ActionBinding choose, in double icon, in bool selected, in Key group, in Text style) {
+    // Selection-group buttons stay direct children of the rail; the group gap is
+    // drawn as a top border on the first handle tool instead of a wrapper.
     ChoiceButton mode { icon: input.icon; action: input.choose; selected: input.selected;
-        selection_group: input.group; width: 30; height: 30; classes: "viewport-mode"; }
+        selection_group: input.group; width: 32; height: 32; classes: input.style; }
 }
 // Houdini scene view: one operation-controls band, a full-height tool rail on
 // the left, and passive/interactive annotations floating over the scene.
@@ -492,7 +496,7 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in ActionBinding snap, in double snap_icon, in bool snapping, in Text grid_step, in bool snap_open,
                  in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
                  in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon,
-                 in Text readout, in bool modal) {
+                 in Text readout, in bool modal, in ActionBinding rail_snap) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -521,8 +525,13 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
             }
         }
         Row content { expand_height: true;
-            Column edit_tools { width: 36; expand_height: true; gap: 3; padding_top: 6; padding_left: 3; classes: "viewport-rail";
+            Column edit_tools { width: 38; expand_height: true; gap: 2; padding_top: 6; padding_left: 3; classes: "viewport-rail";
                 Repeat modes { items: input.modes; }
+                Column snap_separator { height: 1; classes: "viewport-rail-separator"; }
+                Column snap_spacing { height: 6; }
+                // Houdini keeps snapping beside the handles; here it shares the options toggle.
+                ToggleButton rail_snap { icon: input.snap_icon; action: input.rail_snap; selected: input.snapping;
+                    width: 32; height: 32; classes: "viewport-mode"; }
             }
             Overlay scene { expand_width: true; expand_height: true;
                 Viewport viewport { expand_width: true; expand_height: true; }

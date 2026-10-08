@@ -289,9 +289,13 @@ combo.viewport-option-menu, combo.viewport-option-menu:hover {
 combo.viewport-option-menu:hover { background-image: linear-gradient(#5f5f5f, #4a4a4a); color: #ffffff; }
 checkbox.viewport-option-check { padding: 0dip 3dip; text-vertical-align: center; }
 .viewport-rail { background: #3a3a3a; border-width: 0.667dip; border-edges: right; border-color: #000000; }
+.viewport-rail-separator { background: #4d4d4d; }
+/* First handle tool opens a new rail group: hairline above, like Houdini. */
+button.viewport-mode.grouped { border-edges: top; border-width: 0.667dip; border-color: #4d4d4d; }
+button.viewport-mode.grouped:selected { border-edges: all; }
 .viewport-mode, .viewport-operation {
     background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
-    indicator-size: 22dip; indicator-color: #c4ccd0;
+    indicator-size: 24dip; indicator-color: #c4ccd0; indicator-background: #e04a1c;
 }
 button.viewport-mode:hover, combo.viewport-operation:hover { background: #4b4b4b; background-image: none; }
 button.viewport-mode { border-style: solid; }
@@ -301,7 +305,7 @@ button.viewport-mode:selected, button.viewport-mode:selected:hover {
 button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #738ba4; background-image: none; }
 /* Passive HUD: white semibold title with a dark drop shadow over the scene. */
 .viewport-mode-label {
-    color: #ffffff; font-size: 15.5dip; font-weight: 600; indicator-size: 24dip; indicator-color: #e8eef0;
+    color: #ffffff; font-size: 15.5dip; font-weight: 600; indicator-size: 26dip; indicator-color: #e8eef0; indicator-background: #e04a1c;
     padding: 0dip; text-vertical-align: center; text-shadow-color: #00000099;
 }
 .viewport-mode-label:disabled { color: #ffffff; }

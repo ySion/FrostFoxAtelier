@@ -186,6 +186,8 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (event.kind==ui::ActionKind::select && event.key==tree_world)
         return done(workspace_.select_tree(*document_,event.key),L"World context");
+    // The rail snap toggle is a second view of the shared snapping command.
+    if (event.kind==ui::ActionKind::activate && event.key==viewport_rail_snap) return execute(editor::Command::snap_toggle);
     if (event.kind==ui::ActionKind::activate && (event.key==shelf_create || event.key==shelf_view)) {
         workspace_.shelf_page=event.key; return {};
     }

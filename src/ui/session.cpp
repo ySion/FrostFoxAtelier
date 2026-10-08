@@ -744,6 +744,21 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                             const auto stroke=std::max(1.f,std::round(scale));
                             if (size>stroke*2) quad({x+stroke,y+stroke,size-2*stroke,size-2*stroke},icon_clip,appearance.foreground,
                                 self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size-2*stroke))));
+                        } else if (appearance.indicator_background.a>0 &&
+                            (icon==Icon::translate || icon==Icon::rotate || icon==Icon::scale || icon==Icon::axes)) {
+                            // Two-tone handle tool: neutral cube body, then handles in indicator-background.
+                            using Symbol=detail::TextStore::Symbol;
+                            const auto pixels=static_cast<std::uint32_t>(std::ceil(size));
+                            const auto accent=icon==Icon::translate?Symbol::translate_accent:icon==Icon::rotate?Symbol::rotate_accent:
+                                icon==Icon::scale?Symbol::scale_accent:Symbol::transform_accent;
+                            quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(Symbol::transform,pixels));
+                            quad({x,y,size,size},icon_clip,appearance.indicator_background,self.text.symbol(accent,pixels));
+                        } else if (icon==Icon::magnet && appearance.indicator_background.a>0) {
+                            // Houdini snap magnet: accent-coloured horseshoe with neutral pole tips.
+                            using Symbol=detail::TextStore::Symbol;
+                            const auto pixels=static_cast<std::uint32_t>(std::ceil(size));
+                            quad({x,y,size,size},icon_clip,appearance.indicator_background,self.text.symbol(Symbol::magnet,pixels));
+                            quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(Symbol::magnet_tips,pixels));
                         } else quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
                     }
                 }
