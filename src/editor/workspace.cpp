@@ -398,9 +398,16 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         }
         constexpr std::array mode_names{L"Select",L"Transform",L"Move",L"Rotate",L"Scale"};
         constexpr std::array view_names{L"Persp",L"Top",L"Front",L"Right"};
+        // Bindings as actually routed by Application::viewport_input and ViewportTool.
+        constexpr std::array tool_hints{
+            L"Left click places the 3D cursor. Right click selects, drag box-selects. Middle tumbles, Shift+Middle pans.",
+            L"Drag a handle to move, rotate or scale. G / R / S for modal transforms. Middle tumbles, Shift+Middle pans.",
+            L"Drag an arrow or plane to move. G then X/Y/Z constrains, type a value, Enter confirms.",
+            L"Drag a ring to rotate. R then X/Y/Z constrains, type degrees, Enter confirms.",
+            L"Drag a box to scale an axis, the centre for uniform scale. S then X/Y/Z constrains."};
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,32> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,33> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
@@ -412,7 +419,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},std::wstring(view_names[std::size_t(camera_view)]),
             menu && menu->source==control::viewport_camera,ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
             viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down),viewport_readout,!viewport_readout.empty(),
-            ui_language::ActionBinding{control::viewport_rail_snap}};
+            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(tool_hints[std::size_t(viewport_mode)])};
         const std::array<ui_language::KeyBinding,14> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
             {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},

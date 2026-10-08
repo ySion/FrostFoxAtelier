@@ -604,7 +604,8 @@ void ViewportTool::overlay(const Session& session,const ViewportView& view,Setti
         // Houdini orientation triad: fixed lower-left corner, world axes projected
         // through the camera rotation only, coloured discs with dark axis letters.
         const float scale=view.dpi_scale,arm=22*scale,disc=7.5f*scale;
-        const V2 origin{view.bounds.x+40*scale,view.bounds.y+view.bounds.height-38*scale};
+        // Above the tool hint line, as in Houdini.
+        const V2 origin{view.bounds.x+40*scale,view.bounds.y+view.bounds.height-62*scale};
         struct Arm { int axis; V2 tip; float depth; };
         std::array<Arm,3> arms{};
         for(int axis=0;axis<3;++axis) {

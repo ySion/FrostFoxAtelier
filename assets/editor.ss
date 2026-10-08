@@ -320,3 +320,6 @@ combo.viewport-view-menu:hover { background: #6e7e87dd; color: #ffffff; }
 combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background: #44535bdd; background-image: none; }
 .viewport-readout { color: #e6e6e6; text-vertical-align: center; font-family: 'Source Code Pro'; font-size: 12dip; }
 .parameter-swatch { border-color: #131313; border-width: 0.667dip; border-style: solid; }
+.viewport-tool-hint { color: #1a1a1a; font-size: 12dip; padding: 0dip; text-vertical-align: bottom; }
+.viewport-tool-hint:disabled { color: #1a1a1a; }
+.viewport-frame { background: transparent; border-width: 0.667dip; border-edges: right bottom; border-style: solid; border-color: #424242; border-inner-color: #666666; }

@@ -498,7 +498,7 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in ActionBinding snap, in double snap_icon, in bool snapping, in Text grid_step, in bool snap_open,
                  in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
                  in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon,
-                 in Text readout, in bool modal, in ActionBinding rail_snap) {
+                 in Text readout, in bool modal, in ActionBinding rail_snap, in Text tool_hint) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -537,8 +537,14 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
             }
             Overlay scene { expand_width: true; expand_height: true;
                 Viewport viewport { expand_width: true; expand_height: true; }
+                // Houdini closes the scene with a recessed bevel; drawn over the
+                // edge so the viewport rectangle and its hit area stay unchanged.
+                Column frame { expand_width: true; expand_height: true; enabled: false; classes: "viewport-frame"; }
                 Text mode { text: input.mode_name; icon: input.mode_icon; enabled: false;
                     out_of_flow: true; offset_x: 12; offset_y: 10; width: 200; height: 26; classes: "viewport-mode-label"; }
+                // Houdini prints the active tool's mouse bindings on the scene's lower edge.
+                Text tool_hint { text: input.tool_hint; enabled: false; out_of_flow: true; anchor_y: 1; pivot_y: 1;
+                    offset_x: 12; offset_y: -8; width: 640; height: 20; classes: "viewport-tool-hint"; }
                 Combo camera { text: input.view_name; selected: input.view_open; content_width: 0; height: 22;
                     out_of_flow: true; anchor_x: 1; pivot_x: 1; offset_x: -10; offset_y: 12; classes: "viewport-view-menu"; }
             }
