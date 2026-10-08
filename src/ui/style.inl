@@ -67,7 +67,8 @@ ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle&
     const float leading=captioned && style.icon_placement==IconPlacement::leading?style.indicator_size+6:0.f;
     const float above=captioned && style.icon_placement==IconPlacement::above?style.indicator_size+2:0.f;
     return {padding.left+style.padding.left+marker+leading,padding.top+style.padding.top+above,
-            padding.right+style.padding.right+(control.kind==ControlKind::combo && (control.icon==ControlIcon::none || !control.text.empty())?18.f:0.f),padding.bottom+style.padding.bottom};
+            padding.right+style.padding.right+(control.kind==ControlKind::combo && (control.icon==ControlIcon::none || !control.text.empty())?
+                (style.combo_indicator==ComboIndicator::caret?style.indicator_size+1:18.f):0.f),padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.tree_row_height) value.tree_row_height=*p.tree_row_height;
@@ -85,6 +86,7 @@ void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.border_edges) value.border_edges=*p.border_edges;
     if (p.border_inner) value.border_inner=*p.border_inner;
     if (p.border_shadow) value.border_shadow=*p.border_shadow;
+    if (p.text_shadow) value.text_shadow=*p.text_shadow;
     if (p.scrollbar_gutter) value.scrollbar_gutter=*p.scrollbar_gutter;
     if (p.combo_indicator) value.combo_indicator=*p.combo_indicator;
     if (p.icon_placement) value.icon_placement=*p.icon_placement;

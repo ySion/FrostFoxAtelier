@@ -1,5 +1,151 @@
 # 编辑器 renderer 验收
 
+## DDGI 接缝与自发光连续更新（2026-10-09）
+
+在同一工作树修正用户发现的墙脚脏边和发光网格移动时的区域跳变。原质量场景主要移动解析矩形光、测量局部接收区域，本次补充默认 `8×4×8` 探针、64 个/帧、128 条照明射线下的强自发光网格与整墙场景。正式 Renderer 的 `--scene-lit-ddgi` 已复现原错误并返回失败，修改前图像和指标保留在 `out/ddgi-wall-20261009/baseline/`。
+
+逐项对照确认：先乘空间权重再进行非线性压缩，会锐化探针之间的过渡；原 .04 倍间距的表面偏移不足以覆盖墙角的方向距离滤波范围。分离线性空间权重并将法线偏移对齐到 .12 倍间距后，接缝检查通过。单独改变归一化分母或加入可见性下限没有改善该场景；最终保留正确的归一化语义，未加入可见性下限。空间权重顺序也与 [NVIDIA RTXGI 的查询实现](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/rtxgi-sdk/shaders/ddgi/Irradiance.hlsl) 交叉核对。
+
+移动记录还复现四帧轮转造成的停顿与跳变。现在分批更新采样目标、逐帧推进有效探针的照明历史，复用现有传递通道；没有增加射线、屏幕颜色模糊、原生 API 或提交入口。当前机制见 [Scene Lit 探针场](scene-lit.md#ddgi-探针场)。
+
+| 最小复现场景指标 | 修正前 | 修正后 Dev / Release |
+| --- | ---: | ---: |
+| 墙脚 / 稍高墙面的红通道比值 p10 | .1093 | .8068 |
+| 静态 16 对整墙连续帧的最大均值 / p95 | .7344 / 6 | .2089 / 1 |
+| 32 帧发光网格移动及强度编辑的最大均值 / p95 | 2.4311 / 19 | .7222 / 4 |
+
+比值在墙上 61 个位置比较高度 .035 m 与 .35 m 的小区域；帧差使用 sRGB 8 位最大通道差，表中结果不是物理辐照度真值。空间比值下限 .75、帧差均值 3 / p95 8 均在修正前确定，未随结果放宽。运动始终保持物体与场景身份，停止后照明继续收敛；最终照明必须与运动前有可见差异，避免冻结旧结果也能通过稳定性检查。
+
+额外的 12 cm 隔墙延伸越过探针体积，强自发光位于另一侧；关闭环境后，暗侧红通道均值为 0，亮侧为 236.215，证明本场景没有以穿墙漏光换取接缝平滑。默认体积新增的两张目标历史纹理共 256 KiB 逻辑字节；此数值是资源尺寸计算，不是 GPU 帧耗时或物理显存测量。
+
+Dev / Release 的完整 `--scene-lit-quality` 均通过 GPU validation，覆盖四种 AA、直接光与反射、连续灯光编辑、Local GI、几何/相机恢复、Reversed-Z 和以上新增场景，日志没有 D3D12 warning/error。完整证据为 `out/ddgi-wall-20261009/{dev,release}-quality/` 与对应 `.log`；补充最终照明变化约束的快速入口结果为 `{dev,release}-ddgi-final/`，同样使用真实 GPU，但验证级别为 debug layer。本节记录的是 `codex/viewport-rendering` 的工作分支验证，主线集成另行进行。
+
+本轮没有重新执行编辑器原生菜单及保存/重开输入链，已有产品输入验收仍归属下一节的候选。有限体积、低频空间近似与强小自发光源的随机采样限制仍在；本节证明给定场景的修正，不将先前或当前的 PASS 扩展成所有场景无伪影。
+
+## Scene Lit 质量演进（2026-10-09，以上 DDGI 修正前）
+
+本轮仍在 `codex/viewport-rendering`，基础提交为 `402fab075bb2aa6605b51fdb767387ebd0e08869`，加同一工作树中的集成源码。当前合同见 [Scene Lit](scene-lit.md)。下方 10 月 8 日首批数据是历史结果，不能代替新版结果。
+
+| 真实端到端结果 | Dev | Release |
+| --- | --- | --- |
+| Renderer、editor、文档消费者编译链接 | PASS | PASS |
+| 原有 Renderer：工作室显示、线框、参考辅助、UI、深度与寿命 | PASS | PASS |
+| Scene Lit 完整 GPU 功能与执行域重建 | PASS | PASS |
+| 四种 AA、独立光照稳定性、移动灯光、Local GI、远距离深度 | PASS | PASS |
+| Scene Lit 工程、参数、持久化、四种 AA 菜单与近场互斥 | PASS | PASS |
+| 正式窗口原生菜单、AA 切换、三类灯操作、保存与重开 | PASS | PASS |
+
+### 图像与合同证据
+
+`--scene-lit-quality` 使用正式 Renderer、真实窗口和 GPU validation。每种 AA 在初始状态和连续移动灯光后的固定终点各预热 96 帧，再逐帧检查 16 对图像；反射与半影分别测量。差异为 sRGB 8 位最大通道差，原有上限均值 3 / p95 8 未放宽。
+
+| AA | 64 个区域对比中的最大均值 | 最大 p95 |
+| --- | ---: | ---: |
+| Off | 0.413 | 1 |
+| TAA | 0.835 | 2 |
+| SMAA | 0.388 | 1 |
+| SMAA T2x | 0.727 | 1 |
+
+上述为 Dev / Release 实测，两个配置的质量指标一致。每种 AA 的 32 帧灯位/强度编辑均没有全局历史重置，终点照明发生可见变化。静态 Capture 深度逐值一致；jitter 留在内部光照采样中，公开深度和编辑辅助使用未抖动相机。确定性 64 样本直接光两次捕获完全一致，单样本重建相对它的半影区域均值 1.818、p95 3；有限 64 样本对照不等于无偏真值。
+
+Local GI 对照关闭 DDGI，使用固定直接光与均匀环境；邻近红色自发光源的地面差异均值 1.008、p95 2，远处区域差异为 0，连续帧局部稳定性与关闭后恢复基线均通过。该结果证明有界近场修正，不表示全场景额外 GI。
+
+深度验收覆盖透视/正交近远裁剪、900 米处相差 2 厘米的表面顺序和有限 Reversed-Z。零键兼容物体与 `UINT64_MAX-4` 真键同时存在时，直接光颜色及深度与原场景逐值相等，证明光栅和 TLAS 都保留两个物体。完整功能验收的静态帧差均值 0.554、p95 1；重建相同执行域后均值 2.744、p95 7，仍在原有上限内。
+
+### 审计与失败归因
+
+两组 Astra 只读审计分别检查光照算法与资源/深度/公共合同。已落实反射材质边界、有符号控制变量重建、逐信号依赖失效、TAA 逐 tap 历史判断，以及辅助显示深度、稳健法线、私有物体键域和环境变化响应。所有 GPU 操作继续经过现有 RHI/gfx。
+
+首轮 TAA 半影采样的异常大跳变集中在 ROI 最左列 10 个像素。几何投影和失败帧证明该列距遮挡物轮廓仅 0.008～0.138 像素，jitter 会把地面替换成方块。测量点由 `(.75,.01,3.6)` 移到同一半影中的 `(.85,.01,3.6)`，整块 ROI 留在地面且距轮廓超过 4 像素；没有扩大阈值或排除正常抖动帧。原始失败 PNG/逐像素 CSV 保留在证据目录。
+
+正式窗口首次检查还发现空背景深度的旧断言仍为 1，已迁移到 Reversed-Z 的 0。Dev 窗口通过后，视觉复核发现参考网格与真实地板共面时产生斑点；浅视角的新增 GPU 场景复现了 2,213/3,045 个实体像素被辅助网格改变。网格改为直接解齐次平面，并在辅助比较中覆盖子像素光栅舍入误差，主 D32 深度不变。修正后 Dev / Release Renderer 均通过三个透视角度的逐像素检查，全部实体像素与关闭网格时相等；同时重跑了既有 Renderer 的完整回归。
+
+### 本轮证据
+
+本机目录为 `out/scene-lit-quality-20261008/`（沿用开始工作时的日期）。`{dev,release}-quality-final/` 包含逐帧区域指标、四种 AA 的灯光轨迹和 PNG；`{dev,release}-functional-final/` 为完整功能图像；`dev-quality-audited/` 保留旧 ROI 的失败诊断。各配置日志位于同目录；最终来源和文件指纹在 `final-manifest.json`。
+
+正式产品窗口分别在 `dev-product-reversed/` 与 `release-product-coplanar/` 通过：包括此前的 MatCap/线框/参考网格流程、四种 AA 原生菜单、三类灯创建及键入参数、`Shadows 4/5` 提示、临时工程保存/重开。源示例 Config/Content 保持不变，重开后有 10 个网格及 7 盏作者灯。Dev 窗口之后仅修正辅助网格和对应验收；该改动由双配置 `*-grid-final.log` 和最后的 Release 产品窗口验证，未改已测量的 Scene Lit 光照信号或无辅助网格的 benchmark。所有通过的 GPU 日志没有 D3D12 warning/error。原生窗口启用 GPU validation 和 VSync，不能作为性能测量。
+
+Release 最终截图已复核，真实地板上的共面参考网格斑点消失。SSSR 仍受屏幕可见信息限制，DDGI 仍为有限体积的低频近似；本轮指标证明指定场景的稳定性与合同，不宣称所有材质、场景和运动都不存在伪影。
+
+### RX 6800 XT 新版性能
+
+Release、验证与 VSync 关闭、原生 2560×1440；场景仍为八个共享 cube、一盏方向光、两个点光、一盏矩形光，四盏均投影。默认 SMAA，DDGI / GTAO / SSSR / Bloom 开启、Local GI 关闭；探针 `11×7×10`，每帧更新 96 个，每次更新 32 条固定几何射线与 64 条照明射线。预热 96 帧后收集 240 个唯一完成样本，期间不 Capture。
+
+| GPU 阶段 | p50 ms | p95 ms |
+| --- | ---: | ---: |
+| GBuffer | 0.062 | 0.065 |
+| AS/上传 | 0.0004 | 0.0006 |
+| 直接光与独立降噪 | 2.806 | 3.087 |
+| DDGI | 0.424 | 0.430 |
+| GTAO 与独立历史 | 0.782 | 0.794 |
+| HDR/SSSR 与独立降噪 | 2.315 | 2.836 |
+| HDR 合并/表面历史 | 0.229 | 0.238 |
+| Bloom/色调映射/SMAA/显示 | 0.460 | 1.263 |
+| 每样本阶段合计 | **7.167** | **7.887** |
+
+合计 p99 为 8.138 ms；相对首批 4.249 ms 的 p95，独立降噪与新 AA 增加了真实成本，不宣称免费提升。逻辑资源峰值为 1,331,414,708 字节（约 1,269.7 MiB），不等于物理显存峰值；Local GI 首次开启另需四张 RGBA16F 纹理，1440p 约 112.5 MiB。阶段计时不包含完整编辑器 CPU、Present 等待、参考辅助与 UI，不代表完整游戏帧率。
+
+数据在 `release-benchmark-final/benchmark-{gpu.csv,summary.txt}`。启用 GPU validation 的进程首次准备曾观察到较长 CPU 等待；关闭验证的本次性能运行没有相同等待现象，不能把前者作为普通产品启动或 GPU 帧耗时。
+
+## Scene Lit 首批（2026-10-08）
+
+集成位置为 `codex/viewport-rendering` 工作树，基础提交 `402fab075bb2aa6605b51fdb767387ebd0e08869` 加本次未提交源码。RHI、World、Application 的拥有者交付均在同一工作树构建、链接和验收；没有绕过 RHI 的设备、队列或图形原生接口调用。功能范围和历史归属见 [Scene Lit 合同](scene-lit.md)。
+
+| 真实端到端结果 | Dev | Release |
+| --- | --- | --- |
+| Renderer、正式 editor、文档消费者编译链接 | PASS | PASS |
+| 原有 Renderer：MatCap、Smooth/Flat、线框、背景/网格、UI、变换及寿命 | PASS | PASS |
+| Scene Lit GPU：三类灯、真实阴影、HDR/材质、DDGI、GTAO、SSSR、时域、正交、清空与 resize | PASS | PASS |
+| 完整编辑文档、Project、原生 UI/Source 消费链 | PASS | PASS |
+| Scene Lit World/Project、灯参数与持久化、独立运行 World 快照 | PASS | PASS |
+| 正式窗口：原生菜单、三类灯创建、键入参数、预算提示、保存与重新打开 | PASS | PASS |
+
+GPU 图像验收启用 D3D12 debug/GBV。方向光、两个点光及矩形光的阴影开关分别产生 6,432、4,211、11,503、6,687 个变暗像素；面积和单面朝向也改变真实受光。第五盏投影灯在预算 4 下仍正常接受帧，统计为 4 shadowed / 1 unshadowed，正式状态栏显示 `Shadows 4/5`。
+
+DDGI 验证红/蓝墙面向可见地板反弹以及墙面改色后更新；接收点核对投影深度，避免将遮挡它的金属面当作漫反射接收面。GTAO 的直接光/自发光对照使用确定性光源，RGB 差为 0；接触遮蔽使用固定环境隔离其他随机项。SSSR 对照关闭 DDGI 并使用固定 64 样本直接光，检测到 22,815 个变化像素；另行确认屏外环境回退。
+
+同一静止场景 96 帧预热后隔 8 帧比较，完整链 RGB 最大通道差均值 0.543、p95 为 1；场景域重建后对照均值 1.118、p95 为 3。验收上限始终为均值 3、p95 8，没有放宽。Dev 的五组时域隔离均通过；追加 16 帧连续刚体移动，保持稳定组件键和 scene revision，历史重置数每帧为 0，实际受光变化 46,780 像素。
+
+正式编辑器验收使用临时工程副本，源示例保持不变。原生菜单创建三类灯并键入 `79.25 cd`、`22.5 cd/m²`、`3.25 lux`，重开后保留 10 个网格和 7 盏灯。静态标签不属于可编辑 `TextGeometry`：精确单位文本由文档链核对，窗口检查其真实绘制并保留截图；点光参数及预算提示已人工查看实际 PNG。当前没有 Simulate UI，运行状态独立性由独立 World 的正式 `start/update/stop → SceneSnapshot` 和 Renderer 的场景域对照验证，不将编辑文档强行切入运行状态。
+
+### RX 6800 XT 本机性能
+
+Release、验证关闭、VSync 关闭、原生 2560×1440；固定场景为 8 个共享 cube 实例、一盏方向光、两个点光、一盏矩形光，4 盏均投影。DDGI 使用 `11×7×10` 探针，每帧更新 96 个、每探针 64 条主射线；其余效果开启，阴影 1 样本。预热 96 帧后收集 240 个唯一、原始、已完成 GPU 样本，采样循环没有 Capture。
+
+| GPU 阶段 | p50 ms | p95 ms |
+| --- | ---: | ---: |
+| GBuffer | 0.056 | 0.057 |
+| AS/上传 | 0.006 | 0.008 |
+| 直接光/阴影 | 1.395 | 1.576 |
+| DDGI | 0.395 | 0.400 |
+| GTAO | 0.295 | 0.298 |
+| HDR/SSSR | 1.130 | 1.421 |
+| TAA | 0.476 | 0.483 |
+| Bloom/色调映射 | 0.179 | 0.183 |
+| 每样本阶段合计 | **3.932** | **4.249** |
+
+合计 p99 为 4.265 ms；分位数来自每个样本的合计，不是逐阶段分位数相加。当前资源逻辑峰值为 689,800,900 字节（约 658 MiB），包含 AS 数据量，不是物理显存峰值。GPU 阶段和不包含编辑器 CPU、Present 等待、显示扫描、首次 shader 准备、参考辅助线或 UI 的完整成本；该小场景结果不能外推为完整游戏帧率。
+
+### 复现与证据
+
+先按 README 准备固定工具链，并构建 `atelier_renderer_acceptance atelier_editor atelier_editor_document_acceptance`。在相应 `out/<preset>` 目录运行：
+
+```powershell
+./atelier_renderer_acceptance.exe --scene-lit --output <绝对证据目录>
+./atelier_renderer_acceptance.exe --scene-lit-temporal --output <绝对证据目录>
+./atelier_editor_document_acceptance.exe --scene-lit <绝对示例工程目录>
+./atelier_editor.exe --acceptance-scene-lit <绝对证据目录> <绝对示例工程目录>
+# 仅 Release，单独运行，测量期间不运行其他 GPU 验收：
+./atelier_renderer_acceptance.exe --scene-lit-benchmark --output <绝对证据目录>
+```
+
+本机证据位于 `out/scene-lit-20261008/`：`dev-domain-run.log`、`release-final-run.log` 与对应图片；`temporal-motion-final-run.log`；`dev-product/`、`release-product/` 的原生编辑器图片和产品记录；`{dev,release}-world-lifecycle.log`；`profile-final/benchmark-{gpu.csv,summary.txt}`。最终通过的 GPU 日志未报告 D3D12 warning/error。原 RHI 与 World 补丁的双配置专项结果另见各自模块验收。
+
+中间失败保留原日志。修复包括全屏 tone 三角剔除、运动深度精度、斜面历史重投影、静态 DDGI 噪声误判和探针采样时钟归属；验收也修正了随机光对照、被遮挡测点、同命令菜单/工具架坐标以及静态文字查询方式。两次未取得初始前台焦点的窗口运行未发送合成输入，不能记作通过。早期窗口报告曾保留过时的“displayed World simulation”说明，最终范围以上述独立 World/Renderer 验证为准。
+
+完整文档验收从构建目录读取字体和样式；本机深层 worktree 的 Release 物理缓存临时路径达到传统 Windows 路径上限，因此使用 `E:/FrostFoxAtelier/out/sl-doc-release-1008` 短工作目录及同一部署资源通过，日志为 `release-document-full-short.log`。这不是 Scene Lit 生产代码改动，也没有宣称解决项目既有的任意长路径支持。
+
 ## 背景与参考网格（2026-10-05）
 
 Guides 生产者提交为 `d2dafe49298b2e67617e270df788c050badc246d`。它与原生 UI 语言 M1、Session 更新及 RHI 文档在 `acae7b90784c7a1ad6a76e077a9ee5a3b6592530` 完成组合，开发/发布版 Renderer、UI、文档消费者与正式项目窗口均通过，见[组合验收](../../research/native-ui-language-20261005.md#正式组合验收)。

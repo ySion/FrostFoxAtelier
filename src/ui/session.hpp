@@ -37,6 +37,7 @@ struct Control {
     bool enabled{true}, selected{};
     bool click_action{}; // splitter grip only: activate on click; bool payload means Alt modifier.
     double value{}, minimum{-10000}, maximum{10000};
+    bool single_precision{}; // Float storage uses its shortest round-tripping decimal, without widened double noise.
     double drag_step{0.01}, fine_step{0.001}; // Number/splitter: per DIP. Slider: keyboard increment.
     DragAxis drag_axis{DragAxis::horizontal};
     std::vector<std::string> classes;
@@ -201,7 +202,8 @@ struct UiFrame {
 enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize };
 struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; std::optional<TableSelection> table{}; }; // Accepted client pixels.
 struct DragPoint { float x{}, y{}; }; // Accepted-frame client pixels.
-using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint,TableSelection,TableSort,TableColumnResize>;
+struct SelectionModifiers { bool shift{}, control{}; };
+using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint,TableSelection,TableSort,TableColumnResize,SelectionModifiers>;
 struct Action {
     ActionKind kind{};
     ControlKey key{};
@@ -266,7 +268,7 @@ template<class T> using Result = std::expected<T, Error>;
 // tree references, table contents or solve layout; Session remains the complete batch boundary.
 Result<void> validate_control_properties(const Control&);
 enum class Capture { unchanged, acquire, release };
-enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan };
+enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan, crosshair };
 struct Reply {
     bool consumed{}, redraw{};
     Capture capture{Capture::unchanged};
@@ -336,6 +338,8 @@ public:
     Result<std::shared_ptr<const UiFrame>> prepare();
     bool accept(std::shared_ptr<const UiFrame>);
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
+    // Topmost enabled target in the accepted frame; zero while input is suspended.
+    ControlKey pointer_target(float x,float y) const;
     Reply input(const Event&);
     Reply cancel_interaction();
     // Finish a valid text draft before a document save. Invalid input stays

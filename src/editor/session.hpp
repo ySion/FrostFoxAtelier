@@ -35,12 +35,18 @@ public:
     const physics::Types& physics_types() const noexcept { return physics_types_; }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     Selection selection() const noexcept { return selection_; }
+    // Actor-level multi-selection; the active Actor (selection().actor) is the
+    // last entry when it is one of them. Selection is view state, not history.
+    std::span<const ObjectId> selected_actors() const noexcept { return selected_actors_; }
+    bool is_selected(ObjectId actor) const noexcept { return std::ranges::find(selected_actors_,actor)!=selected_actors_.end(); }
     std::wstring_view name(ObjectId) const noexcept;
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
+    Result<void> select_actors(std::span<const ObjectId> actors, ObjectId active);
     Result<world::Commit> add_actor(TypeId actual = {});
-    Result<world::Commit> create_static_mesh(const MeshAsset&);
-    Result<world::Commit> erase_selected();
+    Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {});
+    Result<world::Commit> create_light(world::LightKind, math::Vector3 position = {});
+    Result<world::Commit> erase_selected(); // All selected Actors form one history entry.
     Result<world::Commit> add_component(TypeId);
     Result<world::Commit> remove_component(ObjectId);
     Result<std::vector<ComponentType>> component_types() const;
@@ -48,6 +54,14 @@ public:
     Result<Scalar> read_property(ObjectId, std::span<const FieldId>) const;
     Result<void> configure_body(ObjectId component, physics::BodySettings);
     Result<void> begin_edit(ObjectId component, std::span<const FieldId>, std::uint64_t control_session);
+    // Whole-TRS edit of several SceneComponents (viewport handles, modal G/R/S,
+    // Euler fields). Preview writes complete transforms in the same order;
+    // commit_edit records one history entry, cancel_edit restores all.
+    Result<void> begin_transform(std::span<const ObjectId> scene_components, std::uint64_t control_session);
+    static constexpr float minimum_scale=.0001f, maximum_scale=10000.f;
+    // Stable gesture origin; previews never feed their converted values back into the next preview.
+    Result<world::Trs> original_transform(std::uint64_t control_session, ObjectId component) const;
+    Result<void> preview_transform(std::uint64_t control_session, std::span<const world::Trs>);
     Result<void> set_property(ObjectId, std::span<const FieldId>, Scalar, std::uint64_t control_session);
     Result<void> preview_edit(std::uint64_t control_session, float);
     Result<void> preview_edit(std::uint64_t control_session, Scalar);
@@ -64,16 +78,17 @@ public:
     Result<void> collect_step();
     Result<std::string> serialize() const;
     static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {});
-    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_.has_value(); }
+    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || editing(); }
     void mark_saved() noexcept { saved_cursor_=cursor_; }
     void mark_modified() noexcept { saved_cursor_.reset(); }
-    bool editing() const noexcept { return active_.has_value(); }
+    bool editing() const noexcept { return active_.has_value() || transform_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
     static constexpr std::size_t maximum_actors = 256;
     static constexpr std::size_t maximum_components = 1024;
 private:
-    struct ActorChange { bool added{}; world::ActorRemoval removal; };
+    // Removals are ordered as detached; restore runs in reverse.
+    struct ActorChange { bool added{}; std::vector<world::ActorRemoval> removals; };
     struct ComponentChange { bool added{}; world::ComponentRemoval removal; };
     struct FieldChange {
         ObjectRoot root;
@@ -83,9 +98,15 @@ private:
         // TRS is one invariant group; ordinary business properties keep exact scalar types.
         std::variant<world::Trs,Scalar> before, after;
     };
+    struct TransformChange {
+        struct Entry { ObjectRoot root; ObjectId actor; world::Trs before, after; };
+        std::vector<Entry> entries;
+        std::uint64_t control_session{};
+        Selection inspection;
+    };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     struct BodyChange { ObjectRoot root; ObjectId actor; physics::BodySettings before, after; };
-    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange, BodyChange>;
+    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -98,7 +119,9 @@ private:
     std::size_t cursor_{};
     std::optional<std::size_t> saved_cursor_{0};
     Selection selection_;
+    std::vector<ObjectId> selected_actors_; // Non-owning; validated on write, pruned with membership.
     std::optional<FieldChange> active_;
+    std::optional<TransformChange> transform_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
     std::uint64_t next_name_{1};
     Result<void> admit_actor_edit(ObjectId) const;
@@ -106,6 +129,9 @@ private:
     Result<ObjectId> admit_property_edit(ObjectId) const;
     Result<void> apply_field(const FieldChange&, bool forward);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
+    void set_selection(Selection); // Single-object selection; resets the Actor set.
+    Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
+    void forget_actor(ObjectId) noexcept;
     void remember(Change);
     static Result<void> validate_name(std::wstring_view);
     Result<world::Commit> replay(Change&, bool forward);

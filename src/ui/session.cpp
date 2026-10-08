@@ -24,6 +24,8 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
         icon==Icon::axes?Symbol::axes:icon==Icon::component?Symbol::component:icon==Icon::mesh?Symbol::mesh:icon==Icon::folder?Symbol::folder:
         icon==Icon::search?Symbol::search:icon==Icon::view_list?Symbol::view_list:icon==Icon::view_details?Symbol::view_details:
         icon==Icon::view_tiles?Symbol::view_tiles:icon==Icon::filter?Symbol::filter:icon==Icon::more?Symbol::more:
+        icon==Icon::pointer?Symbol::pointer:icon==Icon::translate?Symbol::translate:icon==Icon::rotate?Symbol::rotate:
+        icon==Icon::scale?Symbol::scale:icon==Icon::cursor3d?Symbol::cursor3d:icon==Icon::magnet?Symbol::magnet:
         icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
 }
 bool text_kind(ControlKind kind) {
@@ -61,9 +63,10 @@ bool visible(Rect bounds, Clip clip) {
     return bounds.width > 0 && bounds.height > 0 && clip.right > clip.left && clip.bottom > clip.top &&
         bounds.x < clip.right && bounds.y < clip.bottom && bounds.x+bounds.width > clip.left && bounds.y+bounds.height > clip.top;
 }
-std::wstring format(double value) {
+std::wstring format(double value,bool single_precision=false) {
     char buffer[64];
-    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general, 9);
+    const auto result = single_precision?std::to_chars(buffer,buffer+sizeof(buffer),static_cast<float>(value)):
+        std::to_chars(buffer,buffer+sizeof(buffer),value);
     if (result.ec != std::errc{}) return L"0";
     return std::wstring(buffer, result.ptr);
 }
@@ -91,7 +94,7 @@ Result<void> validate_control_properties(const Control& control) {
         static_cast<unsigned>(control.button_behavior)>static_cast<unsigned>(ButtonBehavior::toggle) ||
         static_cast<unsigned>(control.menu_behavior)>static_cast<unsigned>(MenuBehavior::radio))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::more) ||
+    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::magnet) ||
         (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
          control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item && control.kind!=ControlKind::menu_item) ||
         (control.click_action && control.kind!=ControlKind::splitter) ||
@@ -449,6 +452,9 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
     if (unchanged) return Reply{};
     return impl_->apply_controls(controls,false);
 }
+ControlKey Session::pointer_target(float x,float y) const {
+    const auto* hit=impl_->hit(x,y);return hit?hit->key:0;
+}
 Result<Reply> Session::update_controls(std::span<const Control> controls) {
     return impl_->apply_controls(controls,true);
 }
@@ -782,15 +788,24 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (kind==ControlKind::combo && (state.control.icon==ControlIcon::none || !state.control.text.empty())) {
                 const float size=std::min(appearance.indicator_size,14.f)*scale;
                 const auto arrow_clip=intersect(clip,clip_rect(bounds));
-                quad({bounds.x+bounds.width-15*scale,bounds.y+border,15*scale-border,std::max(0.f,bounds.height-2*border)},arrow_clip,{0,0,0,.17f});
-                const auto arrow=[&](detail::TextStore::Symbol symbol,float cy) {
-                    quad({bounds.x+bounds.width-(15*scale+size)*.5f,cy-size*.5f,size,size},arrow_clip,
-                        appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
-                };
-                if (appearance.combo_indicator==ComboIndicator::arrows) {
-                    arrow(detail::TextStore::Symbol::up,bounds.y+bounds.height*.5f-3.5f*scale);
-                    arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f+3.5f*scale);
-                } else arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f);
+                if (appearance.combo_indicator==ComboIndicator::caret) {
+                    // Inline caret immediately after the label; no separate arrow well.
+                    const auto padding=self.padding_for(state);
+                    const auto metrics=self.text.metrics(key,std::max(0.f,box->width-(padding.left+padding.right)));
+                    const float x=bounds.x+(padding.left+metrics.width+1)*scale;
+                    if (size>0) quad({x,bounds.y+(bounds.height-size)*.5f+scale,size,size},arrow_clip,
+                        appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(detail::TextStore::Symbol::caret,static_cast<std::uint32_t>(std::ceil(size))));
+                } else {
+                    quad({bounds.x+bounds.width-15*scale,bounds.y+border,15*scale-border,std::max(0.f,bounds.height-2*border)},arrow_clip,{0,0,0,.17f});
+                    const auto arrow=[&](detail::TextStore::Symbol symbol,float cy) {
+                        quad({bounds.x+bounds.width-(15*scale+size)*.5f,cy-size*.5f,size,size},arrow_clip,
+                            appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
+                    };
+                    if (appearance.combo_indicator==ComboIndicator::arrows) {
+                        arrow(detail::TextStore::Symbol::up,bounds.y+bounds.height*.5f-3.5f*scale);
+                        arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f+3.5f*scale);
+                    } else arrow(detail::TextStore::Symbol::down,bounds.y+bounds.height*.5f);
+                }
             }
             if (kind==ControlKind::code_editor) {
 #include "ui/session_code_draw.inl"
@@ -845,6 +860,11 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 const auto raster=self.text.raster(key,width,scale,text_field(kind)?
                     std::optional<Clip>{clip_rect({static_cast<float>(text_clip.left)-x,static_cast<float>(text_clip.top)-y,
                         static_cast<float>(text_clip.right-text_clip.left),static_cast<float>(text_clip.bottom-text_clip.top)})}:std::nullopt);
+                if (raster.coverage && appearance.text_shadow) {
+                    const auto offset=std::max(1.f,std::round(scale));
+                    quad({x+raster.left+offset,y+raster.top+offset,static_cast<float>(raster.coverage->width),
+                        static_cast<float>(raster.coverage->height)},text_clip,*appearance.text_shadow,raster.coverage);
+                }
                 if (raster.coverage) quad({x+raster.left,y+raster.top,static_cast<float>(raster.coverage->width),
                     static_cast<float>(raster.coverage->height)},text_clip,appearance.foreground,raster.coverage);
                 if (editing) {

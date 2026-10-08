@@ -19,7 +19,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
         const auto result=take(renderer.render(frame,&capture));
         check(result.status==render::FrameStatus::accepted && result.accepted_id==drawing.id,
               "display modes use the accepted frame contract");
-        check(pixel(capture,8,8)[1]==255 && depth(capture,8,8)==1,
+        check(pixel(capture,8,8)[1]==255 && depth(capture,8,8)==0,
               "display policy does not affect UI or its depth");
         return result;
     };
@@ -45,7 +45,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     frame.view.triangle_edges=false;
     frame.view.wireframe=render::Wireframe::only; render_frame(); const auto hidden=capture;
     snapshot(capture,"viewport-hidden-lines.ppm");
-    check(pixel(capture,cx,cy)[0]==0 && std::abs(depth(capture,cx,cy)-.2f)<.0001f,
+    check(pixel(capture,cx,cy)[0]==0 && std::abs(depth(capture,cx,cy)-.8f)<.0001f,
           "hidden-line depth prepass preserves background and full surface depth");
     frame.meshes=meshes;
     const auto hidden_result=render_frame();
@@ -66,7 +66,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     check(lit(capture)>thin*2, "wire width changes actual pixel coverage");
     const auto line_width=[&](float z) {
         meshes[0].world[14]=z-.2f;
-        frame.camera.projection={1,0,0,0, 0,1,0,0, 0,0,10.f/9.9f,1, 0,0,-1.f/9.9f,0};
+        frame.camera.projection={1,0,0,0, 0,1,0,0, 0,0,-.1f/9.9f,1, 0,0,1.f/9.9f,0};
         render_frame();
         const int centre=static_cast<int>((.5f-.3f/z)*extent.width);
         unsigned pixels=0;

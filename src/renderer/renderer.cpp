@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "shader_source.hpp"
 #include "math/math.hpp"
+#include "scene_lit.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -57,8 +58,9 @@ void validate(const Frame &frame) {
         frame.scene_viewport.y + frame.scene_viewport.height <= static_cast<float>(ui.extent.height) &&
         frame.meshes.size() <= std::numeric_limits<std::uint32_t>::max() &&
         ui.draws.size() <= std::numeric_limits<std::uint32_t>::max();
-    good &= frame.view.shading <= Shading::matcap && frame.view.wireframe <= Wireframe::only &&
-        frame.view.background <= Background::gradient &&
+    good &= frame.view.shading <= Shading::scene_lit && frame.view.wireframe <= Wireframe::only &&
+        frame.view.background <= Background::gradient && frame.view.grid_plane <= GridPlane::yz &&
+        finite(frame.view.grid_spacing) && frame.view.grid_spacing>=.001f && frame.view.grid_spacing<=10000.f &&
         finite(frame.view.wire_width) && frame.view.wire_width > 0 && frame.view.wire_width <= 8 &&
         finite(frame.view.wire_opacity) && frame.view.wire_opacity >= 0 && frame.view.wire_opacity <= 1;
     for (float v : frame.camera.view)
@@ -81,6 +83,13 @@ void validate(const Frame &frame) {
     }
     if (!good)
         throw error(rhi::ErrorCode::invalid_argument, "Invalid renderer frame, camera, shape, color or image");
+    for (const auto &shape : frame.overlay) {
+        bool valid_shape = shape.kind <= OverlayShape::Kind::rectangle && finite(shape.width) && shape.width >= 0 &&
+            shape.width <= 64 && valid(shape.color) && valid(shape.border);
+        for (float v : shape.points) valid_shape &= finite(v) && std::abs(v) < 1e7f;
+        if (shape.kind == OverlayShape::Kind::rectangle) valid_shape &= shape.points[2] >= 0 && shape.points[3] >= 0;
+        if (!valid_shape) throw error(rhi::ErrorCode::invalid_argument, "Invalid viewport overlay shape");
+    }
 }
 struct Instance {
     std::array<float, 16> world;
@@ -237,6 +246,8 @@ struct Renderer::State {
     struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
     std::vector<MeshBatch> mesh_batches;
+    std::unique_ptr<detail::SceneLit> scene_lit;
+    std::vector<detail::SceneLitDraw> lit_draws;
     GfxTexture depth;
     ui::PixelExtent depth_extent;
     std::unordered_map<TextureKey, CachedImage, TextureHash> images;
@@ -244,6 +255,7 @@ struct Renderer::State {
     std::vector<Instance> instances;
     std::vector<UiInstance> ui_instances;
     std::vector<UiBatch> ui_batches;
+    std::size_t overlay_instances{}, overlay_batches{}; // Leading viewport annotations in ui_instances/ui_batches.
     std::vector<std::uint8_t> upload_pixels;
     std::optional<Error> failure;
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
@@ -267,6 +279,11 @@ struct Renderer::State {
         if (owner != std::this_thread::get_id())
             return std::unexpected(
                 error(rhi::ErrorCode::wrong_thread, "Renderer close requires owner thread"));
+        if(scene_lit) {
+            const auto result=scene_lit->close();
+            if(!result)return result;
+            scene_lit.reset();
+        }
         for (auto &[key, image] : images) {
             const auto r = gfxDestroyTexture(gfx, image.texture);
             if (r != kGfxResult_NoError)
@@ -342,7 +359,7 @@ struct Renderer::State {
                     "Set depth target");
             require(gfxDrawStateSetDepthFunction(desc.draw_state,
                     style == PipelineStyle::all_lines ? D3D12_COMPARISON_FUNC_ALWAYS :
-                    style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_LESS),
+                    style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_GREATER_EQUAL : D3D12_COMPARISON_FUNC_GREATER),
                     "Set depth comparison");
         }
         require(gfxDrawStateSetDepthWriteMask(desc.draw_state,
@@ -435,9 +452,44 @@ struct Renderer::State {
         (color ? stats.image_upload_bytes : stats.coverage_upload_bytes) += upload_pixels.size();
         return image.texture;
     }
-    void prepare_ui(const ui::Frame &frame) {
-        ui_instances.clear(); ui_batches.clear();
-        ui_instances.reserve(frame.draws.size());
+    void prepare_ui(const Frame &source) {
+        const auto &frame = source.ui_frame;
+        ui_instances.clear(); ui_batches.clear(); overlay_instances = 0;
+        ui_instances.reserve(frame.draws.size() + source.overlay.size());
+        const auto &viewport = source.scene_viewport;
+        if (viewport.width > 0 && viewport.height > 0 && !source.overlay.empty()) {
+            const ui::Clip clip{std::clamp(static_cast<int>(std::floor(viewport.x)), 0, int(frame.extent.width)),
+                std::clamp(static_cast<int>(std::floor(viewport.y)), 0, int(frame.extent.height)),
+                std::clamp(static_cast<int>(std::ceil(viewport.x + viewport.width)), 0, int(frame.extent.width)),
+                std::clamp(static_cast<int>(std::ceil(viewport.y + viewport.height)), 0, int(frame.extent.height))};
+            for (const auto &shape : source.overlay) {
+                UiInstance instance{};
+                instance.tint = shape.color;
+                if (shape.kind == OverlayShape::Kind::segment) {
+                    if (shape.color.a == 0 || shape.width == 0) continue;
+                    const auto [ax, ay, bx, by] = shape.points;
+                    const float pad = shape.width * .5f + 1;
+                    instance.bounds = {std::min(ax, bx) - pad, std::min(ay, by) - pad,
+                        std::abs(bx - ax) + 2 * pad, std::abs(by - ay) + 2 * pad};
+                    instance.uv = {ax, ay, bx, by};
+                    instance.radius = {shape.width * .5f, 0, 0, 0};
+                    instance.reserved[0] = 1; // Capsule coverage in the solid pipeline.
+                } else {
+                    if ((shape.color.a == 0 && (shape.width == 0 || shape.border.a == 0)) ||
+                        shape.points[2] == 0 || shape.points[3] == 0) continue;
+                    instance.bounds = {shape.points[0], shape.points[1], shape.points[2], shape.points[3]};
+                    instance.uv = {0, 0, 1, 1};
+                    instance.border_color = shape.border;
+                    instance.border_width = std::min({shape.width, shape.points[2] * .5f, shape.points[3] * .5f});
+                }
+                const auto first = static_cast<std::uint32_t>(ui_instances.size());
+                ui_instances.push_back(instance);
+                ++overlay_instances;
+                if (!ui_batches.empty()) ++ui_batches.back().count;
+                else ui_batches.push_back({first, 1, clip, {}, nullptr});
+            }
+        }
+        overlay_batches = ui_batches.size();
         for (const auto &item : frame.draws) {
             const ui::Clip clip{std::clamp(item.clip.left, 0, int(frame.extent.width)),
                 std::clamp(item.clip.top, 0, int(frame.extent.height)),
@@ -453,7 +505,7 @@ struct Renderer::State {
             ui_instances.push_back({item.bounds, item.uv, item.color, item.border_color,
                 fit_radius(item.radius, item.bounds), item.image_background,
                 std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f})});
-            if (!ui_batches.empty() && ui_batches.back().clip == clip && ui_batches.back().texture == key)
+            if (ui_batches.size() > overlay_batches && ui_batches.back().clip == clip && ui_batches.back().texture == key)
                 ++ui_batches.back().count;
             else ui_batches.push_back({first, 1, clip, key, &item});
         }
@@ -470,6 +522,8 @@ struct Renderer::State {
         require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse), "Set grid inverse camera");
         require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection), "Set grid camera");
         require(gfxProgramSetParameter(gfx, program, "guides", guides), "Set reference guides");
+        require(gfxProgramSetParameter(gfx, program, "grid_spacing", frame.view.grid_spacing), "Set grid spacing");
+        require(gfxProgramSetParameter(gfx, program, "grid_plane", static_cast<std::uint32_t>(frame.view.grid_plane)), "Set grid plane");
         require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind reference grid");
         require(gfxCommandDraw(gfx, 3), "Draw reference grid");
         ++stats.viewport_draw_calls;
@@ -497,20 +551,26 @@ struct Renderer::State {
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         if (draw_scene) {
             const bool lines_only = frame.view.wireframe == Wireframe::only;
-            if (!lines_only && !scene)
+            const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
+            const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
+            const bool editing_depth=jittered&&(capture||frame.view.reference_grid||frame.view.origin_axes||
+                frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
+            if ((lines_only||editing_depth)&&!scene_depth)
+                prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
+            if (!lighting && !lines_only && !scene)
                 prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, PipelineStyle::surface);
             if (lines_only) {
-                if (!scene_depth)
-                    prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
                 auto& lines = frame.view.hidden_lines ? visible_lines : all_lines;
                 if (!lines)
                     prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
                                      frame.view.hidden_lines?PipelineStyle::visible_lines:PipelineStyle::all_lines);
             }
-            prepare_matcap();
+            if(lighting&&!visible_lines)
+                prepare_pipeline(visible_lines,"Scene Lit editing lines",shaders::scene_vs,shaders::scene_ps,PipelineStyle::visible_lines);
+            if(!lighting)prepare_matcap();
             if (depth_extent != extent) {
                 if (depth) require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
-                const float clear[4] = {1, 0, 0, 0};
+                const float clear[4] = {0, 0, 0, 0};
                 depth = gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_D32_FLOAT, 1, clear);
                 allocation(bool(depth));
                 depth_extent = extent;
@@ -558,7 +618,21 @@ struct Renderer::State {
                     ++stats.scene_draw_calls;
                 }
             };
-            if (lines_only) {
+            if(lighting) {
+                lit_draws.clear();lit_draws.reserve(mesh_batches.size());
+                for(const auto& batch:mesh_batches){const auto& geometry=geometries.at(batch.geometry.get());
+                    lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size())});}
+                scene_lit->draw(frame,extent,depth,lit_draws,stats);
+                require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
+                if(editing_depth) {
+                    // AA has consumed and retained its sampled depth. Editing
+                    // guides and capture share the public, unjittered camera.
+                    require(gfxCommandClearTexture(gfx,depth),"Clear sampled scene depth for editing");
+                    draw_batches(scene_depth,2);
+                }
+                draw_grid(frame,true);
+                draw_batches(visible_lines,1);
+            } else if (lines_only) {
                 draw_batches(scene_depth, 2);
                 draw_grid(frame, true);
                 draw_batches(frame.view.hidden_lines ? visible_lines : all_lines, 1);
@@ -582,21 +656,23 @@ struct Renderer::State {
         if (!ui_instances.empty()) {
             ui_data.buffer = gfxCreateBuffer<UiInstance>(gfx, static_cast<std::uint32_t>(ui_instances.size()), ui_instances.data());
             allocation(bool(ui_data.buffer));
-            stats.ui_instance_upload_bytes = ui_instances.size() * sizeof(UiInstance);
-            stats.ui_quads = ui_instances.size();
+            stats.ui_instance_upload_bytes = (ui_instances.size() - overlay_instances) * sizeof(UiInstance);
+            stats.ui_quads = ui_instances.size() - overlay_instances;
+            stats.overlay_shapes = overlay_instances;
         }
-        for (const auto &batch : ui_batches) {
-            const auto &item = *batch.source;
-            const auto &pipeline = item.coverage ? coverage : item.image ? color_image : solid;
+        for (std::size_t index = 0; index < ui_batches.size(); ++index) {
+            const auto &batch = ui_batches[index];
+            const auto *source = batch.source;
+            const auto &pipeline = source && source->coverage ? coverage : source && source->image ? color_image : solid;
             const auto program = pipeline.program();
-            if (item.coverage) {
-                require(gfxProgramSetParameter(gfx, program, "coverage", texture(item.coverage)),
+            if (source && source->coverage) {
+                require(gfxProgramSetParameter(gfx, program, "coverage", texture(source->coverage)),
                         "Bind UI coverage");
                 require(gfxProgramSetParameter(gfx, program, "coverage_sampler", sampler),
                         "Bind coverage sampler");
             }
-            if (item.image) {
-                require(gfxProgramSetParameter(gfx, program, "color_image", texture(item.image)), "Bind UI image");
+            if (source && source->image) {
+                require(gfxProgramSetParameter(gfx, program, "color_image", texture(source->image)), "Bind UI image");
                 require(gfxProgramSetParameter(gfx, program, "image_sampler", sampler), "Bind image sampler");
             }
             const std::array<float, 2> size{static_cast<float>(extent.width),
@@ -608,7 +684,7 @@ struct Renderer::State {
             require(gfxCommandSetScissorRect(gfx, clip.left, clip.top, clip.right - clip.left, clip.bottom - clip.top), "Set UI scissor");
             require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind UI pipeline");
             require(gfxCommandDraw(gfx, 6, batch.count), "Draw UI batch");
-            ++stats.ui_draw_calls;
+            ++(index < overlay_batches ? stats.overlay_draw_calls : stats.ui_draw_calls);
         }
         for (auto it = images.begin(); it != images.end();) {
             if (it->second.used) {
@@ -635,7 +711,7 @@ struct Renderer::State {
                 require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
             } else {
                 // A UI-only capture describes this frame, not a retained scene depth texture.
-                std::fill(capture->depth.begin(), capture->depth.end(), 1.0f);
+                std::fill(capture->depth.begin(), capture->depth.end(), 0.0f);
             }
             const auto finished = context.finish();
             if (!finished) throw Error{finished.error(), true};
@@ -712,16 +788,26 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.ui_instance_upload_bytes = 0;
     s.stats.scene_draw_calls = 0;
     s.stats.viewport_draw_calls = 0;
+    s.stats.overlay_shapes = 0;
+    s.stats.overlay_draw_calls = 0;
     s.stats.coverage_upload_count = 0;
     s.stats.coverage_upload_bytes = 0;
     s.stats.image_upload_count = 0;
     s.stats.image_upload_bytes = 0;
+    s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_gpu_timing_valid=false;
+    s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
+    s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;
+    s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)
         return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     try {
         validate(frame);
+        if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&!frame.meshes.empty()&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
+            if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
+            s.scene_lit->validate(frame);
+        } else if(s.scene_lit)s.scene_lit->invalidate();
         s.grid_camera=prepare_grid_camera(frame);
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
@@ -733,7 +819,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
                 ++s.mesh_batches.back().count;
             else s.mesh_batches.push_back({first, 1, mesh.geometry});
         }
-        s.prepare_ui(frame.ui_frame);
+        s.prepare_ui(frame);
         Capture pending;
         if (capture) {
             pending.frame_id = frame.ui_frame.id;

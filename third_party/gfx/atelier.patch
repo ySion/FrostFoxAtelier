@@ -9,7 +9,7 @@
 +    GfxResult execution_error_ = kGfxResult_NoError;
 +    uint32_t wait_timeout_ms_ = 10000;
 +    HRESULT last_present_result_ = S_FALSE;
- 
+
      bool debug_shaders_ = false;
      bool cache_shaders_ = false;
 @@ -633,6 +638,9 @@
@@ -22,10 +22,29 @@
                  case kType_Image:
                      gfxFree(data_.image_.textures_);
                      gfxFree(data_.image_.mip_levels_);
-@@ -1074,6 +1082,12 @@
+@@ -860,6 +868,7 @@
+     struct TimestampQuery
+     {
+         float duration_ = 0.0f;
++        GfxTimestampQuerySample sample_;
+         bool was_begun_ = false;
+     };
+     GfxArray<TimestampQuery> timestamp_queries_;
+@@ -869,8 +878,10 @@
+     {
+         GfxBuffer query_buffer_ = {};
+         ID3D12QueryHeap *query_heap_ = nullptr;
++        uint64_t frame_sequence_ = 0;
+         std::map<uint64_t, std::pair<uint32_t, GfxTimestampQuery>> timestamp_queries_;
+     };
++    uint64_t timestamp_frame_sequence_ = 0;
+     uint64_t timestamp_query_ticks_per_second_ = 0;
+     TimestampQueryHeap *timestamp_query_heaps_ = nullptr;
+
+@@ -1074,6 +1085,12 @@
              output->Release();
          }
- 
+
 +        if((flags & kGfxCreateContextFlag_ForceRGBA8SwapChain) != 0)
 +        {
 +            back_buffer_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -35,9 +54,9 @@
          DXGI_SWAP_CHAIN_DESC1
          swap_chain_desc                  = {};
          swap_chain_desc.Width            = window_width_;
-@@ -1095,6 +1109,9 @@
+@@ -1095,6 +1112,9 @@
          swap_chain_->SetColorSpace1(color_space_);
- 
+
          back_buffers_ = (ID3D12Resource **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12Resource *));
 +        if(back_buffers_ == nullptr)
 +            return GFX_SET_ERROR(kGfxResult_OutOfMemory, "Unable to allocate back_buffers_ slots");
@@ -45,9 +64,9 @@
          GFX_TRY(acquireSwapChainBuffers());
          back_buffer_rtvs_ = (uint32_t *)gfxMalloc(max_frames_in_flight_ * sizeof(uint32_t));
          GFX_TRY(createBackBufferRTVs());
-@@ -1135,7 +1152,13 @@
+@@ -1135,7 +1155,13 @@
          GFX_TRY(initializeCommon(context));
- 
+
          back_buffers_ = (ID3D12Resource **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12Resource *));
 +        if(back_buffers_ == nullptr)
 +            return GFX_SET_ERROR(kGfxResult_OutOfMemory, "Unable to allocate back_buffers_ slots");
@@ -59,7 +78,7 @@
          GFX_TRY(createBackBuffers());
          back_buffer_rtvs_ = (uint32_t *)gfxMalloc(max_frames_in_flight_ * sizeof(uint32_t));
          GFX_TRY(createBackBufferRTVs());
-@@ -1169,7 +1192,9 @@
+@@ -1169,7 +1195,9 @@
              IDXGIFactory4 *factory4;
              if(!SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory4))))
                  return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create DXGIFactory4");
@@ -70,7 +89,7 @@
                  return GFX_SET_ERROR(kGfxResult_InternalError, "An invalid adapter was supplied");
              if(!SUCCEEDED(D3D12CreateDevice(adapter_, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device_))))
                  return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create D3D12 device");
-@@ -1194,6 +1219,7 @@
+@@ -1194,6 +1222,7 @@
                          break;
                      adapters[i] = adapter1;
                  }
@@ -78,9 +97,9 @@
              }
              else
              {
-@@ -1301,6 +1327,9 @@
+@@ -1301,6 +1330,9 @@
          max_frames_in_flight_ = kGfxConstant_BackBufferCount;
- 
+
          command_allocators_ = (ID3D12CommandAllocator **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12CommandAllocator *));
 +        if(command_allocators_ == nullptr)
 +            return GFX_SET_ERROR(kGfxResult_OutOfMemory, "Unable to allocate command_allocators_ slots");
@@ -88,7 +107,7 @@
          for(uint32_t j = 0; j < max_frames_in_flight_; ++j)
          {
              char buffer[256];
-@@ -1323,6 +1352,9 @@
+@@ -1323,6 +1355,9 @@
          if(!fence_event_)
              return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create event handle");
          fences_ = (ID3D12Fence **)gfxMalloc(max_frames_in_flight_ * sizeof(ID3D12Fence *));
@@ -98,7 +117,7 @@
          for(uint32_t j = 0; j < max_frames_in_flight_; ++j)
          {
              char buffer[256];
-@@ -1603,7 +1635,8 @@
+@@ -1603,7 +1638,8 @@
              collect(sampler_states_.data()[i]);
          for(uint32_t i = 0; i < kernels_.size(); ++i)
          {
@@ -108,7 +127,7 @@
              collect(kernels_.data()[i]);
          }
          for(uint32_t i = 0; i < programs_.size(); ++i)
-@@ -1650,7 +1683,7 @@
+@@ -1650,7 +1686,7 @@
          }
          if(command_list_ != nullptr)
          {
@@ -117,7 +136,7 @@
              command_list_->Release();
              command_list_ = nullptr;
          }
-@@ -1755,6 +1788,11 @@
+@@ -1755,6 +1791,11 @@
              draw_mesh_signature_->Release();
              draw_mesh_signature_ = nullptr;
          }
@@ -126,20 +145,86 @@
 +            adapter_->Release();
 +            adapter_ = nullptr;
 +        }
- 
+
  #ifdef PIX_AMD_EXT
          tls_pAmdExtDeviceObject = nullptr;
-@@ -1768,6 +1806,8 @@
+@@ -1768,6 +1809,8 @@
      {
          return device_ != nullptr && mem_allocator_ != nullptr && device_->GetDeviceRemovedReason() == S_OK;
      }
 +
 +    inline HRESULT getLastPresentResult() const { return last_present_result_; }
- 
+
      inline uint32_t getBackBufferWidth() const
      {
-@@ -3645,8 +3685,7 @@
- 
+@@ -2710,6 +2753,8 @@
+
+     GfxResult bottomLevelAccelerationStructureBuild(GfxBottomLevelAccelerationStructure const *blases, GfxBuildBottomLevelASFlags const *flags, uint32_t blas_count, bool update)
+     {
++        if(command_list_ == nullptr || execution_error_ != kGfxResult_NoError || command_phase_ != kCommandPhase_Recording)
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot build AS without a recording command list");
+         if(dxr_device_ == nullptr || dxr_command_list_ == nullptr)
+             return kGfxResult_InvalidOperation; // avoid spamming console output
+         if(blases == nullptr || (!update && flags == nullptr))
+@@ -2862,6 +2907,8 @@
+             }
+             batch_build_inputs_.push_back(blas_inputs);
+             batch_descs_.push_back(std::move(blas_descs));
++            // Order prior traversal/build reads before overwriting this AS.
++            transition |= transitionResource(buffers_[bvh_buffer], D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+         }
+         GFX_TRY(allocateRaytracingScratch(scratch_size)); // ensure scratch is large enough
+         Buffer &gfx_scratch_buffer = buffers_[raytracing_scratch_buffer_];
+@@ -2894,6 +2941,7 @@
+                 postbuild_desc.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+             }
+             dxr_command_list_->BuildRaytracingAccelerationStructure(&build_desc, blas_compactable ? 1 : 0, blas_compactable ? &postbuild_desc : nullptr);
++            transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+             gfx_blas.state_ = BottomLevelAccelerationStructure::kState_Built;
+             if(blas_compactable)
+             {
+@@ -2902,6 +2950,9 @@
+                 readback = true;
+             }
+         }
++        // AS writes must be visible to subsequent TLAS builds and inline queries.
++        // A barrier on the shared scratch buffer alone does not order AS memory.
++        submitPipelineBarriers();
+         if(readback)
+         {
+             submitPipelineBarriers();
+@@ -3090,6 +3141,8 @@
+
+     GfxResult topLevelAccelerationStructureBuild(GfxTopLevelAccelerationStructure const &tlas, bool update)
+     {
++        if(command_list_ == nullptr || execution_error_ != kGfxResult_NoError || command_phase_ != kCommandPhase_Recording)
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot build AS without a recording command list");
+         if(dxr_device_ == nullptr || dxr_command_list_ == nullptr)
+             return kGfxResult_InvalidOperation; // avoid spamming console output
+         if(!tlas)
+@@ -3153,8 +3206,9 @@
+         Buffer &gfx_buffer = buffers_[gfx_acceleration_structure.bvh_buffer_];
+         Buffer &gfx_scratch_buffer = buffers_[raytracing_scratch_buffer_];
+         SetObjectName(gfx_buffer, tlas.getName());
+-        if(transitionResource(gfx_scratch_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+-            submitPipelineBarriers();   // ensure scratch is not in use
++        transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
++        transitionResource(gfx_scratch_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++        submitPipelineBarriers();   // order previous traversal and scratch use
+         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build_desc = {};
+         build_desc.DestAccelerationStructureData = gfx_buffer.resource_->GetGPUVirtualAddress() + gfx_buffer.data_offset_;
+         build_desc.Inputs = tlas_inputs;
+@@ -3162,6 +3216,8 @@
+             build_desc.SourceAccelerationStructureData = gfx_buffer.resource_->GetGPUVirtualAddress() + gfx_buffer.data_offset_;
+         build_desc.ScratchAccelerationStructureData = gfx_scratch_buffer.resource_->GetGPUVirtualAddress() + gfx_scratch_buffer.data_offset_;
+         dxr_command_list_->BuildRaytracingAccelerationStructure(&build_desc, 0, nullptr);
++        transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
++        submitPipelineBarriers();   // publish the built TLAS to shader traversal
+         return kGfxResult_NoError;
+     }
+
+@@ -3645,8 +3701,7 @@
+
      GfxResult encodeCopyBuffer(GfxBuffer const &dst, GfxBuffer const &src)
      {
 -        if(command_list_ == nullptr)
@@ -148,8 +233,8 @@
          if(!buffer_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy into an invalid buffer object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -3675,8 +3714,7 @@
- 
+@@ -3675,8 +3730,7 @@
+
      GfxResult encodeCopyBuffer(GfxBuffer const &dst, uint64_t dst_offset, GfxBuffer const &src, uint64_t src_offset, uint64_t size)
      {
 -        if(command_list_ == nullptr)
@@ -158,7 +243,7 @@
          if(!buffer_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy into an invalid buffer object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -3706,8 +3744,7 @@
+@@ -3706,8 +3760,7 @@
      GfxResult encodeClearBuffer(GfxBuffer buffer, uint32_t clear_value)
      {
          GfxResult result = kGfxResult_NoError;
@@ -168,8 +253,8 @@
          if(!buffer_handles_.has_handle(buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot clear an invalid buffer object");
          if(buffer.size == 0) return kGfxResult_NoError; // nothing to clear
-@@ -3789,8 +3826,7 @@
- 
+@@ -3789,8 +3842,7 @@
+
      GfxResult encodeCopyTexture(GfxTexture const &dst, GfxTexture const &src)
      {
 -        if(command_list_ == nullptr)
@@ -178,8 +263,8 @@
          if(!texture_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy to an invalid texture object");
          if(!texture_handles_.has_handle(src.handle))
-@@ -3827,8 +3863,7 @@
- 
+@@ -3827,8 +3879,7 @@
+
      GfxResult encodeClearImage(GfxTexture const &texture, uint32_t mip_level, uint32_t slice)
      {
 -        if(command_list_ == nullptr)
@@ -188,8 +273,8 @@
          if(!texture_handles_.has_handle(texture.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot clear an invalid texture object");
          if(mip_level >= texture.mip_levels)
-@@ -3896,8 +3931,7 @@
- 
+@@ -3896,8 +3947,7 @@
+
      GfxResult encodeCopyBufferToTexture(GfxTexture const &dst, GfxBuffer const &src)
      {
 -        if(command_list_ == nullptr)
@@ -198,7 +283,7 @@
          if(!texture_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy to an invalid texture object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -3922,6 +3956,10 @@
+@@ -3922,6 +3972,10 @@
          if(src.cpu_access == kGfxCpuAccess_None) transition |= transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, kTransitionType_Implicit);
          if(transition)
              submitPipelineBarriers();
@@ -209,7 +294,7 @@
          D3D12_FEATURE_DATA_D3D12_OPTIONS13 features = {};   // feature check
          device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &features, sizeof(features));
          bool unrestricted_pitch = features.UnrestrictedBufferTextureCopyPitchSupported;
-@@ -3938,7 +3976,7 @@
+@@ -3938,7 +3992,7 @@
              Buffer *texture_upload_buffer = nullptr;
              uint64_t const texture_row_pitch = subresource_footprints[mip_level].Footprint.RowPitch;
              if(!unrestricted_pitch && (buffer_row_pitch != texture_row_pitch || // we must respect the 256-byte pitch alignment
@@ -218,7 +303,7 @@
              {
                  uint64_t texture_upload_buffer_size = total_rows * static_cast<uint64_t>(subresource_footprints[mip_level].Footprint.RowPitch);
                  if(texture_upload_buffer_.size < texture_upload_buffer_size)
-@@ -3956,7 +3994,7 @@
+@@ -3956,7 +4010,7 @@
                  if(transitionResource(*texture_upload_buffer, D3D12_RESOURCE_STATE_COPY_DEST, kTransitionType_Implicit))
                      submitPipelineBarriers();   // transition our resources if needed
                  for(uint32_t i = 0; i < total_rows; ++i)
@@ -227,7 +312,7 @@
                  transitionResource(*texture_upload_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE);
                  submitPipelineBarriers();
              }
-@@ -3966,12 +4004,12 @@
+@@ -3966,12 +4020,12 @@
                  dst_location.pResource = gfx_texture.resource_;
                  dst_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
                  dst_location.SubresourceIndex = mip_level;  // copy to mip level
@@ -242,8 +327,8 @@
                  command_list_->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
              }
              buffer_offset += buffer_size;   // advance the buffer offset
-@@ -3981,8 +4019,7 @@
- 
+@@ -3981,8 +4035,7 @@
+
      GfxResult encodeCopyBufferToCubeFace(GfxTexture const &dst, GfxBuffer const &src, uint32_t face)
      {
 -        if(command_list_ == nullptr)
@@ -252,7 +337,7 @@
          if(!texture_handles_.has_handle(dst.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy to an invalid texture object");
          if(!buffer_handles_.has_handle(src.handle))
-@@ -4021,16 +4058,68 @@
+@@ -4021,16 +4074,68 @@
                  return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot copy to mip level %u from buffer object with insufficient storage", mip_level);
              D3D12_TEXTURE_COPY_LOCATION dst_location = {.pResource = gfx_texture.resource_, .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = subresource_index};
              D3D12_TEXTURE_COPY_LOCATION src_location = {gfx_buffer.resource_, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {subresource_footprints[mip_level]}};
@@ -262,7 +347,7 @@
          }
          return kGfxResult_NoError;
      }
- 
+
 +    GfxResult encodeReadbackPitched(GfxBuffer const &dst, GfxTexture const &src, uint32_t row_pitch, bool back_buffer)
 +    {
 +        if(command_list_ == nullptr || execution_error_ != kGfxResult_NoError || command_phase_ != kCommandPhase_Recording)
@@ -323,7 +408,7 @@
          if(!texture_handles_.has_handle(src.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot copy from an invalid texture object");
          if(!buffer_handles_.has_handle(dst.handle))
-@@ -4073,7 +4162,7 @@
+@@ -4073,7 +4178,7 @@
                  dst_location.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                  dst_location.PlacedFootprint.Footprint = subresource_footprints[mip_level].Footprint;
                  dst_location.PlacedFootprint.Footprint.RowPitch = (UINT)buffer_row_pitch;
@@ -332,7 +417,7 @@
                  command_list_->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
              }
              buffer_offset += buffer_size;   // advance the buffer offset
-@@ -4084,8 +4173,7 @@
+@@ -4084,8 +4189,7 @@
      GfxResult encodeGenerateMips(GfxTexture const &texture)
      {
          GfxResult result = kGfxResult_NoError;
@@ -342,8 +427,8 @@
          if(!texture_handles_.has_handle(texture.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot generate mips of an invalid texture object");
          if(!texture.is2D() && !texture.is2DArray() && !texture.isCube())
-@@ -4159,8 +4247,7 @@
- 
+@@ -4159,8 +4263,7 @@
+
      GfxResult encodeBindKernel(GfxKernel const &kernel)
      {
 -        if(command_list_ == nullptr)
@@ -352,8 +437,8 @@
          if((kernel.isMesh() && mesh_command_list_ == nullptr))
              return kGfxResult_InvalidOperation; // avoid spamming console output
          if(!kernel_handles_.has_handle(kernel.handle))
-@@ -4190,8 +4277,7 @@
- 
+@@ -4190,8 +4293,7 @@
+
      GfxResult encodeBindIndexBuffer(GfxBuffer const &index_buffer)
      {
 -        if(command_list_ == nullptr)
@@ -362,8 +447,8 @@
          if(!buffer_handles_.has_handle(index_buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot bind index data from invalid buffer object");
          if(index_buffer.size > 0xFFFFFFFFull)
-@@ -4204,8 +4290,7 @@
- 
+@@ -4204,8 +4306,7 @@
+
      GfxResult encodeBindVertexBuffer(GfxBuffer const &vertex_buffer)
      {
 -        if(command_list_ == nullptr)
@@ -372,8 +457,8 @@
          if(!buffer_handles_.has_handle(vertex_buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot bind vertex data from invalid buffer object");
          if(vertex_buffer.size > 0xFFFFFFFFull)
-@@ -4218,8 +4303,7 @@
- 
+@@ -4218,8 +4319,7 @@
+
      GfxResult encodeSetViewport(float x, float y, float width, float height)
      {
 -        if(command_list_ == nullptr)
@@ -382,8 +467,8 @@
          if(isnan(x) || isnan(y) || isnan(width) || isnan(height))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot set viewport using invalid floating-point numbers");
          viewport_.x_ = x;
-@@ -4231,8 +4315,7 @@
- 
+@@ -4231,8 +4331,7 @@
+
      GfxResult encodeSetScissorRect(int32_t x, int32_t y, int32_t width, int32_t height)
      {
 -        if(command_list_ == nullptr)
@@ -392,8 +477,8 @@
          if(width < 0 || height < 0)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot set scissor rect using negative width/height values");
          scissor_rect_.x_ = x;
-@@ -4244,8 +4327,7 @@
- 
+@@ -4244,8 +4343,7 @@
+
      GfxResult encodeDraw(uint32_t vertex_count, uint32_t instance_count, uint32_t base_vertex, uint32_t base_instance)
      {
 -        if(command_list_ == nullptr)
@@ -402,8 +487,8 @@
          if(vertex_count == 0 || instance_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!kernel_handles_.has_handle(bound_kernel_.handle))
-@@ -4263,8 +4345,7 @@
- 
+@@ -4263,8 +4361,7 @@
+
      GfxResult encodeDrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, uint32_t base_vertex, uint32_t base_instance)
      {
 -        if(command_list_ == nullptr)
@@ -412,8 +497,8 @@
          if(index_count == 0 || instance_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!kernel_handles_.has_handle(bound_kernel_.handle))
-@@ -4282,8 +4363,7 @@
- 
+@@ -4282,8 +4379,7 @@
+
      GfxResult encodeMultiDrawIndirect(GfxBuffer const &args_buffer, uint32_t args_count)
      {
 -        if(command_list_ == nullptr)
@@ -422,7 +507,7 @@
          if(args_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4298,9 +4378,10 @@
+@@ -4298,9 +4394,10 @@
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip multi-draw call
          GFX_TRY(populateDrawIdBuffer(args_count));
@@ -434,8 +519,8 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4310,8 +4391,7 @@
- 
+@@ -4310,8 +4407,7 @@
+
      GfxResult encodeMultiDrawIndexedIndirect(GfxBuffer const &args_buffer, uint32_t args_count)
      {
 -        if(command_list_ == nullptr)
@@ -444,7 +529,7 @@
          if(args_count == 0)
              return kGfxResult_NoError;  // nothing to draw
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4326,9 +4406,10 @@
+@@ -4326,9 +4422,10 @@
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip multi-draw call
          GFX_TRY(populateDrawIdBuffer(args_count));
@@ -456,8 +541,8 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4338,8 +4419,7 @@
- 
+@@ -4338,8 +4435,7 @@
+
      GfxResult encodeDispatch(uint32_t num_groups_x, uint32_t num_groups_y, uint32_t num_groups_z)
      {
 -        if(command_list_ == nullptr)
@@ -466,8 +551,8 @@
          if(!num_groups_x || !num_groups_y || !num_groups_z)
              return kGfxResult_NoError;  // nothing to dispatch
          uint32_t const max_num_groups = D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
-@@ -4368,8 +4448,7 @@
- 
+@@ -4368,8 +4464,7 @@
+
      GfxResult encodeDispatchIndirect(GfxBuffer args_buffer)
      {
 -        if(command_list_ == nullptr)
@@ -476,7 +561,7 @@
          if(!buffer_handles_.has_handle(args_buffer.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot dispatch using an invalid arguments buffer object");
          if(args_buffer.cpu_access == kGfxCpuAccess_Read)
-@@ -4381,9 +4460,10 @@
+@@ -4381,9 +4476,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot dispatch using a non-compute kernel object");
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip dispatch call
@@ -488,8 +573,8 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4393,8 +4473,7 @@
- 
+@@ -4393,8 +4489,7 @@
+
      GfxResult encodeMultiDispatchIndirect(GfxBuffer args_buffer, uint32_t args_count)
      {
 -        if(command_list_ == nullptr)
@@ -498,7 +583,7 @@
          if(args_count == 0)
              return kGfxResult_NoError;  // nothing to dispatch
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4408,9 +4487,10 @@
+@@ -4408,9 +4503,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot dispatch using a non-compute kernel object");
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip multi-dispatch call
@@ -510,8 +595,8 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4479,8 +4559,7 @@
- 
+@@ -4479,8 +4575,7 @@
+
      GfxResult encodeDispatchRaysIndirect(GfxSbt const &sbt, GfxBuffer args_buffer)
      {
 -        if(command_list_ == nullptr)
@@ -520,7 +605,7 @@
          if(!sbt_handles_.has_handle(sbt.handle))
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot dispatch using an invalid sbt object");
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4494,10 +4573,10 @@
+@@ -4494,10 +4589,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot dispatch rays using non-raytracing kernel object");
          if(kernel.root_signature_ == nullptr || kernel.state_object_ == nullptr)
              return kGfxResult_NoError;  // skip dispatch rays call
@@ -533,8 +618,8 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4507,8 +4586,7 @@
- 
+@@ -4507,8 +4602,7 @@
+
      GfxResult encodeDrawMesh(uint32_t num_groups_x, uint32_t num_groups_y, uint32_t num_groups_z)
      {
 -        if(command_list_ == nullptr)
@@ -543,8 +628,8 @@
          if(mesh_command_list_ == nullptr)
              return kGfxResult_InvalidOperation; // avoid spamming console output
          if(!num_groups_x || !num_groups_y || !num_groups_z)
-@@ -4528,8 +4606,7 @@
- 
+@@ -4528,8 +4622,7 @@
+
      GfxResult encodeDrawMeshIndirect(GfxBuffer args_buffer)
      {
 -        if(command_list_ == nullptr)
@@ -553,7 +638,7 @@
          if(mesh_command_list_ == nullptr)
              return kGfxResult_InvalidOperation; // avoid spamming console output
          if(!buffer_handles_.has_handle(args_buffer.handle))
-@@ -4543,9 +4620,10 @@
+@@ -4543,9 +4636,10 @@
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot draw using a non-mesh kernel object");
          if(kernel.root_signature_ == nullptr || kernel.pipeline_state_ == nullptr)
              return kGfxResult_NoError;  // skip draw call
@@ -565,7 +650,43 @@
          if(args_buffer.cpu_access == kGfxCpuAccess_None)
              transitionResource(gfx_buffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, kTransitionType_Implicit);
          submitPipelineBarriers();   // transition our resources if needed
-@@ -4654,8 +4732,7 @@
+@@ -4587,8 +4681,26 @@
+         return timestamp_queries_[timestamp_query].duration_;
+     }
+
++    GfxTimestampQuerySample getTimestampQuerySample(GfxTimestampQuery const &timestamp_query)
++    {
++        if(!timestamp_query_handles_.has_handle(timestamp_query.handle))
++        {
++            GFX_PRINT_ERROR(kGfxResult_InvalidParameter, "Cannot get sample of an invalid timestamp query object");
++            return {};
++        }
++        return timestamp_queries_[timestamp_query].sample_;
++    }
++
++    uint64_t getRecordingFrameSequence() const
++    {
++        return !isInterop() && command_list_ != nullptr && execution_error_ == kGfxResult_NoError &&
++            command_phase_ == kCommandPhase_Recording ? timestamp_frame_sequence_ + 1 : 0;
++    }
++
+     GfxResult encodeBeginTimestampQuery(GfxTimestampQuery const &timestamp_query)
+     {
++        if(command_list_ == nullptr || execution_error_ != kGfxResult_NoError || command_phase_ != kCommandPhase_Recording)
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot encode timestamp without a recording command list");
+         if(!timestamp_query_handles_.has_handle(timestamp_query.handle))
+             return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot begin a timed section using an invalid timestamp query object");
+         TimestampQuery &gfx_timestamp_query = timestamp_queries_[timestamp_query];
+@@ -4635,6 +4747,8 @@
+
+     GfxResult encodeEndTimestampQuery(GfxTimestampQuery const &timestamp_query)
+     {
++        if(command_list_ == nullptr || execution_error_ != kGfxResult_NoError || command_phase_ != kCommandPhase_Recording)
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot encode timestamp without a recording command list");
+         if(!timestamp_query_handles_.has_handle(timestamp_query.handle))
+             return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot end a timed section using an invalid timestamp query object");
+         TimestampQuery &gfx_timestamp_query = timestamp_queries_[timestamp_query];
+@@ -4654,8 +4768,7 @@
      GfxResult encodeBeginEvent(uint64_t color, char const *format, va_list args)
      {
          char buffer[4096];
@@ -575,8 +696,8 @@
          vsnprintf(buffer, sizeof(buffer), format, args);
          IAmdExtD3DDevice1 *amd_ext_device = tls_pAmdExtDeviceObject;
          PIXBeginEvent(command_list_, color, buffer);
-@@ -4666,8 +4743,7 @@
- 
+@@ -4666,8 +4779,7 @@
+
      GfxResult encodeEndEvent()
      {
 -        if(command_list_ == nullptr)
@@ -585,8 +706,8 @@
          IAmdExtD3DDevice1 *amd_ext_device = tls_pAmdExtDeviceObject;
          PIXEndEvent(command_list_);
          if(amd_ext_device == nullptr && tls_pAmdExtDeviceObject != nullptr)
-@@ -4686,8 +4762,7 @@
- 
+@@ -4686,8 +4798,7 @@
+
      GfxResult encodeScan(OpType op_type, GfxDataType data_type, GfxBuffer const &dst, GfxBuffer const &src, GfxBuffer const *count)
      {
 -        if(command_list_ == nullptr)
@@ -595,8 +716,8 @@
          if(data_type < 0 || data_type >= kGfxDataType_Count)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot scan buffer object of unsupported data type `%u'", data_type);
          if(dst.size < src.size)
-@@ -4817,8 +4892,7 @@
- 
+@@ -4817,8 +4928,7 @@
+
      GfxResult encodeReduce(OpType op_type, GfxDataType data_type, GfxBuffer const &dst, GfxBuffer const &src, GfxBuffer const *count)
      {
 -        if(command_list_ == nullptr)
@@ -605,8 +726,8 @@
          if(data_type < 0 || data_type >= kGfxDataType_Count)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot reduce buffer object of unsupported data type `%u'", data_type);
          if(dst.size < 4)
-@@ -4921,8 +4995,7 @@
- 
+@@ -4921,8 +5031,7 @@
+
      GfxResult encodeRadixSort(GfxBuffer const &keys_dst, GfxBuffer const &keys_src, GfxBuffer const *values_dst, GfxBuffer const *values_src, GfxBuffer const *count)
      {
 -        if(command_list_ == nullptr)
@@ -615,10 +736,10 @@
          if(keys_dst.size != keys_src.size)
              return GFX_SET_ERROR(kGfxResult_InvalidParameter, "Cannot sort if source and destination buffer objects aren't of the same size");
          if(values_dst != nullptr && keys_dst.size != values_dst->size)
-@@ -5043,8 +5116,90 @@
+@@ -5043,8 +5152,90 @@
          }
      }
- 
+
 +    GfxResult failExecution(GfxResult result, char const *stage, HRESULT hr = S_OK)
 +    {
 +        if(execution_error_ == kGfxResult_NoError) execution_error_ = result;
@@ -706,7 +827,24 @@
          GFX_ASSERT(max_frames_in_flight_ > 0);
          if(isInterop())
          {
-@@ -5086,30 +5241,25 @@
+@@ -5055,6 +5246,8 @@
+         {
+             if(!timestamp_query_heaps_[fence_index_].timestamp_queries_.empty())
+             {
++                // Assign the common submitted-frame identity before recording its resolve.
++                timestamp_query_heaps_[fence_index_].frame_sequence_ = getRecordingFrameSequence();
+                 for(std::map<uint64_t, std::pair<uint32_t, GfxTimestampQuery>>::const_iterator it = timestamp_query_heaps_[fence_index_].timestamp_queries_.begin(); it != timestamp_query_heaps_[fence_index_].timestamp_queries_.end(); ++it)
+                 {
+                     if(!timestamp_query_handles_.has_handle((*it).second.second.handle))
+@@ -5070,6 +5263,7 @@
+                 command_list_->ResolveQueryData(timestamp_query_heaps_[fence_index_].query_heap_,
+                     D3D12_QUERY_TYPE_TIMESTAMP, 0, 2 * timestamp_query_count, query_buffer.resource_, query_buffer.data_offset_);
+             }
++            ++timestamp_frame_sequence_; // count owned frame submissions, including unmeasured frames
+             if(swap_chain_ != nullptr)
+             {
+                 RECT window_rect = {};
+@@ -5086,30 +5280,25 @@
                  resource_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
                  resource_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
                  command_list_->ResourceBarrier(1, &resource_barrier);
@@ -746,7 +884,7 @@
                  resource_barrier.Transition.pResource = back_buffers_[back_buffer_index_];
                  resource_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
                  resource_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-@@ -5117,19 +5267,13 @@
+@@ -5117,19 +5306,13 @@
              }
              else
              {
@@ -772,7 +910,19 @@
              }
              if(!timestamp_query_heaps_[fence_index_].timestamp_queries_.empty())
              {
-@@ -5166,12 +5310,14 @@
+@@ -5144,6 +5327,11 @@
+                     GFX_ASSERT(timestamp_query_index < timestamp_query_heaps_[fence_index_].timestamp_queries_.size());
+                     Buffer const &query_buffer = buffers_[timestamp_query_heaps_[fence_index_].query_buffer_];
+                     uint64_t const *timestamp_query_data = (uint64_t const *)((char const *)query_buffer.data_ + query_buffer.data_offset_);
++                    uint64_t const begin_ticks = timestamp_query_data[2 * timestamp_query_index + 0];
++                    uint64_t const end_ticks = timestamp_query_data[2 * timestamp_query_index + 1];
++                    // Subtract integer ticks first to avoid cancellation of large absolute timestamps.
++                    timestamp_query.sample_.duration_ms = static_cast<double>(end_ticks >= begin_ticks ? end_ticks - begin_ticks : 0) / ticks_per_milliseconds;
++                    timestamp_query.sample_.frame_sequence = timestamp_query_heaps_[fence_index_].frame_sequence_;
+                     double const begin = timestamp_query_data[2 * timestamp_query_index + 0] / ticks_per_milliseconds;
+                     double const end   = timestamp_query_data[2 * timestamp_query_index + 1] / ticks_per_milliseconds;
+                     float const duration    = (float)(GFX_MAX(begin, end) - begin); // elapsed time in milliseconds
+@@ -5166,12 +5354,14 @@
      {
          if(isInterop())
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot synchronize commands when using an interop context");
@@ -793,7 +943,7 @@
          memset(blas_compaction_indices_.data(), blas_compaction_sentinel, blas_compaction_indices_.size() * sizeof(uint32_t));
          resetState();   // re-install state
          decayResourceState();
-@@ -5620,9 +5766,9 @@
+@@ -5620,9 +5810,9 @@
      GfxResult setSwapChain(IDXGISwapChain4 *swapchain)
      {
          if(!window_)
@@ -806,7 +956,7 @@
          // clear old resources associated with the old swapchain
          if(swap_chain_)
          {
-@@ -5634,7 +5780,7 @@
+@@ -5634,7 +5824,7 @@
              }
              swap_chain_->Release();
              swap_chain_ = nullptr;
@@ -815,7 +965,7 @@
          }
          if(swapchain)
          {
-@@ -5643,7 +5789,7 @@
+@@ -5643,7 +5833,7 @@
              // Redo window association and preferences setup
              IDXGIFactory4 *factory = nullptr;
              if(!SUCCEEDED(swap_chain_->GetParent(IID_PPV_ARGS(&factory))) || !IsWindow(window_))
@@ -823,8 +973,8 @@
 +                return GFX_SET_ERROR(kGfxResult_InternalError, "Unable to create DXGI factory");
              factory->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
              factory->Release();
- 
-@@ -5672,16 +5818,17 @@
+
+@@ -5672,16 +5862,17 @@
      {
          if(isInterop())
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot synchronize commands when using an interop context");
@@ -835,7 +985,7 @@
 -        return kGfxResult_NoError;
 +        return submitCurrent();
      }
- 
+
      GfxResult resetCommandList()
      {
 -        command_list_->Reset(command_allocators_[fence_index_], nullptr);
@@ -848,8 +998,8 @@
          resetState();   // re-install state
          return kGfxResult_NoError;
      }
-@@ -6216,7 +6363,7 @@
- 
+@@ -6216,7 +6407,7 @@
+
      static inline D3D12_RESOURCE_STATES GetShaderVisibleResourceState(Kernel const &kernel)
      {
 -        return kernel.isGraphics() && kernel.ps_reflection_ != nullptr
@@ -857,7 +1007,10 @@
                   ? D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE
                   : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
      }
-@@ -6797,6 +6944,40 @@
+@@ -6794,6 +6985,40 @@
+             GFX_ASSERT(global_root_signature_parameters.kernel_parameters.size() == global_root_signature_parameters.descriptor_ranges.size());
+         }
+
 +        // Root arguments share one 64-DWORD budget across all shader stages.
 +        // Keep resource tables in that total and spill only as many globals as
 +        // needed through the existing reflected CBV/constant-pool binding path.
@@ -895,10 +1048,7 @@
          auto finalize_root_parameters = [](RootSignatureParameters &root_signature_parameters)
          {
              for(size_t i = 0; i < root_signature_parameters.root_parameters.size(); ++i)
-             {
-                 Kernel::Parameter const &kernel_parameter = root_signature_parameters.kernel_parameters[i];
-                 if(kernel_parameter.type_ == Kernel::Parameter::kType_Constants)
-@@ -7218,9 +7365,11 @@
+@@ -7218,9 +7443,11 @@
                  render_width = GFX_MIN(render_width, texture_width); render_height = GFX_MIN(render_height, texture_height);
                  transitionResource(gfx_texture, D3D12_RESOURCE_STATE_DEPTH_WRITE);
              }
@@ -913,7 +1063,7 @@
                  color_targets[color_target_count++] = rtv_descriptors_.getCPUHandle(back_buffer_rtvs_[back_buffer_index_]);
              }
              D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)render_width, (float)render_height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
-@@ -9320,9 +9469,10 @@
+@@ -9320,9 +9547,10 @@
          if(kernel.isMesh())
          {
              kernel_type = "Mesh";
@@ -927,7 +1077,7 @@
              createRootSignature(kernel);
              result = createMeshPipelineState(kernel, kernel.draw_state_);
              if(kernel.as_reflection_ != nullptr)
-@@ -9335,9 +9485,10 @@
+@@ -9335,9 +9563,10 @@
          else if(kernel.isCompute())
          {
              kernel_type = "Compute";
@@ -940,7 +1090,7 @@
              if(kernel.cs_reflection_ != nullptr)
                  kernel.cs_reflection_->GetThreadGroupSize(&kernel.num_threads_[0], &kernel.num_threads_[1], &kernel.num_threads_[2]);
              else
-@@ -9346,16 +9497,17 @@
+@@ -9346,16 +9575,17 @@
          else if(kernel.isGraphics())
          {
              kernel_type = "Graphics";
@@ -962,16 +1112,16 @@
              createRootSignature(kernel);
              createRaytracingPipelineState(kernel);
          }
-@@ -9420,7 +9572,7 @@
+@@ -9420,7 +9650,7 @@
      std::map<uint64_t, Shader> shaders_;
- 
+
      template<typename REFLECTION_TYPE>
 -    void compileShader(Program const &program, Kernel const &kernel, ShaderType shader_type, IDxcBlob *&shader_bytecode, REFLECTION_TYPE *&reflection)
 +    GfxResult compileShader(Program const &program, Kernel const &kernel, ShaderType shader_type, IDxcBlob *&shader_bytecode, REFLECTION_TYPE *&reflection)
      {
          DxcBuffer shader_source = {};
          IDxcBlobEncoding *dxc_source = nullptr;
-@@ -9434,9 +9586,14 @@
+@@ -9434,9 +9664,14 @@
              wshader_file.resize(mbstowcs(nullptr, shader_file.data(), 0) + 1);
              mbstowcs(wshader_file.data(), shader_file.data(), shader_file.size());
              // Check file existence before LoadFile call. LoadFile spams hlsl::Exception messages if file not found.
@@ -988,7 +1138,7 @@
              shader_source.Ptr = dxc_source->GetBufferPointer();
              shader_source.Size = dxc_source->GetBufferSize();
          }
-@@ -9470,10 +9627,10 @@
+@@ -9470,10 +9705,10 @@
                  break;
              default:
                  GFX_ASSERTMSG(0, "An unsupported shader type `%u' was supplied", (uint32_t)shader_type);
@@ -999,9 +1149,9 @@
 -            if(shader_source.Size == 0) return; // no source found for this shader
 +            if(shader_source.Size == 0) return kGfxResult_NoError; // optional stage not supplied
          }
- 
+
          char shader_profiles[][16] =
-@@ -9636,7 +9793,7 @@
+@@ -9636,7 +9871,7 @@
                      reflection = (*it).second.shader_reflection_;
                      GFX_ASSERT(shader_bytecode != nullptr && reflection != nullptr);
                      if(dxc_source) dxc_source->Release();
@@ -1010,7 +1160,7 @@
                  }
                  std::filesystem::path file_path(program.file_path_.c_str(), std::locale("en_US.UTF-8"));
                  if(is_directory(file_path))
-@@ -9696,7 +9853,7 @@
+@@ -9696,7 +9931,7 @@
                              shader.shader_reflection_ = reflection;
                              shader_bytecode = bytecode_blob;
                              reflection_blob->Release();
@@ -1019,16 +1169,16 @@
                          }
                      }
                      if(bytecode_blob) bytecode_blob->Release();
-@@ -9708,7 +9865,7 @@
+@@ -9708,7 +9943,7 @@
          IDxcResult *dxc_result = nullptr;
          dxc_compiler_->Compile(&shader_source, shader_args.data(), (uint32_t)shader_args.size(), dxc_include_handler_, IID_PPV_ARGS(&dxc_result));
          if(dxc_source) dxc_source->Release();
 -        if(!dxc_result) return; // should never happen?
 +        if(!dxc_result) return kGfxResult_InternalError;
- 
+
          HRESULT result_code = E_FAIL;
          dxc_result->GetStatus(&result_code);
-@@ -9719,7 +9876,7 @@
+@@ -9719,7 +9954,7 @@
              bool const has_errors = (dxc_error != nullptr && dxc_error->GetBufferPointer() != nullptr);
              GFX_PRINTLN("Error: Failed to compile `%s' for entry point `%s'%s%s", shader_file.data(), kernel.entry_point_.c_str(), has_errors ? ":\r\n" : "", has_errors ? (char const *)dxc_error->GetBufferPointer() : "");
              if(dxc_error) dxc_error->Release(); dxc_result->Release();
@@ -1037,7 +1187,7 @@
          }
          if(dxc_error != nullptr)
          {
-@@ -9744,7 +9901,7 @@
+@@ -9744,7 +9979,7 @@
              if(dxc_pdb_name) dxc_pdb_name->Release();
              if(dxc_bytecode) dxc_bytecode->Release();
              if(dxc_reflection) dxc_reflection->Release();
@@ -1046,15 +1196,25 @@
          }
          if(dxc_pdb != nullptr && dxc_pdb_name != nullptr)
          {
-@@ -9851,6 +10008,7 @@
+@@ -9851,6 +10086,7 @@
          if(dxc_pdb_name) dxc_pdb_name->Release();
          if(dxc_pdb) dxc_pdb->Release();
          dxc_reflection->Release();
 +        return reflection != nullptr && shader_bytecode != nullptr ? kGfxResult_NoError : kGfxResult_InternalError;
      }
- 
+
      GfxResult createResource(D3D12MA::ALLOCATION_DESC const &allocation_desc, D3D12_RESOURCE_DESC const &resource_desc,
-@@ -10095,12 +10253,8 @@
+@@ -9899,7 +10135,8 @@
+         GFX_ASSERT(buffer.data_ == nullptr); if(buffer.data_ != nullptr) return false;
+         if((*buffer.resource_state_ & resource_state) == resource_state && (resource_state != 0 || *buffer.resource_state_ == resource_state))
+         {
+-            if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
++            if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
++               *buffer.resource_state_ == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
+             {
+                 bool already_has_uav_barrier = false;
+                 for(std::vector<D3D12_RESOURCE_BARRIER>::const_iterator it = resource_barriers_.begin(); it != resource_barriers_.end(); ++it)
+@@ -10095,12 +10332,8 @@
      {
          for(uint32_t i = 0; i < max_frames_in_flight_; ++i)
          {
@@ -1069,7 +1229,7 @@
          }
          return forceGarbageCollection();
      }
-@@ -10115,14 +10269,14 @@
+@@ -10115,14 +10348,14 @@
              back_buffers_[i] = nullptr;
              freeRTVDescriptor(back_buffer_rtvs_[i]);
          }
@@ -1086,8 +1246,8 @@
          back_buffer_index_ = swap_chain_->GetCurrentBackBufferIndex();
          GFX_TRY(acquireSwapChainBuffers());
          GFX_TRY(createBackBufferRTVs());
-@@ -10191,6 +10345,8 @@
- 
+@@ -10191,6 +10424,8 @@
+
      GfxResult handleDeviceLost()
      {
 +        execution_error_ = kGfxResult_DeviceError;
@@ -1095,7 +1255,7 @@
          HRESULT const reason = device_->GetDeviceRemovedReason();
          LPSTR error_text = nullptr;
          DWORD const result = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER, nullptr, reason,
-@@ -10266,7 +10422,9 @@
+@@ -10266,7 +10501,9 @@
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return kGfxResult_NoError; // nothing to destroy
@@ -1105,8 +1265,8 @@
 +    delete gfx;
      return kGfxResult_NoError;
  }
- 
-@@ -10275,6 +10433,18 @@
+
+@@ -10275,6 +10512,18 @@
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return false;
      return gfx->isValid();
@@ -1123,14 +1283,12 @@
 +    GfxInternal *gfx = GfxInternal::GetGfx(context);
 +    return gfx ? gfx->getLastPresentResult() : E_INVALIDARG;
  }
- 
+
  uint32_t gfxGetBackBufferWidth(GfxContext context)
-@@ -11058,6 +11228,18 @@
-     GfxInternal *gfx = GfxInternal::GetGfx(context);
-     if(!gfx) return kGfxResult_InvalidParameter;
+@@ -11060,6 +11309,18 @@
      return gfx->encodeCopyTextureToBuffer(dst, src);
-+}
-+
+ }
+
 +GfxResult gfxCommandCopyTextureToBufferPitched(GfxContext context, GfxBuffer dst, GfxTexture src, uint32_t row_pitch)
 +{
 +    GfxInternal *gfx = GfxInternal::GetGfx(context);
@@ -1141,9 +1299,38 @@
 +{
 +    GfxInternal *gfx = GfxInternal::GetGfx(context);
 +    return gfx ? gfx->encodeReadbackPitched(dst, {}, row_pitch, true) : kGfxResult_InvalidParameter;
- }
- 
++}
++
  GfxResult gfxCommandGenerateMips(GfxContext context, GfxTexture texture)
+ {
+     GfxInternal *gfx = GfxInternal::GetGfx(context);
+@@ -11193,6 +11454,12 @@
+     return gfx->encodeDrawMeshIndirect(args_buffer);
+ }
+
++uint64_t gfxGetRecordingFrameSequence(GfxContext context)
++{
++    GfxInternal *gfx = GfxInternal::GetGfx(context);
++    return gfx ? gfx->getRecordingFrameSequence() : 0;
++}
++
+ GfxTimestampQuery gfxCreateTimestampQuery(GfxContext context)
+ {
+     GfxTimestampQuery const timestamp_query = {};
+@@ -11213,6 +11480,13 @@
+     GfxInternal *gfx = GfxInternal::GetGfx(context);
+     if(!gfx) return 0.0f;   // invalid context
+     return gfx->getTimestampQueryDuration(timestamp_query);
++}
++
++GfxTimestampQuerySample gfxTimestampQueryGetSample(GfxContext context, GfxTimestampQuery timestamp_query)
++{
++    GfxInternal *gfx = GfxInternal::GetGfx(context);
++    if(!gfx) return {};
++    return gfx->getTimestampQuerySample(timestamp_query);
+ }
+
+ GfxResult gfxCommandBeginTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query)
 --- a/gfx.h
 +++ b/gfx.h
 @@ -52,7 +52,8 @@
@@ -1155,7 +1342,7 @@
 +    kGfxCreateContextFlag_ForceRGBA8SwapChain       = 1 << 7    // Explicit SDR RGBA8; overrides display/HDR preferences.
  };
  typedef uint32_t GfxCreateContextFlags;
- 
+
 @@ -60,7 +61,11 @@
  GfxContext gfxCreateContext(uint32_t width, uint32_t height, GfxCreateContextFlags flags, IDXGIAdapter *adapter = nullptr);
  GfxResult gfxDestroyContext(GfxContext context);
@@ -1179,8 +1366,32 @@
 +GfxResult gfxCommandCopyTextureToBufferPitched(GfxContext context, GfxBuffer dst, GfxTexture src, uint32_t row_pitch);
 +GfxResult gfxCommandCopyBackBufferToBuffer(GfxContext context, GfxBuffer dst, uint32_t row_pitch);
  GfxResult gfxCommandGenerateMips(GfxContext context, GfxTexture texture);   // expects mip level 0 to be populated, generates the others
- 
+
  GfxResult gfxCommandBindColorTarget(GfxContext context, uint32_t target_index, GfxTexture target_texture, uint32_t mip_level = 0, uint32_t slice = 0);
+@@ -457,9 +467,23 @@
+
+ class GfxTimestampQuery { GFX_INTERNAL_HANDLE(GfxTimestampQuery); public: };
+
++struct GfxTimestampQuerySample
++{
++    double duration_ms = 0.0;       // raw GPU tick delta, without smoothing
++    uint64_t frame_sequence = 0;    // 0: unavailable; otherwise context-local submitted frame identity
++};
++
++// Identity of the current owned recording frame, shared by timestamp samples and
++// ordinary readback copies submitted in that frame. Stable across gfxFinish;
++// advances with gfxFrame. Returns 0 for invalid/failed/non-recording/interop contexts.
++uint64_t gfxGetRecordingFrameSequence(GfxContext context);
+ GfxTimestampQuery gfxCreateTimestampQuery(GfxContext context);
+ GfxResult gfxDestroyTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query);
+ float gfxTimestampQueryGetDuration(GfxContext context, GfxTimestampQuery timestamp_query);  // in milliseconds
++// Latest sample published by owned-context frame-slot retirement. Does not wait or
++// consume; queries from the same submitted frame share frame_sequence. Beginning
++// a new interval preserves the previous sample until the new slot is retired.
++GfxTimestampQuerySample gfxTimestampQueryGetSample(GfxContext context, GfxTimestampQuery timestamp_query);
+ GfxResult gfxCommandBeginTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query);
+ GfxResult gfxCommandEndTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query);
+
 --- a/gfx_core.h
 +++ b/gfx_core.h
 @@ -41,6 +41,7 @@
@@ -1188,7 +1399,7 @@
      kGfxResult_InternalError,
      kGfxResult_DeviceError,
 +    kGfxResult_Timeout,
- 
+
      kGfxResult_Count
  };
 --- a/gfx_core.cpp

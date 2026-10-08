@@ -8,6 +8,12 @@ inline constexpr char coverage_ps[] = R"shader(@coverage_ps@)shader";
 inline constexpr char image_ps[] = R"shader(@image_ps@)shader";
 inline constexpr char viewport_vs[] = R"shader(@viewport_vs@)shader";
 inline constexpr char background_ps[] = R"shader(@background_ps@)shader";
+inline constexpr char lit_gbuffer[] = R"shader(@lit_gbuffer@)shader";
+inline constexpr char lit_direct[] = R"shader(@lit_direct@)shader";
+inline constexpr char lit_ddgi[] = R"shader(@lit_ddgi@)shader";
+inline constexpr char lit_post[] = R"shader(@lit_post@)shader";
+inline constexpr char lit_smaa[] = R"shader(@lit_smaa@)shader";
+inline constexpr char lit_ssil[] = R"shader(@lit_ssil@)shader";
 inline constexpr char grid_ps[] = R"shader(#define GRID_DEPTH 1
 @grid_ps@)shader";
 inline constexpr char grid_empty_ps[] = R"shader(#define GRID_DEPTH 0

@@ -2,6 +2,7 @@ function(atelier_add_world)
     add_library(atelier_world STATIC
         src/world/math.cpp
         src/world/objects.cpp
+        src/world/lighting.cpp
         src/world/world.cpp
         src/world/execution.cpp)
     atelier_target(atelier_world)

@@ -1,5 +1,6 @@
 #include "editor/workspace.hpp"
 #include "editor/assets.hpp"
+#include "editor/fields.hpp"
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
@@ -7,6 +8,17 @@
 #include <cwctype>
 
 namespace atelier::editor {
+namespace {
+struct LightingOption {std::wstring_view title;bool renderer::SceneLitSettings::*field;};
+constexpr std::array lighting_options{
+    LightingOption{L"Shadows",&renderer::SceneLitSettings::shadows},
+    LightingOption{L"DDGI",&renderer::SceneLitSettings::ddgi},
+    LightingOption{L"GTAO",&renderer::SceneLitSettings::gtao},
+    LightingOption{L"SSSR",&renderer::SceneLitSettings::sssr},
+    LightingOption{L"Bloom",&renderer::SceneLitSettings::bloom},
+    LightingOption{L"Local GI",&renderer::SceneLitSettings::ssil}};
+constexpr std::array antialiasing_titles{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
+}
 Workspace::Workspace() : dock(1ULL<<48,{
     {control::scene_tab,control::scene_content,L"Scene View",{240,160}},
     {control::parameters_tab,50,L"Parameters",{220,260}},
@@ -52,6 +64,7 @@ void Workspace::reset_document() {
     ui_document_.reset();
     bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;
     navigation_={ObjectId{}}; navigation_cursor_=0; query.clear(); tree_query.clear(); structure_query.clear(); parameter_search_visible=false;
+    inspecting_asset=false;
     menu.reset(); assets.reset(project_open);
     component_choices_.clear(); property_choices_.clear(); menu_selection_={};
 }
@@ -98,7 +111,8 @@ const Workspace::Binding* Workspace::binding(ui::ControlKey key) const noexcept 
 ui::ControlKey Workspace::object_control(ObjectId object) const noexcept { return field_control(object, {}); }
 ui::ControlKey Workspace::field_control(ObjectId object, std::span<const FieldId> path) const noexcept {
     const auto found = std::find_if(bindings_.begin(), bindings_.end(), [&](const auto& item) {
-        return item.kind==(path.empty()?Binding::Kind::object:Binding::Kind::field) && item.object == object && std::equal(item.path.begin(), item.path.end(), path.begin(), path.end());
+        return (item.kind==(path.empty()?Binding::Kind::object:Binding::Kind::field) || (!path.empty() && item.kind==Binding::Kind::rotation)) &&
+            item.object == object && std::equal(item.path.begin(), item.path.end(), path.begin(), path.end());
     });
     return found == bindings_.end() ? 0 : found->key;
 }
@@ -117,12 +131,29 @@ Result<void> Workspace::navigate(Session& session,int direction) {
     if (!can_navigate(direction)) return {};
     const auto next=direction<0?navigation_cursor_-1:navigation_cursor_+1;
     auto changed=session.select(navigation_[next]);
-    if (changed) navigation_cursor_=next;
+    if (changed) {navigation_cursor_=next;inspecting_asset=false;}
     return changed;
 }
-Result<void> Workspace::select_tree(Session& session,ui::ControlKey key) {
+Result<void> Workspace::select_tree(Session& session,ui::ControlKey key,ui::SelectionModifiers modifiers,const ui::UiFrame* frame) {
+    inspecting_asset=false;
     if (key==control::tree_world) return session.select({});
     const auto* target=binding(key);
+    if(target && target->kind==Binding::Kind::object && (modifiers.shift || modifiers.control)) {
+        std::vector<ObjectId> selected;
+        if(modifiers.control) selected.assign(session.selected_actors().begin(),session.selected_actors().end());
+        if(modifiers.shift) {
+            const auto members=session.world().members();if(!members) return std::unexpected(members.error());
+            std::vector<ObjectId> visible;
+            for(const auto& actor:*members) if(!frame || frame->find(object_control(actor.id()))) visible.push_back(actor.id());
+            const auto first=std::ranges::find(visible,session.selection().actor),last=std::ranges::find(visible,target->object);
+            if(first!=visible.end() && last!=visible.end()) {
+                for(auto at=std::min(first,last);at<=std::max(first,last);++at)
+                    if(std::ranges::find(selected,*at)==selected.end()) selected.push_back(*at);
+            } else selected.push_back(target->object);
+        } else if(std::ranges::find(selected,target->object)!=selected.end()) std::erase(selected,target->object);
+        else selected.push_back(target->object);
+        return session.select_actors(selected,target->object);
+    }
     return target && (target->kind==Binding::Kind::object || target->kind==Binding::Kind::structure)?session.select(target->object):Result<void>{};
 }
 bool Workspace::command_enabled(Command command,const Session& session) const {
@@ -143,6 +174,7 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::create_actor: case Command::create_static_mesh: {
         const auto members=session.world().members(); return scene_available && members && members->size()<Session::maximum_actors;
     }
+    case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
     case Command::erase_selected: case Command::focus: {
         if (session.selection().actor==ObjectId{}) return false;
         const auto state=world::inspect_actor(session.world().runtime(),session.selection().actor);
@@ -173,6 +205,23 @@ bool Workspace::apply_view(const ui::Action& action) {
     const auto key=action.key;
     if (key>=control::shading_first && key<control::shading_first+3)
         view.shading=static_cast<renderer::Shading>(key-control::shading_first);
+    else if(key==control::shading_scene_lit) view.shading=renderer::Shading::scene_lit;
+    else if(key>=control::lit_effects_first && key<control::lit_effects_first+lighting_options.size()) {
+        const auto* checked=std::get_if<bool>(&action.value);if(!checked) return false;
+        const auto field=lighting_options[key-control::lit_effects_first].field;
+        view.lit.*field=*checked;
+        // Local GI supplies the near-field correction, so the menu keeps the
+        // two near-field policies exclusive without another command path.
+        if(*checked) {
+            if(field==&renderer::SceneLitSettings::ssil) view.lit.gtao=false;
+            else if(field==&renderer::SceneLitSettings::gtao) view.lit.ssil=false;
+        }
+    } else if(key>=control::lit_aa_first && key<control::lit_aa_first+antialiasing_titles.size())
+        view.lit.antialiasing=static_cast<renderer::Antialiasing>(key-control::lit_aa_first);
+    else if(key>=control::lit_exposure_first && key<control::lit_exposure_first+5)
+        view.lit.exposure_ev=float(int(key-control::lit_exposure_first)-2);
+    else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
+        view.lit.shadow_light_budget=4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first);
     else if (key>=control::edges_first && key<control::edges_first+4) {
         const auto option=key-control::edges_first;
         view.wireframe=option<2?static_cast<renderer::Wireframe>(option):renderer::Wireframe::only;
@@ -254,6 +303,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     const auto actor_status = selected == ObjectId{} ? world::ActorStatus{} : take(world::inspect_actor(runtime, selected));
     const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_component(runtime, selected));
     auto status_text=status;
+    if(!render_notice.empty()) status_text+=L"  |  "+render_notice;
     if (!ui_error().empty()) {
         auto diagnostic=wide(std::string(ui_error()));
         if (diagnostic.size()>512) {diagnostic.resize(512);if (diagnostic.back()>=0xd800 && diagnostic.back()<=0xdbff) diagnostic.pop_back();}
@@ -274,9 +324,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     for (std::size_t index=0;index<command_definitions.size();++index) {
         const auto& definition=command_definitions[index];
         if (definition.group!=CommandGroup::create && definition.group!=CommandGroup::view) continue;
+        if (definition.group==CommandGroup::view && definition.shelf_title.empty()) continue;
         if (!shelf_items_[index]) shelf_items_[index]=next_binding_++;
         const auto title=definition.shelf_title.empty()?definition.title:definition.shelf_title;
-        const auto icon=definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
+        const auto icon=definition.id>=Command::create_point_light && definition.id<=Command::create_directional_light?ui::ControlIcon::component:
+            definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
             definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
         items->push_back({shelf_items_[index],{std::wstring(title),static_cast<double>(icon),
@@ -334,11 +386,32 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     if (!pane.active) continue;
     const auto& view=*pane.active;
     if (view.key==control::scene_tab) {
-        const std::array<ui_language::InputValue,9> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        auto modes=std::make_shared<std::vector<ui_language::Item>>();
+        constexpr std::array icons{ui::ControlIcon::pointer,ui::ControlIcon::axes,ui::ControlIcon::translate,ui::ControlIcon::rotate,ui::ControlIcon::scale};
+        for(std::size_t i=0;i<icons.size();++i) {
+            const auto command=static_cast<ui::ControlKey>(Command::tool_select)+i;
+            modes->push_back({command,{ui_language::ActionBinding{command,true},double(icons[i]),std::size_t(viewport_settings.tool)==i,control::viewport_modes}});
+        }
+        constexpr std::array mode_names{L"Select",L"Transform",L"Move",L"Rotate",L"Scale"};
+        constexpr std::array view_names{L"Persp",L"Top",L"Front",L"Right"};
+        const auto step=viewport_settings.grid_spacing;
+        const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
+        const std::array<ui_language::InputValue,29> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
-            double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides};
-        const std::array<ui_language::KeyBinding,7> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},
-            {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},{"viewport",control::viewport}}};
+            double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
+            ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
+            std::wstring(mode_names[std::size_t(viewport_mode)]),double(icons[std::size_t(viewport_mode)]),
+            std::wstring(viewport_mode==TransformTool::scale?L"Local axes":L"World axes"),
+            std::wstring(viewport_settings.pivot==PivotMode::median?L"Selection Center":L"3D Cursor"),
+            ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::snap_toggle)},double(ui::ControlIcon::magnet),viewport_settings.grid_snap,
+            step_name,menu && menu->source==control::viewport_snap,viewport_settings.cursor_surface,
+            ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},std::wstring(view_names[std::size_t(camera_view)]),
+            menu && menu->source==control::viewport_camera,ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
+            viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down)};
+        const std::array<ui_language::KeyBinding,13> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},
+            {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
+            {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},
+            {"actions",control::viewport_tools_menu},{"step",control::viewport_snap},{"camera",control::viewport_camera},{"mode",control::viewport_hud}}};
         static_cast<void>(ui_document_->append("SceneViewport",control::scene_content,keys,inputs,result));
         continue;
     }
@@ -365,7 +438,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             const auto expansion=tree_expansion_.find(actor_key);
             rows->push_back({actor_key,{std::move(title),
                 state.state==world::ActorState::attached_inactive || state.state==world::ActorState::active,
-                member.id()==selected,static_cast<double>(mesh_actor?ui::ControlIcon::mesh:ui::ControlIcon::object),
+                session.is_selected(member.id()),static_cast<double>(mesh_actor?ui::ControlIcon::mesh:ui::ControlIcon::object),
                 control::tree_world,expansion!=tree_expansion_.end() && expansion->second,std::wstring(mesh_actor?L"mesh-actor":L"actor")}});
         }
         const auto expansion=tree_expansion_.find(control::tree_world);
@@ -406,6 +479,26 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         static_cast<void>(ui_document_->append("ActorStructure",view.content,keys,inputs,result));
         continue;
     }
+    if(inspecting_asset) {
+        const auto& asset=assets.selected();auto entries=std::make_shared<std::vector<ui_language::Item>>();
+        const auto add=[&](std::size_t index,std::wstring name,std::wstring value) {
+            auto& key=resource_properties_[index];if(!key) key=next_binding_++;
+            entries->push_back({key,{std::move(name),std::move(value)}});
+        };
+        std::wstring kind=L"Resource";
+        if(asset) {
+            kind=asset->kind==AssetKind::mesh?L"Mesh":asset->kind==AssetKind::scene?L"Scene":asset->kind==AssetKind::source?L"Source":asset->kind==AssetKind::folder?L"Folder":L"File";
+            add(0,L"Type",kind);add(1,L"Resource",wide(asset->key));
+            add(2,L"Location",asset->path.empty()?L"Engine":asset->path.generic_wstring());
+            if(!asset->path.empty() && asset->kind!=AssetKind::folder) add(3,L"Size",std::to_wstring(asset->bytes)+L" bytes");
+            if(const auto* mesh=mesh_asset(asset->key)) {
+                add(4,L"Triangles",std::to_wstring(mesh->mesh->vertices().size()/3));
+            }
+        }
+        const std::array<ui_language::InputValue,4> inputs{kind,asset?asset->name:std::wstring(L"No resource selected"),
+            double(asset && asset->kind==AssetKind::mesh?ui::ControlIcon::mesh:ui::ControlIcon::folder),ui_language::ItemList{std::move(entries)}};
+        static_cast<void>(ui_document_->append("ResourceParameters",view.content,{},inputs,result));continue;
+    }
     const auto lowercase=[](std::wstring value) {for(auto& c:value)c=static_cast<wchar_t>(std::towlower(c));return value;};
     const auto folded=parameter_search_visible?lowercase(query):std::wstring{};
     const bool show_position=transform && (inspected==selected || inspected==*transform);
@@ -415,10 +508,80 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const auto title=short_type(object);
         const bool group_matches=lowercase(title).find(folded)!=std::wstring::npos;
         auto properties=std::make_shared<std::vector<ui_language::Item>>();
-        for(const auto& property:take(session.properties(object))) {
-            if(show_position && object==*transform && std::ranges::any_of(session.types().position_fields,
-                [&](const auto& path){return std::ranges::equal(path,property.path);})) continue;
-            const auto caption=wide(property.name);
+        const auto schema=take(session.properties(object));
+        const auto light=take(runtime.is_a(type,session.types().light_component))?
+            std::optional(take(world::read_light(runtime,object))):std::nullopt;
+        for(std::size_t index=0;index<schema.size();++index) {
+            const auto& property=schema[index];
+            if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
+            if(light) {
+                const auto& name=property.name;
+                if(light->kind!=world::LightKind::rectangle && (name=="settings.width" || name=="settings.height" || name=="settings.two_sided")) continue;
+                if(light->kind==world::LightKind::rectangle && name=="settings.source_radius") continue;
+                if(light->kind==world::LightKind::directional && name=="settings.range") continue;
+            }
+            auto parent_type=type;TypeId aggregate_type{};
+            for(std::size_t depth=0;depth+1<property.path.size();++depth) {
+                const auto parent=take(runtime.describe(parent_type));
+                aggregate_type=parent_type;
+                parent_type=std::ranges::find(parent->fields,property.path[depth],&FieldInfo::id)->value.type;
+            }
+            const auto parent=take(runtime.describe(parent_type));
+            if(property.path.size()>1 && (parent->math.vector() || parent->math.shape==math::Shape::quaternion)) {
+                const auto count=parent->math.components();
+                const auto name=property.name.substr(0,property.name.rfind('.'));
+                const auto prefix=std::span(property.path).first(property.path.size()-1);
+                const bool spatial_position=std::ranges::equal(property.path,session.types().position_fields[0]);
+                const bool spatial_rotation=std::ranges::equal(property.path,session.types().rotation_fields[0]);
+                const bool spatial_scale=std::ranges::equal(property.path,session.types().scale_fields[0]);
+                const bool base_color=aggregate_type==session.types().material &&
+                    property.path[property.path.size()-2]==take(runtime.find_field(session.types().material,"base_color"));
+                const bool emission=aggregate_type==session.types().material &&
+                    property.path[property.path.size()-2]==take(runtime.find_field(session.types().material,"emissive"));
+                const bool light_color=aggregate_type==session.types().light_settings &&
+                    property.path[property.path.size()-2]==take(runtime.find_field(session.types().light_settings,"color"));
+                const bool color=base_color || emission || light_color;
+                const auto euler=spatial_rotation?euler_degrees(take(world::read_transform(runtime,object)).rotation):math::Vector3{};
+                std::vector<ui::NumberField> tuple;bool matches=group_matches || lowercase(wide(name)).find(folded)!=std::wstring::npos;
+                for(std::size_t lane=0;lane<count && index+lane<schema.size();++lane) {
+                    const auto& field=schema[index+lane];
+                    if(field.path.size()!=property.path.size() || !std::equal(prefix.begin(),prefix.end(),field.path.begin())) break;
+                    matches|=lowercase(wide(field.name)).find(folded)!=std::wstring::npos;
+                    if(spatial_rotation && lane==3) continue;
+                    const auto value=spatial_rotation?double(euler[lane]):std::visit([](const auto& v)->double {
+                        if constexpr(std::same_as<std::decay_t<decltype(v)>,EnumValue>) return v.bits;
+                        else return double(v);
+                    },field.value);
+                    const double limit=parent->math.precision==math::Precision::f32?double(std::numeric_limits<float>::max()):std::numeric_limits<double>::max();
+                    const double minimum=color?0:spatial_position?session.parameters()[lane].minimum:spatial_scale?Session::minimum_scale:spatial_rotation?-360000:-limit;
+                    const double maximum=base_color?1:spatial_position?session.parameters()[lane].maximum:spatial_scale?Session::maximum_scale:spatial_rotation?360000:limit;
+                    const auto key=bind(object,field.path,spatial_rotation?Binding::Kind::rotation:Binding::Kind::field);
+                    tuple.push_back({key,std::wstring(1,(color?L"RGBW":L"XYZW")[lane]),value,spatial_rotation?0:value,
+                        minimum,maximum,spatial_rotation?1:.01,spatial_rotation?.1:.001,static_cast<ui::VectorAxis>(lane+1)});
+                    tuple.back().single_precision=parent->math.precision==math::Precision::f32;
+                }
+                index+=count-1;
+                if(matches) {
+                    const auto field_key=tuple.front().key;
+                    properties->push_back({bind(object,prefix,Binding::Kind::property_row),
+                        {spatial_rotation?std::wstring(L"Rotation (°)"):wide(name),ui_language::EditBinding{0,actor_status.can_edit,false,std::move(tuple)},
+                        false,false,actor_status.can_edit,ui_language::ActionBinding{field_key,actor_status.can_edit},false,std::wstring{},field_key}});
+                }
+                continue;
+            }
+            auto caption=wide(property.name);
+            if(light && property.name.starts_with("settings.")) {
+                const auto field=std::string_view(property.name).substr(9);
+                if(field=="kind") caption=L"Light Type";
+                else if(field=="intensity") caption=light->kind==world::LightKind::point?L"Intensity (cd)":
+                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":L"Illuminance (lux)";
+                else if(field=="source_radius") caption=light->kind==world::LightKind::directional?L"Angular Radius (rad)":L"Source Radius (m)";
+                else if(field=="range") caption=L"Range (m)";
+                else if(field=="width") caption=L"Width (m)";
+                else if(field=="height") caption=L"Height (m)";
+                else if(field=="two_sided") caption=L"Two Sided";
+                else if(field=="casts_shadow") caption=L"Cast Shadows";
+            }
             if(!group_matches && lowercase(caption).find(folded)==std::wstring::npos) continue;
             std::optional<Scalar> default_value;auto owner=type;
             for(const auto id:property.path) {
@@ -437,8 +600,15 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             if(std::holds_alternative<float>(property.value)) {minimum=-std::numeric_limits<float>::max();maximum=std::numeric_limits<float>::max();}
             if(integral) {minimum=std::holds_alternative<std::int32_t>(property.value)?std::numeric_limits<std::int32_t>::lowest():0;
                 maximum=std::holds_alternative<std::int32_t>(property.value)?std::numeric_limits<std::int32_t>::max():std::numeric_limits<std::uint32_t>::max();}
+            if(parent_type==session.types().material && (property.name=="material.roughness" || property.name=="material.metallic")) {minimum=0;maximum=1;}
+            if(light && parent_type==session.types().light_settings && !boolean && !enumeration) {
+                minimum=property.name=="settings.range" || property.name=="settings.width" || property.name=="settings.height"?
+                    double(std::numeric_limits<float>::denorm_min()):0;
+                if(property.name=="settings.source_radius" && light->kind==world::LightKind::directional) maximum=double(1.5707963267948966f);
+            }
             const auto key=bind(object,property.path);const double value=number(property.value),initial=default_value?number(*default_value):value;
             ui_language::EditBinding edit{0,actor_status.can_edit,value!=initial,{{key,L"",value,initial,minimum,maximum,integral?1:.01,integral?1:.001}}};
+            edit.fields.front().single_precision=std::holds_alternative<float>(property.value);
             std::wstring choice;
             if(enumeration) for(const auto& member:take(runtime.describe(enumeration->type))->enumeration->values)
                 if(member.second==enumeration->bits) {choice=wide(member.first);break;}
@@ -463,19 +633,35 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         group_modified|=value!=definition.default_value;
         if(!show_position || std::wstring_view(aliases[axis]).find(folded)==std::wstring_view::npos) continue;
         fields.push_back({bind(*transform,definition.path),names[axis],value,definition.default_value,definition.minimum,definition.maximum,definition.drag_step,.001,static_cast<ui::VectorAxis>(axis+1)});
+        fields.back().single_precision=true;
     }
-    const bool matches=!fields.empty(),empty=groups->empty() && !matches;
+    const bool position_matches=!fields.empty();
+    const bool rotation_matches=show_position && std::wstring_view(L"rotation transform angle euler x y z 旋转 角度").find(folded)!=std::wstring_view::npos;
+    const bool scale_matches=show_position && std::wstring_view(L"scale transform x y z 缩放").find(folded)!=std::wstring_view::npos;
+    ui_language::EditBinding rotation_edit,scale_edit;
+    if(show_position) {
+        const auto trs=take(world::read_transform(runtime,*transform));const auto angles=euler_degrees(trs.rotation);
+        rotation_edit={bind(*transform,{},Binding::Kind::rotation_default),actor_status.can_edit,angles!=math::Vector3{}, {}};
+        scale_edit={bind(*transform,{},Binding::Kind::scale_default),actor_status.can_edit,trs.scale!=math::Vector3{1,1,1}, {}};
+        for(std::size_t axis=0;axis<3;++axis) {
+            rotation_edit.fields.push_back({bind(*transform,session.types().rotation_fields[axis],Binding::Kind::rotation),names[axis],angles[axis],0,-360000,360000,1,.1,static_cast<ui::VectorAxis>(axis+1)});
+            scale_edit.fields.push_back({bind(*transform,session.types().scale_fields[axis]),names[axis],trs.scale[axis],1,Session::minimum_scale,Session::maximum_scale,.01,.001,static_cast<ui::VectorAxis>(axis+1)});
+            rotation_edit.fields.back().single_precision=scale_edit.fields.back().single_precision=true;
+        }
+    }
+    const bool matches=position_matches || rotation_matches || scale_matches,empty=groups->empty() && !matches;
     ui_language::EditBinding position{show_position?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},
         actor_status.can_edit && show_position,group_modified,std::move(fields)};
     const bool actor_selected=inspected!=ObjectId{} && inspected==selected;
-    const std::array<ui_language::InputValue,17> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
+    const std::array<ui_language::InputValue,22> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
         ui_language::TextEditBinding{actor_selected?bind(selected,{},Binding::Kind::name):ui::ControlKey{77},
             inspected==ObjectId{}?L"No selection":actor_selected?std::wstring(session.name(selected)):short_type(inspected),actor_selected && actor_status.can_edit},
         ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
         double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
         inspected!=ObjectId{},ui_language::ItemList{std::move(groups)},matches,std::move(position),ui_language::TextEditBinding{control::parameter_search,query},empty,
         double(actor_selected?(take(runtime.is_a(actor_status.type,session.types().static_mesh_actor))?ui::ControlIcon::mesh:ui::ControlIcon::object):ui::ControlIcon::component),double(ui::ControlIcon::search),
-        parameter_search_visible && inspected!=ObjectId{},ui_language::ActionBinding{control::parameter_search_toggle,inspected!=ObjectId{}}};
+        parameter_search_visible && inspected!=ObjectId{},ui_language::ActionBinding{control::parameter_search_toggle,inspected!=ObjectId{}},
+        std::move(rotation_edit),std::move(scale_edit),position_matches,rotation_matches,scale_matches};
     const std::array<ui_language::KeyBinding,12> keys{{{"path.bar",75},
         {"path.path",control::parameter_path},{"path.back",control::parameter_back},{"path.forward",control::parameter_forward},
         {"header.row",51},{"header.type",52},{"header.search",control::parameter_search_toggle},
@@ -499,11 +685,58 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             available&=item->enabled && !item->layout.collapsed;
         if (!available) menu.reset();
         else {
+            const auto command_item=[&](Command command) {
+                const auto key=static_cast<ui::ControlKey>(command);const auto* definition=command_definition(key);
+                ui::MenuItem item{key,std::wstring(definition->title),command_enabled(command,session),false,{},std::wstring(definition->shortcut),definition->separator};
+                const auto radio=[&](Command first,bool selected) {item.behavior=ui::MenuBehavior::radio;item.radio_group=static_cast<ui::ControlKey>(first);item.selected=selected;};
+                if(command>=Command::tool_select && command<=Command::tool_scale)
+                    radio(Command::tool_select,key-static_cast<ui::ControlKey>(Command::tool_select)==std::size_t(viewport_settings.tool));
+                else if(command==Command::pivot_median || command==Command::pivot_cursor)
+                    radio(Command::pivot_median,(command==Command::pivot_cursor)==(viewport_settings.pivot==PivotMode::cursor));
+                else if(command>=Command::snap_grid_01 && command<=Command::snap_grid_1) {
+                    constexpr std::array steps{.1f,.2f,.5f,1.f};radio(Command::snap_grid_01,viewport_settings.grid_spacing==steps[key-static_cast<ui::ControlKey>(Command::snap_grid_01)]);
+                } else if(command>=Command::view_perspective && command<=Command::view_right)
+                    radio(Command::view_perspective,key-static_cast<ui::ControlKey>(Command::view_perspective)==std::size_t(camera_view));
+                else if(command==Command::snap_toggle || command==Command::cursor_surface || command==Command::viewport_options) {
+                    item.behavior=ui::MenuBehavior::checkbox;
+                    item.selected=command==Command::snap_toggle?viewport_settings.grid_snap:command==Command::cursor_surface?viewport_settings.cursor_surface:!viewport_options_collapsed;
+                }
+                return item;
+            };
+            const auto commands=[&](std::initializer_list<Command> commands) {
+                std::vector<ui::MenuItem> result;for(const auto command:commands) result.push_back(command_item(command));return result;
+            };
+            const auto viewport_commands=[&](ui::ControlKey key) {
+                using enum Command;
+                switch(key) {
+                case control::viewport_tools_menu: return commands({tool_select,tool_transform,tool_move,tool_rotate,tool_scale});
+                case control::viewport_snap: return commands({snap_toggle,snap_grid_01,snap_grid_02,snap_grid_05,snap_grid_1,
+                    selection_grid,selection_cursor,cursor_selected,cursor_origin,cursor_grid,cursor_surface});
+                case control::viewport_camera: return commands({view_perspective,view_top,view_front,view_right,focus,reset_camera});
+                case control::viewport_pivot: return commands({pivot_median,pivot_cursor,cursor_selected,cursor_origin,cursor_grid});
+                default: return std::vector<ui::MenuItem>{};
+                }
+            };
             std::vector<ui::MenuItem> items=dock.menu_items(source->key,frame);
             if (const auto* group=command_group(source->key)) {
-                for (const auto& definition:command_definitions) if (definition.group==group->id)
-                    items.push_back({static_cast<ui::ControlKey>(definition.id),std::wstring(definition.title),
-                        command_enabled(definition.id,session),false,{},std::wstring(definition.shortcut),definition.separator});
+                if(group->id==CommandGroup::view) {
+                    items.push_back(command_item(Command::focus));
+                    for(const auto& [key,title]:std::array<std::pair<ui::ControlKey,std::wstring_view>,4>{{
+                        {control::viewport_tools_menu,L"Interaction Mode"},{control::viewport_pivot,L"Pivot"},
+                        {control::viewport_snap,L"Snapping"},{control::viewport_camera,L"Camera View"}}})
+                        items.push_back({.key=key,.text=std::wstring(title),.edit_command={},.children=viewport_commands(key)});
+                    items.push_back(command_item(Command::viewport_options));
+                } else for (const auto& definition:command_definitions) if (definition.group==group->id)
+                    items.push_back(command_item(definition.id));
+            } else if(source->key==control::viewport || source->key==control::viewport_tools_menu) {
+                using enum Command;
+                items=viewport_commands(control::viewport_tools_menu);
+                if(source->key==control::viewport) {
+                    items.push_back({.key=control::viewport_snap,.text=L"Snap",.edit_command={},.children=viewport_commands(control::viewport_snap)});
+                    for(auto item:commands({focus,create_static_mesh,erase_selected})) items.push_back(std::move(item));
+                }
+            } else if(source->key==control::viewport_snap || source->key==control::viewport_camera || source->key==control::viewport_pivot) {
+                items=viewport_commands(source->key);
             } else if (control::is_path(source->key)) {
                 items.push_back({control::world_context,L"World",true,selected==ObjectId{},{}});
                 for (const auto& member:members) items.push_back({bind(member.id(),{},Binding::Kind::navigation),
@@ -529,8 +762,38 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     }
                 };
                 group(control::shading_first,shading_titles,static_cast<unsigned>(this->view.shading));
+                ui::MenuItem lit{control::shading_scene_lit,L"Scene Lit",true,this->view.shading==renderer::Shading::scene_lit,{}};
+                lit.behavior=ui::MenuBehavior::radio;lit.radio_group=control::shading_first;items.push_back(std::move(lit));
                 group(control::edges_first,edge_titles,edge_option);
                 group(control::topology_first,topology_titles,this->view.triangle_edges?1u:0u);
+                ui::MenuItem lighting{control::lit_menu,L"Scene Lighting",true,false,{},L"",true};
+                for(std::size_t i=0;i<lighting_options.size();++i) {
+                    ui::MenuItem option{control::lit_effects_first+i,std::wstring(lighting_options[i].title),true,this->view.lit.*lighting_options[i].field,{}};
+                    option.behavior=ui::MenuBehavior::checkbox;lighting.children.push_back(std::move(option));
+                }
+                ui::MenuItem antialiasing{control::lit_aa_menu,L"Antialiasing",true,false,{},L"",true};
+                for(std::size_t i=0;i<antialiasing_titles.size();++i) {
+                    ui::MenuItem option{control::lit_aa_first+i,antialiasing_titles[i],true,
+                        this->view.lit.antialiasing==static_cast<renderer::Antialiasing>(i),{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_aa_first;
+                    antialiasing.children.push_back(std::move(option));
+                }
+                lighting.children.push_back(std::move(antialiasing));
+                ui::MenuItem exposure{control::lit_exposure_menu,L"Exposure",true,false,{},L"",true};
+                for(int i=0;i<5;++i) {
+                    const auto ev=i-2;
+                    ui::MenuItem option{control::lit_exposure_first+std::uint64_t(i),(ev>0?L"+":L"")+std::to_wstring(ev)+L" EV",true,this->view.lit.exposure_ev==float(ev),{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_exposure_first;
+                    exposure.children.push_back(std::move(option));
+                }
+                lighting.children.push_back(std::move(exposure));
+                ui::MenuItem budget{control::lit_shadow_budget_menu,L"Shadow Budget",true,false,{}};
+                for(unsigned i=0;i<3;++i) {
+                    const auto limit=4u<<i;
+                    ui::MenuItem option{control::lit_shadow_budget_first+i,std::to_wstring(limit)+L" lights",true,this->view.lit.shadow_light_budget==limit,{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_shadow_budget_first;budget.children.push_back(std::move(option));
+                }
+                lighting.children.push_back(std::move(budget));items.push_back(std::move(lighting));
             } else if (source->key==source_control::files) {
                 items=source_editor.menu_items();
             } else if(source->key==control::add_component) {

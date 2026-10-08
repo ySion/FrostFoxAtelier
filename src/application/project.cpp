@@ -52,6 +52,8 @@ bool Application::confirm_discard(bool sources) {
     return saved.has_value();
 }
 void Application::publish_document(std::unique_ptr<editor::Session> next,editor::ProjectCode* code) {
+    const auto cancelled=viewport_tool_.cancel(*document_);if(!cancelled) throw std::runtime_error(cancelled.error().message);
+    viewport_tool_.cursor={};accepted_view_.reset();
     close_menu(false);effects(ui_.cancel_interaction());
     auto cleared=ui_.set_controls({});if (!cleared) throw std::runtime_error("Cannot retire the previous document UI.");effects(*cleared);
     sync_text_input();
@@ -60,7 +62,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next,editor:
     workspace_.reset_document();
     project_code_=nullptr;
     const auto closed=document_->close();if (!closed) throw std::runtime_error(closed.error().message);
-    document_=std::move(next);project_code_=code;camera_.reset();invalidate_surface();
+    document_=std::move(next);project_code_=code;scene_.reset();workspace_.render_notice.clear();camera_.reset();camera_cut_=true;invalidate_surface();
 }
 Result<void> Application::open_project(const std::filesystem::path& folder,bool create) {
     // A save decision can change the file we are about to open. Read only after

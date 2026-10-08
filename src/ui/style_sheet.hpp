@@ -26,6 +26,7 @@ struct StyleProperties {
     std::optional<BorderStyle> border_style;
     std::optional<BorderEdges> border_edges;
     std::optional<Color> border_inner, border_shadow;
+    std::optional<Color> text_shadow; // One-pixel drop shadow for labels drawn over scenes.
     std::optional<ScrollbarGutter> scrollbar_gutter;
     std::optional<ComboIndicator> combo_indicator;
     std::optional<IconPlacement> icon_placement;
@@ -64,6 +65,7 @@ struct ResolvedStyle {
     BorderStyle border_style{BorderStyle::solid};
     BorderEdges border_edges{BorderEdges::all};
     std::optional<Color> border_inner, border_shadow;
+    std::optional<Color> text_shadow;
     ScrollbarGutter scrollbar_gutter{ScrollbarGutter::stable};
     ComboIndicator combo_indicator{ComboIndicator::down};
     IconPlacement icon_placement{IconPlacement::leading};

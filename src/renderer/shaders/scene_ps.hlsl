@@ -3,6 +3,7 @@ SamplerState matcap_sampler;
 
 float4 main(SceneOutput input) : SV_Target {
     if (display.w == 2) return 0;
+    if(display.w==1 && display.x==3 && display.y!=1 && input.selected==0) discard;
     float3 color = 0;
     if (display.w == 0) {
         float3 normal = unit_normal(input.normal);
@@ -24,7 +25,7 @@ float4 main(SceneOutput input) : SV_Target {
     float width = input.selected != 0 ? max(wire_style.x, 2.0) : wire_style.x;
     float edge = 1 - smoothstep(max(0, width * .5 - .5), width * .5 + .5,
                                min(distance.x, min(distance.y, distance.z)));
-    float3 ink = input.selected != 0 ? float3(1, .42, .035) :
+    float3 ink = input.selected != 0 ? float3(1, .69, 0) :
                   display.w == 1 ? float3(.48, .55, .62) : float3(.025, .032, .04);
     float alpha = edge * (input.selected != 0 || display.w == 1 ? 1 : wire_style.y);
     if (display.w == 1) {

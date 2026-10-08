@@ -5,7 +5,7 @@
 完整 DSL 迁移的当前评估、区域需求、控件语义、手势边界和实施次序见[迁移计划](dsl-migration.md)。完整工具架、现有参数区结构和 Scene Tree 主体已使用当前[声明式 UI](declarative-ui.md)，现有外壳、菜单、停靠、Controls 和资源浏览器的装配也已迁入同一声明。
 启动日志和 Help → About 使用构建时生成的同一提交标识及配置；未提交改动标为 `local changes`。`atelier_editor --version` 可在不创建窗口的情况下读取该二进制的标识。工程打开成功后记录实际根目录，About 同时显示当前工程目录和场景路径。标识在构建时刷新，运行时不读取当前目录的 Git 状态。
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
-模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录，根位置使用 Vector3，其余 TRS 分量通过实际字段编辑。已接入已声明默认值、修改状态和折叠分组。通用参数控件、独立菜单窗口、下拉框、中键数值阶梯及同宿主实验台已落地；旋转欧拉角专用控件、JIT 单步、视口拾取、gizmo、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
+模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择资源时改为只读资源元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；JIT 单步、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
 UI 作者层已将 Parameters 的查询、Position、属性组、Actor Structure 和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
 
@@ -30,6 +30,7 @@ Win32 窗口消息 → Window 复制拥有的事件 → 每条消息后顺序排
   → UI 已接受帧命中/焦点/捕获 → Reply.effects
   → Action → editor::Session → world::World → Runtime 的真实 Actor/Component 字段
            → Workspace.query → 参数查看投影
+  → ViewportTool（已接受的视口/相机）→ Session 的选择与整组 TRS 事务
   → PlatformRequest → Window 剪贴板/IMM32 → UI 结果事件
   → Workspace 控件描述 + World RenderItem 矩阵/资源/材质值 → UI 帧 + renderer 网格实例
  → renderer 最终 accepted → UI 接受对应命中帧
@@ -51,13 +52,50 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 范围、默认值、单位与拖调步长由[应用参数描述](../../../src/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
 控件 key 独立单调分配，绑定具体 ObjectId 和 FieldId 路径；稳定控件复用其键，失效后退役且不再分配。Actor/组件恢复保留业务身份，但不会恢复旧控件会话、IME 或剪贴板请求。
 
-位置使用共享 `append_number_row` 组合三个 number；标题和字段随宽度自动换行，分量共用一行。修改状态逐分量比较 `Parameter.default_value`。数值菜单可恢复当前分量，标题或菜单的整组命令恢复完整位置（包括搜索过滤隐藏的分量）。标题绑定具体 SceneComponent 身份，`Session::reset_position` 经 World 一次应用完整 TRS，再记录一次现有 FieldChange。无变化不增加历史，旋转和缩放保持原值，undo/redo 恢复对应组件及 Actor 上下文。
+位置、旋转、缩放和数学向量复用 DSL `NumberRow` 与共享 `append_number_row`。标题和字段随宽度换行，分量共用一行。根旋转使用 XYZ 顺序的欧拉角（度），实际存储仍为规范化四元数；一次输入始终基于事务起始姿态计算，避免跨过 90° 后将中间转换结果反馈到下一次预览。显示角为四元数的规范欧拉表示，不保存额外的圈数状态。缩放范围为 `[0.0001, 10000]`，不提供负缩放或 shear；位置范围与上方参数定义一致，手柄和字段沿 Session 执行相同范围检查。
+
+数值显示按底层 float/double 生成可往返的最短十进制，不把 float 扩成 double 的尾差展示为有效精度。欧拉角与四元数转换使用 double 中间计算，最后写入 float，避免额外的中间舍入误差。数学元组根据 Runtime 数学类型元数据识别；SceneComponent 的旋转与 World 材质颜色由实际字段身份识别。标题和菜单可恢复完整位置、旋转、缩放；位置恢复包含搜索隐藏的分量。无变化不增加历史，undo/redo 恢复具体组件及 Actor 上下文。
 
 - 左手坐标系，+Y向上，单位米；方块各轴范围 `[-0.5, 0.5]`。World 组合局部 `S * R * T` 与父世界矩阵；renderer 不自行重算 TRS。空间换父 API 在 World 提供，当前面板编辑根位置。
 - 默认相机 eye `(6,5,-8)`、target `(0,0,0)`、up `(0,1,0)`；使用 LookAtLH/PerspectiveFovLH。
 - CPU 矩阵行主存储，行向量按 `p * world * view * projection` 计算，D3D 深度为 `[0,1]`。
 - viewport 与 UI clip 使用窗口客户区左上为原点的物理像素。1280×720客户区内的 `{240,32,760,660}` 表示从 `(240,32)` 开始、宽760高660的视口。
 - UI 根据实际 backbuffer 尺寸和 DPI 生成 draw/clip；renderer 不再次缩放。深度目标显式匹配实际 backbuffer。
+
+## 视口编辑
+
+Scene View 左侧使用 28 DIP 竖向工具区，26 DIP 图标分别选择选择工具、通用手柄、移动、旋转和缩放。路径栏下方是可折叠的 28 DIP 工具选项栏，包含当前轴空间、枢轴菜单、网格吸附开关/步长和游标表面定位开关；收拢为 12 DIP 后整条可点击恢复。视口左上显示当前操作的图标与名称，G/R/S 期间同步显示临时模式；右上菜单切换 Persp、Top、Front、Right，后三者使用正交投影。显示模式及 Guides 继续收在路径栏右端两个图标菜单中。按钮选择态使用灰蓝底面；收拢条仅按下时变色。图标沿既有原生符号栅格化和缓存链绘制，不复制 Houdini 的专有图标素材。
+
+| 操作 | 行为 |
+| --- | --- |
+| 右键单击物体 | 对实际网格三角形求最近命中；无可渲染网格的空间根以十字定位点命中 |
+| Shift / Ctrl + 右键 | Shift 切换该 Actor 的选择，Ctrl 移除；Scene Tree 中 Ctrl 切换、Shift 选择可见范围 |
+| 右键拖动 / B 后左键拖动 | 以投影包围范围框选，包含遮挡后的对象；Shift 添加、Ctrl 减选，Esc 取消 |
+| Q | 切换纯选择工具，便于框选和选中被手柄覆盖的物体 |
+| 左键拖手柄 | 箭头平移、平面小方块约束平移、圆环旋转、轴端方块缩放；中心方块进行视平面移动或等比缩放 |
+| G / R / S | 开始移动/旋转/缩放；X/Y/Z 约束轴，Shift+轴约束平移/缩放平面；再次按同一轴解除约束 |
+| 输入数字 | 移动为米、旋转为度、缩放为倍率；Backspace 修改，Enter 或左键确认，Esc 或右键取消 |
+| 吸附开关 / Shift+Tab | 开关移动与游标的网格吸附；步长为 0.1、0.2、0.5 或 1 米，与参考网格共用设置。移动时对齐活动 Actor 原点，保留组内偏移与被约束的坐标 |
+| Ctrl / Shift 拖动 | Ctrl 临时反转移动网格吸附开关；旋转为 15°、缩放为 0.1 倍率吸附。Shift 使用十分之一步长；键入数值仍按精确值执行 |
+| 左键单击空白或物体 | 放置红白圆环 3D 游标，不修改选择或场景历史；优先命中物体表面，无命中时使用当前视图的构造平面，射线平行时使用穿过旧游标的视平面。关闭 Surface Cursor 后只使用平面定位 |
+| W | 打开模式、Snap、聚焦、创建和删除菜单；Snap 提供选择到网格、选择中心到游标、游标到选择/原点/网格 |
+| 中键 / Alt+左键 / Shift+中键拖动 | 前两者环绕相机，Shift+中键平移；滚轮缩放，F 聚焦当前 Actor。正交视图开始环绕后转为透视 |
+
+快捷键仅在视口内且文本输入未占用键盘时启动。视口上方的交互控件先参与统一 UI 命中，点击视图菜单不会向后穿透为游标定位。多选变换只处理有空间根的 Actor；Parameters 展示活动 Actor，视口手柄修改整组。移动/旋转使用世界轴；缩放手柄沿活动根的局部轴，改变各根自身的 scale 分量，并在活动根基底中缩放组内位置偏移。枢轴可选组中心或游标，Static Mesh 创建使用游标位置。此阶段没有局部/世界坐标切换、物体变换的表面/顶点吸附、跨面板资源放置或程序外拖入。
+
+`ViewportTool` 只持有手势，`Session` 是业务修改入口；一个手势记录一次历史，组内任一目标拒绝时恢复前一有效预览。非法或未完成的数值不能确认；Esc、右键、失焦、捕获丢失、尺寸/DPI 改变、菜单转移、文档更换都取消草稿。Ctrl+Z/Y 先结束视口草稿，再执行同一场景历史。活动变换期间拒绝保存快照与启动 World。
+
+绘制和命中遍历同一手柄几何；坐标和相机只在 renderer 接受帧后发布。线段/方框复用 renderer 固色实例管线，在场景后、UI 前绘制为一个裁剪批次，不写场景深度，不建立第二个视口窗口或渲染循环。
+
+### 场景光照
+
+Scene View 的显示菜单将 `Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。`Scene Lighting` 子菜单提供 Shadows、DDGI、GTAO、SSSR、TAA、Bloom 独立勾选，Exposure 提供 −2 至 +2 EV，Shadow Budget 提供 4/8/16 盏投影灯预算。以上都是视口设置，不进入场景撤销历史。实际请求超预算时，状态栏持续显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
+
+Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional Light。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 为 `[0,1]`，emissive 使用非负 HDR RGB。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
+
+`application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity。几何资源、材质、灯参数和呈现成员变化递增 scene_revision；TRS、选择和相机连续移动不递增。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
+
+本轮应用接线与验收状态见[SceneLit 应用集成](../../research/scene-lit-application-20261008.md)。
 
 ## 工作区与停靠
 
@@ -109,8 +147,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单击选择，Add to Scene 执行共享创建命令，支持名称/类型过滤与 List/Details/Tiles。工具行、目录树、状态行和全部结果视图由 DSL 声明；List/Details/Tiles 通过 TableBinding 接入共享 Table，提供排序、列宽拖动、当前单元格、键盘导航和双击/Enter Open。三种呈现复用同一数据快照和选择状态，详见[工程与资源浏览](projects.md)。顶部快捷创建继续引用相同内置资源。World/renderer 不按 Cube 名字分支；拖放、吸附和模型缩略图尚未实施。
 数值控件支持普通拖动和中键七档数值阶梯；上下移动选步长，左右移动调值，Shift 细调，释放提交一次、Esc 取消。右键或 Menu/Shift+F10 打开参数菜单；Ctrl+中键恢复分量或标题对应整组默认值。菜单期间视口输入暂停，外部点击只关闭菜单，Esc/Tab 返回原焦点。普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
 文本与数值共用 Unicode 字素边界、视觉光标、双向选区、横滚及本地撤销/重做。Ctrl+A/C/X/V 提供全选、复制、剪切、粘贴。存在本地事务时 Ctrl+Z/Y 只操作本地历史，即使历史耗尽也不穿透；仅聚焦无事务时进入场景历史，Ctrl+Shift+Z 同样重做。历史合组、容量和 Unicode 覆盖见 [UI 模块](../ui/README.md#共享单行编辑)。
-参数搜索按 Position/“位置”/X/Y/Z 名称与别名过滤实际位置行。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。
-右键拖动视口旋转观察，滚轮缩放；Focus 或 F 聚焦选中对象，Reset camera 恢复初始相机。
+参数搜索按实际属性、类型名，以及位置/旋转/缩放行的名称与别名过滤。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。相机与变换操作见上方[视口编辑](#视口编辑)。
 调整窗口尺寸、DPI变化、失焦或外部捕获丢失都会取消当前未提交编辑。应用主动释放捕获产生的同步通知不会误取消刚进入的文本编辑。
 
 ### 独立菜单窗口
@@ -143,7 +180,9 @@ Actor Structure 是可移动、关闭、重开的独立子页：Actor 作为父�
 
 ### 类定义、实例与默认值
 
-目前支持原生及 Source 类定义，实例通过同一个 Runtime 创建，字段声明默认值参与初始化。Scene 持久化限定类型名和实例值。当前没有 Class 资产、组件模板或显式 override 集，也没有模板默认值编辑器；Parameters 始终编辑当前场景实例。现有值与默认值的比较仅用于显示修改状态。没有声明默认值的原生字段不假定为零，也不伪造恢复默认值能力。修改 Source 字段默认值需重建类型，已保存实例值会恢复，不自动随新默认值传播。未来 Class 资产必须先明确持久身份、组件模板、覆盖和传播规则，再复用同一个检查入口。
+目前支持原生及 Source 类定义，实例通过同一个 Runtime 创建，字段声明默认值参与初始化。Scene 持久化限定类型名和实例值。当前没有 Class 资产、组件模板或显式 override 集，也没有模板默认值编辑器。选择场景对象时 Parameters 编辑当前实例；选择 Asset Browser 条目时显示资源类型、资源键、位置、文件大小及已知网格统计，资源不会冒充 Actor 或可编辑类模板。返回 Scene Tree、路径导航或视口操作后恢复实例检查。两类查看共享参数页和 DSL 控件身份分配入口，不增加场景历史。
+
+现有值与默认值的比较仅用于显示修改状态。没有声明默认值的原生字段不假定为零，也不伪造恢复默认值能力。修改 Source 字段默认值需重建类型，已保存实例值会恢复，不自动随新默认值传播。未来 Class 资产必须先明确持久身份、组件模板、覆盖和传播规则，再复用同一个检查入口。
 
 
 Controls 的 Parameters / Appearance 使用同一组合，Appearance 内的 Color / Channels 是独立嵌套组：RGB 元组、三条逐通道滑条和色块消费同一组样本值，支持折叠、禁用、默认值及样本撤销。所有行、组和伸展继续使用现有 row/column/Flex，未引入第二套布局器。
@@ -174,6 +213,8 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 `editor_document_acceptance`消费正式 World/Session，覆盖空 Actor、实际组件增删、单次字段历史/控制会话、完整 TRS undo、成员资格、删除跨 GC 的同身份恢复、历史裁剪普通根保组/最终收集及关闭释放。旧 Scene 库和位置专用入口已删除。
 `atelier_editor --acceptance <输出目录>`运行同一正式窗口，用Win32消息和系统焦点/捕获操作驱动控件，再核对Runtime状态与GPU帧。
+`atelier_editor_document_acceptance --viewport-edit` 覆盖真实网格求交、多选/框选、G/R/S、非法输入、整组回滚、撤销、数学元组布局及资源检查。`atelier_editor --acceptance-edit <输出目录>` 驱动独立原生窗口，覆盖手柄拖动、快捷键、参数联动、捕获取消、数值显示、欧拉角连续输入及资源/实例切换，导出 GPU 截图。组合构建目标为 `editor_edit_acceptance`；窗口部分需要前台焦点。
+2026-10-07 的范围、修正及证据见[视口编辑验收记录](../../research/editor-viewport-edit-20261007.md)。
 `atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内先执行共享视口模式／TRS 验收，再接续工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
 S1 覆盖正常/hover/pressed/focus/invalid/disabled、颜色改变的同Coverage/零raster/零上传、非法Style整体拒绝、字体family/weight/size及caret同步失效、旧帧几何/像素寿命。256真实成员由 Create 菜单加入，验证屏外控件几何仍在、文字不生成、滚回恢复，以及连续拖调历史。
@@ -229,11 +270,11 @@ cmake --build --preset release --target editor_ime_acceptance
 
 ## Scene Tree
 
-Scene Tree 使用共享 `tree/tree_item`，投影 World → Actor。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Actor、StaticMeshActor 使用不同的原生矢量符号和颜色。组件仅在 Parameters 中显示，不进入 Scene Tree。当前 World 没有跨 Actor 父子合同，因此成员平铺在 World 下，不用组件空间关系伪造 Actor 层级。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
+Scene Tree 使用共享 `tree/tree_item`，投影 World → Actor。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Actor、StaticMeshActor 使用不同的原生矢量符号和颜色。组件组成在 Actor Structure 中显示，不进入 Scene Tree。当前 World 没有跨 Actor 父子合同，因此成员平铺在 World 下，不用组件空间关系伪造 Actor 层级。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
 
 参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。树节点的展开状态跨停靠、隐藏及重开恢复；每份接受帧只保存一次，绑定退休时同步删除其展开记录，避免旧帧重放和逐条反查绑定。底部过滤保留祖先并临时展开结果，清空后恢复手动折叠。
 
-上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。复用当前路径栏、字号、滚动条、输入捕获与接受帧；当前 World 没有 Actor 父子关系，因此没有添加虚构父子、拖拽重挂或多选语义。
+上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。Ctrl 切换 Actor 选择，Shift 根据当前接受帧中的 Actor 行选择范围；选择与视口共用 Session 的有序 Actor 集及活动 Actor。复用当前路径栏、字号、滚动条、输入捕获与接受帧；没有添加虚构父子或拖拽重挂。
 
 共享 UI 端到端包含四档 DPI、过滤、长树滚动、禁用祖先、退休和失效命中；真实窗口验收新增 `tree-component-selection.png`、`tree-filtered.png`、`tree-view.png`，随完整窗口链执行。2026-10-03 开发版与发布版完整窗口链均通过，最终清理候选报告分别为 `out/dev/ui-stage-evidence/acceptance.txt`、`out/release/ui-stage-evidence/acceptance.txt`；共享 UI 16/16 与文档消费者同样通过。普通窗口验收仅在启动时等待一次前台激活，开始输入后失焦仍立即中断。本轮未运行搜狗验收。
 

@@ -48,7 +48,8 @@ Result<void> can_remove(Runtime&, ObjectId component, std::span<const ObjectRoot
 Result<void> clear_component(Runtime&, ObjectId actor, ObjectId component, std::size_t index, bool root);
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
-Result<void> validate_material(const Material&);
+// True means this is a native Material/LightSettings path and was handled.
+Result<bool> write_lighting_property(World&, ObjectId, std::span<const FieldId>, Scalar);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 
 }

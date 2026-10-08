@@ -22,7 +22,9 @@ Actor 和 Component 的标量属性使用相同的 `begin_edit / preview_edit(Sc
 
 每个 Actor/Component 保存完整类型名称，并使用 Runtime `find_type / is_a` 校验。每个对象有 `properties` 对象，按声明字段名递归保存业务标量；新增缺省字段保留 Runtime 构造默认值，未知已保存属性报错。整数严格检查范围和符号，不做环绕转换；浮点必须有限。
 
-SceneComponent 的 position/rotation/scale/parent、StaticMeshComponent 的 mesh/base_color 仍走专有验证及资源恢复，不在 properties 重复保存。组件 ID 仅为文件内该 Actor 的局部身份；组件顺序、显式根、同 Actor 空间关系保持原合同，文件不记录 Runtime TypeId、ObjectId 或 FieldId。
+SceneComponent 的 position/rotation/scale/parent、StaticMeshComponent 的 mesh/base_color/roughness/metallic/emissive 走专有验证及资源恢复，不在 properties 重复保存。旧场景缺少新增材质字段时采用 World 的 Material 默认值；加载和保存均调用 World 材质验证。组件 ID 仅为文件内该 Actor 的局部身份；组件顺序、显式根、同 Actor 空间关系保持原合同，文件不记录 Runtime TypeId、ObjectId 或 FieldId。
+
+LightComponent 沿普通空间组件记录类型、TRS、根及父关系；LightSettings 通过通用 `properties.settings` 递归保存，kind 保存枚举成员名。加载先恢复全部字段，再调用 World 的灯参数验证，避免字段恢复顺序改变有效性；保存同样拒绝非法设置。Create 菜单的三种灯只生成一个普通 Actor 和一个作为根的 LightComponent，整组加入文档历史；Actor Structure 的通用增删入口也可操作该组件。没有第二套灯存档或独立灯管理器。
 
 `physics.BodyComponent` 及其派生类型通过 `body` 专有记录保存 shape（box/sphere/triangle_mesh/capsule）、motion（stationary/kinematic/dynamic）、half_extents、radius、capsule_half_height、category、16 项 responses、sensor、friction 和 restitution。v1 的数值枚举 `physics` 记录只用于读取，保存统一为 v2；早期 v2 未包含的新增设置采用 BodySettings 默认值。读取走公开 `physics::configure`，写出使用 `read_settings`。这些 settings 目前未反射，因此不假装由通用 properties 编辑。Physics 类型由 Session 在对象创建前统一注册。
 

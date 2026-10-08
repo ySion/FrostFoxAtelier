@@ -246,7 +246,7 @@ Reply Session::input(const Event& event) {
             } else if (press.dragging) {
                 Impl::action(reply,ActionKind::edit_commit,press.key,press.value);
                 if (self.focus==press.key && self.states.at(press.key).control.kind==ControlKind::number)
-                    self.edit.emplace(self.states.at(press.key),format(press.value),press.value,false,false);
+                    self.edit.emplace(self.states.at(press.key),format(press.value,self.states.at(press.key).control.single_precision),press.value,false,false);
             } else if (!press.selecting && hit && hit->key==press.key) {
                 if (hit->kind==ControlKind::tree_item && press.tree_disclosure) {
                     if (const auto* row=self.tree_row(hit->key);row && contains(row->disclosure,event.x,event.y))
@@ -256,7 +256,7 @@ Reply Session::input(const Event& event) {
                     else { self.edit->text_mode=true; if (self.edit->buffer().select_all()) self.revise(); }
                 } else if (hit->kind==ControlKind::splitter && self.states.at(hit->key).control.click_action)
                     Impl::action(reply,ActionKind::activate,hit->key,event.alt);
-                else if (activatable(hit->kind)) self.activate(reply,*hit);
+                else if (activatable(hit->kind)) self.activate(reply,*hit,{event.shift,event.control});
             }
             reply.cursor=pointer_cursor();
             return reply;

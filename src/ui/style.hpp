@@ -6,7 +6,7 @@
 
 namespace atelier::ui {
 
-enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world, object, axes, component, mesh, folder, search, view_list, view_details, view_tiles, filter, more };
+enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world, object, axes, component, mesh, folder, search, view_list, view_details, view_tiles, filter, more, pointer, translate, rotate, scale, cursor3d, magnet };
 enum class Role { normal, panel, title, caption };
 enum class IconPlacement { leading, above };
 enum class TextAlign { left, center, right };
@@ -15,7 +15,7 @@ enum class BorderStyle { solid, inset, outset };
 enum class ScrollbarGutter { stable, overlay };
 enum class BorderEdges : unsigned { none=0, top=1, right=2, bottom=4, left=8, all=15 };
 constexpr bool has_edge(BorderEdges edges,BorderEdges edge) { return (static_cast<unsigned>(edges)&static_cast<unsigned>(edge))!=0; }
-enum class ComboIndicator { down, arrows };
+enum class ComboIndicator { down, arrows, caret };
 enum class FontStyle { normal, italic };
 enum class ControlKind { container, label, button, list, item, number, splitter, viewport, text_edit, checkbox, foldout, popup, menu_item, combo, tab, slider, tree, tree_item, table, code_editor };
 struct Font {

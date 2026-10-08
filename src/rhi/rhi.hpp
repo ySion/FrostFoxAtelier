@@ -42,6 +42,9 @@ struct ContextInfo {
     bool mesh_shader = false;
     bool debug_layer = false;
     bool gpu_validation = false;
+    // DXR tier 1.1 + shader model 6.5 on this execution domain. Use ordinary
+    // compute pipelines and borrowed gfx AS APIs after checking this capability.
+    bool inline_ray_query = false;
 };
 
 struct TargetInfo {

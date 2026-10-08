@@ -19,7 +19,8 @@ double rail_button_height(bool vertical, double width, double height) {
     return choose(vertical, rail_button_thickness(height), rail_button_length(height));
 }
 
-ui Position(in bool matches, in EditBinding position) {
+ui Position(in bool matches, in EditBinding position, in EditBinding rotation, in EditBinding scale,
+            in bool show_position, in bool show_rotation, in bool show_scale) {
     state bool expanded = true;
     Foldout section {
         text: "Scene root content";
@@ -35,7 +36,10 @@ ui Position(in bool matches, in EditBinding position) {
         NumberRow position {
             text: "Position (m)";
             edit: input.position;
+            collapsed: !input.show_position;
         }
+        NumberRow rotation { text: "Rotation (°)"; edit: input.rotation; collapsed: !input.show_rotation; }
+        NumberRow scale { text: "Scale"; edit: input.scale; collapsed: !input.show_scale; }
     }
 }
 
@@ -275,7 +279,8 @@ ui Parameters(in Text type_name, in TextEditBinding name,
               in double back_icon, in double forward_icon, in double path_icon,
               in bool has_selection, in Items<PropertyGroup> groups, in bool matches,
               in EditBinding position, in TextEditBinding filter, in bool empty,
-              in double type_icon, in double search_icon, in bool search_visible, in ActionBinding search) {
+              in double type_icon, in double search_icon, in bool search_visible, in ActionBinding search,
+              in EditBinding rotation, in EditBinding scale, in bool show_position, in bool show_rotation, in bool show_scale) {
     Column pane {
         classes: "parameter-pane"; panel: true; expand_height: true;
         PanePath path { title: "World"; back: input.back; forward: input.forward;
@@ -294,7 +299,9 @@ ui Parameters(in Text type_name, in TextEditBinding name,
             classes: "parameter-list"; expand_height: true; gap: 7; padding_top: 7.333; padding_bottom: 8;
             collapsed: !input.has_selection;
             Column transform { collapsed: !input.matches; gap: 7;
-                Position position { mounted: input.matches; matches: input.matches; position: input.position; }
+                Position position { mounted: input.matches; matches: input.matches; position: input.position;
+                    rotation: input.rotation; scale: input.scale; show_position: input.show_position;
+                    show_rotation: input.show_rotation; show_scale: input.show_scale; }
             }
             Column properties { classes: "parameter-inset"; gap: 5; Repeat groups { items: input.groups; } }
             Text empty { text: "No matching parameters"; classes: "empty-state"; single_line: true; caption: true; collapsed: !input.empty; }
@@ -302,6 +309,25 @@ ui Parameters(in Text type_name, in TextEditBinding name,
     }
 }
 
+ui ResourceProperty(in Text title, in Text value) {
+    ParameterRow row { text: input.title;
+        Row value_area { height: 23; expand_width: true; align_center: true;
+            Text value { text: input.value; expand_width: true; single_line: true; classes: "resource-value"; }
+        }
+    }
+}
+ui ResourceParameters(in Text kind, in Text name, in double icon, in Items<ResourceProperty> properties) {
+    Column pane { expand_height: true; panel: true; classes: "parameter-pane";
+        Row header { height: 32; align_center: true; gap: 4; padding_left: 6;
+            Text icon { icon: input.icon; width: 22; height: 24; }
+            Text kind { text: input.kind; single_line: true; }
+            Text name { text: input.name; expand_width: true; single_line: true; }
+        }
+        List properties { expand_height: true; gap: 5; padding_top: 7; classes: "parameter-inset";
+            Repeat rows { items: input.properties; }
+        }
+    }
+}
 ui AssetBrowserShell(in Items<ActorRow> directories, in TextEditBinding query,
                      in Text path, in Text status,
                      in ActionBinding back, in ActionBinding up, in ActionBinding clear,
@@ -452,9 +478,20 @@ ui EditorShell(in bool menu_collapsed, in Items<MenuTitle> menus, in Text status
         }
     }
 }
+ui ViewportMode(in ActionBinding choose, in double icon, in bool selected, in Key group) {
+    ChoiceButton mode { icon: input.icon; action: input.choose; selected: input.selected;
+        selection_group: input.group; width: 30; height: 30; classes: "viewport-mode"; }
+}
+// Houdini scene view: one operation-controls band, a full-height tool rail on
+// the left, and passive/interactive annotations floating over the scene.
 ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in double back_icon, in double forward_icon, in double path_icon,
-                 in double display_icon, in double guides_icon, in bool display_open, in bool guides_open) {
+                 in double display_icon, in double guides_icon, in bool display_open, in bool guides_open,
+                 in Items<ViewportMode> modes, in double pivot_icon, in bool pivot_open,
+                 in Text mode_name, in double mode_icon, in Text basis, in Text pivot_name,
+                 in ActionBinding snap, in double snap_icon, in bool snapping, in Text grid_step, in bool snap_open,
+                 in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
+                 in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -465,7 +502,33 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
             Combo path { text: "World"; icon: input.path_icon; min_width: 32; expand_width: true; height: 28; classes: "pane-path"; }
             ViewportTools tools { display_icon: input.display_icon; guides_icon: input.guides_icon; display_open: input.display_open; guides_open: input.guides_open; }
         }
-        Viewport viewport { expand_height: true; }
+        Row options { height: choose(input.collapsed, 12.0d, 32.0d); wrap: false; classes: "viewport-options";
+            ToggleButton stow { action: input.collapse_toggle; icon: choose(input.collapsed, input.down_icon, input.up_icon);
+                selected: input.collapsed; min_width: 12; expand_width: input.collapsed; expand_height: true;
+                padding_bottom: choose(input.collapsed, 0.0d, 20.0d); classes: "bar-stow"; }
+            Row settings { collapsed: input.collapsed; expand_width: true; expand_height: true; align_center: true; gap: 6;
+                padding_left: 4; padding_right: 6;
+                Combo actions { icon: input.mode_icon; width: 30; height: 28; classes: "icon-menu viewport-operation"; }
+                Text basis { text: input.basis; content_width: 0; single_line: true; classes: "viewport-option-label"; }
+                Combo pivot { text: input.pivot_name; selected: input.pivot_open; content_width: 0; height: 26; classes: "viewport-option-menu"; }
+                Column divider { width: 1; height: 20; classes: "viewport-option-divider"; }
+                ToggleButton snapping { icon: input.snap_icon; action: input.snap; selected: input.snapping; width: 28; height: 28; classes: "viewport-mode"; }
+                Combo step { text: input.grid_step; selected: input.snap_open; content_width: 0; height: 26; classes: "viewport-option-menu"; }
+                Checkbox surface { text: "Surface Cursor"; action: input.surface_toggle; selected: input.surface; content_width: 0; height: 26; classes: "viewport-option-check"; }
+            }
+        }
+        Row content { expand_height: true;
+            Column edit_tools { width: 36; expand_height: true; gap: 3; padding_top: 6; padding_left: 3; classes: "viewport-rail";
+                Repeat modes { items: input.modes; }
+            }
+            Overlay scene { expand_width: true; expand_height: true;
+                Viewport viewport { expand_width: true; expand_height: true; }
+                Text mode { text: input.mode_name; icon: input.mode_icon; enabled: false;
+                    out_of_flow: true; offset_x: 12; offset_y: 10; width: 200; height: 26; classes: "viewport-mode-label"; }
+                Combo camera { text: input.view_name; selected: input.view_open; content_width: 0; height: 22;
+                    out_of_flow: true; anchor_x: 1; pivot_x: 1; offset_x: -10; offset_y: 12; classes: "viewport-view-menu"; }
+            }
+        }
     }
 }
 ui PaneTab(in Text title, in bool selected, in Text style, in Key target, in double close_icon) {

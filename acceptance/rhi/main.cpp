@@ -12,7 +12,11 @@
 
 using namespace atelier::rhi;
 using namespace rhi_acceptance;
-namespace rhi_acceptance { void resource_cases(); }
+namespace rhi_acceptance {
+void resource_cases();
+void ray_query_cases();
+void scene_lit_cases();
+}
 namespace {
 template<class T> T take(Result<T> result) {
     if (!result) throw std::runtime_error(result.error().message);
@@ -290,6 +294,8 @@ int main() {
         check_debug(retained_debug.Get());
         retained_debug.Reset();
         resource_cases();
+        ray_query_cases();
+        scene_lit_cases();
         std::puts("invalid-context-inputs=4 PASS pipeline-retains-domain=PASS");
         std::puts("owner-thread=PASS close-busy=PASS close-idempotent=PASS debug-warnings=0 debug-errors=0");
         std::puts("RHI acceptance: PASS");

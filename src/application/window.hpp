@@ -33,7 +33,7 @@ public:
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
     HWND handle() const noexcept { return handle_; }
-    void show();
+    void show(bool activate = true); // false keeps the current foreground window and focus.
     // Main windows pump the thread queue and drain owned records after each
     // Dispatch. Owned popups only drain records queued by that pump or synchronous
     // callbacks, including callback failures. The consumer never runs from WndProc.
