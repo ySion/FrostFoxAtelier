@@ -568,9 +568,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 index+=count-1;
                 if(matches) {
                     const auto field_key=tuple.front().key;
+                    // Swatch shows the display colour; HDR emission is clamped for the chip only.
+                    const auto channel=[&](std::size_t lane){return tuple.size()>lane?std::clamp(tuple[lane].value,0.0,1.0):0.0;};
+                    const double r=channel(0),g=channel(1),b=channel(2);
                     properties->push_back({bind(object,prefix,Binding::Kind::property_row),
                         {spatial_rotation?std::wstring(L"Rotation (°)"):parameter_label(name),ui_language::EditBinding{0,actor_status.can_edit,false,std::move(tuple)},
-                        false,false,actor_status.can_edit,ui_language::ActionBinding{field_key,actor_status.can_edit},false,std::wstring{},field_key}});
+                        false,false,actor_status.can_edit,ui_language::ActionBinding{field_key,actor_status.can_edit},false,std::wstring{},field_key,
+                        color,r,g,b}});
                 }
                 continue;
             }
@@ -619,7 +623,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 if(member.second==enumeration->bits) {choice=wide(member.first);break;}
             properties->push_back({bind(object,property.path,Binding::Kind::property_row),
                 {caption,std::move(edit),boolean,boolean && std::get<bool>(property.value),actor_status.can_edit,
-                 ui_language::ActionBinding{key,actor_status.can_edit},enumeration!=nullptr,std::move(choice),key}});
+                 ui_language::ActionBinding{key,actor_status.can_edit},enumeration!=nullptr,std::move(choice),key,false,0.0,0.0,0.0}});
         }
         if(!properties->empty()) groups->push_back({bind(object,{},Binding::Kind::property_group),
             {title,double(object==selected?ui::ControlIcon::object:ui::ControlIcon::component),ui_language::ItemList{std::move(properties)}}});
