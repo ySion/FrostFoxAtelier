@@ -14,9 +14,9 @@
 :role(panel) { background: token(panel); }
 :role(caption) { color: #a3a3a3; }
 .menubar {
-    background-image: linear-gradient(#3d3d3d, #303030);
-    border-color: #111111;
-    border-inner-color: #575757;
+    background-image: linear-gradient(#3a3a3a, #323232);
+    border-color: #030303;
+    border-inner-color: #424242;
     border-width: 0.667dip;
     border-style: solid;
 }

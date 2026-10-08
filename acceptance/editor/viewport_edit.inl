@@ -62,6 +62,19 @@ void verify_viewport_editing() {
     require(!text(L"10001") && !key(13,ui::Key::enter) && tool.active() && transform(first)==before_first && transform(second)==before_second,
         "Out-of-range preview was committed or partially applied.");
     take(key(27,ui::Key::escape));
+    {
+        // Middle click during G picks the axis matching the pointer's travel (Blender).
+        const auto origin=*view.project(transform(second).position);
+        const auto along_x=*view.project(transform(second).position+math::Vector3{1,0,0});
+        take(key('G'));
+        const auto moved=origin+(along_x-origin)*.5f;
+        take(pointer(ui::EventKind::pointer_move,moved,false,false,ui::PointerButton::primary));
+        take(pointer(ui::EventKind::pointer_down,moved,false,false,ui::PointerButton::middle));
+        const auto picked=transform(second);
+        require(std::abs(picked.position.y-before_second.position.y)<.0001f && std::abs(picked.position.z-before_second.position.z)<.0001f &&
+            std::abs(picked.position.x-before_second.position.x)>.1f,"Middle click did not constrain G to the travelled X axis.");
+        take(key(27,ui::Key::escape));
+    }
     take(key('R'));take(key('Y'));take(text(L"90"));take(key(27,ui::Key::escape));
     require(transform(first)==before_first && transform(second)==before_second && !document.editing(),"Rotation cancellation left a preview behind.");
     take(key('S'));take(text(L"2"));take(key(13,ui::Key::enter));

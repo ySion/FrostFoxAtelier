@@ -445,6 +445,21 @@ Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,con
     }
     if(gesture_) {
         Result<void> result;
+        if(event.kind==ui::EventKind::pointer_down && event.button==ui::PointerButton::middle && gesture_->modal) {
+            // Blender: middle click during G/R/S constrains to the world axis whose
+            // screen direction best matches the pointer's travel since the start.
+            const auto travel=p-gesture_->start;const auto center=view.project(gesture_->pivot);
+            int best=-1;float score=0;
+            if(center && length(travel)>2*view.dpi_scale) for(int axis=0;axis<3;++axis) {
+                const auto tip=view.project(gesture_->pivot+axes[axis]*view.pixel_size(gesture_->pivot)*view.dpi_scale*60);if(!tip) continue;
+                const auto direction=math::try_normalize(*tip-*center);if(!direction) continue;
+                const float match=std::abs(math::dot(*direction,travel/length(travel)));
+                if(match>score) {score=match;best=axis;}
+            }
+            gesture_->axis=best;gesture_->plane=false;gesture_->angle=0;gesture_->last=gesture_->start;
+            result=update(session,view,p,event.control,event.shift);
+            if(!result) return std::unexpected(result.error());return true;
+        }
         if(event.kind==ui::EventKind::pointer_move) result=update(session,view,p,event.control,event.shift);
         else if((event.kind==ui::EventKind::pointer_up && !gesture_->modal && event.button==ui::PointerButton::primary) ||
             (event.kind==ui::EventKind::pointer_down && gesture_->modal && event.button==ui::PointerButton::primary)) result=finish(session);
