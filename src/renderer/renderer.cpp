@@ -376,7 +376,7 @@ struct Renderer::State {
                     "Set depth target");
             require(gfxDrawStateSetDepthFunction(desc.draw_state,
                     style == PipelineStyle::all_lines ? D3D12_COMPARISON_FUNC_ALWAYS :
-                    style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_LESS),
+                    style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_GREATER_EQUAL : D3D12_COMPARISON_FUNC_GREATER),
                     "Set depth comparison");
         }
         require(gfxDrawStateSetDepthWriteMask(desc.draw_state,
@@ -593,11 +593,14 @@ struct Renderer::State {
             }
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
+            const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
+            const bool editing_depth=jittered&&(capture||frame.view.reference_grid||frame.view.origin_axes||
+                frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
+            if ((lines_only||editing_depth)&&!scene_depth)
+                prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
             if (!lighting && !lines_only && !scene)
                 prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, PipelineStyle::surface);
             if (lines_only) {
-                if (!scene_depth)
-                    prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
                 auto& lines = frame.view.hidden_lines ? visible_lines : all_lines;
                 if (!lines)
                     prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
@@ -608,7 +611,7 @@ struct Renderer::State {
             if(!lighting)prepare_matcap();
             if (depth_extent != extent) {
                 if (depth) require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
-                const float clear[4] = {1, 0, 0, 0};
+                const float clear[4] = {0, 0, 0, 0};
                 depth = gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_D32_FLOAT, 1, clear);
                 allocation(bool(depth));
                 depth_extent = extent;
@@ -655,8 +658,8 @@ struct Renderer::State {
                     for(const auto& part:geometry.source->parts()) {
                         const auto& material=geometry.source->materials()[part.material];
                         require(gfxProgramSetParameter(gfx,program,"material_color",material.diffuse),"Set diffuse material");
-                        require(gfxProgramSetParameter(gfx,program,"diffuse_texture",material_texture(material.color,true)),"Bind diffuse texture");
-                        require(gfxProgramSetParameter(gfx,program,"opacity_texture",material_texture(material.opacity,false)),"Bind opacity texture");
+                        require(gfxProgramSetParameter(gfx,program,"diffuse_texture",material_texture(lighting?atelier::geometry::ImageRef{}:material.color,true)),"Bind diffuse texture");
+                        require(gfxProgramSetParameter(gfx,program,"opacity_texture",material_texture(lighting?atelier::geometry::ImageRef{}:material.opacity,false)),"Bind opacity texture");
                         require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
                         require(gfxCommandDraw(gfx,part.vertex_count,batch.count),"Draw material part");
                         ++stats.scene_draw_calls;
@@ -669,6 +672,12 @@ struct Renderer::State {
                     lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size())});}
                 scene_lit->draw(frame,extent,depth,lit_draws,stats);
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
+                if(editing_depth) {
+                    // AA has consumed and retained its sampled depth. Editing
+                    // guides and capture share the public, unjittered camera.
+                    require(gfxCommandClearTexture(gfx,depth),"Clear sampled scene depth for editing");
+                    draw_batches(scene_depth,2);
+                }
                 draw_grid(frame,true);
                 draw_batches(visible_lines,1);
             } else if (lines_only) {
@@ -755,7 +764,7 @@ struct Renderer::State {
                 require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
             } else {
                 // A UI-only capture describes this frame, not a retained scene depth texture.
-                std::fill(capture->depth.begin(), capture->depth.end(), 1.0f);
+                std::fill(capture->depth.begin(), capture->depth.end(), 0.0f);
             }
             const auto finished = context.finish();
             if (!finished) throw Error{finished.error(), true};

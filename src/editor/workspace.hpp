@@ -34,6 +34,7 @@ inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_gr
 inline constexpr ui::ControlKey shading_scene_lit=772;
 inline constexpr ui::ControlKey lit_menu=860,lit_effects_first=861,lit_exposure_first=867,lit_exposure_menu=872;
 inline constexpr ui::ControlKey lit_shadow_budget_menu=873,lit_shadow_budget_first=874;
+inline constexpr ui::ControlKey lit_aa_menu=877,lit_aa_first=878;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;

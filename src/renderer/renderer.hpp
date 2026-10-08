@@ -30,10 +30,10 @@ struct Target {
     bool drawable{};
 };
 // Left-handed, +Y up, meters, D3D depth [0,1]. Row-major storage and row
-// vectors: p * world * view * projection (LookAtLH / PerspectiveFovLH).
+// vectors: p * world * view * projection. Finite Reversed-Z: near=1, far=0.
 struct Camera {
     std::array<float, 16> view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    std::array<float, 16> projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1, 1};
 };
 struct Material {
     float roughness{0.65f};
@@ -79,7 +79,7 @@ struct Frame {
     std::span<const OverlayShape> overlay{};
     std::span<const Light> lights{};
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
-    std::uint64_t scene_revision{}; // Geometry/material/light edits; excludes camera movement.
+    std::uint64_t scene_revision{}; // Content revision; signal owners distinguish changes from scene replacement.
     bool camera_cut{};
 };
 enum class FrameStatus { accepted, skipped };
@@ -108,7 +108,7 @@ struct FrameStats {
     std::uint64_t cached_image_cpu_bytes{};
     // Completed, raw GPU sample. All eight passes and the counters refer to
     // gpu_sample_frame_id; may lag this return and repeat until a new completion.
-    std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct/shadows, DDGI, GTAO, HDR/SSSR, TAA, bloom/tone.
+    std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct/denoise, DDGI, GTAO/Local GI, HDR/SSSR, HDR resolve, bloom/tone/SMAA/display.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
     std::uint32_t scene_lit_shadow_lights{}, scene_lit_unshadowed_lights{}; // This frame's traced slots / requested fallback shadows.

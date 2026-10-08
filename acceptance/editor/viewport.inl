@@ -13,7 +13,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
         std::abs(shading->bounds.y-path->bounds.y)<.1f && std::abs(guides->bounds.y-path->bounds.y)<.1f,
         "Viewport menus must remain two compact targets at the end of the existing path row.");
     atelier::renderer::Capture empty;
-    require(app.step(&empty) && std::ranges::all_of(empty.depth,[](float z){return z==1;}),
+    require(app.step(&empty) && std::ranges::all_of(empty.depth,[](float z){return z==0;}),
             "Empty viewport guides changed geometry depth.");
     png(empty,output/"empty-reference-grid.png");
     const auto browser_history=app.document().undo_count();

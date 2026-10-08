@@ -14,6 +14,10 @@ uint2 lit_depth_output_size;
 uint lit_depth_source_is_device;
 uint lit_depth_level_count;
 RWTexture2D<float> lit_ao_output;
+Texture2D<float> lit_ao_raw;
+Texture2D<float2> lit_ao_previous; // AO visibility, effective history length.
+RWTexture2D<float2> lit_ao_history_output;
+RWTexture2D<float> lit_ao_resolved_output;
 
 Texture2D<float2> lit_brdf_lut;
 RWTexture2D<float2> lit_brdf_output;
@@ -28,6 +32,12 @@ Texture2D<float4> lit_reflection_previous;
 Texture2D<float4> lit_reflection_hit_previous;
 RWTexture2D<float4> lit_reflection_resolved_output;
 RWTexture2D<float4> lit_reflection_hit_output;
+Texture2D<float2> lit_reflection_moments_previous; // Rec709 E[L], E[L^2]; RG32F.
+RWTexture2D<float2> lit_reflection_moments_output;
+Texture2D<float2> lit_reflection_moments;
+Texture2D<float4> lit_reflection_filter_input;
+RWTexture2D<float4> lit_reflection_filter_output;
+uint lit_reflection_filter_step; // Separate images at successive steps 1, 2, 4.
 
 Texture2D<float4> lit_reflection;
 Texture2D<float4> lit_taa_previous;
@@ -42,6 +52,8 @@ Texture2D<float4> lit_bloom_input;
 RWTexture2D<float4> lit_bloom_output;
 int2 lit_bloom_direction;
 float4 lit_bloom_controls; // exposed threshold, soft knee, intensity, exposed clamp
+RWTexture2D<float4> lit_tone_output; // Linear SDR; no display transfer here.
+Texture2D<float4> lit_display_source; // Final AA output, still linear SDR.
 
 float3 lit_post_finite(float3 color) {
     return all(isfinite(color)) ? clamp(color, 0, 65000) : 0;
@@ -59,7 +71,7 @@ int2 lit_post_pixel(float2 uv) {
     return clamp(int2(uv * lit_size_frame.xy), int2(0, 0), int2(lit_size_frame.xy) - 1);
 }
 bool lit_post_surface(uint2 p) {
-    return lit_inside(p) && lit_depth.Load(int3(p, 0)) < 1 &&
+    return lit_inside(p) && !lit_is_background_depth(lit_depth.Load(int3(p, 0))) &&
         dot(lit_normal_roughness.Load(int3(p, 0)).xyz,
             lit_normal_roughness.Load(int3(p, 0)).xyz) > .25;
 }
@@ -101,9 +113,9 @@ void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
     float pixel_radius = clamp(radius / pixel_size, 1, 64);
     // Bias only the horizon origin; stored low-poly surface normals stay intact.
     center += view_direction * pixel_size * .05;
-    uint seed = lit_hash(p.x + p.y * lit_size_frame.x + lit_size_frame.z * 747796405u);
-    float rotation = lit_random(seed);
-    float step_noise = lit_random(seed);
+    uint seed = lit_hash(p.x + p.y * lit_size_frame.x);
+    float rotation = frac(lit_random(seed) + (lit_size_frame.z % 1024) * .618033989);
+    float step_noise = frac(lit_random(seed) + (lit_size_frame.z % 1024) * .754877666);
     float visibility = 0;
     [unroll] for (uint slice = 0; slice < 3; ++slice) {
         float phi = (slice + rotation) * (LIT_PI / 3);
@@ -129,7 +141,7 @@ void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
                 if (!lit_post_inside_uv(sample_uv)) continue;
                 int2 sample_pixel = lit_post_pixel(sample_uv);
                 float sample_depth = lit_depth.Load(int3(sample_pixel, 0));
-                if (sample_depth >= 1) continue;
+                if (lit_is_background_depth(sample_depth)) continue;
                 float3 delta = lit_world(lit_post_uv(sample_pixel), sample_depth) - center;
                 float distance = length(delta);
                 if (distance < 1e-6 || distance >= radius) continue;
@@ -155,7 +167,7 @@ void lit_depth_pyramid_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
     if (any(p >= lit_depth_output_size)) return;
     if (lit_depth_source_is_device != 0) {
-        float z = lit_inside(p) ? lit_depth.Load(int3(p, 0)) : 1;
+        float z = lit_inside(p) ? lit_depth.Load(int3(p, 0)) : lit_depth_far_value();
         lit_depth_output[p] = float2(z, z);
         return;
     }
@@ -230,6 +242,18 @@ float3 lit_post_environment(uint2 p) {
     // GGX prefilter is EXACTLY the same constant at every direction/roughness;
     // the generated LUT retains roughness-dependent masking and Fresnel energy.
     return lit_post_finite(lit_environment.rgb * (f0 * integrated_brdf.x + integrated_brdf.y));
+}
+float3 lit_reflection_finite(float3 value) {
+    // A control-variate observation can be negative even though its integral
+    // is physical. Keep that sign through reconstruction; only the final HDR
+    // combination uses the nonnegative color boundary. Bound FP16 storage.
+    return all(isfinite(value)) ? clamp(value, -65000, 65000) : 0;
+}
+bool lit_reflection_same_material(uint2 p, int2 q) {
+    // This signal is already receiver-material modulated. Base and metallic
+    // uniquely determine F0; exact stored parameters keep adjacent flat-color
+    // low-poly materials separate without another arbitrary color threshold.
+    return all(lit_base_metallic.Load(int3(p, 0)) == lit_base_metallic.Load(int3(q, 0)));
 }
 [numthreads(1, 1, 1)]
 void lit_ssr_reset_cs(uint3 id : SV_DispatchThreadID) { lit_reflection_counter[0] = 0; }
@@ -318,11 +342,11 @@ bool lit_ssr_intersect(float3 world_origin, float3 ray, float3 view_direction,
         float exit_time = min(end_time, lit_ssr_cell_exit(origin.xy, direction.xy, time, grid_size));
         float next_z = origin.z + direction.z * exit_time;
         float ray_min = min(position.z, next_z), ray_max = max(position.z, next_z);
-        bool overlap = range.x < 1 && ray_max >= range.x - depth_thickness &&
+        bool overlap = !lit_is_background_depth(range.y) && ray_max >= range.x - depth_thickness &&
                        ray_min <= range.y + depth_thickness;
         if (overlap && level > 0) { --level; continue; }
         if (overlap) {
-            float candidate_time = abs(direction.z) > 1e-9 ? (range.x - origin.z) / direction.z : time;
+            float candidate_time = abs(direction.z) > 1e-9 ? (range.y - origin.z) / direction.z : time;
             candidate_time = clamp(candidate_time, time, exit_time);
             float3 candidate = origin + direction * candidate_time;
             if (lit_post_inside_uv(candidate.xy)) {
@@ -333,7 +357,7 @@ bool lit_ssr_intersect(float3 world_origin, float3 ray, float3 view_direction,
                 float error = length(surface - world_origin - ray * along_ray);
                 float thickness = world_thickness + along_ray * .002;
                 float3 hit_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
-                if (z < 1 && along_ray > max(lit_controls.y * 8, .04) &&
+                if (!lit_is_background_depth(z) && along_ray > max(lit_controls.y * 8, .04) &&
                     along_ray < max_distance && error < thickness && dot(hit_normal, -ray) > .025) {
                     float2 local = (candidate.xy * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
                     float edge = min(min(local.x, local.y), min(1 - local.x, 1 - local.y));
@@ -362,9 +386,13 @@ void lit_ssr_trace_cs(uint3 id : SV_DispatchThreadID) {
     float3 n = lit_safe_normal(nr.xyz), v = lit_view_direction(uv);
     float3 tangent, bitangent; lit_basis(n, tangent, bitangent);
     float3 local_v = float3(dot(v, tangent), dot(v, bitangent), max(dot(v, n), 1e-4));
-    uint seed = lit_hash(packed ^ (lit_size_frame.z * 2891336453u));
+    uint seed = lit_hash(packed);
     float alpha = max(nr.w * nr.w, .0025);
-    float3 local_h = lit_post_visible_ggx(local_v, alpha, float2(lit_random(seed), lit_random(seed)));
+    // Scrambled R2 samples cover the lobe over time rather than repeatedly
+    // drawing independent frame hashes. Surface history handles disocclusion.
+    float2 sample = frac(float2(lit_random(seed), lit_random(seed)) +
+                        (lit_size_frame.z % 1024) * float2(.754877666, .569840296));
+    float3 local_h = lit_post_visible_ggx(local_v, alpha, sample);
     float3 h = local_h.x * tangent + local_h.y * bitangent + local_h.z * n;
     float3 ray = lit_safe_normal(reflect(-v, h));
     float nl = saturate(dot(n, ray)), nv = max(saturate(dot(n, v)), 1e-4);
@@ -382,7 +410,7 @@ void lit_ssr_trace_cs(uint3 id : SV_DispatchThreadID) {
     // HDR source contains no final reflection, UI, grid or display exposure.
     float3 reflection = lit_post_environment(p) +
         confidence * (incoming - lit_environment.rgb) * fresnel * weight;
-    lit_reflection_output[p] = float4(lit_post_finite(reflection), confidence);
+    lit_reflection_output[p] = float4(lit_reflection_finite(reflection), confidence);
     lit_reflection_hit_trace_output[p] = hit;
 }
 
@@ -390,7 +418,7 @@ float lit_post_previous_depth_tolerance(float3 position, float3 view_direction) 
     float4 a = mul(float4(position, 1), lit_previous_view_projection);
     float4 b = mul(float4(position + view_direction * .035, 1), lit_previous_view_projection);
     if (abs(a.w) < 1e-6 || abs(b.w) < 1e-6) return 0;
-    return max(2e-5, abs(a.z / a.w - b.z / b.w));
+    return max(abs(a.z / a.w) * (8 * 1.192092896e-7), abs(a.z / a.w - b.z / b.w));
 }
 float2 lit_post_previous_depth_gradient(float3 position, float3 normal) {
     // Device depth is affine in projected XY for a plane. Compute that plane's
@@ -406,7 +434,7 @@ float2 lit_post_previous_depth_gradient(float3 position, float3 normal) {
     float2 ac = lit_window_uv(c) - lit_window_uv(a);
     float db = b.z / b.w - a.z / a.w, dc = c.z / c.w - a.z / a.w;
     float determinant = ab.x * ac.y - ab.y * ac.x;
-    if (abs(determinant) < 1e-12) return 0;
+    if (abs(determinant) < 1e-16) return 0;
     float2 gradient = float2(db * ac.y - dc * ab.y, dc * ab.x - db * ac.x) / determinant;
     return all(isfinite(gradient)) ? gradient : 0;
 }
@@ -417,7 +445,7 @@ bool lit_post_valid_history(float2 previous_uv, float expected_depth, float3 cur
     float previous_depth = lit_history_depth.Load(int3(q, 0));
     float3 previous_normal = lit_safe_normal(lit_history_normal.Load(int3(q, 0)).xyz);
     float tap_depth = expected_depth + dot(lit_post_uv(q) - previous_uv, depth_gradient);
-    return previous_depth < 1 && abs(previous_depth - tap_depth) <= depth_tolerance &&
+    return !lit_is_background_depth(previous_depth) && abs(previous_depth - tap_depth) <= depth_tolerance &&
            dot(current_normal, previous_normal) >= .94;
 }
 bool lit_post_sample_history(Texture2D<float4> source, float2 previous_uv, float expected_depth,
@@ -441,12 +469,94 @@ bool lit_post_sample_history(Texture2D<float4> source, float2 previous_uv, float
     return true;
 }
 float lit_post_response(float2 motion) {
-    // Random BRDF/visibility samples are radiance variance, not a flash event.
-    // Scene/light edits have an explicit current-frame reactive signal. Color
-    // clipping handles local disagreement without canceling Monte Carlo reuse.
+    // Lighting changes shorten useful support in each signal; they do not
+    // cancel every pixel's temporal reconstruction on a moving-light frame.
     float motion_pixels = length(motion * lit_size_frame.xy);
-    return (1 - saturate(lit_temporal.z)) *
-           lerp(1, .25, saturate(motion_pixels / 12));
+    return lerp(1, .65, saturate(motion_pixels / 12));
+}
+bool lit_post_reflection_history(float2 previous_uv, float expected_depth, float3 normal,
+                                 float roughness, float tolerance, float2 gradient,
+                                 out float4 signal, out float2 moments, out float support) {
+    signal = 0; moments = 0; support = 0;
+    if (lit_size_frame.w == 0 || !lit_post_inside_uv(previous_uv)) return false;
+    float2 pixel = previous_uv * lit_size_frame.xy - .5;
+    int2 base = int2(floor(pixel)); float2 fraction = frac(pixel);
+    [unroll] for (int y = 0; y < 2; ++y) [unroll] for (int x = 0; x < 2; ++x) {
+        int2 q = base + int2(x, y);
+        if (any(q < 0) || any(q >= int2(lit_size_frame.xy))) continue;
+        float2 q_uv = lit_post_uv(q);
+        float tap_depth = expected_depth + dot(q_uv - previous_uv, gradient);
+        if (!lit_post_valid_history(q_uv, tap_depth, normal, tolerance, gradient) ||
+            abs(lit_history_normal.Load(int3(q, 0)).w - roughness) > .08) continue;
+        float4 sample = lit_reflection_previous.Load(int3(q, 0));
+        float2 sample_moments = lit_reflection_moments_previous.Load(int3(q, 0));
+        if (sample.a < 1 || !all(isfinite(sample)) || !all(isfinite(sample_moments))) continue;
+        float weight = (x == 0 ? 1 - fraction.x : fraction.x) * (y == 0 ? 1 - fraction.y : fraction.y);
+        signal += sample * weight; moments += sample_moments * weight; support += weight;
+    }
+    if (support < .1) return false;
+    signal /= support; moments /= support;
+    return true;
+}
+[numthreads(8, 8, 1)]
+void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
+    uint2 p = id.xy;
+    if (any(p >= lit_size_frame.xy)) return;
+    if (!lit_post_surface(p) || (lit_counts.w & 4) == 0 || lit_controls.z <= 0) {
+        lit_ao_resolved_output[p] = 1; lit_ao_history_output[p] = float2(1, 0); return;
+    }
+    float2 uv = lit_post_uv(p);
+    float3 position = lit_post_world(p);
+    float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(p, 0)).xyz);
+    float pixel_world = max(lit_post_pixel_world_size(uv, lit_depth.Load(int3(p, 0))), .001);
+    float sum = 0, second = 0, weight_sum = 0;
+    [unroll] for (int y = -2; y <= 2; ++y) [unroll] for (int x = -2; x <= 2; ++x) {
+        int2 q = int2(p) + int2(x, y);
+        if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q)) continue;
+        float3 q_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
+        float normal_dot = dot(normal, q_normal);
+        float plane_distance = abs(dot(lit_post_world(q) - position, normal));
+        if (normal_dot < .95 || plane_distance > max(.005, pixel_world * .5)) continue;
+        float weight = pow(saturate(normal_dot), 32) * exp(-.35 * (x * x + y * y));
+        float value = saturate(lit_ao_raw.Load(int3(q, 0)));
+        sum += value * weight; second += value * value * weight; weight_sum += weight;
+    }
+    float current = weight_sum > 0 ? sum / weight_sum : saturate(lit_ao_raw.Load(int3(p, 0)));
+    float sigma = sqrt(max(0, second / max(weight_sum, 1e-6) - current * current));
+    float4 motion = lit_motion.Load(int3(p, 0));
+    float2 previous_uv = uv + motion.xy;
+    float expected_depth = lit_previous_device_depth(p, motion);
+    float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
+    float2 gradient = lit_post_previous_depth_gradient(position, normal);
+    float2 history = 0; float support = 0;
+    if ((lit_history_invalid & 4) == 0 && lit_size_frame.w != 0 && motion.w > .5 && lit_post_inside_uv(previous_uv)) {
+        float2 pixel = previous_uv * lit_size_frame.xy - .5;
+        int2 base = int2(floor(pixel)); float2 fraction = frac(pixel);
+        [unroll] for (int y = 0; y < 2; ++y) [unroll] for (int x = 0; x < 2; ++x) {
+            int2 q = base + int2(x, y);
+            if (any(q < 0) || any(q >= int2(lit_size_frame.xy))) continue;
+            float2 q_uv = lit_post_uv(q);
+            if (!lit_post_valid_history(q_uv, expected_depth + dot(q_uv - previous_uv, gradient),
+                                        normal, tolerance, gradient)) continue;
+            float2 sample = lit_ao_previous.Load(int3(q, 0));
+            if (sample.y < 1 || !all(isfinite(sample))) continue;
+            float weight = (x == 0 ? 1 - fraction.x : fraction.x) * (y == 0 ? 1 - fraction.y : fraction.y);
+            history += sample * weight; support += weight;
+        }
+    }
+    float count = 1;
+    if (support >= .1) {
+        history /= support;
+        float previous_count = min(history.y * support * lit_post_response(motion.xy), 31);
+        // A newly revealed/moving occluder can change AO on an unchanged plane.
+        // Bound that local disagreement without reacting to unrelated lights.
+        if (abs(history.x - current) > max(.15, sigma * 3)) previous_count = min(previous_count, 4);
+        float history_weight = previous_count / (previous_count + 1);
+        float clipped = clamp(history.x, current - max(.06, sigma * 3), current + max(.06, sigma * 3));
+        current = lerp(current, clipped, history_weight); count = previous_count + 1;
+    }
+    current = saturate(current);
+    lit_ao_resolved_output[p] = current; lit_ao_history_output[p] = float2(current, count);
 }
 [numthreads(8, 8, 1)]
 void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
@@ -455,43 +565,55 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float4 center = lit_reflection_trace.Load(int3(p, 0));
     float4 hit = lit_reflection_hit_trace.Load(int3(p, 0));
     lit_reflection_hit_output[p] = hit;
-    if (!lit_post_surface(p)) { lit_reflection_resolved_output[p] = 0; return; }
+    if (!lit_post_surface(p)) {
+        lit_reflection_resolved_output[p] = 0; lit_reflection_moments_output[p] = 0; return;
+    }
+    if ((lit_counts.w & 8) == 0) {
+        // Environment-only rendering is deterministic and material-local;
+        // neither spatial pooling nor stale SSR history participates.
+        float3 environment = lit_post_environment(p);
+        float luma = lit_post_luminance(environment);
+        lit_reflection_resolved_output[p] = float4(environment, 1);
+        lit_reflection_moments_output[p] = float2(luma, luma * luma);
+        lit_reflection_hit_output[p] = 0;
+        return;
+    }
     float2 uv = lit_post_uv(p);
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
     float3 normal = lit_safe_normal(nr.xyz), position = lit_post_world(p);
     float pixel_world = max(lit_post_pixel_world_size(uv, lit_depth.Load(int3(p, 0))), .001);
     float3 sum = center.rgb; float weight_sum = 1;
-    float3 center_encoded = lit_post_ycocg(center.rgb);
-    float3 moment1 = center_encoded, moment2 = center_encoded * center_encoded;
-    [unroll] for (int y = -2; y <= 2; ++y) [unroll] for (int x = -2; x <= 2; ++x) {
+    float center_luma = lit_post_luminance(center.rgb);
+    float2 current_moments = float2(center_luma, center_luma * center_luma);
+    [unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
         if (x == 0 && y == 0) continue;
         int2 q = int2(p) + int2(x, y);
-        if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q)) continue;
+        if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q) ||
+            !lit_reflection_same_material(p, q)) continue;
         float4 neighbor_normal = lit_normal_roughness.Load(int3(q, 0));
         if (dot(normal, lit_safe_normal(neighbor_normal.xyz)) < .96 ||
             abs(nr.w - neighbor_normal.w) > .08 ||
             abs(dot(lit_post_world(q) - position, normal)) > max(.005, pixel_world * .5)) continue;
         float3 value = lit_reflection_trace.Load(int3(q, 0)).rgb;
-        float3 encoded = lit_post_ycocg(value);
         // Mirrors keep their current sharp sample. Rough lobes can pool nearby
         // independent stochastic samples without blending geometric hard edges.
-        float weight = saturate(nr.w * 6) / (1 + x * x + y * y);
+        float weight = smoothstep(.04, .2, nr.w) / (1 + x * x + y * y);
         sum += value * weight; weight_sum += weight;
-        moment1 += encoded * weight; moment2 += encoded * encoded * weight;
+        float luma = lit_post_luminance(value);
+        current_moments += float2(luma, luma * luma) * weight;
     }
     float3 current = sum / weight_sum;
-    float3 mean = moment1 / weight_sum;
-    float3 spatial_variance = max(0, moment2 / weight_sum - mean * mean);
-    float3 spatial_sigma = sqrt(spatial_variance);
+    current_moments /= weight_sum;
+    float spatial_variance = max(0, current_moments.y - current_moments.x * current_moments.x);
     float4 motion = lit_motion.Load(int3(p, 0));
     float2 previous_uv = uv + motion.xy;
     float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
     float2 gradient = lit_post_previous_depth_gradient(position, normal);
     float expected_depth = lit_previous_device_depth(p, motion);
-    float4 previous_signal;
-    bool valid = (lit_counts.w & 8) != 0 && motion.w > .5 &&
-        lit_post_sample_history(lit_reflection_previous, previous_uv, expected_depth, normal,
-                                tolerance, gradient, previous_signal);
+    float4 previous_signal; float2 previous_moments; float support;
+    bool valid = (lit_history_invalid & 2) == 0 && (lit_counts.w & 8) != 0 && motion.w > .5 &&
+        lit_post_reflection_history(previous_uv, expected_depth, normal, nr.w, tolerance,
+                                    gradient, previous_signal, previous_moments, support);
     if (valid && hit.w > 0) {
         int2 hit_pixel = lit_post_pixel(hit.xy);
         float4 hit_motion = lit_motion.Load(int3(hit_pixel, 0));
@@ -516,23 +638,87 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         valid = lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0)).w <= 0;
     }
     float3 result = current;
-    float result_variance = spatial_variance.x;
+    float count = 1;
+    float2 result_moments = current_moments;
     if (valid) {
         float3 previous = previous_signal.rgb;
-        float history_weight = min(lit_temporal.x, .95) * lit_post_response(motion.xy);
-        // Alpha stores luminance standard deviation, not trace confidence.
-        // Persistent variance prevents sparse valid rays followed by random
-        // misses from repeatedly clipping the legitimate accumulated mean away.
-        float temporal_sigma = max(spatial_sigma.x, previous_signal.a);
-        float3 sigma = max(spatial_sigma, float3(temporal_sigma, temporal_sigma * .5, temporal_sigma * .5));
-        float3 range = max(sigma * 3, .002.xxx);
-        previous = lit_post_rgb(clamp(lit_post_ycocg(previous), mean - range, mean + range));
+        float temporal_variance = max(0, previous_moments.y - previous_moments.x * previous_moments.x);
+        float sigma = sqrt(max(spatial_variance, temporal_variance));
+        float previous_count = min(previous_signal.a * support * lit_post_response(motion.xy),
+                                   lerp(63, 23, saturate(lit_temporal.z)));
+        float previous_luma = lit_post_luminance(previous);
+        // Keep radiance variance across independent rough-lobe hits and misses.
+        // Every moment and clipping extent uses the SAME Rec709 scalar units.
+        float range = max(sigma * 4, .01);
+        float clipped_luma = clamp(previous_luma, current_moments.x - range, current_moments.x + range);
+        // Additive projection preserves chroma and works for negative or zero
+        // luminance. Scaling by luma would divide by zero or flip signed RGB.
+        float luma_shift = clipped_luma - previous_luma;
+        previous += luma_shift.xxx;
+        previous_moments.y += 2 * luma_shift * previous_moments.x + luma_shift * luma_shift;
+        previous_moments.x += luma_shift;
+        float disagreement = abs(previous_luma - current_moments.x);
+        if (disagreement > max(.1, sigma * 6)) previous_count = min(previous_count, 7);
+        float history_weight = previous_count / (previous_count + 1);
         result = lerp(current, previous, history_weight);
-        float mean_delta = lit_post_luminance(current) - lit_post_luminance(previous_signal.rgb);
-        result_variance = lerp(spatial_variance.x, previous_signal.a * previous_signal.a, history_weight) +
-                          history_weight * (1 - history_weight) * mean_delta * mean_delta;
+        result_moments = lerp(current_moments, previous_moments, history_weight);
+        count = previous_count + 1;
     }
-    lit_reflection_resolved_output[p] = float4(lit_post_finite(result), min(sqrt(max(result_variance, 0)), 65000));
+    lit_reflection_resolved_output[p] = float4(lit_reflection_finite(result), count);
+    lit_reflection_moments_output[p] = result_moments;
+}
+
+[numthreads(8, 8, 1)]
+void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
+    uint2 p = id.xy;
+    if (any(p >= lit_size_frame.xy)) return;
+    float4 center = lit_reflection_filter_input.Load(int3(p, 0));
+    lit_reflection_filter_output[p] = center;
+    if (!lit_post_surface(p) || (lit_counts.w & 8) == 0) return;
+    float4 nr = lit_normal_roughness.Load(int3(p, 0));
+    // True mirrors retain their association and sharp signal, including edges.
+    if (nr.w < .04) return;
+    float3 normal = lit_safe_normal(nr.xyz), position = lit_post_world(p);
+    float pixel_world = max(lit_post_pixel_world_size(lit_post_uv(p), lit_depth.Load(int3(p, 0))), .001);
+    float2 moments = lit_reflection_moments.Load(int3(p, 0));
+    float variance = max(0, moments.y - moments.x * moments.x);
+    float sigma = sqrt(variance);
+    float relative_noise = saturate(sigma / max(abs(moments.x), .02));
+    float distance = lit_reflection_hit_trace.Load(int3(p, 0)).w;
+    float footprint_distance = distance > 0 ? distance : lit_controls.w * .15;
+    float footprint = clamp(nr.w * nr.w * footprint_distance / pixel_world * .1, 1, 8);
+    float radius = max(1, footprint * lerp(.35, 1, relative_noise));
+    uint step = max(1u, lit_reflection_filter_step);
+    if (step > radius) return;
+    float3 sum = center.rgb; float weight_sum = 1;
+    float center_luma = lit_post_luminance(center.rgb);
+    [unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
+        if (x == 0 && y == 0) continue;
+        int2 q = int2(p) + int2(x, y) * int(step);
+        if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q) ||
+            !lit_reflection_same_material(p, q)) continue;
+        float4 q_nr = lit_normal_roughness.Load(int3(q, 0));
+        float normal_dot = dot(normal, lit_safe_normal(q_nr.xyz));
+        float plane_distance = abs(dot(lit_post_world(q) - position, normal));
+        if (normal_dot < .96 || abs(nr.w - q_nr.w) > .08 ||
+            plane_distance > max(.005, pixel_world * .5)) continue;
+        float4 sample = lit_reflection_filter_input.Load(int3(q, 0));
+        float2 q_moments = lit_reflection_moments.Load(int3(q, 0));
+        float q_variance = max(0, q_moments.y - q_moments.x * q_moments.x);
+        float signal_sigma = sqrt(variance / max(center.a, 1) + q_variance / max(sample.a, 1));
+        float range = max(.01, signal_sigma * 4 + .05 * max(abs(center_luma), abs(lit_post_luminance(sample.rgb))));
+        float weight = exp(-abs(lit_post_luminance(sample.rgb) - center_luma) / range) *
+                       pow(saturate(normal_dot), 32) / (1 + x * x + y * y);
+        float q_distance = lit_reflection_hit_trace.Load(int3(q, 0)).w;
+        // Rough-lobe hit/miss is a random variable, not a geometry boundary.
+        // Distance guides only two valid hits and grows with the lobe width.
+        if (distance > 0 && q_distance > 0) {
+            float distance_range = max(.25, (distance + q_distance) * nr.w * .5);
+            weight *= exp(-abs(distance - q_distance) / distance_range);
+        }
+        sum += sample.rgb * weight; weight_sum += weight;
+    }
+    lit_reflection_filter_output[p] = float4(lit_reflection_finite(sum / weight_sum), center.a);
 }
 
 float3 lit_post_current_hdr(uint2 p) {
@@ -544,7 +730,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     if (any(p >= lit_size_frame.xy)) return;
     float depth = lit_depth.Load(int3(p, 0));
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
-    lit_history_depth_output[p] = lit_inside(p) ? depth : 1;
+    lit_history_depth_output[p] = lit_inside(p) ? depth : lit_depth_far_value();
     lit_history_normal_output[p] = lit_inside(p) ? nr : 0;
     if (!lit_inside(p)) { lit_taa_output[p] = 0; return; }
     float3 current = lit_post_current_hdr(p);
@@ -556,8 +742,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
     float2 gradient = lit_post_previous_depth_gradient(position, normal);
     float expected_depth = lit_previous_device_depth(p, motion);
-    if ((lit_counts.w & 16) == 0 || motion.w <= .5 ||
-        !lit_post_valid_history(previous_uv, expected_depth, normal, tolerance, gradient)) {
+    if ((lit_history_invalid & 8) != 0 || (lit_counts.w & 16) == 0 || motion.w <= .5) {
         lit_taa_output[p] = float4(current, 1); return;
     }
     float3 center_encoded = lit_post_ycocg(current), minimum = center_encoded, maximum = center_encoded;
@@ -578,6 +763,17 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     float3 sigma = sqrt(max(0, moment2 / count - mean * mean));
     minimum = max(minimum, mean - sigma * 1.25);
     maximum = min(maximum, mean + sigma * 1.25);
+    // Signal reconstruction already distinguishes stochastic variance from
+    // disocclusion. Do not squeeze its legitimate mean into this frame's tiny
+    // anti-aliasing neighborhood. Geometric history validation remains strict.
+    float2 reflection_moments = lit_reflection_moments.Load(int3(p, 0));
+    float reflection_variance = max(0, reflection_moments.y - reflection_moments.x * reflection_moments.x);
+    float reflection_count = max(1, lit_reflection.Load(int3(p, 0)).a);
+    float reflection_sigma = sqrt(reflection_variance / reflection_count);
+    // Conservative change of basis: RGB chroma can exceed Rec709 luminance,
+    // especially for blue emitters. The persistent moments stay in Rec709.
+    float3 signal_extent = reflection_sigma * float3(4, 7, 7);
+    minimum -= signal_extent; maximum += signal_extent;
     // The shared footprint reconstruction validates each tap against the
     // projected plane, preserving low-poly edges without rejecting plane slope.
     float4 history_signal;
@@ -586,7 +782,8 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
         lit_taa_output[p] = float4(current, 1); return;
     }
     float3 history = history_signal.rgb;
-    float history_weight = min(lit_temporal.x, .95) * lit_post_response(motion.xy);
+    float history_weight = min(lit_temporal.x, .95) * lit_post_response(motion.xy) *
+                           lerp(1, .9, saturate(lit_temporal.z));
     float3 clipped = lit_post_rgb(clamp(lit_post_ycocg(history), minimum, maximum));
     lit_taa_output[p] = float4(lit_post_finite(lerp(current, clipped, history_weight)), 1);
 }
@@ -630,8 +827,7 @@ void lit_bloom_blur_cs(uint3 id : SV_DispatchThreadID) {
     }
     lit_bloom_output[id.xy] = float4(lit_post_finite(sum), 1);
 }
-float4 lit_tonemap_ps(float4 position : SV_Position, float2 input_uv : TEXCOORD0) : SV_Target {
-    uint2 p = uint2(position.xy);
+float4 lit_post_tonemap(uint2 p) {
     if (!lit_inside(p)) return 0;
     float2 uv = lit_post_uv(p);
     float3 bloom = (lit_counts.w & 32) != 0 ? lit_bloom.SampleLevel(lit_linear_sampler, uv, 0).rgb : 0;
@@ -643,4 +839,13 @@ float4 lit_tonemap_ps(float4 position : SV_Position, float2 input_uv : TEXCOORD0
     float3 mapped = saturate((color * (2.51 * color + .03)) /
                             (color * (2.43 * color + .59) + .14));
     return float4(mapped, 1);
+}
+[numthreads(8, 8, 1)]
+void lit_tonemap_cs(uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= lit_size_frame.xy)) return;
+    lit_tone_output[id.xy] = lit_post_tonemap(id.xy);
+}
+float4 lit_display_ps(float4 position : SV_Position, float2 input_uv : TEXCOORD0) : SV_Target {
+    // Viewport raster clips this pass; the sRGB RTV encodes exactly once.
+    return lit_display_source.Load(int3(uint2(position.xy), 0));
 }

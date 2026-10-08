@@ -6,9 +6,15 @@ SamplerState material_sampler;
 float4 material_color;
 
 float4 main(SceneOutput input) : SV_Target {
-    float4 diffuse = diffuse_texture.Sample(material_sampler, input.uv) * material_color;
-    float opacity = diffuse.a * opacity_texture.Sample(material_sampler, input.uv).r;
-    clip(opacity - .5); // Identical coverage for surfaces, depth and both line passes.
+    float4 diffuse = 1;
+    // Scene Lit's current GBuffer and ray queries are opaque. Its auxiliary
+    // depth and selection overlay must describe those same surfaces. Wire-only
+    // mode still uses the studio material coverage, even with Scene Lit selected.
+    if (display.x != 3 || display.y == 2) {
+        diffuse = diffuse_texture.Sample(material_sampler, input.uv) * material_color;
+        float opacity = diffuse.a * opacity_texture.Sample(material_sampler, input.uv).r;
+        clip(opacity - .5);
+    }
     if (display.w == 2) return 0;
     if(display.w==1 && display.x==3 && display.y!=1 && input.selected==0) discard;
     float3 color = 0;

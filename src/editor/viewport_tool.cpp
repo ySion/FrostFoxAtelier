@@ -162,7 +162,7 @@ std::optional<V2> ViewportView::project(V3 p) const noexcept {
 }
 ViewportView::Ray ViewportView::ray(float x,float y) const noexcept {
     const double nx=2*(x-bounds.x)/std::max(bounds.width,1.f)-1,ny=1-2*(y-bounds.y)/std::max(bounds.height,1.f);
-    const auto p=math::Vector4d{nx,ny,0,1}*inverse;
+    const auto p=math::Vector4d{nx,ny,1,1}*inverse;
     const auto far=math::Vector4d{nx,ny,.5,1}*inverse;
     const V3 near{float(p.x/p.w),float(p.y/p.w),float(p.z/p.w)};
     return {near,math::try_normalize(V3{float(far.x/far.w)-near.x,float(far.y/far.w)-near.y,float(far.z/far.w)-near.z}).value_or(forward)};

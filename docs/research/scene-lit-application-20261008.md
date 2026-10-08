@@ -23,3 +23,5 @@ SceneSnapshot 拥有提交期间需要的 CPU 数组和不可变网格引用；R
 使用实际 Dev 编译参数与双方正式合同头，session.cpp、scene.cpp、workspace.cpp、application.cpp、project.cpp 和文档验收入口六个翻译单元均通过 Clang `/Zs` 编译检查，日志位于 `out/scenelit-application-20261008/*.syntax.log`。临时头放在该交付目录的 include 下，没有替换 E 盘仓库的 Renderer/World 文件。
 
 当前还未完成与新 World/Renderer 二进制的集成运行验收，E 盘源码需要与这两者的新增实现一起构建。GPU、真实编辑器窗口和超预算照明效果由渲染负责人统一构建、排期验收，不能用旧视口截图或后台语法编译代替。
+
+上述为应用交付时的状态。随后在 `viewport-rendering/FrostFoxAtelier` 完成统一集成：Dev/Release 正式窗口菜单、三类灯与参数、预算提示、工程保存重开，以及独立运行 World 快照均通过。最终范围与本机证据以 [Renderer 首批验收](../modules/renderer/acceptance.md#scene-lit-首批2026-10-08) 为准；当前没有 Simulate UI，不在运行中的编辑文档上调用 Parameters。

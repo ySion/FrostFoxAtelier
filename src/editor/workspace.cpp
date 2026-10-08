@@ -15,8 +15,9 @@ constexpr std::array lighting_options{
     LightingOption{L"DDGI",&renderer::SceneLitSettings::ddgi},
     LightingOption{L"GTAO",&renderer::SceneLitSettings::gtao},
     LightingOption{L"SSSR",&renderer::SceneLitSettings::sssr},
-    LightingOption{L"TAA",&renderer::SceneLitSettings::taa},
-    LightingOption{L"Bloom",&renderer::SceneLitSettings::bloom}};
+    LightingOption{L"Bloom",&renderer::SceneLitSettings::bloom},
+    LightingOption{L"Local GI",&renderer::SceneLitSettings::ssil}};
+constexpr std::array antialiasing_titles{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
 }
 Workspace::Workspace() : dock(1ULL<<48,{
     {control::scene_tab,control::scene_content,L"Scene View",{240,160}},
@@ -207,8 +208,17 @@ bool Workspace::apply_view(const ui::Action& action) {
     else if(key==control::shading_scene_lit) view.shading=renderer::Shading::scene_lit;
     else if(key>=control::lit_effects_first && key<control::lit_effects_first+lighting_options.size()) {
         const auto* checked=std::get_if<bool>(&action.value);if(!checked) return false;
-        view.lit.*lighting_options[key-control::lit_effects_first].field=*checked;
-    } else if(key>=control::lit_exposure_first && key<control::lit_exposure_first+5)
+        const auto field=lighting_options[key-control::lit_effects_first].field;
+        view.lit.*field=*checked;
+        // Local GI supplies the near-field correction, so the menu keeps the
+        // two near-field policies exclusive without another command path.
+        if(*checked) {
+            if(field==&renderer::SceneLitSettings::ssil) view.lit.gtao=false;
+            else if(field==&renderer::SceneLitSettings::gtao) view.lit.ssil=false;
+        }
+    } else if(key>=control::lit_aa_first && key<control::lit_aa_first+antialiasing_titles.size())
+        view.lit.antialiasing=static_cast<renderer::Antialiasing>(key-control::lit_aa_first);
+    else if(key>=control::lit_exposure_first && key<control::lit_exposure_first+5)
         view.lit.exposure_ev=float(int(key-control::lit_exposure_first)-2);
     else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
         view.lit.shadow_light_budget=4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first);
@@ -793,6 +803,14 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     ui::MenuItem option{control::lit_effects_first+i,std::wstring(lighting_options[i].title),true,this->view.lit.*lighting_options[i].field,{}};
                     option.behavior=ui::MenuBehavior::checkbox;lighting.children.push_back(std::move(option));
                 }
+                ui::MenuItem antialiasing{control::lit_aa_menu,L"Antialiasing",true,false,{},L"",true};
+                for(std::size_t i=0;i<antialiasing_titles.size();++i) {
+                    ui::MenuItem option{control::lit_aa_first+i,antialiasing_titles[i],true,
+                        this->view.lit.antialiasing==static_cast<renderer::Antialiasing>(i),{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_aa_first;
+                    antialiasing.children.push_back(std::move(option));
+                }
+                lighting.children.push_back(std::move(antialiasing));
                 ui::MenuItem exposure{control::lit_exposure_menu,L"Exposure",true,false,{},L"",true};
                 for(int i=0;i<5;++i) {
                     const auto ev=i-2;

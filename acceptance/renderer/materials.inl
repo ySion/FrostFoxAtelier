@@ -7,6 +7,8 @@ void material_cases(render::Renderer& renderer) {
             {{-1,-1,z},{0,0,-1},{-1,1}},{{-1,1,z},{0,0,-1},{-1,0}},{{1,1,z},{0,0,-1},{0,0}},
             {{-1,-1,z},{0,0,-1},{-1,1}},{{1,1,z},{0,0,-1},{0,0}},{{1,-1,z},{0,0,-1},{0,1}}});
     };
+    // Camera's default projection maps world z to 1-z. Keep the original
+    // near/far geometry; only the expected device depths are reversed.
     quad(.2f);quad(.6f);
     auto image=std::make_shared<const geometry::Image>(2,2,std::vector<std::uint8_t>{255,0,0,255, 255,255,255,0, 0,0,255,255, 255,255,0,255});
     std::weak_ptr<const geometry::Image> observer=image;
@@ -18,16 +20,22 @@ void material_cases(render::Renderer& renderer) {
     auto result=take(renderer.render(frame,&capture));
     const auto x=ui_frame.extent.width/4,y=ui_frame.extent.height/4;
     check(result.stats.scene_draw_calls==2 && result.stats.material_upload_count>0,"material parts bind distinct surfaces");
-    check(pixel(capture,x,y)[0]>150 && pixel(capture,x,y)[1]<10 && std::abs(depth(capture,x,y)-.2f)<1e-5f,
+    for(const auto& point:std::array{std::array{x,y},std::array{x*3,y},std::array{x,y*3},std::array{x*3,y*3}}) {
+        const auto* color=pixel(capture,point[0],point[1]);
+        std::printf("Material coverage pixel=(%u,%u) rgba=(%u,%u,%u,%u) depth=%.9f\n",
+            point[0],point[1],color[0],color[1],color[2],color[3],depth(capture,point[0],point[1]));
+    }
+    scene_lit_e2e::png(capture,"material-coverage.png");
+    check(pixel(capture,x,y)[0]>150 && pixel(capture,x,y)[1]<10 && std::abs(depth(capture,x,y)-.8f)<1e-5f,
         "negative UVs repeat with correct top-left image orientation and sRGB color");
-    check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.6f)<1e-5f,
+    check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.4f)<1e-5f,
         "alpha cutout exposes background color and depth");
     ++ui_frame.id;result=take(renderer.render(frame,&capture));check(result.stats.material_upload_count==0,"unchanged material images upload only once");
     frame.view.wireframe=render::Wireframe::only;
     ++ui_frame.id;take(renderer.render(frame,&capture));
-    check(std::abs(depth(capture,x*3,y)-.6f)<1e-5f,"wire-only depth pass respects material opacity");
+    check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only depth pass respects material opacity");
     frame.view.shading=render::Shading::matcap;
-    ++ui_frame.id;take(renderer.render(frame,&capture));check(std::abs(depth(capture,x*3,y)-.6f)<1e-5f,"MatCap respects cutout silhouettes");
+    ++ui_frame.id;take(renderer.render(frame,&capture));check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"MatCap respects cutout silhouettes");
     auto opaque=std::make_shared<const geometry::Image>(2,2,std::vector<std::uint8_t>{255,0,0,255, 255,255,255,255, 0,0,255,255, 255,255,0,255});
     auto opacity=std::make_shared<const geometry::Image>(2,2,std::vector<std::uint8_t>{255,255,255,255, 0,0,0,255, 160,160,160,255, 255,255,255,255});
     std::weak_ptr<const geometry::Image> opacity_observer=opacity;
@@ -37,13 +45,16 @@ void material_cases(render::Renderer& renderer) {
     frame.view.shading=render::Shading::smooth;frame.view.wireframe=render::Wireframe::off;
     ++ui_frame.id;take(renderer.render(frame,&capture));
     check(observer.expired(),"replaced material image retires after its last frame");
-    check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.6f)<1e-5f,
+    check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.4f)<1e-5f,
         "independent opacity map cuts out opaque diffuse pixels");
-    check(pixel(capture,x,y*3)[2]>150 && std::abs(depth(capture,x,y*3)-.2f)<1e-5f,
+    check(pixel(capture,x,y*3)[2]>150 && std::abs(depth(capture,x,y*3)-.8f)<1e-5f,
         "opacity map is linear, retaining a value above the alpha threshold");
     frame.view.wireframe=render::Wireframe::only;frame.view.shading=render::Shading::matcap;
     ++ui_frame.id;take(renderer.render(frame,&capture));
-    check(std::abs(depth(capture,x*3,y)-.6f)<1e-5f,"wire-only MatCap depth respects independent opacity maps");
+    check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only MatCap depth respects independent opacity maps");
+    frame.view.shading=render::Shading::scene_lit;
+    ++ui_frame.id;take(renderer.render(frame,&capture));
+    check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only mode retains alpha coverage with Scene Lit selected");
     frame.meshes={};meshes[0].geometry.reset();++ui_frame.id;result=take(renderer.render(frame));
     check(opacity_observer.expired() && result.stats.cached_material_images==0,"unused geometry and material images retire together");
     std::puts("Material renderer acceptance: PASS (parts, UV wrap, sRGB, diffuse alpha/linear opacity/depth, MatCap, cache/lifetime)");

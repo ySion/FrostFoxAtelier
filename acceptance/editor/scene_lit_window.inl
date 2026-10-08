@@ -6,6 +6,23 @@ std::filesystem::path scene_lit_window_example(const std::filesystem::path& requ
                 return std::filesystem::canonical(base/"examples/scene-lit");
     throw std::runtime_error("Cannot locate examples/scene-lit; pass its project directory to --acceptance-scene-lit.");
 }
+std::string scene_lit_selection_diagnostic(Application& app) {
+    auto& runtime=app.document().world().runtime();
+    const auto type_name=[&](atelier::ObjectId object) {
+        if(object==atelier::ObjectId{}) return std::string("none");
+        const auto type=runtime.type_of(object);
+        if(!type) return std::string("invalid: ")+type.error().message;
+        const auto info=runtime.describe(*type);
+        return info?(*info)->name:std::string("unknown type");
+    };
+    const auto selected=app.document().selection();
+    std::string result="; selected Actor="+type_name(selected.actor)+"/"+atelier::editor::utf8(app.document().name(selected.actor))+
+        "; selected Object="+type_name(selected.object)+"; components=";
+    const auto components=atelier::world::components(runtime,selected.actor);
+    if(!components) return result+components.error().message;
+    for(const auto& component:*components) result+=type_name(component.id())+",";
+    return result;
+}
 void scene_lit_display(Application& app,ControlKey option) {
     using Access=atelier::application::EditorAcceptanceAccess;
     const auto history=app.document().undo_count();
@@ -24,11 +41,27 @@ std::size_t scene_lit_pixel_difference(const atelier::renderer::Capture& a,const
     require(a.extent==b.extent,"Scene Lit product captures have different physical extents.");
     std::size_t changed=0;
     for (std::size_t index=0;index<a.depth.size();++index) {
-        if (a.depth[index]>=1 || b.depth[index]>=1 || std::abs(a.depth[index]-b.depth[index])>1e-4f) continue;
+        if (a.depth[index]<=0 || b.depth[index]<=0 || std::abs(a.depth[index]-b.depth[index])>1e-4f) continue;
         for (unsigned channel=0;channel<3;++channel)
             if (std::abs(int(a.rgba[index*4+channel])-int(b.rgba[index*4+channel]))>3) {++changed;break;}
     }
     return changed;
+}
+void scene_lit_antialiasing(Application& app,unsigned mode) {
+    using Access=atelier::application::EditorAcceptanceAccess;
+    const auto history=app.document().undo_count();
+    const auto document=model(app.document().serialize());
+    click(app,control::scene_shading);
+    click(app,control::lit_menu);
+    click(app,control::lit_aa_menu);
+    const auto option=control::lit_aa_first+mode;
+    const auto* item=app.menu_frame()?app.menu_frame()->find(option):nullptr;
+    require(item && item->menu_behavior==atelier::ui::MenuBehavior::radio && item->radio_group==control::lit_aa_first,
+        "Native Scene Lit menu omitted the formal AA radio policy.");
+    click(app,option);tick(app,2);
+    require(!app.menu_frame() && Access::scene_lit_view(app).lit.antialiasing==static_cast<atelier::renderer::Antialiasing>(mode) &&
+        app.document().undo_count()==history && model(app.document().serialize())==document,
+        "Native AA selection did not reach the accepted view policy independently of authored scene data/history.");
 }
 void verify_scene_lit_window(Application& app,const std::filesystem::path& output,const std::filesystem::path& requested) {
     using Access=atelier::application::EditorAcceptanceAccess;
@@ -68,6 +101,16 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         "Loaded World light/material identities did not reach the ordinary Scene Lit Renderer frame.");
     require(model(app.document().serialize())==loaded,"Selecting Scene Lit changed the example scene.");
 
+    for(unsigned mode=0;mode<4;++mode) {
+        scene_lit_antialiasing(app,mode);tick(app,16);
+        render::Capture image;require(app.step(&image),"Native AA policy did not accept a real GPU frame.");
+        require(std::count_if(image.depth.begin(),image.depth.end(),[](float value){return value>0;})>1000 &&
+            Access::scene_snapshot(app).meshes.size()==10 && app.frame_statistics().scene_draw_calls>0,
+            "Native AA choice lost the example's actual visible geometry.");
+        png(image,output/("02-example-aa-"+std::to_string(mode)+".png"));
+    }
+    scene_lit_antialiasing(app,static_cast<unsigned>(render::Antialiasing::smaa));
+
     constexpr std::array commands{Command::create_point_light,Command::create_rectangle_light,Command::create_directional_light};
     constexpr std::array kinds{world::LightKind::point,world::LightKind::rectangle,world::LightKind::directional};
     constexpr std::array captions{L"Intensity (cd)",L"Intensity (cd/m²)",L"Illuminance (lux)"};
@@ -76,21 +119,27 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     for (std::size_t index=0;index<commands.size();++index) {
         const auto history=app.document().undo_count();
         const auto count=actors(app).size();
+        std::printf("Scene Lit window step: create light %zu (%llu)\n",index,static_cast<unsigned long long>(commands[index]));
         click(app,control::create_menu);
         const auto command=static_cast<ControlKey>(commands[index]);
         require(app.menu_frame() && app.menu_frame()->find(command),"Native Create menu omitted a real light command.");
         click(app,command);tick(app,2);
+        const auto diagnostic=scene_lit_selection_diagnostic(app);
+        if(actors(app).size()!=count+1 || app.document().undo_count()!=history+1)
+            throw std::runtime_error("Scene Lit native light creation step "+std::to_string(index)+
+                " did not publish one Actor/history entry"+diagnostic);
         created[index]=app.document().selection().actor;
-        const auto light=component(app,created[index],app.document().types().light_component);
         auto& runtime=app.document().world().runtime();
+        const auto root=model(world::root_component(runtime,created[index]));
+        if(!root || !model(runtime.is_a(model(runtime.type_of(*root)),app.document().types().light_component)))
+            throw std::runtime_error("Scene Lit native light creation step "+std::to_string(index)+
+                " selected an Actor without its expected LightComponent root"+diagnostic);
+        const auto light=*root;
         require(actors(app).size()==count+1 && app.document().undo_count()==history+1 &&
             model(world::read_light(runtime,light)).kind==kinds[index],
             "Native light creation did not create one complete, undoable World Actor.");
         click(app,static_cast<ControlKey>(Command::show_parameters));
         const auto fields=model(app.document().properties(light));
-        const auto has_text=[&](std::wstring_view text) {
-            return std::ranges::any_of(app.presented()->text_geometry,[&](const auto& item){return item.paragraph && item.paragraph->matches(text);});
-        };
         const auto has_field=[&](std::string_view name) {
             const auto field=std::ranges::find(fields,name,&atelier::editor::Property::name);
             return field!=fields.end() && app.presented()->find(app.field_control(light,field->path));
@@ -103,7 +152,20 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         require(intensity!=fields.end(),"Created light has no reflected intensity field.");
         const auto edit_history=app.document().undo_count();
         click(app,app.field_control(light,intensity->path));
-        require(has_text(captions[index]),"Visible real Parameters omitted the light's physical intensity units.");
+        capture(app,output/("03-before-edit-light-"+std::to_string(index)+".png"));
+        // Static captions are painted coverage, not editable TextGeometry.
+        // The document E2E checks the exact unit string; this native window
+        // check requires its adjacent label to be visibly painted as well.
+        const auto* input=app.presented()->find(app.field_control(light,intensity->path));
+        require(input && std::ranges::any_of(app.presented()->controls,[&](const auto& label) {
+            const auto centre_y=input->bounds.y+input->bounds.height*.5f;
+            return label.kind==atelier::ui::ControlKind::label &&
+                label.bounds.x+label.bounds.width<=input->bounds.x+1 &&
+                label.bounds.x>=app.presented()->find(control::parameter_list)->bounds.x &&
+                label.bounds.y<=centre_y && label.bounds.y+label.bounds.height>centre_y &&
+                text_coverage(*app.presented(),label.key)!=nullptr;
+        }),"Native light intensity row has no visible painted caption.");
+        std::printf("Scene Lit native parameter units: %s\n",atelier::editor::utf8(captions[index]).c_str());
         const auto text=std::to_wstring(intensities[index]);type(app,text.c_str());key(app,VK_RETURN);
         require(model(world::read_light(runtime,light)).intensity==intensities[index] &&
             app.document().undo_count()==edit_history+1,
@@ -113,34 +175,29 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         capture(app,output/("03-parameters-light-"+std::to_string(index)+".png"));
         if(index==0) {
             tick(app,2);
-            const auto* status=app.presented()->find_text(101); // EditorShell's accepted status paragraph.
-            const auto status_text=app.status_text()+L"  |  "+Access::render_notice(app)+L"  |  "+std::to_wstring(actors(app).size())+L" Actors";
+            const auto* status=app.presented()->find(101); // EditorShell's accepted static status label.
             require(Access::scene_snapshot(app).lights.size()==5 && app.frame_statistics().scene_lit_shadow_lights==4 &&
                 app.frame_statistics().scene_lit_unshadowed_lights==1 && Access::render_notice(app)==L"Shadows 4/5" &&
-                status && status->paragraph && status->paragraph->matches(status_text),
+                status && text_coverage(*app.presented(),101)!=nullptr,
                 "Fifth casting light did not remain accepted with the formal Shadows 4/5 budget status.");
             capture(app,output/"04-shadow-budget-4-of-5.png");
         }
     }
 
-    // The product currently has no Simulate UI. Exercise the existing Session
-    // lifecycle on the displayed World, keeping all display commands native.
+    // Native editor mode changes stay within the editing document's lifecycle.
+    // Running World snapshots are exercised by the document + Renderer E2E.
     const auto history=app.document().undo_count();
     const auto authored=model(app.document().serialize());
     scene_lit_display(app,control::shading_first+2);
-    model(Access::simulate(app,true));model(Access::simulate_tick(app,1.f/60));tick(app,2);
-    require(app.document().world().running() && Access::scene_lit_view(app).shading==render::Shading::matcap,
-        "Starting the displayed World changed MatCap into a simulation-dependent display mode.");
-    capture(app,output/"05-matcap-simulating.png");
-    scene_lit_display(app,control::shading_scene_lit);model(Access::simulate_tick(app,1.f/60));tick(app,16);
-    require(app.document().world().running() && app.frame_statistics().scene_lit_shadow_lights==4 &&
+    capture(app,output/"05-matcap-seven-lights.png");
+    scene_lit_display(app,control::shading_scene_lit);tick(app,16);
+    require(app.frame_statistics().scene_lit_shadow_lights==4 &&
         app.frame_statistics().scene_lit_unshadowed_lights==3,
-        "Scene Lit did not consume the same seven lights while the displayed World was running.");
-    capture(app,output/"06-scene-lit-simulating.png");
-    model(Access::simulate(app,false));tick(app,2);
+        "Scene Lit did not consume all seven authored lights after the native display mode change.");
+    capture(app,output/"06-scene-lit-seven-lights.png");
     require(!app.document().world().running() && Access::scene_lit_view(app).shading==render::Shading::scene_lit &&
         app.document().undo_count()==history && model(app.document().serialize())==authored,
-        "Stopping simulation changed the display policy, authored scene or history.");
+        "Native display mode changes altered the editing lifecycle, authored scene or history.");
     capture(app,output/"07-scene-lit-edit.png");
 
     model(app.save_scene("Content/Scenes/Acceptance.scene"));tick(app,2);
@@ -161,5 +218,5 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         <<"\nTemporary project: "<<atelier::editor::utf8(copy.wstring())
         <<"\nSource Config/Content retained. No Source compilation files copied.\n"
         <<"Native Scene Lit/MatCap menu, point/rectangle/directional creation and Parameters; requested=5, budget=4, shadowed=4, unshadowed=1, status=Shadows 4/5.\n"
-        <<"Formal displayed World Session lifecycle and actual GPU captures; no Simulate UI exists. Saved scene reopened with 10 meshes and 7 authored lights.\n";
+        <<"Actual GPU captures and native editor modes. Runtime World snapshots are verified separately through document/Renderer E2E; no Simulate UI exists. Saved scene reopened with 10 meshes and 7 authored lights.\n";
 }

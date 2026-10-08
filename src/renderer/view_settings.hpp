@@ -9,14 +9,16 @@ enum class Shading : std::uint32_t { smooth, flat, matcap, scene_lit };
 enum class Wireframe : std::uint32_t { off, overlay, only };
 enum class Background : std::uint32_t { none, gradient };
 enum class GridPlane : std::uint32_t { xz, xy, yz };
+enum class Antialiasing : std::uint32_t { none, taa, smaa, smaa_t2x };
 
 struct SceneLitSettings {
     bool shadows{true};
     bool ddgi{true};
     bool gtao{true};
     bool sssr{true};
-    bool taa{true};
     bool bloom{true};
+    bool ssil{false}; // Bounded screen-space near-field correction; takes precedence over GTAO.
+    Antialiasing antialiasing{Antialiasing::smaa};
     float exposure_ev{}; // Display exposure; HDR histories remain scene linear.
     float shadow_bias{0.002f}; // World meters.
     std::uint32_t shadow_light_budget{4}; // Explicit maximum simultaneously traced lights.
@@ -28,8 +30,8 @@ struct SceneLitSettings {
     std::array<float, 3> probe_min{-6.f, -1.f, -6.f};
     std::array<float, 3> probe_max{6.f, 5.f, 6.f};
     std::array<std::uint32_t, 3> probe_counts{8, 4, 8};
-    std::uint32_t probe_update_budget{32}; // Probes per frame, including initialization.
-    std::uint32_t probe_rays{64};
+    std::uint32_t probe_update_budget{64}; // Probes per frame, including initialization.
+    std::uint32_t probe_rays{128}; // At most 256 rays per probe update.
     bool probe_debug{};
 };
 

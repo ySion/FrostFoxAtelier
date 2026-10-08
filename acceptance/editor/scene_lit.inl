@@ -48,6 +48,28 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     require(take(reopened->serialize())==saved && restored.meshes.size()==10 && restored.lights.size()==4 &&
         restored.meshes.front().material.roughness==.71f,
         "Scene Lit example temporary save/reopen lost material or formal light data.");
+    // Runtime presentation uses the same World snapshot contract. An editing
+    // document's Parameters panel intentionally requires a stopped document.
+    const auto began=take(reopened->start());
+    require(!began.notification_error,"Scene Lit runtime World Begin notification failed.");
+    take(reopened->update(1.f/60));
+    application::SceneSnapshot running;running.reset();take(running.refresh(*reopened));
+    require(reopened->world().running() && running.meshes.size()==restored.meshes.size() &&
+        running.lights.size()==restored.lights.size(),"Running World lost its formal render snapshot.");
+    for(std::size_t i=0;i<running.meshes.size();++i)
+        require(running.meshes[i].world==restored.meshes[i].world &&
+            running.meshes[i].geometry==restored.meshes[i].geometry &&
+            running.meshes[i].material.roughness==restored.meshes[i].material.roughness &&
+            running.meshes[i].material.emissive==restored.meshes[i].material.emissive,
+            "Unchanged runtime World altered geometry or materials based on execution state.");
+    for(std::size_t i=0;i<running.lights.size();++i)
+        require(running.lights[i].kind==restored.lights[i].kind &&
+            running.lights[i].position==restored.lights[i].position &&
+            running.lights[i].intensity==restored.lights[i].intensity,
+            "Unchanged runtime World altered authored lights based on execution state.");
+    const auto ended=take(reopened->stop());
+    require(!ended.notification_error && take(reopened->serialize())==saved,
+        "Runtime World presentation modified the saved editing document.");
     require(take(read_file(source_scene))==source_text && take(read_file(source/"Config/Project.json"))==source_config,
         "Scene Lit example acceptance modified the source project.");
     std::ofstream(copy/"acceptance.txt")<<"Scene Lit example Project/Scene: PASS\nSource read only: "<<utf8(source.wstring())
@@ -148,12 +170,37 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto history=document.undo_count();
     require(workspace.apply_view({ui::ActionKind::activate,control::shading_scene_lit,{}}) && workspace.view.shading==renderer::Shading::scene_lit,
         "The formal display command did not select Scene Lit.");
+    const auto antialiasing=workspace.view.lit.antialiasing;
     for(std::uint64_t i=0;i<6;++i) {
         require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+i,false}),"Scene Lit effect toggle was not routed.");
         require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+i,false}),"Repeated Scene Lit toggle was rejected.");
     }
     require(!workspace.view.lit.shadows && !workspace.view.lit.ddgi && !workspace.view.lit.gtao && !workspace.view.lit.sssr &&
-        !workspace.view.lit.taa && !workspace.view.lit.bloom,"Scene Lit effect toggles were coupled or non-idempotent.");
+        !workspace.view.lit.bloom && !workspace.view.lit.ssil && workspace.view.lit.antialiasing==antialiasing,
+        "Scene Lit effect toggles were coupled, changed AA policy or were non-idempotent.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+2,true}) &&
+        workspace.view.lit.gtao && !workspace.view.lit.ssil,
+        "Enabling GTAO did not choose the independent occlusion policy.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+5,true}) &&
+        workspace.view.lit.ssil && !workspace.view.lit.gtao,
+        "Local GI did not replace GTAO through the formal view action.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+5,false}) &&
+        !workspace.view.lit.ssil && !workspace.view.lit.gtao,
+        "Disabling Local GI unexpectedly enabled GTAO.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+5,true}),
+        "Local GI could not be enabled after disabling the shared local policy.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+2,true}) &&
+        workspace.view.lit.gtao && !workspace.view.lit.ssil,
+        "GTAO did not replace Local GI through the formal view action.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+2,false}) &&
+        !workspace.view.lit.gtao && !workspace.view.lit.ssil && document.undo_count()==history,
+        "Disabling the chosen local policy enabled another effect or changed scene history.");
+    for(std::uint64_t i=0;i<4;++i) {
+        require(workspace.apply_view({ui::ActionKind::activate,control::lit_aa_first+i,{}}) &&
+            workspace.apply_view({ui::ActionKind::activate,control::lit_aa_first+i,{}}) &&
+            workspace.view.lit.antialiasing==static_cast<renderer::Antialiasing>(i) && document.undo_count()==history,
+            "Scene Lit AA choices did not route one idempotent display policy independently of scene history.");
+    }
     require(workspace.apply_view({ui::ActionKind::activate,control::lit_exposure_first+4,{}}) && workspace.view.lit.exposure_ev==2 && document.undo_count()==history,
         "Display exposure changed scene history or used the wrong units.");
     require(workspace.apply_view({ui::ActionKind::activate,control::lit_shadow_budget_first+2,{}}) && workspace.view.lit.shadow_light_budget==16,
@@ -162,7 +209,15 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto lit=std::ranges::find(workspace.menu_items,control::shading_scene_lit,&ui::MenuItem::key);
     const auto options=std::ranges::find(workspace.menu_items,control::lit_menu,&ui::MenuItem::key);
     require(lit!=workspace.menu_items.end() && lit->selected && lit->behavior==ui::MenuBehavior::radio &&
-        options!=workspace.menu_items.end() && options->children.size()==8 && options->children[0].behavior==ui::MenuBehavior::checkbox,
+        options!=workspace.menu_items.end() && options->children.size()==9 && options->children[0].behavior==ui::MenuBehavior::checkbox &&
+        options->children[5].key==control::lit_effects_first+5 && options->children[5].behavior==ui::MenuBehavior::checkbox,
         "The display menu lost Scene Lit radio/effect checkbox semantics.");
+    const auto aa=std::ranges::find(options->children,control::lit_aa_menu,&ui::MenuItem::key);
+    require(aa!=options->children.end() && aa->children.size()==4,
+        "Scene Lit menu omitted the four independent AA policies.");
+    for(std::size_t i=0;i<aa->children.size();++i)
+        require(aa->children[i].key==control::lit_aa_first+i && aa->children[i].behavior==ui::MenuBehavior::radio &&
+            aa->children[i].radio_group==control::lit_aa_first && aa->children[i].selected==(i==3),
+            "Scene Lit AA menu did not publish the selected policy through one radio group.");
     std::puts("Scene Lit application acceptance: PASS (real World/Project, light creation/history, reflected parameters, scene persistence/rejection, stable snapshots and display menus)");
 }

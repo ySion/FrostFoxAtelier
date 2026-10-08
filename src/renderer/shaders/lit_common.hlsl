@@ -1,9 +1,10 @@
-// Shared contract: LH +Y up, row vectors, D3D device Z [0,1]. All images
+// Shared contract: LH +Y up, row vectors, finite reversed D3D Z: near=1,
+// far/background=0. Depth correspondence is FP32 throughout. All images
 // cover the window; lit_viewport selects the scene rectangle in physical pixels.
 // HDR and all temporal signals are scene linear, before display exposure.
-// Motion.xy = previous window UV - current window UV; z = previous device Z
-// minus current device Z (a FP16 residual). Decode with current R32 scene depth
-// to retain near/far precision; w = stable object/camera correspondence.
+// Motion.xy = previous window UV - current window UV; z = reserved (zero);
+// w = stable object/camera correspondence. lit_previous_depth holds the
+// expected previous camera device Z of the current surface as R32_FLOAT.
 // Jitter is in viewport pixel units.
 static const float LIT_PI = 3.14159265359;
 uint4 lit_size_frame; // width,height,sequence,history valid
@@ -14,6 +15,7 @@ row_major float4x4 lit_previous_view_projection;
 float4 lit_camera_position;
 float4 lit_environment; // RGB radiance, reserved
 uint4 lit_counts; // lights,shadow slots,samples,effect flags
+uint lit_history_invalid; // Per-signal incompatibility: direct=1, reflection=2, AO=4, final TAA=8, SSIL=16.
 float4 lit_controls; // exposure multiplier,shadow bias,AO radius,SSR max distance
 float4 lit_temporal; // history weight,roughness threshold,light-change reactive, reserved
 float4 lit_jitter; // current xy,previous xy; viewport pixel units
@@ -34,13 +36,16 @@ struct LitInstance {
     float4 emissive_metallic;
     uint4 geometry; // global RT vertex offset,vertex count,history valid,stable hash
 };
-struct LitVertex { float3 position; float3 normal; };
+// Shares the uploaded geometry::Vertex layout with the studio raster path.
+// Scene Lit currently uses position/normal; UV still occupies its ABI bytes.
+struct LitVertex { float3 position; float3 normal; float2 uv; };
 StructuredBuffer<LitLight> lit_lights;
 StructuredBuffer<LitInstance> lit_instances;
 StructuredBuffer<LitVertex> lit_rt_vertices;
 RaytracingAccelerationStructure lit_scene;
 RWStructuredBuffer<uint> lit_ray_counters; // 0/1 = visibility/probe low words, 2/3 = high words.
 Texture2D<float> lit_depth;
+Texture2D<float> lit_previous_depth;
 Texture2D<float4> lit_normal_roughness;
 Texture2D<float4> lit_base_metallic;
 Texture2D<float4> lit_emissive;
@@ -51,8 +56,11 @@ bool lit_inside(uint2 p) {
     return all(p < lit_size_frame.xy) && all(float2(p)+.5 >= lit_viewport.xy) &&
         all(float2(p)+.5 < lit_viewport.xy+lit_viewport.zw);
 }
+float lit_depth_near_value() { return 1; }
+float lit_depth_far_value() { return 0; }
+bool lit_is_background_depth(float depth) { return depth == lit_depth_far_value(); }
 float lit_previous_device_depth(uint2 pixel,float4 motion) {
-    return lit_depth.Load(int3(pixel,0))+motion.z;
+    return lit_previous_depth.Load(int3(pixel,0));
 }
 float3 lit_world(float2 window_uv, float device_z) {
     float2 local=(window_uv*lit_size_frame.xy-lit_viewport.xy)/lit_viewport.zw;
@@ -64,8 +72,10 @@ float2 lit_window_uv(float4 clip) {
     return (uv*lit_viewport.zw+lit_viewport.xy)/lit_size_frame.xy;
 }
 float3 lit_view_direction(float2 uv) {
-    // Near/far unprojection covers perspective and orthographic projections.
-    return normalize(lit_world(uv,0)-lit_world(uv,.9999));
+    // The same near-to-interior ray covers finite perspective and orthographic
+    // projections without magnifying far-plane reconstruction roundoff.
+    float middle=lerp(lit_depth_near_value(),lit_depth_far_value(),.5);
+    return normalize(lit_world(uv,lit_depth_near_value())-lit_world(uv,middle));
 }
 uint lit_hash(uint x) { x^=x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; return x^(x>>16); }
 uint lit_light_seed(uint2 pixel,uint light_index) {
@@ -73,11 +83,17 @@ uint lit_light_seed(uint2 pixel,uint light_index) {
     return lit_hash(pixel.x+pixel.y*lit_size_frame.x+sequence*7919+light_index*104729);
 }
 float lit_random(inout uint seed) { seed=lit_hash(seed); return (seed>>8)*(1.0/16777216.0); }
-float3 lit_safe_normal(float3 n) { return n*rsqrt(max(dot(n,n),1e-20)); }
+float3 lit_safe_normal(float3 n) {
+    float largest = max(abs(n.x), max(abs(n.y), abs(n.z)));
+    if (largest == 0) return 0;
+    float3 scaled = n / largest;
+    return scaled * rsqrt(dot(scaled, scaled));
+}
 void lit_basis(float3 n,out float3 tangent,out float3 bitangent) {
     tangent=normalize(cross(abs(n.y)<.99?float3(0,1,0):float3(1,0,0),n)); bitangent=cross(n,tangent);
 }
-float3 lit_brdf(float3 base,float roughness,float metallic,float3 n,float3 v,float3 l) {
+void lit_brdf_components(float3 base,float roughness,float metallic,float3 n,float3 v,float3 l,
+                         out float3 diffuse,out float3 specular) {
     float nl=saturate(dot(n,l)),nv=max(saturate(dot(n,v)),1e-4);
     float3 h=lit_safe_normal(v+l); float nh=saturate(dot(n,h)),vh=saturate(dot(v,h));
     float a=max(roughness*roughness,.0025),a2=a*a;
@@ -85,7 +101,13 @@ float3 lit_brdf(float3 base,float roughness,float metallic,float3 n,float3 v,flo
     float gv=2*nv/(nv+sqrt(a2+(1-a2)*nv*nv));
     float gl=2*nl/(nl+sqrt(a2+(1-a2)*nl*nl));
     float3 f0=lerp(.04.xxx,base,metallic),f=f0+(1-f0)*pow(1-vh,5);
-    return ((1-f)*base*(1-metallic)/LIT_PI+d*gv*gl*f/max(4*nl*nv,1e-5))*nl;
+    diffuse=(1-f)*base*(1-metallic)/LIT_PI*nl;
+    specular=d*gv*gl*f/max(4*nl*nv,1e-5)*nl;
+}
+float3 lit_brdf(float3 base,float roughness,float metallic,float3 n,float3 v,float3 l) {
+    float3 diffuse,specular;
+    lit_brdf_components(base,roughness,metallic,n,v,l,diffuse,specular);
+    return diffuse+specular;
 }
 void lit_count_rays(uint kind) {
     uint active_rays=WaveActiveCountBits(true);

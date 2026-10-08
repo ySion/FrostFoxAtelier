@@ -61,9 +61,10 @@ CameraMatrices Camera::matrices(float aspect) const noexcept {
     XMFLOAT4X4 view, projection;
     XMStoreFloat4x4(&view, XMMatrixLookAtLH(eye_vector, target, view_==CameraView::top?XMVectorSet(0,0,1,0):XMVectorSet(0,1,0,0)));
     const float height=2*distance_*std::tan(field_of_view*.5f);
+    // Finite reversed Z: physical near=.05 maps to 1 and far=30000 to 0.
     XMStoreFloat4x4(&projection, view_==CameraView::perspective?
-        XMMatrixPerspectiveFovLH(field_of_view,std::max(aspect,.01f),.05f,30000.f):
-        XMMatrixOrthographicLH(height*std::max(aspect,.01f),height,.05f,30000.f));
+        XMMatrixPerspectiveFovLH(field_of_view,std::max(aspect,.01f),30000.f,.05f):
+        XMMatrixOrthographicLH(height*std::max(aspect,.01f),height,30000.f,.05f));
     CameraMatrices result;
     static_assert(sizeof(view) == sizeof(result.view));
     std::memcpy(result.view.data(), &view, sizeof(view));

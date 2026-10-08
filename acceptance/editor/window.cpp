@@ -77,13 +77,6 @@ struct EditorAcceptanceAccess {
     static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
     static const auto& scene_snapshot(const Application& app) {return app.scene_;}
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
-    static Result<void> simulate(Application& app,bool running) {
-        const auto result=running?app.document_->start():app.document_->stop();
-        if (!result) return std::unexpected(result.error());
-        if (result->notification_error) return std::unexpected(*result->notification_error);
-        return {};
-    }
-    static Result<void> simulate_tick(Application& app,float seconds) {return app.document_->update(seconds);}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}
     static void set_cursor(Application& app,math::Vector3 at) {app.viewport_tool_.cursor=at;}
     static ui::ControlKey viewport_readout_key(const Application&) {return editor::control::viewport_readout;}
@@ -215,15 +208,17 @@ const atelier::ui::TableGeometry* row_table(Application& app,ControlKey row) {
 }
 POINT centre(Application& app, ControlKey key) {
     require(app.presented() != nullptr, "Missing presented UI frame.");
-    auto* box = app.presented()->find(key);
+    // An accepted active popup owns input before host controls. The ToolShelf
+    // may expose the same command target; its host bounds are not menu bounds.
+    const auto* popup_box=app.menu_frame()?app.menu_frame()->find(key):nullptr;
+    const bool popup=popup_box!=nullptr;
+    auto* box = popup_box?popup_box:app.presented()->find(key);
     if (!box) box=command_tool(app,key);
     const atelier::ui::TableCellGeometry* cell{};
     if (!box) if (const auto* table=row_table(app,key)) {
         const auto found=std::ranges::find(table->cells,key,&atelier::ui::TableCellGeometry::row);
         if (found!=table->cells.end()) cell=&*found;
     }
-    const bool popup=!box && !cell && app.menu_frame();
-    if (popup) box=app.menu_frame()->find(key);
     if (!box && !cell) {
         std::string menu;
         if (app.menu_frame()) for (const auto& item:app.menu_frame()->controls) menu+=" "+std::to_string(item.key);
@@ -438,7 +433,7 @@ void capture(Application& app, const std::filesystem::path& path) {
     require(app.step(&image) && image.frame_id != 0, "Renderer did not capture an accepted frame.");
     require(image.rgba.size() == static_cast<std::size_t>(image.extent.width) * image.extent.height * 4,
         "Capture has an invalid pixel payload.");
-    const auto scene_pixels = std::count_if(image.depth.begin(), image.depth.end(), [](float value) { return value > 0 && value < .999999f; });
+    const auto scene_pixels = std::count_if(image.depth.begin(), image.depth.end(), [](float value) { return value > 0 && value <= 1; });
     if (app.presented()->find(control::viewport)) require(scene_pixels>32,"Real scene geometry is absent from the depth capture.");
     else require(scene_pixels==0,"Hidden Scene tab continued rendering geometry.");
     png(image, path);
@@ -950,6 +945,9 @@ int verify_editor_scene_lit(Application& app,const char* output_directory,const 
     const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));
     std::filesystem::create_directories(output);
     await_acceptance_activation(app,output,"Scene Lit");
+    const auto legacy=output/"legacy-viewport";
+    std::filesystem::create_directories(legacy);
+    verify_viewport_display(app,legacy);
     verify_scene_lit_window(app,output,source_project?std::filesystem::path{source_project}:std::filesystem::path{});
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Scene Lit acceptance did not close normally.");
@@ -957,7 +955,7 @@ int verify_editor_scene_lit(Application& app,const char* output_directory,const 
     report<<"Editor Scene Lit window acceptance: PASS\nBuild: "<<atelier::build_info::revision
         <<"\nConfiguration: "<<atelier::build_info::configuration
         <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three light creation menus and typed Parameters, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
-        <<"Simulation uses formal Session start/update/stop on the displayed World; no Simulate UI exists. Display choices leave authored history/data unchanged.\n"
+            <<"Runtime World snapshots use separate document/Renderer E2E; no Simulate UI exists. Native display choices leave the editing lifecycle, authored history and data unchanged.\n"
         <<"GPU validation/vsync enabled; this window run is not a performance benchmark.\n";
     require(report.good(),"Cannot save Scene Lit window acceptance evidence.");
     std::puts("Editor Scene Lit window acceptance: PASS");return 0;

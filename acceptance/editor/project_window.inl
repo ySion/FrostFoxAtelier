@@ -162,7 +162,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     choose(control::scene_shading,control::shading_first+2);
     choose(control::scene_shading,control::edges_first);
     atelier::renderer::Capture shaded;
-    require(app.step(&shaded) && shaded.frame_id!=0 && std::any_of(shaded.depth.begin(),shaded.depth.end(),[](float value){return value<1;}),
+    require(app.step(&shaded) && shaded.frame_id!=0 && std::any_of(shaded.depth.begin(),shaded.depth.end(),[](float value){return value>0;}),
         "Project Actor did not reach an accepted GPU scene frame.");
     png(shaded,output/"project-matcap.png");
     choose(control::scene_shading,control::edges_first+1);

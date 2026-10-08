@@ -4,7 +4,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     render::Frame frame{drawing,{}, {24,32,float(extent.width-48),float(extent.height-64)}, {}};
     // Orthographic camera looking down from Y=5: reference plane depth is .5.
     frame.camera.view={1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,5,1};
-    frame.camera.projection={.2f,0,0,0, 0,.2f,0,0, 0,0,.1f,0, 0,0,0,1};
+    frame.camera.projection={.2f,0,0,0, 0,.2f,0,0, 0,0,-.1f,0, 0,0,1,1};
     frame.view.background=render::Background::gradient;
     render::Capture capture;
     const auto draw=[&] {
@@ -12,7 +12,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
         const auto result=take(renderer.render(frame,&capture));
         check(result.status==render::FrameStatus::accepted && capture.frame_id==drawing.id,
               "reference guides retain accepted frame identity");
-        check(pixel(capture,8,8)[1]==255 && depth(capture,8,8)==1 && pixel(capture,20,20)[0]==0,
+        check(pixel(capture,8,8)[1]==255 && depth(capture,8,8)==0 && pixel(capture,20,20)[0]==0,
               "viewport guides do not escape their viewport or affect UI");
         return result;
     };
@@ -26,7 +26,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     auto result=draw(); const auto background=capture;
     check(result.stats.scene_draw_calls==0 && result.stats.viewport_draw_calls==1 &&
           pixel(capture,extent.width/2,extent.height-48)[1]>pixel(capture,extent.width/2,48)[1]+25 &&
-          std::ranges::all_of(capture.depth,[](float z){return z==1;}),
+          std::ranges::all_of(capture.depth,[](float z){return z==0;}),
           "empty viewport has a gradient without geometry depth");
     frame.view.reference_grid=true; result=draw(); const auto grid=capture;
     check(result.stats.viewport_draw_calls==2 && result.stats.scene_draw_calls==0 &&
@@ -47,7 +47,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
             check(capture.depth==bare.depth && difference(capture,bare)>100 && result.stats.viewport_draw_calls==2,
                   "guides preserve full geometry depth in all shading and wire modes");
             std::size_t occluder_pixels=0;
-            for (std::size_t i=0;i<capture.depth.size();++i) if (capture.depth[i]<.499f) {
+            for (std::size_t i=0;i<capture.depth.size();++i) if (capture.depth[i]>.501f) {
                 ++occluder_pixels;
                 for (unsigned c=0;c<3;++c) check(capture.rgba[i*4+c]==bare.rgba[i*4+c],
                     "reference grid stays behind solid geometry and wireframe depth");
@@ -63,9 +63,36 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     frame.view.reference_grid=frame.view.origin_axes=false; draw(); const auto floor=capture;
     frame.view.reference_grid=frame.view.origin_axes=true; draw();
     check(capture.depth==floor.depth,"coplanar guides do not change floor depth");
-    for (std::size_t i=0;i<capture.depth.size();++i) if (capture.depth[i]<1)
+    for (std::size_t i=0;i<capture.depth.size();++i) if (capture.depth[i]>0)
         for (unsigned c=0;c<3;++c) check(capture.rgba[i*4+c]==floor.rgba[i*4+c],
             "coplanar geometry wins over reference grid and axes");
+    const auto orthographic_camera=frame.camera;
+    for (const float height:{.5f,3.f,25.f}) {
+        const float length=std::sqrt(height*height+49.f);
+        frame.camera.view={1,0,0,0, 0,7/length,-height/length,0,
+            0,height/length,7/length,0, 0,0,length,1};
+        const float aspect=frame.scene_viewport.width/frame.scene_viewport.height;
+        frame.camera.projection={1.8f/aspect,0,0,0, 0,1.8f,0,0,
+            0,0,-.05f/29999.95f,1, 0,0,.05f*30000.f/29999.95f,0};
+        frame.view.reference_grid=frame.view.origin_axes=false; draw(); const auto tilted_floor=capture;
+        frame.view.reference_grid=frame.view.origin_axes=true; draw();
+        check(capture.depth==tilted_floor.depth,"perspective coplanar guide keeps full scene depth");
+        std::size_t floor_pixels=0;
+        std::size_t changed_floor_pixels=0;
+        for (std::size_t i=0;i<capture.depth.size();++i) if (capture.depth[i]>0) {
+            ++floor_pixels;
+            bool changed=false;
+            for (unsigned c=0;c<3;++c) changed|=capture.rgba[i*4+c]!=tilted_floor.rgba[i*4+c];
+            if(changed&&changed_floor_pixels++==0) std::printf("Grid coplanar mismatch: height=%.2f pixel=%zu,%zu depth=%.9g RGB=%u,%u,%u -> %u,%u,%u\n",
+                height,i%extent.width,i/extent.width,capture.depth[i],tilted_floor.rgba[i*4],tilted_floor.rgba[i*4+1],tilted_floor.rgba[i*4+2],
+                capture.rgba[i*4],capture.rgba[i*4+1],capture.rgba[i*4+2]);
+        }
+        if(changed_floor_pixels){snapshot(tilted_floor,"viewport-coplanar-bare.ppm");snapshot(capture,"viewport-coplanar-grid.ppm");
+            std::printf("Grid coplanar mismatch: %zu/%zu geometry pixels\n",changed_floor_pixels,floor_pixels);}
+        check(changed_floor_pixels==0,"perspective coplanar grid has no speckle over the actual floor");
+        check(floor_pixels>100,"perspective guide case contains a visible floor");
+    }
+    frame.camera=orthographic_camera;
     // Deleting the final mesh must not expose its retained GPU depth.
     frame.meshes={}; frame.view.origin_axes=false; draw();
     check(capture.depth==background.depth && capture.rgba==grid.rgba,"empty world restores grid after geometry retirement");
@@ -74,7 +101,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
           "singular finite camera skips only the optional grid");
     // A camera on the reference plane must not produce a full-screen axis.
     frame.camera={};
-    frame.camera.projection={1,0,0,0, 0,1,0,0, 0,0,30000.f/29999.95f,1, 0,0,-.05f*30000.f/29999.95f,0};
+    frame.camera.projection={1,0,0,0, 0,1,0,0, 0,0,-.05f/29999.95f,1, 0,0,.05f*30000.f/29999.95f,0};
     draw(); check(capture.rgba==background.rgba,"camera on grid plane has no spurious guide coverage");
     for (const float y:{-.5f,.5f,2000.f}) {
         frame.camera.view=translation(0,-y,0); draw();

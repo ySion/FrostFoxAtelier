@@ -18,11 +18,18 @@ LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     o.base_roughness=i.base_roughness; o.emissive_metallic=i.emissive_metallic; o.valid=i.geometry.z;
     return o;
 }
-struct LitGBuffer { float4 normal:SV_Target0; float4 base:SV_Target1; float4 emissive:SV_Target2; float4 motion:SV_Target3; };
+struct LitGBuffer {
+    float4 normal:SV_Target0;
+    float4 base:SV_Target1;
+    float4 emissive:SV_Target2;
+    float4 motion:SV_Target3;
+    float previous_depth:SV_Target4;
+};
 LitGBuffer lit_gbuffer_ps(LitRaster i) {
     LitGBuffer o; o.normal=float4(lit_safe_normal(i.normal),i.base_roughness.w);
     o.base=float4(i.base_roughness.rgb,i.emissive_metallic.w); o.emissive=float4(i.emissive_metallic.rgb,1);
     float2 current=i.position.xy/lit_size_frame.xy;
-    o.motion=float4(lit_window_uv(i.previous)-current,i.previous.z/max(i.previous.w,1e-8)-i.position.z,i.valid!=0&&i.previous.w>0?1:0);
+    o.motion=float4(lit_window_uv(i.previous)-current,0,i.valid!=0&&i.previous.w>0?1:0);
+    o.previous_depth=i.previous.w>0?i.previous.z/i.previous.w:lit_depth_far_value();
     return o;
 }

@@ -114,9 +114,9 @@ Result<void> Application::frame_actors(bool selected_only) {
     return {};
 }
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading) {
-    if(shading>renderer::Shading::matcap || !camera_.look_at(eye,target))
+    if(shading>renderer::Shading::scene_lit || !camera_.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
-    workspace_.view.shading=shading;invalidate_surface();return {};
+    workspace_.view.shading=shading;camera_cut_=true;invalidate_surface();return {};
 }
 Result<void> Application::action(const ui::Action& source) {
     // UI instance keys and host command/target keys occupy different roles.
