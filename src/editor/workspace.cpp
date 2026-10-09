@@ -1,4 +1,5 @@
 #include "editor/workspace.hpp"
+#include "editor/examples.hpp"
 #include "editor/assets.hpp"
 #include "editor/fields.hpp"
 #include <stdexcept>
@@ -752,8 +753,18 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                         {control::viewport_snap,L"Snapping"},{control::viewport_camera,L"Camera View"}}})
                         items.push_back({.key=key,.text=std::wstring(title),.edit_command={},.children=viewport_commands(key)});
                     items.push_back(command_item(Command::viewport_options));
-                } else for (const auto& definition:command_definitions) if (definition.group==group->id)
-                    items.push_back(command_item(definition.id));
+                } else {
+                    if(group->id==CommandGroup::project) {
+                        ui::MenuItem examples{.key=control::examples_menu,.text=L"Examples",.edit_command={}};
+                        for(const auto& example:official_examples) examples.children.push_back(command_item(example.command));
+                        items.push_back(std::move(examples));
+                    }
+                    for (const auto& definition:command_definitions) if (definition.group==group->id && !example_definition(definition.id)) {
+                        auto item=command_item(definition.id);
+                        if(group->id==CommandGroup::project && items.size()==1) item.separator_before=true;
+                        items.push_back(std::move(item));
+                    }
+                }
             } else if(source->key==control::viewport && menu->group==control::viewport_add_menu) {
                 // Blender Shift+A: everything the Create group can place at the 3D cursor.
                 for(const auto& definition:command_definitions) if(definition.group==CommandGroup::create)

@@ -40,9 +40,9 @@ void verify_textured_obj() {
     std::puts("Textured OBJ acceptance: PASS (bundle import, concave polygon, UV, shared texture, refresh, lifetime, failure/retry boundaries)");
 }
 void verify_sponza_project() {
-    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"examples/physics-test";
+    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"assets/examples";
     auto project=take(editor::Project::open(folder));
-    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Content/Scenes/Sponza.scene")),project));
+    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Examples/Sponza/Scenes/Sponza.scene")),project));
     const auto items=take(document->world().render_items());require(items.size()==1,"Sponza scene should contain one complete static model.");
     const auto mesh=items.front().geometry;
     require(mesh->vertices().size()==786801 && mesh->materials().size()==26 && mesh->parts().size()>20,"Sponza geometry/material completeness changed.");

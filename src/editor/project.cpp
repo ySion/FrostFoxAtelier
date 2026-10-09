@@ -109,7 +109,7 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
             if (!project.ui_source_.empty()) take(project.resolve(project.ui_source_));
         }
         if (project.name_.empty() || project.name_.size()>256 || std::ranges::any_of(project.name_,[](wchar_t c){return c<32 || c==127;}) ||
-            project.startup_.empty() || project.startup_.extension()!=L".scene" || *project.startup_.begin()!=L"Content") return failure("Invalid project name or startup scene.");
+            !is_scene_path(project.startup_)) return failure("Invalid project name or startup scene.");
         take(project.resolve(project.startup_));
         for (const auto* directory:{L"Config",L"Content",L"Source"}) if (!std::filesystem::is_directory(take(project.resolve(directory)))) return failure("Project is missing Config, Content or Source.");
         take(project.refresh()); return project;
@@ -160,10 +160,12 @@ Result<void> Project::refresh() {
     try {
         std::vector<ProjectEntry> entries;
         std::unordered_set<std::string> keys;
-        for (const auto* directory:{L"Content",L"Source",L"Config"}) {
+        for (const auto* directory:{L"Content",L"Source",L"Config",L"Examples"}) {
+            const auto root=take(resolve(directory));
+            if(std::wstring_view(directory)==L"Examples" && !std::filesystem::exists(root)) continue;
             if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
             entries.push_back({directory,utf8(directory),AssetKind::folder});
-            for (const auto& entry:std::filesystem::recursive_directory_iterator(take(resolve(directory)))) {
+            for (const auto& entry:std::filesystem::recursive_directory_iterator(root)) {
                 if (entry.is_symlink()) continue;
                 const auto relative=entry.path().lexically_relative(root_);
                 take(resolve(relative));

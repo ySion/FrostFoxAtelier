@@ -58,6 +58,6 @@ Physics Test 工程使用正式 Project/Session 加载并保存重开，再由�
 
 ## 边界
 
-这些是无窗口、可重跑的真实模拟场景。[Physics Test 工程](../../../examples/physics-test/README.md)提供编辑器可打开的基础 Body 配置场景；`editor_physics_project_acceptance` 从该工程加载场景并用真实 Jolt 检查重力、力、冲量、运动学目标和 Sensor 接触。当前编辑器已通过独立 Project Run 会话推进物理，打开工程本身不会开始模拟。这里的场景验收不证明窗口操作、碰撞调试绘制或专用服务器宿主。`world_acceptance` 验证 World 契约，文档验收不能替代窗口验收。
+这些是无窗口、可重跑的真实模拟场景。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)提供编辑器可打开的基础 Body 配置场景；`editor_physics_project_acceptance` 从该工程加载场景并用真实 Jolt 检查重力、力、冲量、运动学目标和 Sensor 接触。当前编辑器已通过独立 Project Run 会话推进物理，打开工程本身不会开始模拟。这里的场景验收不证明窗口操作、碰撞调试绘制或专用服务器宿主。`world_acceptance` 验证 World 契约，文档验收不能替代窗口验收。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。

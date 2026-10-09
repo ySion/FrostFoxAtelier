@@ -21,6 +21,10 @@ class Project final {
 public:
     static Result<Project> create(const std::filesystem::path&);
     static Result<Project> open(const std::filesystem::path&);
+    static bool is_scene_path(const std::filesystem::path& path) {
+        return !path.empty() && path.extension()==L".scene" &&
+            (*path.begin()==L"Content" || *path.begin()==L"Examples");
+    }
     const std::filesystem::path& root() const noexcept { return root_; }
     const std::filesystem::path& startup_scene() const noexcept { return startup_; }
     const std::filesystem::path& ui_source() const noexcept { return ui_source_; }

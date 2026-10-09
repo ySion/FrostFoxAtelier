@@ -124,7 +124,7 @@ int verify_sponza_window(atelier::application::Application& app,const char* outp
     struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     const auto root=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-    model(app.open_project(root/"examples/physics-test"));model(app.open_scene("Content/Scenes/Sponza.scene"));
+    model(app.open_project(root/"assets/examples"));model(app.open_scene("Examples/Sponza/Scenes/Sponza.scene"));
     require(model(app.document().world().render_items()).front().geometry->vertices().size()==786801,"Sponza viewport lost model geometry.");
     model(app.configure_view({8,2,0},{-6,3,0},atelier::renderer::Shading::smooth));tick(app,3);
     atelier::renderer::Capture image;require(app.step(&image) && image.frame_id,"Sponza frame was not accepted.");

@@ -20,6 +20,7 @@ inline constexpr auto add_actor=command_key(Command::create_actor), remove_selec
     add_static_mesh=command_key(Command::create_static_mesh);
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
+inline constexpr ui::ControlKey examples_menu = 840;
 inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes=846;
 inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850, viewport_readout=851, viewport_rail_snap=852, viewport_add_menu=853, viewport_snap_menu=854;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);

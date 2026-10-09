@@ -2,7 +2,7 @@
 
 ## Sponza DDGI 场景接入（2026-10-10）
 
-基于 `17996cee07bcb234860848e31d6717fac3dec335` 加本轮工作树修改，在 Windows x64 / AMD Radeon RX 6800 XT 验证。复用现有 Scene Lit/DDGI shader，新增场景灯光、启动配置及真实编辑器验收。`Open-Sponza.ps1` 默认进入 Scene Lit，方向光、暖色可移动点光和冷色点光均来自实际 World；建筑使用线性基础色 .55、粗糙度 .85。
+基于 `17996cee07bcb234860848e31d6717fac3dec335` 加本轮工作树修改，在 Windows x64 / AMD Radeon RX 6800 XT 验证。复用现有 Scene Lit/DDGI shader，新增场景灯光、启动配置及真实编辑器验收。该轮的 `Open-Sponza.ps1` 默认进入 Scene Lit（该历史入口现已由编辑器默认启动及 Project → Examples 替代），方向光、暖色可移动点光和冷色点光均来自实际 World；建筑使用线性基础色 .55、粗糙度 .85。
 
 启动时按完整建筑拟合的探针体积为 `[-20,-2,-13]`～`[19,15,12]` 米，`16×10×14 = 2240` 个探针，每帧更新 560 个，每次更新 128 条照明射线加 32 条固定几何射线。验收逐顶点检查覆盖范围；普通相机配置保留已有体积。整个模型仍为 262,267 个三角形、103 个材质组，24 个漫反射贴图材质的基础显示与场景序列化往返继续通过。
 
@@ -54,11 +54,11 @@ Scene Lit 仍不采样 Mesh 材质图，其辅助深度与叠层保持和不透�
 | 正式 editor 的 Sponza 内庭、外观全景与 MatCap 捕获 | PASS | PASS |
 | Physics 15 个场景 / World 8 个场景 | PASS | PASS |
 
-源资产逐文件 SHA-256 验证通过：57 个原始文件、95,882,276 字节，与 [source.json](../../../examples/physics-test/Content/Sponza/source.json) 一致。解析结果为 262,267 个三角形、103 个连续材质组、25 个命名材质及 24 个漫反射贴图材质；源文件未改动，Scene 保持相对资源引用与 0.01 实例比例。
+源资产逐文件 SHA-256 验证通过：57 个原始文件、95,882,276 字节，与 [source.json](../../../assets/examples/Examples/Sponza/Sponza/source.json) 一致。解析结果为 262,267 个三角形、103 个连续材质组、25 个命名材质及 24 个漫反射贴图材质；源文件未改动，Scene 保持相对资源引用与 0.01 实例比例。
 
 真实导入链验证凹多边形面积、负索引/负 UV、共享 WIC 图像、重复导入拒绝、刷新幂等、图片/MTL 改写和删除、旧 Mesh/图像 owner 保持，以及缺依赖和目录逃逸拒绝。GPU 像素读回区分两组几何，验证顶点起点、sRGB 漫反射、UV 重复与左上原点、漫反射 alpha 和独立线性透明遮罩、背景深度、线框/MatCap 轮廓、暖帧零上传、替换与移除后的 owner 释放。完整窗口开启 D3D12 debug/GBV，捕获实际场景颜色与深度；最终渲染器和窗口日志未报告 D3D12 warning/error。
 
-可重复入口为 `editor_sponza_acceptance` 与 `renderer_acceptance`，使用现有 dev/release presets。证据为 `out/<配置>/sponza-{document,import,renderer,window,physics}.log`；图片和窗口报告在 `out/<配置>/sponza-evidence/`，包括 `sponza-interior.png`、`sponza-overview.png`、`sponza-matcap.png` 和 `acceptance.txt`。正式打开方式见 [Physics Test](../../../examples/physics-test/README.md#sponza-场景)。
+可重复入口为 `editor_sponza_acceptance` 与 `renderer_acceptance`，使用现有 dev/release presets。证据为 `out/<配置>/sponza-{document,import,renderer,window,physics}.log`；图片和窗口报告在 `out/<配置>/sponza-evidence/`，包括 `sponza-interior.png`、`sponza-overview.png`、`sponza-matcap.png` 和 `acceptance.txt`。正式打开方式见 [Sponza 默认场景](../../../assets/examples/Examples/Sponza/README.md)。
 
 该次 Sponza 验收使用完整几何、漫反射/遮罩、mip 和基础方向光，不覆盖 Scene Lit 的贴图、DDGI、阴影或 PBR，也没有附加 Sponza 物理 Body。未测量 GPU 帧耗时或显存性能收益。OBJ/MTL 来源贴图中暂未使用的凹凸/高光数据仍保留。
 

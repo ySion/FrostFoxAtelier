@@ -19,7 +19,8 @@ enum class Command : std::uint64_t {
     snap_toggle=818, snap_grid_01=819, snap_grid_02=820, snap_grid_05=821, snap_grid_1=822,
     selection_grid=823, selection_cursor=824, cursor_selected=825, cursor_grid=826, cursor_surface=827,
     view_perspective=830, view_top=831, view_front=832, view_right=833, viewport_options=834,
-    create_point_light=835, create_rectangle_light=836, create_directional_light=837
+    create_point_light=835, create_rectangle_light=836, create_directional_light=837,
+    example_sponza=838, example_scene_lit=839
 };
 enum class CommandGroup { file, edit, create, project, view, window, help };
 struct CommandGroupDefinition {
@@ -104,6 +105,8 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::view_right,CommandGroup::view,L"Right",L""},
     CommandDefinition{Command::viewport_options,CommandGroup::view,L"Show Tool Options",L"",true},
     CommandDefinition{Command::edit_ui_source,CommandGroup::file,L"Edit Editor UI Source",L""},
+    CommandDefinition{Command::example_sponza,CommandGroup::project,L"Sponza",L""},
+    CommandDefinition{Command::example_scene_lit,CommandGroup::project,L"Scene Lit Room",L""},
     CommandDefinition{Command::new_source,CommandGroup::project,L"New Component Source...",L""},
     CommandDefinition{Command::build_project,CommandGroup::project,L"Build Project",L"F6"},
     CommandDefinition{Command::rebuild_project,CommandGroup::project,L"Rebuild Types and Scene",L""},

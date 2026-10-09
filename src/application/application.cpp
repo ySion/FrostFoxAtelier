@@ -64,7 +64,8 @@ ui::PixelExtent client_extent(HWND window) {
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
 }
-Application::Application(bool validation,bool activate) : ui_(editor_fonts()),gpu_validation_(validation) {
+Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace)
+    : examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation) {
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
@@ -321,6 +322,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     if(!workspace_.menu) window_.capture(false);
     Result<void> result;
     switch (command) {
+    case example_sponza:case example_scene_lit:return open_example(command);
     case tool_select: case tool_transform: case tool_move: case tool_rotate: case tool_scale:
         workspace_.viewport_settings.tool=static_cast<editor::TransformTool>(static_cast<unsigned>(command)-static_cast<unsigned>(tool_select));
         workspace_.status=std::wstring(editor::command_definition(static_cast<std::uint64_t>(command))->title);break;

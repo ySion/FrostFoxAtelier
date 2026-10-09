@@ -81,4 +81,4 @@ Renderer 用前后相机和实例变换生成运动信息，结合深度、法�
 
 这些入口的存在不代表当前候选已经通过。实际通过范围、图片和性能样本由 [验收记录](acceptance.md) 维护；首批版本的 4.25 ms 属于其原采样条件，不能作为新版独立降噪、探针设置与 SMAA/Local GI 的性能结果。
 
-可打开的真实工程见 [Scene Lit Room](../../../examples/scene-lit/README.md) 和 [Sponza](../../../examples/physics-test/README.md#sponza-场景)。Sponza 启动脚本使用 `--scene-lit-camera`，根据世界空间几何边界一次性拟合有界探针体积；仍遵循本页的实例材质和不透明覆盖限制。`editor_sponza_acceptance` 在完整建筑上验证 DDGI 开关、移动光源与关灯后的收敛。性能目标基于 RX 6800 XT；目标帧率与最终本机实测应分开陈述。
+可打开的真实工程见 [Scene Lit Room](../../../assets/examples/Examples/Scene%20Lit%20Room/README.md) 和 [Sponza](../../../assets/examples/Examples/Sponza/README.md)。编辑器默认启动及 Project → Examples → Sponza 入口根据世界空间几何边界一次性拟合有界探针体积；仍遵循本页的实例材质和不透明覆盖限制。`editor_sponza_acceptance` 在完整建筑上验证 DDGI 开关、移动光源与关灯后的收敛。性能目标基于 RX 6800 XT；目标帧率与最终本机实测应分开陈述。
