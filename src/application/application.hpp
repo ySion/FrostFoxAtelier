@@ -20,7 +20,8 @@ public:
     bool step(renderer::Capture* = nullptr);
     Result<void> open_project(const std::filesystem::path&,bool create=false);
     Result<void> open_scene(const std::filesystem::path&);
-    Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading);
+    // Optional one-time DDGI fit to rendered world bounds; ordinary camera moves retain the volume.
+    Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading, bool fit_ddgi_volume = false);
     Result<void> open_source(const std::filesystem::path&);
     Result<void> save_scene(const std::filesystem::path& relative = {});
     Result<void> build_project(bool rebuild=false);

@@ -113,10 +113,30 @@ Result<void> Application::frame_actors(bool selected_only) {
     camera_.frame((low+high)*.5f,math::length(high-low)*.5f);camera_cut_=true;
     return {};
 }
-Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading) {
+Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
+    auto lighting=workspace_.view.lit;
+    if(fit_ddgi_volume) {
+        auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+        if(items->empty()) return std::unexpected(Error{ErrorCode::invalid_definition,"DDGI volume fitting requires rendered geometry."});
+        math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;
+        for(const auto& item:*items) for(const auto& vertex:item.geometry->vertices()) {
+            const auto point=math::transform_point(math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world);
+            for(int axis=0;axis<3;++axis) {low[axis]=std::min(low[axis],point[axis]);high[axis]=std::max(high[axis],point[axis]);}
+        }
+        std::uint32_t probes=1;
+        for(int axis=0;axis<3;++axis) {
+            lighting.probe_min[axis]=std::floor(low[axis]-.5f);
+            lighting.probe_max[axis]=std::ceil(high[axis]+.5f);
+            // Aim for two-meter cells, bounded to 4096 probes and a four-frame sweep.
+            lighting.probe_counts[axis]=static_cast<std::uint32_t>(std::clamp(
+                std::ceil((lighting.probe_max[axis]-lighting.probe_min[axis])/2.f)+1.f,2.f,16.f));
+            probes*=lighting.probe_counts[axis];
+        }
+        lighting.probe_update_budget=(probes+3)/4;
+    }
     if(shading>renderer::Shading::scene_lit || !camera_.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
-    workspace_.view.shading=shading;camera_cut_=true;invalidate_surface();return {};
+    workspace_.view.shading=shading;workspace_.view.lit=lighting;camera_cut_=true;invalidate_surface();return {};
 }
 Result<void> Application::action(const ui::Action& source) {
     // UI instance keys and host command/target keys occupy different roles.

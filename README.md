@@ -61,7 +61,7 @@ Scene Tree 展示 World → Actor 关系和实际 Actor 类型，具有类型图
 
 参数面板使用类型图标＋对象标题及连续属性滚动区，名称右侧的放大镜按需展开搜索。Actor 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
 
-工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。完整 Sponza 模型与材质贴图已放入 [Physics Test 工程](examples/physics-test/README.md)，可用其 `Open-Sponza.ps1` 直接打开；该示例默认使用支持贴图与 Alpha Test 的基础显示路径，Scene Lit 的材质范围见上文合同。
+工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。完整 Sponza 模型与材质贴图已放入 [Physics Test 工程](examples/physics-test/README.md)，其 `Open-Sponza.ps1` 默认打开带三盏真实灯光的 Scene Lit + DDGI，并按完整模型范围配置探针。Scene Lit 当前使用实例材质及不透明覆盖；查看原始贴图与 Alpha Test 需切到 Smooth/Flat，具体范围见上文合同。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 

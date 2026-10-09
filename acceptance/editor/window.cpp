@@ -75,6 +75,7 @@ struct EditorAcceptanceAccess {
     static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
     static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
     static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
+    static void scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {app.workspace_.view.lit=settings;}
     static const auto& scene_snapshot(const Application& app) {return app.scene_;}
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}

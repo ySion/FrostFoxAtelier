@@ -24,7 +24,8 @@ int wmain(int argc, wchar_t** argv) {
             return atelier::application::run_project_command({argv+2,static_cast<std::size_t>(argc-2)});
         const bool sponza=argc==3 && std::wstring_view(argv[1])==L"--acceptance-sponza";
         const bool preview=argc==12 && std::wstring_view(argv[1])==L"--project" &&
-            std::wstring_view(argv[3])==L"--scene" && std::wstring_view(argv[5])==L"--material-camera";
+            std::wstring_view(argv[3])==L"--scene" &&
+            (std::wstring_view(argv[5])==L"--material-camera" || std::wstring_view(argv[5])==L"--scene-lit-camera");
         std::array<float,6> camera{};
         if(preview) for(unsigned i=0;i<6;++i) {
             wchar_t* end{};camera[i]=std::wcstof(argv[i+6],&end);
@@ -42,7 +43,7 @@ int wmain(int argc, wchar_t** argv) {
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
         if (argc != 1 && !sponza && !preview && !((acceptance || source || edit || snapshot || ime || viewport || project || create) && argc == 3) &&
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
-            std::fprintf(stderr, "Usage: atelier_editor [--version] [--project|--new-project folder] [--scene relative.scene --material-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-sponza output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
+            std::fprintf(stderr, "Usage: atelier_editor [--version] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-sponza output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
         atelier::application::Application app(acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza,!snapshot);
         if (project || create) {
@@ -51,7 +52,9 @@ int wmain(int argc, wchar_t** argv) {
         }
         if(preview) {
             auto opened=app.open_scene(argv[4]);if(!opened) throw std::runtime_error(opened.error().message);
-            auto view=app.configure_view({camera[0],camera[1],camera[2]},{camera[3],camera[4],camera[5]},atelier::renderer::Shading::smooth);
+            const bool lit=std::wstring_view(argv[5])==L"--scene-lit-camera";
+            auto view=app.configure_view({camera[0],camera[1],camera[2]},{camera[3],camera[4],camera[5]},
+                lit?atelier::renderer::Shading::scene_lit:atelier::renderer::Shading::smooth,lit);
             if(!view) throw std::runtime_error(view.error().message);
         }
         if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());

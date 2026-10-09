@@ -51,5 +51,9 @@ void verify_sponza_project() {
     const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
     require(take(reopened->serialize())==saved && take(reopened->world().render_items()).front().geometry==mesh,
         "Scene save/reopen lost material-backed shared geometry.");
+    const auto lights=take(reopened->world().light_items());
+    require(lights.size()==3 && std::ranges::count_if(lights,[](const auto& light){return light.settings.kind==world::LightKind::directional;})==1 &&
+        std::ranges::all_of(lights,[](const auto& light){return light.settings.casts_shadow && light.settings.intensity>0;}),
+        "Sponza save/reopen lost its directional and two local lights.");
     std::printf("Sponza project acceptance: PASS (%zu triangles, %zu parts, %zu textured materials)\n",mesh->vertices().size()/3,mesh->parts().size(),textured);
 }
