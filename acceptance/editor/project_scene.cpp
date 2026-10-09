@@ -18,6 +18,7 @@ void require(bool value,const char* message) { if (!value) throw std::runtime_er
 struct Actor : world::Actor { std::int32_t health{100}; };
 struct Move : world::Component { float speed{2}; double mass{3.5}; std::uint32_t count{7}; bool allowed{true}; };
 struct Spatial : world::SceneComponent { float offset{4}; };
+struct QueryProbe : physics::SceneQueryComponent { bool observed{};std::uint32_t count{};float distance{};math::Vector3 point{}; };
 struct Evidence { unsigned prepared{},destroyed{},begins{},ends{}; bool fail_tick{},fail_begin{},fail_end{},live_runtime_on_release{true}; };
 struct Code {
     Runtime& runtime;
@@ -57,6 +58,47 @@ ObjectId member(editor::Session& session,TypeId type) {
     throw std::runtime_error("Missing component");
 }
 world::FieldPath field(editor::Session& session,TypeId type,std::string_view name) { return {take(session.world().runtime().find_field(type,name))}; }
+void verify_query_source(editor::Project& project) {
+    auto evidence=std::make_shared<Evidence>();
+    const editor::Session::Prepare query_code=[&](world::World& world)->Result<std::shared_ptr<void>> {
+        auto& runtime=world.runtime();++evidence->prepared;
+        const auto type=take(NativeRegistration<QueryProbe>{runtime,"game.QueryProbe",TypeKind::object}
+            .base<physics::SceneQueryComponent>().field<&QueryProbe::observed>("observed").field<&QueryProbe::count>("count")
+            .field<&QueryProbe::distance>("distance").field<&QueryProbe::point>("point").publish());
+        auto code=std::make_shared<Code>(runtime,type,evidence);
+        auto candidate=take(source::Program::prepare(take(code->program.request("QueryProbe.source",
+            "void tick(float dt) { self.observed = self.query_ready() && self.has_hit(); self.count = self.hit_count(); self.distance = self.hit_distance(); self.point = self.hit_point(); self.request_query(); }"))));
+        take(code->program.try_publish(candidate));const auto lease=take(code->program.pin());
+        take(world.bind_behavior(type,{.tick=[lease](Runtime&,ObjectId object,float dt)->Result<void>{
+            const std::array<Scalar,1> arguments{dt};auto called=lease.invoke(object,arguments);
+            if(!called) return std::unexpected(called.error());return {};
+        }}));
+        return std::static_pointer_cast<void>(code);
+    };
+    auto scene=Json::parse(take(editor::read_file(editor::asset_directory()/"examples/Examples/Physic/Scenes/Raycasts.scene")));
+    for(auto& actor:scene["actors"]) if(actor["name"]=="Scene query emitter") {
+        auto& component=actor["components"][3];component["type"]="game.QueryProbe";component["properties"]["automatic"]=false;
+    }
+    auto document=take(editor::Session::deserialize(scene.dump(),project,query_code));
+    ObjectId probe{};
+    for(const auto& actor:take(document->world().members())) for(const auto& component:take(world::components(document->world().runtime(),actor.id())))
+        if(take(document->world().runtime().type_of(component.id()))==take(document->world().runtime().native_type<QueryProbe>())) probe=component.id();
+    require(probe!=ObjectId{},"Source query probe was not loaded.");
+    changed(document->start());take(document->update(1.f/60));take(document->update(1.f/60));
+    take(document->world().runtime().with_native<const QueryProbe>(probe,[](const auto& value)->Result<void>{
+        require(value.observed && value.count==1 && std::abs(value.distance-6.5f)<.01f && std::abs(value.point.z-2.5f)<.01f,
+            "Source could not request a trace and read the completed bool/count/distance/vector result.");return {};
+    }));
+    const auto saved=take(document->serialize());changed(document->stop());changed(document->close());document.reset();
+    auto reopened=take(editor::Session::deserialize(saved,project,query_code));
+    for(const auto& actor:take(reopened->world().members())) for(const auto& component:take(world::components(reopened->world().runtime(),actor.id()))) {
+        auto ready=reopened->world().runtime().with_native<const physics::SceneQueryComponent>(component.id(),[](const auto& q)->Result<bool>{return q.query_ready();});
+        if(ready) require(!*ready,"Scene persistence restored a transient query result.");
+    }
+    changed(reopened->close());reopened.reset();
+    require(evidence->prepared==evidence->destroyed,"Query script lease survived its Session.");
+    std::puts("Query Source acceptance: PASS (native inherited methods, fixed-step request, scalar/vector result, transient reset)");
+}
 void edit(editor::Session& session,ObjectId object,const world::FieldPath& path,Scalar value,std::uint64_t key) {
     take(session.begin_edit(object,path,key)); take(session.preview_edit(key,value)); take(session.commit_edit(key));
 }
@@ -128,6 +170,9 @@ void run() {
     // JSON source decimals round through the authored float storage.
     const auto migrated_json=Json::parse(take(migrated->serialize()));
     upgraded["actors"][0]["components"][0]["base_color"]=migrated_json["actors"][0]["components"][0]["base_color"];
+    upgraded["actors"][0]["components"][0]["roughness"]=world::Material{}.roughness;
+    upgraded["actors"][0]["components"][0]["metallic"]=0.f;
+    upgraded["actors"][0]["components"][0]["emissive"]=Json::array({0.f,0.f,0.f});
     require(migrated_json==upgraded,"Legacy scene did not preserve spatial/resource data while upgrading to v2.");
     auto physical=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     const auto physical_actor=take(physical->world().members()).front().id();take(physical->select(physical_actor));
@@ -146,9 +191,20 @@ void run() {
     changed(physical_reopened->close());
     changed(physical->start()); require(!physical->update(.01f) && !physical->world().running(),"translate_owner overrode physics ownership.");
     changed(physical->close());
+    for(const auto* controller:{"physics.CharacterComponent","physics.RagdollComponent"}) {
+        auto controlled=take(editor::Session::deserialize(saved,project,prepare(evidence)));
+        take(controlled->select(take(controlled->world().members()).front().id()));
+        changed(controlled->add_component(take(controlled->world().runtime().find_type(controller))));
+        changed(controlled->start());
+        const auto moved=controlled->update(.01f);
+        require(!moved && moved.error().message.find("translate_owner")!=std::string::npos && !controlled->world().running(),
+            "translate_owner overrode a Character or Ragdoll component.");
+        changed(controlled->close());
+    }
     changed(document.erase_selected());require(!document.properties(move),"Detached history object remained editable.");
     changed(document.undo());require(document.selection().actor==actor && std::get<float>(take(document.read_property(move,speed)))==4,"Deletion undo lost business identity/fields.");
     changed(document.close());changed(reopened->close());changed(defaulted->close());
+    verify_query_source(project);
     require(evidence->prepared==evidence->destroyed && evidence->live_runtime_on_release,"Prepared code leaked or outlived its Runtime.");
     std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, load cleanup, Source actions, repeated play/stop, Jolt ownership)");
 }

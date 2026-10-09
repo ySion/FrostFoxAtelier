@@ -1,0 +1,412 @@
+{
+  "version": 2,
+  "actors": [
+    {
+      "type": "world.Actor",
+      "name": "Static triangle mesh floor",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            -0.5,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            40,
+            1,
+            40
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.18,
+            0.22,
+            0.27
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 1
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "triangle_mesh",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 2
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Four wheel vehicle",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            1,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1.6,
+            0.5,
+            2.8
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.9,
+            0.15,
+            0.12
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "dynamic",
+            "half_extents": [
+              0.8,
+              0.25,
+              1.4
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        },
+        {
+          "type": "physics.VehicleComponent",
+          "enabled": true,
+          "properties": {
+            "settings": {
+              "half_width": 0.85,
+              "half_length": 1.2,
+              "wheel_radius": 0.35,
+              "suspension_length": 0.5
+            },
+            "throttle": 0.4,
+            "steering": 0.05,
+            "brake": 0
+          },
+          "id": 4
+        },
+        {
+          "type": "physics.VehicleWheelComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0.85,
+            -0.6,
+            1.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.25,
+            0.7,
+            0.7
+          ],
+          "properties": {
+            "wheel_index": 0
+          },
+          "mesh": "builtin/sphere",
+          "base_color": [
+            0.07,
+            0.08,
+            0.1
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 5
+        },
+        {
+          "type": "physics.VehicleWheelComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            -0.85,
+            -0.6,
+            1.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.25,
+            0.7,
+            0.7
+          ],
+          "properties": {
+            "wheel_index": 1
+          },
+          "mesh": "builtin/sphere",
+          "base_color": [
+            0.07,
+            0.08,
+            0.1
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 6
+        },
+        {
+          "type": "physics.VehicleWheelComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0.85,
+            -0.6,
+            -1.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.25,
+            0.7,
+            0.7
+          ],
+          "properties": {
+            "wheel_index": 2
+          },
+          "mesh": "builtin/sphere",
+          "base_color": [
+            0.07,
+            0.08,
+            0.1
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 7
+        },
+        {
+          "type": "physics.VehicleWheelComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            -0.85,
+            -0.6,
+            -1.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.25,
+            0.7,
+            0.7
+          ],
+          "properties": {
+            "wheel_index": 3
+          },
+          "mesh": "builtin/sphere",
+          "base_color": [
+            0.07,
+            0.08,
+            0.1
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 8
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Main directional",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "id": 1,
+          "type": "world.LightComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            5,
+            -2
+          ],
+          "rotation": [
+            0.5367523272229081,
+            0.18786331452801783,
+            0,
+            0.8225596113810472
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "kind": "directional",
+              "color": {
+                "x": 1,
+                "y": 0.87,
+                "z": 0.7
+              },
+              "intensity": 1.8,
+              "range": 12,
+              "source_radius": 0.018,
+              "width": 2,
+              "height": 2,
+              "two_sided": false,
+              "casts_shadow": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

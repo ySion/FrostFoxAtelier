@@ -497,19 +497,22 @@ Result<void> World::Impl::apply_translations() {
     // discard the batch on every exit so a rejected action cannot replay later.
     struct Cleanup { Impl& state; ~Cleanup() { state.translations.clear(); state.translation_changes.clear(); } } cleanup{*this};
     auto& changes=translation_changes; changes.reserve(translations.size());
-    const auto body_type=runtime.find_type("physics.BodyComponent");
+    const std::array physical_types{runtime.find_type("physics.BodyComponent"),
+        runtime.find_type("physics.CharacterComponent"),runtime.find_type("physics.RagdollComponent")};
     for (const auto& command:translations) {
         auto owner=component_owner(command.component);
         if (!owner) return std::unexpected(owner.error());
         if (*owner!=command.actor) return error(ErrorCode::invalid_member,"Translation receiver changed owner.");
         auto root=root_component(runtime,command.actor); if (!root) return std::unexpected(root.error());
         if (*root!=command.root) return error(ErrorCode::invalid_member,"Translation target root changed.");
-        if (body_type) {
+        {
             auto group=components(runtime,command.actor); if (!group) return std::unexpected(group.error());
             for (const auto& component:*group) {
                 auto type=runtime.type_of(component.id()); if (!type) return std::unexpected(type.error());
-                auto physical=runtime.is_a(*type,*body_type); if (!physical) return std::unexpected(physical.error());
-                if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move an Actor with a physics body; use physics actions.");
+                for(const auto& physical_type:physical_types) if(physical_type) {
+                    auto physical=runtime.is_a(*type,*physical_type); if (!physical) return std::unexpected(physical.error());
+                    if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Actor; use physics actions.");
+                }
             }
         }
         auto found=std::ranges::find(changes,command.root,&TranslationChange::root);
@@ -558,6 +561,14 @@ Result<void> World::apply_simulation_transform(ObjectId object, math::Vector3 po
     auto root = root_component(runtime(), *owner);
     if (!root) return std::unexpected(root.error());
     if (!*root || **root != object) return error(ErrorCode::invalid_member, "Simulation writes require the Actor root.");
+    return apply_simulation_local_transform(object,position,rotation);
+}
+Result<void> World::apply_simulation_local_transform(ObjectId object, math::Vector3 position,
+    math::Quaternion rotation) {
+    if (auto ready=impl_->admit(); !ready) return std::unexpected(ready.error());
+    if (!impl_->running) return error(ErrorCode::busy,"Simulation writes require a running World.");
+    auto owner=impl_->component_owner(object);
+    if (!owner) return std::unexpected(owner.error());
     auto current = read_transform(runtime(), object);
     if (!current) return std::unexpected(current.error());
     auto canonical = canonical_transform({position, rotation, current->scale});

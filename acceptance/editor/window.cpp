@@ -16,6 +16,7 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static editor::Session& physics_document(Application& app) {return *app.document_;}
     static void ui_source(Application& app,const std::filesystem::path& path) {
         auto source=editor::read_file(app.workspace_.ui_source());
         if (!source) throw std::runtime_error(source.error().message);
@@ -1811,3 +1812,4 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
 
 #include "sponza_window.inl"
 #include "examples_window.inl"
+#include "physics_examples_window.inl"

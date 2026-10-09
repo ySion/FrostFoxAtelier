@@ -35,6 +35,8 @@ void committed(atelier::Result<atelier::world::Commit> result) {
 
 #include "integration.inl"
 #include "scenarios.inl"
+#include "components.inl"
+#include "scene_queries.inl"
 
 struct Scenario { std::string_view name; void (*run)(); };
 const Scenario scenarios[]{
@@ -53,6 +55,9 @@ const Scenario scenarios[]{
     {"ragdoll", ragdoll},
     {"vehicle", vehicle},
     {"special_integration", simulate_special_systems},
+    {"components", component_lifecycle},
+    {"trace_queries", trace_queries},
+    {"query_components", query_components},
 };
 } // namespace
 

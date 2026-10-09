@@ -51,6 +51,8 @@ Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与�
 - Scene 保存有序 Actor、真实类型名称、名称、enabled、有序组件、局部组件 ID、显式 root/parent、TRS、材质和资源键。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致，因此 Scene v1 继续可读，无需版本迁移或旧类型别名。
 - Scene 按限定类型名恢复已注册的 Actor/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置由专有字段保存。未知版本、未知类型、未知已保存属性、失效关系、缺失资源和无法编码的字段明确失败；空网格保留为空。单场景最多 256 Actor、每个 Actor 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
+- 物理角色、布娃娃/部件、车辆/车轮、力和运动学组件复用上述属性格式。DistanceConstraint 的 `constraint_target` 是从 1 开始的场景 Actor 顺序，0 为空目标；全部 Actor 创建后恢复 Runtime 弱引用，越界目标拒绝，不保存后端句柄。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
+- SceneQueryComponent 复用 Scene v2 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源和解析内容，`read_static_mesh` 覆盖 Detached 与空网格。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
 - 重建先创建真实类型对象和组件，恢复值，每个 Actor 一次 `attach_components` 恢复组成与空间关系，最后按文档顺序 attach。加载 StaticMeshActor 不重复调用带默认组成的快捷工厂。
 - 保存先完成有效文本草稿，经同目录临时文件、FlushFileBuffers 和替换发布。写入失败保留旧文件；这不是跨文件事务或断电恢复保证。工程标记最后创建，未完成创建不会伪装成可打开工程。存档提交与目录刷新结果分开：成功保存后即更新保存点，资源刷新失败显示警告，不将成功写入误报为保存失败。

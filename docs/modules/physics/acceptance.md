@@ -9,13 +9,15 @@
 ```powershell
 cmake --build --preset dev --target physics_acceptance world_acceptance editor_document_acceptance editor_physics_project_acceptance
 cmake --build --preset release --target physics_acceptance world_acceptance editor_document_acceptance editor_physics_project_acceptance
+cmake --build --preset dev --target physics_examples_acceptance project_scene_acceptance
+cmake --build --preset release --target physics_examples_acceptance project_scene_acceptance
 
 ./out/dev/atelier_physics_acceptance.exe --list
 ./out/dev/atelier_physics_acceptance.exe --scenario vehicle
 ./out/release/atelier_physics_acceptance.exe --scenario world_ownership
 ```
 
-不带参数运行全部 15 项；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。每项输出 RUN 和 PASS/FAIL，汇总成功为 `Physics acceptance: PASS (15/15 scenarios)`。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
+不带参数运行全部 18 项；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。每项输出 RUN 和 PASS/FAIL，汇总成功为 `Physics acceptance: PASS (18/18 scenarios)`。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
 
 ## 场景与检查点
 
@@ -36,8 +38,44 @@ cmake --build --preset release --target physics_acceptance world_acceptance edit
 | `ragdoll` | 两部件布娃娃落到地面 | 层级拒绝、全部部件位姿/步号、重力和碰撞、重复创建/销毁拒绝、重建及 World stop 清理 |
 | `vehicle` | 四轮车在平面加速、转向和刹车 | 四轮接地、位移/速度/转向、刹车减速、底盘及输入合法性、控制器重建与底盘停用 |
 | `special_integration` | 角色台阶/坡道/移动平台、旋转布娃娃、受约束车辆 | 组合运动、布娃娃局部转世界、平台继承、普通 Body 替换专用系统、停用/退出清理 |
+| `components` | 组件拥有的角色、车辆、布娃娃及摆锤 | 重复 reconcile 幂等、停用根/控制器/部件/底盘、删除/恢复、detach/重启代际、单根写入者、约束端点释放/唤醒、跨 World 目标拒绝 |
+| `trace_queries` | 触碰、首个阻挡、遮挡后目标、通道忽略对象和 Sensor | 通道/对象类型 test/single/multi、Actor/Component 忽略集合、容量摘要、旧 closest 合同、球心与接触点、初始穿透、掩码/枚举/零长度/浮点溢出边界 |
+| `query_components` | 有空间父节点的查询组件和可停用目标 | 局部旋转/缩放、自身忽略、自动/一次请求、暂停与立即查询、失败清空结果、祖先停用、删除恢复、跨 World、旧命中失效、未登记请求的停止重启 |
 
-## 本轮验证与修复
+## 官方 Physic 场景
+
+[Examples/Physic](../../../assets/examples/Examples/Physic/README.md) 包含 10 个组件场景。`atelier_editor_document_acceptance --physics-examples` 通过真实磁盘写读保存全部属性及约束目标，再各执行 180 个固定步，检查刚体落地、持续力/一次冲量、运动学平台、触发与碰撞矩阵、Ray/Sweep/Overlap、角色落地移动、距离约束、六部件布娃娃及车辆接地运动。每个场景还验证重复 start/update、暂停/单步、停止和重启；越界约束目标被拒绝。
+
+`atelier_editor --acceptance-physics-examples <输出目录>` 在输出目录的 Workspace 下为每次运行创建新的官方示例副本，避免旧测试副本缺少新增场景。它使用正式 Application/Session/World/Jolt 以及 D3D12 GPU validation。每个场景输出编辑状态及实际模拟后的两张截图，检查被接受的帧和有效几何深度；布娃娃部件坐标另由文档验收与 Jolt 姿态比对。此入口直接调用应用命令和模拟器，不发送原生鼠标输入。
+
+`--examples` 文档验收确认老用户工程仅补入缺失的官方示例目录，重复打开保留编辑且不修改模板。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖 Body/Character/Ragdoll 的根位姿所有权。独立 Project Run 的布娃娃和车辆场景还各运行 180 帧并输出最终场景。
+
+`Raycasts.scene` 的六个查询组件经真实磁盘保存重开，验证通道最近阻挡、通道多命中截断、对象类型穿过阻挡、布尔无载荷、球扫掠与 Sensor 重叠。`project_scene_acceptance` 还通过正式 JIT 绑定查询派生组件 Tick，验证原生继承方法、一次请求、布尔/计数/距离/Vector3 返回、保存后瞬态清空和代码拥有者释放。
+
+## 2026-10-10 查询组件增量
+
+在组件场景基础上增加 [SceneQueryComponent](scene-queries.md) 和 `Raycasts.scene`。dev/release 均构建成功，18/18 物理场景、Project Scene（包含查询 Source/JIT）、10/10 场景磁盘往返与模拟检查通过。完整编辑器文档在两种配置上通过，查询配置未破坏既有 Scene、UI 或源码链。
+
+两种配置的正式编辑器 GPU 验收均通过 10/10 场景，每种输出 20 张编辑/模拟截图；`Raycasts-simulated.png` 显示完整目标布局。查询线本身未绘制，命中值由上述物理、文档和 JIT 验收判定。发布版额外验证在已有旧 Workspace 的输出目录中运行仍会创建新副本并加载当前 10 场景。
+
+查询验收修复了球扫掠初始穿透的后端选项，并覆盖未首次 reconcile 的请求在停止时被取消。Actor 停止通知与组件移除期间的过渡状态分别处理；角色、布娃娃和车辆的既有生命周期场景继续通过。
+
+日志位于 `out/<配置>/query-physics.log`、`query-project-scene.log`、`query-examples.log`、`query-editor-document.log`；截图及窗口报告位于 `out/<配置>/query-examples-evidence/`，使用同一 RX 6800 XT。结果证明当前查询和组件合同，不作为性能或完整 UE 功能对等的结论。
+
+## 2026-10-10 组件与官方场景验证（查询增量之前）
+
+使用锁定工具链，在开发与发布配置上完成以下实际运行，退出码均为 0：
+
+| 配置 | 物理 | World | 完整编辑器文档 / Project Scene | 官方目录与 9 场景磁盘/模拟 | 编辑器 GPU 场景 |
+| --- | --- | --- | --- | --- | --- |
+| dev | 16/16 PASS | 9/9 PASS | PASS / PASS | PASS / 9/9 PASS | 9/9 PASS，18 张截图 |
+| release | 16/16 PASS | 9/9 PASS | PASS / PASS | PASS / 9/9 PASS | 9/9 PASS，18 张截图 |
+
+两种配置的独立运行进程还分别完成 Ragdoll、Vehicle 各 180 帧。证据在 `out/<配置>/physic-components.log`、`physic-world.log`、`physic-project-scene.log`、`physic-editor-document.log`、`physic-official-examples.log`、`physic-examples.log`、`physic-run-*.log` 和 `physics-examples-evidence/`，均为可重建产物。GPU 使用本机 AMD Radeon RX 6800 XT；窗口验收直接调用正式应用入口，未据此声称原生菜单鼠标交互已覆盖。
+
+本轮修复并覆盖了隐藏弱引用的正确恢复、组件依赖停用后的后端清理、恢复时句柄换代，以及脚本移动指令对角色/布娃娃物理所有权的保护。旧 v1 文档验收补齐此前新增材质字段的默认值预期，继续独立检查完整格式兼容性。
+
+## 2026-10-06 历史验证与修复
 
 2026-10-06 在当前工作区修改上，使用 `cmake/toolchain-lock.json` 锁定工具链完成以下验收，两个构建命令退出码均为 0：
 
@@ -58,6 +96,6 @@ Physics Test 工程使用正式 Project/Session 加载并保存重开，再由�
 
 ## 边界
 
-这些是无窗口、可重跑的真实模拟场景。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)提供编辑器可打开的基础 Body 配置场景；`editor_physics_project_acceptance` 从该工程加载场景并用真实 Jolt 检查重力、力、冲量、运动学目标和 Sensor 接触。当前编辑器已通过独立 Project Run 会话推进物理，打开工程本身不会开始模拟。这里的场景验收不证明窗口操作、碰撞调试绘制或专用服务器宿主。`world_acceptance` 验证 World 契约，文档验收不能替代窗口验收。
+底层 18 项是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。

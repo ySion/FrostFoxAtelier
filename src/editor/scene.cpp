@@ -189,6 +189,8 @@ Result<std::string> Session::serialize() const {
         auto& runtime=world_.runtime();
         Json actors=Json::array();
         const auto members=take(world_.members());
+        std::unordered_map<ObjectId,std::size_t> actor_keys;
+        for(std::size_t i=0;i<members.size();++i) actor_keys.emplace(members[i].id(),i+1);
         if (members.size()>maximum_actors) throw std::runtime_error("Scene exceeds the Actor count limit.");
         for (const auto& member:members) {
             const auto actor=take(world::inspect_actor(runtime,member.id()));
@@ -228,6 +230,11 @@ Result<std::string> Session::serialize() const {
                 }
                 if(derives(runtime,state.type,types_.light_component)) take(world::validate_light(take(world::read_light(runtime,component.id()))));
                 if (physical_type(runtime,state.type)) value["body"]=body_settings(take(physics::read_settings(runtime,component.id())));
+                if(derives(runtime,state.type,physics_types_.distance_constraint_component)) {
+                    const auto target=take(physics::constraint_target(runtime,component.id()));
+                    if(target!=ObjectId{} && !actor_keys.contains(target)) throw std::runtime_error("Constraint target must belong to this scene.");
+                    value["constraint_target"]=target==ObjectId{}?0:actor_keys.at(target);
+                }
                 values.push_back(std::move(value));
             }
             actors.push_back({{"type",type_name(runtime,actor.type)},{"name",utf8(name(member.id()))},{"enabled",actor.enabled},
@@ -249,6 +256,8 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
         if (!actors.is_array() || actors.size()>maximum_actors) throw std::runtime_error("Invalid scene Actor count.");
         auto session=std::make_unique<Session>(std::move(prepare)); auto& world=session->world_; auto& runtime=session->runtime_;
         const auto& types=session->types_;
+        std::vector<ObjectId> actor_ids;
+        std::vector<std::pair<ObjectId,std::size_t>> constraint_targets;
         for (const auto& actor:actors) {
             if (version==1) fields(actor,{"type","name","enabled","root","components"});
             else fields(actor,{"type","name","enabled","root","components","properties"});
@@ -273,11 +282,14 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                 Json structural=component;
                 if (version==2) structural.erase("properties");
                 const bool physical=physical_type(runtime,component_type);
+                const bool constraint=derives(runtime,component_type,session->physics_types_.distance_constraint_component);
+                if(constraint) structural.erase("constraint_target");
                 if (physical) structural.erase(version==1?"physics":"body");
                 if (mesh) fields(structural,{"id","type","enabled","position","rotation","scale","parent","mesh","base_color","roughness","metallic","emissive"});
                 else if (spatial) fields(structural,{"id","type","enabled","position","rotation","scale","parent"});
                 else fields(structural,{"id","type","enabled"});
                 auto value=take(world::create_component(runtime,component_type));
+                if(constraint) constraint_targets.emplace_back(value.id(),json_format::identity(component.at("constraint_target")));
                 read_properties(runtime,types,value.id(),component_type,component.value("properties",Json::object()));
                 const auto key=json_format::identity(component.at("id"));
                 if (!key || !ids.emplace(key,value.id()).second) throw std::runtime_error("Duplicate or empty scene Component identity.");
@@ -332,6 +344,11 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
             committed(world.set_enabled(root.id(),actor.at("enabled").get<bool>()));
             committed(world.attach(root.id()));
             session->names_.emplace(root.id(),label);
+            actor_ids.push_back(root.id());
+        }
+        for(const auto& [component,key]:constraint_targets) {
+            if(key>actor_ids.size()) throw std::runtime_error("Constraint target is outside the scene.");
+            take(physics::set_constraint_target(runtime,component,key?actor_ids[key-1]:ObjectId{}));
         }
         session->next_name_=actors.size()+1; return session;
     } catch (const std::exception& error) { return failed(error); }

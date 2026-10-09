@@ -41,6 +41,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_workspace.inl"
 #include "project_document.inl"
 #include "textured_obj.inl"
+#include "physics_examples.inl"
 #include "examples.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
@@ -58,6 +59,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 int main(int argc, char** argv) {
     try {
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--viewport-edit") {verify_viewport_editing();return 0;}
         if((argc==2 || argc==3) && std::string_view(argv[1])=="--scene-lit") {
@@ -77,7 +79,7 @@ int main(int argc, char** argv) {
             std::puts("Editor physics project acceptance: PASS");
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
         verify_physics_test_project();
         verify_project_document();
         verify_textured_obj();

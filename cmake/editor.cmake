@@ -84,6 +84,10 @@ function(atelier_add_editor)
     add_custom_target(editor_physics_project_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-test-project
         DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(physics_examples_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-examples
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-physics-examples "${CMAKE_BINARY_DIR}/physics-examples-evidence"
+        DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_sponza_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --textured-obj
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-sponza "${CMAKE_BINARY_DIR}/sponza-evidence"

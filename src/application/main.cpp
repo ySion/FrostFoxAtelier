@@ -5,8 +5,10 @@
 #include <string_view>
 #include <array>
 #include <cmath>
+#include <chrono>
 
 int verify_sponza_window(atelier::application::Application&, const char* output_directory);
+int verify_physics_examples_window(atelier::application::Application&, const char* output_directory);
 int verify_examples_window(atelier::application::Application&, const char* output_directory,bool snapshot_only);
 
 int verify_editor_window(atelier::application::Application&, const char* output_directory, bool viewport_only = false);
@@ -24,6 +26,8 @@ int wmain(int argc, wchar_t** argv) {
         if (argc>=3 && std::wstring_view(argv[1])==L"--run-project")
             return atelier::application::run_project_command({argv+2,static_cast<std::size_t>(argc-2)});
         const bool sponza=argc==3 && std::wstring_view(argv[1])==L"--acceptance-sponza";
+        const bool physics_examples=argc==3 && std::wstring_view(argv[1])==L"--acceptance-physics-examples";
+        const bool physic=argc==2 && std::wstring_view(argv[1])==L"--physic";
         const bool examples_snapshot=argc==3 && std::wstring_view(argv[1])==L"--snapshot-examples";
         const bool examples=examples_snapshot || (argc==3 && std::wstring_view(argv[1])==L"--acceptance-examples");
         const bool preview=argc==12 && std::wstring_view(argv[1])==L"--project" &&
@@ -44,14 +48,18 @@ int wmain(int argc, wchar_t** argv) {
         const bool scene_lit = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-scene-lit";
         const bool project=(argc==3 || preview) && std::wstring_view(argv[1])==L"--project";
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
-        if (argc != 1 && !examples && !sponza && !preview && !((acceptance || source || edit || snapshot || ime || viewport || project || create) && argc == 3) &&
+        if (argc != 1 && !physic && !physics_examples && !examples && !sponza && !preview && !((acceptance || source || edit || snapshot || ime || viewport || project || create) && argc == 3) &&
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
-            std::fprintf(stderr, "Usage: atelier_editor [--version] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-sponza|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
+            std::fprintf(stderr, "Usage: atelier_editor [--version|--physic] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-sponza|--acceptance-physics-examples|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
-        atelier::application::Application app(acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza || (examples && !examples_snapshot),!snapshot && !examples_snapshot,
-            examples?std::filesystem::absolute(argv[2])/"Workspace":std::filesystem::path{});
-        if(argc==1 || examples) {
-            const auto opened=app.open_example();
+        auto example_workspace=examples||physics_examples?std::filesystem::absolute(argv[2])/"Workspace":std::filesystem::path{};
+        // Each physics run must consume current templates. Product workspaces
+        // intentionally preserve existing folders and must not be refreshed here.
+        if(physics_examples) example_workspace/=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        atelier::application::Application app(acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza || physics_examples || (examples && !examples_snapshot),!snapshot && !examples_snapshot,
+            example_workspace);
+        if(argc==1 || examples || physic) {
+            const auto opened=app.open_example(physic?atelier::editor::Command::example_physic:atelier::editor::Command::example_sponza);
             if(!opened) throw std::runtime_error(opened.error().message);
         }
         if (project || create) {
@@ -66,6 +74,7 @@ int wmain(int argc, wchar_t** argv) {
             if(!view) throw std::runtime_error(view.error().message);
         }
         if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());
+        if(physics_examples) return verify_physics_examples_window(app,atelier::editor::utf8(argv[2]).c_str());
         if(examples) return verify_examples_window(app,atelier::editor::utf8(argv[2]).c_str(),examples_snapshot);
         if (source) return verify_editor_source(app,atelier::editor::utf8(argv[2]).c_str());
         if (edit) return verify_editor_edit_mode(app,atelier::editor::utf8(argv[2]).c_str());

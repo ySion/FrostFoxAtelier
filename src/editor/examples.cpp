@@ -19,6 +19,27 @@ Result<std::filesystem::path> prepare_examples(const std::filesystem::path& work
         if(fs::exists(destination)) {
             auto project=Project::open(destination);
             if(!project) return std::unexpected(project.error());
+            // Publish newly shipped example folders only; existing user scenes
+            // and edits are never merged or replaced by template updates.
+            for(const auto& example:official_examples) {
+                const auto folder=fs::path(example.scene).parent_path().parent_path();
+                if(fs::exists(destination/folder)) continue;
+                const auto source=asset_directory()/"examples"/folder;
+                if(!fs::is_directory(source)) return fail("Missing bundled example: "+utf8(folder.wstring()));
+                GUID id{};if(FAILED(CoCreateGuid(&id))) return fail("Cannot stage a new example.");
+                wchar_t suffix[40]{};StringFromGUID2(id,suffix,40);
+                const auto temporary=destination/(std::wstring(L".example-")+suffix);
+                if(!fs::create_directory(temporary)) return fail("Cannot stage a new example.");
+                staging=temporary;
+                fs::copy(source,staging,fs::copy_options::recursive|fs::copy_options::skip_symlinks);
+                fs::create_directories((destination/folder).parent_path());
+                std::error_code error;fs::rename(staging,destination/folder,error);
+                if(error) {
+                    if(!fs::is_directory(destination/folder)) throw std::runtime_error(error.message());
+                    fs::remove_all(staging);
+                }
+                staging.clear();
+            }
             return destination;
         }
         const auto source=asset_directory()/"examples";
