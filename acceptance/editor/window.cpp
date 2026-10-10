@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "dungeons_roundtrip.hpp"
 #include "atelier/build_info.hpp"
 #include "ui/text.hpp"
 #include <wincodec.h>
@@ -810,7 +811,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
         SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"Cannot fit the list workload window on its monitor.");
     tick(app,4);
     // Populate through the real Create menu and its native popup surface.
-    while (actors(app).size() + 1 < atelier::editor::Session::maximum_actors) {
+    while (actors(app).size() + 1 < 256) {
         const auto before_count = actors(app).size();
         click(app,control::add_actor);
         require(actors(app).size() == before_count + 1, "Create menu failed to populate the real list workload.");
@@ -1907,3 +1908,4 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
 #include "sponza_window.inl"
 #include "examples_window.inl"
 #include "physics_examples_window.inl"
+#include "dungeons_window.inl"

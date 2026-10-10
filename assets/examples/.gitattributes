@@ -3,3 +3,10 @@ Examples/Sponza/Sponza/textures/*.png filter=lfs diff=lfs merge=lfs -text
 # Preserve upstream material and license bytes, including original whitespace.
 Examples/Sponza/Sponza/*.mtl -text -whitespace
 Examples/Sponza/Sponza/copyright.txt -text
+Examples/Dungeons/**/*.fbx filter=lfs diff=lfs merge=lfs -text
+Examples/Dungeons/**/*.obj filter=lfs diff=lfs merge=lfs -text
+Examples/Dungeons/**/*.png filter=lfs diff=lfs merge=lfs -text
+Examples/Dungeons/**/*.tga filter=lfs diff=lfs merge=lfs -text
+Examples/Dungeons/**/*.tif filter=lfs diff=lfs merge=lfs -text
+# Preserve imported Unity data and metadata bytes for source-hash verification.
+Examples/Dungeons/Originals/** -text -whitespace

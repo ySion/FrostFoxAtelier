@@ -2,6 +2,7 @@
 #include "runtime/runtime.hpp"
 #include "math/math.hpp"
 #include "editor/assets.hpp"
+#include "editor/obj_import.hpp"
 #include <filesystem>
 #include <unordered_map>
 
@@ -50,6 +51,7 @@ private:
     std::unordered_map<std::string,std::size_t> mesh_entries_;
     struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; };
     std::unordered_map<std::string,CachedMesh> meshes_;
+    ObjImageCache images_;
 };
 // Same-directory temporary + flush + replacement. Failed writes leave the old
 // file intact. Strings and on-disk paths use validated UTF-8.

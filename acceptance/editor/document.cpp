@@ -4,12 +4,14 @@
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
 #include "application/scene_snapshot.hpp"
+#include "dungeons_roundtrip.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <cstdio>
 #include <stdexcept>
+#include <unordered_set>
 #include <windows.h>
 #include <psapi.h>
 
@@ -43,6 +45,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "textured_obj.inl"
 #include "physics_examples.inl"
 #include "examples.inl"
+#include "dungeons.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
 #include "object_inspection.inl"
@@ -58,6 +61,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 }
 int main(int argc, char** argv) {
     try {
+        if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}

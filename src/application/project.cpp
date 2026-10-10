@@ -84,9 +84,9 @@ Result<void> Application::open_example(editor::Command command) {
     if(!workspace_.scene_available) return {}; // Keep normal project build diagnostics visible.
     const auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
     workspace_.view.lit={};
-    const bool physical=command==editor::Command::example_physic;
-    if(physical) workspace_.view.lit.ddgi=false;
-    return configure_view(example->eye,example->target,physical?renderer::Shading::smooth:renderer::Shading::scene_lit,!physical && !items->empty());
+    const bool textured=command==editor::Command::example_physic || command==editor::Command::example_dungeons;
+    if(textured) workspace_.view.lit.ddgi=false;
+    return configure_view(example->eye,example->target,textured?renderer::Shading::smooth:renderer::Shading::scene_lit,!textured && !items->empty());
 }
 Result<void> Application::load_project(const std::filesystem::path& folder,bool create,const std::filesystem::path& scene,ProjectOpenPolicy policy) {
     auto project=create?editor::Project::create(folder):editor::Project::open(folder);

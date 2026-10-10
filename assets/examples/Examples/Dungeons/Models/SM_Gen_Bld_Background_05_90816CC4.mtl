@@ -1,0 +1,7 @@
+newmtl slot_0
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_01_A_34b1a353ab.png
+newmtl slot_1
+Kd 0.0843762159 0.141263321 0.254152179
+d 1

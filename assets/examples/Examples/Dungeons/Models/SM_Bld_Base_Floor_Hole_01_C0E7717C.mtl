@@ -1,0 +1,16 @@
+newmtl slot_0
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_Wood_e04b18d140.png
+newmtl slot_1
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_01_A_34b1a353ab.png
+newmtl slot_2
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_01_A_34b1a353ab.png
+newmtl slot_3
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_Concrete_6639cc42fb.png

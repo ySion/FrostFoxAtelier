@@ -23,10 +23,24 @@ void verify_textured_obj() {
     require(!project.import_mesh(source/"scene.obj"),"Repeated import overwrote an existing material bundle.");
     const auto revision=project.revision();take(project.refresh());
     require(project.revision()==revision && take(project.mesh(key)).mesh==old,"Unchanged refresh replaced a mesh resource.");
+    const auto sibling=project.root()/"Content/Meshes/scene/sibling.obj";
+    take(editor::write_file(sibling,obj));take(project.refresh());
+    const auto sibling_entry=std::ranges::find(project.entries(),fs::path("Content/Meshes/scene/sibling.obj"),&editor::ProjectEntry::path);
+    require(sibling_entry!=project.entries().end(),"Shared-texture mesh is absent from the real project catalog.");
+    const auto sibling_key=sibling_entry->key;
+    auto sibling_mesh=take(project.mesh(sibling_key)).mesh;
+    // import_mesh already owns its first bundle; reopen to exercise the project cache.
+    auto shared_project=take(editor::Project::open(project.root()));
+    auto shared_a=take(shared_project.mesh(key)).mesh,shared_b=take(shared_project.mesh(sibling_key)).mesh;
+    require(shared_a!=shared_b && shared_a->materials()[1].color==shared_b->materials()[1].color,
+        "Different model assets decoded the same atlas more than once.");
     const auto texture=project.root()/"Content/Meshes/scene/color.bmp";
     for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i]=char(255);bmp[i+2]=0;}
     take(editor::write_file(texture,bmp));fs::last_write_time(texture,fs::last_write_time(texture)+std::chrono::seconds(2));take(project.refresh());
     auto changed=take(project.mesh(key)).mesh;
+    auto sibling_changed=take(project.mesh(sibling_key)).mesh;
+    require(sibling_changed!=sibling_mesh && changed->materials()[1].color==sibling_changed->materials()[1].color &&
+        sibling_mesh->materials()[1].color->pixels()[0]==255,"Shared atlas refresh lost sharing or retired pixels.");
     require(changed!=old && changed->materials()[1].color->pixels()[2]==255 && old->materials()[1].color->pixels()[0]==255,
         "Texture refresh did not publish a new resource while preserving its old owner.");
     take(editor::write_file(project.root()/"Content/Meshes/scene/scene.mtl","newmtl red\nKd 0 1 0\nmap_Kd color.bmp\nnewmtl other\nKd 1 1 1\n"));

@@ -20,7 +20,7 @@ enum class Command : std::uint64_t {
     selection_grid=823, selection_cursor=824, cursor_selected=825, cursor_grid=826, cursor_surface=827,
     view_perspective=830, view_top=831, view_front=832, view_right=833, viewport_options=834,
     create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838,
-    example_sponza=841, example_scene_lit=842, example_physic=843
+    example_sponza=841, example_scene_lit=842, example_physic=843, example_dungeons=844
 };
 enum class CommandGroup { file, edit, create, project, view, window, help };
 struct CommandGroupDefinition {
@@ -111,6 +111,7 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::example_sponza,CommandGroup::project,L"Sponza",L""},
     CommandDefinition{Command::example_scene_lit,CommandGroup::project,L"Scene Lit Room",L""},
     CommandDefinition{Command::example_physic,CommandGroup::project,L"Physic",L""},
+    CommandDefinition{Command::example_dungeons,CommandGroup::project,L"Dungeons",L""},
     CommandDefinition{Command::new_source,CommandGroup::project,L"New Component Source...",L""},
     CommandDefinition{Command::build_project,CommandGroup::project,L"Build Project",L"F6"},
     CommandDefinition{Command::rebuild_project,CommandGroup::project,L"Rebuild Types and Scene",L""},

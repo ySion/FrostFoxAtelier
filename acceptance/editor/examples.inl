@@ -10,7 +10,7 @@ void verify_official_examples() {
     const auto copy=take(editor::prepare_examples(output/"Workspace"));
     require(copy!=source,"Official examples opened their immutable template for editing.");
     auto project=take(editor::Project::open(copy));
-    for(const auto* folder:{"Examples","Examples/Sponza","Examples/Scene Lit Room","Examples/Physic"})
+    for(const auto* folder:{"Examples","Examples/Sponza","Examples/Scene Lit Room","Examples/Physic","Examples/Dungeons"})
         require(std::ranges::any_of(project.entries(),[&](const auto& entry){
             return entry.path==folder && entry.kind==editor::AssetKind::folder;
         }),"Official examples are absent from the shared Project directory catalog.");
@@ -20,7 +20,8 @@ void verify_official_examples() {
         const auto scene_path=take(project.resolve(example.scene));
         auto document=take(editor::Session::deserialize(take(editor::read_file(scene_path)),project));
         const auto meshes=take(document->world().render_items());
-        require(example.command==editor::Command::example_physic?meshes.size()==19:
+        require(example.command==editor::Command::example_dungeons?meshes.size()==3425:
+            example.command==editor::Command::example_physic?meshes.size()==19:
             meshes.size()==(example.command==editor::Command::example_sponza?1u:10u),"Official example lost geometry.");
         const auto fields=take(document->properties(meshes.front().component));
         const auto roughness=std::ranges::find(fields,"material.roughness",&editor::Property::name);

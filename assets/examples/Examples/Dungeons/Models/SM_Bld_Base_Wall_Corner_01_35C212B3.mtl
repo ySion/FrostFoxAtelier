@@ -1,0 +1,8 @@
+newmtl slot_0
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_Brick_90a071df7d.png
+newmtl slot_1
+Kd 1 1 1
+d 1
+map_Kd Textures/Generic_Plaster_67be7ede45.png

@@ -67,10 +67,11 @@ function(atelier_add_editor)
     target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
     target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi atelier_control_transport)
     add_executable(atelier_editor
+        "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/window.cpp")
     atelier_target(atelier_editor)
-    target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer user32 ole32 shell32 windowscodecs imm32 uuid gdi32)
+    target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer nlohmann_json::nlohmann_json user32 ole32 shell32 windowscodecs imm32 uuid gdi32)
     atelier_deploy_rhi_runtime(atelier_editor)
     add_executable(atelier_editor_control_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/control.cpp")
     atelier_target(atelier_editor_control_acceptance)
@@ -81,7 +82,9 @@ function(atelier_add_editor)
     add_custom_target(editor_control_path_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-path-acceptance" --repro-paths
         DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
-    add_executable(atelier_editor_document_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")
+    add_executable(atelier_editor_document_acceptance
+        "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
+        "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")
     atelier_target(atelier_editor_document_acceptance)
     target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
     add_custom_target(editor_document_acceptance
@@ -114,6 +117,10 @@ function(atelier_add_editor)
     add_custom_target(editor_examples_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --examples
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-examples "${CMAKE_BINARY_DIR}/examples-evidence"
+        DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_dungeons_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --dungeons
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dungeons "${CMAKE_BINARY_DIR}/dungeons-evidence"
         DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>

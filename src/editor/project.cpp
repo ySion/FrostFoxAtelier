@@ -175,7 +175,7 @@ Result<void> Project::refresh() {
                 const auto relative=entry.path().lexically_relative(native_root);
                 take(resolve(relative));
                 const auto filename=entry.path().filename().wstring();
-                if (filename.ends_with(L".asset.json") || filename.ends_with(L".tmp")) continue;
+                if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp")) continue;
                 if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
                 auto kind=entry.is_directory()?AssetKind::folder:entry.path().extension()==L".obj"?AssetKind::mesh:
                     entry.path().extension()==L".scene"?AssetKind::scene:std::wstring_view(directory)==L"Source"?AssetKind::source:AssetKind::file;
@@ -219,6 +219,7 @@ Result<void> Project::refresh() {
             }
             return false;
         });
+        std::erase_if(images_.entries,[](const auto& entry){return entry.second.image.expired();});
         entries_=std::move(entries);mesh_entries_=std::move(mesh_entries);++revision_;return {};
     } catch (const std::exception& error) { return failure(error.what()); }
 }
@@ -230,7 +231,7 @@ Result<MeshAsset> Project::mesh(std::string_view key) {
         const auto& entry=entries_[found->second];
         auto found_mesh=meshes_.find(entry.key);
         if(found_mesh==meshes_.end()) {
-            auto loaded=load_obj(take(resolve(entry.path)));CachedMesh cached{loaded.mesh,{}};
+            auto loaded=load_obj(take(resolve(entry.path)),&images_);CachedMesh cached{loaded.mesh,{}};
             for(const auto& file:loaded.files) if(file.relative!=entry.path.filename()) cached.dependencies.push_back(entry.path.parent_path()/file.relative);
             found_mesh=meshes_.emplace(entry.key,std::move(cached)).first;
         }

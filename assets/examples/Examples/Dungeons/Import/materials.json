@@ -1,0 +1,1898 @@
+[
+  {
+    "id": "7ac7f7ed4e4639c41b96b549364e3a9d_2100000",
+    "name": "PolygonDungeon_01_A",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_01_A.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_01_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "2f812bc7d2391f74095c870e8dea3e37_2100000",
+    "name": "PolygonDungeon_01_B",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_01_B.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_01_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ec4e3847523bb844499342c7de73a9b4_2100000",
+    "name": "PolygonDungeon_01_C",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_01_C.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_01_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "63b2458f634a82145935236ca002661d_2100000",
+    "name": "PolygonDungeon_01_D",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_01_D.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_01_D.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "adbe0f4574273aa469f66a7c5f8d6876_2100000",
+    "name": "PolygonDungeon_02_A",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_02_A.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_02_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "dda89ebfddae0294dbbfc71c5556dd52_2100000",
+    "name": "PolygonDungeon_02_B",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_02_B.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_02_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "f470159569cddea4a947afe501e2d54f_2100000",
+    "name": "PolygonDungeon_02_C",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_02_C.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_02_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "41eeaca2a327f424a968942f71105488_2100000",
+    "name": "PolygonDungeon_02_D",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_02_D.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_02_D.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "b1b83a452a77ed74d8bb75e5b8d0a457_2100000",
+    "name": "PolygonDungeon_03_A",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_03_A.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_03_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "b8d4818780a648f43a3c6e2d9b7e0dd7_2100000",
+    "name": "PolygonDungeon_03_B",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_03_B.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_03_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "3fbade09b83e6684c85f132da96a79bd_2100000",
+    "name": "PolygonDungeon_03_C",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_03_C.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_03_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d69305a10055d7c44b8baada30303e88_2100000",
+    "name": "PolygonDungeon_03_D",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_03_D.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_03_D.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d1bae770b379c6e499b93122bbe784cb_2100000",
+    "name": "PolygonDungeon_04_A",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_04_A.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_04_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "dcf1c8ebc26cef840a13f1b3c0a50f63_2100000",
+    "name": "PolygonDungeon_04_B",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_04_B.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_04_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "5669cbb7e0eee7b469fe44c5a872d2ab_2100000",
+    "name": "PolygonDungeon_04_C",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_04_C.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_04_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "677c1b3a96d0442478c508f22f3dff23_2100000",
+    "name": "PolygonDungeon_04_D",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Alts/PolygonDungeon_04_D.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_04_D.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "1a64cf0a23f83924f9debcb452685f6f_2100000",
+    "name": "Characters_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Characters_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/PolygonDungeon_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "169bd604eb7f4bf42bdb6c877f677c9c_2100000",
+    "name": "FX_CandleFlame_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_CandleFlame_01.mat",
+    "texture": "",
+    "color": [
+      0.9926469922065735,
+      0.9704987406730652,
+      0.8466695547103882,
+      1.0
+    ]
+  },
+  {
+    "id": "1b4ac7f29d5087d489765315ce98b634_2100000",
+    "name": "FX_Dirt_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Dirt_01.mat",
+    "texture": "",
+    "color": [
+      0.6784313917160034,
+      0.572549045085907,
+      0.4862745404243469,
+      1.0
+    ]
+  },
+  {
+    "id": "87cb885db32572a49bb20508a49dee45_2100000",
+    "name": "FX_Fog_01_Breakup",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Fog_01_Breakup.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/Fog_Breakup_01.tga",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "a11359418a723dd4ba15a8ff08b0291c_2100000",
+    "name": "FX_Fog_01_Dark",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Fog_01_Dark.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "f609e37a5a8dad5419fad27ba477d1c8_2100000",
+    "name": "FX_Fog_01_Light",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Fog_01_Light.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "91f21d47c2b9b7d4e946b81b5b39f0af_2100000",
+    "name": "FX_LightRay_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_LightRay_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "fa9e67520e3a0c04996a1f31dd165bb9_2100000",
+    "name": "FX_Standard_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Standard_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "72e7d1b8d596ac04ea903c06ffb8b93a_2100000",
+    "name": "FX_Water_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Water_01.mat",
+    "texture": "",
+    "color": [
+      0.19058167934417725,
+      0.5514705777168274,
+      0.5514705777168274,
+      0.16078431904315948
+    ]
+  },
+  {
+    "id": "455fe742c8c369c4d967a98804d6e56e_2100000",
+    "name": "FX_Water_Sewer_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/FX/FX_Water_Sewer_01.mat",
+    "texture": "",
+    "color": [
+      0.29767149686813354,
+      0.30980393290519714,
+      0.08990386873483658,
+      0.5686274766921997
+    ]
+  },
+  {
+    "id": "16025479cbc59c145aed336aa4c0d776_2100000",
+    "name": "Dust_01_Soft",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Dust_01_Soft.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/Soft_Particle_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "3566951063315b24e8e8316d214cf625_2100000",
+    "name": "Emission_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Emission_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d373ce4673e7ea644bdc445ca3082682_2100000",
+    "name": "FX_Fog_Dark",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/FX_Fog_Dark.mat",
+    "texture": "",
+    "color": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ea24e01b03f54464eadda8d044dc3d2e_2100000",
+    "name": "Ghost_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Ghost_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/Ghosts_01.tif",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "685714bc4595f7b4c8e75a582e09e6d3_2100000",
+    "name": "Ghost_01_Soft",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Ghost_01_Soft.mat",
+    "texture": "",
+    "color": [
+      0.07352939993143082,
+      1.0,
+      0.9227941632270813,
+      1.0
+    ]
+  },
+  {
+    "id": "6f564942779400d418ee39582abb85a6_2100000",
+    "name": "Ice_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Ice_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Alternatives/PolygonDungeon_04_D.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "10199ca4525d43e4a993510d83a06737_2100000",
+    "name": "Lava_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Lava_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      0.5843137502670288,
+      0.2705881893634796,
+      1.0
+    ]
+  },
+  {
+    "id": "275920581080ced43a750da785649059_2100000",
+    "name": "Snow_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Snow_01.mat",
+    "texture": "",
+    "color": [
+      0.8014705777168274,
+      0.8685598373413086,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "b64531222cca0504c89bf60a156a2157_2100000",
+    "name": "Textured_Floor_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Textured_Floor_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/FloorTiles_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "a491b62f39624a34c8aa7aaa7edb9d7c_2100000",
+    "name": "Textured_Floor_02",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Textured_Floor_02.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/ExtraTiles/FloorTile_09_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "a6e4b9fc05805d848b0309009afa3dc1_2100000",
+    "name": "Textured_Floor_03",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Textured_Floor_03.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/ExtraTiles/FloorTile_10_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "e31fd59401aad3747990f06e06debc6d_2100000",
+    "name": "Textured_Walls_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Textured_Walls_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/Misc/WallTiles_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "e7578bbbb7085d042bf6a83f3507cd16_2100000",
+    "name": "Transparent_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/Misc/Transparent_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/PolygonDungeon_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.43921568989753723
+    ]
+  },
+  {
+    "id": "42b64fdb315e3054ea757d8d1c4bcfa7_2100000",
+    "name": "PolygonDungeon_01",
+    "source": "Assets/Synty/PolygonDungeon/Materials/PolygonDungeon_01.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/PolygonDungeon_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "0574116a7188c654ab34fcd54a2d0ecc_2100000",
+    "name": "PolygonDungeon_02",
+    "source": "Assets/Synty/PolygonDungeon/Materials/PolygonDungeon_02.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/PolygonDungeon_02.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "54061fa668860e54a8e96694301d76a9_2100000",
+    "name": "PolygonDungeon_03",
+    "source": "Assets/Synty/PolygonDungeon/Materials/PolygonDungeon_03.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/PolygonDungeon_03.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "e3023c0182312214e86398117753528d_2100000",
+    "name": "PolygonDungeon_04",
+    "source": "Assets/Synty/PolygonDungeon/Materials/PolygonDungeon_04.mat",
+    "texture": "Assets/Synty/PolygonDungeon/Textures/PolygonDungeon_04.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "0000000000000000f000000000000000_10303",
+    "name": "Default-Material",
+    "source": "Resources/unity_builtin_extra",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "2a95f9ff80948c643a57b9e94a98eb3f_2100000",
+    "name": "Generic_01_A",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_01_A.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_01_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "1f6edb5992e4e984984c78d3aaf59978_2100000",
+    "name": "Generic_01_B",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_01_B.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_01_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "56c2ce0e88ed0574e9e9a20150967a27_2100000",
+    "name": "Generic_01_C",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_01_C.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_01_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "003a3ad6605dc2f4cbf121d8dafecb97_2100000",
+    "name": "Generic_02_A",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_02_A.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_02_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "a2f60fe228f9e874580a13729fe7349f_2100000",
+    "name": "Generic_02_B",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_02_B.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_02_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "e84b8831d3c6e2a41bea99b972582cd2_2100000",
+    "name": "Generic_02_C",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_02_C.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_02_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "8e23b343e1317c042adbeddb83eff76e_2100000",
+    "name": "Generic_03_A",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_03_A.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_03_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "2c8da63484b4e9142a4b822e5c3daf57_2100000",
+    "name": "Generic_03_B",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_03_B.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_03_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "7bf2755b3434c434488b9f3b96ee3637_2100000",
+    "name": "Generic_03_C",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_03_C.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_03_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "dc2400e7bec500841b343cfd7aa0e45e_2100000",
+    "name": "Generic_04_A",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_04_A.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_04_A.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "045fd5a88cadd6a468f27632c751c7b2_2100000",
+    "name": "Generic_04_B",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_04_B.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_04_B.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "e9fc825d478598f4b9aa8700d6a296a7_2100000",
+    "name": "Generic_04_C",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Alts/Generic_04_C.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Alts/Generic_04_C.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "ea940053cd5e7b940a4bc904c2d96fed_2100000",
+    "name": "Generic_Decal_Arrow_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Arrow_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "84b11dc322ff7a64ebbdb65bc4631157_2100000",
+    "name": "Generic_Decal_Arrow_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Arrow_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "75b632e7fb4192f4cbd749e3d4cac18f_2100000",
+    "name": "Generic_Decal_Character_Doller",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Character_Doller.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "2d407d1975b0d40408c4f7a725f6e17c_2100000",
+    "name": "Generic_Decal_Character_EM",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Character_EM.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "4f0cbd3bdc1f9184698b67baac50d8e8_2100000",
+    "name": "Generic_Decal_Character_Period",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Character_Period.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "c35f0c4ecea4ceb49aa84dc6f441d0c0_2100000",
+    "name": "Generic_Decal_Character_QM",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Character_QM.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "8ce26dd109a00634f89a9ea54f7f043c_2100000",
+    "name": "Generic_Decal_Crack_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Crack_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "482efe2f2d6368d4589c50643f1b6678_2100000",
+    "name": "Generic_Decal_Crack_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Crack_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "82f91586b05e1544b9960398a9800fa3_2100000",
+    "name": "Generic_Decal_Grunge_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Grunge_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "f188dc7217b2422479023bbff4f09d31_2100000",
+    "name": "Generic_Decal_Grunge_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Grunge_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "3edb91388d12da84aadced7297c0e828_2100000",
+    "name": "Generic_Decal_Grunge_03",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Grunge_03.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "22ac387648911ad4d9c57289c2a36224_2100000",
+    "name": "Generic_Decal_Grunge_04",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Grunge_04.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "084bade1acd1bd8418cd468e8e00adf1_2100000",
+    "name": "Generic_Decal_Letter_A",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_A.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "6f52b5eff938e9744a69959b337f4378_2100000",
+    "name": "Generic_Decal_Letter_B",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_B.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "b59f8e8014bebf84a9d3bc2b4e7851af_2100000",
+    "name": "Generic_Decal_Letter_C",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_C.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "17feee3970dcd8c4fb022ebb22ae2851_2100000",
+    "name": "Generic_Decal_Letter_D",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_D.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "a17911f14ee7c88419aa113de80876c0_2100000",
+    "name": "Generic_Decal_Letter_E",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_E.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "7a939574844410842938c2d5d9ffc9fb_2100000",
+    "name": "Generic_Decal_Letter_F",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_F.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "c4fba48e63c8a2e4e8a03e9a52b4620f_2100000",
+    "name": "Generic_Decal_Letter_G",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_G.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "6f4cfda74e74f544099909641d567190_2100000",
+    "name": "Generic_Decal_Letter_H",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_H.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ade45757c237d8d42a84cf84cff4477c_2100000",
+    "name": "Generic_Decal_Letter_I",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_I.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "656c159e8e07eba4e9ec2b4c3a2c0622_2100000",
+    "name": "Generic_Decal_Letter_J",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_J.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "8ce03d418b60d164cab9c979a9028675_2100000",
+    "name": "Generic_Decal_Letter_K",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_K.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "f4cf66ce2f453264788e2f0e10af34d4_2100000",
+    "name": "Generic_Decal_Letter_L",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_L.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "6d4fc83c90fcbec4e8470128a2bc29fc_2100000",
+    "name": "Generic_Decal_Letter_M",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_M.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "5e33c08cf009cb849a513d95c972425d_2100000",
+    "name": "Generic_Decal_Letter_N",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_N.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "239a74318239db346b373d9e6a7e5099_2100000",
+    "name": "Generic_Decal_Letter_O",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_O.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "705d492e40fa8e9449382adb2ee9c04e_2100000",
+    "name": "Generic_Decal_Letter_P",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_P.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "370c47d0bb397e94f92db4696e81c7d2_2100000",
+    "name": "Generic_Decal_Letter_Q",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_Q.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "7f7ff246f86810248963421668c02b6f_2100000",
+    "name": "Generic_Decal_Letter_R",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_R.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "1e462ccab21f39f4a9786a7a2161b653_2100000",
+    "name": "Generic_Decal_Letter_S",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_S.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "856039c905d8a314d9564d98eb847013_2100000",
+    "name": "Generic_Decal_Letter_T",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_T.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "8c36d38a83d30ed4089b691fcaf8c363_2100000",
+    "name": "Generic_Decal_Letter_U",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_U.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "657a47779373e2448bd98bccc0ac73a7_2100000",
+    "name": "Generic_Decal_Letter_V",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_V.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "88c286e0293d3204484478a69fd88cee_2100000",
+    "name": "Generic_Decal_Letter_W",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_W.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "1c00bd943def59149ac52dfffbae3ff9_2100000",
+    "name": "Generic_Decal_Letter_X",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_X.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "4f88ec6f03fb2744b829054db2de72b6_2100000",
+    "name": "Generic_Decal_Letter_Y",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_Y.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "656227daa44270a4fae13a6b203ef204_2100000",
+    "name": "Generic_Decal_Letter_Z",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Letter_Z.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d5af32931d48c074bbf6890ee991e532_2100000",
+    "name": "Generic_Decal_Number_0",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_0.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ec9b0bb50fc58794aa30df9f8291e5ab_2100000",
+    "name": "Generic_Decal_Number_1",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_1.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "4833a0aa16e1d254486c58a5aca6c36c_2100000",
+    "name": "Generic_Decal_Number_2",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_2.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "20b8d95bea3a51245b7932e65ddd9280_2100000",
+    "name": "Generic_Decal_Number_3",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_3.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "bf22da957f2ef59488d31df22cbb7b4f_2100000",
+    "name": "Generic_Decal_Number_4",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_4.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ce400ff4e1c544a4690387daf6a1f4b1_2100000",
+    "name": "Generic_Decal_Number_5",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_5.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "0827885e9322c9d449c535158780c84f_2100000",
+    "name": "Generic_Decal_Number_6",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_6.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "6dcb7f60c40a7e34db1bb3fe0848d4fe_2100000",
+    "name": "Generic_Decal_Number_7",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_7.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "96cf1392721f7ae459b0f6c8f6f769e3_2100000",
+    "name": "Generic_Decal_Number_8",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_8.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "0938a54743555fd489fc8f6e7e2d08ca_2100000",
+    "name": "Generic_Decal_Number_9",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Number_9.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "17c02035081580843813cf028e78e6df_2100000",
+    "name": "Generic_Decal_Pool_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Pool_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "7b36f2b0c67613145ac0a0d9259958fb_2100000",
+    "name": "Generic_Decal_Pool_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Pool_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "0835ad18a905479458207d25e24b455d_2100000",
+    "name": "Generic_Decal_Splatter_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Splatter_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "402524746f2398e46977a6754ced79ad_2100000",
+    "name": "Generic_Decal_Splatter_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Splatter_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "b80f2f29f848efc41842379f5cdddf63_2100000",
+    "name": "Generic_Decal_Splatter_Drag_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Splatter_Drag_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ceb0417a72457b249baf4369388de993_2100000",
+    "name": "Generic_Decal_Splatter_Drag_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Splatter_Drag_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "b906e1e73674d9445813eb221686ae70_2100000",
+    "name": "Generic_Decal_Splatter_Drag_03",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decal_Splatter_Drag_03.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ee8eab1b616797b4d9dcabfacbe39f75_2100000",
+    "name": "Generic_Decals_Tyre_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decals_Tyre_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "f8a4a0f9abc95af43a5ef23d4229ba60_2100000",
+    "name": "Generic_Decals_Tyre_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decals_Tyre_02.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "f532bd9cc1d4a1e4894927018a6d4624_2100000",
+    "name": "Generic_Decals_Tyre_03",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Decals/Generic_Decals_Tyre_03.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "bda4fc451b53444ebab0d7c1e5c4c1f2_2100000",
+    "name": "Gen_Ember_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Fire/Gen_Ember_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "ad1f8a01b5d34857aff5bb7ac339cc7d_2100000",
+    "name": "Gen_FireFrames_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Fire/Gen_FireFrames_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Fire/Gen_FireFrames_Grey_01.png",
+    "color": [
+      8.0,
+      3.2920033931732178,
+      0.9380044937133789,
+      1.0
+    ]
+  },
+  {
+    "id": "5e6abe996af64067bdcdaa2485d804ab_2100000",
+    "name": "Gen_FireFrames_Large_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Fire/Gen_FireFrames_Large_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Fire/Gen_FireFrames_Large_Grey_01.png",
+    "color": [
+      20.553743362426758,
+      5.888733386993408,
+      1.3019208908081055,
+      1.0
+    ]
+  },
+  {
+    "id": "80beb4fd9650dee408ee72969bd0f885_2100000",
+    "name": "Generic_Blank",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Blank.mat",
+    "texture": "",
+    "color": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "id": "91297fe527b5cc64bae58b58c7d48945_2100000",
+    "name": "Generic_Candle_Glow_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Candle_Glow_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Candle_Flame_01.png",
+    "color": [
+      2.9960784912109375,
+      2.9960784912109375,
+      2.9960784912109375,
+      1.0
+    ]
+  },
+  {
+    "id": "4f97083129424eb59260adf7f31b9f62_2100000",
+    "name": "Generic_Circle_Additive_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Circle_Additive_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Circle_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "e335daa1c23375b47ba3abbb1f881d0f_2100000",
+    "name": "Generic_Circle_Additive_01_Alt",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Circle_Additive_01_Alt.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Circle_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "19c73fd36c6145b184650b82dc9e46ce_2100000",
+    "name": "Generic_Circle_Multiply_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Circle_Multiply_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Circle_01.png",
+    "color": [
+      0.6792452335357666,
+      0.6792452335357666,
+      0.6792452335357666,
+      1.0
+    ]
+  },
+  {
+    "id": "9c84568368024efab7b00592aa729409_2100000",
+    "name": "Generic_Circle_Soft_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Circle_Soft_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Circle_Soft_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "70393fc7585331e459ced258ef632844_2100000",
+    "name": "Generic_Circle_Soft_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Circle_Soft_02.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Circle_Soft_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "795775c9ca54458dbf7474194018e090_2100000",
+    "name": "Generic_Leaf",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Leaf.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Leaf_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "592d66e8e7a5492a8583ae3053b90a28_2100000",
+    "name": "Generic_Lightray_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Lightray_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Lightray_01.png",
+    "color": [
+      2.0,
+      1.5271250009536743,
+      0.8359999656677246,
+      1.0
+    ]
+  },
+  {
+    "id": "6897815f366feb1448a019768d61b643_2100000",
+    "name": "Generic_Lightray_02",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Lightray_02.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Lightray_01.png",
+    "color": [
+      0.2648184299468994,
+      0.2583211660385132,
+      0.20610865950584412,
+      1.0
+    ]
+  },
+  {
+    "id": "bda93f4449e14cd19bebc1926f92d6e3_2100000",
+    "name": "Generic_Sun_Beam_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Sun_Beam_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Sun_Beam_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "12b72df2812326a46a4047eba6438379_2100000",
+    "name": "Generic_Wind_Streak",
+    "source": "Assets/Synty/PolygonGeneric/Materials/FX/Generic_Wind_Streak.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/FX/Generic_Wind_Streaks_01.png",
+    "color": [
+      1.515716552734375,
+      1.515716552734375,
+      1.515716552734375,
+      1.0
+    ]
+  },
+  {
+    "id": "ce0a83df77763204a92ca89f1eb6e21c_2100000",
+    "name": "Generic_Brick",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Brick.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Brick.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "837de04461ee1ae4d90ac30ccb02910d_2100000",
+    "name": "Generic_Carpet",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Carpet.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Carpet.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d5781eac488aef247903a1f97360b2c4_2100000",
+    "name": "Generic_Cloud",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Cloud.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "db8c29b5f8b2a2e40b477b54206d0456_2100000",
+    "name": "Generic_Concrete",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Concrete.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Concrete.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "a98a889207a454f48ab79b85673a9804_2100000",
+    "name": "Generic_Dirt",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Dirt.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Dirt.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "e2afcc913d9479543a183c0cd24461b9_2100000",
+    "name": "Generic_Glass",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Glass.mat",
+    "texture": "",
+    "color": [
+      0.5451228022575378,
+      0.8867283463478088,
+      0.9245283007621765,
+      0.29019609093666077
+    ]
+  },
+  {
+    "id": "5f77cbf83028b6c46b8b0e8a2c372c99_2100000",
+    "name": "Generic_Glass_Opaque",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Glass_Opaque.mat",
+    "texture": "",
+    "color": [
+      0.08437621593475342,
+      0.14126332104206085,
+      0.25415217876434326,
+      1.0
+    ]
+  },
+  {
+    "id": "77d067287fb28b7409b920737e9eb9ff_2100000",
+    "name": "Generic_Grass",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Grass.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Grass.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "818015086f3dfe3498a76b42ca89a843_2100000",
+    "name": "Generic_Ivy",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Ivy.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Ivy.tga",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d449e15c908e00844a2f151c52e14384_2100000",
+    "name": "Generic_Mountains",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Mountains.mat",
+    "texture": "",
+    "color": [
+      0.06158600002527237,
+      0.09331029653549194,
+      0.10600000619888306,
+      1.0
+    ]
+  },
+  {
+    "id": "61697f6b2a6443f45ac264b7f2aca5a0_2100000",
+    "name": "Generic_Overview_Map_Ground",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Overview_Map_Ground.mat",
+    "texture": "",
+    "color": [
+      0.04402506351470947,
+      0.04402506351470947,
+      0.04402506351470947,
+      1.0
+    ]
+  },
+  {
+    "id": "55b6a6098e1f4d44486ac3652a215970_2100000",
+    "name": "Generic_Plaster",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Plaster.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Plaster.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "03eccdb98fde9a1459e53b3b29f0a541_2100000",
+    "name": "Generic_Road",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Road.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Road_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "274a221ab2ce454449ba603552e4d58b_2100000",
+    "name": "Generic_Rock",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Rock.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Rock.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "9d4401b9160cb414f8ca60cfc844a46d_2100000",
+    "name": "Generic_SimpleSky",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_SimpleSky.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_SimpleSky_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "id": "c3fed16a72fd672438081713004f6cde_2100000",
+    "name": "Generic_Skyline",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Skyline.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Skyline.tga",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "d2095bea359c259489550a526cfd4a66_2100000",
+    "name": "Generic_Triplanar_Grass_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Triplanar_Grass_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Dirt.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "095f4d2c6678daa408a0c65237edc68a_2100000",
+    "name": "Generic_Tyre_Curved_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Tyre_Curved_01.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Decals/Generic_Decals_Tyre_01.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "c62164f02b7ce3049893d13d6256f145_2100000",
+    "name": "Generic_Water",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Water.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Water_Texture_02.png",
+    "color": [
+      0.270917683839798,
+      0.47310394048690796,
+      0.6705882549285889,
+      0.9019607901573181
+    ]
+  },
+  {
+    "id": "f61df759b6660794fb5054dfbe7085c1_2100000",
+    "name": "Generic_Water_Fade",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Water_Fade.mat",
+    "texture": "",
+    "color": [
+      0.037714287638664246,
+      0.09114283323287964,
+      0.1210000067949295,
+      0.7176470756530762
+    ]
+  },
+  {
+    "id": "25d515228c5e00945ba99ea45cce08e6_2100000",
+    "name": "Generic_Wood",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Generic_Wood.mat",
+    "texture": "Assets/Synty/PolygonGeneric/Textures/Generic_Wood.png",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "00cc91ec301d5ec43ba83a2647c18527_2100000",
+    "name": "Glass_Opaque_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Glass_Opaque_01.mat",
+    "texture": "",
+    "color": [
+      0.08523982763290405,
+      0.14009705185890198,
+      0.25606465339660645,
+      0.6823529601097107
+    ]
+  },
+  {
+    "id": "ffb777b6c60362f4c91c6e29cd23f381_2100000",
+    "name": "Skybox_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Skybox_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "6c8ee546b40eda64294d7c3260ccbd08_2100000",
+    "name": "Waterflow_01",
+    "source": "Assets/Synty/PolygonGeneric/Materials/Waterflow_01.mat",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "e2136d048afeef44396a14590803e28a_-7791486788655378091",
+    "name": "standardSurface1",
+    "source": "Assets/Synty/PolygonGeneric/Models/Collision/SM_Gen_Beam_01_Convex.fbx",
+    "texture": "",
+    "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "id": "627627bb69734d3785bc8635e41e1447_5995965132730170670",
+    "name": "lambert1997",
+    "source": "Assets/Synty/PolygonGeneric/Models/FX/FX_LightRay_Cube_01.fbx",
+    "texture": "",
+    "color": [
+      0.4000000059604645,
+      0.4000000059604645,
+      0.4000000059604645,
+      1.0
+    ]
+  },
+  {
+    "id": "1c748c5d34914ce6a75c32b6e181b9fc_-1159366094912471108",
+    "name": "lambert1998",
+    "source": "Assets/Synty/PolygonGeneric/Models/FX/FX_LightRay_Round_01.fbx",
+    "texture": "",
+    "color": [
+      0.4000000059604645,
+      0.4000000059604645,
+      0.4000000059604645,
+      1.0
+    ]
+  },
+  {
+    "id": "55634147778e40cda3f1132709fbc7e7_5995965132730170670",
+    "name": "lambert1997",
+    "source": "Assets/Synty/PolygonGeneric/Models/FX/FX_SunShafts_01.fbx",
+    "texture": "",
+    "color": [
+      0.4000000059604645,
+      0.4000000059604645,
+      0.4000000059604645,
+      1.0
+    ]
+  },
+  {
+    "id": "bba35968f6654c5468b15145051145ef_-4403891748504474489",
+    "name": "Polygon_Generic_01A",
+    "source": "Assets/Synty/PolygonGeneric/Models/SM_Gen_Env_Water_Plane_01.fbx",
+    "texture": "",
+    "color": [
+      0.800000011920929,
+      0.800000011920929,
+      0.800000011920929,
+      1.0
+    ]
+  }
+]
