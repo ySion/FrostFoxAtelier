@@ -1,0 +1,282 @@
+#include "control/control.hpp"
+#include "platform/windows_path.hpp"
+#include <Windows.h>
+#include <fstream>
+#include <iostream>
+#include <thread>
+
+namespace {
+using namespace atelier::control;
+using namespace std::chrono_literals;
+void require(bool ok,std::string_view message) {if(!ok) throw std::runtime_error(std::string(message));}
+Json read(const std::filesystem::path& path) {std::ifstream stream(atelier::platform::windows_file_path(path),std::ios::binary);require(bool(stream),"Cannot read E2E artifact: "+utf8(path.wstring()));return Json::parse(stream);}
+void write(const std::filesystem::path& path,std::string_view text) {
+    std::filesystem::create_directories(atelier::platform::windows_file_path(path.parent_path()));
+    std::ofstream stream(atelier::platform::windows_file_path(path),std::ios::binary|std::ios::trunc);stream.write(text.data(),static_cast<std::streamsize>(text.size()));
+    require(bool(stream),"Cannot write E2E fixture");
+}
+constexpr std::string_view published_code="class project.ControlProbe : world.Component { float speed = 1.0f; void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); } }\n";
+constexpr std::string_view published_ui="ui ProjectUI(in Text title, in double elapsed, in double actors) { Column hud { Text title { text: input.title; } } }\n";
+void project_fixture(const std::filesystem::path& project) {
+    write(project/"Content/Scenes/Main.scene",Json{{"version",2},{"actors",Json::array()}}.dump());
+    write(project/"Source/Published.source",published_code);write(project/"Source/Published.ui.source",published_ui);
+    std::filesystem::create_directories(project/"Cache");
+    write(project/"Config/Project.json",Json{{"version",1},{"name","Control review"},{"startup_scene","Content/Scenes/Main.scene"},{"ui_source","Source/Published.ui.source"}}.dump());
+}
+std::wstring quote(const std::filesystem::path& path) {return L"\""+path.wstring()+L"\"";}
+struct Process {
+    HANDLE process{};DWORD pid{};HANDLE log{};
+    Process(const std::filesystem::path& executable,std::wstring arguments,const std::filesystem::path& output) {
+        SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
+        log=CreateFileW(output.c_str(),GENERIC_WRITE,FILE_SHARE_READ,&security,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+        require(log!=INVALID_HANDLE_VALUE,"Cannot create child log");
+        auto command=quote(executable)+L" "+arguments;
+        STARTUPINFOW startup{};startup.cb=sizeof(startup);startup.dwFlags=STARTF_USESTDHANDLES;startup.hStdOutput=log;startup.hStdError=log;
+        PROCESS_INFORMATION created{};
+        if(!CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,TRUE,CREATE_NO_WINDOW,nullptr,executable.parent_path().c_str(),&startup,&created)) {
+            CloseHandle(log);throw std::runtime_error("Cannot launch control E2E child");
+        }
+        process=created.hProcess;pid=created.dwProcessId;CloseHandle(created.hThread);
+    }
+    ~Process() {if(process) {if(WaitForSingleObject(process,0)==WAIT_TIMEOUT) {TerminateProcess(process,99);WaitForSingleObject(process,10000);}CloseHandle(process);}if(log && log!=INVALID_HANDLE_VALUE) CloseHandle(log);}
+    HWND window() const {
+        struct Query {DWORD pid;HWND window{};} query{pid};
+        EnumWindows([](HWND window,LPARAM parameter)->BOOL {auto& query=*reinterpret_cast<Query*>(parameter);DWORD pid{};GetWindowThreadProcessId(window,&pid);
+            if(pid==query.pid && IsWindowVisible(window) && GetWindow(window,GW_OWNER)==nullptr) {query.window=window;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&query));return query.window;
+    }
+    void close() {
+        if(auto handle=window()) PostMessageW(handle,WM_CLOSE,0,0);
+        require(WaitForSingleObject(process,10000)==WAIT_OBJECT_0,"Editor did not close cleanly");DWORD code{};GetExitCodeProcess(process,&code);require(code==0,"Editor exited with a failure");
+    }
+};
+struct Driver {
+    std::unique_ptr<Client> client;std::string token;Json descriptor;
+    explicit Driver(Json instance):client(std::make_unique<Client>(instance,600s)),descriptor(std::move(instance)) {}
+    Json call(std::string op,Json args=Json::object(),std::string id={}) {
+        Json request{{"op",std::move(op)},{"args",std::move(args)},{"state_token",token}};if(!id.empty()) request["request_id"]=id;
+        auto result=client->call(std::move(request));if(result.contains("state_token")) token=result.at("state_token").get<std::string>();return result;
+    }
+    Json ok(std::string op,Json args=Json::object()) {auto result=call(std::move(op),std::move(args));require(result.value("status","")=="ok",result.dump());return result.at("result");}
+    Json inspect() {return ok("editor.inspect");}
+    Json wait(std::string id,std::chrono::seconds timeout=125s) {
+        const auto deadline=std::chrono::steady_clock::now()+timeout;
+        while(std::chrono::steady_clock::now()<deadline) {auto result=call("job.status",{{"job_id",id}});if(result.at("status")!="pending") return result;std::this_thread::sleep_for(20ms);}
+        throw std::runtime_error("Control job did not complete");
+    }
+};
+Json discover_editor(const Process& editor,const std::filesystem::path& directory) {
+    const auto deadline=std::chrono::steady_clock::now()+60s;
+    while(std::chrono::steady_clock::now()<deadline) {
+        for(const auto& instance:discover(directory)) if(instance.at("pid").get<DWORD>()==editor.pid) return instance;
+        require(WaitForSingleObject(editor.process,0)==WAIT_TIMEOUT,"Editor stopped before publishing its endpoint");std::this_thread::sleep_for(30ms);
+    }
+    throw std::runtime_error("Editor did not publish its endpoint");
+}
+void error(const Json& result,std::string_view expected) {require(result.value("status","")=="error" && result.at("error").at("code").get<std::string>()==expected,result.dump());}
+void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto project=root/"NestedProject";project_fixture(project);const auto directory=project/"Content/Control";
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"nested-editor.log");
+    Driver d(discover_editor(editor,directory));d.inspect();const auto id=unique_id();
+    require(d.call("repro.export",Json::object(),id).at("status")=="pending","Nested output fixture did not start");
+    error(d.wait(id),"invalid_destination");
+    require(std::filesystem::is_empty(atelier::platform::windows_file_path(directory/"artifacts"/wide(d.descriptor.at("instance_id").get<std::string>()))),"Rejected nested export left a recursive output");
+    d.client.reset();editor.close();
+}
+void repro_paths(const std::filesystem::path& executable,const std::filesystem::path& root,bool deep_control) {
+    const auto project=root/"Project";
+    const auto directory=deep_control?root/"Control"/std::wstring(100,L'x'):root/"Control";
+    project_fixture(project);
+    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+".scene");
+    std::filesystem::rename(project/"Content/Scenes/Main.scene",project/scene);
+    auto config=read(project/"Config/Project.json");config["startup_scene"]=utf8(scene.generic_wstring());
+    write(project/"Config/Project.json",config.dump());
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+    Driver d(discover_editor(editor,directory));
+    unsigned stable{};
+    for(unsigned i=0;i<200 && stable<5;++i) {
+        const auto before=d.token;d.inspect();stable=before==d.token?stable+1:0;std::this_thread::sleep_for(30ms);
+    }
+    require(stable==5,"Project paths fixture did not stabilize");
+    d.ok("scene.create",{{"kind","mesh"}});
+    const auto unpublished=std::filesystem::path("Source")/(std::wstring(72,L'u')+L".source");
+    write(project/unpublished,"invalid saved source");std::this_thread::sleep_for(750ms);d.inspect();
+    std::filesystem::path repro;
+    for(unsigned pass=0;pass<2;++pass) {
+        const auto id=unique_id();const auto started=d.call("repro.export",Json::object(),id);require(started.at("status")=="pending",started.dump());
+        const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
+        repro=wide(exported.at("result").at("directory").get<std::string>());
+        const auto manifest=read(repro/"manifest.json");const auto frozen=repro/"Project"/wide(manifest.at("scene").get<std::string>());
+        require(frozen.wstring().size()>260 && read(frozen).at("actors").size()==1,"Deep-path export did not preserve the scene");
+        if(pass==0) require(std::filesystem::exists(atelier::platform::windows_file_path(repro/"unpublished"/unpublished)),"Deep-path source archive is missing");
+        if(pass==0) d.ok("scene.undo");
+        d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
+        const auto reopened=d.inspect();require(reopened.at("actors").size()==1 && !reopened.at("dirty").get<bool>(),"Deep-path repro did not reopen");
+        d.ok("scene.save");
+    }
+    const auto instance=d.descriptor.at("instance_id").get<std::string>();
+    const auto request_path=repro/"Project/Cache"/(std::wstring(80,L'q')+L".request.json");
+    require(request_path.wstring().size()>260,"CLI request fixture is not a long path");
+    write(request_path,Json{{"op","editor.inspect"}}.dump());d.client.reset();
+    Process cli(executable.parent_path()/"atelier_control.exe",L"--directory "+quote(directory)+L" --instance "+wide(instance)+L" --request "+quote(request_path),root/"cli.json");
+    require(WaitForSingleObject(cli.process,30000)==WAIT_OBJECT_0 && read(root/"cli.json").at("status")=="ok","CLI could not read a deep request or discover the editor");
+    editor.close();
+    require(!std::filesystem::exists(atelier::platform::windows_file_path(directory/"instances"/(instance+".json"))),"Deep-path instance descriptor was not removed on close");
+    write(root/"result.json",Json{{"status","passed"},{"cases",{"long-destination","long-source","deep-project-reopen-save","source-archive","cli-request","descriptor-cleanup"}},{"deep_control",deep_control},{"last_repro",utf8(repro.wstring())}}.dump(2));
+    std::cout<<"Editor Control path E2E: PASS | "<<utf8(root.wstring())<<'\n';
+}
+}
+int wmain(int argc,wchar_t** argv) {
+    try {
+        require(argc==3 || (argc==4 && std::wstring_view(argv[3])==L"--repro-paths"),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths]");
+        const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
+        if(argc==4) {
+            repro_paths(argv[1],root/"exports",false);repro_paths(argv[1],root/"deep-control",true);
+            reject_nested_destination(argv[1],root);
+            write(root/"result.json",Json{{"status","passed"},{"cases",{"nested-exports","deep-control","nested-destination-rejected"}}}.dump(2));
+            return 0;
+        }
+        const auto directory=root/"Control";const auto project=root/"Project";
+        project_fixture(project);
+        Process editor(argv[1],L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate --gpu-validation",root/"editor.log");
+        const auto descriptor=discover_editor(editor,directory);
+        // A small, visible owned test window can render without taking keyboard focus.
+        if(auto window=editor.window()) SetWindowPos(window,HWND_TOPMOST,12,80,960,640,SWP_NOACTIVATE);
+        Driver d(descriptor);const auto caps=d.ok("capabilities");require(caps.at("operations").size()>=20,"Capabilities are incomplete");
+        auto initial=d.inspect();unsigned stable{};
+        for(unsigned i=0;i<200 && stable<5;++i) {
+            const auto token=d.token;std::this_thread::sleep_for(30ms);initial=d.inspect();
+            stable=token==d.token && !initial.at("last_frame").empty()?stable+1:0;
+        }
+        require(stable==5,"Initial surface mapping did not stabilize");
+        require(initial.at("actors").empty() && !initial.at("last_frame").empty(),"Initial editor state is not ready");
+        const auto original_scene=read(project/"Content/Scenes/Main.scene");
+        Json request{{"op","scene.create"},{"args",{{"kind","mesh"}}},{"state_token",d.token},{"request_id",unique_id()}};
+        const auto first=d.client->call(request);require(first.at("status")=="ok",first.dump());
+        const auto replay=d.client->call(request);require(first==replay,"Duplicate mutation did not replay its response");
+        request["args"]["kind"]="actor";error(d.client->call(request),"request_id_conflict");
+        auto current=d.inspect();require(current.at("actors").size()==1 && current.at("undo")==1,"Duplicate request repeated creation");
+        auto actor=current.at("actors")[0].at("handle").get<std::string>();auto component=current.at("actors")[0].at("root").get<std::string>();
+        const auto stale=d.token;
+        d.ok("scene.rename",{{"object",actor},{"name","Control cube"}});
+        error(d.client->call({{"op","scene.rename"},{"args",{{"object",actor},{"name","Wrong"}}},{"state_token",stale}}),"stale_state");
+        d.ok("scene.transform",{{"object",actor},{"position",{1,2,3}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
+        d.ok("scene.set_property",{{"object",component},{"property","position.x"},{"value",4}});
+        current=d.inspect();require(current.at("actors")[0].at("components")[0].at("transform").at("position")[0]==4,"Property command did not write the document");
+        d.ok("scene.undo");current=d.inspect();require(current.at("actors")[0].at("components")[0].at("transform").at("position")[0]==1,"Undo did not restore the transform");d.ok("scene.redo");
+        d.ok("scene.select",{{"actors",{actor}}});
+        const auto added=d.ok("scene.add_component",{{"type","world.SceneComponent"}}).at("object");
+        current=d.inspect();require(current.at("actors")[0].at("components").size()==2,"Component addition failed");
+        d.ok("scene.remove_component",{{"object",added}});current=d.inspect();require(current.at("actors")[0].at("components").size()==1,"Component removal failed");
+        const auto camera=current.at("camera");d.ok("camera.look_at",{{"eye",{8,5,-10}},{"target",{0,0,0}}});d.ok("camera.set",{{"state",camera}});
+        auto invalid_camera=camera;invalid_camera["distance"]=0.0000000001;error(d.call("camera.set",{{"state",invalid_camera}}),"invalid_request");
+        error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
+        d.ok("view.set",{{"patch",{{"ssil",true}}}});current=d.inspect();require(current.at("view").at("ssil")==true && current.at("view").at("gtao")==false,"Display policy did not normalize GTAO / Local GI");
+        d.ok("view.set",{{"patch",{{"ssil",false},{"shadow_bias",0.1}}}});
+        error(d.call("view.set",{{"patch",{{"shadows","wrong"}}}}),"invalid_request");
+        error(d.call("scene.rename",{{"object","stale/999"},{"name","No"}}),"stale_object");
+        error(d.call("project.open",{{"path",utf8(project.wstring())}}),"unsaved_changes");
+        // Saved but unpublished code must not silently enter the runnable repro.
+        write(project/"Source/NeverPublished.source","invalid saved source");
+        write(project/"Source/Published.ui.source","invalid saved UI");
+        std::this_thread::sleep_for(750ms);d.inspect();
+        current=d.inspect();const auto dirty_undo=current.at("undo");const auto dirty_path=current.at("scene_path");
+        const auto export_id=unique_id();require(d.call("repro.export",Json::object(),export_id).at("status")=="pending","Export did not start");
+        auto exported=d.wait(export_id);require(exported.at("status")=="ok",exported.dump());
+        const std::filesystem::path repro=wide(exported.at("result").at("directory").get<std::string>());
+        const auto manifest=read(repro/"manifest.json");const auto frozen=read(repro/"Project"/wide(manifest.at("scene").get<std::string>()));
+        require(!std::filesystem::exists(repro/"Project/Source/NeverPublished.source") &&
+            std::filesystem::exists(repro/"unpublished/Source/NeverPublished.source") &&
+            std::filesystem::exists(repro/"unpublished/Source/Published.ui.source") &&
+            !std::filesystem::exists(repro/"unpublished/Source/Published.source"),"Repro mixed live and unpublished source inputs");
+        require(sha256_file(repro/"Project/Source/Published.ui.source")==sha256(std::as_bytes(std::span(published_ui))),"Repro lost the published UI source");
+        require(manifest.at("publication_version")!=0 && manifest.at("ui_source_version")!=0,"Repro did not identify the full publication");
+        require(frozen.at("actors").size()==1,"Export did not contain the dirty memory scene");
+        require(read(project/"Content/Scenes/Main.scene")==original_scene,"Repro export overwrote the original scene");
+        current=d.inspect();require(current.at("dirty")==true && current.at("undo")==dirty_undo && current.at("scene_path")==dirty_path,"Repro export changed authoring state");
+        d.ok("camera.look_at",{{"eye",{9,7,-8}},{"target",{4,2,3}}});
+        const auto base_view=current.at("view");const auto compare_id=unique_id();
+        const auto prepare_id=unique_id();auto preparing=d.call("render.prepare",Json::object(),prepare_id);require(preparing.at("status")=="pending",preparing.dump());
+        std::cout<<"Editor Control: preparing cold Scene Lit pipelines\n"<<std::flush;
+        auto prepared=d.wait(prepare_id,605s);require(prepared.at("status")=="ok",prepared.dump());
+        require(prepared.at("result").at("phase")=="ready","Preparation did not report an accepted ready frame");
+        std::cout<<"Editor Control: preparation "<<prepared.at("result").at("preparation_ms")<<" ms\n"<<std::flush;
+        d.inspect();
+        auto pending=d.call("render.compare",{{"cases",Json::array({{{"name","baseline"},{"patch",Json::object()}},{{"name","scene_lit"},{"patch",{{"shading","scene_lit"},{"shadows",false},{"ddgi",false},{"gtao",false},{"ssil",false}}}}})},{"sample_frames",{1,3}}},compare_id);
+        require(pending.at("status")=="pending",pending.dump());auto compared=d.wait(compare_id);require(compared.at("status")=="ok",compared.dump());
+        const auto& samples=compared.at("result").at("samples");require(samples.size()==4,"Comparison sample count is incorrect");
+        require(samples[0].at("accepted_ordinal")==1 && samples[1].at("accepted_ordinal")==3 && samples[2].at("accepted_ordinal")==1,"Accepted frame ordinals are incorrect");
+        require(samples[2].at("effective_view").at("shading")=="scene_lit" && samples[2].at("environment")==Json::array({0,0,0}),"Scene Lit settings or explicit zero-sky contract changed");
+        for(const auto& sample:samples) {
+            const std::filesystem::path output=wide(compared.at("result").at("directory").get<std::string>());
+            const auto width=sample.at("extent")[0].get<std::uint64_t>(),height=sample.at("extent")[1].get<std::uint64_t>();
+            require(std::filesystem::file_size(output/wide(sample.at("depth").get<std::string>()))==width*height*4,"Depth readback size is incorrect");
+            require(std::filesystem::file_size(output/wide(sample.at("color").get<std::string>()))>100,"PNG readback is missing");
+            std::ifstream depth_file(atelier::platform::windows_file_path(output/wide(sample.at("depth").get<std::string>())),std::ios::binary);
+            std::vector<float> depth(static_cast<std::size_t>(width*height));depth_file.read(reinterpret_cast<char*>(depth.data()),static_cast<std::streamsize>(depth.size()*sizeof(float)));
+            require(bool(depth_file) && std::ranges::all_of(depth,[](float value){return std::isfinite(value) && value>=0 && value<=1;}) &&
+                std::ranges::any_of(depth,[](float value){return value>0;}),"Depth capture does not contain valid scene geometry");
+        }
+        current=d.inspect();require(current.at("view")==base_view && current.at("undo")==dirty_undo,"Temporary comparison leaked into authoring state");
+        auto cancelled_id=unique_id();
+        const Json cancelled_request{{"op","render.capture"},{"state_token",d.token},{"request_id",cancelled_id},{"args",{{"sample_frames",{4096}}}}};
+        pending=d.client->call(cancelled_request);require(pending.at("status")=="pending",pending.dump());
+        const auto unchanged=d.token;
+        error(d.call("scene.transform",{{"object",actor},{"position",{4,2,3}},{"rotation",{0,0,0,1}},{"scale",{0,1,1}}}),"operation_failed");
+        error(d.call("scene.set_property",{{"object",component},{"property","scale.x"},{"value",0}}),"operation_failed");
+        error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
+        d.ok("camera.set",{{"state",d.inspect().at("camera")}});d.ok("view.set",{{"patch",Json::object()}});
+        require(d.token==unchanged && d.call("job.status",{{"job_id",cancelled_id}}).at("status")=="pending","Rejected or no-op requests cancelled unchanged rendering");
+        error(d.call("job.cancel",{{"job_id",cancelled_id}}),"cancelled");error(d.call("job.cancel",{{"job_id",cancelled_id}}),"cancelled");
+        for(unsigned i=0;i<260;++i) d.ok("view.set",{{"patch",Json::object()}});
+        error(d.client->call(cancelled_request),"request_id_expired");
+        error(d.call("job.status",{{"job_id",cancelled_id}}),"cancelled");
+        require(!d.inspect().contains("active_job"),"Expired request started another job with the same identity");
+        const Json retired_request{{"op","render.capture"},{"state_token",d.token},{"request_id",unique_id()},{"args",{{"sample_frames",{4096}}}}};
+        pending=d.client->call(retired_request);require(pending.at("status")=="pending",pending.dump());
+        error(d.call("job.cancel",{{"job_id",retired_request.at("request_id")}}),"cancelled");
+        for(unsigned i=0;i<17;++i) {
+            const auto id=unique_id();require(d.call("render.capture",{{"sample_frames",{4096}}},id).at("status")=="pending","Retention fixture did not start");
+            error(d.call("job.cancel",{{"job_id",id}}),"cancelled");
+        }
+        error(d.call("job.status",{{"job_id",retired_request.at("request_id")}}),"unknown_job");
+        error(d.client->call(retired_request),"cancelled");
+        auto changed_id=unique_id();pending=d.call("render.capture",{{"sample_frames",{4096}}},changed_id);require(pending.at("status")=="pending",pending.dump());
+        d.ok("scene.rename",{{"object",actor},{"name","Changed during capture"}});error(d.wait(changed_id),"state_changed");
+        auto timed_id=unique_id();pending=d.call("render.capture",{{"sample_frames",{4096}},{"timeout_ms",1}},timed_id);require(pending.at("status")=="pending",pending.dump());error(d.wait(timed_id),"timeout");
+        const auto disconnected_id=unique_id();pending=d.call("render.capture",{{"sample_frames",{4096}}},disconnected_id);require(pending.at("status")=="pending",pending.dump());
+        d.client.reset();std::this_thread::sleep_for(80ms);d.client=std::make_unique<Client>(descriptor);error(d.wait(disconnected_id),"cancelled");
+        d.inspect();d.ok("scene.save");const auto saved=read(project/"Content/Scenes/Main.scene");require(saved.at("actors").size()==1,"Explicit scene.save failed");
+        const auto before_failed_open=d.inspect();
+        write(repro/"Project/Source/Injected.source","invalid added source");
+        error(d.call("repro.open",{{"directory",utf8(repro.wstring())}}),"dependency_mismatch");
+        std::filesystem::remove(repro/"Project/Source/Injected.source");
+        // Hash-valid input can still fail compilation. Strict open must leave the
+        // current document, object identities and project in place.
+        write(repro/"Project/Source/Published.source","invalid published source");
+        auto broken=manifest;
+        for(auto& file:broken.at("files")) if(file.at("path")=="Project/Source/Published.source") {
+            file["sha256"]=sha256_file(repro/"Project/Source/Published.source");file["bytes"]=std::filesystem::file_size(repro/"Project/Source/Published.source");
+        }
+        write(repro/"manifest.json",broken.dump());
+        error(d.call("repro.open",{{"directory",utf8(repro.wstring())}}),"operation_failed");
+        current=d.inspect();require(current.at("project")==before_failed_open.at("project") && current.at("actors")==before_failed_open.at("actors") && current.at("selection")==before_failed_open.at("selection"),"Failed repro open replaced the current document");
+        write(repro/"Project/Source/Published.source",published_code);write(repro/"manifest.json",manifest.dump());
+        d.ok("repro.open",{{"directory",utf8(repro.wstring())}});current=d.inspect();
+        require(current.at("actors").size()==1 && current.at("actors")[0].at("name")=="Control cube" && !current.at("dirty").get<bool>(),"Repro reopen failed");
+        error(d.call("scene.rename",{{"object",actor},{"name","Old handle"}}),"stale_object");
+        d.ok("scene.delete");require(d.inspect().at("actors").empty(),"Delete command did not remove the selected actor");d.ok("scene.undo");require(d.inspect().at("actors").size()==1,"Undo did not restore the actor");
+        d.client.reset();
+        Process cli(std::filesystem::path(argv[1]).parent_path()/"atelier_control.exe",L"--list --directory "+quote(directory),root/"cli.json");
+        require(WaitForSingleObject(cli.process,10000)==WAIT_OBJECT_0,"CLI discovery did not finish");require(read(root/"cli.json").at("instances").size()==1,"CLI did not discover the live editor");
+        {
+            std::ofstream request_file(root/"capture-request.json");request_file<<Json{{"op","render.capture"},{"state_token",d.token},{"args",{{"sample_frames",{1}}}}}.dump();
+        }
+        Process cli_capture(std::filesystem::path(argv[1]).parent_path()/"atelier_control.exe",L"--directory "+quote(directory)+L" --instance "+wide(descriptor.at("instance_id").get<std::string>())+L" --request "+quote(root/"capture-request.json"),root/"cli-capture.json");
+        require(WaitForSingleObject(cli_capture.process,30000)==WAIT_OBJECT_0,"CLI capture did not finish");
+        const auto cli_result=read(root/"cli-capture.json");require(cli_result.at("status")=="ok" && cli_result.at("result").at("samples").size()==1,"CLI did not await its capture job");
+        editor.close();require(discover(directory).empty(),"Closed editor descriptor remained live");
+        reject_nested_destination(argv[1],root);
+        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
+        std::cout<<"Editor Control E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
+    } catch(const std::exception& error) {std::cerr<<"Editor Control E2E: FAIL: "<<error.what()<<'\n';return 1;}
+}

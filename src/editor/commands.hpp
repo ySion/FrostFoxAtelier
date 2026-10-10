@@ -5,8 +5,8 @@
 
 namespace atelier::editor {
 enum class Command : std::uint64_t {
-    create_actor=10, erase_selected=11, undo=12, redo=13, focus=14, reset_camera=15,
-    create_static_mesh=17, reset_layout=603, exit=705,
+    create_actor=10, erase_selected=11, undo=12, redo=13, focus=14, reset_camera=15, duplicate_selected=16,
+    create_static_mesh=17, erase_actors=19, reset_layout=603, exit=705,
     show_scene=710, show_parameters=711, show_controls=712, show_actors=713, maximize_pane=714,
     show_assets=721, previous_tab=722, next_tab=723, close_tab=724,
     new_project=750, open_project=751, save_scene=752, save_scene_as=753, open_scene=754,
@@ -19,7 +19,7 @@ enum class Command : std::uint64_t {
     snap_toggle=818, snap_grid_01=819, snap_grid_02=820, snap_grid_05=821, snap_grid_1=822,
     selection_grid=823, selection_cursor=824, cursor_selected=825, cursor_grid=826, cursor_surface=827,
     view_perspective=830, view_top=831, view_front=832, view_right=833, viewport_options=834,
-    create_point_light=835, create_rectangle_light=836, create_directional_light=837
+    create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838
 };
 enum class CommandGroup { file, edit, create, project, view, window, help };
 struct CommandGroupDefinition {
@@ -73,12 +73,15 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::exit,CommandGroup::file,L"Exit",L"Alt+F4"},
     CommandDefinition{Command::undo,CommandGroup::edit,L"Undo",L"Ctrl+Z"},
     CommandDefinition{Command::redo,CommandGroup::edit,L"Redo",L"Ctrl+Shift+Z"},
+    CommandDefinition{Command::duplicate_selected,CommandGroup::edit,L"Duplicate Actors",L"Shift+D",true},
     CommandDefinition{Command::erase_selected,CommandGroup::edit,L"Delete Selected Object",L"Delete",true},
+    CommandDefinition{Command::erase_actors,CommandGroup::edit,L"Delete Actors",L"X"},
     CommandDefinition{Command::create_actor,CommandGroup::create,L"Actor",L""},
     CommandDefinition{Command::create_static_mesh,CommandGroup::create,L"Static Mesh Actor",L"",false,L"Static Mesh"},
     CommandDefinition{Command::create_point_light,CommandGroup::create,L"Point Light",L"",true,L"Point Light"},
     CommandDefinition{Command::create_rectangle_light,CommandGroup::create,L"Rectangle Light",L"",false,L"Area Light"},
     CommandDefinition{Command::create_directional_light,CommandGroup::create,L"Directional Light",L"",false,L"Sun Light"},
+    CommandDefinition{Command::create_sky_light,CommandGroup::create,L"Sky Light",L"",false,L"Sky Light"},
     CommandDefinition{Command::focus,CommandGroup::view,L"Focus Selection",L"F",false,L"Focus"},
     CommandDefinition{Command::tool_select,CommandGroup::view,L"Select",L"Q",true},
     CommandDefinition{Command::tool_transform,CommandGroup::view,L"Universal Handle",L""},

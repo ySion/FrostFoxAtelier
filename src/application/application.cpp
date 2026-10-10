@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "application/editor_control.hpp"
 #include "application/presentation.hpp"
 #include "atelier/build_info.hpp"
 #include <windowsx.h>
@@ -330,10 +331,11 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
     case create_actor: workspace_.inspecting_asset=false;result=completion(document_->add_actor()); break;
-    case create_point_light:case create_rectangle_light:case create_directional_light: {
+    case create_point_light:case create_rectangle_light:case create_directional_light:case create_sky_light: {
         workspace_.inspecting_asset=false;
         const auto kind=command==create_point_light?world::LightKind::point:
-            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
+            command==create_rectangle_light?world::LightKind::rectangle:
+            command==create_directional_light?world::LightKind::directional:world::LightKind::sky;
         result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
     }
     case create_static_mesh: {
@@ -351,6 +353,8 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         break;
     }
     case erase_selected: workspace_.inspecting_asset=false;result=completion(document_->erase_selected()); break;
+    case erase_actors: workspace_.inspecting_asset=false;result=completion(document_->erase_actors()); break;
+    case duplicate_selected: workspace_.inspecting_asset=false;result=completion(document_->duplicate_selected()); break;
     case undo: case redo:
         workspace_.inspecting_asset=false;
         if (workspace_.source_history()) {
@@ -489,12 +493,15 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     for (auto& submenu:submenus_) submenu->hide();
     menu_path_.clear();
     workspace_.menu=request; menu_incarnation_=source->incarnation;
+    menu_requested_=std::chrono::steady_clock::now();
+    pie_release_pending_=pie_release_select_=pie_pressed_=false;pie_hot_=0;
     menu_context_target_=source->context_target; menu_context_group_=source->context_group;
     menu_table_layout_=source->table_layout;
     orbiting_=false; window_.capture(false);
 }
 void Application::close_menu(bool restore_focus) {
     pending_menu_=0;
+    pie_release_pending_=pie_release_select_=pie_pressed_=false;pie_hot_=0;
     const bool was_open=workspace_.menu.has_value() || menu_window();
     if (!was_open) return;
     workspace_.menu.reset(); workspace_.menu_items.clear();
@@ -518,6 +525,21 @@ void Application::update_menu() {
         source->table_layout!=menu_table_layout_ ||
         !live_table_context(*ui_.presented(),request,true) ||
         source->bounds.y>=source->clip.bottom || source->bounds.y+source->bounds.height<=source->clip.top) { close_menu(); return; }
+    if (workspace_.pie_menu()) {
+        if (popup_) popup_->hide();
+        window_.capture(true);
+        if (ui_.presented()->popup==editor::control::viewport_shading_pie) {
+            effects(ui_.focus(pie_hot_));
+            if (pie_release_pending_) {
+                pie_release_pending_=false;
+                if (pie_release_select_) {
+                    ui::Event release;release.kind=ui::EventKind::key_up;
+                    pie_input(release,'S');
+                }
+            }
+        }
+        return;
+    }
     const bool below=editor::control::is_menu(source->key) || source->kind==ui::ControlKind::combo;
     POINT points[2];
     if (below) {
@@ -526,7 +548,8 @@ void Application::update_menu() {
     } else points[0]=points[1]={static_cast<LONG>(request.x),static_cast<LONG>(request.y)};
     MapWindowPoints(window(),nullptr,points,2);
     if (!popup_) popup_=std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_);
-    popup_->update(source->key,{points[0].x,points[0].y,points[1].x,points[1].y},below,workspace_.menu_items,ui_.style(),style_sheet_,workspace_.ui_component("PopupMenu"));
+    popup_->update(source->key,{points[0].x,points[0].y,points[1].x,points[1].y},below,workspace_.menu_items,ui_.style(),style_sheet_,workspace_.ui_component("PopupMenu"),
+        request.group==editor::control::viewport_delete_menu);
     if (!popup_->visible()) {
         workspace_.status=L"UI: "+editor::wide(std::string(popup_->diagnostic()));close_menu(false);return;
     }
@@ -552,6 +575,7 @@ void Application::update_menu() {
 }
 bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
     if (!workspace_.menu) return false;
+    if (workspace_.pie_menu()) return pie_input(input,native_key);
     const auto source=workspace_.menu->source;
     const bool top=editor::control::is_menu(source);
     auto menu_at=ui::ControlKey{};
@@ -570,7 +594,10 @@ bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
     if (top && menu_path_.empty() && input.kind==ui::EventKind::key_down && (input.key==ui::Key::left || input.key==ui::Key::right)) {
         change(editor::cycle_menu(source,input.key==ui::Key::left)); return true;
     }
-    if (!menu_window()) return true; // Opening transition is modal before the first accepted popup frame.
+    if (!menu_window()) {
+        if (input.kind==ui::EventKind::key_down && input.key==ui::Key::escape) close_menu();
+        return true; // Opening transition is modal before the first accepted popup frame.
+    }
     const bool pointer=input.kind==ui::EventKind::pointer_down || input.kind==ui::EventKind::pointer_up ||
         input.kind==ui::EventKind::pointer_move || input.kind==ui::EventKind::wheel;
     std::size_t level=menu_path_.size();
@@ -601,21 +628,90 @@ bool Application::menu_input(const ui::Event& input,WPARAM native_key) {
             if (!at->children.empty()) {
                 menu_path_.resize(level); menu_path_.push_back(at->key); update_menu(); return true;
             }
-            const auto edit=at->edit_command;
-            if (edit) {
-                const auto incarnation=menu_incarnation_;
-                close_menu(); effects(ui_.execute(*edit,incarnation));
-            } else {
-                const auto result=action(*command);
-                if (!result) status(result,L"");
-                close_menu();
-            }
+            invoke_menu(*command,items);
             return true;
         } else if (command->kind==ui::ActionKind::dismiss) { close_menu(); return true; }
     }
     return true;
 }
+bool Application::invoke_menu(const ui::Action& command,std::span<const ui::MenuItem> items) {
+    const auto at=std::ranges::find(items,command.key,&ui::MenuItem::key);
+    if (at==items.end() || !at->enabled || !at->children.empty()) return false;
+    const auto edit=at->edit_command;
+    if (edit) {
+        const auto incarnation=menu_incarnation_;
+        close_menu();effects(ui_.execute(*edit,incarnation));
+    } else {
+        const auto result=action(command);
+        if (!result) status(result,L"");
+        close_menu();
+    }
+    return true;
+}
+bool Application::pie_input(const ui::Event& input,WPARAM native_key) {
+    if ((input.kind==ui::EventKind::key_down && (input.key==ui::Key::escape || input.key==ui::Key::tab)) ||
+        (input.kind==ui::EventKind::pointer_down && input.button==ui::PointerButton::secondary)) {
+        close_menu();return true;
+    }
+    const bool pointer=input.kind==ui::EventKind::pointer_move || input.kind==ui::EventKind::pointer_down || input.kind==ui::EventKind::pointer_up;
+    if (pointer) pointer_position_={input.x,input.y};
+    const bool release=input.kind==ui::EventKind::key_up && native_key=='S';
+    if (release && !pie_release_select_) {
+        const auto dx=pointer_position_.x-workspace_.menu->x,dy=pointer_position_.y-workspace_.menu->y;
+        pie_release_select_=dx*dx+dy*dy>324*window_.dpi_scale()*window_.dpi_scale() ||
+            std::chrono::steady_clock::now()-menu_requested_>=std::chrono::milliseconds(200);
+    }
+    const auto* frame=ui_.presented().get();
+    const auto* pie=frame?frame->find(editor::control::viewport_shading_pie):nullptr;
+    if (!pie || frame->popup!=pie->key) {
+        if (release) pie_release_pending_=true;
+        return true; // Opening owns input before its first accepted geometry.
+    }
+    const auto choose=[&] {
+        // A click on a visible slot wins over gesture direction when screen-edge
+        // fitting moved the menu away from its original invocation point.
+        if (pointer) for (const auto& item:workspace_.menu_items) {
+            const auto* box=frame->find(item.key);
+            if (item.enabled && box && pointer_position_.x>=box->bounds.x && pointer_position_.x<box->bounds.x+box->bounds.width &&
+                pointer_position_.y>=box->bounds.y && pointer_position_.y<box->bounds.y+box->bounds.height) return item.key;
+        }
+        // Use the invocation point as the gesture origin even if the visible
+        // menu was fitted away from a screen edge. Slots come from accepted DSL geometry.
+        const auto dx=pointer_position_.x-workspace_.menu->x,dy=pointer_position_.y-workspace_.menu->y;
+        const auto distance=std::hypot(dx,dy);
+        ui::ControlKey key{};float best=-2.f;
+        if (distance>18*frame->drawing->dpi_scale) for (const auto& item:workspace_.menu_items) {
+            const auto* box=frame->find(item.key);if (!item.enabled || !box) continue;
+            const auto x=box->bounds.x+box->bounds.width*.5f-(pie->bounds.x+pie->bounds.width*.5f);
+            const auto y=box->bounds.y+box->bounds.height*.5f-(pie->bounds.y+pie->bounds.height*.5f);
+            const auto length=std::hypot(x,y);if (length==0) continue;
+            const auto dot=(dx*x+dy*y)/(distance*length);
+            if (dot>best) {best=dot;key=item.key;}
+        }
+        return key;
+    };
+    const auto activate=[&](ui::ControlKey key) {
+        if (key) invoke_menu({ui::ActionKind::activate,key,true},workspace_.menu_items);
+        else close_menu();
+    };
+    if (pointer) {
+        pie_hot_=choose();effects(ui_.focus(pie_hot_));
+        if (input.kind==ui::EventKind::pointer_down && input.button==ui::PointerButton::primary) pie_pressed_=true;
+        if (input.kind==ui::EventKind::pointer_up && input.button==ui::PointerButton::primary && pie_pressed_) activate(pie_hot_);
+        return true;
+    }
+    if (release) {if (pie_release_select_) activate(pie_hot_?pie_hot_:choose());return true;}
+    // Existing popup keyboard navigation and Enter activation share the same command dispatch.
+    auto reply=ui_.input(input);
+    pie_hot_=ui_.focused_control();
+    for (const auto& effect:reply.effects) if (const auto* command=std::get_if<ui::Action>(&effect)) {
+        if (command->kind==ui::ActionKind::dismiss) {close_menu();break;}
+        if (command->kind==ui::ActionKind::activate) {invoke_menu(*command,workspace_.menu_items);break;}
+    }
+    return true;
+}
 void Application::native(NativeEvent message) {
+    if(control_) control_->input(message.message,message.wparam);
     if (message.message == WM_SIZE || message.message == WM_DPICHANGED) { invalidate_surface(); return; }
     if (message.message==WM_MOVE) { close_menu(false); return; }
     if (message.message==WM_CANCELMODE || (message.message==WM_ACTIVATEAPP && !message.wparam)) {
@@ -634,7 +730,9 @@ void Application::native(NativeEvent message) {
     if (message.error) { workspace_.status = L"Invalid native text input."; return; }
     const auto native_key=message.wparam;
     auto mapped=input_event(std::move(message),window());if (!mapped) return;
-    auto& event=*mapped;
+    input(*mapped,native_key);
+}
+void Application::input(const ui::Event& event,WPARAM native_key) {
     const bool pointer=event.kind==ui::EventKind::pointer_move || event.kind==ui::EventKind::pointer_down ||
         event.kind==ui::EventKind::pointer_up || event.kind==ui::EventKind::wheel;
     if (event.kind==ui::EventKind::focus_lost || event.kind==ui::EventKind::capture_lost) {
@@ -664,6 +762,12 @@ void Application::native(NativeEvent message) {
             menu_return_focus_=ui_.focused_control();
     const bool release = event.kind == ui::EventKind::pointer_up;
     if (pointer && !release && !pointer_ready()) return;
+    if (event.kind==ui::EventKind::pointer_down && event.button==ui::PointerButton::primary) {
+        const auto menu=ui_.pointer_target(event.x,event.y);
+        if (editor::control::is_menu(menu)) {
+            effects(ui_.focus(menu));request_menu({menu,0,0,0});return;
+        }
+    }
     if (event.kind==ui::EventKind::key_down && !workspace_.menu &&
         (native_key==VK_F6 || native_key==VK_F8)) {
         const auto command=native_key==VK_F6?editor::Command::build_project:event.shift?editor::Command::stop_project:editor::Command::run_project;
@@ -699,6 +803,9 @@ void Application::native(NativeEvent message) {
         if (command) if (auto result=execute(*command);!result) status(result,L"");
     }
 }
+void Application::enable_control(const std::filesystem::path& directory) {
+    if(!control_) control_=std::make_unique<EditorControl>(*this,directory);
+}
 bool Application::step(renderer::Capture* capture) {
     frame_timing_ = {};
     frame_statistics_ = {};
@@ -709,6 +816,7 @@ bool Application::step(renderer::Capture* capture) {
         window_.cancel_close();
     }
     poll_project();
+    if(control_) control_->poll();
     const auto title=(project_?project_->name():L"No project")+L" — "+(scene_path_.empty()?L"Untitled":scene_path_.filename().wstring())+
         (document_->dirty()?L" *":L"")+L" — FrostFox Atelier";
     if (title!=window_title_) { SetWindowTextW(window(),title.c_str());window_title_=title; }
@@ -739,6 +847,7 @@ bool Application::step(renderer::Capture* capture) {
     }
     if (!described) throw std::runtime_error("UI rejected editor controls (key " + std::to_string(described.error().key) + ").");
     effects(*described);
+    if (workspace_.pie_menu()) effects(ui_.focus(pie_hot_));
     using Clock = std::chrono::steady_clock;
     const bool sample = sampling_ && !capture;
     const auto prepare_start = sample ? Clock::now() : Clock::time_point{};
@@ -758,6 +867,9 @@ bool Application::step(renderer::Capture* capture) {
         return true;
     }
     workspace_.commit_ui_controls();
+    // Native popups render on their retained surface before scene submission /
+    // Present can block. Their anchor still comes from accepted owner geometry.
+    if (!workspace_.pie_menu()) update_menu();
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};
@@ -772,13 +884,19 @@ bool Application::step(renderer::Capture* capture) {
     overlay_.clear();
     if(viewport) viewport_tool_.overlay(*document_,viewport_view,workspace_.viewport_settings,overlay_);
     const bool projection_cut=accepted_view_ && accepted_view_->orthographic!=viewport_view.orthographic;
+    renderer::Capture control_capture;
+    const bool capturing_control=control_ && control_->wants_capture();
+    auto* frame_capture=capture?capture:capturing_control?&control_capture:nullptr;
+    const auto effective_view=control_?control_->view():workspace_.view;
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
-        viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},workspace_.view,overlay_,
-        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut};
+        viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
+        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
+        scene_.environment};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
-    auto rendered = renderer_.render(render_frame, capture);
+    auto rendered = renderer_.render(render_frame, frame_capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
     if (!rendered) {
+        if(control_) control_->render_failed(rendered.error().cause.message);
         if (rendered.error().terminal) throw std::runtime_error("Renderer stopped: " + rendered.error().cause.message);
         workspace_.status = widen(rendered.error().cause.message); return true;
     }
@@ -790,13 +908,17 @@ bool Application::step(renderer::Capture* capture) {
         accepted_view_=viewport?std::optional(viewport_view):std::nullopt;
         if(viewport) camera_cut_=false;
         workspace_.render_notice.clear();
-        if(viewport && workspace_.view.shading==renderer::Shading::scene_lit && workspace_.view.lit.shadows &&
-            workspace_.view.wireframe!=renderer::Wireframe::only) {
+        if(viewport && effective_view.shading==renderer::Shading::scene_lit && effective_view.lit.shadows &&
+            effective_view.wireframe!=renderer::Wireframe::only) {
             const auto requested=std::ranges::count_if(scene_.lights,[](const auto& light){return light.casts_shadow;});
-            if(std::uint64_t(requested)>workspace_.view.lit.shadow_light_budget)
+            if(std::uint64_t(requested)>effective_view.lit.shadow_light_budget)
                 workspace_.render_notice=L"Shadows "+std::to_wstring(rendered->stats.scene_lit_shadow_lights)+L"/"+std::to_wstring(requested);
         }
         ++accepted_frames_;
+        if(control_) {
+            if(capture && capturing_control) {control_capture=*capture;control_->rendered(render_frame,*rendered,&control_capture);}
+            else control_->rendered(render_frame,*rendered,frame_capture);
+        }
         if (pending_source_focus_) {
             pending_source_focus_=false;
             if (workspace_.source_editor.active()) effects(ui_.focus(editor::source_control::buffer));
@@ -811,12 +933,16 @@ bool Application::step(renderer::Capture* capture) {
             effects(ui_.focus(menu)); request_menu({menu,0,0,0});
         } else update_menu();
         if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us};
-    } else MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    } else {
+        if(control_) control_->rendered(render_frame,*rendered,nullptr);
+        MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
     return true;
 }
 void Application::close() {
     if (closed_) return;
     closed_ = true;
+    control_.reset();
     play_.close();
     if(!play_snapshot_.empty()) {std::error_code ignored;std::filesystem::remove(play_snapshot_,ignored);play_snapshot_.clear();}
     close_menu(false);

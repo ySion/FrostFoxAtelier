@@ -431,7 +431,7 @@ struct SceneLit::State {
         previous_effect_flags=flags;previous_shadow_samples=settings.shadow_samples;previous_shadow_budget=settings.shadow_light_budget;previous_probe_debug=settings.probe_debug;
         scene_identity=frame.scene_identity;scene_revision=frame.scene_revision;enabled=true;
         probes(settings);const bool transform_changed=acceleration(frame);
-        const std::array<float,4> next_environment{settings.environment[0],settings.environment[1],settings.environment[2],1};
+        const std::array<float,4> next_environment{frame.environment[0],frame.environment[1],frame.environment[2],1};
         const bool radiance_changed=light_changed||material_changed||next_environment!=environment;
         // Budgeted updates retain the authoritative change hint until every probe has been visited.
         if(radiance_changed||transform_changed)probe_updates_pending=4*probe_counts[0]*probe_counts[1]*probe_counts[2];
@@ -524,7 +524,6 @@ struct SceneLit::State {
         end(4);
         begin(5);bind(compose.program(),"lit_direct_source",direct_hdr);bind(compose.program(),"lit_indirect_source",settings.ssil?ssil_irradiance:indirect);bind(compose.program(),"lit_ao",ao_texture);
         bind(compose.program(),"lit_probe_debug",settings.probe_debug&&settings.ddgi?1u:0u);
-        bind(compose.program(),"lit_background",frame.view.background==Background::gradient?1u:0u);
         bind(compose.program(),"lit_hdr_output",hdr);dispatch(compose,depth,dx,dy);
         if(!brdf_ready){bind(brdf.program(),"lit_brdf_output",brdf_lut);dispatch(brdf,depth,8,8);brdf_ready=true;}
         for(std::uint32_t i=0;i<pyramid_count;i++) {
@@ -607,7 +606,8 @@ void SceneLit::validate(const Frame& frame) const {
     const auto finite=[](float v){return std::isfinite(v);};
     invalid(finite(s.exposure_ev)&&s.exposure_ev>=-16&&s.exposure_ev<=16&&finite(s.shadow_bias)&&s.shadow_bias>0&&s.shadow_bias<=.1f&&finite(s.ao_radius)&&s.ao_radius>0&&
         finite(s.reflection_distance)&&s.reflection_distance>0&&finite(s.reflection_roughness)&&s.reflection_roughness>=0&&s.reflection_roughness<=1&&s.probe_update_budget>0&&s.probe_rays>=1&&s.probe_rays<=256&&s.antialiasing<=Antialiasing::smaa_t2x,"Invalid Scene Lit settings");
-    std::uint64_t total=1;for(std::size_t i=0;i<3;i++){invalid(finite(s.environment[i])&&s.environment[i]>=0&&finite(s.probe_min[i])&&finite(s.probe_max[i])&&s.probe_max[i]>s.probe_min[i]&&s.probe_counts[i]>=2&&s.probe_counts[i]<=32,"Invalid Scene Lit probe volume");total*=s.probe_counts[i];}
+    for(float radiance:frame.environment)invalid(finite(radiance)&&radiance>=0&&radiance<=65504,"Invalid Scene Lit sky radiance");
+    std::uint64_t total=1;for(std::size_t i=0;i<3;i++){invalid(finite(s.probe_min[i])&&finite(s.probe_max[i])&&s.probe_max[i]>s.probe_min[i]&&s.probe_counts[i]>=2&&s.probe_counts[i]<=32,"Invalid Scene Lit probe volume");total*=s.probe_counts[i];}
     invalid(total<=4096,"Scene Lit probe volume exceeds 4096 probes");
     std::unordered_set<std::uint64_t> mesh_keys,light_keys;
     for(const auto& mesh:frame.meshes){const auto& m=mesh.material;invalid(finite(m.roughness)&&m.roughness>=0&&m.roughness<=1&&finite(m.metallic)&&m.metallic>=0&&m.metallic<=1,"Invalid Scene Lit material");

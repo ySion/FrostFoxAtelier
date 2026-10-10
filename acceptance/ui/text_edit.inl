@@ -30,8 +30,10 @@ struct TextConsumer : Consumer {
 };
 void shared_edit_history_and_focus() {
     TextConsumer c(L"位置"); c.command(ui::Key::a,true);
+    require(c.ui.wants_keyboard() && !c.ui.interaction_state().active(),"Passive text focus blocks external operations");
     require(!c.command(ui::Key::z,true).consumed,"clean focus consumed scene undo");
     auto first=c.type(L"A"); c.type(L"B"); c.type(L"C");
+    require(c.ui.interaction_state().text_draft,"Uncommitted field draft was not protected");
     require(actions_of(first).size()==2 && c.value()==L"ABC","text begin/preview chain failed");
     c.command(ui::Key::z,true); require(c.value()==L"位置","typing was not one undo group");
     require(c.command(ui::Key::z,true).consumed && c.value()==L"位置","exhausted local undo escaped to scene");
@@ -40,10 +42,12 @@ void shared_edit_history_and_focus() {
     require(actions_of(commit).size()==1 && actions_of(commit)[0].kind==ui::ActionKind::edit_commit &&
         c.ui.wants_keyboard() && c.token().generation!=before.generation && !c.command(ui::Key::z,true).consumed,
         "commit did not retain focus and end local history");
+    require(!c.ui.interaction_state().active(),"Committed text focus remains an active interaction");
     c.controls[0].text=L"权威值"; c.prepare(); c.command(ui::Key::a,true);
     require(request_of<ui::ClipboardRequest>(c.command(ui::Key::c,true)).text==L"权威值","passive buffer overwrote authority");
     c.type(L"预览"); c.command(ui::Key::escape);
     require(c.value()==L"权威值" && c.ui.wants_keyboard(),"search cancel did not restore query and retain focus");
+    require(!c.ui.interaction_state().active(),"Cancelled text focus remains an active interaction");
 
     TextConsumer bounded(L""); bounded.command(ui::Key::end);
     for (unsigned i=0;i<70;++i) { bounded.type(L"a"); bounded.command(ui::Key::end); }
@@ -66,6 +70,7 @@ void shared_edit_history_and_focus() {
     const auto restored_token=returned.token();
     returned.compose({ui::CompositionKind::start,60,restored_token,{},{}});
     require(returned.ui.text_input()->composing,"returned focus rejected the first composition");
+    require(returned.ui.interaction_state().composition,"Active IME was not protected");
     const auto refocused=returned.apply(returned.ui.focus(1));
     require(refocused.effects.empty() && returned.token()==restored_token && returned.ui.text_input()->composing,
         "same focus changed the live composition binding");
@@ -139,6 +144,7 @@ void unicode_visual_editing() {
     const auto start=bidi.frame->caret->bounds;
     bidi.command(ui::Key::end); bidi.prepare(); const auto end=bidi.frame->caret->bounds;
     bidi.apply(bidi.ui.input({.kind=ui::EventKind::pointer_down,.x=start.x,.y=start.y+5}));
+    require(bidi.ui.interaction_state().pointer,"Held pointer interaction was not protected");
     bidi.apply(bidi.ui.input({.kind=ui::EventKind::pointer_move,.x=end.x,.y=end.y+5}));
     bidi.apply(bidi.ui.input({.kind=ui::EventKind::pointer_up,.x=end.x,.y=end.y+5}));
     require(!request_of<ui::ClipboardRequest>(bidi.command(ui::Key::c,true)).text.empty(),"pointer text selection failed");
@@ -159,7 +165,9 @@ void unicode_visual_editing() {
 void clipboard_roundtrips() {
     TextConsumer c(L"abcdef"); c.command(ui::Key::a,true);
     const auto copy=request_of<ui::ClipboardRequest>(c.command(ui::Key::c,true));
+    require(c.ui.interaction_state().clipboard,"Pending clipboard operation was not protected");
     require(copy.text==L"abcdef" && actions_of(c.receive(copy,true)).empty(),"copy changed draft");
+    require(!c.ui.interaction_state().active(),"Completed copy kept passive focus busy");
     const auto failed=request_of<ui::ClipboardRequest>(c.command(ui::Key::x,true));
     require(c.receive(failed,false).error.has_value() && c.value()==L"abcdef","failed cut deleted text");
     const auto cut=request_of<ui::ClipboardRequest>(c.command(ui::Key::x,true));
@@ -189,8 +197,10 @@ void clipboard_roundtrips() {
     require(actions_of(invalid).size()==1 && actions_of(invalid)[0].kind==ui::ActionKind::edit_begin && numeric.controls[0].value==12,
         "invalid numeric paste reached business preview");
     require(actions_of(numeric.command(ui::Key::enter)).empty() && numeric.ui.wants_keyboard(),"invalid Enter lost focus or committed");
+    require(numeric.ui.interaction_state().text_draft,"Invalid uncommitted number was treated as idle");
     numeric.command(ui::Key::escape); require(numeric.controls[0].value==12 && !numeric.command(ui::Key::z,true).consumed,
         "numeric cancel did not return to passive focus");
+    require(!numeric.ui.interaction_state().active(),"Cancelled number remained busy");
 }
 void composition_protocol_and_cleanup() {
     TextConsumer c(L"X"); c.command(ui::Key::a,true);

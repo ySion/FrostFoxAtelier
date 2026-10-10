@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "application/editor_control.hpp"
 #include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -52,6 +53,7 @@ bool Application::confirm_discard(bool sources) {
     return saved.has_value();
 }
 void Application::publish_document(std::unique_ptr<editor::Session> next,editor::ProjectCode* code) {
+    if(control_) control_->document_replaced();
     const auto cancelled=viewport_tool_.cancel(*document_);if(!cancelled) throw std::runtime_error(cancelled.error().message);
     viewport_tool_.cursor={};accepted_view_.reset();
     close_menu(false);effects(ui_.cancel_interaction());
@@ -64,7 +66,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next,editor:
     const auto closed=document_->close();if (!closed) throw std::runtime_error(closed.error().message);
     document_=std::move(next);project_code_=code;scene_.reset();workspace_.render_notice.clear();camera_.reset();camera_cut_=true;invalidate_surface();
 }
-Result<void> Application::open_project(const std::filesystem::path& folder,bool create) {
+Result<void> Application::open_project(const std::filesystem::path& folder,bool create,ProjectOpenPolicy policy) {
     // A save decision can change the file we are about to open. Read only after
     // that decision; cancellation also precedes Project::create's disk changes.
     if (!confirm_discard()) return {};
@@ -73,6 +75,10 @@ Result<void> Application::open_project(const std::filesystem::path& folder,bool 
     const auto path=project->resolve(project->startup_scene());if (!path) return std::unexpected(path.error());
     const auto content=editor::read_file(*path);if (!content) return std::unexpected(content.error());
     auto candidate=editor::load_project_scene(*project,*content);
+    // Reproducible workflows admit the complete candidate before retiring the
+    // current document. Interactive opening can still opt into source repair.
+    if(policy==ProjectOpenPolicy::require_scene && (!candidate.session || candidate.error))
+        return candidate.error?std::unexpected(*candidate.error):failed("Project did not produce a complete scene.");
     play_.close();
     workspace_.source_editor.clear();
     project_=std::move(*project);scene_path_=project_->startup_scene();workspace_.project_open=true;

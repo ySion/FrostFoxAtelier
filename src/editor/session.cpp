@@ -32,6 +32,7 @@ Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))
 }
 Session::~Session() { (void)world_.close(); }
 void Session::remember(Change change) {
+    ++revision_;
     if (saved_cursor_ && *saved_cursor_>cursor_) saved_cursor_.reset();
     history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_), history_.end());
     history_.push_back(std::move(change));
@@ -83,11 +84,13 @@ Result<void> Session::rename(ObjectId actor, std::wstring name) {
     return {};
 }
 void Session::set_selection(Selection next) {
+    if(selection_!=next || selected_actors_.size()!=(next.actor==ObjectId{}?0u:1u)) ++revision_;
     selection_=next;
     selected_actors_.clear();
     if (next.actor!=ObjectId{}) selected_actors_.push_back(next.actor);
 }
 void Session::forget_actor(ObjectId actor) noexcept {
+    if(is_selected(actor) || selection_.actor==actor) ++revision_;
     std::erase(selected_actors_,actor);
     if (selection_.actor==actor) {
         selection_={};
@@ -121,6 +124,7 @@ Result<void> Session::select_actors(std::span<const ObjectId> actors, ObjectId a
     if (!cancelled) return cancelled;
     selected_actors_=std::move(next);
     selection_={active,active};
+    ++revision_;
     return {};
 }
 Result<world::Commit> Session::add_actor(TypeId actual) {
@@ -152,14 +156,17 @@ Result<world::Commit> Session::create_light(world::LightKind kind,math::Vector3 
     auto actor=world::create_actor(runtime_);if(!actor) return std::unexpected(actor.error());
     auto light=world::create_component(runtime_,types_.light_component);if(!light) return std::unexpected(light.error());
     auto configured=runtime_.with_native<world::LightComponent>(light->id(),[&](auto& value)->Result<void> {
-        value.settings.kind=kind;return world::validate_light(value.settings);
+        value.settings.kind=kind;
+        if(kind==world::LightKind::sky) value.settings.intensity=.03f;
+        return world::validate_light(value.settings);
     });
     if(!configured) return std::unexpected(configured.error());
     auto positioned=world_.set_transform(light->id(),{position,{},{1,1,1}});if(!positioned) return std::unexpected(positioned.error());
     const std::array parts{world::Attachment{light->id(),{},true}};
     auto attached=world_.attach_components(actor->id(),parts);if(!attached) return attached;
     if(attached->notification_error) return std::unexpected(*attached->notification_error);
-    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":L"Directional Light";
+    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":
+        kind==world::LightKind::directional?L"Directional Light":L"Sky Light";
     return attach_created(std::move(*actor),label);
 }
 Result<world::Commit> Session::attach_created(ObjectRoot root,std::wstring_view label) {
@@ -178,6 +185,10 @@ Result<world::Commit> Session::attach_created(ObjectRoot root,std::wstring_view 
 Result<world::Commit> Session::erase_selected() {
     if(selection_.object==ObjectId{}) return world::Commit{};
     if(selection_.object!=selection_.actor) return remove_component(selection_.object);
+    return erase_actors();
+}
+Result<world::Commit> Session::erase_actors() {
+    if (selected_actors_.empty()) return world::Commit{};
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     const auto targets=selected_actors_.empty()?std::vector<ObjectId>{selection_.actor}:selected_actors_;
@@ -329,7 +340,7 @@ bool Session::owns_edit(std::uint64_t control_session) const noexcept {
     return (active_ && active_->control_session == control_session) ||
         (transform_ && transform_->control_session == control_session);
 }
-Result<void> Session::begin_transform(std::span<const ObjectId> components, std::uint64_t control_session) {
+Result<void> Session::begin_transform(std::span<const ObjectId> components, std::uint64_t control_session, bool amend_creation) {
     if (editing()) return invalid("A field edit is already active.");
     if (!control_session) return invalid("A transform edit requires a control session.");
     if (components.empty()) return invalid("Select an Actor with a SceneComponent root.");
@@ -348,6 +359,14 @@ Result<void> Session::begin_transform(std::span<const ObjectId> components, std:
         auto root=runtime_.hold(component);
         if (!root) return std::unexpected(root.error());
         change.entries.push_back({std::move(*root),state->owner,*value,*value});
+    }
+    if (amend_creation) {
+        const auto* creation=cursor_ && cursor_==history_.size()?std::get_if<ActorChange>(&history_.back()):nullptr;
+        if (!creation || !creation->added || saved_cursor_==cursor_ ||
+            std::ranges::any_of(change.entries,[&](const auto& entry) {
+                return std::ranges::none_of(creation->removals,[&](const auto& item){return item.id()==entry.actor;});
+            })) return invalid("Initial placement must belong to the current unsaved creation.");
+        change.amend_creation=true;
     }
     transform_=std::move(change);
     return {};
@@ -377,6 +396,7 @@ Result<void> Session::write_transforms(const TransformChange& change,std::span<c
         auto value=world::read_transform(runtime_,entry.root.id());
         if (!value) return std::unexpected(value.error());previous.push_back(*value);
     }
+    if(!std::ranges::equal(previous,values)) ++revision_;
     for (std::size_t i=0;i<values.size();++i) {
         if (auto written=world_.set_transform(change.entries[i].root.id(),values[i]); !written) {
             // A refused member cannot leave earlier members at a new preview.
@@ -423,7 +443,11 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
         const auto* number=std::get_if<float>(&value);
         if(!number || *number<minimum_scale || *number>maximum_scale) return invalid("Scale is outside the editor range.");
     }
-    return world_.write(active_->root.id(),active_->path,value);
+    const auto before=world_.read(active_->root.id(),active_->path);
+    if(!before) return std::unexpected(before.error());
+    auto result=world_.write(active_->root.id(),active_->path,value);
+    if(result && *before!=value) ++revision_;
+    return result;
 }
 Result<void> Session::commit_edit(std::uint64_t control_session) {
     if (!owns_edit(control_session)) return invalid("No matching field edit.");
@@ -434,7 +458,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
             if (!value) return std::unexpected(value.error());
             entry.after=*value; changed|=entry.after!=entry.before;
         }
-        if (changed) remember(std::move(*transform_));
+        if (changed && !transform_->amend_creation) remember(std::move(*transform_));
         transform_.reset(); return {};
     }
     auto actor=admit_property_edit(active_->root.id());
@@ -465,14 +489,28 @@ Result<void> Session::cancel_edit() {
         // Restore every target even if one fails; report the first failure.
         Result<void> first;
         for (const auto& entry:transform_->entries) {
+            const auto current=world::read_transform(runtime_,entry.root.id());
+            if (!current) {if (first) first=std::unexpected(current.error());continue;}
             auto restored=world_.set_transform(entry.root.id(),entry.before);
+            if (restored && *current!=entry.before) ++revision_;
             if (!restored && first) first=restored;
         }
         if (!first) return first;
         transform_.reset();
     }
     if (!active_) return {};
+    bool changed{};
+    if (const auto* before=std::get_if<world::Trs>(&active_->before)) {
+        const auto current=world::read_transform(runtime_,active_->root.id());
+        if (!current) return std::unexpected(current.error());
+        changed=*current!=*before;
+    } else {
+        const auto current=world_.read(active_->root.id(),active_->path);
+        if (!current) return std::unexpected(current.error());
+        changed=*current!=std::get<Scalar>(active_->before);
+    }
     auto restored=apply_field(*active_,false); if (!restored) return restored;
+    if (changed) ++revision_;
     active_.reset(); return {};
 }
 Result<void> Session::reset_position(ObjectId component) {
@@ -584,6 +622,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
     }, change);
 }
 Result<world::Commit> Session::undo() {
+    if(cursor_) ++revision_;
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (!cursor_) return world::Commit{};
@@ -592,6 +631,7 @@ Result<world::Commit> Session::undo() {
     return result;
 }
 Result<world::Commit> Session::redo() {
+    if(cursor_<history_.size()) ++revision_;
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (cursor_ == history_.size()) return world::Commit{};

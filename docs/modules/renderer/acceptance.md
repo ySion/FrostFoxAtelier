@@ -1,5 +1,20 @@
 # 编辑器 renderer 验收
 
+## 单一天光、Lit 黑背景与中键方向（2026-10-09）
+
+在阶段集成基线 `17996cee` 上修正中键水平环绕方向。Scene Lit 始终使用黑背景，工作室模式保留渐变偏好，网格与轴线仍独立；黑背景上的底部操作提示改用浅色。均匀环境辐射从 ViewSettings 移到场景快照，只由 World 中唯一的 Sky Light 提供，缺失或停用时为零。示例房间显式包含一个 Sky Light，替代此前的隐式环境值。
+
+| 端到端结果 | Dev | Release |
+| --- | --- | --- |
+| 最终 editor、文档消费者与 Renderer 编译链接 | PASS | PASS |
+| World → SceneSnapshot：天光创建、属性、停用、删除/撤销、保存重开、重复天光和类型切换拒绝 | PASS | PASS |
+| Renderer `--scene-lit`：黑场、显式天光、移除后收敛、Lit 空场景黑背景及原有光照/阴影/DDGI/GTAO/反射/深度 | PASS | PASS |
+| 正式窗口：四类灯菜单、天光属性与保存重开、中键右拖及反向拖回 | PASS | PASS |
+
+无天光、直接灯和自发光的真实几何像素为黑。移除已收敛天光后，探针仍按既有分帧历史衰减：首次 192 帧读回有 78 个像素残留 2/255；最终验收保持每通道 ≤1/255 的终点要求，在 384 帧后检查通过，没有改动 DDGI 滤波、射线预算或放宽阈值。该帧数是此验收场景的收敛等待，不是运行帧率测量。首版天光为均匀辐射，尚不提供 HDRI、方向性天空或可见天空绘制。
+
+证据在 `out/sky-light-20261009/`：`{dev,release}-final-build.log`、`{dev,release}-document-final.log`、`{dev,release}-renderer-final.log` 和 `{dev,release}-editor.log`；GPU 图像在 `{dev,release}-renderer-final/`，正式窗口图像及临时工程在 `{dev,release}-editor/`。Dev 核心交互验收在提示文字颜色调整前执行；最后的提示文字显示由双配置文档/布局验收及 Release 正式窗口确认。所有保存/重开检查均使用临时工程副本，源示例未被验收修改。
+
 ## 阶段集成边界（2026-10-09）
 
 本轮将 Claude/Sponza 与 Scene Lit 质量分支在共同内容快照 `f967165` 上逐文件合并。保留基础模式的 MeshPart、漫反射/opacity 图、Alpha Test 和编辑叠层，以及 Scene Lit 的 Reversed-Z、独立信号重建与 DDGI 修正。Scene Lit 的 GPU 顶点读取同步为含 UV 的 32 字节布局，三角形为 112 字节；材质像素验收采用近 .8 / 远 .4 的反向设备深度。

@@ -7,8 +7,11 @@
 #include "editor/camera.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
+#include <chrono>
 
 namespace atelier::application {
+class EditorControl;
+enum class ProjectOpenPolicy { allow_repair, require_scene };
 struct FrameTiming {
     std::uint64_t frame_id{}; // Zero when the last step was not sampled/accepted.
     double prepare_us{}, render_us{}; // CPU wall time; render includes Present/waits.
@@ -18,7 +21,8 @@ public:
     explicit Application(bool gpu_validation = false, bool activate = true);
     ~Application();
     bool step(renderer::Capture* = nullptr);
-    Result<void> open_project(const std::filesystem::path&,bool create=false);
+    void enable_control(const std::filesystem::path& directory);
+    Result<void> open_project(const std::filesystem::path&,bool create=false,ProjectOpenPolicy=ProjectOpenPolicy::allow_repair);
     Result<void> open_scene(const std::filesystem::path&);
     Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading);
     Result<void> open_source(const std::filesystem::path&);
@@ -66,6 +70,8 @@ public:
     const renderer::FrameStats& frame_statistics() const noexcept { return frame_statistics_; }
 private:
     friend struct EditorAcceptanceAccess; // Seeds real backend failures in the window E2E.
+    friend class EditorControl;
+    std::unique_ptr<EditorControl> control_;
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
     std::optional<editor::Project> project_;
@@ -94,6 +100,9 @@ private:
     ui::ControlKey menu_context_target_{},menu_context_group_{};
     ui::TableLayout menu_table_layout_;
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
+    std::chrono::steady_clock::time_point menu_requested_;
+    bool pie_release_pending_{}, pie_release_select_{}, pie_pressed_{};
+    ui::ControlKey pie_hot_{};
     bool pending_source_focus_{};
     bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
     renderer::Renderer renderer_;
@@ -114,10 +123,13 @@ private:
         return popup_ && popup_->visible()?popup_.get():nullptr;
     }
     void native(NativeEvent);
+    void input(const ui::Event&,WPARAM native_key);
     void request_menu(const ui::ContextMenuRequest&);
     void close_menu(bool restore_focus=true);
     void update_menu();
     bool menu_input(const ui::Event&,WPARAM);
+    bool pie_input(const ui::Event&,WPARAM);
+    bool invoke_menu(const ui::Action&,std::span<const ui::MenuItem>);
     bool effects(const ui::Reply&);
     Result<void> execute(editor::Command,std::string_view asset={});
     Result<void> action(const ui::Action&);

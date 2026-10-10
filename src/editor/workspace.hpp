@@ -21,7 +21,8 @@ inline constexpr auto add_actor=command_key(Command::create_actor), remove_selec
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
 inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes=846;
-inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850, viewport_readout=851, viewport_rail_snap=852, viewport_add_menu=853, viewport_snap_menu=854;
+inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850, viewport_readout=851, viewport_rail_snap=852, viewport_add_menu=853;
+inline constexpr ui::ControlKey viewport_delete_menu=855, viewport_shading_pie=856, shading_preset_first=890;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
@@ -89,6 +90,8 @@ struct Workspace {
     Result<void> select_tree(Session&,ui::ControlKey,ui::SelectionModifiers = {},const ui::UiFrame* = nullptr);
     bool command_enabled(Command,const Session&) const;
     bool apply_view(const ui::Action&);
+    Result<void> set_view_settings(const renderer::ViewSettings&);
+    std::uint64_t view_revision() const noexcept {return view_revision_;}
     Result<bool> apply_ui(const ui::Action&);
     std::string_view ui_error() const noexcept {return ui_document_?ui_document_->diagnostic():std::string_view{};}
     std::optional<ui_language::Statistics> ui_statistics(std::string_view component) const noexcept {
@@ -125,6 +128,7 @@ struct Workspace {
     std::wstring structure_query;
     std::optional<ui::ContextMenuRequest> menu;
     std::vector<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
+    bool pie_menu() const noexcept { return menu && menu->source==control::viewport && menu->group==control::viewport_shading_pie; }
     std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*,const Project* = nullptr);
     void reset_document();
     const Binding* binding(ui::ControlKey) const noexcept;
@@ -137,6 +141,7 @@ struct Workspace {
     std::optional<PropertyChoice> property_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
+    std::uint64_t view_revision_{};
     Runtime ui_runtime_; // Editor authoring scopes outlive individual scene documents.
     std::unique_ptr<ui_language::LiveDocument> ui_document_;
     std::filesystem::path ui_source_;

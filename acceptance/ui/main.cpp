@@ -75,6 +75,30 @@ struct Consumer {
         return ui.input({.kind=ui::EventKind::pointer_up,.x=x,.y=y});
     }
 };
+void single_line_labels() {
+    for (const auto dpi:{1.f,1.25f,1.5f,2.f}) {
+        Consumer consumer;accepted(consumer.ui.set_surface({{640,480},dpi,2}));
+        auto label=leaf(1,ui::ControlKind::label,10,L"Object");
+        label.single_line=true;label.layout.padding={};label.layout.width=ui_layout::Axis::content();
+        label.layout.height=ui_layout::Axis::content();
+        consumer.controls={label};consumer.prepare();
+        ui::detail::TextStore text;text.set(1,L"Object",consumer.frame->find(1)->style->font,false);
+        const auto metrics=text.metrics(1,400);
+        const auto expected=text.raster(1,400,dpi);
+        require(first_text(*consumer.frame).coverage->pixels==expected.coverage->pixels,
+            "Intrinsic single-line label was unnecessarily trimmed.");
+        consumer.controls[0].layout.width=ui_layout::Axis::fixed(metrics.width*.65f);consumer.prepare();
+        const auto trimmed=first_text(*consumer.frame).coverage;
+        require(trimmed->height<=expected.coverage->height+2 && trimmed->width<expected.coverage->width,
+            "A narrow single-line label wrapped instead of trimming.");
+        consumer.controls[0].single_line=false;consumer.prepare();
+        require(first_text(*consumer.frame).coverage->height>trimmed->height,
+            "Changing single-line policy did not invalidate text layout.");
+        consumer.controls[0].single_line=true;consumer.controls[0].layout.width=ui_layout::Axis::content();consumer.prepare();
+        require(first_text(*consumer.frame).coverage->pixels==expected.coverage->pixels,
+            "Restoring intrinsic width retained the old ellipsis.");
+    }
+}
 void text_and_frame_versions() {
     Consumer consumer;
     consumer.controls = {leaf(1,ui::ControlKind::label,10,L"Scene 场景"),leaf(2,ui::ControlKind::button,50,L"Reset camera")};
@@ -568,7 +592,7 @@ int main() {
         {"accepted_geometry_and_surface",accepted_geometry_and_surface},{"numeric_text_and_drag",numeric_text_and_drag},
         {"list_and_splitter",list_and_splitter},{"identity_and_lifetime",identity_and_lifetime},
         {"style_and_invalidation",style_and_invalidation},{"visible_range_and_accounting",visible_range_and_accounting},
-        {"styled_baseline_placement",styled_baseline_placement},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
+        {"styled_baseline_placement",styled_baseline_placement},{"single_line_labels",single_line_labels},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
         {"unicode_visual_editing",unicode_visual_editing},{"clipboard_roundtrips",clipboard_roundtrips},
         {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor},
         {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets},{"shared_tree_view",shared_tree_view},

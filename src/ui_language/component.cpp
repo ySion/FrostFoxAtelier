@@ -322,7 +322,9 @@ struct Context {
         case Property::wrap:
             if (!node.layout.flow) node.layout.flow=ui_layout::FlexSpec{};
             node.layout.flow->wrap=value?ui_layout::Wrap::wrap:ui_layout::Wrap::no_wrap;break;
-        case Property::single_line:node.layout.height=ui_layout::Axis::content(value?ui::single_line_height:0.f);break;
+        case Property::single_line:
+            node.single_line=value;
+            node.layout.height=ui_layout::Axis::content(value?ui::single_line_height:0.f);break;
         default:throw std::runtime_error("Invalid boolean UI property.");
         }
     }

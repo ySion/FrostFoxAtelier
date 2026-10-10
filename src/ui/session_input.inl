@@ -177,6 +177,10 @@ Reply Session::input(const Event& event) {
         if (event.kind==EventKind::pointer_down) {
             reply.consumed=hit && hit->kind!=ControlKind::viewport;
             if (self.press) return reply;
+            if (hit && event.button==PointerButton::primary && hit->kind==ControlKind::combo) {
+                self.context_request(reply,*hit,hit->bounds.x,hit->bounds.y+hit->bounds.height);
+                return reply; // Menu launch is press-driven; the popup owns the matching release.
+            }
             if (hit && event.button==PointerButton::secondary && self.states.at(hit->key).control.context_target) {
                 self.context_request(reply,*hit,event.x,event.y); return reply;
             }

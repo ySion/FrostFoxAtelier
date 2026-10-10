@@ -26,7 +26,7 @@ PopupHost::PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validat
     renderer_=graphics(renderer::Renderer::open(window_.handle(),options));
 }
 void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<const ui::MenuItem> items,
-                       const ui::Style& style,std::shared_ptr<const ui::StyleSheet> sheet,std::shared_ptr<ui_language::Component> component) {
+                       const ui::Style& style,std::shared_ptr<const ui::StyleSheet> sheet,std::shared_ptr<ui_language::Component> component,bool center_first_item) {
     const auto reject=[&](std::string message) {
         diagnostic_=std::move(message);if (instance_) instance_->reject_controls();hide();
         measured_dpi_=0; // A refused projection must never reuse the old geometry for new items.
@@ -109,6 +109,8 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     instance_->commit_controls();component_=std::move(component);diagnostic_.clear();
     }
     auto x=below?anchor.left:anchor.right, y=below?anchor.bottom:anchor.top;
+    // Single-action confirmation opens with its action under the pointer.
+    if (center_first_item) {x=anchor.left-std::min(width/2,static_cast<LONG>(48*dpi));y=anchor.top-height/2;}
     if (!below && x+width>area.right) x=anchor.left-width;
     if (y+height>area.bottom) y=below?anchor.top-height:area.bottom-height;
     x=std::clamp(x,area.left,area.right-width); y=std::clamp(y,area.top,area.bottom-height);

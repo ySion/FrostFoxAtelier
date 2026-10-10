@@ -1,4 +1,69 @@
+void verify_viewport_duplication() {
+    editor::Session document;
+    changed(document.create_static_mesh(editor::mesh_assets().front(),{1,2,3}));
+    const auto first=document.selection().actor;
+    changed(document.add_component(document.types().scene_component));
+    changed(document.add_component(document.physics_types().body_component));
+    auto body=physics::BodySettings{};body.sensor=true;body.radius=2.f;
+    take(document.configure_body(document.selection().object,body));
+    changed(document.create_light(world::LightKind::point,{4,5,6}));
+    const auto second=document.selection().actor;
+    const std::array selected{first,second};take(document.select_actors(selected,second));
+    const auto history=document.undo_count();
+    const auto before=nlohmann::json::parse(take(document.serialize()));
+    changed(document.duplicate_selected());
+    const std::vector copies(document.selected_actors().begin(),document.selected_actors().end());
+    require(copies.size()==2 && copies[0]!=first && copies[1]!=second && document.undo_count()==history+1,
+        "Duplicate did not create independent identities in one history entry.");
+    auto after=nlohmann::json::parse(take(document.serialize()));
+    for (std::size_t i=0;i<2;++i) {
+        after["actors"][i+2]["name"]=before["actors"][i]["name"];
+        require(after["actors"][i+2]==before["actors"][i],"Duplicate lost component state, links, physics settings or reflected properties.");
+    }
+    const auto root=[&](ObjectId actor){return *take(world::root_component(document.world().runtime(),actor));};
+    const auto original_mesh=take(world::read_static_mesh(document.world().runtime(),root(first)));
+    require(take(world::read_static_mesh(document.world().runtime(),root(copies[0]))).mesh.resolved==original_mesh.mesh.resolved,
+        "Duplicating an Actor unnecessarily copied its immutable mesh resource.");
+    editor::ViewportTool tool;editor::Camera camera;
+    const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1.f);
+    take(tool.place_duplicates(document,view,{}, {500,350}));
+    const auto event=[&](ui::Event e,std::uint32_t key=0){take(tool.key(document,view,e,key,{}, {500,350}));};
+    event({.kind=ui::EventKind::key_down},'X');
+    event({.kind=ui::EventKind::text,.data=std::wstring{L"2"}});
+    event({.kind=ui::EventKind::key_down,.key=ui::Key::enter});
+    require(document.undo_count()==history+1 && take(world::read_transform(document.world().runtime(),root(copies[0]))).position.x==3,
+        "Duplicate placement was split into another undo step.");
+    changed(document.undo());require(take(document.world().members()).size()==2,"Undo did not remove the complete duplicate graph.");
+    changed(document.redo());require(document.selected_actors().size()==2 && document.selected_actors()[0]==copies[0] &&
+        take(world::read_transform(document.world().runtime(),root(copies[0]))).position.x==3,"Redo did not retain duplicate identity and final placement.");
+    changed(document.duplicate_selected());const auto stationary=document.selection().actor;
+    const auto transform=take(world::read_transform(document.world().runtime(),root(stationary)));
+    take(tool.place_duplicates(document,view,{}, {500,350}));
+    event({.kind=ui::EventKind::key_down},'X');event({.kind=ui::EventKind::text,.data=std::wstring{L"7"}});
+    event({.kind=ui::EventKind::key_down,.key=ui::Key::escape});
+    require(take(document.world().members()).size()==6 && take(world::read_transform(document.world().runtime(),root(stationary)))==transform,
+        "Cancelling duplicate movement removed copies or kept the preview displacement.");
+    take(document.select(root(stationary)));changed(document.erase_actors());
+    require(take(document.world().members()).size()==5,"Viewport deletion removed only the inspected Component.");
+    changed(document.undo());take(document.select({}));const auto count=document.undo_count();
+    changed(document.duplicate_selected());require(document.undo_count()==count,"Empty duplicate changed history.");
+    editor::Session restricted;
+    changed(restricted.create_static_mesh(editor::mesh_assets().front()));const auto mesh_actor=restricted.selection().actor;
+    changed(restricted.create_light(world::LightKind::sky));const auto sky_actor=restricted.selection().actor;
+    const std::array mixed{mesh_actor,sky_actor};take(restricted.select_actors(mixed,sky_actor));
+    const auto checkpoint=take(restricted.serialize());const auto checkpoint_history=restricted.undo_count();
+    require(!restricted.duplicate_selected() && restricted.undo_count()==checkpoint_history && take(restricted.serialize())==checkpoint &&
+        restricted.selection().actor==sky_actor,"Failed group duplication left a partial Actor, changed selection or changed history.");
+    take(document.select(first));take(document.rename(first,std::wstring(256,L'A')));changed(document.duplicate_selected());
+    require(document.name(document.selection().actor).size()<=256,"Duplicating a maximum-length name exceeded the name limit.");
+    editor::Session full;
+    for (std::size_t i=0;i<editor::Session::maximum_actors;++i) changed(full.add_actor());
+    const auto limit_history=full.undo_count();
+    require(!full.duplicate_selected() && full.undo_count()==limit_history && take(full.world().members()).size()==editor::Session::maximum_actors,
+        "Actor limit rejection partially published a duplicate.");
+}
 void verify_viewport_editing() {
+    verify_viewport_duplication();
     using namespace editor;
     Session document;
     const auto create=[&](math::Vector3 at) {changed(document.create_static_mesh(mesh_assets().front(),at));return document.selection().actor;};
@@ -200,14 +265,27 @@ void verify_viewport_editing() {
     require(step!=workspace.menu_items.end() && step->selected && step->behavior==ui::MenuBehavior::radio &&
         std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::snap_toggle) && item.behavior==ui::MenuBehavior::checkbox;}),
         "The shared snap menu lost its active step or toggle semantics.");
-    // Blender Shift+A / Shift+S: pointer menus anchored on the scene, built from shared commands.
+    // Add commands and shading pie share the viewport's menu model.
     workspace.menu=ui::ContextMenuRequest{control::viewport,control::viewport_add_menu,0,0};publish();
     require(std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::create_static_mesh);}) &&
         std::ranges::none_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::erase_selected);}),
         "Shift+A menu did not list exactly the Create commands.");
-    workspace.menu=ui::ContextMenuRequest{control::viewport,control::viewport_snap_menu,0,0};publish();
-    require(std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::cursor_selected);}),
-        "Shift+S menu did not expose cursor/selection snapping.");
+    workspace.menu=ui::ContextMenuRequest{control::viewport,control::viewport_shading_pie,500,350};publish();
+    if (workspace.menu_items.size()!=4 || ui.presented()->popup!=control::viewport_shading_pie || !ui.presented()->find(control::shading_preset_first))
+        throw std::runtime_error("Shading pie projection: items="+std::to_string(workspace.menu_items.size())+", popup="+
+            std::to_string(ui.presented()->popup)+", error="+std::string(workspace.ui_error()));
+    require(workspace.menu_items.size()==4 && ui.presented()->popup==control::viewport_shading_pie &&
+        ui.presented()->find(control::shading_preset_first),"Shading pie was not projected through Source/JIT.");
+    for (const auto& item:workspace.menu_items) {
+        const auto* box=ui.presented()->find(item.key);
+        require(box && box->bounds.x+box->bounds.width<=box->clip.right+1 && box->bounds.y+box->bounds.height<=box->clip.bottom+1,
+            "Pie slots were clipped by a scroll gutter or popup bounds.");
+    }
+    require(workspace.apply_view({ui::ActionKind::activate,control::shading_preset_first,true}) &&
+        workspace.view.wireframe==renderer::Wireframe::only,"Wireframe pie action did not reach the view model.");
+    require(workspace.apply_view({ui::ActionKind::activate,control::shading_preset_first+2,true}) &&
+        workspace.view.wireframe==renderer::Wireframe::off && workspace.view.shading==renderer::Shading::matcap,
+        "Shading preset retained stale wireframe state.");
     {
         // View Selected frames the actual geometry bounds.
         Camera framing;framing.frame({1,2,3},.5f);

@@ -29,6 +29,20 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
     }
     if(!pointer && !viewport_tool_.active() && ui_.wants_keyboard()) return false;
     if(!viewport_tool_.active() && event.kind==ui::EventKind::key_down && !event.control && !event.alt) {
+        if (event.repeat) return true; // A held shortcut must not restart after its modal owner dismisses.
+        if (event.shift && native_key=='D') {
+            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            const auto duplicated=execute(editor::Command::duplicate_selected);
+            if (!duplicated) {status(duplicated,L"");return true;}
+            if (!document_->selected_actors().empty())
+                status(viewport_tool_.place_duplicates(*document_,view,workspace_.viewport_settings,pointer_position_),L"Duplicate · Move · Right click / Esc keeps copies in place");
+            window_.capture(viewport_tool_.capture());return true;
+        }
+        if (!event.shift && native_key=='X') {
+            if (!document_->selected_actors().empty())
+                request_menu({editor::control::viewport,editor::control::viewport_delete_menu,pointer_position_.x,pointer_position_.y});
+            return true;
+        }
         if(native_key=='W') {
             effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             request_menu({editor::control::viewport,0,pointer_position_.x,pointer_position_.y});return true;
@@ -43,11 +57,12 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
         if((native_key==VK_NUMPAD5 || native_key==VK_NUMPAD0) && !event.shift) return view(view_perspective,L"Perspective view");
         if(native_key==VK_DECIMAL && !event.shift) {status(frame_actors(true),L"View Selected");return true;}
         if(native_key==VK_HOME && !event.shift) {status(frame_actors(false),L"View All");return true;}
-        // Shift+A / Shift+S open the Add and Snap menus at the pointer.
+        // Shift+S follows the editor's requested Shading pie binding. Snapping
+        // remains in the magnet menu and Shift+Tab.
         if(event.shift && (native_key=='A' || native_key=='S')) {
             effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             // The scene is the anchor; group selects which pointer menu to build.
-            request_menu({editor::control::viewport,native_key=='A'?editor::control::viewport_add_menu:editor::control::viewport_snap_menu,pointer_position_.x,pointer_position_.y});
+            request_menu({editor::control::viewport,native_key=='A'?editor::control::viewport_add_menu:editor::control::viewport_shading_pie,pointer_position_.x,pointer_position_.y});
             return true;
         }
     }

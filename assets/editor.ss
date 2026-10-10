@@ -216,6 +216,11 @@ label.menu-shortcut:disabled { color: #a0a0a0; }
 .menu-shortcut { padding: 0dip; text-align: right; text-vertical-align: center; font-style: italic; }
 label.menu-shortcut.unavailable:disabled { color: #777777; }
 .menu-separator { background: #949494; }
+popup.pie-menu { background: transparent; background-image: none; border-width: 0dip; padding: 0dip; scrollbar-gutter: overlay; }
+.pie-hub { background: #292929ed; color: #cccccc; text-align: center; text-vertical-align: center; border-radius: 11dip; }
+menu_item.pie-item { background: #333333f2; color: #cccccc; border-style: solid; border-width: 0.667dip; border-color: #171717; border-radius: 5dip; }
+menu_item.pie-item:hover, menu_item.pie-item:focus { background: #526b80; color: #ffffff; }
+menu_item.pie-item:pressed { background: #6c859d; }
 
 /* Explicit vector-axis semantics in Atelier; animation status is separate. */
 .axis-x { accent-color: #c5644b; accent-width: 2dip; }
@@ -312,6 +317,7 @@ button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #73
 .viewport-mode-label:disabled { color: #ffffff; }
 /* Floating view pill: translucent slate fill, light hairline, inline caret. */
 combo.viewport-view-menu {
+    border-style: solid;
     border-width: 0.667dip; border-radius: 11dip; padding: 0dip 9dip 0dip 11dip; combo-indicator: caret; indicator-size: 9dip;
 }
 combo.viewport-view-menu, combo.viewport-view-menu:hover {
@@ -323,4 +329,5 @@ combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background
 .parameter-swatch { border-color: #131313; border-width: 0.667dip; border-style: solid; }
 .viewport-tool-hint { color: #1a1a1a; font-size: 12dip; padding: 0dip; text-vertical-align: bottom; }
 .viewport-tool-hint:disabled { color: #1a1a1a; }
+.viewport-tool-hint.dark-background, .viewport-tool-hint.dark-background:disabled { color: #d9d9d9; }
 .viewport-frame { background: transparent; border-width: 0.667dip; border-edges: right bottom; border-style: solid; border-color: #424242; border-inner-color: #666666; }

@@ -1,6 +1,13 @@
 include(${CMAKE_CURRENT_LIST_DIR}/json.cmake)
 
 function(atelier_add_editor)
+    add_library(atelier_control_transport STATIC "${PROJECT_SOURCE_DIR}/src/control/control.cpp")
+    atelier_target(atelier_control_transport)
+    target_include_directories(atelier_control_transport PUBLIC "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(atelier_control_transport PUBLIC nlohmann_json::nlohmann_json PRIVATE advapi32 bcrypt ole32)
+    add_executable(atelier_control "${PROJECT_SOURCE_DIR}/src/control/main.cpp")
+    atelier_target(atelier_control)
+    target_link_libraries(atelier_control PRIVATE atelier_control_transport)
     find_package(Git QUIET)
     set(build_info "${CMAKE_BINARY_DIR}/generated/atelier/build_info.hpp")
     add_custom_target(atelier_editor_build_info
@@ -35,7 +42,10 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/project_runner.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/application.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/editor_control.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/control_artifacts.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/asset_browser.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/source_editor.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_ui.cpp"
@@ -47,13 +57,22 @@ function(atelier_add_editor)
     target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
     target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
-    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi)
+    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi atelier_control_transport)
     add_executable(atelier_editor
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/window.cpp")
     atelier_target(atelier_editor)
     target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer user32 ole32 shell32 windowscodecs imm32 uuid gdi32)
     atelier_deploy_rhi_runtime(atelier_editor)
+    add_executable(atelier_editor_control_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/control.cpp")
+    atelier_target(atelier_editor_control_acceptance)
+    target_link_libraries(atelier_editor_control_acceptance PRIVATE atelier_control_transport user32)
+    add_custom_target(editor_control_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-acceptance"
+        DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
+    add_custom_target(editor_control_path_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-path-acceptance" --repro-paths
+        DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
     add_executable(atelier_editor_document_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")
     atelier_target(atelier_editor_document_acceptance)
     target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
@@ -93,6 +112,10 @@ function(atelier_add_editor)
     add_custom_target(editor_viewport_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-viewport "${CMAKE_BINARY_DIR}/viewport-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_shortcuts_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-shortcuts "${CMAKE_BINARY_DIR}/shortcut-evidence"
+        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_edit_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-edit "${CMAKE_BINARY_DIR}/edit-mode-evidence"

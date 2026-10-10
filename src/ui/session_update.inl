@@ -283,6 +283,7 @@
             state.style_dirty|=before.parent!=after.parent || before.kind!=after.kind || before.role!=after.role ||
                 before.classes!=after.classes || before.style!=after.style || before.style_scope!=after.style_scope;
             state.layout_dirty|=before.kind!=after.kind || before.layout!=after.layout || before.text!=after.text ||
+                before.single_line!=after.single_line ||
                 (text_field(after.kind) && before.value!=after.value);
         }
         structure_dirty|=structural;

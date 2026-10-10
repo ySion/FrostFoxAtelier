@@ -642,6 +642,37 @@
           }
         }
       ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Sky Light",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "id": 1,
+          "type": "world.LightComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "properties": {
+            "settings": {
+              "kind": "sky",
+              "color": {"x": 0.025, "y": 0.035, "z": 0.055},
+              "intensity": 1,
+              "range": 10,
+              "source_radius": 0,
+              "width": 1,
+              "height": 1,
+              "two_sided": false,
+              "casts_shadow": false
+            }
+          }
+        }
+      ]
     }
   ]
 }

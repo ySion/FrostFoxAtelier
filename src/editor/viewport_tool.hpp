@@ -59,6 +59,7 @@ public:
     TransformTool displayed_tool(Settings) const noexcept;
     Result<void> snap_selection(Session&,Settings,bool to_cursor);
     Result<void> cursor_to_selection(const Session&);
+    Result<void> place_duplicates(Session&, const ViewportView&, Settings, math::Vector2 pointer);
     void cursor_to_grid(Settings) noexcept;
     ui::Cursor pointer_cursor() const noexcept;
     // Pointer events inside the viewport, or any pointer event while active().
@@ -118,7 +119,7 @@ private:
     static std::optional<Hit> trace(const Session&,const ViewportView&,float x,float y,bool locators);
     Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,Settings,bool control);
     Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2) const;
-    Result<void> begin(Session&, const ViewportView&, Settings, Operation, Handle, bool modal, math::Vector2);
+    Result<void> begin(Session&, const ViewportView&, Settings, Operation, Handle, bool modal, math::Vector2, bool amend_creation = false);
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine=false);
     Result<void> finish(Session&);
     Result<void> clear_channel(Session&, Operation);

@@ -1,4 +1,5 @@
 #include "editor/project.hpp"
+#include "platform/windows_path.hpp"
 #include "editor/obj_import.hpp"
 #include "editor/json_format.hpp"
 #include "physics/physics.hpp"
@@ -44,7 +45,7 @@ std::wstring wide(std::string_view value) {
     std::wstring result(count,L'\0'); MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,value.data(),static_cast<int>(value.size()),result.data(),count); return result;
 }
 Result<std::string> read_file(const std::filesystem::path& path,std::size_t maximum) {
-    std::ifstream file(path,std::ios::binary|std::ios::ate);
+    std::ifstream file(platform::windows_file_path(path),std::ios::binary|std::ios::ate);
     if (!file) return failure("Cannot read "+utf8(path.wstring()));
     const auto size=file.tellg(); if (size<0 || static_cast<std::uint64_t>(size)>maximum) return failure("File exceeds its size limit.");
     std::string bytes(static_cast<std::size_t>(size),'\0'); file.seekg(0);
@@ -54,14 +55,15 @@ Result<std::string> read_file(const std::filesystem::path& path,std::size_t maxi
 Result<void> write_file(const std::filesystem::path& path,std::string_view text,WriteMode mode) {
     std::filesystem::path temporary;
     try {
-        std::filesystem::create_directories(path.parent_path());
-        temporary=path; temporary+=L"."+wide(identity())+L".tmp";
+        const auto native=platform::windows_file_path(path);
+        std::filesystem::create_directories(native.parent_path());
+        temporary=native; temporary+=L"."+wide(identity())+L".tmp";
         const auto file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if (file==INVALID_HANDLE_VALUE) return failure("Cannot create temporary file for "+utf8(path.wstring()));
+        if (file==INVALID_HANDLE_VALUE) return failure("Cannot create temporary file for "+utf8(path.wstring())+" (Windows error "+std::to_string(GetLastError())+").");
         DWORD written{}; const bool ok=text.size()<=MAXDWORD && WriteFile(file,text.data(),static_cast<DWORD>(text.size()),&written,nullptr) && written==text.size() && FlushFileBuffers(file);
         const auto write_error=GetLastError(); CloseHandle(file);
         const DWORD flags=MOVEFILE_WRITE_THROUGH|(mode==WriteMode::replace?MOVEFILE_REPLACE_EXISTING:0);
-        if (!ok || !MoveFileExW(temporary.c_str(),path.c_str(),flags)) {
+        if (!ok || !MoveFileExW(temporary.c_str(),native.c_str(),flags)) {
             const auto error=ok?GetLastError():write_error;
             DeleteFileW(temporary.c_str()); return failure("Cannot save "+utf8(path.wstring())+" (Windows error "+std::to_string(error)+").");
         }
@@ -76,7 +78,7 @@ Result<std::filesystem::path> Project::resolve(const std::filesystem::path& rela
         if (relative.empty() || relative.has_root_path()) return failure("Expected a project-relative path.");
         for (const auto& part:relative) if (part==L".." || part.wstring().find(L':')!=std::wstring::npos ||
             std::ranges::any_of(part.wstring(),[](wchar_t c){return c<32;})) return failure("Invalid project-relative path.");
-        auto path=std::filesystem::weakly_canonical(root_/relative);
+        auto path=std::filesystem::weakly_canonical(platform::windows_file_path(root_/relative));
         if (!within(root_,path)) return failure("Project path escapes its root through a link.");
         return path;
     } catch (const std::exception& error) { return failure(error.what()); }
@@ -84,10 +86,11 @@ Result<std::filesystem::path> Project::resolve(const std::filesystem::path& rela
 Result<Project> Project::create(const std::filesystem::path& folder) {
     try {
         if (folder.empty()) return failure("Choose an empty project folder.");
-        if (std::filesystem::exists(folder) && (!std::filesystem::is_directory(folder) || !std::filesystem::is_empty(folder)))
+        const auto native=platform::windows_file_path(folder);
+        if (std::filesystem::exists(native) && (!std::filesystem::is_directory(native) || !std::filesystem::is_empty(native)))
             return failure("Create Project requires an empty folder; existing files were not changed.");
-        for (const auto* directory:{L"Config",L"Content/Scenes",L"Source",L"Cache"}) std::filesystem::create_directories(folder/directory);
-        const Json config={{"version",1},{"name",utf8(std::filesystem::canonical(folder).filename().wstring())},{"startup_scene","Content/Scenes/Main.scene"}};
+        for (const auto* directory:{L"Config",L"Content/Scenes",L"Source",L"Cache"}) std::filesystem::create_directories(platform::windows_file_path(folder/directory));
+        const Json config={{"version",1},{"name",utf8(std::filesystem::canonical(native).filename().wstring())},{"startup_scene","Content/Scenes/Main.scene"}};
         take(write_file(folder/"Content/Scenes/Main.scene",Json{{"version",2},{"actors",Json::array()}}.dump(2)+"\n",WriteMode::create));
         take(write_file(folder/".gitignore","/Cache/\n",WriteMode::create));
         take(write_file(folder/"Config/Project.json",config.dump(2)+"\n",WriteMode::create)); // Marker is published last.
@@ -96,7 +99,7 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
 }
 Result<Project> Project::open(const std::filesystem::path& folder) {
     try {
-        Project project; project.root_=std::filesystem::canonical(folder);
+        Project project; project.root_=std::filesystem::canonical(platform::windows_file_path(folder));
         const auto config=read_json(take(project.resolve("Config/Project.json")));
         json_format::fields(config,{"version","name","startup_scene","ui_source"});
         if (json_format::identity(config.at("version"))!=1) return failure("Unsupported project format version.");
@@ -111,18 +114,19 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
         if (project.name_.empty() || project.name_.size()>256 || std::ranges::any_of(project.name_,[](wchar_t c){return c<32 || c==127;}) ||
             project.startup_.empty() || project.startup_.extension()!=L".scene" || *project.startup_.begin()!=L"Content") return failure("Invalid project name or startup scene.");
         take(project.resolve(project.startup_));
-        for (const auto* directory:{L"Config",L"Content",L"Source"}) if (!std::filesystem::is_directory(take(project.resolve(directory)))) return failure("Project is missing Config, Content or Source.");
+        for (const auto* directory:{L"Config",L"Content",L"Source"}) if (!std::filesystem::is_directory(platform::windows_file_path(take(project.resolve(directory))))) return failure("Project is missing Config, Content or Source.");
         take(project.refresh()); return project;
     } catch (const std::exception& error) { return failure(error.what()); }
 }
 Result<std::vector<std::filesystem::path>> Project::source_paths() const {
     try {
         std::vector<std::filesystem::path> paths;
-        const auto directory=take(resolve("Source"));
+        const auto native_root=platform::windows_file_path(root_);
+        const auto directory=platform::windows_file_path(take(resolve("Source")));
         for (const auto& entry:std::filesystem::recursive_directory_iterator(directory)) {
             if (entry.is_symlink() || !entry.is_regular_file()) continue;
             if (entry.path().extension()!=L".source" || entry.path().filename().wstring().ends_with(L".ui.source")) continue;
-            const auto relative=entry.path().lexically_relative(root_);
+            const auto relative=entry.path().lexically_relative(native_root);
             take(resolve(relative));
             if (paths.size()>=256) return failure("Project exceeds the 256 Source file limit.");
             paths.push_back(relative);
@@ -160,12 +164,13 @@ Result<void> Project::refresh() {
     try {
         std::vector<ProjectEntry> entries;
         std::unordered_set<std::string> keys;
+        const auto native_root=platform::windows_file_path(root_);
         for (const auto* directory:{L"Content",L"Source",L"Config"}) {
             if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
             entries.push_back({directory,utf8(directory),AssetKind::folder});
-            for (const auto& entry:std::filesystem::recursive_directory_iterator(take(resolve(directory)))) {
+            for (const auto& entry:std::filesystem::recursive_directory_iterator(platform::windows_file_path(take(resolve(directory))))) {
                 if (entry.is_symlink()) continue;
-                const auto relative=entry.path().lexically_relative(root_);
+                const auto relative=entry.path().lexically_relative(native_root);
                 take(resolve(relative));
                 const auto filename=entry.path().filename().wstring();
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".tmp")) continue;

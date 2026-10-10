@@ -330,7 +330,9 @@ struct Session::Impl {
             input.content_key = state.control.key;
             input.content_revision = text_field(state.control.kind) ?
                 text.set(state.control.key, display(state), appearance.font,false,appearance.text_align) :
-                text.set(state.control.key, state.control.text, appearance.font,state.control.kind == ControlKind::label,appearance.text_align);
+                text.set(state.control.key, state.control.text, appearance.font,
+                    state.control.kind == ControlKind::label && !state.control.single_line,appearance.text_align,
+                    state.control.kind == ControlKind::label && state.control.single_line);
         } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter || state.control.kind==ControlKind::slider || state.control.kind==ControlKind::table) {
             input.kind = ui_layout::Kind::box;
         } else if (scrolling(state.control.kind)) {
@@ -978,6 +980,13 @@ ControlKey Session::focused_control() const noexcept { return impl_->focus; }
 bool Session::wants_keyboard() const noexcept {
     const auto* state=impl_->live(impl_->focus);
     return state && text_field(state->control.kind) && impl_->active();
+}
+InteractionState Session::interaction_state() const noexcept {
+    const auto& state=*impl_;
+    return {state.press.has_value(),state.keyboard_pressed!=0,
+        state.edit && !state.edit->document && state.edit->buffer().active(),
+        state.edit && (state.edit->composition.has_value() || state.edit->ime_request.has_value()),
+        state.edit && state.edit->clipboard.has_value(),has_popup()};
 }
 bool Session::has_popup() const noexcept { return impl_->popup || (impl_->published && impl_->published->popup); }
 std::optional<TextInputState> Session::text_input() const noexcept {

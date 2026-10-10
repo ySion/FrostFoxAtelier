@@ -312,10 +312,14 @@ Result<void> ViewportTool::select_box(Session& session,const ViewportView& view,
     }
     return session.select_actors(selected,selected.empty()?ObjectId{}:selected.back());
 }
-Result<void> ViewportTool::begin(Session& session,const ViewportView&,Settings settings,Operation operation,Handle handle,bool modal,V2 p) {
+Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView& view,Settings settings,V2 pointer) {
+    if (!targets(session,settings.pivot,cursor)) return {}; // Nonspatial Actors still duplicate normally.
+    return begin(session,view,settings,Operation::move,Handle::none,true,pointer,true);
+}
+Result<void> ViewportTool::begin(Session& session,const ViewportView&,Settings settings,Operation operation,Handle handle,bool modal,V2 p,bool amend_creation) {
     auto selected=targets(session,settings.pivot,cursor);if(!selected) return invalid("Select an Actor with a spatial root.");
     const auto token=next_session_++;
-    if(auto begun=session.begin_transform(selected->components,token);!begun) return begun;
+    if(auto begun=session.begin_transform(selected->components,token,amend_creation);!begun) return begun;
     Gesture gesture;gesture.operation=operation;gesture.handle=handle;gesture.modal=modal;gesture.session=token;gesture.settings=settings;
     gesture.before=std::move(selected->transforms);gesture.pivot=selected->pivot;
     gesture.start=gesture.last=p;

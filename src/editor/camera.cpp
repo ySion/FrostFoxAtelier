@@ -5,6 +5,19 @@
 #include <cstring>
 
 namespace atelier::editor {
+bool Camera::set_state(const CameraState& value) noexcept {
+    if (value.view > CameraView::right || !std::isfinite(value.target.x) || !std::isfinite(value.target.y) ||
+        !std::isfinite(value.target.z) || !std::isfinite(value.yaw) || !std::isfinite(value.pitch) ||
+        !std::isfinite(value.distance) || value.distance < .5f || value.distance > 2000.f || std::abs(value.pitch) > DirectX::XM_PIDIV2)
+        return false;
+    auto candidate=*this;
+    candidate.view_=value.view;candidate.target_=value.target;candidate.yaw_=value.yaw;candidate.pitch_=value.pitch;candidate.distance_=value.distance;
+    const auto forward=math::try_normalize(candidate.target_-candidate.eye());
+    const auto up=value.view==CameraView::top?math::Vector3{0,0,1}:math::Vector3{0,1,0};
+    if(!forward || !math::try_normalize(math::cross(up,*forward))) return false;
+    *this=candidate;
+    return true;
+}
 void Camera::reset() noexcept {
     view_=CameraView::perspective;
     target_ = {};
@@ -23,8 +36,7 @@ bool Camera::look_at(math::Vector3 eye, math::Vector3 target) noexcept {
     const auto distance=std::hypot(dx,dy,dz);
     if(!std::isfinite(target.x) || !std::isfinite(target.y) || !std::isfinite(target.z) ||
         !std::isfinite(distance) || distance<.5 || distance>2000 || std::hypot(dx,dz)<1e-6) return false;
-    view_=CameraView::perspective;target_=target;distance_=static_cast<float>(distance);yaw_=static_cast<float>(std::atan2(dx,dz));
-    pitch_=static_cast<float>(std::asin(dy/distance));return true;
+    return set_state({CameraView::perspective,target,static_cast<float>(std::atan2(dx,dz)),static_cast<float>(std::asin(dy/distance)),static_cast<float>(distance)});
 }
 void Camera::frame(math::Vector3 center, float radius) noexcept {
     target_ = center;
@@ -33,7 +45,7 @@ void Camera::frame(math::Vector3 center, float radius) noexcept {
 }
 void Camera::orbit(float dx, float dy) noexcept {
     view_=CameraView::perspective;
-    yaw_ -= dx * .006f;
+    yaw_ += dx * .006f;
     pitch_ = std::clamp(pitch_ + dy * .006f, -1.45f, 1.45f);
 }
 void Camera::zoom(float steps) noexcept { distance_ = std::clamp(distance_ * std::exp(-steps * .12f), .5f, 2000.f); }

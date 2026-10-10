@@ -16,6 +16,11 @@
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static void input(Application& app,ui::Event event,WPARAM key=0) {app.input(event,key);}
+    static bool menu_open(const Application& app) {return app.workspace_.menu.has_value();}
+    static auto focused(const Application& app) {return app.ui_.focused_control();}
+    static void finish_menu_hold(Application& app) {app.menu_requested_-=std::chrono::seconds(1);}
+    static bool tool_active(const Application& app) {return app.viewport_tool_.active();}
     static void ui_source(Application& app,const std::filesystem::path& path) {
         auto source=editor::read_file(app.workspace_.ui_source());
         if (!source) throw std::runtime_error(source.error().message);
@@ -72,6 +77,8 @@ struct EditorAcceptanceAccess {
     }
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
     static auto camera_mode(const Application& app) {return app.camera_.view();}
+    static auto camera_eye(const Application& app) {return app.camera_.eye();}
+    static Result<void> select_actor(Application& app,ObjectId actor) {return app.document_->select(actor);}
     static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
     static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
     static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
@@ -954,7 +961,7 @@ int verify_editor_scene_lit(Application& app,const char* output_directory,const 
     std::ofstream report(output/"acceptance.txt");
     report<<"Editor Scene Lit window acceptance: PASS\nBuild: "<<atelier::build_info::revision
         <<"\nConfiguration: "<<atelier::build_info::configuration
-        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three light creation menus and typed Parameters, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
+        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three direct-light creation menus plus unique Sky Light, typed Parameters, native middle-orbit direction, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
             <<"Runtime World snapshots use separate document/Renderer E2E; no Simulate UI exists. Native display choices leave the editing lifecycle, authored history and data unchanged.\n"
         <<"GPU validation/vsync enabled; this window run is not a performance benchmark.\n";
     require(report.good(),"Cannot save Scene Lit window acceptance evidence.");
@@ -993,6 +1000,93 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;
+}
+int verify_editor_shortcuts(Application& app,const char* output_directory) {
+    using namespace atelier;
+    using Access=application::EditorAcceptanceAccess;
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
+    const auto output=std::filesystem::absolute(editor::wide(output_directory));std::filesystem::create_directories(output);
+    tick(app);
+    require(bool(Access::command(app,editor::Command::create_static_mesh)),"Shortcut scene creation failed.");tick(app);
+    const auto first=app.document().selection().actor;
+    const auto viewport=app.presented()->find(control::viewport)->bounds;
+    const float x=viewport.x+viewport.width*.5f,y=viewport.y+viewport.height*.5f;
+    const auto move=[&](float px,float py) {Access::input(app,{.kind=ui::EventKind::pointer_move,.x=px,.y=py});};
+    const auto key=[&](WPARAM code,ui::Key mapped=ui::Key::none,bool shift=false,bool ctrl=false,bool up=false,bool repeat=false) {
+        ui::Event e;e.kind=up?ui::EventKind::key_up:ui::EventKind::key_down;e.key=mapped;e.shift=shift;e.control=ctrl;e.repeat=repeat;
+        Access::input(app,e,code);
+    };
+    move(x,y);
+    key('X');key(VK_ESCAPE,ui::Key::escape);tick(app);
+    require(!Access::menu_open(app),"An immediate Escape failed to cancel a pending popup.");
+    const auto history=app.document().undo_count();key('D',ui::Key::none,true);tick(app);
+    require(app.document().selected_actors().size()==1 && app.document().selection().actor!=first && Access::tool_active(app),
+        "Shift+D did not duplicate and enter modal move.");
+    key('D',ui::Key::none,true,false,false,true);
+    require(app.document().undo_count()==history+1,"Repeated Shift+D created extra copies.");
+    key('X');Access::input(app,{.kind=ui::EventKind::text,.data=std::wstring{L"2"}});key(VK_RETURN,ui::Key::enter);tick(app);
+    require(app.document().undo_count()==history+1 && !Access::tool_active(app),"Duplicate movement created an extra undo step.");
+    key('Z',ui::Key::z,false,true);tick(app);
+    require(app.document().world().members()->size()==1,"Ctrl+Z did not undo the entire duplicate gesture.");
+    key('Z',ui::Key::z,true,true);tick(app);
+    require(app.document().world().members()->size()==2,"Redo did not restore the duplicate.");
+    move(x,y);key('X');tick(app);
+    require(app.menu_frame() && app.menu_frame()->find(static_cast<ui::ControlKey>(editor::Command::erase_actors)),"X did not open its confirmation menu.");
+    RECT popup{};GetWindowRect(app.menu_window(),&popup);POINT client{static_cast<LONG>(x),static_cast<LONG>(y)};ClientToScreen(app.window(),&client);
+    const auto item=app.menu_frame()->find(static_cast<ui::ControlKey>(editor::Command::erase_actors))->bounds;
+    require(client.x-popup.left>=item.x && client.x-popup.left<item.x+item.width && client.y-popup.top>=item.y && client.y-popup.top<item.y+item.height,
+        "Delete confirmation did not place its action under the invocation point.");
+    const auto popup_hwnd=app.menu_window();const auto first_open=app.menu_open_cpu_us();
+    key(VK_ESCAPE,ui::Key::escape);key(VK_ESCAPE,ui::Key::escape,false,false,true);tick(app);
+    require(app.document().world().members()->size()==2 && !Access::menu_open(app),"Cancelling Delete changed the document.");
+    key('X');tick(app);require(app.menu_window()==popup_hwnd,"Delete menu recreated its native window.");
+    const auto warm_open=app.menu_open_cpu_us();
+    Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x,.y=y});tick(app);
+    require(app.document().world().members()->size()==1 && !Access::menu_open(app),"Delete confirmation click missed its command.");
+    key('S',ui::Key::none,true);key('S',ui::Key::none,true,false,true);tick(app);
+    require(Access::menu_open(app) && app.presented()->popup==control::viewport_shading_pie,"Tapping Shift+S did not retain its pie menu.");
+    move(x-90,y);tick(app);capture(app,output/"shading-pie.png");
+    Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x-90,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x-90,.y=y});tick(app);
+    require(!Access::menu_open(app) && Access::scene_lit_view(app).wireframe==renderer::Wireframe::only,"Pie click did not select Wireframe.");
+    move(x,y);key('S',ui::Key::none,true);move(x,y+90);key('S',ui::Key::none,true,false,true);tick(app);
+    require(!Access::menu_open(app) && Access::scene_lit_view(app).shading==renderer::Shading::matcap &&
+        Access::scene_lit_view(app).wireframe==renderer::Wireframe::off,"Fast hold/swipe/release was lost before the first pie frame.");
+    move(x,y);key('S',ui::Key::none,true);tick(app);Access::finish_menu_hold(app);key('S',ui::Key::none,true,false,true);tick(app);
+    require(!Access::menu_open(app),"Held pie release in the dead zone did not cancel.");
+    key('S',ui::Key::none,true);tick(app);key(VK_ESCAPE,ui::Key::escape);tick(app);
+    require(!Access::menu_open(app) && !app.presented()->popup,"Pie cancellation leaked modal state.");
+    move(viewport.x+viewport.width-6,viewport.y+6);key('S',ui::Key::none,true);key('S',ui::Key::none,true,false,true);tick(app);
+    const auto edge_item=app.presented()->find(control::shading_preset_first+1)->bounds;
+    Access::input(app,{.kind=ui::EventKind::pointer_down,.x=edge_item.x+edge_item.width*.5f,.y=edge_item.y+edge_item.height*.5f});
+    Access::input(app,{.kind=ui::EventKind::pointer_up,.x=edge_item.x+edge_item.width*.5f,.y=edge_item.y+edge_item.height*.5f});tick(app);
+    require(!Access::menu_open(app) && Access::scene_lit_view(app).shading==renderer::Shading::smooth,
+        "A screen-edge pie slot click was interpreted relative to the old gesture origin.");
+    const auto camera=app.presented()->find(control::viewport_camera)->bounds;
+    const auto click=[&](float px,float py) {
+        Access::input(app,{.kind=ui::EventKind::pointer_down,.x=px,.y=py});
+        Access::input(app,{.kind=ui::EventKind::pointer_up,.x=px,.y=py});tick(app);
+    };
+    Access::input(app,{.kind=ui::EventKind::pointer_down,.x=camera.x+camera.width*.5f,.y=camera.y+camera.height*.5f});
+    require(Access::menu_open(app),"Camera menu waited for button release.");tick(app);
+    Access::input(app,{.kind=ui::EventKind::pointer_up,.x=camera.x+camera.width*.5f,.y=camera.y+camera.height*.5f});tick(app);
+    const auto* pill=app.presented()->find(control::viewport_camera);
+    require(pill->style->border_style==ui::BorderStyle::solid && pill->style->radius.top_left>0,
+        "The open camera button changed from a pill to a square.");
+    capture(app,output/"persp-menu.png");key(VK_ESCAPE,ui::Key::escape);tick(app);
+    require(bool(Access::select_actor(app,{})),"Empty selection failed.");tick(app);capture(app,output/"parameters-empty.png");
+    // Shortcut dispatch must yield to actual text focus.
+    require(bool(Access::select_actor(app,first)),"Text focus setup failed.");tick(app);
+    const auto name=app.presented()->find(Access::name_control(app,first))->bounds;
+    click(name.x+name.width*.5f,name.y+name.height*.5f);move(x,y);const auto text_history=app.document().undo_count();
+    key('D',ui::Key::none,true);key('X');key('S',ui::Key::none,true);tick(app);
+    require(!Access::menu_open(app) && !Access::tool_active(app) && app.document().undo_count()==text_history,
+        "Viewport shortcuts escaped text focus.");
+    Access::mark_saved(app);app.close();
+    std::ofstream(output/"acceptance.txt")<<"Viewport shortcut acceptance: PASS\nConfiguration: "<<build_info::configuration
+        <<"\nDelete menu CPU first/warm us: "<<first_open<<" / "<<warm_open
+        <<"\nReal Application input routing, World history, Source/JIT controls, native popup, GPU captures. No desktop input injection.\n";
+    std::puts("Viewport shortcut acceptance: PASS");return 0;
 }
 int verify_editor_edit_mode(Application& app,const char* output_directory) {
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);

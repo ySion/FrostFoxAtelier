@@ -12,7 +12,7 @@ public:
     PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validation);
     ~PopupHost() = default; // Renderer member retires before the Window member.
     void update(ui::ControlKey source,RECT anchor,bool below,std::span<const ui::MenuItem>,
-                const ui::Style&,std::shared_ptr<const ui::StyleSheet>,std::shared_ptr<ui_language::Component>);
+                const ui::Style&,std::shared_ptr<const ui::StyleSheet>,std::shared_ptr<ui_language::Component>,bool center_first_item = false);
     void render(renderer::Capture* = nullptr);
     void hide();
     void reset_document(); // Retire JIT scopes before the owner Runtime is closed.

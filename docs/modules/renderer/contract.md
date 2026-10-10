@@ -33,7 +33,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ### 背景与参考辅助显示
 
-`ViewSettings` 的 `background`、`reference_grid`、`origin_axes` 与着色/线框模式独立。正式编辑器默认开启蓝灰渐变、XZ 平面 Y=0 参考网格及 X/Z 原点轴线；直接 Renderer 调用默认关闭。Scene View 的 Guides 菜单沿同一显示设置入口切换，既不创建 Actor，也不改变几何、材质、场景序列化、选择或撤销历史。
+`ViewSettings.background` 保存 MatCap / Smooth / Flat 工作室模式的背景偏好，正式编辑器默认蓝灰渐变；Scene Lit 始终使用黑背景，包括空场景与纯线框显示。Guides 中的 Gradient Background 在 Scene Lit 下禁用，切回工作室模式恢复原偏好。`reference_grid`、`origin_axes` 仍独立于着色模式；正式编辑器默认开启 XZ 平面 Y=0 参考网格及 X/Z 原点轴线，直接 Renderer 调用默认关闭。辅助显示不创建 Actor，也不改变几何、材质、场景序列化、选择或撤销历史。
 
 背景只绘制 scene viewport；网格与轴线通过程序化全屏三角形生成，没有网格顶点缓冲或贴图。网格基准为 0.2 米细格、每五格主线，根据投影像素密度在十倍尺度之间交叉渐变，并在接近地平线和远处淡出。颜色输入为线性值，由既有 sRGB RTV 编码；线宽以物理像素计算。
 
@@ -47,7 +47,7 @@ CPU 在编码前复用数学模块计算一次 inverse view-projection。有限�
 
 Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用 Scene Lit。Scene Lit 消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
 
-背景与参考辅助显示处于独立的视口策略中，可用于上述任意着色模式。当前 Scene Lit 的均匀环境辐射参与光照，渐变只填充没有几何的视口像素；参考网格继续消费同一场景深度且不写深度。环境照明与视口背景设置各有明确用途，曝光不改变辅助背景。Scene Lit 的抗锯齿菜单、独立信号历史与 Local GI / GTAO 互斥合同见 [Scene Lit](scene-lit.md)。带方向的环境贴图和天空资产尚未接入。
+Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Application 从 World 提取天光颜色乘强度，填入 `Frame.environment`；默认是零，不再由 ViewSettings 隐式补光。禁用、删除或更换场景会更新该值，并沿既有信号历史处理收敛。该辐射参与 DDGI 和环境反射，但不自动绘制可见天空；当前 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI / GTAO 互斥合同见 [Scene Lit](scene-lit.md)。带方向的环境贴图和可见天空资产尚未接入。
 
 每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 

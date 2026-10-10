@@ -24,6 +24,8 @@ public:
     Result<void> build(const Project&);
     Result<void> poll(const Project&,bool force=false);
     const std::shared_ptr<const ProjectBuild>& report() const noexcept {return report_;}
+    // Last successful publication, independent of a later failed build report.
+    const std::shared_ptr<const ProjectBuild>& published_build() const noexcept {return published_;}
     const physics::Types& physics_types() const noexcept {return physics_;}
     static Result<source::SourceSnapshot> snapshot(const Project&);
     static Result<std::optional<source::SourceFile>> ui_snapshot(const Project&);
@@ -40,7 +42,7 @@ private:
     physics::Types physics_;
     std::unique_ptr<source::Program> program_;
     std::shared_ptr<const ProjectBuild> report_;
-    std::shared_ptr<const source::SourceSnapshot> published_sources_;
+    std::shared_ptr<const ProjectBuild> published_;
     std::vector<Stamp> stamps_;
     std::chrono::steady_clock::time_point next_poll_{};
     bool bound_{};

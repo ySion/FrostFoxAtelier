@@ -140,7 +140,7 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 
 Slider 仍通过 NumberRow 的 EditBinding 提供，和数值字段共享同一属性与事务；目前没有独立 Slider 声明。
 
-- `Column`、`Row`、`Text`、`Button`、`Foldout`、`NumberRow`、`TextField`、`Tree`、`TreeItem` 复用已有控件。`single_line: true` 使用同一个单行高度原语；文字编辑器和普通按钮默认使用它。
+- `Column`、`Row`、`Text`、`Button`、`Foldout`、`NumberRow`、`TextField`、`Tree`、`TreeItem` 复用已有控件。`single_line: true` 使用同一个单行高度原语；Text 同时关闭自动换行并在宽度不足时显示末尾省略号。完整文字参与固有宽度测量，省略仅影响绘制，避免短标题反复缩短。文字编辑器保留原有水平滚动，普通按钮保持单行。
 - 同一具体节点的 `height`、`expand_height`、`content_height`、`single_line` 互斥，`width`、`expand_width`、`content_width`、`shrink_width`、`flex_width`、`grow_width` 同样互斥。`min_width` 独立约束最后形成的宽度策略，尺寸绑定单独更新不会丢失这个约束。组件输入使用这些名字时仍按普通类型化参数处理。
 - `input.name` 只读；`state bool`、`state double` 属于实例。绑定记录实际执行的 getter，每次成功求值替换依赖集。未读取的输入变化不求值该绑定；稳定输入不重建节点。
 - `on activate` 用于 Foldout、Checkbox、Button、ChoiceButton、ToggleButton；Foldout/Checkbox/ToggleButton 的 `event.checked` 为 bool，Button/ChoiceButton 没有事件值。事件允许修改局部 state，支持 Source 的普通语句、辅助函数与循环。表达式不能直接访问 native context、创建业务对象或启动异步任务。
@@ -190,7 +190,7 @@ ui Tool(in Text title, in ActionBinding command) {
 | `min_width` | 数值表达式 | 独立覆盖所选宽度策略的 minimum；不依赖绑定求值顺序 |
 | `wrap` | bool；Row/Column/List/Tree | 使用既有 Flex 换行，子项尺寸和所属容器决定何时换行 |
 | `panel` | bool；具体控件 | 在 panel / normal 样式角色间选择，与 caption 互斥 |
-| `single_line` | bool | 内容高度下限为 23 DIP / 0 DIP；不是强行裁成固定 23 DIP，字体和内距仍参与测量 |
+| `single_line` | bool | 内容高度下限为 23 DIP / 0 DIP；Text 为 true 时禁止自动换行，宽度不足在末尾显示省略号。字体和内距仍参与测量；输入控件保持其水平滚动行为 |
 | `gap` | 数值表达式；容器 | 流式布局子项间距 |
 | `padding_left/top/right/bottom` | 数值表达式；容器布局 | 所属容器的内容缩进；不同于 SS 的文字/绘制内距 |
 | `align_center` | bool；Row、Column、Tree | 设置流式布局的交叉轴对齐；Row 中可用于文字与编辑框垂直对齐 |

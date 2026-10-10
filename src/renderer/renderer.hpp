@@ -81,6 +81,9 @@ struct Frame {
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
     std::uint64_t scene_revision{}; // Content revision; signal owners distinguish changes from scene replacement.
     bool camera_cut{};
+    // Uniform radiance from the scene's single Sky Light.
+    // No Sky Light means zero; this is not a viewport ambient-light setting.
+    std::array<float, 3> environment{};
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts

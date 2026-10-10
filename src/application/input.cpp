@@ -37,7 +37,7 @@ std::optional<ui::Event> input_event(NativeEvent message,HWND window) {
         event.x=static_cast<float>(point.x);event.y=static_cast<float>(point.y);event.kind=ui::EventKind::wheel;
         event.wheel=static_cast<float>(GET_WHEEL_DELTA_WPARAM(message.wparam))/WHEEL_DELTA;break;
     }
-    case WM_KEYDOWN:event.kind=ui::EventKind::key_down;event.key=key(message.wparam);break;
+    case WM_KEYDOWN:event.kind=ui::EventKind::key_down;event.key=key(message.wparam);event.repeat=(message.lparam&(1LL<<30))!=0;break;
     case WM_KEYUP:event.kind=ui::EventKind::key_up;event.key=key(message.wparam);break;
     case WM_CHAR:event.kind=ui::EventKind::text;event.data=std::move(message.text);break;
     case WM_KILLFOCUS:event.kind=ui::EventKind::focus_lost;break;

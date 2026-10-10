@@ -90,7 +90,10 @@ struct Rasterizer final : IDWriteTextRenderer {
     }
     HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) noexcept override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) noexcept override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL, IUnknown*) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE DrawInlineObject(void* context, FLOAT x, FLOAT y, IDWriteInlineObject* object,
+        BOOL sideways, BOOL right_to_left, IUnknown* effect) noexcept override {
+        return object->Draw(context,this,x,y,sideways,right_to_left,effect);
+    }
 };
 }
 
@@ -116,7 +119,7 @@ struct TextStore::Impl {
     struct Entry {
         std::wstring text;
         Font font;
-        bool wrap{};
+        bool wrap{}, ellipsis{};
         TextAlign alignment{TextAlign::left};
         std::uint64_t revision{1};
         std::array<Paragraph, 2> paragraphs;
@@ -176,6 +179,19 @@ struct TextStore::Impl {
         lines.resize(count);
         check(paragraph.layout->GetLineMetrics(lines.data(), count, &count));
         paragraph.metrics = {metrics.widthIncludingTrailingWhitespace, metrics.height, count ? lines[0].baseline : 0};
+        if (width && entry.ellipsis) {
+            // Layout measures the complete line. Trimming is paint only; feeding
+            // trimmed metrics back into intrinsic sizing progressively shortens labels.
+            if (metrics.widthIncludingTrailingWhitespace<=*width+.01f)
+                check(paragraph.layout->SetMaxWidth(std::max(*width,metrics.widthIncludingTrailingWhitespace)));
+            else {
+                ComPtr<IDWriteInlineObject> sign;
+                check(factory->CreateEllipsisTrimmingSign(format.Get(), &sign));
+                const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
+                check(paragraph.layout->SetMaxHeight(32768.f));
+                check(paragraph.layout->SetTrimming(&trimming,sign.Get()));
+            }
+        }
         paragraph.width = width;
         paragraph.valid = true;
         return paragraph;
@@ -213,10 +229,10 @@ bool TextSnapshot::matches(std::wstring_view text) const noexcept { return impl_
 
 TextStore::TextStore(std::span<const std::wstring> files) : impl_(std::make_unique<Impl>(files)) {}
 TextStore::~TextStore() = default;
-std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment) {
+std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment, bool ellipsis) {
     auto& entry = impl_->entries[key];
-    if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment!=alignment) {
-        entry.text = text; entry.font = font; entry.wrap = wrap; entry.alignment=alignment;
+    if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment!=alignment || entry.ellipsis!=ellipsis) {
+        entry.text = text; entry.font = font; entry.wrap = wrap; entry.alignment=alignment; entry.ellipsis=ellipsis;
         entry.revision = new_identity(); entry.paragraphs = {};
     }
     return entry.revision;

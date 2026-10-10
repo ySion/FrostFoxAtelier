@@ -1,5 +1,6 @@
 #include "application/application.hpp"
 #include "application/project_runner.hpp"
+#include "control/control.hpp"
 #include "atelier/build_info.hpp"
 #include <cstdio>
 #include <string_view>
@@ -11,6 +12,7 @@ int verify_sponza_window(atelier::application::Application&, const char* output_
 int verify_editor_window(atelier::application::Application&, const char* output_directory, bool viewport_only = false);
 int verify_editor_source(atelier::application::Application&, const char* output_directory);
 int verify_editor_edit_mode(atelier::application::Application&, const char* output_directory);
+int verify_editor_shortcuts(atelier::application::Application&, const char* output_directory);
 int capture_editor_snapshot(atelier::application::Application&, const char* output_directory);
 int verify_editor_ime(atelier::application::Application&, const char* output_directory);
 int verify_editor_project(atelier::application::Application&, const char* output_directory,const wchar_t* source_project);
@@ -22,6 +24,17 @@ int wmain(int argc, wchar_t** argv) {
         if (argc==2 && std::wstring_view(argv[1])==L"--version") return 0;
         if (argc>=3 && std::wstring_view(argv[1])==L"--run-project")
             return atelier::application::run_project_command({argv+2,static_cast<std::size_t>(argc-2)});
+        auto control_directory=atelier::control::default_directory();bool no_control{},no_activate{},gpu_validation{};
+        std::vector<wchar_t*> arguments{argv[0]};
+        for(int i=1;i<argc;++i) {
+            const std::wstring_view option(argv[i]);
+            if(option==L"--no-control") no_control=true;
+            else if(option==L"--no-activate") no_activate=true;
+            else if(option==L"--gpu-validation") gpu_validation=true;
+            else if(option==L"--control-directory") {if(++i==argc) throw std::runtime_error("Missing control directory");control_directory=argv[i];}
+            else arguments.push_back(argv[i]);
+        }
+        argc=static_cast<int>(arguments.size());argv=arguments.data();
         const bool sponza=argc==3 && std::wstring_view(argv[1])==L"--acceptance-sponza";
         const bool preview=argc==12 && std::wstring_view(argv[1])==L"--project" &&
             std::wstring_view(argv[3])==L"--scene" && std::wstring_view(argv[5])==L"--material-camera";
@@ -33,6 +46,7 @@ int wmain(int argc, wchar_t** argv) {
         const bool acceptance = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance";
         const bool source=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-source";
         const bool edit=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-edit";
+        const bool shortcuts=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-shortcuts";
         const bool snapshot=argc>=2 && std::wstring_view(argv[1])==L"--snapshot";
         const bool ime = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-ime";
         const bool project_acceptance=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-project";
@@ -40,11 +54,11 @@ int wmain(int argc, wchar_t** argv) {
         const bool scene_lit = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-scene-lit";
         const bool project=(argc==3 || preview) && std::wstring_view(argv[1])==L"--project";
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
-        if (argc != 1 && !sponza && !preview && !((acceptance || source || edit || snapshot || ime || viewport || project || create) && argc == 3) &&
+        if (argc != 1 && !sponza && !preview && !((acceptance || source || edit || shortcuts || snapshot || ime || viewport || project || create) && argc == 3) &&
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
             std::fprintf(stderr, "Usage: atelier_editor [--version] [--project|--new-project folder] [--scene relative.scene --material-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-sponza output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
-        atelier::application::Application app(acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza,!snapshot);
+        atelier::application::Application app(gpu_validation || acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza,!snapshot && !shortcuts && !no_activate);
         if (project || create) {
             const auto opened=app.open_project(argv[2],create);
             if (!opened) throw std::runtime_error(opened.error().message);
@@ -57,12 +71,14 @@ int wmain(int argc, wchar_t** argv) {
         if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());
         if (source) return verify_editor_source(app,atelier::editor::utf8(argv[2]).c_str());
         if (edit) return verify_editor_edit_mode(app,atelier::editor::utf8(argv[2]).c_str());
+        if (shortcuts) return verify_editor_shortcuts(app,atelier::editor::utf8(argv[2]).c_str());
         if (snapshot) return capture_editor_snapshot(app,atelier::editor::utf8(argv[2]).c_str());
         if (acceptance) return verify_editor_window(app, atelier::editor::utf8(argv[2]).c_str());
         if (viewport) return verify_editor_window(app, atelier::editor::utf8(argv[2]).c_str(), true);
         if (ime) return verify_editor_ime(app, atelier::editor::utf8(argv[2]).c_str());
         if (project_acceptance) return verify_editor_project(app,atelier::editor::utf8(argv[2]).c_str(),argc==4?argv[3]:nullptr);
         if (scene_lit) return verify_editor_scene_lit(app,atelier::editor::utf8(argv[2]).c_str(),argc==4?argv[3]:nullptr);
+        if(!no_control) app.enable_control(control_directory);
         while (app.step()) {}
         return 0;
     } catch (const std::exception& error) {

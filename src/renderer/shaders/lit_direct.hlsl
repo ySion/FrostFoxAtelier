@@ -31,7 +31,6 @@ Texture2D<float4> lit_indirect_source;
 Texture2D<float> lit_ao;
 RWTexture2D<float4> lit_hdr_output;
 uint lit_probe_debug;
-uint lit_background;
 
 float3 lit_direct_finite(float3 value) {
     return all(isfinite(value)) ? clamp(value, 0, 65504) : 0;
@@ -372,13 +371,8 @@ void lit_direct_combine_cs(uint3 id : SV_DispatchThreadID) {
 void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
     uint2 p=tid.xy;if(any(p>=lit_size_frame.xy))return;
     if(!lit_inside(p)||lit_is_background_depth(lit_depth[p])) {
-        float y=saturate((p.y+.5-lit_viewport.y)/lit_viewport.w);
-        float3 display_color=lit_background!=0?lerp(float3(.13,.212,.262),float3(.515,.565,.565),y):0;
-        // Auxiliary background is a display policy. Invert the final filmic
-        // curve so changing scene exposure preserves its established colors.
-        float3 a=2.51-2.43*display_color,b=.03-.59*display_color;
-        float3 scene_color=(-b+sqrt(b*b+4*a*.14*display_color))/(2*a*max(lit_controls.x,1e-6));
-        lit_hdr_output[p]=float4(scene_color,1);return;
+        // Sky Light supplies incident radiance, not a visible sky surface.
+        lit_hdr_output[p]=float4(0,0,0,1);return;
     }
     if(lit_probe_debug!=0){lit_hdr_output[p]=float4(lit_indirect_source[p].rgb,1);return;}
     float4 bm=lit_base_metallic[p]; float ao=(lit_counts.w&4)!=0?lit_ao[p]:1;

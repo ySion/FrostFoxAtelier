@@ -575,7 +575,7 @@ struct Renderer::State {
                 static_cast<int>(std::floor(viewport.y)),
                 static_cast<int>(std::ceil(viewport.x+viewport.width))-static_cast<int>(std::floor(viewport.x)),
                 static_cast<int>(std::ceil(viewport.y+viewport.height))-static_cast<int>(std::floor(viewport.y))), "Set scene scissor");
-            if (frame.view.background == Background::gradient) {
+            if (frame.view.shading != Shading::scene_lit && frame.view.background == Background::gradient) {
                 if (!background)
                     prepare_pipeline(background, "viewport background", shaders::viewport_vs, shaders::background_ps, PipelineStyle::background);
                 require(gfxCommandBindKernel(gfx, background.kernel()), "Bind viewport background");

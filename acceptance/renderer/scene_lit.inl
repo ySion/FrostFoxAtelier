@@ -209,6 +209,8 @@ struct Fixture {
         metrics.open(output / (benchmark ? "benchmark-summary.txt" : "image-metrics.csv"));
         check(metrics.good(), "SceneLit evidence directory opened");
         frame.lights = lights; frame.scene_identity = 1; frame.scene_revision = 1;
+        // This fixture authors a sky explicitly; the renderer default is dark.
+        frame.environment = {.025f,.035f,.055f};
         if (!benchmark) {
             frame.scene_viewport = {24,32,float(drawing.extent.width)-48,float(drawing.extent.height)-56};
             frame.camera = camera({static_cast<unsigned>(frame.scene_viewport.width),static_cast<unsigned>(frame.scene_viewport.height)});
@@ -307,10 +309,52 @@ void benchmark(Fixture& f) {
     std::puts("Renderer SceneLit benchmark: PASS (1440p fixed scene, completed GPU pass timestamps)");
 }
 
+void environment_cases(Fixture& f) {
+    const auto meshes=f.room.meshes;
+    const auto lights=f.lights;
+    const auto view=f.frame.view;
+    const auto environment=f.frame.environment;
+    f.lights.clear();
+    for(auto& mesh:f.room.meshes) mesh.material.emissive={};
+    f.edited();++f.frame.scene_identity;
+    f.frame.environment={};
+    f.frame.view.background=render::Background::gradient;
+    f.frame.view.lit.bloom=false;f.frame.view.lit.antialiasing=render::Antialiasing::none;
+    const auto dark=f.capture("sky-absent-black",warmup_frames);
+    std::size_t surfaces=0;
+    for(std::size_t i=0;i<dark.depth.size();++i) if(dark.depth[i]>0) {
+        ++surfaces;
+        check(dark.rgba[i*4]==0 && dark.rgba[i*4+1]==0 && dark.rgba[i*4+2]==0,
+            "Scene Lit has no implicit ambient light without authored sky, lights or emission");
+    }
+    check(surfaces>1000,"dark environment check contains real visible geometry");
+    f.frame.environment={.12f,.08f,.04f};++f.frame.scene_revision;
+    const auto sky=f.capture("sky-authored-on",warmup_frames);
+    check(f.compare("sky-authored-response",dark,sky).changed>1000,
+        "explicit scene sky radiance illuminates real surfaces");
+    check(f.step().stats.scene_lit_shadow_lights==0,"sky does not consume direct shadow slots");
+    f.frame.environment={};++f.frame.scene_revision;
+    // Allow the budgeted multi-bounce histories to decay to a one-code-value
+    // SDR endpoint; the scene radiance input itself is already exactly zero.
+    const auto removed=f.capture("sky-removed-dark",384);
+    for(std::size_t i=0;i<removed.depth.size();++i) if(removed.depth[i]>0)
+        check(removed.rgba[i*4]<=1 && removed.rgba[i*4+1]<=1 && removed.rgba[i*4+2]<=1,
+            "removing scene sky converges to darkness without frozen ambient history");
+    f.room.meshes.clear();f.edited();
+    const auto empty=f.capture("lit-empty-black");
+    for(unsigned y=unsigned(f.frame.scene_viewport.y);y<unsigned(f.frame.scene_viewport.y+f.frame.scene_viewport.height);++y)
+        for(unsigned x=unsigned(f.frame.scene_viewport.x);x<unsigned(f.frame.scene_viewport.x+f.frame.scene_viewport.width);++x)
+            check(pixel(empty,x,y)[0]==0 && pixel(empty,x,y)[1]==0 && pixel(empty,x,y)[2]==0 && depth(empty,x,y)==0,
+                "empty Scene Lit viewport ignores the studio gradient preference");
+    f.room.meshes=meshes;f.lights=lights;f.edited();f.frame.view=view;f.frame.environment=environment;
+    ++f.frame.scene_identity;
+    std::puts("Renderer SceneLit environment: PASS (explicit sky, absent/removed darkness, black empty viewport)");
+}
 void image_cases(Fixture& f) {
     const auto original_meshes = f.room.meshes;
     const auto original_lights = f.lights;
     const auto original_lit = f.frame.view.lit;
+    const auto original_environment = f.frame.environment;
     f.room.meshes.clear(); f.edited();
     const auto cold_empty = f.capture("00-empty-scene");
     check(std::ranges::all_of(cold_empty.depth,[](float value) { return value == 0; }),
@@ -347,7 +391,7 @@ void image_cases(Fixture& f) {
     auto& options = f.frame.view.lit;
     options.ddgi = options.gtao = options.sssr = options.bloom = false;
     options.antialiasing = render::Antialiasing::none;
-    options.environment = {0,0,0}; options.shadow_samples = 64;
+    f.frame.environment = {0,0,0}; options.shadow_samples = 64;
     f.room.meshes[7].material.emissive = {0,0,0};
     for (std::size_t index = 0; index < original_lights.size(); ++index) {
         f.lights = {original_lights[index]};
@@ -390,7 +434,7 @@ void image_cases(Fixture& f) {
     options.exposure_ev = 0;
 
     f.lights = original_lights; f.room.meshes = original_meshes; f.edited();
-    options.environment = original_lit.environment;
+    f.frame.environment = original_environment;
     const auto metal = f.capture("05-material-metals");
     f.room.meshes[5].material.metallic = f.room.meshes[6].material.metallic = 0;
     f.room.meshes[6].material.roughness = .95f; f.edited();
@@ -407,7 +451,7 @@ void image_cases(Fixture& f) {
     f.lights = {original_lights[0]};
     f.lights[0].source_radius = 0;
     f.edited();
-    options.gtao = false; options.environment = {0,0,0};
+    options.gtao = false; f.frame.environment = {0,0,0};
     const auto direct = f.capture("06-direct-no-ao",warmup_frames);
     options.gtao = true;
     const auto direct_ao = f.capture("06-direct-with-ao",16);
@@ -420,7 +464,7 @@ void image_cases(Fixture& f) {
     for (auto& light : f.lights) light.color = {1,1,1};
     f.room.meshes[0].material.metallic = 0; f.room.meshes[0].material.roughness = .8f;
     f.room.meshes[7].material.emissive = {0,0,0}; f.edited();
-    options.gtao = false; options.ddgi = false; options.environment = {0,0,0};
+    options.gtao = false; options.ddgi = false; f.frame.environment = {0,0,0};
     // Both sides need settled direct radiance; otherwise the DDGI difference
     // would also include direct-history convergence after the light edit.
     const auto gi_off = f.capture("07-ddgi-off",warmup_frames);
@@ -445,7 +489,7 @@ void image_cases(Fixture& f) {
     // A fixed environment isolates AO from changing probe updates and random
     // direct-light samples. It is still an indirect diffuse contribution.
     f.lights.clear(); f.edited();
-    options.ddgi = false; options.environment = {.15f,.15f,.15f}; options.gtao = true;
+    options.ddgi = false; f.frame.environment = {.15f,.15f,.15f}; options.gtao = true;
     const auto gi_ao = f.capture("08-gtao-indirect",warmup_frames);
     options.gtao = false;
     const auto gi_no_ao = f.capture("08-gtao-disabled",warmup_frames);
@@ -455,7 +499,7 @@ void image_cases(Fixture& f) {
     // Screen-space tracing adds visible reflection while the environment
     // remains a usable fallback with the emissive reflector off-screen.
     f.room.meshes = original_meshes; f.lights = original_lights; f.edited();
-    options = original_lit; options.bloom = options.ddgi = false;
+    options = original_lit; f.frame.environment = original_environment; options.bloom = options.ddgi = false;
     options.antialiasing = render::Antialiasing::none;
     options.shadow_samples = 64; // Identical direct samples isolate SSR's contribution.
     options.sssr = false;
@@ -471,14 +515,14 @@ void image_cases(Fixture& f) {
     const auto fallback_rgb = mean_rgb(offscreen,metal_region);
     check(fallback_rgb[0]+fallback_rgb[1]+fallback_rgb[2] > 12,
           "reflective surface retains finite environment fallback after its visible source exits the screen");
-    options.environment = {0,0,0};
+    f.frame.environment = {0,0,0};
     const auto no_environment = f.capture("09-fallback-environment-off");
     const auto no_environment_rgb = mean_rgb(no_environment,metal_region);
     check(fallback_rgb[0]+fallback_rgb[1]+fallback_rgb[2] >
               no_environment_rgb[0]+no_environment_rgb[1]+no_environment_rgb[2]+10,
           "off-screen reflective receiver visibly uses the configured environment fallback");
 
-    f.room.meshes = original_meshes; f.lights = original_lights; f.edited(); options = original_lit;
+    f.room.meshes = original_meshes; f.lights = original_lights; f.edited(); options = original_lit; f.frame.environment = original_environment;
     const auto stable0 = f.capture("10-temporal-stable-0",warmup_frames);
     const auto stable1 = f.capture("10-temporal-stable-1",8);
     const auto stable_delta = f.compare("temporal-stable",stable0,stable1);
@@ -724,7 +768,7 @@ void quality_ssil(Fixture& f) {
     auto& options=f.frame.view.lit;
     options.antialiasing=render::Antialiasing::none;
     options.ddgi=options.gtao=options.sssr=options.bloom=options.ssil=false;
-    options.environment={.15f,.15f,.15f};options.shadow_samples=64;
+    f.frame.environment={.15f,.15f,.15f};options.shadow_samples=64;
     // Keep both sides free of GTAO. Deterministic direct64 and the same fixed
     // isotropic fallback make the optional residual the only changing source.
     const auto local=f.region({0,.01f,2.05f});
@@ -781,6 +825,7 @@ void quality_ddgi(Fixture& f) {
     f.lights.clear();f.edited();++f.frame.scene_identity;
     auto& options=f.frame.view.lit;
     options={};options.gtao=options.sssr=options.bloom=false;
+    f.frame.environment={.025f,.035f,.055f};
     options.antialiasing=render::Antialiasing::none;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-1.6f,8,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
@@ -846,7 +891,7 @@ void quality_ddgi(Fixture& f) {
     auto divider=f.room.meshes[1];divider.stable_key=4;
     divider.world=box(0,1.6f,0,.12f,20,24);divider.color={0,0,0,1};
     f.room.meshes.push_back(divider);f.edited();++f.frame.scene_identity;
-    options.environment={0,0,0};
+    f.frame.environment={0,0,0};
     const auto divided=f.capture("ddgi-thin-divider",192);
     const auto dark=mean_rgb(divided,f.region({-.35f,1.6f,5.38f}));
     const auto bright=mean_rgb(divided,f.region({1.3f,2.6f,5.38f}));
@@ -966,7 +1011,7 @@ int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& outpu
     else if(ddgi_only) scene_lit_e2e::quality_ddgi(fixture);
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);
     else if(temporal_only) scene_lit_e2e::temporal_isolation(fixture);
-    else scene_lit_e2e::image_cases(fixture);
+    else {scene_lit_e2e::environment_cases(fixture);scene_lit_e2e::image_cases(fixture);}
     fixture.close();
     return 0;
 }

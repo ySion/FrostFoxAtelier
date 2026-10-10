@@ -8,6 +8,12 @@ struct CameraMatrices {
     math::Matrix4 view;
     math::Matrix4 projection;
 };
+struct CameraState {
+    CameraView view{CameraView::perspective};
+    math::Vector3 target{};
+    float yaw{}, pitch{}, distance{};
+    bool operator==(const CameraState&) const = default;
+};
 // Left-handed, metres, +Y up; row-major matrices and row vectors.
 class Camera final {
 public:
@@ -27,6 +33,8 @@ public:
     math::Vector3 target() const noexcept { return target_; }
     math::Vector3 eye() const noexcept;
     CameraMatrices matrices(float aspect) const noexcept;
+    CameraState state() const noexcept { return {view_, target_, yaw_, pitch_, distance_}; }
+    bool set_state(const CameraState&) noexcept;
 private:
     CameraView view_{CameraView::perspective};
     math::Vector3 target_;

@@ -32,6 +32,7 @@ struct Control {
     ControlKind kind{ControlKind::container};
     ui_layout::NodeInput layout{ui_layout::NodeInput::column()};
     std::wstring text;
+    bool single_line{}; // Labels: one line with end ellipsis when their allocated width is exhausted.
     Role role{Role::normal};
     ControlIcon icon{ControlIcon::none}; // Standalone or leading glyph; text reserves the same measured icon space.
     bool enabled{true}, selected{};
@@ -116,6 +117,12 @@ struct TextInputState {
     bool composing{};
     std::optional<TextCaret> accepted_caret;
     std::optional<TextInputAnchor> accepted_anchor{}; // Only IME offset zero is supported.
+};
+// Focus and passive text bindings are not pending interactions. Field drafts
+// require commit/cancel; CodeDocument edits already belong to their document.
+struct InteractionState {
+    bool pointer{}, keyboard{}, text_draft{}, composition{}, clipboard{}, popup{};
+    bool active() const noexcept { return pointer || keyboard || text_draft || composition || clipboard || popup; }
 };
 struct TextGeometry {
     ControlKey key{};
@@ -291,6 +298,7 @@ struct Event {
     InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
     bool shift{}, control{}, alt{};
     unsigned clicks{1}; // Native click count; two activates the accepted table row.
+    bool repeat{}; // Native key auto-repeat; one-shot commands can ignore repeats.
 };
 struct Statistics {
     // Cumulative since Session construction. prepares/rasterizations count
@@ -352,6 +360,7 @@ public:
     Reply execute(EditCommand, std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.
     ControlKey focused_control() const noexcept;
     bool wants_keyboard() const noexcept;
+    InteractionState interaction_state() const noexcept;
     bool has_popup() const noexcept; // Modal barrier includes an opening/closing frame transition.
     // Live binding plus matching accepted caret only; no pending-frame geometry.
     std::optional<TextInputState> text_input() const noexcept;

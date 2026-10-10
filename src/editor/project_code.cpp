@@ -1,4 +1,5 @@
 #include "editor/project_code.hpp"
+#include "platform/windows_path.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
@@ -101,7 +102,7 @@ Result<void> ProjectCode::build(const Project& project) {
     if(next->ui_source && (!ui_same || report_->error)) {
         auto checked=validate_ui(*next->ui_source);if(!checked) return reject(checked.error());
     }
-    if (!published_sources_ || !same(*published_sources_,*next->sources)) {
+    if (!published_ || !same(*published_->sources,*next->sources)) {
         while (world_.runtime().collection_phase()!=CollectionPhase::idle) {
             auto step=world_.runtime().collect_step({1024});if (!step) return reject(step.error());
         }
@@ -112,10 +113,9 @@ Result<void> ProjectCode::build(const Project& project) {
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
         if (!bound_) {auto binding=bind();if (!binding) return reject(binding.error());bound_=true;}
     }
-    published_sources_=next->sources;
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
     next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
-    report_=std::move(next);return {};
+    published_=next;report_=std::move(next);return {};
 }
 Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) const {
     auto& runtime=world_.runtime();
@@ -164,7 +164,8 @@ Result<void> ProjectCode::poll(const Project& project,bool force) {
     try {
         for (const auto& relative:*paths) {
             const auto path=project.resolve(relative);if (!path) return build(project);
-            stamps.push_back({relative,std::filesystem::last_write_time(*path),std::filesystem::file_size(*path)});
+            const auto native=platform::windows_file_path(*path);
+            stamps.push_back({relative,std::filesystem::last_write_time(native),std::filesystem::file_size(native)});
         }
     } catch(const std::exception&) {return build(project);}
     if (!force && stamps==stamps_) return {};

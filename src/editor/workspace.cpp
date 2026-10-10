@@ -1,6 +1,7 @@
 #include "editor/workspace.hpp"
 #include "editor/assets.hpp"
 #include "editor/fields.hpp"
+#include "editor/view_options.hpp"
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
@@ -9,14 +10,14 @@
 
 namespace atelier::editor {
 namespace {
-struct LightingOption {std::wstring_view title;bool renderer::SceneLitSettings::*field;};
+struct LightingOption {std::wstring_view title;ViewOption option;};
 constexpr std::array lighting_options{
-    LightingOption{L"Shadows",&renderer::SceneLitSettings::shadows},
-    LightingOption{L"DDGI",&renderer::SceneLitSettings::ddgi},
-    LightingOption{L"GTAO",&renderer::SceneLitSettings::gtao},
-    LightingOption{L"SSSR",&renderer::SceneLitSettings::sssr},
-    LightingOption{L"Bloom",&renderer::SceneLitSettings::bloom},
-    LightingOption{L"Local GI",&renderer::SceneLitSettings::ssil}};
+    LightingOption{L"Shadows",ViewOption::shadows},
+    LightingOption{L"DDGI",ViewOption::ddgi},
+    LightingOption{L"GTAO",ViewOption::gtao},
+    LightingOption{L"SSSR",ViewOption::sssr},
+    LightingOption{L"Bloom",ViewOption::bloom},
+    LightingOption{L"Local GI",ViewOption::ssil}};
 constexpr std::array antialiasing_titles{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
 }
 Workspace::Workspace() : dock(1ULL<<48,{
@@ -158,6 +159,12 @@ Result<void> Workspace::select_tree(Session& session,ui::ControlKey key,ui::Sele
 }
 bool Workspace::command_enabled(Command command,const Session& session) const {
     switch (command) {
+    case Command::erase_actors: return scene_available && !project_running && !session.selected_actors().empty();
+    case Command::duplicate_selected: {
+        const auto members=session.world().members();
+        return scene_available && !project_running && !session.selected_actors().empty() && members &&
+            members->size()+session.selected_actors().size()<=Session::maximum_actors;
+    }
     case Command::new_source: case Command::new_project_ui: case Command::build_project: return project_open;
     case Command::rebuild_project:return project_open && !project_running;
     case Command::run_project:return project_open && scene_available && !project_running && project_build && project_build->state==BuildState::ready;
@@ -171,8 +178,19 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
     case Command::undo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_undo();return (sample_history()?workbench.undo_count():session.undo_count())!=0;
     case Command::redo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_redo();return (sample_history()?workbench.redo_count():session.redo_count())!=0;
-    case Command::create_actor: case Command::create_static_mesh: {
-        const auto members=session.world().members(); return scene_available && members && members->size()<Session::maximum_actors;
+    case Command::create_actor: case Command::create_static_mesh:
+    case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: case Command::create_sky_light: {
+        const auto members=session.world().members();
+        if(!scene_available || !members || members->size()>=Session::maximum_actors) return false;
+        if(command==Command::create_sky_light) {
+            const auto lights=session.world().query(session.types().light_component);
+            if(!lights) return false;
+            for(const auto object:*lights) {
+                const auto light=world::read_light(session.world().runtime(),object);
+                if(!light || light->kind==world::LightKind::sky) return false;
+            }
+        }
+        return true;
     }
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
     case Command::erase_selected: case Command::focus: {
@@ -203,41 +221,53 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
 bool Workspace::apply_view(const ui::Action& action) {
     if (action.kind!=ui::ActionKind::activate) return false;
     const auto key=action.key;
-    if (key>=control::shading_first && key<control::shading_first+3)
-        view.shading=static_cast<renderer::Shading>(key-control::shading_first);
-    else if(key==control::shading_scene_lit) view.shading=renderer::Shading::scene_lit;
+    auto candidate=view;
+    const auto set=[&](ViewOption option,double value) {
+        auto changed=set_view_option(candidate,option,value);
+        if(!changed) throw std::runtime_error(changed.error().message);
+    };
+    if (key>=control::shading_preset_first && key<control::shading_preset_first+4) {
+        const auto preset=key-control::shading_preset_first;
+        set(ViewOption::wireframe,preset==0?double(renderer::Wireframe::only):double(renderer::Wireframe::off));
+        if (preset) set(ViewOption::shading,preset==1?double(renderer::Shading::smooth):
+            preset==2?double(renderer::Shading::matcap):double(renderer::Shading::scene_lit));
+    } else if (key>=control::shading_first && key<control::shading_first+3)
+        set(ViewOption::shading,double(key-control::shading_first));
+    else if(key==control::shading_scene_lit) set(ViewOption::shading,double(renderer::Shading::scene_lit));
     else if(key>=control::lit_effects_first && key<control::lit_effects_first+lighting_options.size()) {
         const auto* checked=std::get_if<bool>(&action.value);if(!checked) return false;
-        const auto field=lighting_options[key-control::lit_effects_first].field;
-        view.lit.*field=*checked;
-        // Local GI supplies the near-field correction, so the menu keeps the
-        // two near-field policies exclusive without another command path.
-        if(*checked) {
-            if(field==&renderer::SceneLitSettings::ssil) view.lit.gtao=false;
-            else if(field==&renderer::SceneLitSettings::gtao) view.lit.ssil=false;
-        }
+        set(lighting_options[key-control::lit_effects_first].option,*checked?1:0);
     } else if(key>=control::lit_aa_first && key<control::lit_aa_first+antialiasing_titles.size())
-        view.lit.antialiasing=static_cast<renderer::Antialiasing>(key-control::lit_aa_first);
+        set(ViewOption::antialiasing,double(key-control::lit_aa_first));
     else if(key>=control::lit_exposure_first && key<control::lit_exposure_first+5)
-        view.lit.exposure_ev=float(int(key-control::lit_exposure_first)-2);
+        set(ViewOption::exposure_ev,double(int(key-control::lit_exposure_first)-2));
     else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
-        view.lit.shadow_light_budget=4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first);
+        set(ViewOption::shadow_light_budget,double(4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first)));
     else if (key>=control::edges_first && key<control::edges_first+4) {
         const auto option=key-control::edges_first;
-        view.wireframe=option<2?static_cast<renderer::Wireframe>(option):renderer::Wireframe::only;
-        view.hidden_lines=option!=3;
+        set(ViewOption::wireframe,double(option<2?option:2));
+        set(ViewOption::hidden_lines,option!=3?1:0);
     } else if (key>=control::topology_first && key<control::topology_first+2)
-        view.triangle_edges=key!=control::topology_first;
+        set(ViewOption::triangle_edges,key!=control::topology_first?1:0);
     else if (key==control::guide_background || key==control::guide_grid || key==control::guide_axes) {
         const auto* checked=std::get_if<bool>(&action.value);
         if (!checked) return false;
-        if (key==control::guide_background) view.background=*checked?renderer::Background::gradient:renderer::Background::none;
-        else if (key==control::guide_grid) view.reference_grid=*checked;
-        else view.origin_axes=*checked;
+        if (key==control::guide_background) {
+            if(view.shading==renderer::Shading::scene_lit) return false;
+            set(ViewOption::background,*checked?1:0);
+        }
+        else if (key==control::guide_grid) set(ViewOption::reference_grid,*checked?1:0);
+        else set(ViewOption::origin_axes,*checked?1:0);
     }
     else return false;
+    if(auto updated=set_view_settings(candidate);!updated) return false;
     status=L"Viewport display updated";
     return true;
+}
+Result<void> Workspace::set_view_settings(const renderer::ViewSettings& candidate) {
+    if(auto valid=validate_view_options(candidate);!valid) return valid;
+    if(view!=candidate) {view=candidate;++view_revision_;}
+    return {};
 }
 namespace {
 // Houdini-style parameter label from a reflected field path: "material.base_color"
@@ -340,7 +370,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if (definition.group==CommandGroup::view && definition.shelf_title.empty()) continue;
         if (!shelf_items_[index]) shelf_items_[index]=next_binding_++;
         const auto title=definition.shelf_title.empty()?definition.title:definition.shelf_title;
-        const auto icon=definition.id>=Command::create_point_light && definition.id<=Command::create_directional_light?ui::ControlIcon::component:
+        const auto icon=definition.id>=Command::create_point_light && definition.id<=Command::create_sky_light?ui::ControlIcon::component:
             definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
             definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
@@ -417,7 +447,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             L"Drag a box to scale an axis, the centre for uniform scale. S then X/Y/Z constrains."};
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,33> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,34> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
@@ -429,7 +459,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},std::wstring(view_names[std::size_t(camera_view)]),
             menu && menu->source==control::viewport_camera,ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
             viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down),viewport_readout,!viewport_readout.empty(),
-            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(tool_hints[std::size_t(viewport_mode)])};
+            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(tool_hints[std::size_t(viewport_mode)]),
+            std::wstring(this->view.shading==renderer::Shading::scene_lit || this->view.background==renderer::Background::none?
+                L"viewport-tool-hint dark-background":L"viewport-tool-hint")};
         const std::array<ui_language::KeyBinding,14> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
             {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},
@@ -538,6 +570,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
             if(light) {
                 const auto& name=property.name;
+                if(light->kind==world::LightKind::sky && (name=="settings.range" || name=="settings.source_radius" || name=="settings.casts_shadow")) continue;
                 if(light->kind!=world::LightKind::rectangle && (name=="settings.width" || name=="settings.height" || name=="settings.two_sided")) continue;
                 if(light->kind==world::LightKind::rectangle && name=="settings.source_radius") continue;
                 if(light->kind==world::LightKind::directional && name=="settings.range") continue;
@@ -600,7 +633,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 const auto field=std::string_view(property.name).substr(9);
                 if(field=="kind") caption=L"Light Type";
                 else if(field=="intensity") caption=light->kind==world::LightKind::point?L"Intensity (cd)":
-                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":L"Illuminance (lux)";
+                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":
+                    light->kind==world::LightKind::sky?L"Radiance (cd/m²)":L"Illuminance (lux)";
                 else if(field=="source_radius") caption=light->kind==world::LightKind::directional?L"Angular Radius (rad)":L"Source Radius (m)";
                 else if(field=="range") caption=L"Range (m)";
                 else if(field=="width") caption=L"Width (m)";
@@ -754,18 +788,29 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     items.push_back(command_item(Command::viewport_options));
                 } else for (const auto& definition:command_definitions) if (definition.group==group->id)
                     items.push_back(command_item(definition.id));
+            } else if (pie_menu()) {
+                constexpr std::array titles{L"Wireframe",L"Solid",L"MatCap",L"Scene Lit"};
+                const auto selected=this->view.wireframe==renderer::Wireframe::only?0u:
+                    this->view.shading==renderer::Shading::matcap?2u:this->view.shading==renderer::Shading::scene_lit?3u:1u;
+                for (std::size_t i=0;i<titles.size();++i) {
+                    ui::MenuItem item{control::shading_preset_first+i,titles[i],true,i==selected,{}};
+                    item.behavior=ui::MenuBehavior::radio;item.radio_group=control::shading_preset_first;
+                    items.push_back(std::move(item));
+                }
+            } else if(source->key==control::viewport && menu->group==control::viewport_delete_menu) {
+                auto item=command_item(Command::erase_actors);item.separator_before=false;
+                item.text=session.selected_actors().size()==1?L"Delete Actor":L"Delete "+std::to_wstring(session.selected_actors().size())+L" Actors";
+                items.push_back(std::move(item));
             } else if(source->key==control::viewport && menu->group==control::viewport_add_menu) {
                 // Blender Shift+A: everything the Create group can place at the 3D cursor.
                 for(const auto& definition:command_definitions) if(definition.group==CommandGroup::create)
                     items.push_back(command_item(definition.id));
-            } else if(source->key==control::viewport && menu->group==control::viewport_snap_menu) {
-                items=viewport_commands(control::viewport_snap);
             } else if(source->key==control::viewport || source->key==control::viewport_tools_menu) {
                 using enum Command;
                 items=viewport_commands(control::viewport_tools_menu);
                 if(source->key==control::viewport) {
                     items.push_back({.key=control::viewport_snap,.text=L"Snap",.edit_command={},.children=viewport_commands(control::viewport_snap)});
-                    for(auto item:commands({focus,create_static_mesh,erase_selected})) items.push_back(std::move(item));
+                    for(auto item:commands({focus,create_static_mesh,duplicate_selected,erase_actors})) items.push_back(std::move(item));
                 }
             } else if(source->key==control::viewport_snap || source->key==control::viewport_camera || source->key==control::viewport_pivot) {
                 items=viewport_commands(source->key);
@@ -800,7 +845,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 group(control::topology_first,topology_titles,this->view.triangle_edges?1u:0u);
                 ui::MenuItem lighting{control::lit_menu,L"Scene Lighting",true,false,{},L"",true};
                 for(std::size_t i=0;i<lighting_options.size();++i) {
-                    ui::MenuItem option{control::lit_effects_first+i,std::wstring(lighting_options[i].title),true,this->view.lit.*lighting_options[i].field,{}};
+                    ui::MenuItem option{control::lit_effects_first+i,std::wstring(lighting_options[i].title),true,view_value(this->view,lighting_options[i].option)!=0,{}};
                     option.behavior=ui::MenuBehavior::checkbox;lighting.children.push_back(std::move(option));
                 }
                 ui::MenuItem antialiasing{control::lit_aa_menu,L"Antialiasing",true,false,{},L"",true};
@@ -833,7 +878,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 for(std::size_t i=0;i<component_choices_.size();++i)
                     items.push_back({control::component_choice_first+i,wide(component_choices_[i].name),selected!=ObjectId{},false,{}});
             } else if (source->key==control::scene_guides) {
-                items.push_back({control::guide_background,L"Gradient Background",true,view.background==renderer::Background::gradient,{}});
+                const bool studio=view.shading!=renderer::Shading::scene_lit;
+                items.push_back({control::guide_background,L"Gradient Background",studio,studio && view.background==renderer::Background::gradient,{}});
                 items.push_back({control::guide_grid,L"Reference Grid",true,view.reference_grid,{}});
                 items.push_back({control::guide_axes,L"Origin Axes",true,view.origin_axes,{}});
                 for (auto& item:items) item.behavior=ui::MenuBehavior::checkbox;
@@ -855,6 +901,20 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             if (items.empty()) menu.reset();
             else menu_items=std::move(items);
         }
+    }
+    if (pie_menu() && !menu_items.empty()) {
+        const auto dpi=frame?frame->drawing->dpi_scale:1.f;
+        auto entries=std::make_shared<std::vector<ui_language::Item>>();
+        constexpr std::array<std::pair<double,double>,4> positions{{{60,104},{300,104},{180,181},{180,27}}};
+        for (std::size_t i=0;i<menu_items.size();++i) {
+            const auto& item=menu_items[i];
+            entries->push_back({item.key,{item.text,item.enabled,item.selected,positions[i].first,positions[i].second,
+                control::shading_preset_first}});
+        }
+        const std::array<ui_language::InputValue,3> inputs{double(std::clamp(menu->x/dpi-180.f,0.f,std::max(0.f,size.width-360.f))),
+            double(std::clamp(menu->y/dpi-104.f,0.f,std::max(0.f,size.height-208.f))),ui_language::ItemList{entries}};
+        const std::array<ui_language::KeyBinding,1> keys{{{"menu",control::viewport_shading_pie}}};
+        static_cast<void>(ui_document_->append("ShadingPie",0,keys,inputs,result));
     }
     if (ui_document_->candidate_failed()) {
         reject_ui_controls(std::string(ui_error()));

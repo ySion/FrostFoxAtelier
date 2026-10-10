@@ -183,6 +183,99 @@ void read_properties(Runtime& runtime,const world::Types& types,ObjectId object,
 }
 
 }
+Result<world::Commit> Session::duplicate_selected() {
+    ActorChange change; change.added=true;
+    std::vector<std::pair<ObjectId,std::wstring>> labels;
+    std::vector<ObjectId> attached;
+    try {
+        if (editing()) throw std::runtime_error("Finish the active edit before duplicating.");
+        if (selected_actors_.empty()) return world::Commit{};
+        if (take(world_.members()).size()+selected_actors_.size()>maximum_actors)
+            throw std::runtime_error("Editor Actor limit reached.");
+        const auto copy_fields=[&](ObjectId from,ObjectId to,TypeId type) {
+            for (const auto& field:business_fields(runtime_,types_,type)) {
+                const auto value=take(runtime_.read(from,field.path));
+                if (!detail::finite_scalar(value)) throw std::runtime_error("Cannot duplicate non-finite scene properties.");
+                take(runtime_.write(to,field.path,value));
+            }
+        };
+        // Prepare the complete detached graph before publishing any membership.
+        // Runtime identities and component ownership are never copied as bytes.
+        for (const auto source:selected_actors_) {
+            take(admit_actor_edit(source));
+            const auto actor=take(world::inspect_actor(runtime_,source));
+            auto root=take(world::create_actor(runtime_,actor.type));
+            copy_fields(source,root.id(),actor.type);
+            const auto parts=take(world::components(runtime_,source));
+            if (parts.size()>maximum_components) throw std::runtime_error("Editor Component limit reached.");
+            const auto source_root=take(world::root_component(runtime_,source));
+            std::vector<ObjectRoot> roots; roots.reserve(parts.size());
+            std::unordered_map<ObjectId,ObjectId> ids;
+            for (const auto& part:parts) {
+                auto copy=take(world::create_component(runtime_,take(runtime_.type_of(part.id()))));
+                ids.emplace(part.id(),copy.id()); roots.push_back(std::move(copy));
+            }
+            std::vector<world::Attachment> attachments; attachments.reserve(parts.size());
+            for (std::size_t i=0;i<parts.size();++i) {
+                const auto from=parts[i].id(),to=roots[i].id();
+                const auto state=take(world::inspect_component(runtime_,from));
+                copy_fields(from,to,state.type);
+                ObjectId parent;
+                if (derives(runtime_,state.type,types_.scene_component)) {
+                    take(world_.set_transform(to,take(world::read_transform(runtime_,from))));
+                    const auto old_parent=take(world::scene_parent(runtime_,from));
+                    if (old_parent!=ObjectId{}) parent=ids.at(old_parent);
+                }
+                if (derives(runtime_,state.type,types_.static_mesh_component)) {
+                    const auto mesh=take(world::read_static_mesh(runtime_,from));
+                    take(world::validate_material(mesh.material));
+                    take(world::set_mesh_binding(runtime_,to,mesh.mesh));
+                    take(runtime_.with_native<world::StaticMeshComponent>(to,[&](auto& value)->Result<void> {
+                        value.material=mesh.material;return {};
+                    }));
+                }
+                if (physical_type(runtime_,state.type)) take(physics::configure(runtime_,to,take(physics::read_settings(runtime_,from))));
+                if (derives(runtime_,state.type,types_.light_component)) take(world::validate_light(take(world::read_light(runtime_,to))));
+                committed(world_.set_enabled(to,state.enabled));
+                attachments.push_back({to,parent,source_root && *source_root==from});
+                if (!name(from).empty()) labels.emplace_back(to,name(from));
+            }
+            if (!attachments.empty()) committed(world_.attach_components(root.id(),attachments));
+            committed(world_.set_enabled(root.id(),actor.enabled));
+            std::wstring label;
+            for (std::size_t suffix=1;;++suffix) {
+                const auto tail=L" Copy"+(suffix==1?std::wstring{}:L" "+std::to_wstring(suffix));
+                auto prefix=std::wstring(name(source).substr(0,256-tail.size()));
+                if (!prefix.empty() && prefix.back()>=0xd800 && prefix.back()<=0xdbff) prefix.pop_back();
+                label=prefix+tail;
+                if (std::ranges::none_of(names_,[&](const auto& item){return item.second==label;}) &&
+                    std::ranges::none_of(labels,[&](const auto& item){return item.second==label;})) break;
+            }
+            take(validate_name(label));
+            labels.emplace_back(root.id(),std::move(label));
+            change.removals.emplace_back().root=std::move(root);
+        }
+        world::Commit result;
+        for (auto& item:change.removals) {
+            auto added=take(world_.attach(item.id()));
+            if (added.changed) attached.push_back(item.id());
+            result.changed|=added.changed;
+            if (added.notification_error && !result.notification_error) result.notification_error=std::move(added.notification_error);
+        }
+        for (auto& [id,label]:labels) names_.emplace(id,std::move(label));
+        if (attached.empty()) return result;
+        take(select_actors(attached,attached.back()));
+        remember(std::move(change));
+        return result;
+    } catch (const std::exception& error) {
+        // Membership is reversible in authoring mode. Keep any exceptional
+        // failed rollback owned by history rather than losing an attached graph.
+        bool rollback_failed{};
+        for (auto it=attached.rbegin();it!=attached.rend();++it) if (!world_.detach(*it)) rollback_failed=true;
+        if (rollback_failed) remember(std::move(change));
+        return failed(error);
+    }
+}
 Result<std::string> Session::serialize() const {
     try {
         if (editing()) throw std::runtime_error("Finish the active edit before saving.");
