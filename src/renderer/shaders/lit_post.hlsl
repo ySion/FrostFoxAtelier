@@ -267,6 +267,10 @@ bool lit_reflection_same_material(uint2 p, int2 q) {
 }
 [numthreads(1, 1, 1)]
 void lit_ssr_reset_cs(uint3 id : SV_DispatchThreadID) { lit_reflection_counter[0] = 0; }
+bool lit_ssr_eligible(uint2 p, float4 nr) {
+    return (lit_counts.w & 8) != 0 && nr.w <= lit_temporal.y && lit_controls.w > 0 &&
+        dot(lit_safe_normal(nr.xyz), lit_view_direction(lit_post_uv(p))) > .005;
+}
 [numthreads(8, 8, 1)]
 void lit_ssr_classify_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
@@ -275,10 +279,9 @@ void lit_ssr_classify_cs(uint3 id : SV_DispatchThreadID) {
     if (!lit_post_surface(p)) { lit_reflection_output[p] = 0; return; }
     lit_reflection_output[p] = float4(lit_post_environment(p), 0);
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
-    float nv = dot(lit_safe_normal(nr.xyz), lit_view_direction(lit_post_uv(p)));
     // Compact only pixels with a visible, sufficiently smooth specular lobe.
     // Work allocation has a strict one-entry-per-window-pixel capacity contract.
-    if ((lit_counts.w & 8) == 0 || nv <= .005 || nr.w > lit_temporal.y || lit_controls.w <= 0) return;
+    if (!lit_ssr_eligible(p, nr)) return;
     uint index;
     InterlockedAdd(lit_reflection_counter[0], 1, index);
     lit_reflection_work[index] = p.y * lit_size_frame.x + p.x;
@@ -544,6 +547,9 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
     if (clip.w <= 1e-6 || !lit_post_inside_uv(lit_window_uv(clip))) return false;
     int2 current_pixel = lit_post_pixel(lit_window_uv(clip));
     if (!lit_post_surface(current_pixel)) return false;
+    // The source can retain identical geometry while its material/emission or
+    // object identity changes. Geometry alone cannot validate its old radiance.
+    if (lit_motion.Load(int3(current_pixel, 0)).w <= .5) return false;
     float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(current_pixel, 0)).xyz);
     float tolerance = max(.035, lit_post_pixel_world_size(lit_post_uv(current_pixel),
         lit_depth.Load(int3(current_pixel, 0))) * .5);
@@ -623,7 +629,8 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     if (!lit_post_surface(p)) {
         lit_reflection_resolved_output[p] = 0; lit_reflection_moments_output[p] = 0; return;
     }
-    if ((lit_counts.w & 8) == 0) {
+    float4 nr = lit_normal_roughness.Load(int3(p, 0));
+    if (!lit_ssr_eligible(p, nr)) {
         // Environment-only rendering is deterministic and material-local;
         // neither spatial pooling nor stale SSR history participates.
         float3 environment = lit_post_environment(p);
@@ -634,7 +641,6 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         return;
     }
     float2 uv = lit_post_uv(p);
-    float4 nr = lit_normal_roughness.Load(int3(p, 0));
     float3 normal = lit_safe_normal(nr.xyz), position = lit_post_world(p);
     float pixel_world = max(lit_post_pixel_world_size(uv, lit_depth.Load(int3(p, 0))), .001);
     float3 sum = center.rgb; float weight_sum = 1;
@@ -649,6 +655,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q) ||
             !lit_reflection_same_material(p, q)) continue;
         float4 neighbor_normal = lit_normal_roughness.Load(int3(q, 0));
+        if (!lit_ssr_eligible(q, neighbor_normal)) continue;
         if (dot(normal, lit_safe_normal(neighbor_normal.xyz)) < .96 ||
             abs(nr.w - neighbor_normal.w) > .08 ||
             abs(dot(lit_post_world(q) - position, normal)) > max(.005, pixel_world * .5)) continue;
@@ -765,6 +772,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
     lit_reflection_filter_output[p] = center;
     if (!lit_post_surface(p) || (lit_counts.w & 8) == 0) return;
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
+    if (!lit_ssr_eligible(p, nr)) return;
     // True mirrors retain their association and sharp signal, including edges.
     if (nr.w < .04) return;
     float3 normal = lit_safe_normal(nr.xyz), position = lit_post_world(p);
@@ -787,6 +795,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q) ||
             !lit_reflection_same_material(p, q)) continue;
         float4 q_nr = lit_normal_roughness.Load(int3(q, 0));
+        if (!lit_ssr_eligible(q, q_nr)) continue;
         float normal_dot = dot(normal, lit_safe_normal(q_nr.xyz));
         float plane_distance = abs(dot(lit_post_world(q) - position, normal));
         if (normal_dot < .96 || abs(nr.w - q_nr.w) > .08 ||

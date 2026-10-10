@@ -99,16 +99,24 @@ void lit_direct_cs(uint3 tid:SV_DispatchThreadID) {
         uint index=count>64?k:lit_tile_indices[tile*64+k]; LitLight light=lit_lights[index];
         uint seed=lit_light_seed(p,index);
         uint samples=max(1,lit_counts.z); float3 diffuse_sum=0,specular_sum=0;
+        // These delta lights consume no random values and repeat exactly the
+        // same direction and visibility. Keep the original accumulation order.
+        bool repeat_sample=(light.meta.x==0||light.meta.x==2)&&light.direction_radius.w==0;
+        float3 radiance=0,diffuse=0,specular=0;float visibility=1;
         for(uint s=0;s<samples;s++) {
-            float3 l;float distance;float3 radiance=lit_sample_light(light,position,seed,l,distance);
-            if(dot(n,l)<=0||!any(radiance>0))continue;
-            float visibility=1;
-            if(light.meta.y!=~0u && (lit_counts.w&1)!=0 && (light.meta.z&2u)!=0)
-                visibility=lit_visible(position,n,l,distance)?1:0;
-            float3 diffuse,specular;
-            lit_brdf_components(bm.rgb,nr.w,bm.w,n,v,l,diffuse,specular);
-            // Visibility is evaluated at THIS emitter sample, preserving the
-            // correlation of GGX, emitter radiance and occlusion for f*L*V.
+            if(!repeat_sample||s==0) {
+                float3 l;float distance;radiance=lit_sample_light(light,position,seed,l,distance);
+                if(dot(n,l)<=0||!any(radiance>0)) {
+                    if(repeat_sample)break;
+                    continue;
+                }
+                visibility=1;
+                if(light.meta.y!=~0u && (lit_counts.w&1)!=0 && (light.meta.z&2u)!=0)
+                    visibility=lit_visible(position,n,l,distance)?1:0;
+                lit_brdf_components(bm.rgb,nr.w,bm.w,n,v,l,diffuse,specular);
+                // Visibility belongs to this actual emitter sample; finite
+                // sources still evaluate every distinct f*L*V contribution.
+            }
             diffuse_sum+=diffuse*radiance*visibility;
             specular_sum+=specular*radiance*visibility;
         }

@@ -613,8 +613,10 @@ void image_cases(Fixture& f) {
     std::puts("Renderer SceneLit acceptance: PASS (four shadow lights, HDR RGB/materials, DDGI update, GTAO indirect, SSSR/fallback, temporal resets, orthographic, modes, empty/UI depth)");
 }
 #include "scene_lit_motion.inl"
+#include "scene_lit_signal_edits.inl"
 
 void temporal_isolation(Fixture& f) {
+    quality_signal_edits(f);
     quality_motion_history(f);
     const auto defaults=f.frame.view.lit;
     constexpr const char* names[]{"all","no-sssr","no-ddgi","direct-only","direct-reference"};
@@ -1057,6 +1059,7 @@ void quality_ddgi(Fixture& f) {
     std::puts("Renderer SceneLit DDGI quality: PASS");
 }
 
+#include "scene_lit_work.inl"
 #include "scene_lit_contracts.inl"
 
 void quality_smaa_t2x_coverage(Fixture& f) {

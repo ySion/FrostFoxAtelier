@@ -143,6 +143,7 @@ void quality_contracts(Fixture& f) {
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const auto reentered=f.capture("contract-empty-reentry",2);
     check(std::ranges::any_of(reentered.depth,[](float d){return d>0;}),"same Renderer rebuilds a nonempty Lit scene after scene-resource retirement");
+    quality_work_elision(f);
     check(bool(f.renderer.close()) && bool(f.renderer.close()),"repeated renderer close remains successful after empty-scene retirement");
     std::puts("Renderer SceneLit contracts: PASS (light domains/support, open/closed mixed geometry, winding/mirror, continuous membership, rejected-frame isolation, exact ray budget, empty-scene retirement, repeated close)");
 }

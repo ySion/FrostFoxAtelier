@@ -495,6 +495,15 @@ void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
     if (any(pixel >= lit_size_frame.xy)) return;
     float depth = lit_depth.Load(int3(pixel, 0));
     if (!lit_inside(pixel) || lit_is_background_depth(depth)) { lit_indirect[pixel] = 0; return; }
+    if ((lit_counts.w & 64) == 0 && (lit_probe_update.w & 2) == 0) {
+        float4 material = lit_base_metallic.Load(int3(pixel, 0));
+        // Compose cannot consume diffuse irradiance at exactly zero material
+        // response. Local GI and probe visualization retain their full input.
+        if (all(material.rgb * (1 - material.w) == 0)) {
+            lit_indirect[pixel] = float4(0, 0, 0, 1);
+            return;
+        }
+    }
     float2 uv = (float2(pixel) + .5) / lit_size_frame.xy;
     float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(pixel, 0)).xyz);
     float3 position = lit_world(uv, depth);

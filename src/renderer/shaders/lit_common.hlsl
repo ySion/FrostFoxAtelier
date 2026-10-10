@@ -4,7 +4,7 @@
 // HDR and all temporal signals are scene linear, before display exposure.
 // Motion.xy = previous window UV - current window UV, including sample jitter;
 // z = raster coverage (one on geometry, clear zero on background);
-// w = stable object/camera correspondence. lit_previous_depth holds the
+// w = stable object/camera and unchanged material correspondence. lit_previous_depth holds the
 // expected previous camera device Z of the current surface as R32_FLOAT.
 // Jitter is in viewport pixel units.
 static const float LIT_PI = 3.14159265359;

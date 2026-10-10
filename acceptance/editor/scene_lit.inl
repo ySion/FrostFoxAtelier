@@ -115,8 +115,24 @@ void verify_sky_light_application() {
     require(snapshot.environment==dark,"Disabled Sky Light Actor emits radiance.");
     changed(sky_world->set_enabled(actor,true));take(snapshot.refresh(document));
     require(snapshot.environment==radiance,"Re-enabled Sky Light did not restore its authored radiance.");
+    const auto before_point=snapshot.revision;
     changed(document.create_light(world::LightKind::point));
     const auto point=*take(world::root_component(document.world().runtime(),document.selection().actor));
+    take(snapshot.refresh(document));
+    require(snapshot.lights.size()==1 && snapshot.revision==before_point+1 && snapshot.environment==radiance,
+        "Appending a direct light failed to advance the scene revision independently of Sky Light.");
+    take(snapshot.refresh(document));
+    require(snapshot.revision==before_point+1,"Unchanged appended light advanced the scene revision.");
+    changed(sky_world->set_enabled(point,false));take(snapshot.refresh(document));
+    require(snapshot.lights.empty() && snapshot.revision==before_point+2 && snapshot.environment==radiance,
+        "Disabling the trailing direct light failed to update scene membership and revision.");
+    take(snapshot.refresh(document));
+    require(snapshot.revision==before_point+2,"Unchanged disabled light advanced the scene revision.");
+    changed(sky_world->set_enabled(point,true));take(snapshot.refresh(document));
+    require(snapshot.lights.size()==1 && snapshot.revision==before_point+3 && snapshot.environment==radiance,
+        "Re-enabling the trailing direct light failed to advance the scene revision.");
+    take(snapshot.refresh(document));
+    require(snapshot.revision==before_point+3,"Unchanged re-enabled light advanced the scene revision.");
     require(!document.set_property(point,property("settings.kind"),EnumValue{document.types().light_kind,static_cast<std::uint64_t>(world::LightKind::sky)},985) &&
         take(world::read_light(document.world().runtime(),point)).kind==world::LightKind::point && !document.editing(),
         "Changing Light Type created a second sky or left an active rejected edit.");
