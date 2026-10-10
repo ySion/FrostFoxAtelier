@@ -112,7 +112,7 @@ public:
     bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
-    static constexpr std::size_t maximum_actors = 256;
+    static constexpr std::size_t maximum_actors = 8192;
     static constexpr std::size_t maximum_components = 1024;
 private:
     // Removals are ordered as detached; restore runs in reverse.

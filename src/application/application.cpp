@@ -359,7 +359,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     if(!workspace_.menu) window_.capture(false);
     Result<void> result;
     switch (command) {
-    case example_sponza:case example_scene_lit:case example_physic:return open_example(command);
+    case example_sponza:case example_scene_lit:case example_physic:case example_dungeons:return open_example(command);
     case tool_select: case tool_transform: case tool_move: case tool_rotate: case tool_scale:
         workspace_.viewport_settings.tool=static_cast<editor::TransformTool>(static_cast<unsigned>(command)-static_cast<unsigned>(tool_select));
         workspace_.status=std::wstring(editor::command_definition(static_cast<std::uint64_t>(command))->title);break;

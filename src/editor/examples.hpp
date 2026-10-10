@@ -12,7 +12,8 @@ struct ExampleDefinition {
 inline constexpr std::array official_examples{
     ExampleDefinition{Command::example_sponza,"Examples/Sponza/Scenes/Sponza.scene",{8,2,0},{-6,3,0}},
     ExampleDefinition{Command::example_scene_lit,"Examples/Scene Lit Room/Scenes/Main.scene",{9,6,-12},{0,1.5f,0}},
-    ExampleDefinition{Command::example_physic,"Examples/Physic/Scenes/Overview.scene",{22,18,-26},{0,2,0}}
+    ExampleDefinition{Command::example_physic,"Examples/Physic/Scenes/Overview.scene",{22,18,-26},{0,2,0}},
+    ExampleDefinition{Command::example_dungeons,"Examples/Dungeons/Scenes/Dungeon.scene",{6.927793f,-.362655f,24.410025f},{3.6086f,-1.3809f,33.7881f}}
 };
 constexpr const ExampleDefinition* example_definition(Command command) {
     for(const auto& example:official_examples) if(example.command==command) return &example;
