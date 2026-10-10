@@ -1,6 +1,6 @@
 # 内容绑定与完整呈现消费
 
-本页说明headless布局消费者中的资源持有与提交机制；该示例本身不含窗口、输入或GPU绘制。正式生产链见[UI模块](../ui/README.md)与[编辑器](../editor/README.md)。布局39项验收见[acceptance](acceptance.md)，同场景成本见[audit](audit.md)。
+本页说明 headless 布局消费者中的资源持有与提交机制；该示例本身不含窗口、输入或 GPU 绘制。正式生产链见[UI 模块](../ui/README.md)与[编辑器](../editor/README.md)。布局覆盖矩阵见[验收记录](acceptance.md)，固定版本的同场景成本见[审计记录](audit.md)。
 
 ## 唯一消费链与资源责任
 

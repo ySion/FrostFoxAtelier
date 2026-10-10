@@ -24,13 +24,17 @@ apply_effects(*changed);
 
 活动文字草稿不被新的权威值覆盖；未发生编辑的被动缓冲跟随权威值并保留合法选区。祖先禁用/折叠、移除或kind改变仍通过原路径结算focus、capture、IME、按键状态及owned popup。删除再出现使用新incarnation；纯绘制改变不更换身份。
 
+`action_target`、按钮/菜单行为和 radio 组可以沿同一属性入口更新，但改变它们会取消旧按压/编辑，并阻止旧接受帧继续派发。`code` 换文档指针也走原失效清理；已确认源码仍属于 CodeDocument。稳定 key 只表示控件寿命，不能代替外部业务对象/字段身份。
+
+表格的数据快照、`table_layout` 和 `table_selection` 分别表达模型、呈现与选择。新快照提交前建立并校验行/列索引；仅改变选择或呈现不重建数据索引。数据或呈现变化取消旧指针手势，选择变化也清理待键盘激活状态。接受帧保留对应数据和呈现，旧几何不能用于新布局的输入。完整表格及交互状态合同见[UI 模块](README.md)。
+
 ## 失效与实际成本
 
 `prepare`按父先序检查状态与样式继承，只有脏控件或必要后代重新生成有效NodeInput、同步到LayoutDocument。
 
 - 最终颜色改变只更新样式/绘制，复用文字Coverage，不同步布局输入、不重测或重新栅格化。父文字颜色改变传播继承样式，不伪造字体/provider版本。
 - text/value变化通过原草稿显示规则和TextStore内容版本；只有被实际布局使用的度量依赖才触发布局重算。固定尺寸文字仍在绘制准备时生成当前内容的文字资源。
-- 字体、文字对齐、有效padding、树缩进/行高、scrollbar gutter按实际变化同步。selected/modified/enabled可能通过SS改变字重，不能无条件当作纯绘制属性。
+- 字体、文字对齐、single_line、有效padding、树缩进/行高、scrollbar gutter按实际变化同步。selected/modified/enabled可能通过SS改变字重，不能无条件当作纯绘制属性。
 - 编辑/组合显示版本变化只要求对应字段重新同步；首基线上下文和父样式仍按树序传播。
 
 稀疏批次只复制改变的Control，不复制整棵状态树。树过滤、树行层级/可见性改变仍会更新树元数据；移除默认值时会检查引用该目标的reset菜单。暂存描述、effects和需要保留的交互状态可能分配内存，不承诺零分配。
@@ -49,7 +53,7 @@ apply_effects(*changed);
 
 ## 观测
 
-`Session::statistics()`新增只读累计值：
+`Session::statistics()`提供以下描述与布局同步累计值；其余文字、资源和裁剪计数见公开头：
 
 | 字段 | 口径 |
 |---|---|
@@ -62,15 +66,15 @@ apply_effects(*changed);
 
 使用操作前后差值。布局、文字、绘制统计分别表达自己的工作；零node_visits不代表整次prepare没有扫描控件。
 
-## 验收
+## 历史验收
 
-基线`855433a840584b414073758d6587f5ce6ae66703`，2026-10-05在Dev/Release各执行正式`ui_acceptance`，均20/20 PASS，exit 0。新增四组真实Session/LayoutDocument/DirectWrite端到端场景：
+本节是 2026-10-05 稀疏更新增量的固定证据，不是当前全部 UI 场景清单。起始基线`855433a840584b414073758d6587f5ce6ae66703`，交付提交`08b2fa2cbeee1033948603f97a9c9564abd5e93d`，Dev/Release各执行正式`ui_acceptance`，均20/20 PASS，exit 0。新增四组真实Session/LayoutDocument/DirectWrite端到端场景：
 
-- `persistent_control_updates`：33个静态节点；单项颜色更新的control_updates增量1，layout_syncs、layout.node_visits、measure_calls、rasterizations增量均0；文字更新仅同步1个控件；继承颜色/字体、同值no-op及旧帧身份/像素保持。
+- `persistent_control_updates`：33个静态节点；单项颜色更新的controls_updated增量1，layout_syncs、layout.node_visits、measure_calls、rasterizations增量均0；文字更新仅同步1个控件；继承颜色/字体、同值no-op及旧帧身份/像素保持。
 - `control_batch_validation`：全量/稀疏坏批次、缺失/重复key、种类/父关系/绑定引用拒绝；活动草稿保持、提交值正确、被动缓冲同步。
 - `control_update_cleanup`：祖先禁用时真实编辑协议的edit_cancel、IME取消和capture release；全量移除复用清理；坏批次不关闭popup，owner禁用正常dismiss。
 - `control_candidate_revision`：描述/主题版本拒绝旧候选；布局失败及几何已发布后的UI准备失败均保留旧UiFrame并暂停激活；暂停Surface恢复同一坐标映射后，旧帧仍不能绕过失败边界；恢复必须等待新帧accepted，重复接受同一恢复帧有效。
 
 命令：正式开发环境中运行`cmake --build --preset dev --target ui_acceptance`和release对应入口。日志位于`out/review/ui-sparse-updates/{dev,release}-acceptance.log`。
 
-本轮未进行每个分配点的异常注入，也未运行GPU、窗口或真实系统IME/剪贴板；生产协议注入只证明UI侧边界，不替代平台验收。
+该次增量未进行每个分配点的异常注入，也未运行GPU、窗口或真实系统IME/剪贴板；生产协议注入只证明UI侧边界，不替代平台验收。当前覆盖与其他集成证据从[UI 模块](README.md#限额与验收)进入。

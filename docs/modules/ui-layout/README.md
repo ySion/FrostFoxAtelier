@@ -1,6 +1,8 @@
 # UI 布局核心
 
-状态：**原生布局基建已完成本阶段审计与优化，可以收尾。** 支持基准尺寸与伸缩、换行/分布/首基线，以及二维轨道、跨行跨列和自动放置；既有稳定身份、共享列、重复格、虚拟列表、缓存和事务发布保持。开发/发布覆盖41个场景，生产UI消费者两配置各15/15通过，见[验收记录](acceptance.md)与[交叉审计和性能](audit.md)。这是原生UI语义，CSS兼容、循环依赖与基线边界见[Flex/Grid合同](flex-grid.md)；正式控件与文字见[UI消费模块](../ui/README.md)，真实窗口与绘制接线见[编辑器](../editor/README.md)。
+`atelier_ui_layout` 是正式原生布局核心。支持稳定节点身份、共享列、重复格、Flex 伸缩/换行/分布/首基线、二维 Grid 轨道/跨格/自动放置，以及逻辑列表的可见范围和滚动锚点。当前布局消费者包含 41 个场景；固定版本的验收和性能证据见[验收记录](acceptance.md)与[审计记录](audit.md)。
+
+尺寸语义、CSS 兼容边界和不支持的循环依赖见[Flex/Grid 合同](flex-grid.md)。正式控件、文字与输入由[UI 模块](../ui/README.md)提供；声明式作者层和真实窗口消费见[编辑器](../editor/README.md)。布局验收不替代这些上层模块的验收。
 
 ## 当前入口
 
@@ -12,14 +14,14 @@
 | 了解当前设计取舍 | [决策](decisions.md) |
 | 接入共享列、物品格、版本和错误处理 | [调用示例](usage.md) |
 | 使用原生Flex、二维Grid、基线和统一对齐 | [Flex/Grid合同与示例](flex-grid.md) |
-| 查看本轮修复、交叉二审和同场景性能 | [审计与优化](audit.md) |
+| 查看已完成的数值修复、交叉二审和同场景性能 | [审计与优化](audit.md) |
 | 管理逻辑行高、可见范围与滚动锚点 | [VirtualList契约](virtual-list.md) |
 | 接入内容绑定与完整呈现帧 | [完整内容消费](composition.md) |
 | 回看全量Inspector/物品格的成本 | [历史性能证据](../../research/ui-layout-reassessment/native-performance-history.md) |
 
 生产命名空间是 `atelier::ui_layout`，静态目标是 `atelier_ui_layout`。公开包含路径为 `ui_layout/layout.hpp`；核心不链接 Runtime、LLVM/JIT、RHI 或文字库。根CMake复用既有工具链和分配器规则，不另建求解器后端工厂。
 
-## 已实现的最小消费链
+## 消费链
 
 1. 创建带明确容量/深度限制的 `LayoutDocument`，传入同步叶测量函数与非拥有context。
 2. 通过稳定局部 `LayoutNodeId` 创建、更新、移动、移除节点；编辑和旧发布相互独立。
@@ -39,7 +41,7 @@
 
 当前支持Fixed/Content/正权重Expand及min/max、padding/gap、槽内填满/对齐、覆盖与父内容矩形锚定。`table` 为各行统一列宽，`wrap` 按自然宽度分行，`grid()` 在同一换行算法中使用自适应等宽槽。折叠保留节点身份但退出几何和测量。真实文字按最终宽度取得自然高度，不用viewport高度压缩自然需求。
 
-编辑可批量合并到下一次计算，稳定叶度量可命中缓存。内容变化若未参与上次几何度量，计算可复用几何并发布新版本；尺寸、结构、provider或viewport变化仍求解参与布局的实例树。折叠子树不再承担逐次工作数组初始化；节点描述仍保留。VirtualList让树只保留可见窗口，普通滚动可只改变composition偏移。不承诺通用局部调度、全链路零分配或硬帧预算。
+编辑可批量合并到下一次计算，稳定叶度量可命中缓存。内容变化若未参与上次几何度量，计算可复用几何并发布新版本；尺寸、结构、provider或viewport变化仍求解参与布局的实例树。折叠子树不承担逐次工作数组初始化，节点描述仍保留。调用方可用 VirtualList 只实例化可见窗口，普通滚动只改变 composition 偏移；它不自动虚拟化任意 Session 控件树。原生 UI Table 的可见绘制走其自身统一表格入口。不承诺通用局部调度、全链路零分配或硬帧预算。
 
 ## 构建与验收
 
@@ -61,7 +63,7 @@ cmake --build --preset release --target ui_layout_acceptance
 - [三候选真实验证](../../research/ui-layout-reassessment/validation-results.md)：历史比较路径、性能分项、反例及覆盖限制。
 - [工业游戏UI](../../research/ui-layout-reassessment/industry-game-ui.md) / [工业编辑器UI](../../research/ui-layout-reassessment/industry-editor-ui.md)：通过Exa调查的机制依据。
 - [研究总入口](../../research/ui-layout-reassessment/README.md)：来源和历史资料，不是当前生产依赖。
-- [本次Flex/Grid原始资料核对](research.md)：规范和工业实现的算法依据、性能取舍与保留边界。
+- [Flex/Grid原始资料核对](research.md)：规范和工业实现的算法依据、性能取舍与保留边界；建议的落地结果见审计记录。
 - 已退役的候选与原生首步探针可从Git历史恢复；源码、独立runner和已失效方案不再留在当前树中。固定来源、许可与必要实测摘要保存在研究目录。
 
-正式代码位于 `src/ui_layout/`，消费者位于 `acceptance/ui_layout/`。当前树只保留这一套正式布局实现和验收入口；共享README与跨模块验收由集成负责人协调。
+正式代码位于 `src/ui_layout/`，消费者位于 `acceptance/ui_layout/`。当前树只保留这一套正式布局实现和验收入口。
