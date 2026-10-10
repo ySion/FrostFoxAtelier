@@ -2,7 +2,7 @@
 
 研究日期：2026-09-30。本文讨论 Hazelight 的 UnrealEngine-Angelscript 集成，依据其官方文档和实际源码；不把上游 AngelScript 的通用能力当作 UE 分支已经具备的能力。
 
-状态说明：以下比较保留研究时的能力基线与建议。其后的同步拥有型 String/Array、词法清理和受控原生算法调用已落地，现行实现与验收见[源码拥有型基础值](../source-owned-values.md)。
+状态说明：以下比较保留 2026-09-30 的能力基线与建议。其后的同步拥有型 String/Array、词法清理、受控原生算法调用及源码调试核心均已落地，现行实现与验收见[源码拥有型基础值](../source-owned-values.md)和[源码调试](../source-debugger.md)。文中的后续建议不作为当前待办。
 
 ## 结论与优先级
 

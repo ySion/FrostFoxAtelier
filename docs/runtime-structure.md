@@ -145,7 +145,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 | 项目 | 现状与实际影响 | 处理时机与最小方向 |
 | --- | --- | --- |
 | 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 以[阶段测量](research/runtime-stage-measurements.md)及连续运行证据评估消费者预算；当前没有已证明需要池化、根表替换或退休队列的负载 |
-| 源码调试宿主接入 | 核心已有源码断点、单步、只读局部值和源码调用栈；平台继续提供动态展开信息 | UI/远程通信尚未接入，C++ 单步、变量写入和任意指令暂停不在当前范围；见[调试合同](source-debugger.md) |
+| 源码调试宿主接入 | 核心已有源码断点、单步、只读局部值和源码调用栈；平台继续提供动态展开信息 | 编辑器面板与 Control 调试指令仍处于[接入方案](modules/editor/control.md#源码调试接入待实现)阶段；核心能力与 C++ 单步、变量写入等边界见[调试合同](source-debugger.md) |
 
 `await`、跨模块调用、递归、多对象类型环境、对象引用参数、资源记录/容器按值调用和布局迁移属于尚未实现的能力；plain record 同步按值参数/结果、原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
 
@@ -156,6 +156,6 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 ## 证据与维护入口
 
 - 模块迁移的历史验收见[阶段记录](research/runtime-stage-closeout.md#源码模块迁移的历史证据)。`out/review/runtime-structure/verification.json`保留迁移前的历史快照，不代表当前路径。
-- 当前阶段的关停、资源基线和结束条件见[阶段收尾](research/runtime-stage-closeout.md)；可重跑的测量代码随源码维护，原始日志保存在本机 `out/review/`。
+- 2026-09-28 的关停、资源基线和验收结果见[历史阶段记录](research/runtime-stage-closeout.md)；可重跑的测量代码随源码维护，原始日志保存在本机 `out/review/`。
 - ABI 结果诊断与 async 绑定的[关闭记录](research/runtime-stage-closeout.md#已关闭的历史缺陷)保留原始证据；它们不再是现行缺陷。
 - 当前行为更新 `runtime-model.md`，语法统一更新根目录 `LANGUAGE.md`，本页维护结构与已知边界。研究文件不作为另一份当前实现清单。
