@@ -2,6 +2,8 @@
 
 当前支持精确源码断点、进入/跳过/跳出单步、只读调用栈与局部值、错误现场和受控终止。公共入口为 [`source/debugger.hpp`](../src/source/debugger.hpp)，执行仍使用现有 `Entry/Lease.invoke`、`start` 和 `Coroutine.resume`。
 
+这是已经落地的调试核心。编辑器调试面板、快捷键及外部指令的共同接入方向由 [Editor Control](modules/editor/control.md#源码调试接入待实现)维护，目前仍处于方案阶段；各调用方将共享同一宿主调试会话。
+
 ## 暂停与执行合同
 
 停点在 Runtime 所在线程同步调用处理器。**处理器返回前，原来的 `invoke/resume` 不返回**；原生栈、参数借用、GC 根和代码版本保持有效。处理器接收独立拥有的 `DebugSnapshot`，返回带本次 `stop_id` 的命令。
@@ -75,7 +77,7 @@ Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映
 
 ## 范围与验收
 
-当前不提供任意机器指令暂停、C++ 单步、变量写入、表达式求值、反向执行或内置远程传输。工业依据见[研究记录](research/source-debugger-research.md)。
+当前不提供任意机器指令暂停、C++ 单步、变量写入、表达式求值或反向执行。运行中的暂停/终止请求尚无独立控制句柄，`abort` 只在已有停点处理器返回时生效；不能据此承诺终止未命中停点的无限循环或抢占长时间原生调用。工业依据见[研究记录](research/source-debugger-research.md)。
 
 [`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径覆盖单步、精确版本断点、变量初始化/作用域、只读保护、快照寿命、首错、中止，以及 async 跨 yield 和旧版本清理。它纳入 `source_acceptance`，也可单独运行：
 

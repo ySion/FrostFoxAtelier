@@ -6,7 +6,7 @@
 
 ## 当前能力与文档入口
 
-LLM 和工具可通过 [Editor Control](docs/modules/editor/control.md) 的本机管道与 CLI 调用场景、属性、相机、显示设置、复现导出和多帧渲染对照，复用编辑器的业务与撤销链。
+[Editor Control](docs/modules/editor/control.md) 是编辑器指令化操作与调试的标准入口，UI、快捷键、CLI、自动化、验收和 LLM 都是调用方。当前外部接入使用本机管道与 JSON，场景、属性、相机、显示设置、复现导出和渲染对照沿现有业务与撤销链执行；调试面板与 `debug.*` 仍待接入。
 
 | 模块 | 当前能力 | 详细说明 |
 | --- | --- | --- |
@@ -82,7 +82,7 @@ cmake --build --preset release --target editor_acceptance
 
 ## 编辑器内编写源码
 
-**File → Edit Editor UI Source** 打开正在使用的 UI DSL，编辑后 Ctrl+S 保存并进入原有同步热更新。**File → Open Source…** 或 Asset Browser 打开项目 Source 文件。Code 面板支持行号、选区、缩进、剪贴板、独立撤销、错误定位与外部修改冲突处理；工程 Source 已接入跨文件构建、真实组件和属性、场景保存、独立运行及兼容热更；项目 UI 可独立预览。F6 构建、F8 运行、Shift+F8 停止；类型变化使用 Project → Rebuild Types and Scene。补全和断点调试尚未接入。详见[源码工作流](docs/modules/editor/source-editor.md)。
+**File → Edit Editor UI Source** 打开正在使用的 UI DSL，编辑后 Ctrl+S 保存并进入原有同步热更新。**File → Open Source…** 或 Asset Browser 打开项目 Source 文件。Code 面板支持行号、选区、缩进、剪贴板、独立撤销、错误定位与外部修改冲突处理；工程 Source 已接入跨文件构建、真实组件和属性、场景保存、独立运行及兼容热更；项目 UI 可独立预览。F6 构建、F8 运行、Shift+F8 停止；类型变化使用 Project → Rebuild Types and Scene。Code 面板的补全和断点调试交互尚未接入，Runtime/JIT 调试核心已可通过正式接口使用。详见[源码工作流](docs/modules/editor/source-editor.md)。
 
 ## 构建与端到端验收
 
@@ -211,7 +211,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 已完成长会话反复物化/退休、最多 512 个同时存活单元及定型成功调用的本机测量，方法、数据与限制见[二次验收记录](docs/research/jit-industrial-research.md#二次验收记录2026-09-24)。这只是平台微型样例，不替代真实业务负载的编译延迟、稳态吞吐或行为热重载验收。
 
-**平台范围限制**：只验证受控、已定型 LLVM IR 的进程内同步执行，不支持任意 C++ 目标文件、C++ 静态构造/TLS 初始化或 C++ 异常跨 JIT 帧。语言源码行映射、PDB/源码断点和变量查看、真正的行为热重载仍未接入；共享业务与执行根的最小贯通见下节。
+**平台范围限制**：只验证受控、已定型 LLVM IR 的进程内同步执行，不支持任意 C++ 目标文件、C++ 静态构造/TLS 初始化或 C++ 异常跨 JIT 帧。平台探针只证明机器码执行、展开和退休路径。源码位置、断点/变量查看及兼容方法体更新由正式 Source 模块提供，分别见[源码调试](docs/source-debugger.md)与下节业务闭环；PDB 和原生调试器集成尚未接入。
 
 ## JIT 业务执行闭环
 
@@ -254,7 +254,7 @@ cmake --build --preset release --target atelier_source_measure
 
 语言基础沿同一 Runtime/source/JIT 入口支持 `core.bool`、短路逻辑、受检查的整数除余/移位、四种数值类型的显式转换、局部只读 const 与编译期模块常量，以及带作用域清理的 for/break/continue。[语言基础消费者](acceptance/source/foundations.cpp)通过 `source_acceptance` 覆盖这些执行与拒绝场景；[bool 调用边界消费者](acceptance/jit/bool_abi.cpp)通过 `jit_acceptance` 覆盖布尔值、借用及结果契约。运行入口为 `cmake --build --preset dev --target source_acceptance jit_acceptance`，release 使用同名目标；语义以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
-构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。这不等于已有文件监视、机器码源码行映射或断点调试。
+构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。编译错误的位置与运行停点分别维护：实际断点、单步和局部值通过[调试接口](docs/source-debugger.md)使用；编辑器磁盘检测沿[源码工作流](docs/modules/editor/source-editor.md)执行，PDB 和任意机器指令源码映射尚未接入。
 
 当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
 
@@ -369,6 +369,6 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 原生/描述型标量返回、const 接收者元数据、共享签名解析、嵌套实参次序、第二次 ABI 回调漏写/错种类、结果不提交与显式清根；源码首次声明、宿主期望核验、接收者要求固定及各版本实际调用存储。开发/发布完整日志见 `out/review/function-contract-meeting/dev-acceptance-corrected.log` 和 `release-acceptance.log`。
 - mimalloc 实际覆盖：C++/标准容器、对齐分配、DLL 初始化期及跨 DLL CRT 分配/扩容/释放、线程退出后的释放、分配失败的 C++ 语义。独立验收 DLL 不链接 mimalloc，用于确认 CRT 路径的实际重定向。
 
-首阶段的历史目标与取舍见[第一步记录](docs/first-step.md)。当前源码引用局部与临时值根、兼容方法体更新和显式协程均已贯通，实际合同与已验收范围见[运行时协议](docs/runtime-model.md#已实现的最小业务执行协议)。下一增量按真实消费者需求选择，尚未实现的范围见[阶段边界](docs/research/runtime-stage-closeout.md#后续阶段边界)。
+首阶段的历史目标与取舍见[第一步记录](docs/first-step.md)。当前源码引用局部与临时值根、兼容方法体更新和显式协程均已贯通，实际合同与已验收范围见[运行时协议](docs/runtime-model.md#已实现的最小业务执行协议)。下一增量按真实消费者需求选择，尚未实现的范围见[当前能力边界](docs/runtime-structure.md#已知成本与能力边界)。
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
