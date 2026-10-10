@@ -1,15 +1,15 @@
 # 布局正式验收
 
-状态：**2026-10-04，dev/release各41项正式场景、最小消费者及生产UI 15/15 PASS，正式入口均exit 0。** 在前次39项基础上补充Flex行/列触界余量、基线能力拒绝及Grid批次/隐式轨道/失败重试。审计、原始资料核对和最终二审见[审计与同场景性能](audit.md)。实际合同见[Flex/Grid](flex-grid.md)。未改共享构建或其他线源码，没有复跑Runtime/JIT/RHI全仓验收。
+本页保存布局核心的覆盖矩阵及固定版本验收证据。**2026-10-04，Dev/Release 各 41 项正式场景、最小消费者及当时的生产 UI 15/15 PASS，正式入口均 exit 0。** 在前次 39 项基础上补充 Flex 行/列触界余量、基线能力拒绝及 Grid 批次/隐式轨道/失败重试。审计、原始资料核对和最终二审见[审计与同场景性能](audit.md)，实际合同见[Flex/Grid](flex-grid.md)。当前 UI 覆盖独立维护在[UI 模块](../ui/README.md#限额与验收)，不沿用这里的 15/15 作为现状。
 
-## 当前入口与证据范围
+## 正式入口与历史证据范围
 
 - 生产：`src/ui_layout/layout.hpp`、`layout.cpp`及其私有`flex.inl`、`grid.inl`。
 - 正式消费者：`acceptance/ui_layout/main.cpp`、`practical.inl`、`scaling.inl`、`editor.inl`、`flex_grid.inl`、`audit.inl`和`minimal.cpp`；inl仅由现有正式消费者包含，没有第二个目标。
 - 构建与运行仍使用README中的`cmake --build --preset dev --target ui_layout_acceptance`及release对应命令，先按正式工具脚本准备环境和配置。
-- 当前源码以`f42d071b937ad0c9c81e2315c9a8b0ff49ddc00d`为基线；源码、工具链输入和两配置程序SHA-256记录于`out/review/ui-layout-followup/environment.json`。修改前程序先在新增复现下得到39 PASS / 2 FAIL，再保留作同输入性能对照。
-- 当前日志：`out/review/ui-layout-followup/dev-acceptance.log`、`out/review/ui-layout-followup/release-acceptance.log`；每份包含布局41/41、minimal和生产UI 15/15。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
-- 前次39项验收以`c644ba5692fe2d67d1dda93953e227a50ba64f9f`为基线，旧哈希和日志保存在`out/review/ui-layout-audit/`，不替代当前结果。
+- 该次修改以`f42d071b937ad0c9c81e2315c9a8b0ff49ddc00d`为基线，交付提交为`5d5336b430b20af88724c89cf949061bb653e280`；源码、工具链输入和两配置程序SHA-256记录于`out/review/ui-layout-followup/environment.json`。修改前程序先在新增复现下得到39 PASS / 2 FAIL，再保留作同输入性能对照。
+- 该次日志：`out/review/ui-layout-followup/dev-acceptance.log`、`out/review/ui-layout-followup/release-acceptance.log`；每份包含布局41/41、minimal和当时的生产UI 15/15。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
+- 前次39项验收以`c644ba5692fe2d67d1dda93953e227a50ba64f9f`为基线，旧哈希和日志保存在`out/review/ui-layout-audit/`，不替代后续版本的结果。
 - 退役两套旧探针和整理文档后，两配置再次各39/39及minimal通过，exit 0：`out/review/ui-layout-audit/cleanup-dev-acceptance.log`、`out/review/ui-layout-audit/cleanup-release-acceptance.log`。正式源码与上述哈希记录一致。
 - retained_text_frames和editor_session_end_to_end覆盖同内容不同宽度、固定文字的几何复用、旧资源保有/回收、批量编辑、稳定业务key、ghost取消/提交、字体失效及多面板失败保旧。消费链见[composition](composition.md)，最新成本分项见[审计](audit.md)。
 
@@ -50,7 +50,7 @@
 
 同一个正式消费者提供`--text-costs`、`--virtual-performance`和`--editor-performance`。最新复合场景、完整文字资源和成本拆分见[编辑器消费](composition.md)；文字API/字体对照及早期消费者结果见[历史性能证据](../../research/ui-layout-reassessment/native-performance-history.md)。这些不是帧预算承诺。
 
-仍未提供通用局部调度、完整滚动控件、绘制/输入、业务语言UI绑定、并发/异步或非Windows构建证明。没有所有core分配点失败注入、代际/版本极限循环实测、完整字体文件固定或全进程内存分析。几何快照不保活旧文字/绘制资源。
+布局核心仍未提供通用局部调度或并发/异步求解；非 Windows 构建未经验证。滚动控件、绘制/输入由[UI 模块](../ui/README.md)提供，业务语言绑定由[声明式 UI](../editor/declarative-ui.md)提供，不能把布局目标不覆盖它们写成全项目尚未实现。没有所有 core 分配点失败注入、代际/版本极限循环实测、完整字体文件固定或全进程内存分析。几何快照不保活旧文字/绘制资源。
 
 
 ## 基础行为覆盖

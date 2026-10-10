@@ -7,7 +7,7 @@
 基线：`1ddaac3`
 
 本页记录首个编辑器的范围、责任和验收终点。当前交付见[编辑器模块](modules/editor/README.md)；M2 保留为未完成的阶段目标。
-**当前 World 接入以[对象模型合同](research/game-world-object-model.md)为准**；[原生 UI 方案](ui-foundation-plan.md)保留已收口 S1/S2 和未启动 S3。本页只保留首版阶段记录，不表示立即继续 M2，也不要求恢复已经删除的旧 Scene/位置入口。
+**当前 World 接入以[对象模型合同](research/game-world-object-model.md)为准**；UI 输入与控件合同见[UI 模块](modules/ui/README.md)，S1/S2 的历史验收见[编辑器记录](modules/editor/README.md#s2-集成状态与输入法验收)。本页只保留首版阶段记录，不表示立即继续其旧排期，也不要求恢复已经删除的 Scene/位置入口。
 本轮交付位置 XYZ、列表选择、增删/撤销重做、可调分隔、基本相机及窗口生命周期；旋转缩放编辑、存档、JIT、节点画布、gizmo、视口拾取、自由停靠、多窗口和完整 IME 编辑器留待后续。
 长期工程规则沿用 [AGENTS.md](../AGENTS.md) 与[工程指南](engineering.md)；启动和构建命令统一维护在 [README](../README.md)。
 

@@ -26,6 +26,22 @@
 
 `UiFrame.controls_revision`标识候选使用的描述批次；描述或SS版本改变后，`accept`拒绝旧候选。颜色改变保留控件incarnation。`prepare`失败仍保有旧帧，但暂停交互激活，直到修复后的帧被接受；已提交描述及已返回的取消effects不会因出帧失败自动撤回。
 
+## 接入导航
+
+- 尺寸、Flex/Grid、测量和几何寿命：[布局核心](../ui-layout/README.md)。布局核心只返回几何，DirectWrite 排版与控件输入由本模块负责。
+- 描述提交、局部属性更新和失败恢复：[持久实例与稀疏更新](updates.md)。
+- 主题、作用域、继承及最终样式：[SS 合同](style-sheets.md)。
+- 组件组合、稳定 key、源码保存更新：[声明式 UI](../editor/declarative-ui.md)。生成的 Control 仍进入本 Session。
+- 外部工具的业务指令与 busy 策略：[Editor Control](../editor/control.md)。
+
+## 焦点与待结束交互
+
+`Session::interaction_state()` 返回只读 `InteractionState`，分别记录 `pointer`、`keyboard`、`text_draft`、`composition`、`clipboard` 和 `popup`；`active()` 是这些状态的并集。宿主用它判断是否需要等待交互结束，业务命令仍由宿主自己的入口校验。
+
+仅有 focus、被动文字绑定或可输入状态不表示活动草稿。字段提交/取消后可以保留焦点，同时不再有待提交事务；无效数字草稿仍属于 `text_draft`。`composition` 包含在途 IME 请求，`popup` 包含尚在已接受帧中显示的菜单。`wants_keyboard()` 继续表达键盘归属，`text_input()` 继续提供平台 token/位置，两者不替代待结束交互查询。
+
+`CodeDocument` 的已确认文字与历史属于源码文档，不计入字段 `text_draft`；源码保存/替换是否允许由编辑器的文档规则决定。源码编辑中的按压、组合与剪贴板请求仍通过上述状态保护。
+
 ## 多行源码编辑
 
 `ControlKind::code_editor` 使用 `Control::code` 指向宿主持有的 `CodeDocument`。文档跨控件挂载保持文本和增量历史；Session 共用原有焦点、捕获、Clipboard/IME token 与平台请求。`UiFrame::find_code` 返回可见行、文档版本和接受帧几何。单行字段继续使用其原有事务，源码已确认输入不会因失焦或隐藏回滚。作者与文件层契约见[源码工作流](../editor/source-editor.md)。
@@ -70,7 +86,7 @@ Session 管理展开状态；`tree_initially_expanded` 只在行进入或更换�
 
 宿主将某行 `selected` 从 false 改为 true 时，Session 展开其祖先，并按新几何滚动显露该行；进入时已选中的新行遵循相同规则。稳定的 selected 投影不会反复展开用户手动折叠的分支，过滤也不因此清空。
 
-展开按钮只改变视图；点击行或 Enter/Space 发出普通 `select`。上下/Home/End 在当前可见层级移动，越出视口会滚动显露；左键折叠或返回父行，右键展开或进入首个子项。Tab 将整个树作为一个停靠点。禁用逻辑祖先同时禁用后代；隐藏、移除、重挂父节点取消旧捕获。
+展开按钮只改变视图；点击行或 Enter/Space 发出 `select`，`SelectionModifiers` 携带 Shift/Ctrl，业务选择集合由宿主维护。上下/Home/End 在当前可见层级移动，越出视口会滚动显露；左方向键折叠或返回父行，右方向键展开或进入首个子项。Tab 将整个树作为一个停靠点。禁用逻辑祖先同时禁用后代；隐藏、移除、重挂父节点取消旧捕获。
 
 `tree_filter` 是名称子串过滤（ASCII 大小写折叠，其他字符原样匹配），匹配子节点保留祖先，匹配父节点保留其子树。过滤临时显露匹配路径，清空恢复保留的展开状态；空结果不产生虚假滚动条。固定行高、层级间距、交替底色和连接线通过 SS 表达；交替行覆盖空白区，复用现有文字与图标 Coverage 缓存、裁剪、滚动条及绘制协议。
 
@@ -88,7 +104,7 @@ Session 在同一输入入口管理滚动、焦点和在途列宽预览。固定
 
 行、列和手势均核对当前身份及接受帧数据。新数据的校验和行索引建立仅发生在数据快照变化时，选格不重新扫描整表。右键先发选择，再用真实 Table Control 作为 `ContextMenuRequest.source`，`table` 载荷记录原行/列；宿主菜单在原行消失、禁用或选择改变后关闭，不对后来的选择执行旧菜单动作。表格没有私有业务对象、命令入口或第二套文字编辑会话。
 
-首个消费者是 Asset Browser Details，通过 DSL 的 `Table` 与 `TableBinding` 接入；[声明式表格合同](../editor/declarative-ui.md#表格与宿主)说明作者语法和宿主路由。当前不提供单元格编辑、范围多选或冻结列，这些能力需由实际业务和既有编辑事务继续驱动。
+Asset Browser 的 List、Details、Tiles 共用 DSL `Table` / `TableBinding`、数据快照和原生虚拟绘制；[声明式表格合同](../editor/declarative-ui.md#表格与宿主)说明作者语法和宿主路由。当前不提供单元格编辑、范围多选或冻结列，这些能力需由实际业务和既有编辑事务继续驱动。
 
 ### 滚动与指针
 
@@ -100,7 +116,7 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 
 DSL 的 PopupMenu / PopupEntry 组合根级 `popup`、普通 `menu_item`、快捷键提示和分隔线。每个 Session 只允许一个 popup；同一 surface 内的非零 owner 必须先出现，浮层子树放在描述末尾。owner=0 表示独立菜单 surface，外部目标的身份与生命周期由宿主管理。Session 只负责本 surface 的布局、滚动、绘制和接受帧，不假定它是主窗口。
 
-`context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 通过点击、Enter/Space 或上下键请求菜单。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
+`context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 在主按钮按下时请求菜单，对应释放交给菜单宿主，不再等待按钮释放才展开。Enter/Space 或上下键也走同一菜单请求。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
 
 正式编辑器全部菜单使用 [PopupHost](../../../src/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。
 
@@ -131,6 +147,8 @@ DSL 的 PopupMenu / PopupEntry 组合根级 `popup`、普通 `menu_item`、快�
 
 label 默认从内容顶部绘制，普通 button/item/number/text_edit/checkbox/foldout/menu_item/combo 默认在内容框内垂直居中。`text-vertical-align` 可显式选择 top、center 或 bottom；文字、选区、caret 与输入法锚点共用最后的文字原点。控件显式或经 Flex 父项参与首基线对齐时，其 UI 文字上下文沿子树继承，文字统一从内容顶部绘制，包括容器内贡献首基线的后代，避免额外偏移破坏布局基线。这只决定文字内部放置，不改变 NodeInput 对齐和脱流规则。退出基线上下文后恢复最终样式指定的对齐。
 
+label 默认按可用宽度换行；`Control.single_line=true` 使用单行排版，超过分配的内容宽度时绘制尾部省略号。此属性通过同一文字版本、测量和接受帧快照生效，不修改权威 `Control.text`。可编辑字段仍使用完整原文、横向滚动和原有选择/caret 路径。
+
 `Style.control_padding` 为 button/item/number/text_edit/checkbox/foldout/menu_item/combo 增加内容边距，与显式`NodeInput.padding`相加；label/container/viewport没有隐式内容边距。消费者不能重复添加相同控件内边距。测量、栅格化、选区和caret使用同一个有效内容框。border/caret/scrollbar尺寸也以DIP配置，绘制时统一转换物理像素。
 
 - family、locale、weight、字号或角色字体比例改变：推进文字provider revision，清理对应格式/段落缓存，再通过正常布局入口测量。
@@ -158,11 +176,11 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 - 普通换焦点合法提交、非法取消；OS失焦、Surface失效、控件失效取消。数值拖调提交后回仅聚焦，下一次Ctrl+Z交业务。仅聚焦时新的权威投影更新被动缓冲，不能被旧文字覆盖。
 - 字段聚焦时Delete/Backspace由共享文字编辑消费，不能删除场景对象。Tab按可见呈现控件顺序导航，Ctrl+A全选，Left/Right按视觉方向移动或折叠选择，Shift扩选，Home/End到视觉行端。
 
-Action.value为`ActionValue = variant<monostate,double,wstring,bool,ContextMenuRequest,DragPoint>`：普通activate/select无值；checkbox、foldout、toggle按钮及checkbox/radio菜单项携带请求的bool值；number/splitter编辑为double，text_edit为wstring。begin/preview/commit/cancel继续沿应用的同一事务消费路径；cancel携带原值。业务派发失败停止同组剩余普通effects，仍须调用统一取消和IME/capture清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
+`Action.value` 使用公开头中的 `ActionValue`：普通命令激活无值；checkbox、foldout、toggle 按钮及 checkbox/radio 菜单项携带请求的 bool；number/splitter 编辑为 double，text_edit 为 wstring。上下文菜单、拖动、表格选择/排序/列宽及选择修饰键各有定型载荷，宿主按 ActionKind 和实际载荷解释。begin/preview/commit/cancel 继续沿应用的同一事务消费路径；cancel 携带原值。业务派发失败停止同组剩余普通 effects，仍须调用统一取消和 IME/capture 清理，保留首错。剪贴板失败则保留草稿、选择和历史供重试。
 
 本地历史保存插入/删除片段及前后选区，避免每次编辑复制整份文字；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 
-索引为UTF-16码元，编辑端点来自系统ICU的extended grapheme边界。DirectWrite同一layout负责点命中、带视觉affinity的caret和`HitTestTextRange`多矩形选择，不能用两个x表示双向选区。Windows SDK的`icu.h/icu.lib`仅为UI私有依赖，不新建文字渲染器或系统控件镜像。当前实机报告ICU 72.1、Unicode 15.1；覆盖非BMP代理对、组合重音、variation selector、明确ZWJ序列和双向混排，不据此宣称所有Unicode版本与字体均已验收。一手依据：[Windows ICU](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)、[ICU边界分析](https://unicode-org.github.io/icu/userguide/boundaryanalysis/)。
+索引为UTF-16码元，编辑端点来自系统ICU的extended grapheme边界。DirectWrite同一layout负责点命中、带视觉affinity的caret和`HitTestTextRange`多矩形选择，不能用两个x表示双向选区。Windows SDK的`icu.h/icu.lib`仅为UI私有依赖，不新建文字渲染器或系统控件镜像。既有验收环境报告ICU 72.1、Unicode 15.1；覆盖非BMP代理对、组合重音、variation selector、明确ZWJ序列和双向混排。正式消费者每次运行输出实际 ICU/Unicode 版本，不据历史结果宣称所有版本与字体均已验收。一手依据：[Windows ICU](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)、[ICU边界分析](https://unicode-org.github.io/icu/userguide/boundaryanalysis/)。
 
 ## 剪贴板、组合与平台位置
 
@@ -200,13 +218,15 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 ## 限额与验收
 
-2026-10-05 稀疏属性更新增量：Dev/Release正式`ui_acceptance`各20/20通过，使用真实Session、LayoutDocument和DirectWrite。新增计数、批次失败、编辑取消及过时候选覆盖见[更新合同与证据](updates.md#验收)。
+正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。当前源码包含 24 组场景，数量以[消费者的 cases 列表](../../../acceptance/ui/main.cpp)为准。
 
-单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；每段文字最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
+单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式`ui_acceptance`目标运行[真实消费者](../../../acceptance/ui/main.cpp)，20组场景覆盖实际中文/英文灰度文字、Style失效/候选失败保旧、DPI/暂停、旧帧寿命、数字拖调、控件身份、列表可见性，以及共享编辑的焦点/事务政策、合组与数量/字节预算、Unicode删除与双向选择、4096码元横滚、accepted caret、剪贴板身份/失败/过期和组合结果/取消/清理顺序，以及正反向选区、RTL组合起点、横滚不可见起点拒绝、显示版本/候选/旧帧和DPI失效。新增接受帧文字快照和SS作用域/继承/覆盖/错误恢复两组，图片与圆角也通过正式帧接线。Dev/Release均有效；组合协议注入不算真实系统输入法通过。
+正式消费者使用真实 Session、LayoutDocument 和 DirectWrite，覆盖文字/样式/接受帧寿命、DPI 与失败恢复、稀疏更新、编辑历史及 Unicode、剪贴板/组合协议、树/表格、按钮与菜单行为，以及单行标签省略。交互状态查询回归位于同目标的[文字编辑场景](../../../acceptance/ui/text_edit.inl)。检查在 Dev/Release 中均有效；组合协议注入不算真实系统输入法通过。
 
-S1的256行/96 DIP窗口首屏仍栅格化4行、裁剪252行，滚尾再返回累计栅格化8行。S2的4096宽字符/100 DIP字段保持完整编辑，生成的覆盖率宽度不超过100像素。正式窗口平台与搜索业务由[编辑器端到端验收](../editor/README.md)负责，S2整体是否完成以该集成记录及本机搜狗真实系统输入验收证据为准。
+验收记录按其代码基线保留：2026-10-05 的稀疏更新为双配置 20/20，见[更新证据](updates.md#历史验收)；2026-10-09 阶段合并为双配置 23/23，见[集成记录](../../research/stage-merge-20261009.md#本候选验收)。随后加入的场景以当前源码为准，历史通过数量不代表新版本已重跑。本次文档整理没有新增运行验收。
+
+历史 S1 的 256 行/96 DIP 窗口首屏栅格化 4 行、裁剪 252 行，滚尾再返回累计栅格化 8 行；S2 的 4096 宽字符/100 DIP 字段保持完整编辑，覆盖率宽度不超过 100 像素。这些是固定场景证据。正式窗口、搜索业务及本机搜狗真实输入的范围见[编辑器端到端验收](../editor/README.md)，不从 UI 协议场景推断其他系统输入法已通过。
 
 模块、renderer及正式编辑器使用同一源码树和项目固定工具链构建；阶段验收范围与证据见[SS文档](style-sheets.md#验收)。
 

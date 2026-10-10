@@ -74,7 +74,7 @@
 
 [ui-layout 合同](../../modules/ui-layout/contract.md) 第7、31–49行以及 [责任表](../../modules/ui-layout/README.md) 第31–38行规定 LayoutDocument 负责有序树、结构输入、尺寸分配、测量缓存及逻辑几何；不负责主题、shaping、滚动、裁剪或 renderer。当前 Session 已正确作为消费适配层：将样式中影响测量的 padding/字体映射为 NodeInput 与内容/provider 版本，再消费结果完成像素、状态与输入。
 
-Workspace 的 [describe](../../../src/editor/workspace.cpp) 第34–154行只投影业务：panel/title/caption Role、按钮 enabled、列表项 selected，以及明确的行列、宽高、gap 和容器 padding。它不复制调色板、不直接绘制文字、不建立局部 style resolver。这与 [ui-foundation-plan](../../ui-foundation-plan.md) 第66–72行已落地的 S1 合同一致；计划中的后续菜单/参数表达不得被当成当前已完成能力。
+上述历史基线的 Workspace::describe 只投影业务：panel/title/caption Role、按钮 enabled、列表项 selected，以及行列、宽高、gap 和容器 padding，不复制调色板、不直接绘制文字、不建立局部 style resolver。后续生产者已接入声明式 UI；当前样式职责以 [UI 模块](../../modules/ui/README.md#style与失效)和 [SS 合同](../../modules/ui/style-sheets.md)为准，旧行号及阶段计划不再作为调用指引。
 
 ## 建议：保持一个入口扩展
 

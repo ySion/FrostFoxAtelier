@@ -2,7 +2,7 @@
 
 日期：2026-10-01。状态：基础控件已完成阶段收口；随后按用户确认的“参数控件外观＋交互”接入菜单、下拉、数值阶梯与紧凑参数样式。固定目标仍为后续方向；随后按用户要求推进的停靠和 1.75 缩放校准见[工作区研究](houdini-workspace-reference-20261001.md)。
 
-本仓库观察基线：`9ad772ee9069a72ba90e535f598864f7565ea2c5`。已有 UI/SS 能力以 [UI 模块文档](../modules/ui/README.md) 和 [样式表文档](../modules/ui/style-sheets.md) 为准。本记录补充 [UI 基础计划](../ui-foundation-plan.md) 的控件方向，不另立实现规范。
+本仓库观察基线：`9ad772ee9069a72ba90e535f598864f7565ea2c5`。本记录保留当时的实机观察与控件方向，不另立实现规范；当前能力以 [UI 模块文档](../modules/ui/README.md) 和 [样式表文档](../modules/ui/style-sheets.md) 为准。
 
 ## 判断
 

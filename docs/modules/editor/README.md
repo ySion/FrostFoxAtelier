@@ -268,13 +268,15 @@ cmake --build --preset release --target editor_ime_acceptance
 
 这两个目标须依次运行，并保持编辑器前台且无物理修饰键按住。驱动保存原线程 profile，必要时仅在本线程选择已启用搜狗，退出时恢复并核对原文本服务或键盘布局；不修改用户默认、输入列表或启用状态。实际输入使用 SendInput 扫描码，系统生成的 IMM32 快照进入正式共享编辑路径。GPU 截图保存应用预编辑文字，`s2-ime-native-candidate.png` 保存编辑器所在桌面区域的原生候选窗；`ime-acceptance.txt` 记录系统组合/结果/候选通知及结果。
 
-用户已指定使用现有搜狗实测，当前模块为 SogouTSF.ime 16.8.0.5415。精确系统/profile 信息、此前 Pinyin 设置撤回证据与完整收口要求见[共同合同](../../ui-foundation-plan.md#95-本机环境与真实输入证据)。本轮证据必须分别看待：
+以下是 2026-09-29 的固定环境和历史证据，不表示当前机器配置。该次按用户指定使用搜狗，Windows build 为 26200.9457 / 25H2，`C:\Windows\System32\SogouTSF.ime` 的 FileVersion/ProductVersion 均为 16.8.0.5415；TIP 为 `{E7EA138E-69F8-11D7-A6EA-00065B844310}`，profile 为 `{E7EA138F-69F8-11D7-A6EA-00065B844311}`，语言为 `0804`。当时输入列表是 zh-Hans-CN 搜狗与 en-US 美式键盘，默认覆盖为搜狗。后续实机验收须重新记录实际环境。
+
+此前为微软拼音临时设置的用户 enable 位及追加可选项已通过原受支持 API 撤回，未覆盖整份用户设置；`out/pinyin-profile-reverted.txt` 与 `out/pinyin-environment-reverted.json` 记录 enable=0、列表顺序及搜狗默认与操作前一致。这不是微软拼音验收通过的证据。当前输入生命周期合同见[共享单行编辑](../ui/README.md#共享单行编辑)与[平台交接](../ui/README.md#剪贴板组合与平台位置)。以下结果须分别看待：
 
 - 真实 dev 运行已通过位置应答的屏幕坐标/非法请求检查。原生截图 `out/dev/editor-evidence/s2-ime-native-candidate.png` 确认 WEIZHI 的首候选为“位置”；物理 Space 已通过真实 START → GCS_RESULTSTR → END 将“位置”插入一次，`s2-ime-confirmed.png` 与 `out/dev/sogou-real-result.log` 保存确认结果。候选阶段可只有 VK_PROCESSKEY、IMN_CHANGECANDIDATE 和起点查询，没有 GCS 组合；不以 Session::composing 判断搜狗 reading 是否存在。
 - 加强生命周期检查后，在 X=0 的数值字段输入 WEIZHI，切到原查询为“位置”的搜索末端，再按 Space，实际变成“位置位置”。同一搜索字段的干净状态 Space 基准是“位置 ”。最新有界诊断存于 `out/dev/sogou-rebind-diagnostic-20260929/`：旧/新 token 转换正确、同一 HIMC/open=1，CPS_CANCEL 确实调用并返回成功；切换前后 starts/results 均为3，Space 后才变4。Space 前原生候选仍可见；最终 expected UTF16 `4f4d 7f6e 20`、actual `4f4d 7f6e 4f4d 7f6e`，X=0、business editing=0。该次证据排除取消分支未执行及取消期间新 start 排队错绑，表明 pre-START reading 仍存活。
 - 加入解绑/恢复后的版本在 dev/release 均通过原真实回归：切字段/失焦/Surface/目标变化后，Space 与同一 IME 的干净状态基准一致。字段内容、旧对象值和业务 editing 分别断言并记录；不以非空候选缓存或结果消息计数增加判失败。候选文本枚举已移除，仅用候选数量观察准备阶段、按本机已观察首候选送 Space。最终 `ime-platform.txt` 的跨字段 expected/actual 均为 `4f4d 7f6e 20`；`ime-acceptance.txt` 与 `acceptance.txt` 分别记录真实搜狗和普通窗口 PASS。最终归档不包含旧失败截图；诊断原始证据单独保留。
 
-驱动只请求一次前台并等待用户切换，随后失焦即停止，不反复抢焦点。临时生产 DEBUG、逐键跟踪、有界取消快照及诊断分支均已移除，保留必要原生计数、失败分类和正式回归。`out/sogou-environment-final.json` 与实测前记录核对，输入法列表/顺序和搜狗默认未变。系统 IME、协议注入、静态环境检查分别记录；此次仅证明本机搜狗 16.8.0.5415 及已观察候选顺序，不代表其他 IME。S2 主持已收口，S3 未启动。
+驱动只请求一次前台并等待用户切换，随后失焦即停止，不反复抢焦点。临时生产 DEBUG、逐键跟踪、有界取消快照及诊断分支均已移除，保留必要原生计数、失败分类和正式回归。`out/sogou-environment-final.json` 与实测前记录核对，输入法列表/顺序和搜狗默认未变。系统 IME、协议注入、静态环境检查分别记录；此次仅证明当时搜狗 16.8.0.5415 及已观察候选顺序，不代表其他 IME。S2 已在该范围内收口；后续编辑器能力以本模块和当前声明式 UI 文档为准。
 
 ### S1 真实负载采样
 
