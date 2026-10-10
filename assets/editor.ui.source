@@ -74,8 +74,11 @@ ui BooleanProperty(in Text title, in bool checked, in bool enabled, in ActionBin
 }
 
 ui EnumProperty(in Text title, in Text choice, in bool enabled, in Key target) {
+    // Houdini menu buttons hug their label (e.g. "Scale Rot Trans") instead of
+    // spanning the row; a minimum keeps short choices clickable.
     ParameterRow row { text: input.title;
-        Combo choice { text: input.choice; context: input.target; enabled: input.enabled; height: 23; expand_width: true; }
+        Combo choice { text: input.choice; context: input.target; enabled: input.enabled; height: 23; content_width: 0; min_width: 96;
+            classes: "parameter-menu"; }
     }
 }
 
@@ -475,8 +478,8 @@ ui EditorShell(in bool menu_collapsed, in Items<MenuTitle> menus, in Text status
         Column shelf_slot { }
         Column workspace { expand_height: true; }
         Row footer {
-            height: 23; padding_left: 8; padding_right: 8; classes: "status-bar";
-            Text status { text: input.status; single_line: true; caption: true; }
+            height: 23; padding_left: 8; padding_right: 8; align_center: true; classes: "status-bar";
+            Text status { text: input.status; single_line: true; caption: true; classes: "status-text"; }
         }
     }
 }
