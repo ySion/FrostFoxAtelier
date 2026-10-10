@@ -181,6 +181,7 @@ struct EditorControl::Impl {
             {"environment",f.environment},{"extent",{f.extent.width,f.extent.height}},
             {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"shadow_lights",s.scene_lit_shadow_lights},{"unshadowed_lights",s.scene_lit_unshadowed_lights}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
+            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
             {"resource_bytes",s.scene_lit_resource_bytes},{"shadow_rays",s.scene_lit_shadow_rays},{"probe_rays",s.scene_lit_probe_rays}}}};
     }
     Impl(Application& owner,const std::filesystem::path& directory):app(owner),server(directory,{{"revision",build_info::revision},{"configuration",build_info::configuration}}) {

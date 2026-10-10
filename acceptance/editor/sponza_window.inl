@@ -53,8 +53,9 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         <<" max="<<settings.probe_max[0]<<','<<settings.probe_max[1]<<','<<settings.probe_max[2]
         <<" grid="<<settings.probe_counts[0]<<'x'<<settings.probe_counts[1]<<'x'<<settings.probe_counts[2]
         <<" budget="<<settings.probe_update_budget<<" rays/probe="<<settings.probe_rays<<'\n';
-    // Isolate indirect diffuse from AO, screen reflections, bloom and the fallback environment.
-    settings.gtao=false;settings.sssr=false;settings.bloom=false;settings.environment={0,0,0};
+    // Sponza has no Sky Light; isolate indirect diffuse from AO, screen reflections and bloom.
+    require(Access::scene_snapshot(app).environment==std::array<float,3>{},"Sponza unexpectedly has environment radiance.");
+    settings.gtao=false;settings.sssr=false;settings.bloom=false;
     Access::scene_lit_settings(app,settings);
     auto on=shot("sponza-ddgi-on",128);
     const auto stable=shot("sponza-ddgi-stable",32);

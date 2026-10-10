@@ -108,7 +108,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 - 每次采样 JSON：接受帧号、全局计数、case 内序号、viewport、相机矩阵、有效设置、Sky radiance、等待/跳过帧和 GPU 统计。frame_stats 提供当前帧的 history_resets、shadow_lights、unshadowed_lights，case_reported_history_resets 累计本 case 所有已报告帧的重置次数。
 - manifest.json：文件大小及 SHA-256，最后发布的完整产物标记。
 
-GPU 统计带独立采样帧号和有效标志，可能落后于截图。相机矩阵与深度使用不抖动的编辑器投影；TAA/SMAA T2x 内部栅格投影有抖动，本接口不提供该内部矩阵。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护历史；接口不承诺完整清空 DDGI 探针、逐位确定性或恢复原 GPU 历史。
+GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sample.ddgi_pass_ms` 的两项分别为探针更新/传输与接收点 gather 耗时；`ddgi_visibility_rays` 的两项分别为探针命中着色与接收点 gather 的可见性查询数。它们共用 `valid`、`sequence`、`frame_id`，分别是 `pass_ms[3]` 和 `shadow_rays` 的细分，不能再次相加。相机矩阵与深度使用不抖动的编辑器投影；TAA/SMAA T2x 内部栅格投影有抖动，本接口不提供该内部矩阵。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护历史；接口不承诺完整清空 DDGI 探针、逐位确定性或恢复原 GPU 历史。
 
 ## 复现工程
 
