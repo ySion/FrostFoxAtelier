@@ -15,10 +15,10 @@
     "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
   },
   "gfx": {
-    "version": "e039b255efb327994d30b187caee400ca60110e0",
-    "url": "https://api.github.com/repos/gboisse/gfx/tarball/e039b255efb327994d30b187caee400ca60110e0",
-    "sha256": "498c32963532d78ab2697db0ed7a8d709b276970c6fcc049a57f9e7e1a680433",
-    "filename": "gfx-e039b255.tar.gz"
+    "version": "a8d9bd64ea7d95cfc015a047845bf709ac9f6582",
+    "url": "https://api.github.com/repos/gboisse/gfx/tarball/a8d9bd64ea7d95cfc015a047845bf709ac9f6582",
+    "sha256": "a30f5e25b820ee062ae4d0d3638579c2c5557ba6887fb882f8ec924263dfc68f",
+    "filename": "gfx-a8d9bd64.tar.gz"
   },
   "gfx_dxc": {
     "version": "1.9.2602",

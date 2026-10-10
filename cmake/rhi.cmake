@@ -50,12 +50,18 @@ function(atelier_patch_gfx source_dir)
 endfunction()
 
 function(atelier_add_rhi)
-    set(_gfx "${CMAKE_BINARY_DIR}/_deps/gfx-src")
+    file(READ "${PROJECT_SOURCE_DIR}/cmake/dependencies-lock.json" _gfx_lock)
+    string(JSON _gfx_revision GET "${_gfx_lock}" gfx version)
+    # gfx stores fetched SDKs below its own source tree. Give each revision a
+    # separate root so replacing gfx cannot erase SDKs whose fetch stamps survive.
+    set(_gfx "${CMAKE_BINARY_DIR}/_deps/gfx-${_gfx_revision}-src")
     atelier_gfx_dependency(gfx gfx "${_gfx}")
     atelier_gfx_dependency(directx-dxc gfx_dxc "${_gfx}/third_party/directx-dxc")
     atelier_gfx_dependency(DirectX12-Agility gfx_agility "${_gfx}/third_party/directx12-agility")
     atelier_gfx_dependency(D3D12MemoryAllocator gfx_d3d12ma "${_gfx}/third_party/D3D12MemoryAllocator")
     atelier_gfx_dependency(winpixevent gfx_pix "${_gfx}/third_party/WinPixEventRuntime")
+    set(D3D12MA_AGILITY_SDK_DIRECTORY "${_gfx}/third_party/directx12-agility"
+        CACHE STRING "Engine-locked gfx Agility SDK location" FORCE)
     set(GFX_BUILD_EXAMPLES OFF CACHE BOOL "No vendor examples in the engine" FORCE)
     set(GFX_ENABLE_GUI OFF CACHE BOOL "UI belongs to its own module" FORCE)
     set(GFX_ENABLE_SCENE OFF CACHE BOOL "Scene loading is not RHI" FORCE)
@@ -124,7 +130,7 @@ function(atelier_add_rhi)
 endfunction()
 
 function(atelier_deploy_rhi_runtime target)
-    set(_gfx "${CMAKE_BINARY_DIR}/_deps/gfx-src")
+    get_target_property(_gfx gfx SOURCE_DIR)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${_gfx}/third_party/directx-dxc/bin/x64/dxcompiler.dll"

@@ -32,6 +32,8 @@ cmake --build --preset release --target rhi_acceptance
 
 依赖版本/下载与 hash 的唯一权威是 [dependencies-lock.json](../../../cmake/dependencies-lock.json)，工具链是 [toolchain-lock.json](../../../cmake/toolchain-lock.json)。[cmake/rhi.cmake](../../../cmake/rhi.cmake) 部署 DXC、Agility、PIX 运行库及 `licenses/rhi`；[atelier.patch](../../../third_party/gfx/atelier.patch) 可从固定上游源码重新应用。普通 CPU 分配沿项目 mimalloc 接入，GPU 内存由 gfx/D3D12MA 管理。
 
+gfx 源码按锁定修订号放在 `out/<preset>/_deps/gfx-<revision>-src`，补丁的 pristine 副本及嵌套 SDK 留在对应源码目录。更新 gfx 时重新配置 preset 即可；不同修订分开存放，避免父源码重新解压后嵌套 SDK 被删除、旧 FetchContent 记录却仍宣称已完成下载。运行库部署从实际 gfx target 的源码目录取文件。
+
 部署时保留同目录 DXC、Agility、PIX、mimalloc 运行库及许可证，不能只复制 exe。共享根构建与依赖锁的跨模块整合由主持协调；运行场景、预期诊断和限制集中在 [acceptance](acceptance.md)，不另建会话交接规则。
 
 ## 当前边界
