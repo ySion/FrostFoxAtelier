@@ -67,6 +67,8 @@ Trs 使用 position、xyzw 四元数、每轴严格为正的 scale；输入有�
 
 Actor 或 Component Begin 失败停止后续 Begin，并逆序结束已经成功开始的对象。任一对象 Tick 首错停止本帧后续执行，整个 World 停止并完成 End 清理。End 失败仍继续其余清理，只报告首错；已产生的业务副作用不回滚。
 
+正常 stop、运行中 close 与异常停机共用退出入口：取消任务、逆序 End 后，按 Actor 成员逆序交付启用 Actor 的 deactivated，撤销物理等子系统参与。End 或停用通知失败不跳过其余对象和订阅者；保留引发退出的首错。重复 stop/close 不重发已完成的退出通知。
+
 `start_task` 接受活动 Actor 或 Component 的真实 Coroutine 启动器，World 持有 ready/suspended 任务。Actor 禁用或离场取消自身和组件任务；单组件禁用或移除只取消其任务，stop/close 取消全部任务。这里不提供线程调度器。
 
 LifecycleObserver 的 attached/detached 表达 World 注册/注销：Actor 整组注册按 Actor、组件正序通知，注销按组件逆序、Actor 最后；World close 还反转 Actor 顺序。动态组件增删采用相同规则；Detached 组成变动不产生这些通知。注册通知可以看到已提交完整图；注销通知可以看到已撤参与关系的完整对象，通知期间根仍保活。通知出错继续交付整组事件，并以 `Commit.notification_error` 报告。activated/deactivated 继续表达启用资格变化，所有通知均不代替 Begin/End。回调中同步结构修改失败，可用 `request/flush` 在宿主边界延后执行。

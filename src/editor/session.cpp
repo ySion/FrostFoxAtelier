@@ -671,6 +671,7 @@ Result<void> Session::update(float amount) {
 }
 Result<world::Commit> Session::stop() {
     auto result=world_.stop();
+    if (!result) return result;
     if (!world_.running()) physics_.reset();
     return result;
 }
