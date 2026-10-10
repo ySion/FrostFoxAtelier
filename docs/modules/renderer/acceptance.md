@@ -1,5 +1,188 @@
 # 编辑器 renderer 验收
 
+## 提交后 Review 补强（2026-10-10）
+
+基线提交为 `c8293e9`（移动光照历史与此前 Scene Lit 演进），本节验证其后的工作区补强。证据根目录 `out/lit-review-hardening-20261010/`。Astra 分别审查需求符合度、生命周期／规范与性能路径；主执行方负责集成和真实端到端验收。审核补强不改变 RHI 边界、FP32 深度或原生分辨率。
+
+需求审查确认：原位关闭 emission、等亮度换色、材质粗糙度跨过 SSSR 上限和修改反射上限，都会保留不再有效的旧反射。新增 `scene_lit_signal_edits.inl` 沿原 `--scene-lit-temporal` 入口隔离这些信号，使用同一终点清历史后收敛的参考图；比较只包含实际存在反射的接收像素。相对误差定义与下节移动验收相同，不表示残留能量比例。
+
+| 编辑后 16 帧的相对图像误差 | 修改前 `red.log` | 修复后 `fix-v2.log` |
+|---|---:|---:|
+| 关闭自发光 | .8879 | 0 |
+| 等亮度红色改蓝色 | .8094 | .1401 |
+| 材质 roughness .58 → .65，SSSR 上限 .6 | .7723 | 0 |
+| SSSR roughness 上限 .6 → .1，材质 .18 | .9445 | 0 |
+
+原位材质编辑使该对象的着色对应失效一帧，保留几何运动；反射旧来源验证也消费此标记。分类、解析、空间重建共用反射资格判断，超出范围即时回退环境并清除来源。两个 roughness 用例在编辑后的 0／1／2／4／8／16 帧均与 SSSR Off 参考一致，RGB8 最大误差为 0，FP32 深度逐值相同。等亮度换色仍需短暂收敛，实测静态噪声为 .0329；原 .25／.15 或三倍静态噪声的 8／16 帧门限未放宽。
+
+规范与生命周期审查修正了两处 CPU 链路：非 Sky 组件 attach 无须为天光唯一性额外扫描所有对象；新增解析灯时显式标记 SceneSnapshot 变化。正式文档链现在验证灯光创建、禁用、重新启用各使 scene revision 增加一次，重复 refresh 保持幂等，且不改变天光环境。原有其他 presentation refresh 成本仍在，不能据此次局部扫描消除宣称整个 attach 流程降为线性。
+
+性能补强包括跳过纯复制的三个直接光滤波通道、SSSR 关闭时省去 HiZ／工作列表准备／反射滤波、确定性光源样本复用、无漫反射贡献时跳过 DDGI 接收查询。`scene_lit_work.inl` 加入既有 contracts，按完成序号去重，每种条件采集三个实际 GPU 查询样本；Dev 与 Release 计数一致：
+
+| 固定接收面场景 | 每帧接收／可见性查询 | 每帧探针主查询 |
+|---|---:|---:|
+| 零半径点光，1／8／64 样本 | 均为 441,408 | 0 |
+| 零角半径方向光，1／8／64 样本 | 均为 441,408 | 0 |
+| 有限半径点光／方向光，8 样本 | 3,531,264 | 0 |
+| DDGI，纯金属或纯黑漫反射，Local GI Off | 0 | 6,144 |
+| DDGI，纯金属但 Local GI On | 3,531,264 | 6,144 |
+| DDGI，基础色仅 1e-5 的非零漫反射 | 3,531,264 | 6,144 |
+
+同时验证确定性光源的亮度与深度、有限面积样本、探针调试显示和世界空间探针继续更新。逻辑 dispatch／读写节省的计算见 [Scene Lit](scene-lit.md#诊断与性能边界)，本轮没有独占 GPU 帧耗时或 FPS 的前后对照。保留可复用纹理也不等于释放显存。
+
+| 配置／入口 | 结果 | 日志 |
+|---|---|---|
+| Dev `--scene-lit-temporal`，GPU validation | PASS：以上四项编辑、移动拖尾、无关运动、T2x 长时来源与原时间隔离 | `fix-v2.log` |
+| Dev `--scene-lit-contracts`，GPU validation | PASS：查询计数、几何／灯边界、成员变化、无效帧隔离、空场景退休／重入、重复关闭 | `dev-contracts.log` |
+| Release `--scene-lit-quality`，GPU validation | PASS：四种 AA、反射／半影、连续编辑、SSIL、DDGI 接缝／隔墙、上述 contracts | `release-quality.log` |
+| Dev／Release `atelier_editor_document_acceptance --scene-lit examples/scene-lit` | PASS：真实 World／Project／Scene、快照版本、Sky Light 唯一性、撤销、临时保存重开 | `dev-document.log`／`release-document.log` |
+
+Dev 时间验收中移动后 16 帧误差为：面光阴影 .1015、红色反射 .0663、等亮灰色反射 .0367、Local GI .0638；纯红反射的未发光绿蓝通道最大值为 0。最终构建及 GPU 日志没有编译诊断或 D3D12 warning/error。`red.log` 是实际失败证据；`fix-build.log` 是中间 C++ 缩进诊断导致的构建失败，最终构建证据为 `fix-v2-build.log` 与 `release-build.log`。
+
+Astra 已复审最终材质／几何对应、来源验证、资格边界、设置依赖失效及跳过通道的输入有效性，未发现本批阻断项。仍需独立演进的边界：单个来源见证不能完整表示粗糙波瓣中的多个光源，次要来源改变而主要来源不变尚缺专门验收；解析灯仍上限 256，满分块的全灯回退与动态实例／发光分布重建成本值得在更大场景中采样。本轮没有实现多来源历史模型或大规模灯光调度。
+
+## SMAA 下移动物体的光照拖尾（2026-10-10）
+
+证据根目录 `out/moving-history-20261010/`。通过 Control 导出用户当前未保存场景，原进程和 Undo 保持不变。新增 `scene_lit_motion.inl` 沿既有 `--scene-lit-temporal` 入口，用真实 Renderer 分别隔离移动面光阴影、红色／等亮灰色发光面反射、Local GI。固定相机使用 SMAA，移动 16 个接受帧后观察停止响应；清除图像历史并收敛得到同一终点参考。比较仅包含移动前后仍为同一接收面的像素，误差为 RGB8 最大通道绝对差之和，除以初始／终点图像变化之和。它不是残留光能百分比或主观质量分数。
+
+| 停止后 16 帧的相对图像误差 | 修改前 | 最终 |
+|---|---:|---:|
+| 面光阴影 | .6072 | .1035 |
+| 红色反射 | .5990 | .0693 |
+| 等亮灰色反射 | .5575 | .0370 |
+| Local GI | .3377 | .0658 |
+
+原始 `baseline.log` 和 `baseline/` 确实失败。只全局降低几何变动时的反射历史支持会使远处无关物体的运动将静态反射帧间变化从 .6792 放大到 6.2605，`fix.log` 是失败候选，不作为交付。最终采用局部来源几何验证、跨随机 miss 的贡献见证和 signed RGB／矩的同步仿射收缩；纯红场景中未发光的绿蓝通道最大值为 0，修前可见的白色污染消失。
+
+原移动门限保持不变：停止 8／16 帧的误差分别不超过初始变化的 .25／.15，或实测静态采样噪声的三倍。负对照中的远处物体持续移动，SMAA 反射均值变化 .29%，帧间最大通道差均值为 .5390／.5605；T2x 对应 .69%、1.1313／1.0198。T2x 同一采样相位在第 256／512 帧的反射区域均值变化 .15%，防止来源坐标递归取整漂移。不同 AA 的随机采样和重建结果不要求逐像素／平均亮度一致，跨 AA 差异不作为来源漂移的判据。
+
+Dev `final-dev-temporal.log` 在 GPU validation 下通过新增移动／无关运动／512 帧来源检查和原时间隔离场景。Release `release-quality.log` 在 GPU validation 下通过完整质量入口，包含四 AA、反射／半影稳定性、光源与几何变化、SSIL、DDGI 接缝／薄隔墙、生命周期和 FP32 深度；T2x 静止／停止运动／新身份轮廓最大相邻帧 RGB8 差仍为 0／1／2。Astra 对来源坐标、贡献权重、矩、格式绑定和失效路径复审通过。
+
+Release 编辑器为 `out/release/atelier_editor.motion-history.exe`，SHA256 `fa8ab4ea0b57342b823daeb51a3f99e6caf737a8858505684e34959b891c9d5c`，沿正式 Ninja 链接命令仅改输出名。`release-build.log`、`release-link.log` 记录构建，`preview.result.json` 记录用户场景副本的 Control 对照及最终状态。实际产品捕获不启用 GPU validation，管线验证由上述两个真实 Renderer 入口提供。
+
+没有新增纹理、dispatch 或射线；既有三张 hit 图仍各为 8B／像素，前帧逆投影为新增常量。局部验证增加了 shader 计算，未给出独占 GPU 计时或 FPS 提升结论。反射仍是有限屏幕空间随机估计，移动后保留短暂收敛，不能据本轮结果宣称所有场景无噪声或无拖尾。
+
+## SMAA T2x 静态抖动与反射对照（2026-10-10）
+
+证据根目录 `out/t2x-investigation-20261010/`。原实现把含 jitter 的 surface motion 用于 T2x 独立空间帧颜色重投影，并用深度／背景硬拒绝互补覆盖；即使静止且 SSSR 关闭，两个采样相位仍来回跳动。修复仅为 T2x 派生去 jitter 的速度，沿上游邻域核计算抗锯齿速度，按原两帧 point resolve 和速度幅值权重组合前景／背景。`motion.z` 使用原保留位记录覆盖，`xy/w`、其他信号降噪及 FP32 深度保持原合同。1/256 显示像素的 T2x 速度噪声下限防止 FP16 motion／FP32 投影残差被平方根权重放大；没有增加纹理或 dispatch。
+
+Astra 窄范围复审通过。新增真实 Renderer 端到端 `quality_smaa_t2x_coverage` 关闭环境、解析灯、DDGI、AO、SSSR、SSIL、Bloom，仅观察静止自发光轮廓；同一场景三帧及公开无抖动深度直接比较，门限始终为最大 RGB8 色差不超过 2。旧代码为 188（`dev-red.log`）；只修坐标与覆盖的中间候选为 7（`dev-quality.log`，FAIL，不作通过证据）；最终为静止 0、移动停止 1、新对象身份 2。最终 Dev `--scene-lit-quality` 在 GPU validation 下通过，包含四 AA、灯光／几何／相机变化、反射／阴影收敛、SSIL、FP32 深度及原 DDGI／生命周期 contracts，见 `dev-quality-v2.log`。
+
+Release 正式编辑器使用已保存柱子现场的独立副本，通过 Control 比较 SMAA／T2x × SSSR 开／关，各采集接受帧 256、257、258。反射对照仅在副本将地板 roughness 设为 .18、metallic 设为 .65，原哑光地板 roughness .82 超过 .6 反射阈值，不能作为反射质量证据。新旧基线及修复数据为 `glossy-baseline.result.json`、`glossy-fixed.result.json` 和对应 `.metrics.json`；所有测量来自固定相机，没有模拟输入或修改原场景文件。
+
+| 指标 | 修前 | 修后 |
+|---|---:|---:|
+| T2x，SSSR 关闭，135 行发光板斜边相邻帧横向位移中位数 | .9645 px | 0 px |
+| T2x，SSSR 开启，同一区域边缘位移 | .9645 / .9639 px | 0 / 0 px |
+| T2x 反射 ROI 相邻帧 RGB8 平均差 | .5194 | .1460 |
+| T2x 反射 ROI 相邻帧 RGB8 差 p99 | 5 | 2 |
+| SMAA 反射 ROI 相邻帧 RGB8 平均差 | .1269 | .1282 |
+
+反射 ROI 为完整 1920×1260 客户区的 x∈[800,940)、y∈[775,870)，均为左闭右开。三帧只提供两个相邻帧样本，说明该复现的相位噪声改善，不代表所有材质／运动场景或长期方差。采样期间其他编辑器可能共用 GPU，未据此给出性能提升。现有 SSSR 仍有独立时域矩历史和 step 1／2／4 空间降噪；本轮未升级该降噪器，不能宣称消除所有随机反射噪声。T2x 仍为非递归两帧组合，新显露／增删可能保留一帧旧空间颜色。
+
+修正版为 `out/release/atelier_editor.t2x-fix.exe`，SHA256 `860db923aaa4f5a8335838e2292908d90f3684887daefe23ef97d5f6df5ed63b`。沿正式 CMake/Ninja 构建和链接，只改最终输出名；构建记录为 `dev-build-v2.log`、`release-build-v2.log`、`editor-link-v2.log`。Release 产品捕获为 `glossy-fixed-control/artifacts/2aa5d92b1eb880428010fb19752245b0/91b8ed726059ce49aa62d3335ef35ae6/`。未来 SDF 取舍见 [调研](../../research/mesh-sdf-ddgi-tradeoffs-20261010.md)，本轮未引入 SDF。
+
+## Review 修复与复审（2026-10-10）
+
+证据根目录为 `out/lit-review-fixes-20261010/`，修改前源码保存在其 `baseline-source/`。本批修复普通成员变化清空 DDGI、开放薄片背面误判 inside、World/Renderer 灯值域不一致、点光 source_radius 剔除遗漏、探针小预算失真、空场景资源滞留、被拒绝模式候选污染历史；同时复用静态实例/灯光上传与排序/法线缓存，合并直接光材质恢复和 Compose，关闭 Bloom 时跳过生成通道。仍使用现有 RHI、FP32 深度/距离和原生分辨率 AA。
+
+三位 Astra 分别复审光照语义、生命周期、性能与缓存失效。复审发现的低预算空半球写黑已修正为保留无观测方向历史；验收也从探针分类色改为真实间接光，并补上均匀天空能量与删空重入。最终源码复核未发现剩余阻断项，以下 GPU 验收由主执行方独立完成：
+
+| 配置 / 入口 | 结果 | 证据 |
+|---|---|---|
+| Dev `--scene-lit-contracts`，GPU validation | PASS | `dev-contracts-v2.log`、`dev-contracts-v2/` |
+| Dev `--scene-lit-ddgi`，debug layer | PASS | `dev-ddgi.log`、`dev-ddgi/` |
+| Release `--scene-lit-quality`，GPU validation | PASS，包含四种 AA 和上述 contracts | `release-quality.log`、`release-quality/` |
+| Release 正式编辑器 / Control | PASS，接受帧 96 捕获及独立复现导出 | `editor-fixed.result.json`、`editor-capture.log` |
+
+开放薄片与闭合立方体共用同一个 Mesh 的场景中，水平传播方向光只照亮墙，地板直接项为零：DDGI Off 接收面不超过 1，开启 DDGI 后接收面红通道均值为 46.6528。反绕序、镜像、连续 24 帧成员增删和快照重排均通过；后者同时检查真实光照与没有全局 history reset。均匀天空从独立初始化比较 64 条和 1 条照明射线，接收面均值均为 78；实际完成查询计数包含每探针独立的 32 条固定几何射线。上述数值是捕获的 sRGB 通道值，不是线性辐照度单位。首轮 `dev-contracts/` 使用了分类色，不作为 GI 能量证据；正式结论采用 v2。
+
+原质量阈值没有放宽：Release 墙/地面比例 p10 为 .9986，静态整墙最大相邻帧 mean .0804 / p95 1，移动发光体 mean .9786 / p95 3；12 cm 与亚像素隔墙的暗侧均为 0，direct64 参考也为 0。SSIL 关闭恢复的画面差为 0；四种 AA 的收敛及连续灯光、几何和相机变化检查通过。
+
+正式编辑器沿上轮已保存的柱子复现建立独立 `PreviewProject`，没有修改原未保存窗口。新可执行文件为 `out/release/atelier_editor.lit-review-fixes.exe`（SHA256 `1041f6ab692f0f5dca1c2d2343880fc913f7a23a16d783e06da8093e939effe5`），由 CMake/Ninja 的正式链接命令仅改输出名生成，以保留正在运行的旧二进制。捕获为 `editor-fixed-control/artifacts/05bcf62dee008344b96fd7ba222e84d4/9d0a85965e22ca499fa5e668d0bbfe6b/sample-1.png`；临时验收实例已关闭，原两个实例保留。
+
+同为 1920×1260、SMAA 的柱子捕获，逻辑资源从 873571020 降至 854217612 字节，减少 19353408 字节（约 18.46 MiB），见 `editor-resource-comparison.json`。它等于移除 `8P` 中转纹理减去本场景 12 个缓存三角形新增的 `16T` 数据；不包含待退休/驱动开销，不作为 FPS 或实际显存结论。视口尺寸资源裁剪、空间多灯 proposal 和超过 256 解析灯的扩展仍属后续演进。
+
+## 发光面主动采样与 DDGI 重建成本（2026-10-10）
+
+证据根目录为 `out/lit-sampling-4f514c5d/`。用户调整柱子后，通过 Control 读取内存属性和相机，在独立工程恢复现场；逐 Actor/Component 属性比较一致，原工程 Config/Content/Source 的四个输入文件与开始时副本的 SHA256 一致。固定视角的旧版对照中，柱子旁尖锐亮斑随 DDGI 关闭而消失，单独关闭 GTAO、SSSR 或解析阴影仍保留。旧窗口存在 Control busy 误报，未被关闭、保存或取消编辑。
+
+本批增加 world-space 发光三角 alias 分布与四候选 streaming RIS；屏幕漫反射和 probe-hit shading 共享采样/PDF、真实终点遮挡。DDGI 与 SSIL 不再重复注入已由直接光负责的一跳 emission。移除 DDGI 5×5 表面重建、对应 pipeline 和中间纹理，保留实际 probe→receiver LOS、连续方向权重以及 FP32 深度/距离。1440p 少一张 28.125 MiB 逻辑纹理；新增发光表每三角 64 字节，仅发光数据变化时重建。
+
+新能量场景关闭 DDGI、SSIL、所有解析灯与环境光，以 64 样本检查真实 GPU 接收面；观察的是 sRGB 红通道均值，不将其比例当作线性能量比例：
+
+| 条件 | 红通道均值 |
+| --- | --- |
+| 无发光面 | 0 |
+| 两三角发光面 | 50.0138 |
+| 不等面积四三角 | 50.0459 |
+| 镜像与非均匀实例变换后同一表面 | 50.0138 |
+| 同一表面细分为 800 个发光三角 | 49.9458 |
+| 反向绕序 | 50.0441 |
+| 辐射加倍 | 85.9669 |
+| 恢复原辐射并开启 DDGI | 50.0138 |
+| 加入遮挡 / 删除发光面 | 0 / 0 |
+
+最初新增直接发光暴露了降噪器的跨薄墙混色：RIS 候选的亚像素隔墙暗侧为 34，而只读直接光时间结果为 1、未滤波 direct64 为 0。修正空间重建，使当前接收点的估计方差决定混色范围，避免明亮邻点的噪声扩大稳定暗区的支持。原门槛没有放宽，最终 Dev/Release 专项结果相同或仅采样相位有微差：墙脚/墙面比 p10 约 .9983；静态整墙最大帧差均值 .0815、p95=1；移动自发光最大均值 .9659、p95=3；12 cm 隔墙暗侧 0、亮侧约 229.1；亚像素隔墙 0 / 230，direct64 暗侧也为 0。
+
+`final-dev-ddgi.log`、`final-release-ddgi.log` 均退出 0。`final-release-quality.log` 开启 GPU validation，四种 AA、反射/半影稳定性、直接光参考、连续灯光编辑、几何/相机恢复、Local GI 和 FP32 Reversed-Z 均通过；随后仅增加镜像/800 三角验收，生产代码不变，并在两种配置的专项入口补验。日志未报告 GPU warning/error。
+
+DDGI 计时与可见性射线已按 update/transfer、receiver gather 拆分，与主阶段使用同一个完成样本。原三阶段诊断证明 5×5 重建在该柱子视角额外执行约 1727 万查询；移除后该项为零，gather 约 583 万查询保留。`benchmark-{stats-baseline,final}` 记录 1440p 原始样本及资源统计，但原用户 Lit 窗口仍在并行渲染，`benchmark-condition.json` 明确标记未隔离；这些计时不能用于宣称稳定帧率或无干扰性能提升。
+
+该固定场景的 240 个唯一完成样本中，可见性查询中位数从 37,065,305 降至 15,250,712，减少约 58.9%；主探针查询仍为 9,216。gather 查询保持 8,442,020，移除的表面滤波为 25,147,940；新发光直接采样及 probe-hit shading 增加的查询已计入最终总量。逻辑资源从 1,361,695,756 降至 1,332,205,060 字节。射线与资源计数不受同时渲染导致的计时伸长影响；它们也不等同于帧率收益。
+
+补充配置对照中，当前 Dev 也出现了长延迟，因此没有归因为 Release 独有回归。临时 Dev 副本完成并关闭后，同一 Release 预览进程在不重建、不重启的情况下恢复到 SSSR 约 1.289 ms、DDGI 约 .476 ms 的单帧样本，见 `config-release-capture.response.json`。Windows adapter counters 同时观察到 dedicated 约 14.63 GiB、shared 约 2.21 GiB、committed 约 18.61 GiB；这是资源压力线索，不是已证实的因果，也不能把进程 counters 简单相加解释为物理驻留。原始记录已交 RHI 负责人核对，未为猜测修改 RHI 或绕过它。
+
+最终 Release 预览为 `out/release/atelier_editor.lit-sampling.exe`，由当前官方 Ninja 链接命令仅改输出名称生成，避免覆盖正在运行且有未保存数据的旧程序；命令保存在 `release-preview-link.txt`。窗口打开独立 `DeliveryProject`，完成 SMAA、AA Off、direct64 的 32/33 接受帧对照和复现导出，返回后恢复基础 SMAA/单样本设置；这组 GUI 观察不替代上面的长收敛质量验收。记录为 `delivery-final-*.response.json`、`delivery.result.json` 与 `delivery-evidence.json`，前后图为 `stats-baseline-viewport.png`、`delivery-viewport.png`。新版 Control 提供具体 busy_reasons 并区分被动文本焦点，消费者的实际 compare/export 成功；用户旧窗口仍保持原进程和未保存状态。
+
+当前限制：发光体镜面仍依赖 SSSR，离屏镜面路径未补全；解析灯仍有 256 上限和既有 tile 溢出路径，800 三角验收只证明派生发光面不受该上限截断。局部高密度解析灯、空间重要性采样和 Adaptive DDGI 调度仍待后续批次，未以本轮结果宣称完成。
+
+## DDGI 墙角残留暗斑与探针过渡（2026-10-10）
+
+前一轮逐 tap 距离矩修正缓解了尖斑，但没有覆盖用户新的贴近墙角视图。通过 Editor Control 固定当前相机、保留发光网格与仅剩的点光/天光后对照：关闭 GTAO 只能减轻接触暗部，残留不均匀暗斑仍来自 DDGI。最终让实际 probe→receiver 射线剔除被阻挡的贡献，同时保留距离矩的连续方向权重。纯二值可见性候选虽然通过墙脚检查，却在柱子旁暴露探针成员切换的三角轮廓，因此未作为最终交付。小范围接收面重建另用真实 LOS 约束，避免薄墙两侧同平面的像素混光；全部追踪和提交沿现有 RHI 入口，D32/R32 深度与 RG32 距离矩保持不变。
+
+证据根目录为 `out/ddgi-contact-7d839dce/`。新增亚像素隔墙场景，并将原墙脚比值下限从 .75 收紧至 .95；原实现重新编译后在同一验收入口确实失败，记录在 `regression-baseline-verified.log`。最终 Dev `--scene-lit-ddgi` 通过：
+
+| 指标 | 本轮原实现 | 最终组合 |
+| --- | --- | --- |
+| 墙脚/墙面红通道亮度比 p10 | .8338 | .9971 |
+| 静态整墙最大帧差均值 / p95 | .2093 / 1 | .2027 / 1 |
+| 移动自发光整墙最大帧差均值 / p95 | .7291 / 3 | .7052 / 3 |
+| 12 cm 隔墙暗侧 / 亮侧红通道均值 | .8182 / 236.1240 | 0 / 236.2231 |
+| 亚像素隔墙暗侧 / 亮侧红通道 | 220 / 224 | 1 / 239 |
+
+最终 Dev 专项与 Release 完整 `--scene-lit-quality` 均退出 0，日志未报告 GPU warning/error；Release 覆盖四种 AA、直接光/反射/半影稳定性、连续光照编辑与收敛、Local GI、几何/相机恢复、Reversed-Z 和上述 DDGI 场景。最终日志和图像分别在 `gated-final-dev-ddgi`、`gated-final-release-quality` 及相邻 `.log`；本轮 Dev 未重复完整质量入口。
+
+最终 Release 正式编辑器在用户原工程、相同相机和显示设置下完成 512 接受帧对照与独立复现导出；窗口留给用户继续观察。`before-viewport.png` 与 `gated-final-viewport.png` 为修复前后图像，`gated-final-editor-4.response.json`、`gated-final-editor-6.response.json` 分别记录对照与导出。应用负责人提供的 Control 长路径修复已合入消费树并通过此次导出，原工程四个输入文件的 SHA256 未变化。当前实例、源码/二进制指纹与相机/显示恢复证据见 `gated-final-manifest.json`。
+
+RX 6800 XT、Release、原生 2560×1440、验证关闭，沿既有固定 benchmark 场景（8 个网格、4 盏灯、SMAA、`11×7×10` 探针、96 更新/帧、64 照明射线）串行比较。运行中的编辑器临时切至 Flat，测量后恢复；每个版本预热 96 帧并收集 240 个唯一完成样本，测量阶段不 Capture。最终数据在 `gated-controlled-{moment-baseline,gated-final}/benchmark-{gpu.csv,summary.txt}`：
+
+| GPU 阶段 | 原实现 p50 / p95（ms） | 最终组合 p50 / p95（ms） |
+| --- | --- | --- |
+| DDGI | .450 / .454 | 1.567 / 1.574 |
+| 已计时通道总和 | 6.618 / 6.939 | 7.743 / 8.059 |
+
+额外逻辑纹理字节为 29,491,200（28.125 MiB），不是物理显存峰值。该 benchmark 的 DDGI 开销增加约 1.12 ms，不能推广为完整编辑器帧率或复杂场景上限。方向缓存与有限探针密度仍会影响有效贡献之间的插值；本轮结论限于已复现的墙角、成员过渡、运动与隔墙场景，不宣称所有 GI 伪影消失。
+
+## DDGI 方向可见性尖斑（2026-10-10，以上墙角修正前）
+
+在 `codex/viewport-rendering` 的 `17996cee` 加既有天光增量上，通过应用负责人提供的 Editor Control 增量读取现场、独立导出和固定相机对照。首次场景关闭 DDGI 后尖斑消失，单独关闭 GTAO 或 SSSR 后仍在；增加照明射线不能消除其空间形状。逐项诊断将问题定位到方向距离矩混合后的可见性：改为四个 tap 各自计算并压缩 Chebyshev 可见性，再双线性插值。最终未保留诊断用的可见性旁路或更高分辨率距离图。
+
+用户随后删除三盏解析灯并移动、放大发光板。保存后的 12 Actor 场景保留 Cool point 和 Sky Light；在修复前后的正式 Release 编辑器中各等待 256 个接受帧，复现并消除了沿墙排列的三角亮斑。两边场景文件 SHA-256、相机矩阵、显示设置、环境和 viewport 均一致；证据为 `out/lighting-spikes-4a8e3e16/adjusted-scene-comparison.json` 及其指向的两组 PNG、FP32 深度和 manifest。这是固定场景的视觉端到端对照，不是所有场景无伪影的声明。
+
+Dev / Release 的 editor、control、Renderer 验收目标均构建通过；两种配置的 `--scene-lit-ddgi` 均通过，既有阈值未改变：
+
+| DDGI 专项指标 | Dev / Release |
+| --- | ---: |
+| 墙脚 / 稍高墙面红通道比值 p10（下限 .75） | .8338 |
+| 静态整墙最大帧差均值 / p95（上限 3 / 8） | .2093 / 1 |
+| 发光物连续运动最大帧差均值 / p95（上限 3 / 8） | .7291 / 3 |
+| 12 cm 隔墙暗侧 / 亮侧红通道均值 | .8182 / 236.1240 |
+
+Release 完整 `--scene-lit-quality` 通过 GPU validation，覆盖四种 AA、直接光与反射稳定性、连续光照修改、Local GI、几何/相机恢复、Reversed-Z 和上述 DDGI 场景；本轮 Dev 执行 DDGI 专项，未重跑完整质量入口。日志与图像在同一证据根目录的 `release-quality`、`dev-ddgi`、`visibility-filter-release` 及相邻 `.log`；正常退出且未报告 D3D12 warning/error。
+
+最终修改没有新增 GPU 资源或射线，保留 8×8 方向图与 RG32_FLOAT 距离矩，只增加逐 tap 的可见性算术；本轮未测量常规帧的性能差值。当前实现与有限角分辨率边界见 [DDGI 探针场](scene-lit.md#ddgi-探针场)。原工程没有被本轮诊断写回；修正版编辑器打开独立的 `UserAdjustedProject`，可通过正常场景命令继续编辑、保存。
+
 ## Sponza DDGI 场景接入（2026-10-10）
 
 基于 `17996cee07bcb234860848e31d6717fac3dec335` 加本轮工作树修改，在 Windows x64 / AMD Radeon RX 6800 XT 验证。复用现有 Scene Lit/DDGI shader，新增场景灯光、启动配置及真实编辑器验收。该轮的 `Open-Sponza.ps1` 默认进入 Scene Lit（该历史入口现已由编辑器默认启动及 Project → Examples 替代），方向光、暖色可移动点光和冷色点光均来自实际 World；建筑使用线性基础色 .55、粗糙度 .85。

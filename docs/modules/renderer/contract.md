@@ -58,6 +58,7 @@ Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Applic
 - 隐藏、最小化、零 client 尺寸或输入 extent 与实际 target 不符：编码前返回 skipped，capture 不变。空 scissor 不会落入 gfx 的“零尺寸代表整个目标”惯例。
 - 完整 `Context::frame` 成功且 Present 未返回 `DXGI_STATUS_OCCLUDED`：accepted。`accepted_extent` 是编码前捕获的实际尺寸；gfx 在旧目标 Present 后 resize，`next_extent` 只适用于下一帧。accepted 不承诺已经完成扫描显示。
 - CPU 校验和编码前 CPU 分配失败：`Error::terminal=false`，可重新准备帧。开始 GPU 创建、上传或录制后失败：terminal，后续只可关闭，不宣称回滚或继续使用上一 GPU 帧。
+- 模式退出引起的 Scene Lit 历史失效也在 CPU 准备成功后执行；被拒绝的候选帧不改变有效 Lit 历史。接受空场景沿原 Context 退休旧场景的光栅与射线资源，可复用的 Scene Lit 目标仍由 Renderer 持有并报告逻辑字节。
 - Present 之后的 resize、等待、Reset 等失败沿 RHI 终态返回，不会提前发布 accepted。遮挡是 skipped，GPU 可能已经提交；它不是 GPU 回滚。
 - 应用只根据 accepted 替换完整命中数据，并负责在窗口大小/DPI 与命中帧不匹配时暂停命中、取消 press/capture；renderer 不建立第二份输入状态。
 
@@ -104,4 +105,4 @@ TAA / SMAA T2x 的采样深度只用于内部光照重建与历史。需要编�
 
 GPU 图像缓存以不可变 Image owner 与颜色空间为键并持有 CPU 所有者；未使用版本随帧退休，关闭时沿原 Context 合同释放。无材质贴图使用共享白图。场景图片与 UI 图片统计分开：`material_upload_count` 为本帧新增图片上传数（包括首次白图），`cached_material_images` 为当前场景图片缓存项数；不含 gfx 等待退休的资源。不增加原生设备/队列或帧内磁盘读取。
 
-此材质路径使用既有基础方向光和环境项；未使用的高度/高光贴图仍保留在源资产中。Scene Lit 的 GBuffer 与射线命中点目前只使用实例的基础色、粗糙度、金属度和自发光，不采样 Mesh 的漫反射或 opacity 图。Scene Lit 的编辑深度与选择叠层同样保持不透明覆盖，避免颜色、阴影和拾取深度对同一物体给出不同轮廓；纯线框模式仍使用上述材质裁剪。各模式共享含 UV 的 32 字节顶点和 112 字节三角形上传布局。Sponza 的贴图/Alpha Test 与 Scene Lit 的完整光照目前分别成立，尚未形成支持贴图裁剪的光栅/射线统一材质路径。
+此材质路径使用既有基础方向光和环境项；未使用的高度/高光贴图仍保留在源资产中。Scene Lit 的 GBuffer 与射线命中点目前只使用实例的基础色、粗糙度、金属度和自发光，不采样 Mesh 的漫反射或 opacity 图。Scene Lit 的编辑深度与选择叠层同样保持不透明覆盖，避免颜色、阴影和拾取深度对同一物体给出不同轮廓；纯线框模式仍使用上述材质裁剪。各模式共享含 UV 的 32 字节源顶点；光栅使用含边掩码的 112 字节三角形，Scene Lit 射线命中数据使用含几何法线与闭合分类的独立 112 字节派生三角形。Sponza 的贴图/Alpha Test 与 Scene Lit 的完整光照目前分别成立，尚未形成支持贴图裁剪的光栅/射线统一材质路径。

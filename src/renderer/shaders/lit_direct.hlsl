@@ -25,8 +25,6 @@ Texture2D<float2> lit_direct_specular_moments;
 uint lit_direct_filter_step;
 Texture2D<float4> lit_history_normal;
 Texture2D<float> lit_history_depth;
-RWTexture2D<float4> lit_direct_output;
-Texture2D<float4> lit_direct_source;
 Texture2D<float4> lit_indirect_source;
 Texture2D<float> lit_ao;
 RWTexture2D<float4> lit_hdr_output;
@@ -75,7 +73,11 @@ void lit_tiles_cs(uint3 dispatch:SV_DispatchThreadID,uint3 group:SV_GroupID,uint
     if(lane!=0)return; uint tile=group.y*((lit_size_frame.x+15)/16)+group.x,count=0;
     for(uint i=0;i<lit_counts.x;i++) {
         LitLight light=lit_lights[i]; float3 delta=max(tile_minimum[0]-light.position_range.xyz,0)+max(light.position_range.xyz-tile_maximum[0],0);
-        float radius=light.position_range.w+max(light.right_width.w,light.up_height.w);
+        // Match the support of lit_sample_light: point samples lie on a sphere,
+        // rectangle samples on their actual emitting rectangle.
+        float source_extent=light.meta.x==0?light.direction_radius.w:
+            .5*length(float2(light.right_width.w,light.up_height.w));
+        float radius=light.position_range.w+source_extent;
         if(light.meta.x==2||dot(delta,delta)<=radius*radius) {
             if(count<64)lit_tile_indices_output[tile*64+count]=i; count++;
         }
@@ -97,20 +99,37 @@ void lit_direct_cs(uint3 tid:SV_DispatchThreadID) {
         uint index=count>64?k:lit_tile_indices[tile*64+k]; LitLight light=lit_lights[index];
         uint seed=lit_light_seed(p,index);
         uint samples=max(1,lit_counts.z); float3 diffuse_sum=0,specular_sum=0;
+        // These delta lights consume no random values and repeat exactly the
+        // same direction and visibility. Keep the original accumulation order.
+        bool repeat_sample=(light.meta.x==0||light.meta.x==2)&&light.direction_radius.w==0;
+        float3 radiance=0,diffuse=0,specular=0;float visibility=1;
         for(uint s=0;s<samples;s++) {
-            float3 l;float distance;float3 radiance=lit_sample_light(light,position,seed,l,distance);
-            if(dot(n,l)<=0||!any(radiance>0))continue;
-            float visibility=1;
-            if(light.meta.y!=~0u && (lit_counts.w&1)!=0 && (light.meta.z&2u)!=0)
-                visibility=lit_visible(position,n,l,distance)?1:0;
-            float3 diffuse,specular;
-            lit_brdf_components(bm.rgb,nr.w,bm.w,n,v,l,diffuse,specular);
-            // Visibility is evaluated at THIS emitter sample, preserving the
-            // correlation of GGX, emitter radiance and occlusion for f*L*V.
+            if(!repeat_sample||s==0) {
+                float3 l;float distance;radiance=lit_sample_light(light,position,seed,l,distance);
+                if(dot(n,l)<=0||!any(radiance>0)) {
+                    if(repeat_sample)break;
+                    continue;
+                }
+                visibility=1;
+                if(light.meta.y!=~0u && (lit_counts.w&1)!=0 && (light.meta.z&2u)!=0)
+                    visibility=lit_visible(position,n,l,distance)?1:0;
+                lit_brdf_components(bm.rgb,nr.w,bm.w,n,v,l,diffuse,specular);
+                // Visibility belongs to this actual emitter sample; finite
+                // sources still evaluate every distinct f*L*V contribution.
+            }
             diffuse_sum+=diffuse*radiance*visibility;
             specular_sum+=specular*radiance*visibility;
         }
         diffuse_result+=diffuse_sum/samples; specular_result+=specular_sum/samples;
+    }
+    // SSSR owns camera-path emitter specular until both techniques share MIS.
+    // Mesh NEE supplies diffuse here and full BRDF transport at DDGI hits.
+    if (lit_emitter_count > 0 && any(diffuse_factor > 0)) {
+        uint emitter_seed = lit_light_seed(p, 0x6a09e667u);
+        float3 emitter_diffuse, unused_specular;
+        lit_emitter_lighting(position, n, v, bm.rgb, nr.w, bm.w,
+            (lit_counts.w & 1u) != 0, false, emitter_seed, emitter_diffuse, unused_specular);
+        diffuse_result += emitter_diffuse;
     }
     float3 diffuse_divisor=float3(diffuse_factor.r>0?diffuse_factor.r:1,
         diffuse_factor.g>0?diffuse_factor.g:1,diffuse_factor.b>0?diffuse_factor.b:1);
@@ -229,7 +248,7 @@ void lit_direct_resolve_signal(Texture2D<float4> raw, Texture2D<float4> previous
     float current_luma = lit_direct_luminance(current);
     // The deterministic reference integrates the same fLV samples without
     // reconstruction bias. No-light frames must never retain a removed lamp.
-    if (lit_counts.z == 64 || lit_counts.x == 0) {
+    if (lit_counts.z == 64 || (lit_counts.x == 0 && lit_emitter_count == 0)) {
         result = float4(current, 1);
         result_moments = float2(current_luma, 0);
         return;
@@ -247,6 +266,11 @@ void lit_direct_resolve_signal(Texture2D<float4> raw, Texture2D<float4> previous
         // Known light edits shorten support gently. They never globally turn
         // history off; geometry validity remains an independent hard gate.
         maximum_count = lerp(maximum_count, specular ? 7 : 11, saturate(lit_temporal.z));
+        // A moving occluder changes illumination on stationary receivers too.
+        // Preserve their history, but let new visibility replace old shadows.
+        // Unlike an authored light/color edit, this is not proof that a random
+        // zero observation invalidates a distant, unchanged lighting mean.
+        maximum_count = min(maximum_count, lerp(47, 4, saturate(lit_temporal.w)));
         float previous_count = min(history.a * support * lerp(1, .7, saturate(motion_pixels / 12)), maximum_count);
         // A known lighting change and a coherent current neighborhood provide
         // evidence of a new signal, independently of the old signal variance.
@@ -265,7 +289,7 @@ void lit_direct_resolve_signal(Texture2D<float4> raw, Texture2D<float4> previous
             float scale = clipped_luma / history_luma;
             history.rgb *= scale;
             history_moments.y *= scale * scale;
-        } else history.rgb = average * (clipped_luma / max(local.x, 1e-8));
+        } else history.rgb = 0; // A valid black history has no chroma to borrow from its neighbors.
         float history_weight = previous_count / (previous_count + 1);
         float clipped_mean = lit_direct_luminance(max(history.rgb, 0));
         result_moments.x = lerp(current_luma, clipped_mean, history_weight);
@@ -310,7 +334,7 @@ float4 lit_direct_filter_signal(Texture2D<float4> source, Texture2D<float2> mome
                                   uint2 p, bool specular, float3 position, float3 normal,
                                   float roughness, float pixel_size) {
     float4 center = source.Load(int3(p, 0));
-    if (lit_counts.z == 64 || lit_counts.x == 0) return center;
+    if (lit_counts.z == 64 || (lit_counts.x == 0 && lit_emitter_count == 0)) return center;
     float2 moments = moment_source.Load(int3(p, 0));
     if (center.a <= 0 || !all(isfinite(center)) || !all(isfinite(moments))) return 0;
     float noise = sqrt(max(moments.y, 0) / max(center.a, 1));
@@ -328,12 +352,12 @@ float4 lit_direct_filter_signal(Texture2D<float4> source, Texture2D<float2> mome
         int2 q = int2(p) + int2(x, y) * int(step);
         if (!lit_direct_neighbor(p, q, specular, position, normal, pixel_size)) continue;
         float4 sample = source.Load(int3(q, 0));
-        float2 sample_moments = moment_source.Load(int3(q, 0));
-        if (sample.a <= 0 || !all(isfinite(sample)) || !all(isfinite(sample_moments))) continue;
+        if (sample.a <= 0 || !all(isfinite(sample))) continue;
         float luma = lit_direct_luminance(sample.rgb);
-        float sigma = sqrt(max(moments.y, 0) / max(center.a, 1) +
-                           max(sample_moments.y, 0) / max(sample.a, 1));
-        float range = max(.002, sigma * 3 + .02 * max(center_luma, luma));
+        // The receiver's uncertainty sets its reconstruction support. A noisy
+        // bright neighbor cannot make a converged occluded receiver uncertain
+        // and leak through an intervening wall absent from the pixel centers.
+        float range = max(.002, noise * 3 + .02 * max(center_luma, luma));
         float kx = x == 0 ? 6 : (abs(x) == 1 ? 4 : 1);
         float ky = y == 0 ? 6 : (abs(y) == 1 ? 4 : 1);
         float weight = kx * ky * exp(-abs(luma - center_luma) / range);
@@ -357,17 +381,6 @@ void lit_direct_filter_cs(uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(8,8,1)]
-void lit_direct_combine_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy; if (any(p >= lit_size_frame.xy)) return;
-    lit_direct_output[p] = 0;
-    if (!lit_direct_surface(int2(p))) return;
-    float4 material = lit_base_metallic.Load(int3(p, 0));
-    float3 diffuse = lit_direct_diffuse_filter_input.Load(int3(p, 0)).rgb * lit_direct_diffuse_factor(material);
-    float3 specular = lit_direct_specular_filter_input.Load(int3(p, 0)).rgb * lit_direct_specular_factor(material);
-    lit_direct_output[p] = float4(lit_direct_finite(diffuse + specular), 1);
-}
-
-[numthreads(8,8,1)]
 void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
     uint2 p=tid.xy;if(any(p>=lit_size_frame.xy))return;
     if(!lit_inside(p)||lit_is_background_depth(lit_depth[p])) {
@@ -378,5 +391,10 @@ void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
     float4 bm=lit_base_metallic[p]; float ao=(lit_counts.w&4)!=0?lit_ao[p]:1;
     float3 irradiance=(lit_counts.w&(2|64))!=0?lit_indirect_source[p].rgb:lit_environment.rgb*LIT_PI;
     float3 diffuse=bm.rgb*(1-bm.w)*irradiance/LIT_PI*ao;
-    lit_hdr_output[p]=float4(min(lit_direct_source[p].rgb+diffuse+lit_emissive[p].rgb,65504.xxx),1);
+    float3 direct_diffuse=lit_direct_diffuse_filter_input.Load(int3(p,0)).rgb*lit_direct_diffuse_factor(bm);
+    float3 direct_specular=lit_direct_specular_filter_input.Load(int3(p,0)).rgb*lit_direct_specular_factor(bm);
+    // Preserve the removed RGBA16F material-resolve store's rounding. Depth,
+    // normals and all geometric correspondence keep their existing precision.
+    float3 direct=f16tof32(f32tof16(lit_direct_finite(direct_diffuse+direct_specular)));
+    lit_hdr_output[p]=float4(min(direct+diffuse+lit_emissive[p].rgb,65504.xxx),1);
 }

@@ -848,7 +848,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.coverage_upload_bytes = 0;
     s.stats.image_upload_count = 0;
     s.stats.image_upload_bytes = 0;
-    s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_gpu_timing_valid=false;
+    s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
     s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
     s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
@@ -861,7 +861,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&!frame.meshes.empty()&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
             if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
             s.scene_lit->validate(frame);
-        } else if(s.scene_lit)s.scene_lit->invalidate();
+        }
         s.grid_camera=prepare_grid_camera(frame);
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
@@ -882,6 +882,9 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
             pending.depth.resize(std::size_t(extent.width) * extent.height);
         }
         encoding = true;
+        if(s.scene_lit && (frame.view.shading!=Shading::scene_lit || frame.view.wireframe==Wireframe::only ||
+                          frame.meshes.empty() || frame.scene_viewport.width==0 || frame.scene_viewport.height==0))
+            s.scene_lit->invalidate(frame.meshes.empty(),s.stats);
         s.draw(frame, extent, capture ? &pending : nullptr);
         rhi::FrameInfo details;
         const auto presented = s.context.frame(s.options.vsync, &details);

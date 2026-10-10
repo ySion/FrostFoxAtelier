@@ -109,8 +109,10 @@ void lit_ssil_trace_cs(uint3 id : SV_DispatchThreadID) {
     if (!lit_ssil_intersect(origin, ray, clamp(lit_ssil_controls.x, .05, 1.2), q, confidence)) return;
     float4 material = lit_base_metallic.Load(int3(q, 0));
     float3 factor = max(material.rgb, 0) * (1 - saturate(material.w));
+    // Match the DDGI scattered-light boundary. Mesh NEE already owns direct
+    // emitter illumination at the receiver; only reflected light is corrected.
     float3 incoming = max(0, lit_ssil_finite(lit_direct_diffuse.Load(int3(q, 0)).rgb * factor +
-        lit_ssil_baseline(q) * factor / LIT_PI + lit_emissive.Load(int3(q, 0)).rgb));
+        lit_ssil_baseline(q) * factor / LIT_PI));
     float3 baseline = lit_ssil_baseline(int2(p));
     // cosine/pdf = pi. A miss adds zero residual, retaining DDGI/environment.
     float3 residual = lit_ssil_bound(incoming * LIT_PI - baseline, baseline) * confidence;
@@ -197,7 +199,9 @@ void lit_ssil_resolve_cs(uint3 id : SV_DispatchThreadID) {
     if (support >= .1) {
         history /= support;
         float motion_pixels = length(motion.xy * lit_size_frame.xy);
-        float previous_count = min(history.a * support * lerp(1, .7, saturate(motion_pixels / 12)), 47);
+        float maximum_count = min(lerp(47, 7, saturate(lit_temporal.z)),
+                                  lerp(47, 4, saturate(lit_temporal.w)));
+        float previous_count = min(history.a * support * lerp(1, .7, saturate(motion_pixels / 12)), maximum_count);
         float3 range = max(sigma * 4, baseline * .1 + .015);
         if (any(abs(history.rgb - average) > range * 2)) previous_count = min(previous_count, 7);
         float3 clipped = clamp(history.rgb, average - range, average + range);

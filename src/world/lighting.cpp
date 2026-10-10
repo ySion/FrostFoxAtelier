@@ -127,8 +127,11 @@ Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additio
         if(sky!=ObjectId{} && sky!=object) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
         sky=object;return {};
     };
-    for(const auto object:presentation) if(auto valid=visit(object);!valid) return valid;
     for(const auto& object:additions) if(auto valid=visit(object.id());!valid) return valid;
+    // Ordinary composition changes cannot introduce another Sky Light.
+    // Replacement edits are checked in presentation, preserving detached edits.
+    if(sky==ObjectId{} && (!replacement || replacement->kind!=LightKind::sky)) return {};
+    for(const auto object:presentation) if(auto valid=visit(object);!valid) return valid;
     return {};
 }
 Result<void> World::set_material(ObjectId object,Material value) {

@@ -25,13 +25,13 @@ RWStructuredBuffer<uint> lit_reflection_work;
 RWStructuredBuffer<uint> lit_reflection_counter;
 RWStructuredBuffer<uint> lit_reflection_arguments;
 RWTexture2D<float4> lit_reflection_output;
-RWTexture2D<float4> lit_reflection_hit_trace_output;
+RWTexture2D<uint2> lit_reflection_hit_trace_output;
 Texture2D<float4> lit_reflection_trace;
-Texture2D<float4> lit_reflection_hit_trace;
+Texture2D<uint2> lit_reflection_hit_trace;
 Texture2D<float4> lit_reflection_previous;
-Texture2D<float4> lit_reflection_hit_previous;
+Texture2D<float2> lit_reflection_hit_previous; // Continuous source anchor; zero means no witness.
 RWTexture2D<float4> lit_reflection_resolved_output;
-RWTexture2D<float4> lit_reflection_hit_output;
+RWTexture2D<float2> lit_reflection_hit_output;
 Texture2D<float2> lit_reflection_moments_previous; // Rec709 E[L], E[L^2]; RG32F.
 RWTexture2D<float2> lit_reflection_moments_output;
 Texture2D<float2> lit_reflection_moments;
@@ -69,6 +69,16 @@ bool lit_post_inside_uv(float2 uv) {
 }
 int2 lit_post_pixel(float2 uv) {
     return clamp(int2(uv * lit_size_frame.xy), int2(0, 0), int2(lit_size_frame.xy) - 1);
+}
+uint2 lit_reflection_pack_hit(float4 hit) {
+    if (hit.w <= 0) return 0;
+    uint2 pixel = uint2(lit_post_pixel(hit.xy));
+    // Exact texel identity and FP32 distance in the same eight bytes as before.
+    // Half-precision UV can select the wrong source across a silhouette at 1440p.
+    return uint2(pixel.x | (pixel.y << 16), asuint(hit.w));
+}
+float4 lit_reflection_unpack_hit(uint2 hit) {
+    return float4(lit_post_uv(uint2(hit.x & 65535, hit.x >> 16)), 0, asfloat(hit.y));
 }
 bool lit_post_surface(uint2 p) {
     return lit_inside(p) && !lit_is_background_depth(lit_depth.Load(int3(p, 0))) &&
@@ -257,6 +267,10 @@ bool lit_reflection_same_material(uint2 p, int2 q) {
 }
 [numthreads(1, 1, 1)]
 void lit_ssr_reset_cs(uint3 id : SV_DispatchThreadID) { lit_reflection_counter[0] = 0; }
+bool lit_ssr_eligible(uint2 p, float4 nr) {
+    return (lit_counts.w & 8) != 0 && nr.w <= lit_temporal.y && lit_controls.w > 0 &&
+        dot(lit_safe_normal(nr.xyz), lit_view_direction(lit_post_uv(p))) > .005;
+}
 [numthreads(8, 8, 1)]
 void lit_ssr_classify_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
@@ -265,10 +279,9 @@ void lit_ssr_classify_cs(uint3 id : SV_DispatchThreadID) {
     if (!lit_post_surface(p)) { lit_reflection_output[p] = 0; return; }
     lit_reflection_output[p] = float4(lit_post_environment(p), 0);
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
-    float nv = dot(lit_safe_normal(nr.xyz), lit_view_direction(lit_post_uv(p)));
     // Compact only pixels with a visible, sufficiently smooth specular lobe.
     // Work allocation has a strict one-entry-per-window-pixel capacity contract.
-    if ((lit_counts.w & 8) == 0 || nv <= .005 || nr.w > lit_temporal.y || lit_controls.w <= 0) return;
+    if (!lit_ssr_eligible(p, nr)) return;
     uint index;
     InterlockedAdd(lit_reflection_counter[0], 1, index);
     lit_reflection_work[index] = p.y * lit_size_frame.x + p.x;
@@ -411,7 +424,7 @@ void lit_ssr_trace_cs(uint3 id : SV_DispatchThreadID) {
     float3 reflection = lit_post_environment(p) +
         confidence * (incoming - lit_environment.rgb) * fresnel * weight;
     lit_reflection_output[p] = float4(lit_reflection_finite(reflection), confidence);
-    lit_reflection_hit_trace_output[p] = hit;
+    lit_reflection_hit_trace_output[p] = lit_reflection_pack_hit(hit);
 }
 
 float lit_post_previous_depth_tolerance(float3 position, float3 view_direction) {
@@ -498,6 +511,54 @@ bool lit_post_reflection_history(float2 previous_uv, float expected_depth, float
     signal /= support; moments /= support;
     return true;
 }
+float lit_post_geometry_motion(uint2 p) {
+    // Compare actual correspondence against the same WORLD point held still.
+    // Camera motion and projection jitter therefore do not count as object motion.
+    float4 motion = lit_motion.Load(int3(p, 0));
+    if (motion.w <= .5) return 1;
+    float3 position = lit_post_world(p);
+    float4 stationary = mul(float4(position, 1), lit_previous_view_projection);
+    if (stationary.w <= 1e-6) return 1;
+    float error_pixels = length((lit_post_uv(p) + motion.xy - lit_window_uv(stationary)) * lit_size_frame.xy);
+    float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(lit_post_uv(p)));
+    float depth_error = abs(stationary.z / stationary.w - lit_previous_device_depth(p, motion));
+    return max(smoothstep(.25, 2, error_pixels), saturate(depth_error / max(tolerance, 1e-8) - 1));
+}
+bool lit_post_previous_hit_present(float2 hit, out float source_motion, out float2 current_hit) {
+    source_motion = 0;
+    current_hit = 0;
+    if (all(hit == 0)) return true;
+    if (!lit_post_inside_uv(hit)) return false;
+    int2 old_pixel = lit_post_pixel(hit);
+    // Reconstruct the continuous anchor on the previous source plane from R32
+    // depth. Repeated snapping to texel centers drifts under the two T2x phases.
+    float depth = lit_history_depth.Load(int3(old_pixel, 0));
+    if (lit_is_background_depth(depth)) return false;
+    float2 local = (lit_post_uv(old_pixel) * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
+    float4 previous_world = mul(float4(local * float2(2, -2) + float2(-1, 1), depth, 1),
+                                 lit_previous_inverse_view_projection);
+    float3 position = previous_world.xyz / previous_world.w;
+    float3 old_normal = lit_safe_normal(lit_history_normal.Load(int3(old_pixel, 0)).xyz);
+    depth += dot(hit - lit_post_uv(old_pixel), lit_post_previous_depth_gradient(position, old_normal));
+    local = (hit * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
+    previous_world = mul(float4(local * float2(2, -2) + float2(-1, 1), depth, 1), lit_previous_inverse_view_projection);
+    position = previous_world.xyz / previous_world.w;
+    float4 clip = mul(float4(position, 1), lit_view_projection);
+    if (clip.w <= 1e-6 || !lit_post_inside_uv(lit_window_uv(clip))) return false;
+    int2 current_pixel = lit_post_pixel(lit_window_uv(clip));
+    if (!lit_post_surface(current_pixel)) return false;
+    // The source can retain identical geometry while its material/emission or
+    // object identity changes. Geometry alone cannot validate its old radiance.
+    if (lit_motion.Load(int3(current_pixel, 0)).w <= .5) return false;
+    float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(current_pixel, 0)).xyz);
+    float tolerance = max(.035, lit_post_pixel_world_size(lit_post_uv(current_pixel),
+        lit_depth.Load(int3(current_pixel, 0))) * .5);
+    if (dot(normal, old_normal) < .94 || abs(dot(lit_post_world(current_pixel) - position, normal)) > tolerance)
+        return false;
+    if (lit_temporal.w > 0) source_motion = lit_post_geometry_motion(current_pixel);
+    current_hit = lit_window_uv(clip);
+    return true;
+}
 [numthreads(8, 8, 1)]
 void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
@@ -563,12 +624,13 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
     if (any(p >= lit_size_frame.xy)) return;
     float4 center = lit_reflection_trace.Load(int3(p, 0));
-    float4 hit = lit_reflection_hit_trace.Load(int3(p, 0));
-    lit_reflection_hit_output[p] = hit;
+    float4 hit = lit_reflection_unpack_hit(lit_reflection_hit_trace.Load(int3(p, 0)));
+    lit_reflection_hit_output[p] = hit.w > 0 ? hit.xy : 0;
     if (!lit_post_surface(p)) {
         lit_reflection_resolved_output[p] = 0; lit_reflection_moments_output[p] = 0; return;
     }
-    if ((lit_counts.w & 8) == 0) {
+    float4 nr = lit_normal_roughness.Load(int3(p, 0));
+    if (!lit_ssr_eligible(p, nr)) {
         // Environment-only rendering is deterministic and material-local;
         // neither spatial pooling nor stale SSR history participates.
         float3 environment = lit_post_environment(p);
@@ -579,10 +641,12 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         return;
     }
     float2 uv = lit_post_uv(p);
-    float4 nr = lit_normal_roughness.Load(int3(p, 0));
     float3 normal = lit_safe_normal(nr.xyz), position = lit_post_world(p);
     float pixel_world = max(lit_post_pixel_world_size(uv, lit_depth.Load(int3(p, 0))), .001);
     float3 sum = center.rgb; float weight_sum = 1;
+    float3 environment = lit_post_environment(p);
+    float2 witness = hit.w > 0 ? hit.xy : 0;
+    float witness_score = hit.w > 0 ? length(center.rgb - environment) : 0;
     float center_luma = lit_post_luminance(center.rgb);
     float2 current_moments = float2(center_luma, center_luma * center_luma);
     [unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
@@ -591,6 +655,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q) ||
             !lit_reflection_same_material(p, q)) continue;
         float4 neighbor_normal = lit_normal_roughness.Load(int3(q, 0));
+        if (!lit_ssr_eligible(q, neighbor_normal)) continue;
         if (dot(normal, lit_safe_normal(neighbor_normal.xyz)) < .96 ||
             abs(nr.w - neighbor_normal.w) > .08 ||
             abs(dot(lit_post_world(q) - position, normal)) > max(.005, pixel_world * .5)) continue;
@@ -598,6 +663,11 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         // Mirrors keep their current sharp sample. Rough lobes can pool nearby
         // independent stochastic samples without blending geometric hard edges.
         float weight = smoothstep(.04, .2, nr.w) / (1 + x * x + y * y);
+        float score = length(value - environment) * weight;
+        if (score > witness_score) {
+            float4 candidate = lit_reflection_unpack_hit(lit_reflection_hit_trace.Load(int3(q, 0)));
+            if (candidate.w > 0) { witness = candidate.xy; witness_score = score; }
+        }
         sum += value * weight; weight_sum += weight;
         float luma = lit_post_luminance(value);
         current_moments += float2(luma, luma * luma) * weight;
@@ -614,6 +684,14 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     bool valid = (lit_history_invalid & 2) == 0 && (lit_counts.w & 8) != 0 && motion.w > .5 &&
         lit_post_reflection_history(previous_uv, expected_depth, normal, nr.w, tolerance,
                                     gradient, previous_signal, previous_moments, support);
+    float geometry_response = 0;
+    float2 previous_witness = 0;
+    if (valid && nr.w >= .04) {
+        float source_motion;
+        float2 previous_hit = lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0));
+        valid = lit_post_previous_hit_present(previous_hit, source_motion, previous_witness);
+        if (lit_temporal.w > 0) geometry_response = max(source_motion, lit_post_geometry_motion(p));
+    }
     if (valid && hit.w > 0) {
         int2 hit_pixel = lit_post_pixel(hit.xy);
         float4 hit_motion = lit_motion.Load(int3(hit_pixel, 0));
@@ -624,21 +702,24 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         float2 hit_gradient = lit_post_previous_depth_gradient(hit_position, hit_normal);
         valid = hit_motion.w > .5 && lit_post_valid_history(previous_hit_uv,
             lit_previous_device_depth(hit_pixel, hit_motion), hit_normal, hit_tolerance, hit_gradient);
+        if (lit_temporal.w > 0) geometry_response = max(geometry_response, lit_post_geometry_motion(hit_pixel));
         // Independent GGX rays estimate one rough-lobe integral and need not
         // hit the same pixel or even share hit/miss status. Reproject the CURRENT
         // hit to reject real disocclusion. Only near-delta lobes require the
         // previous ray association in addition to surface correspondence.
         if (valid && nr.w < .04) {
-            float4 previous_hit = lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0));
-            float hit_uv_error = length((previous_hit.xy - previous_hit_uv) * lit_size_frame.xy);
-            valid = previous_hit.w > 0 && hit_uv_error < 4 &&
-                abs(previous_hit.w - hit.w) < max(.15, hit.w * .04);
+            float2 previous_hit = lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0));
+            float hit_uv_error = length((previous_hit - previous_hit_uv) * lit_size_frame.xy);
+            valid = any(previous_hit != 0) && hit_uv_error < 4 &&
+                lit_post_valid_history(previous_hit, lit_previous_device_depth(hit_pixel, hit_motion) +
+                    dot(previous_hit - previous_hit_uv, hit_gradient), hit_normal, hit_tolerance, hit_gradient);
         }
     } else if (valid && nr.w < .04) {
-        valid = lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0)).w <= 0;
+        valid = all(lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0)) == 0);
     }
     float3 result = current;
     float count = 1;
+    float retained_contribution = 0;
     float2 result_moments = current_moments;
     if (valid) {
         float3 previous = previous_signal.rgb;
@@ -646,26 +727,41 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         float sigma = sqrt(max(spatial_variance, temporal_variance));
         float previous_count = min(previous_signal.a * support * lit_post_response(motion.xy),
                                    lerp(63, 23, saturate(lit_temporal.z)));
+        previous_count = min(previous_count, lerp(63, 2, geometry_response));
         float previous_luma = lit_post_luminance(previous);
         // Keep radiance variance across independent rough-lobe hits and misses.
         // Every moment and clipping extent uses the SAME Rec709 scalar units.
         float range = max(sigma * 4, .01);
-        float clipped_luma = clamp(previous_luma, current_moments.x - range, current_moments.x + range);
-        // Additive projection preserves chroma and works for negative or zero
-        // luminance. Scaling by luma would divide by zero or flip signed RGB.
-        float luma_shift = clipped_luma - previous_luma;
-        previous += luma_shift.xxx;
-        previous_moments.y += 2 * luma_shift * previous_moments.x + luma_shift * luma_shift;
-        previous_moments.x += luma_shift;
+        // Project TOWARD the current RGB mean. An equal RGB translation can
+        // turn stale red into red-minus-cyan (or create white in a red-only
+        // scene); the final nonnegative HDR boundary then exposes that chroma.
+        // This affine contraction preserves signed observations and needs no
+        // division by either color's luminance. Static rough-lobe misses retain
+        // the same temporal-variance support instead of hard-rejecting history.
+        float contraction = min(1, range / max(abs(previous_luma - current_moments.x), 1e-6));
+        previous = lerp(current, previous, contraction);
+        float clipped_mean = lerp(current_moments.x, previous_moments.x, contraction);
+        previous_moments = float2(clipped_mean,
+            temporal_variance * contraction * contraction + clipped_mean * clipped_mean);
+        // Count is reconstruction confidence, not an independent-sample proof.
+        previous_count *= contraction;
         float disagreement = abs(previous_luma - current_moments.x);
         if (disagreement > max(.1, sigma * 6)) previous_count = min(previous_count, 7);
         float history_weight = previous_count / (previous_count + 1);
+        retained_contribution = history_weight * contraction;
         result = lerp(current, previous, history_weight);
         result_moments = lerp(current_moments, previous_moments, history_weight);
         count = previous_count + 1;
     }
     lit_reflection_resolved_output[p] = float4(lit_reflection_finite(result), count);
     lit_reflection_moments_output[p] = result_moments;
+    // Rough radiance pools neighboring rays. Keep a representative contributing
+    // source through stochastic misses, advancing it into THIS frame's domain.
+    // This metadata changes no estimator weight and is not a hit/miss validity test.
+    if (nr.w >= .04 && valid && any(previous_witness != 0) &&
+        (1 - retained_contribution) * witness_score / weight_sum <
+            retained_contribution * length(previous_signal.rgb - environment)) witness = previous_witness;
+    lit_reflection_hit_output[p] = witness;
 }
 
 [numthreads(8, 8, 1)]
@@ -676,6 +772,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
     lit_reflection_filter_output[p] = center;
     if (!lit_post_surface(p) || (lit_counts.w & 8) == 0) return;
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
+    if (!lit_ssr_eligible(p, nr)) return;
     // True mirrors retain their association and sharp signal, including edges.
     if (nr.w < .04) return;
     float3 normal = lit_safe_normal(nr.xyz), position = lit_post_world(p);
@@ -684,7 +781,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
     float variance = max(0, moments.y - moments.x * moments.x);
     float sigma = sqrt(variance);
     float relative_noise = saturate(sigma / max(abs(moments.x), .02));
-    float distance = lit_reflection_hit_trace.Load(int3(p, 0)).w;
+    float distance = asfloat(lit_reflection_hit_trace.Load(int3(p, 0)).y);
     float footprint_distance = distance > 0 ? distance : lit_controls.w * .15;
     float footprint = clamp(nr.w * nr.w * footprint_distance / pixel_world * .1, 1, 8);
     float radius = max(1, footprint * lerp(.35, 1, relative_noise));
@@ -698,6 +795,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q) ||
             !lit_reflection_same_material(p, q)) continue;
         float4 q_nr = lit_normal_roughness.Load(int3(q, 0));
+        if (!lit_ssr_eligible(q, q_nr)) continue;
         float normal_dot = dot(normal, lit_safe_normal(q_nr.xyz));
         float plane_distance = abs(dot(lit_post_world(q) - position, normal));
         if (normal_dot < .96 || abs(nr.w - q_nr.w) > .08 ||
@@ -709,7 +807,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
         float range = max(.01, signal_sigma * 4 + .05 * max(abs(center_luma), abs(lit_post_luminance(sample.rgb))));
         float weight = exp(-abs(lit_post_luminance(sample.rgb) - center_luma) / range) *
                        pow(saturate(normal_dot), 32) / (1 + x * x + y * y);
-        float q_distance = lit_reflection_hit_trace.Load(int3(q, 0)).w;
+        float q_distance = asfloat(lit_reflection_hit_trace.Load(int3(q, 0)).y);
         // Rough-lobe hit/miss is a random variable, not a geometry boundary.
         // Distance guides only two valid hits and grows with the lobe width.
         if (distance > 0 && q_distance > 0) {

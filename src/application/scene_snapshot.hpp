@@ -69,7 +69,7 @@ public:
             value.source_radius=settings.source_radius;value.width=settings.width;value.height=settings.height;
             value.two_sided=settings.two_sided;value.casts_shadow=settings.casts_shadow;
             if(i<lights.size()) {changed|=light_content(lights[i])!=light_content(value);lights[i]=value;}
-            else lights.push_back(value);
+            else {lights.push_back(value);changed=true;}
         }
         changed|=lights.size()!=light_count;lights.resize(light_count);
         std::array<float,3> next_environment{};
