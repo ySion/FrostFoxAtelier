@@ -38,6 +38,8 @@ LightComponent 沿普通空间组件记录类型、TRS、根及父关系；Light
 
 准备好的行为代码存活到 close；停止后可重新 start。应用可以为每次 Play 从编辑场景快照创建新 Session，编辑文档和原撤销历史不参与运行，也不把运行结果自动写回。运行数据不得复用编辑 Runtime 的身份。
 
+End 回调内同步调用 Session::stop 会沿 World 准入返回 busy；被拒绝的调用不释放 PhysicsScene。物理服务保留到外层 World 退出完成、物理 update 返回后，再由宿主释放。
+
 ## 验收
 
 `project_scene_acceptance` 使用真实 Runtime 原生派生类型、Source/JIT 调用、Session、Scene、资源目录和 Jolt，覆盖默认值、类型/字段发现、Actor/Component 标量事务、失败加载释放、v1/v2、独立运行身份、反复启停、Begin/Tick/End 错误和物理争写拒绝。原 `world_acceptance` 继续覆盖顺序生命周期与对象图边界。新的多文件 Source class 发布链由项目编译集成验收补齐，不以原生派生类型消费者替代其证据。

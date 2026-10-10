@@ -104,8 +104,20 @@ std::optional<Error> World::Impl::end(ObjectId actor, ObjectId component) {
     return failure;
 }
 std::optional<Error> World::Impl::shutdown() {
+    const bool was_running = running;
     halt(); // Cancel tasks before End and suppress all further Tick calls.
-    return end();
+    auto failure = end();
+    // Every exit from a running World withdraws subsystem participation, even
+    // when Begin, Tick, End or another observer failed. A second shutdown is inert.
+    if (was_running) for (auto it = members.rbegin(); it != members.rend(); ++it) {
+        auto data = detail::actor_data(runtime, it->id());
+        if (!data) { if (!failure) failure = data.error(); continue; }
+        if (data->enabled) {
+            auto notification = notify(Lifecycle::deactivated, it->id());
+            if (!failure) failure = std::move(notification);
+        }
+    }
+    return failure;
 }
 Result<Commit> World::start() {
     auto& state = *impl_;
@@ -132,14 +144,6 @@ Result<Commit> World::stop() {
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
     if (!state.running) return Commit{};
     auto failure = state.shutdown();
-    for (auto it = state.members.rbegin(); it != state.members.rend(); ++it) {
-        auto data = detail::actor_data(runtime(), it->id());
-        if (!data) { if (!failure) failure = data.error(); continue; }
-        if (data->enabled) {
-            auto notification = state.notify(Lifecycle::deactivated, it->id());
-            if (!failure) failure = std::move(notification);
-        }
-    }
     return state.finish(true, std::move(failure));
 }
 Result<Commit> World::close() {
@@ -147,10 +151,8 @@ Result<Commit> World::close() {
     if (state.closed) return Commit{};
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
     state.closing = true;
-    const bool was_running = state.running;
     state.lifetime->open = false;
-    auto failure = state.shutdown();
-    state.presentation.clear();
+    std::optional<Error> failure;
     {
         detail::FlagScope transition{state.transitioning};
         for (const auto& member : state.members) {
@@ -160,13 +162,10 @@ Result<Commit> World::close() {
             });
             if (!marked && !failure) failure = marked.error();
         }
+        auto stopped = state.shutdown();
+        if (!failure) failure = std::move(stopped);
+        state.presentation.clear();
         for (const auto& member : state.members) {
-            auto data = detail::actor_data(runtime(), member.id());
-            if (!data) { if (!failure) failure = data.error(); continue; }
-            if (was_running && data->enabled) {
-                auto notification = state.notify(Lifecycle::deactivated, member.id());
-                if (!failure) failure = std::move(notification);
-            }
             auto cleared = runtime().with_native<Actor>(member.id(), [&](Actor& actor) -> Result<void> {
                 Access::member_world(actor) = nullptr;
                 return {};

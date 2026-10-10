@@ -269,7 +269,88 @@ void world_ownership() {
     take(other_scene->destroy_character(transferred));
 }
 
+void failed_lifecycle() {
+    enum class Exit { tick, task, activation, stop, close };
+    struct FailedTask final : atelier::CoroutineFrame {
+        atelier::Result<atelier::CoroutineStep> resume() override {
+            return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed,"primary failure"});
+        }
+    };
+    for (const auto exit : {Exit::tick, Exit::task, Exit::activation, Exit::stop, Exit::close}) {
+        using Event = std::pair<char, atelier::ObjectId>;
+        std::vector<Event> events;
+        bool fail_tick{}, fail_activation{}, fail_cleanup{};
+        PhysicsFixture f;
+        auto first = f.make({0, 4, 0}, dynamic_body());
+        auto second = f.make({4, 4, 0}, dynamic_body());
+        take(f.world.bind_behavior(f.world_types.actor, {
+            .tick=[&](atelier::Runtime&, atelier::ObjectId, float)->atelier::Result<void> {
+                if (fail_tick) return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed,"primary failure"});
+                return {};
+            },
+            .end=[&](atelier::Runtime&, atelier::ObjectId id)->atelier::Result<void> {
+                events.emplace_back('E', id);
+                if (fail_cleanup) return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed,"end failure"});
+                return {};
+            }
+        }));
+        take(f.world.observe_lifecycle([&, first_id=first.id(), second_id=second.id()](w::World&, w::Lifecycle event, atelier::ObjectId id)->atelier::Result<void> {
+            if (event == w::Lifecycle::activated && fail_activation)
+                return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed,"primary failure"});
+            if (event == w::Lifecycle::deactivated && (id == first_id || id == second_id)) {
+                events.emplace_back('D', id);
+                if (fail_cleanup) return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed,"notification failure"});
+            }
+            return {};
+        }));
+        f.start();
+        const auto first_handle = f.handle(first), second_handle = f.handle(second);
+        take(f.scene->add_impulse(second.id(), {100, 0, 0}));
+        fail_cleanup = true;
+        if (exit == Exit::tick || exit == Exit::task) {
+            fail_tick = exit == Exit::tick;
+            if (exit == Exit::task) take(f.world.start_task(first.id(), [](atelier::Runtime& runtime, atelier::ObjectId) {
+                return atelier::Coroutine::create(runtime, std::make_unique<FailedTask>());
+            }));
+            const auto updated = f.scene->update(fixed_delta);
+            require(!updated && updated.error().message == "primary failure", "Cleanup replaced the original execution failure.");
+        } else {
+            if (exit == Exit::activation) {
+                committed(f.world.set_enabled(first.body.id(), false));
+                fail_activation = true;
+            }
+            const auto result = take(exit == Exit::activation ? f.world.set_enabled(first.body.id(), true)
+                : exit == Exit::stop ? f.world.stop() : f.world.close());
+            require(result.changed && result.notification_error && result.notification_error->message ==
+                (exit == Exit::activation ? "primary failure" : "end failure"), "Committed exit lost the first failure.");
+        }
+        require(!f.world.running() && f.world.activity().tasks == 0 && f.scene->body_count() == 0,
+            "Failed World exit retained tasks or physical bodies.");
+        require(!f.scene->read_body_state(first_handle) && !f.scene->read_body_state(second_handle) &&
+            !f.scene->body_handle(second.id()) && take(f.scene->overlap_sphere({4, 4, 0}, 2)).hits.empty(),
+            "Stopped World retained a physics handle or query hit.");
+        const std::vector<Event> expected{{'E', second.id()}, {'E', first.id()}, {'D', second.id()}, {'D', first.id()}};
+        require(events == expected, "Failed exit did not finish reverse End and deactivation exactly once.");
+        fail_tick = fail_activation = fail_cleanup = false;
+        if (exit != Exit::close) {
+            committed(f.world.stop()); committed(f.world.stop());
+            require(events == expected, "Repeated stop repeated failed cleanup.");
+            f.start();
+            const auto fresh = f.handle(second);
+            require(fresh != second_handle, "Restart reused a body from the failed run.");
+            take(f.scene->update(fixed_delta));
+            require(near(f.state(second).linear_velocity.x, 0), "Failed run's queued impulse affected the restart.");
+            committed(f.world.stop());
+            require(events.size() == expected.size() * 2, "Restart did not receive one independent exit.");
+        }
+        const auto exits = events.size();
+        committed(f.world.close()); committed(f.world.close());
+        require(events.size() == exits, "Close repeated completed End or deactivation.");
+    }
+}
+
 void lifecycle() {
+    failed_lifecycle();
     PhysicsFixture f;
     auto actor = f.make({0, 4, 0}, dynamic_body());
     f.start();

@@ -102,7 +102,58 @@ void verify_query_source(editor::Project& project) {
 void edit(editor::Session& session,ObjectId object,const world::FieldPath& path,Scalar value,std::uint64_t key) {
     take(session.begin_edit(object,path,key)); take(session.preview_edit(key,value)); take(session.commit_edit(key));
 }
+void verify_stop_reentry() {
+    editor::Session* current{};
+    ObjectId query;
+    bool fail_tick{};
+    unsigned ends{}, live_ends{};
+    editor::Session document([&](world::World& world)->Result<std::shared_ptr<void>> {
+        take(world.bind_behavior(world.types().actor, {
+            .tick=[&](Runtime&,ObjectId,float)->Result<void> {
+                if (fail_tick) return std::unexpected(Error{ErrorCode::invocation_failed,"reentry tick failure"});
+                return {};
+            },
+            .end=[&](Runtime& runtime,ObjectId)->Result<void> {
+                ++ends;
+                const auto stopped=current->stop();
+                require(!stopped && stopped.error().code==ErrorCode::busy,"End reentered Session stop.");
+                // The completed query is real PhysicsScene-owned transient state.
+                // Its destructor clears this state, so this detects premature
+                // release without relying on a freed allocation still being readable.
+                const bool alive=take(runtime.with_native<const physics::SceneQueryComponent>(query,[](const auto& value)->Result<bool> {
+                    return value.query_ready();
+                }));
+                if (alive) ++live_ends;
+                require(alive,"Rejected stop destroyed the physics service before End returned.");
+                return {};
+            }
+        }));
+        return std::shared_ptr<void>{};
+    });
+    current=&document;
+    changed(document.add_actor());
+    changed(document.add_component(document.physics_types().scene_query_component));
+    query=document.selection().object;
+    const auto ready=[&] {
+        return take(document.world().runtime().with_native<const physics::SceneQueryComponent>(query,[](const auto& value)->Result<bool> {
+            return value.query_ready();
+        }));
+    };
+    changed(document.start());take(document.update(1.f/60));require(ready(),"Physics query did not complete before End reentry.");
+    fail_tick=true;
+    const auto failed=document.update(1.f/60);
+    require(!failed && failed.error().message=="reentry tick failure" && ends==1 && live_ends==1 && !document.world().running() && !ready(),
+        "Failed Session update lost its error or retained physics participation.");
+    changed(document.stop());changed(document.stop());require(ends==1,"Repeated stop repeated End after failure.");
+    fail_tick=false;
+    changed(document.start());take(document.update(1.f/60));require(ready(),"Physics service did not restart.");
+    changed(document.stop());require(ends==2 && live_ends==2 && !ready(),"Normal stop did not release physics after End.");
+    changed(document.close());changed(document.close());
+    require(ends==2,"Close repeated an already completed End.");
+    std::puts("Session stop reentry: PASS (failed Tick, live physics during End, rejected nested stop, restart, idempotent cleanup)");
+}
 void run() {
+    verify_stop_reentry();
     const auto directory=std::filesystem::current_path()/"project-scene-evidence"/std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project=take(editor::Project::create(directory));
     auto evidence=std::make_shared<Evidence>();
