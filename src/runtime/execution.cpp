@@ -21,6 +21,19 @@ ExecutionScope::~ExecutionScope() { if (runtime_) runtime_->leave_execution(); }
 ExecutionScope::ExecutionScope(ExecutionScope&& other) noexcept
     : runtime_(std::exchange(other.runtime_, nullptr)) {}
 
+Result<ExecutionInspection> ExecutionInspection::enter(Runtime& runtime) {
+    auto ready = runtime.enter_execution_inspection();
+    if (!ready) return std::unexpected(std::move(ready.error()));
+    return ExecutionInspection(runtime);
+}
+
+ExecutionInspection::~ExecutionInspection() noexcept {
+    if (runtime_) runtime_->leave_execution_inspection();
+}
+
+ExecutionInspection::ExecutionInspection(ExecutionInspection&& other) noexcept
+    : runtime_(std::exchange(other.runtime_, nullptr)) {}
+
 ExecutionFrame::ExecutionFrame(Runtime& runtime, std::span<ObjectRoot> slots) noexcept
     : runtime_(runtime), slots_(slots) {}
 
@@ -142,6 +155,7 @@ void Coroutine::cancel() noexcept {
     if (active->state == CoroutineState::running) { active->cancel_requested = true; return; }
     if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended) return;
     active->state = CoroutineState::cancelled;
+    active->frame->on_terminal(active->state, nullptr);
     active->frame.reset();
 }
 
@@ -167,16 +181,20 @@ Result<CoroutineState> Coroutine::resume() {
     if (!step) {
         active->state = CoroutineState::failed;
         active->error = std::move(step.error());
+        active->frame->on_terminal(active->state, &*active->error);
         active->frame.reset();
         return std::unexpected(*active->error);
     }
+    active->cancel_requested |= active->frame->cancel_requested_;
     if (active->cancel_requested) {
         active->state = CoroutineState::cancelled;
+        active->frame->on_terminal(active->state, nullptr);
         active->frame.reset();
     } else {
         active->state = step->state;
         if (active->state == CoroutineState::completed) {
             active->result = std::move(step->result);
+            active->frame->on_terminal(active->state, nullptr);
             active->frame.reset();
         }
     }

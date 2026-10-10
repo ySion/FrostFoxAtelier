@@ -122,12 +122,18 @@ struct Invocation {
     std::span<Argument> method_arguments;
     CollectionBudget budget;
     InvocationObserver observer;
+    BusinessTrace* trace{};
+    std::shared_ptr<DebugSessionState> debugger;
+    BusinessDebugFrame* debug_top{};
+    std::uint64_t next_debug_activation{};
+    bool debug_aborted{};
     bool failed{};
     std::size_t live_values{};
     ErrorCode error_code{ErrorCode::invocation_failed};
     char error[512]{};
-    Invocation(Runtime&, const Binding&, BusinessFrameLayout, CollectionBudget, InvocationObserver = {});
+    Invocation(Runtime&, const Binding&, BusinessFrameLayout, CollectionBudget, InvocationObserver = {}, BusinessTrace* = nullptr, std::shared_ptr<DebugSessionState> = {});
     bool resources_cleared() const noexcept;
+    void record_resources(bool cleared) const noexcept;
     void fail(ErrorCode, const char*) noexcept;
 };
 template<class Operation>
@@ -168,7 +174,7 @@ Result<void> check_source_arguments(const Binding&, const BusinessSignature&, st
 Result<void> check_source_receiver(const Binding&, ObjectId);
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
     BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessValue>,
-    bool request_collection, InvocationObserver = {}, CollectionBudget = {1}, void* result_data = nullptr);
+    bool request_collection, InvocationObserver = {}, CollectionBudget = {1}, void* result_data = nullptr, BusinessTrace* = nullptr, std::shared_ptr<DebugSessionState> = {});
 Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId,
     std::span<const BusinessValue>, bool request_collection = false,
     InvocationObserver = {}, CollectionBudget = {1});
@@ -191,8 +197,7 @@ struct ProgramAccess {
     static void set_request_sequence(Program&, std::uint64_t) noexcept;
     static std::uint64_t published_sequence(const Program&) noexcept;
 #endif
-private:
     static Result<Coroutine> start_version(std::shared_ptr<const Program::Version>, ObjectId,
-        std::span<const BusinessValue>, InvocationObserver, CollectionBudget);
+        std::span<const BusinessValue>, InvocationObserver, CollectionBudget, std::shared_ptr<DiagnosticState> = {}, std::shared_ptr<DebugSessionState> = {});
 };
 }

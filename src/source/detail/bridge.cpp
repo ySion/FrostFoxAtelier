@@ -1,4 +1,6 @@
 #include "source/detail/bridge.hpp"
+#include "source/detail/diagnostics.hpp"
+#include "source/detail/debugger.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -251,23 +253,29 @@ void AbiArguments::initialize(const Binding& binding, const FunctionSignature& s
 }
 
 Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout,
-    CollectionBudget work, InvocationObserver observation)
+    CollectionBudget work, InvocationObserver observation, BusinessTrace* capture, std::shared_ptr<DebugSessionState> session)
     : runtime(owner), binding(bound),
       expanded_roots(layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
       roots(expanded_roots.empty() ? std::span<ObjectRoot>{inline_roots} : std::span<ObjectRoot>{expanded_roots}),
       observations(layout.weak_slots), frame(owner, roots),
       expanded_arguments(layout.max_call_arguments > inline_arguments.size() ? layout.max_call_arguments : 0),
       method_arguments(expanded_arguments.empty() ? std::span<Argument>{inline_arguments} : std::span<Argument>{expanded_arguments}),
-      budget(work), observer(observation) {}
+      budget(work), observer(observation), trace(capture), debugger(std::move(session)) {}
 bool Invocation::resources_cleared() const noexcept {
-    if (!frame.empty() || live_values != 0) return false;
+    if (!frame.empty() || live_values != 0 || debug_top) return false;
     for (const auto& observation : observations)
         if (observation.description().type != TypeId{}) return false;
     return true;
 }
+void Invocation::record_resources(bool cleared) const noexcept {
+    if (!trace) return;
+    trace->remaining_owned_values = live_values;
+    trace->resources_cleared = cleared;
+}
 void Invocation::fail(ErrorCode code, const char* message) noexcept {
     if (failed) return;
     failed = true;
+    if (trace && trace->failure_location == no_diagnostic_location) trace->failure_location = trace->current_location;
     error_code = code;
     std::snprintf(error, sizeof(error), "%s", message);
 }
@@ -467,6 +475,10 @@ std::uint32_t poll(void* context) noexcept {
     return bridge(invocation, [&]() -> Result<void> {
         auto progress = invocation.frame.poll(invocation.budget);
         if (!progress) return std::unexpected(std::move(progress.error()));
+        if (invocation.trace) {
+            diagnostic_add(invocation.trace->gc_work, progress->work_done);
+            diagnostic_add(invocation.trace->gc_reclaimed, progress->reclaimed);
+        }
         if (invocation.observer.poll)
             return invocation.observer.poll(invocation.observer.context, invocation, *progress);
         return {};
@@ -581,7 +593,13 @@ std::uint32_t construct_value(void* context, std::uint32_t type, void* target, c
         auto storage = std::span{static_cast<std::byte*>(target), value.size};
         auto result = source ? invocation.runtime.copy_construct_value(value.type, storage, {static_cast<const std::byte*>(source), value.size}) :
             invocation.runtime.initialize_value(value.type, storage);
-        if (result) ++invocation.live_values;
+        if (result) {
+            ++invocation.live_values;
+            if (invocation.trace) {
+                invocation.trace->peak_owned_values = std::max(invocation.trace->peak_owned_values, static_cast<std::uint64_t>(invocation.live_values));
+                invocation.trace->remaining_owned_values = invocation.live_values;
+            }
+        }
         return result;
     });
 }
@@ -599,7 +617,10 @@ void destroy_value(void* context, std::uint32_t type, void* target) noexcept {
         const auto& value = owned_value(invocation, type);
         require(invocation.live_values != 0, "Value cleanup has no live construction.");
         auto result = invocation.runtime.destroy_value(value.type, {static_cast<std::byte*>(target), value.size});
-        if (result) --invocation.live_values;
+        if (result) {
+            --invocation.live_values;
+            if (invocation.trace) invocation.trace->remaining_owned_values = invocation.live_values;
+        }
         return result;
     });
 }
@@ -621,7 +642,7 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
 }
 const BusinessServices services{begin, create_slot, read_float, write_float, read_uint,
     write_uint, call_method, poll, finish, clear_slot, change_reference, same_reference,
-    construct_value, assign_value, destroy_value, mutate_sequence, read_double, write_double, read_value, write_value, read_bool, write_bool};
+    construct_value, assign_value, destroy_value, mutate_sequence, read_double, write_double, read_value, write_value, read_bool, write_bool, debug_enter, debug_point, debug_leave};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count || binding.enumerations.size() != environment.enumeration_count) return false;
@@ -694,13 +715,14 @@ Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const Binding& binding,
     BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver,
     std::span<const BusinessValue> arguments, bool request_collection, InvocationObserver observer,
-    CollectionBudget budget, void* result_data) {
+    CollectionBudget budget, void* result_data, BusinessTrace* trace, std::shared_ptr<DebugSessionState> debugger) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
         auto checked = check_source_receiver(binding, receiver);
         if (!checked) return std::unexpected(std::move(checked.error()));
     }
-    Invocation invocation(runtime, binding, layout, budget, observer);
+    Invocation invocation(runtime, binding, layout, budget, observer, trace, std::move(debugger));
+    if (trace) trace->resources_cleared = false;
     if (hold_receiver) {
         auto rooted = invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!rooted) return std::unexpected(std::move(rooted.error()));
@@ -710,16 +732,22 @@ Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const 
     BusinessValue value{};
     value.data = result_data;
     const auto status = atelier_invoke_business(code, &invocation, arguments.data(),
-        static_cast<std::uint32_t>(arguments.size()), &value, backend_error, sizeof(backend_error));
+        static_cast<std::uint32_t>(arguments.size()), &value, backend_error, sizeof(backend_error), trace);
     // Inspect generated cleanup before the RAII fallback. Observers cannot
     // manufacture success or substitute for this production invariant.
     const bool cleared = invocation.resources_cleared();
+    invocation.record_resources(cleared);
     if (observer.complete) observer.complete(observer.context, invocation, cleared && status == 0 && !invocation.failed);
-    if (!cleared)
-        return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});
+    if (status != 0 && !invocation.failed && invocation.debug_aborted) {
+        if (!cleared)
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Aborted source execution left resources alive."});
+        return std::unexpected(Error{ErrorCode::execution_aborted, "Source execution aborted by the debugger."});
+    }
     if (status != 0 || invocation.failed)
         return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
             invocation.failed ? invocation.error : backend_error});
+    if (!cleared)
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});
     return value;
 }
 

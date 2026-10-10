@@ -20,6 +20,23 @@ private:
     Runtime* runtime_;
 };
 
+// Read-only observation inside an active generated invocation. Runtime mutations,
+// new roots, native borrows, GC and generated reentry are rejected until this
+// scope ends. Queries, nested reference visits and existing root release remain
+// available. The scope must end before its execution activation and Runtime.
+class ExecutionInspection final {
+public:
+    [[nodiscard]] static Result<ExecutionInspection> enter(Runtime& runtime);
+    ~ExecutionInspection() noexcept;
+    ExecutionInspection(ExecutionInspection&& other) noexcept;
+    ExecutionInspection(const ExecutionInspection&) = delete;
+    ExecutionInspection& operator=(const ExecutionInspection&) = delete;
+    ExecutionInspection& operator=(ExecutionInspection&&) = delete;
+private:
+    explicit ExecutionInspection(Runtime& runtime) noexcept : runtime_(&runtime) {}
+    Runtime* runtime_;
+};
+
 // An execution owns registrations in caller-provided, stable slots. Coroutine
 // owners keep these slots across suspension. Runtime/storage outlive the frame.
 // Slot numbers identify
@@ -72,6 +89,16 @@ class CoroutineFrame {
 public:
     virtual ~CoroutineFrame() = default;
     [[nodiscard]] virtual Result<CoroutineStep> resume() = 0;
+    // The owner resolves failure/cancellation precedence before destruction.
+    // This notification cannot resume, throw or change the terminal result.
+    virtual void on_terminal(CoroutineState, const Error*) noexcept {}
+protected:
+    // Cooperatively cancel after a successful resume step. Execution failures
+    // still win, and the owner discards any result before destroying the frame.
+    void request_cancel() noexcept { cancel_requested_ = true; }
+private:
+    friend class Coroutine;
+    bool cancel_requested_{};
 };
 
 // Same-thread cooperative execution, with no scheduler. Runtime must outlive

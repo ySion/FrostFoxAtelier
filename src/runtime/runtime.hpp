@@ -33,7 +33,7 @@ enum class ErrorCode {
     invalid_type, invalid_definition, duplicate_name, invalid_object,
     invalid_member, type_mismatch, argument_mismatch, construction_failed,
     invocation_failed, busy, capacity_exceeded, invalid_storage,
-    unsupported_operation, assignment_failed, rebuild_required
+    unsupported_operation, assignment_failed, rebuild_required, execution_aborted
 };
 
 struct SourceLocation {
@@ -748,6 +748,9 @@ private:
     friend class ExecutionScope;
     [[nodiscard]] Result<void> enter_execution();
     void leave_execution() noexcept;
+    friend class ExecutionInspection;
+    [[nodiscard]] Result<void> enter_execution_inspection();
+    void leave_execution_inspection() noexcept;
     struct Impl;
     struct Address { void* data; ValueDescription value; };
     struct NativeBorrow {

@@ -83,13 +83,13 @@ Result<FunctionSignature> Program::describe(std::string_view name) const {
     return version->declaration->signature;
 }
 
-Result<Program::Request> Program::request(SourceSnapshot snapshot) {
+Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOptions options) {
     if (!state_->open || state_->declaration || state_->contract->binding.type != TypeId{})
         return std::unexpected(Error{ErrorCode::invalid_definition, "Project snapshots require an open, unbound Program."});
     if (state_->latest_request == std::numeric_limits<std::uint64_t>::max())
         return std::unexpected(Error{ErrorCode::capacity_exceeded, "Source request sequence exhausted."});
     auto request = std::shared_ptr<SourceRequest>{new SourceRequest(state_, state_->contract, {},
-        ++state_->latest_request, snapshot.name, {}, {})};
+        ++state_->latest_request, snapshot.name, {}, {}, options)};
     request->module_ = std::make_shared<ModuleRequest>();
     auto& module = *request->module_;
     module.snapshot = std::make_shared<const SourceSnapshot>(std::move(snapshot));
@@ -188,6 +188,17 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
     const auto owner = request->owner_.lock();
     if (!owner || !owner->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Project program is closed."});
     auto module = std::make_shared<ModuleVersion>(); module->request = request->module_; module->classes = request->module_->classes;
+    // One line index per original file and one location table per compiled unit.
+    // Export views share it, while completed captures own no project snapshot.
+    const auto& snapshot = *request->module_->snapshot;
+    std::vector<std::vector<std::size_t>> line_starts(snapshot.files.size());
+    if (request->options.diagnostics || request->options.debugging) {
+        for (std::size_t file = 0; file < snapshot.files.size(); ++file) {
+            auto& lines = line_starts[file]; lines.push_back(0);
+            const auto& source = snapshot.files[file].source;
+            for (std::size_t i = 0; i < source.size(); ++i) if (source[i] == '\n') lines.push_back(i + 1);
+        }
+    }
     for (const auto& unit : request->module_->units) {
         auto text = request->module_->source.common;
         text.append(unit.source);
@@ -201,10 +212,33 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
         CompileLocation location{}; char diagnostic[2048]{};
         const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
             text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
-            names.data(), static_cast<std::uint32_t>(names.size()), !unit.owner.empty(), output.data(), &location, diagnostic, sizeof(diagnostic));
+            names.data(), static_cast<std::uint32_t>(names.size()), !unit.owner.empty(), output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
         for (auto* code : output) codes.emplace_back(code, &atelier_destroy_business);
         if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
             {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+        auto locations = std::make_shared<std::vector<DiagnosticLocation>>();
+        std::shared_ptr<const DebugTables> debug_tables;
+        if (!codes.empty()) {
+            const auto info = atelier_business_info(codes.front().get());
+            debug_tables = copy_debug_tables(info);
+            locations->reserve(info.location_count);
+            for (std::uint32_t index = 0; index < info.location_count; ++index) {
+                const auto& position = info.locations[index];
+                SourceLocation mapped{request->source_name, request->sequence,
+                    static_cast<std::size_t>(position.offset), static_cast<std::size_t>(position.line), static_cast<std::size_t>(position.column)};
+                for (const auto& piece : text.pieces) {
+                    if (position.offset < piece.begin || position.offset >= piece.end) continue;
+                    const auto& file = snapshot.files[piece.file];
+                    const auto offset = std::min(file.source.size(), piece.offset + static_cast<std::size_t>(position.offset) - piece.begin);
+                    const auto& lines = line_starts[piece.file];
+                    const auto line = std::upper_bound(lines.begin(), lines.end(), offset);
+                    const auto line_index = static_cast<std::size_t>(line - lines.begin() - 1);
+                    mapped = {file.path, file.version, offset, line_index + 1, offset - lines[line_index] + 1};
+                    break;
+                }
+                locations->push_back({position.function ? position.function : "", std::move(mapped)});
+            }
+        }
         for (std::size_t i = 0; i < codes.size(); ++i) {
             auto compatible = unit.contract->compatible(codes[i].get(), request->source_name);
             if (!compatible) return std::unexpected(compatible.error());
@@ -224,7 +258,11 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
             module->entries.push_back({name, *signature});
             auto declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
-            module->versions.push_back(std::make_shared<const Version>(unit.contract, std::move(declaration), request->sequence, std::move(codes[i])));
+            auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,
+                name, request->source_name, locations});
+            auto debug = make_debug_metadata(*metadata, info, debug_tables);
+            module->versions.push_back(std::make_shared<const Version>(unit.contract, std::move(declaration), request->sequence,
+                std::move(metadata), std::move(debug), std::move(codes[i])));
         }
     }
     if (owner->module) {

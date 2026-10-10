@@ -55,7 +55,7 @@ function(atelier_add_source)
        LLVM_ENABLE_ASSERTIONS OR LLVM_ENABLE_RTTI)
         message(FATAL_ERROR "Revalidate the pinned LLVM SDK ABI before changing its isolation DLL configuration.")
     endif()
-    llvm_map_components_to_libnames(_llvm_libraries Core OrcJIT native AsmParser Passes Coroutines)
+    llvm_map_components_to_libnames(_llvm_libraries Core OrcJIT native AsmParser Passes Coroutines Object MCDisassembler)
     set_target_properties(zlibstatic libzstd_static PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)
     configure_file("${zlib_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.zlib.txt" COPYONLY)
     configure_file("${zstd_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.zstd.txt" COPYONLY)
@@ -75,7 +75,7 @@ function(atelier_add_source)
     # The same frontend is compiled on each side of the isolation boundary;
     # its STL state stays within the host or the LLVM DLL's own CRT ABI.
     add_library(atelier_source_backend SHARED src/jit/source_backend.cpp
-        src/language/source.cpp src/language/declarations.cpp)
+        src/jit/diagnostic_artifact.cpp src/language/source.cpp src/language/declarations.cpp)
     atelier_llvm_target(atelier_source_backend)
     target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
     target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support)
@@ -84,7 +84,8 @@ function(atelier_add_source)
         target_include_directories(atelier_source_backend PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
     endif()
 
-    add_library(atelier_source STATIC src/source/program.cpp src/source/detail/bridge.cpp
+    add_library(atelier_source STATIC src/source/program.cpp src/source/diagnostics.cpp src/source/detail/bridge.cpp
+        src/source/debugger.cpp src/source/detail/debugger.cpp
         src/language/source.cpp src/language/declarations.cpp src/language/module.cpp)
     atelier_target(atelier_source)
     target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -98,7 +99,8 @@ function(atelier_add_source)
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
         acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp
         acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp
-        acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp)
+        acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp
+        acceptance/source/diagnostics.cpp acceptance/source/debugger.cpp)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
