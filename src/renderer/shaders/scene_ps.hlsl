@@ -5,6 +5,15 @@ Texture2D<float4> opacity_texture;
 SamplerState material_sampler;
 float4 material_color;
 
+float edge_distance(float value, float dx, float dy) {
+    // Normalize before squaring: homogeneous edge gradients scale with 1/w.
+    // A constant edge function describes no finite screen-space boundary.
+    float scale = max(abs(dx), abs(dy));
+    if (scale == 0) return 1e8;
+    float2 gradient = float2(dx, dy) / scale;
+    return abs(value / scale) * rsqrt(dot(gradient, gradient));
+}
+
 float4 main(SceneOutput input) : SV_Target {
     float4 diffuse = 1;
     // Scene Lit's current GBuffer and ray queries are opaque. Its auxiliary
@@ -29,9 +38,14 @@ float4 main(SceneOutput input) : SV_Target {
         }
         if (display.y != 1 && input.selected == 0) return float4(color, 1);
     }
-    // Pixel distances to original edges; the mask omits triangulation diagonals.
-    float3 dx = ddx(input.barycentric), dy = ddy(input.barycentric);
-    float3 distance = input.barycentric / max(sqrt(dx * dx + dy * dy), 1e-8);
+    // Dividing perspective barycentrics by the interpolated clip w recovers
+    // affine edge functions, including vertices on/behind w=0. Raw screen
+    // barycentrics can be negative there and turn an entire face into a line.
+    float3 edge_function = input.edge_coordinates.xyz / input.edge_coordinates.w;
+    float3 dx = ddx(edge_function), dy = ddy(edge_function);
+    float3 distance = float3(edge_distance(edge_function.x, dx.x, dy.x),
+                             edge_distance(edge_function.y, dx.y, dy.y),
+                             edge_distance(edge_function.z, dx.z, dy.z));
     distance = float3((input.edge_mask & 1) != 0 ? distance.x : 1e8,
                       (input.edge_mask & 2) != 0 ? distance.y : 1e8,
                       (input.edge_mask & 4) != 0 ? distance.z : 1e8);
