@@ -93,11 +93,16 @@ Result<void> validate_material(const Material& material) {
     return {};
 }
 Result<void> validate_light(const LightSettings& settings) {
-    if (settings.kind!=LightKind::point && settings.kind!=LightKind::rectangle && settings.kind!=LightKind::directional)
+    if (settings.kind!=LightKind::point && settings.kind!=LightKind::rectangle && settings.kind!=LightKind::directional && settings.kind!=LightKind::sky)
         return error(ErrorCode::argument_mismatch,"Unknown LightKind.");
     if (!nonnegative(settings.color) || !std::isfinite(settings.intensity) || settings.intensity<0.f)
         return error(ErrorCode::argument_mismatch,"Light color and intensity must be finite and nonnegative.");
-    if (!std::isfinite(settings.range) || settings.range<0.f || (settings.kind!=LightKind::directional && settings.range==0.f))
+    if(settings.kind==LightKind::sky)
+        for(std::size_t channel=0;channel<3;++channel)
+            if(double(settings.color[channel])*settings.intensity>65504)
+                return error(ErrorCode::argument_mismatch,"Sky Light radiance exceeds the HDR scene range.");
+    if (!std::isfinite(settings.range) || settings.range<0.f ||
+        ((settings.kind==LightKind::point || settings.kind==LightKind::rectangle) && settings.range==0.f))
         return error(ErrorCode::argument_mismatch,"Local light range must be finite and positive; directional range may be zero.");
     if (!std::isfinite(settings.source_radius) || settings.source_radius<0.f)
         return error(ErrorCode::argument_mismatch,"Light source radius must be finite and nonnegative.");
@@ -111,6 +116,21 @@ Result<void> validate_light(const LightSettings& settings) {
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
     return runtime.with_native<const LightComponent>(object,[](const LightComponent& light)->Result<LightSettings> { return light.settings; });
 }
+Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additions,ObjectId edited,const LightSettings* replacement) const {
+    ObjectId sky;
+    const auto visit=[&](ObjectId object)->Result<void> {
+        auto light=detail::is(runtime,object,types.light_component);if(!light) return std::unexpected(light.error());
+        if(!*light) return {};
+        auto settings=object==edited && replacement?Result<LightSettings>{*replacement}:read_light(runtime,object);
+        if(!settings) return std::unexpected(settings.error());
+        if(settings->kind!=LightKind::sky) return {};
+        if(sky!=ObjectId{} && sky!=object) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
+        sky=object;return {};
+    };
+    for(const auto object:presentation) if(auto valid=visit(object);!valid) return valid;
+    for(const auto& object:additions) if(auto valid=visit(object.id());!valid) return valid;
+    return {};
+}
 Result<void> World::set_material(ObjectId object,Material value) {
     if (auto ready=impl_->admit(); !ready) return ready;
     if (running()) return error(ErrorCode::busy,"Stop the World before editing Material.");
@@ -123,6 +143,8 @@ Result<void> World::set_light(ObjectId object,LightSettings value) {
     if (running()) return error(ErrorCode::busy,"Stop the World before editing LightSettings.");
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
     if (auto valid=validate_light(value); !valid) return valid;
+    if(value.kind==LightKind::sky)
+        if(auto valid=impl_->validate_sky_light({},object,&value);!valid) return valid;
     return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=value;return {};});
 }
 namespace detail {
@@ -156,15 +178,24 @@ Result<bool> write_lighting_property(World& world,ObjectId object,std::span<cons
 Result<std::vector<LightRenderItem>> World::light_items() const {
     if (auto ready=impl_->admit(false); !ready) return std::unexpected(ready.error());
     std::vector<LightRenderItem> result; result.reserve(impl_->presentation.size());
+    bool has_sky=false;
     for (const auto object:impl_->presentation) {
         auto light=detail::is(runtime(),object,types().light_component); if (!light) return std::unexpected(light.error());
         if (!*light) continue;
         auto owner=impl_->component_owner(object); if (!owner) return std::unexpected(owner.error());
         auto actor=detail::actor_data(runtime(),*owner); if (!actor) return std::unexpected(actor.error());
         auto component=detail::component_data(runtime(),object); if (!component) return std::unexpected(component.error());
-        if (!actor->enabled || !component->enabled) continue;
         auto settings=read_light(runtime(),object); if (!settings) return std::unexpected(settings.error());
+        if(settings->kind==LightKind::sky) {
+            if(has_sky) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
+            has_sky=true;
+        }
+        if (!actor->enabled || !component->enabled) continue;
         if (auto valid=validate_light(*settings); !valid) return std::unexpected(valid.error());
+        if(settings->kind==LightKind::sky) {
+            result.push_back({*owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
+            continue;
+        }
         auto matrix=world_matrix(runtime(),object); if (!matrix) return std::unexpected(matrix.error());
         auto rotation=light_rotation(runtime(),object); if (!rotation) return std::unexpected(rotation.error());
         const auto axis=[&](math::Vector3d local) {

@@ -9,9 +9,6 @@ Texture2D<float4> lit_smaa_area;
 Texture2D<float4> lit_smaa_search;
 Texture2D<float4> lit_smaa_spatial;
 Texture2D<float4> lit_smaa_previous;
-Texture2D<float> lit_smaa_expected_previous_depth;
-Texture2D<float> lit_history_depth;
-Texture2D<float4> lit_history_normal;
 RWTexture2D<float4> lit_smaa_edges_output;
 RWTexture2D<float4> lit_smaa_weights_output;
 RWTexture2D<float4> lit_smaa_spatial_output;
@@ -32,7 +29,10 @@ float4 lit_smaa_point(Texture2D<float4> source, float2 uv) {
 // and reuses the renderer's linear clamp sampler. The reference stays verbatim.
 #define SMAA_CUSTOM_SL 1
 #define SMAA_PRESET_HIGH 1
-#define SMAA_REPROJECTION 1
+// Apply the same reference neighborhood kernel to color and motion separately.
+// This retains antialiased velocity while preserving our float4 coverage lane;
+// the upstream temporal decoder only receives float2 motion.
+#define SMAA_REPROJECTION 0
 #define SMAA_RT_METRICS float4(1.0 / float2(lit_size_frame.xy), float2(lit_size_frame.xy))
 #define SMAATexture2D(tex) Texture2D<float4> tex
 #define SMAATexturePass2D(tex) tex
@@ -48,6 +48,17 @@ float4 lit_smaa_point(Texture2D<float4> source, float2 uv) {
 // SMAA_REFERENCE_SOURCE
 
 float2 lit_smaa_uv(uint2 p) { return (float2(p) + .5) / float2(lit_size_frame.xy); }
+float2 lit_smaa_surface_motion(float4 motion) {
+    // T2x combines complementary subpixel samples on the unjittered grid.
+    // Signal denoisers still consume the original jitter-aware GBuffer motion.
+    // Coverage, not correspondence validity, makes this linear across silhouettes.
+    float2 result = motion.xy - motion.z * (lit_jitter.zw - lit_jitter.xy) / float2(lit_size_frame.xy);
+    // FP16 motion storage and FP32 projection leave subpixel cancellation noise.
+    // The reference's sqrt velocity rejection amplifies it on stationary edges.
+    // Limit the T2x-only noise floor to 1/256 display pixel, in both consumers.
+    float2 pixels = result * float2(lit_size_frame.xy);
+    return dot(pixels, pixels) <= (1.0 / 256) * (1.0 / 256) ? 0 : result;
+}
 bool lit_smaa_inside_uv(float2 uv) {
     float2 p = uv * float2(lit_size_frame.xy);
     return all(isfinite(uv)) && all(p >= lit_viewport.xy + .5) &&
@@ -114,65 +125,16 @@ void lit_smaa_neighborhood_cs(uint3 id : SV_DispatchThreadID) {
     if (!lit_inside(p)) { lit_smaa_spatial_output[p] = 0; return; }
     float2 uv = lit_smaa_uv(p); float4 offset;
     SMAANeighborhoodBlendingVS(uv, offset);
-    float4 spatial = SMAANeighborhoodBlendingPS(uv, offset, lit_smaa_color, lit_smaa_weights, lit_motion);
+    float4 spatial = SMAANeighborhoodBlendingPS(uv, offset, lit_smaa_color, lit_smaa_weights);
     spatial.rgb = lit_smaa_sdr(spatial.rgb);
     // T2x uses reference's antialiased velocity-magnitude alpha. One-frame
     // output stays opaque. Never feed the temporal-resolved image back here.
-    if (lit_smaa_temporal_enabled == 0) spatial.a = 1;
-    lit_smaa_spatial_output[p] = spatial;
-}
-
-void lit_smaa_previous_plane(float2 uv, float3 position, float3 normal, float expected_depth,
-                               out float tolerance, out float2 gradient) {
-    // Match the shared device-Z convention and compare history taps against
-    // the projected surface plane, not the same center depth on a tilted floor.
-    // A world-space tolerance plus relative FP32 roundoff remains meaningful
-    // for reverse-Z far surfaces; an absolute device-Z epsilon does not.
-    gradient = 0; tolerance = abs(expected_depth) * (8 * 1.1920929e-7);
-    float depth = lit_depth.Load(int3(int2(uv * float2(lit_size_frame.xy)), 0));
-    float pixel_size = max(length(lit_world(uv + float2(1.0 / lit_size_frame.x, 0), depth) - position),
-        length(lit_world(uv + float2(0, 1.0 / lit_size_frame.y), depth) - position));
-    float scale = max(pixel_size, .001);
-    float3 tangent, bitangent; lit_basis(normal, tangent, bitangent);
-    float4 a = mul(float4(position, 1), lit_previous_view_projection);
-    float4 b = mul(float4(position + tangent * scale, 1), lit_previous_view_projection);
-    float4 c = mul(float4(position + bitangent * scale, 1), lit_previous_view_projection);
-    float4 extent = mul(float4(position + lit_view_direction(uv) * .02, 1), lit_previous_view_projection);
-    if (a.w <= 1e-8) return;
-    if (extent.w > 1e-8) tolerance += abs(extent.z / extent.w - a.z / a.w);
-    if (b.w <= 1e-8 || c.w <= 1e-8) return;
-    float2 ab = lit_window_uv(b) - lit_window_uv(a), ac = lit_window_uv(c) - lit_window_uv(a);
-    float db = b.z / b.w - a.z / a.w, dc = c.z / c.w - a.z / a.w;
-    float determinant = ab.x * ac.y - ab.y * ac.x;
-    if (abs(determinant) < 1e-16) return;
-    gradient = float2(db * ac.y - dc * ab.y, dc * ab.x - db * ac.x) / determinant;
-    if (!all(isfinite(gradient))) gradient = 0;
-}
-bool lit_smaa_history(float2 uv, float expected_depth, float3 normal, float tolerance,
-                       float2 gradient, out float4 history, out float coverage) {
-    history = 0; coverage = 0;
-    if (!lit_smaa_inside_uv(uv) || !isfinite(expected_depth) || lit_is_background_depth(expected_depth) ||
-        expected_depth < 0 || expected_depth > 1) return false;
-    float2 sample_position = uv * float2(lit_size_frame.xy) - .5;
-    int2 base = int2(floor(sample_position)); float2 fraction = frac(sample_position);
-    [unroll] for (int y = 0; y < 2; ++y) [unroll] for (int x = 0; x < 2; ++x) {
-        int2 q = base + int2(x, y);
-        if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_inside(uint2(q))) continue;
-        float previous_depth = lit_history_depth.Load(int3(q, 0));
-        float3 previous_normal = lit_history_normal.Load(int3(q, 0)).xyz;
-        if (dot(previous_normal, previous_normal) < .25 || !isfinite(previous_depth)) continue;
-        float projected_depth = expected_depth + dot(lit_smaa_uv(uint2(q)) - uv, gradient);
-        if (lit_is_background_depth(previous_depth) || previous_depth < 0 || previous_depth > 1 ||
-            abs(previous_depth - projected_depth) > tolerance ||
-            dot(normal, lit_safe_normal(previous_normal)) < .94) continue;
-        float4 sample_color = lit_smaa_previous.Load(int3(q, 0));
-        if (!all(isfinite(sample_color))) continue;
-        float weight = (x == 0 ? 1 - fraction.x : fraction.x) * (y == 0 ? 1 - fraction.y : fraction.y);
-        history += sample_color * weight; coverage += weight;
+    spatial.a = 1;
+    if (lit_smaa_temporal_enabled != 0) {
+        float4 motion = SMAANeighborhoodBlendingPS(uv, offset, lit_motion, lit_smaa_weights);
+        spatial.a = sqrt(5 * length(lit_smaa_surface_motion(motion)));
     }
-    if (coverage < .1) return false;
-    history /= coverage;
-    return true;
+    lit_smaa_spatial_output[p] = spatial;
 }
 
 [numthreads(8, 8, 1)]
@@ -182,26 +144,19 @@ void lit_smaa_resolve_cs(uint3 id : SV_DispatchThreadID) {
     if (!lit_inside(p)) { lit_smaa_output[p] = 0; return; }
     float4 current = lit_smaa_spatial.Load(int3(p, 0));
     float3 color = lit_smaa_sdr(current.rgb);
-    float4 motion = lit_motion.Load(int3(p, 0));
-    float3 normal = lit_normal_roughness.Load(int3(p, 0)).xyz;
-    if (lit_smaa_temporal_enabled != 0 && lit_size_frame.w != 0 && motion.w > .5 &&
-        all(isfinite(motion)) && !lit_is_background_depth(lit_depth.Load(int3(p, 0))) && dot(normal, normal) >= .25) {
-        float2 uv = lit_smaa_uv(p), previous_uv = uv + motion.xy;
-        float3 position = lit_world(uv, lit_depth.Load(int3(p, 0)));
-        normal = lit_safe_normal(normal);
-        float expected_depth = lit_smaa_expected_previous_depth.Load(int3(p, 0));
-        float tolerance; float2 gradient;
-        lit_smaa_previous_plane(uv, position, normal, expected_depth, tolerance, gradient);
-        float4 previous; float coverage;
-        if (lit_smaa_history(previous_uv, expected_depth,
-                             normal, tolerance, gradient, previous, coverage)) {
-            // Original T2x motion-magnitude weighting, with history capped at
-            // one previous spatial frame. Local geometric validity and coverage
-            // control confidence; changing lights retain the short two-frame
-            // blend instead of globally turning history off.
+    float2 motion = lit_smaa_surface_motion(lit_motion.Load(int3(p, 0)));
+    float2 previous_uv = lit_smaa_uv(p) + motion;
+    if (lit_smaa_temporal_enabled != 0 && lit_size_frame.w != 0 &&
+        all(isfinite(motion)) && lit_smaa_inside_uv(previous_uv)) {
+        // SMAAResolvePS's two independent point samples and velocity-alpha
+        // weighting. Keep this small adapter because our decoder needs motion.z
+        // coverage, which the reference resolve's float2 interface discards.
+        // Foreground/background differences are intentional subpixel coverage;
+        // treating them as invalid history makes stationary silhouettes flicker.
+        float4 previous = lit_smaa_point(lit_smaa_previous, previous_uv);
+        if (all(isfinite(current)) && all(isfinite(previous))) {
             float delta = abs(current.a * current.a - previous.a * previous.a) / 5.0;
             float weight = .5 * saturate(1 - sqrt(delta) * SMAA_REPROJECTION_WEIGHT_SCALE);
-            weight *= saturate(coverage);
             color = lerp(color, lit_smaa_sdr(previous.rgb), weight);
         }
     }

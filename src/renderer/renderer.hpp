@@ -81,6 +81,9 @@ struct Frame {
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
     std::uint64_t scene_revision{}; // Content revision; signal owners distinguish changes from scene replacement.
     bool camera_cut{};
+    // Uniform radiance from the scene's single Sky Light.
+    // No Sky Light means zero; this is not a viewport ambient-light setting.
+    std::array<float, 3> environment{};
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts
@@ -106,9 +109,11 @@ struct FrameStats {
     std::uint64_t cached_image_count{};
     std::uint64_t cached_image_texel_bytes{};
     std::uint64_t cached_image_cpu_bytes{};
-    // Completed, raw GPU sample. All eight passes and the counters refer to
+    // Completed, raw GPU sample. All passes, subpasses and counters refer to
     // gpu_sample_frame_id; may lag this return and repeat until a new completion.
     std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct/denoise, DDGI, GTAO/Local GI, HDR/SSSR, HDR resolve, bloom/tone/SMAA/display.
+    std::array<float, 2> scene_lit_ddgi_gpu_ms{}; // Update/transfer, receiver gather; subsets of DDGI time.
+    std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
     std::uint32_t scene_lit_shadow_lights{}, scene_lit_unshadowed_lights{}; // This frame's traced slots / requested fallback shadows.

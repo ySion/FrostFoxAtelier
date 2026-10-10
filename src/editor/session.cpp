@@ -152,14 +152,17 @@ Result<world::Commit> Session::create_light(world::LightKind kind,math::Vector3 
     auto actor=world::create_actor(runtime_);if(!actor) return std::unexpected(actor.error());
     auto light=world::create_component(runtime_,types_.light_component);if(!light) return std::unexpected(light.error());
     auto configured=runtime_.with_native<world::LightComponent>(light->id(),[&](auto& value)->Result<void> {
-        value.settings.kind=kind;return world::validate_light(value.settings);
+        value.settings.kind=kind;
+        if(kind==world::LightKind::sky) value.settings.intensity=.03f;
+        return world::validate_light(value.settings);
     });
     if(!configured) return std::unexpected(configured.error());
     auto positioned=world_.set_transform(light->id(),{position,{},{1,1,1}});if(!positioned) return std::unexpected(positioned.error());
     const std::array parts{world::Attachment{light->id(),{},true}};
     auto attached=world_.attach_components(actor->id(),parts);if(!attached) return attached;
     if(attached->notification_error) return std::unexpected(*attached->notification_error);
-    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":L"Directional Light";
+    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":
+        kind==world::LightKind::directional?L"Directional Light":L"Sky Light";
     return attach_created(std::move(*actor),label);
 }
 Result<world::Commit> Session::attach_created(ObjectRoot root,std::wstring_view label) {

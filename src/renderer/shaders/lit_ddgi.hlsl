@@ -101,7 +101,7 @@ float4 ddgi_sample_tile(Texture2D<float4> atlas, uint probe, float3 direction) {
     return lerp(lerp(a, b, fraction.x), lerp(c, d, fraction.x), fraction.y);
 }
 
-float2 ddgi_sample_distance(uint probe, float3 direction) {
+float ddgi_sample_visibility(uint probe, float3 direction, float normalized_distance, float distance_floor) {
     float2 location = ddgi_octahedral_encode(direction) * DDGI_TILE_SIZE - .5;
     int2 lower = int2(floor(location));
     float2 fraction = frac(location);
@@ -110,22 +110,53 @@ float2 ddgi_sample_distance(uint probe, float3 direction) {
     float2 b = lit_probe_distance_previous.Load(int3(tile + ddgi_fold_texel(lower + int2(1, 0)), 0));
     float2 c = lit_probe_distance_previous.Load(int3(tile + ddgi_fold_texel(lower + int2(0, 1)), 0));
     float2 d = lit_probe_distance_previous.Load(int3(tile + ddgi_fold_texel(lower + int2(1, 1)), 0));
-    return lerp(lerp(a, b, fraction.x), lerp(c, d, fraction.x), fraction.y);
+    if (!all(isfinite(float4(a, b))) || !all(isfinite(float4(c, d)))) return 0;
+    // Evaluate each direction's visibility before spatial filtering. Mixing
+    // moments first adds the variation between their means to the variance,
+    // which can manufacture visible wedges between otherwise blocked taps.
+    float4 means = float4(a.x, b.x, c.x, d.x);
+    float4 second_moments = float4(a.y, b.y, c.y, d.y);
+    float4 variance = max(second_moments - means * means, distance_floor * distance_floor);
+    float4 difference = max(normalized_distance - means, 0);
+    float4 visibility = variance / (variance + difference * difference);
+    // Cubing each bound retains thin-blocker rejection before interpolation.
+    visibility = visibility * visibility * visibility;
+    return lerp(lerp(visibility.x, visibility.y, fraction.x),
+                lerp(visibility.z, visibility.w, fraction.x), fraction.y);
 }
 
 float ddgi_minimum_spacing() {
     return max(1e-3, min(lit_probe_spacing.x, min(lit_probe_spacing.y, lit_probe_spacing.z)));
 }
 
-float3 ddgi_irradiance(float3 position, float3 normal) {
+bool ddgi_segment_visible(float3 from, float3 to) {
+    float3 delta = to - from;
+    float distance = length(delta);
+    if (distance <= 2e-4) return true;
+    RayDesc ray;
+    ray.Origin = from;
+    ray.Direction = delta / distance;
+    ray.TMin = 1e-4;
+    ray.TMax = distance - 1e-4;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE |
+             RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    lit_count_rays(lit_visibility_counter);
+    query.TraceRayInline(lit_scene, 0, 255, ray);
+    while (query.Proceed()) {}
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+float3 ddgi_irradiance(float3 position, float3 normal, bool trace_support) {
     if (any(lit_probe_grid.xyz < 2) || lit_probe_grid.w == 0 ||
         !all(isfinite(position)) || !all(isfinite(normal))) return 0;
 
     float3 spacing = max(lit_probe_spacing.xyz, 1e-3);
-    // Match the query clearance to the probe relocation clearance. The 8x8
-    // directional moment filter covers a cone; a smaller bias self-occludes
-    // the wall/floor intersection. This remains camera independent.
-    float3 biased_position = position + normal * ddgi_minimum_spacing() * .12;
+    // Cached angular support needs its established filter bias. Actual
+    // surface visibility uses only numerical clearance, so this larger bias
+    // cannot move the receiver through a thin wall during the ray query.
+    float3 support_position = position + normal * (ddgi_minimum_spacing() * .12);
+    float3 biased_position = trace_support ?
+        position + normal * max(1e-4, ddgi_minimum_spacing() * .0001) : support_position;
     float3 grid_position = (biased_position - lit_probe_origin.xyz) / spacing;
     if (any(grid_position < 0) || any(grid_position > float3(lit_probe_grid.xyz - 1))) return 0;
     uint3 lower = uint3(clamp(floor(grid_position), 0, float3(lit_probe_grid.xyz - 2)));
@@ -142,29 +173,33 @@ float3 ddgi_irradiance(float3 position, float3 normal) {
         // w = 0: initializing/relocated, -1: inside geometry, +1: usable.
         if (offset.w < .5 || !all(isfinite(offset))) continue;
 
+        float3 trilinear = lerp(1 - fraction, fraction, float3(step));
+        float spatial_weight = trilinear.x * trilinear.y * trilinear.z;
+        if (spatial_weight <= 0) continue;
+        float4 irradiance = ddgi_sample_tile(lit_probe_irradiance_previous, probe, normal);
+        if (irradiance.w <= 0 || !all(isfinite(irradiance))) continue;
+
         float3 probe_position = ddgi_probe_position(probe, offset.xyz);
         float3 delta = biased_position - probe_position;
         float distance = length(delta);
         float3 direction = delta / max(distance, 1e-5);
-        float2 moments = ddgi_sample_distance(probe, direction);
-        if (!all(isfinite(moments))) continue;
-        float normalized_distance = distance / max(lit_probe_origin.w, 1e-3);
-        float distance_floor = ddgi_minimum_spacing() * .002 / max(lit_probe_origin.w, 1e-3);
-        float variance = max(moments.y - moments.x * moments.x, distance_floor * distance_floor);
-        float difference = max(normalized_distance - moments.x, 0);
-        float visibility = difference == 0 ? 1 : variance / (variance + difference * difference);
-        // Cubed Chebyshev visibility suppresses light bleeding across thin
-        // blockers while retaining the distance field's angular information.
-        visibility = visibility * visibility * visibility;
-        float3 trilinear = lerp(1 - fraction, fraction, float3(step));
+        if (trace_support) {
+            if (!ddgi_segment_visible(probe_position, biased_position)) continue;
+        }
+        // Keep the continuous directional support: binary visibility alone
+        // projects hard probe-membership contours onto the receiver. The ray
+        // above rejects blocked contributions that cached moments can admit.
+        float3 support_delta = support_position - probe_position;
+        float support_distance = length(support_delta);
+        float distance_scale = max(lit_probe_origin.w, 1e-3);
+        float visibility = ddgi_sample_visibility(probe, support_delta / max(support_distance, 1e-5),
+            support_distance / distance_scale, ddgi_minimum_spacing() * .002 / distance_scale);
         float facing = max(.02, (dot(normal, -direction) + 1) * .5);
         float weight = facing * facing * visibility;
         if (weight < .2) weight *= weight * weight / .04;
         // Confidence shaping must not sharpen the spatial interpolation into
         // isolated probe cells. Keep the partition of unity linear.
-        weight *= trilinear.x * trilinear.y * trilinear.z;
-        float4 irradiance = ddgi_sample_tile(lit_probe_irradiance_previous, probe, normal);
-        if (irradiance.w <= 0 || !all(isfinite(irradiance))) continue;
+        weight *= spatial_weight;
         accumulated += max(irradiance.rgb, 0) * weight;
         accumulated_weight += weight;
     }
@@ -212,7 +247,9 @@ float3 ddgi_spherical_direction(uint ray_index, uint ray_count) {
 }
 
 float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint seed) {
-    float3 radiance = max(surface.emissive, 0);
+    // Camera-surface NEE owns direct mesh emission. This field stores the
+    // environment and light that has scattered at least once before the probe.
+    float3 radiance = 0;
     // Small light sets have no light-index lottery. For larger sets, two
     // uniform distinct indices have inclusion probability 2/N. The N/2
     // estimator remains unbiased and cannot choose the same light twice.
@@ -238,12 +275,18 @@ float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint see
                 surface.normal, toward_probe, direction) * (float(lit_counts.x) / samples);
         }
     }
+    float3 emitter_diffuse, emitter_specular;
+    lit_emitter_lighting(surface.position, surface.normal, toward_probe,
+        surface.base, surface.roughness, surface.metallic, true, true, seed,
+        emitter_diffuse, emitter_specular);
+    radiance += emitter_diffuse + emitter_specular;
     if ((lit_probe_update.w & 1) == 0) {
         // Only diffuse history feeds back. Bounded reflectance and the 0.85
         // transport factor make this iteration a contraction even in a closed
-        // white room; direct emission is injected once at the actual hit.
+        // white room. Analytic and mesh NEE above inject reflected direct
+        // light once at the actual hit, without the feedback attenuation.
         float3 reflectance = saturate(surface.base) * (1 - saturate(surface.metallic));
-        radiance += ddgi_irradiance(surface.position, surface.normal) * reflectance * (.85 / LIT_PI);
+        radiance += ddgi_irradiance(surface.position, surface.normal, false) * reflectance * (.85 / LIT_PI);
     }
     return ddgi_finite_radiance(radiance);
 }
@@ -266,11 +309,15 @@ float ddgi_trace_ray(float3 position, float3 direction, bool shade, inout uint s
     LitSurface surface = lit_hit_surface(query.CommittedInstanceID(),
         query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(),
         position + direction * distance);
-    // The mesh normal is the outward contract, including reflected instances.
-    if (dot(surface.normal, direction) > 0) {
+    // Only a closed component's geometric backface is evidence of an interior.
+    // The local authored orientation uses inverse-transpose, including mirrors.
+    if (surface.closed && dot(surface.geometric_normal, direction) > 0) {
         radiance = 0;
         return -max(distance, 1e-5);
     }
+    // An open sheet still blocks this ray. Preserve its existing shading side
+    // without treating the entire half-space behind it as a solid volume.
+    if (dot(surface.normal, direction) > 0) { radiance = 0; return distance; }
     if (shade) radiance = ddgi_hit_radiance(surface, -direction, seed);
     return distance;
 }
@@ -296,7 +343,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         lit_probe_offsets_previous.Load(int3(probe_texel, 0));
     if (!all(isfinite(old_offset))) old_offset = 0;
     float3 position = ddgi_probe_position(probe, old_offset.xyz);
-    uint ray_count = clamp(lit_probe_update.z, 64u, DDGI_MAX_RAYS);
+    uint ray_count = clamp(lit_probe_update.z, 1u, DDGI_MAX_RAYS);
     float maximum_distance = max(lit_probe_origin.w, 1e-3);
 
     // Geometry decisions must not follow the random illumination rotation.
@@ -406,6 +453,15 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     }
     if (!all(isfinite(previous_irradiance))) previous_irradiance = 0;
     if (!all(isfinite(previous_distance))) previous_distance = float2(1, 1);
+    // With fewer rays than directional texels, a hemisphere may have no
+    // observation this visit. That is missing support, not measured darkness.
+    // Preserve both the target and its observation count (or invalid initial
+    // support), so a constant sky cannot be driven toward black by empty visits.
+    if (irradiance_weight <= 1e-5) {
+        lit_probe_target_output[atlas_texel] = previous_irradiance;
+        lit_probe_distance_output[atlas_texel] = previous_distance;
+        return;
+    }
     float irradiance_history = previous_irradiance.w > 0 ? clamp(lit_probe_history.x, 0, .98) : 0;
     float distance_history = previous_irradiance.w > 0 ? clamp(lit_probe_history.y, 0, .98) : 0;
     // Running-average warmup uses the actual number of visits, not render
@@ -429,7 +485,8 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     float updates = min(previous_irradiance.w + 1, 32);
     lit_probe_target_output[atlas_texel] = float4(
         ddgi_finite_radiance(pow(max(lerp(encoded, old_encoded, irradiance_history), 0), 5)), updates);
-    lit_probe_distance_output[atlas_texel] = lerp(moments, previous_distance, distance_history);
+    lit_probe_distance_output[atlas_texel] = distance_weight > 1e-8 ?
+        lerp(moments, previous_distance, distance_history) : previous_distance;
 }
 
 [numthreads(8, 8, 1)]
@@ -460,5 +517,5 @@ void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
         lit_indirect[pixel] = float4(color * (.25 + .75 * proximity), 1);
         return;
     }
-    lit_indirect[pixel] = float4(ddgi_irradiance(position, normal), 1);
+    lit_indirect[pixel] = float4(ddgi_irradiance(position, normal, true), 1);
 }

@@ -128,6 +128,10 @@ void run() {
     // JSON source decimals round through the authored float storage.
     const auto migrated_json=Json::parse(take(migrated->serialize()));
     upgraded["actors"][0]["components"][0]["base_color"]=migrated_json["actors"][0]["components"][0]["base_color"];
+    // Legacy scenes acquire the current material defaults when upgraded.
+    upgraded["actors"][0]["components"][0]["roughness"]=.65f;
+    upgraded["actors"][0]["components"][0]["metallic"]=0.f;
+    upgraded["actors"][0]["components"][0]["emissive"]={0.f,0.f,0.f};
     require(migrated_json==upgraded,"Legacy scene did not preserve spatial/resource data while upgrading to v2.");
     auto physical=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     const auto physical_actor=take(physical->world().members()).front().id();take(physical->select(physical_actor));

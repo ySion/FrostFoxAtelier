@@ -72,6 +72,8 @@ struct EditorAcceptanceAccess {
     }
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
     static auto camera_mode(const Application& app) {return app.camera_.view();}
+    static auto camera_eye(const Application& app) {return app.camera_.eye();}
+    static Result<void> select_actor(Application& app,ObjectId actor) {return app.document_->select(actor);}
     static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
     static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
     static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
@@ -954,7 +956,7 @@ int verify_editor_scene_lit(Application& app,const char* output_directory,const 
     std::ofstream report(output/"acceptance.txt");
     report<<"Editor Scene Lit window acceptance: PASS\nBuild: "<<atelier::build_info::revision
         <<"\nConfiguration: "<<atelier::build_info::configuration
-        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three light creation menus and typed Parameters, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
+        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three direct-light creation menus plus unique Sky Light, typed Parameters, native middle-orbit direction, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
             <<"Runtime World snapshots use separate document/Renderer E2E; no Simulate UI exists. Native display choices leave the editing lifecycle, authored history and data unchanged.\n"
         <<"GPU validation/vsync enabled; this window run is not a performance benchmark.\n";
     require(report.good(),"Cannot save Scene Lit window acceptance evidence.");

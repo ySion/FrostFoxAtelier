@@ -99,7 +99,7 @@ private:
 };
 
 AENUM(Name="world.LightKind")
-enum class LightKind : std::uint32_t { point, rectangle, directional };
+enum class LightKind : std::uint32_t { point, rectangle, directional, sky };
 
 ASTRUCT(Name="world.LightSettings")
 struct LightSettings {
@@ -109,7 +109,8 @@ public:
     LightKind kind{LightKind::point};
     AFIELD()
     math::Vector3 color{1.f,1.f,1.f};
-    // Reference-white intensity: point cd, rectangle cd/m^2, directional lux.
+    // Reference-white intensity: point cd, rectangle/sky cd/m^2, directional lux.
+    // Sky is uniform incident radiance; spatial transform and emitter shape do not affect it.
     AFIELD()
     float intensity{1.f};
     AFIELD()

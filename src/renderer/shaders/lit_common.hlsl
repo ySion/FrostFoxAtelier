@@ -2,7 +2,8 @@
 // far/background=0. Depth correspondence is FP32 throughout. All images
 // cover the window; lit_viewport selects the scene rectangle in physical pixels.
 // HDR and all temporal signals are scene linear, before display exposure.
-// Motion.xy = previous window UV - current window UV; z = reserved (zero);
+// Motion.xy = previous window UV - current window UV, including sample jitter;
+// z = raster coverage (one on geometry, clear zero on background);
 // w = stable object/camera correspondence. lit_previous_depth holds the
 // expected previous camera device Z of the current surface as R32_FLOAT.
 // Jitter is in viewport pixel units.
@@ -12,12 +13,13 @@ float4 lit_viewport; // x,y,width,height
 row_major float4x4 lit_view_projection;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
+row_major float4x4 lit_previous_inverse_view_projection;
 float4 lit_camera_position;
 float4 lit_environment; // RGB radiance, reserved
 uint4 lit_counts; // lights,shadow slots,samples,effect flags
 uint lit_history_invalid; // Per-signal incompatibility: direct=1, reflection=2, AO=4, final TAA=8, SSIL=16.
 float4 lit_controls; // exposure multiplier,shadow bias,AO radius,SSR max distance
-float4 lit_temporal; // history weight,roughness threshold,light-change reactive, reserved
+float4 lit_temporal; // history weight,roughness threshold,radiance change,visibility geometry change
 float4 lit_jitter; // current xy,previous xy; viewport pixel units
 
 struct LitLight {
@@ -28,22 +30,34 @@ struct LitLight {
     float4 up_height;
     uint4 meta; // kind(point=0,rect=1,dir=2),shadow slot/~0,flags(two-sided=1,casts-shadow=2),stable hash
 };
+// Derived from emissive mesh triangles; emission is two-sided radiance.
+// The probability is the selected triangle's PMF, not its alias acceptance.
+struct LitEmitter {
+    float4 origin_area;
+    float4 edge1_probability;
+    float4 edge2_accept;
+    float3 emissive;
+    uint alias;
+};
+uint lit_emitter_count;
 struct LitInstance {
     row_major float4x4 world;
     row_major float4x4 previous_world;
     float4 normal_x, normal_y, normal_z;
     float4 base_roughness;
     float4 emissive_metallic;
-    uint4 geometry; // global RT vertex offset,vertex count,history valid,stable hash
+    uint4 geometry; // global RT triangle offset,vertex count,history valid,stable hash
 };
 // Shares the uploaded geometry::Vertex layout with the studio raster path.
 // Scene Lit currently uses position/normal; UV still occupies its ABI bytes.
 struct LitVertex { float3 position; float3 normal; float2 uv; };
+struct LitRayTriangle { LitVertex vertices[3]; float3 geometric_normal; uint closed; };
 StructuredBuffer<LitLight> lit_lights;
+StructuredBuffer<LitEmitter> lit_emitters;
 StructuredBuffer<LitInstance> lit_instances;
-StructuredBuffer<LitVertex> lit_rt_vertices;
+StructuredBuffer<LitRayTriangle> lit_rt_triangles;
 RaytracingAccelerationStructure lit_scene;
-RWStructuredBuffer<uint> lit_ray_counters; // 0/1 = visibility/probe low words, 2/3 = high words.
+RWStructuredBuffer<uint> lit_ray_counters; // Four low words followed by their four high words.
 Texture2D<float> lit_depth;
 Texture2D<float> lit_previous_depth;
 Texture2D<float4> lit_normal_roughness;
@@ -109,20 +123,106 @@ float3 lit_brdf(float3 base,float roughness,float metallic,float3 n,float3 v,flo
     lit_brdf_components(base,roughness,metallic,n,v,l,diffuse,specular);
     return diffuse+specular;
 }
+// Four disjoint counters, with high words in the second half. Classification
+// avoids a second atomic increment for every visibility query.
+uint lit_visibility_counter; // direct=0, probe shading=2, receiver gather=3
 void lit_count_rays(uint kind) {
     uint active_rays=WaveActiveCountBits(true);
     if(WaveIsFirstLane()) {
         uint before;InterlockedAdd(lit_ray_counters[kind],active_rays,before);
-        if(before>0xffffffffu-active_rays)InterlockedAdd(lit_ray_counters[kind+2],1);
+        if(before>0xffffffffu-active_rays)InterlockedAdd(lit_ray_counters[kind+4],1);
     }
 }
 bool lit_visible(float3 p,float3 n,float3 l,float distance) {
-    lit_count_rays(0);
+    lit_count_rays(lit_visibility_counter);
     RayDesc ray; ray.Origin=p+n*lit_controls.y; ray.Direction=l;
     ray.TMin=lit_controls.y; ray.TMax=max(ray.TMin,distance-lit_controls.y*2);
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
     query.TraceRayInline(lit_scene,0,255,ray); while(query.Proceed()) {}
     return query.CommittedStatus()==COMMITTED_NOTHING;
+}
+bool lit_visible_target(float3 p, float3 n, float3 target) {
+    float bias = max(lit_controls.y, 1e-5);
+    RayDesc ray;
+    ray.Origin = p + n * bias;
+    // Re-aim after offsetting the receiver: an unmodified direction may hit
+    // the sampled emitter before TMax, particularly at grazing angles.
+    float3 delta = target - ray.Origin;
+    float distance = length(delta);
+    if (distance <= bias * 2) return true;
+    ray.Direction = delta / distance;
+    ray.TMin = bias;
+    ray.TMax = distance - bias;
+    lit_count_rays(lit_visibility_counter);
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    query.TraceRayInline(lit_scene, 0, 255, ray); while (query.Proceed()) {}
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+uint lit_emitter_sample_count() {
+    return lit_emitter_count > 0 ? clamp(lit_counts.z, 4u, 64u) : 0;
+}
+// Returns Le / solid-angle PDF, including triangle selection and uniform
+// area sampling. The receiver cosine belongs exclusively to lit_brdf_components.
+float3 lit_sample_emitter(float3 p, inout uint seed, out float3 direction, out float3 target) {
+    direction = 0; target = p;
+    if (lit_emitter_count == 0) return 0;
+    uint index = min(uint(lit_random(seed) * lit_emitter_count), lit_emitter_count - 1);
+    LitEmitter emitter = lit_emitters[index];
+    if (lit_random(seed) >= emitter.edge2_accept.w) emitter = lit_emitters[emitter.alias];
+    float root = sqrt(lit_random(seed)), split = lit_random(seed);
+    target = emitter.origin_area.xyz + root * (1 - split) * emitter.edge1_probability.xyz +
+        root * split * emitter.edge2_accept.xyz;
+    float3 delta = target - p;
+    float distance_squared = dot(delta, delta);
+    float area = emitter.origin_area.w, probability = emitter.edge1_probability.w;
+    if (distance_squared <= 0 || !isfinite(distance_squared) || area <= 0 || probability <= 0) return 0;
+    direction = delta * rsqrt(distance_squared);
+    float3 normal = lit_safe_normal(cross(emitter.edge1_probability.xyz, emitter.edge2_accept.xyz));
+    float cosine = abs(dot(normal, -direction));
+    return max(emitter.emissive, 0) * (area * cosine / (probability * distance_squared));
+}
+void lit_emitter_lighting(float3 p, float3 n, float3 v, float3 base, float roughness, float metallic,
+                          bool shadows, bool include_specular, inout uint seed,
+                          out float3 diffuse_result, out float3 specular_result) {
+    diffuse_result = 0; specular_result = 0;
+    uint samples = lit_emitter_sample_count();
+    uint candidates = lit_counts.z == 64 ? 1u : 4u;
+    [loop] for (uint sample_index = 0; sample_index < samples; ++sample_index) {
+        float3 selected_target = p, selected_diffuse = 0, selected_specular = 0;
+        float weight_sum = 0, selected_weight = 0;
+        [loop] for (uint candidate = 0; candidate < candidates; ++candidate) {
+            float3 direction, target;
+            float3 incoming = lit_sample_emitter(p, seed, direction, target);
+            if (dot(n, direction) <= 0 || !any(incoming > 0)) continue;
+            float3 diffuse, specular;
+            lit_brdf_components(base, roughness, metallic, n, v, direction, diffuse, specular);
+            diffuse *= incoming;
+            specular = include_specular ? specular * incoming : 0;
+            // These contributions already include the proposal PDF inverse,
+            // so luminance is the RIS weight, not a second light-selection PDF.
+            float weight = dot(diffuse + specular, float3(.2126, .7152, .0722));
+            if (weight <= 0) continue;
+            weight_sum += weight;
+            bool replace = selected_weight == 0;
+            // One-candidate reference mode consumes no reservoir random value.
+            if (!replace) replace = lit_random(seed) * weight_sum < weight;
+            if (replace) {
+                selected_target = target;
+                selected_diffuse = diffuse; selected_specular = specular;
+                selected_weight = weight;
+            }
+        }
+        if (selected_weight <= 0) continue;
+        if (shadows && !lit_visible_target(p, n, selected_target)) continue;
+        // Zero-contribution candidates still count in M. Only the selected
+        // candidate traces visibility; no previous visibility is reused.
+        float correction = (weight_sum / selected_weight) / candidates;
+        diffuse_result += selected_diffuse * correction;
+        specular_result += selected_specular * correction;
+    }
+    // Rejected and shadowed samples remain in the denominator.
+    diffuse_result /= max(samples, 1u);
+    specular_result /= max(samples, 1u);
 }
 // Returns incoming radiance integrated against the sampling solid angle.
 // Rectangle uses uniform area samples, including its emitting cosine and area.
@@ -151,13 +251,17 @@ float3 lit_sample_light(LitLight light,float3 p,inout uint seed,out float3 l,out
     }
     return light.color_intensity.rgb*light.color_intensity.w*attenuation;
 }
-struct LitSurface { float3 position,normal,base,emissive; float roughness,metallic; };
+struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed; };
 LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position) {
-    LitInstance instance=lit_instances[instance_id]; uint offset=instance.geometry.x+primitive*3;
-    LitVertex a=lit_rt_vertices[offset],b=lit_rt_vertices[offset+1],c=lit_rt_vertices[offset+2];
+    LitInstance instance=lit_instances[instance_id];
+    LitRayTriangle face=lit_rt_triangles[instance.geometry.x+primitive];
+    LitVertex a=face.vertices[0],b=face.vertices[1],c=face.vertices[2];
     float3 n=a.normal*(1-bary.x-bary.y)+b.normal*bary.x+c.normal*bary.y;
     LitSurface s; s.position=position;
     s.normal=lit_safe_normal(n.x*instance.normal_x.xyz+n.y*instance.normal_y.xyz+n.z*instance.normal_z.xyz);
+    float3 gn=face.geometric_normal;
+    s.geometric_normal=lit_safe_normal(gn.x*instance.normal_x.xyz+gn.y*instance.normal_y.xyz+gn.z*instance.normal_z.xyz);
+    s.closed=face.closed!=0;
     s.base=instance.base_roughness.rgb; s.roughness=instance.base_roughness.w;
     s.emissive=instance.emissive_metallic.rgb; s.metallic=instance.emissive_metallic.w; return s;
 }

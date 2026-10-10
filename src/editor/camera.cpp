@@ -33,7 +33,7 @@ void Camera::frame(math::Vector3 center, float radius) noexcept {
 }
 void Camera::orbit(float dx, float dy) noexcept {
     view_=CameraView::perspective;
-    yaw_ -= dx * .006f;
+    yaw_ += dx * .006f;
     pitch_ = std::clamp(pitch_ + dy * .006f, -1.45f, 1.45f);
 }
 void Camera::zoom(float steps) noexcept { distance_ = std::clamp(distance_ * std::exp(-steps * .12f), .5f, 2000.f); }

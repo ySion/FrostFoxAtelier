@@ -23,8 +23,8 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     auto project=take(Project::open(copy));
     auto document=take(Session::deserialize(take(read_file(take(project.resolve(project.startup_scene())))),project));
     application::SceneSnapshot scene;take(scene.refresh(*document));
-    require(scene.meshes.size()==10 && scene.lights.size()==4,
-        "Scene Lit example did not load its ten meshes and four formal World lights.");
+    require(scene.meshes.size()==10 && scene.lights.size()==4 && scene.environment==std::array{.025f,.035f,.055f},
+        "Scene Lit example did not load its ten meshes, four direct lights and explicit Sky Light.");
     require(std::ranges::count(scene.lights,renderer::LightKind::directional,&renderer::Light::kind)==1 &&
         std::ranges::count(scene.lights,renderer::LightKind::point,&renderer::Light::kind)==2 &&
         std::ranges::count(scene.lights,renderer::LightKind::rectangle,&renderer::Light::kind)==1 &&
@@ -46,7 +46,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     auto reopened=take(Session::deserialize(take(read_file(saved_path)),project));
     application::SceneSnapshot restored;take(restored.refresh(*reopened));
     require(take(reopened->serialize())==saved && restored.meshes.size()==10 && restored.lights.size()==4 &&
-        restored.meshes.front().material.roughness==.71f,
+        restored.meshes.front().material.roughness==.71f && restored.environment==scene.environment,
         "Scene Lit example temporary save/reopen lost material or formal light data.");
     // Runtime presentation uses the same World snapshot contract. An editing
     // document's Parameters panel intentionally requires a stopped document.
@@ -55,7 +55,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     take(reopened->update(1.f/60));
     application::SceneSnapshot running;running.reset();take(running.refresh(*reopened));
     require(reopened->world().running() && running.meshes.size()==restored.meshes.size() &&
-        running.lights.size()==restored.lights.size(),"Running World lost its formal render snapshot.");
+        running.lights.size()==restored.lights.size() && running.environment==restored.environment,"Running World lost its formal render snapshot.");
     for(std::size_t i=0;i<running.meshes.size();++i)
         require(running.meshes[i].world==restored.meshes[i].world &&
             running.meshes[i].geometry==restored.meshes[i].geometry &&
@@ -76,8 +76,73 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
         <<"\nTemporary saved Scene: Content/Scenes/Acceptance.scene\n10 meshes, 4 shadow lights; HDR/metal/roughness and edited material survive reopening.\n";
     std::puts("Scene Lit example Project/Scene acceptance: PASS (source read only, temporary save/reopen)");
 }
+void verify_sky_light_application() {
+    using namespace editor;
+    world::World* sky_world{};
+    Session document([&](world::World& scene)->Result<std::shared_ptr<void>> {
+        sky_world=&scene;return std::shared_ptr<void>{};
+    });
+    application::SceneSnapshot snapshot;
+    Workspace workspace;
+    const std::array<float,3> dark{},radiance{.025f,.05f,.075f};
+    take(snapshot.refresh(document));
+    require(snapshot.environment==dark,"A World without Sky Light has implicit environment radiance.");
+    changed(document.create_light(world::LightKind::sky));
+    const auto actor=document.selection().actor;
+    const auto sky=*take(world::root_component(document.world().runtime(),actor));
+    const auto fields=take(document.properties(sky));
+    const auto property=[&](std::string_view name) {
+        const auto at=std::ranges::find(fields,name,&Property::name);
+        require(at!=fields.end(),"Sky Light reflected property is absent.");return at->path;
+    };
+    take(document.set_property(sky,property("settings.color.x"),.25f,981));
+    take(document.set_property(sky,property("settings.color.y"),.5f,982));
+    take(document.set_property(sky,property("settings.color.z"),.75f,983));
+    take(document.set_property(sky,property("settings.intensity"),.1f,984));
+    take(snapshot.refresh(document));
+    require(snapshot.environment==radiance && snapshot.lights.empty(),"Sky Light did not publish uniform scene radiance outside direct-light slots.");
+    const auto revision=snapshot.revision;take(snapshot.refresh(document));
+    require(snapshot.revision==revision,"Unchanged Sky Light continuously invalidates history.");
+    const auto history=document.undo_count();
+    require(!document.create_light(world::LightKind::sky) && document.undo_count()==history &&
+        take(document.world().members()).size()==1 && !workspace.command_enabled(Command::create_sky_light,document),
+        "Duplicate Sky Light creation changed World membership/history or remained enabled in Create.");
+    changed(sky_world->set_enabled(sky,false));take(snapshot.refresh(document));
+    require(snapshot.environment==dark && !workspace.command_enabled(Command::create_sky_light,document),
+        "Disabled Sky Light emits radiance or allows a second Sky Light.");
+    changed(sky_world->set_enabled(sky,true));
+    changed(sky_world->set_enabled(actor,false));take(snapshot.refresh(document));
+    require(snapshot.environment==dark,"Disabled Sky Light Actor emits radiance.");
+    changed(sky_world->set_enabled(actor,true));take(snapshot.refresh(document));
+    require(snapshot.environment==radiance,"Re-enabled Sky Light did not restore its authored radiance.");
+    changed(document.create_light(world::LightKind::point));
+    const auto point=*take(world::root_component(document.world().runtime(),document.selection().actor));
+    require(!document.set_property(point,property("settings.kind"),EnumValue{document.types().light_kind,static_cast<std::uint64_t>(world::LightKind::sky)},985) &&
+        take(world::read_light(document.world().runtime(),point)).kind==world::LightKind::point && !document.editing(),
+        "Changing Light Type created a second sky or left an active rejected edit.");
+    take(document.select(actor));changed(document.remove_component(sky));take(snapshot.refresh(document));
+    require(snapshot.environment==dark && workspace.command_enabled(Command::create_sky_light,document),"Removed Sky Light remained effective or occupied the unique slot.");
+    changed(document.undo());take(snapshot.refresh(document));
+    require(snapshot.environment==radiance && *take(world::root_component(document.world().runtime(),actor))==sky,
+        "Undo did not restore the same Sky Light component and radiance.");
+    const auto folder=std::filesystem::current_path()/"out/scene-lit-application-evidence"/
+        ("sky-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto project=take(Project::create(folder));
+    const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Sky.scene"));
+    take(write_file(file,text,WriteMode::create));
+    auto reopened=take(Session::deserialize(take(read_file(file)),project));take(snapshot.refresh(*reopened));
+    require(snapshot.environment==radiance && snapshot.lights.size()==1,"Sky Light changed after saved scene reopen.");
+    auto duplicate=nlohmann::json::parse(text);duplicate["actors"].push_back(duplicate["actors"][0]);
+    duplicate["actors"].back()["name"]="Second Sky Light";
+    const auto rejected=Session::deserialize(duplicate.dump(),project);
+    require(!rejected && rejected.error().message.find("one Sky Light")!=std::string::npos,
+        "Scene loading accepted two Sky Lights or rejected for an unrelated reason.");
+    snapshot.reset();require(snapshot.environment==dark,"Replacement scene retained the old Sky Light.");
+    std::puts("Sky Light application acceptance: PASS (single component, create/edit/reject, enable/remove/undo, scene save/reopen)");
+}
 void verify_scene_lit_application(const std::filesystem::path& source_example = {}) {
     verify_scene_lit_example(source_example);
+    verify_sky_light_application();
     using namespace editor;
     const auto folder=std::filesystem::current_path()/"out/scene-lit-application-evidence"/
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -170,6 +235,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto history=document.undo_count();
     require(workspace.apply_view({ui::ActionKind::activate,control::shading_scene_lit,{}}) && workspace.view.shading==renderer::Shading::scene_lit,
         "The formal display command did not select Scene Lit.");
+    require(!workspace.apply_view({ui::ActionKind::activate,control::guide_background,true}) &&
+        workspace.view.background==renderer::Background::gradient,"Scene Lit can enable a studio gradient or destroys the stored studio preference.");
     const auto antialiasing=workspace.view.lit.antialiasing;
     for(std::uint64_t i=0;i<6;++i) {
         require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+i,false}),"Scene Lit effect toggle was not routed.");

@@ -84,7 +84,7 @@ Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采�
 | Ctrl / Shift 拖动 | Ctrl 临时反转移动网格吸附开关；旋转为 15°、缩放为 0.1 倍率吸附。Shift 使用十分之一步长；键入数值仍按精确值执行 |
 | 左键单击空白或物体 | 放置 3D 游标，不修改选择或场景历史。游标是带朝向的三维坐标系：表面定位时局部 Z 对齐命中面法线，X 尽量对齐视图右方向；绘制为 Blender 4.x 样式的 16 段红白虚线圆环，四根黑色刻度沿游标自身 X/Y 轴投影，因此贴面放置时可见其倾斜。无命中时使用当前视图的构造平面，射线平行时使用穿过旧游标的视平面；关闭 Surface Cursor 后只使用平面定位，重置游标同时清除朝向 |
 | W | 打开模式、Snap、聚焦、创建和删除菜单；Snap 提供选择到网格、选择中心到游标、游标到选择/原点/网格 |
-| 中键 / Alt+左键 / Shift+中键拖动 | 前两者环绕相机，Shift+中键平移；滚轮缩放，F 聚焦当前 Actor。正交视图开始环绕后转为透视 |
+| 中键 / Alt+左键 / Shift+中键拖动 | 前两者环绕相机，水平拖动按抓取场景的方向旋转，Shift+中键平移；滚轮缩放，F 聚焦当前 Actor。正交视图开始环绕后转为透视 |
 
 Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键一样交给应用，不进入系统菜单。快捷键仅在视口内且文本输入未占用键盘时启动。视口上方的交互控件先参与统一 UI 命中，点击视图菜单不会向后穿透为游标定位。多选变换只处理有空间根的 Actor；Parameters 展示活动 Actor，视口手柄修改整组。移动/旋转使用世界轴；缩放手柄沿活动根的局部轴，改变各根自身的 scale 分量，并在活动根基底中缩放组内位置偏移。枢轴可选组中心或游标，Static Mesh 创建使用游标位置。此阶段没有局部/世界坐标切换、物体变换的表面/顶点吸附、跨面板资源放置或程序外拖入。
 
@@ -96,7 +96,7 @@ Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键
 
 Scene View 的显示菜单将 `Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。`Scene Lighting` 子菜单提供 Shadows、DDGI、GTAO、SSSR、TAA、Bloom 独立勾选，Exposure 提供 −2 至 +2 EV，Shadow Budget 提供 4/8/16 盏投影灯预算。以上都是视口设置，不进入场景撤销历史。实际请求超预算时，状态栏持续显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
 
-Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional Light。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 为 `[0,1]`，emissive 使用非负 HDR RGB。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
+Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional Light 和 Sky Light。场景已有 Sky Light 时，其创建入口禁用；天光的颜色和 Radiance (cd/m²) 强度由同一属性链编辑，隐藏局部范围、光源尺寸和直接阴影控件。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 为 `[0,1]`，emissive 使用非负 HDR RGB。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity。几何资源、材质、灯参数和呈现成员变化递增 scene_revision；TRS、选择和相机连续移动不递增。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 

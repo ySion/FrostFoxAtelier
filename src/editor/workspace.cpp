@@ -171,8 +171,19 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
     case Command::undo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_undo();return (sample_history()?workbench.undo_count():session.undo_count())!=0;
     case Command::redo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_redo();return (sample_history()?workbench.redo_count():session.redo_count())!=0;
-    case Command::create_actor: case Command::create_static_mesh: {
-        const auto members=session.world().members(); return scene_available && members && members->size()<Session::maximum_actors;
+    case Command::create_actor: case Command::create_static_mesh:
+    case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: case Command::create_sky_light: {
+        const auto members=session.world().members();
+        if(!scene_available || !members || members->size()>=Session::maximum_actors) return false;
+        if(command==Command::create_sky_light) {
+            const auto lights=session.world().query(session.types().light_component);
+            if(!lights) return false;
+            for(const auto object:*lights) {
+                const auto light=world::read_light(session.world().runtime(),object);
+                if(!light || light->kind==world::LightKind::sky) return false;
+            }
+        }
+        return true;
     }
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
     case Command::erase_selected: case Command::focus: {
@@ -231,6 +242,7 @@ bool Workspace::apply_view(const ui::Action& action) {
     else if (key==control::guide_background || key==control::guide_grid || key==control::guide_axes) {
         const auto* checked=std::get_if<bool>(&action.value);
         if (!checked) return false;
+        if (key==control::guide_background && view.shading==renderer::Shading::scene_lit) return false;
         if (key==control::guide_background) view.background=*checked?renderer::Background::gradient:renderer::Background::none;
         else if (key==control::guide_grid) view.reference_grid=*checked;
         else view.origin_axes=*checked;
@@ -340,7 +352,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if (definition.group==CommandGroup::view && definition.shelf_title.empty()) continue;
         if (!shelf_items_[index]) shelf_items_[index]=next_binding_++;
         const auto title=definition.shelf_title.empty()?definition.title:definition.shelf_title;
-        const auto icon=definition.id>=Command::create_point_light && definition.id<=Command::create_directional_light?ui::ControlIcon::component:
+        const auto icon=definition.id>=Command::create_point_light && definition.id<=Command::create_sky_light?ui::ControlIcon::component:
             definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
             definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
@@ -417,7 +429,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             L"Drag a box to scale an axis, the centre for uniform scale. S then X/Y/Z constrains."};
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,33> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,34> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
@@ -429,7 +441,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},std::wstring(view_names[std::size_t(camera_view)]),
             menu && menu->source==control::viewport_camera,ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
             viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down),viewport_readout,!viewport_readout.empty(),
-            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(tool_hints[std::size_t(viewport_mode)])};
+            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(tool_hints[std::size_t(viewport_mode)]),
+            std::wstring(this->view.shading==renderer::Shading::scene_lit || this->view.background==renderer::Background::none?
+                L"viewport-tool-hint dark-background":L"viewport-tool-hint")};
         const std::array<ui_language::KeyBinding,14> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
             {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},
@@ -538,6 +552,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
             if(light) {
                 const auto& name=property.name;
+                if(light->kind==world::LightKind::sky && (name=="settings.range" || name=="settings.source_radius" || name=="settings.casts_shadow")) continue;
                 if(light->kind!=world::LightKind::rectangle && (name=="settings.width" || name=="settings.height" || name=="settings.two_sided")) continue;
                 if(light->kind==world::LightKind::rectangle && name=="settings.source_radius") continue;
                 if(light->kind==world::LightKind::directional && name=="settings.range") continue;
@@ -600,7 +615,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 const auto field=std::string_view(property.name).substr(9);
                 if(field=="kind") caption=L"Light Type";
                 else if(field=="intensity") caption=light->kind==world::LightKind::point?L"Intensity (cd)":
-                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":L"Illuminance (lux)";
+                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":
+                    light->kind==world::LightKind::sky?L"Radiance (cd/m²)":L"Illuminance (lux)";
                 else if(field=="source_radius") caption=light->kind==world::LightKind::directional?L"Angular Radius (rad)":L"Source Radius (m)";
                 else if(field=="range") caption=L"Range (m)";
                 else if(field=="width") caption=L"Width (m)";
@@ -833,7 +849,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 for(std::size_t i=0;i<component_choices_.size();++i)
                     items.push_back({control::component_choice_first+i,wide(component_choices_[i].name),selected!=ObjectId{},false,{}});
             } else if (source->key==control::scene_guides) {
-                items.push_back({control::guide_background,L"Gradient Background",true,view.background==renderer::Background::gradient,{}});
+                const bool studio=view.shading!=renderer::Shading::scene_lit;
+                items.push_back({control::guide_background,L"Gradient Background",studio,studio && view.background==renderer::Background::gradient,{}});
                 items.push_back({control::guide_grid,L"Reference Grid",true,view.reference_grid,{}});
                 items.push_back({control::guide_axes,L"Origin Axes",true,view.origin_axes,{}});
                 for (auto& item:items) item.behavior=ui::MenuBehavior::checkbox;

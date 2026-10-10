@@ -21,7 +21,8 @@ public:
     void validate(const Frame& frame) const;
     void draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,
               std::span<const SceneLitDraw> draws,FrameStats& stats);
-    void invalidate() noexcept;
+    // Called only after CPU preparation succeeds, inside the encoding phase.
+    void invalidate(bool empty_scene,FrameStats& stats);
     Result<void> close();
 private:
     struct State;

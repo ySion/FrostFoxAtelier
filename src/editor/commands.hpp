@@ -19,7 +19,7 @@ enum class Command : std::uint64_t {
     snap_toggle=818, snap_grid_01=819, snap_grid_02=820, snap_grid_05=821, snap_grid_1=822,
     selection_grid=823, selection_cursor=824, cursor_selected=825, cursor_grid=826, cursor_surface=827,
     view_perspective=830, view_top=831, view_front=832, view_right=833, viewport_options=834,
-    create_point_light=835, create_rectangle_light=836, create_directional_light=837
+    create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838
 };
 enum class CommandGroup { file, edit, create, project, view, window, help };
 struct CommandGroupDefinition {
@@ -79,6 +79,7 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::create_point_light,CommandGroup::create,L"Point Light",L"",true,L"Point Light"},
     CommandDefinition{Command::create_rectangle_light,CommandGroup::create,L"Rectangle Light",L"",false,L"Area Light"},
     CommandDefinition{Command::create_directional_light,CommandGroup::create,L"Directional Light",L"",false,L"Sun Light"},
+    CommandDefinition{Command::create_sky_light,CommandGroup::create,L"Sky Light",L"",false,L"Sky Light"},
     CommandDefinition{Command::focus,CommandGroup::view,L"Focus Selection",L"F",false,L"Focus"},
     CommandDefinition{Command::tool_select,CommandGroup::view,L"Select",L"Q",true},
     CommandDefinition{Command::tool_transform,CommandGroup::view,L"Universal Handle",L""},

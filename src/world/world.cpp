@@ -231,6 +231,7 @@ Result<Commit> World::attach(ObjectId object, std::size_t index) {
         buckets.push_back(*bucket);
     }
     if (auto tree = detail::validate_tree(runtime(), object, *group); !tree) return std::unexpected(tree.error());
+    if (auto sky = state.validate_sky_light(*group); !sky) return std::unexpected(sky.error());
     state.members.reserve(state.members.size() + 1);
     state.positions.reserve(state.positions.size() + 1);
     state.prepare_activity(group->size() + 1);
@@ -359,6 +360,7 @@ Result<Commit> World::attach_components(ObjectId actor_id, std::span<const Attac
         references.push_back(held->reference()); roots.push_back(std::move(*held));
     }
     if (auto valid = detail::validate_parents(proposed_root, parents); !valid) return std::unexpected(valid.error());
+    if (registered) if (auto sky=state.validate_sky_light(roots); !sky) return std::unexpected(sky.error());
     auto actor_root = runtime().hold(actor_id, types().actor);
     if (!actor_root) return std::unexpected(actor_root.error());
     const auto weak = [&](ObjectId id) -> Result<ObjectReference> {

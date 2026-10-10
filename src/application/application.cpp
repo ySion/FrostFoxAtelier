@@ -330,10 +330,11 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
     case create_actor: workspace_.inspecting_asset=false;result=completion(document_->add_actor()); break;
-    case create_point_light:case create_rectangle_light:case create_directional_light: {
+    case create_point_light:case create_rectangle_light:case create_directional_light:case create_sky_light: {
         workspace_.inspecting_asset=false;
         const auto kind=command==create_point_light?world::LightKind::point:
-            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
+            command==create_rectangle_light?world::LightKind::rectangle:
+            command==create_directional_light?world::LightKind::directional:world::LightKind::sky;
         result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
     }
     case create_static_mesh: {
@@ -774,7 +775,8 @@ bool Application::step(renderer::Capture* capture) {
     const bool projection_cut=accepted_view_ && accepted_view_->orthographic!=viewport_view.orthographic;
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},workspace_.view,overlay_,
-        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut};
+        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
+        scene_.environment};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;

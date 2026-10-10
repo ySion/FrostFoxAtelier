@@ -100,6 +100,8 @@ struct World::Impl {
     Result<std::size_t> prepare_bucket(TypeId, std::size_t additional);
     void prepare_activity(std::size_t additional = 0);
     Result<void> refresh();
+    // Validate prospective membership/settings before publishing a second sky.
+    Result<void> validate_sky_light(std::span<const ObjectRoot> additions = {}, ObjectId edited = {}, const LightSettings* replacement = nullptr) const;
     void cancel_tasks(ObjectId target = {}, bool actor = true) noexcept;
     void halt() noexcept;
     std::optional<Error> begin(ObjectId actor = {}, ObjectId component = {});

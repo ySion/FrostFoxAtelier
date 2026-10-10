@@ -209,6 +209,8 @@ struct Fixture {
         metrics.open(output / (benchmark ? "benchmark-summary.txt" : "image-metrics.csv"));
         check(metrics.good(), "SceneLit evidence directory opened");
         frame.lights = lights; frame.scene_identity = 1; frame.scene_revision = 1;
+        // This fixture authors a sky explicitly; the renderer default is dark.
+        frame.environment = {.025f,.035f,.055f};
         if (!benchmark) {
             frame.scene_viewport = {24,32,float(drawing.extent.width)-48,float(drawing.extent.height)-56};
             frame.camera = camera({static_cast<unsigned>(frame.scene_viewport.width),static_cast<unsigned>(frame.scene_viewport.height)});
@@ -266,9 +268,10 @@ struct Fixture {
 void benchmark(Fixture& f) {
     for (unsigned frame = 0; frame < warmup_frames; ++frame) f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
-    samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries\n";
+    samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries\n";
     std::vector<double> totals;
     std::array<std::vector<double>, 8> passes;
+    std::array<std::vector<double>, 2> ddgi_passes;
     std::uint64_t resource_peak = 0;
     std::uint64_t previous_sequence = 0;
     const auto first_measured_frame = f.drawing.id;
@@ -288,7 +291,18 @@ void benchmark(Fixture& f) {
         }
         totals.push_back(sum); resource_peak = std::max(resource_peak, stats.scene_lit_resource_bytes);
         samples << ',' << sum << ',' << stats.scene_lit_resource_bytes << ',' << stats.scene_lit_shadow_rays
-                << ',' << stats.scene_lit_probe_rays << '\n';
+                << ',' << stats.scene_lit_probe_rays;
+        double ddgi_sum=0;
+        for(std::size_t pass=0;pass<ddgi_passes.size();++pass) {
+            const double value=stats.scene_lit_ddgi_gpu_ms[pass];
+            check(std::isfinite(value)&&value>=0,"DDGI subpass timestamps are finite nonnegative milliseconds");
+            ddgi_passes[pass].push_back(value);ddgi_sum+=value;samples<<','<<value;
+        }
+        check(ddgi_sum<=stats.scene_lit_gpu_ms[3]+.01,"DDGI subpass timestamps belong to the enclosing completed DDGI stage");
+        std::uint64_t ddgi_visibility=0;
+        for(auto queries:stats.scene_lit_ddgi_visibility_rays){samples<<','<<queries;ddgi_visibility+=queries;}
+        check(ddgi_visibility<=stats.scene_lit_shadow_rays,"DDGI classified queries are a subset of all visibility queries");
+        samples<<'\n';
     }
     check(totals.size() >= 120 && percentile(totals, 95) > 0, "SceneLit benchmark obtains completed GPU timestamp samples");
     f.metrics << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle, four shadow lights\n"
@@ -301,16 +315,62 @@ void benchmark(Fixture& f) {
     for (std::size_t pass = 0; pass < passes.size(); ++pass)
         f.metrics << names[pass] << "_ms p50=" << percentile(passes[pass],50) << " p95=" << percentile(passes[pass],95)
                   << " p99=" << percentile(passes[pass],99) << '\n';
+    constexpr const char* ddgi_names[]{"DDGI_update","DDGI_gather"};
+    for(std::size_t pass=0;pass<ddgi_passes.size();++pass)
+        f.metrics<<ddgi_names[pass]<<"_ms p50="<<percentile(ddgi_passes[pass],50)<<" p95="<<percentile(ddgi_passes[pass],95)
+                 <<" p99="<<percentile(ddgi_passes[pass],99)<<'\n';
     check(samples.good() && f.metrics.good(), "SceneLit GPU benchmark evidence written");
     // Evidence capture happens only after the timestamp sample loop.
     f.capture("benchmark-1440p");
     std::puts("Renderer SceneLit benchmark: PASS (1440p fixed scene, completed GPU pass timestamps)");
 }
 
+void environment_cases(Fixture& f) {
+    const auto meshes=f.room.meshes;
+    const auto lights=f.lights;
+    const auto view=f.frame.view;
+    const auto environment=f.frame.environment;
+    f.lights.clear();
+    for(auto& mesh:f.room.meshes) mesh.material.emissive={};
+    f.edited();++f.frame.scene_identity;
+    f.frame.environment={};
+    f.frame.view.background=render::Background::gradient;
+    f.frame.view.lit.bloom=false;f.frame.view.lit.antialiasing=render::Antialiasing::none;
+    const auto dark=f.capture("sky-absent-black",warmup_frames);
+    std::size_t surfaces=0;
+    for(std::size_t i=0;i<dark.depth.size();++i) if(dark.depth[i]>0) {
+        ++surfaces;
+        check(dark.rgba[i*4]==0 && dark.rgba[i*4+1]==0 && dark.rgba[i*4+2]==0,
+            "Scene Lit has no implicit ambient light without authored sky, lights or emission");
+    }
+    check(surfaces>1000,"dark environment check contains real visible geometry");
+    f.frame.environment={.12f,.08f,.04f};++f.frame.scene_revision;
+    const auto sky=f.capture("sky-authored-on",warmup_frames);
+    check(f.compare("sky-authored-response",dark,sky).changed>1000,
+        "explicit scene sky radiance illuminates real surfaces");
+    check(f.step().stats.scene_lit_shadow_lights==0,"sky does not consume direct shadow slots");
+    f.frame.environment={};++f.frame.scene_revision;
+    // Allow the budgeted multi-bounce histories to decay to a one-code-value
+    // SDR endpoint; the scene radiance input itself is already exactly zero.
+    const auto removed=f.capture("sky-removed-dark",384);
+    for(std::size_t i=0;i<removed.depth.size();++i) if(removed.depth[i]>0)
+        check(removed.rgba[i*4]<=1 && removed.rgba[i*4+1]<=1 && removed.rgba[i*4+2]<=1,
+            "removing scene sky converges to darkness without frozen ambient history");
+    f.room.meshes.clear();f.edited();
+    const auto empty=f.capture("lit-empty-black");
+    for(unsigned y=unsigned(f.frame.scene_viewport.y);y<unsigned(f.frame.scene_viewport.y+f.frame.scene_viewport.height);++y)
+        for(unsigned x=unsigned(f.frame.scene_viewport.x);x<unsigned(f.frame.scene_viewport.x+f.frame.scene_viewport.width);++x)
+            check(pixel(empty,x,y)[0]==0 && pixel(empty,x,y)[1]==0 && pixel(empty,x,y)[2]==0 && depth(empty,x,y)==0,
+                "empty Scene Lit viewport ignores the studio gradient preference");
+    f.room.meshes=meshes;f.lights=lights;f.edited();f.frame.view=view;f.frame.environment=environment;
+    ++f.frame.scene_identity;
+    std::puts("Renderer SceneLit environment: PASS (explicit sky, absent/removed darkness, black empty viewport)");
+}
 void image_cases(Fixture& f) {
     const auto original_meshes = f.room.meshes;
     const auto original_lights = f.lights;
     const auto original_lit = f.frame.view.lit;
+    const auto original_environment = f.frame.environment;
     f.room.meshes.clear(); f.edited();
     const auto cold_empty = f.capture("00-empty-scene");
     check(std::ranges::all_of(cold_empty.depth,[](float value) { return value == 0; }),
@@ -347,7 +407,7 @@ void image_cases(Fixture& f) {
     auto& options = f.frame.view.lit;
     options.ddgi = options.gtao = options.sssr = options.bloom = false;
     options.antialiasing = render::Antialiasing::none;
-    options.environment = {0,0,0}; options.shadow_samples = 64;
+    f.frame.environment = {0,0,0}; options.shadow_samples = 64;
     f.room.meshes[7].material.emissive = {0,0,0};
     for (std::size_t index = 0; index < original_lights.size(); ++index) {
         f.lights = {original_lights[index]};
@@ -390,7 +450,7 @@ void image_cases(Fixture& f) {
     options.exposure_ev = 0;
 
     f.lights = original_lights; f.room.meshes = original_meshes; f.edited();
-    options.environment = original_lit.environment;
+    f.frame.environment = original_environment;
     const auto metal = f.capture("05-material-metals");
     f.room.meshes[5].material.metallic = f.room.meshes[6].material.metallic = 0;
     f.room.meshes[6].material.roughness = .95f; f.edited();
@@ -407,7 +467,7 @@ void image_cases(Fixture& f) {
     f.lights = {original_lights[0]};
     f.lights[0].source_radius = 0;
     f.edited();
-    options.gtao = false; options.environment = {0,0,0};
+    options.gtao = false; f.frame.environment = {0,0,0};
     const auto direct = f.capture("06-direct-no-ao",warmup_frames);
     options.gtao = true;
     const auto direct_ao = f.capture("06-direct-with-ao",16);
@@ -420,7 +480,7 @@ void image_cases(Fixture& f) {
     for (auto& light : f.lights) light.color = {1,1,1};
     f.room.meshes[0].material.metallic = 0; f.room.meshes[0].material.roughness = .8f;
     f.room.meshes[7].material.emissive = {0,0,0}; f.edited();
-    options.gtao = false; options.ddgi = false; options.environment = {0,0,0};
+    options.gtao = false; options.ddgi = false; f.frame.environment = {0,0,0};
     // Both sides need settled direct radiance; otherwise the DDGI difference
     // would also include direct-history convergence after the light edit.
     const auto gi_off = f.capture("07-ddgi-off",warmup_frames);
@@ -445,7 +505,7 @@ void image_cases(Fixture& f) {
     // A fixed environment isolates AO from changing probe updates and random
     // direct-light samples. It is still an indirect diffuse contribution.
     f.lights.clear(); f.edited();
-    options.ddgi = false; options.environment = {.15f,.15f,.15f}; options.gtao = true;
+    options.ddgi = false; f.frame.environment = {.15f,.15f,.15f}; options.gtao = true;
     const auto gi_ao = f.capture("08-gtao-indirect",warmup_frames);
     options.gtao = false;
     const auto gi_no_ao = f.capture("08-gtao-disabled",warmup_frames);
@@ -455,7 +515,7 @@ void image_cases(Fixture& f) {
     // Screen-space tracing adds visible reflection while the environment
     // remains a usable fallback with the emissive reflector off-screen.
     f.room.meshes = original_meshes; f.lights = original_lights; f.edited();
-    options = original_lit; options.bloom = options.ddgi = false;
+    options = original_lit; f.frame.environment = original_environment; options.bloom = options.ddgi = false;
     options.antialiasing = render::Antialiasing::none;
     options.shadow_samples = 64; // Identical direct samples isolate SSR's contribution.
     options.sssr = false;
@@ -471,14 +531,14 @@ void image_cases(Fixture& f) {
     const auto fallback_rgb = mean_rgb(offscreen,metal_region);
     check(fallback_rgb[0]+fallback_rgb[1]+fallback_rgb[2] > 12,
           "reflective surface retains finite environment fallback after its visible source exits the screen");
-    options.environment = {0,0,0};
+    f.frame.environment = {0,0,0};
     const auto no_environment = f.capture("09-fallback-environment-off");
     const auto no_environment_rgb = mean_rgb(no_environment,metal_region);
     check(fallback_rgb[0]+fallback_rgb[1]+fallback_rgb[2] >
               no_environment_rgb[0]+no_environment_rgb[1]+no_environment_rgb[2]+10,
           "off-screen reflective receiver visibly uses the configured environment fallback");
 
-    f.room.meshes = original_meshes; f.lights = original_lights; f.edited(); options = original_lit;
+    f.room.meshes = original_meshes; f.lights = original_lights; f.edited(); options = original_lit; f.frame.environment = original_environment;
     const auto stable0 = f.capture("10-temporal-stable-0",warmup_frames);
     const auto stable1 = f.capture("10-temporal-stable-1",8);
     const auto stable_delta = f.compare("temporal-stable",stable0,stable1);
@@ -552,7 +612,10 @@ void image_cases(Fixture& f) {
     check(f.metrics.good(), "SceneLit image verification evidence written");
     std::puts("Renderer SceneLit acceptance: PASS (four shadow lights, HDR RGB/materials, DDGI update, GTAO indirect, SSSR/fallback, temporal resets, orthographic, modes, empty/UI depth)");
 }
+#include "scene_lit_motion.inl"
+
 void temporal_isolation(Fixture& f) {
+    quality_motion_history(f);
     const auto defaults=f.frame.view.lit;
     constexpr const char* names[]{"all","no-sssr","no-ddgi","direct-only","direct-reference"};
     bool stable=true;
@@ -713,18 +776,22 @@ void quality_depth(Fixture& f) {
 }
 
 void quality_ssil(Fixture& f) {
-    // A visible red front face is within the short screen-space radius of the
-    // neutral floor. The remote floor has no surface within that radius.
+    // A lit red front face is within the short screen-space radius of the
+    // neutral floor. Emission belongs to mesh NEE, not the SSIL residual.
+    // The remote floor has no surface within that radius.
     f.room.meshes[0].material.metallic=0;
     f.room.meshes[0].material.roughness=.8f;
     f.room.meshes[4].color={.9f,.025f,.01f,1};
-    f.room.meshes[4].material.emissive={4,.03f,.01f};
+    f.room.meshes[4].material.emissive={0,0,0};
     f.room.meshes[7].material.emissive={0,0,0};
-    f.lights={room_lights()[0]};f.lights[0].source_radius=0;f.edited();
+    f.lights={room_lights()[0]};f.lights[0].source_radius=0;
+    // Horizontal illumination reaches the red face without saturating the
+    // floor, so its reflected residual remains visible in the RGBA8 evidence.
+    f.lights[0].direction={0,0,1};f.lights[0].intensity=16;f.edited();
     auto& options=f.frame.view.lit;
     options.antialiasing=render::Antialiasing::none;
     options.ddgi=options.gtao=options.sssr=options.bloom=options.ssil=false;
-    options.environment={.15f,.15f,.15f};options.shadow_samples=64;
+    f.frame.environment={.15f,.15f,.15f};options.shadow_samples=64;
     // Keep both sides free of GTAO. Deterministic direct64 and the same fixed
     // isotropic fallback make the optional residual the only changing source.
     const auto local=f.region({0,.01f,2.05f});
@@ -743,7 +810,7 @@ void quality_ssil(Fixture& f) {
              <<"ssil-remote-roi,"<<remote_delta.mean<<','<<remote_delta.p95<<','<<remote_delta.changed<<",0\n";
     check(local_delta.mean>=.5 && local_after[0]-local_before[0]>
           local_after[2]-local_before[2]+.25,
-          "optional SSIL visibly transfers the nearby red source to its neutral floor receiver");
+          "optional SSIL visibly transfers reflected light from the nearby red surface to its neutral floor receiver");
     check(remote_delta.p95<=1 && global_delta.changed<static_cast<std::size_t>(visible)/2,
           "bounded SSIL preserves the remote baseline instead of brightening the whole scene");
     for(unsigned index=0;index<16;++index) {
@@ -763,7 +830,113 @@ void quality_ssil(Fixture& f) {
           "disabling SSIL restores the same direct and isotropic indirect baseline");
 }
 
+void quality_emissive_nee(Fixture& f) {
+    using atelier::geometry::Vertex;
+    // Both representations cover precisely the same quad. The off-centre fan
+    // has unequal triangle areas, exposing a missing triangle-selection PDF.
+    const auto emitter_geometry=[](bool fan, bool reversed=false) {
+        const std::array<Vec3,4> corners{{{1,-1,2},{3,-1,2},{3,1,2},{1,1,2}}};
+        std::vector<Vertex> vertices;
+        const auto triangle=[&](Vec3 a,Vec3 b,Vec3 c) {
+            if(reversed) std::swap(b,c);
+            for(const auto p:{a,b,c}) vertices.push_back({{p[0],p[1],p[2]},{0,0,reversed?1.f:-1.f}});
+        };
+        if(fan) for(unsigned i=0;i<4;++i) triangle(corners[i],corners[(i+1)%4],{1.1f,-.85f,2});
+        else {triangle(corners[0],corners[1],corners[2]);triangle(corners[0],corners[2],corners[3]);}
+        return std::make_shared<const atelier::geometry::Mesh>(std::move(vertices));
+    };
+    f.room.meshes.resize(2);
+    auto& receiver=f.room.meshes[0];
+    receiver={};receiver.stable_key=1;receiver.world=box(0,0,0,1,1,1);
+    receiver.geometry=std::make_shared<const atelier::geometry::Mesh>(std::vector<Vertex>{
+        {{-3,-2,4},{0,0,-1}},{{3,-2,4},{0,0,-1}},{{3,2,4},{0,0,-1}},
+        {{-3,-2,4},{0,0,-1}},{{3,2,4},{0,0,-1}},{{-3,2,4},{0,0,-1}}});
+    receiver.color={.08f,.08f,.08f,1};receiver.material={.roughness=1};
+    auto& emitter=f.room.meshes[1];
+    emitter={};emitter.stable_key=2;emitter.world=box(0,0,0,1,1,1);
+    emitter.geometry=emitter_geometry(false);emitter.color={0,0,0,1};
+    emitter.material={.roughness=1,.metallic=1};
+    f.lights.clear();f.edited();++f.frame.scene_identity;
+    f.frame.environment={0,0,0};
+    auto& options=f.frame.view.lit;
+    options={};options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.antialiasing=render::Antialiasing::none;options.shadow_samples=64;
+    f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
+    const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
+    f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
+    f.frame.camera_cut=true;
+    // This broad, unoccluded receiver remains visible when the blocker is
+    // inserted halfway along every emitter segment, away from the camera ray.
+    const auto region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{-.7f,0,4},16);
+    const auto measure=[&](const char* name,unsigned settle=4) {
+        const auto image=f.capture(name,settle);
+        const double value=mean_rgb(image,region)[0];
+        f.metrics<<name<<','<<value<<",0,0,0\n";
+        std::printf("SceneLit %s receiver red=%.4f\n",name,value);
+        return value;
+    };
+    const double dark=measure("mesh-nee-no-emitter");
+    f.room.meshes[1].material.emissive={12,12,12};f.edited();
+    const double direct=measure("mesh-nee-direct64");
+    check(dark<=1 && direct>=32 && direct<=200,
+          "mesh emission lights an unsaturated real receiver with DDGI, SSIL and authored lights disabled");
+    f.room.meshes[1].geometry=emitter_geometry(true);f.edited();
+    const double triangulated=measure("mesh-nee-unequal-area-fan");
+    check(std::abs(triangulated-direct)<=4,
+          "equal emitting area retains energy under unequal-area retriangulation with its complete PDF");
+    const auto original_geometry=emitter_geometry(false);
+    std::vector<Vertex> transformed(original_geometry->vertices().begin(),original_geometry->vertices().end());
+    for(auto& vertex:transformed){vertex.position[0]*=-.5f;vertex.position[1]*=2;}
+    f.room.meshes[1].geometry=std::make_shared<const atelier::geometry::Mesh>(std::move(transformed));
+    f.room.meshes[1].world=box(0,0,0,-2,.5f,1);f.edited();
+    const double scaled=measure("mesh-nee-mirrored-nonuniform-transform");
+    check(std::abs(scaled-direct)<=4,"world-space emitter area and radiance survive mirrored nonuniform instance transforms");
+    f.room.meshes[1].world=box(0,0,0,1,1,1);
+    std::vector<Vertex> tiled;
+    const auto emit_triangle=[&](Vec3 a,Vec3 b,Vec3 c){for(const auto p:{a,b,c})tiled.push_back({{p[0],p[1],p[2]},{0,0,-1}});};
+    for(unsigned y=0;y<20;++y)for(unsigned x=0;x<20;++x) {
+        const float left=1+float(x)*.1f,right=1+float(x+1)*.1f,bottom=-1+float(y)*.1f,top=-1+float(y+1)*.1f;
+        emit_triangle({left,bottom,2},{right,bottom,2},{right,top,2});
+        emit_triangle({left,bottom,2},{right,top,2},{left,top,2});
+    }
+    f.room.meshes[1].geometry=std::make_shared<const atelier::geometry::Mesh>(std::move(tiled));f.edited();
+    const double many=measure("mesh-nee-800-triangles");
+    check(std::abs(many-direct)<=4,"800 emitting primitives keep complete sampling support without a 256-light truncation");
+    f.room.meshes[1].geometry=emitter_geometry(false,true);f.edited();
+    const double reversed=measure("mesh-nee-reversed-winding");
+    check(std::abs(reversed-direct)<=4,
+          "two-sided mesh emission retains receiver energy when emitter winding is reversed");
+    f.room.meshes[1].geometry=emitter_geometry(false);
+    f.room.meshes[1].material.emissive={24,24,24};f.edited();
+    const double doubled=measure("mesh-nee-double-radiance");
+    check(doubled>=direct+12,"emissive energy comparison has visible unsaturated headroom");
+    f.room.meshes[1].material.emissive={12,12,12};f.edited();
+    options.ddgi=true;
+    const double with_ddgi=measure("mesh-nee-ddgi-no-duplicate",192);
+    // The emitter reflects nothing; the only other surface is this dim planar
+    // receiver. Allow finite-probe reconstruction error, but reject a second
+    // direct contribution using an actual 2x-radiance capture (not an sRGB ratio).
+    check(with_ddgi>=direct-4 && with_ddgi<=direct+(doubled-direct)*.3+2,
+          "DDGI adds no duplicate mesh-direct emission to an isolated low-reflectance receiver");
+    options.ddgi=false;
+    render::MeshInstance blocker;
+    blocker.stable_key=3;blocker.geometry=atelier::geometry::cube_mesh();
+    blocker.world=box(.65f,0,3,1.6f,2.4f,.05f);blocker.color={0,0,0,1};
+    blocker.material={.roughness=1,.metallic=1};
+    f.room.meshes.push_back(blocker);f.edited();
+    const double blocked=measure("mesh-nee-occluded");
+    check(blocked<=dark+2,"mesh NEE visibility rejects geometry before the sampled emitter endpoint");
+    f.room.meshes.pop_back();f.edited();
+    const double restored=measure("mesh-nee-blocker-removed");
+    check(std::abs(restored-direct)<=4,"removing the blocker restores mesh light visibility");
+    f.room.meshes.pop_back();f.edited();
+    const double removed=measure("mesh-nee-emitter-removed");
+    check(removed<=dark+1,"removing emissive geometry removes its derived light without stale energy");
+    check(f.metrics.good(),"mesh NEE real-renderer energy and visibility evidence written");
+}
+
 void quality_ddgi(Fixture& f) {
+    quality_emissive_nee(f);
     // Minimal real scene for the reported dirty wall/floor junction and moving
     // bright emissive mesh. Use the product's default probe field, not the
     // denser field used by the older general lighting fixture.
@@ -781,6 +954,7 @@ void quality_ddgi(Fixture& f) {
     f.lights.clear();f.edited();++f.frame.scene_identity;
     auto& options=f.frame.view.lit;
     options={};options.gtao=options.sssr=options.bloom=false;
+    f.frame.environment={.025f,.035f,.055f};
     options.antialiasing=render::Antialiasing::none;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-1.6f,8,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
@@ -803,7 +977,7 @@ void quality_ddgi(Fixture& f) {
         seam_ratios.push_back(near_red/std::max(above_red,1.0));
     }
     const double seam_p10=percentile(seam_ratios,10);
-    std::printf("SceneLit DDGI wall/floor red ratio p10=%.4f (minimum .75)\n",seam_p10);
+    std::printf("SceneLit DDGI wall/floor red ratio p10=%.4f (minimum .95)\n",seam_p10);
     f.metrics<<"ddgi-seam-ratio-p10,"<<seam_p10<<",0,0,0\n";f.metrics.flush();
     const auto upper_left=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{-4.4f,3,5.38f},1);
     const auto lower_right=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{1.4f,.05f,5.38f},1);
@@ -846,22 +1020,91 @@ void quality_ddgi(Fixture& f) {
     auto divider=f.room.meshes[1];divider.stable_key=4;
     divider.world=box(0,1.6f,0,.12f,20,24);divider.color={0,0,0,1};
     f.room.meshes.push_back(divider);f.edited();++f.frame.scene_identity;
-    options.environment={0,0,0};
+    f.frame.environment={0,0,0};
     const auto divided=f.capture("ddgi-thin-divider",192);
     const auto dark=mean_rgb(divided,f.region({-.35f,1.6f,5.38f}));
     const auto bright=mean_rgb(divided,f.region({1.3f,2.6f,5.38f}));
     std::printf("SceneLit DDGI divider dark red=%.4f, lit red=%.4f\n",dark[0],bright[0]);
     f.metrics<<"ddgi-divider-dark-red,"<<dark[0]<<",0,0,0\n"
              <<"ddgi-divider-lit-red,"<<bright[0]<<",0,0,0\n";f.metrics.flush();
+    // Place a thinner-than-pixel divider between adjacent pixel centers.
+    // Both visible receivers are the same back-wall plane: normal/depth-only
+    // spatial filtering would blend across the unseen intervening wall.
+    const float world_pixel=6.f/f.frame.scene_viewport.height;
+    f.room.meshes.back().world=box(world_pixel,1.6f,0,world_pixel*.4f,20,24);
+    f.edited();++f.frame.scene_identity;
+    const auto subpixel=f.capture("ddgi-subpixel-divider",192);
+    const auto dark_edge=mean_rgb(subpixel,project_region(f.frame.camera,f.frame.scene_viewport,
+        f.drawing.extent,{0,1.6f,5.38f},0));
+    const auto bright_edge=mean_rgb(subpixel,project_region(f.frame.camera,f.frame.scene_viewport,
+        f.drawing.extent,{world_pixel*2,1.6f,5.38f},0));
+    std::printf("SceneLit DDGI subpixel divider dark red=%.4f, lit red=%.4f\n",dark_edge[0],bright_edge[0]);
+    options.shadow_samples=64;
+    const auto subpixel_reference=f.capture("ddgi-subpixel-divider-direct64",16);
+    const auto dark_reference=mean_rgb(subpixel_reference,project_region(f.frame.camera,f.frame.scene_viewport,
+        f.drawing.extent,{0,1.6f,5.38f},0));
+    std::printf("SceneLit subpixel divider direct64 dark red=%.4f\n",dark_reference[0]);
+    check(dark_reference[0]<=8,"unfiltered direct64 confirms the subpixel divider really blocks the light");
+    f.metrics<<"ddgi-subpixel-divider-dark-red,"<<dark_edge[0]<<",0,0,0\n"
+             <<"ddgi-subpixel-divider-lit-red,"<<bright_edge[0]<<",0,0,0\n";f.metrics.flush();
     check(profile.good() && f.metrics.good(),"DDGI whole-wall evidence written");
-    check(seam_p10>=.75,"DDGI does not collapse broad unobstructed wall/floor contact into a dirty dark strip");
+    check(seam_p10>=.95,"DDGI visible wall/floor contact retains illumination without a false dark strip");
     check(static_mean<=3 && static_p95<=8,"converged bright-emitter whole-wall temporal stability");
     check(moving_mean<=3 && moving_p95<=8,"slow emissive motion does not expose budgeted probe update blocks");
     check(dark[0]<=8 && bright[0]>=64,"thin divider retains visibility rejection under bright emissive lighting");
+    check(dark_edge[0]<=8 && bright_edge[0]>=64,
+          "lighting reconstruction does not cross a subpixel blocker between coplanar receivers");
     std::puts("Renderer SceneLit DDGI quality: PASS");
 }
 
+#include "scene_lit_contracts.inl"
+
+void quality_smaa_t2x_coverage(Fixture& f) {
+    const auto meshes=f.room.meshes;
+    const auto lights=f.lights;
+    const auto view=f.frame.view;
+    const auto environment=f.frame.environment;
+    f.room.meshes={meshes[4]};f.lights.clear();f.frame.environment={};
+    auto& object=f.room.meshes.front();
+    object.world=box(0,1.2f,3,1.4f,2,1);
+    object.world[0]=1.4f*std::cos(.3f);object.world[1]=1.4f*std::sin(.3f);
+    object.world[4]=-2*std::sin(.3f);object.world[5]=2*std::cos(.3f);
+    object.material.emissive={.4f,.18f,.07f};
+    auto& options=f.frame.view.lit;
+    options.antialiasing=render::Antialiasing::smaa_t2x;
+    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    f.frame.camera_cut=true;f.edited();
+    const auto stable=[&](const char* name) {
+        const auto a=f.capture((std::string(name)+"-a").c_str(),4);
+        const auto b=f.capture((std::string(name)+"-b").c_str());
+        const auto c=f.capture((std::string(name)+"-c").c_str());
+        unsigned maximum=0;std::size_t visible=0;
+        for(std::size_t i=0;i<a.depth.size();++i) {
+            visible+=a.depth[i]>0;
+            for(unsigned channel=0;channel<3;++channel) {
+                const auto index=i*4+channel;
+                maximum=std::max({maximum,unsigned(std::abs(int(a.rgba[index])-int(b.rgba[index]))),
+                    unsigned(std::abs(int(b.rgba[index])-int(c.rgba[index])))});
+            }
+        }
+        std::printf("SceneLit %s: maximum consecutive RGB8 delta=%u visible=%zu\n",name,maximum,visible);
+        check(visible>256,"T2x coverage fixture contains a visible emissive silhouette");
+        check(a.depth==b.depth && b.depth==c.depth,"T2x public depth and static geometry remain fixed");
+        check(maximum<=2,"T2x combines complementary static silhouette coverage without phase flicker");
+    };
+    stable("quality-t2x-coverage");
+    object.world[12]+=.3f;f.edited();f.step();
+    stable("quality-t2x-motion-settled");
+    // A new identity at the same transform has invalid surface correspondence,
+    // but still has raster coverage and must not reintroduce sampling jitter.
+    ++object.stable_key;f.edited();
+    stable("quality-t2x-new-identity");
+    f.room.meshes=meshes;f.lights=lights;f.frame.view=view;f.frame.environment=environment;
+    f.frame.camera_cut=true;f.edited();
+}
+
 void quality_cases(Fixture& f) {
+    quality_smaa_t2x_coverage(f);
     const auto meshes=f.room.meshes;
     const auto lights=f.lights;
     const auto defaults=f.frame.view.lit;
@@ -955,18 +1198,20 @@ void quality_cases(Fixture& f) {
     quality_ssil(f);
     quality_depth(f);
     quality_ddgi(f);
+    quality_contracts(f);
     check(f.metrics.good() && trajectory.good(),"SceneLit quality evidence and accepted-frame trajectory written");
     std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, direct64, bounded SSIL, geometry/camera recovery, reversed depth, emissive DDGI wall continuity/motion/divider)");
 }
 } // namespace scene_lit_e2e
 
-int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false) {
+int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false) {
     scene_lit_e2e::Fixture fixture(benchmark_mode,output,ddgi_only?atelier::rhi::Validation::debug_layer:atelier::rhi::Validation::gpu);
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
+    else if(contracts_only) scene_lit_e2e::quality_contracts(fixture);
     else if(ddgi_only) scene_lit_e2e::quality_ddgi(fixture);
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);
     else if(temporal_only) scene_lit_e2e::temporal_isolation(fixture);
-    else scene_lit_e2e::image_cases(fixture);
+    else {scene_lit_e2e::environment_cases(fixture);scene_lit_e2e::image_cases(fixture);}
     fixture.close();
     return 0;
 }
