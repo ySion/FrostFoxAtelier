@@ -25,7 +25,7 @@ SceneOutput main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
     o.normal = normal.x * instance.normal_x + normal.y * instance.normal_y + normal.z * instance.normal_z;
     o.color = instance.color;
     o.uv = vertex.uv;
-    o.barycentric = float3(corner == 0, corner == 1, corner == 2);
+    o.edge_coordinates = float4(corner == 0, corner == 1, corner == 2, o.position.w);
     o.edge_mask = display.z != 0 ? 7 : face.edge_mask;
     o.selected = instance.selected;
     return o;

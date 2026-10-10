@@ -2,7 +2,9 @@ struct SceneOutput {
     float4 position : SV_Position;
     float3 normal : NORMAL;
     float4 color : COLOR;
-    noperspective float3 barycentric : TEXCOORD0;
+    // Original barycentrics and clip w share perspective interpolation. Their
+    // quotient is affine in screen space, even across eye/near-plane clipping.
+    float4 edge_coordinates : TEXCOORD0;
     nointerpolation uint edge_mask : TEXCOORD1;
     nointerpolation float selected : TEXCOORD2;
     float2 uv : TEXCOORD3;

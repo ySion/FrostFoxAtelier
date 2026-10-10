@@ -209,7 +209,7 @@ ui Tool(in Text title, in ActionBinding command) {
 ### 外壳、停靠和独立菜单
 
 - EditorShell 声明菜单栏、工具架内容槽、工作区和状态栏。菜单栏、工具架、状态栏是固定高度的外围区域；宿主读取声明产生的实际高度，为 DockSpace 提供剩余空间。该约束会在源码发布前检查，不在 C++ 复制高度公式。
-- DockSpace::presentation 只提供分割位置、比例范围、稳定页签和内容槽身份。DockWorkspace 通过 Repeat 组合 DockPane、PaneTabs、PaneDivider 和 PaneSlot；分隔条三个动作的尺寸与排布属于 DSL。拖放使用接受帧中的实际页签栏高度。
+- DockSpace::presentation 只提供分割位置、比例范围、稳定页签和内容槽身份。DockWorkspace 通过 Repeat 组合 DockPane、PaneTabs、PaneDivider 和 PaneSlot；分隔条三个动作的尺寸与排布属于 DSL。拖放使用接受帧中的实际页签栏高度。分隔条的编辑预览由 DockSpace 保留，复用 DockPreview 的 DSL 外观；已提交的面板尺寸仅在松手后改变，取消时直接退休预览。
 - `Item.keys` 可为重复组件内部的具体节点提供命名 KeyBinding，根节点始终由 Item.key 持有。`Item.parent` 可指定既有宿主内容槽；省略时使用 Repeat 的父节点。父节点必须在完整控件批次中先出现，重复身份和非法父链由 Session 拒绝。换父节点复用同一可回滚实例准备链，不另建控件注册入口。
 - `out_of_flow`、`offset_x/y`、`anchor_x/y`、`pivot_x/y` 直接使用现有布局合同；只有 offset 允许负数。`flex_width` 是可收缩的内容宽度，`grow_width` 同时允许扩张，值表示最小宽度。
 - `context` 可直接引用 Key、node.name 或 TextEditBinding；文字编辑菜单通过同一编辑绑定取得目标身份，和字段换绑一起更新。

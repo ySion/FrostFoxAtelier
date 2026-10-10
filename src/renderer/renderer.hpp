@@ -153,6 +153,8 @@ class Renderer {
 
     [[nodiscard]] static Result<Renderer> open(HWND window, const Options &options = {});
     [[nodiscard]] Result<Target> target() const;
+    // Match the native client before preparing its UI frame; no Present is needed.
+    [[nodiscard]] Result<Target> sync_window_target();
     // Minimized/zero client size, target mismatch or occluded Present is skipped.
     // CPU validation failure retains usability. Upload/encoding/execution failure
     // is terminal. Switch the application's hit frame ONLY on accepted.

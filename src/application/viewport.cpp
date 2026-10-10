@@ -2,7 +2,8 @@
 
 namespace atelier::application {
 bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key) {
-    if(workspace_.menu || workspace_.dock.dragging() || !accepted_view_ || !pointer_ready()) return false;
+    // A UI press owns its whole gesture, including movement across the viewport.
+    if(workspace_.menu || workspace_.dock.dragging() || ui_.interaction_state().pointer || !accepted_view_ || !pointer_ready()) return false;
     const auto& view=*accepted_view_;
     const bool pointer=event.kind==ui::EventKind::pointer_down || event.kind==ui::EventKind::pointer_up ||
         event.kind==ui::EventKind::pointer_move || event.kind==ui::EventKind::wheel;

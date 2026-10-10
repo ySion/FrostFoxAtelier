@@ -266,6 +266,7 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     std::puts("Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
 }
 #include "ui_shapes.inl"
+#include "selection.inl"
 #include "viewport_modes.inl"
 #include "reference_guides.inl"
 #include "scene_lit.inl"
@@ -451,6 +452,7 @@ int main(int argc, char** argv) try {
     transform_cases(renderer, ui_frame.extent);
     mesh_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
+    selection_clipping_cases(renderer, ui_frame.extent);
     viewport_cases(renderer, ui_frame.extent);
     reference_guide_cases(renderer, ui_frame.extent);
     auto closed = renderer.close();

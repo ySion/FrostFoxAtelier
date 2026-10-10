@@ -8,6 +8,12 @@ namespace {
 constexpr float divider_width=8;
 constexpr ControlKey close_offset=1'000'000, wrapper_offset=2'000'000, open_offset=3'000'000, preview_offset=4'000'000, command_offset=5'000'000;
 bool inside(Rect r,float x,float y) { return x>=r.x && y>=r.y && x<r.x+r.width && y<r.y+r.height; }
+struct SplitRange { float span{},low{},high{}; };
+SplitRange split_range(float size,float first,float second) {
+    const auto span=std::max(0.f,size-divider_width);
+    const auto low=span>=first+second?first:span*first/(first+second);
+    return {span,low,span>=first+second?span-second:low};
+}
 
 }
 DockSpace::DockSpace(ControlKey base,std::vector<DockTab> tabs) : base_(base),next_(base),tabs_(std::move(tabs)) {
@@ -55,7 +61,7 @@ void DockSpace::reset() {
     root_=make_node();
     for (const auto& view:tabs_) root_->tabs.push_back(view.key);
     focused_=root_->active=tabs_.front().key;
-    maximized_=menu_pane_=0; menu_add_=menu_type_=false; closed_tabs_.clear(); drag_.reset();
+    maximized_=menu_pane_=0; menu_add_=menu_type_=false; closed_tabs_.clear(); drag_.reset();resize_.reset();
 }
 ControlKey DockSpace::pane(ControlKey key) const noexcept { const auto* node=owner(key); return node?node->key:0; }
 bool DockSpace::visible(ControlKey key) const noexcept {
@@ -82,7 +88,7 @@ void DockSpace::reveal(ControlKey key) {
 }
 void DockSpace::collapse(Node& node,unsigned side) {
     node.collapsed=node.collapsed==side?0:side;
-    maximized_=0; drag_.reset();
+    maximized_=0; drag_.reset();resize_.reset();
     if (!visible(focused_)) {
         focused_=0;
         for (const auto& view:tabs_) if (visible(view.key)) { focused_=view.key; break; }
@@ -103,6 +109,7 @@ void DockSpace::normalize(std::unique_ptr<Node>& node) {
 }
 bool DockSpace::select(ControlKey key) {
     if (!tab(key)) return false;
+    resize_.reset();
     auto* node=owner(key);
     if (!node) {
         node=find(menu_pane_);
@@ -126,9 +133,10 @@ bool DockSpace::close(ControlKey key) {
         focused_=next;
         if (!focused_) for (const auto& view:tabs_) if (visible(view.key)) { focused_=view.key; break; }
     }
-    drag_.reset(); return true;
+    drag_.reset();resize_.reset(); return true;
 }
 void DockSpace::maximize(ControlKey key) {
+    resize_.reset();
     reveal(key);
     if (const auto* node=owner(key)) { maximized_=maximized_==node->key?0:node->key; focused_=node->active; }
 }
@@ -153,6 +161,7 @@ bool DockSpace::place(ControlKey key,ControlKey target,DockSide side,ControlKey 
     if (!to || to->split() || !from || (to==from && side!=DockSide::tabs && from->tabs.size()==1)) return false;
     if (before==key) return true;
     if (before && std::find(to->tabs.begin(),to->tabs.end(),before)==to->tabs.end()) return false;
+    resize_.reset();
     remove(*from,key);
     if (side==DockSide::tabs) {
         const auto at=before?std::find(to->tabs.begin(),to->tabs.end(),before):to->tabs.end();
@@ -231,7 +240,7 @@ std::optional<DockSpace::Drop> DockSpace::destination(ControlKey source,const Dr
 bool DockSpace::apply(const Action& action,const UiFrame& frame) {
     if (tab(action.key)) {
         if (action.kind==ActionKind::activate) return select(action.key);
-        if (action.kind==ActionKind::drag_begin) { drag_=Drag{action.key,{}}; return true; }
+        if (action.kind==ActionKind::drag_begin) { resize_.reset();drag_=Drag{action.key,{}}; return true; }
         if (action.kind==ActionKind::drag_cancel) { drag_.reset(); return true; }
         if (action.kind==ActionKind::drag_preview || action.kind==ActionKind::drag_commit) {
             if (!drag_ || drag_->tab!=action.key) return true;
@@ -282,6 +291,7 @@ bool DockSpace::apply(const Action& action,const UiFrame& frame) {
     const auto offset=action.key-key;
     if (node->split()) {
         if (action.kind==ActionKind::activate) {
+            resize_.reset();
             if (offset==12) collapse(*node,1);
             else if (offset==13) collapse(*node,2);
             else if (offset==14) {
@@ -290,9 +300,27 @@ bool DockSpace::apply(const Action& action,const UiFrame& frame) {
                 else { std::swap(node->first,node->second); if (node->collapsed) node->collapsed=3-node->collapsed; }
             }
         } else if (offset==1 || offset==14) {
-            if (const auto* value=std::get_if<double>(&action.value))
-                if (action.kind==ActionKind::edit_preview || action.kind==ActionKind::edit_commit || action.kind==ActionKind::edit_cancel)
-                    node->fraction=static_cast<float>(*value);
+            if(action.kind==ActionKind::edit_cancel) {
+                if(resize_ && resize_->source==action.key) resize_.reset();
+                return true;
+            }
+            const auto* value=std::get_if<double>(&action.value);
+            const auto* pane=frame.find(node->key);
+            if(!value || !std::isfinite(*value) || !pane || node->collapsed) return true;
+            if(action.kind==ActionKind::edit_begin) {drag_.reset();resize_=Resize{action.key,{}};}
+            if(!resize_ || resize_->source!=action.key) return true;
+            const auto scale=frame.drawing->dpi_scale;
+            const bool horizontal=node->axis==DragAxis::horizontal;
+            const auto a=minimum(*node->first),b=minimum(*node->second);
+            const auto range=split_range((horizontal?pane->bounds.width:pane->bounds.height)/scale,
+                horizontal?a.width:a.height,horizontal?b.width:b.height);
+            const auto cut=std::clamp(range.span*static_cast<float>(std::clamp(*value,0.,1.)),range.low,range.high);
+            resize_->preview={pane->bounds.x/scale+(horizontal?cut:0.f),pane->bounds.y/scale+(horizontal?0.f:cut),
+                horizontal?std::min(divider_width,pane->bounds.width/scale):pane->bounds.width/scale,
+                horizontal?pane->bounds.height/scale:std::min(divider_width,pane->bounds.height/scale)};
+            if(action.kind==ActionKind::edit_commit) {
+                node->fraction=range.span?cut/range.span:.5f;resize_.reset();
+            }
         }
         return true;
     }
@@ -347,10 +375,8 @@ void DockSpace::present_node(Presentation& result,const Node& node,ControlKey pa
     }
     const bool horizontal=pane.horizontal;
     const auto a=minimum(*node.first),b=minimum(*node.second);
-    const auto span=std::max(0.f,(horizontal?bounds.width:bounds.height)-divider_width);
-    const auto low=horizontal?a.width:a.height,high=horizontal?b.width:b.height;
-    const auto floor=span>=low+high?low:span*low/(low+high);
-    const auto ceiling=span>=low+high?span-high:floor;
+    const auto range=split_range(horizontal?bounds.width:bounds.height,horizontal?a.width:a.height,horizontal?b.width:b.height);
+    const auto span=range.span,floor=range.low,ceiling=range.high;
     const auto cut=node.collapsed==1?0.f:node.collapsed==2?span:std::clamp(span*node.fraction,floor,ceiling);
     pane.value=span?cut/span:.5f;pane.minimum=span?floor/span:.5f;pane.maximum=span?ceiling/span:.5f;
     pane.step=1/std::max(span,1.f);
@@ -371,6 +397,7 @@ DockSpace::Presentation DockSpace::presentation(ControlKey parent,ui_layout::Siz
     auto* node=maximized_?find(maximized_):root_.get();if (!node) node=root_.get();
     present_node(result,*node,parent,{0,0,size.width,size.height});
     if (drag_ && drag_->target) result.preview=drag_->target->preview;
+    if (resize_) result.preview=resize_->preview;
     return result;
 }
 } // namespace atelier::ui

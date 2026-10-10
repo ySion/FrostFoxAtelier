@@ -56,7 +56,7 @@ public:
     // Logical placement, bounded gestures and host slots. All chrome is authored
     // by the consumer; this model no longer assembles controls or styles.
     Presentation presentation(ControlKey parent, ui_layout::Size) const;
-    bool dragging() const noexcept { return drag_.has_value(); }
+    bool dragging() const noexcept { return drag_.has_value() || resize_.has_value(); }
 private:
     struct Node {
         ControlKey key{};
@@ -70,12 +70,14 @@ private:
     };
     struct Drop { ControlKey pane{}, before{}; DockSide side{}; Rect preview{}; };
     struct Drag { ControlKey tab{}; std::optional<Drop> target; };
+    struct Resize { ControlKey source{}; Rect preview; };
     ControlKey base_{}, next_{}, focused_{}, maximized_{}, menu_pane_{};
     bool menu_add_{}, menu_type_{};
     std::vector<ControlKey> closed_tabs_;
     std::vector<DockTab> tabs_;
     std::unique_ptr<Node> root_;
     std::optional<Drag> drag_;
+    std::optional<Resize> resize_; // Preview only; accepted pane geometry changes once at release.
     std::unique_ptr<Node> make_node();
     const DockTab* tab(ControlKey) const noexcept;
     Node* find(ControlKey) const noexcept;
