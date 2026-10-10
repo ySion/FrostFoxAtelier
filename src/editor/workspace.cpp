@@ -720,7 +720,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             edit.fields.front().single_precision=std::holds_alternative<float>(property.value);
             std::wstring choice;
             if(enumeration) for(const auto& member:take(runtime.describe(enumeration->type))->enumeration->values)
-                if(member.second==enumeration->bits) {choice=wide(member.first);break;}
+                if(member.second==enumeration->bits) {choice=parameter_label(member.first);break;}
             properties->push_back({property_key(property.path,Binding::Kind::property_row),
                 {caption,std::move(edit),boolean,boolean && std::get<bool>(property.value),editable,
                  ui_language::ActionBinding{key,editable},enumeration!=nullptr,std::move(choice),key,false,0.0,0.0,0.0,override_available,overridden,ui_language::ActionBinding{instance?override_key:key,override_available && !session.world().running()}}});
@@ -929,7 +929,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     for(const auto& member:take(runtime.describe(enumeration->type))->enumeration->values) {
                         const auto key=control::property_choice_first+property_choices_.size();
                         property_choices_.push_back({target->object,target->path,{enumeration->type,member.second},target->key});
-                        ui::MenuItem item{key,wide(member.first),(session.is_material(target->object)?!session.world().running():actor_status.can_edit),member.second==enumeration->bits,{}};
+                        ui::MenuItem item{key,parameter_label(member.first),(session.is_material(target->object)?!session.world().running():actor_status.can_edit),member.second==enumeration->bits,{}};
                         item.behavior=ui::MenuBehavior::radio;item.radio_group=source->key;items.push_back(std::move(item));
                     }
                 }

@@ -1005,6 +1005,8 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     Access::tool_cancel(app);
     Access::tool_key(app,'R',pointer);Access::tool_key(app,'X',pointer);pointer.x+=70;Access::tool_move(app,pointer);shot("snapshot-modal-rotate.png");
     Access::tool_cancel(app);
+    // An enum menu and colour swatch row, through the real light creation command.
+    model(Access::command(app,Command::create_rectangle_light));shot("snapshot-light-parameters.png");
     Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;
