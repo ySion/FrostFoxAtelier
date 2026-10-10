@@ -1,4 +1,5 @@
 #include "physics/physics.hpp"
+#include "physics/components.hpp"
 #include "runtime/native.hpp"
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
@@ -243,12 +244,6 @@ Result<void> validate_cooked_triangle_mesh(std::string_view bytes,
     return {};
 }
 
-Result<Types> register_types(Runtime& runtime) {
-    auto id = NativeRegistration<BodyComponent>{runtime, "physics.BodyComponent", TypeKind::object}
-        .base<world::Component>().publish();
-    if (!id) return std::unexpected(id.error());
-    return Types{*id};
-}
 Result<void> configure(Runtime& runtime, ObjectId component, BodySettings settings) {
     if (auto valid = validate(settings); !valid) return valid;
     auto state = world::inspect_component(runtime, component);
@@ -449,24 +444,37 @@ struct PhysicsScene::Impl {
             return Response::overlap;
         return Response::block;
     }
+    Response query_response(const BodySettings& settings,const QueryFilter& filter) const {
+        Response response=Response::block;
+        if(filter.policy!=QueryPolicy::object_type) response=settings.responses[filter.category];
+        if(filter.policy==QueryPolicy::interaction) {
+            const auto other=filter.responses[settings.category];
+            if(other==Response::ignore) response=Response::ignore;
+            else if(other==Response::overlap && response==Response::block) response=Response::overlap;
+        }
+        if(settings.sensor && response==Response::block) response=Response::overlap;
+        return response;
+    }
     bool query_accept(JPH::BodyID id, const QueryFilter& filter) const {
         auto owner = actors.find(id);
-        if (owner == actors.end() || owner->second == filter.ignore_actor) return false;
+        if (owner == actors.end() || owner->second == filter.ignore_actor ||
+            std::ranges::find(filter.ignored_actors,owner->second)!=filter.ignored_actors.end()) return false;
         auto body = bodies.find(owner->second);
-        return body != bodies.end() &&
+        if(body==bodies.end()) return false;
+        const auto response=query_response(body->second.settings,filter);
+        return
             body->second.component != filter.ignore_component &&
+            std::ranges::find(filter.ignored_components,body->second.component)==filter.ignored_components.end() &&
+            (filter.include_sensors || !body->second.settings.sensor) &&
             ((filter.categories >> body->second.settings.category) & 1u) != 0 &&
-            filter.responses[body->second.settings.category] != Response::ignore &&
-            body->second.settings.responses[filter.category] != Response::ignore;
+            response!=Response::ignore && (!filter.ignore_touches || response==Response::block);
     }
     QueryHit query_hit(JPH::BodyID id, std::uint32_t sub_shape, float fraction,
         math::Vector3 point, math::Vector3 normal, bool initial,
         std::uint64_t scene, const QueryFilter& filter) const {
         const auto actor = actors.at(id);
         const auto& body = bodies.at(actor);
-        const bool blocking = !body.settings.sensor &&
-            body.settings.responses[filter.category] == Response::block &&
-            filter.responses[body.settings.category] == Response::block;
+        const bool blocking=query_response(body.settings,filter)==Response::block;
         return {{actor, body.component, scene, body.revision}, fraction, point, normal,
             sub_shape, body.settings.sensor, initial, blocking, body.settings.material};
     }
@@ -485,7 +493,8 @@ struct PhysicsScene::Impl {
 };
 
 PhysicsScene::PhysicsScene(world::World& world, Types types)
-    : world_(world), types_(types), impl_(std::make_unique<Impl>()), scene_id_(next_scene_id++) {}
+    : world_(world), types_(types), impl_(std::make_unique<Impl>()),
+      components_(std::make_unique<detail::ComponentSimulation>(world,*this)), scene_id_(next_scene_id++) {}
 Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types) {
     if (world.closed()) return failure(ErrorCode::unsupported_operation, "Cannot attach physics to a closed World.");
     auto actual = world.runtime().native_type<BodyComponent>();
@@ -513,6 +522,7 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
 }
 PhysicsScene::~PhysicsScene() {
     if (subscription_) world_.unsubscribe_lifecycle(subscription_);
+    components_.reset();
     while (!impl_->characters.empty()) remove_special(impl_->characters.begin()->first);
     while (!impl_->ragdolls.empty()) remove_special(impl_->ragdolls.begin()->first);
     while (!impl_->vehicles.empty()) remove_special(impl_->vehicles.begin()->first);
@@ -648,6 +658,7 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     auto actor = world_.runtime().is_a(*type, world_.types().actor);
     if (!actor) return std::unexpected(actor.error());
     if (phase == world::Lifecycle::deactivated || phase == world::Lifecycle::detached) {
+        if(auto removed=components_->removed(object); !removed) return removed;
         if (*actor) { remove_special(object); remove(object); }
         else for (auto it = impl_->bodies.begin(); it != impl_->bodies.end();) {
             if (it->second.component == object || it->second.root == object) {
@@ -677,6 +688,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
     struct ResetUpdate { bool& flag; ~ResetUpdate() { flag = false; } } reset{updating_};
     if (auto ticked = world_.update(elapsed); !ticked) return std::unexpected(ticked.error());
     if (!world_.running()) {
+        components_->clear();
         while (!impl_->characters.empty()) remove_special(impl_->characters.begin()->first);
         while (!impl_->ragdolls.empty()) remove_special(impl_->ragdolls.begin()->first);
         while (!impl_->bodies.empty()) remove(impl_->bodies.begin()->first);
@@ -689,6 +701,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
     if (!members) return std::unexpected(members.error());
     for (const auto& member : *members)
         if (auto found = reconcile(member.id()); !found) return std::unexpected(found.error());
+    if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
     constexpr float fixed = 1.f / 60.f;
     constexpr std::uint32_t maximum_steps = 8;
     StepResult result{.completed_step = completed_step_};
@@ -712,6 +725,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
                 return failure(ErrorCode::invocation_failed, "Before-step handler threw an unknown exception.");
             }
         }
+        if(auto input=components_->before_step(fixed); !input) return std::unexpected(input.error());
         std::vector<Impl::Command> commands;
         commands.swap(impl_->commands);
         for (const auto& command : commands) {
@@ -782,6 +796,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
         else single_step_ = false;
         ++result.steps;
         result.completed_step = ++completed_step_;
+        if(auto visuals=components_->after_step(); !visuals) return std::unexpected(visuals.error());
         impl_->collect_contacts(completed_step_, result);
         if (after_step_) {
             try {
@@ -959,6 +974,21 @@ Result<void> PhysicsScene::set_character_input(SpecialHandle handle,
     found->second.jump |= jump;
     return {};
 }
+Result<SpecialHandle> PhysicsScene::character_handle(ObjectId actor) const {
+    const auto found=impl_->characters.find(actor);
+    if(found==impl_->characters.end()) return failure(ErrorCode::invalid_member,"Actor has no active character.");
+    return SpecialHandle{actor,scene_id_,found->second.revision};
+}
+Result<SpecialHandle> PhysicsScene::ragdoll_handle(ObjectId actor) const {
+    const auto found=impl_->ragdolls.find(actor);
+    if(found==impl_->ragdolls.end()) return failure(ErrorCode::invalid_member,"Actor has no active ragdoll.");
+    return SpecialHandle{actor,scene_id_,found->second.revision};
+}
+Result<SpecialHandle> PhysicsScene::vehicle_handle(ObjectId actor) const {
+    const auto found=impl_->vehicles.find(actor);
+    if(found==impl_->vehicles.end()) return failure(ErrorCode::invalid_member,"Actor has no active vehicle.");
+    return SpecialHandle{actor,scene_id_,found->second.revision};
+}
 Result<CharacterState> PhysicsScene::read_character_state(SpecialHandle handle) const {
     auto found = impl_->characters.find(handle.actor);
     if (handle.scene != scene_id_ || found == impl_->characters.end() ||
@@ -1116,8 +1146,12 @@ Result<VehicleState> PhysicsScene::read_vehicle_state(SpecialHandle handle) cons
     auto chassis = read_body_state(found->second.chassis);
     if (!chassis) return std::unexpected(chassis.error());
     VehicleState state{handle, completed_step_, chassis->position, chassis->linear_velocity};
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 4; ++i) {
         state.wheel_contact[i] = found->second.constraint->GetWheel(i)->HasContact();
+        const auto transform=found->second.constraint->GetWheelWorldTransform(i,JPH::Vec3::sAxisX(),JPH::Vec3::sAxisY());
+        state.wheel_positions[i]=vector(transform.GetTranslation());
+        state.wheel_rotations[i]=rotation(transform.GetRotation().GetQuaternion());
+    }
     return state;
 }
 Result<void> PhysicsScene::destroy_vehicle(SpecialHandle handle) {
@@ -1129,6 +1163,7 @@ namespace {
 Result<void> validate_query(const QueryFilter& filter) {
     if (filter.capacity == 0 || filter.capacity > 4096 ||
         filter.category >= filter.responses.size() ||
+        (filter.policy!=QueryPolicy::interaction && filter.policy!=QueryPolicy::channel && filter.policy!=QueryPolicy::object_type) ||
         (filter.mode != QueryMode::any && filter.mode != QueryMode::closest && filter.mode != QueryMode::all))
         return failure(ErrorCode::argument_mismatch, "Invalid physics query mode or capacity.");
     for (auto response : filter.responses)
@@ -1142,21 +1177,39 @@ void finish_query(QueryResult& result, const QueryFilter& filter) {
         if (a.body.revision != b.body.revision) return a.body.revision < b.body.revision;
         return a.sub_shape < b.sub_shape;
     });
+    if(filter.stop_at_block) {
+        const auto first=std::ranges::find_if(result.hits,[](const auto& hit){return hit.blocking;});
+        if(first!=result.hits.end()) result.hits.erase(first+1,result.hits.end());
+    }
+    if(filter.mode!=QueryMode::all && result.hits.size()>1) result.hits.resize(1);
+    result.has_hit=!result.hits.empty();
+    result.has_block=std::ranges::any_of(result.hits,[](const QueryHit& hit){return hit.blocking;});
     const auto limit = filter.mode == QueryMode::all ? filter.capacity : std::size_t{1};
     if (result.hits.size() > limit) {
         result.overflow = filter.mode == QueryMode::all;
         result.hits.resize(limit);
     }
-    result.has_block = std::ranges::any_of(result.hits, [](const QueryHit& hit) { return hit.blocking; });
+    const auto delta=result.end-result.start;
+    const auto length=std::hypot(delta.x,delta.y,delta.z);
+    for(auto& hit:result.hits) {
+        hit.distance=length*hit.fraction;
+        hit.location=result.start+delta*hit.fraction;
+    }
+}
+bool finite_segment(math::Vector3 start,math::Vector3 end) {
+    const auto delta=end-start;
+    return math::is_finite(start) && math::is_finite(end) && math::is_finite(delta) &&
+        std::isfinite(std::hypot(delta.x,delta.y,delta.z));
 }
 }
 Result<QueryResult> PhysicsScene::raycast(math::Vector3 start, math::Vector3 end,
     QueryFilter filter) const {
-    if (!math::is_finite(start) || !math::is_finite(end))
+    if (!finite_segment(start,end))
         return failure(ErrorCode::argument_mismatch, "Ray endpoints must be finite.");
     if (auto valid = validate_query(filter); !valid) return std::unexpected(valid.error());
     QueryResult result;
     result.step_id = completed_step_;
+    result.start=start;result.end=end;
     const JPH::RRayCast ray(position(start), vector(math::Vector3{end.x - start.x, end.y - start.y, end.z - start.z}));
     JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
     impl_->system.GetNarrowPhaseQuery().CastRay(ray, JPH::RayCastSettings{}, collector);
@@ -1179,17 +1232,20 @@ Result<QueryResult> PhysicsScene::raycast(math::Vector3 start, math::Vector3 end
 }
 Result<QueryResult> PhysicsScene::sweep_sphere(math::Vector3 start, math::Vector3 end,
     float radius, QueryFilter filter) const {
-    if (!math::is_finite(start) || !math::is_finite(end) || !std::isfinite(radius) || radius <= 0)
+    if (!finite_segment(start,end) || !std::isfinite(radius) || radius <= 0)
         return failure(ErrorCode::argument_mismatch, "Sphere sweep requires finite endpoints and positive radius.");
     if (auto valid = validate_query(filter); !valid) return std::unexpected(valid.error());
     QueryResult result;
     result.step_id = completed_step_;
+    result.start=start;result.end=end;
     const JPH::ShapeRefC shape = new JPH::SphereShape(radius);
     const JPH::RShapeCast cast(shape.GetPtr(), JPH::Vec3::sReplicate(1.f),
         JPH::RMat44::sTranslation(position(start)),
         vector(math::Vector3{end.x - start.x, end.y - start.y, end.z - start.z}));
     JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
-    impl_->system.GetNarrowPhaseQuery().CastShape(cast, JPH::ShapeCastSettings{},
+    JPH::ShapeCastSettings cast_settings;cast_settings.mReturnDeepestPoint=true;
+    cast_settings.mBackFaceModeConvex=JPH::EBackFaceMode::CollideWithBackFaces;
+    impl_->system.GetNarrowPhaseQuery().CastShape(cast, cast_settings,
         JPH::RVec3::sZero(), collector);
     for (const auto& hit : collector.mHits) {
         if (!impl_->query_accept(hit.mBodyID2, filter)) continue;
@@ -1198,6 +1254,7 @@ Result<QueryResult> PhysicsScene::sweep_sphere(math::Vector3 start, math::Vector
         result.hits.push_back(impl_->query_hit(hit.mBodyID2, hit.mSubShapeID2.GetValue(),
             hit.mFraction, {hit.mContactPointOn2.GetX(), hit.mContactPointOn2.GetY(), hit.mContactPointOn2.GetZ()},
             {normal.GetX(), normal.GetY(), normal.GetZ()}, hit.mFraction == 0, scene_id_, filter));
+        result.hits.back().penetration_depth=std::max(0.f,hit.mPenetrationDepth);
     }
     finish_query(result, filter);
     return result;
@@ -1209,6 +1266,7 @@ Result<QueryResult> PhysicsScene::overlap_sphere(math::Vector3 center, float rad
     if (auto valid = validate_query(filter); !valid) return std::unexpected(valid.error());
     QueryResult result;
     result.step_id = completed_step_;
+    result.start=center;result.end=center;
     const JPH::ShapeRefC shape = new JPH::SphereShape(radius);
     JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
     impl_->system.GetNarrowPhaseQuery().CollideShape(shape.GetPtr(), JPH::Vec3::sReplicate(1.f),
@@ -1221,10 +1279,37 @@ Result<QueryResult> PhysicsScene::overlap_sphere(math::Vector3 center, float rad
         result.hits.push_back(impl_->query_hit(hit.mBodyID2, hit.mSubShapeID2.GetValue(),
             0, {hit.mContactPointOn2.GetX(), hit.mContactPointOn2.GetY(), hit.mContactPointOn2.GetZ()},
             {normal.GetX(), normal.GetY(), normal.GetZ()}, true, scene_id_, filter));
+        result.hits.back().penetration_depth=std::max(0.f,hit.mPenetrationDepth);
     }
     finish_query(result, filter);
     return result;
 }
 std::size_t PhysicsScene::body_count() const noexcept { return impl_->bodies.size(); }
+
+Result<QueryResult> PhysicsScene::trace(math::Vector3 start,math::Vector3 end,
+    const TraceSettings& settings,QueryIgnore ignore) const {
+    if(settings.shape>TraceShape::sphere_overlap || settings.selection>TraceSelection::object_type ||
+        settings.mode>TraceMode::multi || settings.channel>=16 || settings.object_types>0xffff ||
+        !settings.capacity || settings.capacity>4096)
+        return failure(ErrorCode::argument_mismatch,"Invalid trace shape, selection, mode, channel, mask or capacity.");
+    if(settings.shape==TraceShape::sphere_overlap) end=start;
+    if(!finite_segment(start,end) || (settings.shape!=TraceShape::sphere_overlap && start==end))
+        return failure(ErrorCode::argument_mismatch,"Trace requires a finite nonzero segment; use sphere overlap for a stationary volume.");
+    QueryFilter filter;
+    filter.policy=settings.selection==TraceSelection::channel?QueryPolicy::channel:QueryPolicy::object_type;
+    filter.category=static_cast<std::uint8_t>(settings.channel);
+    filter.categories=settings.selection==TraceSelection::channel?0xffff:static_cast<std::uint16_t>(settings.object_types);
+    filter.mode=settings.mode==TraceMode::multi?QueryMode::all:QueryMode::closest;
+    filter.capacity=settings.capacity;filter.include_sensors=settings.include_sensors;
+    filter.ignored_actors=ignore.actors;filter.ignored_components=ignore.components;
+    filter.ignore_touches=settings.selection==TraceSelection::channel && settings.mode!=TraceMode::multi;
+    filter.stop_at_block=settings.selection==TraceSelection::channel && settings.mode==TraceMode::multi && settings.shape!=TraceShape::sphere_overlap;
+    auto result=settings.shape==TraceShape::line?raycast(start,end,filter):
+        settings.shape==TraceShape::sphere_sweep?sweep_sphere(start,end,settings.radius,filter):overlap_sphere(start,settings.radius,filter);
+    if(result && settings.mode==TraceMode::test) result->hits.clear();
+    return result;
+}
+Result<QueryResult> PhysicsScene::execute_query(ObjectId component,QueryIgnore ignore) {return components_->execute_query(component,ignore);}
+Result<QueryResult> PhysicsScene::read_query_result(ObjectId component) const {return components_->read_query_result(component);}
 
 }

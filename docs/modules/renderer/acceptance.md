@@ -1,5 +1,27 @@
 # 编辑器 renderer 验收
 
+## Sponza DDGI 场景接入（2026-10-10）
+
+基于 `17996cee07bcb234860848e31d6717fac3dec335` 加本轮工作树修改，在 Windows x64 / AMD Radeon RX 6800 XT 验证。复用现有 Scene Lit/DDGI shader，新增场景灯光、启动配置及真实编辑器验收。该轮的 `Open-Sponza.ps1` 默认进入 Scene Lit（该历史入口现已由编辑器默认启动及 Project → Examples 替代），方向光、暖色可移动点光和冷色点光均来自实际 World；建筑使用线性基础色 .55、粗糙度 .85。
+
+启动时按完整建筑拟合的探针体积为 `[-20,-2,-13]`～`[19,15,12]` 米，`16×10×14 = 2240` 个探针，每帧更新 560 个，每次更新 128 条照明射线加 32 条固定几何射线。验收逐顶点检查覆盖范围；普通相机配置保留已有体积。整个模型仍为 262,267 个三角形、103 个材质组，24 个漫反射贴图材质的基础显示与场景序列化往返继续通过。
+
+Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文档链、正式窗口验收均通过；两个窗口运行都启用 D3D12 GPU validation，日志无 warning/error/fail。两份最终 `ddgi.txt` 指标逐字一致。最终图像分别保留默认完整 Scene Lit、关闭 AO/SSSR/Bloom/环境后的 DDGI 开关、暖灯从 x=-4 到 x=4 的 32 步真实字段编辑、移动停止后的开关对照，以及所有灯强度归零后的消退。移动步骤的 `history_resets` 全为 0；完成后恢复原始场景值，不保存验收编辑。
+
+| 最终中性材质场景的图像指标，0～255 | Dev / Release |
+| --- | ---: |
+| 原位 DDGI 开关平均 RGB 绝对差 | 49.8709 |
+| 静态两次捕获的平均 RGB 绝对差 | .371414 |
+| 移动后 DDGI 开关平均 RGB 绝对差 | 35.4786 |
+| 移动前后开关差的再差分 | 26.4249 |
+| 关灯初期 / 389 个接受帧后的平均显示亮度 | 123.362 / 2.47939 |
+
+指标取相同视口内有几何深度的像素，属于色调映射后的显示空间差异，包含其上的编辑辅助叠层；不是线性间接辐照度真值，也不是帧率测量。静态噪声对照的两次捕获之间推进 32 个预热帧及一次捕获帧；关灯后的最终捕获包含三段各 128 个预热帧和中间捕获。固定检查要求 DDGI 开关差大于 .5 且超过静态差两倍、移动后的再差分大于同一门槛、关灯末期亮度低于初期的 30% 或 2；没有随实测放宽阈值。
+
+首次沿用基础显示的纯白实例色 1 时，DDGI 使画面偏亮；关灯初期 / 末期亮度为 218.154 / 107.381，未通过消退检查。最终默认改成 .55 是场景材质设定，本轮没有修正这个高反射率下的慢消退问题，不能将最终通过外推到所有材质。Scene Lit 仍不读取 Sponza 漫反射/opacity 图，植物与铁链按不透明处理；完整贴图和镂空仅由 Smooth 路径验证。
+
+本轮证据位于 `out/sponza-ddgi-20261010/`：`{dev,release}-final/` 保存最终截图、`ddgi.txt`、`ddgi-motion.csv` 和 `acceptance.txt`，`{dev,release}-window-final.log` 为窗口运行记录；`{dev,release}-document-final.log` 保存最终场景往返结果。首次纯白失败的图像与指标保留在 `dev/` 和 `dev-window.log`。构建使用锁文件版本；本机环境脚本选中的已安装 CMake 版本不同，实际使用既有 `.tools/setup/cmake18.5/` 内与锁文件相符的 CMake/Ninja，未修改锁文件或全局安装。
+
 ## 单一天光、Lit 黑背景与中键方向（2026-10-09）
 
 在阶段集成基线 `17996cee` 上修正中键水平环绕方向。Scene Lit 始终使用黑背景，工作室模式保留渐变偏好，网格与轴线仍独立；黑背景上的底部操作提示改用浅色。均匀环境辐射从 ViewSettings 移到场景快照，只由 World 中唯一的 Sky Light 提供，缺失或停用时为零。示例房间显式包含一个 Sky Light，替代此前的隐式环境值。
@@ -47,11 +69,11 @@ Scene Lit 仍不采样 Mesh 材质图，其辅助深度与叠层保持和不透�
 | 正式 editor 的 Sponza 内庭、外观全景与 MatCap 捕获 | PASS | PASS |
 | Physics 15 个场景 / World 8 个场景 | PASS | PASS |
 
-源资产逐文件 SHA-256 验证通过：57 个原始文件、95,882,276 字节，与 [source.json](../../../examples/physics-test/Content/Sponza/source.json) 一致。解析结果为 262,267 个三角形、103 个连续材质组、25 个命名材质及 24 个漫反射贴图材质；源文件未改动，Scene 保持相对资源引用与 0.01 实例比例。
+源资产逐文件 SHA-256 验证通过：57 个原始文件、95,882,276 字节，与 [source.json](../../../assets/examples/Examples/Sponza/Sponza/source.json) 一致。解析结果为 262,267 个三角形、103 个连续材质组、25 个命名材质及 24 个漫反射贴图材质；源文件未改动，Scene 保持相对资源引用与 0.01 实例比例。
 
 真实导入链验证凹多边形面积、负索引/负 UV、共享 WIC 图像、重复导入拒绝、刷新幂等、图片/MTL 改写和删除、旧 Mesh/图像 owner 保持，以及缺依赖和目录逃逸拒绝。GPU 像素读回区分两组几何，验证顶点起点、sRGB 漫反射、UV 重复与左上原点、漫反射 alpha 和独立线性透明遮罩、背景深度、线框/MatCap 轮廓、暖帧零上传、替换与移除后的 owner 释放。完整窗口开启 D3D12 debug/GBV，捕获实际场景颜色与深度；最终渲染器和窗口日志未报告 D3D12 warning/error。
 
-可重复入口为 `editor_sponza_acceptance` 与 `renderer_acceptance`，使用现有 dev/release presets。证据为 `out/<配置>/sponza-{document,import,renderer,window,physics}.log`；图片和窗口报告在 `out/<配置>/sponza-evidence/`，包括 `sponza-interior.png`、`sponza-overview.png`、`sponza-matcap.png` 和 `acceptance.txt`。正式打开方式见 [Physics Test](../../../examples/physics-test/README.md#sponza-场景)。
+可重复入口为 `editor_sponza_acceptance` 与 `renderer_acceptance`，使用现有 dev/release presets。证据为 `out/<配置>/sponza-{document,import,renderer,window,physics}.log`；图片和窗口报告在 `out/<配置>/sponza-evidence/`，包括 `sponza-interior.png`、`sponza-overview.png`、`sponza-matcap.png` 和 `acceptance.txt`。正式打开方式见 [Sponza 默认场景](../../../assets/examples/Examples/Sponza/README.md)。
 
 该次 Sponza 验收使用完整几何、漫反射/遮罩、mip 和基础方向光，不覆盖 Scene Lit 的贴图、DDGI、阴影或 PBR，也没有附加 Sponza 物理 Body。未测量 GPU 帧耗时或显存性能收益。OBJ/MTL 来源贴图中暂未使用的凹凸/高光数据仍保留。
 

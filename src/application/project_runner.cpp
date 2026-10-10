@@ -104,6 +104,17 @@ int run_project(const RunOptions& options) {
         };
         if(project_ui.configured()) {std::printf("Project UI evaluating\n");std::fflush(stdout);}
         editor::Camera camera;std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
+        // Frame the authored mesh centers once; large collision floors should
+        // not force a tiny view of the moving Actors. Navigation stays a host concern.
+        const auto initial=take(document.world().render_items());
+        if(!initial.empty()) {
+            math::Vector3 low{initial.front().world.elements[12],initial.front().world.elements[13],initial.front().world.elements[14]},high=low;
+            for(const auto& item:initial) for(unsigned axis=0;axis<3;++axis) {
+                low[axis]=std::min(low[axis],item.world.elements[12+axis]);high[axis]=std::max(high[axis],item.world.elements[12+axis]);
+            }
+            const auto target=(low+high)*.5f;const auto size=std::max({high.x-low.x,high.y-low.y,high.z-low.z,4.f});
+            static_cast<void>(camera.look_at(target+math::Vector3{size*1.3f,size,size*-1.6f},target));
+        }
         auto previous=std::chrono::steady_clock::now();auto last_report=loaded.build;std::string ui_error;
         while(!options.frames || frame<options.frames) {
             if(options.stop_event && WaitForSingleObject(options.stop_event,0)==WAIT_OBJECT_0) break;
@@ -151,7 +162,8 @@ int run_project(const RunOptions& options) {
                     const auto matrices=camera.matrices(static_cast<float>(extent.width)/std::max(extent.height,1u));
                     const renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
                         options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},meshes,
-                        {.shading=renderer::Shading::matcap,.background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true}};
+                        {.shading=document.physics_scene() && document.physics_scene()->body_count()?renderer::Shading::smooth:renderer::Shading::matcap,
+                         .background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true}};
                     const auto result=graphics(renderer->render(rendered));
                     if(result.status==renderer::FrameStatus::accepted && !ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
                 } else if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the headless frame.");

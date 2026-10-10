@@ -33,6 +33,8 @@ public:
     const world::World& world() const noexcept { return world_; }
     const world::Types& types() const noexcept { return types_; }
     const physics::Types& physics_types() const noexcept { return physics_types_; }
+    // Borrowed running scene; invalidated by stop, close, or a failed update.
+    physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     Selection selection() const noexcept { return selection_; }
     // Actor-level multi-selection; the active Actor (selection().actor) is the

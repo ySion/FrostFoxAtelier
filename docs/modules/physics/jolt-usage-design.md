@@ -1,6 +1,6 @@
 # Jolt 使用设计方案
 
-状态：P0-P4 的基础场景接口已在 `physic-engine` 分支实现，本文仍保留目标语义和未落地的扩展要求；实际可调用范围以[物理模块](README.md)和公开头文件为准。参考资料是仓库外的 `C:/Users/qq137/Documents/ChatGPT/UE/docs/12-ue-native-physics-design.md`，只借鉴职责、使用范式和验收方法，不移植 UE 类型、单位或默认行为。Jolt API 以当前子模块 `v5.6.0` 为核对基线，升级以主仓库 gitlink 为准。
+状态：P0-P4 的基础接口已实现；角色、约束、布娃娃、车辆已接入可持久化组件及官方 Examples/Physic 场景。本文仍保留目标语义和未落地的扩展要求；实际可调用范围以[物理模块](README.md)和公开头文件为准。参考资料是仓库外的 `C:/Users/qq137/Documents/ChatGPT/UE/docs/12-ue-native-physics-design.md`，只借鉴职责、使用范式和验收方法，不移植 UE 类型、单位或默认行为。Jolt API 以当前子模块 `v5.6.0` 为核对基线，升级以主仓库 gitlink 为准。
 
 ## 1. 目标与当前边界
 
@@ -12,8 +12,8 @@
 | 形状与运动 | Box/Sphere/Capsule、静态三角网格、运动学目标与传送 | Convex、Compound、形状偏移尚未实现 |
 | 模拟 | 60 Hz、最多 8 子步、丢时统计、暂停/单步、力和冲量、场景固定步前/后回调 | World 业务系统尚未自动注册到固定步阶段 |
 | 接触 | 对象对归并、Sensor、双向过滤、销毁 Exit、通知溢出 | 接触冲量与物理材质组合策略尚未公开 |
-| 查询与资产 | 同步 Ray/Sphere Sweep/Sphere Overlap、工程网格离线 Cook 与版本/摘要校验 | 通用形状查询、资产导入自动 Cook、异步查询尚未实现 |
-| 工具与专用系统 | 编辑器基础 Body 参数；角色、距离约束、布娃娃、四轮车基础 API | 碰撞可视化、完整专用资产流程、专用服务器可执行宿主尚未实现 |
+| 查询与资产 | 同步 Ray/Sphere Sweep/Sphere Overlap；通道/对象类型 test/single/multi、可保存的 SceneQueryComponent 与脚本方法；工程网格离线 Cook 与版本/摘要校验 | 通用形状查询、资产导入自动 Cook、异步查询尚未实现 |
+| 工具与专用系统 | Body、角色、距离约束、布娃娃、四轮车、力和运动学组件；Scene v2 持久化；10 个官方示例 | 碰撞可视化、骨骼蒙皮、完整专用资产流程、专用服务器可执行宿主尚未实现 |
 
 当前调用顺序是 `PhysicsScene::update(elapsed)` 先执行一次 `World::update`，再对物理做固定子步；结构和网格变化会在生命周期通知或下一次 reconcile 时映射到 Jolt。`World::set_transform` 禁止运行时编辑，`World::apply_simulation_transform` 是受控模拟写入口。`StepResult` 已报告完成步、丢时及失效命令；接触按对象对归并。以下章节保留最初设计的推导和更完整的目标要求，其中“建议”“下一阶段”等语句不是当前 API 声明。
 
@@ -64,6 +64,8 @@
 
 ## 5. 碰撞配置、形状与场景查询
 
+当前落地接口、与 UE 的具体对应关系和边界以[场景查询与射线组件](scene-queries.md)为准；本节后续文字仍包含未实施的形状、Profile 和资产目标。
+
 UE 的 `CollisionEnabled`、`ObjectType`、`TraceChannel`、Profile 和 `Ignore/Overlap/Block` 可借鉴为**使用语义**，但 Jolt Object Layer/BroadPhase Layer 不是 UE 通道的同构类型。当前公开对象类别、双向响应、Sensor 和查询过滤；具名 Profile、独立查询/模拟参与开关仍未实现。双方均 Block 且非 Sensor 才有求解阻挡，任一 Ignore 不相遇，至少一方 Overlap 且无 Ignore 只通知重叠，已通过 18 组双向响应与 Sensor 组合验证。过滤规则在模拟和查询适配中执行，后端 `stationary/moving` 两层仅用于粗分。Sensor 可被查询；查询专用代理、仅模拟体仍需另行定义，不把 `IsSensor` 等同于 UE 的 QueryOnly。
 
 | 用途 | 推荐形状/运动 | 调用方应配置或检查 |
@@ -107,7 +109,7 @@ Jolt 回调只收集原始 BodyID/子形状及必要的值数据，不访问 Wor
 | P3 资产与工具 | 基本物理材质、离线 Cook、编辑器配置/可视化 | 资产版本升级/损坏报错；场景反复加载；编辑器与无窗口宿主同结果 |
 | P4 玩法专用 | 角色运动；随后按游戏需求增加约束/布娃娃、车辆等 | 坡度/台阶/跳跃/移动平台；约束限位与生命周期；对应专用场景 |
 
-验收使用真实 Jolt、World 和资源路径，不建立 mock 物理世界。当前 15 个可独立运行的场景及 dev/release 证据见[物理验收](acceptance.md)，覆盖已公开的基础 API；上表包含尚未实现的目标，不代表 Profile、可视化或全部关节限位已交付。专用服务器宿主出现后，使用相同场景输入比较可观察状态与事件顺序；结果允许声明过的浮点容差，不承诺跨平台位级确定。后续性能工作再补充每步活动/休眠体、接触对、查询量和耗时统计，性能预算由目标机器测量后确定。
+验收使用真实 Jolt、World 和资源路径，不建立 mock 物理世界。当前 18 个可独立运行的场景及 dev/release 证据见[物理验收](acceptance.md)，覆盖已公开的基础 API；上表包含尚未实现的目标，不代表 Profile、可视化或全部关节限位已交付。专用服务器宿主出现后，使用相同场景输入比较可观察状态与事件顺序；结果允许声明过的浮点容差，不承诺跨平台位级确定。后续性能工作再补充每步活动/休眠体、接触对、查询量和耗时统计，性能预算由目标机器测量后确定。
 
 ## 8. 实施前需要锁定的决策
 

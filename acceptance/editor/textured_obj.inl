@@ -40,9 +40,9 @@ void verify_textured_obj() {
     std::puts("Textured OBJ acceptance: PASS (bundle import, concave polygon, UV, shared texture, refresh, lifetime, failure/retry boundaries)");
 }
 void verify_sponza_project() {
-    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"examples/physics-test";
+    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"assets/examples";
     auto project=take(editor::Project::open(folder));
-    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Content/Scenes/Sponza.scene")),project));
+    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Examples/Sponza/Scenes/Sponza.scene")),project));
     const auto items=take(document->world().render_items());require(items.size()==1,"Sponza scene should contain one complete static model.");
     const auto mesh=items.front().geometry;
     require(mesh->vertices().size()==786801 && mesh->materials().size()==26 && mesh->parts().size()>20,"Sponza geometry/material completeness changed.");
@@ -51,5 +51,9 @@ void verify_sponza_project() {
     const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
     require(take(reopened->serialize())==saved && take(reopened->world().render_items()).front().geometry==mesh,
         "Scene save/reopen lost material-backed shared geometry.");
+    const auto lights=take(reopened->world().light_items());
+    require(lights.size()==3 && std::ranges::count_if(lights,[](const auto& light){return light.settings.kind==world::LightKind::directional;})==1 &&
+        std::ranges::all_of(lights,[](const auto& light){return light.settings.casts_shadow && light.settings.intensity>0;}),
+        "Sponza save/reopen lost its directional and two local lights.");
     std::printf("Sponza project acceptance: PASS (%zu triangles, %zu parts, %zu textured materials)\n",mesh->vertices().size()/3,mesh->parts().size(),textured);
 }

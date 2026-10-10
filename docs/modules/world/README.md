@@ -111,4 +111,6 @@ Component 的共享类型定义注册 `translate_owner(float dx, float dy, float
 
 该方法要求已归属、已注册、有显式根且正在 World 行为阶段执行。命令在 Begin/注册阶段成功结束或本帧 Tick/协程全部返回后，于宿主边界重新校验接收者、Actor、根和有限 TRS，再合并同一根的平移。它修改根的世界位置，保留旋转、scale；当前空间树只允许同 Actor 层级，根没有父节点。批次先完整验证再写入，失败或 shutdown 清除未应用命令，后续 start 不会重放。
 
-含 `physics.BodyComponent`（含派生）的 Actor 拒绝此命令，即使 Body 停用也不绕开物理所有权。物理动作沿 PhysicsScene 的正式接口处理。此命令不改变停止状态的 `set_transform`、`apply_simulation_transform` 或结构 `request/flush` 的准入合同。
+含 `physics.BodyComponent`、`physics.CharacterComponent` 或 `physics.RagdollComponent`（含派生）的 Actor 拒绝此命令，即使组件停用也不绕开物理所有权。物理动作沿 PhysicsScene 的正式接口处理。此命令不改变停止状态的 `set_transform`、`apply_simulation_transform` 或结构 `request/flush` 的准入合同。
+
+`apply_simulation_transform` 继续限定 Actor 根；`apply_simulation_local_transform` 允许模拟器写入同一运行中 World 内的空间子组件，用于布娃娃部件和车轮。两者检查归属、有限位姿及旋转，保留组件的显示缩放；它们不接受停止或其他 World 的写入，不进入编辑历史。

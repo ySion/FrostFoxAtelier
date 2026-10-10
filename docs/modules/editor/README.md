@@ -150,7 +150,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 
 ## 首版操作
 
-顶部菜单栏提供 File / Edit / Create / View / Window。Create 快捷区创建 Actor 或 Static Mesh Actor，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。应用启动为空场景。Parameters 通过真实类型显示检查目标及其连续属性区。Actor Structure 展示 Actor 归属下的组件，负责选择、添加和删除；Scene Tree 保持 Actor 列表。没有根组件时不显示根位置，Focus 停用；没有检查目标时显示空状态。
+顶部菜单栏提供 File / Edit / Create / Project / View / Window / Help。Create 快捷区创建 Actor 或 Static Mesh Actor，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。无参数启动加载自带 Sponza 场景，启用 Scene Lit 与 DDGI；Project → Examples 提供 Sponza 和 Scene Lit Room，保存与副本规则见[官方 Examples](../../../assets/examples/README.md)。Parameters 通过真实类型显示检查目标及其连续属性区。Actor Structure 展示 Actor 归属下的组件，负责选择、添加和删除；Scene Tree 保持 Actor 列表。没有根组件时不显示根位置，Focus 停用；没有检查目标时显示空状态。
 
 `commands.hpp` 是编辑器命令描述入口，`Workspace::command_enabled` 判定当前可用性，`Application::execute` 执行。菜单和顶部快捷区读取同一描述，快捷键与资源点击进入同一个执行函数。执行时再次检查可用性；UI 只产生通用 Action，不直接修改 World。输入字段和拖动仍通过 Session 事务入口。
 

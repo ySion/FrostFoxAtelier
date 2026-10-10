@@ -1,0 +1,1055 @@
+{
+  "version": 2,
+  "actors": [
+    {
+      "type": "world.Actor",
+      "name": "Static triangle mesh floor",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            -0.5,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            40,
+            1,
+            40
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.18,
+            0.22,
+            0.27
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 1
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "triangle_mesh",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 2
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Touch target",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            1,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.2,
+            0.8,
+            0.3
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 1,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              1,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "First blocking target",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            1,
+            3
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.9,
+            0.2,
+            0.15
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 2,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Target behind blocker",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            1,
+            6
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.2,
+            0.5,
+            0.9
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 2,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Channel ignored object",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            1,
+            9
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.9,
+            0.7,
+            0.2
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 2,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              0,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Overlap sensor",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            -4,
+            1,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.3,
+            0.8,
+            0.8
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "stationary",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 3,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": true,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Scene query emitter",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "type": "world.SceneComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            1,
+            -4
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {},
+          "id": 1
+        },
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.4,
+            0.4,
+            0.4
+          ],
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.7,
+            0.3,
+            0.9
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": 2
+        },
+        {
+          "type": "physics.BodyComponent",
+          "enabled": true,
+          "properties": {},
+          "body": {
+            "shape": "box",
+            "motion": "stationary",
+            "half_extents": [
+              0.2,
+              0.2,
+              0.2
+            ],
+            "radius": 0.5,
+            "capsule_half_height": 0.5,
+            "category": 0,
+            "responses": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "sensor": false,
+            "friction": 0.4,
+            "restitution": 0.1
+          },
+          "id": 3
+        },
+        {
+          "type": "physics.SceneQueryComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "shape": "line",
+              "selection": "channel",
+              "mode": "single",
+              "channel": 7,
+              "object_types": 6,
+              "capacity": 64,
+              "radius": 0.35,
+              "include_sensors": true
+            },
+            "start": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0,
+              "z": 16
+            },
+            "automatic": true,
+            "ignore_self": true
+          },
+          "id": 4
+        },
+        {
+          "type": "physics.SceneQueryComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "shape": "line",
+              "selection": "channel",
+              "mode": "multi",
+              "channel": 7,
+              "object_types": 6,
+              "capacity": 64,
+              "radius": 0.35,
+              "include_sensors": true
+            },
+            "start": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0,
+              "z": 16
+            },
+            "automatic": true,
+            "ignore_self": true
+          },
+          "id": 5
+        },
+        {
+          "type": "physics.SceneQueryComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "shape": "line",
+              "selection": "object_type",
+              "mode": "multi",
+              "channel": 7,
+              "object_types": 6,
+              "capacity": 64,
+              "radius": 0.35,
+              "include_sensors": true
+            },
+            "start": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0,
+              "z": 16
+            },
+            "automatic": true,
+            "ignore_self": true
+          },
+          "id": 6
+        },
+        {
+          "type": "physics.SceneQueryComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "shape": "line",
+              "selection": "channel",
+              "mode": "test",
+              "channel": 7,
+              "object_types": 6,
+              "capacity": 64,
+              "radius": 0.35,
+              "include_sensors": true
+            },
+            "start": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0,
+              "z": 16
+            },
+            "automatic": true,
+            "ignore_self": true
+          },
+          "id": 7
+        },
+        {
+          "type": "physics.SceneQueryComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "shape": "sphere_sweep",
+              "selection": "channel",
+              "mode": "multi",
+              "channel": 7,
+              "object_types": 6,
+              "capacity": 64,
+              "radius": 0.35,
+              "include_sensors": true
+            },
+            "start": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0,
+              "z": 16
+            },
+            "automatic": true,
+            "ignore_self": true
+          },
+          "id": 8
+        },
+        {
+          "type": "physics.SceneQueryComponent",
+          "enabled": true,
+          "parent": 1,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "shape": "sphere_overlap",
+              "selection": "object_type",
+              "mode": "multi",
+              "channel": 7,
+              "object_types": 8,
+              "capacity": 64,
+              "radius": 0.35,
+              "include_sensors": true
+            },
+            "start": {
+              "x": -4,
+              "y": 0,
+              "z": 4
+            },
+            "end": {
+              "x": 0,
+              "y": 0,
+              "z": 16
+            },
+            "automatic": true,
+            "ignore_self": true
+          },
+          "id": 9
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Main directional",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "id": 1,
+          "type": "world.LightComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            5,
+            -2
+          ],
+          "rotation": [
+            0.5367523272229081,
+            0.18786331452801783,
+            0,
+            0.8225596113810472
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "kind": "directional",
+              "color": {
+                "x": 1,
+                "y": 0.87,
+                "z": 0.7
+              },
+              "intensity": 1.8,
+              "range": 12,
+              "source_radius": 0.018,
+              "width": 2,
+              "height": 2,
+              "two_sided": false,
+              "casts_shadow": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

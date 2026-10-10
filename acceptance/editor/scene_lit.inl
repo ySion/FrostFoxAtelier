@@ -2,26 +2,26 @@ std::filesystem::path scene_lit_example(const std::filesystem::path& requested) 
     if (!requested.empty()) return std::filesystem::canonical(requested);
     for (auto base : {std::filesystem::current_path(),editor::asset_directory()})
         for (unsigned depth=0;depth<16 && !base.empty();++depth,base=base.parent_path())
-            if (std::filesystem::is_regular_file(base/"examples/scene-lit/Config/Project.json"))
-                return std::filesystem::canonical(base/"examples/scene-lit");
-    throw std::runtime_error("Cannot locate examples/scene-lit; pass its project directory to --scene-lit.");
+            if (std::filesystem::is_regular_file(base/"assets/examples/Config/Project.json"))
+                return std::filesystem::canonical(base/"assets/examples");
+    throw std::runtime_error("Cannot locate assets/examples; pass its project directory to --scene-lit.");
 }
 void verify_scene_lit_example(const std::filesystem::path& requested) {
     using namespace editor;
     const auto source=scene_lit_example(requested);
     const auto source_project=take(Project::open(source));
-    const auto source_scene=take(source_project.resolve(source_project.startup_scene()));
+    const auto source_scene=take(source_project.resolve("Examples/Scene Lit Room/Scenes/Main.scene"));
     const auto source_text=take(read_file(source_scene));
     const auto source_config=take(read_file(source/"Config/Project.json"));
     const auto copy=std::filesystem::absolute("out/scene-lit-application-evidence")/
         ("example-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(copy);
-    for (const auto* directory : {"Config","Content"})
+    for (const auto* directory : {"Config","Content","Examples"})
         std::filesystem::copy(source/directory,copy/directory,
             std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     std::filesystem::create_directories(copy/"Source");
     auto project=take(Project::open(copy));
-    auto document=take(Session::deserialize(take(read_file(take(project.resolve(project.startup_scene())))),project));
+    auto document=take(Session::deserialize(take(read_file(take(project.resolve("Examples/Scene Lit Room/Scenes/Main.scene")))),project));
     application::SceneSnapshot scene;take(scene.refresh(*document));
     require(scene.meshes.size()==10 && scene.lights.size()==4 && scene.environment==std::array{.025f,.035f,.055f},
         "Scene Lit example did not load its ten meshes, four direct lights and explicit Sky Light.");

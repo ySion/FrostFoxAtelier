@@ -2,9 +2,9 @@ std::filesystem::path scene_lit_window_example(const std::filesystem::path& requ
     if (!requested.empty()) return std::filesystem::canonical(requested);
     for (auto base : {std::filesystem::current_path(),atelier::editor::asset_directory()})
         for (unsigned depth=0;depth<16 && !base.empty();++depth,base=base.parent_path())
-            if (std::filesystem::is_regular_file(base/"examples/scene-lit/Config/Project.json"))
-                return std::filesystem::canonical(base/"examples/scene-lit");
-    throw std::runtime_error("Cannot locate examples/scene-lit; pass its project directory to --acceptance-scene-lit.");
+            if (std::filesystem::is_regular_file(base/"assets/examples/Config/Project.json"))
+                return std::filesystem::canonical(base/"assets/examples");
+    throw std::runtime_error("Cannot locate assets/examples; pass its project directory to --acceptance-scene-lit.");
 }
 std::string scene_lit_selection_diagnostic(Application& app) {
     auto& runtime=app.document().world().runtime();
@@ -72,16 +72,16 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto outside=output.lexically_relative(source);
     require(!outside.empty() && *outside.begin()==L"..","Scene Lit evidence output must be outside the source example project.");
     auto source_project=model(atelier::editor::Project::open(source));
-    const auto source_scene=model(source_project.resolve(source_project.startup_scene()));
+    const auto source_scene=model(source_project.resolve("Examples/Scene Lit Room/Scenes/Main.scene"));
     const auto source_text=model(atelier::editor::read_file(source_scene));
     const auto source_config=model(atelier::editor::read_file(source/"Config/Project.json"));
     const auto copy=output/(L"Project-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
     std::filesystem::create_directories(copy);
-    for (const auto* directory : {"Config","Content"})
+    for (const auto* directory : {"Config","Content","Examples"})
         std::filesystem::copy(source/directory,copy/directory,
             std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     std::filesystem::create_directories(copy/"Source");
-    Access::mark_saved(app);model(app.open_project(copy));tick(app,4);
+    Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Examples/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
     require(!app.document().dirty() && actors(app).size()==15 &&
         model(app.document().world().render_items()).size()==10 && model(app.document().world().light_items()).size()==5,
         "The formal application failed to load the complete Scene Lit example World.");

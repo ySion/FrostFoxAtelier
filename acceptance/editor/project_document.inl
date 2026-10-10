@@ -49,7 +49,7 @@ void verify_scene_v1(editor::Project& project) {
 }
 
 void verify_physics_test_project() {
-    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"examples/physics-test";
+    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"acceptance/editor/fixtures/physics-project";
     auto project=take(editor::Project::open(folder));
     auto document=take(editor::Session::deserialize(
         take(editor::read_file(take(project.resolve(project.startup_scene())))),project));

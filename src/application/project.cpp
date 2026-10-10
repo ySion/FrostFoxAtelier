@@ -1,5 +1,6 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
+#include "editor/examples.hpp"
 #include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -70,9 +71,28 @@ Result<void> Application::open_project(const std::filesystem::path& folder,bool 
     // A save decision can change the file we are about to open. Read only after
     // that decision; cancellation also precedes Project::create's disk changes.
     if (!confirm_discard()) return {};
+    return load_project(folder,create,{},policy);
+}
+Result<void> Application::open_example(editor::Command command) {
+    const auto* example=editor::example_definition(command);
+    if(!example) return failed("Unknown official example.");
+    if(!confirm_discard()) return {};
+    auto folder=editor::prepare_examples(examples_workspace_);
+    if(!folder) return std::unexpected(folder.error());
+    auto loaded=load_project(*folder,false,example->scene);if(!loaded) return loaded;
+    workspace_.assets.navigate(std::filesystem::path(example->scene).parent_path().parent_path());
+    if(!workspace_.scene_available) return {}; // Keep normal project build diagnostics visible.
+    const auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    workspace_.view.lit={};
+    const bool physical=command==editor::Command::example_physic;
+    if(physical) workspace_.view.lit.ddgi=false;
+    return configure_view(example->eye,example->target,physical?renderer::Shading::smooth:renderer::Shading::scene_lit,!physical && !items->empty());
+}
+Result<void> Application::load_project(const std::filesystem::path& folder,bool create,const std::filesystem::path& scene,ProjectOpenPolicy policy) {
     auto project=create?editor::Project::create(folder):editor::Project::open(folder);
     if (!project) return std::unexpected(project.error());
-    const auto path=project->resolve(project->startup_scene());if (!path) return std::unexpected(path.error());
+    const auto initial_scene=scene.empty()?project->startup_scene():scene;
+    const auto path=project->resolve(initial_scene);if (!path) return std::unexpected(path.error());
     const auto content=editor::read_file(*path);if (!content) return std::unexpected(content.error());
     auto candidate=editor::load_project_scene(*project,*content);
     // Reproducible workflows admit the complete candidate before retiring the
@@ -81,7 +101,7 @@ Result<void> Application::open_project(const std::filesystem::path& folder,bool 
         return candidate.error?std::unexpected(*candidate.error):failed("Project did not produce a complete scene.");
     play_.close();
     workspace_.source_editor.clear();
-    project_=std::move(*project);scene_path_=project_->startup_scene();workspace_.project_open=true;
+    project_=std::move(*project);scene_path_=initial_scene;workspace_.project_open=true;
     pending_scene_=*content;workspace_.scene_available=candidate.session!=nullptr;
     if(candidate.session) publish_document(std::move(candidate.session),candidate.code);
     else publish_document(std::make_unique<editor::Session>());
@@ -116,7 +136,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     const auto edit=ui_.commit_edit();if (!edit) return failed("Correct the active field before saving.");
     if (!effects(*edit)) return failed("The active field could not be committed; the scene was not saved.");
     const auto destination=relative.empty()?scene_path_:relative;
-    if (destination.empty() || *destination.begin()!=L"Content" || destination.extension()!=L".scene") return failed("Save scenes inside the project's Content folder with a .scene extension.");
+    if (!editor::Project::is_scene_path(destination)) return failed("Save scenes inside the project's Content or Examples folder with a .scene extension.");
     const auto path=project_->resolve(destination);if (!path) return std::unexpected(path.error());
     const auto text=document_->serialize();if (!text) return std::unexpected(text.error());
     auto saved=editor::write_file(*path,*text);if (!saved) return saved;

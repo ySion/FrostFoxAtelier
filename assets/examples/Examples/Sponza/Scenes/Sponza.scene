@@ -1,0 +1,186 @@
+{
+  "version": 2,
+  "actors": [
+    {
+      "type": "world.StaticMeshActor",
+      "name": "Sponza Atrium",
+      "enabled": true,
+      "root": 1,
+      "components": [
+        {
+          "id": 1,
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.01,
+            0.01,
+            0.01
+          ],
+          "mesh": "project/{239AB1BE-160D-471D-96D5-84B58A7D549B}",
+          "base_color": [
+            0.55,
+            0.55,
+            0.55
+          ],
+          "roughness": 0.85
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Atrium sun",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "id": 1,
+          "type": "world.LightComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            0,
+            5,
+            -2
+          ],
+          "rotation": [
+            0.5367523272229081,
+            0.18786331452801783,
+            0,
+            0.8225596113810472
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "kind": "directional",
+              "color": {
+                "x": 1,
+                "y": 0.87,
+                "z": 0.7
+              },
+              "intensity": 3.5,
+              "range": 12,
+              "source_radius": 0.018,
+              "width": 2,
+              "height": 2,
+              "two_sided": false,
+              "casts_shadow": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Warm movable light",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "id": 1,
+          "type": "world.LightComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            -4,
+            2,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "kind": "point",
+              "color": {
+                "x": 1,
+                "y": 0.25,
+                "z": 0.055
+              },
+              "intensity": 90,
+              "range": 15,
+              "source_radius": 0.16,
+              "width": 2,
+              "height": 2,
+              "two_sided": false,
+              "casts_shadow": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "world.Actor",
+      "name": "Cool east light",
+      "enabled": true,
+      "root": 1,
+      "properties": {},
+      "components": [
+        {
+          "id": 1,
+          "type": "world.LightComponent",
+          "enabled": true,
+          "parent": 0,
+          "position": [
+            7,
+            3,
+            1
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "properties": {
+            "settings": {
+              "kind": "point",
+              "color": {
+                "x": 0.07,
+                "y": 0.35,
+                "z": 1
+              },
+              "intensity": 55,
+              "range": 13,
+              "source_radius": 0.12,
+              "width": 2,
+              "height": 2,
+              "two_sided": false,
+              "casts_shadow": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

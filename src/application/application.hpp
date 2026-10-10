@@ -18,13 +18,15 @@ struct FrameTiming {
 };
 class Application final {
 public:
-    explicit Application(bool gpu_validation = false, bool activate = true);
+    explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {});
     ~Application();
     bool step(renderer::Capture* = nullptr);
     void enable_control(const std::filesystem::path& directory);
     Result<void> open_project(const std::filesystem::path&,bool create=false,ProjectOpenPolicy=ProjectOpenPolicy::allow_repair);
+    Result<void> open_example(editor::Command = editor::Command::example_sponza);
     Result<void> open_scene(const std::filesystem::path&);
-    Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading);
+    // Optional one-time DDGI fit to rendered world bounds; ordinary camera moves retain the volume.
+    Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading, bool fit_ddgi_volume = false);
     Result<void> open_source(const std::filesystem::path&);
     Result<void> save_scene(const std::filesystem::path& relative = {});
     Result<void> build_project(bool rebuild=false);
@@ -75,6 +77,7 @@ private:
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
     std::optional<editor::Project> project_;
+    std::filesystem::path examples_workspace_; // Empty selects the current user's local application data.
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.
     PlayProcess play_;
     std::string pending_scene_;
@@ -147,6 +150,7 @@ private:
     void poll_project();
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
     void publish_document(std::unique_ptr<editor::Session>,editor::ProjectCode* = nullptr);
+    Result<void> load_project(const std::filesystem::path&,bool create=false,const std::filesystem::path& scene={},ProjectOpenPolicy=ProjectOpenPolicy::allow_repair);
     void cancel_interaction(const ui::Reply&);
     void invalidate_surface();
     bool pointer_ready() const noexcept;

@@ -358,6 +358,10 @@ public:
     // dispatch phases. Scale stays authored; ordinary editing remains stopped-only.
     [[nodiscard]] Result<void> apply_simulation_transform(ObjectId root, math::Vector3 position,
         math::Quaternion rotation);
+    // Simulation-owned visual children (ragdoll parts / wheels). Position and
+    // rotation are local to their existing parent; authored scale is retained.
+    [[nodiscard]] Result<void> apply_simulation_local_transform(ObjectId component, math::Vector3 position,
+        math::Quaternion rotation);
     // Root remains explicit. Non-root nodes must stay below that same Actor root.
     // Removing a node with children is rejected; reparent its children first.
     [[nodiscard]] Result<Commit> reparent(ObjectId scene_component, ObjectId parent, ReparentRule);

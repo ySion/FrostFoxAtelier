@@ -16,14 +16,14 @@ MyGame/
 ## 使用
 
 - File → New Project Folder / Open Project Folder 选择目录；也可运行 `atelier_editor --new-project <目录>` 或 `atelier_editor --project <目录>`，支持中文路径。
-- Ctrl+S 保存当前工作区域：Code 区保存当前源码，其余区域保存场景；File → Save Scene 始终保存场景。Ctrl+Shift+S 另存场景到当前工程 Content 内，File → Open Scene 打开同一工程中的场景。标题显示工程、场景和未保存标记。
+- Ctrl+S 保存当前工作区域：Code 区保存当前源码，其余区域保存场景；File → Save Scene 始终保存场景。Ctrl+Shift+S 另存场景到当前工程 Content 或 Examples 内，File → Open Scene 打开同一工程中的场景。标题显示工程、场景和未保存标记。
 - 关闭窗口、打开其他工程或场景前处理未保存修改。保存决定完成后才读取目标场景，取消新建也不会创建目录。加载在独立、停止的新 Session/World 中完成；失败保留当前文档，成功才撤下旧 UI 绑定和文档。
 - Config 的 `startup_scene` 是打开工程时加载的场景，路径相对工程根。另存场景不隐式修改启动场景配置。
 - Source 文件由工程统一采集、编译并绑定到真实场景类型。Project 菜单提供创建组件源码、构建、重建类型、运行、停止和项目 UI 预览。
 
 ## 资源浏览器
 
-原 Asset Shelf 沿原停靠视图演进为 Asset Browser。左侧常驻目录树以 Project、Engine 为并列根：Project 展示实际 Content、Source、Config 目录，Engine 展示只读内置网格；未打开工程时 Project 根禁用。路径与搜索位于同一紧凑工具行，路径菜单可访问祖先目录，返回和上级操作使用同一导航状态。类型筛选、List/Details/Tiles 和资源操作各由图标菜单承载。
+原 Asset Shelf 沿原停靠视图演进为 Asset Browser。左侧常驻目录树以 Project、Engine 为并列根：Project 展示实际 Content、Source、Config 及可选的 Examples 目录，Engine 展示只读内置网格；未打开工程时 Project 根禁用。路径与搜索位于同一紧凑工具行，路径菜单可访问祖先目录，返回和上级操作使用同一导航状态。类型筛选、List/Details/Tiles 和资源操作各由图标菜单承载。
 
 单击资源只改变浏览器选择，不修改 Scene Tree 选择或创建 Actor。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshActor 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
@@ -42,7 +42,7 @@ MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等�
 Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Actor 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
 
 
-每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据属于 Content，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
+每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
 
 ## 持久格式与责任
 
@@ -51,6 +51,8 @@ Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与�
 - Scene 保存有序 Actor、真实类型名称、名称、enabled、有序组件、局部组件 ID、显式 root/parent、TRS、材质和资源键。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致，因此 Scene v1 继续可读，无需版本迁移或旧类型别名。
 - Scene 按限定类型名恢复已注册的 Actor/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置由专有字段保存。未知版本、未知类型、未知已保存属性、失效关系、缺失资源和无法编码的字段明确失败；空网格保留为空。单场景最多 256 Actor、每个 Actor 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
+- 物理角色、布娃娃/部件、车辆/车轮、力和运动学组件复用上述属性格式。DistanceConstraint 的 `constraint_target` 是从 1 开始的场景 Actor 顺序，0 为空目标；全部 Actor 创建后恢复 Runtime 弱引用，越界目标拒绝，不保存后端句柄。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
+- SceneQueryComponent 复用 Scene v2 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源和解析内容，`read_static_mesh` 覆盖 Detached 与空网格。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
 - 重建先创建真实类型对象和组件，恢复值，每个 Actor 一次 `attach_components` 恢复组成与空间关系，最后按文档顺序 attach。加载 StaticMeshActor 不重复调用带默认组成的快捷工厂。
 - 保存先完成有效文本草稿，经同目录临时文件、FlushFileBuffers 和替换发布。写入失败保留旧文件；这不是跨文件事务或断电恢复保证。工程标记最后创建，未完成创建不会伪装成可打开工程。存档提交与目录刷新结果分开：成功保存后即更新保存点，资源刷新失败显示警告，不将成功写入误报为保存失败。
@@ -173,6 +175,6 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ## Sponza 完整模型
 
-[Physics Test](../../../examples/physics-test/README.md) 的 `Content/Scenes/Sponza.scene` 引用完整 Crytek Sponza，原始 OBJ、MTL、54 张 PNG 和版权说明位于 `Content/Sponza/`。执行 `examples/physics-test/Open-Sponza.ps1` 打开内庭视角与 Smooth 材质显示。启动相机选项为 `--project <工程> --scene <相对场景> --material-camera <eye xyz> <target xyz>`，只设置当前视口，不写场景数据；普通打开仍使用现有 MatCap 默认值。
+[Sponza](../../../assets/examples/Examples/Sponza/README.md) 是编辑器自带默认场景，与 Scene Lit Room 同属 Official Examples 工程。源模板位于 `assets/examples/`，构建部署到可执行文件旁的 `examples/`；资源浏览器按 `Project / Examples / 场景名` 展示真实目录，启动时展开到 Sponza。无参数启动及顶部 Project → Examples 菜单配置内庭相机与 Scene Lit + DDGI。首次打开建立整个工程的用户副本，后续保存与切换保留修改。工程目录扫描、启动场景及 Save Scene As 同时支持 Content 和可选的 Examples 内容目录；Source 编译和 Cache 排除规则不变。部署及副本约定见 [官方 Examples](../../../assets/examples/README.md)。显式命令行的 `--project`、`--scene`、`--material-camera` 和 `--scene-lit-camera` 保留原语义。
 
 `editor_sponza_acceptance` 运行真实依赖导入/重试/刷新/资源寿命、完整模型保存重开和正式编辑器 GPU 捕获。窗口证据在 `out/<配置>/sponza-evidence/`；基础材质像素与深度/线框检查由 `renderer_acceptance` 执行。

@@ -39,6 +39,7 @@ function(atelier_add_jolt)
         "${CMAKE_BINARY_DIR}/LICENSE.jolt.txt" COPYONLY)
 
     add_library(atelier_physics STATIC
+        "${PROJECT_SOURCE_DIR}/src/physics/components.cpp"
         "${PROJECT_SOURCE_DIR}/src/physics/physics.cpp")
     atelier_target(atelier_physics)
     target_include_directories(atelier_physics PUBLIC "${PROJECT_SOURCE_DIR}/src")
