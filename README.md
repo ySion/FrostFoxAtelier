@@ -181,7 +181,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## 引擎资源连接方案
 
-[图片资源首例](docs/modules/resources/design-proposal.md)目前是设计提案：宿主建立共享 Runtime Texture 对象，业务引用共享，布局和绘制消费固定内容版本。正式源码宿主和受保护原生载荷访问已可用，基础 UI 已消费不可变 CPU 图片快照。三维材质已沿同一 Runtime 引入原生 Texture/Material 资源，见[材质系统](docs/modules/renderer/materials.md)；跨类型源码目录、引用字段编译及 Runtime Texture 到 UI 的资源接线仍未实现。这条跨模块业务链尚未通过验收。
+引擎已有不可变 CPU Mesh/材质图片、UI 图片快照、Renderer 上传与退休，以及 Runtime 的受保护原生载荷访问。三维材质已沿同一 Runtime 引入原生 Texture/Material 资源，见[材质系统](docs/modules/renderer/materials.md)。[共享 Runtime Texture 与 UI 连接方案](docs/modules/resources/design-proposal.md)的剩余缺口是语言的跨类型对象目录/引用字段，以及固定内容版本到 UI 测量和绘制的共同接线；这条业务链尚未通过贯通验收，继续复用已有源码宿主、布局和渲染入口。
 
 ## 默认内存分配
 

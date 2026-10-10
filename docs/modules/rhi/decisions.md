@@ -13,12 +13,13 @@
 | 完整候选成功后移动替换 | 失败保留旧 Pipeline；新 Program 的参数由消费者绑定，不建第二份发布/绑定表 | [准备与替换](contract.md#管线准备与替换) |
 | 编译、反射、主字节码及 PSO 都参与成功判断 | 有效 handle 或某一阶段生成 PSO 不足以证明所请求管线完整可用 | [生产实现](../../../src/rhi/rhi.cpp) |
 | 保留提交事实和失败终态 | Execute 后的 Signal 等失败不能被当成未提交，清理必须区别排空与重新执行 | [失败与关停](contract.md#失败与有界关停) |
-| 普通借用限定为资源、参数和录制 | frame/finish/close 与执行域仍由 Context 管理；原生 interop 只在专门回归中使用 | [借用范围](contract.md#借用-gfx-的许可范围) |
+| 普通借用限定为资源、参数和录制 | 窗口同步、frame/finish/close 与执行域由 Context 管理；原生 interop 只在专门回归中使用 | [借用范围](contract.md#借用-gfx-的许可范围) |
+| 显式同步绘制前窗口尺寸 | 隐藏弹窗可准备正确画布；复用现有排空、退休与 resize，消除为旧尺寸额外绘制和 Present 的需要 | [窗口合同](contract.md#窗口与读回) |
 | 一套正式消费者与必要后端回归 | 验收经过真实 Interface；native fence gate 等诊断只验证对应原生路径 | [验收范围](acceptance.md) |
 
 ## 取舍理由
 
-- 原生类型与业务语言共享权威类型，不要求自行重写全部 GPU 底层机制。现有 gfx 能承担正式消费者的资源与执行职责；SDK clear/copy 路径仅留下[历史可行性证据](research.md)，自建 Recording/Ticket/ResourceId 方案不再是实施入口。
+- 原生类型与业务语言共享权威类型，不要求自行重写全部 GPU 底层机制。gfx 承担设备资源与执行职责；早期原生 SDK 探针只证明硬件和链接可行性，不作为另一套生产入口。自行维护后端需要承担的责任见[原生 D3D12 比较](../../research/rhi-reassessment/native-baseline.md)。
 - 整体复用仍需要履行实际契约。普通绑定、资源导入、外部队列和并发录制的责任不同，不能将某条路径的延迟退休扩展成所有使用方式都安全。
 - 宿主选择 owned context；原生 interop 会把持久 queue/list、状态恢复和同步责任交回消费者。当前业务需求没有要求承担这套额外执行模式。
 - gfx 的快速原型定位或第三方采用记录不能替代本项目验证；选型依据是所需语义、真实消费者和修正后的行为矩阵，没有性能胜出声明。
@@ -26,9 +27,9 @@
 
 ## 补丁与依赖维护
 
-补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`：Mesh PS 可见资源状态、shader/主阶段失败传播、null-list 清理、有限等待、Recording/Closed/Submitted 状态、失败录制门禁，以及间接 finish/sync 调用的错误传播。补丁从锁定原始归档生成；配置先还原 pristine 副本再重放，不在旧修改上叠加。
+补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`，覆盖资源状态、管线失败传播、有限执行与关停、根参数预算、AS 屏障、原始时间戳及绘制前窗口同步。补丁从锁定原始归档生成；配置先还原 pristine 副本再重放，不在旧修改上叠加。按 gfx 修订号隔离源码根，避免升级时替换父目录却保留嵌套 SDK 的旧下载记录；具体路径见[构建说明](README.md#构建与运行)。
 
-2026-09-27 的九项[审计修正](audit-2026-09-27.md)已进入同一生产宿主或补丁：间接命令按有效句柄重新取得 Buffer、纹理复制计入 range 偏移、DXGI 和参数数组存储配平、原生拥有数组初始化、成功 finish 后常量池复用，以及宿主 Mesh 候选筛选、输入边界和公开 C++23 要求。细项结果只维护于验收文档。
+已修正的问题继续由同一宿主和补丁维护：内部缓冲表变化后重新按句柄取 Buffer、纹理复制计入 range 偏移、DXGI 与参数数组配平、原生拥有数组初始化、完成后常量池复用，以及 Mesh 候选筛选、输入边界和公开 C++23 要求。对应运行与历史观察见[验收记录](acceptance.md)。
 
 gfx 的 AVX2 baseline 编译选项已移除，保持项目 x64 基线；不因此宣称全部可选路径已验证。依赖版本和实际归档 hash 只维护于依赖锁。DXC、Agility、D3D12MA、PIX 的 license/notice 与项目补丁由 [模块构建](../../../cmake/rhi.cmake)保留到 `licenses/rhi`；patch 的 LF 由仓库属性固定。
 

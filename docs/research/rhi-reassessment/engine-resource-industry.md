@@ -39,7 +39,9 @@ Asset Manager 通过 `FPrimaryAssetId` 发现、加载资产，Streamable Handle
 - 内容依赖、质量选择和热更发布由掌握资产语义的一侧决定；RHI 提供分配、上传、绑定、完成与安全回收。观察到的创建接口无需资产路径或业务 GC；调试名、shader cache 不改变这个责任边界。
 - “业务仍引用”“CPU 已加载”“GPU 驻留”“旧版本仍在飞”是不同事实。把它们压成一个 `loaded` 或一份引用计数，会使缓存、流送和替换难以正确协同。
 
-## 本项目现在已有的资源概念
+## 2026-09-27 的项目状态
+
+本节保留当时的源码判断；此后引擎已增加 CPU Mesh/材质图片、UI 图片消费与窗口渲染。当前资源连接状态见[资源连接提案](../../modules/resources/design-proposal.md#已有机制与剩余缺口)，RHI 行为以[现行契约](../../modules/rhi/contract.md)为准。
 
 正式消费者已经创建 `GfxBuffer`、`GfxTexture`，用于计算输入、间接参数、颜色/深度目标、上传与回读；`GfxProgram/GfxKernel` 表达着色程序与执行管线。资源由 gfx 跟踪分配、状态、绑定与延迟退休。`atelier::rhi::Context` 管执行域，`Pipeline` 管 Program/Kernel 与执行域的拥有关系。[正式消费者](../../../acceptance/rhi/main.cpp)、[公开入口](../../../src/rhi/rhi.hpp)、[当前契约](../../modules/rhi/contract.md)
 
