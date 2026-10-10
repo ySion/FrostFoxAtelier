@@ -149,6 +149,7 @@ Result<Context> Context::open(const ContextOptions& options) {
                                      "no hardware adapter with FL12_1 and Mesh Shader support"});
     auto state = std::make_shared<detail::ContextState>();
     const GfxCreateContextFlags flags = (debug ? kGfxCreateContextFlag_EnableDebugLayer : 0) |
+        (options.validation == Validation::gpu ? kGfxCreateContextFlag_EnableGPUBasedValidation : 0) |
         (options.rgba8_window ? kGfxCreateContextFlag_ForceRGBA8SwapChain : 0);
     state->context = options.window ? gfxCreateContext(options.window, flags, adapter.Get())
         : gfxCreateContext(options.width, options.height, flags, adapter.Get());

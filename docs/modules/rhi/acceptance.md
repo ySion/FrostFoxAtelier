@@ -4,6 +4,30 @@
 
 2026-09-28 更新：编辑器 renderer 新增单窗口、显式 RGBA8、backbuffer 与独立深度同时绑定、带行距读回和 Present 状态。本页原 RHI 矩阵已在 dev/release 重新通过；新增窗口验收、641/703 宽度和未覆盖范围见 [renderer 验收](../renderer/acceptance.md)。以下保留 2026-09-27 的证据边界，不将其旧的窗口“未覆盖”列表当作当前全部能力。
 
+## 2026-10-10：升级固定 gfx
+
+在引擎 `17996cee07bcb234860848e31d6717fac3dec335` 上，将 gfx 从 `e039b255` 更新至当日核实的上游 master `a8d9bd64ea7d95cfc015a047845bf709ac9f6582`（10 月 7 日提交）。[上游差异](https://github.com/gboisse/gfx/compare/e039b255efb327994d30b187caee400ca60110e0...a8d9bd64ea7d95cfc015a047845bf709ac9f6582)包含 9 个提交，涉及 GPU validation 开关、DRED 日志与日志严重度修正；DXC、Agility、D3D12MA 和 PIX 的锁定版本未变。
+
+迁移处理两处补丁冲突：保留 shader 编译失败的显式错误返回；上游扩展创建标志后，将项目 `ForceRGBA8SwapChain` 移至空闲 bit 9，并把 `Validation::gpu` 接到上游明确标志。所有既有 owner、有限等待/终态、根签名预算、AS 屏障和原始 timestamp/录制序号补丁保留，接口未另建入口。
+
+首次在原构建目录升级复现了嵌套 SDK 文件被父 gfx 解压替换、FetchContent 旧记录却仍有效的问题。现改为按 gfx 修订号隔离源码根，并由锁定路径更新 D3D12MA 的 Agility cache 设置；运行库部署查询真实 gfx target 源码目录。现有 dev/release 构建目录均成功完成升级配置和编译，四份已打补丁的 gfx 源文件在两种配置中 hash 一致。
+
+| RX 6800 XT，D3D12 debug/GBV | Dev | Release |
+| --- | --- | --- |
+| `rhi_acceptance`：完整 GPU 主场景及三个后端回归 | PASS | PASS |
+| `atelier_renderer_acceptance`：材质、UI、基础场景、窗口/深度和既有模式 | PASS | PASS |
+| `atelier_renderer_acceptance --scene-lit`：三类灯/阴影、HDR、DDGI、GTAO、SSSR、时域重置及资源寿命 | PASS | PASS |
+
+以上进程均退出 0；GPU 验收没有 D3D12 debug/GBV warning/error。未重新执行编辑器输入自动化，也未注入真实设备移除验证 DRED。证据位于 `out/gfx-upgrade-a8d9bd64/`：`configure-{dev,release}.log`、`build-rhi-{dev,release}.log`、`renderer-{dev,release}.log`、`scene-lit-{dev,release}.log` 及对应 Scene Lit 图像目录。RHI 日志中的故意无效 HLSL、timeout 和 null-list 清理输出沿既有验收预期。
+
+### 同日独立诊断：DDGIFilter 展开循环访问冲突
+
+Renderer 提供的失败 shader 在独立无窗口进程中复现，调用链只有 `Context::open → prepare(DDGIFilter)`，未录制 draw/dispatch，也未创建 TLAS。DXC CLI 使用相同 SM 6.5、entry 和编译选项成功生成 DXIL；`Validation::disabled` 下仍在 prepare 阶段以 `0xC0000005` 退出。CDB 栈确认异常地址位于 `amdxc64.dll`，下层调用链经过 `D3D12Core::CreateComputePipelineState → gfx → Context::prepare`。驱动没有返回可转换成 `Result` 的失败 HRESULT；不能将原生访问冲突当作普通 shader 编译失败吞掉并继续使用执行域。
+
+只把该 5×5 循环的两个 `[unroll]` 改成 `[loop]`，同一个探针即可完成 prepare/close 并退出 0。该现象在本次新 gfx 上仍可复现，不将 gfx 升级记为驱动故障修复。此处仅完成单管线复现，尚未把 HLSL 裁剪到最小指令集；Renderer 已采用正常循环，本轮未修改其工作树。
+
+输入快照、独立 probe、DXC 结果、CDB 栈、loop 对照与文件指纹保存在 `out/ddgi-unroll-probe-20261010/`，关键文件为 `dxc.log`、`cdb-disabled.log`、`prepare-loop-disabled.log` 和 `manifest.json`。这些是本地诊断产物，不成为第二套生产编译入口。
+
 ## 2026-10-05：跨阶段根参数预算
 
 固定候选 `495bf513c4f3cb7e7a2a0ab9506559e34ee3f3c7` 的 Dev `renderer_acceptance` 实际复现：纯 UI 先通过，随后 `editor surface` 在 `CreateRootSignature` 因超过 64 DWORD 失败。原 gfx 只检查单个 `$Globals` 是否超过 256 字节，未计算跨阶段常量和描述符表的总成本。修正进入同一 `atelier.patch`，复用原有反射变量填充、CBV 绑定、常量池与退休机制；Renderer/shader 无需参数旁路。
