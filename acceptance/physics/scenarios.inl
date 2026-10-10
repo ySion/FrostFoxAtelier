@@ -17,13 +17,13 @@ struct PhysicsFixture {
     };
     Actor make(Vector3 position, p::BodySettings settings = {}, bool body_enabled = true) {
         Actor result{take(w::create_actor(runtime)),
-            take(w::create_component(runtime, world_types.scene_component)),
-            take(w::create_component(runtime, physics_types.body_component))};
+            take(w::create_component(runtime, world_types.collision_component)), {}};
+        result.body=take(runtime.hold(result.root.id()));
         committed(world.attach_components(result.id(), std::array{
-            w::Attachment{result.root.id(), {}, true}, w::Attachment{result.body.id()}}));
+            w::Attachment{result.root.id(), {}, true}}));
         take(world.set_transform(result.root.id(), w::Trs{position, {0, 0, 0, 1}, {1, 1, 1}}));
+        settings.enabled=body_enabled;
         take(p::configure(runtime, result.body.id(), settings));
-        if (!body_enabled) committed(world.set_enabled(result.body.id(), false));
         committed(world.attach(result.id()));
         return result;
     }
@@ -218,11 +218,11 @@ void collision_matrix() {
         barrier.motion = p::MotionKind::kinematic;
         barrier.sensor = sensor;
         barrier.category = 1;
-        barrier.responses[2] = left;
+        take(barrier.set_response(2,left));
         auto wall = f.make({}, barrier);
         auto moving = dynamic_body();
         moving.category = 2;
-        moving.responses[1] = right;
+        take(moving.set_response(1,right));
         auto target = f.make({.75f, 0, 0}, moving);
         take(f.scene->set_gravity({}));
         f.start();

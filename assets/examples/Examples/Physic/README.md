@@ -19,11 +19,11 @@
 
 ## 组件组合
 
-沿现有 Actor Structure 的 **Add Component** 添加组件，公开数值字段在 Parameters 编辑并由 Scene v2 保存。`BodyComponent` 的完整形状配置继续沿现有 Body 配置接口/场景文件保存。
+沿现有 Actor Structure 的 **Add Component** 添加组件，公开数值字段在 Parameters 编辑并由 Scene v2 保存。网格和碰撞组件的 `body` 配置沿 Parameters 编辑，并通过通用反射属性保存。
 
 | 组件 | 职责和依赖 |
 | --- | --- |
-| `BodyComponent` | 静态、运动学或动态刚体，形状/材料/碰撞过滤 |
+| `PrimitiveComponent` 的 `body` | 网格与 CollisionComponent 共用的静态、运动学或动态物理配置；形状、材料和碰撞过滤 |
 | `CharacterComponent` | 虚拟胶囊角色；每固定步读取 `velocity` 和一次性 `jump` |
 | `RagdollComponent` | 拥有一个布娃娃控制器 |
 | `RagdollPartComponent` | 胶囊形状和可见网格；按组件组成顺序索引，`parent_index` 指向先前部件，`rest_position` 相对根 |
@@ -51,4 +51,4 @@ cmake --build --preset dev --target physics_acceptance physics_examples_acceptan
 cmake --build --preset release --target physics_acceptance physics_examples_acceptance
 ```
 
-`physics_examples_acceptance` 先将全部 10 个场景写盘重开并实际模拟，检查约束、位姿、接触/过滤、查询、暂停/单步、停止重启及旧句柄失效，再通过正式编辑器和 D3D12 GPU validation 捕获编辑与模拟画面。窗口证据位于 `out/<配置>/physics-examples-evidence/`。`physics_acceptance` 另外覆盖 18 个底层真实场景，包括 Cook 缓存、边界输入、跨 World 拒绝、组件依赖和生命周期。详见[物理验收](../../../../docs/modules/physics/acceptance.md)。
+`physics_examples_acceptance` 先将全部 10 个场景写盘重开并实际模拟，检查约束、位姿、接触/过滤、查询、暂停/单步、停止重启及旧句柄失效，再通过正式编辑器和 D3D12 GPU validation 捕获编辑与模拟画面。窗口证据位于 `out/<配置>/physics-examples-evidence/`。`physics_acceptance` 另外覆盖 20 个底层真实场景，包括 Cook 缓存、边界输入、跨 World 拒绝、组件依赖和生命周期。详见[物理验收](../../../../docs/modules/physics/acceptance.md)。

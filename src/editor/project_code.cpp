@@ -50,9 +50,7 @@ Result<void> validate_ui(const source::SourceFile& file) {
 }
 }
 ProjectCode::ProjectCode(world::World& world):world_(world),report_(std::make_shared<ProjectBuild>()) {
-    auto body=world_.runtime().find_type("physics.BodyComponent");
-    if (!body) throw std::runtime_error(body.error().message);
-    physics_={*body};
+
 }
 Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     auto paths=project.source_paths();if (!paths) return std::unexpected(paths.error());

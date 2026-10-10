@@ -72,6 +72,77 @@ private:
     AFIELD(Name="parent", Hidden, Weak="world.SceneComponent")
     ReferenceSlot parent_;
 };
+AENUM(Name="world.CollisionShape")
+enum class ShapeKind : std::uint32_t { box, sphere, triangle_mesh, capsule };
+AENUM(Name="world.BodyMotion")
+enum class MotionKind : std::uint32_t { stationary, kinematic, dynamic };
+AENUM(Name="world.CollisionResponse")
+enum class Response : std::uint32_t { ignore, overlap, block };
+
+ASTRUCT(Name="world.PhysicsMaterial")
+struct PhysicsMaterial {
+    AGENERATED_BODY(PhysicsMaterial)
+public:
+    AFIELD()
+    float friction{.2f};
+    AFIELD()
+    float restitution{};
+    bool operator==(const PhysicsMaterial&) const = default;
+};
+
+// Authoring values belong to the World type system. Backend state is scene-owned.
+ASTRUCT(Name="world.BodySettings")
+struct BodySettings {
+    AGENERATED_BODY(BodySettings)
+public:
+    AFIELD()
+    bool enabled{true};
+    AFIELD()
+    ShapeKind shape{ShapeKind::box};
+    AFIELD()
+    MotionKind motion{MotionKind::stationary};
+    AFIELD()
+    math::Vector3 half_extents{.5f, .5f, .5f};
+    AFIELD()
+    float radius{.5f};
+    AFIELD()
+    float capsule_half_height{.5f};
+    AFIELD()
+    std::uint32_t category{};
+    // Sixteen categories; disjoint masks encode Ignore/Overlap, otherwise Block.
+    AFIELD()
+    std::uint32_t ignore_categories{};
+    AFIELD()
+    std::uint32_t overlap_categories{};
+    AFIELD()
+    bool sensor{};
+    AFIELD()
+    PhysicsMaterial material{};
+    // Derived cache, rebuilt from the mesh resource; never archived as object state.
+    std::shared_ptr<const std::string> cooked_shape{};
+    [[nodiscard]] Response response(std::uint32_t category) const noexcept;
+    [[nodiscard]] Result<void> set_response(std::uint32_t category, Response);
+    bool operator==(const BodySettings&) const = default;
+};
+[[nodiscard]] Result<void> validate_body_settings(const BodySettings&);
+
+ACLASS(Name="world.PrimitiveComponent")
+class PrimitiveComponent : public SceneComponent {
+    AGENERATED_BODY(PrimitiveComponent)
+public:
+    AFIELD()
+    BodySettings body{.enabled=false};
+};
+
+// A spatial collision primitive without presentation. Choose box/sphere/capsule
+// through the same reflected body settings used by StaticMeshComponent.
+ACLASS(Name="world.CollisionComponent")
+class CollisionComponent : public PrimitiveComponent {
+    AGENERATED_BODY(CollisionComponent)
+public:
+    CollisionComponent() { body.enabled=true; }
+};
+
 ASTRUCT(Name="world.Material")
 struct Material {
     AGENERATED_BODY(Material)
@@ -87,7 +158,7 @@ public:
     bool operator==(const Material&) const = default;
 };
 ACLASS(Name="world.StaticMeshComponent")
-class StaticMeshComponent : public SceneComponent {
+class StaticMeshComponent : public PrimitiveComponent {
     AGENERATED_BODY(StaticMeshComponent)
 public:
     AFIELD()
@@ -157,6 +228,7 @@ struct Types {
     TypeId static_mesh_actor;
     TypeId vector3, quaternion;
     TypeId light_kind, light_settings, light_component;
+    TypeId primitive_component, collision_component;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
@@ -374,9 +446,9 @@ public:
     // Validated whole-value authoring. Same stopped/ownership policy as set_transform.
     [[nodiscard]] Result<void> set_material(ObjectId static_mesh_component, Material);
     [[nodiscard]] Result<void> set_light(ObjectId light_component, LightSettings);
-    // A host-driven simulation may write an attached Actor's root between
-    // dispatch phases. Scale stays authored; ordinary editing remains stopped-only.
-    [[nodiscard]] Result<void> apply_simulation_transform(ObjectId root, math::Vector3 position,
+    // Writes a SceneComponent's world pose between dispatch phases. Converts
+    // through its parent and preserves authored scale; unrepresentable TRS fails.
+    [[nodiscard]] Result<void> apply_simulation_transform(ObjectId component, math::Vector3 position,
         math::Quaternion rotation);
     // Simulation-owned visual children (ragdoll parts / wheels). Position and
     // rotation are local to their existing parent; authored scale is retained.

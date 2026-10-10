@@ -224,15 +224,6 @@ Result<world::Commit> Session::add_component(TypeId type) {
     const auto members=world::components(runtime_,actor);
     if (!members) return std::unexpected(members.error());
     if (members->size()>=maximum_components) return invalid("Editor Component limit reached.");
-    auto physical=runtime_.is_a(type,physics_types_.body_component);
-    if (!physical) return std::unexpected(physical.error());
-    if (*physical) for (const auto& member:*members) {
-        auto existing=runtime_.type_of(member.id());
-        if (!existing) return std::unexpected(existing.error());
-        auto body=runtime_.is_a(*existing,physics_types_.body_component);
-        if (!body) return std::unexpected(body.error());
-        if (*body) return invalid("An Actor can have only one physics BodyComponent.");
-    }
     auto root = world::create_component(runtime_, type);
     if (!root) return std::unexpected(root.error());
     auto actor_root = world::root_component(runtime_, actor);
@@ -312,7 +303,7 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
     if (auto cancelled=cancel_edit(); !cancelled) return cancelled;
     auto state=admit_component_edit(component);
     if (!state) return std::unexpected(state.error());
-    auto physical=runtime_.is_a(state->type,physics_types_.body_component);
+    auto physical=runtime_.is_a(state->type,types_.primitive_component);
     if (!physical) return std::unexpected(physical.error());
     if (!*physical)
         return invalid("Selected Component is not a physics body.");

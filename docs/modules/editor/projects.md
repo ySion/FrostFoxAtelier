@@ -129,7 +129,7 @@ class project.Move : world.Component {
 }
 ```
 
-`translate_owner` 将位移请求交给 World，在回调边界应用。拥有 BodyComponent 的 Actor 由物理控制，此操作会被拒绝；不绕过物理变换所有权。语言声明、原生派生和字段默认值的精确范围见[Source 类型声明](../../source-type-declarations.md)。
+`translate_owner` 将位移请求交给 World，在回调边界应用。含 `body.enabled=true` 的 Primitive、CharacterComponent 或 RagdollComponent 的 Actor 会拒绝此操作；停用组件不绕开已声明的物理所有权，物理移动使用 PhysicsScene 的命令。语言声明、原生派生和字段默认值的精确范围见[Source 类型声明](../../source-type-declarations.md)。
 
 ### 加载与执行链
 

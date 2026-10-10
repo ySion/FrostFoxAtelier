@@ -1,10 +1,10 @@
 void trace_queries() {
     PhysicsFixture f;
-    p::BodySettings touch;touch.category=1;touch.responses[7]=p::Response::overlap;
+    p::BodySettings touch;touch.category=1;take(touch.set_response(7,p::Response::overlap));
     auto near_body=f.make({0,0,0},touch);
     p::BodySettings block;block.category=2;
     auto wall=f.make({0,0,3},block);auto behind=f.make({0,0,6},block);
-    auto ignored_settings=block;ignored_settings.responses[7]=p::Response::ignore;
+    auto ignored_settings=block;take(ignored_settings.set_response(7,p::Response::ignore));
     auto ignored=f.make({0,0,9},ignored_settings);
     f.start();take(f.scene->update(0));
     p::TraceSettings query;query.channel=7;
@@ -46,7 +46,7 @@ void trace_queries() {
     query.capacity=0;require(!f.scene->trace(start,end,query),"Zero result capacity was accepted.");query.capacity=64;
     query.object_types=0x10000;require(!f.scene->trace(start,end,query),"Out-of-range object mask was accepted.");query.object_types=0xffff;
     query.mode=static_cast<p::TraceMode>(99);require(!f.scene->trace(start,end,query),"Unknown trace mode was accepted.");
-    committed(f.world.stop());touch.sensor=true;touch.responses[7]=p::Response::block;take(p::configure(f.runtime,near_body.body.id(),touch));
+    committed(f.world.stop());touch.sensor=true;take(touch.set_response(7,p::Response::block));take(p::configure(f.runtime,near_body.body.id(),touch));
     f.start();take(f.scene->update(0));query.mode=p::TraceMode::single;query.object_types=1u<<1;
     require(take(f.scene->trace(start,end,query)).has_hit,"Object trace excluded a requested Sensor.");
     query.include_sensors=false;require(!take(f.scene->trace(start,end,query)).has_hit,"Sensor exclusion was ignored.");

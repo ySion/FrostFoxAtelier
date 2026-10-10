@@ -10,15 +10,18 @@ core.Object
 │  └─ StaticMeshActor
 └─ Component
    └─ SceneComponent
-      ├─ StaticMeshComponent
+      ├─ PrimitiveComponent
+      │  ├─ StaticMeshComponent
+      │  └─ CollisionComponent
       └─ LightComponent
 ```
 
 - Actor/Component 是世界的业务模型。所有对象沿用 Runtime 的 TypeId、ObjectId、继承、引用与 GC；类型桶只提供查询索引，不决定执行顺序。
-- `register_types` 一次发布 Material、LightSettings 值类型、LightKind 枚举与上述六个对象类型，复用 Runtime 已初始化的 `math.vector3`、`math.quaternion` 身份。业务元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
+- `register_types` 一次发布上述对象、Material/LightSettings/BodySettings/PhysicsMaterial 值类型及其枚举，复用 Runtime 已初始化的 `math.vector3`、`math.quaternion` 身份。业务元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
 - Actor 的隐藏强引用序列决定组成顺序，Component 强持 owner。一个组件的普通强引用会保住 Actor 和兄弟组件；没有外部根的组成环可被 GC 回收。
 - Actor 的显式根引用和 SceneComponent 的空间父引用均为弱引用。组成负责拥有，空间关系负责坐标继承，两种顺序独立。
-- StaticMeshComponent 继承完整局部 TRS，持有不可变 geometry::Mesh、未绑定槽的基础 Material 值，以及沿 Runtime 强引用管理的材质槽绑定。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。
+- PrimitiveComponent 继承空间能力，持有反射的物理作者配置；Jolt 运行态由 PhysicsScene 持有。StaticMeshComponent 默认只呈现，CollisionComponent 默认开启碰撞且没有网格。
+- StaticMeshComponent 经 PrimitiveComponent 继承完整局部 TRS，持有不可变 geometry::Mesh、未绑定槽的基础 Material 值，以及沿 Runtime 强引用管理的材质槽绑定。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。
 - `components` 返回普通根快照，保持身份与当前数据，不冻结字段。World 成员目录持有 Actor 根；查询、执行列表、请求和历史来源凭证不另建隐藏根。
 
 Runtime 必须晚于 World、相关对象操作及任务结束。对象可以活过旧 World，但普通根不能延长 Runtime 或关闭的 World 服务寿命。
@@ -115,6 +118,6 @@ Component 的共享类型定义注册 `translate_owner(float dx, float dy, float
 
 该方法要求已归属、已注册、有显式根且正在 World 行为阶段执行。命令在 Begin/注册阶段成功结束或本帧 Tick/协程全部返回后，于宿主边界重新校验接收者、Actor、根和有限 TRS，再合并同一根的平移。它修改根的世界位置，保留旋转、scale；当前空间树只允许同 Actor 层级，根没有父节点。批次先完整验证再写入，失败或 shutdown 清除未应用命令，后续 start 不会重放。
 
-含 `physics.BodyComponent`、`physics.CharacterComponent` 或 `physics.RagdollComponent`（含派生）的 Actor 拒绝此命令，即使组件停用也不绕开物理所有权。物理动作沿 PhysicsScene 的正式接口处理。此命令不改变停止状态的 `set_transform`、`apply_simulation_transform` 或结构 `request/flush` 的准入合同。
+含 `body.enabled=true` 的 Primitive、`physics.CharacterComponent` 或 `physics.RagdollComponent`（含派生）的 Actor 拒绝此命令，组件停用不绕开已声明的物理所有权。物理动作沿 PhysicsScene 的正式接口处理。此命令不改变停止状态的 `set_transform`、`apply_simulation_transform` 或结构 `request/flush` 的准入合同。
 
-`apply_simulation_transform` 继续限定 Actor 根；`apply_simulation_local_transform` 允许模拟器写入同一运行中 World 内的空间子组件，用于布娃娃部件和车轮。两者检查归属、有限位姿及旋转，保留组件的显示缩放；它们不接受停止或其他 World 的写入，不进入编辑历史。
+`apply_simulation_transform` 接受同一运行中 World 内任意 SceneComponent 的世界位置与旋转；有父节点时沿空间树转换为局部 TRS，拒绝不可表示的剪切或需要改变局部缩放的结果。`apply_simulation_local_transform` 接受局部位姿，用于布娃娃部件和车轮。两者检查归属、有限位姿及旋转，保留组件的显示缩放；它们不接受停止或其他 World 的写入，不进入编辑历史。物理场景先缓存全部求解位姿，再按空间深度父先子后回写，避免组成顺序影响结果。

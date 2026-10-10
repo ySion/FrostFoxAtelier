@@ -20,7 +20,6 @@ template<class T,class F> auto read(Runtime& runtime,ObjectId id,F callback) {
 }
 Result<Types> register_types(Runtime& runtime) try {
     Types types;
-    types.body_component=take(NativeRegistration<BodyComponent>{runtime,"physics.BodyComponent",TypeKind::object}.base<world::Component>().publish());
     take(NativeRegistration<CharacterSettings>{runtime,"physics.CharacterSettings",TypeKind::record}
         .field<&CharacterSettings::radius>("radius").field<&CharacterSettings::capsule_half_height>("capsule_half_height")
         .field<&CharacterSettings::max_slope_radians>("max_slope_radians").field<&CharacterSettings::jump_speed>("jump_speed")
@@ -153,8 +152,9 @@ Result<void> ComponentSimulation::reconcile() try {
         const auto group=take(world::components(runtime,member.id()));
         unsigned writers=0;std::set<Kind> unique;
         for(const auto& item:group) if(take(world::inspect_component(runtime,item.id())).active)
-            writers+=is.template operator()<BodyComponent>(item.id()) || is.template operator()<CharacterComponent>(item.id()) || is.template operator()<RagdollComponent>(item.id());
-        require(writers<=1,"An Actor may have only one active Body, Character or Ragdoll component.");
+            writers+=is.template operator()<CharacterComponent>(item.id()) || is.template operator()<RagdollComponent>(item.id());
+        writers+=bool(scene_.body_handle(*root));
+        require(writers<=1,"The Actor root may have only one physics pose driver.");
         for(const auto& item:group) {
             if(!take(world::inspect_component(runtime,item.id())).active) continue;
             Kind kind;
@@ -262,8 +262,8 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
         case Kind::force: {
             const auto input=read<ForceComponent>(runtime,id,[](const auto& v){return std::pair{v.force,v.initial_impulse};});
             require(math::is_finite(input.first)&&math::is_finite(input.second),"Force component inputs must be finite.");
-            if(e.impulse_pending) {take(scene_.add_impulse(e.actor,input.second));e.impulse_pending=false;}
-            take(scene_.add_force(e.actor,input.first));break;
+            if(e.impulse_pending) {take(scene_.add_impulse(e.body,input.second));e.impulse_pending=false;}
+            take(scene_.add_force(e.body,input.first));break;
         }
         case Kind::kinematic: {
             const auto input=read<KinematicMotionComponent>(runtime,id,[](const auto& v){return std::tuple{v.velocity,v.amplitude,v.period};});

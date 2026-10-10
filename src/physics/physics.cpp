@@ -83,30 +83,6 @@ void release_jolt() noexcept {
         JPH::Factory::sInstance = nullptr;
     }
 }
-Result<void> validate(BodySettings value) {
-    if (value.shape != ShapeKind::box && value.shape != ShapeKind::sphere &&
-        value.shape != ShapeKind::triangle_mesh && value.shape != ShapeKind::capsule)
-        return failure(ErrorCode::argument_mismatch, "Unknown collision shape.");
-    if (value.motion != MotionKind::stationary && value.motion != MotionKind::kinematic && value.motion != MotionKind::dynamic)
-        return failure(ErrorCode::argument_mismatch, "Unknown body motion type.");
-    if (!math::is_finite(value.half_extents) || value.half_extents.x <= 0 || value.half_extents.y <= 0 ||
-        value.half_extents.z <= 0 || !std::isfinite(value.radius) || value.radius <= 0 ||
-        !std::isfinite(value.capsule_half_height) || value.capsule_half_height <= 0)
-        return failure(ErrorCode::argument_mismatch, "Collision dimensions must be finite and positive.");
-    if (value.category >= value.responses.size() ||
-        !std::isfinite(value.material.friction) || value.material.friction < 0 ||
-        !std::isfinite(value.material.restitution) || value.material.restitution < 0 ||
-        value.material.restitution > 1)
-        return failure(ErrorCode::argument_mismatch, "Invalid collision category or physical material.");
-    for (auto response : value.responses)
-        if (response != Response::ignore && response != Response::overlap && response != Response::block)
-            return failure(ErrorCode::argument_mismatch, "Invalid collision response.");
-    if (value.shape == ShapeKind::triangle_mesh && value.motion != MotionKind::stationary)
-        return failure(ErrorCode::argument_mismatch, "Triangle mesh collision requires a stationary body.");
-    if (value.cooked_shape && value.shape != ShapeKind::triangle_mesh)
-        return failure(ErrorCode::argument_mismatch, "Cooked collision asset requires a triangle mesh body.");
-    return {};
-}
 JPH::RVec3 position(math::Vector3 value) { return {value.x, value.y, value.z}; }
 JPH::Vec3 vector(math::Vector3 value) { return {value.x, value.y, value.z}; }
 JPH::Quat rotation(math::Quaternion value) { return {value.x, value.y, value.z, value.w}; }
@@ -245,18 +221,18 @@ Result<void> validate_cooked_triangle_mesh(std::string_view bytes,
 }
 
 Result<void> configure(Runtime& runtime, ObjectId component, BodySettings settings) {
-    if (auto valid = validate(settings); !valid) return valid;
+    if (auto valid = world::validate_body_settings(settings); !valid) return valid;
     auto state = world::inspect_component(runtime, component);
     if (!state) return std::unexpected(state.error());
     if (state->active) return failure(ErrorCode::busy, "Stop the World before changing a physical body.");
-    return runtime.with_native<BodyComponent>(component, [&](BodyComponent& body) -> Result<void> {
-        body.settings = settings;
+    return runtime.with_native<world::PrimitiveComponent>(component, [&](world::PrimitiveComponent& body) -> Result<void> {
+        body.body = settings;
         return {};
     });
 }
 Result<BodySettings> read_settings(Runtime& runtime, ObjectId component) {
-    return runtime.with_native<const BodyComponent>(component, [](const BodyComponent& body) -> Result<BodySettings> {
-        return body.settings;
+    return runtime.with_native<const world::PrimitiveComponent>(component, [](const world::PrimitiveComponent& body) -> Result<BodySettings> {
+        return body.body;
     });
 }
 
@@ -296,16 +272,19 @@ struct PhysicsScene::Impl {
     JPH::BroadPhaseLayerInterfaceTable broad_phase{2, 2};
     JPH::ObjectLayerPairFilterTable pairs{2};
     std::optional<JPH::ObjectVsBroadPhaseLayerFilterTable> broad_phase_filter;
-    JPH::TempAllocatorImpl temporary{4 * 1024 * 1024};
+    JPH::TempAllocatorImplWithMallocFallback temporary{4 * 1024 * 1024};
     JPH::JobSystemSingleThreaded jobs{JPH::cMaxPhysicsJobs};
     JPH::PhysicsSystem system;
     struct Body {
         JPH::BodyID id;
-        ObjectId component, root;
+        ObjectId actor, component, root;
         MotionKind motion;
         BodySettings settings;
         geometry::MeshRef mesh;
         std::uint64_t revision;
+        math::Vector3 shape_scale;
+        world::Trs target;
+        std::vector<ObjectId> ancestors;
     };
     enum class CommandKind { force, impulse, kinematic_target, teleport };
     struct Command {
@@ -316,8 +295,15 @@ struct PhysicsScene::Impl {
         bool preserve_velocity{};
     };
     std::vector<Command> commands;
+    struct Pose { ObjectId component; std::size_t depth; math::Vector3 position; math::Quaternion rotation; };
+    std::vector<Pose> poses;
     std::unordered_map<ObjectId, Body> bodies;
-    std::unordered_map<JPH::BodyID, ObjectId> actors;
+    Body* resolve(BodyHandle handle, std::uint64_t scene) {
+        auto found=bodies.find(handle.component);
+        return found!=bodies.end() && handle.scene==scene && found->second.actor==handle.actor &&
+            found->second.revision==handle.revision ? &found->second : nullptr;
+    }
+    std::unordered_map<JPH::BodyID, ObjectId> body_components;
     struct Distance {
         BodyHandle first, second;
         JPH::Ref<JPH::TwoBodyConstraint> constraint;
@@ -355,20 +341,21 @@ struct PhysicsScene::Impl {
         return (std::uint64_t{std::min(a, b)} << 32) | std::max(a, b);
     }
     std::optional<ContactEvent> make_event(JPH::BodyID first, JPH::BodyID second,
-        std::uint64_t step) const {
-        auto a = actors.find(first), b = actors.find(second);
-        if (a == actors.end() || b == actors.end()) return std::nullopt;
+        std::uint64_t step, std::uint64_t scene) const {
+        auto a = body_components.find(first), b = body_components.find(second);
+        if (a == body_components.end() || b == body_components.end()) return std::nullopt;
         auto x = bodies.find(a->second), y = bodies.find(b->second);
         if (x == bodies.end() || y == bodies.end()) return std::nullopt;
         if (first.GetIndexAndSequenceNumber() > second.GetIndexAndSequenceNumber()) {
             std::swap(a, b);
             std::swap(x, y);
         }
-        return ContactEvent{ContactPhase::began, a->second, b->second,
-            x->second.component, y->second.component, step,
+        return ContactEvent{ContactPhase::began,
+            {x->second.actor, x->second.component, scene, x->second.revision},
+            {y->second.actor, y->second.component, scene, y->second.revision}, step,
             response(first, second) != Response::block};
     }
-    void collect_contacts(std::uint64_t step, StepResult& result) {
+    void collect_contacts(std::uint64_t step, std::uint64_t scene, StepResult& result) {
         std::vector<RawContact> raw;
         {
             std::lock_guard lock(contacts.mutex);
@@ -382,7 +369,7 @@ struct PhysicsScene::Impl {
         for (const auto& notice : raw) {
             const auto key = pair_key(notice.first, notice.second);
             if (notice.phase == ContactPhase::began) {
-                auto event = make_event(notice.first, notice.second, step);
+                auto event = make_event(notice.first, notice.second, step, scene);
                 if (!event) continue;
                 auto& state = active_pairs[key];
                 if (state.contacts == 0) state.event = *event;
@@ -426,19 +413,19 @@ struct PhysicsScene::Impl {
         }
     }
     Response response(JPH::BodyID first, JPH::BodyID second) const {
-        auto a = actors.find(first), b = actors.find(second);
-        if (a == actors.end() || b == actors.end()) {
+        auto a = body_components.find(first), b = body_components.find(second);
+        if (a == body_components.end() || b == body_components.end()) {
             const bool left_ragdoll = ragdoll_ids.contains(first);
             const bool right_ragdoll = ragdoll_ids.contains(second);
-            if ((left_ragdoll && (right_ragdoll || b != actors.end())) ||
-                (right_ragdoll && a != actors.end())) return Response::block;
+            if ((left_ragdoll && (right_ragdoll || b != body_components.end())) ||
+                (right_ragdoll && a != body_components.end())) return Response::block;
             return Response::ignore;
         }
         auto left = bodies.find(a->second), right = bodies.find(b->second);
         if (left == bodies.end() || right == bodies.end()) return Response::ignore;
         const auto& x = left->second.settings;
         const auto& y = right->second.settings;
-        const auto xy = x.responses[y.category], yx = y.responses[x.category];
+        const auto xy = x.response(y.category), yx = y.response(x.category);
         if (xy == Response::ignore || yx == Response::ignore) return Response::ignore;
         if (x.sensor || y.sensor || xy == Response::overlap || yx == Response::overlap)
             return Response::overlap;
@@ -446,7 +433,7 @@ struct PhysicsScene::Impl {
     }
     Response query_response(const BodySettings& settings,const QueryFilter& filter) const {
         Response response=Response::block;
-        if(filter.policy!=QueryPolicy::object_type) response=settings.responses[filter.category];
+        if(filter.policy!=QueryPolicy::object_type) response=settings.response(filter.category);
         if(filter.policy==QueryPolicy::interaction) {
             const auto other=filter.responses[settings.category];
             if(other==Response::ignore) response=Response::ignore;
@@ -456,11 +443,11 @@ struct PhysicsScene::Impl {
         return response;
     }
     bool query_accept(JPH::BodyID id, const QueryFilter& filter) const {
-        auto owner = actors.find(id);
-        if (owner == actors.end() || owner->second == filter.ignore_actor ||
-            std::ranges::find(filter.ignored_actors,owner->second)!=filter.ignored_actors.end()) return false;
+        auto owner = body_components.find(id);
+        if (owner == body_components.end()) return false;
         auto body = bodies.find(owner->second);
-        if(body==bodies.end()) return false;
+        if (body == bodies.end() || body->second.actor == filter.ignore_actor ||
+            std::ranges::find(filter.ignored_actors,body->second.actor)!=filter.ignored_actors.end()) return false;
         const auto response=query_response(body->second.settings,filter);
         return
             body->second.component != filter.ignore_component &&
@@ -472,10 +459,9 @@ struct PhysicsScene::Impl {
     QueryHit query_hit(JPH::BodyID id, std::uint32_t sub_shape, float fraction,
         math::Vector3 point, math::Vector3 normal, bool initial,
         std::uint64_t scene, const QueryFilter& filter) const {
-        const auto actor = actors.at(id);
-        const auto& body = bodies.at(actor);
+        const auto& body = bodies.at(body_components.at(id));
         const bool blocking=query_response(body.settings,filter)==Response::block;
-        return {{actor, body.component, scene, body.revision}, fraction, point, normal,
+        return {{body.actor, body.component, scene, body.revision}, fraction, point, normal,
             sub_shape, body.settings.sensor, initial, blocking, body.settings.material};
     }
 
@@ -497,9 +483,9 @@ PhysicsScene::PhysicsScene(world::World& world, Types types)
       components_(std::make_unique<detail::ComponentSimulation>(world,*this)), scene_id_(next_scene_id++) {}
 Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types) {
     if (world.closed()) return failure(ErrorCode::unsupported_operation, "Cannot attach physics to a closed World.");
-    auto actual = world.runtime().native_type<BodyComponent>();
+    auto actual = world.runtime().native_type<CharacterComponent>();
     if (!actual) return std::unexpected(actual.error());
-    if (*actual != types.body_component) return failure(ErrorCode::type_mismatch, "Physics types belong to another Runtime.");
+    if (*actual != types.character_component) return failure(ErrorCode::type_mismatch, "Physics types belong to another Runtime.");
     if (auto acquired = acquire_jolt(); !acquired) return std::unexpected(acquired.error());
     std::unique_ptr<PhysicsScene> result;
     try {
@@ -535,23 +521,25 @@ PhysicsScene::~PhysicsScene() {
     impl_.reset();
     release_jolt();
 }
-void PhysicsScene::remove(ObjectId actor) noexcept {
-    auto found = impl_->bodies.find(actor);
+void PhysicsScene::remove(ObjectId component) noexcept {
+    auto found = impl_->bodies.find(component);
     if (found == impl_->bodies.end()) return;
-    remove_special(actor);
+    const auto actor=found->second.actor;
+    if (auto vehicle=impl_->vehicles.find(actor);vehicle!=impl_->vehicles.end() && vehicle->second.chassis.component==component)
+        remove_special(actor);
     for (auto it = impl_->distances.begin(); it != impl_->distances.end();) {
-        if (it->second.first.actor == actor || it->second.second.actor == actor) {
+        if (it->second.first.component == component || it->second.second.component == component) {
             const auto revision = it->first;
             ++it;
             (void)destroy_constraint({scene_id_, revision});
         } else ++it;
     }
-    auto id = found->second.id;
+    const auto id = found->second.id;
     impl_->remove_pairs(id, completed_step_);
     auto& bodies = impl_->system.GetBodyInterface();
     bodies.RemoveBody(id);
     bodies.DestroyBody(id);
-    impl_->actors.erase(id);
+    impl_->body_components.erase(id);
     impl_->bodies.erase(found);
 }
 void PhysicsScene::remove_special(ObjectId actor) noexcept {
@@ -570,86 +558,132 @@ void PhysicsScene::remove_special(ObjectId actor) noexcept {
 Result<void> PhysicsScene::reconcile(ObjectId actor) {
     auto status = world::inspect_actor(world_.runtime(), actor);
     if (!status) return std::unexpected(status.error());
-    if (status->state != world::ActorState::active) { remove_special(actor); remove(actor); return {}; }
-    auto group = world::components(world_.runtime(), actor);
-    if (!group) return std::unexpected(group.error());
-    ObjectId component;
-    for (const auto& item : *group) {
-        auto type = world_.runtime().type_of(item.id());
-        if (!type) return std::unexpected(type.error());
-        auto body = world_.runtime().is_a(*type, types_.body_component);
-        if (!body) return std::unexpected(body.error());
-        if (*body) {
-            auto enabled = world::inspect_component(world_.runtime(), item.id());
-            if (!enabled) return std::unexpected(enabled.error());
-            if (enabled->enabled) {
-                if (component != ObjectId{}) return failure(ErrorCode::invalid_member, "An Actor can have only one enabled physical body.");
-                component = item.id();
+    std::vector<ObjectId> active;
+    if (status->state == world::ActorState::active) {
+        auto group = world::components(world_.runtime(), actor);
+        if (!group) return std::unexpected(group.error());
+        bool special_driver=impl_->characters.contains(actor) || impl_->ragdolls.contains(actor);
+        for (const auto& item:*group) {
+            auto status=world::inspect_component(world_.runtime(),item.id());
+            if (!status) return std::unexpected(status.error());
+            if (!status->active) continue;
+            auto character=world_.runtime().is_a(status->type,types_.character_component);
+            auto ragdoll=world_.runtime().is_a(status->type,types_.ragdoll_component);
+            if (!character) return std::unexpected(character.error());
+            if (!ragdoll) return std::unexpected(ragdoll.error());
+            special_driver|=*character || *ragdoll;
+        }
+        auto root=world::root_component(world_.runtime(),actor);
+        if (!root) return std::unexpected(root.error());
+        for (const auto& item : *group) {
+            auto type=world_.runtime().type_of(item.id());
+            if (!type) return std::unexpected(type.error());
+            auto primitive=world_.runtime().is_a(*type,world_.types().primitive_component);
+            if (!primitive) return std::unexpected(primitive.error());
+            if (!*primitive) continue;
+            if (special_driver && *root && item.id()!=**root) {
+                auto settings=read_settings(world_.runtime(),item.id());
+                auto state=world::inspect_component(world_.runtime(),item.id());
+                if (!settings) return std::unexpected(settings.error());
+                if (!state) return std::unexpected(state.error());
+                if (state->active && settings->enabled)
+                    return failure(ErrorCode::unsupported_operation,"Child Primitive bodies are not supported beneath Character or Ragdoll pose drivers.");
             }
+            if (auto result=reconcile_component(actor,item.id());!result) return result;
+            if (impl_->bodies.contains(item.id())) active.push_back(item.id());
         }
+    } else remove_special(actor);
+    for (auto it=impl_->bodies.begin();it!=impl_->bodies.end();) {
+        const auto id=it->first;
+        const bool obsolete=it->second.actor==actor && std::ranges::find(active,id)==active.end();
+        ++it;
+        if (obsolete) remove(id);
     }
-    if (component == ObjectId{}) { remove(actor); return {}; }
-    auto root = world::root_component(world_.runtime(), actor);
-    if (!root) return std::unexpected(root.error());
-    if (!*root) return failure(ErrorCode::invalid_member, "A physical body requires an Actor root SceneComponent.");
-    auto root_status = world::inspect_component(world_.runtime(), **root);
-    if (!root_status) return std::unexpected(root_status.error());
-    if (!root_status->enabled) { remove(actor); return {}; }
-    auto settings = read_settings(world_.runtime(), component);
+    return {};
+}
+Result<void> PhysicsScene::reconcile_component(ObjectId actor, ObjectId component) {
+    auto& runtime=world_.runtime();
+    auto settings=read_settings(runtime,component);
     if (!settings) return std::unexpected(settings.error());
-    if (auto valid = validate(*settings); !valid) return valid;
-    geometry::MeshRef mesh;
-    if (settings->shape == ShapeKind::triangle_mesh) {
-        auto binding = world::read_static_mesh(world_.runtime(), **root);
-        if (!binding) return std::unexpected(binding.error());
-        mesh = std::move(binding->mesh.resolved);
-        if (!mesh) return failure(ErrorCode::invalid_member, "Triangle mesh collision requires a root mesh resource.");
-    }
-    auto current = impl_->bodies.find(actor);
-    if (current != impl_->bodies.end() && current->second.component == component &&
-        current->second.root == **root && current->second.mesh == mesh &&
-        current->second.settings == *settings) return {};
-    auto trs = world::read_transform(world_.runtime(), **root);
-    if (!trs) return std::unexpected(trs.error());
-    auto canonical = world::canonical_transform(*trs);
-    if (!canonical) return std::unexpected(canonical.error());
-    if (settings->shape != ShapeKind::triangle_mesh && canonical->scale != math::Vector3{1, 1, 1})
-        return failure(ErrorCode::argument_mismatch, "Primitive physical Actor roots require unit scale.");
-    JPH::ShapeRefC shape;
-    if (settings->shape == ShapeKind::box)
-        shape = new JPH::BoxShape(vector(settings->half_extents));
-    else if (settings->shape == ShapeKind::sphere)
-        shape = new JPH::SphereShape(settings->radius);
-    else if (settings->shape == ShapeKind::capsule)
-        shape = new JPH::CapsuleShape(settings->capsule_half_height, settings->radius);
-    else {
-        std::string source;
-        if (settings->cooked_shape) {
-            auto binding = world::read_static_mesh(world_.runtime(), **root);
-            if (!binding) return std::unexpected(binding.error());
-            source = binding->mesh.source;
+    if (auto valid=world::validate_body_settings(*settings);!valid) return valid;
+    if (!settings->enabled) {remove(component);return {};}
+    auto root=world::root_component(runtime,actor);
+    if (!root) return std::unexpected(root.error());
+    if (!*root) return failure(ErrorCode::invalid_member,"A Primitive requires an Actor root.");
+    std::vector<ObjectId> ancestors;
+    for (auto node=component;node!=ObjectId{};) {
+        ancestors.push_back(node);
+        auto status=world::inspect_component(runtime,node);
+        if (!status) return std::unexpected(status.error());
+        if (!status->active) {remove(component);return {};}
+        auto local=world::read_transform(runtime,node);
+        if (!local) return std::unexpected(local.error());
+        if (node!=component && settings->motion!=MotionKind::stationary &&
+            (std::abs(local->scale.x-local->scale.y)>1e-5f || std::abs(local->scale.x-local->scale.z)>1e-5f))
+            return failure(ErrorCode::argument_mismatch,"Moving Primitive ancestors require uniform scale for lossless pose writeback.");
+        if (node!=component && settings->motion!=MotionKind::dynamic) {
+            auto ancestor=read_settings(runtime,node);
+            if (ancestor && ancestor->enabled && ancestor->motion!=MotionKind::stationary)
+                return failure(ErrorCode::unsupported_operation,"Independent static or kinematic bodies cannot follow a moving physical ancestor; use a visual child or independent spatial branch.");
         }
-        auto built = settings->cooked_shape ?
-            restore_shape(*settings->cooked_shape, *mesh, canonical->scale, source) :
-            mesh_shape(*mesh, canonical->scale);
-        if (!built) return std::unexpected(built.error());
-        shape = *built;
+        auto parent=world::scene_parent(runtime,node);
+        if (!parent) return std::unexpected(parent.error());
+        node=*parent;
     }
-    remove(actor);
-    auto& bodies = impl_->system.GetBodyInterface();
-    JPH::BodyCreationSettings creation(shape,
-        position(canonical->position), rotation(canonical->rotation), motion(settings->motion),
-        settings->motion == MotionKind::stationary ? Impl::stationary_layer : Impl::moving_layer);
-    creation.mIsSensor = settings->sensor;
-    creation.mFriction = settings->material.friction;
-    creation.mRestitution = settings->material.restitution;
-    const auto id = bodies.CreateAndAddBody(creation,
-        settings->motion == MotionKind::dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
-    if (id.IsInvalid()) return failure(ErrorCode::capacity_exceeded, "Jolt could not create a physical body.");
-    remove_special(actor);
-    impl_->bodies.emplace(actor, Impl::Body{id, component, **root, settings->motion, *settings,
-        std::move(mesh), next_revision_++});
-    impl_->actors.emplace(id, actor);
+    auto matrix=world::world_matrix(runtime,component);
+    if (!matrix) return std::unexpected(matrix.error());
+    auto canonical=world::relative_transform(*matrix,world::transform_matrix({}));
+    if (!canonical) return std::unexpected(canonical.error());
+    const auto scale=canonical->scale;
+    if ((settings->shape==ShapeKind::sphere || settings->shape==ShapeKind::capsule) &&
+        (std::abs(scale.x-scale.y)>1e-5f || std::abs(scale.x-scale.z)>1e-5f))
+        return failure(ErrorCode::argument_mismatch,"Sphere and capsule collision require uniform world scale.");
+    geometry::MeshRef mesh;
+    std::string source;
+    if (settings->shape==ShapeKind::triangle_mesh) {
+        auto binding=world::read_static_mesh(runtime,component);
+        if (!binding) return std::unexpected(binding.error());
+        mesh=binding->mesh.resolved;source=binding->mesh.source;
+        if (!mesh) return failure(ErrorCode::invalid_member,"Triangle collision requires this Primitive's mesh resource.");
+    }
+    auto current=impl_->bodies.find(component);
+    const auto same_scale=[&](math::Vector3 a,math::Vector3 b) {
+        for (std::size_t i=0;i<3;++i) if (std::abs(a[i]-b[i])>1e-5f*std::max(1.f,b[i])) return false;
+        return true;
+    };
+    if (current!=impl_->bodies.end() && current->second.actor==actor && current->second.mesh==mesh &&
+        current->second.settings==*settings && same_scale(current->second.shape_scale,scale) && current->second.ancestors==ancestors)
+        return {};
+    const math::Vector3 dimensions{settings->half_extents.x*scale.x,settings->half_extents.y*scale.y,settings->half_extents.z*scale.z};
+    if (!math::is_finite(dimensions) || dimensions.x<=0 || dimensions.y<=0 || dimensions.z<=0 ||
+        !std::isfinite(settings->radius*scale.x) || settings->radius*scale.x<=0 ||
+        !std::isfinite(settings->capsule_half_height*scale.x) || settings->capsule_half_height*scale.x<=0)
+        return failure(ErrorCode::argument_mismatch,"Scaled collision dimensions exceed finite range.");
+    JPH::ShapeRefC shape;
+    if (settings->shape==ShapeKind::box)
+        shape=new JPH::BoxShape(vector(dimensions));
+    else if (settings->shape==ShapeKind::sphere)
+        shape=new JPH::SphereShape(settings->radius*scale.x);
+    else if (settings->shape==ShapeKind::capsule)
+        shape=new JPH::CapsuleShape(settings->capsule_half_height*scale.x,settings->radius*scale.x);
+    else {
+        auto built=settings->cooked_shape?restore_shape(*settings->cooked_shape,*mesh,scale,source):mesh_shape(*mesh,scale);
+        if (!built) return std::unexpected(built.error());
+        shape=*built;
+    }
+    auto& bodies=impl_->system.GetBodyInterface();
+    JPH::BodyCreationSettings creation(shape,position(canonical->position),rotation(canonical->rotation),motion(settings->motion),
+        settings->motion==MotionKind::stationary?Impl::stationary_layer:Impl::moving_layer);
+    creation.mIsSensor=settings->sensor;
+    creation.mCollideKinematicVsNonDynamic=settings->sensor && settings->motion==MotionKind::kinematic;
+    creation.mFriction=settings->material.friction;
+    creation.mRestitution=settings->material.restitution;
+    const auto id=bodies.CreateAndAddBody(creation,settings->motion==MotionKind::stationary?JPH::EActivation::DontActivate:JPH::EActivation::Activate);
+    if (id.IsInvalid()) return failure(ErrorCode::capacity_exceeded,"Jolt could not create a physical body.");
+    remove(component);
+    if (component==**root) remove_special(actor);
+    impl_->bodies.emplace(component,Impl::Body{id,actor,component,**root,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,std::move(ancestors)});
+    impl_->body_components.emplace(id,component);
     return {};
 }
 Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
@@ -659,9 +693,9 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     if (!actor) return std::unexpected(actor.error());
     if (phase == world::Lifecycle::deactivated || phase == world::Lifecycle::detached) {
         if(auto removed=components_->removed(object); !removed) return removed;
-        if (*actor) { remove_special(object); remove(object); }
-        else for (auto it = impl_->bodies.begin(); it != impl_->bodies.end();) {
-            if (it->second.component == object || it->second.root == object) {
+        if (*actor) remove_special(object);
+        for (auto it = impl_->bodies.begin(); it != impl_->bodies.end();) {
+            if (it->second.actor == object || std::ranges::find(it->second.ancestors,object)!=it->second.ancestors.end()) {
                 auto owner = it->first; ++it; remove(owner);
             } else ++it;
         }
@@ -729,13 +763,12 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
         std::vector<Impl::Command> commands;
         commands.swap(impl_->commands);
         for (const auto& command : commands) {
-            auto found = impl_->bodies.find(command.handle.actor);
-            if (found == impl_->bodies.end() || found->second.component != command.handle.component ||
-                command.handle.scene != scene_id_ || found->second.revision != command.handle.revision) {
+            auto* target=impl_->resolve(command.handle,scene_id_);
+            if (!target) {
                 ++result.rejected_commands;
                 continue;
             }
-            const auto& body = found->second;
+            auto& body = *target;
             switch (command.kind) {
             case Impl::CommandKind::force:
                 bodies.AddForce(body.id, vector(command.value));
@@ -744,15 +777,23 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
                 bodies.AddImpulse(body.id, vector(command.value));
                 break;
             case Impl::CommandKind::kinematic_target:
-                bodies.MoveKinematic(body.id, position(command.value), rotation(command.rotation), fixed);
+                body.target.position=command.value;
+                body.target.rotation=command.rotation;
                 break;
             case Impl::CommandKind::teleport:
+                body.target.position=command.value;
+                body.target.rotation=command.rotation;
                 bodies.SetPositionAndRotation(body.id, position(command.value), rotation(command.rotation),
                     body.motion == MotionKind::dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
                 if (!command.preserve_velocity)
                     bodies.SetLinearAndAngularVelocity(body.id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
                 break;
             }
+        }
+        for (const auto& [component,body]:impl_->bodies) {
+            (void)component;
+            if (body.motion==MotionKind::kinematic)
+                bodies.MoveKinematic(body.id,position(body.target.position),rotation(body.target.rotation),fixed);
         }
         for (auto& [actor, controlled] : impl_->characters) {
             (void)actor;
@@ -777,13 +818,16 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
         }
         if (impl_->system.Update(fixed, 1, &impl_->temporary, &impl_->jobs) != JPH::EPhysicsUpdateError::None)
             return failure(ErrorCode::invocation_failed, "Jolt physics step failed.");
-        for (const auto& [actor, body] : impl_->bodies) {
-            (void)actor;
-            if (body.motion == MotionKind::stationary) continue;
-            JPH::RVec3 where;
-            JPH::Quat orientation;
-            bodies.GetPositionAndRotation(body.id, where, orientation);
-            auto written = world_.apply_simulation_transform(body.root, vector(where), rotation(orientation));
+        auto& poses=impl_->poses;
+        poses.clear();poses.reserve(impl_->bodies.size());
+        for (const auto& [component,body]:impl_->bodies) {
+            JPH::RVec3 where;JPH::Quat orientation;
+            bodies.GetPositionAndRotation(body.id,where,orientation);
+            poses.push_back({component,body.ancestors.size(),vector(where),rotation(orientation)});
+        }
+        std::ranges::sort(poses,{},&Impl::Pose::depth);
+        for (const auto& pose:poses) {
+            auto written=world_.apply_simulation_transform(pose.component,pose.position,pose.rotation);
             if (!written) return std::unexpected(written.error());
         }
         for (const auto& [actor, controlled] : impl_->characters) {
@@ -797,7 +841,7 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
         ++result.steps;
         result.completed_step = ++completed_step_;
         if(auto visuals=components_->after_step(); !visuals) return std::unexpected(visuals.error());
-        impl_->collect_contacts(completed_step_, result);
+        impl_->collect_contacts(completed_step_, scene_id_, result);
         if (after_step_) {
             try {
                 auto called = after_step_(completed_step_, fixed);
@@ -814,8 +858,8 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
     events.swap(impl_->ready_events);
     for (const auto& event : events) {
         if (!handler_) break;
-        if (!world_.runtime().type_of(event.first_actor) ||
-            !world_.runtime().type_of(event.second_actor)) continue;
+        if (!world_.runtime().type_of(event.first.actor) ||
+            !world_.runtime().type_of(event.second.actor)) continue;
         try {
             auto delivered = handler_(event);
             if (!delivered) return std::unexpected(delivered.error());
@@ -832,51 +876,64 @@ Result<void> PhysicsScene::set_gravity(math::Vector3 gravity) {
     impl_->system.SetGravity(vector(gravity));
     return {};
 }
-Result<void> PhysicsScene::add_force(ObjectId actor, math::Vector3 force) {
-    if (!math::is_finite(force)) return failure(ErrorCode::argument_mismatch, "Force must be finite.");
-    auto handle = body_handle(actor);
+Result<void> PhysicsScene::add_force(ObjectId object, math::Vector3 force) {
+    auto handle=body_handle(object);
     if (!handle) return std::unexpected(handle.error());
-    if (impl_->bodies.at(actor).motion != MotionKind::dynamic)
-        return failure(ErrorCode::invalid_member, "Force requires an active dynamic body.");
-    impl_->commands.push_back({Impl::CommandKind::force, *handle, force});
+    return add_force(*handle,force);
+}
+Result<void> PhysicsScene::add_impulse(ObjectId object, math::Vector3 impulse) {
+    auto handle=body_handle(object);
+    if (!handle) return std::unexpected(handle.error());
+    return add_impulse(*handle,impulse);
+}
+Result<void> PhysicsScene::add_force(BodyHandle handle, math::Vector3 force) {
+    if (!math::is_finite(force)) return failure(ErrorCode::argument_mismatch,"Force must be finite.");
+    const auto* body=impl_->resolve(handle,scene_id_);
+    if (!body) return failure(ErrorCode::invalid_member,"Physical body handle is stale or belongs to another scene.");
+    if (body->motion!=MotionKind::dynamic)
+        return failure(ErrorCode::invalid_member,"Force requires an active dynamic body.");
+    impl_->commands.push_back({Impl::CommandKind::force,handle,force});
     return {};
 }
-Result<void> PhysicsScene::add_impulse(ObjectId actor, math::Vector3 impulse) {
-    if (!math::is_finite(impulse)) return failure(ErrorCode::argument_mismatch, "Impulse must be finite.");
-    auto handle = body_handle(actor);
-    if (!handle) return std::unexpected(handle.error());
-    if (impl_->bodies.at(actor).motion != MotionKind::dynamic)
-        return failure(ErrorCode::invalid_member, "Impulse requires an active dynamic body.");
-    impl_->commands.push_back({Impl::CommandKind::impulse, *handle, impulse});
+Result<void> PhysicsScene::add_impulse(BodyHandle handle, math::Vector3 impulse) {
+    if (!math::is_finite(impulse)) return failure(ErrorCode::argument_mismatch,"Impulse must be finite.");
+    const auto* body=impl_->resolve(handle,scene_id_);
+    if (!body) return failure(ErrorCode::invalid_member,"Physical body handle is stale or belongs to another scene.");
+    if (body->motion!=MotionKind::dynamic)
+        return failure(ErrorCode::invalid_member,"Impulse requires an active dynamic body.");
+    impl_->commands.push_back({Impl::CommandKind::impulse,handle,impulse});
     return {};
 }
-Result<BodyHandle> PhysicsScene::body_handle(ObjectId actor) const {
-    auto found = impl_->bodies.find(actor);
-    if (found == impl_->bodies.end())
-        return failure(ErrorCode::invalid_member, "Actor has no active physical body in this scene.");
-    return BodyHandle{actor, found->second.component, scene_id_, found->second.revision};
+Result<BodyHandle> PhysicsScene::body_handle(ObjectId object) const {
+    auto found=impl_->bodies.find(object);
+    if (found==impl_->bodies.end()) {
+        auto root=world::root_component(world_.runtime(),object);
+        if (root && *root) found=impl_->bodies.find(**root);
+    }
+    if (found==impl_->bodies.end())
+        return failure(ErrorCode::invalid_member,"Primitive or Actor root has no active body in this scene.");
+    return BodyHandle{found->second.actor,found->first,scene_id_,found->second.revision};
 }
 Result<BodyState> PhysicsScene::read_body_state(BodyHandle handle) const {
-    auto found = impl_->bodies.find(handle.actor);
-    if (found == impl_->bodies.end() || found->second.component != handle.component ||
-        handle.scene != scene_id_ || found->second.revision != handle.revision)
+    const auto* body=impl_->resolve(handle,scene_id_);
+    if (!body)
         return failure(ErrorCode::invalid_member, "Physical body handle is stale or belongs to another scene.");
     auto& bodies = impl_->system.GetBodyInterface();
     JPH::RVec3 where;
     JPH::Quat orientation;
-    bodies.GetPositionAndRotation(found->second.id, where, orientation);
-    const auto linear = bodies.GetLinearVelocity(found->second.id);
-    const auto angular = bodies.GetAngularVelocity(found->second.id);
+    bodies.GetPositionAndRotation(body->id, where, orientation);
+    const auto linear = bodies.GetLinearVelocity(body->id);
+    const auto angular = bodies.GetAngularVelocity(body->id);
     return BodyState{handle, completed_step_, vector(where),
         {linear.GetX(), linear.GetY(), linear.GetZ()},
         {angular.GetX(), angular.GetY(), angular.GetZ()}, rotation(orientation),
-        !bodies.IsActive(found->second.id)};
+        !bodies.IsActive(body->id)};
 }
 Result<void> PhysicsScene::set_kinematic_target(BodyHandle handle, math::Vector3 where,
     math::Quaternion orientation) {
-    auto state = read_body_state(handle);
-    if (!state) return std::unexpected(state.error());
-    if (impl_->bodies.at(handle.actor).motion != MotionKind::kinematic)
+    const auto* body=impl_->resolve(handle,scene_id_);
+    if (!body) return failure(ErrorCode::invalid_member,"Physical body handle is stale or belongs to another scene.");
+    if (body->motion != MotionKind::kinematic)
         return failure(ErrorCode::invalid_member, "Kinematic target requires a kinematic body.");
     auto valid = world::canonical_transform({where, orientation, {1, 1, 1}});
     if (!valid) return std::unexpected(valid.error());
@@ -886,8 +943,8 @@ Result<void> PhysicsScene::set_kinematic_target(BodyHandle handle, math::Vector3
 }
 Result<void> PhysicsScene::teleport(BodyHandle handle, math::Vector3 where,
     math::Quaternion orientation, bool preserve_velocity) {
-    auto state = read_body_state(handle);
-    if (!state) return std::unexpected(state.error());
+    const auto* body=impl_->resolve(handle,scene_id_);
+    if (!body) return failure(ErrorCode::invalid_member,"Physical body handle is stale or belongs to another scene.");
     auto valid = world::canonical_transform({where, orientation, {1, 1, 1}});
     if (!valid) return std::unexpected(valid.error());
     impl_->commands.push_back({Impl::CommandKind::teleport, handle,
@@ -896,13 +953,13 @@ Result<void> PhysicsScene::teleport(BodyHandle handle, math::Vector3 where,
 }
 Result<ConstraintHandle> PhysicsScene::create_distance_constraint(BodyHandle first,
     BodyHandle second, float minimum, float maximum) {
-    if (first.actor == second.actor || !std::isfinite(minimum) || !std::isfinite(maximum) ||
+    if (first.component == second.component || !std::isfinite(minimum) || !std::isfinite(maximum) ||
         minimum < 0 || maximum < minimum)
         return failure(ErrorCode::argument_mismatch, "Distance constraint requires two bodies and a valid range.");
     if (auto state = read_body_state(first); !state) return std::unexpected(state.error());
     if (auto state = read_body_state(second); !state) return std::unexpected(state.error());
-    const auto left = impl_->bodies.at(first.actor).id;
-    const auto right = impl_->bodies.at(second.actor).id;
+    const auto left = impl_->bodies.at(first.component).id;
+    const auto right = impl_->bodies.at(second.component).id;
     const std::array<JPH::BodyID, 2> ids{left, right};
     JPH::BodyLockMultiWrite locks(impl_->system.GetBodyLockInterface(), ids.data(), ids.size());
     if (!locks.GetBody(0) || !locks.GetBody(1))
@@ -926,8 +983,8 @@ Result<void> PhysicsScene::destroy_constraint(ConstraintHandle handle) {
     // Removing support must resume sleeping endpoints as well as active ones.
     // Jolt removes the constraint without waking its bodies.
     auto& bodies = impl_->system.GetBodyInterface();
-    bodies.ActivateBody(impl_->bodies.at(found->second.first.actor).id);
-    bodies.ActivateBody(impl_->bodies.at(found->second.second.actor).id);
+    bodies.ActivateBody(impl_->bodies.at(found->second.first.component).id);
+    bodies.ActivateBody(impl_->bodies.at(found->second.second.component).id);
     impl_->distances.erase(found);
     return {};
 }
@@ -938,7 +995,7 @@ Result<SpecialHandle> PhysicsScene::create_character(ObjectId actor, CharacterSe
         settings.max_slope_radians >= 1.5707963f || !std::isfinite(settings.jump_speed) ||
         settings.jump_speed < 0 || !std::isfinite(settings.step_height) || settings.step_height < 0)
         return failure(ErrorCode::argument_mismatch, "Invalid character dimensions or movement settings.");
-    if (!world_.running() || impl_->characters.contains(actor) || impl_->bodies.contains(actor) ||
+    if (!world_.running() || impl_->characters.contains(actor) || bool(body_handle(actor)) ||
         impl_->ragdolls.contains(actor))
         return failure(ErrorCode::invalid_member, "Character requires an active Actor without another physics body.");
     if (auto valid = validate_active_actor(world_, actor); !valid) return std::unexpected(valid.error());
@@ -1008,7 +1065,7 @@ Result<void> PhysicsScene::destroy_character(SpecialHandle handle) {
 Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId actor,
     std::span<const RagdollPart> parts) {
     if (parts.empty() || parts.size() > 128 || !world_.running() ||
-        impl_->bodies.contains(actor) || impl_->characters.contains(actor) || impl_->ragdolls.contains(actor))
+        bool(body_handle(actor)) || impl_->characters.contains(actor) || impl_->ragdolls.contains(actor))
         return failure(ErrorCode::argument_mismatch, "Ragdoll requires 1-128 parts and an unused active Actor.");
     if (auto valid = validate_active_actor(world_, actor); !valid) return std::unexpected(valid.error());
     auto root = world::root_component(world_.runtime(), actor);
@@ -1087,14 +1144,14 @@ Result<void> PhysicsScene::destroy_ragdoll(SpecialHandle handle) {
 }
 Result<SpecialHandle> PhysicsScene::create_vehicle(BodyHandle chassis, VehicleSettings settings) {
     if (auto state = read_body_state(chassis); !state) return std::unexpected(state.error());
-    if (impl_->bodies.at(chassis.actor).motion != MotionKind::dynamic ||
+    if (impl_->bodies.at(chassis.component).motion != MotionKind::dynamic ||
         impl_->vehicles.contains(chassis.actor) || !std::isfinite(settings.half_width) ||
         settings.half_width <= 0 || !std::isfinite(settings.half_length) ||
         settings.half_length <= settings.wheel_radius || !std::isfinite(settings.wheel_radius) ||
         settings.wheel_radius <= 0 || !std::isfinite(settings.suspension_length) ||
         settings.suspension_length <= 0)
         return failure(ErrorCode::argument_mismatch, "Vehicle requires a dynamic chassis and positive wheel dimensions.");
-    const auto id = impl_->bodies.at(chassis.actor).id;
+    const auto id = impl_->bodies.at(chassis.component).id;
     JPH::BodyLockWrite lock(impl_->system.GetBodyLockInterface(), id);
     if (!lock.Succeeded()) return failure(ErrorCode::busy, "Could not lock vehicle chassis.");
     JPH::VehicleConstraintSettings vehicle;
@@ -1135,7 +1192,7 @@ Result<void> PhysicsScene::set_vehicle_input(SpecialHandle handle,
         return failure(ErrorCode::argument_mismatch, "Vehicle controls are out of range.");
     auto* controller = static_cast<JPH::WheeledVehicleController*>(found->second.constraint->GetController());
     controller->SetDriverInput(throttle, steering, brake, 0);
-    impl_->system.GetBodyInterface().ActivateBody(impl_->bodies.at(handle.actor).id);
+    impl_->system.GetBodyInterface().ActivateBody(impl_->bodies.at(found->second.chassis.component).id);
     return {};
 }
 Result<VehicleState> PhysicsScene::read_vehicle_state(SpecialHandle handle) const {

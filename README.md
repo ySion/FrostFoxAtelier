@@ -15,7 +15,7 @@ LLM 和工具可通过 [Editor Control](docs/modules/editor/control.md) 的本�
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、GC/拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
-| Jolt 物理 | 固定上游源码、World 刚体/查询/触发、Cook 资产、可保存的物理组件与 10 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
+| Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、同 Actor 多刚体、查询/触发、Cook 资产与 10 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | Flex/Grid、虚拟列表、Unicode 编辑、参数行、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Actor/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -143,7 +143,7 @@ cmake --build --preset dev --target physics_examples_acceptance
 cmake --build --preset release --target physics_examples_acceptance
 ```
 
-`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口执行 18 个可独立运行的场景，检查刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃/车辆；成功输出 `Physics acceptance: PASS (18/18 scenarios)`。`editor_physics_project_acceptance` 保留旧 Body 工程兼容性检查；`physics_examples_acceptance` 验证 10 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
+`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口执行 20 个可独立运行的场景，检查多 Primitive 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃/车辆；成功输出 `Physics acceptance: PASS (20/20 scenarios)`。`editor_physics_project_acceptance` 保留旧 Body 工程迁移检查；`physics_examples_acceptance` 验证 10 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 

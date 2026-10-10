@@ -26,7 +26,6 @@ public:
     const std::shared_ptr<const ProjectBuild>& report() const noexcept {return report_;}
     // Last successful publication, independent of a later failed build report.
     const std::shared_ptr<const ProjectBuild>& published_build() const noexcept {return published_;}
-    const physics::Types& physics_types() const noexcept {return physics_;}
     static Result<source::SourceSnapshot> snapshot(const Project&);
     static Result<std::optional<source::SourceFile>> ui_snapshot(const Project&);
     static std::string component_source(std::string_view name);
@@ -39,7 +38,6 @@ private:
         bool operator==(const Stamp&) const = default;
     };
     world::World& world_;
-    physics::Types physics_;
     std::unique_ptr<source::Program> program_;
     std::shared_ptr<const ProjectBuild> report_;
     std::shared_ptr<const ProjectBuild> published_;

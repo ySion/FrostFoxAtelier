@@ -17,7 +17,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 ./out/release/atelier_physics_acceptance.exe --scenario world_ownership
 ```
 
-不带参数运行全部 18 项；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。每项输出 RUN 和 PASS/FAIL，汇总成功为 `Physics acceptance: PASS (18/18 scenarios)`。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
+不带参数运行全部 20 项；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。每项输出 RUN 和 PASS/FAIL，汇总成功为 `Physics acceptance: PASS (20/20 scenarios)`。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
 
 ## 场景与检查点
 
@@ -26,7 +26,9 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `world_mesh` | 三角网格地面、球、箱体 | 下落与支撑高度、根位姿回写、网格替换、动态三角网格拒绝、前后步回调、接触和停止清理 |
 | `rigid_shapes` | Box/Sphere/Capsule 下落及运动学平台 | 重力、各形状支撑高度、休眠、静态体拒绝施力、运动学目标、非法配置不覆盖原值 |
 | `forces` | 零重力下三个相同动态体 | 等效力与冲量、延迟消费且只消费一次、传送保留/清除速度、自定义重力、NaN 拒绝 |
-| `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤 |
+| `primitive_composition` | 同 Actor 的网格刚体、动态碰撞子体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |
+| `primitive_authoring` | 反射配置的缩放网格与运动学触发子组件 | 属性验证回滚、Box 缩放、显式根查找、运动学目标到达后停止、局部位姿转换、非法缩放拒绝并清理 |
+| `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤；事件保留场景与刚体代际，历史结束事件不能操作重建后的刚体 |
 | `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
 | `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |
 | `cooked_assets` | 磁盘 Cook 网格反复加载到新 World | 形状可查询、二进制往返、损坏/版本/来源/缩放不匹配拒绝 |
@@ -48,54 +50,29 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 `atelier_editor --acceptance-physics-examples <输出目录>` 在输出目录的 Workspace 下为每次运行创建新的官方示例副本，避免旧测试副本缺少新增场景。它使用正式 Application/Session/World/Jolt 以及 D3D12 GPU validation。每个场景输出编辑状态及实际模拟后的两张截图，检查被接受的帧和有效几何深度；布娃娃部件坐标另由文档验收与 Jolt 姿态比对。此入口直接调用应用命令和模拟器，不发送原生鼠标输入。
 
-`--examples` 文档验收确认老用户工程仅补入缺失的官方示例目录，重复打开保留编辑且不修改模板。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖 Body/Character/Ragdoll 的根位姿所有权。独立 Project Run 的布娃娃和车辆场景还各运行 180 帧并输出最终场景。
+`--examples` 文档验收确认老用户工程仅补入缺失的官方示例目录，重复打开保留编辑且不修改模板。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖 已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃和车辆场景还各运行 180 帧并输出最终场景。
 
 `Raycasts.scene` 的六个查询组件经真实磁盘保存重开，验证通道最近阻挡、通道多命中截断、对象类型穿过阻挡、布尔无载荷、球扫掠与 Sensor 重叠。`project_scene_acceptance` 还通过正式 JIT 绑定查询派生组件 Tick，验证原生继承方法、一次请求、布尔/计数/距离/Vector3 返回、保存后瞬态清空和代码拥有者释放。
 
-## 2026-10-10 查询组件增量
+## 2026-10-10 Primitive 组件改造
 
-在组件场景基础上增加 [SceneQueryComponent](scene-queries.md) 和 `Raycasts.scene`。dev/release 均构建成功，18/18 物理场景、Project Scene（包含查询 Source/JIT）、10/10 场景磁盘往返与模拟检查通过。完整编辑器文档在两种配置上通过，查询配置未破坏既有 Scene、UI 或源码链。
+开发与发布配置均已实际构建并运行，所有下列入口最终退出码为 0：
 
-两种配置的正式编辑器 GPU 验收均通过 10/10 场景，每种输出 20 张编辑/模拟截图；`Raycasts-simulated.png` 显示完整目标布局。查询线本身未绘制，命中值由上述物理、文档和 JIT 验收判定。发布版额外验证在已有旧 Workspace 的输出目录中运行仍会创建新副本并加载当前 10 场景。
+| 验收 | dev | release |
+| --- | --- | --- |
+| 普通与既有专用物理场景 | 20/20 PASS | 20/20 PASS |
+| World 生命周期与对象图 | 9/9 PASS | 9/9 PASS |
+| Project Scene，含生成反射、Primitive JIT 字段、通用属性保存和 Jolt 生命周期 | PASS | PASS |
+| 完整编辑器文档、参数编辑、历史、v1/v2 与旧 Body 迁移 | PASS | PASS |
+| 官方物理场景磁盘往返、模拟、查询、暂停和重启 | 10/10 PASS | 10/10 PASS |
+| 正式编辑器与真实 D3D12 GPU 场景截图 | 10 场景 PASS | 10 场景 PASS |
 
-查询验收修复了球扫掠初始穿透的后端选项，并覆盖未首次 reconcile 的请求在停止时被取消。Actor 停止通知与组件移除期间的过渡状态分别处理；角色、布娃娃和车辆的既有生命周期场景继续通过。
+新增场景验证同 Actor 多 Primitive、倒置组成顺序的空间回写、同 Actor 约束端点清理、独立句柄/查询/命令、只卸载目标、形状缩放、运动学目标保持、非法祖先缩放和移动祖先下从属 Sensor 的拒绝。旧场景中的空间、网格和物理配置迁移后保持意义；默认视觉网格不会意外开启碰撞。验收中的组件选择按实际类型与查询用途定位，避免依赖已删除旧组件的数组位置。
 
-日志位于 `out/<配置>/query-physics.log`、`query-project-scene.log`、`query-examples.log`、`query-editor-document.log`；截图及窗口报告位于 `out/<配置>/query-examples-evidence/`，使用同一 RX 6800 XT。结果证明当前查询和组件合同，不作为性能或完整 UE 功能对等的结论。
-
-## 2026-10-10 组件与官方场景验证（查询增量之前）
-
-使用锁定工具链，在开发与发布配置上完成以下实际运行，退出码均为 0：
-
-| 配置 | 物理 | World | 完整编辑器文档 / Project Scene | 官方目录与 9 场景磁盘/模拟 | 编辑器 GPU 场景 |
-| --- | --- | --- | --- | --- | --- |
-| dev | 16/16 PASS | 9/9 PASS | PASS / PASS | PASS / 9/9 PASS | 9/9 PASS，18 张截图 |
-| release | 16/16 PASS | 9/9 PASS | PASS / PASS | PASS / 9/9 PASS | 9/9 PASS，18 张截图 |
-
-两种配置的独立运行进程还分别完成 Ragdoll、Vehicle 各 180 帧。证据在 `out/<配置>/physic-components.log`、`physic-world.log`、`physic-project-scene.log`、`physic-editor-document.log`、`physic-official-examples.log`、`physic-examples.log`、`physic-run-*.log` 和 `physics-examples-evidence/`，均为可重建产物。GPU 使用本机 AMD Radeon RX 6800 XT；窗口验收直接调用正式应用入口，未据此声称原生菜单鼠标交互已覆盖。
-
-本轮修复并覆盖了隐藏弱引用的正确恢复、组件依赖停用后的后端清理、恢复时句柄换代，以及脚本移动指令对角色/布娃娃物理所有权的保护。旧 v1 文档验收补齐此前新增材质字段的默认值预期，继续独立检查完整格式兼容性。
-
-## 2026-10-06 历史验证与修复
-
-2026-10-06 在当前工作区修改上，使用 `cmake/toolchain-lock.json` 锁定工具链完成以下验收，两个构建命令退出码均为 0：
-
-| 配置 | 物理 | World | 编辑器文档 | Physics Test 工程 |
-| --- | --- | --- | --- | --- |
-| dev | 15/15 PASS | 8/8 PASS | PASS | PASS |
-| release | 15/15 PASS | 8/8 PASS | PASS | PASS |
-
-两种配置的 `--list` 均列出 15 项；分别执行 `vehicle`、`world_ownership` 均为 1/1 PASS；未知场景和未知参数均返回非零。完整本地日志为 `out/review/physics-scenarios/dev.log`、`release.log`、`cli.log`，属于可重新生成的构建产物，不随源码提交。
-
-Physics Test 工程使用正式 Project/Session 加载并保存重开，再由真实 Jolt 步进 90 帧检查 Body、重力、力、冲量、运动学目标及 Sensor 接触；本轮 dev/release 的独立目标与完整编辑器文档验收均退出 0。自动窗口检查未完成，不能据此断言场景在视口中的显示与操作已验收。
-
-真实场景已复现并加入回归的修复：
-
-- 暂停单步在前回调失败时曾提前消费请求；现在保留未执行请求，后回调失败仍保留已完成步。
-- Jolt 移除距离约束不会自动唤醒端点；适配层显式唤醒，使显式删除和端点停用两条路径均恢复幸存刚体运动。
-- 角色和布娃娃曾只验证 Runtime 内 Actor 活跃状态；现在同时验证所属 World，阻止另一场景创建第二个物理写入者。
+日志在 `out/primitive-physics-<配置>.log`、`out/primitive-final-<配置>.log`、`out/primitive-documents-<配置>.log`、`out/primitive-examples-<配置>.log`。两种配置各输出 20 张编辑/模拟 PNG 到 `out/<配置>/physics-examples-evidence`，GPU 为 RX 6800 XT；发布版 Overview 模拟画面另经目视确认。结果验证当前功能与边界，没有据此宣称并行性能或完整复合碰撞能力。
 
 ## 边界
 
-底层 18 项是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
+底层 20 项是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。
