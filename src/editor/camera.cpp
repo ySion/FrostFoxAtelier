@@ -6,14 +6,14 @@
 
 namespace atelier::editor {
 bool Camera::set_state(const CameraState& value) noexcept {
-    if (value.view > CameraView::right || !std::isfinite(value.target.x) || !std::isfinite(value.target.y) ||
+    if (value.view > CameraView::left || !std::isfinite(value.target.x) || !std::isfinite(value.target.y) ||
         !std::isfinite(value.target.z) || !std::isfinite(value.yaw) || !std::isfinite(value.pitch) ||
         !std::isfinite(value.distance) || value.distance < .5f || value.distance > 2000.f || std::abs(value.pitch) > DirectX::XM_PIDIV2)
         return false;
     auto candidate=*this;
     candidate.view_=value.view;candidate.target_=value.target;candidate.yaw_=value.yaw;candidate.pitch_=value.pitch;candidate.distance_=value.distance;
     const auto forward=math::try_normalize(candidate.target_-candidate.eye());
-    const auto up=value.view==CameraView::top?math::Vector3{0,0,1}:math::Vector3{0,1,0};
+    const auto up=candidate.up_hint();
     if(!forward || !math::try_normalize(math::cross(up,*forward))) return false;
     *this=candidate;
     return true;
@@ -28,7 +28,18 @@ void Camera::reset() noexcept {
 void Camera::set_view(CameraView view) noexcept {
     view_=view;
     if(view==CameraView::perspective) {yaw_=std::atan2(6.f,-8.f);pitch_=std::asin(5.f/std::sqrt(125.f));}
-    else {yaw_=view==CameraView::right?DirectX::XM_PIDIV2:DirectX::XM_PI;pitch_=view==CameraView::top?DirectX::XM_PIDIV2:0;}
+    else {
+        yaw_=view==CameraView::right?DirectX::XM_PIDIV2:view==CameraView::left?-DirectX::XM_PIDIV2:
+            view==CameraView::back?0:DirectX::XM_PI;
+        pitch_=view==CameraView::top?DirectX::XM_PIDIV2:view==CameraView::bottom?-DirectX::XM_PIDIV2:0;
+    }
+}
+math::Vector3 Camera::up_hint() const noexcept {
+    return view_==CameraView::top?math::Vector3{0,0,1}:view_==CameraView::bottom?math::Vector3{0,0,-1}:math::Vector3{0,1,0};
+}
+math::Vector3 Camera::construction_normal() const noexcept {
+    return view_==CameraView::front || view_==CameraView::back?math::Vector3{0,0,1}:
+        view_==CameraView::right || view_==CameraView::left?math::Vector3{1,0,0}:math::Vector3{0,1,0};
 }
 void Camera::focus(math::Vector3 target) noexcept { target_ = target; distance_ = 5.f; }
 bool Camera::look_at(math::Vector3 eye, math::Vector3 target) noexcept {
@@ -57,7 +68,7 @@ void Camera::pan(float dx, float dy, float height) noexcept {
     if (!(height > 0)) return;
     const auto forward = math::try_normalize(target_ - eye());
     if (!forward) return;
-    const auto right = math::try_normalize(math::cross(view_==CameraView::top?math::Vector3{0,0,1}:math::Vector3{0,1,0}, *forward));
+    const auto right = math::try_normalize(math::cross(up_hint(), *forward));
     if (!right) return;
     const auto up = math::cross(*forward, *right);
     // One pixel spans this many metres on the target plane.
@@ -71,7 +82,8 @@ CameraMatrices Camera::matrices(float aspect) const noexcept {
     const auto eye_vector = XMVectorSet(position.x, position.y, position.z, 1.f);
     const auto target = XMVectorSet(target_.x, target_.y, target_.z, 1.f);
     XMFLOAT4X4 view, projection;
-    XMStoreFloat4x4(&view, XMMatrixLookAtLH(eye_vector, target, view_==CameraView::top?XMVectorSet(0,0,1,0):XMVectorSet(0,1,0,0)));
+    const auto up=up_hint();
+    XMStoreFloat4x4(&view, XMMatrixLookAtLH(eye_vector, target, XMVectorSet(up.x,up.y,up.z,0)));
     const float height=2*distance_*std::tan(field_of_view*.5f);
     // Finite reversed Z: physical near=.05 maps to 1 and far=30000 to 0.
     XMStoreFloat4x4(&projection, view_==CameraView::perspective?

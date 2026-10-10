@@ -69,6 +69,10 @@ struct MeshInstance {
     geometry::MeshRef geometry;
     Material material{};
     std::uint64_t stable_key{}; // Zero allows legacy draws but disables temporal object reuse.
+    // Complete resolved surfaces in geometry material-slot order. Captures own
+    // immutable content; no Runtime objects enter the renderer. Empty uses the
+    // mesh defaults with the instance's existing constant material values.
+    std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces{};
 };
 struct Frame {
     const ui::Frame &ui_frame; // Sole authoritative id/extent; borrowed to return.

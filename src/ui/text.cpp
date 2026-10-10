@@ -314,8 +314,6 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                 symbol==Symbol::magnet_tips?(py>=.12f && py<.3f && ((px>=.13f && px<=.31f) || (px>=.69f && px<=.87f))):
                 (symbol==Symbol::radio || symbol==Symbol::radio_checked)?(std::abs(std::hypot(px-.5f,py-.5f)-.33f)<.04f ||
                     (symbol==Symbol::radio_checked && std::hypot(px-.5f,py-.5f)<.15f)):
-                (symbol==Symbol::checkbox || symbol==Symbol::checkbox_checked)?(outline(.13f,.13f,.87f,.87f) ||
-                    (symbol==Symbol::checkbox_checked && (segment(px,py,.28f,.51f,.44f,.68f) || segment(px,py,.44f,.68f,.74f,.32f)))):
                 symbol==Symbol::object?((px>=.18f && px<=.82f && py>=.28f && py<=.75f) || (py>=.12f && py<.28f && std::abs(px-.5f)<(py-.08f)*2)):
                 symbol==Symbol::axes?(segment(px,py,.45f,.55f,.85f,.75f) || segment(px,py,.45f,.55f,.15f,.85f) || segment(px,py,.45f,.55f,.45f,.10f)):
                 symbol==Symbol::component?((px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)<.16f && (px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)>.06f):

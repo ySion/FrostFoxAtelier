@@ -31,12 +31,17 @@ std::string mesh_hash(const geometry::Mesh& mesh) {
     shape["edges"]=control::sha256(std::as_bytes(std::span(edges)));
     for(const auto& p:mesh.parts()) shape["parts"].push_back({p.first_vertex,p.vertex_count,p.material});
     for(const auto& m:mesh.materials()) {
-        Json material{{"name",m.name},{"diffuse",m.diffuse}};
-        const auto image=[](const geometry::ImageRef& i)->Json {
-            if(!i) return nullptr;
-            return {{"width",i->width()},{"height",i->height()},{"rgba",control::sha256(std::as_bytes(i->pixels()))}};
-        };
-        material["color"]=image(m.color);material["opacity"]=image(m.opacity);shape["materials"].push_back(std::move(material));
+        const auto& d=m.surface->description();const auto& p=d.parameters;
+        Json surface{{"name",m.name},{"base_color",p.base_color},{"roughness",p.roughness},{"metallic",p.metallic},
+            {"emissive",p.emissive},{"normal_scale",p.normal_scale},{"normal_y_sign",p.normal_y_sign},{"coverage",static_cast<unsigned>(p.coverage)},
+            {"alpha_cutoff",p.alpha_cutoff},{"double_sided",p.double_sided},{"emission_two_sided",p.emission_two_sided},{"textures",Json::array()}};
+        for(const auto& t:d.textures) {
+            Json image=nullptr;
+            if(t.image)image={{"width",t.image->width()},{"height",t.image->height()},{"rgba",control::sha256(std::as_bytes(t.image->pixels()))}};
+            surface["textures"].push_back({{"image",std::move(image)},{"scale",t.scale},{"offset",t.offset},
+                {"rotation",t.rotation},{"address",static_cast<unsigned>(t.address)},{"channel",t.channel}});
+        }
+        shape["materials"].push_back(std::move(surface));
     }
     const auto bytes=shape.dump();return control::sha256(std::as_bytes(std::span(bytes)));
 }
@@ -152,6 +157,17 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
     if(data.ui_source) config["ui_source"]=data.ui_source->path;else config.erase("ui_source");
     config["startup_scene"]=path_text(scene_path);take(editor::write_file(project/"Config/Project.json",config.dump(2)+"\n"));
     auto clone=take(editor::Project::open(output/"Project"));auto resources=Json::array();
+    for(const auto& material:data.materials) {
+        checkpoint(cancel);
+        for(std::size_t i=0;i<material.textures.size();++i) if(!material.textures[i].empty()) {
+            const auto copied=take(clone.texture(material.textures[i])).image;const auto& expected=material.description.textures[i].image;
+            if(!expected || copied->width()!=expected->width() || copied->height()!=expected->height() ||
+                control::sha256(std::as_bytes(copied->pixels()))!=control::sha256(std::as_bytes(expected->pixels())))
+                throw Failure("dependency_mismatch","Copied texture differs from the loaded material: "+material.textures[i]);
+        }
+        // Publish the live draft only in this independent bundle, never in the source project.
+        take(clone.save_material(material));
+    }
     for(const auto& [key,mesh]:data.meshes) {
         checkpoint(cancel);auto loaded=take(clone.mesh(key));
         const auto expected=mesh_hash(*mesh);

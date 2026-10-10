@@ -13,8 +13,8 @@ std::filesystem::path asset_directory() {
 namespace {
 geometry::MeshRef plane() {
     return std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
-        {{-1,0,-1},{0,1,0}},{{-1,0,1},{0,1,0}},{{1,0,1},{0,1,0}},
-        {{-1,0,-1},{0,1,0}},{{1,0,1},{0,1,0}},{{1,0,-1},{0,1,0}}},
+        {{-1,0,-1},{0,1,0},{0,1}},{{-1,0,1},{0,1,0},{0,0}},{{1,0,1},{0,1,0},{1,0}},
+        {{-1,0,-1},{0,1,0},{0,1}},{{1,0,1},{0,1,0},{1,0}},{{1,0,-1},{0,1,0},{1,1}}},
         std::vector<std::uint8_t>{5,3});
 }
 geometry::MeshRef sphere() {
@@ -25,7 +25,7 @@ geometry::MeshRef sphere() {
         const auto latitude=std::numbers::pi_v<float>*static_cast<float>(y)/rings;
         const auto longitude=2*std::numbers::pi_v<float>*static_cast<float>(x)/segments;
         const auto a=std::sin(latitude)*std::cos(longitude), b=std::cos(latitude), c=std::sin(latitude)*std::sin(longitude);
-        return geometry::Vertex{{a*.5f,b*.5f,c*.5f},{a,b,c}};
+        return geometry::Vertex{{a*.5f,b*.5f,c*.5f},{a,b,c},{static_cast<float>(x)/segments,static_cast<float>(y)/rings}};
     };
     for (unsigned y=0;y<rings;++y) for (unsigned x=0;x<segments;++x) {
         const auto a=vertex(y,x),b=vertex(y+1,x),c=vertex(y+1,x+1),d=vertex(y,x+1);

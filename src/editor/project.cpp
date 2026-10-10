@@ -178,9 +178,10 @@ Result<void> Project::refresh() {
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".tmp")) continue;
                 if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
                 auto kind=entry.is_directory()?AssetKind::folder:entry.path().extension()==L".obj"?AssetKind::mesh:
+                    entry.path().extension()==L".material"?AssetKind::material:is_texture_path(entry.path())?AssetKind::texture:
                     entry.path().extension()==L".scene"?AssetKind::scene:std::wstring_view(directory)==L"Source"?AssetKind::source:AssetKind::file;
                 std::string key=utf8(relative.generic_wstring());
-                if (kind==AssetKind::mesh) {
+                if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture) {
                     auto meta_relative=relative; meta_relative+=L".asset.json";
                     auto metadata=take(resolve(meta_relative));
                     if (!std::filesystem::exists(metadata)) {
@@ -188,12 +189,12 @@ Result<void> Project::refresh() {
                         if (!created && !std::filesystem::exists(metadata)) return created;
                     }
                     const auto info=read_json(metadata);json_format::fields(info,{"version","id"});
-                    if (json_format::identity(info.at("version"))!=1) return failure("Unsupported mesh metadata version.");
+                    if (json_format::identity(info.at("version"))!=1) return failure("Unsupported resource metadata version.");
                     const auto raw=wide(info.at("id").get<std::string>());GUID id{};
                     if (raw.size()!=38 || raw.front()!=L'{' || raw.back()!=L'}' || FAILED(CLSIDFromString(raw.c_str(),&id)))
                         return failure("Invalid resource identity metadata.");
                     wchar_t canonical[40]{};StringFromGUID2(id,canonical,40);key="project/"+utf8(canonical);
-                    if (!keys.insert(key).second) return failure("Duplicate resource identity; copy assets through Import Mesh.");
+                    if (!keys.insert(key).second) return failure("Duplicate resource identity; import or create an independent asset.");
                 }
                 entries.push_back({relative,std::move(key),kind,kind==AssetKind::folder?0:entry.file_size(),
                     kind!=AssetKind::folder?entry.last_write_time():std::filesystem::file_time_type{}});
@@ -206,6 +207,11 @@ Result<void> Project::refresh() {
         std::map<std::filesystem::path,const ProjectEntry*> previous_files,next_files;
         for(const auto& entry:entries_) previous_files.emplace(entry.path,&entry);
         for(const auto& entry:entries) next_files.emplace(entry.path,&entry);
+        std::erase_if(textures_,[&](const auto& cached) {
+            const auto before=std::ranges::find(entries_,cached.first,&ProjectEntry::key);
+            const auto after=std::ranges::find(entries,cached.first,&ProjectEntry::key);
+            return before==entries_.end() || after==entries.end() || before->bytes!=after->bytes || before->modified!=after->modified;
+        });
         std::erase_if(meshes_,[&](const auto& cached) {
             const auto before=mesh_entries_.find(cached.first),after=mesh_entries.find(cached.first);
             if (after==mesh_entries.end()) return true;

@@ -216,6 +216,7 @@ struct Action {
     ControlKey key{};
     ActionValue value; // Cancel returns the original value; toggles activate with the requested bool.
     ControlKey target{}; // Optional host route. key always identifies the control that emitted the action.
+    bool keep_menu_open{}; // Checkbox indicator click; host refreshes the authoritative value in place.
 };
 enum class ClipboardKind { read, copy, cut };
 struct ClipboardRequest {

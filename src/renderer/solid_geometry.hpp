@@ -5,7 +5,7 @@
 namespace atelier::renderer::detail {
 struct TriangleVolume {
     std::array<float,3> normal{};
-    std::uint32_t closed{};
+    std::uint32_t closed{}; // Zero or connected closed-component root + 1.
 };
 
 // Derived once per cached immutable Mesh, exclusively for DDGI's inside test.
@@ -81,7 +81,7 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
         // A zero-volume doubled sheet is not a solid. Do not force positive
         // volume: authored inner-shell normals may intentionally enclose a void.
         result[i].closed=closed[component]&&std::abs(volume[component])>
-            64*std::numeric_limits<double>::epsilon()*absolute_volume[component];
+            64*std::numeric_limits<double>::epsilon()*absolute_volume[component]?component+1:0;
     }
     return result;
 }

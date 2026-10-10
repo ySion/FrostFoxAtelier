@@ -10,6 +10,7 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include "material/surface.hpp"
 
 namespace atelier::geometry {
 
@@ -17,33 +18,11 @@ struct Vertex {
     float position[3];
     float normal[3];
     float uv[2]{};
+    float tangent[4]{}; // MikkTSpace tangent and handedness, generated once on publication.
 };
 
-// Immutable tightly packed RGBA8 source, with top-left image origin. Color
-// interpretation belongs to the material slot (sRGB diffuse, linear opacity).
-class Image final {
-public:
-    Image(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t> pixels)
-        : width_(width), height_(height), pixels_(std::move(pixels)) {
-        if (!width || !height || width > 8192 || height > 8192 ||
-            std::uint64_t(width)*height*4 != pixels_.size())
-            throw std::invalid_argument("Invalid material image dimensions or RGBA storage.");
-    }
-    Image& operator=(const Image&) = delete;
-    Image& operator=(Image&&) = delete;
-    std::uint32_t width() const noexcept { return width_; }
-    std::uint32_t height() const noexcept { return height_; }
-    std::span<const std::uint8_t> pixels() const noexcept { return pixels_; }
-private:
-    std::uint32_t width_, height_;
-    std::vector<std::uint8_t> pixels_;
-};
-using ImageRef = std::shared_ptr<const Image>;
-struct Material {
-    std::string name;
-    std::array<float,4> diffuse{1,1,1,1};
-    ImageRef color{}, opacity{};
-};
+void generate_tangents(std::span<Vertex>);
+
 struct MeshPart {
     std::uint32_t first_vertex{}, vertex_count{}, material{};
 };
@@ -56,11 +35,11 @@ public:
     // No masks means all triangle edges. Producers preserve polygon boundaries
     // during triangulation; the renderer never guesses connectivity from positions.
     explicit Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {},
-                  std::vector<Material> materials = {}, std::vector<MeshPart> parts = {})
+                  std::vector<material::Slot> materials = {}, std::vector<MeshPart> parts = {})
         : vertices_(std::move(vertices)), edge_masks_(std::move(edge_masks)),
           materials_(std::move(materials)), parts_(std::move(parts)) {
         if (vertices_.empty() || vertices_.size() % 3 != 0 ||
-            vertices_.size() > std::numeric_limits<std::uint32_t>::max())
+            vertices_.size() > std::numeric_limits<int>::max())
             throw std::invalid_argument("Mesh requires a nonempty triangle list.");
         if (!edge_masks_.empty() && edge_masks_.size() != vertices_.size() / 3)
             throw std::invalid_argument("Mesh requires one edge mask per triangle.");
@@ -75,8 +54,8 @@ public:
             end+=part.vertex_count;
         }
         if (end!=vertices_.size()) throw std::invalid_argument("Mesh parts must cover every vertex exactly once.");
-        for (const auto& material:materials_) for (float value:material.diffuse)
-            if (!std::isfinite(value) || value<0 || value>1) throw std::invalid_argument("Invalid diffuse material factor.");
+        for (const auto& slot : materials_)
+            if (!slot.surface) throw std::invalid_argument("Mesh material slot requires an immutable surface.");
         for (auto& vertex : vertices_) {
             for (float value : vertex.uv)
                 if (!std::isfinite(value)) throw std::invalid_argument("Mesh UV must be finite.");
@@ -88,12 +67,18 @@ public:
             if (length == 0) throw std::invalid_argument("Mesh normal must be nonzero.");
             for (float& value : vertex.normal) value = static_cast<float>(value / length);
         }
+        generate_tangents(vertices_);
     }
     Mesh& operator=(const Mesh&) = delete;
     Mesh& operator=(Mesh&&) = delete;
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
-    [[nodiscard]] std::span<const Material> materials() const noexcept { return materials_; }
+    [[nodiscard]] std::span<const material::Slot> materials() const noexcept { return materials_; }
     [[nodiscard]] std::span<const MeshPart> parts() const noexcept { return parts_; }
+    [[nodiscard]] std::uint32_t material_slot(std::size_t triangle) const noexcept {
+        const auto vertex=triangle*3;
+        const auto at=std::upper_bound(parts_.begin(),parts_.end(),vertex,[](std::size_t first,const MeshPart& part){return first<part.first_vertex;});
+        return std::prev(at)->material;
+    }
     [[nodiscard]] bool has_materials() const noexcept {
         return std::ranges::any_of(materials_, [](const auto& m) { return !m.name.empty(); });
     }
@@ -103,7 +88,7 @@ public:
 private:
     std::vector<Vertex> vertices_;
     std::vector<std::uint8_t> edge_masks_;
-    std::vector<Material> materials_;
+    std::vector<material::Slot> materials_;
     std::vector<MeshPart> parts_;
 };
 
@@ -123,6 +108,8 @@ using MeshRef = std::shared_ptr<const Mesh>;
             auto& vertex = vertices[face * 6 + i];
             std::copy_n(positions[faces[face][indices[i]]], 3, vertex.position);
             std::copy_n(normals[face], 3, vertex.normal);
+            constexpr float uv[4][2]={{0,1},{0,0},{1,0},{1,1}};
+            std::copy_n(uv[indices[i]],2,vertex.uv);
         }
         return std::make_shared<const Mesh>(std::move(vertices),
             std::vector<std::uint8_t>{5,3,5,3,5,3,5,3,5,3,5,3});

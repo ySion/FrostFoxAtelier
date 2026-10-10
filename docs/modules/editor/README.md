@@ -5,7 +5,7 @@
 完整 DSL 迁移的当前评估、区域需求、控件语义、手势边界和实施次序见[迁移计划](dsl-migration.md)。完整工具架、现有参数区结构和 Scene Tree 主体已使用当前[声明式 UI](declarative-ui.md)，现有外壳、菜单、停靠、Controls 和资源浏览器的装配也已迁入同一声明。
 启动日志和 Help → About 使用构建时生成的同一提交标识及配置；未提交改动标为 `local changes`。`atelier_editor --version` 可在不创建窗口的情况下读取该二进制的标识。工程打开成功后记录实际根目录，About 同时显示当前工程目录和场景路径。标识在构建时刷新，运行时不读取当前目录的 Git 状态。
 当前消费者将正式 Actor/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用 SceneComponent、StaticMeshComponent 和真实 StaticMeshActor；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
-模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择资源时改为只读资源元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；JIT 单步、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
+模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择 Material 时编辑共享材质参数，其他资源显示元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；JIT 单步、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
 UI 作者层已将 Parameters 的查询、Position、属性组、Actor Structure 和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
 
@@ -50,6 +50,9 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 参数和坐标
 
+材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Actor 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v3、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
+
+
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
 范围、默认值、单位与拖调步长由[应用参数描述](../../../src/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
 控件 key 独立单调分配，绑定具体 ObjectId 和 FieldId 路径；稳定控件复用其键，失效后退役且不再分配。Actor/组件恢复保留业务身份，但不会恢复旧控件会话、IME 或剪贴板请求。
@@ -80,7 +83,8 @@ Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采�
 | G/R/S 期间中键 | 按指针移动方向选取最接近的世界轴作为约束，与 Blender 相同；约束轴以整条世界轴线显示 |
 | A / Alt+A / Ctrl+I | A 全选，已全选时再按 A 取消全选；Alt+A 取消全选；Ctrl+I 反选 |
 | Alt+G / Alt+R / Alt+S | 分别清除所选根的位置、旋转、缩放，各记一次历史 |
-| 小键盘 1/3/7、5 或 0 | Front / Right / Top 正交视图，回到透视；小键盘 `.` 按渲染包围盒框选所选，Home 框选全部 |
+| 小键盘 1/3/7，Ctrl+1/3/7 | Front / Right / Top 正交视图；加 Ctrl 切换 Back / Left / Bottom。小键盘 5 或 0 回到透视，`.` 框选所选，Home 框选全部 |
+| `·` / \` 键（Esc 下方，AccentGrave） | 六向视图饼菜单，另含 Perspective 和 Focus；轻按后点击，或按住、划向选项、松键确认。Esc/右键取消 |
 | Shift+D | 复制所选 Actor 及其组件并进入移动；左键或 Enter 确认，Esc/右键只取消位移、保留原位副本。复制和初次移动合为一次撤销 |
 | X | 在指针下打开删除确认项；取消不修改场景。视口始终删除 Actor，检查某个 Component 时也不会误删成单个组件 |
 | Shift+A | 在指针处打开添加菜单（Create 组命令，于 3D 游标处创建） |
@@ -97,19 +101,31 @@ Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键
 
 复制沿用场景可编辑属性的同一字段规则，创建独立 Actor/Component 身份，重建组件父子、根、启用状态，复制业务属性、材质与物理配置，复用不可变网格/碰撞资源。整组选中先在脱离 World 的状态下准备，成员发布失败时回退；不复制运行期句柄、速度或外部业务引用。初次定位只允许合入刚建立且未保存的创建记录，之后的普通移动照常单独记历史。交互参照 [Blender Duplicate](https://docs.blender.org/manual/en/4.3/scene_layout/object/editing/duplicate.html) 和 [Pie Menus](https://docs.blender.org/manual/en/latest/interface/controls/buttons/menus.html)；本编辑器按项目约定将 Shift+S 用于渲染模式，吸附保留在磁铁菜单和 Shift+Tab。
 
-饼菜单使用 DSL 的 `ShadingPie` / `PieEntry`，叠在同一接受帧内，复用菜单项模型与命令执行入口；普通列表菜单继续使用可跨窗边界的原生 PopupHost。方向选择基于接受帧的槽位，显示位置受客户区约束；边缘位置可直接点击可见项。快速划动松键在首次呈现后结算；菜单打开期间屏蔽场景输入，关闭、失焦和 surface 变化撤销模态状态。
+视角与渲染模式饼菜单共用 DSL 的 `ViewportPie` / `PieEntry` 和稳定的根节点身份，只更新标题与条目；叠在同一接受帧内，复用菜单项模型与命令执行入口。普通列表菜单继续使用可跨窗边界的原生 PopupHost。方向选择基于接受帧的槽位，显示位置受客户区约束；边缘位置可直接点击可见项。快速划动松键在首次呈现后结算；菜单打开期间屏蔽场景输入，关闭、失焦和 surface 变化撤销模态状态。六向相机的投影、平移、拾取与游标构造平面使用同一相机基底；切换视角不进入场景历史。快捷键参照 [Blender 默认键位](https://docs.blender.org/manual/en/5.0/interface/keymap/blender_default.html)。
+
+可勾选菜单项的方框列允许连续修改：按下和松开都在该列内时，切换后保留同一菜单窗口与焦点，并从权威视图设置刷新勾选状态。点击文字或用 Enter/Space 激活则切换后关闭；互斥项和普通命令维持原有关闭行为。
 
 绘制和命中遍历同一手柄几何；坐标和相机只在 renderer 接受帧后发布。线段/方框复用 renderer 固色实例管线，在场景后、UI 前绘制为一个裁剪批次，不写场景深度，不建立第二个视口窗口或渲染循环。
 
+### 工作室 Cavity
+
+Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：`Screen Cavity` 开关、Ridge 凸边亮度、Valley 凹边暗度及 Radius 采样半径。默认开启，两个强度默认 1、范围 0–2，半径默认 1 物理像素、范围 0.5–4；菜单提供常用档位，Control 接口支持范围内的数值。效果用于 MatCap、Smooth 和 Flat；Scene Lit 和纯线框时入口禁用并保留偏好。
+
+增强使用几何深度和法线，在网格、选中轮廓、手柄和 UI 之前合成；不改场景、材质和撤销历史。此项对应 Blender 的 [Screen Cavity](https://docs.blender.org/manual/en/3.6/editors/3dview/display/shading.html)，随屏幕像素工作；渲染和资源寿命合同见[渲染模块](../renderer/contract.md)。
+
+### FPS 显示
+
+通过视口 **Guides → Show FPS** 或顶部 **View → Show FPS** 开关，默认关闭。启用后在左上角模式名称下方显示帧率及平均帧间隔（ms），每 0.5 秒更新一次。统计来自主窗口已接受帧之间的实际时间，包含正常 UI、场景绘制及呈现等待；它不是 GPU 单独耗时。文字不占布局空间、不拦截视口输入，不修改场景历史。视口隐藏、窗口最小化、提交失败或诊断截图时清空采样，恢复后重新累计，避免将暂停和读回耗时混入正常读数。开关由公共 `show_fps` 命令和同一布尔 Action 入口处理。
+
 ### 场景光照
 
-Scene View 的显示菜单将 `Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。`Scene Lighting` 子菜单提供 Shadows、DDGI、GTAO、SSSR、TAA、Bloom 独立勾选，Exposure 提供 −2 至 +2 EV，Shadow Budget 提供 4/8/16 盏投影灯预算。以上都是视口设置，不进入场景撤销历史。实际请求超预算时，状态栏持续显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
+Scene View 的显示菜单将 `Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。`Scene Lighting` 子菜单提供 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI 开关；Antialiasing 在 Off / TAA / SMAA / SMAA T2x 中单选，默认 SMAA。Local GI 与 GTAO 互斥。Exposure 提供 −2 至 +2 EV，Shadow Budget 提供 4/8/16 盏投影灯预算。以上都是视口设置，不进入场景撤销历史。实际请求超预算时，状态栏持续显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
 
 Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional Light 和 Sky Light。场景已有 Sky Light 时，其创建入口禁用；天光的颜色和 Radiance (cd/m²) 强度由同一属性链编辑，隐藏局部范围、光源尺寸和直接阴影控件。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 为 `[0,1]`，emissive 使用非负 HDR RGB。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity。几何资源、材质、灯参数和呈现成员变化递增 scene_revision；TRS、选择和相机连续移动不递增。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 
-本轮应用接线与验收状态见[SceneLit 应用集成](../../research/scene-lit-application-20261008.md)。
+光照及快照的当前合同见 [Scene Lit](../renderer/scene-lit.md)，应用创建、撤销、保存重开和正式窗口结果统一见 [Renderer 验收](../renderer/acceptance.md)。早期只完成语法检查的交接记录已被这些集成结果替代。
 
 ## 工作区与停靠
 
@@ -119,7 +135,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 
 固定视图标签统一使用正体，包括 Scene View；选中状态仅通过灰色底面区分，不使用斜体或焦点描边。标签只绘制右侧分隔边，首标签直接衔接分隔条的收边，不叠加左边框。
 
-- 拖标签到另一个标签栏可合并/重排；拖到内容的左、右、上、下边缘可分栏，松开前有预览，Esc 取消。分隔条可拖动改变两侧比例。两侧箭头收起对应面板为 8 DIP 细条，重按恢复原比例；Tab 栏直接从标签开始。中央单排方点单击交换两侧，Alt+单击切换横竖方向，拖动仍调整比例。
+- 拖标签到另一个标签栏可合并/重排；拖到内容的左、右、上、下边缘可分栏，松开前有预览，Esc 取消。分隔条拖动只移动预览线，两侧面板和 viewport 保留已接受的尺寸，松手一次提交比例，避免连续重建视口渲染目标。已有 UI 指针手势始终由原控件处理，跨入视口时也不交给视口悬停处理。Esc、失焦和丢失捕获取消预览；已取消手势的迟到松键不提交。两侧箭头收起对应面板为 8 DIP 细条，重按恢复原比例；Tab 栏直接从标签开始。中央单排方点单击交换两侧，Alt+单击切换横竖方向，拖动仍调整比例。
 - 分隔条的三个按钮沿条方向各占 36 DIP，连续居中排列，窄小宿主内等比例缩短。背景为 `#494949`，靠前边为黑色、靠后边为 `#333333`；横竖方向共用 SS 边框规则，悬停和按下反馈限制在按钮内部，保持外侧细边连续。
 - “＋”紧跟最后一个标签，打开原生菜单，将已有视图移到当前组，或重新打开已关闭的视图；视图的值和历史保留。右端下拉菜单的 Show 则跳转到视图当前所在组。
 - 标签的关闭按钮移除其显示；右侧菜单可以重新打开已注册视图，并把当前标签移到右方/下方的新区域。空间不足或组中只有一个标签时，对应分割菜单不可用。
@@ -233,7 +249,9 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 2026-10-07 的范围、修正及证据见[视口编辑验收记录](../../research/editor-viewport-edit-20261007.md)。
 `--viewport-edit` 另覆盖 A/Alt+A/Ctrl+I、Alt+G/R/S 单次历史、表面游标朝向、G/R/S 中键选轴、添加/饼菜单内容和框选相机距离；复制验收比较完整场景序列化结果、组件关系、物理配置和共享网格，检查组合撤销、取消、空选择和容量拒绝。窗口验收覆盖经 `WM_SYSKEYDOWN` 的 Alt 组合键与模态读数栏截图 `modal-readout.png`。
 
-`editor_shortcuts_acceptance` 先执行上述文档链，再通过独立真实编辑器的统一输入入口验收 Shift+D、X、Shift+S、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。它不注入桌面键鼠、不要求前台；GPU 截图与菜单 CPU 耗时写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
+`editor_shortcuts_acceptance` 先执行上述文档链，再通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Shift+S、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；GPU 截图、菜单 CPU 耗时与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
+
+当前增量的 Dev / Release 文档及窗口端到端均通过，日志为 `out/viewport-document-{dev,release}.log`、`out/viewport-navigation-{dev,release}.log`，截图和拖动记录在对应的 `out/viewport-navigation-{dev,release}/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 `atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。
 `atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内先执行共享视口模式／TRS 验收，再接续工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
@@ -302,7 +320,7 @@ Scene Tree 使用共享 `tree/tree_item`，投影 World → Actor。行标签同
 
 页签下拉菜单提供 Set Pane Tab Type 子菜单、前后页签、关闭页签、恢复最近关闭、最大化、关闭整个 pane 和左右/上下分割。已注册视图保持单实例；更换类型交换已有视图的位置，关闭后重开保留该视图状态。加号负责向当前组加入视图。浮动窗口、复制视图尚未实现，菜单不提供无效动作。
 
-菜单描述可嵌套。每层是保留的原生无激活窗口，主窗口保留键盘焦点与 capture；点击或 Right 打开子菜单，Left/Escape 回到父菜单，选择叶命令关闭整条菜单链。改变根来源、失焦、关闭和改变 surface 时清理子菜单路径。每层按实际文字、DPI、样式和屏幕工作区测量，短菜单不保留滚动槽。
+菜单描述可嵌套。每层是保留的原生无激活窗口，主窗口保留键盘焦点与 capture；点击或 Right 打开子菜单，Left/Escape 回到父菜单。选择叶命令关闭整条菜单链；点击可勾选叶项的方框列则保留当前链，便于连续设置。改变根来源、失焦、关闭和改变 surface 时清理子菜单路径。每层按实际文字、DPI、样式和屏幕工作区测量，短菜单不保留滚动槽。
 
 应用初始化主菜单及首层子菜单宿主；Renderer 仅在实际网格绘制时创建场景管线和深度资源。隐藏菜单折叠已有控件，保留文字缓存；相同描述重开复用尺寸，不再先缩到 32×32。验收输出 `popup-open.csv` 记录当前首次打开和暖重开在更新/呈现路径上的 CPU 耗时，不包含启动期 Context 初始化，也不包含截图读回；不据此声称已经测量旧版本加速比。
 

@@ -83,6 +83,10 @@ struct EditorAcceptanceAccess {
     static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
     static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
     static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
+    static const auto& fps_text(const Application& app) {return app.workspace_.viewport_fps;}
+    static Result<void> fps_setting(Application& app,bool enabled) {
+        return app.action({ui::ActionKind::activate,editor::control::command_key(editor::Command::show_fps),enabled});
+    }
     static void scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {app.workspace_.view.lit=settings;}
     static const auto& scene_snapshot(const Application& app) {return app.scene_;}
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
@@ -1003,6 +1007,8 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;
 }
+#include "dock_resize.inl"
+#include "viewport_navigation.inl"
 int verify_editor_shortcuts(Application& app,const char* output_directory) {
     using namespace atelier;
     using Access=application::EditorAcceptanceAccess;
@@ -1010,7 +1016,9 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
     const auto output=std::filesystem::absolute(editor::wide(output_directory));std::filesystem::create_directories(output);
     tick(app);
+    verify_viewport_splitter_drag(app,output);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Shortcut scene creation failed.");tick(app);
+    verify_viewport_navigation(app,output);
     const auto first=app.document().selection().actor;
     const auto viewport=app.presented()->find(control::viewport)->bounds;
     const float x=viewport.x+viewport.width*.5f,y=viewport.y+viewport.height*.5f;
@@ -1047,7 +1055,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x,.y=y});tick(app);
     require(app.document().world().members()->size()==1 && !Access::menu_open(app),"Delete confirmation click missed its command.");
     key('S',ui::Key::none,true);key('S',ui::Key::none,true,false,true);tick(app);
-    require(Access::menu_open(app) && app.presented()->popup==control::viewport_shading_pie,"Tapping Shift+S did not retain its pie menu.");
+    require(Access::menu_open(app) && app.presented()->popup==control::viewport_pie,"Tapping Shift+S did not retain its pie menu.");
     move(x-90,y);tick(app);capture(app,output/"shading-pie.png");
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x-90,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x-90,.y=y});tick(app);
     require(!Access::menu_open(app) && Access::scene_lit_view(app).wireframe==renderer::Wireframe::only,"Pie click did not select Wireframe.");

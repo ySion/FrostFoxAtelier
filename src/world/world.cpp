@@ -680,6 +680,8 @@ Result<std::vector<RenderItem>> World::render_items() const {
             return RenderItem{*owner, object, *matrix, Access::geometry(component), component.material};
         });
         if (!item) return std::unexpected(item.error());
+        auto surfaces=material_surfaces(runtime(),object);if(!surfaces) return std::unexpected(surfaces.error());
+        item->surfaces=std::move(*surfaces);
         result.push_back(std::move(*item));
     }
     return result;

@@ -1,6 +1,6 @@
 # Houdini 场景视口：线框与 MatCap
 
-研究日期：2026-10-04。仅研究官方资料，未修改代码或执行验收。在线帮助页眉为 Houdini 22.0；20.5 官方 Foundations 教程亦列出下述模式。不据此推断用户安装版本或首次引入版本。[当前帮助](https://www.sidefx.com/docs/houdini/basics/view.html)、[20.5 教程](https://media.sidefx.com/files/tutorials/h205-foundations-welcome/01_welcome_tutorial.pdf)
+研究日期：2026-10-04。本文保留当日官方资料研究；本引擎对应的视口模式后来已经实现，现状见[显示合同](../modules/renderer/contract.md#视口显示策略)，结果见[验收记录](../modules/renderer/acceptance.md)。当时在线帮助页眉为 Houdini 22.0；20.5 官方 Foundations 教程亦列出下述模式。不据此推断用户安装版本或首次引入版本。[官方帮助](https://www.sidefx.com/docs/houdini/basics/view.html)、[20.5 教程](https://media.sidefx.com/files/tutorials/h205-foundations-welcome/01_welcome_tutorial.pdf)
 
 ## 正式模式与效果
 

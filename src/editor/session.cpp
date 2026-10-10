@@ -288,12 +288,12 @@ Result<std::vector<ComponentType>> Session::component_types() const {
     return result;
 }
 Result<std::vector<Property>> Session::properties(ObjectId object) const {
-    if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
+    if (!is_material(object)) if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
     auto type=runtime_.type_of(object); if (!type) return std::unexpected(type.error());
     auto fields=detail::scalar_fields(world_.runtime(),*type); if (!fields) return std::unexpected(fields.error());
     std::vector<Property> result;
     for (auto& field:*fields) {
-        auto value=world_.read(object,field.path); if (!value) return std::unexpected(value.error());
+        auto value=read_property(object,field.path); if (!value) return std::unexpected(value.error());
         std::string name;
         for (const auto& part:field.names) { if (!name.empty()) name+='.'; name+=part; }
         result.push_back({std::move(name),std::move(field.path),field.type,std::move(*value)});
@@ -301,6 +301,10 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
     return result;
 }
 Result<Scalar> Session::read_property(ObjectId object,std::span<const FieldId> path) const {
+    if(is_material(object)) {
+        auto captured=material::capture(world_.runtime(),object);if(!captured) return std::unexpected(captured.error());
+        return world_.runtime().read(object,path);
+    }
     if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
     return world_.read(object,path);
 }
@@ -324,6 +328,11 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
 Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path, std::uint64_t control_session) {
     if (editing()) return invalid("A field edit is already active.");
     if (!control_session) return invalid("A field edit requires a control session.");
+    if(is_material(object)) {
+        auto value=runtime_.read(object,path);if(!value) return std::unexpected(value.error());
+        auto begun=begin_material_edit(object,control_session);if(!begun) return begun;
+        material_edit_->path.assign(path.begin(),path.end());return {};
+    }
     auto actor=admit_property_edit(object); if (!actor) return std::unexpected(actor.error());
     auto before=world_.read(object,path); if (!before) return std::unexpected(before.error());
     auto root=runtime_.hold(object); if (!root) return std::unexpected(root.error());
@@ -338,7 +347,7 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
 }
 bool Session::owns_edit(std::uint64_t control_session) const noexcept {
     return (active_ && active_->control_session == control_session) ||
-        (transform_ && transform_->control_session == control_session);
+        (transform_ && transform_->control_session == control_session) || material_editing(control_session);
 }
 Result<void> Session::begin_transform(std::span<const ObjectId> components, std::uint64_t control_session, bool amend_creation) {
     if (editing()) return invalid("A field edit is already active.");
@@ -420,6 +429,12 @@ Result<void> Session::preview_edit(std::uint64_t control_session,float value) {
     return preview_edit(control_session,Scalar{value});
 }
 Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
+    if(material_editing(control_session)) {
+        if(material_edit_->path.empty()) return invalid("No material field is being edited.");
+        if(!detail::finite_scalar(value)) return invalid("Material fields must be finite.");
+        auto changed=material::write_property(runtime_,material_edit_->root.id(),material_edit_->path,std::move(value));
+        if(changed) ++revision_;return changed;
+    }
     if (!active_ || active_->control_session!=control_session) return invalid("No matching field edit.");
     auto actor=admit_property_edit(active_->root.id());
     if (!actor) return std::unexpected(actor.error());
@@ -450,6 +465,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
     return result;
 }
 Result<void> Session::commit_edit(std::uint64_t control_session) {
+    if(material_editing(control_session)) return commit_material_edit(control_session);
     if (!owns_edit(control_session)) return invalid("No matching field edit.");
     if (transform_) {
         bool changed{};
@@ -485,6 +501,7 @@ Result<void> Session::apply_field(const FieldChange& change,bool forward) {
     return world_.write(change.root.id(),change.path,std::get<Scalar>(value));
 }
 Result<void> Session::cancel_edit() {
+    if(auto cancelled=cancel_material_edit();!cancelled) return cancelled;
     if (transform_) {
         // Restore every target even if one fails; report the first failure.
         Result<void> first;
@@ -559,6 +576,18 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
                 if(owner && *owner==selection_.actor) selection_.object=item.inspection.object;
             }
             return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, MaterialValueChange>) {
+            auto state=admit_component_edit(item.component);if(!state) return std::unexpected(state.error());
+            if(state->owner!=item.actor) return invalid("The material instance's owner changed.");
+            auto changed=material::update_material(runtime_,item.root.id(),forward?item.after:item.before);
+            if(!changed) return std::unexpected(changed.error());
+            set_selection({item.actor,item.component});return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
+            auto state=admit_component_edit(item.root.id());if(!state) return std::unexpected(state.error());
+            if(state->owner!=item.actor) return invalid("The material binding's owning Actor changed.");
+            auto changed=world::set_material_bindings(runtime_,item.root.id(),forward?item.after:item.before);
+            if(!changed) return std::unexpected(changed.error());
+            set_selection({item.actor,item.root.id()});return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, BodyChange>) {
             auto state=admit_component_edit(item.root.id());
             if (!state) return std::unexpected(state.error());
@@ -646,6 +675,7 @@ Result<world::Commit> Session::close() {
     if (!closed) return closed;
     physics_.reset();
     history_.clear(); names_.clear(); cursor_ = 0; set_selection({});
+    materials_.clear();textures_.clear();
     prepared_.reset();
     return closed;
 }

@@ -32,10 +32,13 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/examples.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/assets.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/project_materials.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/image_decode.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/obj_import.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/session_materials.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/viewport_tool.cpp")
     atelier_target(atelier_editor_core)
@@ -53,6 +56,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/editor_control.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/control_artifacts.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/workspace_materials.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/asset_browser.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/source_editor.cpp"
@@ -86,6 +90,9 @@ function(atelier_add_editor)
     target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
     add_custom_target(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
+        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_material_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --materials
         DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_executable(atelier_project_scene_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_scene.cpp")
     atelier_target(atelier_project_scene_acceptance)

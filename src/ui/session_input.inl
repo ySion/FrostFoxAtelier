@@ -260,7 +260,8 @@ Reply Session::input(const Event& event) {
                     else { self.edit->text_mode=true; if (self.edit->buffer().select_all()) self.revise(); }
                 } else if (hit->kind==ControlKind::splitter && self.states.at(hit->key).control.click_action)
                     Impl::action(reply,ActionKind::activate,hit->key,event.alt);
-                else if (activatable(hit->kind)) self.activate(reply,*hit,{event.shift,event.control});
+                else if (activatable(hit->kind)) self.activate(reply,*hit,{event.shift,event.control},
+                    self.menu_indicator_hit(*hit,press.x,press.y) && self.menu_indicator_hit(*hit,event.x,event.y));
             }
             reply.cursor=pointer_cursor();
             return reply;

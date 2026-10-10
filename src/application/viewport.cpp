@@ -2,7 +2,8 @@
 
 namespace atelier::application {
 bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key) {
-    if(workspace_.menu || workspace_.dock.dragging() || !accepted_view_ || !pointer_ready()) return false;
+    // A UI press owns its whole gesture, including movement across the viewport.
+    if(workspace_.menu || workspace_.dock.dragging() || ui_.interaction_state().pointer || !accepted_view_ || !pointer_ready()) return false;
     const auto& view=*accepted_view_;
     const bool pointer=event.kind==ui::EventKind::pointer_down || event.kind==ui::EventKind::pointer_up ||
         event.kind==ui::EventKind::pointer_move || event.kind==ui::EventKind::wheel;
@@ -28,6 +29,15 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
         }
     }
     if(!pointer && !viewport_tool_.active() && ui_.wants_keyboard()) return false;
+    if(!viewport_tool_.active() && event.kind==ui::EventKind::key_down && !event.shift && !event.alt &&
+        (native_key==VK_NUMPAD1 || native_key==VK_NUMPAD3 || native_key==VK_NUMPAD7)) {
+        if(event.repeat) return true;
+        using enum editor::Command;
+        const auto command=native_key==VK_NUMPAD1?(event.control?view_back:view_front):
+            native_key==VK_NUMPAD3?(event.control?view_left:view_right):(event.control?view_bottom:view_top);
+        status(execute(command),L"Camera view updated");
+        return true;
+    }
     if(!viewport_tool_.active() && event.kind==ui::EventKind::key_down && !event.control && !event.alt) {
         if (event.repeat) return true; // A held shortcut must not restart after its modal owner dismisses.
         if (event.shift && native_key=='D') {
@@ -51,12 +61,14 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
         // Blender navigation keys while the pointer is over the scene.
         using enum editor::Command;
         const auto view=[&](editor::Command command,const wchar_t* text){status(execute(command),text);return true;};
-        if(native_key==VK_NUMPAD1 && !event.shift) return view(view_front,L"Front view");
-        if(native_key==VK_NUMPAD3 && !event.shift) return view(view_right,L"Right view");
-        if(native_key==VK_NUMPAD7 && !event.shift) return view(view_top,L"Top view");
         if((native_key==VK_NUMPAD5 || native_key==VK_NUMPAD0) && !event.shift) return view(view_perspective,L"Perspective view");
         if(native_key==VK_DECIMAL && !event.shift) {status(frame_actors(true),L"View Selected");return true;}
         if(native_key==VK_HOME && !event.shift) {status(frame_actors(false),L"View All");return true;}
+        if(native_key==VK_OEM_3 && !event.shift) {
+            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            request_menu({editor::control::viewport,editor::control::viewport_axis_pie,pointer_position_.x,pointer_position_.y});
+            return true;
+        }
         // Shift+S follows the editor's requested Shading pie binding. Snapping
         // remains in the magnet menu and Shift+Tab.
         if(event.shift && (native_key=='A' || native_key=='S')) {

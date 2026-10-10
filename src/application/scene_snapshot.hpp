@@ -31,11 +31,12 @@ public:
                 {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1},
                 document.is_selected(item.actor),item.geometry,
                 {item.material.roughness,item.material.metallic,rgb(item.material.emissive)},key(item.component)};
+            value.surfaces=item.surfaces;
             if(i<meshes.size()) {
                 const auto& previous=meshes[i];
                 changed|=previous.stable_key!=value.stable_key || previous.geometry!=value.geometry || previous.color!=value.color ||
                     previous.material.roughness!=value.material.roughness || previous.material.metallic!=value.material.metallic ||
-                    previous.material.emissive!=value.material.emissive;
+                    previous.material.emissive!=value.material.emissive || previous.surfaces!=value.surfaces;
                 meshes[i]=std::move(value);
             } else meshes.push_back(std::move(value));
         }

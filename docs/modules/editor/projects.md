@@ -25,7 +25,7 @@ MyGame/
 
 原 Asset Shelf 沿原停靠视图演进为 Asset Browser。左侧常驻目录树以 Project、Engine 为并列根：Project 展示实际 Content、Source、Config 及可选的 Examples 目录，Engine 展示只读内置网格；未打开工程时 Project 根禁用。路径与搜索位于同一紧凑工具行，路径菜单可访问祖先目录，返回和上级操作使用同一导航状态。类型筛选、List/Details/Tiles 和资源操作各由图标菜单承载。
 
-单击资源只改变浏览器选择，不修改 Scene Tree 选择或创建 Actor。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshActor 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
+单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Actor。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshActor 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
 查询或类型过滤排除当前资源时立即清空选择，并禁用对应 Open/Add；仍匹配的选择保留。清除过滤不恢复先前的隐藏选择。目录导航使用共享 Tree 的展开、选择与键盘行为；从路径或内容进入目录时显露对应树行。视图和类型菜单使用互斥单选标记。目录刷新淘汰失效导航记录，当前目录消失时回到有效来源根。
 
@@ -35,7 +35,7 @@ Details 使用共享 Table 的 Name / Type / Size 列，列头显示排序方向
 
 Import OBJ 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Actor 使用白色实例颜色，避免默认蓝色染色。
 
-MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。其他常见 MTL 光照参数及贴图保留源文件但不参与当前着色；尚无法线/高度贴图、PBR、半透明混合、动态阴影或 DDGI。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
+MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与 DDGI 消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
 依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录，再独占创建依赖、网格与身份文件；已有同名文件不覆盖。发布后目录检查失败时仅删除本轮创建的文件，允许修复后重试；空目录可能保留，清理失败明确报告。
 
@@ -44,9 +44,27 @@ Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与�
 
 每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
 
+## 材质与贴图资源
+
+File 或 Asset Browser 菜单中的 New Material 创建 `Content/**/*.material`，Import Texture 导入 PNG/JPEG/BMP/TIFF 到 `Content/Textures`。二者与 Mesh 共用 Project 目录索引及 `.asset.json` GUID，类型筛选增加 Materials、Textures。材质文件保存参数、六路贴图 GUID、UV 变换、寻址与通道；图片解码复用 WIC。路径、缺失引用、错误资源类型、重复身份和非法参数均在发布前验证。
+
+选择 Material 后，Parameters 使用 Runtime `material.Material` 的实际反射字段：颜色/向量共用 NumberRow，开关和枚举使用既有控件，贴图由资源菜单选择。标量/颜色和采样设置沿 Session 的 begin/preview/commit/cancel 编辑链；菜单赋纹理也记录完整事务。每个材质资产拥有独立撤销历史与保存点，Ctrl+S 保存当前材质；Save All 保存材质、源码和场景。运行与重建类型先提交并保存材质草稿，避免新 Runtime 或独立进程读取旧文件。关闭、切换文档处理所有未保存资产；Control 替换文档直接拒绝未保存资产。
+
+Actor/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提供赋予共享 Material、Edit Shared Material 和 Use Mesh Default。已有资源绑定时不再显示会被覆盖的旧组件颜色/粗糙度字段。绑定的参数行旁有覆盖复选框：勾选后在同一 Runtime 惰性创建具有父材质强引用的实例；只记录被勾选参数的覆盖位，未覆盖参数继续继承。取消某项覆盖立即恢复父值。当前支持一层继承，覆盖颜色、透明度、粗糙度、金属度、发光、法线强度/Y 约定及覆盖/双面标志；纹理及采样设置从共享材质继承，未提供实例纹理覆盖。
+
+例如两根柱子引用同一材质，仅 A 覆盖 roughness 后，修改父材质 base_color 会同时更新 A/B；A 保留自己的 roughness。资产修改不污染场景历史；槽赋予、实例参数及覆盖开关进入场景历史。复制 Actor 共享资产但复制其可变材质实例。更换网格保留名称唯一匹配的绑定，丢失/歧义槽被移除；清空网格清空材质引用。没有名称的槽使用 `slot/<index>`，命名槽按名称持久对应。
+
+资源引用由 Runtime 强引用与 GC 管理；Project 保留不可变图像解析缓存和持久索引。渲染只借用拥有型 Surface 快照，不访问 Runtime 对象或磁盘。材质变化按内容发布快照，未变化帧复用；对象关闭后已发布捕获仍拥有图片内容。实例原生字段编辑须经过 `material::write_property / set_override` 明确覆盖意图，不能仅根据字段值与父值不同推断覆盖。
+
+外部图片改写目前不会自动替换已载入 Runtime 中的 Texture 对象。Project Refresh 更新目录及解析缓存；已有会话保留既有图片版本，重新打开工程/场景重新解析。替换为其他 Texture GUID 会立即使用对应资源。本轮没有接入 UI Image 控件的 Runtime Texture 资源。
+
+Scene v3 在 StaticMeshComponent 的 `materials` 中保存槽名、共享资源 GUID、赋予意图，以及实例的父 GUID、显式覆盖名称和值。v1/v2 读取路径保留，写出统一升级到 v3。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
+
+新增 `editor_material_acceptance` 是真实 Project → Runtime → World → Session → SceneSnapshot/DSL → 文件重开的端到端消费者；同时应运行原 document/project scene 消费者和 renderer GPU 材质验收。新增用例不等于已验收通过，实际结果以本次集成日志为准。
+
 ## 持久格式与责任
 
-- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 2`，继续读取 v1。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
+- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 3`，继续读取 v1/v2。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene 保存有序 Actor、真实类型名称、名称、enabled、有序组件、局部组件 ID、显式 root/parent、TRS、材质和资源键。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致，因此 Scene v1 继续可读，无需版本迁移或旧类型别名。

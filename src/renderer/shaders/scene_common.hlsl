@@ -1,18 +1,22 @@
 struct SceneOutput {
     float4 position : SV_Position;
     float3 normal : NORMAL;
-    float4 color : COLOR;
     // Original barycentrics and clip w share perspective interpolation. Their
     // quotient is affine in screen space, even across eye/near-plane clipping.
     float4 edge_coordinates : TEXCOORD0;
     nointerpolation uint edge_mask : TEXCOORD1;
     nointerpolation float selected : TEXCOORD2;
     float2 uv : TEXCOORD3;
+    nointerpolation uint material_index : TEXCOORD4;
+    float4 tangent:TEXCOORD5;
+    float3 eye_position:TEXCOORD6;
+    nointerpolation float3 eye_geometric_normal:TEXCOORD7;
 };
-// Shading, wireframe, triangle edges, pass (surface / lines / depth).
+// Shading, wireframe, triangle edges, pass (surface / wire lines / depth / studio overlay).
 uint4 display;
 float2 wire_style;
 row_major float4x4 view;
+row_major float4x4 projection;
 
 float3 unit_normal(float3 normal) {
     float magnitude = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));

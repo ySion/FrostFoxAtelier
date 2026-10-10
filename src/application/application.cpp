@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <limits>
 #include <stdexcept>
 
@@ -159,6 +160,15 @@ Result<void> Application::action(const ui::Action& source) {
         request_menu(*request); return {};
     }
     if (event.kind==ui::ActionKind::dismiss) { close_menu(); return {}; }
+    if (event.kind==ui::ActionKind::activate && event.key==command_key(editor::Command::show_fps)) {
+        const auto* checked=std::get_if<bool>(&event.value);
+        if (!checked) return invalid();
+        if (workspace_.show_fps!=*checked) {
+            workspace_.show_fps=*checked;
+            update_viewport_fps(false);
+        }
+        return {};
+    }
     if (event.kind==ui::ActionKind::activate && (event.key==menu_bar_handle || event.key==shelf_handle)) {
         close_menu();
         if (event.key==shelf_handle) {
@@ -190,9 +200,26 @@ Result<void> Application::action(const ui::Action& source) {
         return done(document_->set_property(choice->object,choice->path,Scalar{choice->value},choice->field),L"Property changed");
     }
     if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
+    if(event.kind==ui::ActionKind::activate) if(const auto choice=workspace_.material_choice(event.key)) {
+        if(!project_) return invalid();
+        using Kind=editor::Workspace::MaterialChoice::Kind;
+        if(choice->kind==Kind::assign) return document_->assign_material(*project_,choice->object,choice->slot,choice->key);
+        if(choice->kind==Kind::clear) return document_->clear_material(choice->object,choice->slot);
+        if(choice->kind==Kind::texture) return document_->set_material_texture(*project_,choice->object,static_cast<material::Input>(choice->index),choice->key);
+        auto root=document_->material_resource(*project_,choice->key);if(!root) return std::unexpected(root.error());
+        workspace_.material_inspection=choice->key;workspace_.inspecting_asset=true;return {};
+    }
     if (workspace_.workbench.apply(event)) return {};
     if (workspace_.assets.apply(event)) {
-        if(event.key==editor::browser_control::results && event.kind==ui::ActionKind::select) workspace_.inspecting_asset=true;
+        if(event.key==editor::browser_control::results && event.kind==ui::ActionKind::select) {
+            if(auto cancelled=document_->cancel_edit();!cancelled) return cancelled;
+            workspace_.inspecting_asset=true;workspace_.material_inspection.clear();
+            const auto& selected=workspace_.assets.selected();
+            if(selected && selected->kind==editor::AssetKind::material && project_) {
+                auto root=document_->material_resource(*project_,selected->key);if(!root) return std::unexpected(root.error());
+                workspace_.material_inspection=selected->key;
+            }
+        }
         return {};
     }
     if (workspace_.apply_view(event)) return {};
@@ -209,6 +236,10 @@ Result<void> Application::action(const ui::Action& source) {
         if (event.key==editor::browser_control::add && selected->kind==editor::AssetKind::mesh)
             return execute(editor::Command::create_static_mesh,selected->key);
         if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
+        else if(selected->kind==editor::AssetKind::material && project_) {
+            auto root=document_->material_resource(*project_,selected->key);if(!root) return std::unexpected(root.error());
+            workspace_.material_inspection=selected->key;workspace_.inspecting_asset=true;workspace_.dock.select(editor::control::parameters_tab);
+        }
         else if (selected->kind==editor::AssetKind::scene) return open_scene(selected->path);
         else if (selected->kind==editor::AssetKind::source && project_) {
             auto path=project_->resolve(selected->path);if (!path) return std::unexpected(path.error());
@@ -249,6 +280,11 @@ Result<void> Application::action(const ui::Action& source) {
     if (event.kind == ui::ActionKind::edit_cancel)
         return document_->owns_edit(event.key) ? done(document_->cancel_edit(), L"Edit cancelled") : Result<void>{};
     if (const auto* binding = workspace_.binding(event.key)) {
+        if(binding->kind==editor::Workspace::Binding::Kind::material_override) {
+            if(event.kind!=ui::ActionKind::activate) return {};
+            const auto* enabled=std::get_if<bool>(&event.value);if(!enabled) return invalid();
+            return document_->set_material_override(binding->component,binding->slot,binding->path,*enabled);
+        }
         if (event.kind==ui::ActionKind::select && (binding->kind==editor::Workspace::Binding::Kind::object || binding->kind==editor::Workspace::Binding::Kind::structure) && binding->path.empty())
             return done(workspace_.select_tree(*document_,event.key,std::get_if<ui::SelectionModifiers>(&event.value)?std::get<ui::SelectionModifiers>(event.value):ui::SelectionModifiers{},ui_.presented().get()),L"Tree selection updated");
         if (binding->kind==editor::Workspace::Binding::Kind::navigation) {
@@ -339,16 +375,17 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case cursor_selected:result=viewport_tool_.cursor_to_selection(*document_);break;
     case cursor_grid:viewport_tool_.cursor_to_grid(workspace_.viewport_settings);break;
     case cursor_surface:workspace_.viewport_settings.cursor_surface=!workspace_.viewport_settings.cursor_surface;break;
-    case view_perspective:case view_top:case view_front:case view_right:
-        camera_.set_view(static_cast<editor::CameraView>(static_cast<unsigned>(command)-static_cast<unsigned>(view_perspective)));camera_cut_=true;break;
+    case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
+        camera_.set_view(*editor::camera_view_command(command));camera_cut_=true;break;
     case viewport_options:workspace_.viewport_options_collapsed=!workspace_.viewport_options_collapsed;break;
+    case show_fps:return action({ui::ActionKind::activate,editor::control::command_key(command),!workspace_.show_fps});
     case open_source: case edit_ui_source: case save_document: case close_source: case reload_source: case save_all:
     case new_source: case new_project_ui: case edit_project_ui:
         return source_command(command,asset_key);
     case build_project:case rebuild_project:case run_project:case stop_project:case show_project_ui:case show_output:
         return execution_command(command);
     case show_code: workspace_.dock.select(editor::source_control::tab);break;
-    case new_project: case open_project: case save_scene: case save_scene_as: case open_scene: case import_mesh: case refresh_assets:
+    case new_project: case open_project: case save_scene: case save_scene_as: case open_scene: case import_mesh:case import_texture:case create_material: case refresh_assets:
         workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
@@ -378,11 +415,11 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case erase_actors: workspace_.inspecting_asset=false;result=completion(document_->erase_actors()); break;
     case duplicate_selected: workspace_.inspecting_asset=false;result=completion(document_->duplicate_selected()); break;
     case undo: case redo:
-        workspace_.inspecting_asset=false;
         if (workspace_.source_history()) {
             workspace_.source_editor.active()->document->edit().history(command==redo);pending_source_focus_=true;
-        } else if (workspace_.sample_history()) { if (command==undo) workspace_.workbench.undo(); else workspace_.workbench.redo(); }
-        else result=completion(command==undo?document_->undo():document_->redo());
+        } else if(workspace_.inspecting_asset && !workspace_.material_inspection.empty()) result=document_->material_undo(workspace_.material_inspection,command==redo);
+        else if (workspace_.sample_history()) { if (command==undo) workspace_.workbench.undo(); else workspace_.workbench.redo(); }
+        else {workspace_.inspecting_asset=false;result=completion(command==undo?document_->undo():document_->redo());}
         break;
     case focus: result=focus_selected();if(result) camera_cut_=true;break;
     case reset_camera: camera_.reset();camera_cut_=true;break;
@@ -550,13 +587,13 @@ void Application::update_menu() {
     if (workspace_.pie_menu()) {
         if (popup_) popup_->hide();
         window_.capture(true);
-        if (ui_.presented()->popup==editor::control::viewport_shading_pie) {
+        if (ui_.presented()->popup==editor::control::viewport_pie) {
             effects(ui_.focus(pie_hot_));
             if (pie_release_pending_) {
                 pie_release_pending_=false;
                 if (pie_release_select_) {
                     ui::Event release;release.kind=ui::EventKind::key_up;
-                    pie_input(release,'S');
+                    pie_input(release,request.group==editor::control::viewport_axis_pie?VK_OEM_3:'S');
                 }
             }
         }
@@ -660,13 +697,14 @@ bool Application::invoke_menu(const ui::Action& command,std::span<const ui::Menu
     const auto at=std::ranges::find(items,command.key,&ui::MenuItem::key);
     if (at==items.end() || !at->enabled || !at->children.empty()) return false;
     const auto edit=at->edit_command;
+    const bool keep_open=command.keep_menu_open && at->behavior==ui::MenuBehavior::checkbox;
     if (edit) {
         const auto incarnation=menu_incarnation_;
         close_menu();effects(ui_.execute(*edit,incarnation));
     } else {
         const auto result=action(command);
         if (!result) status(result,L"");
-        close_menu();
+        if(!keep_open || !result) close_menu();
     }
     return true;
 }
@@ -677,14 +715,15 @@ bool Application::pie_input(const ui::Event& input,WPARAM native_key) {
     }
     const bool pointer=input.kind==ui::EventKind::pointer_move || input.kind==ui::EventKind::pointer_down || input.kind==ui::EventKind::pointer_up;
     if (pointer) pointer_position_={input.x,input.y};
-    const bool release=input.kind==ui::EventKind::key_up && native_key=='S';
+    const bool release=input.kind==ui::EventKind::key_up &&
+        native_key==(workspace_.menu->group==editor::control::viewport_axis_pie?VK_OEM_3:'S');
     if (release && !pie_release_select_) {
         const auto dx=pointer_position_.x-workspace_.menu->x,dy=pointer_position_.y-workspace_.menu->y;
         pie_release_select_=dx*dx+dy*dy>324*window_.dpi_scale()*window_.dpi_scale() ||
             std::chrono::steady_clock::now()-menu_requested_>=std::chrono::milliseconds(200);
     }
     const auto* frame=ui_.presented().get();
-    const auto* pie=frame?frame->find(editor::control::viewport_shading_pie):nullptr;
+    const auto* pie=frame?frame->find(editor::control::viewport_pie):nullptr;
     if (!pie || frame->popup!=pie->key) {
         if (release) pie_release_pending_=true;
         return true; // Opening owns input before its first accepted geometry.
@@ -828,6 +867,16 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
 void Application::enable_control(const std::filesystem::path& directory) {
     if(!control_) control_=std::make_unique<EditorControl>(*this,directory);
 }
+void Application::update_viewport_fps(bool accepted) {
+    if (!accepted) {fps_start_={};fps_frames_=0;workspace_.viewport_fps.clear();return;}
+    const auto now=std::chrono::steady_clock::now();
+    if (fps_start_==std::chrono::steady_clock::time_point{}) {fps_start_=now;return;}
+    ++fps_frames_;
+    const auto seconds=std::chrono::duration<double>(now-fps_start_).count();
+    if (seconds<.5) return;
+    workspace_.viewport_fps=std::format(L"{:.1f} FPS  ·  {:.1f} ms",fps_frames_/seconds,seconds*1000/fps_frames_);
+    fps_start_=now;fps_frames_=0;
+}
 bool Application::step(renderer::Capture* capture) {
     frame_timing_ = {};
     frame_statistics_ = {};
@@ -852,14 +901,16 @@ bool Application::step(renderer::Capture* capture) {
     if (!gc) throw std::runtime_error(gc.error().message);
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
-    if (!target.drawable) { MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    if (!target.drawable) { update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    if (!workspace_.show_fps || !workspace_.dock.visible(editor::control::scene_tab)) update_viewport_fps(false);
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
     workspace_.viewport_mode=viewport_tool_.displayed_tool(workspace_.viewport_settings);
     workspace_.viewport_readout=viewport_tool_.readout();
     workspace_.camera_view=camera_.view();
     workspace_.view.grid_spacing=workspace_.viewport_settings.grid_spacing;
-    workspace_.view.grid_plane=camera_.view()==editor::CameraView::front?renderer::GridPlane::xy:
-        camera_.view()==editor::CameraView::right?renderer::GridPlane::yz:renderer::GridPlane::xz;
+    const auto plane_normal=camera_.construction_normal();
+    workspace_.view.grid_plane=plane_normal.z!=0?renderer::GridPlane::xy:
+        plane_normal.x!=0?renderer::GridPlane::yz:renderer::GridPlane::xz;
     const auto describe=[&] {return workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr);};
     auto controls = describe();
     auto described = ui_.set_controls(controls);
@@ -883,6 +934,7 @@ bool Application::step(renderer::Capture* capture) {
     }
     const auto prepare_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - prepare_start).count() : 0;
     if (!prepared) {
+        update_viewport_fps(false);
         if (!ui_.presented()) throw std::runtime_error("Initial editor frame preparation failed (UI code " + std::to_string(static_cast<int>(prepared.error().code)) + ").");
         workspace_.status = L"Frame preparation failed; previous frame retained";
         MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
@@ -918,6 +970,7 @@ bool Application::step(renderer::Capture* capture) {
     auto rendered = renderer_.render(render_frame, frame_capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
     if (!rendered) {
+        update_viewport_fps(false);
         if(control_) control_->render_failed(rendered.error().cause.message);
         if (rendered.error().terminal) throw std::runtime_error("Renderer stopped: " + rendered.error().cause.message);
         workspace_.status = widen(rendered.error().cause.message); return true;
@@ -937,6 +990,7 @@ bool Application::step(renderer::Capture* capture) {
                 workspace_.render_notice=L"Shadows "+std::to_wstring(rendered->stats.scene_lit_shadow_lights)+L"/"+std::to_wstring(requested);
         }
         ++accepted_frames_;
+        update_viewport_fps(workspace_.show_fps && viewport && !frame_capture);
         if(control_) {
             if(capture && capturing_control) {control_capture=*capture;control_->rendered(render_frame,*rendered,&control_capture);}
             else control_->rendered(render_frame,*rendered,frame_capture);
@@ -956,6 +1010,7 @@ bool Application::step(renderer::Capture* capture) {
         } else update_menu();
         if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us};
     } else {
+        update_viewport_fps(false);
         if(control_) control_->rendered(render_frame,*rendered,nullptr);
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }

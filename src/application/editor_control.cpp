@@ -3,6 +3,7 @@
 #include "application/control_artifacts.hpp"
 #include "editor/view_options.hpp"
 #include "editor/json_format.hpp"
+#include "editor/material_format.hpp"
 #include "platform/windows_path.hpp"
 #include "atelier/build_info.hpp"
 #include <deque>
@@ -35,7 +36,7 @@ Json vector3(math::Vector3 v) {return {v.x,v.y,v.z};}
 Json camera_json(const editor::CameraState& c) {return {{"view",static_cast<unsigned>(c.view)},{"target",vector3(c.target)},{"yaw",c.yaw},{"pitch",c.pitch},{"distance",c.distance}};}
 editor::CameraState camera_state(const Json& args) {
     control::fields(args,{"view","target","yaw","pitch","distance"});
-    return {static_cast<editor::CameraView>(integer(args.at("view"),0,3)),vector3(args.at("target")),
+    return {static_cast<editor::CameraView>(integer(args.at("view"),0,static_cast<unsigned>(editor::CameraView::left))),vector3(args.at("target")),
         static_cast<float>(number(args.at("yaw"))),static_cast<float>(number(args.at("pitch"))),static_cast<float>(number(args.at("distance")))};
 }
 Json view_json(const renderer::ViewSettings& view) {
@@ -103,6 +104,16 @@ const std::vector<Operation>& operations() {
         {"scene.select","Select actor handles; optional inspected object must belong to active actor",true,{{"actors",arr},{"active",str},{"object",str}},{"actors"}},
         {"scene.rename","Rename one actor through document history; components use their type names",true,{{"object",str},{"name",str}},{"object","name"}},
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
+        {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
+        {"texture.import","Import a texture with a Project GUID",true,{{"path",str}},{"path"}},
+        {"material.inspect","Read a shared asset or instance object and its resolved reflected parameters",false,{{"asset",str},{"object",str}},{}},
+        {"material.set_property","Edit one reflected shared or instance material parameter",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
+        {"material.set_texture","Assign a texture asset to one shared material input",true,{{"object",str},{"input",str},{"texture",str}},{"object","input","texture"}},
+        {"material.assign","Assign a shared material to a component slot; empty asset restores its mesh default",true,{{"component",str},{"slot",str},{"asset",str}},{"component","slot","asset"}},
+        {"material.override","Enable or clear explicit instance parameter inheritance override",true,{{"component",str},{"slot",str},{"property",str},{"enabled",{{"type","boolean"}}}},{"component","slot","property","enabled"}},
+        {"material.save","Save a shared material asset",true,{{"asset",str}},{"asset"}},
+        {"material.undo","Undo one shared material asset edit",true,{{"asset",str}},{"asset"}},
+        {"material.redo","Redo one shared material asset edit",true,{{"asset",str}},{"asset"}},
         {"scene.transform","Set complete TRS on a scene component or actor root; one undo entry",true,{{"object",str},{"position",arr},{"rotation",arr},{"scale",arr}},{"object","position","rotation","scale"}},
         {"scene.add_component","Add one discovered component type to the selected actor",true,{{"type",str}},{"type"}},
         {"scene.remove_component","Remove a component through document history",true,{{"object",str}},{"object"}},
@@ -211,6 +222,7 @@ struct EditorControl::Impl {
     void idle() const {if(busy()) throw Failure("busy","Finish the current text, menu or viewport interaction first");}
     void replaceable() const {
         idle();if(app.document_->dirty()) throw Failure("unsaved_changes","Save the current scene before replacing it");
+        if(!app.document_->dirty_materials().empty()) throw Failure("unsaved_changes","Save the open material assets before replacing the document");
         for(const auto& file:app.workspace_.source_editor.files()) if(file->dirty()) throw Failure("unsaved_changes","Source drafts are still open");
         if(app.play_.running()) throw Failure("busy","Stop the project before replacing its document");
     }
@@ -273,12 +285,21 @@ struct EditorControl::Impl {
         pruned_revision=app.document_->revision();
         std::unordered_set<ObjectId> live;
         for(const auto& actor:take(app.document_->world().members())) {live.insert(actor.id());for(const auto& component:take(world::components(app.document_->world().runtime(),actor.id()))) live.insert(component.id());}
+        for(const auto id:app.document_->material_objects()) live.insert(id);
+        const auto objects_snapshot=live;
+        for(const auto id:objects_snapshot) if(auto bindings=world::read_material_bindings(app.document_->world().runtime(),id);bindings)
+            for(const auto& binding:*bindings) live.insert(binding.resource.id());
         std::erase_if(handles,[&](const auto& entry) {if(live.contains(entry.first)) return false;objects.erase(entry.second);return true;});
     }
     bool member(ObjectId object) const {
+        const auto materials=app.document_->material_objects();if(std::ranges::find(materials,object)!=materials.end()) return true;
         auto actors=app.document_->world().members();if(!actors) return false;
         for(const auto& actor:*actors) {if(actor.id()==object) return true;auto components=world::components(app.document_->world().runtime(),actor.id());
-            if(components) for(const auto& component:*components) if(component.id()==object) return true;}
+            if(components) for(const auto& component:*components) {
+                if(component.id()==object) return true;
+                if(auto bindings=world::read_material_bindings(app.document_->world().runtime(),component.id());bindings)
+                    for(const auto& binding:*bindings) if(binding.resource.id()==object) return true;
+            }}
         return false;
     }
     ObjectId object(const Json& value) {
@@ -296,6 +317,15 @@ struct EditorControl::Impl {
         }
         if(auto transform=world::read_transform(runtime,id)) result["transform"]={{"position",vector3(transform->position)},
             {"rotation",{transform->rotation.x,transform->rotation.y,transform->rotation.z,transform->rotation.w}},{"scale",vector3(transform->scale)}};
+        if(auto bindings=world::read_material_bindings(runtime,id);bindings) {
+            result["materials"]=Json::array();
+            for(const auto& binding:*bindings) {
+                const auto state=take(material::read_material(runtime,binding.resource.id()));
+                result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
+                    {"parent",state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:""},
+                    {"parameter_mask",state.overrides},{"assignment_override",binding.overridden}});
+            }
+        }
         return result;
     }
     Json inspect() {
@@ -315,6 +345,7 @@ struct EditorControl::Impl {
         prune_handles();
         for(auto actor:app.document_->selected_actors()) result["selection"].push_back(handle(actor));
         result["inspected_object"]=handle(app.document_->selection().object);
+        result["dirty_materials"]=app.document_->dirty_materials();
         for(const auto& type:take(app.document_->component_types())) result["component_types"].push_back(type.name);
         for(const auto& asset:editor::mesh_assets()) result["assets"].push_back({{"key",asset.key},{"name",control::utf8(asset.name)},{"kind","mesh"}});
         if(app.project_) for(const auto& entry:app.project_->entries()) result["assets"].push_back({{"key",entry.key},{"path",control::utf8(entry.path.generic_wstring())},{"kind",static_cast<unsigned>(entry.kind)}});
@@ -334,6 +365,7 @@ struct EditorControl::Impl {
     }
     Json start_export(const std::string& id,const std::shared_ptr<control::Peer>& peer) {
         control_artifacts::Repro data;data.scene=take(app.document_->serialize());
+        data.materials=take(app.document_->material_assets());
         if(app.project_) {
             if(!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available) throw Failure("not_ready","Repair the project and load its scene before exporting a repro");
             data.project=app.project_->root();const auto& published=*app.project_code_->published_build();
@@ -392,6 +424,17 @@ struct EditorControl::Impl {
         auto& doc=*app.document_;auto& runtime=doc.world().runtime();
         if(op=="capabilities") return capabilities();
         if(op=="editor.inspect") return inspect();
+        if(op=="material.inspect") {
+            if(!app.project_) throw Failure("not_ready","No project is open");
+            if(args.contains("asset")==args.contains("object")) throw Failure("invalid_request","Specify exactly one material asset or object");
+            const auto target=args.contains("asset")?take(doc.material_resource(*app.project_,text(args.at("asset")))).id():object(args.at("object"));
+            if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
+            const auto state=take(material::read_material(runtime,target));
+            auto result=object_json(target);result["asset"]=state.source;
+            result["parent"]=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:"";
+            result["parameter_mask"]=state.overrides;
+            result["dirty"]=state.source.empty()?doc.dirty():doc.material_dirty(state.source);return result;
+        }
         if(op=="job.status" || op=="job.cancel") {
             const auto job_id=text(args.at("job_id"),80);for(auto& job:jobs) if(job->id==job_id) {
                 if(op=="job.cancel") cancel(*job,"cancelled","Cancelled by control client");
@@ -401,6 +444,39 @@ struct EditorControl::Impl {
             throw Failure("unknown_job","Job expired or belongs to another instance");
         }
         idle();
+        if(op.starts_with("material.") || op=="texture.import") {
+            if(!app.project_) throw Failure("not_ready","No project is open");
+            auto& project=*app.project_;
+            if(op=="material.create") return {{"asset",take(project.create_material(control::wide(text(args.at("path")))))}};
+            if(op=="texture.import") return {{"asset",take(project.import_texture(control::wide(text(args.at("path")))))}};
+            if(op=="material.save") {
+                take(doc.save_material(project,text(args.at("asset"))));const auto refreshed=project.refresh();
+                Json result{{"saved",true}};if(!refreshed) result["catalog_warning"]=refreshed.error().message;return result;
+            }
+            if(op=="material.undo" || op=="material.redo") {take(doc.material_undo(text(args.at("asset")),op=="material.redo"));return Json::object();}
+            if(op=="material.assign") {
+                const auto component=object(args.at("component"));const auto slot=text(args.at("slot")),asset=text(args.at("asset"));
+                if(asset.empty()) take(doc.clear_material(component,slot));else take(doc.assign_material(project,component,slot,asset));return Json::object();
+            }
+            if(op=="material.set_texture") {
+                const auto input=text(args.at("input"));const auto at=std::ranges::find(editor::material_format::names,input);
+                if(at==editor::material_format::names.end()) throw Failure("invalid_request","Unknown material input");
+                take(doc.set_material_texture(project,object(args.at("object")),static_cast<material::Input>(at-editor::material_format::names.begin()),text(args.at("texture"))));return Json::object();
+            }
+            auto target=op=="material.override"?ObjectId{}:object(args.at("object"));
+            ObjectId component;std::string slot;
+            if(op=="material.override") {
+                component=object(args.at("component"));slot=text(args.at("slot"));
+                const auto bindings=take(world::read_material_bindings(runtime,component));const auto at=std::ranges::find(bindings,slot,&world::MaterialBinding::slot);
+                if(at==bindings.end()) throw Failure("invalid_request","Assign a material to this slot first");target=at->resource.id();
+            }
+            if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
+            const auto properties=take(doc.properties(target));const auto name=text(args.at("property"));const auto found=std::ranges::find(properties,name,&editor::Property::name);
+            if(found==properties.end()) throw Failure("unknown_property","Unknown reflected material property");
+            if(op=="material.override") take(doc.set_material_override(component,slot,found->path,args.at("enabled").get<bool>()));
+            else take(doc.set_property(target,found->path,scalar_value(args.at("value"),found->value,runtime),++edit_id));
+            return Json::object();
+        }
         if(op=="project.open") {replaceable();take(app.open_project(control::wide(text(args.at("path")))));}
         else if(op=="scene.open") {replaceable();take(app.open_scene(control::wide(text(args.at("path")))));}
         else if(op=="scene.save") take(app.save_scene(control::wide(text(args.value("path",Json(""))))));

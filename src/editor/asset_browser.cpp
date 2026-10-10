@@ -9,12 +9,13 @@ namespace atelier::editor {
 namespace {
 std::wstring_view kind_name(AssetKind kind) {
     switch (kind) { case AssetKind::folder:return L"Folder"; case AssetKind::mesh:return L"Mesh";
-    case AssetKind::scene:return L"Scene"; case AssetKind::source:return L"Source"; default:return L"File"; }
+    case AssetKind::scene:return L"Scene"; case AssetKind::source:return L"Source";
+    case AssetKind::texture:return L"Texture";case AssetKind::material:return L"Material";default:return L"File"; }
 }
 std::wstring folded(std::wstring text) { for (auto& c:text) c=static_cast<wchar_t>(std::towlower(c)); return text; }
 bool matches_filter(const AssetBrowser::Item& item,std::wstring_view query,unsigned filter) {
     return (query.empty() || folded(item.name).find(query)!=std::wstring::npos) &&
-        (!filter || item.kind==AssetKind::folder || item.kind==(filter==1?AssetKind::mesh:filter==2?AssetKind::scene:AssetKind::source));
+        (!filter || item.kind==AssetKind::folder || item.kind==(filter==1?AssetKind::mesh:filter==2?AssetKind::scene:filter==3?AssetKind::source:filter==4?AssetKind::material:AssetKind::texture));
 }
 int compare_names(std::wstring_view a,std::wstring_view b) {
     for (std::size_t i=0;i<std::min(a.size(),b.size());++i) {
@@ -171,7 +172,7 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         items.push_back(std::move(item));
     };
     if (source==id::filter) {
-        const std::array names{L"All types",L"Meshes",L"Scenes",L"Source"};
+        const std::array names{L"All types",L"Meshes",L"Scenes",L"Source",L"Materials",L"Textures"};
         for (std::size_t i=0;i<names.size();++i) radio(id::filter_first+i,names[i],true,filter_==i);
     } else if (source==id::view_menu) {
         radio(id::list,L"List",true,view_==View::list,ui::ControlIcon::view_list);
@@ -189,11 +190,11 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         radio(id::engine,L"Engine",true,engine_,ui::ControlIcon::mesh);
     } else {
         if (source!=id::actions && source!=id::results) return {};
-        items.push_back({id::open,L"Open",selected_ && (selected_->kind==AssetKind::folder || selected_->kind==AssetKind::scene || selected_->kind==AssetKind::source),false,{}});
+        items.push_back({id::open,L"Open",selected_ && (selected_->kind==AssetKind::folder || selected_->kind==AssetKind::scene || selected_->kind==AssetKind::source || selected_->kind==AssetKind::material),false,{}});
         items.back().icon=ui::ControlIcon::folder;
         items.push_back({id::add,L"Add to Scene",can_create_ && selected_ && selected_->kind==AssetKind::mesh,false,{}});
         items.back().icon=ui::ControlIcon::plus;
-        for (const auto command:{Command::import_mesh,Command::refresh_assets}) {
+        for (const auto command:{Command::import_mesh,Command::import_texture,Command::create_material,Command::refresh_assets}) {
             const auto* definition=command_definition(static_cast<ui::ControlKey>(command));
             items.push_back({static_cast<ui::ControlKey>(command),std::wstring(definition->title),has_project_,false,{},std::wstring(definition->shortcut),command==Command::import_mesh});
         }
@@ -238,7 +239,7 @@ bool AssetBrowser::apply(const ui::Action& action) {
     if (action.key==browser_control::engine) {visit({true,{}});return true;}
     for (const auto& target:targets_) if (target.key==action.key) {navigate(target.item.path);return true;}
     if (action.kind!=ui::ActionKind::activate) return false;
-    if (action.key>=filter_first && action.key<filter_first+4) {filter_=static_cast<unsigned>(action.key-filter_first);filter_changed();return true;}
+    if (action.key>=filter_first && action.key<filter_first+6) {filter_=static_cast<unsigned>(action.key-filter_first);filter_changed();return true;}
     switch (action.key) {
     case back:if (navigation_cursor_) {const auto location=navigation_[--navigation_cursor_];visit(location,false);}return true;
     case up:if (!engine_ && !directory_.empty()) navigate(directory_.parent_path());return true;

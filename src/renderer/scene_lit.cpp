@@ -12,6 +12,7 @@
 #include <numbers>
 #include <string>
 #include <unordered_map>
+#include <map>
 #include <unordered_set>
 #include <utility>
 
@@ -37,7 +38,7 @@ float halton(std::uint32_t index,std::uint32_t base) {
 }
 struct GpuInstance {
     std::array<float,16> world,previous_world;
-    std::array<float,4> normal_x,normal_y,normal_z,base_roughness,emissive_metallic;
+    std::array<float,4> normal_x,normal_y,normal_z;
     std::array<std::uint32_t,4> geometry;
     bool operator==(const GpuInstance&) const=default;
 };
@@ -48,16 +49,20 @@ struct GpuLight {
 };
 struct GpuEmitter {
     std::array<float,4> origin_area,edge1_probability,edge2_accept;
-    std::array<float,3> emissive;
+    std::array<float,3> normal;
     std::uint32_t alias{};
+    std::uint32_t instance{},primitive{};
+    std::array<std::uint32_t,2> reserved{};
 };
 struct GpuRayTriangle {
     std::array<geometry::Vertex,3> vertices;
     TriangleVolume volume;
+    std::uint32_t material_slot{};
+    std::uint32_t closure_first{},closure_count{},reserved{};
 };
-static_assert(sizeof(GpuInstance)==224 && sizeof(GpuLight)==96 && sizeof(GpuEmitter)==64);
-static_assert(sizeof(geometry::Vertex)==32 && sizeof(SceneTriangle)==112);
-static_assert(sizeof(GpuRayTriangle)==112);
+static_assert(sizeof(GpuInstance)==192 && sizeof(GpuLight)==96 && sizeof(GpuEmitter)==80);
+static_assert(sizeof(geometry::Vertex)==48 && sizeof(SceneTriangle)==176);
+static_assert(sizeof(GpuRayTriangle)==176);
 std::uint32_t key_hash(std::uint64_t key) {return static_cast<std::uint32_t>(key^(key>>32));}
 }
 
@@ -72,11 +77,11 @@ struct SceneLit::State {
     std::array<GfxTimestampQuery,10> queries{}; // Eight stages plus DDGI update and gather.
     GfxSamplerState sampler;
     ui::PixelExtent extent{};
-    std::array<GfxTexture,5> gbuffer_textures{};
+    std::array<GfxTexture,6> gbuffer_textures{};
     GfxTexture hdr,indirect,ao_texture,ao_raw,reflection_trace,reflection_hit_trace,brdf_lut;
     struct DirectSignal { GfxTexture raw; std::array<GfxTexture,2> history{},moments{},scratch{}; };
     std::array<DirectSignal,2> direct_signals{}; // Diffuse/specular radiance with separate reconstruction support.
-    std::array<GfxTexture,2> history_depth{},history_normal{},taa_history{},reflection_history{},reflection_hit_history{},reflection_moments{},reflection_scratch{},ao_history{},bloom{};
+    std::array<GfxTexture,2> history_depth{},history_normal{},history_geometry_normal{},taa_history{},reflection_history{},reflection_hit_history{},reflection_moments{},reflection_scratch{},ao_history{},bloom{};
     GfxTexture tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search;
     std::array<GfxTexture,2> smaa_spatial{};
     GfxTexture ssil_raw,ssil_irradiance;
@@ -86,7 +91,7 @@ struct SceneLit::State {
     std::array<GfxTexture,2> probe_irradiance{},probe_target{},probe_distance{},probe_offsets{};
     std::array<std::uint32_t,3> probe_counts{};
     std::array<float,3> probe_min{},probe_max{};
-    GfxBuffer gpu_instances,gpu_lights,gpu_emitters,rt_triangles,tile_counts,tile_indices,reflection_work,reflection_counter,reflection_arguments;
+    GfxBuffer gpu_instances,gpu_lights,gpu_emitters,rt_triangles,rt_closed_slots,tile_counts,tile_indices,reflection_work,reflection_counter,reflection_arguments;
     GfxBuffer ray_counters;
     static constexpr std::size_t readback_count=32;
     std::array<GfxBuffer,readback_count> ray_readback{};
@@ -98,15 +103,17 @@ struct SceneLit::State {
         GfxGeometry geometry;
         GfxBottomLevelAccelerationStructure blas;
         std::vector<TriangleVolume> volumes;
+        std::map<std::uint32_t,std::vector<std::uint32_t>> component_slots;
         std::uint32_t offset{};
-        bool used{};
+        bool used{},opaque{true},next_opaque{true};
     };
     struct Object {
         GfxTopLevelAccelerationStructureInstance instance;
         const geometry::Mesh* geometry{};
         std::array<float,16> world{};
         std::array<float,4> normal_x{},normal_y{},normal_z{};
-        std::array<float,4> base_roughness{},emissive_metallic{};
+        std::vector<material::Description> surfaces;
+        bool emitting{};
         bool used{};
     };
     struct ObjectKey {
@@ -127,6 +134,7 @@ struct SceneLit::State {
     std::vector<GpuEmitter> emitters;
     std::vector<std::uint32_t> shadow_lights;
     std::vector<GpuRayTriangle> packed_triangles;
+    std::vector<std::uint32_t> packed_closed_slots;
     std::vector<ObjectKey> object_keys,previous_object_keys;
     std::vector<std::pair<LightKind,std::uint64_t>> light_sort_keys;
     std::vector<std::size_t> light_order;
@@ -141,6 +149,7 @@ struct SceneLit::State {
     Antialiasing previous_antialiasing{Antialiasing::none};
     bool history_valid{},enabled{},probe_valid{},brdf_ready{},tlas_built{};
     bool light_changed{},material_changed{},emitter_changed{};
+    const MaterialFrame* material_frame{};
     explicit State(rhi::Context& owner):context(owner),gfx(owner.borrow()){}
 
     template<class T> void bind(GfxProgram p,const char* name,const T& value) {
@@ -167,6 +176,7 @@ struct SceneLit::State {
         rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Scene Lit GBuffer";
         for(std::uint32_t i=0;i<4;i++)require(gfxDrawStateSetColorTarget(desc.draw_state,i,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set GBuffer format");
         require(gfxDrawStateSetColorTarget(desc.draw_state,4,DXGI_FORMAT_R32_FLOAT),"Set previous surface depth format");
+        require(gfxDrawStateSetColorTarget(desc.draw_state,5,DXGI_FORMAT_R16G16_FLOAT),"Set geometric normal format");
         require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set GBuffer depth");
         require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set GBuffer reversed depth");
         require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set GBuffer culling");
@@ -219,7 +229,7 @@ struct SceneLit::State {
     void retire_targets() {
         for(auto& t:gbuffer_textures)retire(t);
         for(auto* t:{&hdr,&indirect,&ao_texture,&ao_raw,&reflection_trace,&reflection_hit_trace,&tone_color,&smaa_edges,&smaa_weights,&smaa_output,&ssil_raw,&ssil_irradiance})retire(*t);
-        for(auto* pair:{&history_depth,&history_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&bloom,&smaa_spatial,&ssil_history})for(auto& t:*pair)retire(t);
+        for(auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&bloom,&smaa_spatial,&ssil_history})for(auto& t:*pair)retire(t);
         for(auto& signal:direct_signals){retire(signal.raw);for(auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto& t:*pair)retire(t);}
         for(auto& t:pyramid)retire(t);
         for(auto* b:{&tile_counts,&tile_indices,&reflection_work,&reflection_counter,&reflection_arguments})retire(*b);
@@ -228,7 +238,7 @@ struct SceneLit::State {
         if(extent==next)return;
         retire_targets();extent=next;
         const auto w=next.width,h=next.height;
-        for(std::size_t i=0;i<gbuffer_textures.size();++i)gbuffer_textures[i]=texture(w,h,i==4?DXGI_FORMAT_R32_FLOAT:DXGI_FORMAT_R16G16B16A16_FLOAT,i==4?4:8);
+        for(std::size_t i=0;i<gbuffer_textures.size();++i)gbuffer_textures[i]=texture(w,h,i==4?DXGI_FORMAT_R32_FLOAT:(i==5?DXGI_FORMAT_R16G16_FLOAT:DXGI_FORMAT_R16G16B16A16_FLOAT),i>=4?4:8);
         for(auto* t:{&hdr,&indirect,&reflection_trace,&tone_color,&smaa_output})*t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         reflection_hit_trace=texture(w,h,DXGI_FORMAT_R32G32_UINT,8);
         ao_texture=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
@@ -236,6 +246,7 @@ struct SceneLit::State {
         for(auto* pair:{&history_normal,&taa_history,&reflection_history,&reflection_scratch,&smaa_spatial})for(auto& t:*pair)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         for(auto& t:reflection_hit_history)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
         for(auto& t:reflection_moments)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
+        for(auto& t:history_geometry_normal)t=texture(w,h,DXGI_FORMAT_R16G16_FLOAT,4);
         for(auto& t:ao_history)t=texture(w,h,DXGI_FORMAT_R16G16_FLOAT,4);
         smaa_edges=texture(w,h,DXGI_FORMAT_R8G8B8A8_UNORM,4);smaa_weights=texture(w,h,DXGI_FORMAT_R8G8B8A8_UNORM,4);
         for(auto& signal:direct_signals) {
@@ -266,19 +277,21 @@ struct SceneLit::State {
         probe_valid=false;probe_parity=0;probe_cursor=0;probe_updates_pending=0;probe_geometry_pending=0;probe_sequence=0;
     }
     void common(GfxProgram p,GfxTexture depth,std::uint32_t visibility_counter=0) {
+        bind_materials(gfx,p,*material_frame);
         bind(p,"lit_size_frame",size_frame);bind(p,"lit_viewport",viewport);bind(p,"lit_view_projection",view_projection);
         bind(p,"lit_inverse_view_projection",inverse_view_projection);bind(p,"lit_previous_view_projection",previous_view_projection);
         bind(p,"lit_previous_inverse_view_projection",previous_inverse_view_projection);
         bind(p,"lit_camera_position",camera);bind(p,"lit_environment",environment);bind(p,"lit_controls",controls);
         bind(p,"lit_temporal",temporal);bind(p,"lit_jitter",jitter);bind(p,"lit_counts",counts);
         bind(p,"lit_history_invalid",history_invalid);
-        bind(p,"lit_instances",gpu_instances);bind(p,"lit_lights",gpu_lights);bind(p,"lit_rt_triangles",rt_triangles);
+        bind(p,"lit_instances",gpu_instances);bind(p,"lit_lights",gpu_lights);bind(p,"lit_rt_triangles",rt_triangles);bind(p,"lit_closed_slots",rt_closed_slots);
         bind(p,"lit_emitters",gpu_emitters);bind(p,"lit_emitter_count",static_cast<std::uint32_t>(emitters.size()));
         bind(p,"lit_scene",tlas);bind(p,"lit_depth",depth);bind(p,"lit_normal_roughness",gbuffer_textures[0]);
         bind(p,"lit_ray_counters",ray_counters);
         bind(p,"lit_visibility_counter",visibility_counter);
         bind(p,"lit_base_metallic",gbuffer_textures[1]);bind(p,"lit_emissive",gbuffer_textures[2]);bind(p,"lit_motion",gbuffer_textures[3]);
         bind(p,"lit_previous_depth",gbuffer_textures[4]);
+        bind(p,"lit_geometry_normal",gbuffer_textures[5]);bind(p,"lit_history_geometry_normal",history_geometry_normal[1-parity]);
         bind(p,"lit_linear_sampler",sampler);bind(p,"lit_history_depth",history_depth[1-parity]);bind(p,"lit_history_normal",history_normal[1-parity]);
         bind(p,"lit_hdr_source",hdr);bind(p,"lit_brdf_lut",brdf_lut);
         bind(p,"lit_temporal",temporal);
@@ -328,10 +341,10 @@ struct SceneLit::State {
             result+=std::uint64_t(t.getWidth())*t.getHeight()*t.getDepth()*bytes;};
         for(auto t:gbuffer_textures)add_texture(t);
         for(auto t:{hdr,indirect,ao_texture,ao_raw,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,ssil_raw,ssil_irradiance})add_texture(t);
-        for(const auto* pair:{&history_depth,&history_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&ssil_history,&bloom,&probe_irradiance,&probe_target,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
+        for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&ssil_history,&bloom,&probe_irradiance,&probe_target,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(const auto& signal:direct_signals){add_texture(signal.raw);for(const auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto t:*pair)add_texture(t);}
         for(auto t:pyramid)add_texture(t);
-        for(auto b:{gpu_instances,gpu_lights,gpu_emitters,rt_triangles,tile_counts,tile_indices,reflection_work,reflection_counter,reflection_arguments,ray_counters})result+=b.getSize();
+        for(auto b:{gpu_instances,gpu_lights,gpu_emitters,rt_triangles,rt_closed_slots,tile_counts,tile_indices,reflection_work,reflection_counter,reflection_arguments,ray_counters})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
         for(const auto& [key,g]:geometries){(void)key;result+=g.positions.getSize()+gfxBottomLevelAccelerationStructureGetDataSize(gfx,g.blas);}
         if(tlas)result+=gfxTopLevelAccelerationStructureGetDataSize(gfx,tlas);
@@ -344,20 +357,41 @@ struct SceneLit::State {
         bool geometry_changed=false,topology_changed=false,transform_changed=false;
         bool instances_changed=instances.size()!=frame.meshes.size();
         if(!tlas){tlas=gfxCreateTopLevelAccelerationStructure(gfx);allocation(bool(tlas));}
-        for(auto& [key,g]:geometries){(void)key;g.used=false;}
+        for(auto& [key,g]:geometries){(void)key;g.used=false;g.next_opaque=true;}
         for(auto& [key,o]:objects){(void)key;o.used=false;}
-        for(const auto& mesh:frame.meshes) {
-            auto [found,inserted]=geometries.try_emplace(mesh.geometry.get());auto& g=found->second;g.used=true;
-            if(inserted) {
-                g.source=mesh.geometry;g.volumes=triangle_volumes(*g.source);const auto vertices=g.source->vertices();
+        for(std::size_t i=0;i<frame.meshes.size();++i) {
+            const auto& mesh=frame.meshes[i];bool opaque=true;
+            for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
+                opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
+            auto [at,added]=geometries.try_emplace(mesh.geometry.get());auto& g=at->second;
+            if(added)g.source=mesh.geometry;
+            g.used=true;g.next_opaque &= opaque;
+        }
+        // Aggregate coverage in the owning geometry cache. Repeated frames and
+        // instances share it without allocating a second per-frame hash table.
+        for(auto& [key,g]:geometries) {
+            (void)key;if(!g.used)continue;
+            if(!g.blas) {
+                g.volumes=triangle_volumes(*g.source);const auto vertices=g.source->vertices();
+                for(std::size_t i=0;i<g.volumes.size();++i)if(g.volumes[i].closed)
+                    g.component_slots[g.volumes[i].closed].push_back(g.source->material_slot(i));
+                for(auto& [component,slots]:g.component_slots) {
+                    (void)component;std::sort(slots.begin(),slots.end());slots.erase(std::unique(slots.begin(),slots.end()),slots.end());
+                }
                 g.positions=gfxCreateBuffer<geometry::Vertex>(gfx,static_cast<std::uint32_t>(vertices.size()),vertices.data());allocation(bool(g.positions));
                 auto range=gfxCreateBufferRange(gfx,g.positions,0,g.positions.getSize());allocation(bool(range));
                 g.geometry=gfxCreateGeometryTriangles(gfx,range,sizeof(geometry::Vertex));allocation(bool(g.geometry));
-                require(gfxGeometrySetOpaque(gfx,g.geometry,true),"Set opaque RT geometry");
+                g.opaque=g.next_opaque;
+                require(gfxGeometrySetOpaque(gfx,g.geometry,g.opaque),"Set RT material coverage");
                 g.blas=gfxCreateBottomLevelAccelerationStructure(gfx);allocation(bool(g.blas));
                 require(gfxBottomLevelAccelerationStructureAddGeometry(gfx,g.blas,g.geometry),"Attach RT mesh geometry");
                 const GfxBuildBottomLevelASFlags flags=kGfxBuildBottomLevelASFlag_FastTrace;
                 require(gfxBuildBottomLevelAccelerationStructures(gfx,&g.blas,&flags,1),"Build static mesh BLAS");geometry_changed=true;
+            } else if(g.opaque!=g.next_opaque) {
+                g.opaque=g.next_opaque;
+                require(gfxGeometrySetOpaque(gfx,g.geometry,g.opaque),"Change RT material coverage");
+                const GfxBuildBottomLevelASFlags flags=kGfxBuildBottomLevelASFlag_FastTrace;
+                require(gfxBuildBottomLevelAccelerationStructures(gfx,&g.blas,&flags,1),"Rebuild changed material coverage BLAS");topology_changed=true;
             }
         }
         object_keys.clear();object_keys.reserve(frame.meshes.size());instances.resize(frame.meshes.size());
@@ -368,23 +402,28 @@ struct SceneLit::State {
             GpuInstance instance{};instance.world=mesh.world;instance.previous_world=correspondence?object.world:mesh.world;
             if(inserted||object.world!=mesh.world) {
                 const auto inverse=math::try_inverse(matrix(mesh.world));allocation(bool(inverse));
+                const auto& inv=inverse->elements;
+                const double determinant=inv[0]*(inv[5]*inv[10]-inv[6]*inv[9])-inv[1]*(inv[4]*inv[10]-inv[6]*inv[8])+inv[2]*(inv[4]*inv[9]-inv[5]*inv[8]);
+                object.normal_x[3]=determinant<0?-1.f:1.f;
                 double maximum=0;for(std::size_t r=0;r<3;r++)for(std::size_t c=0;c<3;c++)maximum=std::max(maximum,std::abs(inverse->elements[c*4+r]));
                 for(std::size_t c=0;c<3;c++){object.normal_x[c]=static_cast<float>(inverse->elements[c*4]/maximum);
                     object.normal_y[c]=static_cast<float>(inverse->elements[c*4+1]/maximum);object.normal_z[c]=static_cast<float>(inverse->elements[c*4+2]/maximum);}
             }
             instance.normal_x=object.normal_x;instance.normal_y=object.normal_y;instance.normal_z=object.normal_z;
-            instance.base_roughness={mesh.color.r,mesh.color.g,mesh.color.b,mesh.material.roughness};
-            instance.emissive_metallic={mesh.material.emissive[0],mesh.material.emissive[1],mesh.material.emissive[2],mesh.material.metallic};
-            const bool surface_changed=!inserted&&(object.base_roughness!=instance.base_roughness||object.emissive_metallic!=instance.emissive_metallic);
+            const auto descriptions=std::span(material_frame->descriptions).subspan(material_frame->offsets[index],mesh.geometry->materials().size());
+            const bool surface_changed=!inserted&&!std::ranges::equal(object.surfaces,descriptions);
             material_changed|=surface_changed;
-            const auto emitting=[](const auto& e){return e[0]>0||e[1]>0||e[2]>0;};
-            if(emitting(instance.emissive_metallic)||emitting(object.emissive_metallic))
-                emitter_changed|=inserted||object.geometry!=mesh.geometry.get()||object.world!=mesh.world||
-                    !std::equal(instance.emissive_metallic.begin(),instance.emissive_metallic.begin()+3,object.emissive_metallic.begin());
-            object.base_roughness=instance.base_roughness;object.emissive_metallic=instance.emissive_metallic;
+            bool emitting=false;
+            for(const auto& surface:descriptions) {
+                const auto& e=surface.parameters.emissive;emitting|=e[0]>0||e[1]>0||e[2]>0;
+            }
+            if(emitting||object.emitting)
+                emitter_changed|=inserted||object.geometry!=mesh.geometry.get()||object.world!=mesh.world||surface_changed;
+            if(inserted||surface_changed)object.surfaces.assign(descriptions.begin(),descriptions.end());
+            object.emitting=emitting;
             // Keep geometric motion, but edited material/radiance has no valid
             // previous shading observation, including when seen through SSR.
-            instance.geometry={geometries.at(mesh.geometry.get()).offset,static_cast<std::uint32_t>(mesh.geometry->vertices().size()),correspondence&&!surface_changed?1u:0u,key_hash(key.value)^(key.legacy?0x9e3779b9u:0u)};
+            instance.geometry={geometries.at(mesh.geometry.get()).offset,0,correspondence&&!surface_changed?1u:0u,key_hash(key.value)^(key.legacy?0x9e3779b9u:0u)};
             instances_changed|=instances[index]!=instance;instances[index]=instance;
             if(inserted){object.instance=gfxCreateTopLevelAccelerationStructureInstance(gfx);allocation(bool(object.instance));
                 require(gfxTopLevelAccelerationStructureAddInstance(gfx,tlas,object.instance),"Attach RT scene instance");topology_changed=true;}
@@ -400,7 +439,7 @@ struct SceneLit::State {
         }
         for(auto it=objects.begin();it!=objects.end();) {
             if(it->second.used){++it;continue;}
-            const auto& e=it->second.emissive_metallic;emitter_changed|=e[0]>0||e[1]>0||e[2]>0;
+            emitter_changed|=it->second.emitting;
             require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,it->second.instance),"Detach removed RT instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,it->second.instance),"Retire removed RT instance");it=objects.erase(it);topology_changed=true;
         }
@@ -410,9 +449,27 @@ struct SceneLit::State {
             require(gfxDestroyGeometry(gfx,g.geometry),"Retire unused RT geometry");retire(g.positions);it=geometries.erase(it);geometry_changed=true;
         }
         if(geometry_changed) {
-            packed_triangles.clear();for(auto& [key,g]:geometries){(void)key;g.offset=static_cast<std::uint32_t>(packed_triangles.size());
+            packed_triangles.clear();packed_closed_slots.clear();
+            for(auto& [key,g]:geometries) {
+                (void)key;g.offset=static_cast<std::uint32_t>(packed_triangles.size());
+                std::map<std::uint32_t,std::array<std::uint32_t,2>> ranges;
+                for(const auto& [component,slots]:g.component_slots) {
+                    // A single-slot component needs only the hit material's
+                    // coverage flag. Multi-slot shells inspect their other slots.
+                    if(slots.size()>1) {
+                        ranges[component]={static_cast<std::uint32_t>(packed_closed_slots.size()),static_cast<std::uint32_t>(slots.size())};
+                        packed_closed_slots.insert(packed_closed_slots.end(),slots.begin(),slots.end());
+                    }
+                }
                 const auto vertices=g.source->vertices();
-                for(std::size_t i=0;i<g.volumes.size();++i)packed_triangles.push_back({{vertices[i*3],vertices[i*3+1],vertices[i*3+2]},g.volumes[i]});}
+                for(std::size_t i=0;i<g.volumes.size();++i) {
+                    const auto at=ranges.find(g.volumes[i].closed);
+                    const auto range=at==ranges.end()?std::array<std::uint32_t,2>{}:at->second;
+                    packed_triangles.push_back({{vertices[i*3],vertices[i*3+1],vertices[i*3+2]},g.volumes[i],g.source->material_slot(i),range[0],range[1],0});
+                }
+            }
+            retire(rt_closed_slots);
+            rt_closed_slots=gfxCreateBuffer<std::uint32_t>(gfx,std::max(1u,static_cast<std::uint32_t>(packed_closed_slots.size())),packed_closed_slots.empty()?nullptr:packed_closed_slots.data());allocation(bool(rt_closed_slots));
             retire(rt_triangles);rt_triangles=gfxCreateBuffer<GpuRayTriangle>(gfx,static_cast<std::uint32_t>(packed_triangles.size()),packed_triangles.data());allocation(bool(rt_triangles));
         }
         for(std::size_t i=0;i<instances.size();i++) {
@@ -424,6 +481,7 @@ struct SceneLit::State {
         // surviving stable objects retain it even if their GPU indices change.
         if(!tlas_built||topology_changed) {require(gfxTopLevelAccelerationStructureBuild(gfx,tlas),"Build scene TLAS");tlas_built=true;}
         else if(transform_changed||object_keys!=previous_object_keys)require(gfxTopLevelAccelerationStructureUpdate(gfx,tlas),"Update scene TLAS");
+        emitter_changed|=object_keys!=previous_object_keys;
         previous_object_keys=object_keys;
         if(emitter_changed||!gpu_emitters)emitter_distribution(frame);
         if(instances_changed||!gpu_instances) {
@@ -439,17 +497,20 @@ struct SceneLit::State {
         emitters.clear();std::vector<double> powers;
         std::vector<std::size_t> sources;
         for(std::size_t i=0;i<frame.meshes.size();++i) {
-            const auto& e=frame.meshes[i].material.emissive;
-            if(e[0]>0||e[1]>0||e[2]>0)sources.push_back(i);
+            if(objects.at(object_keys[i]).emitting)sources.push_back(i);
         }
         std::sort(sources.begin(),sources.end(),[&](auto a,auto b){
             const auto x=object_keys[a],y=object_keys[b];return x.legacy!=y.legacy?x.legacy<y.legacy:x.value<y.value;});
         double total_power=0;
         for(auto index:sources) {
             const auto& mesh=frame.meshes[index];const auto vertices=mesh.geometry->vertices();const auto world=matrix(mesh.world);
-            const auto& emission=mesh.material.emissive;
-            const double luminance=.2126*emission[0]+.7152*emission[1]+.0722*emission[2];
             for(std::size_t first=0;first+2<vertices.size();first+=3) {
+                const auto& surface=material_frame->surface(index,mesh.geometry->material_slot(first/3));
+                const auto& emission=surface.parameters.emissive;
+                const auto& image=surface.texture(material::Input::emissive).image;
+                const auto mean=image?image->mean_linear():std::array<float,3>{1,1,1};
+                const double luminance=.2126*emission[0]*mean[0]+.7152*emission[1]*mean[1]+.0722*emission[2]*mean[2];
+                if(luminance<=0)continue;
                 const auto position=[&](std::size_t vertex){const auto& p=vertices[vertex].position;
                     return math::transform_point(math::Vector3d{p[0],p[1],p[2]},world);};
                 const auto a=position(first),b=position(first+1),c=position(first+2);
@@ -458,12 +519,18 @@ struct SceneLit::State {
                 if(area==0)continue;
                 invalid(std::isfinite(area)&&area<=std::numeric_limits<float>::max(),"Emissive triangle area exceeds GPU representation");
                 GpuEmitter emitter{};emitter.origin_area[3]=static_cast<float>(area);
+                emitter.instance=static_cast<std::uint32_t>(index);emitter.primitive=static_cast<std::uint32_t>(first/3);
                 if(emitter.origin_area[3]==0)continue;
+                const auto& face_normal=geometries.at(mesh.geometry.get()).volumes[first/3].normal;
+                const auto& instance=instances[index];std::array<double,3> normal{};
+                for(std::size_t axis=0;axis<3;++axis)
+                    normal[axis]=double(face_normal[0])*instance.normal_x[axis]+double(face_normal[1])*instance.normal_y[axis]+double(face_normal[2])*instance.normal_z[axis];
+                const double normal_length=std::hypot(normal[0],normal[1],normal[2]);
                 for(std::size_t axis=0;axis<3;++axis) {
                     for(double value:{a[axis],edge1[axis],edge2[axis]})
                         invalid(std::isfinite(value)&&std::abs(value)<=std::numeric_limits<float>::max(),"Emissive triangle exceeds GPU representation");
                     emitter.origin_area[axis]=static_cast<float>(a[axis]);emitter.edge1_probability[axis]=static_cast<float>(edge1[axis]);
-                    emitter.edge2_accept[axis]=static_cast<float>(edge2[axis]);emitter.emissive[axis]=emission[axis];
+                    emitter.edge2_accept[axis]=static_cast<float>(edge2[axis]);emitter.normal[axis]=static_cast<float>(normal[axis]/normal_length);
                 }
                 emitters.push_back(emitter);powers.push_back(area*luminance);total_power+=powers.back();
             }
@@ -529,7 +596,8 @@ struct SceneLit::State {
             allocation(bool(gpu_lights));
         }
     }
-    void draw(const Frame& frame,ui::PixelExtent next,GfxTexture depth,std::span<const SceneLitDraw> draws,FrameStats& stats) {
+    void draw(const Frame& frame,ui::PixelExtent next,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats) {
+        material_frame=&materials;
         pipelines();publish_gpu_sample(stats);begin(1);const auto& settings=frame.view.lit;lighting(frame);targets(next);
         if(!enabled||scene_identity!=frame.scene_identity)reset();
         else if(frame.camera_cut)reset(false);
@@ -578,12 +646,12 @@ struct SceneLit::State {
         // hits. Keep visibility changes distinct from authored radiance edits:
         // they shorten support without globally clamping stochastic observations.
         temporal={.9f,settings.reflection_roughness,radiance_changed?1.f:0.f,transform_changed?1.f:0.f};jitter={jx,jy,jitter[0],jitter[1]};
-        begin(0);for(std::uint32_t i=0;i<5;i++){require(gfxCommandClearTexture(gfx,gbuffer_textures[i]),"Clear Scene Lit GBuffer");require(gfxCommandBindColorTarget(gfx,i,gbuffer_textures[i]),"Bind Scene Lit GBuffer");}
+        begin(0);for(std::uint32_t i=0;i<gbuffer_textures.size();i++){require(gfxCommandClearTexture(gfx,gbuffer_textures[i]),"Clear Scene Lit GBuffer");require(gfxCommandBindColorTarget(gfx,i,gbuffer_textures[i]),"Bind Scene Lit GBuffer");}
         require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit primary depth");common(gbuffer.program(),depth);
         require(gfxCommandBindKernel(gfx,gbuffer.kernel()),"Bind Scene Lit raster pipeline");
         for(const auto& draw:draws){bind(gbuffer.program(),"lit_triangles",draw.triangles);bind(gbuffer.program(),"lit_first_instance",draw.first);
-            require(gfxCommandDraw(gfx,draw.vertex_count,draw.count),"Draw Scene Lit opaque geometry");stats.scene_draw_calls++;}
-        for(std::uint32_t i=0;i<5;i++)require(gfxCommandBindColorTarget(gfx,i,{}),"Unbind Scene Lit GBuffer");
+            require(gfxCommandDraw(gfx,draw.vertex_count,draw.count),"Draw Scene Lit surface geometry");stats.scene_draw_calls++;}
+        for(std::uint32_t i=0;i<gbuffer_textures.size();i++)require(gfxCommandBindColorTarget(gfx,i,{}),"Unbind Scene Lit GBuffer");
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind Scene Lit primary depth");end(0);
         const auto dx=(next.width+7)/8,dy=(next.height+7)/8;
         begin(2);bind(tiles.program(),"lit_tile_counts_output",tile_counts);bind(tiles.program(),"lit_tile_indices_output",tile_indices);
@@ -681,7 +749,7 @@ struct SceneLit::State {
             bind(p,"lit_reflection_hit_trace",reflection_hit_trace);bind(p,"lit_reflection_filter_step",1u<<step);dispatch(reflection_filter,depth,dx,dy);}
         end(5);
         begin(6);bind(taa.program(),"lit_reflection",settings.sssr?reflection_scratch[0]:reflection_history[parity]);bind(taa.program(),"lit_reflection_moments",reflection_moments[parity]);bind(taa.program(),"lit_taa_previous",taa_history[1-parity]);bind(taa.program(),"lit_taa_output",taa_history[parity]);
-        bind(taa.program(),"lit_history_depth_output",history_depth[parity]);bind(taa.program(),"lit_history_normal_output",history_normal[parity]);dispatch(taa,depth,dx,dy);end(6);
+        bind(taa.program(),"lit_history_depth_output",history_depth[parity]);bind(taa.program(),"lit_history_normal_output",history_normal[parity]);bind(taa.program(),"lit_history_geometry_normal_output",history_geometry_normal[parity]);dispatch(taa,depth,dx,dy);end(6);
         begin(7);const std::array<float,4> bloom_controls{1,.5f,settings.bloom?.04f:0.f,64};
         if(settings.bloom) {
         bind(bloom_downsample.program(),"lit_taa",taa_history[parity]);bind(bloom_downsample.program(),"lit_bloom_output",bloom[0]);bind(bloom_downsample.program(),"lit_bloom_controls",bloom_controls);
@@ -716,9 +784,9 @@ struct SceneLit::State {
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,o.instance),"Retire Scene Lit instance");}objects.clear();
         if(tlas)require(gfxDestroyTopLevelAccelerationStructure(gfx,std::exchange(tlas,{})),"Retire Scene Lit TLAS");
         for(auto& [key,g]:geometries){(void)key;require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire Scene Lit BLAS");require(gfxDestroyGeometry(gfx,g.geometry),"Retire Scene Lit geometry");retire(g.positions);}geometries.clear();
-        for(auto* b:{&gpu_instances,&gpu_lights,&gpu_emitters,&rt_triangles})retire(*b);
+        for(auto* b:{&gpu_instances,&gpu_lights,&gpu_emitters,&rt_triangles,&rt_closed_slots})retire(*b);
         std::vector<GpuInstance>{}.swap(instances);std::vector<GpuEmitter>{}.swap(emitters);
-        std::vector<GpuRayTriangle>{}.swap(packed_triangles);lights.clear();previous_lights.clear();
+        std::vector<GpuRayTriangle>{}.swap(packed_triangles);std::vector<std::uint32_t>{}.swap(packed_closed_slots);lights.clear();previous_lights.clear();
         object_keys.clear();previous_object_keys.clear();light_order.clear();light_sort_keys.clear();shadow_lights.clear();
         tlas_built=false;
     }
@@ -751,8 +819,8 @@ void SceneLit::validate(const Frame& frame) const {
     std::uint64_t total=1;for(std::size_t i=0;i<3;i++){invalid(finite(s.probe_min[i])&&finite(s.probe_max[i])&&s.probe_max[i]>s.probe_min[i]&&s.probe_counts[i]>=2&&s.probe_counts[i]<=32,"Invalid Scene Lit probe volume");total*=s.probe_counts[i];}
     invalid(total<=4096,"Scene Lit probe volume exceeds 4096 probes");
     std::unordered_set<std::uint64_t> mesh_keys,light_keys;
-    for(const auto& mesh:frame.meshes){const auto& m=mesh.material;invalid(finite(m.roughness)&&m.roughness>=0&&m.roughness<=1&&finite(m.metallic)&&m.metallic>=0&&m.metallic<=1,"Invalid Scene Lit material");
-        for(float e:m.emissive)invalid(finite(e)&&e>=0&&e<=65504,"Invalid Scene Lit emissive");if(mesh.stable_key)invalid(mesh_keys.insert(mesh.stable_key).second,"Duplicate stable mesh identity");}
+    for(const auto& mesh:frame.meshes)if(mesh.stable_key)
+        invalid(mesh_keys.insert(mesh.stable_key).second,"Duplicate stable mesh identity");
     for(const auto& l:frame.lights){invalid(l.kind<=LightKind::directional&&finite(l.intensity)&&l.intensity>=0&&finite(l.range)&&l.range>=0&&finite(l.source_radius)&&l.source_radius>=0&&finite(l.width)&&l.width>=0&&finite(l.height)&&l.height>=0,"Invalid Scene Lit light");
         invalid(l.kind==LightKind::directional||l.range>0,"Local light range must be positive");
         invalid(l.kind!=LightKind::rectangle||(l.width>0&&l.height>0),"Rectangle dimensions must be positive");
@@ -764,7 +832,7 @@ void SceneLit::validate(const Frame& frame) const {
         }
         if(l.kind==LightKind::directional)invalid(double(l.source_radius)<std::numbers::pi_v<double>/2,"Directional source angular radius is too large");if(l.stable_key)invalid(light_keys.insert(l.stable_key).second,"Duplicate stable light identity");}
 }
-void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,std::span<const SceneLitDraw> draws,FrameStats& stats){state_->draw(frame,extent,depth,draws,stats);}
+void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats){state_->draw(frame,extent,depth,draws,materials,stats);}
 void SceneLit::invalidate(bool empty_scene,FrameStats& stats) {
     state_->enabled=false;state_->reset();if(empty_scene)state_->retire_scene();
     stats.scene_lit_resource_bytes=state_->resource_bytes();

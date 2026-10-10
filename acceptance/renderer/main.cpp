@@ -272,10 +272,18 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
 #include "scene_lit.inl"
 } // namespace
 #include "materials.inl"
+#include "cavity.inl"
 
 int main(int argc, char** argv) try {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    if (argc > 1) {
+    const bool materials_only=argc>1&&std::string_view(argv[1])=="--materials";
+    const bool cavity_only=argc>1&&std::string_view(argv[1])=="--cavity";
+    std::filesystem::path material_output;
+    if(materials_only||cavity_only) {
+        check(argc==2||(argc==4&&std::string_view(argv[2])=="--output"),"usage: --materials|--cavity [--output <absolute-directory>]");
+        if(argc==4) {material_output=std::filesystem::path(argv[3]);check(material_output.is_absolute(),"Evidence path must be absolute");std::filesystem::create_directories(material_output);}
+    }
+    if (argc > 1&&!materials_only&&!cavity_only) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
                   (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts"),
@@ -289,7 +297,11 @@ int main(int argc, char** argv) try {
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
-    material_cases(renderer);
+    if(!materials_only)cavity_cases(renderer,window,material_output);
+    if(cavity_only){check(bool(renderer.close()),"close cavity renderer");check(bool(renderer.close()),"repeat cavity renderer close");return 0;}
+    material_cases(renderer,material_output);
+    material_transport_cases(renderer,material_output);
+    if(materials_only){check(bool(renderer.close()),"close material renderer");return 0;}
     ui_only_cases(renderer, window);
     auto target = take(renderer.target());
     check(target.drawable && target.extent == ui::PixelExtent{641, 385}, "actual initial target");
@@ -340,7 +352,8 @@ int main(int argc, char** argv) try {
     check(pixel(capture, 240, 200)[1] > pixel(initial, 240, 200)[1] + 60 &&
           pixel(capture, 360, 200)[1] == pixel(initial, 360, 200)[1],
           "selection highlights polygon edges while preserving the surface");
-    check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 1 &&
+    // Cavity composites before selected edges; UI coverage activity remains unchanged.
+    check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 2 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 10,
           "unchanged coverage reuses cache without accumulating per-frame activity");
@@ -374,7 +387,7 @@ int main(int argc, char** argv) try {
     for (int i = 0; i < 12; ++i) {
         ++ui_frame.id;
         result = take(renderer.render(frame));
-        check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 1 &&
+        check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
                   result.stats.coverage_upload_count == (i == 0 ? 1u : 0u) &&
                   result.stats.coverage_upload_bytes == (i == 0 ? 6u : 0u) &&
                   result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
@@ -391,7 +404,7 @@ int main(int argc, char** argv) try {
     ui_frame.draws.push_back({{0, 0, 30, 20}, {}, {1, 1, 1, 1}, {0, 0, 1, 1}, hidden});
     ++ui_frame.id;
     result = take(renderer.render(frame));
-    check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 1 &&
+    check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 1,
           "empty-clipped input is not counted as a draw or upload");

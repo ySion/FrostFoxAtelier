@@ -10,6 +10,7 @@ using detail::Access;
 using detail::error;
 
 Result<Types> register_types(Runtime& runtime) {
+    if(auto ready=material::register_types(runtime);!ready) return std::unexpected(ready.error());
     const auto vector = runtime.native_type<math::Vector3>();
     const auto quaternion = runtime.native_type<math::Quaternion>();
     if (!vector) return std::unexpected(vector.error());
@@ -252,6 +253,22 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         }
     }
     auto changed = runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<void> {
+        std::vector<std::string> names;std::vector<bool> overrides;std::vector<ObjectReference> references;
+        auto field=runtime.reference_field(object,Access::materials(component));if(!field) return std::unexpected(field.error());
+        auto count=runtime.sequence_size(*field);if(!count) return std::unexpected(count.error());
+        const auto& previous=Access::material_slots(component);
+        for(std::size_t i=0;i<previous.size();++i) {
+            std::size_t matches{};
+            if(binding.resolved) for(std::size_t j=0;j<binding.resolved->materials().size();++j)
+                matches+=material_slot_name(*binding.resolved,j)==previous[i];
+            if(matches!=1) continue;
+            auto reference=runtime.sequence_read(*field,i);if(!reference) return std::unexpected(reference.error());
+            names.push_back(previous[i]);overrides.push_back(Access::material_overrides(component)[i]);references.push_back(*reference);
+        }
+        const ReferenceChange change=SequenceSplice{*field,0,*count,references};
+        if(auto written=runtime.apply_reference_changes({&change,1});!written) return written;
+        Access::material_slots(component)=std::move(names);Access::material_overrides(component)=std::move(overrides);
+        Access::surfaces(component).reset();Access::surface_geometry(component).reset();
         Access::mesh_source(component)=std::move(source);
         Access::geometry(component) = std::move(binding.resolved); return {};
     });

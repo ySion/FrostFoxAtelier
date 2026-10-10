@@ -92,6 +92,7 @@ void lit_direct_cs(uint3 tid:SV_DispatchThreadID) {
     float2 uv=(p+.5)/lit_size_frame.xy; float3 position=lit_world(uv,lit_depth[p]);
     float4 nr=lit_normal_roughness[p],bm=lit_base_metallic[p];
     float3 n=normalize(nr.xyz),v=lit_view_direction(uv),diffuse_result=0,specular_result=0;
+    float3 geometric_normal=lit_geometry_normal_at(p);
     float3 diffuse_factor=lit_direct_diffuse_factor(bm),specular_factor=lit_direct_specular_factor(bm);
     uint tile=(p.y/16)*((lit_size_frame.x+15)/16)+p.x/16,count=lit_tile_counts[tile];
     uint iterations=count>64?lit_counts.x:count;
@@ -106,13 +107,13 @@ void lit_direct_cs(uint3 tid:SV_DispatchThreadID) {
         for(uint s=0;s<samples;s++) {
             if(!repeat_sample||s==0) {
                 float3 l;float distance;radiance=lit_sample_light(light,position,seed,l,distance);
-                if(dot(n,l)<=0||!any(radiance>0)) {
+                if(dot(n,l)<=0||dot(geometric_normal,l)<=0||!any(radiance>0)) {
                     if(repeat_sample)break;
                     continue;
                 }
                 visibility=1;
                 if(light.meta.y!=~0u && (lit_counts.w&1)!=0 && (light.meta.z&2u)!=0)
-                    visibility=lit_visible(position,n,l,distance)?1:0;
+                    visibility=lit_visible(position,geometric_normal,l,distance)?1:0;
                 lit_brdf_components(bm.rgb,nr.w,bm.w,n,v,l,diffuse,specular);
                 // Visibility belongs to this actual emitter sample; finite
                 // sources still evaluate every distinct f*L*V contribution.
@@ -127,7 +128,7 @@ void lit_direct_cs(uint3 tid:SV_DispatchThreadID) {
     if (lit_emitter_count > 0 && any(diffuse_factor > 0)) {
         uint emitter_seed = lit_light_seed(p, 0x6a09e667u);
         float3 emitter_diffuse, unused_specular;
-        lit_emitter_lighting(position, n, v, bm.rgb, nr.w, bm.w,
+        lit_emitter_lighting(position, n, geometric_normal, v, bm.rgb, nr.w, bm.w,
             (lit_counts.w & 1u) != 0, false, emitter_seed, emitter_diffuse, unused_specular);
         diffuse_result += emitter_diffuse;
     }
@@ -146,8 +147,8 @@ bool lit_direct_neighbor(uint2 p, int2 q, bool specular, float3 position, float3
     // Plane error is in world units, independent of device-depth direction.
     float3 delta = lit_direct_world(q) - position;
     float tolerance = max(.0005, pixel_size * .25);
-    if (dot(normal, q_normal) < .9995 || abs(dot(delta, normal)) > tolerance ||
-        abs(dot(delta, q_normal)) > tolerance ||
+    if (dot(normal, q_normal) < .9995 || abs(dot(delta,lit_geometry_normal_at(p))) > tolerance ||
+        abs(dot(delta,lit_geometry_normal_at(q))) > tolerance ||
         abs(nr.w - q_nr.w) > (specular ? .05 : .15)) return false;
     float4 material = lit_base_metallic.Load(int3(p, 0));
     float4 q_material = lit_base_metallic.Load(int3(q, 0));
@@ -318,7 +319,7 @@ void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float pixel_size = lit_direct_pixel_size(p);
     float4 motion = lit_motion.Load(int3(p, 0));
     float expected_depth = lit_previous_device_depth(p, motion), tolerance;
-    float2 gradient; lit_direct_previous_plane(p, position, normal, pixel_size, expected_depth, tolerance, gradient);
+    float2 gradient; lit_direct_previous_plane(p, position, lit_geometry_normal_at(p), pixel_size, expected_depth, tolerance, gradient);
     float4 diffuse, specular; float2 diffuse_moments, specular_moments;
     lit_direct_resolve_signal(lit_direct_diffuse_raw, lit_direct_diffuse_previous,
         lit_direct_diffuse_moments_previous, p, false, position, normal, nr.w, pixel_size,

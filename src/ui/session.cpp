@@ -765,16 +765,16 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     }
                 }
             }
-            if (toggle_kind(kind)) {
+            if (toggle_kind(kind) || (kind==ControlKind::menu_item && state.control.menu_behavior==MenuBehavior::checkbox)) {
                 const auto marker_clip=intersect(clip,clip_rect(bounds));
                 const float x=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
                 const float size=appearance.indicator_size*scale;
                 const float y=bounds.y+(bounds.height-size)*.5f;
                 const float glyph=std::max(2.f,appearance.indicator_size-2)*scale;
-                if (kind==ControlKind::checkbox) {
+                if (kind==ControlKind::checkbox || kind==ControlKind::menu_item) {
                     paint_box({x,y,size,size},marker_clip,appearance.indicator_background,{}, {},scale,
                         appearance.indicator_border.a>0?appearance.indicator_border:appearance.foreground,
-                        appearance.indicator_border.a>0?BorderStyle::inset:BorderStyle::solid);
+                        kind==ControlKind::menu_item?BorderStyle::solid:appearance.indicator_border.a>0?BorderStyle::inset:BorderStyle::solid);
                     if (state.control.selected) quad({x+scale,y+scale,glyph,glyph},marker_clip,appearance.indicator_foreground.value_or(appearance.foreground),
                         self.text.symbol(detail::TextStore::Symbol::check,static_cast<std::uint32_t>(std::ceil(glyph))));
                 } else {
@@ -787,13 +787,12 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
 #include "ui/session_table_draw.inl"
                 continue;
             }
-            if (kind==ControlKind::menu_item && state.control.menu_behavior!=MenuBehavior::command) {
+            if (kind==ControlKind::menu_item && state.control.menu_behavior==MenuBehavior::radio) {
                 using Symbol=detail::TextStore::Symbol;
                 const auto size=appearance.indicator_size*scale;
                 const auto x=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
                 const auto y=bounds.y+(bounds.height-size)*.5f;
-                const auto symbol=state.control.menu_behavior==MenuBehavior::radio?
-                    (state.control.selected?Symbol::radio_checked:Symbol::radio):(state.control.selected?Symbol::checkbox_checked:Symbol::checkbox);
+                const auto symbol=state.control.selected?Symbol::radio_checked:Symbol::radio;
                 if (size>0) quad({x,y,size,size},intersect(clip,clip_rect(bounds)),appearance.foreground,
                     self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
             }

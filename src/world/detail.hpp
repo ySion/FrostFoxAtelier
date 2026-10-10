@@ -31,6 +31,12 @@ struct Access {
     static const geometry::MeshRef& geometry(const StaticMeshComponent& value) noexcept { return value.geometry_; }
     static String& mesh_source(StaticMeshComponent& value) noexcept { return value.mesh_source_; }
     static const String& mesh_source(const StaticMeshComponent& value) noexcept { return value.mesh_source_; }
+    static ReferenceSequence& materials(StaticMeshComponent& value) noexcept {return value.materials_;}
+    static std::vector<std::string>& material_slots(StaticMeshComponent& value) noexcept {return value.material_slots_;}
+    static std::vector<bool>& material_overrides(StaticMeshComponent& value) noexcept {return value.material_overrides_;}
+    static auto& surfaces(StaticMeshComponent& value) noexcept {return value.surfaces_;}
+    static auto& surface_geometry(StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
+    static auto& surface_parameters(StaticMeshComponent& value) noexcept {return value.surface_parameters_;}
     static bool& begun(Component& value) noexcept { return value.begun_; }
     static bool& begun(Actor& value) noexcept { return value.begun_; }
     static World*& member_world(Actor& value) noexcept { return value.member_world_; }

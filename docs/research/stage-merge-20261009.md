@@ -14,7 +14,7 @@
 
 - 视口继续使用左键定位游标、右键选择、W 菜单与 G/R/S 变换；网格吸附、选区及操作历史沿现有文档命令链执行。
 - Sponza 的相机初始化与 Houdini 风格视图切换共存。显式设置相机后重置渲染历史；含材质的导入模型使用白色实例乘色，同时保留游标创建位置。
-- 基础显示路径保留贴图与 Alpha Test。Scene Lit 使用不透明实例材质，其具体能力以[渲染合同](../modules/renderer/contract.md)与 [Scene Lit](../modules/renderer/scene-lit.md) 为准。
+- 基础显示路径保留贴图与 Alpha Test。该历史阶段的 Scene Lit 使用不透明实例材质；后续已由标准材质与 Mask 路径替代，当前能力以[渲染合同](../modules/renderer/contract.md)与 [Scene Lit](../modules/renderer/scene-lit.md) 为准。
 - 新增 UV 后的 GPU 数据读取遵循实际顶点布局，材质深度验收使用统一的 Reversed-Z 约定。
 - 正式工程入口、Sponza 验收、视口编辑验收、Scene Lit 验收及无输入快照入口同时保留。
 

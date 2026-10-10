@@ -56,7 +56,16 @@
         }
         reply.redraw=true;
     }
-    void activate(Reply& reply, const ControlBox& box,SelectionModifiers modifiers={}) {
+    bool menu_indicator_hit(const ControlBox& box,float x,float y) const {
+        if(box.kind!=ControlKind::menu_item || box.menu_behavior!=MenuBehavior::checkbox ||
+            !contains(box.bounds,x,y) || !contains(box.clip,x,y)) return false;
+        const auto& control=states.at(box.key).control;
+        // The full leading column is the checkbox hit area; the label starts after it.
+        const auto width=(control.layout.padding.left+box.style->padding.left+box.style->indicator_size+3)*surface.dpi_scale;
+        return x<box.bounds.x+width;
+    }
+    void activate(Reply& reply, const ControlBox& box,SelectionModifiers modifiers={},bool keep_menu_open=false) {
+        keep_menu_open&=box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::checkbox;
         const auto command=states.at(box.key).control.edit_command;
         if (box.kind==ControlKind::combo) {
             context_request(reply,box,box.bounds.x,box.bounds.y+box.bounds.height); return;
@@ -69,8 +78,8 @@
                 (box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::checkbox);
             const bool radio=box.kind==ControlKind::menu_item && box.menu_behavior==MenuBehavior::radio;
             action(reply,(box.kind==ControlKind::item || box.kind==ControlKind::tree_item)?ActionKind::select:ActionKind::activate,box.key,
-                radio?ActionValue{true}:toggle?ActionValue{!box.selected}:box.kind==ControlKind::tree_item?ActionValue{modifiers}:ActionValue{},box.action_target);
-            if (box.kind==ControlKind::menu_item && !states.at(box.key).control.menu_branch) dismiss_popup(reply);
+                radio?ActionValue{true}:toggle?ActionValue{!box.selected}:box.kind==ControlKind::tree_item?ActionValue{modifiers}:ActionValue{},box.action_target,keep_menu_open);
+            if (box.kind==ControlKind::menu_item && !states.at(box.key).control.menu_branch && !keep_menu_open) dismiss_popup(reply);
         }
     }
     bool popup_input(Reply& reply, const Event& event, const ControlBox* hit) {

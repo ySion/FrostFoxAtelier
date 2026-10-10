@@ -1,5 +1,7 @@
 # Scene Lit
 
+本页维护已实现的光照合同。使用方式与视口合同见 [Renderer](contract.md)，实测结果见[验收记录](acceptance.md)；大灯数、Adaptive DDGI、ReSTIR DI 等未实现内容统一见[后续演进](../../research/scene-lit-next-evolution-20261010.md)。
+
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
 实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线；相关资源在首次非空 Scene Lit 绘制时准备，关闭与尺寸变化沿既有 gfx 退休机制处理。
@@ -8,8 +10,8 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 
 ## 材质和真实灯光
 
-- 不透明金属度/粗糙度材质：基础色、roughness、metallic、线性 HDR RGB 自发光。自发光在曝光前保留大于 1 的值。
-- 当前只消费实例材质值，不采样 Mesh/MTL 的漫反射和 opacity 图；贴图及 Alpha Test 属于基础显示路径。Scene Lit 的光栅、射线、辅助深度与选择叠层一致采用不透明覆盖，详见[场景材质与贴图](contract.md#场景材质与贴图)。
+- 标准金属度/粗糙度材质支持基础色、roughness、metallic、切线空间法线、线性 HDR RGB 自发光与 Opaque/Mask。六个贴图输入及 UV/采样设置由统一材质表提供，自发光因子在曝光前保留大于 1 的值。
+- GBuffer、射线命中、发光采样、辅助深度和选择叠层消费同一表面；Mesh/MTL 默认材质与显式资产绑定走同一解析入口。颜色/发光图使用 sRGB，标量/法线图使用线性数据，详见[材质系统](materials.md)。
 - 点光源使用 candela，矩形面光源使用 cd/m²，方向光使用 lux。点光源半径以米表示，方向光角半径以弧度表示；矩形使用米制宽高与单面/双面设置。
 - Sky Light 是场景唯一的天光，首版表示均匀入射辐射，颜色乘 cd/m² 强度经 SceneSnapshot 写入 `Frame.environment`。没有启用的 Sky Light 时该值为零；它不占局部灯或直接阴影名额，不依据空间变换改变照明，也不自动绘制天空。Scene Lit 背景固定为黑，工作室模式的渐变偏好单独保留。HDRI / 方向性天空尚未实现。
 - World 唯一负责层级变换与灯的正交方向；Renderer 接收最终位置、传播方向和矩形切向轴。空间缩放不隐式改变灯的物理尺寸、范围或强度。权威数据约束见 [World lighting](../world/lighting.md)。
@@ -17,15 +19,15 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 - Renderer 的灯光值域与 World 一致：方向光允许零 range，非矩形光允许零 width/height，方向光角半径小于 π/2。分块筛选的保守范围覆盖实际采样源：点光为 range 加 source_radius，矩形为 range 加半对角线。
 - 解析灯每帧最多 256 盏；局部直接光按屏幕分块筛选。阴影预算限制同时追踪可见性的灯数，默认 4，界面可选 4/8/16，单灯样本数 1～64。方向光优先，再按稳定键排序，超额灯仍正常照明。应用显示实际与请求阴影数，如 `Shadows 4/5`；增加第五盏灯不会拒绝整帧。发光三角形不占这 256 个槽，也不占解析灯阴影名额。
 
-LightComponent 不自动创建可见发光几何。自发光网格沿同一 MeshInstance 快照派生为可采样三角形，不创建额外业务对象。世界变换决定实际面积，材质 emission 决定辐射；两面发光与当前可见 emission 合同一致。只有发光几何、变换、辐射或成员变化时重建采样表，非均匀缩放和镜像由变换后的边与面积表达。
+LightComponent 不自动创建可见发光几何。自发光网格沿同一 MeshInstance 快照派生为可采样三角形，不创建额外业务对象。世界变换决定实际面积，材质 emission 决定辐射；材质分别控制双面显示与双面发光，相机可见 emission 和发光采样遵循同一发光侧向。只有发光几何、变换、辐射或成员变化时重建采样表，非均匀缩放和镜像由变换后的边与面积表达。
 
-三角选择使用面积乘辐射亮度的 alias 表，混合 5% 均匀概率保留所有有效发光面的支持。CPU 以 double 生成分布，按实际上传的 float alias 阈值回算 PDF；GPU 面积采样包含选择概率、面积和发光余弦。每点默认四个最终样本，每个样本用四个候选做 streaming RIS，仅对选中候选追踪真实终点可见性。零贡献和被遮挡样本保留在分母；没有时空 reservoir 或旧阴影复用。沿现有 shadow_samples 增加至 64，64 模式为普通面积 MC 对照，无 RIS 与直接光降噪。
+三角选择使用面积乘辐射亮度的 alias 表（贴图以线性平均辐射估计权重），混合 5% 均匀概率保留所有有效发光面的支持。CPU 以 double 生成分布，按实际上传的 float alias 阈值回算 PDF；GPU 面积采样在实际重心 UV 上读取发光与覆盖，包含选择概率、面积和发光余弦。每点默认四个最终样本，每个样本用四个候选做 streaming RIS，仅对选中候选追踪真实终点可见性。零贡献和被遮挡样本保留在分母；没有时空 reservoir 或旧阴影复用。沿现有 shadow_samples 增加至 64，64 模式为普通面积 MC 对照，无 RIS 与直接光降噪。
 
-屏幕直接光负责发光面到当前表面的漫反射，DDGI 命中着色负责经过另一次表面散射的入射光，探针直接命中的 emission 不再重复注入。屏幕可见 emission 保留；SSIL 读取反射后的光照，去掉重复的一跳 emission。发光面的镜面路径仍由现有 SSSR 表达，屏幕 mesh NEE 首版不再加一份镜面；离屏发光面镜面缺失仍是限制。没有发光网格与解析灯的绑定合同，样例发光板与解析面光源仍是独立光源，不应重合用于表示同一个发光面。
+屏幕直接光负责发光面到当前表面的漫反射，DDGI 命中着色负责经过另一次表面散射的入射光，探针直接命中的 emission 不再重复注入。屏幕可见 emission 保留；SSIL 读取已稳定的去材质直接漫反射与 DDGI 间接项，不读取 SSR、镜面或表面 emission，避免重复的一跳发光贡献。发光面的镜面路径仍由现有 SSSR 表达，屏幕 mesh NEE 首版不再加一份镜面；离屏发光面镜面缺失仍是限制。没有发光网格与解析灯的绑定合同，样例发光板与解析面光源仍是独立光源，不应重合用于表示同一个发光面。
 
 ## 同一帧的执行链
 
-1. 光栅 GBuffer 写入法线/粗糙度、基础色/金属度、HDR 自发光、运动信息和独立 R32_FLOAT 预期前帧设备深度。当前 D32_FLOAT 深度、前帧 R32_FLOAT 深度与 RG32_FLOAT min/max Hi-Z 都遵循有限 Reversed-Z；方向和背景约定见 [Renderer 合同](contract.md#场景和-ui)。屏幕坐标使用整个窗口，`scene_viewport` 处理物理像素偏移，支持透视与正交投影。
+1. 光栅 GBuffer 写入着色法线/粗糙度、基础色/金属度、HDR 自发光、运动信息、独立 R32_FLOAT 预期前帧设备深度与 RG16_FLOAT 八面体几何法线。法线贴图只改变着色法线；偏移、支持平面和历史深度梯度使用几何法线。当前 D32_FLOAT 深度、前帧 R32_FLOAT 深度与 RG32_FLOAT min/max Hi-Z 都遵循有限 Reversed-Z；方向和背景约定见 [Renderer 合同](contract.md#场景和-ui)。屏幕坐标使用整个窗口，`scene_viewport` 处理物理像素偏移，支持透视与正交投影。
 2. 共享不可变网格缓存 BLAS，稳定实例更新 TLAS。内联 RayQuery 完成灯光可见性和 DDGI 探针射线；能力由 RHI 的 `inline_ray_query` 明确报告。
 3. 直接光估计实际 `f×L×V`（解析灯为 GGX 全项，屏幕 mesh NEE 为漫反射项）：每个灯光样本同时决定表面响应、入射光与真实射线可见性，不把独立平均的光照和可见性再相乘。漫反射与镜面信号分别去除材质调制，使用各自的时间历史、FP32 亮度矩和三个步长的方差引导空间滤波，再恢复材质贡献。重建范围由当前接收点的估计方差决定，亮邻点的高方差不能使稳定暗点获得额外混色支持；法线、切平面、粗糙度和材质约束保留 lowpoly 硬边。
 4. 有限体积 DDGI：规则 XYZ 探针格、八面体方向辐照度与距离矩、背面分类、受限位置修正、分帧采样与逐帧照明过渡，以及有界上一轮间接反弹。屏幕接收点用实际射线可见性选择八探针贡献，直接输出间接辐照度。
@@ -117,4 +119,4 @@ SSSR 不以全局几何变化统一降低历史支持。它比较接收面及反
 
 资源优化按逻辑字节计算：移除直接光中转减少 `8P` 字节，新射线三角信息增加 `16T` 字节，P 为窗口像素数，T 为缓存内不同网格的三角形总数。跳过纯复制直接光滤波省下三个 dispatch 与至少 `96P` 逻辑读写字节；关闭 SSSR 省下 HiZ 层数加五个 dispatch，其中三个反射滤波至少省下 `48P` 逻辑读写字节。这些通道跳过仍保留可复用纹理，不代表实际显存释放、外部带宽或 FPS 测量。
 
-可打开的真实工程见 [Scene Lit Room](../../../assets/examples/Examples/Scene%20Lit%20Room/README.md) 和 [Sponza](../../../assets/examples/Examples/Sponza/README.md)。编辑器默认启动及 Project → Examples → Sponza 入口根据世界空间几何边界一次性拟合有界探针体积；仍遵循本页的实例材质和不透明覆盖限制。`editor_sponza_acceptance` 在完整建筑上验证 DDGI 开关、移动光源与关灯后的收敛。性能目标基于 RX 6800 XT；目标帧率与最终本机实测应分开陈述。
+可打开的真实工程见 [Scene Lit Room](../../../assets/examples/Examples/Scene%20Lit%20Room/README.md) 和 [Sponza](../../../assets/examples/Examples/Sponza/README.md)。编辑器默认启动及 Project → Examples → Sponza 入口根据世界空间几何边界一次性拟合有界探针体积；通过本页统一材质表消费原有贴图及 Mask。`editor_sponza_acceptance` 在完整建筑上验证 DDGI 开关、移动光源与关灯后的收敛。性能目标基于 RX 6800 XT；目标帧率与最终本机实测应分开陈述。

@@ -118,6 +118,9 @@ private:
     bool panning_{};
     ui::PointerButton camera_button_{ui::PointerButton::secondary};
     FrameTiming frame_timing_;
+    std::chrono::steady_clock::time_point fps_start_{};
+    std::uint64_t fps_frames_{};
+    void update_viewport_fps(bool accepted);
     renderer::FrameStats frame_statistics_;
     float last_x_{}, last_y_{};
     PopupHost* menu_host() const noexcept {

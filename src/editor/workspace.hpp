@@ -24,6 +24,9 @@ inline constexpr ui::ControlKey examples_menu = 840;
 inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes=846;
 inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850, viewport_readout=851, viewport_rail_snap=852, viewport_add_menu=853;
 inline constexpr ui::ControlKey viewport_delete_menu=855, viewport_shading_pie=856, shading_preset_first=890;
+inline constexpr ui::ControlKey viewport_axis_pie=857, viewport_cavity=858, viewport_pie=859;
+inline constexpr ui::ControlKey cavity_enabled=910, cavity_group_first=911, cavity_value_first=920;
+inline constexpr ui::ControlKey viewport_fps=904;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
@@ -65,11 +68,15 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 }
 struct Workspace {
     struct Binding {
-        enum class Kind { object, structure, property_group, field, rotation, property_row, position_default, rotation_default, scale_default, name, navigation };
+        enum class Kind { object, structure, property_group, field, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
+            material_slot, material_texture, material_override };
         ui::ControlKey key{};
         ObjectId object;
         std::vector<FieldId> path; // Empty for object rows; fields address the actual inspected object.
         Kind kind{};
+        ObjectId component{};
+        std::string slot{};
+        std::size_t index{};
     };
     Workspace();
     Workspace(const Workspace&)=delete;
@@ -82,7 +89,10 @@ struct Workspace {
     std::wstring viewport_readout; // Modal G/R/S header text; empty hides the band.
     CameraView camera_view{CameraView::perspective};
     bool viewport_options_collapsed{};
+    bool show_fps{};
+    std::wstring viewport_fps; // Smoothed main-window presentation rate; empty while sampling starts.
     bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Actor instance.
+    std::string material_inspection;
     void reset_layout();
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }
@@ -129,7 +139,8 @@ struct Workspace {
     std::wstring structure_query;
     std::optional<ui::ContextMenuRequest> menu;
     std::vector<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
-    bool pie_menu() const noexcept { return menu && menu->source==control::viewport && menu->group==control::viewport_shading_pie; }
+    bool pie_menu() const noexcept { return menu && menu->source==control::viewport &&
+        (menu->group==control::viewport_shading_pie || menu->group==control::viewport_axis_pie); }
     std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*,const Project* = nullptr);
     void reset_document();
     const Binding* binding(ui::ControlKey) const noexcept;
@@ -140,6 +151,8 @@ struct Workspace {
     std::optional<TypeId> component_choice(ui::ControlKey) const noexcept;
     struct PropertyChoice { ObjectId object; std::vector<FieldId> path; EnumValue value; ui::ControlKey field; };
     std::optional<PropertyChoice> property_choice(ui::ControlKey) const;
+    struct MaterialChoice {enum class Kind {assign,clear,edit,texture};Kind kind{};ObjectId object;std::string slot,key;std::size_t index{};};
+    std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
     std::uint64_t view_revision_{};
@@ -159,7 +172,10 @@ private:
     ui::ControlKey next_output_{1};
     std::vector<ComponentType> component_choices_;
     std::vector<PropertyChoice> property_choices_;
+    std::vector<MaterialChoice> material_choices_;
     Selection menu_selection_;
     ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
+    ui::ControlKey bind_material(ObjectId,std::span<const FieldId>,Binding::Kind,ObjectId component={},std::string_view slot={},std::size_t index=0);
+    std::vector<ui::MenuItem> material_menu(const Binding&,const Session&,const Project*);
 };
 }

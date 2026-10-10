@@ -51,7 +51,7 @@ Renderer 固定交付为 `58e4bf51abd5afb2aca928d096c1a2169ebe525c`，实际后�
 
 负责人树的 Dev／Release 正式 editor 与 renderer 验收程序编译、World 8／8、Project／Workspace 文档链已通过；日志位于其 `out/viewport-integration/stage-sync-{dev,release}.log`。这些证据不等同于与新 Runtime 合并后的 GPU／窗口结果。
 
-该交付将正常合入独立分支 `codex/stage-renderer-pending-20261004`，不进入本轮可发布候选。获准使用桌面后，须在固定集成代码上依次运行 Dev／Release 的 `renderer_acceptance` 与 `editor_viewport_acceptance`。执行命令与画面证据以该分支的专项记录为准。
+该交付当时独立合入 `codex/stage-renderer-pending-20261004`，没有进入 10 月 4 日的可发布候选；组合构建记录为 `ed5a49b79efdf94d27ba1b11e4c10958d1a5ee58`，日志为该树 `out/stage-sync-20261004/renderer-{dev,release}-{configure,build}.log`。后续 GPU／正式窗口验收已经完成，并随 10 月 5 日集成进入 `855433a840584b414073758d6587f5ce6ae66703`，见[视口验收与集成历史](../modules/renderer/acceptance.md#视口显示增量)。旧“待验候选”交接页已删除，本段仅保留当时的阶段边界。
 
 ## 保留的边界
 

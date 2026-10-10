@@ -30,37 +30,51 @@ struct LitLight {
     float4 up_height;
     uint4 meta; // kind(point=0,rect=1,dir=2),shadow slot/~0,flags(two-sided=1,casts-shadow=2),stable hash
 };
-// Derived from emissive mesh triangles; emission is two-sided radiance.
-// The probability is the selected triangle's PMF, not its alias acceptance.
+// Derived from emissive mesh triangles; the material defines emission sidedness.
+// The probability is the selected face's PMF, not its alias acceptance.
 struct LitEmitter {
     float4 origin_area;
     float4 edge1_probability;
     float4 edge2_accept;
-    float3 emissive;
+    float3 normal;
     uint alias;
+    uint instance,primitive;
+    uint2 reserved;
 };
 uint lit_emitter_count;
 struct LitInstance {
     row_major float4x4 world;
     row_major float4x4 previous_world;
     float4 normal_x, normal_y, normal_z;
-    float4 base_roughness;
-    float4 emissive_metallic;
-    uint4 geometry; // global RT triangle offset,vertex count,history valid,stable hash
+    uint4 geometry; // global RT face offset,reserved,history valid,stable hash
 };
 // Shares the uploaded geometry::Vertex layout with the studio raster path.
-// Scene Lit currently uses position/normal; UV still occupies its ABI bytes.
-struct LitVertex { float3 position; float3 normal; float2 uv; };
-struct LitRayTriangle { LitVertex vertices[3]; float3 geometric_normal; uint closed; };
+// UV and slot lookup are identical in primary and secondary surface evaluation.
+struct LitVertex { float3 position; float3 normal; float2 uv; float4 tangent; };
+struct LitRayTriangle { LitVertex vertices[3]; float3 geometric_normal; uint closed; uint material_slot; uint closure_first,closure_count,reserved; };
 StructuredBuffer<LitLight> lit_lights;
 StructuredBuffer<LitEmitter> lit_emitters;
 StructuredBuffer<LitInstance> lit_instances;
 StructuredBuffer<LitRayTriangle> lit_rt_triangles;
+StructuredBuffer<uint> lit_closed_slots;
 RaytracingAccelerationStructure lit_scene;
 RWStructuredBuffer<uint> lit_ray_counters; // Four low words followed by their four high words.
 Texture2D<float> lit_depth;
 Texture2D<float> lit_previous_depth;
 Texture2D<float4> lit_normal_roughness;
+Texture2D<float2> lit_geometry_normal;
+Texture2D<float2> lit_history_geometry_normal;
+float2 lit_encode_normal(float3 n) {
+    n/=max(abs(n.x)+abs(n.y)+abs(n.z),1e-20);
+    float2 signs=float2(n.x>=0?1:-1,n.y>=0?1:-1);
+    return n.z>=0?n.xy:(1-abs(n.yx))*signs;
+}
+float3 lit_decode_normal(float2 value) {
+    float3 n=float3(value,1-abs(value.x)-abs(value.y));
+    float t=saturate(-n.z);n.xy+=float2(n.x>=0?-t:t,n.y>=0?-t:t);
+    return normalize(n);
+}
+float3 lit_geometry_normal_at(uint2 pixel) {return lit_decode_normal(lit_geometry_normal.Load(int3(pixel,0)));}
 Texture2D<float4> lit_base_metallic;
 Texture2D<float4> lit_emissive;
 Texture2D<float4> lit_motion;
@@ -133,12 +147,23 @@ void lit_count_rays(uint kind) {
         if(before>0xffffffffu-active_rays)InterlockedAdd(lit_ray_counters[kind+4],1);
     }
 }
+float2 lit_triangle_uv(LitRayTriangle face,float2 bary) {
+    return face.vertices[0].uv*(1-bary.x-bary.y)+face.vertices[1].uv*bary.x+face.vertices[2].uv*bary.y;
+}
+MaterialSurface lit_ray_material(uint instance_id,LitRayTriangle face) {
+    return material_surfaces[material_indices[material_offsets[instance_id]+face.material_slot]];
+}
+bool lit_accept_candidate(uint instance_id,uint primitive,float2 bary) {
+    LitRayTriangle face=lit_rt_triangles[lit_instances[instance_id].geometry.x+primitive];
+    return material_covered(lit_ray_material(instance_id,face),lit_triangle_uv(face,bary),0,0,0,false);
+}
 bool lit_visible(float3 p,float3 n,float3 l,float distance) {
     lit_count_rays(lit_visibility_counter);
     RayDesc ray; ray.Origin=p+n*lit_controls.y; ray.Direction=l;
     ray.TMin=lit_controls.y; ray.TMax=max(ray.TMin,distance-lit_controls.y*2);
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-    query.TraceRayInline(lit_scene,0,255,ray); while(query.Proceed()) {}
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    query.TraceRayInline(lit_scene,0,255,ray); while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     return query.CommittedStatus()==COMMITTED_NOTHING;
 }
 bool lit_visible_target(float3 p, float3 n, float3 target) {
@@ -154,14 +179,15 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
     ray.TMin = bias;
     ray.TMax = distance - bias;
     lit_count_rays(lit_visibility_counter);
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-    query.TraceRayInline(lit_scene, 0, 255, ray); while (query.Proceed()) {}
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    query.TraceRayInline(lit_scene, 0, 255, ray); while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
 uint lit_emitter_sample_count() {
     return lit_emitter_count > 0 ? clamp(lit_counts.z, 4u, 64u) : 0;
 }
-// Returns Le / solid-angle PDF, including triangle selection and uniform
+// Returns Le / solid-angle PDF, including face selection and uniform
 // area sampling. The receiver cosine belongs exclusively to lit_brdf_components.
 float3 lit_sample_emitter(float3 p, inout uint seed, out float3 direction, out float3 target) {
     direction = 0; target = p;
@@ -177,11 +203,17 @@ float3 lit_sample_emitter(float3 p, inout uint seed, out float3 direction, out f
     float area = emitter.origin_area.w, probability = emitter.edge1_probability.w;
     if (distance_squared <= 0 || !isfinite(distance_squared) || area <= 0 || probability <= 0) return 0;
     direction = delta * rsqrt(distance_squared);
-    float3 normal = lit_safe_normal(cross(emitter.edge1_probability.xyz, emitter.edge2_accept.xyz));
-    float cosine = abs(dot(normal, -direction));
-    return max(emitter.emissive, 0) * (area * cosine / (probability * distance_squared));
+    float3 normal = lit_safe_normal(emitter.normal);
+    LitRayTriangle face=lit_rt_triangles[lit_instances[emitter.instance].geometry.x+emitter.primitive];
+    MaterialSurface surface=lit_ray_material(emitter.instance,face);
+    float2 uv=lit_triangle_uv(face,float2(root*(1-split),root*split));
+    if(!material_covered(surface,uv,0,0,0,false))return 0;
+    float cosine=dot(normal,-direction);
+    cosine=surface.flags.z!=0?abs(cosine):saturate(cosine);
+    float3 emission=surface.emissive_metallic.rgb*material_read(surface,4,uv,0,0,0,false).rgb;
+    return max(emission,0)*(area*cosine/(probability*distance_squared));
 }
-void lit_emitter_lighting(float3 p, float3 n, float3 v, float3 base, float roughness, float metallic,
+void lit_emitter_lighting(float3 p, float3 n, float3 geometric_normal, float3 v, float3 base, float roughness, float metallic,
                           bool shadows, bool include_specular, inout uint seed,
                           out float3 diffuse_result, out float3 specular_result) {
     diffuse_result = 0; specular_result = 0;
@@ -193,7 +225,7 @@ void lit_emitter_lighting(float3 p, float3 n, float3 v, float3 base, float rough
         [loop] for (uint candidate = 0; candidate < candidates; ++candidate) {
             float3 direction, target;
             float3 incoming = lit_sample_emitter(p, seed, direction, target);
-            if (dot(n, direction) <= 0 || !any(incoming > 0)) continue;
+            if (dot(n, direction) <= 0 || dot(geometric_normal,direction)<=0 || !any(incoming > 0)) continue;
             float3 diffuse, specular;
             lit_brdf_components(base, roughness, metallic, n, v, direction, diffuse, specular);
             diffuse *= incoming;
@@ -213,7 +245,7 @@ void lit_emitter_lighting(float3 p, float3 n, float3 v, float3 base, float rough
             }
         }
         if (selected_weight <= 0) continue;
-        if (shadows && !lit_visible_target(p, n, selected_target)) continue;
+        if (shadows && !lit_visible_target(p, geometric_normal, selected_target)) continue;
         // Zero-contribution candidates still count in M. Only the selected
         // candidate traces visibility; no previous visibility is reused.
         float correction = (weight_sum / selected_weight) / candidates;
@@ -251,8 +283,8 @@ float3 lit_sample_light(LitLight light,float3 p,inout uint seed,out float3 l,out
     }
     return light.color_intensity.rgb*light.color_intensity.w*attenuation;
 }
-struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed; };
-LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position) {
+struct LitSurface { float3 position,normal,geometric_normal,base; float roughness,metallic; bool closed,double_sided; };
+LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float footprint) {
     LitInstance instance=lit_instances[instance_id];
     LitRayTriangle face=lit_rt_triangles[instance.geometry.x+primitive];
     LitVertex a=face.vertices[0],b=face.vertices[1],c=face.vertices[2];
@@ -261,7 +293,20 @@ LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 po
     s.normal=lit_safe_normal(n.x*instance.normal_x.xyz+n.y*instance.normal_y.xyz+n.z*instance.normal_z.xyz);
     float3 gn=face.geometric_normal;
     s.geometric_normal=lit_safe_normal(gn.x*instance.normal_x.xyz+gn.y*instance.normal_y.xyz+gn.z*instance.normal_z.xyz);
-    s.closed=face.closed!=0;
-    s.base=instance.base_roughness.rgb; s.roughness=instance.base_roughness.w;
-    s.emissive=instance.emissive_metallic.rgb; s.metallic=instance.emissive_metallic.w; return s;
+    MaterialSurface surface=lit_ray_material(instance_id,face);
+    s.closed=face.closed!=0&&surface.flags.x==0;
+    if(s.closed) [loop] for(uint i=0;i<face.closure_count;++i) {
+        uint slot=lit_closed_slots[face.closure_first+i];
+        if(slot==face.material_slot)continue;
+        if(material_surfaces[material_indices[material_offsets[instance_id]+slot]].flags.x!=0) {s.closed=false;break;}
+    }
+    float3 edge1=mul(float4(b.position-a.position,0),instance.world).xyz;
+    float3 edge2=mul(float4(c.position-a.position,0),instance.world).xyz;
+    float uv_density=max(length(b.uv-a.uv)/max(length(edge1),1e-6),length(c.uv-a.uv)/max(length(edge2),1e-6));
+    MaterialSample material=material_evaluate(surface,lit_triangle_uv(face,bary),0,0,footprint*uv_density,false);
+    float4 tangent=a.tangent*(1-bary.x-bary.y)+b.tangent*bary.x+c.tangent*bary.y;
+    tangent.xyz=material_transform_tangent(tangent.xyz,instance.world);tangent.w*=instance.normal_x.w;
+    s.normal=material_normal(surface,lit_triangle_uv(face,bary),0,0,footprint*uv_density,false,s.normal,tangent,material.roughness);
+    s.base=material.base;s.roughness=material.roughness;s.metallic=material.metallic;
+    s.double_sided=surface.flags.y!=0;return s;
 }

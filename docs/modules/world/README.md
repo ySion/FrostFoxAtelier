@@ -18,10 +18,12 @@ core.Object
 - `register_types` 一次发布 Material、LightSettings 值类型、LightKind 枚举与上述六个对象类型，复用 Runtime 已初始化的 `math.vector3`、`math.quaternion` 身份。业务元数据由 C++ 声明旁的自动反射生成；StaticMeshActor 拥有真实独立 TypeId，沿现有 Actor 继承链参与生命周期。额外业务类型在创建首个对象前注册。
 - Actor 的隐藏强引用序列决定组成顺序，Component 强持 owner。一个组件的普通强引用会保住 Actor 和兄弟组件；没有外部根的组成环可被 GC 回收。
 - Actor 的显式根引用和 SceneComponent 的空间父引用均为弱引用。组成负责拥有，空间关系负责坐标继承，两种顺序独立。
-- StaticMeshComponent 继承完整局部 TRS，持有不可变 geometry::Mesh 资源和 Material 值。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。
+- StaticMeshComponent 继承完整局部 TRS，持有不可变 geometry::Mesh、未绑定槽的基础 Material 值，以及沿 Runtime 强引用管理的材质槽绑定。方块是 `geometry::cube_mesh()` 资源；典型方块对象只有 Actor 与一个作为根的 StaticMeshComponent。没有独立 Transform/Cube 类型、隐式 Transform 查找或 Counter 专用入口。
 - `components` 返回普通根快照，保持身份与当前数据，不冻结字段。World 成员目录持有 Actor 根；查询、执行列表、请求和历史来源凭证不另建隐藏根。
 
 Runtime 必须晚于 World、相关对象操作及任务结束。对象可以活过旧 World，但普通根不能延长 Runtime 或关闭的 World 服务寿命。
+
+`material.Texture` 和 `material.Material` 是同一 Runtime 的原生业务对象，不属于 World 成员列表。材质参数与采样记录由自动反射定义；组件的隐藏引用序列拥有按名称对应的槽资源。实例通过父材质强引用和显式覆盖位继承，首批只允许一层。`read_material_bindings / set_material_bindings` 是组成入口，`material_surfaces` 发布完整、拥有型不可变表面表；Renderer 不持有 Runtime 对象。`set_mesh_binding` 在同一发布点保留新网格唯一匹配的槽并清理失配引用，空网格清空。撤销记录使用普通 ObjectRoot 保活，文件只保存资源 GUID 和覆盖意图。具体作者工作流见[编辑器材质资源](../editor/projects.md#材质与贴图资源)。
 
 ## StaticMeshActor 完整创建
 

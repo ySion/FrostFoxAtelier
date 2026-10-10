@@ -1,9 +1,18 @@
 #pragma once
 
 #include "math/math.hpp"
+#include <string_view>
 
 namespace atelier::editor {
-enum class CameraView : std::uint8_t { perspective, top, front, right };
+enum class CameraView : std::uint8_t { perspective, top, front, right, bottom, back, left };
+constexpr std::wstring_view camera_view_name(CameraView view) noexcept {
+    switch(view) {
+    case CameraView::perspective:return L"Persp";case CameraView::top:return L"Top";
+    case CameraView::front:return L"Front";case CameraView::right:return L"Right";
+    case CameraView::bottom:return L"Bottom";case CameraView::back:return L"Back";case CameraView::left:return L"Left";
+    }
+    return {};
+}
 struct CameraMatrices {
     math::Matrix4 view;
     math::Matrix4 projection;
@@ -32,6 +41,8 @@ public:
     void pan(float pixel_dx, float pixel_dy, float viewport_pixel_height) noexcept;
     math::Vector3 target() const noexcept { return target_; }
     math::Vector3 eye() const noexcept;
+    math::Vector3 up_hint() const noexcept;
+    math::Vector3 construction_normal() const noexcept;
     CameraMatrices matrices(float aspect) const noexcept;
     CameraState state() const noexcept { return {view_, target_, yaw_, pitch_, distance_}; }
     bool set_state(const CameraState&) noexcept;

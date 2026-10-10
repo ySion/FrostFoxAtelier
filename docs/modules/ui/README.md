@@ -102,7 +102,9 @@ DSL 的 PopupMenu / PopupEntry 组合根级 `popup`、普通 `menu_item`、快�
 
 `context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 通过点击、Enter/Space 或上下键请求菜单。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
 
-正式编辑器全部菜单使用 [PopupHost](../../../src/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。
+正式编辑器的列表菜单使用 [PopupHost](../../../src/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有列表菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。视口饼菜单在主 surface 中通过 DSL 组合，复用同一菜单项模型与命令入口。
+
+`MenuBehavior::checkbox` 的前置方框与普通 checkbox 共用框体和独立抗锯齿勾号绘制，使用 `indicator-size/background/border-color/color`。鼠标按下、松开均位于接受帧的方框列时，Session 发出 `activate` 并设置 `Action.keep_menu_open`，不发 dismiss；标签点击与键盘激活仍关闭菜单。方框列包含左内距、方框和其后 3 DIP 间隔，并受控件裁剪约束。宿主只对仍有效的 checkbox 尊重该标志，接受动作后重新发布权威 selected 值；错误、失效与取消沿原关闭路径。PopupHost 更新后复用原窗口，并在新 GPU 帧接受后恢复原条目的焦点。
 
 同 surface 的 `menu_item.edit_command` 仍由 Session 直接处理；独立菜单宿主关闭菜单后调用原 Session 的 `execute(command, incarnation)`。该入口检查原控件的已接受身份和当前有效性，之后进入原 TextEdit、原生剪贴板与业务事务。有效数字粘贴立即提交一次，非法数字保留可取消草稿。控件被替换后不能把旧菜单命令派给新绑定。`focus(0)` 清除焦点，非零目标须为当前可见、已接受控件；切换焦点结束前一草稿，同目标保留草稿、选区和组合，文本字段立即绑定输入，数值字段保留被动焦点。取消交互同时清除键盘按下与终止键状态。
 

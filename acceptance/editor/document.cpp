@@ -55,9 +55,11 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "source_editor.inl"
 #include "viewport_edit.inl"
 #include "scene_lit.inl"
+#include "material_resources.inl"
 }
 int main(int argc, char** argv) {
     try {
+        if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}

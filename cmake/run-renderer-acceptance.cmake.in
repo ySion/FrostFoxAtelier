@@ -1,5 +1,6 @@
+# The full GPU suite includes first-use textured Lit pipeline compilation under GBV.
 execute_process(COMMAND "$<TARGET_FILE:atelier_renderer_acceptance>"
-    WORKING_DIRECTORY "$<TARGET_FILE_DIR:atelier_renderer_acceptance>" TIMEOUT 120
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:atelier_renderer_acceptance>" TIMEOUT 600
     RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
 file(WRITE "$<TARGET_FILE_DIR:atelier_renderer_acceptance>/renderer-acceptance.log"
     "${_out}\n${_err}\nexit=${_result}\n")

@@ -138,15 +138,16 @@ bool ddgi_segment_visible(float3 from, float3 to) {
     ray.Direction = delta / distance;
     ray.TMin = 1e-4;
     ray.TMax = distance - 1e-4;
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE |
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
              RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
     lit_count_rays(lit_visibility_counter);
     query.TraceRayInline(lit_scene, 0, 255, ray);
-    while (query.Proceed()) {}
+    while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
 
-float3 ddgi_irradiance(float3 position, float3 normal, bool trace_support) {
+float3 ddgi_irradiance(float3 position, float3 normal, float3 geometric_normal, bool trace_support) {
     if (any(lit_probe_grid.xyz < 2) || lit_probe_grid.w == 0 ||
         !all(isfinite(position)) || !all(isfinite(normal))) return 0;
 
@@ -154,9 +155,9 @@ float3 ddgi_irradiance(float3 position, float3 normal, bool trace_support) {
     // Cached angular support needs its established filter bias. Actual
     // surface visibility uses only numerical clearance, so this larger bias
     // cannot move the receiver through a thin wall during the ray query.
-    float3 support_position = position + normal * (ddgi_minimum_spacing() * .12);
+    float3 support_position = position + geometric_normal * (ddgi_minimum_spacing() * .12);
     float3 biased_position = trace_support ?
-        position + normal * max(1e-4, ddgi_minimum_spacing() * .0001) : support_position;
+        position + geometric_normal * max(1e-4, ddgi_minimum_spacing() * .0001) : support_position;
     float3 grid_position = (biased_position - lit_probe_origin.xyz) / spacing;
     if (any(grid_position < 0) || any(grid_position > float3(lit_probe_grid.xyz - 1))) return 0;
     uint3 lower = uint3(clamp(floor(grid_position), 0, float3(lit_probe_grid.xyz - 2)));
@@ -267,16 +268,16 @@ float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint see
         float distance;
         float3 incoming = lit_sample_light(light, surface.position,
             seed, direction, distance);
-        if (dot(surface.normal, direction) > 0 && any(incoming > 0)) {
+        if (dot(surface.normal, direction) > 0 && dot(surface.geometric_normal,direction)>0 && any(incoming > 0)) {
             bool visible = true;
             if ((light.meta.z & 2u) != 0)
-                visible = lit_visible(surface.position, surface.normal, direction, distance);
+                visible = lit_visible(surface.position, surface.geometric_normal, direction, distance);
             if (visible) radiance += incoming * lit_brdf(surface.base, surface.roughness, surface.metallic,
                 surface.normal, toward_probe, direction) * (float(lit_counts.x) / samples);
         }
     }
     float3 emitter_diffuse, emitter_specular;
-    lit_emitter_lighting(surface.position, surface.normal, toward_probe,
+    lit_emitter_lighting(surface.position, surface.normal, surface.geometric_normal, toward_probe,
         surface.base, surface.roughness, surface.metallic, true, true, seed,
         emitter_diffuse, emitter_specular);
     radiance += emitter_diffuse + emitter_specular;
@@ -286,7 +287,7 @@ float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint see
         // white room. Analytic and mesh NEE above inject reflected direct
         // light once at the actual hit, without the feedback attenuation.
         float3 reflectance = saturate(surface.base) * (1 - saturate(surface.metallic));
-        radiance += ddgi_irradiance(surface.position, surface.normal, false) * reflectance * (.85 / LIT_PI);
+        radiance += ddgi_irradiance(surface.position, surface.normal, surface.geometric_normal, false) * reflectance * (.85 / LIT_PI);
     }
     return ddgi_finite_radiance(radiance);
 }
@@ -297,18 +298,19 @@ float ddgi_trace_ray(float3 position, float3 direction, bool shade, inout uint s
     ray.Direction = direction;
     ray.TMin = max(1e-4, ddgi_minimum_spacing() * .001);
     ray.TMax = max(lit_probe_origin.w, ray.TMin * 2);
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
     // Both fixed geometry and random illumination rays count as probe rays.
     // Secondary shadow rays are counted separately by lit_visible().
     lit_count_rays(1);
     query.TraceRayInline(lit_scene, 0, 255, ray);
-    while (query.Proceed()) {}
+    while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     radiance = shade ? ddgi_finite_radiance(lit_environment.rgb) : 0;
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return ray.TMax;
     float distance = query.CommittedRayT();
     LitSurface surface = lit_hit_surface(query.CommittedInstanceID(),
         query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(),
-        position + direction * distance);
+        position + direction * distance, distance*.01);
     // Only a closed component's geometric backface is evidence of an interior.
     // The local authored orientation uses inverse-transpose, including mirrors.
     if (surface.closed && dot(surface.geometric_normal, direction) > 0) {
@@ -317,7 +319,10 @@ float ddgi_trace_ray(float3 position, float3 direction, bool shade, inout uint s
     }
     // An open sheet still blocks this ray. Preserve its existing shading side
     // without treating the entire half-space behind it as a solid volume.
-    if (dot(surface.normal, direction) > 0) { radiance = 0; return distance; }
+    if (dot(surface.geometric_normal, direction) > 0) {
+        if(surface.double_sided) {surface.normal=-surface.normal;surface.geometric_normal=-surface.geometric_normal;}
+        else {radiance=0;return distance;}
+    }
     if (shade) radiance = ddgi_hit_radiance(surface, -direction, seed);
     return distance;
 }
@@ -526,5 +531,5 @@ void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
         lit_indirect[pixel] = float4(color * (.25 + .75 * proximity), 1);
         return;
     }
-    lit_indirect[pixel] = float4(ddgi_irradiance(position, normal, true), 1);
+    lit_indirect[pixel] = float4(ddgi_irradiance(position, normal, lit_geometry_normal_at(pixel), true), 1);
 }

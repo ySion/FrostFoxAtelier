@@ -173,7 +173,7 @@ void run() {
     take(document.preview_edit(13,6.f)); take(document.cancel_edit()); take(document.cancel_edit());
     require(std::get<float>(take(document.read_property(move,speed)))==4,"Cancel failed to restore scalar value.");
     const auto saved=take(document.serialize()); const auto saved_json=Json::parse(saved);
-    require(saved_json["version"]==2 && saved_json["actors"][0]["properties"]["health"]==75,"Scene v2 did not save real Actor properties.");
+    require(saved_json["version"]==3 && saved_json["actors"][0]["properties"]["health"]==75,"Scene did not save real Actor properties.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     require(Json::parse(take(reopened->serialize()))==saved_json,"Derived scene roundtrip changed type, fields or composition.");
     auto defaults=saved_json; defaults["actors"][0]["components"][1]["properties"].erase("speed");
@@ -216,7 +216,8 @@ void run() {
         {"id":1,"type":"world.StaticMeshComponent","enabled":true,"parent":0,"position":[1,2,3],"rotation":[0,0,0,1],"scale":[2,2,2],"mesh":"builtin/cube","base_color":[0.2,0.3,0.4]}
     ]}]})";
     auto migrated=take(editor::Session::deserialize(legacy,project));
-    auto upgraded=Json::parse(legacy);upgraded["version"]=2;
+    auto upgraded=Json::parse(legacy);upgraded["version"]=3;
+    upgraded["actors"][0]["components"][0]["materials"]=Json::array();
     upgraded["actors"][0]["properties"]=Json::object();upgraded["actors"][0]["components"][0]["properties"]=Json::object();
     // JSON source decimals round through the authored float storage.
     const auto migrated_json=Json::parse(take(migrated->serialize()));

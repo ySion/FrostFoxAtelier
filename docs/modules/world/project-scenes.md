@@ -18,15 +18,17 @@ Actor 和 Component 的标量属性使用相同的 `begin_edit / preview_edit(Sc
 
 ## Scene 格式
 
-统一写出版本 2，继续读取版本 1；其他版本拒绝。v1 保存时升级为 v2，已有类型、TRS、组成、网格来源和材质保留。
+统一写出版本 3，继续读取版本 1/2；其他版本拒绝。旧版本保存时升级为 v3，已有类型、TRS、组成、网格来源和材质保留。
 
 每个 Actor/Component 保存完整类型名称，并使用 Runtime `find_type / is_a` 校验。每个对象有 `properties` 对象，按声明字段名递归保存业务标量；新增缺省字段保留 Runtime 构造默认值，未知已保存属性报错。整数严格检查范围和符号，不做环绕转换；浮点必须有限。
 
 SceneComponent 的 position/rotation/scale/parent、StaticMeshComponent 的 mesh/base_color/roughness/metallic/emissive 走专有验证及资源恢复，不在 properties 重复保存。旧场景缺少新增材质字段时采用 World 的 Material 默认值；加载和保存均调用 World 材质验证。组件 ID 仅为文件内该 Actor 的局部身份；组件顺序、显式根、同 Actor 空间关系保持原合同，文件不记录 Runtime TypeId、ObjectId 或 FieldId。
 
+StaticMeshComponent 的 `materials` 保存命名槽的资源 GUID 和显式赋予标志。参数实例额外保存父材质 GUID、覆盖字段名称和参数值，加载后重新建立 Runtime 引用，不按与父值是否相等猜测覆盖。共享材质资产由 Project 单独持久化，Scene 保存引用；未保存材质由编辑器单独提示和保存。复制 Actor 时复制其场景内联材质和参数实例，共享父资产与 Texture；换网格时移除失配槽。
+
 LightComponent 沿普通空间组件记录类型、TRS、根及父关系；LightSettings 通过通用 `properties.settings` 递归保存，kind 保存枚举成员名。加载先恢复全部字段，再调用 World 的灯参数验证，避免字段恢复顺序改变有效性；保存同样拒绝非法设置。Create 菜单的三种灯只生成一个普通 Actor 和一个作为根的 LightComponent，整组加入文档历史；Actor Structure 的通用增删入口也可操作该组件。没有第二套灯存档或独立灯管理器。
 
-`physics.BodyComponent` 及其派生类型通过 `body` 专有记录保存 shape（box/sphere/triangle_mesh/capsule）、motion（stationary/kinematic/dynamic）、half_extents、radius、capsule_half_height、category、16 项 responses、sensor、friction 和 restitution。v1 的数值枚举 `physics` 记录只用于读取，保存统一为 v2；早期 v2 未包含的新增设置采用 BodySettings 默认值。读取走公开 `physics::configure`，写出使用 `read_settings`。这些 settings 目前未反射，因此不假装由通用 properties 编辑。Physics 类型由 Session 在对象创建前统一注册。
+`physics.BodyComponent` 及其派生类型通过 `body` 专有记录保存 shape（box/sphere/triangle_mesh/capsule）、motion（stationary/kinematic/dynamic）、half_extents、radius、capsule_half_height、category、16 项 responses、sensor、friction 和 restitution。v1 的数值枚举 `physics` 记录只用于读取，保存统一为 v3；早期 v2 未包含的新增设置采用 BodySettings 默认值。读取走公开 `physics::configure`，写出使用 `read_settings`。这些 settings 目前未反射，因此不假装由通用 properties 编辑。Physics 类型由 Session 在对象创建前统一注册。
 
 加载先恢复根网格与 TRS，再配置 Body；工程三角网格从 `Project::collision` 校验并读取 Cook 缓存，内置网格使用 CPU 几何。Cook 数据不写进 Scene。`Session::configure_body` 记录完整配置的撤销/重做，恢复实际组件选择；Actor Structure 使用通用组件入口添加和移除 Body。
 

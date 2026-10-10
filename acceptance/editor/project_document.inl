@@ -32,12 +32,13 @@ void verify_scene_v1(editor::Project& project) {
         "Scene v1 lost its mesh source or material.");
     take(editor::write_file(path,take(document->serialize())));
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
-    auto upgraded=nlohmann::json::parse(source); upgraded["version"]=2;
+    auto upgraded=nlohmann::json::parse(source); upgraded["version"]=3;
     for (auto& actor:upgraded["actors"]) {
         actor["properties"]=nlohmann::json::object();
         for (auto& component:actor["components"]) {
             component["properties"]=nlohmann::json::object();
             if(component["type"]=="world.StaticMeshComponent") {
+                component["materials"]=nlohmann::json::array();
                 const world::Material material;
                 component["roughness"]=material.roughness;component["metallic"]=material.metallic;
                 component["emissive"]=nlohmann::json::array({0.f,0.f,0.f});

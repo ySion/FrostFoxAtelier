@@ -1,8 +1,67 @@
-# 编辑器 renderer 验收
+# Renderer 验收记录
+
+本页记录真实执行过的验收，不以文档更新代替新测量。当前行为和参数见[显示合同](contract.md)与 [Scene Lit](scene-lit.md)。每批结果只对应其注明的源码、配置和场景；早期帧时、前向深度或选中染色行为不代表当前实现。
+
+## 近期证据索引
+
+| 范围 | 实际覆盖与记录 |
+|---|---|
+| 工作室 Cavity | 2026-10-11 工作树：屏幕凹凸增强、显示隔离与生命周期，见[工作室 Cavity](#工作室-cavity2026-10-11) |
+| 标准材质 | 2026-10-11 工作树：Dev/Release 材质与原 Renderer 全套 GPU 验收，见[标准材质](#标准材质2026-10-11) |
+| 选中边线 | `a7ab99f`：Dev／Release 原生 Renderer 裁剪矩阵；另有独立 Release 官方 Sponza 编辑器集成捕获，见[选中修复](#跨相机平面的选中边线铺黄2026-10-10) |
+| 材质／设置变更和无效工作 | `ca4af33`：Dev 时间响应／contracts、Release 质量矩阵、双配置场景文档链，见[Review 补强](#提交后-review-补强2026-10-10) |
+| 移动物体与 T2x | `c8293e9`：移动阴影、反射、Local GI、无关运动与 T2x 来源稳定性，见[移动历史](#smaa-下移动物体的光照拖尾2026-10-10)和 [T2x 对照](#smaa-t2x-静态抖动与反射对照2026-10-10) |
+| 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
+
+这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## 工作室 Cavity（2026-10-11）
+
+本轮沿用 `a7ab99f` 基线的 `codex/viewport-rendering` 工作树、RX 6800 XT 与真实 GPU validation。`cavity.inl` 加入现有无参数 `atelier_renderer_acceptance`；`--cavity --output <绝对目录>` 可单独运行同一用例并导出图像，不建立另一套 Renderer。
+
+最终 Dev/Release 全量均退出 0，包含 Cavity、材质/AA、贴图 DDGI 与离屏发光传输、原 Renderer 生命周期和 15 组选中裁剪。日志为 `out/cavity-dev-full.log`、`out/cavity-release-full.log`；两份均未报告 D3D12 warning/error。Dev 直接执行已构建程序，用时 359.2 秒；Release 通过正式 `renderer_acceptance` 目标，用时 333.8 秒（含增量构建）。这些是本次命令耗时，不作两配置性能对比。最终折面、方块/球体的开关对照在 `out/cavity-evidence/dev/` 与 `release/`。
+
+应用负责人完成同一工作树的 Dev/Release `--viewport-edit` 与 `--acceptance-shortcuts`，覆盖 Cavity 控件、视角导航/饼菜单、菜单勾选更新、停靠缩放及原快捷键链；证据为 `out/viewport-document-<配置>.log` 和 `out/viewport-navigation-<配置>.log`。本轮没有操作或关闭用户的未保存编辑器。
+
+完整入口 `renderer_acceptance` 的进程预算更新为 600 秒，保留全部 GPU validation 与断言。原 120 秒在本机首个 Lit 帧阶段截断了正常推进的验证；该次超时保留在 `out/cavity-dev-initial-timeout.log`，不记为通过。首帧初始化和整套验收时间不用于推断稳态帧率。
+
+用例覆盖 MatCap/Smooth/Flat 的凸折面提亮、凹折面压暗、ridge/valley 独立控制、零强度旁路、0.5/1/4 像素半径和静态连续帧一致性。另有真实方块、球体与地板图像，检查效果变化及 FP32 深度逐值不变；屏幕凹凸增强不产生世界空间接触阴影。
+
+背景、视口外边距和 UI 与关闭效果时逐字节一致；纯线框与 Scene Lit 跳过效果。Lit 对照使用相同 `camera_cut` 起点，避免把光照自身的历史变化误归因于 Cavity，并要求颜色、深度与 pass 数完全一致。窗口缩放覆盖接受旧尺寸、跳过过期尺寸、接受新尺寸的完整路径；另检查透视/正交、非法参数的编码前拒绝、清空场景和重复关闭。
+
+默认 Cavity 在表面合成之后绘制选中边线，因此该状态比未选中时多一次 scene draw；旧 UI 缓存用例已同步实际绘制计数，上传次数、字节数和退休检查保持不变。临时颜色/法线目标为每窗口像素 12 字节，另加一次全屏合成；未选中且没有 Overlay 的批次跳过后置边线绘制。没有新增深度目标、随机采样或时间历史，也没有此次 GPU 毫秒或 FPS 收益的测量。
+
+## 标准材质（2026-10-11）
+
+本轮基于 `a7ab99f` 的 `codex/viewport-rendering` 工作树，RX 6800 XT。当前 Dev/Release 的 `atelier_renderer_acceptance` 均返回 0，启用真实 D3D12 GPU validation。证据为 `out/material-renderer-dev-full.log`、`out/material-renderer-release-full.log`，图片分别位于 `out/material-evidence/dev-full/` 和 `release-full/`；后续对渲染代码的更改须重新注明对应证据，不能沿用本段结论。
+
+材质消费入口在原 `materials.inl` 中扩展；`--materials --output <绝对目录>` 可只运行材质与光照传播用例。检查包含：
+
+- 材质分区、负 UV、sRGB 与独立线性 opacity、MatCap/Smooth/Lit、四种 AA 的 Mask 和公开 FP32 深度一致性。
+- 镂空在相机与真实阴影射线中一致；粗糙度/金属度打包图与相同常量响应匹配；MikkTSpace 法线图改变着色。
+- 贴图内容替换更新可见 emission；单面/双面 emission 的相机与 mesh NEE 方向一致，含镜像变换。
+- 离屏贴图发光仍照亮真实接收面；发光图从红换蓝后对应照明变化，完全裁弃的发光面不产生照明。
+- DDGI 命中读取贴图颜色；中性接收区相对关闭 DDGI 的 8-bit RGB 均值增量，红墙为 `(6.140, 0.950, 1.099)`，蓝墙为 `(5.240, 3.025, 12.587)`。这证明颜色传播，不是物理真值或性能测量。
+- 同一 Mesh 加入不相连的 Mask 三角形不改变原封闭墙体的 DDGI 支持；随后只换贴图内容，GI 跟随新颜色。
+- 原有共享网格、UI、invalid-frame 恢复、resize/minimize、资源退休及 15 组选中裁剪场景继续通过。各组选中表面内部改变/铺黄仍为 `0 / 0`。
+
+Release 还通过 `--scene-lit-temporal`（`out/material-temporal-release.log`）：材质/发光变化、移动阴影、红/灰反射、Local GI、T2x 来源稳定性与分通道隔离均通过；红色反射的非受光绿色/蓝色最大值保持 0。该检查覆盖本轮着色法线/几何法线分离对既有历史链的影响。
+
+Dev/Release 的完整 `atelier_editor_document_acceptance`、`--materials` 及 `atelier_project_scene_acceptance` 均通过，分别记录在 `out/material-editor-document-<配置>.log`、`material-resources-<配置>.log` 和 `material-project-scene-<配置>.log`。除共享/实例参数外，还检查了取消草稿、无效值回退、幂等绑定、复制实例、换网格槽对齐、旧场景兼容与关闭 Runtime 后的快照所有权。点拾取专项验证透明孔洞、负 UV 镜像和单面正/背面。
+
+真实 Release 编辑器的独立工程位于 `out/material-evidence/editor-preview/Project`。Control 实际完成图片导入、资产创建、两物体共享绑定、实例粗糙度覆盖、共享颜色传播、两条撤销历史、无效值回退、保存/重开及旧句柄拒绝。请求和响应在 `control-transcript.jsonl`；64 个接受帧后的 Scene Lit 全窗口截图由 `capture-result.json` 指向。截图中左侧粗糙度覆盖为 0.85，共享资产为 0.3，棋盘纹理使用 2 倍 UV 重复。场景使用显式方向光与 Sky Light，没有操作用户原编辑器。
+
+收尾审查同时覆盖资源发布、失败回滚、复制与保存、缓存命中和混合实例覆盖。Dev/Release 的材质资源、Textured OBJ/Sponza、Project Scene 定向验收已通过（`out/material-review-{resources,textured,scene}-<配置>.log`）：含 `./` 与合法 `..` 的创建路径、重复创建保护、越界拒绝、持久材质拒绝匿名纹理且保留旧状态、内联材质复制后的独立编辑/Undo/Redo/保存重开，以及退化 UV 与 +X 作者法线的稳定正交切线。限定代码交叉复审未发现新的阻断问题；没有模拟文件系统或 GPU 失败。
+
+收尾 Dev/Release `--materials` GPU 验收均通过（`out/material-review-renderer-<配置>.log`，图片在 `out/material-review-evidence/<配置>/`）。新增同一 Mesh 的 Mask/Opaque 实例共享、交换顺序、移除 Mask 后仅保留 Opaque、重新恢复 Mask 的连续帧检查，光栅深度和阴影透明孔洞均正确；原材质、DDGI 和离屏发光用例继续通过，颜色传播均值与本节前述值一致。正式 Editor 的双配置构建及停靠/快捷键验收由应用负责人完成，另见[编辑器记录](../editor/README.md)。
+
+无绑定材质的稳定捕获不再查询引用字段；RT 不透明性聚合复用几何缓存，消除每帧临时哈希表。旧的逐材质绑定通路已退役，重复的 Lit 标量验证由 Renderer 边界统一承担，未使用的 shader 中间字段已删除。上述减少工作量是代码事实，尚未换算为受控帧率收益。
+
+本段不宣称纹理流送、大规模材质压力测试或已测得 FPS 提升。原始无贴图光照质量/性能记录的场景条件保持在对应旧章节，不与新材质工作量直接比较。
 
 ## 跨相机平面的选中边线铺黄（2026-10-10）
 
-基线为 `5d24e4a6ab10b954c3bda03ffdfea674e939b12d`，证据根目录 `out/selection-clipping-20261010/`。用户 Sponza 截图的近处整面铺黄，用同一真实 Renderer、RX 6800 XT 和 GPU validation 缩减为一个两三角形地板复现；未操作或重启用户编辑器，也未修改场景数据。
+基线为 `5d24e4a6ab10b954c3bda03ffdfea674e939b12d`，修复提交 `a7ab99f9c0356e2b31aa96b6317e760b3e834c8e`，证据根目录 `out/selection-clipping-20261010/`。用户 Sponza 截图的近处整面铺黄，用同一真实 Renderer、RX 6800 XT 和 GPU validation 缩减为一个两三角形地板复现；未操作或重启用户编辑器，也未修改场景数据。
 
 原 shader 把无透视插值重心坐标当作非负距离。顶点跨到相机背后时，屏幕重心坐标可变负，`smoothstep` 把该区域当成完全覆盖的边线。实际失败 `red.log`：前端顶点 z=-1 时，远离全部原始边的 22,528 个内部像素全部改变并成为黄色；顶点位于 z=0、.04 和 .11 时，该内部区域没有铺黄，近裁剪面为 .1。对应原始捕获为 `red/selection-clipping-0.ppm`，无损 PNG 转换为同名 `.png`。
 
@@ -19,11 +78,13 @@
 
 最终构建／验收为 `dev-final-build.log`、`dev-final.log`、`release-final-build.log`、`release-final.log`，配对选中／未选中捕获在 `dev-final/` 和 `release-final/`。最终源码不含临时诊断输出，构建及 GPU 日志没有编译诊断或 D3D12 warning/error。本轮验证原生 Renderer 场景，未声称已经操作用户未保存的 Sponza 现场。
 
+编辑器集成复验使用独立 Release 进程打开仓库内的 Official Examples，通过 Control 恢复从原窗口只读取得的相机状态，设置 Smooth 并选中 Sponza Atrium。实际 GPU 捕获中，近处地板保留材质，原始边继续可见，未出现整面铺黄；它使用官方示例的场景数据，不包含用户未保存的其他对象。原窗口和未保存内容保持不变。Dev／Release 的 `editor_surfaces_acceptance` 与 `editor_shortcuts_acceptance` 同时验证停靠、菜单与视口输入集成。来源是应用集成工作树 `C:/Users/Arzuo/.codex/worktrees/2a7e/FrostFoxAtelier` 的 `out/release/surface-evidence/selection-sponza.png`，不是渲染专项目录中的捕获。
+
 中间结果保留用于归因：`fix.log` 的首版消除了铺黄，但宽线检查发现把系统位置 w 当作倒数的假设导致宽度失真；显式插值 clip w 后修正。`dev.log` 还暴露验收颜色判据错误：浅色 MatCap 的边线主要降低蓝通道，不能要求红绿同时提高 20；最终比较任意 RGB 通道的实际变化，并保持线宽约束。`diagnostic*.log` 属于临时 GPU 数值探针的预期失败，不作为通过证据。
 
 ## 提交后 Review 补强（2026-10-10）
 
-基线提交为 `c8293e9`（移动光照历史与此前 Scene Lit 演进），本节验证其后的工作区补强。证据根目录 `out/lit-review-hardening-20261010/`。Astra 分别审查需求符合度、生命周期／规范与性能路径；主执行方负责集成和真实端到端验收。审核补强不改变 RHI 边界、FP32 深度或原生分辨率。
+基线提交为 `c8293e9`（移动光照历史与此前 Scene Lit 演进），补强提交为 `ca4af3344f09a3fc2cfd45b11bf6fdf895d412d0`，已进入 `5d24e4a6` 集成基线。证据根目录 `out/lit-review-hardening-20261010/`。Astra 分别审查需求符合度、生命周期／规范与性能路径；主执行方负责集成和真实端到端验收。审核补强不改变 RHI 边界、FP32 深度或原生分辨率。
 
 需求审查确认：原位关闭 emission、等亮度换色、材质粗糙度跨过 SSSR 上限和修改反射上限，都会保留不再有效的旧反射。新增 `scene_lit_signal_edits.inl` 沿原 `--scene-lit-temporal` 入口隔离这些信号，使用同一终点清历史后收敛的参考图；比较只包含实际存在反射的接收像素。相对误差定义与下节移动验收相同，不表示残留能量比例。
 
@@ -222,7 +283,7 @@ Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文
 
 指标取相同视口内有几何深度的像素，属于色调映射后的显示空间差异，包含其上的编辑辅助叠层；不是线性间接辐照度真值，也不是帧率测量。静态噪声对照的两次捕获之间推进 32 个预热帧及一次捕获帧；关灯后的最终捕获包含三段各 128 个预热帧和中间捕获。固定检查要求 DDGI 开关差大于 .5 且超过静态差两倍、移动后的再差分大于同一门槛、关灯末期亮度低于初期的 30% 或 2；没有随实测放宽阈值。
 
-首次沿用基础显示的纯白实例色 1 时，DDGI 使画面偏亮；关灯初期 / 末期亮度为 218.154 / 107.381，未通过消退检查。最终默认改成 .55 是场景材质设定，本轮没有修正这个高反射率下的慢消退问题，不能将最终通过外推到所有材质。Scene Lit 仍不读取 Sponza 漫反射/opacity 图，植物与铁链按不透明处理；完整贴图和镂空仅由 Smooth 路径验证。
+首次沿用基础显示的纯白实例色 1 时，DDGI 使画面偏亮；关灯初期 / 末期亮度为 218.154 / 107.381，未通过消退检查。最终默认改成 .55 是场景材质设定，本轮没有修正这个高反射率下的慢消退问题，不能将最终通过外推到所有材质。该轮 Scene Lit 尚不读取 Sponza 漫反射/opacity 图，植物与铁链按不透明处理；此历史限制已由 2026-10-11 的标准材质接入替代。
 
 本轮证据位于 `out/sponza-ddgi-20261010/`：`{dev,release}-final/` 保存最终截图、`ddgi.txt`、`ddgi-motion.csv` 和 `acceptance.txt`，`{dev,release}-window-final.log` 为窗口运行记录；`{dev,release}-document-final.log` 保存最终场景往返结果。首次纯白失败的图像与指标保留在 `dev/` 和 `dev-window.log`。构建使用锁文件版本；本机环境脚本选中的已安装 CMake 版本不同，实际使用既有 `.tools/setup/cmake18.5/` 内与锁文件相符的 CMake/Ninja，未修改锁文件或全局安装。
 
@@ -245,7 +306,7 @@ Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文
 
 本轮将 Claude/Sponza 与 Scene Lit 质量分支在共同内容快照 `f967165` 上逐文件合并。保留基础模式的 MeshPart、漫反射/opacity 图、Alpha Test 和编辑叠层，以及 Scene Lit 的 Reversed-Z、独立信号重建与 DDGI 修正。Scene Lit 的 GPU 顶点读取同步为含 UV 的 32 字节布局，三角形为 112 字节；材质像素验收采用近 .8 / 远 .4 的反向设备深度。
 
-Scene Lit 仍不采样 Mesh 材质图，其辅助深度与叠层保持和不透明光栅/射线相同的覆盖。纯线框和基础着色继续裁剪透明材质。下面独立分支各节保留各自的历史证据；阶段合并的验证单独记录。
+该次历史合并尚未让 Scene Lit 采样 Mesh 材质图，其辅助深度与叠层保持和不透明光栅/射线相同的覆盖；这一限制已由上面的标准材质接入替代。纯线框和基础着色继续裁剪透明材质。下面独立分支各节保留各自的历史证据；阶段合并的验证单独记录。
 
 阶段 GPU 验收首次失败于材质图像检查。读回四个采样点均为 `(0,216,0,255)`、设备深度约 .6：默认 Camera 已将世界 z 映射为 `1-z`，合并时又把验收几何的近 .2 / 远 .6 反置成 .8 / .4，背景因此覆盖贴图。修正恢复原几何，仅将设备深度预期保持为近 .8 / 远 .4；全部颜色与深度阈值不变。修正后的四点依次为红 `(216,0,0)`/.8、透孔露出的绿 `(0,216,0)`/.4、蓝 `(0,0,216)`/.8、黄 `(216,216,0)`/.8。两个配置的基础验收均已通过，并保留 `material-coverage.png` 与实际像素日志。
 
@@ -501,9 +562,11 @@ Renderer 消费者检查 MatCap 对基础色的覆盖与视空间响应、Flat/�
 
 ## 历史验收
 
+以下保留 2026-09-28 至 S1 的早期记录，包含后来已经替换的前向深度、整面选中色和构建接线。它们用于追溯当时结果，不能覆盖上方当前 Reversed-Z、边线高亮及正式 presets 合同。
+
 2026-09-28，Windows x64、AMD Radeon RX 6800 XT，dev 与 release 的正式 `renderer_acceptance` 均通过。fixture 使用真实 HWND、正式 Renderer、D3D12 debug layer 与 GPU validation；不使用 mock。最终程序输出必须包含 `Renderer acceptance: PASS` 且退出 0，runner 保留日志并限制进程为 120 秒。
 
-## 可重复入口
+### 可重复入口
 
 应用根构建先创建 RHI 与 `atelier_ui_protocol`，再 include `cmake/renderer.cmake` 并调用 `atelier_add_renderer()`。然后：
 
@@ -515,9 +578,9 @@ cmake --preset release
 cmake --build --preset release --target renderer_acceptance
 ```
 
-本次独立 RHI worktree 未修改由应用拥有的根 CMake；通过忽略目录 `out/renderer-development.cmake` 的 CMake DEFER 在既有根构建末尾调用同一 `atelier_add_renderer()`，用 `CMAKE_PROJECT_FrostFoxAtelier_INCLUDE` 注入。没有复制生产实现、建立另一个产品入口或引用其他 worktree；应用集成后使用上面的普通 presets 命令。
+早期独立 RHI worktree 曾使用临时 CMake DEFER 注入完成接线，该辅助方式已废弃。当前正式根构建直接包含 Renderer，使用上面的普通 presets 命令。
 
-## 已核对的结果
+### 已核对的结果
 
 | 行为 | 真实观察 |
 | --- | --- |
@@ -536,7 +599,7 @@ cmake --build --preset release --target renderer_acceptance
 
 证据在各配置 `out/<preset>/renderer-acceptance.log` 与 `renderer-acceptance.ppm`；这些本机文件不随仓库提交。窗口是端到端验收 fixture，正式产品窗口由 application 唯一拥有。fixture 没有文字排版与用户控件；真实文字、Reset Camera、场景对象操作、撤销/取消和 DPI 输入路由由应用与 UI 的共同验收证明。
 
-## S1 诊断计数增量
+### S1 诊断计数增量
 
 从 `fcb9ddf` 增加 `FrameResult::stats` 后，dev/release 分别再次运行现有 `renderer_acceptance`，均 PASS。只扩展同一真实窗口消费者的检查，没有另建测试或 benchmark 工程，没有重跑无改动的完整 RHI/Runtime/JIT 矩阵。
 
@@ -548,13 +611,13 @@ cmake --build --preset release --target renderer_acceptance
 
 该结果证明计数对应已编码操作和现有缓存持有量，不是 256 对象的性能结论；真实交互 prepare/render 耗时与上传分布由应用侧在同一正式入口采样。日志为本机 `out/<preset>/renderer-stats-run.log` 和正式 runner 生成的 `renderer-acceptance.log`。
 
-## 已有 RHI 回归
+### 已有 RHI 回归
 
 同一 gfx 补丁在 dev/release 分别运行 `rhi_acceptance`，两种配置均通过：Compute/Mesh/Vertex 场景颜色 24,576 像素、深度 12,288 像素、90 个参数字匹配；管线准备失败、资源使用期、owner/关停、null-list、mesh-pixel-state 和真实 timeout 矩阵通过。timeout 检查继续报告 `poisoned-admission=PASS drain-only=PASS increments=1`。
 
 对应日志为 `out/<preset>/rhi-acceptance.log`、`rhi-regression-*.log`。没有重复运行无改动的 Runtime/JIT 矩阵。
 
-## 未覆盖
+### 当时未覆盖
 
 没有动态注入 Present 后的 ResizeBuffers、Signal、Reset、device removal 或 native OOM 故障；该处失败继续沿原 RHI 终态返回，代码仅在整个 frame 成功后接受。原 timeout 证明不能替代这些驱动故障的证明。未强制制造 `DXGI_STATUS_OCCLUDED`；其分类有实现，隐藏/最小化是编码前可见性检查，不能记作 native occlusion 的验收。
 

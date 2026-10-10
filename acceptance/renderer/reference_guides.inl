@@ -44,7 +44,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
             frame.view.wireframe=wire; frame.view.hidden_lines=hidden;
             frame.view.reference_grid=frame.view.origin_axes=false; draw(); const auto bare=capture;
             frame.view.reference_grid=frame.view.origin_axes=true; result=draw();
-            check(capture.depth==bare.depth && difference(capture,bare)>100 && result.stats.viewport_draw_calls==2,
+            check(capture.depth==bare.depth && difference(capture,bare)>100 && result.stats.viewport_draw_calls==(wire==render::Wireframe::only?2u:3u),
                   "guides preserve full geometry depth in all shading and wire modes");
             std::size_t occluder_pixels=0;
             for (std::size_t i=0;i<capture.depth.size();++i) if (capture.depth[i]>.501f) {

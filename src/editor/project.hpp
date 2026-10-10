@@ -6,7 +6,14 @@
 #include <unordered_map>
 
 namespace atelier::editor {
-enum class AssetKind { folder, mesh, scene, source, file };
+enum class AssetKind { folder, mesh, scene, source, file, texture, material };
+struct TextureAsset {std::string key;std::wstring name;material::ImageRef image;};
+struct MaterialAsset {
+    std::string key;
+    std::wstring name;
+    material::Description description;
+    std::array<std::string,material::input_count> textures;
+};
 struct ProjectEntry {
     std::filesystem::path path; // Relative to the project root; never a Runtime ID.
     std::string key;
@@ -21,6 +28,7 @@ class Project final {
 public:
     static Result<Project> create(const std::filesystem::path&);
     static Result<Project> open(const std::filesystem::path&);
+    static bool is_texture_path(const std::filesystem::path&);
     static bool is_scene_path(const std::filesystem::path& path) {
         return !path.empty() && path.extension()==L".scene" &&
             (*path.begin()==L"Content" || *path.begin()==L"Examples");
@@ -35,6 +43,11 @@ public:
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
     Result<MeshAsset> mesh(std::string_view);
     Result<std::string> import_mesh(const std::filesystem::path&);
+    Result<TextureAsset> texture(std::string_view);
+    Result<MaterialAsset> material(std::string_view);
+    Result<std::string> import_texture(const std::filesystem::path&);
+    Result<std::string> create_material(const std::filesystem::path&,const MaterialAsset& = {});
+    Result<void> save_material(const MaterialAsset&);
     // Fresh, deterministic compiler inputs. UI declarations have their own
     // configured entry and are not parsed as gameplay Source functions.
     Result<std::vector<std::filesystem::path>> source_paths() const;
@@ -48,6 +61,7 @@ private:
     std::vector<ProjectEntry> entries_;
     std::uint64_t revision_{};
     std::unordered_map<std::string,std::size_t> mesh_entries_;
+    std::unordered_map<std::string,material::ImageRef> textures_;
     struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; };
     std::unordered_map<std::string,CachedMesh> meshes_;
 };

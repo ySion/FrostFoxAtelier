@@ -26,6 +26,9 @@ Result<void> Application::build_project(bool rebuild) {
         auto result=project_code_->poll(*project_,true);publish_build(project_code_->report());return result;
     }
     if(play_.running()) return failure("Stop the project before rebuilding its types.");
+    for(const auto& key:document_->dirty_materials()) {
+        auto saved=document_->save_material(*project_,key);if(!saved) return saved;
+    }
     auto text=workspace_.scene_available?document_->serialize():Result<std::string>{pending_scene_};
     if(!text) return std::unexpected(text.error());
     const bool dirty=workspace_.scene_available && document_->dirty();
@@ -65,6 +68,9 @@ Result<void> Application::run_project() {
     if(!project_ || !workspace_.scene_available) return failure("Build and load a project scene before running.");
     if(play_.running()) return {};
     const auto edit=ui_.commit_edit();if(!edit || !effects(*edit)) return failure("Finish the current field edit before running.");
+    for(const auto& key:document_->dirty_materials()) {
+        auto saved=document_->save_material(*project_,key);if(!saved) return saved;
+    }
     auto built=build_project();if(!built) return built;
     const auto source=document_->serialize();if(!source) return std::unexpected(source.error());
     static std::atomic<std::uint64_t> serial{};

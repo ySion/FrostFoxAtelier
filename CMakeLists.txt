@@ -103,8 +103,11 @@ atelier_add_source()
 include(cmake/reflection.cmake)
 include(cmake/foundation.cmake)
 
+include(cmake/geometry.cmake)
+
 include(cmake/world.cmake)
 atelier_add_world()
+target_link_libraries(atelier_world PUBLIC atelier_geometry)
 
 include(cmake/jolt.cmake)
 atelier_add_jolt()

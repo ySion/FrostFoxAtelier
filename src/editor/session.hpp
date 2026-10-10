@@ -7,6 +7,7 @@
 
 namespace atelier::editor {
 class Project;
+struct MaterialAsset;
 struct Parameter {
     const char* name;
     const char* unit;
@@ -72,6 +73,27 @@ public:
     Result<void> commit_edit(std::uint64_t control_session);
     Result<void> cancel_edit();
     Result<void> reset_position(ObjectId component); // One group change and one history entry.
+    Result<ObjectRoot> material_resource(Project&,std::string_view key);
+    Result<ObjectRoot> material_resource(Project&,const MaterialAsset&);
+    Result<MaterialAsset> material_asset(ObjectId) const;
+    Result<std::vector<MaterialAsset>> material_assets() const;
+    std::vector<ObjectId> material_objects() const;
+    Result<void> begin_material_edit(ObjectId,std::uint64_t control_session);
+    Result<void> preview_material(std::uint64_t,const material::State&);
+    Result<void> commit_material_edit(std::uint64_t);
+    Result<void> cancel_material_edit();
+    Result<void> set_material_texture(Project&,ObjectId,material::Input,std::string_view key);
+    Result<void> assign_material(Project&,ObjectId component,std::string_view slot,std::string_view key);
+    Result<void> clear_material(ObjectId component,std::string_view slot);
+    Result<void> set_material_override(ObjectId component,std::string_view slot,std::span<const FieldId>,bool);
+    Result<void> save_material(Project&,std::string_view key);
+    Result<void> material_undo(std::string_view key,bool redo=false);
+    bool material_dirty(std::string_view key) const;
+    std::vector<std::string> dirty_materials() const;
+    bool material_editing(std::uint64_t control_session) const noexcept;
+    ObjectId loaded_material(std::string_view key) const;
+    bool is_material(ObjectId) const;
+    bool material_can_undo(std::string_view key,bool redo=false) const;
     bool owns_edit(std::uint64_t control_session) const noexcept;
     Result<world::Commit> undo();
     Result<world::Commit> redo();
@@ -82,12 +104,12 @@ public:
     Result<void> collect_step();
     Result<std::string> serialize() const;
     static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {});
-    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || editing(); }
+    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
     void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
     void mark_modified() noexcept { if(saved_cursor_) {saved_cursor_.reset();++revision_;} }
     // Monotonic authoring observation token, independent of undo cursor reuse.
     std::uint64_t revision() const noexcept { return revision_; }
-    bool editing() const noexcept { return active_.has_value() || transform_.has_value(); }
+    bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
     static constexpr std::size_t maximum_actors = 256;
@@ -113,7 +135,9 @@ private:
     };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     struct BodyChange { ObjectRoot root; ObjectId actor; physics::BodySettings before, after; };
-    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange>;
+    struct MaterialBindingChange {ObjectRoot root;ObjectId actor;std::vector<world::MaterialBinding> before,after;};
+    struct MaterialValueChange {ObjectRoot root;ObjectId actor,component;material::State before,after;};
+    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -132,6 +156,13 @@ private:
     std::optional<TransformChange> transform_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
     std::uint64_t next_name_{1};
+    struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};
+    std::unordered_map<std::string,MaterialDocument> materials_;
+    std::unordered_map<std::string,ObjectRoot> textures_;
+    struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};world::FieldPath path;ObjectId actor,component;};
+    std::optional<MaterialEdit> material_edit_;
+    Result<ObjectRoot> texture_resource(Project&,std::string_view);
+    Result<void> replace_material_bindings(ObjectId,std::vector<world::MaterialBinding>);
     Result<void> admit_actor_edit(ObjectId) const;
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     Result<ObjectId> admit_property_edit(ObjectId) const;

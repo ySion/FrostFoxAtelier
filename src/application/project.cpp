@@ -8,13 +8,13 @@
 namespace atelier::application {
 namespace {
 auto failed(std::string message) { return std::unexpected(Error{ErrorCode::invalid_storage,std::move(message)}); }
-enum class Pick { folder, scene_open, scene_save, mesh, source, source_save };
+enum class Pick { folder, scene_open, scene_save, mesh, source, source_save, texture, material_save };
 Result<std::optional<std::filesystem::path>> pick(HWND owner,Pick kind,const std::filesystem::path& initial={},const wchar_t* filename=L"Move.source") {
     const auto initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED|COINIT_DISABLE_OLE1DDE);
     if (FAILED(initialized) && initialized!=RPC_E_CHANGED_MODE) return failed("Cannot initialize the native file dialog.");
     struct Apartment { bool owns; ~Apartment(){if (owns) CoUninitialize();} } apartment{SUCCEEDED(initialized)};
     Microsoft::WRL::ComPtr<IFileDialog> dialog;
-    const bool save=kind==Pick::scene_save || kind==Pick::source_save;
+    const bool save=kind==Pick::scene_save || kind==Pick::source_save || kind==Pick::material_save;
     auto hr=CoCreateInstance(save?CLSID_FileSaveDialog:CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog));
     if (FAILED(hr)) return failed("Cannot create the native file dialog.");
     FILEOPENDIALOGOPTIONS options{};dialog->GetOptions(&options);
@@ -22,10 +22,12 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner,Pick kind,const std
     if (kind==Pick::folder) {options|=FOS_PICKFOLDERS;dialog->SetTitle(L"Choose a project folder");}
     else {
         const bool source=kind==Pick::source || kind==Pick::source_save;
-        const COMDLG_FILTERSPEC type{source?L"Source and text files":kind==Pick::mesh?L"OBJ models and materials":L"Atelier scene",source?L"*.source;*.ss;*.txt;*.json":kind==Pick::mesh?L"*.obj":L"*.scene"};
-        dialog->SetFileTypes(1,&type);dialog->SetDefaultExtension(source?L"source":kind==Pick::mesh?L"obj":L"scene");
+        const COMDLG_FILTERSPEC type{source?L"Source and text files":kind==Pick::mesh?L"OBJ models and materials":kind==Pick::texture?L"Textures":kind==Pick::material_save?L"Material":L"Atelier scene",
+            source?L"*.source;*.ss;*.txt;*.json":kind==Pick::mesh?L"*.obj":kind==Pick::texture?L"*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff":kind==Pick::material_save?L"*.material":L"*.scene"};
+        dialog->SetFileTypes(1,&type);dialog->SetDefaultExtension(source?L"source":kind==Pick::mesh?L"obj":kind==Pick::texture?L"png":kind==Pick::material_save?L"material":L"scene");
         if (!save) options|=FOS_FILEMUSTEXIST;
         if(kind==Pick::source_save) dialog->SetFileName(filename);
+        if(kind==Pick::material_save) dialog->SetFileName(L"Material.material");
     }
     dialog->SetOptions(options);
     if (!initial.empty()) {
@@ -45,6 +47,15 @@ bool Application::confirm_discard(bool sources) {
     if (const auto edit=ui_.commit_edit();edit) {if (!effects(*edit)) return false;}
     else return false;
     if (sources) for (const auto& file:workspace_.source_editor.files()) if (!confirm_source(*file)) return false;
+    for(const auto& key:document_->dirty_materials()) {
+        const auto response=MessageBoxW(window(),(L"Save changes to material "+editor::wide(key)+L"?").c_str(),L"Unsaved material",MB_YESNOCANCEL|MB_ICONQUESTION);
+        if(response==IDCANCEL) return false;
+        if(response==IDYES) {
+            if(!project_) return false;
+            const auto saved=document_->save_material(*project_,key);
+            if(!saved) {workspace_.status=editor::wide(saved.error().message);return false;}
+        }
+    }
     if (!document_->dirty()) return true;
     const auto response=MessageBoxW(window(),L"Save changes to the current scene?",L"Unsaved scene",MB_YESNOCANCEL|MB_ICONQUESTION);
     if (response==IDCANCEL) return false;
@@ -149,6 +160,25 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     using enum editor::Command;
     close_menu(false);
     if (command==save_scene) return this->save_scene();
+    if(command==create_material || command==import_texture) {
+        if(!project_) return failed("Open a project before creating resources.");
+        std::filesystem::path path;
+        if(!argument.empty()) path=editor::wide(argument);
+        else {
+            auto picked=pick(window(),command==create_material?Pick::material_save:Pick::texture,project_->root()/"Content");
+            if(!picked) return std::unexpected(picked.error());if(!*picked) return {};path=**picked;
+        }
+        Result<std::string> created=command==create_material?
+            project_->create_material(path.is_absolute()?path.lexically_relative(project_->root()):path):project_->import_texture(path);
+        if(!created) return std::unexpected(created.error());
+        const auto at=std::ranges::find(project_->entries(),*created,&editor::ProjectEntry::key);
+        if(at!=project_->entries().end()) workspace_.assets.navigate(at->path.parent_path());
+        if(command==create_material) {
+            auto root=document_->material_resource(*project_,*created);if(!root) return std::unexpected(root.error());
+            workspace_.material_inspection=*created;workspace_.inspecting_asset=true;
+        }
+        workspace_.status=command==create_material?L"Material created":L"Texture imported";return {};
+    }
     if (command==refresh_assets) return project_?project_->refresh():Result<void>(failed("No project is open."));
     const auto kind=command==new_project || command==open_project?Pick::folder:command==open_scene?Pick::scene_open:command==save_scene_as?Pick::scene_save:Pick::mesh;
     std::optional<std::filesystem::path> path;
@@ -217,8 +247,16 @@ Result<void> Application::source_command(editor::Command command,std::string_vie
         if (!path) return std::unexpected(path.error());
         return *path?this->open_source(**path):Result<void>{};
     }
+    if(command==save_document && !workspace_.source_history() && workspace_.inspecting_asset && !workspace_.material_inspection.empty()) {
+        auto edit=ui_.commit_edit();if(!edit || !effects(*edit)) return failed("Finish the material field before saving.");
+        if(!project_) return failed("No project is open.");
+        auto saved=document_->save_material(*project_,workspace_.material_inspection);if(!saved) return saved;
+        const auto refreshed=project_->refresh();workspace_.status=refreshed?L"Material saved":L"Material saved; catalog refresh failed";return {};
+    }
     if (command==save_document) return workspace_.source_history() && file?save_source(*file):this->save_scene();
     if (command==save_all) {
+        auto edit=ui_.commit_edit();if(!edit || !effects(*edit)) return failed("Finish the current field before saving.");
+        if(project_) for(const auto& key:document_->dirty_materials()) {auto saved=document_->save_material(*project_,key);if(!saved) return saved;}
         for (const auto& item:workspace_.source_editor.files()) if (item->dirty()) if (auto result=save_source(*item);!result) return result;
         return project_ && workspace_.scene_available?this->save_scene():Result<void>{};
     }

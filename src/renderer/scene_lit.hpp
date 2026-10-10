@@ -1,11 +1,14 @@
 #pragma once
 #include "renderer.hpp"
+#include "material_frame.hpp"
 
 namespace atelier::renderer::detail {
 struct SceneTriangle {
     std::array<geometry::Vertex, 3> vertices;
     std::uint32_t edge_mask;
     std::array<float, 3> face_normal;
+    std::uint32_t material_slot{};
+    std::array<std::uint32_t,3> reserved{};
 };
 struct SceneLitDraw {
     GfxBuffer triangles;
@@ -20,7 +23,7 @@ public:
     SceneLit& operator=(const SceneLit&)=delete;
     void validate(const Frame& frame) const;
     void draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,
-              std::span<const SceneLitDraw> draws,FrameStats& stats);
+              std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats);
     // Called only after CPU preparation succeeds, inside the encoding phase.
     void invalidate(bool empty_scene,FrameStats& stats);
     Result<void> close();

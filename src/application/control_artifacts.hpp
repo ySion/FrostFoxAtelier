@@ -3,6 +3,7 @@
 #include "geometry/mesh.hpp"
 #include "renderer/renderer.hpp"
 #include "language/snapshot.hpp"
+#include "editor/project.hpp"
 
 namespace atelier::application::control_artifacts {
 struct Repro {
@@ -12,6 +13,7 @@ struct Repro {
     std::optional<language::SourceFile> ui_source;
     std::uint64_t publication_version{};
     std::vector<std::pair<std::string,geometry::MeshRef>> meshes;
+    std::vector<editor::MaterialAsset> materials;
     control::Json manifest, drafts;
 };
 struct Sample {renderer::Capture pixels;control::Json metadata;};

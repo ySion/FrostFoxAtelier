@@ -33,14 +33,18 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     };
     if (!component) {reject("PopupMenu is missing from the accepted UI authoring module.");return;}
     if (visible_ && source_==source && std::ranges::equal(items,items_) && style==ui_.style() && sheet_==sheet && component_==component) return;
+    const auto previous_focus=visible_ && source_==source?ui_.focused_control():0;
     const auto start=std::chrono::steady_clock::now();
+    const auto monitor_handle=MonitorFromRect(&anchor,MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
-    if (!GetMonitorInfoW(MonitorFromRect(&anchor,MONITOR_DEFAULTTONEAREST),&monitor))
+    if (!GetMonitorInfoW(monitor_handle,&monitor))
         throw std::runtime_error("Cannot query popup monitor.");
     const auto area=monitor.rcWork;
     const ui::PixelExtent work_area{static_cast<std::uint32_t>(area.right-area.left),static_cast<std::uint32_t>(area.bottom-area.top)};
-    // Move to the anchor monitor without shrinking the retained swapchain.
-    if (!SetWindowPos(window(),nullptr,anchor.left,anchor.bottom,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER))
+    // Cross monitors before measuring DPI; an in-place toggle must not first move
+    // the visible menu to its anchor and then back to its fitted position.
+    if (MonitorFromWindow(window(),MONITOR_DEFAULTTONEAREST)!=monitor_handle &&
+        !SetWindowPos(window(),nullptr,anchor.left,anchor.bottom,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER))
         throw std::runtime_error("Cannot position popup window.");
     const auto dpi=window_.dpi_scale();
     const bool measure=controls_.empty() || !std::ranges::equal(items,items_) || style!=ui_.style() || sheet_!=sheet ||
@@ -116,6 +120,7 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     x=std::clamp(x,area.left,area.right-width); y=std::clamp(y,area.top,area.bottom-height);
     if (!SetWindowPos(window(),HWND_TOP,x,y,width,height,SWP_NOACTIVATE)) throw std::runtime_error("Cannot size popup window.");
     retarget({static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)});
+    restore_focus_=previous_focus;
     window_.show(); visible_=dirty_=opening_=true;
     open_cpu_us_=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
 }
@@ -150,7 +155,12 @@ void PopupHost::render(renderer::Capture* capture) {
         if (current && result.status==renderer::FrameStatus::accepted) {
             if (!ui_.accept(candidate)) throw std::runtime_error("Popup rejected its accepted GPU frame.");
             if (opening_) open_cpu_us_+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
-            opening_=dirty_=false; return;
+            opening_=dirty_=false;
+            if(restore_focus_) {
+                dirty_|=ui_.focus(restore_focus_).redraw;
+                restore_focus_=0;
+            }
+            return;
         }
     }
 }
@@ -166,7 +176,7 @@ ui::Reply PopupHost::input(ui::Event event) {
 }
 void PopupHost::hide() {
     if (!visible_) return;
-    ShowWindow(window(),SW_HIDE); visible_=false; source_=0;
+    ShowWindow(window(),SW_HIDE); visible_=false; source_=restore_focus_=0;
     // Key-up after dismissal belongs to the owner. Retire the popup's terminal
     // key latch now, so the next opening does not swallow its first Escape.
     ui::Event loss; loss.kind=ui::EventKind::focus_lost;

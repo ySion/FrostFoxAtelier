@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "editor/json_format.hpp"
 #include "editor/fields.hpp"
+#include "editor/material_format.hpp"
 #include "physics/physics.hpp"
 #include <limits>
 #include <algorithm>
@@ -230,6 +231,12 @@ Result<world::Commit> Session::duplicate_selected() {
                     const auto mesh=take(world::read_static_mesh(runtime_,from));
                     take(world::validate_material(mesh.material));
                     take(world::set_mesh_binding(runtime_,to,mesh.mesh));
+                    auto materials=take(world::read_material_bindings(runtime_,from));
+                    for(auto& binding:materials) {
+                        const auto state=take(material::read_material(runtime_,binding.resource.id()));
+                        if(state.source.empty()) binding.resource=take(material::create_material(runtime_,state));
+                    }
+                    take(world::set_material_bindings(runtime_,to,materials));
                     take(runtime_.with_native<world::StaticMeshComponent>(to,[&](auto& value)->Result<void> {
                         value.material=mesh.material;return {};
                     }));
@@ -320,6 +327,21 @@ Result<std::string> Session::serialize() const {
                     value["mesh"]=mesh.mesh.source; value["base_color"]=vector(mesh.material.base_color);
                     value["roughness"]=mesh.material.roughness;value["metallic"]=mesh.material.metallic;
                     value["emissive"]=vector(mesh.material.emissive);
+                    auto bindings=Json::array();
+                    for(const auto& binding:take(world::read_material_bindings(runtime,component.id()))) {
+                        const auto asset=take(material_asset(binding.resource.id()));
+                        Json entry{{"slot",binding.slot},{"source",asset.key},{"overridden",binding.overridden}};
+                        if(asset.key.empty()) entry["inline"]=material_format::encode(asset);
+                        const auto state=take(material::read_material(runtime,binding.resource.id()));
+                        if(state.parent.registered()) {
+                            entry["parent"]=take(material::read_material(runtime,state.parent.id())).source;
+                            auto overrides=Json::array();
+                            for(std::size_t i=0;i<material::parameter_names.size();++i) if(state.overrides & (1u<<i)) overrides.push_back(material::parameter_names[i]);
+                            entry["overrides"]=std::move(overrides);
+                        }
+                        bindings.push_back(std::move(entry));
+                    }
+                    value["materials"]=std::move(bindings);
                 }
                 if(derives(runtime,state.type,types_.light_component)) take(world::validate_light(take(world::read_light(runtime,component.id()))));
                 if (physical_type(runtime,state.type)) value["body"]=body_settings(take(physics::read_settings(runtime,component.id())));
@@ -334,7 +356,7 @@ Result<std::string> Session::serialize() const {
                 {"root",object_key(root)},{"components",std::move(values)},
                 {"properties",write_properties(runtime,types_,member.id(),actor.type)}});
         }
-        auto text=Json{{"version",2},{"actors",std::move(actors)}}.dump(2)+"\n";
+        auto text=Json{{"version",3},{"actors",std::move(actors)}}.dump(2)+"\n";
         if (text.size()>json_format::maximum_bytes) throw std::runtime_error("Scene exceeds the 16 MiB file limit.");
         return text;
     } catch (const std::exception& error) { return failed(error); }
@@ -344,7 +366,7 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
         const auto data=json_format::parse(text);
         fields(data,{"version","actors"});
         const auto version=json_format::identity(data.at("version"));
-        if (version!=1 && version!=2) throw std::runtime_error("Unsupported scene format version.");
+        if (version<1 || version>3) throw std::runtime_error("Unsupported scene format version.");
         const auto& actors=data.at("actors");
         if (!actors.is_array() || actors.size()>maximum_actors) throw std::runtime_error("Invalid scene Actor count.");
         auto session=std::make_unique<Session>(std::move(prepare)); auto& world=session->world_; auto& runtime=session->runtime_;
@@ -373,7 +395,8 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                 const bool spatial=derives(runtime,component_type,types.scene_component);
                 const bool mesh=derives(runtime,component_type,types.static_mesh_component);
                 Json structural=component;
-                if (version==2) structural.erase("properties");
+                if (version>=2) structural.erase("properties");
+                if(mesh && version>=3) structural.erase("materials");
                 const bool physical=physical_type(runtime,component_type);
                 const bool constraint=derives(runtime,component_type,session->physics_types_.distance_constraint_component);
                 if(constraint) structural.erase("constraint_target");
@@ -410,6 +433,37 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                     if(component.contains("emissive")) material.emissive=vector(component.at("emissive"));
                     take(world::validate_material(material));
                     take(runtime.with_native<world::StaticMeshComponent>(id,[&](auto& value)->Result<void>{ value.material=material; return {}; }));
+                    if(version>=3) {
+                        const auto& entries=component.at("materials");
+                        if(!entries.is_array() || entries.size()>1024) throw std::runtime_error("Invalid material binding table.");
+                        std::vector<world::MaterialBinding> bindings;
+                        for(const auto& entry:entries) {
+                            fields(entry,{"slot","source","overridden","inline","parent","overrides"});
+                            const auto key=entry.at("source").get<std::string>();
+                            if(!key.empty() && entry.contains("inline")) throw std::runtime_error("A material binding must have one source.");
+                            ObjectRoot resource;
+                            if(entry.contains("parent")) {
+                                if(!key.empty()) throw std::runtime_error("A material instance cannot own an asset identity.");
+                                auto parent=take(session->material_resource(project,entry.at("parent").get<std::string>()));
+                                auto state=take(material::read_material(runtime,parent.id()));state.source.clear();state.parent=parent;state.overrides=0;
+                                state.description=material_format::decode(entry.at("inline")).description;
+                                const auto& names=entry.at("overrides");if(!names.is_array() || names.size()>material::parameter_names.size()) throw std::runtime_error("Invalid parameter overrides.");
+                                for(const auto& name:names) {
+                                    const auto found=std::ranges::find(material::parameter_names,name.get<std::string>());
+                                    if(found==material::parameter_names.end()) throw std::runtime_error("Unknown parameter override.");
+                                    const auto bit=1u<<static_cast<unsigned>(found-material::parameter_names.begin());
+                                    if(state.overrides & bit) throw std::runtime_error("Duplicate parameter override.");state.overrides|=bit;
+                                }
+                                resource=take(material::create_material(runtime,state));
+                            } else {
+                                if(entry.contains("overrides")) throw std::runtime_error("Parameter overrides require a parent material.");
+                                resource=key.empty()?take(session->material_resource(project,material_format::decode(entry.at("inline")))):
+                                    take(session->material_resource(project,key));
+                            }
+                            bindings.push_back({entry.at("slot").get<std::string>(),std::move(resource),entry.at("overridden").get<bool>()});
+                        }
+                        take(world::set_material_bindings(runtime,id,bindings));
+                    }
                 }
                 if(derives(runtime,component_type,types.light_component)) take(world::validate_light(take(world::read_light(runtime,id))));
                 committed(world.set_enabled(id,component.at("enabled").get<bool>()));

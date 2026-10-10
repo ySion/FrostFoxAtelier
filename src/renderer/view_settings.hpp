@@ -11,6 +11,13 @@ enum class Background : std::uint32_t { none, gradient };
 enum class GridPlane : std::uint32_t { xz, xy, yz };
 enum class Antialiasing : std::uint32_t { none, taa, smaa, smaa_t2x };
 
+struct CavitySettings {
+    bool operator==(const CavitySettings&) const = default;
+    bool enabled{true};
+    float ridge{1.f}, valley{1.f}; // Independent convex/concave contrast, 0..2.
+    float radius{1.f}; // Screen-space radius, 0.5..4 physical pixels.
+};
+
 struct SceneLitSettings {
     bool operator==(const SceneLitSettings&) const = default;
     bool shadows{true};
@@ -52,6 +59,7 @@ struct ViewSettings {
     bool origin_axes{};
     float grid_spacing{.2f};
     GridPlane grid_plane{GridPlane::xz};
+    CavitySettings cavity{}; // Studio geometry only; independent of lighting and materials.
     SceneLitSettings lit{};
 };
 

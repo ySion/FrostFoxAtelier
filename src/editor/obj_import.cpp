@@ -1,8 +1,6 @@
 #include "editor/obj_import.hpp"
 #include "editor/project.hpp"
-#include <Windows.h>
-#include <wincodec.h>
-#include <wrl/client.h>
+#include "editor/image_decode.hpp"
 #include <charconv>
 #include <sstream>
 #include <unordered_map>
@@ -33,30 +31,6 @@ std::size_t index(std::string_view text,std::size_t count) {
 float scalar(std::istringstream& row) {
     float v{};require(bool(row>>v) && std::isfinite(v),"Invalid OBJ/MTL number.");return v;
 }
-geometry::ImageRef decode(const std::string& bytes) {
-    using Microsoft::WRL::ComPtr;
-    const auto initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
-    require(SUCCEEDED(initialized) || initialized==RPC_E_CHANGED_MODE,"Cannot initialize texture decoder.");
-    struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
-    ComPtr<IWICImagingFactory> factory;ComPtr<IWICStream> stream;ComPtr<IWICBitmapDecoder> decoder;
-    ComPtr<IWICBitmapFrameDecode> frame;ComPtr<IWICFormatConverter> converter;
-    require(SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory))),"Cannot create texture decoder.");
-    require(SUCCEEDED(factory->CreateStream(&stream)) && bytes.size()<=MAXDWORD &&
-        SUCCEEDED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<char*>(bytes.data())),static_cast<DWORD>(bytes.size()))) &&
-        SUCCEEDED(factory->CreateDecoderFromStream(stream.Get(),nullptr,WICDecodeMetadataCacheOnLoad,&decoder)) &&
-        SUCCEEDED(decoder->GetFrame(0,&frame)),"Cannot decode material texture.");
-    UINT width{},height{};require(SUCCEEDED(frame->GetSize(&width,&height)) && width && height && width<=8192 && height<=8192,
-        "Material texture exceeds the 8192-pixel dimension limit.");
-    require(SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
-        SUCCEEDED(converter->Initialize(frame.Get(),GUID_WICPixelFormat32bppRGBA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom)),
-        "Cannot convert material texture to RGBA.");
-    std::vector<std::uint8_t> pixels(std::size_t(width)*height*4);
-    require(SUCCEEDED(converter->CopyPixels(nullptr,width*4,static_cast<UINT>(pixels.size()),pixels.data())),"Cannot read material texture pixels.");
-    return std::make_shared<const geometry::Image>(width,height,std::move(pixels));
-}
-// Ear clipping in the dominant projection preserves concave polygon boundaries.
-// Collinear ears may be emitted: zero-area triangles with supplied normals are
-// valid OBJ data and harmless to rendering; polygons with no valid ear fail.
 std::vector<std::array<unsigned,3>> triangulate(const std::vector<geometry::Vertex>& face) {
     if(face.size()==3) return {{0,1,2}};
     std::array<double,3> normal{};
@@ -94,7 +68,7 @@ ObjImport load_obj(const std::filesystem::path& source) {
     ObjImport result;
     const auto root=std::filesystem::canonical(source.parent_path());
     std::unordered_map<std::string,std::size_t> files;
-    std::unordered_map<std::string,geometry::ImageRef> images;
+    std::unordered_map<std::string,material::ImageRef> images;
     std::size_t total_bytes{},image_bytes{};
     const auto read=[&](const std::filesystem::path& relative)->std::size_t {
         const auto key=utf8(relative.generic_wstring());
@@ -110,31 +84,32 @@ ObjImport load_obj(const std::filesystem::path& source) {
     const auto image=[&](const std::filesystem::path& relative) {
         const auto key=utf8(relative.generic_wstring());
         if(const auto found=images.find(key);found!=images.end()) return found->second;
-        const auto slot=read(relative);auto loaded=decode(result.files[slot].bytes);
+        const auto slot=read(relative);auto loaded=decode_image(result.files[slot].bytes);
         require(image_bytes+loaded->pixels().size()<=768ull*1024*1024,"Decoded OBJ textures exceed 768 MiB.");
         image_bytes+=loaded->pixels().size();images.emplace(key,loaded);return loaded;
     };
-    std::vector<geometry::Material> materials(1);
+    std::vector<material::Slot> materials(1);
+    std::vector<material::Description> descriptions(1);
     std::unordered_map<std::string,std::uint32_t> material_names;
     const auto mtl=[&](const std::filesystem::path& relative) {
         const auto slot=read(relative);std::istringstream input(result.files[slot].bytes);input.imbue(std::locale::classic());
-        std::string line,kind;geometry::Material* material=nullptr;
+        std::string line,kind;material::Description* current=nullptr;
         while(std::getline(input,line)) {
             if(auto p=line.find('#');p!=line.npos) line.resize(p);
             std::istringstream row(line);row.imbue(std::locale::classic());if(!(row>>kind)) continue;
             if(kind=="newmtl") {
                 auto name=rest(row);require(!name.empty() && material_names.size()<1024,"Invalid or excessive MTL material names.");
                 require(material_names.emplace(name,static_cast<std::uint32_t>(materials.size())).second,"Duplicate MTL material name.");
-                materials.push_back({std::move(name)});material=&materials.back();
+                materials.push_back({std::move(name)});descriptions.emplace_back();current=&descriptions.back();
             } else {
-                require(material!=nullptr,"MTL property precedes newmtl.");
-                if(kind=="Kd") for(unsigned i=0;i<3;++i) material->diffuse[i]=scalar(row);
-                else if(kind=="d" || kind=="Tr") {const auto v=scalar(row);material->diffuse[3]=kind=="d"?v:1-v;}
+                require(current!=nullptr,"MTL property precedes newmtl.");
+                if(kind=="Kd") for(unsigned i=0;i<3;++i) current->parameters.base_color[i]=scalar(row);
+                else if(kind=="d" || kind=="Tr") {const auto v=scalar(row);current->parameters.base_color[3]=kind=="d"?v:1-v;}
                 else if(kind.starts_with("map_") || kind=="bump") {
                     auto name=rest(row);require(!name.empty() && name.front()!='-',"MTL map options are not supported.");
                     const auto path=relative.parent_path()/relative_path(name);
-                    if(kind=="map_Kd") material->color=image(path);
-                    else if(kind=="map_d") material->opacity=image(path);
+                    if(kind=="map_Kd") current->texture(material::Input::base_color).image=image(path);
+                    else if(kind=="map_d") current->texture(material::Input::opacity).image=image(path);
                     else static_cast<void>(read(path)); // Preserve unrendered source maps during import.
                 } else if(kind!="Ka" && kind!="Ks" && kind!="Ke" && kind!="Ns" && kind!="Ni" && kind!="Tf" && kind!="illum")
                     throw std::runtime_error("Unsupported MTL record: "+kind);
@@ -166,7 +141,7 @@ ObjImport load_obj(const std::filesystem::path& source) {
                 std::ranges::copy(positions.at(index(std::string_view(token).substr(0,a),positions.size())),vertex.position);
                 if(a!=token.npos && a+1<(b==token.npos?token.size():b))
                     std::ranges::copy(uv.at(index(std::string_view(token).substr(a+1,b==token.npos?token.npos:b-a-1),uv.size())),vertex.uv);
-                else require(!materials[material].color && !materials[material].opacity,"Textured OBJ face requires UV indices.");
+                else require(std::ranges::none_of(descriptions[material].textures,[](const auto& t){return bool(t.image);}),"Textured OBJ face requires UV indices.");
                 const bool normal=b!=token.npos && b+1<token.size();
                 if(normal) std::ranges::copy(normals.at(index(std::string_view(token).substr(b+1),normals.size())),vertex.normal);
                 face.push_back(vertex);has_normal.push_back(normal);
@@ -188,6 +163,14 @@ ObjImport load_obj(const std::filesystem::path& source) {
                 vertices.insert(vertices.end(),triangle.begin(),triangle.end());masks.push_back(mask);parts.back().vertex_count+=3;
             }
         } else if(kind!="o" && kind!="g" && kind!="s") throw std::runtime_error("Unsupported OBJ record: "+kind);
+    }
+    for(std::size_t i=0;i<materials.size();++i) {
+        auto& value=descriptions[i];
+        const auto& color=value.texture(material::Input::base_color).image;
+        bool alpha=value.parameters.base_color[3]<1 || bool(value.texture(material::Input::opacity).image);
+        if(color)alpha|=color->has_alpha();
+        if(alpha)value.parameters.coverage=material::Coverage::mask;
+        materials[i].surface=std::make_shared<const material::Surface>(std::move(value));
     }
     result.mesh=std::make_shared<const geometry::Mesh>(std::move(vertices),std::move(masks),std::move(materials),std::move(parts));
     return result;

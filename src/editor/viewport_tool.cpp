@@ -112,14 +112,15 @@ template<class Emit> void handles(const ViewportView& view,V3 pivot,math::Quater
     if(tool==TransformTool::scale) box(Handle::scale_uniform,*center,11,srgb(0xae,0x8b,0xd2));
     else if(tool!=TransformTool::rotate) box(Handle::move_view,*center,7,srgb(0xee,0xee,0xe6));
 }
-std::optional<float> triangle(const ViewportView::Ray& ray,V3 a,V3 b,V3 c) {
+struct TriangleHit {float distance,u,v;};
+std::optional<TriangleHit> triangle(const ViewportView::Ray& ray,V3 a,V3 b,V3 c) {
     const auto edge1=b-a,edge2=c-a,h=math::cross(ray.direction,edge2);const auto det=math::dot(edge1,h);
     if(std::abs(det)<1e-8f) return {};
     const auto offset=ray.origin-a;const float u=math::dot(offset,h)/det;
     if(u<0 || u>1) return {};
     const auto q=math::cross(offset,edge1);const float v=math::dot(ray.direction,q)/det;
     if(v<0 || u+v>1) return {};
-    const float t=math::dot(edge2,q)/det;return t>=0?std::optional(t):std::nullopt;
+    const float t=math::dot(edge2,q)/det;return t>=0?std::optional(TriangleHit{t,u,v}):std::nullopt;
 }
 }
 
@@ -143,13 +144,13 @@ math::Quaternion from_euler_degrees(math::Vector3 value) noexcept {
 ViewportView ViewportView::make(const Camera& camera,ui::Rect bounds,float dpi) {
     ViewportView result;result.bounds=bounds;result.dpi_scale=dpi;result.eye=camera.eye();
     result.orthographic=camera.view()!=CameraView::perspective;
-    result.construction_normal=camera.view()==CameraView::front?V3{0,0,1}:camera.view()==CameraView::right?V3{1,0,0}:V3{0,1,0};
+    result.construction_normal=camera.construction_normal();
     const auto matrices=camera.matrices(std::max(bounds.width,1.f)/std::max(bounds.height,1.f));
     result.view=matrices.view;result.projection=matrices.projection;
     math::Matrix4d vp;const auto m=matrices.view*matrices.projection;
     std::copy(m.begin(),m.end(),vp.begin());result.inverse=math::try_inverse(vp).value_or(math::Matrix4d::identity());
     result.forward=math::try_normalize(camera.target()-camera.eye()).value_or(V3{0,0,1});
-    result.right=math::try_normalize(math::cross(camera.view()==CameraView::top?V3{0,0,1}:V3{0,1,0},result.forward)).value_or(V3{1,0,0});
+    result.right=math::try_normalize(math::cross(camera.up_hint(),result.forward)).value_or(V3{1,0,0});
     result.up=math::cross(result.forward,result.right);return result;
 }
 bool ViewportView::contains(float x,float y) const noexcept {
@@ -203,14 +204,29 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,cons
         for(std::size_t i=0;i<vertices.size();i+=3) {
             const auto at=[&](std::size_t n){const auto& p=vertices[n].position;return V3{p[0],p[1],p[2]};};
             const auto t=triangle(local,at(i),at(i+1),at(i+2));
-            if(t && *t<nearest) {
-                const auto point=ray.origin+ray.direction**t;
+            if(t && t->distance<nearest) {
+                const auto slot=item.geometry->material_slot(i/3);
+                const auto& surface=(item.surfaces?(*item.surfaces)[slot]:item.geometry->materials()[slot].surface)->description();
+                if(!surface.parameters.double_sided) {
+                    auto normal=math::cross(at(i+1)-at(i),at(i+2)-at(i));
+                    V3 authored{};
+                    for(std::size_t vertex=i;vertex<i+3;++vertex) {
+                        const auto& n=vertices[vertex].normal;authored+=V3{n[0],n[1],n[2]};
+                    }
+                    if(math::dot(normal,authored)<0)normal=-normal;
+                    if(math::dot(normal,local.direction)>=0)continue;
+                }
+                std::array<double,2> uv{};
+                for(std::size_t axis=0;axis<2;++axis)
+                    uv[axis]=vertices[i].uv[axis]*(1.-t->u-t->v)+vertices[i+1].uv[axis]*t->u+vertices[i+2].uv[axis]*t->v;
+                if(!material::covered(surface,uv))continue;
+                const auto point=ray.origin+ray.direction*t->distance;
                 if(view.project(point)) {
                     // World normal of the hit face, facing the viewer.
                     const auto edge1=math::transform_direction(at(i+1)-at(i),item.world),edge2=math::transform_direction(at(i+2)-at(i),item.world);
                     auto normal=math::try_normalize(math::cross(edge1,edge2)).value_or(V3{0,1,0});
                     if(math::dot(normal,ray.direction)>0) normal=-normal;
-                    nearest=*t;found=Hit{item.actor,point,normal};
+                    nearest=t->distance;found=Hit{item.actor,point,normal};
                 }
             }
         }

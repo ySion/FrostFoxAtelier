@@ -1,6 +1,16 @@
-# Scene Lit 画质、稳定性与清晰度演进评估
+# Scene Lit 画质、稳定性与清晰度演进依据（历史研究）
 
-日期：2026-10-08。状态：研究与设计评估完成，**本轮未修改渲染生产代码、未替换已打开的编辑器、未执行新的 GPU 验收**。本文的建议不是已经落地的能力。
+研究日期：2026-10-08；状态于 2026-10-10 核对。第 1～10 节保留研究原文，其中“当前”、源码行号和性能值都指 10 月 8 日的原型，不能用于定位或评价今天的实现。旧方案、旧问题和外部 SDK 能力不等同于当前产品能力。
+
+后续落实状态统一如下，详细参数只在 [Scene Lit 合同](../modules/renderer/scene-lit.md)维护，实际覆盖以[验收记录](../modules/renderer/acceptance.md)为准：
+
+| 研究方向 | 后续结果 |
+|---|---|
+| A：历史与 FP32 深度 | 已完成逐信号失效、几何／辐射变化分工、R32 前帧深度与有限 Reversed-Z |
+| B：光照稳定性 | 已完成直接光辐射重建、独立矩／滤波、DDGI 几何与照明射线分离、连续显示过渡，以及移动／原位材质编辑的反射历史修正 |
+| C：清晰 AA | 已完成 Off / TAA / SMAA / SMAA T2x，默认 SMAA；T2x 使用非递归两帧空间结果，抖动坐标与覆盖问题已修复 |
+| D：近场细节 | 已完成默认关闭的有界 Local GI（SSIL），与 GTAO 互斥；不是完整屏幕空间 GI 或 Lumen |
+| 未实现方向 | ReSTIR DI、Adaptive DDGI／滚动体积、方向 HDR 环境、场景 RT 反射仍属于[后续研究](scene-lit-next-evolution-20261010.md) |
 
 依据：当前 `codex/viewport-rendering` 未提交实现、此前实际验收记录、NVIDIA/AMD/Intel 官方文档与源码、算法作者论文。Exa 共检索 105 条结果，包含重复和不适用项；该数不是 105 个独立引用来源。三位 6.1-sol 子代理分别提供 DDGI/深度、AA、局部信号代码审计，主代理核对关键执行链并作最终判断。研究材料保存在 `out/scene-lit-quality-research-20261008/`；引用以下原始来源即可复查，不依赖这些忽略目录中的材料。
 
@@ -18,9 +28,9 @@
 
 建议优先顺序：**修历史有效性 → 保证深度契约 → 完整光照信号降噪与 DDGI 更新 → 反射/AO 稳定 → 原生分辨率 SMAA 对照 → 屏幕空间局部间接光**。其中深度和信号重建可按互不冲突的职责并行设计，但验收需能归因。此时继续增加 ReSTIR DI 或更多效果，不是解决已报告画质问题的最短路径。
 
-## 2. 目前实际拥有的技术栈
+## 2. 2026-10-08 的原型技术栈
 
-| 环节 | 当前实现 | 重要边界 |
+| 环节 | 当时实现（已被后续演进替代） | 当时边界 |
 |---|---|---|
 | 视口 | MatCap、Smooth、Flat、线框、背景/网格、Scene Lit | 着色方式与 Edit/Play 生命周期独立 |
 | 表面 | 不透明 deferred GBuffer、GGX 金属度/粗糙度、HDR 自发光 | 没有透明材质/完整路径追踪 |
@@ -34,7 +44,7 @@
 
 代码：[设置](../../src/renderer/view_settings.hpp)、[统一执行链](../../src/renderer/scene_lit.cpp)、[DDGI](../../src/renderer/shaders/lit_ddgi.hlsl)、[后处理](../../src/renderer/shaders/lit_post.hlsl)。当前合同见 [Scene Lit](../modules/renderer/scene-lit.md)。
 
-## 3. 最高优先级：一次灯光变化被当成全画面历史不可信
+## 3. 原型问题：一次灯光变化被当成全画面历史不可信
 
 ### 3.1 已确认的执行链
 
@@ -79,7 +89,7 @@
 
 以下固定为经典 **RTXGI-DDGI v1.3.7，commit `c233266e95931231961f35c842c78e7c4bdc50cf`**。新的 RTXGI v2 NRC/SHaRC 是其他 radiance cache 路线，不能把其宣传效果视作经典 DDGI 的默认能力。[版本](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/releases/tag/v1.3.7)、[官方产品区分](https://github.com/NVIDIA-RTX/RTXGI/blob/main/Readme.md)。
 
-| 机制 | 当前引擎 | NVIDIA 经典 SDK 的核实结果 |
+| 机制 | 10 月 8 日原型 | NVIDIA 经典 SDK 的核实结果 |
 |---|---|---|
 | 方向表示 | irradiance 与 distance 都是 8×8 有效 texel；软件 seam folding，无边框 | 常见样例 irradiance 6×6 内区 + 边框，distance 14×14 内区 + 边框；各自可配置 |
 | 射线数 | 上限 64，64 lanes 同时用于 texel/ray 布局 | descriptor 默认 256 总 rays；不是必须固定 256 |
@@ -230,4 +240,4 @@ A/B 应先解决用户看到的现象；C 决定默认 AA；D 是经过验证再
 
 ## 11. 交付状态
 
-本轮产出是以上带证据的演进评估。没有把建议描述成新实现，也没有因为研究重跑已通过的功能验收。已向 RHI 负责人同步 FP32/Reversed-Z 与降噪接入边界；未要求其现在实施，未绕 RHI 调用原生 API。下一次实现应以 A/B 的明确结果为起点。
+10 月 8 日当次产出是带证据的演进评估，尚未实现；随后 A～D 已形成正式增量并完成对应验收。本文保留外部方案比较和取舍依据，新的实现任务应从页首所链接的当前合同与剩余工作开始，不再重复执行这里的首批计划。

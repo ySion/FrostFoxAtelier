@@ -64,16 +64,30 @@ void validate(const Frame &frame) {
         finite(frame.view.grid_spacing) && frame.view.grid_spacing>=.001f && frame.view.grid_spacing<=10000.f &&
         finite(frame.view.wire_width) && frame.view.wire_width > 0 && frame.view.wire_width <= 8 &&
         finite(frame.view.wire_opacity) && frame.view.wire_opacity >= 0 && frame.view.wire_opacity <= 1;
+    const auto& cavity=frame.view.cavity;
+    good &= finite(cavity.ridge)&&cavity.ridge>=0&&cavity.ridge<=2&&
+        finite(cavity.valley)&&cavity.valley>=0&&cavity.valley<=2&&
+        finite(cavity.radius)&&cavity.radius>=.5f&&cavity.radius<=4;
     for (float v : frame.camera.view)
         good &= finite(v);
     for (float v : frame.camera.projection)
         good &= finite(v);
+    std::uint64_t material_slots=0;
     for (const auto &mesh : frame.meshes) {
+        if(mesh.geometry)material_slots+=mesh.geometry->materials().size();
         good &= bool(mesh.geometry) && valid(mesh.color);
+        if(mesh.surfaces) {
+            good &= mesh.geometry && mesh.surfaces->size()==mesh.geometry->materials().size();
+            for(const auto& surface:*mesh.surfaces)good &= bool(surface);
+        }
+        good &= finite(mesh.material.roughness) && mesh.material.roughness>=0 && mesh.material.roughness<=1 &&
+            finite(mesh.material.metallic) && mesh.material.metallic>=0 && mesh.material.metallic<=1;
+        for(float e:mesh.material.emissive)good &= finite(e)&&e>=0&&e<=65504;
         for (float v : mesh.world)
             good &= finite(v);
         good &= mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
     }
+    good &= material_slots<=std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface);
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
             finite(draw.border_width) && draw.border_width >= 0 && !(draw.coverage && draw.image);
@@ -96,13 +110,15 @@ struct Instance {
     std::array<float, 16> world;
     std::array<float, 9> normal_matrix;
     float selected;
-    ui::Color color;
+    float tangent_sign{1};
 };
-static_assert(sizeof(Instance) == 120 && sizeof(geometry::Vertex) == 32);
+static_assert(sizeof(Instance) == 108 && sizeof(geometry::Vertex) == 48);
 struct SceneTriangle {
     std::array<geometry::Vertex, 3> vertices;
     std::uint32_t edge_mask;
     std::array<float, 3> face_normal;
+    std::uint32_t material_slot{};
+    std::array<std::uint32_t,3> reserved{};
 };
 struct GridCamera {
     std::array<float, 16> view_projection, inverse;
@@ -127,11 +143,24 @@ std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     }
     return result;
 }
-enum class PipelineStyle { ui, surface, depth, visible_lines, all_lines, background, grid, grid_depth };
-static_assert(sizeof(SceneTriangle) == 112);
+std::optional<std::array<float,16>> prepare_cavity_projection(const Frame& frame) {
+    const auto& c=frame.view.cavity;
+    if(!c.enabled||(c.ridge==0&&c.valley==0)||frame.view.shading==Shading::scene_lit||
+       frame.view.wireframe==Wireframe::only||frame.meshes.empty()||frame.scene_viewport.width==0||frame.scene_viewport.height==0)return {};
+    math::Matrix4d projection;
+    for(std::size_t i=0;i<16;++i)projection.elements[i]=frame.camera.projection[i];
+    const auto inverse=math::try_inverse(projection);if(!inverse)return {};
+    std::array<float,16> result;
+    for(std::size_t i=0;i<16;++i) {
+        result[i]=static_cast<float>(inverse->elements[i]);if(!finite(result[i]))return {};
+    }
+    return result;
+}
+enum class PipelineStyle { ui, surface, cavity_surface, depth, visible_lines, all_lines, background, grid, grid_depth };
+static_assert(sizeof(SceneTriangle) == 176);
 SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
     const auto vertices = mesh.vertices().subspan(index * 3, 3);
-    SceneTriangle result{{vertices[0], vertices[1], vertices[2]}, mesh.edge_mask(index), {}};
+    SceneTriangle result{{vertices[0], vertices[1], vertices[2]}, mesh.edge_mask(index), {}, mesh.material_slot(index), {}};
     std::array<double, 3> a{}, b{}, normal{};
     for (std::size_t i = 0; i < 3; ++i) {
         a[i] = double(vertices[1].position[i]) - vertices[0].position[i];
@@ -159,7 +188,7 @@ Instance prepare_instance(const MeshInstance &mesh) {
                                           b * f - c * e, c * d - a * f, a * e - b * d};
     const double determinant = a * cofactors[0] + b * cofactors[1] + c * cofactors[2];
     if (determinant == 0) throw error(rhi::ErrorCode::invalid_argument, "Mesh world matrix is singular");
-    Instance result{mesh.world, {}, mesh.selected ? 1.0f : 0.0f, mesh.color};
+    Instance result{mesh.world, {}, mesh.selected ? 1.0f : 0.0f, determinant<0?-1.f:1.f};
     // One common factor preserves inverse-transpose row weights for arbitrary
     // vertex normals. Double cofactors also support very small/large scales.
     double maximum = 0;
@@ -240,19 +269,35 @@ struct Renderer::State {
     Options options;
     rhi::Pipeline scene, scene_depth, visible_lines, all_lines, solid, coverage, color_image;
     rhi::Pipeline background, grid, grid_depth;
+    rhi::Pipeline cavity_surface,cavity_composite;
+    GfxTexture cavity_normals,cavity_color;
+    ui::PixelExtent cavity_extent{};
+    std::optional<std::array<float,16>> cavity_projection;
     std::optional<GridCamera> grid_camera;
     GfxTexture matcap;
     GfxSamplerState sampler;
-    GfxSamplerState material_sampler;
-    struct MaterialImage { geometry::ImageRef owner; GfxTexture texture; bool used{}; };
-    std::map<std::pair<const geometry::Image*,bool>,MaterialImage> material_images;
-    geometry::ImageRef white_image;
+    struct MaterialImage { material::ImageRef owner; GfxTexture texture; bool used{}; };
+    std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
+    material::ImageRef white_image;
     struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
     struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
     std::vector<MeshBatch> mesh_batches;
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
+    detail::MaterialFrame materials;
+    struct MaterialCaptureKey {
+        geometry::MeshRef geometry;
+        std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces;
+        ui::Color color;
+        float roughness{},metallic{};
+        std::array<float,3> emissive{};
+        bool operator==(const MaterialCaptureKey&) const=default;
+    };
+    std::vector<MaterialCaptureKey> material_keys,next_material_keys;
+    std::vector<std::pair<const material::Image*,bool>> used_material_images;
+    std::vector<detail::GpuSurface> next_surfaces;
+    std::vector<std::uint32_t> next_material_indices,next_material_offsets;
     GfxTexture depth;
     ui::PixelExtent depth_extent;
     std::unordered_map<TextureKey, CachedImage, TextureHash> images;
@@ -304,11 +349,18 @@ struct Renderer::State {
             image.texture={};
         }
         material_images.clear();white_image.reset();
-        if(material_sampler) {
-            const auto r=gfxDestroySamplerState(gfx,material_sampler);
-            if(r) return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material sampler retirement failed",true,r));
+        for(auto* buffer:{&materials.surface_buffer,&materials.index_buffer,&materials.offset_buffer})if(*buffer) {
+            const auto result=gfxDestroyBuffer(gfx,*buffer);
+            if(result)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material table retirement failed",true,result));
+            *buffer={};
+        }
+        for(auto& material_sampler:materials.samplers)if(material_sampler) {
+            const auto result=gfxDestroySamplerState(gfx,material_sampler);
+            if(result)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material sampler retirement failed",true,result));
             material_sampler={};
         }
+        material_keys.clear();next_material_keys.clear();used_material_images.clear();
+        materials.descriptions.clear();materials.textures.clear();materials.surfaces.clear();materials.indices.clear();materials.offsets.clear();
         if (matcap) {
             const auto r = gfxDestroyTexture(gfx, matcap);
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
@@ -320,6 +372,16 @@ struct Renderer::State {
                 return std::unexpected(
                     error(rhi::ErrorCode::execution_failed, "Depth retirement failed", true, r));
             depth = {};
+        }
+        if(cavity_normals) {
+            const auto r=gfxDestroyTexture(gfx,cavity_normals);
+            if(r)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Cavity normal retirement failed",true,r));
+            cavity_normals={};
+        }
+        if(cavity_color) {
+            const auto r=gfxDestroyTexture(gfx,cavity_color);
+            if(r)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Cavity color retirement failed",true,r));
+            cavity_color={};
         }
         for (auto& [key, geometry] : geometries) {
             (void)key;
@@ -346,6 +408,7 @@ struct Renderer::State {
         background = {};
         grid = {};
         grid_depth = {};
+        cavity_surface={};cavity_composite={};
         auto result = context.close();
         if (!result) return std::unexpected(Error{result.error(), true});
         gfx = {};
@@ -367,10 +430,13 @@ struct Renderer::State {
         desc.source.ps = ps;
         require(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
                 "Set window color target");
+        if(style==PipelineStyle::cavity_surface)
+            require(gfxDrawStateSetColorTarget(desc.draw_state,1,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set cavity normal target");
         require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set culling");
-        const bool with_depth = style == PipelineStyle::surface || style == PipelineStyle::depth ||
+        const bool surface=style==PipelineStyle::surface||style==PipelineStyle::cavity_surface;
+        const bool with_depth = surface || style == PipelineStyle::depth ||
             style == PipelineStyle::visible_lines || style == PipelineStyle::all_lines || style == PipelineStyle::grid_depth;
-        const bool write_depth = style == PipelineStyle::surface || style == PipelineStyle::depth;
+        const bool write_depth = surface || style == PipelineStyle::depth;
         if (with_depth) {
             require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT),
                     "Set depth target");
@@ -381,7 +447,7 @@ struct Renderer::State {
         }
         require(gfxDrawStateSetDepthWriteMask(desc.draw_state,
                 write_depth ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO), "Set depth writes");
-        if (style != PipelineStyle::surface && style != PipelineStyle::background)
+        if (!surface && style != PipelineStyle::background)
             require(gfxDrawStateSetBlendMode(desc.draw_state,
                 style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
                 style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
@@ -438,9 +504,9 @@ struct Renderer::State {
         }
         debug->ClearStoredMessages();
     }
-    GfxTexture material_texture(geometry::ImageRef source,bool srgb) {
+    GfxTexture material_texture(material::ImageRef source,bool srgb) {
         if(!source) {
-            if(!white_image) white_image=std::make_shared<const geometry::Image>(1,1,std::vector<std::uint8_t>{255,255,255,255});
+            if(!white_image) white_image=std::make_shared<const material::Image>(1,1,std::vector<std::uint8_t>{255,255,255,255});
             source=white_image;
         }
         auto [found,inserted]=material_images.try_emplace({source.get(),srgb},MaterialImage{source,{},true});
@@ -455,6 +521,64 @@ struct Renderer::State {
         require(gfxCommandCopyBufferToTexture(gfx,image.texture,upload.buffer),"Upload material texture");
         require(gfxCommandGenerateMips(gfx,image.texture),"Generate material mipmaps");
         ++stats.material_upload_count;return image.texture;
+    }
+    void prepare_materials(const Frame& frame) {
+        next_material_keys.clear();next_material_keys.reserve(frame.meshes.size());
+        for(const auto& mesh:frame.meshes) {
+            MaterialCaptureKey key{mesh.geometry,mesh.surfaces,{1,1,1,1},0,0,{}};
+            if(!mesh.surfaces) {key.color=mesh.color;key.roughness=mesh.material.roughness;key.metallic=mesh.material.metallic;key.emissive=mesh.material.emissive;}
+            next_material_keys.push_back(std::move(key));
+        }
+        if(materials.surface_buffer&&material_keys==next_material_keys) {
+            for(const auto& key:used_material_images)material_images.at(key).used=true;
+            next_material_keys.clear();return;
+        }
+        material_keys.swap(next_material_keys);next_material_keys.clear();used_material_images.clear();
+        materials.descriptions.clear();materials.textures.clear();
+        next_surfaces.clear();next_material_indices.clear();next_material_offsets.clear();
+        std::map<std::pair<const material::Image*,bool>,std::uint32_t> texture_indices;
+        std::map<detail::GpuSurface,std::uint32_t> surface_indices;
+        materials.textures.push_back(material_texture({},true));
+        used_material_images.emplace_back(white_image.get(),true);
+        for(const auto& mesh:frame.meshes) {
+            next_material_offsets.push_back(static_cast<std::uint32_t>(materials.descriptions.size()));
+            for(std::size_t slot=0;slot<mesh.geometry->materials().size();++slot) {
+                const auto value=detail::resolved_surface(mesh,slot);materials.descriptions.push_back(value);
+                const auto& p=value.parameters;detail::GpuSurface gpu{};
+                gpu.base_roughness={p.base_color[0],p.base_color[1],p.base_color[2],p.roughness};
+                gpu.emissive_metallic={p.emissive[0],p.emissive[1],p.emissive[2],p.metallic};
+                gpu.coverage_normal={p.base_color[3],p.alpha_cutoff,p.normal_scale,p.normal_y_sign};
+                gpu.flags={static_cast<std::uint32_t>(p.coverage),p.double_sided?1u:0u,p.emission_two_sided?1u:0u,0};
+                for(std::size_t input=0;input<material::input_count;++input) {
+                    const auto& t=value.textures[input];auto& binding=gpu.inputs[input];
+                    binding.scale_offset={t.scale[0],t.scale[1],t.offset[0],t.offset[1]};
+                    binding.rotation_size={std::cos(t.rotation),std::sin(t.rotation),1,1};
+                    binding.meta={0,t.channel,static_cast<std::uint32_t>(t.address),t.image?1u:0u};
+                    if(t.image) {
+                        const bool srgb=input==0||input==4;
+                        auto [found,added]=texture_indices.try_emplace({t.image.get(),srgb},static_cast<std::uint32_t>(materials.textures.size()));
+                        if(added) {materials.textures.push_back(material_texture(t.image,srgb));used_material_images.emplace_back(t.image.get(),srgb);}
+                        binding.meta[0]=found->second;
+                        binding.rotation_size[2]=static_cast<float>(t.image->width());binding.rotation_size[3]=static_cast<float>(t.image->height());
+                    }
+                }
+                auto [found,added]=surface_indices.try_emplace(gpu,static_cast<std::uint32_t>(next_surfaces.size()));
+                if(added)next_surfaces.push_back(gpu);
+                next_material_indices.push_back(found->second);
+            }
+        }
+        const auto upload=[&]<class T>(GfxBuffer& buffer,std::vector<T>& current,std::vector<T>& next) {
+            if(buffer&&current==next)return;
+            if(buffer)require(gfxDestroyBuffer(gfx,std::exchange(buffer,{})),"Retire material table");
+            buffer=gfxCreateBuffer<T>(gfx,static_cast<std::uint32_t>(next.size()),next.data());allocation(bool(buffer));current.swap(next);
+        };
+        upload(materials.surface_buffer,materials.surfaces,next_surfaces);
+        upload(materials.index_buffer,materials.indices,next_material_indices);
+        upload(materials.offset_buffer,materials.offsets,next_material_offsets);
+        constexpr D3D12_TEXTURE_ADDRESS_MODE addresses[]{D3D12_TEXTURE_ADDRESS_MODE_WRAP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_MIRROR};
+        for(std::size_t i=0;i<materials.samplers.size();++i)if(!materials.samplers[i]) {
+            materials.samplers[i]=gfxCreateSamplerState(gfx,D3D12_FILTER_ANISOTROPIC,addresses[i],addresses[i]);allocation(bool(materials.samplers[i]));
+        }
     }
     template<class Pixels> GfxTexture texture(const std::shared_ptr<const Pixels> &owner) {
         constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
@@ -563,10 +687,31 @@ struct Renderer::State {
         require(gfxCommandDraw(gfx, 3), "Draw reference grid");
         ++stats.viewport_draw_calls;
     }
+    void draw_cavity(const Frame& frame) {
+        if(!cavity_composite)
+            prepare_pipeline(cavity_composite,"studio screen cavity",shaders::viewport_vs,shaders::cavity_ps,PipelineStyle::ui);
+        require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind depth for cavity sampling");
+        const auto program=cavity_composite.program();
+        const auto& v=frame.scene_viewport;const auto& c=frame.view.cavity;
+        const std::array<float,4> viewport{v.x,v.y,v.width,v.height},controls{c.ridge,c.valley,c.radius,0};
+        require(gfxProgramSetParameter(gfx,program,"cavity_normals",cavity_normals),"Bind cavity normals");
+        require(gfxProgramSetParameter(gfx,program,"cavity_color",cavity_color),"Bind studio color");
+        require(gfxProgramSetParameter(gfx,program,"cavity_depth",depth),"Bind cavity depth");
+        require(gfxProgramSetParameter(gfx,program,"cavity_inverse_projection",*cavity_projection),"Set cavity projection");
+        require(gfxProgramSetParameter(gfx,program,"cavity_viewport",viewport),"Set cavity viewport");
+        require(gfxProgramSetParameter(gfx,program,"cavity_controls",controls),"Set cavity controls");
+        require(gfxCommandBindKernel(gfx,cavity_composite.kernel()),"Bind cavity pass");
+        require(gfxCommandDraw(gfx,3),"Draw studio cavity");++stats.viewport_draw_calls;
+    }
     void draw(const Frame &frame, const ui::PixelExtent extent, Capture *capture) {
         const auto &viewport = frame.scene_viewport;
         const bool has_viewport = viewport.width > 0 && viewport.height > 0;
         const bool draw_scene = !instances.empty() && has_viewport;
+        if(!cavity_projection||cavity_extent!=extent) {
+            if(cavity_normals)require(gfxDestroyTexture(gfx,std::exchange(cavity_normals,{})),"Retire unused cavity normals");
+            if(cavity_color)require(gfxDestroyTexture(gfx,std::exchange(cavity_color,{})),"Retire unused studio color");
+            cavity_extent={};
+        }
         require(gfxCommandClearBackBuffer(gfx), "Clear window");
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for viewport background");
         if (has_viewport) {
@@ -586,11 +731,7 @@ struct Renderer::State {
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         for(auto& [key,image]:material_images) { (void)key;image.used=false; }
         if (draw_scene) {
-            if(!material_sampler) {
-                material_sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_ANISOTROPIC,
-                    D3D12_TEXTURE_ADDRESS_MODE_WRAP,D3D12_TEXTURE_ADDRESS_MODE_WRAP);
-                allocation(bool(material_sampler));
-            }
+            prepare_materials(frame);
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
             const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
@@ -598,15 +739,26 @@ struct Renderer::State {
                 frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
             if ((lines_only||editing_depth)&&!scene_depth)
                 prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
-            if (!lighting && !lines_only && !scene)
+            if (!lighting && !lines_only && !cavity_projection && !scene)
                 prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, PipelineStyle::surface);
+            if(cavity_projection) {
+                if(!cavity_surface)prepare_pipeline(cavity_surface,"studio surface normals",shaders::scene_vs,shaders::cavity_surface_ps,PipelineStyle::cavity_surface);
+                if(!cavity_normals) {
+                    constexpr float empty[4]{};
+                    cavity_normals=gfxCreateTexture2D(gfx,extent.width,extent.height,DXGI_FORMAT_R16G16B16A16_FLOAT,1,empty);
+                    allocation(bool(cavity_normals));
+                    cavity_color=gfxCreateTexture2D(gfx,extent.width,extent.height,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+                    allocation(bool(cavity_color));cavity_extent=extent;
+                }
+                require(gfxCommandClearTexture(gfx,cavity_normals),"Clear cavity coverage");
+            }
             if (lines_only) {
                 auto& lines = frame.view.hidden_lines ? visible_lines : all_lines;
                 if (!lines)
                     prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
                                      frame.view.hidden_lines?PipelineStyle::visible_lines:PipelineStyle::all_lines);
             }
-            if(lighting&&!visible_lines)
+            if((lighting||cavity_projection)&&!visible_lines)
                 prepare_pipeline(visible_lines,"Scene Lit editing lines",shaders::scene_vs,shaders::scene_ps,PipelineStyle::visible_lines);
             if(!lighting)prepare_matcap();
             if (depth_extent != extent) {
@@ -638,6 +790,7 @@ struct Renderer::State {
             }
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const auto program = pipeline.program();
+                detail::bind_materials(gfx,program,materials);
                 const std::array<std::uint32_t, 4> display{
                     static_cast<std::uint32_t>(frame.view.shading), static_cast<std::uint32_t>(frame.view.wireframe),
                     frame.view.triangle_edges ? 1u : 0u, pass};
@@ -649,17 +802,15 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
-                require(gfxProgramSetParameter(gfx, program, "material_sampler", material_sampler), "Bind material sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
                 for (const auto& batch : mesh_batches) {
+                    if(pass==3&&frame.view.wireframe!=Wireframe::overlay&&
+                       !std::ranges::any_of(frame.meshes.subspan(batch.first,batch.count),[](const MeshInstance& m){return m.selected;}))continue;
                     const auto& geometry = geometries.at(batch.geometry.get());
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
                     require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set mesh instance offset");
                     for(const auto& part:geometry.source->parts()) {
-                        const auto& material=geometry.source->materials()[part.material];
-                        require(gfxProgramSetParameter(gfx,program,"material_color",material.diffuse),"Set diffuse material");
-                        require(gfxProgramSetParameter(gfx,program,"diffuse_texture",material_texture(lighting?atelier::geometry::ImageRef{}:material.color,true)),"Bind diffuse texture");
-                        require(gfxProgramSetParameter(gfx,program,"opacity_texture",material_texture(lighting?atelier::geometry::ImageRef{}:material.opacity,false)),"Bind opacity texture");
+                        require(gfxProgramSetParameter(gfx,program,"material_slot",part.material),"Set material slot");
                         require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
                         require(gfxCommandDraw(gfx,part.vertex_count,batch.count),"Draw material part");
                         ++stats.scene_draw_calls;
@@ -670,7 +821,7 @@ struct Renderer::State {
                 lit_draws.clear();lit_draws.reserve(mesh_batches.size());
                 for(const auto& batch:mesh_batches){const auto& geometry=geometries.at(batch.geometry.get());
                     lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size())});}
-                scene_lit->draw(frame,extent,depth,lit_draws,stats);
+                scene_lit->draw(frame,extent,depth,lit_draws,materials,stats);
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
                 if(editing_depth) {
                     // AA has consumed and retained its sampled depth. Editing
@@ -685,10 +836,22 @@ struct Renderer::State {
                 draw_grid(frame, true);
                 draw_batches(frame.view.hidden_lines ? visible_lines : all_lines, 1);
             } else {
-                draw_batches(scene, 0);
+                if(cavity_projection) {
+                    require(gfxCommandBindColorTarget(gfx,0,cavity_color),"Bind studio surface color");
+                    require(gfxCommandBindColorTarget(gfx,1,cavity_normals),"Bind cavity surface normals");
+                    draw_batches(cavity_surface,0);
+                    require(gfxCommandBindColorTarget(gfx,1,{}),"Unbind cavity surface normals");
+                    require(gfxCommandBindColorTarget(gfx,0,{}),"Restore window color target");
+                    draw_cavity(frame);
+                    require(gfxCommandBindDepthStencilTarget(gfx,depth),"Restore studio editing depth");
+                } else draw_batches(scene,0);
                 draw_grid(frame, true);
+                if(cavity_projection)draw_batches(visible_lines,3);
             }
-        } else if (has_viewport) draw_grid(frame, false);
+        } else {
+            materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();
+            if(has_viewport)draw_grid(frame,false);
+        }
         for(auto it=material_images.begin();it!=material_images.end();) {
             if(it->second.used) {++it;continue;}
             require(gfxDestroyTexture(gfx,it->second.texture),"Retire unused material texture");it=material_images.erase(it);
@@ -863,6 +1026,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
             s.scene_lit->validate(frame);
         }
         s.grid_camera=prepare_grid_camera(frame);
+        s.cavity_projection=prepare_cavity_projection(frame);
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
         s.mesh_batches.clear();

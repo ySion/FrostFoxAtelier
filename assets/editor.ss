@@ -108,9 +108,14 @@ popup.menu {
     background: #3a3a3a; border-width: 0.667dip; border-color: #949494; border-shadow-color: #262626;
     border-style: outset; font-size: 13.333dip; scrollbar-gutter: overlay;
 }
-menu_item { padding: 0dip 9dip; background: transparent; border-width: 0dip; text-vertical-align: center; }
+menu_item {
+    padding: 0dip 9dip; background: transparent; border-width: 0dip; text-vertical-align: center;
+    indicator-size: 12dip; indicator-background: #292929; indicator-border-color: #a0a0a0; indicator-color: #eeeeee;
+}
 menu_item:hover, menu_item:focus { background: token(menu-active); color: #ffffff; }
 menu_item:selected { color: #eeeeee; }
+menu_item:disabled { color: #808080; indicator-border-color: #666666; indicator-color: #808080; }
+combo.cavity-menu { padding: 0dip 6dip; combo-indicator: down; indicator-size: 8dip; }
 :disabled { color: #808080; }
 button:disabled, combo:disabled { background-image: token(button-face); }
 
@@ -315,6 +320,10 @@ button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #73
     padding: 0dip; text-vertical-align: center; text-shadow-color: #00000099;
 }
 .viewport-mode-label:disabled { color: #ffffff; }
+.viewport-fps {
+    color: #ffffff; font-size: 12dip; padding: 0dip; text-shadow-color: #000000cc;
+}
+.viewport-fps:disabled { color: #ffffff; }
 /* Floating view pill: translucent slate fill, light hairline, inline caret. */
 combo.viewport-view-menu {
     border-style: solid;

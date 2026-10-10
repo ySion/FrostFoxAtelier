@@ -209,12 +209,14 @@ void verify_viewport_editing() {
     const math::Vector3 angles{23,47,-12};const auto converted=euler_degrees(from_euler_degrees(angles));
     require(std::abs(converted.x-angles.x)<.001f && std::abs(converted.y-angles.y)<.001f && std::abs(converted.z-angles.z)<.001f,
         "Euler parameter conversion disagrees with native XYZ rotation.");
-    for(const auto preset:{CameraView::top,CameraView::front,CameraView::right}) {
+    for(const auto preset:{CameraView::top,CameraView::bottom,CameraView::front,CameraView::back,CameraView::right,CameraView::left}) {
         camera.set_view(preset);const auto orthographic=ViewportView::make(camera,view.bounds,view.dpi_scale);
         const auto a=orthographic.ray(400,300),b=orthographic.ray(420,300);
         require(orthographic.orthographic && math::dot(a.direction,b.direction)>.99999f && a.origin!=b.origin,
             "Orthographic camera rays are not parallel and position-dependent.");
         require(orthographic.pixel_size({})==orthographic.pixel_size({10,20,30}),"Orthographic handle size changed with depth.");
+        Camera restored;require(restored.set_state(camera.state()),"A six-axis camera state could not be restored.");
+        require(restored.matrices(1).view==camera.matrices(1).view,"Camera state restoration changed its basis.");
         const auto center=orthographic.project(transform(first).position);
         require(center && tool.pick(document,orthographic,center->x,center->y).has_value(),"Orthographic picking lost real geometry.");
     }
@@ -271,10 +273,10 @@ void verify_viewport_editing() {
         std::ranges::none_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::erase_selected);}),
         "Shift+A menu did not list exactly the Create commands.");
     workspace.menu=ui::ContextMenuRequest{control::viewport,control::viewport_shading_pie,500,350};publish();
-    if (workspace.menu_items.size()!=4 || ui.presented()->popup!=control::viewport_shading_pie || !ui.presented()->find(control::shading_preset_first))
+    if (workspace.menu_items.size()!=4 || ui.presented()->popup!=control::viewport_pie || !ui.presented()->find(control::shading_preset_first))
         throw std::runtime_error("Shading pie projection: items="+std::to_string(workspace.menu_items.size())+", popup="+
             std::to_string(ui.presented()->popup)+", error="+std::string(workspace.ui_error()));
-    require(workspace.menu_items.size()==4 && ui.presented()->popup==control::viewport_shading_pie &&
+    require(workspace.menu_items.size()==4 && ui.presented()->popup==control::viewport_pie &&
         ui.presented()->find(control::shading_preset_first),"Shading pie was not projected through Source/JIT.");
     for (const auto& item:workspace.menu_items) {
         const auto* box=ui.presented()->find(item.key);

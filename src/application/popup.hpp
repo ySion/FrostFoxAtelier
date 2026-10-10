@@ -38,6 +38,7 @@ private:
     ui::PixelExtent extent_;
     std::shared_ptr<const ui::StyleSheet> sheet_;
     ui::ControlKey source_{};
+    ui::ControlKey restore_focus_{};
     std::uint64_t revision_{};
     bool visible_{}, dirty_{}, closed_{};
     double open_cpu_us_{};

@@ -28,7 +28,8 @@ constexpr std::array options{
     FIELD(probe_min_x,number,-100000,100000),FIELD(probe_min_y,number,-100000,100000),FIELD(probe_min_z,number,-100000,100000),
     FIELD(probe_max_x,number,-100000,100000),FIELD(probe_max_y,number,-100000,100000),FIELD(probe_max_z,number,-100000,100000),
     FIELD(probe_count_x,integer,2,32),FIELD(probe_count_y,integer,2,32),FIELD(probe_count_z,integer,2,32),
-    FIELD(probe_update_budget,integer,1,4096),FIELD(probe_rays,integer,1,256),FIELD(probe_debug,boolean,0,1)
+    FIELD(probe_update_budget,integer,1,4096),FIELD(probe_rays,integer,1,256),FIELD(probe_debug,boolean,0,1),
+    FIELD(cavity,boolean,0,1),FIELD(cavity_ridge,number,0,2),FIELD(cavity_valley,number,0,2),FIELD(cavity_radius,number,.5,4)
 };
 #undef FIELD
 auto invalid(std::string message) { return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)}); }
@@ -49,6 +50,7 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_max_x,lit.probe_max[0]);VALUE(probe_max_y,lit.probe_max[1]);VALUE(probe_max_z,lit.probe_max[2]);
     VALUE(probe_count_x,lit.probe_counts[0]);VALUE(probe_count_y,lit.probe_counts[1]);VALUE(probe_count_z,lit.probe_counts[2]);
     VALUE(probe_update_budget,lit.probe_update_budget);VALUE(probe_rays,lit.probe_rays);VALUE(probe_debug,lit.probe_debug);
+    VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
     }
     return 0;
@@ -72,6 +74,7 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_max_x,lit.probe_max[0]);SET(probe_max_y,lit.probe_max[1]);SET(probe_max_z,lit.probe_max[2]);
     SET(probe_count_x,lit.probe_counts[0]);SET(probe_count_y,lit.probe_counts[1]);SET(probe_count_z,lit.probe_counts[2]);
     SET(probe_update_budget,lit.probe_update_budget);SET(probe_rays,lit.probe_rays);SET(probe_debug,lit.probe_debug);
+    SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET
     }
     if(value!=0) {if(option==ViewOption::gtao) view.lit.ssil=false;else if(option==ViewOption::ssil) view.lit.gtao=false;}

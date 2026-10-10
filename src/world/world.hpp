@@ -4,6 +4,7 @@
 #include "runtime/reflection.hpp"
 #include "world/math.hpp"
 #include "geometry/mesh.hpp"
+#include "material/resources.hpp"
 #include "foundation/string.hpp"
 #include <limits>
 #include "world/world.gen.hpp"
@@ -96,6 +97,13 @@ private:
     AFIELD(Name="mesh_source", Hidden)
     String mesh_source_;
     geometry::MeshRef geometry_;
+    AFIELD(Name="materials", Hidden, Sequence="material.Material")
+    ReferenceSequence materials_;
+    std::vector<std::string> material_slots_;
+    std::vector<bool> material_overrides_;
+    std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces_;
+    geometry::MeshRef surface_geometry_;
+    Material surface_parameters_;
 };
 
 AENUM(Name="world.LightKind")
@@ -246,6 +254,7 @@ struct RenderItem {
     math::Matrix4 world;
     geometry::MeshRef geometry;
     Material material;
+    std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces{};
 };
 struct LightRenderItem {
     ObjectId actor, component;
@@ -269,6 +278,17 @@ struct StaticMeshState { MeshBinding mesh; Material material; };
 // clears provenance. These snapshots also support detached and null-mesh data.
 [[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
 [[nodiscard]] Result<StaticMeshState> read_static_mesh(Runtime&, ObjectId);
+struct MaterialBinding {
+    std::string slot;
+    ObjectRoot resource;
+    bool overridden{true}; // Explicit instance assignment; false is a mesh default.
+};
+// Names, not slot positions, are the persistent correspondence. Empty imported
+// names use the reserved slot/<index> spelling until assigned a named asset.
+[[nodiscard]] std::string material_slot_name(const geometry::Mesh&,std::size_t);
+[[nodiscard]] Result<std::vector<MaterialBinding>> read_material_bindings(Runtime&,ObjectId);
+[[nodiscard]] Result<void> set_material_bindings(Runtime&,ObjectId,std::span<const MaterialBinding>);
+[[nodiscard]] Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&,ObjectId);
 
 // World registration notifications: whole Actor groups enter in forward order
 // and leave in reverse order. Detached composition does not emit these events.

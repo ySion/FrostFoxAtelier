@@ -1,5 +1,7 @@
 #pragma once
+#include "editor/camera.hpp"
 #include <array>
+#include <optional>
 #include <cstdint>
 #include <string_view>
 
@@ -14,14 +16,23 @@ enum class Command : std::uint64_t {
     open_source=780, edit_ui_source=781, show_code=782, save_document=783, close_source=784, reload_source=785, save_all=786,
     new_source=787, build_project=788, rebuild_project=789, run_project=790, stop_project=791,
     new_project_ui=792, edit_project_ui=793, show_project_ui=794, show_output=795, show_structure=796,
+    create_material=797, import_texture=798,
     tool_select=810, tool_transform=811, tool_move=812, tool_rotate=813, tool_scale=814,
     pivot_median=815, pivot_cursor=816, cursor_origin=817,
     snap_toggle=818, snap_grid_01=819, snap_grid_02=820, snap_grid_05=821, snap_grid_1=822,
     selection_grid=823, selection_cursor=824, cursor_selected=825, cursor_grid=826, cursor_surface=827,
     view_perspective=830, view_top=831, view_front=832, view_right=833, viewport_options=834,
     create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838,
-    example_sponza=841, example_scene_lit=842, example_physic=843
+    example_sponza=841, example_scene_lit=842, example_physic=843,
+    view_bottom=900, view_back=901, view_left=902, show_fps=903
 };
+inline constexpr std::array camera_commands{Command::view_perspective,Command::view_top,Command::view_front,
+    Command::view_right,Command::view_bottom,Command::view_back,Command::view_left};
+constexpr std::optional<CameraView> camera_view_command(Command command) noexcept {
+    for(std::size_t i=0;i<camera_commands.size();++i)
+        if(camera_commands[i]==command) return static_cast<CameraView>(i);
+    return {};
+}
 enum class CommandGroup { file, edit, create, project, view, window, help };
 struct CommandGroupDefinition {
     CommandGroup id;
@@ -68,6 +79,8 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::save_scene,CommandGroup::file,L"Save Scene",L"",true},
     CommandDefinition{Command::save_scene_as,CommandGroup::file,L"Save Scene As...",L"Ctrl+Shift+S"},
     CommandDefinition{Command::import_mesh,CommandGroup::file,L"Import Mesh (OBJ)...",L"",true},
+    CommandDefinition{Command::import_texture,CommandGroup::file,L"Import Texture...",L""},
+    CommandDefinition{Command::create_material,CommandGroup::file,L"New Material...",L""},
     CommandDefinition{Command::refresh_assets,CommandGroup::file,L"Refresh Assets",L"F5"},
     CommandDefinition{Command::reload_source,CommandGroup::file,L"Reload Source from Disk",L"",true},
     CommandDefinition{Command::close_source,CommandGroup::file,L"Close Source Document",L""},
@@ -102,11 +115,15 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::cursor_selected,CommandGroup::view,L"Cursor to Selection",L""},
     CommandDefinition{Command::cursor_grid,CommandGroup::view,L"Cursor to Grid",L""},
     CommandDefinition{Command::cursor_surface,CommandGroup::view,L"Cursor Surface Placement",L""},
-    CommandDefinition{Command::view_perspective,CommandGroup::view,L"Perspective",L"",true},
-    CommandDefinition{Command::view_top,CommandGroup::view,L"Top",L""},
-    CommandDefinition{Command::view_front,CommandGroup::view,L"Front",L""},
-    CommandDefinition{Command::view_right,CommandGroup::view,L"Right",L""},
+    CommandDefinition{Command::view_perspective,CommandGroup::view,L"Perspective",L"Numpad 5",true},
+    CommandDefinition{Command::view_top,CommandGroup::view,L"Top",L"Numpad 7"},
+    CommandDefinition{Command::view_front,CommandGroup::view,L"Front",L"Numpad 1"},
+    CommandDefinition{Command::view_right,CommandGroup::view,L"Right",L"Numpad 3"},
+    CommandDefinition{Command::view_bottom,CommandGroup::view,L"Bottom",L"Ctrl+Numpad 7"},
+    CommandDefinition{Command::view_back,CommandGroup::view,L"Back",L"Ctrl+Numpad 1"},
+    CommandDefinition{Command::view_left,CommandGroup::view,L"Left",L"Ctrl+Numpad 3"},
     CommandDefinition{Command::viewport_options,CommandGroup::view,L"Show Tool Options",L"",true},
+    CommandDefinition{Command::show_fps,CommandGroup::view,L"Show FPS",L""},
     CommandDefinition{Command::edit_ui_source,CommandGroup::file,L"Edit Editor UI Source",L""},
     CommandDefinition{Command::example_sponza,CommandGroup::project,L"Sponza",L""},
     CommandDefinition{Command::example_scene_lit,CommandGroup::project,L"Scene Lit Room",L""},

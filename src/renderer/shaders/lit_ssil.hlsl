@@ -104,7 +104,8 @@ void lit_ssil_trace_cs(uint3 id : SV_DispatchThreadID) {
     float phi = sample.y * (2 * LIT_PI), disk = sqrt(sample.x);
     float3 ray = lit_safe_normal(tangent * (disk * cos(phi)) + bitangent * (disk * sin(phi)) +
                                 normal * sqrt(max(0, 1 - sample.x)));
-    float3 origin = lit_ssil_world(int2(p)) + normal * max(.005, lit_controls.y * 2);
+    if(dot(lit_geometry_normal_at(p),ray)<=0)return;
+    float3 origin = lit_ssil_world(int2(p)) + lit_geometry_normal_at(p) * max(.005, lit_controls.y * 2);
     int2 q; float confidence;
     if (!lit_ssil_intersect(origin, ray, clamp(lit_ssil_controls.x, .05, 1.2), q, confidence)) return;
     float4 material = lit_base_metallic.Load(int3(q, 0));
@@ -158,8 +159,8 @@ void lit_ssil_resolve_cs(uint3 id : SV_DispatchThreadID) {
         float3 q_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
         float3 delta = lit_ssil_world(q) - position;
         float plane_tolerance = max(.0005, pixel_size * .25);
-        if (dot(normal, q_normal) < .9995 || abs(dot(delta, normal)) > plane_tolerance ||
-            abs(dot(delta, q_normal)) > plane_tolerance) continue;
+        if (dot(normal, q_normal) < .9995 || abs(dot(delta,lit_geometry_normal_at(p))) > plane_tolerance ||
+            abs(dot(delta,lit_geometry_normal_at(q))) > plane_tolerance) continue;
         // Include zero-confidence misses: conditioning only on hits would
         // overestimate bounce energy and erase the isotropic fallback contract.
         float3 value = lit_ssil_finite(lit_ssil_raw.Load(int3(q, 0)).rgb);
@@ -175,7 +176,7 @@ void lit_ssil_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float4 motion = lit_motion.Load(int3(p, 0));
     float2 previous_uv = lit_ssil_uv(int2(p)) + motion.xy;
     float expected_depth = lit_previous_device_depth(p, motion), tolerance; float2 gradient;
-    lit_ssil_previous_plane(position, normal, pixel_size, expected_depth, tolerance, gradient);
+    lit_ssil_previous_plane(position,lit_geometry_normal_at(p), pixel_size, expected_depth, tolerance, gradient);
     float4 history = 0; float support = 0;
     if ((lit_history_invalid & 16) == 0 && lit_size_frame.w != 0 && motion.w > .5 &&
         all(isfinite(previous_uv)) && isfinite(expected_depth) && all(previous_uv >= 0) && all(previous_uv <= 1)) {

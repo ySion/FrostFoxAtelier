@@ -1,6 +1,6 @@
 # Editor Control
 
-Editor Control 是供 LLM 和工具使用的正式编辑器指令入口。UI 与外部调用共享 Application、Session、Camera 和显示设置的业务规则。协议使用稳定业务名称，不暴露 UI control key、指针或 Runtime 私有布局。
+Editor Control 是指令化操作与调试的标准入口，供 UI、CLI、自动化和 LLM 等消费者使用。当前已开放工程、场景、材质、相机与渲染观测操作；源码调试核心与编辑器调试指令的实际接入范围另见调试文档。UI 与外部调用共享 Application、Session、Camera 和显示设置的业务规则。协议使用稳定业务名称，不暴露 UI control key、指针或 Runtime 私有布局。
 
 ## 启动和调用
 
@@ -43,6 +43,12 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | scene.transform | Actor 根或 SceneComponent 的完整 TRS，一次撤销；位置/缩放三分量，旋转 quaternion xyzw |
 | scene.add_component、scene.remove_component | 现有组件组合和生命周期；类型来自 component_types |
 | scene.undo、scene.redo | 文档原有撤销/重做链 |
+| material.create、texture.import | Project 创建 `.material` 或导入图片，沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
+| material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
+| material.set_property、material.set_texture | 通过 Session 编辑材质对象；参数使用发现到的字段名/标量/枚举，贴图使用 input 名与 Texture GUID |
+| material.assign | 按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
+| material.override | 按真实参数字段名启用/取消实例覆盖；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
+| material.save、material.undo、material.redo | 共享资产独立保存和历史；实例覆盖使用 scene.undo/redo。保存后目录刷新失败返回 saved 与 catalog_warning |
 | camera.set、camera.look_at | 公共 Camera 状态和观察目标 |
 | view.set | 原子应用显示 patch，与菜单共用 ViewOption 规则 |
 | repro.export、repro.open | 内存场景的独立复现工程 |
@@ -50,11 +56,17 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | render.capture、render.compare | 当前显示捕获或临时设置对照 |
 | job.status、job.cancel | 查询和幂等取消任务 |
 
-坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–3 为 perspective/top/front/right，yaw/pitch 为弧度，distance 为 0.5–2000 米；恢复时验证相机基底。
+材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存实际材质草稿并核对已载入贴图内容，原工程不变。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
+
+坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left，原有 0–3 编码不变；yaw/pitch 为弧度，distance 为 0.5–2000 米，恢复时验证相机基底。视图命令与 UI 使用同一六向相机入口，`camera.set` 仍恢复完整状态。
 
 启用 GTAO 或 Local GI/SSIL 会关闭另一项；同一个 patch 同时请求两者为 true 会失败。持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自场景的唯一 Sky Light；background 仍保存工作室模式偏好。
 
+工作室 Cavity 同样通过 `view.set`、`render.compare` 和复现工程使用统一 ViewOption：`cavity` 为 bool，`cavity_ridge` / `cavity_valley` 为 0–2，`cavity_radius` 为 0.5–4 物理像素。默认开启且三个数值均为 1。MatCap、Smooth、Flat 使用该效果；Scene Lit 与纯线框保留设置但不执行效果。非法值使整个 patch 失败，不部分应用。
+
 当前不包括布局编辑、Source 文本编辑、Play 命令、鼠标回放或任意 C++/JIT 调用。后续能力按业务名称接入现有权威模块。
+
+`material.inspect` 接受 `asset` 或 `object` 二选一；后者使用组件材质槽返回的对象句柄，可读取实例已解析的属性、父资产和显式覆盖位。实例修改由 `scene.save` 保存，共享资产由 `material.save` 保存。
 
 ## 协议、身份和重试
 

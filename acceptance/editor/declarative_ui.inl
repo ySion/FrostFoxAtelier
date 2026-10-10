@@ -143,7 +143,15 @@ void verify_declarative_parameters() {
         }
         workspace.commit_ui_controls();
         auto frame=ui.prepare();
-        if (!frame) throw std::runtime_error("Declarative parameter layout/draw failed at control "+std::to_string(frame.error().key));
+        if (!frame) {
+            for(auto key=frame.error().key;key;) {
+                const auto at=std::ranges::find(controls,key,&ui::Control::key);if(at==controls.end())break;
+                std::fprintf(stderr,"UI failed control=%llu parent=%llu kind=%u\n",static_cast<unsigned long long>(at->key),static_cast<unsigned long long>(at->parent),static_cast<unsigned>(at->kind));
+                key=at->parent;
+            }
+            throw std::runtime_error("Declarative parameter layout/draw failed at control "+std::to_string(frame.error().key)+
+                " code="+std::to_string(static_cast<unsigned>(frame.error().code))+" native="+std::to_string(frame.error().native_code));
+        }
         require(ui.accept(*frame),"Declarative parameter frame was rejected.");
     };
     publish();

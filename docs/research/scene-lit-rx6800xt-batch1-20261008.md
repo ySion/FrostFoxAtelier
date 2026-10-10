@@ -1,6 +1,17 @@
-# Scene Lit 第一批建议：以 RX 6800 XT 为基准
+# Scene Lit 首批设计依据：RX 6800 XT（历史研究）
 
-日期：2026-10-08。状态：基于源码和一手资料的实施建议，尚未实施、运行外部样例或测得本项目 Scene Lit 性能。代码基线为 `402fab075bb2aa6605b51fdb767387ebd0e08869`，工作分支 `codex/viewport-rendering`。本说明承接[算法与项目现状调研](scene-lit-first-plan-20261008.md)；本轮新增决策条件是用户接受较积极的方案，并以自己的显卡为开发基准。
+研究日期：2026-10-08；状态于 2026-10-10 核对。本文保留首批硬件选择、外部工程比较与设计依据，基线为 `402fab075bb2aa6605b51fdb767387ebd0e08869`，不是当前待实现清单。首批 Scene Lit 及后续质量演进已经实施和验收，当前能力与参数见 [Scene Lit](../modules/renderer/scene-lit.md)，结果见[验收记录](../modules/renderer/acceptance.md)，剩余工作见[后续演进](scene-lit-next-evolution-20261010.md)。下文的预算是研究时的目标，不是最新实测或最低配置承诺。
+
+## 算法职责与原始来源
+
+早期硬件选定前的方案已合并到本记录；实际 RHI 接入与灯光合同由当前模块文档维护。
+
+| 技术 | 职责与边界 | 一手来源 |
+|---|---|---|
+| SSSR | 屏幕可见的镜面反射；不能补出屏外或被遮挡的几何 | [AMD SSSR](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/stochastic-screen-space-reflections/) |
+| DDGI | 世界空间低频漫反射场，需要真实射线、命中着色与可见性；不替代镜面反射 | [DDGI 原论文](https://research.nvidia.com/index.php/publication/2019-05_dynamic-diffuse-global-illumination-ray-traced-irradiance-fields)、[RTXGI 集成](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/docs/Integration.md) |
+| GTAO | 近场间接遮蔽，不替代灯光阴影或颜色反弹 | [GTAO 技术报告](https://www.activision.com/cdn/research/PracticalRealtimeStrategiesTRfinal.pdf) |
+| ReSTIR DI | 对直接光候选做时空重采样，仍需正确 PDF、动态光源身份、可见性与降噪 | [原论文](https://research.nvidia.com/labs/rtr/publication/bitterli2020spatiotemporal/) |
 
 ## 结论与第一批边界
 

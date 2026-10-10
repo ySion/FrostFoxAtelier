@@ -45,6 +45,7 @@ Texture2D<float4> lit_history_normal;
 Texture2D<float> lit_history_depth;
 RWTexture2D<float4> lit_taa_output;
 RWTexture2D<float4> lit_history_normal_output;
+RWTexture2D<float2> lit_history_geometry_normal_output;
 RWTexture2D<float> lit_history_depth_output;
 Texture2D<float4> lit_taa;
 Texture2D<float4> lit_bloom;
@@ -409,8 +410,8 @@ void lit_ssr_trace_cs(uint3 id : SV_DispatchThreadID) {
     float3 h = local_h.x * tangent + local_h.y * bitangent + local_h.z * n;
     float3 ray = lit_safe_normal(reflect(-v, h));
     float nl = saturate(dot(n, ray)), nv = max(saturate(dot(n, v)), 1e-4);
-    if (nl <= 0) return;
-    float3 origin = lit_post_world(p) + n * max(lit_controls.y * 2, .005);
+    if (nl <= 0 || dot(lit_geometry_normal_at(p),ray)<=0) return;
+    float3 origin = lit_post_world(p) + lit_geometry_normal_at(p) * max(lit_controls.y * 2, .005);
     float4 hit; float confidence;
     if (!lit_ssr_intersect(origin, ray, v, hit, confidence)) return;
     int2 q = lit_post_pixel(hit.xy);
@@ -539,7 +540,7 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
                                  lit_previous_inverse_view_projection);
     float3 position = previous_world.xyz / previous_world.w;
     float3 old_normal = lit_safe_normal(lit_history_normal.Load(int3(old_pixel, 0)).xyz);
-    depth += dot(hit - lit_post_uv(old_pixel), lit_post_previous_depth_gradient(position, old_normal));
+    depth += dot(hit - lit_post_uv(old_pixel), lit_post_previous_depth_gradient(position,lit_decode_normal(lit_history_geometry_normal.Load(int3(old_pixel,0)))));
     local = (hit * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
     previous_world = mul(float4(local * float2(2, -2) + float2(-1, 1), depth, 1), lit_previous_inverse_view_projection);
     position = previous_world.xyz / previous_world.w;
@@ -553,7 +554,7 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
     float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(current_pixel, 0)).xyz);
     float tolerance = max(.035, lit_post_pixel_world_size(lit_post_uv(current_pixel),
         lit_depth.Load(int3(current_pixel, 0))) * .5);
-    if (dot(normal, old_normal) < .94 || abs(dot(lit_post_world(current_pixel) - position, normal)) > tolerance)
+    if (dot(normal, old_normal) < .94 || abs(dot(lit_post_world(current_pixel)-position,lit_geometry_normal_at(current_pixel))) > tolerance)
         return false;
     if (lit_temporal.w > 0) source_motion = lit_post_geometry_motion(current_pixel);
     current_hit = lit_window_uv(clip);
@@ -576,7 +577,7 @@ void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q)) continue;
         float3 q_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
         float normal_dot = dot(normal, q_normal);
-        float plane_distance = abs(dot(lit_post_world(q) - position, normal));
+        float plane_distance = abs(dot(lit_post_world(q)-position,lit_geometry_normal_at(p)));
         if (normal_dot < .95 || plane_distance > max(.005, pixel_world * .5)) continue;
         float weight = pow(saturate(normal_dot), 32) * exp(-.35 * (x * x + y * y));
         float value = saturate(lit_ao_raw.Load(int3(q, 0)));
@@ -588,7 +589,7 @@ void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float2 previous_uv = uv + motion.xy;
     float expected_depth = lit_previous_device_depth(p, motion);
     float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
-    float2 gradient = lit_post_previous_depth_gradient(position, normal);
+    float2 gradient = lit_post_previous_depth_gradient(position,lit_geometry_normal_at(p));
     float2 history = 0; float support = 0;
     if ((lit_history_invalid & 4) == 0 && lit_size_frame.w != 0 && motion.w > .5 && lit_post_inside_uv(previous_uv)) {
         float2 pixel = previous_uv * lit_size_frame.xy - .5;
@@ -658,7 +659,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         if (!lit_ssr_eligible(q, neighbor_normal)) continue;
         if (dot(normal, lit_safe_normal(neighbor_normal.xyz)) < .96 ||
             abs(nr.w - neighbor_normal.w) > .08 ||
-            abs(dot(lit_post_world(q) - position, normal)) > max(.005, pixel_world * .5)) continue;
+            abs(dot(lit_post_world(q)-position,lit_geometry_normal_at(p))) > max(.005, pixel_world * .5)) continue;
         float3 value = lit_reflection_trace.Load(int3(q, 0)).rgb;
         // Mirrors keep their current sharp sample. Rough lobes can pool nearby
         // independent stochastic samples without blending geometric hard edges.
@@ -678,7 +679,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float4 motion = lit_motion.Load(int3(p, 0));
     float2 previous_uv = uv + motion.xy;
     float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
-    float2 gradient = lit_post_previous_depth_gradient(position, normal);
+    float2 gradient = lit_post_previous_depth_gradient(position,lit_geometry_normal_at(p));
     float expected_depth = lit_previous_device_depth(p, motion);
     float4 previous_signal; float2 previous_moments; float support;
     bool valid = (lit_history_invalid & 2) == 0 && (lit_counts.w & 8) != 0 && motion.w > .5 &&
@@ -699,7 +700,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         float3 hit_normal = lit_safe_normal(lit_normal_roughness.Load(int3(hit_pixel, 0)).xyz);
         float3 hit_position = lit_world(hit.xy, lit_depth.Load(int3(hit_pixel, 0)));
         float hit_tolerance = lit_post_previous_depth_tolerance(hit_position, lit_view_direction(hit.xy));
-        float2 hit_gradient = lit_post_previous_depth_gradient(hit_position, hit_normal);
+        float2 hit_gradient = lit_post_previous_depth_gradient(hit_position,lit_geometry_normal_at(hit_pixel));
         valid = hit_motion.w > .5 && lit_post_valid_history(previous_hit_uv,
             lit_previous_device_depth(hit_pixel, hit_motion), hit_normal, hit_tolerance, hit_gradient);
         if (lit_temporal.w > 0) geometry_response = max(geometry_response, lit_post_geometry_motion(hit_pixel));
@@ -797,7 +798,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
         float4 q_nr = lit_normal_roughness.Load(int3(q, 0));
         if (!lit_ssr_eligible(q, q_nr)) continue;
         float normal_dot = dot(normal, lit_safe_normal(q_nr.xyz));
-        float plane_distance = abs(dot(lit_post_world(q) - position, normal));
+        float plane_distance = abs(dot(lit_post_world(q)-position,lit_geometry_normal_at(p)));
         if (normal_dot < .96 || abs(nr.w - q_nr.w) > .08 ||
             plane_distance > max(.005, pixel_world * .5)) continue;
         float4 sample = lit_reflection_filter_input.Load(int3(q, 0));
@@ -830,6 +831,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
     lit_history_depth_output[p] = lit_inside(p) ? depth : lit_depth_far_value();
     lit_history_normal_output[p] = lit_inside(p) ? nr : 0;
+    lit_history_geometry_normal_output[p]=lit_inside(p)?lit_geometry_normal.Load(int3(p,0)):0;
     if (!lit_inside(p)) { lit_taa_output[p] = 0; return; }
     float3 current = lit_post_current_hdr(p);
     if (!lit_post_surface(p)) { lit_taa_output[p] = float4(current, 1); return; }
@@ -838,7 +840,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     float4 motion = lit_motion.Load(int3(p, 0));
     float2 previous_uv = uv + motion.xy;
     float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
-    float2 gradient = lit_post_previous_depth_gradient(position, normal);
+    float2 gradient = lit_post_previous_depth_gradient(position,lit_geometry_normal_at(p));
     float expected_depth = lit_previous_device_depth(p, motion);
     if ((lit_history_invalid & 8) != 0 || (lit_counts.w & 16) == 0 || motion.w <= .5) {
         lit_taa_output[p] = float4(current, 1); return;
@@ -852,7 +854,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q)) continue;
         float3 q_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
         if (dot(normal, q_normal) < .94 ||
-            abs(dot(lit_post_world(q) - position, normal)) > max(.005, pixel_world * .5)) continue;
+            abs(dot(lit_post_world(q)-position,lit_geometry_normal_at(p))) > max(.005, pixel_world * .5)) continue;
         float3 encoded = lit_post_ycocg(lit_post_current_hdr(q));
         minimum = min(minimum, encoded); maximum = max(maximum, encoded);
         moment1 += encoded; moment2 += encoded * encoded; ++count;
