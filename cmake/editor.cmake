@@ -143,6 +143,9 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-edit "${CMAKE_BINARY_DIR}/edit-mode-evidence"
         DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_surfaces_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-surfaces "${CMAKE_BINARY_DIR}/surface-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_scene_lit_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --scene-lit "${PROJECT_SOURCE_DIR}/assets/examples"
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-scene-lit "${CMAKE_BINARY_DIR}/scene-lit-editor-evidence" "${PROJECT_SOURCE_DIR}/assets/examples"

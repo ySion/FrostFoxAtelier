@@ -28,7 +28,7 @@
 
 `Context::borrow()` 只用于普通资源创建/销毁、参数设置和命令录制。消费者遵守 gfx 的句柄与绑定约束；释放后不得再借旧句柄发起操作。gfx 负责已经编码的 GPU 使用期，普通资源销毁不等待 GPU。
 
-不能绕过 Context 调用 `gfxFrame`、`gfxFinish`、`gfxDestroyContext`、`gfxKernelReloadAll`、原生提交、替换 swapchain、外部资源导入或手工修改资源状态。专门的后端回归直接使用这些入口不代表它们成为普通消费者能力。借用不能越过 close 或执行域最终销毁。
+不能绕过 Context 调用 `gfxFrame`、`gfxFinish`、`gfxSyncWindowTarget`、`gfxDestroyContext`、`gfxKernelReloadAll`、原生提交、替换 swapchain、外部资源导入或手工修改资源状态。专门的后端回归直接使用这些入口不代表它们成为普通消费者能力。借用不能越过 close 或执行域最终销毁。
 
 普通 gfx 资源由消费者显式释放，Context 不复制资源管理器，也不追踪第二份资源 owner 表。`close` 的 busy 检查针对 Pipeline；原始资源退出由消费者履行 gfx 契约。
 
@@ -54,6 +54,10 @@ DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-
 ## 窗口与读回
 
 - `Context::target()` 在 owner 线程返回实际 backbuffer 尺寸和窗口可绘制状态；隐藏、最小化或零 client 尺寸不可绘制。它不执行 resize。
+- `Context::sync_window_target() -> Result<TargetInfo>` 由 owner 在线程所属的窗口尺寸更新后、开始本次绘制录制前调用；Renderer 须在进入 execute 回调前调用，不能在回调中调整正在使用的目标。成功返回同步后的实际目标，调用方再按这个尺寸准备画布、viewport 与读回存储。它不改变 `target()` 的只读语义。
+- 隐藏窗口只要 client 尺寸有效也会同步，以支持弹出菜单显示前准备；返回的 `drawable` 仍为 false。同尺寸、最小化、零 client 尺寸、窗口已销毁或无窗口 Context 不提交、不等待、不重建；尺寸沿 gfx 既有最小 8×8 约定。关闭、异线程与失败 Context 沿既有错误入口拒绝，重复调用不清除错误。
+- 实际尺寸变化复用 gfx 的自动尺寸纹理更新、当前命令提交、有限排空、资源退休与 `resizeBackBuffers`，恢复同一帧槽的录制及 backbuffer 状态；不调用 Present，不推进 recording frame sequence，也不发布 timestamp 样本。已排队的上传不会被丢弃，auto-resize 纹理句柄保持有效但内容不保留；尺寸不变不增加上述 GPU 工作。尺寸变化仍可能等待在途 GPU，调用方不能把它视为无等待操作。
+- 同步失败进入既有执行终态，只允许清理/close，不返回半完成的目标。自动尺寸纹理分配失败显式返回错误，不再记录错误后继续报告 resize 成功。`frame` 末尾原有 resize 继续处理录制期间的窗口变化。
 - `frame(vsync, &details)` 沿唯一原入口推进；可选 details 仅在整个操作成功后更新，包含提交前目标、完成后目标和 DXGI 遮挡状态。Present 成功之后的 resize/等待/Reset 失败仍是终态，不发布部分成功。旧的 `frame(vsync)` 调用不变。
 - `ContextOptions::rgba8_window=true` 显式请求 SDR RGBA8，backbuffer 使用 sRGB RTV。默认 false 保留 gfx 按显示器选择格式的行为；10 位显示器的默认目标不保证 RGBA8。renderer 对需要的实际格式另做校验。
 - backbuffer 可与独立深度目标一起绑定：Pipeline 显式声明颜色格式等于 backbuffer 格式，并声明 depth 格式；不提供颜色声明的 depth-only 路径保留原义。

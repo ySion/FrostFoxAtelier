@@ -82,6 +82,29 @@ Dev/Release 的完整 `atelier_editor_document_acceptance`、`--materials` 及 `
 
 中间结果保留用于归因：`fix.log` 的首版消除了铺黄，但宽线检查发现把系统位置 w 当作倒数的假设导致宽度失真；显式插值 clip w 后修正。`dev.log` 还暴露验收颜色判据错误：浅色 MatCap 的边线主要降低蓝通道，不能要求红绿同时提高 20；最终比较任意 RGB 通道的实际变化，并保持线宽约束。`diagnostic*.log` 属于临时 GPU 数值探针的预期失败，不作为通过证据。
 
+## 跨相机平面的选中边线铺黄（2026-10-10）
+
+基线为 `5d24e4a6ab10b954c3bda03ffdfea674e939b12d`，证据根目录 `out/selection-clipping-20261010/`。用户 Sponza 截图的近处整面铺黄，用同一真实 Renderer、RX 6800 XT 和 GPU validation 缩减为一个两三角形地板复现；未操作或重启用户编辑器，也未修改场景数据。
+
+原 shader 把无透视插值重心坐标当作非负距离。顶点跨到相机背后时，屏幕重心坐标可变负，`smoothstep` 把该区域当成完全覆盖的边线。实际失败 `red.log`：前端顶点 z=-1 时，远离全部原始边的 22,528 个内部像素全部改变并成为黄色；顶点位于 z=0、.04 和 .11 时，该内部区域没有铺黄，近裁剪面为 .1。对应原始捕获为 `red/selection-clipping-0.ppm`，无损 PNG 转换为同名 `.png`。
+
+最终保留原始网格边高亮与显式 wireframe 的共同语义。VS 将原始三角形重心坐标和 clip w 放入同一透视插值字段；PS 使用 `barycentric / clip_w` 恢复屏幕仿射边函数，再按梯度求绝对像素距离。梯度先按最大分量归一化，避免极大／极小投影尺度在平方时溢出／下溢。不新增 RT、draw、CPU 缓冲或公共 API；增加一个插值标量和局部 shader 计算，未测量 FPS 收益。对象 mask/ID 轮廓与边线的取舍见[显示合同](contract.md#视口显示策略)。
+
+`selection.inl` 加入现有无参数 `atelier_renderer_acceptance`，没有另建测试入口。15 组真实 GPU 场景覆盖跨眼平面／恰好 w=0／近裁剪两侧、Smooth／Flat／MatCap／Scene Lit、Scene Lit 的四种 AA、1e-20／1e20 同构场景尺度、镜像和 8 像素宽线。每组检查选中内部颜色保持、原始边仍可见且宽度有界、显式三角形模式恢复对角线、Overlay／Lines Visible／Lines All 均不铺面，以及 FP32 捕获深度逐值保持。现有材质／Alpha Test、遮挡、正交与透视线宽、参考辅助显示、resize／最小化恢复和资源生命周期验收也继续执行。
+
+| 最终真实 GPU 结果 | Dev | Release |
+|---|---:|---:|
+| 各场景内部改变／铺黄像素 | 0 / 0 | 0 / 0 |
+| 默认选中远边可见像素（表面内侧） | 1～2 | 1～2 |
+| 8 像素宽线在表面内侧的可见像素 | 4 | 4 |
+| 新裁剪场景与原 Renderer 全部验收 | PASS | PASS |
+
+最终构建／验收为 `dev-final-build.log`、`dev-final.log`、`release-final-build.log`、`release-final.log`，配对选中／未选中捕获在 `dev-final/` 和 `release-final/`。最终源码不含临时诊断输出，构建及 GPU 日志没有编译诊断或 D3D12 warning/error。本轮验证原生 Renderer 场景，未声称已经操作用户未保存的 Sponza 现场。
+
+编辑器集成复验使用独立 Release 进程打开仓库内的 Official Examples，通过 Control 恢复从原窗口只读取得的相机状态，设置 Smooth 并选中 Sponza Atrium。实际 GPU 捕获 `out/release/surface-evidence/selection-sponza.png` 中，近处地板保留材质，原始边继续可见，未出现整面铺黄；它使用官方示例的场景数据，不包含用户未保存的其他对象。原窗口和未保存内容保持不变。Dev／Release 的 `editor_surfaces_acceptance` 与 `editor_shortcuts_acceptance` 同时验证本批停靠、菜单与视口输入集成。
+
+中间结果保留用于归因：`fix.log` 的首版消除了铺黄，但宽线检查发现把系统位置 w 当作倒数的假设导致宽度失真；显式插值 clip w 后修正。`dev.log` 还暴露验收颜色判据错误：浅色 MatCap 的边线主要降低蓝通道，不能要求红绿同时提高 20；最终比较任意 RGB 通道的实际变化，并保持线宽约束。`diagnostic*.log` 属于临时 GPU 数值探针的预期失败，不作为通过证据。
+
 ## 提交后 Review 补强（2026-10-10）
 
 基线提交为 `c8293e9`（移动光照历史与此前 Scene Lit 演进），补强提交为 `ca4af3344f09a3fc2cfd45b11bf6fdf895d412d0`，已进入 `5d24e4a6` 集成基线。证据根目录 `out/lit-review-hardening-20261010/`。Astra 分别审查需求符合度、生命周期／规范与性能路径；主执行方负责集成和真实端到端验收。审核补强不改变 RHI 边界、FP32 深度或原生分辨率。

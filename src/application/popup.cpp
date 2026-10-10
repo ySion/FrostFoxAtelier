@@ -119,9 +119,11 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     if (y+height>area.bottom) y=below?anchor.top-height:area.bottom-height;
     x=std::clamp(x,area.left,area.right-width); y=std::clamp(y,area.top,area.bottom-height);
     if (!SetWindowPos(window(),HWND_TOP,x,y,width,height,SWP_NOACTIVATE)) throw std::runtime_error("Cannot size popup window.");
+    // Match the client before showing a newly opened popup; never paint its old-sized canvas.
+    static_cast<void>(graphics(renderer_.sync_window_target()));
     retarget({static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)});
     restore_focus_=previous_focus;
-    window_.show(); visible_=dirty_=opening_=true;
+    window_.show(); visible_=dirty_=opening_=true;open_present_count_=0;
     open_cpu_us_=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
 }
 void PopupHost::suspend() {
@@ -142,25 +144,19 @@ void PopupHost::render(renderer::Capture* capture) {
     });
     if (!dirty_ && !capture) return;
     const auto start=std::chrono::steady_clock::now();
-    // The renderer publishes a resize after Present. Drive that same protocol,
-    // accepting input only once the back buffer matches the native client.
-    for (unsigned attempt=0;attempt<2;++attempt) {
-        const auto target=graphics(renderer_.target());
-        if (!target.drawable) return;
-        if (target.extent!=extent_) retarget(target.extent);
-        const auto candidate=take(ui_.prepare());
-        RECT client{}; GetClientRect(window(),&client);
-        const bool current=target.extent==ui::PixelExtent{static_cast<std::uint32_t>(client.right),static_cast<std::uint32_t>(client.bottom)};
-        const auto result=graphics(renderer_.render({*candidate->drawing,{}, {},{}},current?capture:nullptr));
-        if (current && result.status==renderer::FrameStatus::accepted) {
-            if (!ui_.accept(candidate)) throw std::runtime_error("Popup rejected its accepted GPU frame.");
-            if (opening_) open_cpu_us_+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
-            opening_=dirty_=false;
-            if(restore_focus_) {
-                dirty_|=ui_.focus(restore_focus_).redraw;
-                restore_focus_=0;
-            }
-            return;
+    const auto target=graphics(renderer_.sync_window_target());
+    if (!target.drawable) return;
+    if (target.extent!=extent_) retarget(target.extent);
+    const auto candidate=take(ui_.prepare());
+    const auto result=graphics(renderer_.render({*candidate->drawing,{}, {},{}},capture));
+    if(opening_) ++open_present_count_;
+    if (result.status==renderer::FrameStatus::accepted) {
+        if (!ui_.accept(candidate)) throw std::runtime_error("Popup rejected its accepted GPU frame.");
+        if (opening_) open_cpu_us_+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
+        opening_=dirty_=false;
+        if(restore_focus_) {
+            dirty_|=ui_.focus(restore_focus_).redraw;
+            restore_focus_=0;
         }
     }
 }

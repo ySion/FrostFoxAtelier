@@ -922,7 +922,41 @@
                      double const begin = timestamp_query_data[2 * timestamp_query_index + 0] / ticks_per_milliseconds;
                      double const end   = timestamp_query_data[2 * timestamp_query_index + 1] / ticks_per_milliseconds;
                      float const duration    = (float)(GFX_MAX(begin, end) - begin); // elapsed time in milliseconds
-@@ -5200,12 +5388,14 @@
+@@ -5196,16 +5384,53 @@
+         return runGarbageCollection();
+     }
+
++    GfxResult syncWindowTarget()
++    {
++        if(execution_error_ != kGfxResult_NoError) return execution_error_;
++        if(isInterop())
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Window synchronization requires an owned context");
++        if(swap_chain_ == nullptr || !IsWindow(window_) || IsIconic(window_)) return kGfxResult_NoError;
++        RECT client = {};
++        if(!GetClientRect(window_, &client) || client.right <= 0 || client.bottom <= 0) return kGfxResult_NoError;
++        uint32_t const width = GFX_MAX(client.right, (LONG)8);
++        uint32_t const height = GFX_MAX(client.bottom, (LONG)8);
++        if(width == window_width_ && height == window_height_) return kGfxResult_NoError;
++        if(command_list_ == nullptr || command_phase_ != kCommandPhase_Recording)
++            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Window synchronization requires a recording list");
++
++        // Preserve queued uploads and auto-sized resources. Resize uses the same
++        // bounded drain/retirement path as frame(), without an obsolete Present.
++        GFX_TRY(resizeTextures(width, height));
++        GFX_TRY(submitCurrent());
++        GFX_TRY(resizeBackBuffers(width, height));
++        GFX_TRY(resumeAfterSync());
++        D3D12_RESOURCE_BARRIER barrier = {};
++        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        barrier.Transition.pResource = back_buffers_[back_buffer_index_];
++        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
++        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        command_list_->ResourceBarrier(1, &barrier);
++        return kGfxResult_NoError;
++    }
++
+     GfxResult finish()
      {
          if(isInterop())
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot synchronize commands when using an interop context");
@@ -937,13 +971,18 @@
 +        else if(command_phase_ != kCommandPhase_Submitted)
 +            return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot finish a closed, unsubmitted list");
 +        GFX_TRY(sync());
++        return resumeAfterSync();
++    }
++
++    GfxResult resumeAfterSync()
++    {
 +        GFX_TRY(resetOwnedList(fence_index_));
 +        // sync proved completion; this slot's constant storage can now be reused.
 +        constant_buffer_pool_cursors_[fence_index_] = 0;
          memset(blas_compaction_indices_.data(), blas_compaction_sentinel, blas_compaction_indices_.size() * sizeof(uint32_t));
          resetState();   // re-install state
          decayResourceState();
-@@ -5654,9 +5844,9 @@
+@@ -5654,9 +5879,9 @@
      GfxResult setSwapChain(IDXGISwapChain4 *swapchain)
      {
          if(!window_)
@@ -956,7 +995,7 @@
          // clear old resources associated with the old swapchain
          if(swap_chain_)
          {
-@@ -5668,7 +5858,7 @@
+@@ -5668,7 +5893,7 @@
              }
              swap_chain_->Release();
              swap_chain_ = nullptr;
@@ -965,7 +1004,7 @@
          }
          if(swapchain)
          {
-@@ -5677,7 +5867,7 @@
+@@ -5677,7 +5902,7 @@
              // Redo window association and preferences setup
              IDXGIFactory4 *factory = nullptr;
              if(!SUCCEEDED(swap_chain_->GetParent(IID_PPV_ARGS(&factory))) || !IsWindow(window_))
@@ -974,7 +1013,7 @@
              factory->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
              factory->Release();
 
-@@ -5706,16 +5896,17 @@
+@@ -5706,16 +5931,17 @@
      {
          if(isInterop())
              return GFX_SET_ERROR(kGfxResult_InvalidOperation, "Cannot synchronize commands when using an interop context");
@@ -998,7 +1037,7 @@
          resetState();   // re-install state
          return kGfxResult_NoError;
      }
-@@ -6250,7 +6441,7 @@
+@@ -6250,7 +6476,7 @@
 
      static inline D3D12_RESOURCE_STATES GetShaderVisibleResourceState(Kernel const &kernel)
      {
@@ -1007,7 +1046,7 @@
                   ? D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE
                   : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
      }
-@@ -6828,6 +7019,40 @@
+@@ -6828,6 +7054,40 @@
              GFX_ASSERT(global_root_signature_parameters.kernel_parameters.size() == global_root_signature_parameters.descriptor_ranges.size());
          }
 
@@ -1048,7 +1087,7 @@
          auto finalize_root_parameters = [](RootSignatureParameters &root_signature_parameters)
          {
              for(size_t i = 0; i < root_signature_parameters.root_parameters.size(); ++i)
-@@ -7252,9 +7477,11 @@
+@@ -7252,9 +7512,11 @@
                  render_width = GFX_MIN(render_width, texture_width); render_height = GFX_MIN(render_height, texture_height);
                  transitionResource(gfx_texture, D3D12_RESOURCE_STATE_DEPTH_WRITE);
              }
@@ -1063,7 +1102,7 @@
                  color_targets[color_target_count++] = rtv_descriptors_.getCPUHandle(back_buffer_rtvs_[back_buffer_index_]);
              }
              D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)render_width, (float)render_height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
-@@ -9354,9 +9581,10 @@
+@@ -9354,9 +9616,10 @@
          if(kernel.isMesh())
          {
              kernel_type = "Mesh";
@@ -1077,7 +1116,7 @@
              createRootSignature(kernel);
              result = createMeshPipelineState(kernel, kernel.draw_state_);
              if(kernel.as_reflection_ != nullptr)
-@@ -9369,9 +9597,10 @@
+@@ -9369,9 +9632,10 @@
          else if(kernel.isCompute())
          {
              kernel_type = "Compute";
@@ -1090,7 +1129,7 @@
              if(kernel.cs_reflection_ != nullptr)
                  kernel.cs_reflection_->GetThreadGroupSize(&kernel.num_threads_[0], &kernel.num_threads_[1], &kernel.num_threads_[2]);
              else
-@@ -9380,16 +9609,17 @@
+@@ -9380,16 +9644,17 @@
          else if(kernel.isGraphics())
          {
              kernel_type = "Graphics";
@@ -1112,7 +1151,7 @@
              createRootSignature(kernel);
              createRaytracingPipelineState(kernel);
          }
-@@ -9454,7 +9684,7 @@
+@@ -9454,7 +9719,7 @@
      std::map<uint64_t, Shader> shaders_;
 
      template<typename REFLECTION_TYPE>
@@ -1121,7 +1160,7 @@
      {
          DxcBuffer shader_source = {};
          IDxcBlobEncoding *dxc_source = nullptr;
-@@ -9468,9 +9698,14 @@
+@@ -9468,9 +9733,14 @@
              wshader_file.resize(mbstowcs(nullptr, shader_file.data(), 0) + 1);
              mbstowcs(wshader_file.data(), shader_file.data(), shader_file.size());
              // Check file existence before LoadFile call. LoadFile spams hlsl::Exception messages if file not found.
@@ -1138,7 +1177,7 @@
              shader_source.Ptr = dxc_source->GetBufferPointer();
              shader_source.Size = dxc_source->GetBufferSize();
          }
-@@ -9504,10 +9739,10 @@
+@@ -9504,10 +9774,10 @@
                  break;
              default:
                  GFX_ASSERTMSG(0, "An unsupported shader type `%u' was supplied", (uint32_t)shader_type);
@@ -1151,7 +1190,7 @@
          }
 
          char shader_profiles[][16] =
-@@ -9670,7 +9905,7 @@
+@@ -9670,7 +9940,7 @@
                      reflection = (*it).second.shader_reflection_;
                      GFX_ASSERT(shader_bytecode != nullptr && reflection != nullptr);
                      if(dxc_source) dxc_source->Release();
@@ -1160,7 +1199,7 @@
                  }
                  std::filesystem::path file_path(program.file_path_.c_str(), std::locale("en_US.UTF-8"));
                  if(is_directory(file_path))
-@@ -9730,7 +9965,7 @@
+@@ -9730,7 +10000,7 @@
                              shader.shader_reflection_ = reflection;
                              shader_bytecode = bytecode_blob;
                              reflection_blob->Release();
@@ -1169,7 +1208,7 @@
                          }
                      }
                      if(bytecode_blob) bytecode_blob->Release();
-@@ -9742,7 +9977,7 @@
+@@ -9742,7 +10012,7 @@
          IDxcResult *dxc_result = nullptr;
          dxc_compiler_->Compile(&shader_source, shader_args.data(), (uint32_t)shader_args.size(), dxc_include_handler_, IID_PPV_ARGS(&dxc_result));
          if(dxc_source) dxc_source->Release();
@@ -1178,7 +1217,7 @@
 
          HRESULT result_code = E_FAIL;
          dxc_result->GetStatus(&result_code);
-@@ -9756,7 +9991,7 @@
+@@ -9756,7 +10026,7 @@
                  kernel.entry_point_.c_str(), has_errors ? ":\r\n" : "",
                  has_errors ? (char const *)dxc_error->GetBufferPointer() : "");
              if(dxc_error) dxc_error->Release(); dxc_result->Release();
@@ -1187,7 +1226,7 @@
          }
          if(dxc_error != nullptr)
          {
-@@ -9781,7 +10016,7 @@
+@@ -9781,7 +10051,7 @@
              if(dxc_pdb_name) dxc_pdb_name->Release();
              if(dxc_bytecode) dxc_bytecode->Release();
              if(dxc_reflection) dxc_reflection->Release();
@@ -1196,7 +1235,7 @@
          }
          if(dxc_pdb != nullptr && dxc_pdb_name != nullptr)
          {
-@@ -9888,6 +10123,7 @@
+@@ -9888,6 +10158,7 @@
          if(dxc_pdb_name) dxc_pdb_name->Release();
          if(dxc_pdb) dxc_pdb->Release();
          dxc_reflection->Release();
@@ -1204,7 +1243,7 @@
      }
 
      GfxResult createResource(D3D12MA::ALLOCATION_DESC const &allocation_desc, D3D12_RESOURCE_DESC const &resource_desc,
-@@ -9936,7 +10172,8 @@
+@@ -9936,7 +10207,8 @@
          GFX_ASSERT(buffer.data_ == nullptr); if(buffer.data_ != nullptr) return false;
          if((*buffer.resource_state_ & resource_state) == resource_state && (resource_state != 0 || *buffer.resource_state_ == resource_state))
          {
@@ -1214,7 +1253,7 @@
              {
                  bool already_has_uav_barrier = false;
                  for(std::vector<D3D12_RESOURCE_BARRIER>::const_iterator it = resource_barriers_.begin(); it != resource_barriers_.end(); ++it)
-@@ -10132,12 +10369,8 @@
+@@ -10132,12 +10404,8 @@
      {
          for(uint32_t i = 0; i < max_frames_in_flight_; ++i)
          {
@@ -1229,7 +1268,7 @@
          }
          return forceGarbageCollection();
      }
-@@ -10152,14 +10385,14 @@
+@@ -10152,14 +10420,14 @@
              back_buffers_[i] = nullptr;
              freeRTVDescriptor(back_buffer_rtvs_[i]);
          }
@@ -1246,7 +1285,17 @@
          back_buffer_index_ = swap_chain_->GetCurrentBackBufferIndex();
          GFX_TRY(acquireSwapChainBuffers());
          GFX_TRY(createBackBufferRTVs());
-@@ -10471,6 +10704,8 @@
+@@ -10184,8 +10452,7 @@
+             allocation_desc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+             if(createResource(allocation_desc, resource_desc, D3D12_RESOURCE_STATE_COMMON, texture.clear_value_, &allocation, IID_PPV_ARGS(&resource)) != kGfxResult_NoError)
+             {
+-                GFX_PRINT_ERROR(kGfxResult_OutOfMemory, "Unable to auto-resize texture object(s) to %ux%u", window_width, window_height);
+-                break;  // out of memory
++                return failExecution(kGfxResult_OutOfMemory, "Auto-resize texture allocation");
+             }
+             collect(texture);   // release previous texture
+             texture.resource_ = resource;
+@@ -10471,6 +10738,8 @@
 
      GfxResult handleDeviceLost()
      {
@@ -1255,7 +1304,7 @@
          HRESULT const reason = device_->GetDeviceRemovedReason();
          LPSTR error_text = nullptr;
          DWORD const result = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER, nullptr, reason,
-@@ -10547,7 +10782,9 @@
+@@ -10547,7 +10816,9 @@
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return kGfxResult_NoError; // nothing to destroy
@@ -1266,7 +1315,7 @@
      return kGfxResult_NoError;
  }
 
-@@ -10556,6 +10793,18 @@
+@@ -10556,6 +10827,18 @@
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return false;
      return gfx->isValid();
@@ -1285,7 +1334,7 @@
  }
 
  uint32_t gfxGetBackBufferWidth(GfxContext context)
-@@ -11341,6 +11590,18 @@
+@@ -11341,6 +11624,18 @@
      return gfx->encodeCopyTextureToBuffer(dst, src);
  }
 
@@ -1304,7 +1353,7 @@
  GfxResult gfxCommandGenerateMips(GfxContext context, GfxTexture texture)
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
-@@ -11474,6 +11735,12 @@
+@@ -11474,6 +11769,12 @@
      return gfx->encodeDrawMeshIndirect(args_buffer);
  }
 
@@ -1317,7 +1366,7 @@
  GfxTimestampQuery gfxCreateTimestampQuery(GfxContext context)
  {
      GfxTimestampQuery const timestamp_query = {};
-@@ -11494,6 +11761,13 @@
+@@ -11494,6 +11795,13 @@
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return 0.0f;   // invalid context
      return gfx->getTimestampQueryDuration(timestamp_query);
@@ -1331,6 +1380,20 @@
  }
 
  GfxResult gfxCommandBeginTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query)
+@@ -11595,6 +11903,13 @@
+     GfxInternal *gfx = GfxInternal::GetGfx(context);
+     if(!gfx) return kGfxResult_InvalidParameter;
+     return gfx->frame(vsync);
++}
++
++GfxResult gfxSyncWindowTarget(GfxContext context)
++{
++    GfxInternal *gfx = GfxInternal::GetGfx(context);
++    if(!gfx) return kGfxResult_InvalidParameter;
++    return gfx->syncWindowTarget();
+ }
+
+ GfxResult gfxFinish(GfxContext context)
 --- a/gfx.h
 +++ b/gfx.h
 @@ -54,7 +54,8 @@
@@ -1392,6 +1455,16 @@
  GfxResult gfxCommandBeginTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query);
  GfxResult gfxCommandEndTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query);
 
+@@ -509,6 +533,9 @@
+
+ GfxResult gfxFrame(GfxContext context, bool vsync = true);
+ GfxResult gfxFinish(GfxContext context);
++// Owner-only, before frame drawing. Hidden positive client sizes are supported.
++// Changed sizes drain pending work without Present or advancing frame identity.
++GfxResult gfxSyncWindowTarget(GfxContext context);
+
+ //!
+ //! Interop interface.
 --- a/gfx_core.h
 +++ b/gfx_core.h
 @@ -41,6 +41,7 @@

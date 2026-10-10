@@ -246,6 +246,14 @@ Result<TargetInfo> Context::target() const {
         GetClientRect(window, &client) && client.right > 0 && client.bottom > 0);
     return TargetInfo{gfxGetBackBufferWidth(context), gfxGetBackBufferHeight(context), window != nullptr, drawable};
 }
+Result<TargetInfo> Context::sync_window_target() {
+    const auto current = target(); // Shared owner, closed and failure admission.
+    if (!current) return std::unexpected(current.error());
+    const GfxResult result = gfxSyncWindowTarget(state_->context);
+    if (result == kGfxResult_NoError) return target();
+    state_->failure = result;
+    return std::unexpected(execution_error(result));
+}
 Result<void> Context::frame(bool vsync, FrameInfo* details) {
     if (!state_ || !state_->context)
         return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});

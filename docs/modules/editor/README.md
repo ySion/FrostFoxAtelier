@@ -192,7 +192,7 @@ Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单
 
 弹出窗口基于锚点显示器的工作区定位，可超出编辑器边界；下拉空间不足时向上翻转，超宽/超高按可用空间限制并滚动。主窗口移动、尺寸/DPI 改变、失焦、系统取消或捕获丢失关闭菜单；关闭编辑器时先关闭弹出窗口的 GPU 资源，再销毁 HWND。它不创建第二套字段编辑或场景历史。
 
-当前 renderer/RHI 的所有权仍是一窗口一上下文，菜单宿主首次使用时建立并在后续菜单之间复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。跨窗口共享 GPU 设备和纹理缓存尚未实现；多显示器真实 DPI 迁移需要额外设备验证。级联子菜单复用保留的原生菜单窗口，详见下方[页签菜单与弹窗资源](#页签菜单与弹窗资源)。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
+当前 renderer/RHI 的所有权仍是一窗口一上下文，主菜单及首层子菜单宿主随应用初始化，其余层首次使用后复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。跨窗口共享 GPU 设备和纹理缓存尚未实现；多显示器真实 DPI 迁移需要额外设备验证。级联子菜单复用保留的原生菜单窗口，详见下方[页签菜单与弹窗资源](#页签菜单与弹窗资源)。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
 
 主窗口统一消费线程消息队列，每次分发后处理自身事件记录；弹出窗口只处理已由该消息泵或同步回调排入的自身记录和回调错误，业务消费者始终在 WndProc 返回后执行。
 
@@ -252,6 +252,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 `editor_shortcuts_acceptance` 先执行上述文档链，再通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Shift+S、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；GPU 截图、菜单 CPU 耗时与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
 
 当前增量的 Dev / Release 文档及窗口端到端均通过，日志为 `out/viewport-document-{dev,release}.log`、`out/viewport-navigation-{dev,release}.log`，截图和拖动记录在对应的 `out/viewport-navigation-{dev,release}/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
+`editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口且仅需一次 Present、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键。它不注入桌面键鼠；`surface-evidence/surfaces.csv` 保存每次打开的提交次数、CPU 耗时与整个 step 耗时，PNG 保存拖动预览和提交后的画面。耗时包含当前机器负载，不代表输入到显示器的端到端延迟。
 `atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。
 `atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内先执行共享视口模式／TRS 验收，再接续工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
@@ -324,4 +325,4 @@ Scene Tree 使用共享 `tree/tree_item`，投影 World → Actor。行标签同
 
 应用初始化主菜单及首层子菜单宿主；Renderer 仅在实际网格绘制时创建场景管线和深度资源。隐藏菜单折叠已有控件，保留文字缓存；相同描述重开复用尺寸，不再先缩到 32×32。验收输出 `popup-open.csv` 记录当前首次打开和暖重开在更新/呈现路径上的 CPU 耗时，不包含启动期 Context 初始化，也不包含截图读回；不据此声称已经测量旧版本加速比。
 
-菜单栏和 Combo 在鼠标按下时请求展开，弹窗接管后续松键，不再等待一次完整点击。列表弹窗在主视口提交/Present 前更新与呈现，避免再等待一轮场景渲染；仍只接受与原生客户区匹配的 GPU 帧。这个调度调整不改变渲染器本身的重场景耗时。
+菜单栏和 Combo 在鼠标按下时请求展开，弹窗接管后续松键，不再等待一次完整点击。列表弹窗在主视口提交/Present 前更新与呈现，避免再等待一轮场景渲染；仍只接受与原生客户区匹配的 GPU 帧。PopupHost 在窗口呈现前通过 `Renderer::sync_window_target` 同步实际客户区尺寸，沿 RHI 原有排空和资源退休机制调整交换链；菜单直接准备并呈现正确尺寸的帧，移除了先呈现旧画布再重试的循环。同尺寸为空操作，隐藏窗口仍可准备尺寸，菜单输入继续只使用已接受的帧。这个调度调整不改变渲染器本身的重场景耗时。

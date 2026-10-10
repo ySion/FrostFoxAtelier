@@ -995,6 +995,13 @@ Result<Target> Renderer::target() const {
     if (!target) return std::unexpected(Error{target.error(), true});
     return Target{{target->width, target->height}, target->drawable};
 }
+Result<Target> Renderer::sync_window_target() {
+    if (!state_) return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
+    if (const auto checked=state_->check();!checked) return std::unexpected(checked.error());
+    const auto target=state_->context.sync_window_target();
+    if(!target) return std::unexpected(Error{target.error(),true});
+    return Target{{target->width,target->height},target->drawable};
+}
 Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     const auto destination = target();
     if (!destination) return std::unexpected(destination.error());

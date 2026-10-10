@@ -18,6 +18,7 @@ namespace atelier::application {
 struct EditorAcceptanceAccess {
     static void input(Application& app,ui::Event event,WPARAM key=0) {app.input(event,key);}
     static bool menu_open(const Application& app) {return app.workspace_.menu.has_value();}
+    static unsigned menu_presents(Application& app) {return app.menu_host()?app.menu_host()->open_present_count():0;}
     static auto focused(const Application& app) {return app.ui_.focused_control();}
     static void finish_menu_hold(Application& app) {app.menu_requested_-=std::chrono::seconds(1);}
     static bool tool_active(const Application& app) {return app.viewport_tool_.active();}
@@ -1007,6 +1008,7 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;
 }
+#include "surfaces.inl"
 #include "dock_resize.inl"
 #include "viewport_navigation.inl"
 int verify_editor_shortcuts(Application& app,const char* output_directory) {
