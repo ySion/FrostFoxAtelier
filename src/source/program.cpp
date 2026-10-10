@@ -1,10 +1,13 @@
 #include "source/program.hpp"
 #include "source/detail/bridge.hpp"
+#include "source/detail/diagnostics.hpp"
+#include "source/detail/debugger.hpp"
 #include "runtime/detail/type_publication.hpp"
 #include "language/declarations.hpp"
 #include "language/module.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 #include <limits>
@@ -13,6 +16,28 @@
 namespace atelier::source {
 using namespace detail;
 namespace {
+Error reject_invocation(Diagnostics* diagnostics, Debugger* debugger, Error error) {
+    return DebugAccess::reject(debugger, DiagnosticAccess::reject(diagnostics, std::move(error)));
+}
+std::uint64_t next_program_id() {
+    static std::atomic<std::uint64_t> next{1};
+    auto value = next.load(std::memory_order_relaxed);
+    for (;;) {
+        if (value == UINT64_MAX) throw std::overflow_error("Source program identity exhausted.");
+        if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) return value;
+    }
+}
+std::shared_ptr<const std::vector<DiagnosticLocation>> diagnostic_locations(const BusinessCodeInfo& info,
+    std::string_view path, std::uint64_t version) {
+    auto locations = std::make_shared<std::vector<DiagnosticLocation>>();
+    locations->reserve(info.location_count);
+    for (std::uint32_t i = 0; i < info.location_count; ++i) {
+        const auto& value = info.locations[i];
+        locations->push_back({value.function ? value.function : "", {std::string(path), version,
+            static_cast<std::size_t>(value.offset), static_cast<std::size_t>(value.line), static_cast<std::size_t>(value.column)}});
+    }
+    return locations;
+}
 template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     return std::move(*value);
@@ -223,48 +248,67 @@ struct Program::Version {
     CodeOwner code;
     BusinessCodeInfo info;
     BusinessFrameLayout layout;
+    std::shared_ptr<const DiagnosticMetadata> diagnostic;
+    std::shared_ptr<const DebugMetadata> debug;
     Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared,
-        std::uint64_t request, CodeOwner owner) noexcept
+        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, CodeOwner owner) noexcept
         : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
-          info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())) {}
+          info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())), diagnostic(std::move(capture)), debug(std::move(session)) {}
     template<class T>
-    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget) const {
-        if (aggregate(info.signature.result))
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
-        const AbiArguments encoded(contract->binding, declaration->signature, arguments);
-        if (!encoded.status) return std::unexpected(encoded.status.error());
-        auto result = invoke(receiver, encoded.values, {}, budget);
-        if (!result) return std::unexpected(result.error());
-        auto decoded = detail::scalar_value(*result, &contract->binding);
-        if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
-            (info.signature.result != ValueKind::void_value && !decoded))
-            return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled source returned an invalid scalar value."});
-        return decoded;
+    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+        auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
+        if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
+        DiagnosticScope scope(std::move(*capture), *contract->binding.runtime);
+        auto session = DebugAccess::begin(debugger, debug, info.debugging);
+        if (!session) return scope.complete(Result<std::optional<Scalar>>{std::unexpected(std::move(session.error()))});
+        DebugScope debug_scope(std::move(*session));
+        return scope.complete(debug_scope.complete([&]() -> Result<std::optional<Scalar>> {
+            if (aggregate(info.signature.result))
+                return std::unexpected(Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
+            const AbiArguments encoded(contract->binding, declaration->signature, arguments);
+            if (!encoded.status) return std::unexpected(encoded.status.error());
+            auto result = invoke(receiver, encoded.values, {}, budget, nullptr, scope.trace(), debug_scope.state());
+            if (!result) return std::unexpected(result.error());
+            auto decoded = detail::scalar_value(*result, &contract->binding);
+            if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
+                (info.signature.result != ValueKind::void_value && !decoded))
+                return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled source returned an invalid scalar value."});
+            return decoded;
+        }()));
     }
     template<class T>
-    Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output, CollectionBudget budget) const {
-        const auto kind = info.signature.result;
-        const auto& binding = contract->binding;
-        if (!aggregate(kind) || kind.type_index >= binding.values.size() || !(binding.values[kind.type_index].math || binding.values[kind.type_index].plain_value))
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Typed value output requires a math or plain record source result."});
-        const auto& value = binding.values[kind.type_index];
-        if (output.type != value.type || !output.data || reinterpret_cast<std::uintptr_t>(output.data) % value.alignment != 0)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Source output storage does not match its declared value type and alignment."});
-        const AbiArguments encoded(binding, declaration->signature, arguments);
-        if (!encoded.status) return std::unexpected(encoded.status.error());
-        // Only the returned representation enters this buffer. Constructing a
-        // native value here would execute an unrelated default constructor.
-        ::atelier::detail::ValueStorage staging_owner;
-        auto* staged = staging_owner.prepare(value.size, value.alignment);
-        auto result = invoke(receiver, encoded.values, {}, budget, staged);
-        if (!result) return std::unexpected(result.error());
-        if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
-            return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled aggregate result changed its typed output storage."});
-        std::memcpy(output.data, staged, value.size);
-        return {};
+    Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+        auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
+        if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
+        DiagnosticScope scope(std::move(*capture), *contract->binding.runtime);
+        auto session = DebugAccess::begin(debugger, debug, info.debugging);
+        if (!session) return scope.complete(Result<void>{std::unexpected(std::move(session.error()))});
+        DebugScope debug_scope(std::move(*session));
+        return scope.complete(debug_scope.complete([&]() -> Result<void> {
+            const auto kind = info.signature.result;
+            const auto& binding = contract->binding;
+            if (!aggregate(kind) || kind.type_index >= binding.values.size() || !(binding.values[kind.type_index].math || binding.values[kind.type_index].plain_value))
+                return std::unexpected(Error{ErrorCode::argument_mismatch, "Typed value output requires a math or plain record source result."});
+            const auto& value = binding.values[kind.type_index];
+            if (output.type != value.type || !output.data || reinterpret_cast<std::uintptr_t>(output.data) % value.alignment != 0)
+                return std::unexpected(Error{ErrorCode::argument_mismatch, "Source output storage does not match its declared value type and alignment."});
+            const AbiArguments encoded(binding, declaration->signature, arguments);
+            if (!encoded.status) return std::unexpected(encoded.status.error());
+            // Only the returned representation enters this buffer. Constructing a
+            // native value here would execute an unrelated default constructor.
+            ::atelier::detail::ValueStorage staging_owner;
+            auto* staged = staging_owner.prepare(value.size, value.alignment);
+            auto result = invoke(receiver, encoded.values, {}, budget, staged, scope.trace(), debug_scope.state());
+            if (!result) return std::unexpected(result.error());
+            if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
+                return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled aggregate result changed its typed output storage."});
+            std::memcpy(output.data, staged, value.size);
+            return {};
+        }()));
     }
     Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
-        InvocationObserver observer, CollectionBudget budget, void* result_data = nullptr) const {
+        InvocationObserver observer, CollectionBudget budget, void* result_data = nullptr, BusinessTrace* trace = nullptr,
+        std::shared_ptr<DebugSessionState> debugger = {}) const {
         if (info.signature.is_coroutine)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
         if (aggregate(info.signature.result) && !result_data)
@@ -275,7 +319,7 @@ struct Program::Version {
         auto checked = check_source_arguments(binding, info.signature, arguments);
         if (!checked) return std::unexpected(std::move(checked.error()));
         return execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
-            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data);
+            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data, trace, std::move(debugger));
     }
 };
 #include "source/detail/module_state.inl"
@@ -285,6 +329,7 @@ struct Program::State {
     std::shared_ptr<const Declaration> declaration;
     std::shared_ptr<const Version> current;
     std::shared_ptr<const ModuleVersion> module;
+    const std::uint64_t id{next_program_id()};
     std::uint64_t latest_request{}, published_request{};
     bool open{true};
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
@@ -301,18 +346,44 @@ struct Program::State {
 };
 struct Program::Frame final : CoroutineFrame {
     std::shared_ptr<const Version> version;
+    std::shared_ptr<DiagnosticState> diagnostic;
     Invocation invocation;
     std::unique_ptr<BusinessCoroutine, decltype(&atelier_destroy_business_coroutine)> code_frame{
         nullptr, &atelier_destroy_business_coroutine};
-    bool observed_terminal{};
-    Frame(std::shared_ptr<const Version> owner, InvocationObserver observer, CollectionBudget budget)
-        : version(std::move(owner)), invocation(*version->contract->binding.runtime, version->contract->binding,
-            version->layout, budget, observer) {}
+    bool observed_terminal{}, captures_owned{};
+    DiagnosticStatus terminal{DiagnosticStatus::cancelled};
+    DebugStatus debug_terminal{DebugStatus::cancelled};
+    Frame(std::shared_ptr<const Version> owner, InvocationObserver observer, CollectionBudget budget,
+        std::shared_ptr<DiagnosticState> capture, std::shared_ptr<DebugSessionState> debugger)
+        : version(std::move(owner)), diagnostic(std::move(capture)),
+          invocation(*version->contract->binding.runtime, version->contract->binding,
+            version->layout, budget, observer, diagnostic ? &diagnostic->trace : nullptr, std::move(debugger)) {}
     ~Frame() override {
         // Generated destruction can call host cleanup, so retain Invocation and
         // Version until the DLL frame has finished using them.
+        if (diagnostic) DiagnosticAccess::running(*diagnostic);
+        if (invocation.debugger) DebugAccess::status(*invocation.debugger, DebugStatus::running);
+        const bool generated = code_frame != nullptr;
         code_frame.reset();
         complete(false);
+        if (!diagnostic && !invocation.debugger) return;
+        const bool cleared = generated && invocation.resources_cleared();
+        // Report Runtime resources after fallback roots are released, while
+        // preserving whether generated cleanup itself honored its contract.
+        for (auto& root : invocation.roots) root.reset();
+        invocation.observations.clear();
+        invocation.record_resources(generated ? cleared : invocation.resources_cleared());
+        if (captures_owned) {
+            if (diagnostic) DiagnosticAccess::finish(*diagnostic, invocation.runtime, terminal);
+            if (invocation.debugger) DebugAccess::finish(*invocation.debugger, debug_terminal);
+        }
+    }
+    void on_terminal(CoroutineState state, const Error* error) noexcept override {
+        terminal = state == CoroutineState::failed ? DiagnosticStatus::failed :
+            state == CoroutineState::completed ? DiagnosticStatus::completed : DiagnosticStatus::cancelled;
+        debug_terminal = state == CoroutineState::failed ? DebugStatus::failed :
+            state == CoroutineState::completed ? DebugStatus::completed : DebugStatus::cancelled;
+        if (diagnostic && error) DiagnosticAccess::fail(*diagnostic, *error);
     }
     void complete(bool success) noexcept {
         if (observed_terminal) return;
@@ -320,29 +391,49 @@ struct Program::Frame final : CoroutineFrame {
         const auto observer = invocation.observer;
         if (observer.complete) observer.complete(observer.context, invocation, success);
     }
+    Result<CoroutineStep> failure(Error error) {
+        if (invocation.debugger) DebugAccess::locate_error(*invocation.debugger, error);
+        if (diagnostic) {
+            DiagnosticAccess::fail(*diagnostic, error);
+            DiagnosticAccess::locate_error(*diagnostic, error);
+        }
+        return std::unexpected(std::move(error));
+    }
     Result<CoroutineStep> resume() override {
-        char diagnostic[512];
+        if (diagnostic) DiagnosticAccess::running(*diagnostic, true);
+        if (invocation.debugger) DebugAccess::status(*invocation.debugger, DebugStatus::running);
+        char message[512];
         bool suspended{};
         BusinessValue output{};
         const auto status = atelier_resume_business_coroutine(code_frame.get(), &suspended, &output,
-            diagnostic, sizeof(diagnostic));
+            message, sizeof(message));
         const auto decoded = status == 0 && !suspended && !invocation.failed ?
             scalar_value(output, &version->contract->binding) : std::optional<Scalar>{};
         const bool invalid_result = status == 0 && !suspended && !invocation.failed &&
             (output.kind != version->info.signature.result || output.storage != ArgumentStorage::value ||
                 (version->info.signature.result != ValueKind::void_value && !decoded));
-        if (status != 0 || !suspended || invocation.failed) {
-            const bool cleared = invocation.resources_cleared();
-            complete(cleared && status == 0 && !invocation.failed && !invalid_result);
+        const bool terminal_step = status != 0 || !suspended || invocation.failed;
+        const bool cleared = (terminal_step || diagnostic) && invocation.resources_cleared();
+        invocation.record_resources(cleared);
+        if (terminal_step) complete(cleared && status == 0 && !invocation.failed && !invalid_result);
+        if (status != 0 && !invocation.failed && invocation.debug_aborted) {
             if (!cleared)
-                return std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine left execution resources alive."});
+                return failure({ErrorCode::invocation_failed, "Aborted coroutine left execution resources alive."});
+            request_cancel();
+            return CoroutineStep{CoroutineState::completed};
         }
         if (status != 0 || invocation.failed)
-            return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-                invocation.failed ? invocation.error : diagnostic});
-        if (suspended) return CoroutineStep{CoroutineState::suspended};
+            return failure({invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
+                invocation.failed ? invocation.error : message});
+        if (terminal_step && !cleared)
+            return failure({ErrorCode::invocation_failed, "Coroutine left execution resources alive."});
+        if (suspended) {
+            if (diagnostic) DiagnosticAccess::pause(*diagnostic, invocation.runtime, DiagnosticStatus::suspended);
+            if (invocation.debugger) DebugAccess::status(*invocation.debugger, DebugStatus::suspended);
+            return CoroutineStep{CoroutineState::suspended};
+        }
         if (invalid_result)
-            return std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine returned an invalid scalar value."});
+            return failure({ErrorCode::invocation_failed, "Coroutine returned an invalid scalar value."});
         return CoroutineStep{CoroutineState::completed, decoded};
     }
 };
@@ -355,10 +446,13 @@ struct Program::Prepared {
     CodeOwner code;
     std::string source_name;
     std::shared_ptr<ModuleVersion> module;
+    std::shared_ptr<const DiagnosticMetadata> diagnostic;
+    std::shared_ptr<const DebugMetadata> debug;
 };
 
 Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Version> version, ObjectId receiver,
-    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget) {
+    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget, std::shared_ptr<DiagnosticState> capture,
+    std::shared_ptr<DebugSessionState> debugger) {
     if (!version || !version->info.signature.is_coroutine)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Starting a coroutine requires a coroutine declaration."});
     const auto& binding = version->contract->binding;
@@ -371,7 +465,7 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
         auto checked_receiver = check_source_receiver(binding, receiver);
         if (!checked_receiver) return std::unexpected(std::move(checked_receiver.error()));
     }
-    auto frame = std::make_unique<Program::Frame>(std::move(version), observer, budget);
+    auto frame = std::make_unique<Program::Frame>(std::move(version), observer, budget, std::move(capture), std::move(debugger));
     if (hold_receiver) {
         auto held = frame->invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!held) return std::unexpected(std::move(held.error()));
@@ -380,16 +474,20 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
     char diagnostic[512]{};
     if (atelier_create_business_coroutine(frame->version->code.get(), &frame->invocation,
             arguments.data(), static_cast<std::uint32_t>(arguments.size()), &compiled,
-            diagnostic, sizeof(diagnostic)) != 0)
+            diagnostic, sizeof(diagnostic), frame->invocation.trace) != 0)
         return std::unexpected(Error{ErrorCode::invocation_failed, diagnostic});
     frame->code_frame.reset(compiled);
-    return Coroutine::create(*binding.runtime, std::move(frame));
+    if (frame->diagnostic) frame->invocation.record_resources(frame->invocation.resources_cleared());
+    auto* observed = frame.get();
+    auto result = Coroutine::create(*binding.runtime, std::move(frame));
+    if (result) observed->captures_owned = true;
+    return result;
 }
 
 Program::SourceRequest::SourceRequest(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract,
-    std::shared_ptr<const Declaration> declaration, std::uint64_t number, std::string name, std::string text, std::string entry)
+    std::shared_ptr<const Declaration> declaration, std::uint64_t number, std::string name, std::string text, std::string entry, CompileOptions compilation)
     : owner_(std::move(owner)), contract_(std::move(contract)), compilation_contract_(contract_), declaration_(std::move(declaration)),
-      sequence(number), source_name(std::move(name)), source(std::move(text)), entry_name(std::move(entry)) {}
+      sequence(number), source_name(std::move(name)), source(std::move(text)), entry_name(std::move(entry)), options(compilation) {}
 Program::Candidate::Candidate() = default;
 Program::Candidate::Candidate(std::unique_ptr<Prepared> prepared) : prepared_(std::move(prepared)) {}
 Program::Candidate::~Candidate() = default;
@@ -408,6 +506,37 @@ std::uintptr_t Program::Candidate::address() const noexcept {
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
 Program::Entry::Entry(std::weak_ptr<State> owner, std::optional<std::size_t> index) : owner_(std::move(owner)), index_(index) {}
 std::uintptr_t Program::Lease::address() const noexcept { return version_ ? version_->info.entry_address : 0; }
+Result<CompilationArtifacts> Program::Lease::artifacts() const {
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    BusinessArtifacts view{};
+    if (!atelier_query_business_artifacts(version->code.get(), &view))
+        return std::unexpected(Error{ErrorCode::unsupported_operation, "This source version did not retain compiler artifacts."});
+    CompilationArtifacts result;
+    result.entry_symbol = view.entry_symbol;
+    result.target_triple = view.target_triple;
+    result.cpu_features = view.cpu_features;
+    result.original_ir.assign(view.original_ir, view.original_ir_size);
+    result.optimized_ir.assign(view.optimized_ir, view.optimized_ir_size);
+    result.assembly.assign(view.assembly, view.assembly_size);
+    result.object_code.assign(view.object_code, view.object_code + view.object_code_size);
+    return result;
+}
+
+Result<std::vector<DiagnosticLocation>> Program::Lease::debug_sites() const {
+    const auto version = version_;
+    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    if (!version->info.debugging || !version->debug || !version->debug->tables || !version->debug->locations)
+        return std::unexpected(Error{ErrorCode::unsupported_operation, "This source version was compiled without debugging."});
+    std::vector<DiagnosticLocation> sites;
+    sites.reserve(version->debug->tables->sites.size());
+    for (const auto index : version->debug->tables->sites) {
+        if (index >= version->debug->locations->size())
+            return std::unexpected(Error{ErrorCode::invalid_definition, "Compiled debug site has no source location."});
+        sites.push_back((*version->debug->locations)[index]);
+    }
+    return sites;
+}
 
 Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectId receiver,
     std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget) {
@@ -441,78 +570,104 @@ BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept 
     return lease.version_ ? lease.version_->layout : BusinessFrameLayout{};
 }
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget) const {
+    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    return version->invoke_values(receiver, arguments, budget);
+        return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
+    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
 }
 Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    CollectionBudget budget) const {
+    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    return version->invoke_values(receiver, arguments, budget);
+        return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
+    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
 }
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget) const {
+    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
-    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    return version->invoke_values(receiver, arguments, budget);
+    if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
+    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
 }
 Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    CollectionBudget budget) const {
+    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
-    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    return version->invoke_values(receiver, arguments, budget);
+    if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
+    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
 }
 Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    ValueOutput output, CollectionBudget budget) const {
+    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    return version->invoke_values(receiver, arguments, output, budget);
+        return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
+    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
 }
 Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    ValueOutput output, CollectionBudget budget) const {
+    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    return version->invoke_values(receiver, arguments, output, budget);
+        return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
+    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
 }
 Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    ValueOutput output, CollectionBudget budget) const {
+    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
-    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    return version->invoke_values(receiver, arguments, output, budget);
+    if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
+    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
 }
 Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    ValueOutput output, CollectionBudget budget) const {
+    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
-    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    return version->invoke_values(receiver, arguments, output, budget);
+    if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
+    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
 }
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget) const {
+    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
-    if (!encoded.status) return std::unexpected(encoded.status.error());
-    return ProgramAccess::start(*this, receiver, encoded.values, {}, budget);
+        return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
+    auto capture = DiagnosticAccess::begin(diagnostics, version->diagnostic,
+        *version->contract->binding.runtime, version->info.diagnostics);
+    if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
+    DiagnosticScope scope(std::move(*capture), *version->contract->binding.runtime);
+    auto session = DebugAccess::begin(debugger, version->debug, version->info.debugging);
+    if (!session) return scope.complete(Result<Coroutine>{std::unexpected(std::move(session.error()))});
+    DebugScope debug_scope(std::move(*session));
+    auto result = [&]() -> Result<Coroutine> {
+        const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
+        if (!encoded.status) return std::unexpected(encoded.status.error());
+        return ProgramAccess::start_version(version, receiver, encoded.values, {}, budget, scope.state(), debug_scope.state());
+    }();
+    if (!result) return scope.complete(debug_scope.complete(std::move(result)));
+    scope.transfer(DiagnosticStatus::ready);
+    debug_scope.transfer(DebugStatus::ready);
+    return result;
 }
 Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget) const {
+    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
-    if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
-    if (!encoded.status) return std::unexpected(encoded.status.error());
-    return ProgramAccess::start(*this, receiver, encoded.values, {}, budget);
+    if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
+    auto capture = DiagnosticAccess::begin(diagnostics, version->diagnostic,
+        *version->contract->binding.runtime, version->info.diagnostics);
+    if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
+    DiagnosticScope scope(std::move(*capture), *version->contract->binding.runtime);
+    auto session = DebugAccess::begin(debugger, version->debug, version->info.debugging);
+    if (!session) return scope.complete(Result<Coroutine>{std::unexpected(std::move(session.error()))});
+    DebugScope debug_scope(std::move(*session));
+    auto result = [&]() -> Result<Coroutine> {
+        const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
+        if (!encoded.status) return std::unexpected(encoded.status.error());
+        return ProgramAccess::start_version(version, receiver, encoded.values, {}, budget, scope.state(), debug_scope.state());
+    }();
+    if (!result) return scope.complete(debug_scope.complete(std::move(result)));
+    scope.transfer(DiagnosticStatus::ready);
+    debug_scope.transfer(DebugStatus::ready);
+    return result;
 }
 Program::Program(Runtime& runtime, TypeId type)
     : state_(std::make_shared<State>(std::make_shared<const Contract>(runtime, type))) {}
@@ -541,7 +696,7 @@ Result<Program::Lease> Program::pin() const {
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no version to pin."});
     return Lease{state_->current};
 }
-Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name) {
+Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name, CompileOptions options) {
     if (!state_->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     if (state_->module) return std::unexpected(Error{ErrorCode::invalid_definition, "A project program requires a complete source snapshot."});
     if (state_->latest_request == std::numeric_limits<std::uint64_t>::max())
@@ -551,7 +706,8 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
     if (entry_name.empty() && state_->declaration) entry_name = state_->declaration->name;
     const auto sequence = state_->latest_request + 1;
     auto result = std::shared_ptr<SourceRequest>{new SourceRequest(state_, state_->contract, state_->declaration, sequence,
-        std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source), std::string(entry_name))};
+        std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source), std::string(entry_name), options)};
+    result->source_path_ = name;
     state_->latest_request = sequence;
     const auto report = [&](std::string message, language::SourcePosition position = {}) {
         result->declaration_error_ = Error{ErrorCode::invalid_definition, result->source_name + ":" +
@@ -594,7 +750,7 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     const EnvironmentView storage(contract.binding);
     const auto environment = storage.view(contract.type_name.c_str());
     const auto status = compile(&contract.actual_services, request->source_name.c_str(), request->source.data(),
-        static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic), request->entry_name.c_str());
+        static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic), request->entry_name.c_str(), request->options);
     CodeOwner code{output, &atelier_destroy_business};
     if (status != 0) return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});
     const auto info = atelier_business_info(code.get());
@@ -603,8 +759,11 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     auto compatible = contract.compatible(code.get(), request->source_name, request->declaration_.get());
     if (!compatible)
         return std::unexpected(Error{compatible.error().code, request->source_name + ": " + compatible.error().message});
+    auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,
+        info.function_name, request->source_path_, diagnostic_locations(info, request->source_path_, request->sequence)});
+    auto debug = make_debug_metadata(*metadata, info);
     return Program::Candidate{std::make_unique<Program::Prepared>(request->owner_, request->contract_, request->compilation_contract_, request->type_publication_, request->sequence,
-        std::move(code), request->source_name)};
+        std::move(code), request->source_name, nullptr, std::move(metadata), std::move(debug))};
 }
 Result<void> Program::try_publish(Candidate& candidate) {
     const auto owner = state_;
@@ -634,7 +793,7 @@ Result<void> Program::try_publish(Candidate& candidate) {
         declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
     }
     // Allocation precedes the noexcept constructor's transfer of candidate code.
-    auto version = std::make_shared<const Version>(prepared.compilation_contract, declaration, prepared.sequence, std::move(prepared.code));
+    auto version = std::make_shared<const Version>(prepared.compilation_contract, declaration, prepared.sequence, prepared.diagnostic, prepared.debug, std::move(prepared.code));
     if (prepared.type_publication) prepared.type_publication->commit(*owner->contract->binding.runtime);
     owner->contract = prepared.compilation_contract;
     owner->declaration = std::move(declaration);

@@ -1,6 +1,7 @@
 #include "jit/source_backend.hpp"
 #include "jit/windows_unwind.hpp"
 #include "jit/math_lowering.hpp"
+#include "jit/diagnostic_artifact.hpp"
 #include "language/source.hpp"
 #include "runtime/value_storage.hpp"
 
@@ -10,6 +11,7 @@
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ObjectTransformLayer.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
@@ -27,6 +29,7 @@
 #include <limits>
 #include <cstdio>
 #include <memory>
+#include <map>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -36,40 +39,37 @@
 
 namespace atelier::source::detail {
 namespace {
-enum class EntryFailure : std::uint32_t {
-    none, invalid_call_result, sequence_bounds, sequence_layout, sequence_size,
-    integer_division, integer_shift, integer_conversion
-};
-
-const char* failure_message(EntryFailure reason) noexcept {
-    switch (reason) {
-    case EntryFailure::none: return nullptr;
-    case EntryFailure::invalid_call_result:
-        return "Native call result contract violation: successful callback omitted the result or returned an invalid value.";
-    case EntryFailure::sequence_bounds: return "Borrowed Array/String index is out of range.";
-    case EntryFailure::sequence_layout: return "Borrowed sequence has invalid storage, alignment or size beyond uint range.";
-    case EntryFailure::sequence_size: return "Sequence size cannot be negative.";
-    case EntryFailure::integer_division: return "Integer division or remainder requires a nonzero divisor and a representable quotient.";
-    case EntryFailure::integer_shift: return "Integer shift count must be in the range 0 through 31.";
-    case EntryFailure::integer_conversion: return "Integer conversion requires a finite value representable after truncation toward zero.";
-    }
-    return "Unknown source execution failure.";
-}
 // Keep generated failure reasons separate from opaque host service status codes.
 // This entry is private to the DLL; the exported invocation ABI stays unchanged.
 using Entry = std::uint32_t (*)(void*, const BusinessValue*, void*, EntryFailure*) noexcept;
 using CoroutineEntry = void* (*)(void*, const BusinessValue*, void*, EntryFailure*,
     std::uint32_t*, std::uint32_t*) noexcept;
+using DiagnosticEntry = std::uint32_t (*)(void*, const BusinessValue*, void*, EntryFailure*, BusinessTrace*) noexcept;
+using DiagnosticCoroutineEntry = void* (*)(void*, const BusinessValue*, void*, EntryFailure*,
+    std::uint32_t*, std::uint32_t*, BusinessTrace*) noexcept;
 using CoroutineAction = void (*)(void*) noexcept;
 using llvm::orc::LLJIT;
 using llvm::orc::ExecutorAddr;
 
+struct DiagnosticCatalog {
+    std::vector<std::string> functions;
+    std::vector<BusinessLocation> locations;
+    std::vector<std::vector<std::string>> variable_names;
+    std::vector<std::vector<BusinessDebugVariable>> variables;
+    std::vector<BusinessDebugFunction> debug_functions;
+    std::vector<std::uint32_t> debug_sites;
+};
+struct Artifacts {
+    std::string target_triple, cpu_features, original_ir, optimized_ir, assembly;
+    std::vector<std::byte> object_code;
+};
 struct CompiledBusiness {
     std::shared_ptr<std::string> diagnostic{std::make_shared<std::string>()};
     std::string object_type_name;
     std::string function_name;
     std::string source_name;
     BusinessServices services{};
+    CompileOptions options;
     std::vector<BusinessParameter> parameters;
     std::vector<std::string> field_names;
     std::vector<BusinessFieldBinding> fields;
@@ -91,6 +91,11 @@ struct CompiledBusiness {
     std::shared_ptr<LLJIT> jit;
     Entry entry{};
     CoroutineEntry coroutine_entry{};
+    DiagnosticEntry diagnostic_entry{};
+    DiagnosticCoroutineEntry diagnostic_coroutine_entry{};
+    std::shared_ptr<DiagnosticCatalog> diagnostics;
+    std::shared_ptr<Artifacts> artifacts;
+    std::string entry_symbol;
     CoroutineAction resume{}, destroy{};
 };
 
@@ -168,12 +173,16 @@ T take(llvm::Expected<T> value) {
 class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
-        std::uint32_t function, const std::vector<llvm::Function*>& functions, std::uint32_t strong_base, std::uint32_t weak_base)
+        std::uint32_t function, const std::vector<llvm::Function*>& functions, std::uint32_t strong_base, std::uint32_t weak_base,
+        DiagnosticCatalog* catalog, CompileOptions options)
         : function_(source.functions[function]), source_(source), functions_(functions), context_(&context), module_(&module), ir_(context),
           entry_(functions[function]), local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot),
           strong_slots_(strong_base), weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
-          public_entry_(source.exported(function)), protected_values_(function_.uses_scoped_values) {
+          public_entry_(source.exported(function)), protected_values_(function_.uses_scoped_values),
+          diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
+          debugging_(options.debugging && (source.exports.empty() || !public_entry_)),
+          function_index_(function), position_(function_.position) {
         for (std::size_t index = 0; index < function_.locals.size(); ++index) {
             const auto type = function_.locals[index].type;
             if (is_reference(type)) local_slots_[index] = allocate_reference(type);
@@ -223,6 +232,13 @@ public:
         assign_value_ = declare("business_assign_value", i32, {ptr, i32, ptr, ptr});
         destroy_value_ = declare("business_destroy_value", ir_.getVoidTy(), {ptr, i32, ptr});
         mutate_sequence_ = declare("business_mutate_sequence", i32, {ptr, i32, i32, ptr, ptr, ir_.getInt64Ty()});
+        if (debugging_) {
+            debug_enter_ = declare("business_debug_enter", i32, {ptr, ptr});
+            debug_point_ = declare("business_debug_point", i32, {ptr, ptr, i32, i32, i32});
+            debug_leave_ = declare("business_debug_leave", ir_.getVoidTy(), {ptr, ptr});
+            debug_local_type_ = llvm::StructType::get(*context_, {ptr, i32, i32});
+            debug_frame_type_ = llvm::StructType::get(*context_, {ptr, ptr, ir_.getInt64Ty(), i32, i32});
+        }
         invocation_ = entry_->getArg(0);
         result_output_ = entry_->getArg(public_entry_ ? 2 : 1);
         failure_output_ = entry_->getArg(public_entry_ ? 3 : 2);
@@ -231,6 +247,10 @@ public:
         // O2 folds it when the helper is inlined into a known entry.
         if (public_entry_ || protected_values_) borrow_active_ = ir_.getInt1(protected_values_);
         else borrow_active_ = entry_->getArg(3);
+        if (diagnostics_) {
+            trace_ = entry_->getArg(public_entry_ && function_.is_coroutine ? 6 : 4);
+            trace_->setName("diagnostic.trace");
+        }
     }
 
     BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr, max_call_arguments_}; }
@@ -242,8 +262,10 @@ public:
         ir_.SetInsertPoint(failure_);
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
         failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
+        if (catalog_) failure_location_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.location");
         ir_.SetInsertPoint(start);
         if (function_.is_coroutine) setup_coroutine();
+        else prepare_debug_storage();
         float_result_ = ir_.CreateAlloca(ir_.getFloatTy());
         double_result_ = ir_.CreateAlloca(ir_.getDoubleTy());
         double_result_->setAlignment(llvm::Align(8));
@@ -315,32 +337,37 @@ public:
                 }
             }
         }
+        open_debug_frame();
         for (std::size_t index = 0; index < function_.parameters.size(); ++index) {
             if (!public_entry_) {
-                auto* argument = entry_->getArg(static_cast<unsigned>(index + 4));
+                auto* argument = entry_->getArg(static_cast<unsigned>(index + 4 + (diagnostics_ ? 1 : 0)));
                 // Internal record arguments already own a caller-created
                 // snapshot. It cannot escape this synchronous call chain.
                 if (function_.parameters[index].passing == ParameterPassing::value && !managed_value(function_.parameters[index].type))
                     store_value(argument, locals_[index], function_.parameters[index].type);
                 else locals_[index] = argument;
+                debug_local(index, DebugAvailability::available);
                 continue;
             }
             auto* argument = ir_.CreateInBoundsGEP(abi_value_type_, entry_->getArg(1),
                 ir_.getInt32(static_cast<std::uint32_t>(index)));
             if (function_.parameters[index].passing != ParameterPassing::value) {
                 locals_[index] = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4));
+                debug_local(index, DebugAvailability::available);
                 continue;
             }
             const auto type = function_.parameters[index].type;
             if (managed_value(type)) {
                 construct_owned(owned_local_slots_[index],
                     ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4)));
+                debug_local(index, DebugAvailability::available);
                 continue;
             }
             auto* value = math_type(type) ? load_value(ir_.CreateLoad(ir_.getPtrTy(),
                 ir_.CreateStructGEP(abi_value_type_, argument, 4)), type) :
                 decode_bits(ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, argument, 2)), type);
             store_value(value, locals_.at(index), type);
+            debug_local(index, DebugAvailability::available);
         }
         if (public_entry_ && !protected_values_) checked_call(begin_, {invocation_});
         parameter_views_.resize(function_.parameters.size());
@@ -350,6 +377,7 @@ public:
                 parameter_views_[i] = sequence_view(locals_[i], type);
         }
         safe_point();
+        debug_stop(DebugPoint::entry);
         statement(function_.body);
         if (!terminated()) {
             if (function_.result == language::ValueType::void_value) ir_.CreateBr(finish_);
@@ -361,15 +389,153 @@ public:
         clear_user_values();
         if (public_entry_ && !protected_values_) checked_call(finish_call_, {invocation_});
         if (public_entry_) clear_slot(receiver_slot);
+        close_debug_frame();
         complete(ir_.getInt32(0));
         ir_.SetInsertPoint(failure_);
+        trace_failure();
+        debug_failure();
         clear_execution_resources();
+        close_debug_frame();
         ir_.CreateStore(failure_reason_, failure_output_);
         complete(failure_status_);
         if (function_.is_coroutine) finish_coroutine();
 
     }
 private:
+    void prepare_debug_storage() {
+        if (!debugging_) return;
+        // Async calls initialize this after coro.begin and before the initial
+        // suspend, so LLVM can place both tables and their interior pointers in
+        // the coroutine frame, including the ready-cancellation path.
+        debug_frame_ = ir_.CreateAlloca(debug_frame_type_, nullptr, "debug.frame");
+        debug_frame_->setAlignment(llvm::Align(8));
+        ir_.CreateStore(llvm::Constant::getNullValue(debug_frame_type_), debug_frame_);
+        auto* table_type = llvm::ArrayType::get(debug_local_type_, std::max<std::size_t>(1, function_.locals.size()));
+        debug_locals_ = ir_.CreateAlloca(table_type, nullptr, "debug.locals");
+        debug_locals_->setAlignment(llvm::Align(8));
+        ir_.CreateStore(llvm::Constant::getNullValue(table_type), debug_locals_);
+        ir_.CreateStore(debug_locals_, ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 1));
+        ir_.CreateStore(ir_.getInt32(function_index_), ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 3));
+        ir_.CreateStore(ir_.getInt32(location()), ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 4));
+    }
+    void debug_local(std::size_t index, DebugAvailability availability) {
+        if (!debugging_) return;
+        auto* value = ir_.CreateInBoundsGEP(debug_local_type_, debug_locals_, ir_.getInt32(static_cast<std::uint32_t>(index)));
+        if (availability == DebugAvailability::available && locals_[index])
+            ir_.CreateStore(locals_[index], ir_.CreateStructGEP(debug_local_type_, value, 0));
+        ir_.CreateStore(ir_.getInt32(local_slots_[index]), ir_.CreateStructGEP(debug_local_type_, value, 1));
+        ir_.CreateStore(ir_.getInt32(static_cast<std::uint32_t>(availability)), ir_.CreateStructGEP(debug_local_type_, value, 2));
+    }
+    void open_debug_frame() {
+        if (!debugging_) return;
+        for (std::size_t i = 0; i < function_.locals.size(); ++i)
+            debug_local(i, i < function_.parameters.size() ? DebugAvailability::uninitialized : DebugAvailability::out_of_scope);
+        checked_call(debug_enter_, {invocation_, debug_frame_});
+    }
+    void debug_location() {
+        if (debugging_) ir_.CreateStore(ir_.getInt32(location()), ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 4));
+    }
+    void debug_stop(DebugPoint kind) {
+        if (!debugging_) return;
+        const auto site = location();
+        if (kind == DebugPoint::statement || kind == DebugPoint::entry) catalog_->debug_sites.push_back(site);
+        checked_call(debug_point_, {invocation_, debug_frame_, ir_.getInt32(site),
+            ir_.getInt32(static_cast<std::uint32_t>(kind)), ir_.getInt32(0)});
+    }
+    void debug_failure() {
+        if (!debugging_) return;
+        trace_event(DiagnosticCall::debug_hook);
+        // An error stop cannot recover the failed operation. Its command is
+        // observed by the host, then the original failure continues to cleanup.
+        ir_.CreateCall(debug_point_, {invocation_, debug_frame_, failure_location_,
+            ir_.getInt32(static_cast<std::uint32_t>(DebugPoint::error)), failure_reason_});
+    }
+    void close_debug_frame() {
+        if (!debugging_) return;
+        trace_event(DiagnosticCall::debug_hook);
+        ir_.CreateCall(debug_leave_, {invocation_, debug_frame_});
+    }
+    // Positions follow the typed expression/statement recursion. Nested operand
+    // lowering cannot leave its location on a parent's callback or failure edge.
+    struct PositionScope {
+        language::SourcePosition& current;
+        language::SourcePosition saved;
+        PositionScope(language::SourcePosition& target, language::SourcePosition next)
+            : current(target), saved(std::exchange(target, next)) {}
+        ~PositionScope() { current = saved; }
+    };
+    std::uint32_t location() {
+        if (!catalog_) return no_diagnostic_location;
+        if (const auto found = location_ids_.find(position_.offset); found != location_ids_.end()) return found->second;
+        if (catalog_->locations.size() >= no_diagnostic_location)
+            throw std::runtime_error("Source diagnostic location table exceeds its index range.");
+        const auto id = static_cast<std::uint32_t>(catalog_->locations.size());
+        catalog_->locations.push_back({catalog_->functions[function_index_].c_str(),
+            position_.offset, position_.line, position_.column});
+        location_ids_.emplace(position_.offset, id);
+        return id;
+    }
+    llvm::Value* trace_address(std::size_t offset) {
+        return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), trace_, ir_.getInt64(offset));
+    }
+    template<class F> void record(F&& write) {
+        if (!diagnostics_) return;
+        auto* capture = block("diagnostic.record");
+        auto* next = block("diagnostic.continue");
+        ir_.CreateCondBr(ir_.CreateIsNotNull(trace_), capture, next);
+        ir_.SetInsertPoint(capture);
+        write();
+        ir_.CreateBr(next);
+        ir_.SetInsertPoint(next);
+    }
+    void trace_position(std::size_t member = offsetof(BusinessTrace, current_location)) {
+        if (!diagnostics_) return;
+        const auto id = location();
+        record([&] { ir_.CreateStore(ir_.getInt32(id), trace_address(member)); });
+    }
+    void trace_event(DiagnosticCall kind) {
+        if (!diagnostics_) return;
+        const auto id = location();
+        record([&] {
+            auto* counter = trace_address(offsetof(BusinessTrace, calls) +
+                offsetof(DiagnosticCounters, values) + static_cast<std::size_t>(kind) * sizeof(std::uint64_t));
+            auto* value = ir_.CreateLoad(ir_.getInt64Ty(), counter);
+            auto* increment = ir_.CreateSelect(ir_.CreateICmpEQ(value, ir_.getInt64(UINT64_MAX)),
+                value, ir_.CreateAdd(value, ir_.getInt64(1)));
+            ir_.CreateStore(increment, counter);
+            ir_.CreateStore(ir_.getInt32(id), trace_address(offsetof(BusinessTrace, current_location)));
+        });
+    }
+    void failure_edge(llvm::Value* status, llvm::Value* reason) {
+        failure_status_->addIncoming(status, ir_.GetInsertBlock());
+        failure_reason_->addIncoming(reason, ir_.GetInsertBlock());
+        if (catalog_) failure_location_->addIncoming(ir_.getInt32(location()), ir_.GetInsertBlock());
+    }
+    void trace_failure() {
+        record([&] {
+            auto* address = trace_address(offsetof(BusinessTrace, failure_location));
+            auto* previous = ir_.CreateLoad(ir_.getInt32Ty(), address);
+            ir_.CreateStore(ir_.CreateSelect(ir_.CreateICmpEQ(previous, ir_.getInt32(no_diagnostic_location)),
+                failure_location_, previous), address);
+        });
+    }
+    DiagnosticCall service_kind(llvm::FunctionCallee function) {
+        const auto name = llvm::cast<llvm::Function>(function.getCallee())->getName();
+        if (name.starts_with("business_read_")) return DiagnosticCall::field_read;
+        if (name.starts_with("business_write_")) return DiagnosticCall::field_write;
+        if (name.starts_with("business_debug_")) return DiagnosticCall::debug_hook;
+        if (function.getCallee() == begin_.getCallee()) return DiagnosticCall::begin;
+        if (function.getCallee() == finish_call_.getCallee()) return DiagnosticCall::finish;
+        if (function.getCallee() == call_.getCallee()) return DiagnosticCall::native_call;
+        if (function.getCallee() == poll_.getCallee()) return DiagnosticCall::poll;
+        if (function.getCallee() == create_.getCallee()) return DiagnosticCall::object_create;
+        if (function.getCallee() == reference_.getCallee()) return DiagnosticCall::reference;
+        if (function.getCallee() == same_reference_.getCallee()) return DiagnosticCall::reference_compare;
+        if (function.getCallee() == construct_value_.getCallee()) return DiagnosticCall::value_construct;
+        if (function.getCallee() == assign_value_.getCallee()) return DiagnosticCall::value_assign;
+        if (function.getCallee() == mutate_sequence_.getCallee()) return DiagnosticCall::sequence_mutation;
+        throw std::logic_error("Unclassified source service call.");
+    }
     static bool floating_type(language::ValueType type) noexcept {
         return type == language::ValueType::f32 || type == language::ValueType::f64;
     }
@@ -442,6 +608,7 @@ private:
         coroutine_alignment_ = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_align, {ir_.getInt32Ty()}));
         auto allocate = module_->getOrInsertFunction("business_coroutine_allocate",
             llvm::FunctionType::get(ir_.getPtrTy(), {ir_.getInt64Ty(), ir_.getInt32Ty()}, false));
+        trace_event(DiagnosticCall::coroutine_allocate);
         auto* memory = ir_.CreateCall(allocate, {size, coroutine_alignment_});
         auto* allocated = block("coroutine.allocated");
         auto* exhausted = block("coroutine.allocation_failed");
@@ -450,6 +617,7 @@ private:
         ir_.CreateRet(null);
         ir_.SetInsertPoint(allocated);
         coroutine_handle_ = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_begin), {coroutine_id_, memory});
+        prepare_debug_storage();
         suspend(false); // Creation owns a frame; the first resume enters the body.
     }
     void finish_coroutine() {
@@ -457,11 +625,13 @@ private:
         suspend(true);
         ir_.SetInsertPoint(coroutine_cancel_);
         clear_execution_resources();
+        close_debug_frame();
         ir_.CreateBr(coroutine_free_);
         ir_.SetInsertPoint(coroutine_free_);
         auto* memory = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_free), {coroutine_id_, coroutine_handle_});
         auto release = module_->getOrInsertFunction("business_coroutine_free",
             llvm::FunctionType::get(ir_.getVoidTy(), {ir_.getPtrTy(), ir_.getInt32Ty()}, false));
+        trace_event(DiagnosticCall::coroutine_free);
         ir_.CreateCall(release, {memory, coroutine_alignment_});
         ir_.CreateBr(coroutine_return_);
         ir_.SetInsertPoint(coroutine_return_);
@@ -521,14 +691,15 @@ private:
     llvm::BasicBlock* block(const char* name) { return llvm::BasicBlock::Create(*context_, name, entry_); }
     bool terminated() const { return ir_.GetInsertBlock()->getTerminatorOrNull() != nullptr; }
     void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments) {
+        if (diagnostics_) trace_event(service_kind(function));
         auto* status = ir_.CreateCall(function, arguments);
-        failure_status_->addIncoming(status, ir_.GetInsertBlock());
-        failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none)), ir_.GetInsertBlock());
+        failure_edge(status, ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none)));
         auto* next = block("service.ok");
         ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failure_);
         ir_.SetInsertPoint(next);
     }
     void clear_slot(std::uint32_t slot) {
+        trace_event(DiagnosticCall::root_clear);
         ir_.CreateCall(clear_, {invocation_, ir_.getInt32(slot)});
     }
     struct OwnedValue { language::ValueType type; llvm::Value* storage; llvm::AllocaInst* live; };
@@ -563,6 +734,7 @@ private:
         ir_.CreateCondBr(ir_.CreateLoad(ir_.getInt1Ty(), value.live), destroy, next);
         ir_.SetInsertPoint(destroy);
         ir_.CreateStore(ir_.getFalse(), value.live);
+        trace_event(DiagnosticCall::value_destroy);
         ir_.CreateCall(destroy_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage});
         ir_.CreateBr(next);
         ir_.SetInsertPoint(next);
@@ -601,6 +773,8 @@ private:
         for (auto slot = owned_.size(); slot != 0;) destroy_owned(--slot);
         for (auto slot = weak_slots_; slot > first_weak_slot_;) clear_slot(observation_slot_bit | --slot);
         for (auto slot = strong_slots_; slot > first_strong_slot_;) clear_slot(--slot);
+        if (debugging_) for (std::size_t i = 0; i < function_.locals.size(); ++i)
+            debug_local(i, DebugAvailability::out_of_scope);
     }
     void clear_execution_resources() {
         clear_user_values();
@@ -668,8 +842,7 @@ private:
         ir_.SetInsertPoint(next);
     }
     void check_value(llvm::Value* valid, EntryFailure reason) {
-        failure_status_->addIncoming(ir_.getInt32(1), ir_.GetInsertBlock());
-        failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(reason)), ir_.GetInsertBlock());
+        failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(reason)));
         auto* next = block("borrow.valid");
         ir_.CreateCondBr(valid, next, failure_);
         ir_.SetInsertPoint(next);
@@ -684,6 +857,7 @@ private:
         auto* size = entry_ir.CreateAlloca(ir_.getInt64Ty(), nullptr, "sequence.size");
         auto* function_type = llvm::FunctionType::get(ir_.getVoidTy(), {ir_.getPtrTy(), ir_.getPtrTy(), ir_.getPtrTy()}, false);
         auto* address = llvm::ConstantExpr::getIntToPtr(ir_.getInt64(reinterpret_cast<std::uintptr_t>(layout.sequence_view)), ir_.getPtrTy());
+        trace_event(DiagnosticCall::sequence_view);
         auto* call = ir_.CreateCall(function_type, address, {value, data, size});
         call->setDoesNotThrow();
         Sequence result{ir_.CreateLoad(ir_.getPtrTy(), data), ir_.CreateLoad(ir_.getInt64Ty(), size)};
@@ -713,6 +887,7 @@ private:
     }
     llvm::Value* value_address(language::NodeId id) {
         const auto& node = function_.expressions[id];
+        PositionScope position(position_, node.position);
         if (node.kind == language::Expression::Kind::local) return locals_.at(node.value);
         if (node.kind == language::Expression::Kind::string_literal) return expression(id);
         if (node.kind == language::Expression::Kind::value_field)
@@ -734,6 +909,7 @@ private:
     }
     llvm::Value* expression(language::NodeId index) {
         const auto& node = function_.expressions[index];
+        PositionScope position(position_, node.position);
         using Kind = language::Expression::Kind;
         switch (node.kind) {
         case Kind::scalar_cast: {
@@ -834,6 +1010,7 @@ private:
         case Kind::field: return read_field(expression(node.receiver), node.type, node.value);
         case Kind::source_call: {
             llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_, borrow_active_};
+            if (diagnostics_) arguments.push_back(trace_);
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto id = node.arguments[i];
                 const auto& argument = function_.expressions[id];
@@ -854,12 +1031,15 @@ private:
             if (managed_value(node.type)) result_storage = source_value_results_.at(index);
             arguments[1] = result_storage;
             ir_.CreateStore(ir_.getInt32(0), source_failure_);
+            debug_location();
+            trace_event(DiagnosticCall::source_call);
             auto* status = ir_.CreateCall(functions_.at(node.value), arguments);
-            failure_status_->addIncoming(status, ir_.GetInsertBlock());
-            failure_reason_->addIncoming(ir_.CreateLoad(ir_.getInt32Ty(), source_failure_), ir_.GetInsertBlock());
+            failure_edge(status, ir_.CreateLoad(ir_.getInt32Ty(), source_failure_));
             auto* next = block("function.ok");
             ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failure_);
             ir_.SetInsertPoint(next);
+            trace_position();
+            debug_stop(DebugPoint::call_return);
             safe_point();
             if (node.type == language::ValueType::void_value) return nullptr;
             if (managed_value(node.type)) return result_storage;
@@ -932,9 +1112,7 @@ private:
             if (node.type == language::ValueType::void_value) return nullptr;
             auto* kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 0));
             auto* next = block("result.ok");
-            failure_status_->addIncoming(ir_.getInt32(1), ir_.GetInsertBlock());
-            failure_reason_->addIncoming(ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)),
-                ir_.GetInsertBlock());
+            failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)));
             const auto expected = business_type(node.type);
             auto* type_index = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 1));
             auto* storage_kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 3));
@@ -1037,14 +1215,18 @@ private:
         for (auto local = scope.locals.rbegin(); local != scope.locals.rend(); ++local) {
             if (is_reference(function_.locals[*local].type)) clear_slot(local_slots_[*local]);
             else if (owned_local_slots_[*local] != language::no_node) destroy_owned(owned_local_slots_[*local]);
+            debug_local(*local, DebugAvailability::out_of_scope);
         }
     }
     void statement(language::NodeId index) {
         const auto& node = function_.statements[index];
+        PositionScope position(position_, node.position);
         using Kind = language::Statement::Kind;
+        if (node.kind != Kind::block && node.kind != Kind::loop) debug_stop(DebugPoint::statement);
         switch (node.kind) {
         case Kind::block:
             scopes_.push_back(index);
+            for (const auto local : node.locals) debug_local(local, DebugAvailability::uninitialized);
             for (const auto child : node.children) {
                 if (terminated()) break;
                 statement(child);
@@ -1060,6 +1242,7 @@ private:
                     write_text(owned_[slot].type, owned_[slot].storage, function_.expressions[text].value, SequenceMutation::assign_text);
                 } else construct_owned(slot, node.expression == language::no_node ? nullptr : expression(node.expression));
                 clear_temporaries();
+                debug_local(node.target, DebugAvailability::available);
                 return;
             }
             const auto type = function_.locals[node.target].type;
@@ -1067,6 +1250,7 @@ private:
             if (is_reference(type)) copy_reference(local_slots_[node.target], value);
             else store_value(value, locals_[node.target], type);
             clear_temporaries();
+            debug_local(node.target, DebugAvailability::available);
             return;
         }
         case Kind::assign: {
@@ -1098,6 +1282,7 @@ private:
             clear_temporaries();
             return;
         case Kind::yield:
+            trace_position(offsetof(BusinessTrace, suspended_location));
             suspend(false);
             safe_point();
             return;
@@ -1139,6 +1324,7 @@ private:
             auto* end = block("loop.end");
             ir_.CreateBr(condition);
             ir_.SetInsertPoint(condition);
+            debug_stop(DebugPoint::statement);
             auto* value = expression(node.expression);
             clear_temporaries();
             ir_.CreateCondBr(value, body, end);
@@ -1207,6 +1393,13 @@ private:
     std::uint32_t weak_slots_{};
     const std::uint32_t first_strong_slot_, first_weak_slot_;
     const bool public_entry_, protected_values_;
+    DiagnosticCatalog *diagnostics_{}, *catalog_{};
+    bool debugging_{};
+    std::uint32_t function_index_{};
+    language::SourcePosition position_;
+    std::map<std::size_t, std::uint32_t> location_ids_;
+    llvm::Value* trace_{};
+    llvm::PHINode* failure_location_{};
     llvm::Value* borrow_active_{};
     std::uint32_t max_call_arguments_{};
     bool has_call_result_{}, has_source_calls_{};
@@ -1214,10 +1407,13 @@ private:
     llvm::FunctionCallee read_bool_, write_bool_;
     llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
     llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
+    llvm::FunctionCallee debug_enter_, debug_point_, debug_leave_;
+    llvm::StructType *debug_frame_type_{}, *debug_local_type_{};
+    llvm::AllocaInst *debug_frame_{}, *debug_locals_{};
 };
 
 llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Program& program,
-    BusinessFrameLayout& layout) {
+    BusinessFrameLayout& layout, DiagnosticCatalog* catalog, CompileOptions options, Artifacts* artifacts) {
     auto context = std::make_unique<llvm::LLVMContext>();
     auto module = std::make_unique<llvm::Module>(program.source_name, *context);
     module->setSourceFileName(diagnostic_source_name(program.source_name));
@@ -1231,10 +1427,14 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         const bool entry = program.exported(static_cast<std::uint32_t>(i));
         const bool coroutine = program.functions[i].is_coroutine;
         llvm::SmallVector<llvm::Type*, 8> parameters;
-        if (entry) parameters.assign(coroutine ? 6 : 4, ptr);
+        if (entry) {
+            parameters.assign(coroutine ? 6 : 4, ptr);
+            if (options.diagnostics) parameters.push_back(ptr);
+        }
         else {
             parameters.assign(3, ptr); // invocation, scalar result bits, failure reason
             parameters.push_back(llvm::Type::getInt1Ty(*context)); // caller's active borrow scope
+            if (options.diagnostics) parameters.push_back(ptr);
             for (const auto& parameter : program.functions[i].parameters) {
                 if (parameter.passing != ParameterPassing::value) parameters.push_back(ptr);
                 else if (parameter.type.kind == language::ValueType::record) {
@@ -1251,7 +1451,7 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         auto* function = llvm::Function::Create(type, entry ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage,
             entry ? (program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(i))
                 : "atelier_source_function_" + std::to_string(i), *module);
-        if (entry) function->addFnAttr(llvm::Attribute::NoInline);
+        if (entry || options.debugging) function->addFnAttr(llvm::Attribute::NoInline);
         function->addFnAttr(llvm::Attribute::NoUnwind);
         function->addFnAttr("disable-tail-calls", "true");
         function->setUWTableKind(llvm::UWTableKind::Async);
@@ -1261,16 +1461,25 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
     layout = {business_root_slots, 0, nullptr, 0};
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i]) continue;
-        SourceLowering lowering(*context, *module, program, i, functions, layout.strong_slots, layout.weak_slots);
+        SourceLowering lowering(*context, *module, program, i, functions, layout.strong_slots, layout.weak_slots, catalog, options);
         const auto demand = lowering.layout();
         layout.strong_slots = demand.strong_slots;
         layout.weak_slots = demand.weak_slots;
         layout.max_call_arguments = std::max(layout.max_call_arguments, demand.max_call_arguments);
         lowering.generate();
     }
-    std::string diagnostics;
-    llvm::raw_string_ostream stream(diagnostics);
-    if (llvm::verifyModule(*module, &stream)) throw std::runtime_error(diagnostics);
+    if (catalog) {
+        auto& sites = catalog->debug_sites;
+        std::sort(sites.begin(), sites.end());
+        sites.erase(std::unique(sites.begin(), sites.end()), sites.end());
+    }
+    std::string verification;
+    llvm::raw_string_ostream stream(verification);
+    if (llvm::verifyModule(*module, &stream)) throw std::runtime_error(verification);
+    if (artifacts) {
+        llvm::raw_string_ostream original(artifacts->original_ir);
+        module->print(original, nullptr);
+    }
     {
         llvm::LoopAnalysisManager loops;
         llvm::FunctionAnalysisManager functions;
@@ -1298,14 +1507,18 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         // their NaN/Inf and rounding semantics; no fast-math flags are added.
         pipeline.addPass(passes.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2));
         pipeline.run(*module, modules);
-        diagnostics.clear();
-        if (llvm::verifyModule(*module, &stream)) throw std::runtime_error(diagnostics);
+        verification.clear();
+        if (llvm::verifyModule(*module, &stream)) throw std::runtime_error(verification);
+    }
+    if (artifacts) {
+        llvm::raw_string_ostream optimized(artifacts->optimized_ir);
+        module->print(optimized, nullptr);
     }
     return {std::move(module), std::move(context)};
 }
 
 std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, const language::Program& program,
-    language::Environment environment
+    language::Environment environment, CompileOptions options
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
     , bool omit_poll_for_verification = false
 #endif
@@ -1316,6 +1529,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     state->function_name = entry.function_name;
     state->source_name = program.source_name;
     state->services = services;
+    state->options = options;
     state->object_type_name = program.object_type_name;
     state->parameters.reserve(entry.parameters.size());
     for (const auto parameter : entry.parameters) state->parameters.push_back({business_type(parameter.type), parameter.passing});
@@ -1379,6 +1593,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     state->requires_receiver = entry.requires_receiver;
     if (shared) {
         state->jit = shared->jit; state->layout = shared->layout; state->diagnostic = shared->diagnostic;
+        state->diagnostics = shared->diagnostics; state->artifacts = shared->artifacts;
     } else {
         if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter())
             throw std::runtime_error("LLVM native target initialization failed.");
@@ -1386,6 +1601,40 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
         target.setCodeModel(llvm::CodeModel::Large);
         target.setRelocationModel(llvm::Reloc::PIC_);
+        if (options.diagnostics || options.debugging) {
+            state->diagnostics = std::make_shared<DiagnosticCatalog>();
+            state->diagnostics->functions.reserve(program.functions.size());
+            for (const auto& function : program.functions)
+                state->diagnostics->functions.push_back(function.function_name);
+        }
+        if (options.debugging) {
+            auto& catalog = *state->diagnostics;
+            catalog.variable_names.resize(program.functions.size());
+            catalog.variables.resize(program.functions.size());
+            catalog.debug_functions.resize(program.functions.size());
+            for (std::size_t i = 0; i < program.functions.size(); ++i) {
+                const auto& function = program.functions[i];
+                auto& names = catalog.variable_names[i];
+                auto& variables = catalog.variables[i];
+                names.reserve(function.locals.size());
+                variables.reserve(function.locals.size());
+                for (std::size_t local = 0; local < function.locals.size(); ++local) {
+                    const auto& value = function.locals[local];
+                    names.push_back(value.name);
+                    const auto storage = value.type == language::ValueType::strong_reference ? DebugStorage::strong_reference :
+                        value.type == language::ValueType::weak_reference ? DebugStorage::weak_reference : DebugStorage::value;
+                    variables.push_back({names.back().c_str(), storage == DebugStorage::value ? business_type(value.type) :
+                        BusinessType{ValueKind::void_value}, storage,
+                        local < function.parameters.size() ? function.parameters[local].passing : ParameterPassing::value});
+                }
+                catalog.debug_functions[i] = {variables.data(), static_cast<std::uint32_t>(variables.size())};
+            }
+        }
+        if (options.artifacts) {
+            state->artifacts = std::make_shared<Artifacts>();
+            state->artifacts->target_triple = target.getTargetTriple().str();
+            state->artifacts->cpu_features = target.getFeatures().getString();
+        }
         llvm::orc::LLJITBuilder builder;
         builder.setJITTargetMachineBuilder(std::move(target));
         builder.setObjectLinkingLayerCreator(
@@ -1397,6 +1646,19 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
             });
         builder.setPlatformSetUp(llvm::orc::setUpInactivePlatform);
         state->jit = take(builder.create());
+        if (state->artifacts) state->jit->getObjTransformLayer().setTransform(
+            [artifacts = state->artifacts](std::unique_ptr<llvm::MemoryBuffer> object)
+                -> llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> {
+                try {
+                    const auto bytes = object->getBuffer();
+                    const auto* begin = reinterpret_cast<const std::byte*>(bytes.data());
+                    artifacts->object_code.assign(begin, begin + bytes.size());
+                    artifacts->assembly = disassemble_object(object->getMemBufferRef());
+                    return object;
+                } catch (const std::exception& error) {
+                    return llvm::make_error<llvm::StringError>(error.what(), llvm::inconvertibleErrorCode());
+                }
+            });
         state->jit->getExecutionSession().setErrorReporter([diagnostic = state->diagnostic](llvm::Error error) {
             *diagnostic = llvm::toString(std::move(error));
         });
@@ -1430,25 +1692,34 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         if (services.assign_value) bind("business_assign_value", services.assign_value);
         if (services.destroy_value) bind("business_destroy_value", services.destroy_value);
         if (services.mutate_sequence) bind("business_mutate_sequence", services.mutate_sequence);
+        if (options.debugging) {
+            bind("business_debug_enter", services.debug_enter);
+            bind("business_debug_point", services.debug_point);
+            bind("business_debug_leave", services.debug_leave);
+        }
         if (entry.is_coroutine) {
             bind("business_coroutine_allocate", &allocate_coroutine);
             bind("business_coroutine_free", &free_coroutine);
         }
         check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
-        check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout)));
+        check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout,
+            state->diagnostics.get(), options, state->artifacts.get())));
     }
     state->layout.object_type_name = state->object_type_name.c_str();
-    auto address = state->jit->lookup(program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(program.entry));
+    state->entry_symbol = program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(program.entry);
+    auto address = state->jit->lookup(state->entry_symbol);
     if (!address) {
         auto diagnostic = llvm::toString(address.takeError());
         if (!state->diagnostic->empty()) diagnostic += "\n" + *state->diagnostic;
         throw std::runtime_error(diagnostic_source_name(program.source_name) + ": JIT materialization: " + diagnostic);
     }
     if (entry.is_coroutine) {
-        state->coroutine_entry = address->toPtr<CoroutineEntry>();
+        if (options.diagnostics) state->diagnostic_coroutine_entry = address->toPtr<DiagnosticCoroutineEntry>();
+        else state->coroutine_entry = address->toPtr<CoroutineEntry>();
         state->resume = take(state->jit->lookup("atelier_source_resume")).toPtr<CoroutineAction>();
         state->destroy = take(state->jit->lookup("atelier_source_destroy")).toPtr<CoroutineAction>();
-    } else state->entry = address->toPtr<Entry>();
+    } else if (options.diagnostics) state->diagnostic_entry = address->toPtr<DiagnosticEntry>();
+    else state->entry = address->toPtr<Entry>();
     return state;
 }
 }
@@ -1472,7 +1743,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity, const char* entry_name
+    char* error, std::uint32_t error_capacity, const char* entry_name, atelier::source::CompileOptions options
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
     , bool omit_poll_for_verification = false
 #endif
@@ -1487,6 +1758,8 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             !services->call || !services->poll || !services->finish || !services->clear ||
             !services->reference || !services->same_reference)
             throw std::runtime_error("Invalid business compiler input, callbacks or output storage.");
+        if (options.debugging && (!services->debug_enter || !services->debug_point || !services->debug_leave))
+            throw std::runtime_error("Source debugging requires its frame and stop services.");
         using namespace atelier;
         using namespace atelier::source::detail;
         if (entry_count && !entries) throw std::runtime_error("Missing source export names.");
@@ -1605,7 +1878,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             throw std::runtime_error("Source-owned values require the native value lifecycle services.");
         if (mutates_sequences && !services->mutate_sequence)
             throw std::runtime_error("Source sequence mutation requires its native service.");
-        auto state = atelier::source::detail::compile(*services, *program, source_environment
+        auto state = atelier::source::detail::compile(*services, *program, source_environment, options
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
             , omit_poll_for_verification
 #endif
@@ -1614,7 +1887,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
         codes.push_back(std::make_unique<BusinessCode>(state));
         for (std::uint32_t i = 1; i < entry_count; ++i) {
             program->entry = program->exports[i];
-            auto next = atelier::source::detail::compile(*services, *program, source_environment
+            auto next = atelier::source::detail::compile(*services, *program, source_environment, options
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
                 , false
 #endif
@@ -1636,9 +1909,10 @@ std::uint32_t atelier_compile_business_entries(const atelier::source::detail::Bu
     const char* name, const char* source, std::uint32_t size,
     const atelier::source::detail::BusinessEnvironment* environment, const char* const* entries,
     std::uint32_t count, bool receiver, atelier::source::detail::BusinessCode** output,
-    atelier::source::detail::CompileLocation* location, char* error, std::uint32_t capacity) noexcept {
+    atelier::source::detail::CompileLocation* location, char* error, std::uint32_t capacity,
+    atelier::source::CompileOptions options) noexcept {
     if (location) *location = {};
-    return compile_business_impl(services, name, source, size, environment, output, error, capacity, entries && count ? entries[0] : nullptr
+    return compile_business_impl(services, name, source, size, environment, output, error, capacity, entries && count ? entries[0] : nullptr, options
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
         , false
 #endif
@@ -1649,9 +1923,9 @@ std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessSe
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity, const char* entry_name) noexcept {
+    char* error, std::uint32_t error_capacity, const char* entry_name, atelier::source::CompileOptions options) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment,
-        output, error, error_capacity, entry_name);
+        output, error, error_capacity, entry_name, options);
 }
 
 #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
@@ -1660,9 +1934,9 @@ std::uint32_t atelier_compile_business_without_poll_for_verification(
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity, const char* entry_name) noexcept {
+    char* error, std::uint32_t error_capacity, const char* entry_name, atelier::source::CompileOptions options) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment,
-        output, error, error_capacity, entry_name, true);
+        output, error, error_capacity, entry_name, options, true);
 }
 #endif
 
@@ -1671,10 +1945,29 @@ void atelier_query_business_info(atelier::source::detail::BusinessCode* code,
     if (!output) return;
     if (!code) { *output = {}; return; }
     const auto& state = *code->state;
-    *output = {state.function_name.c_str(), state.source_name.c_str(),
-        state.signature.is_coroutine ? reinterpret_cast<std::uintptr_t>(state.coroutine_entry) :
-            reinterpret_cast<std::uintptr_t>(state.entry), state.services, state.signature, state.environment,
-        state.requires_receiver};
+    const auto address = state.signature.is_coroutine ?
+        (state.options.diagnostics ? reinterpret_cast<std::uintptr_t>(state.diagnostic_coroutine_entry) : reinterpret_cast<std::uintptr_t>(state.coroutine_entry)) :
+        (state.options.diagnostics ? reinterpret_cast<std::uintptr_t>(state.diagnostic_entry) : reinterpret_cast<std::uintptr_t>(state.entry));
+    *output = {state.function_name.c_str(), state.source_name.c_str(), address, state.services, state.signature, state.environment,
+        state.requires_receiver, state.options.diagnostics, state.diagnostics ? state.diagnostics->locations.data() : nullptr,
+        state.diagnostics ? static_cast<std::uint32_t>(state.diagnostics->locations.size()) : 0,
+        state.options.debugging, state.options.debugging ? state.diagnostics->debug_functions.data() : nullptr,
+        state.options.debugging ? static_cast<std::uint32_t>(state.diagnostics->debug_functions.size()) : 0,
+        state.options.debugging ? state.diagnostics->debug_sites.data() : nullptr,
+        state.options.debugging ? static_cast<std::uint32_t>(state.diagnostics->debug_sites.size()) : 0};
+}
+
+bool atelier_query_business_artifacts(atelier::source::detail::BusinessCode* code,
+    atelier::source::detail::BusinessArtifacts* output) noexcept {
+    if (!output) return false;
+    *output = {};
+    if (!code || !code->state->artifacts) return false;
+    const auto& state = *code->state;
+    const auto& artifacts = *state.artifacts;
+    *output = {state.entry_symbol.c_str(), artifacts.target_triple.c_str(), artifacts.cpu_features.c_str(),
+        artifacts.original_ir.data(), artifacts.original_ir.size(), artifacts.optimized_ir.data(), artifacts.optimized_ir.size(),
+        artifacts.assembly.data(), artifacts.assembly.size(), artifacts.object_code.data(), artifacts.object_code.size()};
+    return true;
 }
 
 atelier::source::detail::BusinessFrameLayout atelier_business_layout(
@@ -1684,7 +1977,8 @@ atelier::source::detail::BusinessFrameLayout atelier_business_layout(
 
 std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* code, void* invocation,
     const atelier::source::detail::BusinessValue* arguments, std::uint32_t argument_count,
-    atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity) noexcept {
+    atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity,
+    atelier::source::detail::BusinessTrace* trace) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     if (!code || !invocation) {
@@ -1693,6 +1987,10 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
     }
     // Do not read code again: a synchronous callback may destroy its handle.
     const auto active_code = code->state;
+    if (trace && !active_code->options.diagnostics) {
+        std::snprintf(error, error_capacity, "%s", "Source code was compiled without diagnostics.");
+        return 1;
+    }
     const auto& signature = active_code->signature;
     if (signature.is_coroutine) {
         std::snprintf(error, error_capacity, "%s", "Coroutine code requires a persistent execution instance.");
@@ -1741,8 +2039,9 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         return 1;
     }
     auto failure_reason = atelier::source::detail::EntryFailure::none;
-    const auto status = active_code->entry(invocation, arguments,
-        value_result ? staged_value : &staged_bits, &failure_reason);
+    const auto status = active_code->options.diagnostics ? active_code->diagnostic_entry(invocation, arguments,
+        value_result ? staged_value : &staged_bits, &failure_reason, trace) :
+        active_code->entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure_reason);
     if (const auto* message = atelier::source::detail::failure_message(failure_reason))
         std::snprintf(error, error_capacity, "%s", message);
     if (status == 0 && result) {
@@ -1758,7 +2057,8 @@ void atelier_destroy_business(atelier::source::detail::BusinessCode* code) noexc
 
 std::uint32_t atelier_create_business_coroutine(atelier::source::detail::BusinessCode* code, void* invocation,
     const atelier::source::detail::BusinessValue* arguments, std::uint32_t argument_count,
-    atelier::source::detail::BusinessCoroutine** output, char* error, std::uint32_t error_capacity) noexcept {
+    atelier::source::detail::BusinessCoroutine** output, char* error, std::uint32_t error_capacity,
+    atelier::source::detail::BusinessTrace* trace) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     using namespace atelier::source::detail;
@@ -1767,6 +2067,10 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
         return 1;
     }
     const auto active = code->state;
+    if (trace && !active->options.diagnostics) {
+        std::snprintf(error, error_capacity, "%s", "Source code was compiled without diagnostics.");
+        return 1;
+    }
     if (argument_count != active->signature.parameter_count || (argument_count && !arguments)) {
         std::snprintf(error, error_capacity, "%s", "Coroutine arguments do not match its signature.");
         return 1;
@@ -1785,8 +2089,9 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
         if (argument_count) state->arguments.assign(arguments, arguments + argument_count);
         auto owner = std::make_unique<BusinessCoroutine>();
         owner->state = state;
-        state->handle = active->coroutine_entry(invocation, state->arguments.data(), &state->bits,
-            &state->failure, &state->status, &state->completed);
+        state->handle = active->options.diagnostics ? active->diagnostic_coroutine_entry(invocation, state->arguments.data(), &state->bits,
+            &state->failure, &state->status, &state->completed, trace) :
+            active->coroutine_entry(invocation, state->arguments.data(), &state->bits, &state->failure, &state->status, &state->completed);
         if (!state->handle) throw std::bad_alloc();
         *output = owner.release();
         return 0;
@@ -1833,7 +2138,7 @@ std::uint32_t atelier_verify_business_link_failure(
             "void candidate() {}", {});
         if (!program) throw std::runtime_error(program.error().message);
         try {
-            (void)atelier::source::detail::compile(*services, *program, {}, true);
+            (void)atelier::source::detail::compile(*services, *program, {}, {}, true);
         } catch (const std::exception& failure) {
             const std::string_view diagnostic(failure.what());
             if (diagnostic.find("business_poll") != std::string_view::npos &&

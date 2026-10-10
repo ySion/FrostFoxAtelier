@@ -2,6 +2,8 @@
 
 #include "runtime/execution.hpp"
 #include "source/snapshot.hpp"
+#include "source/diagnostics.hpp"
+#include "source/debugger.hpp"
 #include <type_traits>
 
 namespace atelier::source {
@@ -33,13 +35,15 @@ public:
         std::optional<Error> declaration_error_;
         std::shared_ptr<const Declaration> declaration_;
         std::shared_ptr<ModuleRequest> module_;
+        std::string source_path_; // Original single-input name, without the compiler's request display suffix.
         SourceRequest(std::weak_ptr<State>, std::shared_ptr<const Contract>,
-            std::shared_ptr<const Declaration>, std::uint64_t, std::string, std::string, std::string);
+            std::shared_ptr<const Declaration>, std::uint64_t, std::string, std::string, std::string, CompileOptions);
     public:
         const std::uint64_t sequence;
         const std::string source_name;
         const std::string source;
         const std::string entry_name;
+        const CompileOptions options;
         std::shared_ptr<const SourceSnapshot> snapshot() const;
     };
     using Request = std::shared_ptr<const SourceRequest>;
@@ -71,26 +75,28 @@ public:
         explicit Lease(std::shared_ptr<const Version>);
     public:
         Lease() = default;
-        Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}, Diagnostics* = nullptr, Debugger* = nullptr) const;
         // Math and plain record results require live, aligned storage of the exact declared type.
         // Failure preserves the complete output; scalar results use the overload above.
-        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}) const;
+        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}, Diagnostics* = nullptr, Debugger* = nullptr) const;
         template<std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
-        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, budget);
+        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}, Diagnostics* diagnostics = nullptr, Debugger* debugger = nullptr) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, budget, diagnostics, debugger);
         }
         template<std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
-        Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, CollectionBudget budget = {1}) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, output, budget);
+        Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, CollectionBudget budget = {1}, Diagnostics* diagnostics = nullptr, Debugger* debugger = nullptr) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, output, budget, diagnostics, debugger);
         }
     private:
-        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget) const;
-        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, CollectionBudget) const;
+        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget, Diagnostics*, Debugger*) const;
+        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, CollectionBudget, Diagnostics*, Debugger*) const;
     public:
-        Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}, Diagnostics* = nullptr, Debugger* = nullptr) const;
         std::uintptr_t address() const noexcept;
+        Result<CompilationArtifacts> artifacts() const;
+        Result<std::vector<DiagnosticLocation>> debug_sites() const;
     };
     class Entry {
         friend class Program;
@@ -100,23 +106,23 @@ public:
         explicit Entry(std::weak_ptr<State>, std::optional<std::size_t> = {});
     public:
         Entry() = default;
-        Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
-        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}) const;
+        Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, CollectionBudget = {1}, Diagnostics* = nullptr, Debugger* = nullptr) const;
+        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, CollectionBudget = {1}, Diagnostics* = nullptr, Debugger* = nullptr) const;
         template<std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
-        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, budget);
+        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, CollectionBudget budget = {1}, Diagnostics* diagnostics = nullptr, Debugger* debugger = nullptr) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, budget, diagnostics, debugger);
         }
         template<std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
-        Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, CollectionBudget budget = {1}) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, output, budget);
+        Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, CollectionBudget budget = {1}, Diagnostics* diagnostics = nullptr, Debugger* debugger = nullptr) const {
+            return invoke_arguments(object, std::span<const Argument>{arguments}, output, budget, diagnostics, debugger);
         }
     private:
-        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget) const;
-        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, CollectionBudget) const;
+        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, CollectionBudget, Diagnostics*, Debugger*) const;
+        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, CollectionBudget, Diagnostics*, Debugger*) const;
     public:
-        Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}) const;
+        Result<Coroutine> start(ObjectId, std::span<const Scalar>, CollectionBudget = {1}, Diagnostics* = nullptr, Debugger* = nullptr) const;
     };
 
     // TypeId{} declares a receiverless typed value environment. Binding errors are
@@ -153,8 +159,8 @@ public:
     // Requests own the module source, entry selection and metadata, but no code.
     // Multiple functions require an entry name before
     // first publication; later requests default to the frozen declaration name.
-    Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {});
-    Result<Request> request(SourceSnapshot);
+    Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {}, CompileOptions = {});
+    Result<Request> request(SourceSnapshot, CompileOptions = {});
     static Result<Candidate> prepare(const Request&);
     // Busy does not consume the candidate. Publishing requires the latest
     // request, unchanged dependencies and the declaration's frozen signature.

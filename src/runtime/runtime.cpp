@@ -950,6 +950,23 @@ Result<void> Runtime::enter_execution() {
 
 void Runtime::leave_execution() noexcept { --impl_->active_executions; }
 
+Result<void> Runtime::enter_execution_inspection() {
+    auto ready = check_execution_entry();
+    if (!ready) return ready;
+    if (impl_->active_executions == 0)
+        return failure(ErrorCode::busy, "Execution inspection requires an active generated invocation.");
+    // Share reference traversal's read-only admission, including root copying
+    // through RootState. This is not a new execution or a native storage borrow.
+    ++impl_->callbacks;
+    ++impl_->roots->traversals;
+    return {};
+}
+
+void Runtime::leave_execution_inspection() noexcept {
+    --impl_->roots->traversals;
+    --impl_->callbacks;
+}
+
 Result<void> Runtime::check_code_publication() const {
     auto ready = check_execution_entry();
     if (!ready) return ready;
