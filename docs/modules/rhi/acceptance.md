@@ -4,6 +4,19 @@
 
 2026-09-28 更新：编辑器 renderer 新增单窗口、显式 RGBA8、backbuffer 与独立深度同时绑定、带行距读回和 Present 状态。本页原 RHI 矩阵已在 dev/release 重新通过；新增窗口验收、641/703 宽度和未覆盖范围见 [renderer 验收](../renderer/acceptance.md)。以下保留 2026-09-27 的证据边界，不将其旧的窗口“未覆盖”列表当作当前全部能力。
 
+## 2026-10-10：绘制前同步窗口目标
+
+基于集成提交 `5d24e4a6ab10b954c3bda03ffdfea674e939b12d`，新增 `Context::sync_window_target()`，将隐藏弹出窗口的有效 client 尺寸在本次绘制前同步至既有 swapchain 与 auto-resize 纹理。复用 gfx 的提交、有限排空、退休和 resize 路径；调用约束与无操作条件见 [窗口合同](contract.md#窗口与读回)。本次未修改 Renderer/Application 接线。
+
+RX 6800 XT、D3D12 debug/GBV 下，Dev 与 Release 的 `rhi_acceptance` 完整主场景及三个后端回归均退出 0：
+
+- 专属、不激活的真实窗口依次切换 641×73、257×181、703×97、320×96、641×73、257×181；每次在隐藏状态同步，随后只调用一次 `frame/Present`，`rendered` 与 `next` 均为新尺寸。
+- 每种配置读回并校验全部 285,531 个 RGBA 像素；全屏三角形覆盖新画布，无旧 viewport 留边。自动尺寸纹理在前一帧可能仍在途时调整，尺寸与目标一致。
+- 同步不改变 recording frame sequence 或 last Present 结果。以真实 fence 阻塞队列，验证同尺寸、隐藏同尺寸、零客户区与最小化均不排空；无窗口、异线程及关闭 Context 的重复调用保持既有契约。
+- 改变尺寸后对阻塞队列触发有限 timeout，验证重复调用保留终态、停止借用，放行 GPU 后可清理并重复 close。D3D12 debug warning/error 均为 0；日志中的 timeout 是该场景预期诊断。
+
+配置与完整输出位于 `out/rhi-window-target-sync/configure-{dev,release}.log`、`dev.log`、`release.log`；标准逐场景日志仍由既有验收器写入 `out/<preset>/rhi-*.log`。此次证明 RHI 可在首个 Present 前完成尺寸同步；菜单打开耗时与 execute 回调保护由后续应用接线验收，不以本结果代替。
+
 ## 2026-10-10：升级固定 gfx
 
 在引擎 `17996cee07bcb234860848e31d6717fac3dec335` 上，将 gfx 从 `e039b255` 更新至当日核实的上游 master `a8d9bd64ea7d95cfc015a047845bf709ac9f6582`（10 月 7 日提交）。[上游差异](https://github.com/gboisse/gfx/compare/e039b255efb327994d30b187caee400ca60110e0...a8d9bd64ea7d95cfc015a047845bf709ac9f6582)包含 9 个提交，涉及 GPU validation 开关、DRED 日志与日志严重度修正；DXC、Agility、D3D12MA 和 PIX 的锁定版本未变。

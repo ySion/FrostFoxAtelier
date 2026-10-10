@@ -252,6 +252,143 @@ void texture_ranges() {
     check_debug(debug.Get());
     std::puts("texture-ranges: upload-offset=256 readback-offset=512 image-bytes=8192 prefix/trailer=PASS");
 }
+void window_target_sync() {
+    // This fixture owns its window and never activates or touches another one.
+    struct Window {
+        HINSTANCE instance = GetModuleHandleW(nullptr);
+        HWND handle{};
+        Window() {
+            WNDCLASSW type{};
+            type.hInstance = instance;
+            type.lpfnWndProc = DefWindowProcW;
+            type.lpszClassName = L"AtelierRhiTargetSyncAcceptance";
+            require(RegisterClassW(&type) != 0, "window class registration failed");
+            handle = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, type.lpszClassName,
+                L"RHI target synchronization acceptance", WS_POPUP, 32, 32, 160, 96,
+                nullptr, nullptr, instance, nullptr);
+            require(handle != nullptr, "acceptance window creation failed");
+        }
+        ~Window() {
+            DestroyWindow(handle);
+            UnregisterClassW(L"AtelierRhiTargetSyncAcceptance", instance);
+        }
+        void size(int width, int height) const {
+            require(SetWindowPos(handle, nullptr, 0, 0, width, height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE, "window resize failed");
+        }
+    } window;
+    ContextOptions options;
+    options.window = window.handle;
+    options.rgba8_window = true;
+    options.validation = Validation::gpu;
+    auto owner = take(Context::open(options));
+    const auto gfx = owner.borrow();
+    auto debug = debug_queue(gfx);
+    PipelineDesc desc;
+    desc.kind = PipelineKind::vertex;
+    desc.source.vs = R"(
+float4 main(uint id : SV_VertexID) : SV_Position {
+    return float4(id == 0 ? float2(-1,-1) : id == 1 ? float2(-1,3) : float2(3,-1), 0, 1);
+}
+)";
+    desc.source.ps = "float4 main() : SV_Target { return float4(1,0,1,1); }";
+    check(gfxDrawStateSetColorTarget(desc.draw_state, 0, gfxGetBackBufferFormat(gfx)));
+    check(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
+    auto pipeline = take(owner.prepare(desc));
+    auto automatic = gfxCreateTexture2D(gfx, DXGI_FORMAT_R8G8B8A8_UNORM, nullptr,
+                                        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    require(static_cast<bool>(automatic), "auto-sized texture creation failed");
+    struct Capture { GfxBuffer buffer; std::uint32_t width, height, pitch; };
+    std::vector<Capture> captures;
+    constexpr std::array sizes{std::pair{641u, 73u}, std::pair{257u, 181u},
+        std::pair{703u, 97u}, std::pair{320u, 96u}, std::pair{641u, 73u}, std::pair{257u, 181u}};
+    for (const auto [width, height] : sizes) {
+        ShowWindow(window.handle, SW_HIDE);
+        window.size(static_cast<int>(width), static_cast<int>(height));
+        const auto sequence = gfxGetRecordingFrameSequence(gfx);
+        const auto last_present = gfxGetLastPresentResult(gfx);
+        const auto target = take(owner.sync_window_target());
+        require(target.windowed && !target.drawable && target.width == width && target.height == height,
+                "hidden window did not synchronize before its first draw");
+        require(gfxGetRecordingFrameSequence(gfx) == sequence && gfxGetLastPresentResult(gfx) == last_present,
+                "target synchronization presented or advanced frame identity");
+        const auto resource_desc = gfxTextureGetResource(gfx, automatic)->GetDesc();
+        require(resource_desc.Width == width && resource_desc.Height == height,
+                "auto-sized texture did not follow pre-draw synchronization");
+        const auto repeated = take(owner.sync_window_target());
+        require(repeated.width == width && repeated.height == height, "same-size synchronization changed the target");
+        ShowWindow(window.handle, SW_SHOWNOACTIVATE);
+        require(take(owner.sync_window_target()).drawable, "shown acceptance window is not drawable");
+
+        const auto pitch = (width * 4 + 255) & ~255u;
+        auto readback = gfxCreateBuffer(gfx, static_cast<std::uint64_t>(pitch) * height, nullptr, kGfxCpuAccess_Read);
+        require(static_cast<bool>(readback), "window readback creation failed");
+        captures.push_back({readback, width, height, pitch});
+        check(gfxCommandClearTexture(gfx, automatic)); // Previous texture may still be in flight at the next resize.
+        check(gfxCommandClearBackBuffer(gfx));
+        check(gfxCommandBindKernel(gfx, pipeline.kernel()));
+        check(gfxCommandDraw(gfx, 3));
+        check(gfxCommandCopyBackBufferToBuffer(gfx, readback, pitch));
+        FrameInfo frame;
+        complete(owner.frame(false, &frame));
+        require(frame.rendered.width == width && frame.rendered.height == height &&
+                frame.next.width == width && frame.next.height == height &&
+                gfxGetRecordingFrameSequence(gfx) == sequence + 1,
+                "first Present after resize used an obsolete target");
+    }
+    complete(owner.finish());
+    std::uint64_t pixels = 0;
+    for (const auto& capture : captures) {
+        const auto* bytes = gfxBufferGetData<std::uint8_t>(gfx, capture.buffer);
+        require(bytes != nullptr, "window readback unavailable");
+        for (std::uint32_t y = 0; y < capture.height; ++y)
+            for (std::uint32_t x = 0; x < capture.width; ++x) {
+                const auto* pixel = bytes + y * capture.pitch + x * 4;
+                require(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 255 && pixel[3] == 255,
+                        "resized viewport did not fill the first presented image");
+                ++pixels;
+            }
+        check(gfxDestroyBuffer(gfx, capture.buffer));
+    }
+
+    // A blocked real queue makes any accidental no-op drain fail deterministically.
+    ComPtr<ID3D12Fence> gate;
+    check_hr(gfxGetDevice(gfx)->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
+    struct ReleaseGate { ID3D12Fence* fence; ~ReleaseGate() { fence->Signal(1); } } release{gate.Get()};
+    check_hr(gfxGetCommandQueue(gfx)->Wait(gate.Get(), 1));
+    check(gfxSetWaitTimeout(gfx, 5));
+    const auto sequence = gfxGetRecordingFrameSequence(gfx);
+    for (unsigned repeat = 0; repeat < 2; ++repeat) (void)take(owner.sync_window_target());
+    ShowWindow(window.handle, SW_HIDE);
+    require(!take(owner.sync_window_target()).drawable, "hidden no-op target became drawable");
+    window.size(0, 0);
+    const auto zero = take(owner.sync_window_target());
+    require(!zero.drawable && zero.width == sizes.back().first && zero.height == sizes.back().second,
+            "zero client size resized the swap chain");
+    window.size(401, 109);
+    ShowWindow(window.handle, SW_SHOWMINNOACTIVE);
+    require(IsIconic(window.handle) != FALSE && !take(owner.sync_window_target()).drawable,
+            "minimized target synchronization did not skip resize");
+    require(gfxGetRecordingFrameSequence(gfx) == sequence, "no-op synchronization advanced a frame");
+    ShowWindow(window.handle, SW_SHOWNOACTIVATE);
+    ShowWindow(window.handle, SW_HIDE);
+    window.size(401, 109);
+    for (unsigned repeat = 0; repeat < 2; ++repeat) {
+        const auto failed = owner.sync_window_target();
+        require(!failed && failed.error().code == ErrorCode::timeout,
+                "resize timeout did not retain terminal failure");
+    }
+    require(!owner.borrow(), "failed resize remained borrowable");
+    check_hr(gate->Signal(1));
+    check(gfxSetWaitTimeout(gfx, 10000)); // Cleanup budget only; does not clear failure.
+    check(gfxDestroyTexture(gfx, automatic));
+    pipeline = {};
+    complete(owner.close());
+    complete(owner.close());
+    check_debug(debug.Get());
+    std::printf("window-target-sync: hidden-resizes=6 single-present=PASS image-pixels=%llu no-op/no-wait=PASS resize-timeout/drain-only=PASS debug-warnings=0 debug-errors=0\n",
+                static_cast<unsigned long long>(pixels));
+}
 } // namespace
 
 void resource_cases() {
@@ -262,5 +399,6 @@ void resource_cases() {
     indirect_graphics(PipelineKind::vertex, true);
     indirect_graphics(PipelineKind::mesh, false);
     texture_ranges();
+    window_target_sync();
 }
 } // namespace rhi_acceptance

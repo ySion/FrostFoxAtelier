@@ -248,6 +248,12 @@ int main() {
         ContextOptions options;
         options.validation = Validation::gpu;
         auto context = take(Context::open(options));
+        for (unsigned repeat = 0; repeat < 2; ++repeat) {
+            const auto target = take(context.sync_window_target());
+            require(!target.windowed && target.drawable && target.width == options.width && target.height == options.height,
+                    "headless target synchronization changed the target");
+            require(gfxGetRecordingFrameSequence(context.borrow()) == 1, "headless synchronization advanced a frame");
+        }
         require(context.info().debug_layer && context.info().gpu_validation, "validation not enabled");
         require(context.info().mesh_shader, "acceptance requires hardware mesh shader support");
         print_adapter(context.borrow());
@@ -263,7 +269,9 @@ int main() {
         bool wrong_thread = false;
         std::thread worker([&] {
             auto result = context.finish();
-            wrong_thread = !result && result.error().code == ErrorCode::wrong_thread && !context.borrow();
+            const auto synced = context.sync_window_target();
+            wrong_thread = !result && result.error().code == ErrorCode::wrong_thread && !context.borrow() &&
+                           !synced && synced.error().code == ErrorCode::wrong_thread;
         });
         worker.join();
         require(wrong_thread, "foreign thread entered the execution domain");
@@ -276,6 +284,10 @@ int main() {
         check_debug(debug.Get());
         check(context.close());
         require(!context.borrow(), "closed context remained borrowable");
+        for (unsigned repeat = 0; repeat < 2; ++repeat) {
+            const auto synced = context.sync_window_target();
+            require(!synced && synced.error().code == ErrorCode::closed, "closed target synchronization was not rejected");
+        }
         check(context.close());
         check_debug(debug.Get());
         debug.Reset();

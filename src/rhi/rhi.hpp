@@ -109,6 +109,10 @@ public:
     [[nodiscard]] const ContextInfo& info() const noexcept;
     [[nodiscard]] Result<Pipeline> prepare(const PipelineDesc& desc);
     [[nodiscard]] Result<TargetInfo> target() const;
+    // Owner-only, before recording the draw/execute callback. Synchronizes a
+    // positive window client size even while hidden; returns the actual target.
+    // A changed size drains pending work, but never presents or advances a frame.
+    [[nodiscard]] Result<TargetInfo> sync_window_target();
     // Details are published only after the entire frame succeeds. Positive DXGI
     // occlusion status is successful execution but not an accepted visible frame.
     [[nodiscard]] Result<void> frame(bool vsync = false, FrameInfo* details = nullptr);
