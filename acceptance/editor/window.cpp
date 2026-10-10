@@ -1306,10 +1306,10 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
         "Redo changed the created Actor/component identity.");
     click(app,static_cast<ControlKey>(atelier::editor::Command::show_structure));
     click(app,control::add_component);
-    const auto body_choice=atelier::application::EditorAcceptanceAccess::menu_item(app,L"physics.BodyComponent");
+    const auto body_choice=atelier::application::EditorAcceptanceAccess::menu_item(app,L"world.CollisionComponent");
     require(body_choice,"Actor Structure omitted the physical Body type.");
     click(app,body_choice);
-    const auto physics_body=component(app,mesh_actor,app.document().physics_types().body_component);
+    const auto physics_body=component(app,mesh_actor,app.document().types().collision_component);
     require(app.document().selection()==atelier::editor::Selection{mesh_actor,physics_body},
         "Adding a physical Body did not inspect the new Component.");
     capture(app,output/"physics-components.png");
@@ -1318,7 +1318,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     require(model(atelier::world::components(app.document().world().runtime(),mesh_actor)).size()==1,
         "Physics body removal left a component attached.");
     key(app,'Z',true);
-    require(component(app,mesh_actor,app.document().physics_types().body_component)==physics_body,
+    require(component(app,mesh_actor,app.document().types().collision_component)==physics_body,
         "Undo physical Body removal changed identity.");
     key(app,'Y',true);
     click(app,control::show_actors);

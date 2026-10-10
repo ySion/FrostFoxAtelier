@@ -20,7 +20,7 @@
 
 当前复用 Body 原有的 16 槽响应表，channel 范围为 0–15；object_types 为 16 位掩码，0 表示不选择任何类别。没有独立的 UE TraceChannel/Profile 配置系统。Sensor 可由 `include_sensors` 排除；包含时只产生非阻挡命中，因此通道 test/single 不会选中 Sensor，对象类型查询可以选中它。
 
-`QueryIgnore` 支持同时忽略多个 Actor 和 Component，借用的 span 只在同步调用期间有效。忽略的 Component 指 BodyComponent 身份，不是其可见网格。基础 `QueryFilter` 默认 `interaction` 策略继续使用双方响应表；新 `trace` 显式选择 channel/object_type。基础 closest 的 `has_block` 仍描述最近命中。
+`QueryIgnore` 支持同时忽略多个 Actor 和 Component，借用的 span 只在同步调用期间有效。忽略的 Component 指启用了物理状态的 Primitive；StaticMeshComponent 可以直接成为命中组件。同一 Actor 下只忽略指定组件时，其余 Primitive 仍可命中。基础 `QueryFilter` 默认 `interaction` 策略继续使用双方响应；`trace` 显式选择 channel/object_type。基础 closest 的 `has_block` 仍描述最近命中。
 
 输入必须有限，线段差值与长度不能溢出；line/sweep 拒绝零长度，静止体积应使用 overlap。球半径必须有限且大于 0；容量为 1–4096，非法枚举或超出 16 位的掩码返回错误。半径不用于 line。容量只是输出上限，目前 Jolt 全命中收集器仍可能收集更多候选，不是内存或耗时预算。
 
@@ -28,7 +28,7 @@
 
 `QueryResult` 保存完成物理步 `step_id`、世界空间 `start/end`、`has_hit`、`has_block`、`overflow` 和拥有型 `hits`。未命中是成功的空结果。multi 摘要在容量截断前计算：即使容量只保留前方 Overlap，`has_block` 仍能表示后面的首个 Block；此时 `overflow` 为 true。
 
-每个 `QueryHit` 包含带场景与重建代际的 `BodyHandle`（Actor、BodyComponent）、`sub_shape`、物理材质、Sensor/Block 标记，以及：
+每个 `QueryHit` 包含带场景与重建代际的 `BodyHandle`（Actor、PrimitiveComponent）、`sub_shape`、物理材质、Sensor/Block 标记，以及：
 
 - `fraction`：线段上的比例；`distance`：沿线段的世界距离。
 - `location`：射线命中位置或扫掠球心；`point`：目标表面的接触点，球扫掠时两者不同。
@@ -90,6 +90,6 @@ void tick(float dt) {
 
 已有用户副本的 Physic 目录不会被模板更新覆盖。缺少新场景时，可把此新文件复制到用户工程的 `Examples/Physic/Scenes/`，再刷新并打开；不要替换已编辑的场景。
 
-当前查询只返回登记为 BodyComponent 的物理体（含车辆底盘和静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。本轮不声称这些 UE 能力已经实现。
+当前查询返回已登记的 Primitive 物理体（含车辆底盘和静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。
 
 设计参考：[UE Trace 概览](https://dev.epicgames.com/documentation/unreal-engine/traces-in-unreal-engine---overview)、[Raycast 使用](https://dev.epicgames.com/documentation/unreal-engine/traces-with-raycasts-in-unreal-engine)、[FCollisionQueryParams](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/FCollisionQueryParams)。后端细节以仓库固定版本的 [Jolt ShapeCast](../../../third_party/jolt/Jolt/Physics/Collision/ShapeCast.h) 为准。实际覆盖与证据见[物理验收](acceptance.md)。

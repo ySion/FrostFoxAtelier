@@ -4,50 +4,19 @@
 
 namespace atelier::physics {
 
-enum class ShapeKind : std::uint8_t { box, sphere, triangle_mesh, capsule };
-enum class MotionKind : std::uint8_t { stationary, kinematic, dynamic };
-enum class Response : std::uint8_t { ignore, overlap, block };
-
-struct PhysicsMaterial {
-    float friction{.2f}, restitution{};
-    bool operator==(const PhysicsMaterial&) const = default;
-};
-
-struct BodySettings {
-    ShapeKind shape{ShapeKind::box};
-    MotionKind motion{MotionKind::stationary};
-    math::Vector3 half_extents{.5f, .5f, .5f};
-    float radius{.5f};
-    float capsule_half_height{.5f};
-    std::uint8_t category{};
-    std::array<Response, 16> responses = [] {
-        std::array<Response, 16> values;
-        values.fill(Response::block);
-        return values;
-    }();
-    bool sensor{};
-    PhysicsMaterial material{};
-    // Immutable bytes produced by cook_triangle_mesh; the mesh binding remains
-    // the authoritative resource identity and is checked when the body loads.
-    std::shared_ptr<const std::string> cooked_shape;
-    bool operator==(const BodySettings&) const = default;
-};
+using world::ShapeKind;
+using world::MotionKind;
+using world::Response;
+using world::PhysicsMaterial;
+using world::BodySettings;
 
 [[nodiscard]] Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh,
     math::Vector3 scale, std::string_view source_key);
 [[nodiscard]] Result<void> validate_cooked_triangle_mesh(std::string_view bytes,
     const geometry::MeshRef& mesh, math::Vector3 scale, std::string_view source_key);
 
-// Non-spatial composition. Its body is placed at the owning Actor's explicit root.
-// triangle_mesh consumes the immutable mesh of a root StaticMeshComponent and
-// supports stationary bodies only. Other shapes work with any SceneComponent root.
-class BodyComponent : public world::Component {
-public:
-    BodySettings settings;
-};
-
 struct Types {
-    TypeId body_component{}, character_component{}, ragdoll_component{}, ragdoll_part_component{},
+    TypeId character_component{}, ragdoll_component{}, ragdoll_part_component{},
         vehicle_component{}, vehicle_wheel_component{}, distance_constraint_component{},
         force_component{}, kinematic_motion_component{}, scene_query_component{};
 };
@@ -55,12 +24,19 @@ struct Types {
 [[nodiscard]] Result<void> configure(Runtime&, ObjectId component, BodySettings);
 [[nodiscard]] Result<BodySettings> read_settings(Runtime&, ObjectId component);
 
+struct BodyHandle {
+    ObjectId actor, component;
+    std::uint64_t scene{}, revision{};
+    bool operator==(const BodyHandle&) const = default;
+};
+
 enum class ContactPhase : std::uint8_t { began, persisted, ended };
 enum class ContactExitReason : std::uint8_t { separated, body_removed };
 struct ContactEvent {
     ContactPhase phase;
-    ObjectId first_actor, second_actor;
-    ObjectId first_component, second_component;
+    // Historical instances at contact time. An ended event remains meaningful
+    // after removal; using either handle for a command still checks its revision.
+    BodyHandle first, second;
     std::uint64_t step_id{};
     bool trigger{};
     ContactExitReason exit_reason{ContactExitReason::separated};
@@ -68,11 +44,6 @@ struct ContactEvent {
 using ContactHandler = std::function<Result<void>(const ContactEvent&)>;
 using StepHandler = std::function<Result<void>(std::uint64_t step_id, float fixed_delta)>;
 
-struct BodyHandle {
-    ObjectId actor, component;
-    std::uint64_t scene{}, revision{};
-    bool operator==(const BodyHandle&) const = default;
-};
 struct BodyState {
     BodyHandle handle;
     std::uint64_t step_id{};
@@ -269,7 +240,10 @@ public:
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
     [[nodiscard]] Result<void> add_force(ObjectId actor, math::Vector3);
     [[nodiscard]] Result<void> add_impulse(ObjectId actor, math::Vector3);
-    [[nodiscard]] Result<BodyHandle> body_handle(ObjectId actor) const;
+    [[nodiscard]] Result<void> add_force(BodyHandle, math::Vector3);
+    [[nodiscard]] Result<void> add_impulse(BodyHandle, math::Vector3);
+    // A Primitive selects its own body; an Actor selects only its explicit root.
+    [[nodiscard]] Result<BodyHandle> body_handle(ObjectId actor_or_primitive) const;
     [[nodiscard]] Result<BodyState> read_body_state(BodyHandle) const;
     [[nodiscard]] Result<void> set_kinematic_target(BodyHandle, math::Vector3 position,
         math::Quaternion rotation);
@@ -327,7 +301,8 @@ private:
     explicit PhysicsScene(world::World&, Types);
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
     [[nodiscard]] Result<void> reconcile(ObjectId actor);
-    void remove(ObjectId actor) noexcept;
+    [[nodiscard]] Result<void> reconcile_component(ObjectId actor, ObjectId component);
+    void remove(ObjectId component) noexcept;
     void remove_special(ObjectId actor) noexcept;
     world::World& world_;
     Types types_;

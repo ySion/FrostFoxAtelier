@@ -28,7 +28,28 @@
             1,
             40
           ],
-          "properties": {},
+          "properties": {
+            "body": {
+              "enabled": true,
+              "shape": "triangle_mesh",
+              "motion": "stationary",
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "radius": 0.5,
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "ignore_categories": 0,
+              "overlap_categories": 0,
+              "sensor": false,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              }
+            }
+          },
           "mesh": "builtin/cube",
           "base_color": [
             0.18,
@@ -43,45 +64,6 @@
             0
           ],
           "id": 1
-        },
-        {
-          "type": "physics.BodyComponent",
-          "enabled": true,
-          "properties": {},
-          "body": {
-            "shape": "triangle_mesh",
-            "motion": "stationary",
-            "half_extents": [
-              0.5,
-              0.5,
-              0.5
-            ],
-            "radius": 0.5,
-            "capsule_half_height": 0.5,
-            "category": 0,
-            "responses": [
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2
-            ],
-            "sensor": false,
-            "friction": 0.4,
-            "restitution": 0.1
-          },
-          "id": 2
         }
       ]
     },
@@ -93,7 +75,7 @@
       "properties": {},
       "components": [
         {
-          "type": "world.SceneComponent",
+          "type": "world.CollisionComponent",
           "enabled": true,
           "parent": 0,
           "position": [
@@ -112,7 +94,28 @@
             1,
             1
           ],
-          "properties": {},
+          "properties": {
+            "body": {
+              "enabled": true,
+              "shape": "box",
+              "motion": "kinematic",
+              "half_extents": {
+                "x": 2,
+                "y": 0.4,
+                "z": 2
+              },
+              "radius": 0.5,
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "ignore_categories": 0,
+              "overlap_categories": 0,
+              "sensor": true,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              }
+            }
+          },
           "id": 1
         },
         {
@@ -150,45 +153,6 @@
             0
           ],
           "id": 2
-        },
-        {
-          "type": "physics.BodyComponent",
-          "enabled": true,
-          "properties": {},
-          "body": {
-            "shape": "box",
-            "motion": "kinematic",
-            "half_extents": [
-              2,
-              0.4,
-              2
-            ],
-            "radius": 0.5,
-            "capsule_half_height": 0.5,
-            "category": 0,
-            "responses": [
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2
-            ],
-            "sensor": true,
-            "friction": 0.4,
-            "restitution": 0.1
-          },
-          "id": 3
         }
       ]
     },
@@ -200,7 +164,7 @@
       "properties": {},
       "components": [
         {
-          "type": "world.SceneComponent",
+          "type": "world.CollisionComponent",
           "enabled": true,
           "parent": 0,
           "position": [
@@ -219,7 +183,28 @@
             1,
             1
           ],
-          "properties": {},
+          "properties": {
+            "body": {
+              "enabled": true,
+              "shape": "box",
+              "motion": "dynamic",
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "radius": 0.5,
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "ignore_categories": 0,
+              "overlap_categories": 0,
+              "sensor": false,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              }
+            }
+          },
           "id": 1
         },
         {
@@ -257,45 +242,6 @@
             0
           ],
           "id": 2
-        },
-        {
-          "type": "physics.BodyComponent",
-          "enabled": true,
-          "properties": {},
-          "body": {
-            "shape": "box",
-            "motion": "dynamic",
-            "half_extents": [
-              0.5,
-              0.5,
-              0.5
-            ],
-            "radius": 0.5,
-            "capsule_half_height": 0.5,
-            "category": 0,
-            "responses": [
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2
-            ],
-            "sensor": false,
-            "friction": 0.4,
-            "restitution": 0.1
-          },
-          "id": 3
         }
       ]
     },
@@ -307,7 +253,7 @@
       "properties": {},
       "components": [
         {
-          "type": "world.SceneComponent",
+          "type": "world.CollisionComponent",
           "enabled": true,
           "parent": 0,
           "position": [
@@ -326,7 +272,28 @@
             1,
             1
           ],
-          "properties": {},
+          "properties": {
+            "body": {
+              "enabled": true,
+              "shape": "box",
+              "motion": "dynamic",
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "radius": 0.5,
+              "capsule_half_height": 0.5,
+              "category": 2,
+              "ignore_categories": 65535,
+              "overlap_categories": 0,
+              "sensor": false,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              }
+            }
+          },
           "id": 1
         },
         {
@@ -364,45 +331,6 @@
             0
           ],
           "id": 2
-        },
-        {
-          "type": "physics.BodyComponent",
-          "enabled": true,
-          "properties": {},
-          "body": {
-            "shape": "box",
-            "motion": "dynamic",
-            "half_extents": [
-              0.5,
-              0.5,
-              0.5
-            ],
-            "radius": 0.5,
-            "capsule_half_height": 0.5,
-            "category": 2,
-            "responses": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ],
-            "sensor": false,
-            "friction": 0.4,
-            "restitution": 0.1
-          },
-          "id": 3
         }
       ]
     },
@@ -414,7 +342,7 @@
       "properties": {},
       "components": [
         {
-          "type": "world.SceneComponent",
+          "type": "world.CollisionComponent",
           "enabled": true,
           "parent": 0,
           "position": [
@@ -433,7 +361,28 @@
             1,
             1
           ],
-          "properties": {},
+          "properties": {
+            "body": {
+              "enabled": true,
+              "shape": "box",
+              "motion": "dynamic",
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "radius": 0.5,
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "ignore_categories": 0,
+              "overlap_categories": 0,
+              "sensor": false,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              }
+            }
+          },
           "id": 1
         },
         {
@@ -471,45 +420,6 @@
             0
           ],
           "id": 2
-        },
-        {
-          "type": "physics.BodyComponent",
-          "enabled": true,
-          "properties": {},
-          "body": {
-            "shape": "box",
-            "motion": "dynamic",
-            "half_extents": [
-              0.5,
-              0.5,
-              0.5
-            ],
-            "radius": 0.5,
-            "capsule_half_height": 0.5,
-            "category": 0,
-            "responses": [
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2,
-              2
-            ],
-            "sensor": false,
-            "friction": 0.4,
-            "restitution": 0.1
-          },
-          "id": 3
         }
       ]
     },

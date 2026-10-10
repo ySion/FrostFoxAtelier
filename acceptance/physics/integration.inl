@@ -12,22 +12,20 @@ void simulate_world() {
     floor_desc.transform.position = {0, -.5f, 0};
     floor_desc.transform.scale = {8, 1, 8};
     auto floor = take(w::create_static_mesh_actor(world, floor_desc));
-    auto floor_body = take(w::create_component(runtime, physics_types.body_component));
+    auto floor_body = take(runtime.hold(*take(w::root_component(runtime,floor.id()))));
     p::BodySettings floor_settings;
     floor_settings.shape = p::ShapeKind::triangle_mesh;
     auto invalid_mesh = floor_settings;
     invalid_mesh.motion = p::MotionKind::dynamic;
     require(!p::configure(runtime, floor_body.id(), invalid_mesh), "dynamic triangle mesh rejected");
     take(p::configure(runtime, floor_body.id(), floor_settings));
-    const std::array floor_attachment{w::Attachment{floor_body.id()}};
-    committed(world.attach_components(floor.id(), floor_attachment));
 
     auto actor = take(w::create_actor(runtime));
-    auto root = take(w::create_component(runtime, world_types.scene_component));
-    auto body = take(w::create_component(runtime, physics_types.body_component));
-    auto disabled_body = take(w::create_component(runtime, physics_types.body_component));
-    const std::array actor_attachments{w::Attachment{root.id(), {}, true}, w::Attachment{body.id()},
-        w::Attachment{disabled_body.id()}};
+    auto root = take(w::create_component(runtime, world_types.collision_component));
+    auto body = take(runtime.hold(root.id()));
+    auto disabled_body = take(w::create_component(runtime, world_types.collision_component));
+    const std::array actor_attachments{w::Attachment{root.id(), {}, true},
+        w::Attachment{disabled_body.id(),root.id()}};
     committed(world.attach_components(actor.id(), actor_attachments));
     committed(world.set_enabled(disabled_body.id(), false));
     take(world.set_transform(root.id(), w::Trs{{0, 2, 0}, {0, 0, 0, 1}, {1, 1, 1}}));
@@ -37,9 +35,8 @@ void simulate_world() {
     take(p::configure(runtime, body.id(), body_settings));
 
     auto box_actor = take(w::create_actor(runtime));
-    auto box_root = take(w::create_component(runtime, world_types.scene_component));
-    auto box_body = take(w::create_component(runtime, physics_types.body_component));
-    const std::array box_attachments{w::Attachment{box_root.id(), {}, true}, w::Attachment{box_body.id()}};
+    auto box_root = take(w::create_component(runtime, world_types.collision_component));
+    const std::array box_attachments{w::Attachment{box_root.id(), {}, true}};
     committed(world.attach_components(box_actor.id(), box_attachments));
     take(world.set_transform(box_root.id(), w::Trs{{20, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}}));
 
@@ -73,10 +70,10 @@ void simulate_world() {
     require(!scene->read_body_state(first_handle), "mesh replacement invalidates old body handle");
     std::vector<p::ContactPhase> contacts;
     scene->on_contact([&](const p::ContactEvent& event) -> atelier::Result<void> {
-        require((event.first_actor == floor.id() && event.second_actor == actor.id()) ||
-            (event.second_actor == floor.id() && event.first_actor == actor.id()), "contact Actor identity");
-        require((event.first_component == floor_body.id() && event.second_component == body.id()) ||
-            (event.second_component == floor_body.id() && event.first_component == body.id()), "contact component identity");
+        require((event.first.actor == floor.id() && event.second.actor == actor.id()) ||
+            (event.second.actor == floor.id() && event.first.actor == actor.id()), "contact Actor identity");
+        require((event.first.component == floor_body.id() && event.second.component == body.id()) ||
+            (event.second.component == floor_body.id() && event.first.component == body.id()), "contact component identity");
         contacts.push_back(event.phase);
         return {};
     });
@@ -138,9 +135,9 @@ void simulate_filter_and_trigger() {
     auto scene = take(p::PhysicsScene::create(world, physics_types));
     auto create = [&](atelier::math::Vector3 position, p::BodySettings settings) {
         auto actor = take(w::create_actor(runtime));
-        auto root = take(w::create_component(runtime, world_types.scene_component));
-        auto body = take(w::create_component(runtime, physics_types.body_component));
-        const std::array attachments{w::Attachment{root.id(), {}, true}, w::Attachment{body.id()}};
+        auto root = take(w::create_component(runtime, world_types.collision_component));
+        auto body = take(runtime.hold(root.id()));
+        const std::array attachments{w::Attachment{root.id(), {}, true}};
         committed(world.attach_components(actor.id(), attachments));
         take(world.set_transform(root.id(), w::Trs{position, {0, 0, 0, 1}, {1, 1, 1}}));
         take(p::configure(runtime, body.id(), settings));
@@ -153,14 +150,14 @@ void simulate_filter_and_trigger() {
     sensor.radius = 2;
     sensor.category = 1;
     sensor.sensor = true;
-    sensor.responses[2] = p::Response::overlap;
+    take(sensor.set_response(2,p::Response::overlap));
     auto [area, area_body] = create({0, 0, 0}, sensor);
     p::BodySettings dynamic;
     dynamic.motion = p::MotionKind::dynamic;
     dynamic.shape = p::ShapeKind::sphere;
     dynamic.category = 2;
-    dynamic.responses[1] = p::Response::block;
-    dynamic.responses[3] = p::Response::ignore;
+    take(dynamic.set_response(1,p::Response::block));
+    take(dynamic.set_response(3,p::Response::ignore));
     auto [target, target_body] = create({0, 0, 0}, dynamic);
     take(scene->set_gravity({0, 0, 0}));
     committed(world.start());
@@ -172,6 +169,9 @@ void simulate_filter_and_trigger() {
     take(scene->update(1.f / 60.f));
     require(events.size() == 1 && events[0].phase == p::ContactPhase::began &&
         events[0].trigger && events[0].step_id == 1, "trigger enters once per body pair");
+    const auto contact_area = events[0].first.actor == area.id() ? events[0].first : events[0].second;
+    require(contact_area == take(scene->body_handle(area.id())),
+        "contact carries the same scene and body generation as queries and commands");
     const auto position_before = take(scene->read_body_state(take(scene->body_handle(target.id())))).position;
     take(scene->update(1.f / 60.f));
     require(events.size() == 2 && events[1].phase == p::ContactPhase::persisted,
@@ -192,6 +192,14 @@ void simulate_filter_and_trigger() {
     require(events.size() == 3 && events.back().phase == p::ContactPhase::ended &&
         events.back().exit_reason == p::ContactExitReason::body_removed,
         "deactivation emits one explicit trigger exit");
+    const auto ended_area = events.back().first.actor == area.id() ? events.back().first : events.back().second;
+    require(ended_area == contact_area && !scene->read_body_state(ended_area),
+        "removed contact keeps its historical instance without granting current body access");
+    committed(world.set_enabled(area_body.id(), true));
+    const auto rebuilt_area = take(scene->body_handle(area.id()));
+    require(rebuilt_area.component == ended_area.component && rebuilt_area.revision != ended_area.revision &&
+        !scene->set_kinematic_target(ended_area, {10, 0, 0}, {0, 0, 0, 1}),
+        "a historical event cannot move a replacement body with the same component identity");
     committed(world.stop());
     require(scene->body_count() == 0, "trigger World closes cleanly");
 }
@@ -223,12 +231,11 @@ void simulate_cooked_assets() {
         desc.mesh_source = source;
         desc.transform.scale = scale;
         auto ground = take(w::create_static_mesh_actor(world, desc));
-        auto body = take(w::create_component(runtime, physics_types.body_component));
+        auto body = take(runtime.hold(*take(w::root_component(runtime,ground.id()))));
         p::BodySettings settings;
         settings.shape = p::ShapeKind::triangle_mesh;
         settings.cooked_shape = std::make_shared<const std::string>(std::move(bytes));
         take(p::configure(runtime, body.id(), settings));
-        committed(world.attach_components(ground.id(), std::array{w::Attachment{body.id()}}));
         committed(world.attach(ground.id()));
         committed(world.start());
         auto scene = p::PhysicsScene::create(world, physics_types);
@@ -263,13 +270,14 @@ void simulate_special_systems() {
     auto make_actor = [&](atelier::math::Vector3 position, bool body_enabled,
         p::BodySettings settings = {}) {
         auto actor = take(w::create_actor(runtime));
-        auto root = take(w::create_component(runtime, world_types.scene_component));
-        auto body = take(w::create_component(runtime, physics_types.body_component));
-        const std::array attachments{w::Attachment{root.id(), {}, true}, w::Attachment{body.id()}};
+        auto root = take(w::create_component(runtime, world_types.collision_component));
+        auto body = take(runtime.hold(root.id()));
+        const std::array attachments{w::Attachment{root.id(), {}, true}};
         committed(world.attach_components(actor.id(), attachments));
         take(world.set_transform(root.id(), w::Trs{position, {0, 0, 0, 1}, {1, 1, 1}}));
         take(p::configure(runtime, body.id(), settings));
-        if (!body_enabled) committed(world.set_enabled(body.id(), false));
+        settings.enabled=body_enabled;
+        take(p::configure(runtime,body.id(),settings));
         committed(world.attach(actor.id()));
         return std::tuple{std::move(actor), std::move(root), std::move(body)};
     };
@@ -387,10 +395,15 @@ void simulate_special_systems() {
     require(!scene->read_character_state(character), "destroyed character handle is rejected");
     const auto again = take(scene->create_character(character_actor.id()));
     require(again.revision != character.revision, "recreated character has a new generation");
-    committed(world.set_enabled(character_body.id(), true));
+    committed(world.set_enabled(character_root.id(), false));
+    auto replacement_settings=take(p::read_settings(runtime,character_body.id()));replacement_settings.enabled=true;
+    take(p::configure(runtime,character_body.id(),replacement_settings));
+    committed(world.set_enabled(character_root.id(), true));
     require(!scene->read_character_state(again) && bool(scene->body_handle(character_actor.id())),
         "enabling a Body replaces the virtual character on the same Actor");
-    committed(world.set_enabled(character_body.id(), false));
+    committed(world.set_enabled(character_root.id(), false));
+    replacement_settings.enabled=false;take(p::configure(runtime,character_body.id(),replacement_settings));
+    committed(world.set_enabled(character_root.id(), true));
     const auto replaced = take(scene->create_character(character_actor.id()));
     require(replaced.revision != again.revision,
         "returning from a Body creates a new character generation");

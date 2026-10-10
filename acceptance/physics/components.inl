@@ -20,7 +20,7 @@ void component_lifecycle() {
     committed(f.world.start());take(f.scene->update(0));require(take(f.scene->character_handle(actor.id()))!=restored,"Restart retained the special handle.");
     committed(f.world.stop());
     // A component may not silently become a second transform writer.
-    committed(f.world.set_enabled(actor.body.id(),true));f.start();
+    auto physical=take(p::read_settings(f.runtime,actor.body.id()));physical.enabled=true;take(p::configure(f.runtime,actor.body.id(),physical));f.start();
     require(!f.scene->update(0),"Body and Character components were accepted together.");committed(f.world.stop());
     committed(f.world.set_enabled(character.id(),false));
     auto vehicle=take(w::create_component(f.runtime,f.physics_types.vehicle_component));

@@ -44,7 +44,14 @@ void verify_scene_v1(editor::Project& project) {
             }
         }
     }
-    require(nlohmann::json::parse(take(reopened->serialize()))==upgraded,
+    auto migrated=nlohmann::json::parse(take(reopened->serialize()));
+    for (auto& actor:migrated["actors"]) for (auto& component:actor["components"])
+        if (component["type"]=="world.StaticMeshComponent") {
+            require(component["properties"]["body"]["enabled"]==false,
+                "Legacy visual mesh unexpectedly enabled collision.");
+            component["properties"].erase("body");
+        }
+    require(migrated==upgraded,
         "Scene v1 migration lost authored values or did not write the explicit v2 schema.");
 }
 
@@ -69,8 +76,7 @@ void verify_physics_test_project() {
     const auto target=find_actor(L"Force And Impulse Target");
     auto& world=const_cast<world::World&>(document->world());
     const auto body_settings=[&](ObjectId actor) {
-        return take(physics::read_settings(world.runtime(),component(*document,actor,
-            document->physics_types().body_component)));
+        return take(physics::read_settings(world.runtime(),*take(world::root_component(world.runtime(),actor))));
     };
     require(body_settings(ground).shape==physics::ShapeKind::triangle_mesh &&
         body_settings(box).motion==physics::MotionKind::dynamic &&
@@ -87,8 +93,8 @@ void verify_physics_test_project() {
     bool entered_sensor=false;
     scene->on_contact([&](const physics::ContactEvent& event)->Result<void> {
         if (event.phase==physics::ContactPhase::began && event.trigger &&
-            ((event.first_actor==sphere && event.second_actor==sensor) ||
-             (event.second_actor==sphere && event.first_actor==sensor))) entered_sensor=true;
+            ((event.first.actor==sphere && event.second.actor==sensor) ||
+             (event.second.actor==sphere && event.first.actor==sensor))) entered_sensor=true;
         return {};
     });
     changed(world.start());
@@ -157,14 +163,13 @@ void verify_project_document() {
         editor::Session built_in;
         changed(built_in.create_static_mesh(take(project.mesh("builtin/sphere"))));
         const auto built_in_actor=built_in.selection().actor;
-        changed(built_in.add_component(built_in.physics_types().body_component));
-        const auto body=component(built_in,built_in_actor,built_in.physics_types().body_component);
+        const auto body=component(built_in,built_in_actor,built_in.types().static_mesh_component);
         physics::BodySettings settings;
         settings.shape=physics::ShapeKind::triangle_mesh;
         take(built_in.configure_body(body,settings));
         auto reopened=take(editor::Session::deserialize(take(built_in.serialize()),project));
         const auto restored_body=component(*reopened,take(reopened->world().members()).front().id(),
-            reopened->physics_types().body_component);
+            reopened->types().static_mesh_component);
         const auto restored_settings=take(physics::read_settings(reopened->world().runtime(),restored_body));
         require(restored_settings.shape==physics::ShapeKind::triangle_mesh && !restored_settings.cooked_shape,
             "Built-in triangle collision required a project Cook cache after reopening.");
@@ -182,8 +187,7 @@ void verify_project_document() {
         const auto physical_root=component(physical,physical_actor,physical.types().static_mesh_component);
         take(const_cast<world::World&>(physical.world()).set_transform(physical_root,
             {{0,0,0},{0,0,0,1},collision_scale}));
-        changed(physical.add_component(physical.physics_types().body_component));
-        const auto body=component(physical,physical_actor,physical.physics_types().body_component);
+        const auto body=component(physical,physical_actor,physical.types().static_mesh_component);
         physics::BodySettings settings;
         settings.shape=physics::ShapeKind::triangle_mesh;
         settings.material.friction=.65f;

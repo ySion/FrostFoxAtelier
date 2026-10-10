@@ -1,5 +1,7 @@
 # 游戏世界与对象模型：引擎及公开技术资料比较
 
+资料状态：保留 2026-10-01 的行业来源与研究基线；项目实现进展统一见[改良判断](world-model-reassessment-2026-10.md#5-已落地的项目合同与剩余缺口)及 [World 模块](../modules/world/README.md)。下文对旧代码的比较不作为当前能力清单。
+
 研究日期：2026-10-01。六个研究席均使用 gpt-6.1-sol，分别调查 UE、Unity、CryEngine、Godot、Frostbite 和跨公司技术分享，并完成一轮交叉质询。本文是汇总后的研究入口；过程材料保存在本工作树忽略的 `out/world-paradigms-research/`。FrostFox 对照基线为 `70e08ded193fcf33a2bcf414cf03bc4b7e105569`，源码树与已合并 main `8d774cf` 一致；当前合同见 [World 模块文档](../modules/world/README.md)。
 
 **公开证据支持的主要判断是：游戏世界模型由几种可以分别选择的机制组成。** 对象类型与身份、能力组合、空间关系、生命周期、内容定义、数据布局、执行依赖和资源驻留各自回答不同问题。UE 与 Unity 同时提供对象组件和批量实体机制；Godot 在场景节点之外提供服务器接口；寒霜公开分享把作者数据、持久数据和运行数据分别设计。这里的“共存”是样本内可观察的事实，不能据此给所有商业引擎规定唯一架构，也不能把某个子系统的优化推成整个引擎的对象模型。[UE Mass](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-mass-entity-in-unreal-engine)、[Unity Baking](https://docs.unity3d.com/Packages/com.unity.entities@1.4/manual/baking-overview.html)、[Godot Servers](https://docs.godotengine.org/en/4.7/tutorials/performance/using_servers.html)、[Frostbite 三种 schema](https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/gdc18-tools-tutorial-day-a-tale-of-three-data-schemas.pptx)。

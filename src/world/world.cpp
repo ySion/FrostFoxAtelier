@@ -499,8 +499,7 @@ Result<void> World::Impl::apply_translations() {
     // discard the batch on every exit so a rejected action cannot replay later.
     struct Cleanup { Impl& state; ~Cleanup() { state.translations.clear(); state.translation_changes.clear(); } } cleanup{*this};
     auto& changes=translation_changes; changes.reserve(translations.size());
-    const std::array physical_types{runtime.find_type("physics.BodyComponent"),
-        runtime.find_type("physics.CharacterComponent"),runtime.find_type("physics.RagdollComponent")};
+    const std::array physical_types{runtime.find_type("physics.CharacterComponent"),runtime.find_type("physics.RagdollComponent")};
     for (const auto& command:translations) {
         auto owner=component_owner(command.component);
         if (!owner) return std::unexpected(owner.error());
@@ -511,6 +510,13 @@ Result<void> World::Impl::apply_translations() {
             auto group=components(runtime,command.actor); if (!group) return std::unexpected(group.error());
             for (const auto& component:*group) {
                 auto type=runtime.type_of(component.id()); if (!type) return std::unexpected(type.error());
+                auto primitive=runtime.is_a(*type,types.primitive_component);
+                if (!primitive) return std::unexpected(primitive.error());
+                if (*primitive) {
+                    auto physical=runtime.with_native<const PrimitiveComponent>(component.id(),[](const auto& p)->Result<bool>{return p.body.enabled;});
+                    if (!physical) return std::unexpected(physical.error());
+                    if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Actor; use physics actions.");
+                }
                 for(const auto& physical_type:physical_types) if(physical_type) {
                     auto physical=runtime.is_a(*type,*physical_type); if (!physical) return std::unexpected(physical.error());
                     if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Actor; use physics actions.");
@@ -560,10 +566,25 @@ Result<void> World::apply_simulation_transform(ObjectId object, math::Vector3 po
     if (!impl_->running) return error(ErrorCode::busy, "Simulation writes require a running World.");
     auto owner = impl_->component_owner(object);
     if (!owner) return std::unexpected(owner.error());
-    auto root = root_component(runtime(), *owner);
-    if (!root) return std::unexpected(root.error());
-    if (!*root || **root != object) return error(ErrorCode::invalid_member, "Simulation writes require the Actor root.");
-    return apply_simulation_local_transform(object,position,rotation);
+    auto parent=scene_parent(runtime(),object);
+    if (!parent) return std::unexpected(parent.error());
+    if (*parent==ObjectId{}) return apply_simulation_local_transform(object,position,rotation);
+    auto matrix=world_matrix(runtime(),object);
+    if (!matrix) return std::unexpected(matrix.error());
+    auto previous=relative_transform(*matrix,transform_matrix(Trs{}));
+    if (!previous) return std::unexpected(previous.error());
+    auto desired=canonical_transform({position,rotation,previous->scale});
+    if (!desired) return std::unexpected(desired.error());
+    auto parent_matrix=world_matrix(runtime(),*parent);
+    if (!parent_matrix) return std::unexpected(parent_matrix.error());
+    auto local=relative_transform(transform_matrix(*desired),*parent_matrix);
+    if (!local) return std::unexpected(local.error());
+    auto authored=read_transform(runtime(),object);
+    if (!authored) return std::unexpected(authored.error());
+    for (std::size_t i=0;i<3;++i)
+        if (std::abs(local->scale[i]-authored->scale[i])>1e-5f*std::max(1.f,authored->scale[i]))
+            return error(ErrorCode::argument_mismatch,"Simulation pose would change authored local scale.");
+    return apply_simulation_local_transform(object,local->position,local->rotation);
 }
 Result<void> World::apply_simulation_local_transform(ObjectId object, math::Vector3 position,
     math::Quaternion rotation) {
@@ -591,6 +612,23 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
     auto lighting=detail::write_lighting_property(*this,object,path,value);
     if (!lighting) return std::unexpected(lighting.error());
     if (*lighting) return {};
+    auto primitive=detail::is(runtime(),object,types().primitive_component);
+    if (!primitive) return std::unexpected(primitive.error());
+    if (*primitive && !path.empty()) {
+        auto body_field=runtime().find_field(types().primitive_component,"body");
+        if (!body_field) return std::unexpected(body_field.error());
+        if (path.front()==*body_field) {
+            auto previous=runtime().with_native<const PrimitiveComponent>(object,[](const auto& p)->Result<BodySettings>{return p.body;});
+            if (!previous) return std::unexpected(previous.error());
+            if (auto written=runtime().write(object,path,value);!written) return written;
+            return runtime().with_native<PrimitiveComponent>(object,[&](auto& p)->Result<void>{
+                if (p.body.shape!=previous->shape) p.body.cooked_shape.reset();
+                auto valid=validate_body_settings(p.body);
+                if (!valid) p.body=*previous;
+                return valid;
+            });
+        }
+    }
     auto transform = detail::is(runtime(), object, types().scene_component);
     if (!transform) return std::unexpected(transform.error());
     if (*transform) {

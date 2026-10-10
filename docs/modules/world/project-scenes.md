@@ -26,9 +26,9 @@ SceneComponent 的 position/rotation/scale/parent、StaticMeshComponent 的 mesh
 
 LightComponent 沿普通空间组件记录类型、TRS、根及父关系；LightSettings 通过通用 `properties.settings` 递归保存，kind 保存枚举成员名。加载先恢复全部字段，再调用 World 的灯参数验证，避免字段恢复顺序改变有效性；保存同样拒绝非法设置。Create 菜单的三种灯只生成一个普通 Actor 和一个作为根的 LightComponent，整组加入文档历史；Actor Structure 的通用增删入口也可操作该组件。没有第二套灯存档或独立灯管理器。
 
-`physics.BodyComponent` 及其派生类型通过 `body` 专有记录保存 shape（box/sphere/triangle_mesh/capsule）、motion（stationary/kinematic/dynamic）、half_extents、radius、capsule_half_height、category、16 项 responses、sensor、friction 和 restitution。v1 的数值枚举 `physics` 记录只用于读取，保存统一为 v2；早期 v2 未包含的新增设置采用 BodySettings 默认值。读取走公开 `physics::configure`，写出使用 `read_settings`。这些 settings 目前未反射，因此不假装由通用 properties 编辑。Physics 类型由 Session 在对象创建前统一注册。
+`PrimitiveComponent` 的 `body` 是生成反射的 BodySettings 值，StaticMeshComponent 与 CollisionComponent 共享。启用、形状、运动模式、尺寸、类别/响应掩码和物理材料沿通用 `properties.body` 保存并由相同字段路径编辑；Source/JIT 读写同一内存。保存与加载调用 World 的配置验证，不写入 Jolt 身份或运行态。
 
-加载先恢复根网格与 TRS，再配置 Body；工程三角网格从 `Project::collision` 校验并读取 Cook 缓存，内置网格使用 CPU 几何。Cook 数据不写进 Scene。`Session::configure_body` 记录完整配置的撤销/重做，恢复实际组件选择；Actor Structure 使用通用组件入口添加和移除 Body。
+加载先恢复全部网格、TRS 和空间关系，再按每个 Primitive 的世界缩放读取工程三角网格 Cook 缓存。内置网格使用 CPU 几何；Cook 字节是派生缓存，不写入 Scene。旧 v1/v2 BodyComponent 在加载时合并到根 Primitive；普通 SceneComponent 根升级为 CollisionComponent。旧名称只存在于单向文档迁移，运行时不注册旧类，保存只输出反射配置。自定义非 Primitive 根或多个旧 Body 无法无损合并时明确报错。`Session::configure_body` 的整值事务与 Parameters 字段编辑修改同一对象；Actor Structure 添加独立碰撞时使用 CollisionComponent。
 
 加载使用真实类型的低层 create，再恢复字段/资源/组成，不调用会额外生成默认根的 StaticMeshActor 工厂。未找到类型或资源、属性不支持、组成或空间校验失败时，整个候选丢弃，原文件保持原样。
 

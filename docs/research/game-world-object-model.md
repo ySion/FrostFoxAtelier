@@ -1,8 +1,8 @@
 # 游戏世界与对象模型：研究与会审方案
 
-状态：**I、II及III已本地验收，III的dev/release均为World acceptance: PASS (4/4)；IV由应用分支接续，尚未集成main，S3未启动。当前行为以[World模块文档](../modules/world/README.md)及正式公共头为准；本稿保留取舍与历史证据，不是第二份待批准排期。**
+状态：历史研究与会审记录。文中的 I–IV 阶段、接口候选及验收数字只描述 2026-09-30 的基线；基础 World、编辑器接入、空间树、有序生命周期与 Primitive 物理组成现已落地。当前行为统一见 [World 模块](../modules/world/README.md)、[项目场景](../modules/world/project-scenes.md)与[物理模块](../modules/physics/README.md)，后续缺口见 [Class/Actor 评估](ue-class-actor-attachment-2026-10.md)。
 
-日期：2026-09-30。III实现基线为已验收的II提交`ce36a2ef71cfd31da39f98aa3c75004b69e77929`，含I提交`3985869a3c700ddddf190aae6291ea39d3616bf6`。唯一当前研究稿与实现位于`C:/Users/Arzuo/.codex/worktrees/actor-world/FrostFoxAtelier`，分支`codex/actor-world`；原共享根目录的本稿和三项词义修改已完整保全到此分支。第2节历史代码定位仍对应原main `9d33f4fc1c8a88481c93be4b166e6eb311456a1b`，不代表当前Core能力；I/II验收事实复用，不重复运行无关验收。
+日期：2026-09-30。III 实现基线为 II 提交 `ce36a2ef71cfd31da39f98aa3c75004b69e77929`，含 I 提交 `3985869a3c700ddddf190aae6291ea39d3616bf6`。第 2 节历史代码定位对应原 main `9d33f4fc1c8a88481c93be4b166e6eb311456a1b`；这些提交用于追溯当时的取舍，不代表当前 Core 能力或工作分支状态。
 
 研究由对象模型负责人汇总。首轮三席分别调查生命周期、数据与执行、消费者迁移，独立结论后进行一次聚焦交叉质询。用户进一步要求正式基础派生后，复用同三席补UE类型合同、Godot/Stride对照和本仓映射，并做一次类型问题的交叉收口；原生命周期与存储证据复用。Runtime与应用负责人提供各自的合同候选及消费者delta。未新增专家或并列研究稿。
 

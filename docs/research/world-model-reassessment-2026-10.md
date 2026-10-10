@@ -1,18 +1,18 @@
 # 游戏世界与对象模型：比较研究后的改良判断
 
-实现状态：本轮已按用户确认迁移 SceneComponent、StaticMeshComponent、显式空间树与有序生命周期。当前 API、边界和验收入口以 [World 模块](../modules/world/README.md)为准；下文“当前实现”调查及旧符号定位保留为本次改动前的研究证据。
+实现同步：2026-10-10。SceneComponent、显式空间树、Actor/Component 有序生命周期及 Primitive 物理组成均已落地。本文保留行业研究，并更新第 1、5、7 节的项目结论；当前接口见 [World](../modules/world/README.md)、[物理](../modules/physics/README.md)与[项目场景](../modules/world/project-scenes.md)。
 
 研究日期：2026-10-01。对照代码为 `70e08ded193fcf33a2bcf414cf03bc4b7e105569`，源码树与 main `8d774cf82b30d320a246246853e3359a4f6c83e9` 相同。本轮组织了五个 gpt-6.1-sol 研究席：UE、Unity、Godot/CryEngine、Frostbite/大厂分享、当前实现；各席完成了一轮针对其他席结论的质询。主持补充了 ECS 存储及并发论文。
 
-工作树原有的[综合研究稿](world-object-paradigms-2026-10.md)保留原样，本轮复用来源并独立核验重要判断。本报告是这次重新评估的决策入口，当前已实现合同仍以 [World 模块文档](../modules/world/README.md)为准。以下明确区分公开机制、项目事实和设计建议；本轮没有修改生产代码、运行性能测量或重做构建验收。
+行业资料来自[综合研究稿](world-object-paradigms-2026-10.md)及本次交叉核验。外部来源以原研究日期为界；下文第 6 节保留当时的讨论取舍，不作为当前实施排期。
 
 ## 1. 判断：值得改良，优先完善能力接入
 
-**当前的共同类型、ObjectId、对象存储和生命周期方向值得保留。最先应该改良的是业务能力接入 World 的方式。** 现在已能注册和组成新 Component，但自动逐帧执行仍只识别 Counter，呈现仍只识别 Cube。类型可反射、对象能组成、对象已激活，并不自动意味着它有更新和呈现能力。
+**共同 Runtime 类型、ObjectId 和 Actor/Component 的方向已保留，能力接入已沿同一 World 扩展。** Actor 与 Component 共用有序 Begin/Tick/End；StaticMesh、Light 和 Primitive 分别接入真实渲染、灯光与物理消费者，旧 Counter/Cube 专用执行模型已退出。
 
 本轮后续讨论明确了项目定位：**Actor/Component 是游戏世界与业务建模的主范式；ECS 可按具体系统的需要作为子范式使用。** 能力可以有行为与对象身份；批量执行或专用数据布局服务这些业务语义。本文的批处理建议不构成将全部 Actor/Component 改为纯数据 Entity/Fragment 的建议。
 
-建议下一次相关开发选择一个真实新能力，贯通正式类型、参与登记、算法、编辑与历史、停用和退出，并把 Counter 迁入同一执行机制。当前没有证据要求同时改变强 owner、全面改成 archetype ECS、建立通用关系语言或并行调度器。
+后续继续以真实游戏对象验证类型、实例化、编辑、保存与退出的完整链路。核心 Class 引用、通用对象图与跨 Actor 挂接仍有缺口；这些需求不要求同时改变强 owner 或引入通用并行调度器。
 
 这是对现有实现和业务扩展成本的判断，不是宣称当前 Runtime 已在大规模游戏负载上优于其他布局，也不是用行业案例证明现有 GC 合同最优。
 
@@ -80,83 +80,27 @@ ECS 也有不同存储选择。EnTT 使用稀疏集，并提供可选稳定地�
 - **SAC 2026，The Essence of Entity Component System。** 形式化 archetype 转换和访问条件，并用 Scala 塔防实现比较布局；实验的实体规模、程序和运行环境有限，不能证明任意 C++ 对象模型都落后。本文只将它作为结构变化与读写冲突需要显式规则的补证。[作者全文，§4–7](https://boyang.cs.uwm.edu/publication/sac2026_ECS.pdf)
 - **GAS 2025，ECS mapping study。** 该研究筛选出 25 篇论文，并指出现有学术结果偏向积极发现。它支持谨慎解释“ECS 更快”等概括，不作为任何特定引擎实现的证据。[研究全文，研究选择与有效性威胁](https://assets.ptidej.net/Publications/Documents/GAS25.doc.pdf)
 
-## 5. 对当前代码的重新评估
+## 5. 已落地的项目合同与剩余缺口
 
-### 现状对齐：TypeId 与生命周期入口
+`TypeId` 是所属 Runtime 内的类型身份；原生反射和语言定义生产同一 TypeDefinition，实例分别使用 ObjectId。World 用已有类型链做创建、兼容性检查与行为查找，类型身份不充当执行优先级或存档键。[Runtime](../../src/runtime/runtime.hpp)、[World 类型](../../src/world/objects.cpp)
 
-`TypeId` 是现有 Core 的类型身份句柄，在所属 Runtime 内标识一个已注册类型；它不是这轮研究新建的 ECS 标识、组件执行优先级或存档 ID。多个 Counter 对象共享 Counter 的 TypeId，各有自己的 ObjectId。原生反射和语言定义使用共同类型体系，World 只引用已存在的类型身份做创建、兼容性检查和查询。定义见 [runtime.hpp](../../src/runtime/runtime.hpp):45，World 使用见 [objects.cpp](../../src/world/objects.cpp):8。
+### 生命周期与执行
 
-当前真实行为需要与拟议接口分清：
+Actor 组成使用有序强引用序列。`bind_behavior` 为 Actor 或 Component 绑定可选 Begin/Tick/End，实际类型沿基类链选择最近的完整登记。Begin/Tick 按 Actor 成员顺序、每组 Actor 在前而组件按组成顺序；End 按当前成员和组成逆序，只结束成功 Begin 的对象。enabled 控制 Tick 和任务取消，Begin/End 按运行周期配对。
 
-- Actor 的 components 是有顺序的强引用序列，历史记录组成位置；它已经提供稳定的组成表达。
-- 尚无每个 Component 通用的 Begin/Tick/End 方法合同。LifecycleObserver 是 World 的 attached/activated/deactivated/detached 通知；start/stop 遍历 Actor 成员通知，不会自动调用其全部组件的 Begin/End。stop 当前也不是逆序退场。
-- refresh 从类型 bucket 收集启用 Counter 的 ObjectId，update 逐个调用 Counter 方法或其宿主/JIT适配，再推进已有协程。这里有按类型索引，没有同类型 payload 连续池，也没有一般 Actor.Tick 或 Component.Tick。
-- 显式 destroy_actor 先按组成逆序终结非 Transform 组件，再终结 Transform，最后 Actor。这是终结清理顺序，不等于已存在反向 EndPlay。
-- SceneComponent 方向已得到用户同意，代码尚未迁移；现有类型仍为 Actor/Component/Transform/Cube/Counter。
+正常停止、异常停机和关闭共用取消任务、逆序 End 与退出通知；重入被拒绝，重复退出不重新通知。LifecycleObserver 仍描述成员与参与变化。执行合同不依赖同类型池的枚举顺序；真正的合批和并行需要另外满足顺序与访问约束。[生命周期](../modules/world/README.md#生命周期与执行顺序)
 
-以上依据 [world.cpp](../../src/world/world.cpp):55、89，[execution.cpp](../../src/world/execution.cpp):47、66、173，[objects.cpp](../../src/world/objects.cpp):193。
+### 空间、呈现与物理
 
-用户随后提出可预测的正序 Begin/Tick、逆序 End。建议将它作为同一 Actor 内的默认业务生命周期合同：先完成整组构造与绑定，再按明确组成顺序 Begin；普通 Tick 使用明确的参与顺序；退出时按实际成功 Begin 的顺序逆向 End。动态插入、Begin 失败和中途移除须使用真实的已进入状态，而非机械倒序当前列表。End 的清理即使一项失败仍需继续，其错误政策与已提交变化分开说明。
+SceneComponent 持有局部 TRS 和空间父引用，Actor 指定显式根；当前空间树限于同一 Actor。StaticMeshComponent 通过 PrimitiveComponent 继承空间能力，网格与碰撞配置同属一个对象；CollisionComponent 表达独立空间碰撞。方块是网格资源，纯 pivot 使用 SceneComponent，不再强制创建单独 Transform 对象。
 
-这仍是待确认和实施的行为建议。Begin/End 究竟对应一次玩法生命周期还是每次激活周期，需要明确；它们不能自动等同构造/析构或任意 Tick 暂停。组成順序若被正式选作默认执行顺序，就成为可观察合同，后续同类型合批不得无声重排；跨 Actor 或跨系统依赖则应明确表达，不能靠列表位置猜测。
+换父的 keep-world 操作完整验证可表示的 TRS，失败保持原状态。物理以组件世界位姿创建 body，求解后父先子后回写；同 Actor 可有多个独立 body，挂接不自动产生焊接。Mesh、Light 和 Physics 各自维护消费者所需的派生数据，不改变共同对象身份。[空间合同](../modules/world/README.md#空间树与网格)、[物理边界](../modules/physics/README.md)
 
-### 应保留的合同
+### 所有权与持久化
 
-共同 Runtime 承担类型、对象身份、字段和 GC；反射生成继续产出相同 TypeDefinition。Actor 组成、World 成员、运行启用和实际呈现各有权威事实。整批组成变更先验证，再通过 Core 引用批次提交；生命周期通知失败通过 Commit 单独报告。detach/close 结束参与，普通根保数据，destroy 明确终结。这些机制已有真实消费者，不应仅因其他引擎名称不同就替换。
+共同 Runtime 负责类型、对象身份、字段和 GC；World 负责成员、组成和运行参与。组件的强 owner 保持既定保组语义；detach 结束参与并保留对象图，destroy 明确终结。若以后真实轨迹证明少量长期持有的组件导致过量 CPU 数据驻留，再共同审视 owner 强度及引用消费者；本轮没有相关测量。
 
-代码依据：[类型注册与对象操作](../../src/world/objects.cpp)，[对象与公共合同](../../src/world/world.hpp)，[组成提交与历史恢复](../../src/world/world.cpp)，[执行与退出](../../src/world/execution.cpp)。本轮只读核对这些路径，复用此前验收事实。
-
-### 最明确的扩展边界
-
-| 当前事实 | 具体位置，行号相对本报告基线 | 对下一能力的影响 |
-| --- | --- | --- |
-| Bucket 缓存 cube/counter/transform 三种分类 | [detail.hpp](../../src/world/detail.hpp):48；[world.cpp](../../src/world/world.cpp):38 | 新业务类型无法仅靠正式类型定义获得新的参与方式 |
-| refresh 只把 Cube 加入呈现，把 Counter 加入更新 | [world.cpp](../../src/world/world.cpp):55、69 | 继承 Component 可以 active、能启动任务，但不等于自动 tick |
-| update 只有 CounterUpdate 和 counter_advance 路径 | [execution.cpp](../../src/world/execution.cpp):135、185 | 不相关玩法不能合理地靠继承 Counter 来接入 |
-| Cube 是唯一显式空间依赖 | [world.cpp](../../src/world/world.cpp):293、370；[objects.cpp](../../src/world/objects.cpp):279 | 仅泛化 updater 不会自动得到一般依赖验证与删除语义 |
-| 编辑创建只开放 Transform/Cube，字段历史只保存 TRS | [session.cpp](../../src/editor/session.cpp):73、110；[session.hpp](../../src/editor/session.hpp):44 | 注册一个新类型还不能完成作者编辑、撤销和实际应用消费 |
-| RenderItem 被应用转成固定 Cube 绘制 | [application.cpp](../../src/application/application.cpp):329 | 增加呈现回调但不增加消费数据，不构成完整 Mesh/Light 支持 |
-
-因此，当前 World 已完成少数真实能力的纵向实现，但一般能力的接入还没有闭合。这是功能扩展边界，不表示现有方块编辑消费者已经失败。
-
-### 推荐的改良：统一执行登记，按需求选择个体或批次处理
-
-以一个真实第二种更新能力为起点，沿现有成员、enabled、start/stop 逻辑维护实际执行参与。正式 TypeId 可以绑定默认行为和维护查询索引，但最终调度的对象是登记的执行工作；它可以是一个 Actor/Component 的更新，也可以是处理多个对象的专用系统。World.update 继续承担唯一执行入口和保护，Counter 迁入同一登记链。组件作为业务对象能够有行为，不能为了调度而被强制变成纯数据片段。
-
-对于适合同质处理的能力，已有 bucket 可以缓存类型匹配、形成活动 ObjectId 批次，处理器选择循环原生调用、调用 JIT 或采用专用批处理。批次不承诺 payload 连续；也不要求同类型所有实例拥有相同阶段、间隔和依赖。此前“按 TypeId 登记批次处理器”的建议限定为这类系统的可选路径，不将它作为所有组件的唯一调度模型。无需先给所有 Component 增加虚 tick，也无需把 World 参与策略塞入 Core 反射元数据。
-
-第一片必须确定以下合同：
-
-1. 在开放、停止且没有活动回调的 World 安装或替换登记，明确登记函数及捕获资源的寿命。
-2. 明确派生匹配和重叠处理，不能无意对同一对象重复更新；执行次序采用明确规则，不能依赖类型首次加入的偶然顺序。
-3. 字段改动何时对后续处理器可见，结构请求何时提交，延后 destroy 从哪个时点使身份失效，都沿唯一执行链说明。
-4. 必要的参与登记属于提交路径，不能靠 LifecycleObserver 事后建立；后者仍只承担通知。
-5. 更新错误继续遵守当前停止运行、取消任务的政策；已提交结构仍按 Commit 报告。stop/remove/detach/close 收束同一登记和任务。
-6. 类型到默认行为的映射不规定每种类型只有一种执行方式。同一对象的多个更新工作，或不同实例的阶段、间隔与依赖，须按真实需求表达；类型分组不能覆盖正确的执行依赖。
-
-它的直接收益是新增能力不再需要扩展 World 内的每个类型分支。登记表、活动数组和间接调用都有成本；本轮不声称它已经带来性能提升，更不把它当作并行安全证明。
-
-第二呈现能力应连同实际 renderer 输入和消费实现一起落地。通用关系/依赖描述暂不提炼：当前只有 Cube 一条显式依赖，尚无两项真实重复支撑一个依赖语言。未来扩展仍需覆盖批量组成提交、移除拒绝与 detached destroy。
-
-### 强 owner：现在保留，明确重审条件
-
-组件强 owner 会保住 Actor 和仍附属的兄弟，这是已承诺的保组语义。编辑器字段历史也有只持 Transform 根的消费者；但 ActorRemoval 直接持 Actor、ComponentRemoval 则已解除 owner，不能说所有历史都依赖这条反向强边。相关证据见 [session.hpp](../../src/editor/session.hpp):44、[session.cpp](../../src/editor/session.cpp):122、[World 验收](../../acceptance/world/main.cpp):204。
-
-建议普通“记住一个对象”的需求优先选合适的弱观察引用，资源驻留由资源消费者的使用权控制。即使外部资源能卸载，兄弟自身的 CPU 载荷仍然保留，因此不能把“资源独立管理”当作无限保组没有成本的证明。
-
-只有真实轨迹显示长尾组件强根持续保住大量不需要的 CPU 数据，超过项目预算，而且引用者确实不依赖整组完整性，才应共同重审 owner 强度。届时要一并定义 owner 已回收而组件仍有效时的访问、调用、闭包和历史行为，迁移需要保组的消费者。只改 Strong 为 Weak 会改变合同。
-
-### 空间模型：功能需求明确后再扩，先决定失败语义
-
-需要进一步区分数学值与空间组件。当前 `Trs` 是无独立身份的数学值，名为 `Transform` 的类则是一个独立 Component。用户已同意 SceneComponent 方向：由 `SceneComponent : Component` 承担局部 Trs、空间挂接与世界变换，`StaticMeshComponent : SceneComponent` 携带网格与材质；Actor 指定一个空间组件为根。一个方块可由 Actor 加以方块网格为内容的 StaticMeshComponent 表达，网格组件直接作为根，不必强制再创建一个独立 Transform 对象。需要单独 pivot 或挂点时，才建立纯空间组件。UE 展示了这类结构，Unity 则将 Transform 作为 GameObject 的独立组件，二者都能成立。[UE Scene Components](https://dev.epicgames.com/documentation/en-us/unreal-engine/components-in-unreal-engine?application_version=5.6)、[Unity Transform](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Transform.html)
-
-空间组件方向已确认，空间挂接、失败和销毁细节仍需明确，尚未迁移代码。实施时需把当前 Cube 专用类型与独立 Transform 依赖完整迁移到新的空间/网格合同，避免保留两套空间入口。共享空间能力也不要求立即复制 UE 的全部渲染/物理继承层次。
-
-唯一 Transform 使当前根、聚焦、Cube 依赖和销毁顺序清楚，但多个 Cube 共用它，无法表达炮塔、车轮或武器挂点各自的局部空间。下一项这类玩法出现时，可以选择“唯一根加空间部件”或“多个 Transform 加显式根”；不能只删除唯一性检查。
-
-必须同时定义循环与所属检查、局部/世界变换、重挂接、父终结、历史恢复和离场重入。组成 owner、空间 parent、保存范围和销毁级联各自回答不同问题。
-
-**额外约束是非均匀缩放与旋转可能产生剪切。** 当前正尺度、归一化四元数的 TRS 不一定能表达任意保世界重挂接结果。可选择提前拒绝不可表示的操作、限制支持范围，或明确增加仿射表示；需要一次可审查的合同决定。不能失败后回退 identity 或默默损失变换。该结论来自矩阵组合性质与当前 [math.hpp](../../src/world/math.hpp) 合同，不是外部引擎性能结论。
+Scene v2 保存真实类型名、组成、空间关系、资源来源及通用标量/枚举/内联 record，物理配置使用同一 `properties.body`。公开业务引用和容器仍未接入一般归档；核心 Class 引用驱动的默认组件图、跨 Actor 挂接、材质槽实例覆盖仍需完善。现状与候选见 [Class/Actor 评估](ue-class-actor-attachment-2026-10.md)。
 
 ### 补充：UE 组件无序与 Tick 调度
 
@@ -166,9 +110,9 @@ UE 的“组件无序”应理解为所属组件集合没有可依赖的枚举�
 
 本次默认 TickFunction API 页标为 5.8，包含合批、间隔、线程资格和先决条件。Tick 合批不等于组件载荷池化，所有 Tick 也不自动获得并行安全。Actor Ticking 概述保留了旧式逐 Actor 驱动的历史措辞，本文依据注册、目标和管理器接口交叉核对，不用该句概述推导全部内部路径。[FTickFunction](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Engine/FTickFunction?lang=en-US)
 
-对 FrostFox，Actor 组成序列继续服务展示和历史，SceneComponent 空间关系决定变换传播，执行登记说明何时运行。排列位置不应隐式规定业务 Tick 依赖。按类型查询、按阶段调度及针对热负载合批可以共存；不必因为 UE 使用 TSet 就改掉现有组成容器。
+FrostFox 已明确把 Actor 成员和组件组成顺序用于默认 Begin/Tick 与反向 End；SceneComponent 空间树独立决定变换关系，物理按空间依赖回写。未来合批不能无声重排已承诺的回调顺序；跨系统执行依赖需要显式表达，不因 UE 使用 TSet 就改变现有组成容器。
 
-## 6. 专家讨论中的分歧及收口
+## 6. 原研究阶段的分歧与取舍
 
 | 被挑战的建议 | 质询结果 | 本轮判断 |
 | --- | --- | --- |
@@ -176,19 +120,15 @@ UE 的“组件无序”应理解为所属组件集合没有可依赖的枚举�
 | 注册处理器是否已经完成扩展？ | 本地席指出 Session/应用仍有专用逻辑；AAA 席以 Destiny 说明作者体验不能由注册表代替 | 以一个完整能力交付为终点，而非“类型注册成功” |
 | 批次接口是否应该立即附带效应图？ | Unity 席要求避免固化 N 次逐对象调度；本地席指出当前串行合同已经成立 | 采用批次消费形态，当前明确顺序；真实并行出现后再做访问分析 |
 | 资源可卸载是否意味着强 owner 没有问题？ | UE 席指出兄弟 CPU 数据仍驻留；AAA 席指出存活图和资源图根的用途不同 | 保留合同，按根来源、保留字节和持续时间决定是否重审 |
-| 应不应该先通用化全部依赖和空间关系？ | 现有只一项显式依赖；Godot/Cry 席确认外部 parent/owner/删除合同不能机械套用 | 优先补真实能力接线；空间与依赖按新消费者分别演进 |
+| 应不应该先通用化全部依赖和空间关系？ | 研究基线只有一项显式依赖；Godot/Cry 席确认外部 parent/owner/删除合同不能机械套用 | 优先补真实能力接线；空间与依赖按新消费者分别演进 |
 | 所有寿命和可见性问题能否等性能数据？ | AAA 席反对：同帧字段可见、结构提交、destroy/close 写入资格是现在就必须明确的语义 | 语义先明确；版本、双缓冲、栅栏等设施由真实异步消费者触发 |
 
 这轮没有找到推翻共同 Runtime、detach 保身份或显式 destroy 的必要证据。也没有证据证明当前按类型索引已经足够应付大量同构模拟。两种判断可以同时成立。
 
-## 7. 下一步的具体终点
+## 7. 后续候选
 
-**推荐下一项相关开发做一次“真实新能力的完整接入”，例如移动或旋转能力。** 名称由实际游戏需求决定，不能再增加一个只有计数的演示来替代业务压力。
+基础空间、生命周期及普通物理组成已贯通正式类型、参数编辑、场景保存、模拟和退出；当前验收见各模块文档。下一增量应由真实游戏需求选择，例如核心 Class 引用实例化完整组件图，或独立 Actor 在挂点与世界空间之间切换。
 
-完整切片至少贯通：正式类型与字段 → World 执行参与 → 真实算法及可观察结果 → 实际需要的创建、参数编辑和历史 → 停用、移除、撤销、关闭。若范围选择无窗口游戏宿主，就明确仅验收该宿主；若声称编辑器支持，就完成 Session 和 UI 的对应接线。当前停止模式和游戏运行模式怎样查看结果也应随切片明确，不能暗中加入半套 Play 状态。
+这些能力需要同步对象引用、加载修复与失败边界，不能只放宽一个类型或 parent 检查。Compound、材质槽覆盖、批执行与并行各有自己的需求和成本，不作为当前模型必须一次完成的清单。性能结论仍需实际负载测量。
 
-进入实现时，以已有端到端消费者扩展必要情形：新能力和 Counter 共存、派生匹配没有误更新、运行资格一致、结构请求有确定可见点、错误后退出完整、历史恢复同身份。性能若属于该项任务，再测实际解析、调用、复制、GC 和驻留；本轮不新增基准工程。
-
-后续按真实需求选择：多空间部件先补空间合同；资产与流送先补持久内容、实例发布和驻留合同；高密度模拟先测布局与批执行；实际并行再定义读写与任务依赖。当前建议可以在现有共同类型和唯一 World 操作链上逐步完成。
-
-过程材料保存在本工作树忽略的 `out/research-world-2026-10/`。它们保留各席的一手来源定位、公开证据限制和交叉回复；当前实现规范不由这些过程稿定义。
+原研究过程材料位于工作树忽略的 `out/research-world-2026-10/`，只供来源与讨论追溯。

@@ -23,34 +23,9 @@ Json vector(math::Vector3 value) { return Json::array({value.x,value.y,value.z})
 math::Vector3 vector(const Json& value) {
     const auto v=json_format::vector<3>(value); return {v[0],v[1],v[2]};
 }
-Json body_settings(const physics::BodySettings& value) {
-    constexpr std::array shapes{"box","sphere","triangle_mesh","capsule"};
-    constexpr std::array motions{"stationary","kinematic","dynamic"};
-    if (static_cast<unsigned>(value.shape)>=shapes.size() || static_cast<unsigned>(value.motion)>=motions.size() ||
-        !math::is_finite(value.half_extents) || value.half_extents.x<=0 || value.half_extents.y<=0 || value.half_extents.z<=0 ||
-        !std::isfinite(value.radius) || value.radius<=0 || !std::isfinite(value.capsule_half_height) || value.capsule_half_height<=0 ||
-        value.category>=value.responses.size() || !std::isfinite(value.material.friction) || value.material.friction<0 ||
-        !std::isfinite(value.material.restitution) || value.material.restitution<0 || value.material.restitution>1 ||
-        (value.shape==physics::ShapeKind::triangle_mesh && value.motion!=physics::MotionKind::stationary) ||
-        (value.cooked_shape && value.shape!=physics::ShapeKind::triangle_mesh))
-        throw std::runtime_error("Invalid physical body settings.");
-    Json responses=Json::array();
-    for (auto response:value.responses) {
-        if (static_cast<unsigned>(response)>static_cast<unsigned>(physics::Response::block))
-            throw std::runtime_error("Invalid physics collision response.");
-        responses.push_back(static_cast<unsigned>(response));
-    }
-    return {{"shape",shapes[static_cast<unsigned>(value.shape)]},
-        {"motion",motions[static_cast<unsigned>(value.motion)]},
-        {"half_extents",vector(value.half_extents)},
-        {"radius",value.radius},{"capsule_half_height",value.capsule_half_height},
-        {"category",value.category},{"responses",std::move(responses)},
-        {"sensor",value.sensor},{"friction",value.material.friction},
-        {"restitution",value.material.restitution}};
-}
 physics::BodySettings body_settings(const Json& value,bool legacy) {
     fields(value,{"shape","motion","half_extents","radius","capsule_half_height",
-        "category","responses","sensor","friction","restitution"});
+        "category","responses","sensor","friction","restitution","enabled"});
     if (legacy) for (const auto key:{"capsule_half_height","category","responses","sensor","friction","restitution"})
         (void)value.at(key);
     physics::BodySettings settings;
@@ -80,19 +55,20 @@ physics::BodySettings body_settings(const Json& value,bool legacy) {
     settings.radius=number("radius",settings.radius);
     settings.capsule_half_height=number("capsule_half_height",settings.capsule_half_height);
     const auto category=value.contains("category")?json_format::identity(value.at("category")):settings.category;
-    if (category>=settings.responses.size()) throw std::runtime_error("Invalid physics category.");
-    settings.category=static_cast<std::uint8_t>(category);
+    if (category>=16) throw std::runtime_error("Invalid physics category.");
+    settings.category=static_cast<std::uint32_t>(category);
     if (value.contains("responses")) {
         const auto& responses=value.at("responses");
-        if (!responses.is_array() || responses.size()!=settings.responses.size())
+        if (!responses.is_array() || responses.size()!=16)
             throw std::runtime_error("Physics responses require 16 entries.");
-        for (std::size_t i=0;i<settings.responses.size();++i) {
+        for (std::size_t i=0;i<16;++i) {
             const auto response=json_format::identity(responses[i]);
             if (response>static_cast<unsigned>(physics::Response::block))
                 throw std::runtime_error("Invalid physics collision response.");
-            settings.responses[i]=static_cast<physics::Response>(response);
+            take(settings.set_response(static_cast<std::uint32_t>(i),static_cast<physics::Response>(response)));
         }
     }
+    settings.enabled=value.value("enabled",true);
     settings.sensor=value.value("sensor",settings.sensor);
     settings.material={number("friction",settings.material.friction),number("restitution",settings.material.restitution)};
     return settings;
@@ -101,7 +77,7 @@ std::string type_name(Runtime& runtime,TypeId type) { return std::string(take(ru
 auto failed(const std::exception& error) { return std::unexpected(Error{ErrorCode::invalid_storage,error.what()}); }
 bool derives(Runtime& runtime,TypeId type,TypeId base) { return take(runtime.is_a(type,base)); }
 bool physical_type(Runtime& runtime,TypeId type) {
-    const auto body=runtime.find_type("physics.BodyComponent");
+    const auto body=runtime.native_type<world::PrimitiveComponent>();
     return body && derives(runtime,type,*body);
 }
 std::vector<detail::ScalarField> business_fields(Runtime& runtime,const world::Types& types,TypeId type) {
@@ -322,7 +298,7 @@ Result<std::string> Session::serialize() const {
                     value["emissive"]=vector(mesh.material.emissive);
                 }
                 if(derives(runtime,state.type,types_.light_component)) take(world::validate_light(take(world::read_light(runtime,component.id()))));
-                if (physical_type(runtime,state.type)) value["body"]=body_settings(take(physics::read_settings(runtime,component.id())));
+                if (physical_type(runtime,state.type)) take(world::validate_body_settings(take(physics::read_settings(runtime,component.id()))));
                 if(derives(runtime,state.type,physics_types_.distance_constraint_component)) {
                     const auto target=take(physics::constraint_target(runtime,component.id()));
                     if(target!=ObjectId{} && !actor_keys.contains(target)) throw std::runtime_error("Constraint target must belong to this scene.");
@@ -341,7 +317,7 @@ Result<std::string> Session::serialize() const {
 }
 Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Project& project,Prepare prepare) {
     try {
-        const auto data=json_format::parse(text);
+        auto data=json_format::parse(text);
         fields(data,{"version","actors"});
         const auto version=json_format::identity(data.at("version"));
         if (version!=1 && version!=2) throw std::runtime_error("Unsupported scene format version.");
@@ -351,6 +327,37 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
         const auto& types=session->types_;
         std::vector<ObjectId> actor_ids;
         std::vector<std::pair<ObjectId,std::size_t>> constraint_targets;
+        // One-way document migration. Legacy BodyComponent never enters Runtime.
+        for (auto& actor:data["actors"]) {
+            auto& parts=actor["components"];
+            if (!parts.is_array() || parts.size()>maximum_components) throw std::runtime_error("Invalid scene Component count.");
+            auto legacy=std::ranges::find_if(parts,[](const auto& part){return part.at("type")=="physics.BodyComponent";});
+            if (legacy==parts.end()) continue;
+            std::unordered_set<std::size_t> identities;
+            for (const auto& part:parts) {
+                const auto id=json_format::identity(part.at("id"));
+                if (!id || !identities.insert(id).second) throw std::runtime_error("Duplicate or empty scene Component identity.");
+            }
+            if (version==1) fields(*legacy,{"id","type","enabled","physics"});
+            else fields(*legacy,{"id","type","enabled","properties","body"});
+            if (legacy->contains("properties") && (!legacy->at("properties").is_object() || !legacy->at("properties").empty()))
+                throw std::runtime_error("Legacy BodyComponent has unsupported business properties.");
+            if (std::ranges::count_if(parts,[](const auto& part){return part.at("type")=="physics.BodyComponent";})!=1)
+                throw std::runtime_error("Legacy scenes with multiple BodyComponents require an explicit component migration.");
+            const auto root_key=json_format::identity(actor.at("root"));
+            auto spatial=std::ranges::find_if(parts,[&](const auto& part){return json_format::identity(part.at("id"))==root_key;});
+            if (spatial==parts.end()) throw std::runtime_error("Legacy physical Actor has no root.");
+            if (spatial->at("type")=="world.SceneComponent") (*spatial)["type"]="world.CollisionComponent";
+            const auto type=take(runtime.find_type(spatial->at("type").template get<std::string>()));
+            if (!physical_type(runtime,type)) throw std::runtime_error("Legacy physical root must migrate to a PrimitiveComponent type.");
+            const auto key=version==1?"physics":"body";
+            if (spatial->contains(key) || (spatial->contains("properties") && spatial->at("properties").contains("body")))
+                throw std::runtime_error("Legacy physical root already has body configuration.");
+            (*spatial)[key]=legacy->at(key);
+            (*spatial)[key]["enabled"]=legacy->at("enabled");
+            parts.erase(legacy);
+        }
+
         for (const auto& actor:actors) {
             if (version==1) fields(actor,{"type","name","enabled","root","components"});
             else fields(actor,{"type","name","enabled","root","components","properties"});
@@ -415,25 +422,24 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
                 committed(world.set_enabled(id,component.at("enabled").get<bool>()));
                 attachments.push_back({id,parent,id==scene_root});
             }
-            for (std::size_t i=0;i<components.size();++i) {
-                const auto& component=components[i]; const auto id=roots[i].id();
-                const auto component_type=take(runtime.type_of(id));
-                if (physical_type(runtime,component_type)) {
-                    auto settings=body_settings(component.at(version==1?"physics":"body"),version==1);
-                    if (settings.shape==physics::ShapeKind::triangle_mesh) {
-                        if (scene_root==ObjectId{}) throw std::runtime_error("Triangle collision needs a root mesh.");
-                        const auto mesh=take(world::read_static_mesh(runtime,scene_root));
-                        if (mesh.mesh.source.empty()) throw std::runtime_error("Triangle collision needs a persistent mesh source.");
-                        if (mesh.mesh.source.starts_with("project/"))
-                            settings.cooked_shape=take(project.collision(mesh.mesh.source,
-                                take(world::read_transform(runtime,scene_root)).scale));
-                        else if (!mesh.mesh.source.starts_with("builtin/"))
-                            throw std::runtime_error("Triangle collision has an unsupported mesh source.");
-                    }
-                    take(physics::configure(runtime,id,std::move(settings)));
-                }
-            }
             if (!attachments.empty()) committed(world.attach_components(root.id(),attachments));
+            for (std::size_t i=0;i<components.size();++i) {
+                const auto& component=components[i];const auto id=roots[i].id();
+                const auto component_type=take(runtime.type_of(id));
+                if (!physical_type(runtime,component_type)) continue;
+                const auto key=version==1?"physics":"body";
+                if (component.contains(key) && component.value("properties",Json::object()).contains("body"))
+                    throw std::runtime_error("Body settings have two competing definitions.");
+                auto settings=component.contains(key)?body_settings(component.at(key),version==1):take(physics::read_settings(runtime,id));
+                if (settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh) {
+                    const auto mesh=take(world::read_static_mesh(runtime,id));
+                    if (mesh.mesh.source.empty()) throw std::runtime_error("Triangle collision needs a persistent mesh source.");
+                    const auto transform=take(world::relative_transform(take(world::world_matrix(runtime,id)),world::transform_matrix({})));
+                    if (mesh.mesh.source.starts_with("project/")) settings.cooked_shape=take(project.collision(mesh.mesh.source,transform.scale));
+                    else if (!mesh.mesh.source.starts_with("builtin/")) throw std::runtime_error("Triangle collision has an unsupported mesh source.");
+                }
+                take(physics::configure(runtime,id,std::move(settings)));
+            }
             committed(world.set_enabled(root.id(),actor.at("enabled").get<bool>()));
             committed(world.attach(root.id()));
             session->names_.emplace(root.id(),label);

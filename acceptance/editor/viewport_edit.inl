@@ -3,7 +3,7 @@ void verify_viewport_duplication() {
     changed(document.create_static_mesh(editor::mesh_assets().front(),{1,2,3}));
     const auto first=document.selection().actor;
     changed(document.add_component(document.types().scene_component));
-    changed(document.add_component(document.physics_types().body_component));
+    changed(document.add_component(document.types().collision_component));
     auto body=physics::BodySettings{};body.sensor=true;body.radius=2.f;
     take(document.configure_body(document.selection().object,body));
     changed(document.create_light(world::LightKind::point,{4,5,6}));

@@ -58,6 +58,32 @@ ObjectId member(editor::Session& session,TypeId type) {
     throw std::runtime_error("Missing component");
 }
 world::FieldPath field(editor::Session& session,TypeId type,std::string_view name) { return {take(session.world().runtime().find_field(type,name))}; }
+void verify_primitive_source(editor::Project& project) {
+    editor::Session document;
+    auto& runtime=document.world().runtime();
+    source::Program program(runtime,document.types().static_mesh_component);
+    auto candidate=take(source::Program::prepare(take(program.request("Primitive.source",
+        "void configure() { self.body.enabled = true; self.body.half_extents.x = 2.0f; self.body.material.friction = 0.6f; }"))));
+    take(program.try_publish(candidate));
+    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
+    const auto actor=document.selection().actor;
+    const auto component=*take(world::root_component(runtime,actor));
+    auto lease=take(program.pin());take(lease.invoke(component,{}));
+    const auto settings=take(physics::read_settings(runtime,component));
+    require(settings.enabled && settings.half_extents.x==2.f && settings.material.friction==.6f,
+        "Source did not write the Primitive's shared reflected body configuration.");
+    const auto saved=take(document.serialize());
+    const auto data=Json::parse(saved);
+    require(data["actors"][0]["components"].size()==1 &&
+        data["actors"][0]["components"][0]["properties"]["body"]["enabled"]==true &&
+        !data["actors"][0]["components"][0].contains("body"),
+        "Primitive physics acquired a separate component or a second serialization path.");
+    auto reopened=take(editor::Session::deserialize(saved,project));
+    changed(reopened->start());take(reopened->update(1.f/60.f));changed(reopened->stop());
+    require(take(reopened->serialize())==saved,"Jolt startup changed the authored Primitive configuration.");
+    changed(document.close());changed(reopened->close());
+    std::puts("Primitive Source/Scene: PASS (generated reflection, JIT fields, generic properties, Jolt lifecycle)");
+}
 void verify_query_source(editor::Project& project) {
     auto evidence=std::make_shared<Evidence>();
     const editor::Session::Prepare query_code=[&](world::World& world)->Result<std::shared_ptr<void>> {
@@ -77,7 +103,10 @@ void verify_query_source(editor::Project& project) {
     };
     auto scene=Json::parse(take(editor::read_file(editor::asset_directory()/"examples/Examples/Physic/Scenes/Raycasts.scene")));
     for(auto& actor:scene["actors"]) if(actor["name"]=="Scene query emitter") {
-        auto& component=actor["components"][3];component["type"]="game.QueryProbe";component["properties"]["automatic"]=false;
+        for (auto& component:actor["components"]) if (component["type"]=="physics.SceneQueryComponent" &&
+            component["properties"]["settings"]["mode"]=="single") {
+            component["type"]="game.QueryProbe";component["properties"]["automatic"]=false;break;
+        }
     }
     auto document=take(editor::Session::deserialize(scene.dump(),project,query_code));
     ObjectId probe{};
@@ -224,11 +253,15 @@ void run() {
     upgraded["actors"][0]["components"][0]["roughness"]=world::Material{}.roughness;
     upgraded["actors"][0]["components"][0]["metallic"]=0.f;
     upgraded["actors"][0]["components"][0]["emissive"]=Json::array({0.f,0.f,0.f});
-    require(migrated_json==upgraded,"Legacy scene did not preserve spatial/resource data while upgrading to v2.");
+    auto migrated_structure=migrated_json;
+    require(migrated_structure["actors"][0]["components"][0]["properties"]["body"]["enabled"]==false,
+        "Legacy visual mesh unexpectedly enabled physics.");
+    migrated_structure["actors"][0]["components"][0]["properties"].erase("body");
+    require(migrated_structure==upgraded,"Legacy scene did not preserve spatial/resource data while upgrading to v2.");
     auto physical=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     const auto physical_actor=take(physical->world().members()).front().id();take(physical->select(physical_actor));
     auto& physical_runtime=physical->world().runtime();
-    const auto body_type=take(physical_runtime.find_type("physics.BodyComponent"));changed(physical->add_component(body_type));
+    const auto body_type=take(physical_runtime.find_type("world.CollisionComponent"));changed(physical->add_component(body_type));
     const auto body=member(*physical,body_type);
     physics::BodySettings settings;
     settings.shape=physics::ShapeKind::sphere;settings.motion=physics::MotionKind::dynamic;
@@ -236,9 +269,9 @@ void run() {
     take(physical->configure_body(body,settings));
     auto physical_reopened=take(editor::Session::deserialize(take(physical->serialize()),project,prepare(evidence)));
     take(physical_reopened->select(take(physical_reopened->world().members()).front().id()));
-    const auto reopened_body_type=take(physical_reopened->world().runtime().find_type("physics.BodyComponent"));
+    const auto reopened_body_type=take(physical_reopened->world().runtime().find_type("world.CollisionComponent"));
     require(take(physics::read_settings(physical_reopened->world().runtime(),member(*physical_reopened,reopened_body_type)))==
-        take(physics::read_settings(physical_runtime,body)),"Scene lost non-reflected physical body settings.");
+        take(physics::read_settings(physical_runtime,body)),"Scene lost reflected Primitive body settings.");
     changed(physical_reopened->close());
     changed(physical->start()); require(!physical->update(.01f) && !physical->world().running(),"translate_owner overrode physics ownership.");
     changed(physical->close());
@@ -256,6 +289,7 @@ void run() {
     changed(document.undo());require(document.selection().actor==actor && std::get<float>(take(document.read_property(move,speed)))==4,"Deletion undo lost business identity/fields.");
     changed(document.close());changed(reopened->close());changed(defaulted->close());
     verify_query_source(project);
+    verify_primitive_source(project);
     require(evidence->prepared==evidence->destroyed && evidence->live_runtime_on_release,"Prepared code leaked or outlived its Runtime.");
     std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, load cleanup, Source actions, repeated play/stop, Jolt ownership)");
 }

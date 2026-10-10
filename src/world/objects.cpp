@@ -32,6 +32,13 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<LightKind>::build(runtime));
     definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
     definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
+    definitions.push_back(reflection::Definition<ShapeKind>::build(runtime));
+    definitions.push_back(reflection::Definition<MotionKind>::build(runtime));
+    definitions.push_back(reflection::Definition<Response>::build(runtime));
+    definitions.push_back(reflection::Definition<PhysicsMaterial>::build(runtime));
+    definitions.push_back(reflection::Definition<BodySettings>::build(runtime));
+    definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
+    definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
     if (!runtime.find_type("core.String")) definitions.push_back(string_definition(runtime));
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
@@ -40,6 +47,7 @@ Result<Types> register_types(Runtime& runtime) {
     types.component = (*ids)[1]; types.scene_component = (*ids)[2]; types.material = (*ids)[3]; types.static_mesh_component = (*ids)[4];
     types.static_mesh_actor = (*ids)[5];
     types.light_kind = (*ids)[6]; types.light_settings = (*ids)[7]; types.light_component = (*ids)[8];
+    types.primitive_component = (*ids)[14]; types.collision_component = (*ids)[15];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
         auto outer = runtime.find_field(types.scene_component, name);
         if (!outer) return std::unexpected(outer.error());
@@ -55,6 +63,38 @@ Result<Types> register_types(Runtime& runtime) {
     if (auto result = make_paths(types.rotation_fields, types.quaternion, "rotation"); !result) return std::unexpected(result.error());
     if (auto result = make_paths(types.scale_fields, types.vector3, "scale"); !result) return std::unexpected(result.error());
     return types;
+}
+
+Response BodySettings::response(std::uint32_t channel) const noexcept {
+    if (channel>=16) return Response::ignore;
+    const auto bit=std::uint32_t{1}<<channel;
+    return ignore_categories&bit ? Response::ignore : overlap_categories&bit ? Response::overlap : Response::block;
+}
+Result<void> BodySettings::set_response(std::uint32_t channel, Response value) {
+    if (channel>=16 || (value!=Response::ignore && value!=Response::overlap && value!=Response::block))
+        return error(ErrorCode::argument_mismatch,"Invalid collision channel or response.");
+    const auto bit=std::uint32_t{1}<<channel;
+    ignore_categories=(ignore_categories&~bit)|(value==Response::ignore?bit:0);
+    overlap_categories=(overlap_categories&~bit)|(value==Response::overlap?bit:0);
+    return {};
+}
+Result<void> validate_body_settings(const BodySettings& value) {
+    if (value.shape!=ShapeKind::box && value.shape!=ShapeKind::sphere && value.shape!=ShapeKind::triangle_mesh && value.shape!=ShapeKind::capsule)
+        return error(ErrorCode::argument_mismatch,"Unknown collision shape.");
+    if (value.motion!=MotionKind::stationary && value.motion!=MotionKind::kinematic && value.motion!=MotionKind::dynamic)
+        return error(ErrorCode::argument_mismatch,"Unknown body motion type.");
+    if (!math::is_finite(value.half_extents) || value.half_extents.x<=0 || value.half_extents.y<=0 || value.half_extents.z<=0 ||
+        !std::isfinite(value.radius) || value.radius<=0 || !std::isfinite(value.capsule_half_height) || value.capsule_half_height<=0)
+        return error(ErrorCode::argument_mismatch,"Collision dimensions must be finite and positive.");
+    if (value.category>=16 || (value.ignore_categories|value.overlap_categories)>0xffff ||
+        (value.ignore_categories&value.overlap_categories)!=0 || !std::isfinite(value.material.friction) || value.material.friction<0 ||
+        !std::isfinite(value.material.restitution) || value.material.restitution<0 || value.material.restitution>1)
+        return error(ErrorCode::argument_mismatch,"Invalid collision category, response masks or physical material.");
+    if (value.shape==ShapeKind::triangle_mesh && value.motion!=MotionKind::stationary)
+        return error(ErrorCode::argument_mismatch,"Triangle mesh collision requires a stationary body.");
+    if (value.cooked_shape && value.shape!=ShapeKind::triangle_mesh)
+        return error(ErrorCode::argument_mismatch,"Cooked collision requires a triangle mesh body.");
+    return {};
 }
 
 namespace detail {
