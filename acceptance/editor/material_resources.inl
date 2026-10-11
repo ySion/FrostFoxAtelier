@@ -196,6 +196,16 @@ void verify_material_resources() {
     require(!fallback_visible(),"A fully bound mesh retained ineffective fallback material controls.");
     take(document.clear_material(partial,second_slot));
     require(fallback_visible(),"Clearing a material slot did not restore fallback controls.");
+    const auto before_history=take(material::capture(runtime,resource.id()));
+    take(document.material_undo(key));
+    const auto paused_history=take(material::capture(runtime,resource.id()));
+    take(document.start());const auto running_revision=document.revision();
+    require(!document.material_undo(key) && !document.material_undo(key,true),"Running World accepted material history replay.");
+    require(document.revision()==running_revision && take(material::capture(runtime,resource.id()))==paused_history,
+        "Rejected material history replay changed the material or document revision.");
+    take(document.stop());take(document.material_undo(key,true));
+    require(take(material::capture(runtime,resource.id()))->description()==before_history->description(),
+        "Rejected running history replay advanced its cursor or prevented redo after stop.");
     const auto old_surface=capture(a);changed(document.close());collect(document);
     require(old_surface->description().parameters.roughness==.8f && old_surface->description().textures[0].image,
         "Closing the Runtime invalidated an owning render capture.");

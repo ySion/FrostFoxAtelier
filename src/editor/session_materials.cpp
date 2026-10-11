@@ -127,6 +127,7 @@ std::vector<std::string> Session::dirty_materials() const {
     std::vector<std::string> result;for(const auto& [key,value]:materials_) {static_cast<void>(value);if(material_dirty(key)) result.push_back(key);}return result;
 }
 Result<void> Session::material_undo(std::string_view key,bool redo) {
+    if(world_.closed() || world_.running()) return failure("Stop the World before editing a material asset.");
     if(auto cancelled=cancel_edit();!cancelled) return cancelled;
     const auto at=materials_.find(std::string(key));if(at==materials_.end()) return failure("Material asset is not open.");
     auto& doc=at->second;
