@@ -88,12 +88,20 @@ struct Frame {
     // Uniform radiance from the scene's single Sky Light.
     // No Sky Light means zero; this is not a viewport ambient-light setting.
     std::array<float, 3> environment{};
+    std::array<float, 3> lighting_focus{}; // Receiver/play focus for following DDGI volumes; not camera eye.
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts
 // encoded commands, including an occluded Present; pre-encoding skips have zero
 // activity. Legacy counts are not GPU timings. Errors provide no complete statistics.
+struct ProbeVolumeStats {
+    bool enabled{},rolling{};
+    std::array<float,3> minimum{},maximum{},spacing{};
+    std::array<std::uint32_t,3> counts{};
+    std::uint32_t resident{},updated{},reset_probes{}; // CPU schedule, not GPU-valid probe counts.
+};
 struct FrameStats {
+    std::array<ProbeVolumeStats,probe_volume_limit> scene_lit_probe_volumes{};
     std::uint64_t ui_draw_calls{};
     std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
     std::uint64_t ui_instance_upload_bytes{};

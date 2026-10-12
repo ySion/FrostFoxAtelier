@@ -220,7 +220,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     render::Frame frame{drawing,camera(drawing.extent),{0,0,float(drawing.extent.width),float(drawing.extent.height)},room.meshes};
     frame.scene_identity=12000;frame.scene_revision=1;frame.lights=lights;frame.view.shading=render::Shading::scene_lit;
     auto& options=frame.view.lit;options.antialiasing=render::Antialiasing::none;options.gtao=false;options.sssr=false;options.bloom=false;
-    options.probe_min={-5,-1,-1};options.probe_max={5,5,8};options.probe_counts={11,7,10};options.probe_update_budget=96;options.probe_rays=64;
+    options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};options.probe_volumes[0].counts={11,7,10};options.probe_update_budget=96;options.probe_rays=64;
     const auto capture=[&](const char* name) {
         render::Capture result;
         for(unsigned i=0;i<warmup_frames;++i) {pump();++drawing.id;take(renderer.render(frame,i+1==warmup_frames?&result:nullptr));}

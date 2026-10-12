@@ -8,6 +8,7 @@ struct ScalarField {
     std::vector<std::string> names;
     world::FieldPath path;
     TypeId type;
+    std::string label,category;
 };
 inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId type) {
     std::vector<ScalarField> result;
@@ -24,6 +25,11 @@ inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId t
             if (field.value.form != ValueForm::inline_value)
                 return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene business references are not supported: " + field.name});
             auto child = prefix; child.names.push_back(field.name); child.path.push_back(field.id);
+            // A vector's lanes share the aggregate caption. Other record children
+            // use their own caption, while categories inherit through records.
+            if(!(*info)->math.vector() && (*info)->math.shape!=math::Shape::quaternion) child.label=field.label;
+            else if(!field.label.empty()) child.label=field.label;
+            if(!field.category.empty()) child.category=field.category;
             auto added = self(self, field.value.type, std::move(child)); if (!added) return added;
         }
         return {};

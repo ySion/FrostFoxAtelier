@@ -14,7 +14,7 @@ namespace browser_control {
 inline constexpr ui::ControlKey root=1ULL<<44, project=root+1, engine=root+2, up=root+3,
     path=root+4, search=root+5, clear=root+6, filter=root+7, list=root+8, details=root+9, tiles=root+10,
     open=root+11, add=root+12, view_menu=root+13, actions=root+14, back=root+15, directories=root+16,
-    results=root+17, content=root+18, filter_first=root+20;
+    results=root+17, content=root+18, divider=root+19, filter_first=root+20;
 inline constexpr ui::TableKey name_column=1, type_column=2, size_column=3;
 }
 class AssetBrowser {
@@ -53,6 +53,8 @@ private:
     ui::TableSort sort_{browser_control::name_column,ui::TableSortDirection::ascending};
     ui::TableKey active_column_{browser_control::name_column};
     std::array<float,3> column_widths_{220,90,84};
+    double directory_width_{144};
+    std::optional<double> directory_resize_;
     std::shared_ptr<const ui::TableData> table_data_;
     bool table_dirty_{true};
     std::vector<Item> directories_;

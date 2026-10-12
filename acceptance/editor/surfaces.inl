@@ -1,5 +1,6 @@
 int verify_editor_surfaces(Application& app,const char* output_directory) {
     using namespace atelier;
+    namespace control=atelier::editor::control;
     using Access=application::EditorAcceptanceAccess;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
@@ -7,7 +8,7 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     tick(app);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Surface scene creation failed.");tick(app);
     const auto point=[&](ui::ControlKey key) {
-        const auto* control=app.presented()->find(key);require(control!=nullptr,"Surface control is absent.");
+        const auto* control=app.presented()->find(key);if(!control) throw std::runtime_error("Surface control is absent: "+std::to_string(key));
         return math::Vector2{control->bounds.x+control->bounds.width*.5f,control->bounds.y+control->bounds.height*.5f};
     };
     const auto pointer=[&](ui::EventKind kind,math::Vector2 p) {Access::input(app,{.kind=kind,.x=p.x,.y=p.y,.button=ui::PointerButton::primary});};
@@ -62,9 +63,158 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         require(!app.docking().dragging() && app.presented()->find(control::viewport)->bounds==before,
             "Cancelled divider committed a late release or retained its preview.");
     }
+    namespace browser=editor::browser_control;
+    const auto history=app.document().undo_count();
+    const auto tree_width=[&] {const auto* tree=app.presented()->find(browser::directories);
+        require(tree!=nullptr,"Asset directory tree is absent.");return tree->bounds.width;};
+    const auto split=point(browser::divider);const auto initial_tree=tree_width();
+    const auto viewport=app.presented()->find(control::viewport)->bounds;
+    pointer(ui::EventKind::pointer_down,split);
+    for(unsigned step=1;step<=4;++step) {
+        pointer(ui::EventKind::pointer_move,{split.x+step*16.f,split.y});tick(app,1);
+        require(GetCapture()==app.window(),"Asset directory splitter lost capture while crossing its content.");
+        require(app.presented()->find(control::viewport)->bounds==viewport,"Asset directory resize changed the scene viewport.");
+    }
+    pointer(ui::EventKind::pointer_up,{split.x+64,split.y});tick(app);
+    require(tree_width()>initial_tree+40,"Asset directory splitter did not widen the tree.");
+    const auto committed_tree=tree_width();
+    for(unsigned reason=0;reason<3;++reason) {
+        const auto start=point(browser::divider);pointer(ui::EventKind::pointer_down,start);
+        pointer(ui::EventKind::pointer_move,{start.x-35,start.y});tick(app,1);
+        require(tree_width()<committed_tree-20,"Asset directory splitter did not preview shrinking.");
+        if(reason==0) escape();
+        else Access::input(app,{.kind=reason==1?ui::EventKind::focus_lost:ui::EventKind::capture_lost});
+        pointer(ui::EventKind::pointer_up,{start.x-35,start.y});tick(app);
+        require(std::abs(tree_width()-committed_tree)<1,"Cancelled asset resize changed the saved width.");
+    }
+    for(const float direction:{-1.f,1.f}) {
+        const auto start=point(browser::divider);pointer(ui::EventKind::pointer_down,start);
+        pointer(ui::EventKind::pointer_move,{start.x+direction*10000,start.y});tick(app);
+        const auto dpi=app.presented()->drawing->dpi_scale;
+        require(tree_width()>=96*dpi-.5f && app.presented()->find(browser::content)->bounds.width>=64*dpi-.5f,
+            "Asset directory resize hid the tree or result content at its limits.");
+        escape();pointer(ui::EventKind::pointer_up,start);tick(app);
+    }
+    require(app.document().undo_count()==history,"Asset directory layout entered scene history.");
+    capture(app,output/"asset-directory-width.png");
+    const auto original_lighting=Access::scene_lit_view(app).lit;
+    const auto menu_click=[&](ui::ControlKey key) {
+        const auto at=centre(app,key);const math::Vector2 p{float(at.x),float(at.y)};
+        pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);
+    };
+    const auto debug_menu=[&] {
+        menu_click(control::scene_shading);menu_click(control::lit_menu);menu_click(control::probe_debug_menu);
+    };
+    debug_menu();menu_click(control::probe_modes_menu);
+    capture(app,output/"ddgi-probe-menu.png");
+    menu_click(control::probe_modes_first+2);
+    require(!Access::menu_open(app) && Access::scene_lit_view(app).lit.probe_visualization==renderer::ProbeVisualization::state,
+        "DDGI Probe Spheres menu did not apply its radio selection.");
+    debug_menu();capture(app,output/"ddgi-debug-menu.png");
+    menu_click(control::probe_options_first);
+    require(!Access::menu_open(app) && Access::scene_lit_view(app).lit.probe_volume!=original_lighting.probe_volume,
+        "DDGI Volume Bounds menu did not apply its checkbox.");
+    require(app.document().undo_count()==history,"DDGI display menus entered scene history.");
+    Access::scene_lit_settings(app,original_lighting);
+    // Exercise camera lifetime through actual input and the public pipe. The
+    // client thread owns only protocol data; Application stays on this thread.
+    namespace api=atelier::control;
+    const auto directory=output/"Control";app.enable_control(directory);
+    const auto instances=api::discover(directory);
+    const auto instance=std::ranges::find_if(instances,[](const auto& item){return item.at("pid").template get<DWORD>()==GetCurrentProcessId();});
+    require(instance!=instances.end(),"Camera acceptance Control endpoint is absent.");
+    const auto control_reply=[&] {
+        auto pending=std::async(std::launch::async,[descriptor=*instance] {
+            api::Client client(descriptor,std::chrono::seconds(5));
+            const auto state=client.call({{"op","capabilities"}});
+            return client.call({{"op","view.set"},{"state_token",state.at("state_token")},
+                {"args",{{"patch",api::Json::object()}}}});
+        });
+        while(pending.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready)
+            require(app.step(),"Editor closed during camera Control acceptance.");
+        return pending.get();
+    };
+    const auto camera_point=point(control::viewport);
+    for(unsigned gesture=0;gesture<3;++gesture) for(unsigned ending=0;ending<4;++ending) {
+        const auto button=gesture==2?ui::PointerButton::primary:ui::PointerButton::middle;
+        Access::input(app,{.kind=ui::EventKind::pointer_down,.x=camera_point.x,.y=camera_point.y,
+            .button=button,.shift=gesture==0,.alt=gesture==2});
+        const auto busy=control_reply();
+        require(busy.at("status")=="error" && busy.at("error").at("code")=="busy","Control did not protect an active camera gesture.");
+        const auto& reasons=busy.at("error").at("busy_reasons");
+        require(std::ranges::find(reasons,gesture==0?"camera_pan":"camera_orbit")!=reasons.end() &&
+            std::ranges::find(reasons,gesture==0?"camera_orbit":"camera_pan")==reasons.end(),"Control reported the wrong camera gesture.");
+        Access::input(app,{.kind=ui::EventKind::pointer_up,.x=camera_point.x,.y=camera_point.y,.button=ui::PointerButton::secondary});
+        require(control_reply().at("status")=="error","Unrelated mouse release ended a camera gesture.");
+        if(ending==1 || ending==2) Access::input(app,{.kind=ending==1?ui::EventKind::focus_lost:ui::EventKind::capture_lost});
+        else if(ending==3) {
+            Access::input(app,{.kind=ui::EventKind::key_down,.key=ui::Key::f10},VK_F10);tick(app,1);
+            const auto menu=control_reply();
+            require(menu.at("status")=="error" && menu.at("error").at("busy_reasons")==api::Json::array({"menu"}),
+                "Opening a menu retained the old camera gesture or lost menu protection.");
+            escape();tick(app,1);
+        }
+        Access::input(app,{.kind=ui::EventKind::pointer_up,.x=camera_point.x,.y=camera_point.y,.button=button});
+        const auto released=control_reply();
+        if(released.at("status")!="ok") throw std::runtime_error("Ended camera gesture left Control busy: "+released.dump());
+        const auto stopped=Access::camera_view(app);
+        Access::input(app,{.kind=ui::EventKind::pointer_move,.x=camera_point.x+8,.y=camera_point.y+8});tick(app,1);
+        require(Access::camera_view(app)==stopped && GetCapture()!=app.window(),"Ended camera gesture resumed on late movement.");
+        report<<"camera,"<<gesture<<','<<ending<<",idle\n";report.flush();
+    }
+    require(app.document().undo_count()==history,"Camera gestures entered scene history.");
+    require(bool(Access::command(app,editor::Command::show_world_settings)),"Lighting page command failed.");tick(app,1);
+    capture(app,output/"world-lighting.png");
+    const auto press_tab=[&](ui::ControlKey key) {const auto p=point(key);pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);};
+    press_tab(editor::world_control::effects_tab);capture(app,output/"world-effects.png");
+    press_tab(editor::world_control::diagnostics_tab);capture(app,output/"world-diagnostics.png");
+    press_tab(editor::world_control::ddgi_tab);capture(app,output/"world-ddgi.png");
+    const auto world_history=app.document().undo_count();
+    const auto count=editor::world_control::field(editor::probe_volume_option(0,editor::ProbeVolumeField::count_x));
+    const auto lighting_before=Access::scene_lit_view(app);
+    const auto type_number=[&](std::wstring value) {
+        const auto p=point(count);pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);
+        Access::input(app,{.kind=ui::EventKind::key_down,.key=ui::Key::a,.control=true},'A');
+        Access::input(app,{.kind=ui::EventKind::key_up,.key=ui::Key::a,.control=true},'A');
+        Access::input(app,{.kind=ui::EventKind::text,.data=std::move(value)});tick(app,1);
+    };
+    type_number(L"10");
+    require(Access::scene_lit_view(app)==lighting_before,"Lighting text preview rebuilt the probe configuration.");
+    const auto pending_edit=control_reply();
+    require(pending_edit.at("status")=="error" &&
+        std::ranges::find(pending_edit.at("error").at("busy_reasons"),"view_edit")!=pending_edit.at("error").at("busy_reasons").end(),
+        "Control did not protect the uncommitted Lighting edit.");
+    escape();tick(app,1);
+    require(Access::scene_lit_view(app)==lighting_before && control_reply().at("status")=="ok","Cancelled Lighting draft retained settings or busy state.");
+    type_number(L"10");
+    Access::input(app,{.kind=ui::EventKind::key_down,.key=ui::Key::enter},VK_RETURN);
+    Access::input(app,{.kind=ui::EventKind::key_up,.key=ui::Key::enter},VK_RETURN);tick(app,1);
+    require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0]==10 && control_reply().at("status")=="ok",
+        "Lighting Enter commit failed to publish or left an active draft.");
+    type_number(L"12");
+    Access::input(app,{.kind=ui::EventKind::key_down,.control=true},'W');
+    Access::input(app,{.kind=ui::EventKind::key_up,.control=true},'W');tick(app,1);
+    require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0]==10 && control_reply().at("status")=="ok",
+        "Closing Lighting committed a pending number or kept Control busy.");
+    require(bool(Access::command(app,editor::Command::show_world_settings)),"Lighting page did not reopen.");tick(app,1);
+    const auto slot=point(editor::world_control::slot);
+    pointer(ui::EventKind::pointer_down,slot);pointer(ui::EventKind::pointer_up,slot);tick(app,1);
+    require(app.menu_frame()!=nullptr,"Lighting volume selector did not open its radio menu.");
+    capture(app,output/"lighting-volumes.png");menu_click(editor::world_control::slot_first+1);
+    require(!app.presented()->find(count) && app.presented()->find(editor::world_control::field(editor::probe_volume_option(1,editor::ProbeVolumeField::count_x))),
+        "Changing the volume did not replace the DSL row bindings.");
+    require(app.document().undo_count()==world_history+1,"World controls did not commit exactly one scene history entry.");
+    report<<"lighting,preview-cancel-commit-close-slot-switch,passed\n";report.flush();
+    require(bool(Access::command(app,editor::Command::show_parameters)),"Parameters did not reopen.");tick(app,1);
+    const auto actor=app.document().selection().actor;const auto position_key=property_control(app,actor,0);
+    press_tab(control::group_categories);capture(app,output/"parameters-category.png");
+    require(property_control(app,actor,0)==position_key && app.presented()->find(position_key),
+        "Category grouping hid the primary transform or changed field identity.");
+    press_tab(control::group_components);capture(app,output/"parameters-component.png");
+    require(property_control(app,actor,0)==position_key,"Component grouping changed field identity.");
     Access::mark_saved(app);app.close();
     std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens\n",resized_during_drag,redundant_presents);
     require(resized_during_drag==0,"Dock dragging resized the live viewport before release.");
     require(redundant_presents==0,"Popup resize presented an obsolete canvas before its accepted frame.");
-    std::puts("Editor surfaces acceptance: PASS (single-present menus, deferred dock geometry, both axes, Escape/focus/capture loss, late release)");return 0;
+    std::puts("Editor surfaces acceptance: PASS (single-present menus, DDGI submenu actions, Lighting DSL edits/lifetime, deferred dock geometry, resizable asset directories, camera Control lifetime, both axes, Escape/focus/capture loss, late release)");return 0;
 }

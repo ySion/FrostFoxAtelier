@@ -6,6 +6,8 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| DDGI 多体积与反馈 | 2026-10-12 主目录工作树：Dev/Release 联合 GPU 回归、双配置编辑器/Control 与地牢同预算布局对照，见[覆盖演进](#ddgi-覆盖与反馈演进2026-10-12) |
+| 选中边线深度一致性 | `72843f7` 主目录工作树：Dev 专项与 Release 全套 GPU 验收、真实 Dungeons 桶模型，见[深度一致性](#选中边线深度一致性2026-10-11) |
 | DDGI 诊断 | 2026-10-11 工作树：真实探针/Volume、八邻接收覆盖、年龄、深度与历史隔离，见[DDGI 诊断](#ddgi-诊断2026-10-11) |
 | 工作室 Cavity | 2026-10-11 工作树：屏幕凹凸增强、显示隔离与生命周期，见[工作室 Cavity](#工作室-cavity2026-10-11) |
 | 标准材质 | 2026-10-11 工作树：Dev/Release 材质与原 Renderer 全套 GPU 验收，见[标准材质](#标准材质2026-10-11) |
@@ -16,9 +18,44 @@
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
 
+## DDGI 覆盖与反馈演进（2026-10-12）
+
+来源为主目录 `E:/FrostFoxAtelier` 的本批工作树，AMD Radeon RX 6800 XT。本批没有调整 RHI 或建立另一套图形 API 入口；保留 FP32 深度与距离矩，重定位 offset/state 改为 RGBA32F，在 4096 个探针的双缓冲下增加 64 KiB 逻辑字节。
+
+- 最终 Dev/Release `atelier_renderer_acceptance --scene-lit-volumes --output <绝对目录>` 均退出 0，启用 GPU validation。覆盖共享驻留/更新预算、真实接收面来源/贡献数/主导程度、亚格历史保留、正负多轴滚动、传送、重复配置、有效暗部、最终增益与反馈运输分离、全关重开、非法配置拒绝后继续渲染。
+- 小体积/大密闭房间对照通过：缓存之外约 20 米处的墙仍遮挡非零天光，真实有效暗部显示为青色。缓存 bounds 不再充当场景照明射线的终点。
+- 同一 Renderer 继续通过原 mesh emission NEE、整墙/墙脚、连续移动发光体、薄与亚像素隔墙，以及完整空间诊断回归。两配置的整墙静态差异最大均值均为 .0831、p95 为 1；移动发光体最大均值 1.3538、p95 为 4；薄/亚像素隔墙暗侧红通道均为 0。以上均为既有图像判据，未放宽门限。空间诊断后 FP32 拾取深度逐值不变，覆盖四种 AA、正交、空场、最大探针池和资源寿命。
+- 日志为 `out/ddgi-evolution-final-{dev,release}.log`，完整图像在对应 `out/ddgi-evolution-final-{dev,release}/`。已人工核对多体积来源和亚像素隔墙图。该最终候选包含 Astra 提出的全部生产修正，早期 Dev 多体积单项结果不代替此联合回归。
+
+Astra 分别审阅空间身份/生命周期、反馈传播和成本。已修正跟随体积缺少完整内部区域、世界关注点精度、局部缓存截断远墙、新切片抢占导致远层响应期过早结束等问题；应用发布前校验与旧版 repro 默认基底由应用负责人接齐。报告位于 `out/ddgi-astra-20261012/`。代码审查不替代 GPU 与真实编辑器验收。
+
+应用接线的 Dev/Release 文档、正式 surfaces 窗口与 Control `--ddgi-debug` 均 PASS，日志为 `out/ddgi-panel-{document,surfaces,control}-{dev,release}.log`。覆盖四槽 UI 编辑与取消、配置幂等、非法世界关注点精度的原子拒绝、规范字段/旧别名冲突、四槽导出恢复及真正缺少所有新增字段的旧版 repro。Astra 最终复核确认发布链、相机 target 入口和旧文件默认基底的问题已关闭。
+
+### Dungeons 同预算布局对照
+
+正式 Release 编辑器在独立 Dungeons 副本中对照，未关闭或写入用户原窗口。两布局均为 **2911 个探针、每帧更新 256 个、每次 32 条照明射线**，每个 Lit / status / volume case 在第 72 个接受帧捕获（六个完整预算轮转），未借增加预算获得覆盖改善。
+
+- Scene + Follow Focus：关注点约 `(3.609,-1.381,33.788)`。细层实际 bounds 为 `(-3,-4,27)..(9,2,39)`，`13×7×13`、间距 1 米；粗层为 `12³`，bounds `(-105,-18,-163)..(63,32,92)`，间距约 `(15.27,4.55,23.18)` 米。画面地板约在 y=-4.9，低于细层下界，只能依赖粗层；近景地板和部分远景出现遮挡支持缺口。
+- 保持总数与预算，将同一个 slot 0 改为局部固定楼层 `(-6,-5.5,28)..(12,-2.5,52)`、仍为 `13×7×13`，间距 `(1.5,.5,2)` 米；slot 1 粗层保持。地板诊断从大量遮挡/零辐照度转为连续有效贡献，来源也从粗层转为局部层。
+- 同相机固定地板 ROI `(300,630)..(850,745)` 共 63,250 像素，按正式 status 色分类：全部候选被遮挡从 **38.417% 降至 .114%**，有效零辐照度从 61.554% 降至 .996%，有非零 GI 支持从 .028% 升至 **98.890%**。没有未分类像素。此结果描述该区域的支持状态，不是全关卡照明质量、真实辐照度或收敛速度的保证；不同进程/配置不保证相同 GPU 历史和随机序列。
+
+原近/远视图证据在 `out/ddgi-panel-dungeons/89db6b1086d64de3bd395acfde432a3c/`，局部楼层在 `out/ddgi-panel-dungeons/4b782452264c419888e9986fbb34a162/`，各 `result.json` 指向实际图像、相机、FP32 深度、有效配置和统计。分类脚本与结果为 `out/ddgi-layout-compare.py`、`out/ddgi-layout-comparison.json`。
+
+普通 Lit 仍整体偏暗，上方墙面和远处仍有粗层遮挡缺口。这次实景证明“将密度投向实际楼层”能在相同预算下改善支持，不能把 Scene + Follow Focus 预设称为全建筑自动覆盖方案。捕获中的单个 GPU 时间样本不作为稳定帧时或提速结论。
+
+## 选中边线深度一致性（2026-10-11）
+
+`E:/FrostFoxAtelier` 的 `72843f7` 加本轮修改，RX 6800 XT：Dev 的 `atelier_renderer_acceptance --selection --output <绝对目录>` 和 Release 完整 `atelier_renderer_acceptance` 均返回 0，启用 GPU validation。日志分别为 `out/selection-final-dev.log`、`out/selection-renderer-release-full.log`。Release 同时覆盖原材质、Cavity、参考网格、UI、尺寸变化与资源寿命检查。
+
+改前用倾斜表面、非均匀变换与远离原点的相机复现：同一参考图的 902 个强边线像素中，Off/SMAA 仅保留 864 个；TAA/T2x 为 895 个，记录在 `out/selection-red-translated.log`。统一位置计算后，八个相机位置的四种 AA 均达到参考边线至少 98% 覆盖；在原失败位置均为 895/902。另验证相距 2 毫米的前方表面完全遮住选中边线，选择不改变 FP32 深度。既有 15 组近面/相机平面裁剪、极端尺度和镜像场景继续通过，没有表面铺黄。
+
+正式 Dev 编辑器通过 Editor Control 加载官方 `SM_Prop_Barrel_02` OBJ、纹理与真实光源，捕获 Off/SMAA/TAA/T2x 各第 1、4 个接受帧。约 31914 个强黄色像素中，各捕获与首帧的掩码差异为 0～4 个，没有截图所示的大片断线。可见线条的截图已人工检查；这不代替任意相机轨迹或任意重叠几何的保证。独立工程、请求记录和捕获索引保存在 `out/selection-barrel/`，其中 `capture-result.json` 指向完整颜色、深度与元数据。
+
 ## DDGI 诊断（2026-10-11）
 
 来源为 `codex/viewport-rendering` 工作树，基线 `72843f7a24d51542620f5bebedb83433cfca914b` 加本批未提交改动。硬件为 AMD Radeon RX 6800 XT。Dev/Release 受影响 Renderer、Editor、Control 验收目标均编译通过；没有调整 RHI 或调用另一套图形 API。
+
+主目录 `E:/FrostFoxAtelier` 已整合这批功能与选中边线、目录分隔条、原生对话框修复。整合后的 Dev 与独立 Release（`out/dialog-release`）均通过 Renderer `--scene-lit-debug`、`--selection`、Editor `--acceptance-surfaces` 和 Control `--ddgi-debug`；日志位于 `out/ddgi-integration-20261011/{renderer,selection,surfaces,control}-{dev,release}.log`。新增交集检查覆盖四种 AA 下探针叠层之后选中边线仍完整、FP32 深度不变，以及实际 DDGI 子菜单的互斥/勾选操作与场景历史隔离。这里的 Release 证据来自独立发布构建；标准 `out/release/atelier_editor.exe` 在本轮链接时被用户未保存窗口占用，未将其关闭或覆盖。
 
 | 实际入口 | 结果与范围 | 本机证据 |
 | --- | --- | --- |

@@ -85,7 +85,13 @@ struct Marker {
     bool used{};
 };
 using Options = std::map<std::string, std::string>;
-struct Field { std::string cpp_name, name, form, target; bool hidden{}; unsigned line{}; bool direct_layout{}; };
+struct Field {
+    std::string cpp_name, name, form, target;
+    bool hidden{};
+    unsigned line{};
+    bool direct_layout{};
+    std::string label{}, category{};
+};
 struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; };
 struct Type {
     const CXXRecordDecl* declaration{};
@@ -158,8 +164,12 @@ struct State {
                 StringLiteralParser literal(llvm::ArrayRef<Token>(&tokens[i++], 1), compiler->getPreprocessor());
                 if (literal.hadError) { failed = true; return {}; }
                 value = literal.GetString().str();
-                if (value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
-                    error(marker.location, "Reflection option strings must be nonempty and contain no control characters."); return {};
+                const bool presentation = name == "Label" || name == "Category";
+                if (!presentation && value.empty()) {
+                    error(marker.location, "Reflection option " + name + " requires a nonempty string."); return {};
+                }
+                if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
+                    error(marker.location, "Reflection option strings must contain no control characters."); return {};
                 }
             } else if (name != "Hidden" && name != "BorrowSafe") {
                 error(marker.location, "Reflection option " + name + " requires a value."); return {};
@@ -457,7 +467,7 @@ void members(State& state, Type& type, ASTContext& context) {
                 state.error(field->getLocation(), "Runtime reference storage, including inline records and arrays, requires an explicit AFIELD marker.");
             continue;
         }
-        const auto options = state.options(*marker, {"Name", "Hidden", "Strong", "Weak", "Sequence"});
+        const auto options = state.options(*marker, {"Name", "Label", "Category", "Hidden", "Strong", "Weak", "Sequence"});
         if (!options) continue;
         if (field->isBitField() || field->isAnonymousStructOrUnion() || field->getType().isConstQualified() || field->getType().isVolatileQualified()) {
             state.error(field->getLocation(), "AFIELD requires a named, mutable, addressable data member."); continue;
@@ -469,6 +479,8 @@ void members(State& state, Type& type, ASTContext& context) {
             layout.getAlignment().getQuantity() * context.getCharWidth() >= alignment &&
             layout.getFieldOffset(field->getFieldIndex()) % alignment == 0;
         if (options->contains("Name")) result.name = options->at("Name");
+        if (options->contains("Label")) result.label = options->at("Label");
+        if (options->contains("Category")) result.category = options->at("Category");
         unsigned forms = 0;
         for (const auto* form : {"Strong", "Weak", "Sequence"}) if (options->contains(form)) {
             ++forms; result.target = options->at(form);
@@ -622,12 +634,15 @@ void emit(const State& state) {
             cpp += "\n        .enumerator(" + quote(name) + ", Self::" + name + ")";
         if (!type.base.empty()) cpp += "\n        .base<" + type.base + ">()";
         for (const auto& field : type.fields) {
+            const bool presentation = !field.label.empty() || !field.category.empty();
             cpp += location(field.line) + "        ." + (field.hidden ? "hidden_field" : "field") + "<&Self::" + field.cpp_name + ">(" + quote(field.name);
             if (!field.form.empty()) cpp += ", {TypeReference{" + quote(field.target) + "}, ValueForm::" + field.form + "}";
-            else if (!field.hidden && field.direct_layout)
+            else if ((!field.hidden && field.direct_layout) || presentation)
                 cpp += ", {TypeReference::native<decltype(Self::" + field.cpp_name + ")>()}";
             if (!field.hidden && field.direct_layout)
                 cpp += ", offsetof(Self, " + field.cpp_name + ")";
+            else if (!field.hidden && presentation) cpp += ", std::nullopt";
+            if (presentation) cpp += ", " + quote(field.label) + ", " + quote(field.category);
             cpp += ")";
         }
         for (const auto& method : type.methods)

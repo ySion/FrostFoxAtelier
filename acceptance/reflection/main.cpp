@@ -19,6 +19,80 @@ void take(Result<void> result) {
     if (!result) throw std::runtime_error(result.error().message);
 }
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+const FieldInfo& field_info(Runtime& runtime, TypeId type, std::string_view name) {
+    const auto id = take(runtime.find_field(type, name));
+    for (const auto& field : take(runtime.describe(type))->fields)
+        if (field.id == id) return field;
+    throw std::runtime_error("Published field is missing from its type description.");
+}
+void verify_field_presentation(Runtime& runtime) {
+    const auto sample_type = take(runtime.native_type<Sample>());
+    const auto& value = field_info(runtime, sample_type, "value");
+    const auto& count = field_info(runtime, sample_type, "count");
+    require(value.label == "数值 \"value\" \\ preview" && value.category == "Transform" &&
+        value.offset == offsetof(Sample, value), "Generated field presentation lost UTF-8, escapes or native layout.");
+    require(count.label.empty() && count.category.empty() && !runtime.find_field(sample_type, value.label),
+        "Presentation changed field lookup or synthesized fallback metadata.");
+    const auto probe_type = take(runtime.native_type<CallProbe>());
+    const auto& direction = field_info(runtime, probe_type, "direction");
+    require(direction.label == "Position" && direction.category == "Transform" &&
+        direction.value.type == take(runtime.native_type<math::Vector3d>()),
+        "Generated mathematical field presentation changed its type.");
+    const auto& enabled = field_info(runtime, probe_type, "enabled");
+    const auto& before = field_info(runtime, probe_type, "before");
+    require(enabled.label.empty() && enabled.category == "Flags" && before.label.empty() && before.category.empty(),
+        "Category-only or explicitly empty presentation metadata was not preserved.");
+    const auto counter_type = take(runtime.native_type<Counter>());
+#if defined(_DEBUG)
+    const auto& counter_field = field_info(runtime, counter_type, "debug_only");
+    require(counter_field.label == "Debug value", "Non-standard-layout field lost its generated label.");
+#else
+    const auto& counter_field = field_info(runtime, counter_type, "release_only");
+    require(counter_field.label == "Release value", "Non-standard-layout field lost its generated label.");
+#endif
+    require(counter_field.category.empty() && !counter_field.offset && !runtime.find_field(counter_type, "sample_"),
+        "Presentation exposed hidden storage or inferred a non-standard native offset.");
+
+    TypeInfo retained{};
+    {
+        Runtime described;
+        TypeDefinition definition;
+        definition.name = "reflection.DescribedPresentation";
+        definition.fields = {{"value", {TypeReference::native<float>()}}, {"count", {TypeReference::native<std::uint32_t>()}}};
+        definition.fields[0].label = value.label;
+        definition.fields[0].category = value.category;
+        // Labels may repeat; only actual member names identify fields.
+        definition.fields[1].label = value.label;
+        auto plain = definition;
+        plain.name = "reflection.UnlabelledPresentation";
+        for (auto& field : plain.fields) { field.label.clear(); field.category.clear(); }
+        TypeDefinition derived;
+        derived.name = "reflection.InheritedPresentation";
+        derived.base = TypeReference{definition.name};
+        const auto types = take(described.register_types({definition, std::move(plain), std::move(derived)}));
+        definition.fields.clear();
+        retained = *take(described.describe(types[0]));
+        const auto* plain_info = take(described.describe(types[1]));
+        const auto& inherited = field_info(described, types[2], "value");
+        require(retained.size == plain_info->size && retained.alignment == plain_info->alignment &&
+            retained.fields.size() == plain_info->fields.size(), "Presentation changed described storage layout.");
+        for (std::size_t i = 0; i < retained.fields.size(); ++i)
+            require(retained.fields[i].name == plain_info->fields[i].name &&
+                retained.fields[i].value == plain_info->fields[i].value &&
+                retained.fields[i].offset == plain_info->fields[i].offset &&
+                retained.fields[i].default_value == plain_info->fields[i].default_value,
+                "Presentation changed a field's storage contract.");
+        require(inherited.id == retained.fields[0].id && inherited.label == value.label && inherited.category == value.category,
+            "Inherited metadata lost declaration identity or owning presentation text.");
+        auto object = take(described.create(types[2]));
+        take(described.write(object.id(), inherited.id, Scalar{9.f}));
+        require(std::get<float>(take(described.read(object.id(), inherited.id))) == 9.f &&
+            !described.find_field(types[2], value.label), "Label changed described field lookup or access.");
+    }
+    require(retained.fields[0].label == value.label && retained.fields[0].category == value.category,
+        "Copied presentation metadata did not own its text after Runtime shutdown.");
+    std::puts("[pass] Generated and described field presentation, empty defaults, identity, layout, inheritance and ownership");
+}
 void invoke(Runtime& runtime, ObjectId object, TypeId type, const char* name,
     std::span<const Scalar> args, Scalar expected) {
     Scalar output;
@@ -143,6 +217,7 @@ int main() {
             atelier::reflection::Definition<PlainRecord>::build(runtime),
             array_definition<double>(runtime, "reflection.DoubleArray"),
             array_definition<bool>(runtime, "reflection.BoolArray")}));
+        verify_field_presentation(runtime);
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);

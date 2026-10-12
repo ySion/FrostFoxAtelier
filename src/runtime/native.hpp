@@ -120,20 +120,22 @@ public:
 
     // Explicit descriptions allow references to definitions in the same batch.
     template<auto Pointer>
-    NativeRegistration& field(std::string name, ValueDefinition value, std::optional<std::size_t> offset = std::nullopt) {
+    NativeRegistration& field(std::string name, ValueDefinition value, std::optional<std::size_t> offset = std::nullopt,
+        std::string label = {}, std::string category = {}) {
         using Traits = detail::Member<decltype(Pointer)>;
         using Value = typename Traits::Value;
         static_assert(std::same_as<typename Traits::Owner, T>);
         static_assert(!std::is_const_v<Value> && !std::is_volatile_v<Value>);
         definition_.fields.push_back({std::move(name), std::move(value),
             [](void* object) noexcept -> void* { return std::addressof(static_cast<T*>(object)->*Pointer); },
-            detail::representation<Value>(), true, offset});
+            detail::representation<Value>(), true, offset, {}, std::move(label), std::move(category)});
         return *this;
     }
 
     template<auto Pointer>
-    NativeRegistration& hidden_field(std::string name, ValueDefinition value) {
-        field<Pointer>(std::move(name), std::move(value));
+    NativeRegistration& hidden_field(std::string name, ValueDefinition value,
+        std::string label = {}, std::string category = {}) {
+        field<Pointer>(std::move(name), std::move(value), std::nullopt, std::move(label), std::move(category));
         definition_.fields.back().exposed = false;
         return *this;
     }

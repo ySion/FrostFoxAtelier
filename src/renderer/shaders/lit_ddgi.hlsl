@@ -1,12 +1,12 @@
 // Probe updates and receiver irradiance. Shared DDGI source is prepended.
 [numthreads(64, 1, 1)]
 void DDGICopy(uint3 dispatch_id : SV_DispatchThreadID) {
-    uint width = lit_probe_grid.x * DDGI_TILE_SIZE;
-    uint height = lit_probe_grid.y * lit_probe_grid.z * DDGI_TILE_SIZE;
     uint index = dispatch_id.x;
-    if (index < width * height) {
-        uint2 texel = uint2(index % width, index / width);
-        if ((lit_probe_update.w & 1) != 0) {
+    if (index < lit_probe_pool.y * 64) {
+        uint probe=index/64;
+        DDGIVolume volume=lit_probe_current_volumes[ddgi_volume_for_probe(probe)];
+        uint2 texel=ddgi_probe_texel(probe)*8+uint2(index%8,index%64/8);
+        if (ddgi_probe_fresh(probe,volume)) {
             lit_probe_irradiance_output[texel] = 0;
             lit_probe_target_output[texel] = 0;
             lit_probe_distance_output[texel] = float2(1, 1);
@@ -23,14 +23,15 @@ void DDGICopy(uint3 dispatch_id : SV_DispatchThreadID) {
             lit_probe_distance_output[texel] = lit_probe_distance_previous.Load(int3(texel, 0));
         }
     }
-    if (index < lit_probe_grid.w) {
+    if (index < lit_probe_pool.y) {
         uint2 texel = ddgi_probe_texel(index);
-        if ((lit_probe_update.w & 1) != 0) lit_probe_age_output[texel] = 0xffffffff;
+        bool fresh=ddgi_probe_fresh(index,lit_probe_current_volumes[ddgi_volume_for_probe(index)]);
+        if (fresh) lit_probe_age_output[texel] = 0xffffffff;
         else {
             uint age = lit_probe_age_output[texel];
             if (age != 0xffffffff) lit_probe_age_output[texel] = min(age, 0xfffffffd) + 1;
         }
-        lit_probe_offsets_output[texel] = (lit_probe_update.w & 1) != 0 ? 0 :
+        lit_probe_offsets_output[texel] = fresh ? 0 :
             lit_probe_offsets_previous.Load(int3(texel, 0));
     }
 }
@@ -76,23 +77,29 @@ float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint see
         surface.base, surface.roughness, surface.metallic, true, true, seed,
         emitter_diffuse, emitter_specular);
     radiance += emitter_diffuse + emitter_specular;
-    if ((lit_probe_update.w & 1) == 0) {
+    if (lit_probe_pool.w != 0 && lit_probe_controls.x > 0) {
         // Only diffuse history feeds back. Bounded reflectance and the 0.85
         // transport factor make this iteration a contraction even in a closed
         // white room. Analytic and mesh NEE above inject reflected direct
         // light once at the actual hit, without the feedback attenuation.
         float3 reflectance = saturate(surface.base) * (1 - saturate(surface.metallic));
-        radiance += ddgi_irradiance(surface.position, surface.normal, surface.geometric_normal, false) * reflectance * (.85 / LIT_PI);
+        if(any(reflectance>0))radiance += ddgi_irradiance(surface.position, surface.normal,
+            surface.geometric_normal, lit_probe_controls.y!=0) * reflectance * (lit_probe_controls.x / LIT_PI);
     }
     return ddgi_finite_radiance(radiance);
 }
 
-float ddgi_trace_ray(float3 position, float3 direction, bool shade, inout uint seed, out float3 radiance) {
+float ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, bool shade, inout uint seed, out float3 radiance) {
     RayDesc ray;
     ray.Origin = position;
     ray.Direction = direction;
-    ray.TMin = max(1e-4, ddgi_minimum_spacing() * .001);
-    ray.TMax = max(lit_probe_origin.w, ray.TMin * 2);
+    ray.TMin = max(1e-4, ddgi_minimum_spacing(volume) * .001);
+    // Cache coverage is not a transport horizon. A small following volume
+    // must still see the distant walls of the same scene before reporting sky.
+    float3 far_corner=max(abs(position-lit_probe_scene_min.xyz),abs(position-lit_probe_scene_max.xyz));
+    float far_scale=max(1e-3,max(far_corner.x,max(far_corner.y,far_corner.z)));
+    float scene_distance=far_scale*length(far_corner/far_scale);
+    ray.TMax = max(scene_distance+max(1e-3,scene_distance*1e-5),ray.TMin*2);
     RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
     // Both fixed geometry and random illumination rays count as probe rays.
     // Secondary shadow rays are counted separately by lit_visible().
@@ -133,18 +140,19 @@ groupshared uint ddgi_discard_history;
 
 [numthreads(64, 1, 1)]
 void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
-    if (group_id.x >= min(lit_probe_update.y, lit_probe_grid.w) || lit_probe_grid.w == 0) return;
-    if (lane == 0) ddgi_current_probe = ddgi_interleaved_probe(
-        (lit_probe_update.x + group_id.x) % lit_probe_grid.w);
+    if (group_id.x >= lit_probe_update.y || lit_probe_pool.y == 0) return;
+    if (lane == 0) ddgi_current_probe = lit_probe_work[group_id.x/4][group_id.x%4];
     GroupMemoryBarrierWithGroupSync();
     uint probe = ddgi_current_probe;
+    DDGIVolume volume=lit_probe_current_volumes[ddgi_volume_for_probe(probe)];
+    bool fresh=ddgi_probe_fresh(probe,volume);
     uint2 probe_texel = ddgi_probe_texel(probe);
-    float4 old_offset = (lit_probe_update.w & 1) != 0 ? 0 :
+    float4 old_offset = fresh ? 0 :
         lit_probe_offsets_previous.Load(int3(probe_texel, 0));
     if (!all(isfinite(old_offset))) old_offset = 0;
-    float3 position = ddgi_probe_position(probe, old_offset.xyz);
+    float3 position = ddgi_probe_position(probe, old_offset.xyz,volume);
     uint ray_count = clamp(lit_probe_update.z, 1u, DDGI_MAX_RAYS);
-    float maximum_distance = max(lit_probe_origin.w, 1e-3);
+    float maximum_distance = max(volume.origin.w, 1e-3);
 
     // Geometry decisions must not follow the random illumination rotation.
     // Inactive probes retain these rays so moved geometry can reactivate them.
@@ -152,13 +160,15 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         uint seed = 0;
         float3 unused_radiance;
         ddgi_fixed_distances[lane] = ddgi_trace_ray(position,
-            ddgi_spherical_direction(lane, DDGI_FIXED_RAYS), false, seed, unused_radiance);
+            ddgi_spherical_direction(lane, DDGI_FIXED_RAYS), volume, false, seed, unused_radiance);
     }
     GroupMemoryBarrierWithGroupSync();
 
     if (lane == 0) {
         uint backfaces = 0, nearest_backface = 0, nearest_frontface = 0;
-        float backface_distance = maximum_distance, frontface_distance = maximum_distance;
+        // Fixed rays now cover the shared scene, including hits beyond this
+        // volume's moment range. Search over their actual distances.
+        float backface_distance = asfloat(0x7f7fffff), frontface_distance = asfloat(0x7f7fffff);
         [loop] for (uint i = 0; i < DDGI_FIXED_RAYS; ++i) {
             float d = ddgi_fixed_distances[i];
             if (d < 0) {
@@ -166,7 +176,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
                 if (-d < backface_distance) { backface_distance = -d; nearest_backface = i; }
             } else if (d < frontface_distance) { frontface_distance = d; nearest_frontface = i; }
         }
-        float clearance = ddgi_minimum_spacing() * .12;
+        float clearance = ddgi_minimum_spacing(volume) * .12;
         float3 target_offset = old_offset.xyz;
         ddgi_probe_state = 1;
         bool inside = backfaces > DDGI_FIXED_RAYS / 4;
@@ -174,7 +184,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
             target_offset += ddgi_spherical_direction(nearest_backface, DDGI_FIXED_RAYS) *
                 (backface_distance + clearance);
             ddgi_probe_state = -1;
-        } else if (frontface_distance < clearance - ddgi_minimum_spacing() * .01) {
+        } else if (frontface_distance < clearance - ddgi_minimum_spacing(volume) * .01) {
             target_offset -= ddgi_spherical_direction(nearest_frontface, DDGI_FIXED_RAYS) *
                 (clearance - frontface_distance);
         }
@@ -187,13 +197,13 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         float3 move = target_offset - old_offset.xyz;
         float move_length = length(move);
         if (old_offset.w >= .5 && !inside)
-            target_offset = old_offset.xyz + move * min(1, ddgi_minimum_spacing() * .04 / max(move_length, 1e-6));
-        float3 normalized_offset = target_offset / max(lit_probe_spacing.xyz, 1e-3);
+            target_offset = old_offset.xyz + move * min(1, ddgi_minimum_spacing(volume) * .04 / max(move_length, 1e-6));
+        float3 normalized_offset = target_offset / max(volume.spacing.xyz, 1e-3);
         target_offset *= min(1, .45 / max(length(normalized_offset), 1e-6));
-        bool relocated = length(target_offset - old_offset.xyz) > ddgi_minimum_spacing() * .002;
+        bool relocated = length(target_offset - old_offset.xyz) > ddgi_minimum_spacing(volume) * .002;
         if (!relocated) target_offset = old_offset.xyz;
         if (relocated) ddgi_probe_state = 0;
-        ddgi_discard_history = ((lit_probe_update.w & 1) != 0 || old_offset.w < .5 || relocated || inside) ? 1 : 0;
+        ddgi_discard_history = (fresh || old_offset.w < .5 || relocated || inside) ? 1 : 0;
         lit_probe_offsets_output[probe_texel] = float4(target_offset, ddgi_probe_state);
         lit_probe_age_output[probe_texel] = 0;
         uint seed = lit_hash(probe ^ lit_hash(lit_probe_sequence + 0x9e3779b9));
@@ -221,7 +231,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
             cross(ddgi_ray_rotation.xyz, direction) + ddgi_ray_rotation.w * direction);
         uint seed = lit_hash(probe ^ lit_hash(i + DDGI_MAX_RAYS * lit_probe_sequence));
         float3 radiance;
-        ddgi_ray_distances[i] = ddgi_trace_ray(position, direction, true, seed, radiance);
+        ddgi_ray_distances[i] = ddgi_trace_ray(position, direction, volume, true, seed, radiance);
         ddgi_ray_directions[i] = direction;
         ddgi_ray_radiance[i] = radiance;
     }
@@ -236,7 +246,9 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         irradiance += ddgi_ray_radiance[i] * cosine;
         irradiance_weight += cosine;
         float weight = pow(cosine, 32);
-        float normalized_distance = max(ddgi_ray_distances[i], 0) / maximum_distance;
+        // Transport can reach beyond this cache. Clamp each distance before
+        // forming moments; clamping the averaged moments would erase variance.
+        float normalized_distance = saturate(max(ddgi_ray_distances[i], 0) / maximum_distance);
         moments += float2(normalized_distance, normalized_distance * normalized_distance) * weight;
         distance_weight += weight;
     }

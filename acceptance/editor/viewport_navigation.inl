@@ -1,5 +1,6 @@
 void verify_viewport_navigation(Application& app,const std::filesystem::path& output) {
     using namespace atelier;
+    namespace control=atelier::editor::control;
     using Access=application::EditorAcceptanceAccess;
     const auto viewport=app.presented()->find(control::viewport)->bounds;
     const math::Vector2 origin{viewport.x+viewport.width*.5f,viewport.y+viewport.height*.5f};

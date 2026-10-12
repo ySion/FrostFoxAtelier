@@ -217,8 +217,8 @@ struct Fixture {
             drawing.draws.push_back({{4,4,16,16},{4,4,20,20},{0,1,0,1},{0,0,1,1},{}});
         }
         frame.view.shading = render::Shading::scene_lit;
-        frame.view.lit.probe_min = {-5,-1,-1}; frame.view.lit.probe_max = {5,5,8};
-        frame.view.lit.probe_counts = {11,7,10};
+        frame.view.lit.probe_volumes[0].minimum = {-5,-1,-1}; frame.view.lit.probe_volumes[0].maximum = {5,5,8};
+        frame.view.lit.probe_volumes[0].counts = {11,7,10};
         frame.view.lit.probe_update_budget = 96; frame.view.lit.probe_rays = 64;
         if (!benchmark) metrics << "scenario,mean_rgb_delta,p95_rgb_delta,changed_pixels,darker_pixels\n";
     }
@@ -1208,9 +1208,25 @@ void quality_cases(Fixture& f) {
 }
 } // namespace scene_lit_e2e
 
-int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false) {
+int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false, bool volumes_only=false) {
     scene_lit_e2e::Fixture fixture(benchmark_mode,output,ddgi_only?atelier::rhi::Validation::debug_layer:atelier::rhi::Validation::gpu);
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
+    else if(volumes_only) {
+        // Reuse the prepared renderer for the related real-GPU regressions;
+        // shader preparation is not repeated for each independent scene.
+        const auto initial_view=fixture.frame.view;
+        const auto initial_camera=fixture.frame.camera;
+        const auto initial_environment=fixture.frame.environment;
+        const auto restore=[&] {
+            fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
+            fixture.frame.view=initial_view;fixture.frame.camera=initial_camera;
+            fixture.frame.environment=initial_environment;fixture.frame.lighting_focus={};
+            ++fixture.frame.scene_identity;fixture.edited();
+        };
+        scene_lit_e2e::probe_volume_cases(fixture);
+        restore();scene_lit_e2e::quality_ddgi(fixture);
+        restore();scene_lit_e2e::probe_debug_cases(fixture);
+    }
     else if(debug_only) scene_lit_e2e::probe_debug_cases(fixture);
     else if(contracts_only) scene_lit_e2e::quality_contracts(fixture);
     else if(ddgi_only) scene_lit_e2e::quality_ddgi(fixture);

@@ -460,6 +460,9 @@ struct FieldDefinition {
     // Described scalar fields only. Construction applies this before publication;
     // copy construction copies the source instead. Native constructors own defaults.
     std::optional<Scalar> default_value{};
+    // Optional presentation text; never part of field identity or value layout.
+    // Empty text leaves display-name/group fallback to the consumer.
+    std::string label{}, category{};
 };
 
 struct MethodDefinition {
@@ -493,6 +496,8 @@ struct FieldInfo {
     ValueDescription value;
     std::optional<std::size_t> offset{};
     std::optional<Scalar> default_value{};
+    // Owned by the type descriptor, including inherited field copies.
+    std::string label{}, category{};
 };
 
 struct MethodInfo {

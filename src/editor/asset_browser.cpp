@@ -34,6 +34,7 @@ ui::ControlIcon item_icon(AssetKind kind) {
 }
 }
 void AssetBrowser::reset(bool has_project) {
+    if(directory_resize_) {directory_width_=*directory_resize_;directory_resize_.reset();}
     engine_=!has_project;has_project_=has_project;directory_=has_project?std::filesystem::path{L"Content"}:std::filesystem::path{};
     query_.clear();filter_=0;selected_.reset();targets_.clear();keys_.clear();row_indices_.clear();directories_.clear();project_root_.clear();
     table_data_.reset();active_column_=browser_control::name_column;
@@ -203,6 +204,16 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
 }
 bool AssetBrowser::apply(const ui::Action& action) {
     using namespace browser_control;
+    if(action.key==divider) {
+        if(action.kind==ui::ActionKind::edit_begin && !directory_resize_) directory_resize_=directory_width_;
+        else if(action.kind==ui::ActionKind::edit_cancel && directory_resize_) {
+            directory_width_=*directory_resize_;directory_resize_.reset();
+        } else if(directory_resize_ && (action.kind==ui::ActionKind::edit_preview || action.kind==ui::ActionKind::edit_commit)) {
+            if(const auto* value=std::get_if<double>(&action.value);value && std::isfinite(*value)) directory_width_=std::max(96.,*value);
+            if(action.kind==ui::ActionKind::edit_commit) directory_resize_.reset();
+        }
+        return true;
+    }
     const auto filter_changed=[&] {
         if (selected_ && !matches_filter(*selected_,folded(query_),filter_)) selected_.reset();
         invalidate_items();
@@ -268,19 +279,22 @@ void AssetBrowser::append(std::vector<ui::Control>& controls,ui::ControlKey pare
     const auto address=engine_?L"Engine":directory_.empty()?L"Project":L"Project / "+directory_.generic_wstring();
     const auto count=items_.empty()?(query_.empty() && !filter_?L"This folder is empty.":L"No matches."):
         std::to_wstring(items_.size())+(items_.size()==1?L" item":L" items");
-    const std::array<ui_language::InputValue,15> inputs{
+    const auto* body=frame?frame->find(id::root+103):nullptr;
+    const double directory_limit=body?std::max(96.,static_cast<double>(body->bounds.width/frame->drawing->dpi_scale)-69.):144.;
+    const std::array<ui_language::InputValue,17> inputs{
         ui_language::ItemList{directory_items()},ui_language::TextEditBinding{id::search,query_},address,
         count+(selected_?L"  |  "+selected_->name:L""),
         ui_language::ActionBinding{id::back,navigation_cursor_!=0},ui_language::ActionBinding{id::up,!engine_ && !directory_.empty()},
         ui_language::ActionBinding{id::clear,!query_.empty() || filter_!=0},filter_!=0,
         static_cast<double>(view_==View::list?ui::ControlIcon::view_list:view_==View::details?ui::ControlIcon::view_details:ui::ControlIcon::view_tiles),
         static_cast<double>(ui::ControlIcon::back),static_cast<double>(ui::ControlIcon::up),static_cast<double>(ui::ControlIcon::search),
-        static_cast<double>(ui::ControlIcon::close),static_cast<double>(ui::ControlIcon::filter),static_cast<double>(ui::ControlIcon::more)};
-    const std::array<ui_language::KeyBinding,14> keys{{
+        static_cast<double>(ui::ControlIcon::close),static_cast<double>(ui::ControlIcon::filter),static_cast<double>(ui::ControlIcon::more),
+        std::min(directory_width_,directory_limit),directory_limit};
+    const std::array<ui_language::KeyBinding,15> keys{{
         {"toolbar",id::root+100},{"back",id::back},{"up",id::up},{"path",id::path},
         {"search_area",id::root+101},{"search_icon",id::root+102},{"clear",id::clear},
         {"filter",id::filter},{"view",id::view_menu},{"actions",id::actions},
-        {"body",id::root+103},{"tree",id::directories},{"content",id::content},{"status",id::root+104}}};
+        {"body",id::root+103},{"tree",id::directories},{"divider",id::divider},{"content",id::content},{"status",id::root+104}}};
     static_cast<void>(document.append("AssetBrowserShell",parent,keys,inputs,controls));
     const std::array<ui_language::InputValue,5> results{
         ui_language::TableBinding{table_data(),{selected_?row_key(selected_->key):0,active_column_}},

@@ -27,6 +27,7 @@ public:
     Result<void> open_scene(const std::filesystem::path&);
     // Optional one-time DDGI fit to rendered world bounds; ordinary camera moves retain the volume.
     Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading, bool fit_ddgi_volume = false);
+    Result<renderer::ViewSettings> fitted_probe_view(bool follow_focus) const;
     Result<void> open_source(const std::filesystem::path&);
     Result<void> save_scene(const std::filesystem::path& relative = {});
     Result<void> build_project(bool rebuild=false);
@@ -114,15 +115,18 @@ private:
     std::vector<renderer::OverlayShape> overlay_;
     ui::Surface surface_;
     std::uint64_t surface_revision_{1}, accepted_frames_{};
-    bool closed_{}, orbiting_{}, sampling_{};
-    bool panning_{};
-    ui::PointerButton camera_button_{ui::PointerButton::secondary};
+    bool closed_{}, sampling_{};
+    struct CameraDrag {
+        ui::PointerButton button;
+        bool pan;
+        math::Vector2 previous;
+    };
+    std::optional<CameraDrag> camera_drag_;
     FrameTiming frame_timing_;
     std::chrono::steady_clock::time_point fps_start_{};
     std::uint64_t fps_frames_{};
     void update_viewport_fps(bool accepted);
     renderer::FrameStats frame_statistics_;
-    float last_x_{}, last_y_{};
     PopupHost* menu_host() const noexcept {
         if (!menu_path_.empty() && submenus_.size()>=menu_path_.size() && submenus_[menu_path_.size()-1]->visible())
             return submenus_[menu_path_.size()-1].get();
@@ -144,6 +148,9 @@ private:
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
     Result<void> frame_actors(bool selected_only);
+    Result<void> set_camera(const editor::Camera&,bool cut);
+    void sync_world_view();
+    std::array<float,3> lighting_focus() const;
     bool confirm_discard(bool sources=true);
     bool confirm_source(editor::SourceEditor::File&);
     Result<void> save_source(editor::SourceEditor::File&);

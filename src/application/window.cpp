@@ -182,6 +182,11 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_CLOSE: input_anchor_.reset(); closing_ = true; return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT paint; BeginPaint(handle_, &paint); EndPaint(handle_, &paint); return 0; }
+    case WM_CANCELMODE:
+        // A native modal loop can suspend poll(). Release OS capture now via
+        // default processing; defer business cancellation until normal delivery.
+        events_.push_back(event(message, wparam, lparam));
+        return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_GETMINMAXINFO: {
         if (popup_) return 0;
         const auto dpi = GetDpiForWindow(handle_);
@@ -266,7 +271,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_SIZE:
         input_anchor_.reset(); events_.push_back(event(message, wparam, lparam)); return 0;
     case WM_SETFOCUS:
-    case WM_MOVE: case WM_CANCELMODE: case WM_ACTIVATEAPP:
+    case WM_MOVE: case WM_ACTIVATEAPP:
     case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_MOUSEWHEEL:

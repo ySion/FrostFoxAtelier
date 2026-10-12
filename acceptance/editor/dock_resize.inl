@@ -1,5 +1,6 @@
 void verify_viewport_splitter_drag(Application& app,const std::filesystem::path& output) {
     using namespace atelier;
+    namespace control=atelier::editor::control;
     using Access=application::EditorAcceptanceAccess;
     const auto pointer=[&](ui::EventKind kind,math::Vector2 p) {
         Access::input(app,{.kind=kind,.x=p.x,.y=p.y,.button=ui::PointerButton::primary});

@@ -42,7 +42,7 @@ Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含
 
 工作室 MatCap / Smooth / Flat 默认开启 Screen Cavity，通过几何凹凸增强表面分界；开关、Ridge、Valley 与像素半径属于视口显示设置，具体范围见[渲染合同](docs/modules/renderer/contract.md#工作室-cavity)。
 
-Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线、发光采样与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。发光网格通过主动三角采样照亮表面，即使 DDGI 关闭也能提供直接漫反射；DDGI 负责后续反弹，两者避免重复计算一跳发光。直接光、DDGI、GTAO 和随机屏幕反射分别稳定自己的光照信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA；显示菜单还提供默认关闭的 Local GI、曝光、Bloom 和阴影预算。DDGI Debug 提供真实探针球、Volume 边界、重定位、更新年龄与八邻接收覆盖诊断，经同一显示设置和 Control 操作。Point、Rectangle、Directional Light 与场景唯一的 Sky Light 沿 Create、Actor Structure、Parameters 和场景保存的现有入口编辑。没有启用的 Sky Light 时环境照明为零；Scene Lit 使用黑背景，工作室模式保留渐变偏好。通过 Project → Examples → Scene Lit Room 可打开 [Scene Lit Room](assets/examples/Examples/Scene%20Lit%20Room/README.md)，入口自动配置 Scene Lit 与相机。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`，原生分辨率质量专项为 `atelier_renderer_acceptance --scene-lit-quality --output <绝对目录>`。新版质量和性能以对应候选的实际验收记录为准。
+Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线、发光采样与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。发光网格通过主动三角采样照亮表面，即使 DDGI 关闭也能提供直接漫反射；DDGI 负责后续反弹，两者避免重复计算一跳发光。直接光、DDGI、GTAO 和随机屏幕反射分别稳定自己的光照信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA；显示菜单还提供默认关闭的 Local GI、曝光、Bloom 和阴影预算。**Window → Lighting** 打开 DSL 灯光配置页，编辑四个 DDGI 体积、固定或跟随覆盖、传播预算和诊断；数值提交后原子生效。DDGI Debug 提供真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，经同一显示设置和 Control 操作。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 与场景唯一的 Sky Light 沿 Create、Actor Structure、Parameters 和场景保存的现有入口编辑。没有启用的 Sky Light 时环境照明为零；Scene Lit 使用黑背景，工作室模式保留渐变偏好。通过 Project → Examples → Scene Lit Room 可打开 [Scene Lit Room](assets/examples/Examples/Scene%20Lit%20Room/README.md)，入口自动配置 Scene Lit 与相机。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`，原生分辨率质量专项为 `atelier_renderer_acceptance --scene-lit-quality --output <绝对目录>`。新版质量和性能以对应候选的实际验收记录为准。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，当前输入合同见[UI 模块](docs/modules/ui/README.md#共享单行编辑)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
@@ -61,7 +61,7 @@ Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质�
 
 **Controls** 标签打开同宿主的控件实验台，可操作数值、Vector3/Vector4、Unicode 文本、下拉、勾选和折叠，检查禁用、长标签与窄面板。实际位置参数复用同一参数行和 Houdini 风格 SS：中英文统一使用 Sarasa UI SC，数字使用 Source Code Pro，配合黑色字段、细凹凸边缘、轻渐变按钮与灰色编辑边界；Tab 以灰色选中底面区分，不显示焦点描边。右键菜单提供复制、粘贴与默认值恢复，中键支持数值阶梯，整组恢复只记一次撤销。字体依据见[字体说明](assets/fonts/README.md)，实验台的样本历史独立于场景，详见[控件实验台](docs/modules/editor/README.md#控件实验台)。
 
-工作区采用 Scene View、Parameters、Controls、Scene Tree、Actor Structure、Asset Browser、Code 和 Project Output 八个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
+工作区采用 Scene View、Parameters、Controls、Scene Tree、Actor Structure、Asset Browser、Code、World 和 Project Output 九个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
 
 Scene Tree 展示 World → Actor 关系和实际 Actor 类型，具有类型图标、层级线、交替行、键盘导航和底部过滤；组件组成由 Actor Structure 展示，属性由 Parameters 检查，详见[编辑器模块](docs/modules/editor/README.md)。
 
@@ -372,3 +372,5 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 首阶段的历史目标与取舍见[第一步记录](docs/first-step.md)。当前源码引用局部与临时值根、兼容方法体更新和显式协程均已贯通，实际合同与已验收范围见[运行时协议](docs/runtime-model.md#已实现的最小业务执行协议)。下一增量按真实消费者需求选择，尚未实现的范围见[当前能力边界](docs/runtime-structure.md#已知成本与能力边界)。
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
+
+World 配置通过 **Window → World Settings** 打开，光照、DDGI 与效果随 Scene v4 保存并支持同一场景撤销；诊断留在视口。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。

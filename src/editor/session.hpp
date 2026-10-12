@@ -16,7 +16,7 @@ struct Parameter {
     float default_value{};
 };
 struct ComponentType { TypeId type; std::string name; };
-struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; };
+struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category; };
 struct Selection {
     ObjectId actor, object; // Actor context and inspected Actor/Component, in this document only.
     bool operator==(const Selection&) const = default;
@@ -43,6 +43,7 @@ public:
     std::span<const ObjectId> selected_actors() const noexcept { return selected_actors_; }
     bool is_selected(ObjectId actor) const noexcept { return std::ranges::find(selected_actors_,actor)!=selected_actors_.end(); }
     std::wstring_view name(ObjectId) const noexcept;
+    Result<void> set_world_lighting(const rendering::SceneLightingSettings&);
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<void> select_actors(std::span<const ObjectId> actors, ObjectId active);
@@ -133,11 +134,12 @@ private:
         Selection inspection;
         bool amend_creation{}; // Initial placement belongs to the immediately preceding creation entry.
     };
+    struct LightingChange { rendering::SceneLightingSettings before,after; };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     struct BodyChange { ObjectRoot root; ObjectId actor; physics::BodySettings before, after; };
     struct MaterialBindingChange {ObjectRoot root;ObjectId actor;std::vector<world::MaterialBinding> before,after;};
     struct MaterialValueChange {ObjectRoot root;ObjectId actor,component;material::State before,after;};
-    using Change = std::variant<ActorChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange>;
+    using Change = std::variant<LightingChange, ActorChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;

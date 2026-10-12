@@ -109,7 +109,7 @@ void quality_contracts(Fixture& f) {
         {{-.4f,0,-.4f},{0,1,0}},{{.4f,0,-.4f},{0,1,0}},{{.4f,0,.4f},{0,1,0}},
         {{-.4f,0,-.4f},{0,1,0}},{{.4f,0,.4f},{0,1,0}},{{-.4f,0,.4f},{0,1,0}}});
     f.lights.clear();f.frame.environment={.1f,.1f,.1f};
-    options.probe_min={-1,-1,-1};options.probe_max={1,3,1};options.probe_counts={2,2,2};
+    options.probe_volumes[0].minimum={-1,-1,-1};options.probe_volumes[0].maximum={1,3,1};options.probe_volumes[0].counts={2,2,2};
     options.probe_update_budget=8;options.probe_rays=64;++f.frame.scene_identity;f.edited();
     const auto sky_region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{0,0,0},6);
     const auto sky_reference=f.capture("contract-sky-64-rays",32);

@@ -81,7 +81,7 @@ void quality_work_elision(Fixture& f) {
 
     f.lights.clear();f.frame.environment={.05f,.05f,.05f};
     options.shadow_samples=1;options.ddgi=true;
-    options.probe_min={-6,-4,0};options.probe_max={6,4,8};options.probe_counts={4,4,4};
+    options.probe_volumes[0].minimum={-6,-4,0};options.probe_volumes[0].maximum={6,4,8};options.probe_volumes[0].counts={4,4,4};
     options.probe_update_budget=64;options.probe_rays=64;
     const auto gather_case=[&](const char* name,bool needs_gather) {
         f.edited();const auto first_frame=f.drawing.id+1;

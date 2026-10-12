@@ -68,6 +68,7 @@ struct World::Impl {
     struct Task { ObjectId object, actor; Coroutine coroutine; };
     struct Pending { std::uint64_t serial; Request request; ObjectId owner; bool member_required{}; };
 
+    rendering::SceneLightingSettings lighting;
     Runtime& runtime;
     Types types;
     World& world;

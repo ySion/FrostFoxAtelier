@@ -278,25 +278,32 @@ int main(int argc, char** argv) try {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const bool materials_only=argc>1&&std::string_view(argv[1])=="--materials";
     const bool cavity_only=argc>1&&std::string_view(argv[1])=="--cavity";
+    const bool selection_only=argc>1&&std::string_view(argv[1])=="--selection";
     std::filesystem::path material_output;
-    if(materials_only||cavity_only) {
-        check(argc==2||(argc==4&&std::string_view(argv[2])=="--output"),"usage: --materials|--cavity [--output <absolute-directory>]");
+    if(materials_only||cavity_only||selection_only) {
+        check(argc==2||(argc==4&&std::string_view(argv[2])=="--output"),"usage: --materials|--cavity|--selection [--output <absolute-directory>]");
         if(argc==4) {material_output=std::filesystem::path(argv[3]);check(material_output.is_absolute(),"Evidence path must be absolute");std::filesystem::create_directories(material_output);}
     }
-    if (argc > 1&&!materials_only&&!cavity_only) {
+    if (argc > 1&&!materials_only&&!cavity_only&&!selection_only) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
         return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal",
-                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts", mode == "--scene-lit-debug");
+                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts", mode == "--scene-lit-debug", mode == "--scene-lit-volumes");
     }
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    if(selection_only) {
+        if(!material_output.empty())std::filesystem::current_path(material_output);
+        const auto extent=take(renderer.target()).extent;
+        selection_depth_cases(renderer,extent);selection_clipping_cases(renderer,extent);
+        check(bool(renderer.close()),"close selection renderer");return 0;
+    }
     if(!materials_only)cavity_cases(renderer,window,material_output);
     if(cavity_only){check(bool(renderer.close()),"close cavity renderer");check(bool(renderer.close()),"repeat cavity renderer close");return 0;}
     material_cases(renderer,material_output);
@@ -465,6 +472,7 @@ int main(int argc, char** argv) try {
     transform_cases(renderer, ui_frame.extent);
     mesh_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
+    selection_depth_cases(renderer,ui_frame.extent);
     selection_clipping_cases(renderer, ui_frame.extent);
     viewport_cases(renderer, ui_frame.extent);
     reference_guide_cases(renderer, ui_frame.extent);

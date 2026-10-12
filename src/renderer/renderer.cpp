@@ -788,6 +788,14 @@ struct Renderer::State {
                 }
                 geometry.used = true;
             }
+            // Match SceneLit's CPU-composed view/projection before the shared
+            // precise world-to-clip shader path. Chained GPU matrices differ by
+            // ULPs and make coplanar editing ink fail the surface depth test.
+            math::Matrix4d camera_view,camera_projection;
+            for(std::size_t i=0;i<16;++i) {camera_view.elements[i]=frame.camera.view[i];camera_projection.elements[i]=frame.camera.projection[i];}
+            const auto combined=camera_view*camera_projection;
+            std::array<float,16> view_projection;
+            for(std::size_t i=0;i<16;++i)view_projection[i]=static_cast<float>(combined.elements[i]);
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const auto program = pipeline.program();
                 detail::bind_materials(gfx,program,materials);
@@ -798,6 +806,7 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
+                require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
                 require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy");
                 require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
@@ -1024,7 +1033,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
     s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
-    s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;
+    s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)

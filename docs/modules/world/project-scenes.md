@@ -18,7 +18,7 @@ Actor 和 Component 的标量属性使用相同的 `begin_edit / preview_edit(Sc
 
 ## Scene 格式
 
-统一写出版本 3，继续读取版本 1/2；其他版本拒绝。旧版本保存时升级为 v3，已有类型、TRS、组成、网格来源和材质保留。
+统一写出版本 4，继续读取版本 1/2/3；其他版本拒绝。旧版本保存时升级为 v4，已有类型、TRS、组成、网格来源和材质保留。
 
 每个 Actor/Component 保存完整类型名称，并使用 Runtime `find_type / is_a` 校验。每个对象有 `properties` 对象，按声明字段名递归保存业务标量；新增缺省字段保留 Runtime 构造默认值，未知已保存属性报错。整数严格检查范围和符号，不做环绕转换；浮点必须有限。
 
@@ -45,3 +45,7 @@ End 回调内同步调用 Session::stop 会沿 World 准入返回 busy；被拒�
 ## 验收
 
 `project_scene_acceptance` 使用真实 Runtime 原生派生类型、Source/JIT 调用、Session、Scene、资源目录和 Jolt，覆盖默认值、类型/字段发现、Actor/Component 标量事务、失败加载释放、v1/v2、独立运行身份、反复启停、Begin/Tick/End 错误和物理争写拒绝。原 `world_acceptance` 继续覆盖顺序生命周期与对象图边界。新的多文件 Source class 发布链由项目编译集成验收补齐，不以原生派生类型消费者替代其证据。
+
+## World authoring 配置
+
+Scene v4 根 `world` 保存共享 `rendering::SceneLightingSettings`。它由 World 持有，Scene 编解码和 Session 历史负责持久化与撤销；Renderer 只消费副本。v1–v3 使用类型默认值。诊断偏好、GPU 缓存和实际 follow-focus 锚点不属于存档，完整规则见[持久格式与责任](../editor/projects.md#持久格式与责任)。

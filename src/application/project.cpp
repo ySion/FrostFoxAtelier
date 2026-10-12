@@ -76,7 +76,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next,editor:
     workspace_.reset_document();
     project_code_=nullptr;
     const auto closed=document_->close();if (!closed) throw std::runtime_error(closed.error().message);
-    document_=std::move(next);project_code_=code;scene_.reset();workspace_.render_notice.clear();camera_.reset();camera_cut_=true;invalidate_surface();
+    document_=std::move(next);project_code_=code;scene_.reset();workspace_.render_notice.clear();camera_.reset();sync_world_view();camera_cut_=true;invalidate_surface();
 }
 Result<void> Application::open_project(const std::filesystem::path& folder,bool create,ProjectOpenPolicy policy) {
     // A save decision can change the file we are about to open. Read only after
@@ -94,9 +94,7 @@ Result<void> Application::open_example(editor::Command command) {
     workspace_.assets.navigate(std::filesystem::path(example->scene).parent_path().parent_path());
     if(!workspace_.scene_available) return {}; // Keep normal project build diagnostics visible.
     const auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
-    workspace_.view.lit={};
     const bool textured=command==editor::Command::example_physic || command==editor::Command::example_dungeons;
-    if(textured) workspace_.view.lit.ddgi=false;
     return configure_view(example->eye,example->target,textured?renderer::Shading::smooth:renderer::Shading::scene_lit,!textured && !items->empty());
 }
 Result<void> Application::load_project(const std::filesystem::path& folder,bool create,const std::filesystem::path& scene,ProjectOpenPolicy policy) {

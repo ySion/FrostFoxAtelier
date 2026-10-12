@@ -249,52 +249,58 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(document.select(light_actors[1]));publish();require(has_text(L"Intensity (cd/m²)") && has_text(L"Width (m)"),"Rectangle parameters are missing their authored dimensions.");
     take(document.select(light_actors[2]));publish();require(has_text(L"Illuminance (lux)") && !has_text(L"Range (m)"),"Directional parameters exposed a local light range.");
     const auto history=document.undo_count();
-    require(workspace.apply_view({ui::ActionKind::activate,control::shading_scene_lit,{}}) && workspace.view.shading==renderer::Shading::scene_lit,
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_scene_lit,{}})) && workspace.view.shading==renderer::Shading::scene_lit,
         "The formal display command did not select Scene Lit.");
-    require(!workspace.apply_view({ui::ActionKind::activate,control::guide_background,true}) &&
+    require(!take(workspace.apply_view(document,{ui::ActionKind::activate,control::guide_background,true})) &&
         workspace.view.background==renderer::Background::gradient,"Scene Lit can enable a studio gradient or destroys the stored studio preference.");
     const auto antialiasing=workspace.view.lit.antialiasing;
     for(std::uint64_t i=0;i<6;++i) {
-        require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+i,false}),"Scene Lit effect toggle was not routed.");
-        require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+i,false}),"Repeated Scene Lit toggle was rejected.");
+        require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+i,false})),"Scene Lit effect toggle was not routed.");
+        require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+i,false})),"Repeated Scene Lit toggle was rejected.");
     }
     require(!workspace.view.lit.shadows && !workspace.view.lit.ddgi && !workspace.view.lit.gtao && !workspace.view.lit.sssr &&
         !workspace.view.lit.bloom && !workspace.view.lit.ssil && workspace.view.lit.antialiasing==antialiasing,
         "Scene Lit effect toggles were coupled, changed AA policy or were non-idempotent.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+2,true}) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+2,true})) &&
         workspace.view.lit.gtao && !workspace.view.lit.ssil,
         "Enabling GTAO did not choose the independent occlusion policy.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+5,true}) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+5,true})) &&
         workspace.view.lit.ssil && !workspace.view.lit.gtao,
         "Local GI did not replace GTAO through the formal view action.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+5,false}) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+5,false})) &&
         !workspace.view.lit.ssil && !workspace.view.lit.gtao,
         "Disabling Local GI unexpectedly enabled GTAO.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+5,true}),
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+5,true})),
         "Local GI could not be enabled after disabling the shared local policy.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+2,true}) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+2,true})) &&
         workspace.view.lit.gtao && !workspace.view.lit.ssil,
         "GTAO did not replace Local GI through the formal view action.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_effects_first+2,false}) &&
-        !workspace.view.lit.gtao && !workspace.view.lit.ssil && document.undo_count()==history,
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+2,false})) &&
+        !workspace.view.lit.gtao && !workspace.view.lit.ssil && document.undo_count()>history,
         "Disabling the chosen local policy enabled another effect or changed scene history.");
     for(std::uint64_t i=0;i<4;++i) {
-        require(workspace.apply_view({ui::ActionKind::activate,control::lit_aa_first+i,{}}) &&
-            workspace.apply_view({ui::ActionKind::activate,control::lit_aa_first+i,{}}) &&
-            workspace.view.lit.antialiasing==static_cast<renderer::Antialiasing>(i) && document.undo_count()==history,
-            "Scene Lit AA choices did not route one idempotent display policy independently of scene history.");
+        require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_aa_first+i,{}})) &&
+            take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_aa_first+i,{}})) &&
+            workspace.view.lit.antialiasing==static_cast<renderer::Antialiasing>(i) && document.undo_count()>history,
+            "World AA choices did not route through scene history.");
     }
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_exposure_first+4,{}}) && workspace.view.lit.exposure_ev==2 && document.undo_count()==history,
-        "Display exposure changed scene history or used the wrong units.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::lit_shadow_budget_first+2,{}}) && workspace.view.lit.shadow_light_budget==16,
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_exposure_first+4,{}})) && workspace.view.lit.exposure_ev==2 && document.undo_count()>history,
+        "World exposure did not enter scene history or used the wrong units.");
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_shadow_budget_first+2,{}})) && workspace.view.lit.shadow_light_budget==16,
         "Shadow budget was not routed through the shared display settings.");
     workspace.menu=ui::ContextMenuRequest{control::scene_shading,0,0,0};publish();
     const auto lit=std::ranges::find(workspace.menu_items,control::shading_scene_lit,&ui::MenuItem::key);
     const auto options=std::ranges::find(workspace.menu_items,control::lit_menu,&ui::MenuItem::key);
     require(lit!=workspace.menu_items.end() && lit->selected && lit->behavior==ui::MenuBehavior::radio &&
-        options!=workspace.menu_items.end() && options->children.size()==9 && options->children[0].behavior==ui::MenuBehavior::checkbox &&
-        options->children[5].key==control::lit_effects_first+5 && options->children[5].behavior==ui::MenuBehavior::checkbox,
+        options!=workspace.menu_items.end(),
         "The display menu lost Scene Lit radio/effect checkbox semantics.");
+    require(std::ranges::find(options->children,static_cast<ui::ControlKey>(Command::show_world_settings),&ui::MenuItem::key)!=options->children.end(),
+        "Scene Lighting omitted its dockable configuration page.");
+    for(unsigned i=0;i<6;++i) {
+        const auto item=std::ranges::find(options->children,control::lit_effects_first+i,&ui::MenuItem::key);
+        require(item!=options->children.end() && item->behavior==ui::MenuBehavior::checkbox,
+            "A Scene Lighting effect lost its checkbox behavior.");
+    }
     const auto aa=std::ranges::find(options->children,control::lit_aa_menu,&ui::MenuItem::key);
     require(aa!=options->children.end() && aa->children.size()==4,
         "Scene Lit menu omitted the four independent AA policies.");
@@ -302,5 +308,76 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         require(aa->children[i].key==control::lit_aa_first+i && aa->children[i].behavior==ui::MenuBehavior::radio &&
             aa->children[i].radio_group==control::lit_aa_first && aa->children[i].selected==(i==3),
             "Scene Lit AA menu did not publish the selected policy through one radio group.");
-    std::puts("Scene Lit application acceptance: PASS (real World/Project, light creation/history, reflected parameters, scene persistence/rejection, stable snapshots and display menus)");
+    {
+    workspace.menu.reset();workspace.dock.select(world_control::tab);publish();
+    take(workspace.apply_ui({ui::ActionKind::activate,world_control::ddgi_tab,{}}));publish();
+    require(has_text(L"Propagation") && has_text(L"World min (m)") && has_text(L"Current layout (CPU)"),
+        "Lighting DSL page omitted its volume, propagation or accepted-frame layout controls.");
+    const auto count0=world_control::field(probe_volume_option(0,ProbeVolumeField::count_x));
+    const auto old_view=workspace.view;const auto revision=workspace.view_revision();
+    const auto edit=[&](ui::ActionKind kind,ui::ControlKey key,double value=0) {return workspace.apply_view(document,{kind,key,value});};
+    take(edit(ui::ActionKind::edit_begin,count0));take(edit(ui::ActionKind::edit_preview,count0,10));publish();
+    require(workspace.lighting.editing() && workspace.view==old_view && workspace.view_revision()==revision,
+        "Lighting preview published renderer settings before commit.");
+    take(edit(ui::ActionKind::edit_cancel,count0));
+    require(!workspace.lighting.editing() && workspace.view==old_view,"Cancelled lighting input changed settings.");
+    take(edit(ui::ActionKind::edit_begin,count0));take(edit(ui::ActionKind::edit_commit,count0,10));
+    require(workspace.view.lit.probe_volumes[0].counts[0]==10 && workspace.view_revision()==revision+1,
+        "Lighting commit did not publish once.");
+    take(edit(ui::ActionKind::edit_begin,count0));take(edit(ui::ActionKind::edit_commit,count0,10));
+    require(workspace.view_revision()==revision+1,"Repeated lighting commit changed the view revision.");
+    const auto before_invalid=workspace.view;
+    const auto max0=world_control::field(probe_volume_option(0,ProbeVolumeField::max_x));
+    take(edit(ui::ActionKind::edit_begin,max0));
+    require(!edit(ui::ActionKind::edit_commit,max0,before_invalid.lit.probe_volumes[0].minimum[0]) &&
+        workspace.view==before_invalid && !workspace.lighting.editing(),"Invalid bounds left a partial publication or live draft.");
+    take(edit(ui::ActionKind::edit_begin,count0));
+    take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::slot_first+1,{}}));publish();
+    take(edit(ui::ActionKind::edit_commit,count0,12));take(edit(ui::ActionKind::edit_begin,count0));
+    require(workspace.view==before_invalid && !workspace.lighting.editing() && workspace.lighting.selected_volume()==1,
+        "A retired volume row resumed editing after a slot switch.");
+    const auto count1=world_control::field(probe_volume_option(1,ProbeVolumeField::count_x));
+    take(edit(ui::ActionKind::edit_begin,count1));workspace.reset_document();
+    take(edit(ui::ActionKind::edit_commit,count1,12));publish();
+    require(workspace.view==before_invalid && !workspace.lighting.editing() && document.undo_count()>history,
+        "Document replacement kept a lighting draft or lost World history.");
+    }
+    {
+    const auto before=document.world().lighting_settings();const auto count=document.undo_count();
+    auto candidate=before;candidate.exposure_ev=3.5f;
+    take(document.set_world_lighting(candidate));take(document.set_world_lighting(candidate));
+    require(document.undo_count()==count+1,"Repeated World settings created duplicate history.");
+    take(document.undo());workspace.sync_world(document);
+    require(document.world().lighting_settings()==before && static_cast<const rendering::SceneLightingSettings&>(workspace.view.lit)==before,
+        "Undo did not restore World and the evaluated view together.");
+    take(document.redo());workspace.sync_world(document);
+    const auto saved=take(document.serialize());auto restored=take(Session::deserialize(saved,project));
+    require(restored->world().lighting_settings()==candidate && take(restored->serialize())==saved && !restored->dirty(),
+        "Scene v4 did not round-trip World authoring values into a clean document.");
+    const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
+    auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
+    take(workspace.set_view_settings(document,diagnostic_view));
+    require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
+    auto invalid=candidate;invalid.probe_volumes[0].maximum=invalid.probe_volumes[0].minimum;
+    require(!document.set_world_lighting(invalid) && document.world().lighting_settings()==candidate && document.undo_count()==stable_history,
+        "Invalid World configuration partially published.");
+    auto json=nlohmann::json::parse(saved);json["world"]["probe_debug"]=true;
+    require(!Session::deserialize(json.dump(),project),"A diagnostic setting was accepted in persisted World configuration.");
+    json=nlohmann::json::parse(saved);json["version"]=3;json.erase("world");
+    auto legacy=take(Session::deserialize(json.dump(),project));
+    require(legacy->world().lighting_settings()==rendering::SceneLightingSettings{},"An old scene inherited another document's World settings.");
+    take(restored->start());require(!restored->set_world_lighting(before),"Running World accepted author settings.");take(restored->stop());
+    workspace.dock.select(control::parameters_tab);publish();
+    const auto actor=document.selection().actor;const auto root=*take(world::root_component(document.world().runtime(),actor));
+    const auto schema=take(document.properties(root));
+    const auto position=std::ranges::find(schema,std::string("position.x"),&Property::name);
+    require(position!=schema.end() && position->label=="Position (m)" && position->category=="Transform","AFIELD metadata did not reach the real actor parameter schema.");
+    const auto key=workspace.field_control(root,document.types().position_fields[0]);
+    take(workspace.apply_view(document,{ui::ActionKind::activate,control::group_categories,true}));publish();
+    require(has_text(L"Transform") && workspace.field_control(root,document.types().position_fields[0])==key,
+        "Category grouping changed the property target or omitted reflected groups.");
+    take(workspace.apply_view(document,{ui::ActionKind::activate,control::group_components,true}));publish();
+    require(workspace.field_control(root,document.types().position_fields[0])==key,"Component grouping lost field identity.");
+    }
+    std::puts("Scene Lit application acceptance: PASS (World/Project, light history/persistence, DSL lighting page, transactional volume edits, stale actions, display menus)");
 }
