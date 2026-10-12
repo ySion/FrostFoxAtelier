@@ -1061,6 +1061,7 @@ void quality_ddgi(Fixture& f) {
 
 #include "scene_lit_work.inl"
 #include "scene_lit_contracts.inl"
+#include "scene_lit_debug.inl"
 
 void quality_smaa_t2x_coverage(Fixture& f) {
     const auto meshes=f.room.meshes;
@@ -1207,9 +1208,10 @@ void quality_cases(Fixture& f) {
 }
 } // namespace scene_lit_e2e
 
-int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false) {
+int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false) {
     scene_lit_e2e::Fixture fixture(benchmark_mode,output,ddgi_only?atelier::rhi::Validation::debug_layer:atelier::rhi::Validation::gpu);
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
+    else if(debug_only) scene_lit_e2e::probe_debug_cases(fixture);
     else if(contracts_only) scene_lit_e2e::quality_contracts(fixture);
     else if(ddgi_only) scene_lit_e2e::quality_ddgi(fixture);
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);

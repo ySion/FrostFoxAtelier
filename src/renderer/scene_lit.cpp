@@ -73,7 +73,8 @@ struct SceneLit::State {
     rhi::Pipeline probe_copy,probe_update,probe_resolve,ao,ao_resolve,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
     rhi::Pipeline reflection_resolve,reflection_filter,brdf,taa,bloom_downsample,bloom_blur,tone_map,tone;
     rhi::Pipeline smaa_edges_pass,smaa_weights_pass,smaa_neighborhood,smaa_resolve;
-    rhi::Pipeline ssil_trace,ssil_resolve;
+    rhi::Pipeline ssil_trace,ssil_resolve,probe_debug_surface,probe_debug_geometry;
+    GfxTexture probe_age,probe_debug_depth;
     std::array<GfxTimestampQuery,10> queries{}; // Eight stages plus DDGI update and gather.
     GfxSamplerState sampler;
     ui::PixelExtent extent{};
@@ -145,7 +146,6 @@ struct SceneLit::State {
     std::uint32_t parity{},probe_parity{},probe_cursor{},probe_updates_pending{},probe_geometry_pending{},probe_sequence{};
     std::uint32_t previous_effect_flags{},previous_shadow_samples{},previous_shadow_budget{};
     std::uint32_t history_invalid{};
-    bool previous_probe_debug{};
     Antialiasing previous_antialiasing{Antialiasing::none};
     bool history_valid{},enabled{},probe_valid{},brdf_ready{},tlas_built{};
     bool light_changed{},material_changed{},emitter_changed{};
@@ -268,12 +268,14 @@ struct SceneLit::State {
     void probes(const SceneLitSettings& settings) {
         if(probe_counts==settings.probe_counts&&probe_min==settings.probe_min&&probe_max==settings.probe_max)return;
         for(auto* pair:{&probe_irradiance,&probe_target,&probe_distance,&probe_offsets})for(auto& t:*pair)retire(t);
+        retire(probe_age);
         probe_counts=settings.probe_counts;probe_min=settings.probe_min;probe_max=settings.probe_max;
         const auto w=probe_counts[0]*8,h=probe_counts[1]*probe_counts[2]*8;
         for(auto& t:probe_irradiance)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         for(auto& t:probe_target)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         for(auto& t:probe_distance)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
         for(auto& t:probe_offsets)t=texture(probe_counts[0],probe_counts[1]*probe_counts[2],DXGI_FORMAT_R16G16B16A16_FLOAT,8);
+        probe_age=texture(probe_counts[0],probe_counts[1]*probe_counts[2],DXGI_FORMAT_R32_UINT,4);
         probe_valid=false;probe_parity=0;probe_cursor=0;probe_updates_pending=0;probe_geometry_pending=0;probe_sequence=0;
     }
     void common(GfxProgram p,GfxTexture depth,std::uint32_t visibility_counter=0) {
@@ -337,10 +339,10 @@ struct SceneLit::State {
             if(t.getFormat()==DXGI_FORMAT_R16_FLOAT)bytes=2;
             else if(t.getFormat()==DXGI_FORMAT_R8_UNORM)bytes=1;
             else if(t.getFormat()==DXGI_FORMAT_R8G8_UNORM)bytes=2;
-            else if(t.getFormat()==DXGI_FORMAT_R32_FLOAT||t.getFormat()==DXGI_FORMAT_R16G16_FLOAT||t.getFormat()==DXGI_FORMAT_R8G8B8A8_UNORM)bytes=4;
+            else if(t.getFormat()==DXGI_FORMAT_R32_FLOAT||t.getFormat()==DXGI_FORMAT_R32_UINT||t.getFormat()==DXGI_FORMAT_D32_FLOAT||t.getFormat()==DXGI_FORMAT_R16G16_FLOAT||t.getFormat()==DXGI_FORMAT_R8G8B8A8_UNORM)bytes=4;
             result+=std::uint64_t(t.getWidth())*t.getHeight()*t.getDepth()*bytes;};
         for(auto t:gbuffer_textures)add_texture(t);
-        for(auto t:{hdr,indirect,ao_texture,ao_raw,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,ssil_raw,ssil_irradiance})add_texture(t);
+        for(auto t:{hdr,indirect,ao_texture,ao_raw,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,ssil_raw,ssil_irradiance,probe_age,probe_debug_depth})add_texture(t);
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&ssil_history,&bloom,&probe_irradiance,&probe_target,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(const auto& signal:direct_signals){add_texture(signal.raw);for(const auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto t:*pair)add_texture(t);}
         for(auto t:pyramid)add_texture(t);
@@ -609,16 +611,15 @@ struct SceneLit::State {
         const bool direct_changed=(effect_changes&1u)!=0||settings.shadow_samples!=previous_shadow_samples||settings.shadow_light_budget!=previous_shadow_budget||settings.shadow_bias!=controls[1];
         const bool reflection_changed=settings.reflection_distance!=controls[3]||settings.reflection_roughness!=temporal[1];
         const bool ao_changed=(effect_changes&4u)!=0||settings.ao_radius!=controls[2];
-        const bool probe_display_changed=settings.probe_debug!=previous_probe_debug;
         // Invalidate each signal and its actual consumers when its input contract
         // changes. Continuous light edits still use each signal's local response.
         history_invalid=(direct_changed?1u:0u)|
-            (direct_changed||reflection_changed||ao_changed||probe_display_changed||(effect_changes&(2u|4u|8u|64u))?2u:0u)|(ao_changed?4u:0u)|
-            (direct_changed||reflection_changed||ao_changed||effect_changes||probe_display_changed?8u:0u)|
-            (direct_changed||probe_display_changed||(effect_changes&(2u|64u))?16u:0u);
+            (direct_changed||reflection_changed||ao_changed||(effect_changes&(2u|4u|8u|64u))?2u:0u)|(ao_changed?4u:0u)|
+            (direct_changed||reflection_changed||ao_changed||effect_changes?8u:0u)|
+            (direct_changed||(effect_changes&(2u|64u))?16u:0u);
         if(settings.antialiasing!=previous_antialiasing)reset(false); // Projection sampling changed.
         previous_antialiasing=settings.antialiasing;
-        previous_effect_flags=flags;previous_shadow_samples=settings.shadow_samples;previous_shadow_budget=settings.shadow_light_budget;previous_probe_debug=settings.probe_debug;
+        previous_effect_flags=flags;previous_shadow_samples=settings.shadow_samples;previous_shadow_budget=settings.shadow_light_budget;
         scene_identity=frame.scene_identity;scene_revision=frame.scene_revision;enabled=true;
         probes(settings);const bool transform_changed=acceleration(frame);
         const std::array<float,4> next_environment{frame.environment[0],frame.environment[1],frame.environment[2],1};
@@ -688,10 +689,10 @@ struct SceneLit::State {
             probe_origin[3]=std::sqrt(maximum_distance);probe_spacing[3]=0;
             probe_grid={probe_counts[0],probe_counts[1],probe_counts[2],total};const auto budget=std::min(settings.probe_update_budget,total);
             probe_history={probe_updates_pending?.8f:.93f,probe_geometry_pending?.85f:.95f,1.f-float(budget)/float(total),0};
-            probe_update_settings={probe_cursor,budget,settings.probe_rays,(probe_valid?0u:1u)|(settings.probe_debug?2u:0u)};
+            probe_update_settings={probe_cursor,budget,settings.probe_rays,(probe_valid?0u:1u)};
             const auto bind_probes=[&](GfxProgram p,bool newest) {
                 bind(p,"lit_probe_origin",probe_origin);bind(p,"lit_probe_spacing",probe_spacing);bind(p,"lit_probe_grid",probe_grid);bind(p,"lit_probe_update",probe_update_settings);
-                bind(p,"lit_probe_sequence",probe_sequence);
+                bind(p,"lit_probe_sequence",probe_sequence);bind(p,"lit_probe_age_output",probe_age);
                 bind(p,"lit_probe_history",probe_history);
                 const auto read=newest?probe_parity:1-probe_parity;bind(p,"lit_probe_irradiance_previous",probe_irradiance[read]);bind(p,"lit_probe_distance_previous",probe_distance[read]);bind(p,"lit_probe_offsets_previous",probe_offsets[read]);
                 bind(p,"lit_probe_target_previous",probe_target[read]);bind(p,"lit_probe_target_output",probe_target[probe_parity]);
@@ -720,7 +721,6 @@ struct SceneLit::State {
         end(4);
         begin(5);for(std::size_t i=0;i<2;++i)bind(compose.program(),filter_inputs[i],direct_result[i]);
         bind(compose.program(),"lit_indirect_source",settings.ssil?ssil_irradiance:indirect);bind(compose.program(),"lit_ao",ao_texture);
-        bind(compose.program(),"lit_probe_debug",settings.probe_debug&&settings.ddgi?1u:0u);
         bind(compose.program(),"lit_hdr_output",hdr);dispatch(compose,depth,dx,dy);
         if(!brdf_ready){bind(brdf.program(),"lit_brdf_output",brdf_lut);dispatch(brdf,depth,8,8);brdf_ready=true;}
         if(settings.sssr)for(std::uint32_t i=0;i<pyramid_count;i++) {
@@ -773,11 +773,81 @@ struct SceneLit::State {
         }
         common(tone.program(),depth);bind(tone.program(),"lit_display_source",display);
         require(gfxCommandBindKernel(gfx,tone.kernel()),"Bind Scene Lit tone map");require(gfxCommandDraw(gfx,3),"Compose Scene Lit display");stats.viewport_draw_calls++;end(7);
+        if(settings.probe_debug) draw_coverage(depth,stats);
         stats.scene_lit_resource_bytes=resource_bytes();stats.scene_lit_shadow_lights=counts[1];stats.scene_lit_unshadowed_lights=static_cast<std::uint32_t>(std::count_if(frame.lights.begin(),frame.lights.end(),[](const Light& l){return l.casts_shadow;}))-counts[1];
         const auto readback_slot=sequence%readback_count;
         require(gfxCommandCopyBuffer(gfx,ray_readback[readback_slot],ray_counters),"Publish Scene Lit ray counters asynchronously");
         readback_sequences[readback_slot]=gfxGetRecordingFrameSequence(gfx);readback_frame_ids[readback_slot]=frame.ui_frame.id;
         stats.scene_lit_history_resets=reset_events;reset_events=0;previous_view_projection=view_projection;previous_inverse_view_projection=inverse_view_projection;history_valid=true;sequence++;parity=1-parity;
+    }
+    void prepare_probe_debug(rhi::Pipeline& pipeline,bool geometry) {
+        if(pipeline)return;
+        const std::string source=std::string(shaders::lit_ddgi_debug);
+        const std::string vs=source+"\nDDGIDebugVertex main(uint v:SV_VertexID,uint i:SV_InstanceID){return ddgi_debug_vs(v,i);}";
+        const std::string ps=source+(geometry?"\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}":
+            "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}");
+        rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=geometry?vs.c_str():shaders::viewport_vs;
+        desc.source.ps=ps.c_str();desc.name=geometry?"DDGI spatial diagnostics":"DDGI receiver coverage";
+        require(gfxDrawStateSetColorTarget(desc.draw_state,0,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),"Set DDGI debug color format");
+        require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set DDGI debug culling");
+        if(geometry) {
+            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set DDGI debug depth format");
+            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER_EQUAL),"Set DDGI debug reversed depth");
+        } else require(gfxDrawStateSetDepthWriteMask(desc.draw_state,D3D12_DEPTH_WRITE_MASK_ZERO),"Disable diagnostic surface depth writes");
+        auto result=context.prepare(desc);if(!result)throw Error{result.error(),true};pipeline=std::move(*result);
+    }
+    void bind_probe_debug(GfxProgram p) {
+        const auto read=1-probe_parity;
+        bind(p,"lit_probe_irradiance_previous",probe_irradiance[read]);bind(p,"lit_probe_distance_previous",probe_distance[read]);
+        bind(p,"lit_probe_offsets_previous",probe_offsets[read]);bind(p,"lit_probe_age",probe_age);
+    }
+    void draw_coverage(GfxTexture depth,FrameStats& stats) {
+        prepare_probe_debug(probe_debug_surface,false);
+        const auto p=probe_debug_surface.program();common(p,depth);bind_probe_debug(p);
+        bind(p,"lit_probe_origin",probe_origin);bind(p,"lit_probe_spacing",probe_spacing);bind(p,"lit_probe_grid",probe_grid);
+        bind(p,"lit_probe_debug_options",std::array<std::uint32_t,4>{(counts[3]&2u)&&probe_valid?1u:0u,0,0,0});
+        require(gfxCommandBindKernel(gfx,probe_debug_surface.kernel()),"Bind DDGI receiver diagnostic");
+        require(gfxCommandDraw(gfx,3),"Draw DDGI receiver diagnostic");++stats.viewport_draw_calls;
+    }
+    void draw_debug(const Frame& frame,ui::PixelExtent size,GfxTexture depth,FrameStats& stats) {
+        const auto& settings=frame.view.lit;
+        if(frame.view.shading!=Shading::scene_lit||frame.view.wireframe==Wireframe::only||!settings.probe_overlay()) {retire(probe_debug_depth);stats.scene_lit_resource_bytes=resource_bytes();return;}
+        prepare_probe_debug(probe_debug_geometry,true);
+        if(probe_debug_depth.getWidth()!=size.width||probe_debug_depth.getHeight()!=size.height) {
+            retire(probe_debug_depth);constexpr float clear[4]{};
+            probe_debug_depth=gfxCreateTexture2D(gfx,size.width,size.height,DXGI_FORMAT_D32_FLOAT,1,clear);allocation(bool(probe_debug_depth));
+        }
+        // Preserve authoritative scene depth for picking, captures and editing guides.
+        require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind scene depth for DDGI debug copy");
+        if(settings.probe_xray||frame.meshes.empty())require(gfxCommandClearTexture(gfx,probe_debug_depth),"Clear DDGI X-Ray depth");
+        else require(gfxCommandCopyTexture(gfx,probe_debug_depth,depth),"Copy scene depth for DDGI diagnostics");
+        require(gfxCommandBindDepthStencilTarget(gfx,probe_debug_depth),"Bind private DDGI diagnostic depth");
+        const auto p=probe_debug_geometry.program();
+        std::array<float,4> origin{},spacing{};
+        for(std::size_t i=0;i<3;++i){origin[i]=settings.probe_min[i];const auto size=settings.probe_max[i]-settings.probe_min[i];
+            spacing[i]=size/(settings.probe_counts[i]-1);origin[3]+=size*size;}
+        origin[3]=std::sqrt(origin[3]);
+        const auto total=settings.probe_counts[0]*settings.probe_counts[1]*settings.probe_counts[2];
+        const bool ready=enabled&&settings.ddgi&&probe_valid&&scene_identity==frame.scene_identity&&
+            probe_counts==settings.probe_counts&&probe_min==settings.probe_min&&probe_max==settings.probe_max;
+        const auto& v=frame.scene_viewport;
+        bind(p,"lit_view_projection",floats(matrix(frame.camera.view)*matrix(frame.camera.projection)));
+        bind(p,"lit_viewport",std::array<float,4>{v.x,v.y,v.width,v.height});
+        bind(p,"lit_probe_origin",origin);bind(p,"lit_probe_spacing",spacing);
+        bind(p,"lit_probe_grid",std::array<std::uint32_t,4>{settings.probe_counts[0],settings.probe_counts[1],settings.probe_counts[2],total});
+        const auto budget=std::min(total,settings.probe_update_budget);
+        bind(p,"lit_probe_debug_controls",std::array<float,4>{settings.probe_radius,std::exp2(settings.exposure_ev),float((total+budget-1)/budget-1),0});
+        bind_probe_debug(p);
+        require(gfxCommandBindKernel(gfx,probe_debug_geometry.kernel()),"Bind DDGI spatial diagnostics");
+        const auto draw=[&](std::uint32_t kind,std::uint32_t vertices,std::uint32_t count) {
+            bind(p,"lit_probe_debug_options",std::array<std::uint32_t,4>{ready?1u:0u,static_cast<std::uint32_t>(settings.probe_visualization),kind,0});
+            require(gfxCommandDraw(gfx,vertices,count),"Draw DDGI diagnostic geometry");++stats.viewport_draw_calls;
+        };
+        if(settings.probe_visualization!=ProbeVisualization::off)draw(0,12*8*6,total);
+        if(settings.probe_relocation)draw(2,6,total);
+        if(settings.probe_volume)draw(1,6,12);
+        require(gfxCommandBindDepthStencilTarget(gfx,depth),"Restore scene editing depth");
+        stats.scene_lit_resource_bytes=resource_bytes();
     }
     void retire_scene() {
         for(auto& [key,o]:objects){(void)key;if(tlas)require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,o.instance),"Detach Scene Lit instance");
@@ -791,14 +861,14 @@ struct SceneLit::State {
         tlas_built=false;
     }
     void close() {
-        retire_targets();for(auto* pair:{&probe_irradiance,&probe_target,&probe_distance,&probe_offsets})for(auto& t:*pair)retire(t);retire(brdf_lut);retire(smaa_area);retire(smaa_search);
+        retire_targets();for(auto* pair:{&probe_irradiance,&probe_target,&probe_distance,&probe_offsets})for(auto& t:*pair)retire(t);retire(brdf_lut);retire(smaa_area);retire(smaa_search);retire(probe_age);retire(probe_debug_depth);
         retire_scene();retire(ray_counters);
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
         if(sampler)require(gfxDestroySamplerState(gfx,std::exchange(sampler,{})),"Retire Scene Lit sampler");
         for(auto* p:{&gbuffer,&tiles,&direct,&direct_resolve,&direct_filter,&compose,&probe_copy,&probe_update,&probe_resolve,
                     &ao,&ao_resolve,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
-                    &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&ssil_trace,&ssil_resolve})*p={};
+                    &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&ssil_trace,&ssil_resolve,&probe_debug_surface,&probe_debug_geometry})*p={};
     }
 };
 
@@ -814,7 +884,7 @@ void SceneLit::validate(const Frame& frame) const {
     const auto& s=frame.view.lit;invalid(frame.lights.size()<=256&&s.shadow_light_budget<=16&&s.shadow_samples>=1&&s.shadow_samples<=64,"Invalid Scene Lit light or shadow budget");
     const auto finite=[](float v){return std::isfinite(v);};
     invalid(finite(s.exposure_ev)&&s.exposure_ev>=-16&&s.exposure_ev<=16&&finite(s.shadow_bias)&&s.shadow_bias>0&&s.shadow_bias<=.1f&&finite(s.ao_radius)&&s.ao_radius>0&&
-        finite(s.reflection_distance)&&s.reflection_distance>0&&finite(s.reflection_roughness)&&s.reflection_roughness>=0&&s.reflection_roughness<=1&&s.probe_update_budget>0&&s.probe_rays>=1&&s.probe_rays<=256&&s.antialiasing<=Antialiasing::smaa_t2x,"Invalid Scene Lit settings");
+        finite(s.reflection_distance)&&s.reflection_distance>0&&finite(s.reflection_roughness)&&s.reflection_roughness>=0&&s.reflection_roughness<=1&&s.probe_update_budget>0&&s.probe_rays>=1&&s.probe_rays<=256&&s.antialiasing<=Antialiasing::smaa_t2x&&s.probe_visualization<=ProbeVisualization::distance&&finite(s.probe_radius)&&s.probe_radius>=.01f&&s.probe_radius<=.45f,"Invalid Scene Lit settings");
     for(float radiance:frame.environment)invalid(finite(radiance)&&radiance>=0&&radiance<=65504,"Invalid Scene Lit sky radiance");
     std::uint64_t total=1;for(std::size_t i=0;i<3;i++){invalid(finite(s.probe_min[i])&&finite(s.probe_max[i])&&s.probe_max[i]>s.probe_min[i]&&s.probe_counts[i]>=2&&s.probe_counts[i]<=32,"Invalid Scene Lit probe volume");total*=s.probe_counts[i];}
     invalid(total<=4096,"Scene Lit probe volume exceeds 4096 probes");
@@ -833,8 +903,9 @@ void SceneLit::validate(const Frame& frame) const {
         if(l.kind==LightKind::directional)invalid(double(l.source_radius)<std::numbers::pi_v<double>/2,"Directional source angular radius is too large");if(l.stable_key)invalid(light_keys.insert(l.stable_key).second,"Duplicate stable light identity");}
 }
 void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats){state_->draw(frame,extent,depth,draws,materials,stats);}
+void SceneLit::draw_debug(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,FrameStats& stats){state_->draw_debug(frame,extent,depth,stats);}
 void SceneLit::invalidate(bool empty_scene,FrameStats& stats) {
-    state_->enabled=false;state_->reset();if(empty_scene)state_->retire_scene();
+    state_->enabled=false;state_->reset();if(!empty_scene)state_->retire(state_->probe_debug_depth);if(empty_scene)state_->retire_scene();
     stats.scene_lit_resource_bytes=state_->resource_bytes();
 }
 Result<void> SceneLit::close(){if(!state_)return {};try{state_->close();state_.reset();return {};}catch(const Error& error){return std::unexpected(error);}}

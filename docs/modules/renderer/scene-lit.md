@@ -58,7 +58,7 @@ DDGI 的 inside 分类只使用闭合组件的几何背面。每份不可变 Mes
 
 屏幕 gather 直接写入 Compose 与 Local GI 共用的间接辐照度，不再执行额外 5×5 表面重建。原 pipeline、每邻点短射线和一张全分辨率 RGBA16F 中间纹理均已移除；1440p 减少 28.125 MiB 逻辑纹理字节。探针到接收面的实际 LOS 与连续距离权重仍保留，深度、距离矩和全分辨率几何精度不变。去除重建后的墙角、亚像素隔墙、运动与真实柱子场景证据见[验收记录](acceptance.md)。
 
-Local GI 与探针调试均关闭时，若接收材质的 `base_color × (1 − metallic)` 严格为零，屏幕 gather 直接写零，省去无贡献接收点的探针可见性查询；没有亮度阈值，极小非零漫反射仍正常计算。世界空间探针更新不受影响，Local GI 需要的去材质辐照度也不被裁掉。
+Local GI 关闭时，若接收材质的 `base_color × (1 − metallic)` 严格为零，屏幕 gather 直接写零，省去无贡献接收点的探针可见性查询；没有亮度阈值，极小非零漫反射仍正常计算。世界空间探针更新不受影响，Local GI 需要的去材质辐照度也不被裁掉。Receiver Coverage 在显示阶段单独查询，不改变此优化或光照射线统计。
 
 分批采样保留独立的辐照度目标历史，已有照明历史在每帧的探针传递中向上一帧目标推进，混合比例为 `min(更新预算, 探针总数) / 探针总数`。因此未在本帧采样的有效探针也会连续响应，不把四帧轮转直接显示成停顿与跳变；采样目标仍按上述 .8/.93 规则稳定。初始化、进入几何或位置修正会同步清除不再有效的目标与显示贡献，下一次有效采样再建立支持。这项逐帧过渡只增加世界空间探针历史；默认 256 个探针额外占用 256 KiB 逻辑纹理字节。连续过渡会增加少量收敛延迟。
 
@@ -66,9 +66,36 @@ Local GI 与探针调试均关闭时，若接收材质的 `base_color × (1 − 
 
 当前仍是有限、低频的漫反射场，有探针插值与更新延迟；不包含相机跟随级联和无限世界流送，也不能单独表达细小几何的全部近场遮蔽。
 
+## DDGI 空间与接收面诊断
+
+Scene Lighting → DDGI Debug 与 Control 的 `view.set` / `render.compare` 共用 `ViewOption`。全部默认关闭；设置属于视口，不创建 Actor、TLAS 实例或发光体，不写场景撤销与保存数据。
+
+- `probe_visualization`：`off`、`irradiance`、`state`、`update_age`、`distance`。球心读取本帧完成更新的真实 offset；辐照度读取对应八面体方向，显示 `E / π × exposure` 经 `c / (1 + c)` 映射；它是探针数据预览，不是最终表面光照。距离读取 FP32 距离矩中的方向均值，黑到白对应 0～4 倍最小探针间距。
+- `probe_volume` 显示配置边界，`probe_relocation` 连接原格点与实际位置。`probe_radius` 为最小格间距的 0.01～0.45 倍，默认 0.12；菜单提供 Small / Medium / Large。半径只影响显示，不改变采样。
+- `probe_xray` 忽略场景遮挡；探针之间仍有深度遮挡。空间诊断在 AA 完成和无抖动编辑深度重建后执行，使用私有 D32_FLOAT 深度，保留正式 scene depth 给拾取、Capture 和编辑辅助线。未启用时没有诊断绘制或深度副本。
+- Update Age 记录距上次**探针评估**经过的 DDGI 更新帧数，包括 inside/relocation 评估，不表示有效照明样本数或墙钟时间。青色表示本轮刚评估，绿到红表示一个预算轮转的年龄，灰色表示尚未评估。每探针 R32_UINT 占 4 字节，随现有 copy/update 维护，无额外 dispatch 或逐帧 GPU 读回；随探针场重建/重置清除，DDGI 关闭时不推进。
+
+`probe_debug=true` 现在显示 Receiver Coverage，替代旧的“最近探针分类”伪彩；其名称保留兼容既有 Control 请求。它调用与真实间接光相同的八邻 gather，包括真实段遮挡、几何法线偏置、方向距离权重及有效历史，不以最近球的颜色推断接收面质量。绿色亮度表示实际非零贡献探针数（1～8）；有效但严格零辐照度仍单独标记。
+
+| 颜色 | 接收面含义 |
+| --- | --- |
+| 灰 | DDGI 关闭或没有当前场 |
+| 蓝 | 超出当前体积 |
+| 橙 | 相关探针尚未就绪或正在重定位 |
+| 红 | 相关探针处在实体内部 |
+| 紫 | 没有有效方向数据、非零权重或可见支持 |
+| 青 | 有有效支持，但辐照度为零 |
+| 绿 | 有光照贡献；越亮表示贡献探针越多 |
+
+混合失败时，有可用探针但无最终贡献优先显示紫；全部不可用时待初始化优先于 inside。球体 State 直接显示探针自身分类。关闭 DDGI、空场景或场被失效时，空间设施显示灰色配置位置，不把旧照明当成当前数据。菜单 Legend 提供颜色说明。
+
+Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和空间球都不进入 DDGI、Local GI、反射、Bloom 或 AA 历史。诊断模式单独查询可见性，开启时有额外 GPU 成本；这部分不混入既有光照阶段时间和射线计数，性能采样应关闭诊断。本批提供空间显示与真实覆盖分类；逐像素贡献明细、自动跟随体积、级联/clipmap 尚未实现。
+
+端到端入口：`atelier_renderer_acceptance --scene-lit-debug --output <绝对目录>` 使用真实 GPU validation；`atelier_editor_control_acceptance <editor.exe> <绝对输出目录> --ddgi-debug` 验证正式编辑器、统一选项发现、幂等 patch、非法 patch 原子拒绝、临时渲染对照及场景/撤销隔离。
+
 ## 显示菜单与近场策略
 
-Scene Lighting 提供 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI 六个勾选项，以及 Antialiasing、Exposure、Shadow Budget 子菜单。操作仍经 Workspace 的统一 `apply_view` 入口，不改变业务材质或场景撤销历史。
+Scene Lighting 提供 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI 六个勾选项，以及 Antialiasing、Exposure、Shadow Budget、DDGI Debug 子菜单。操作仍经 Workspace 的统一 `apply_view` 入口，不改变业务材质或场景撤销历史。
 
 `SceneLitSettings::antialiasing` 为 `Antialiasing::{none,taa,smaa,smaa_t2x}`，菜单显示 Off / TAA / SMAA / SMAA T2x，默认 SMAA。所有模式均使用原生分辨率：
 

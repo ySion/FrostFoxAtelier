@@ -105,7 +105,7 @@ void quality_work_elision(Fixture& f) {
     const auto debug=gather_case("work-ddgi-metal-debug",false);
     const auto debug_color=mean_rgb(debug,region);
     check(*std::max_element(debug_color.begin(),debug_color.end())>5,
-          "probe visualization remains visible on a zero-diffuse material");
+          "receiver coverage remains visible on a zero-diffuse material without changing lighting gather counters");
     options.probe_debug=false;
     std::puts("Renderer SceneLit work elision: PASS (delta-light queries and brightness, finite-source samples, zero/tiny diffuse support, SSIL/debug consumers)");
 }

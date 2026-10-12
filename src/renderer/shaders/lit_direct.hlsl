@@ -28,7 +28,6 @@ Texture2D<float> lit_history_depth;
 Texture2D<float4> lit_indirect_source;
 Texture2D<float> lit_ao;
 RWTexture2D<float4> lit_hdr_output;
-uint lit_probe_debug;
 
 float3 lit_direct_finite(float3 value) {
     return all(isfinite(value)) ? clamp(value, 0, 65504) : 0;
@@ -388,7 +387,6 @@ void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
         // Sky Light supplies incident radiance, not a visible sky surface.
         lit_hdr_output[p]=float4(0,0,0,1);return;
     }
-    if(lit_probe_debug!=0){lit_hdr_output[p]=float4(lit_indirect_source[p].rgb,1);return;}
     float4 bm=lit_base_metallic[p]; float ao=(lit_counts.w&4)!=0?lit_ao[p]:1;
     float3 irradiance=(lit_counts.w&(2|64))!=0?lit_indirect_source[p].rgb:lit_environment.rgb*LIT_PI;
     float3 diffuse=bm.rgb*(1-bm.w)*irradiance/LIT_PI*ao;

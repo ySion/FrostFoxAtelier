@@ -736,7 +736,7 @@ struct Renderer::State {
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
             const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
             const bool editing_depth=jittered&&(capture||frame.view.reference_grid||frame.view.origin_axes||
-                frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
+                frame.view.lit.probe_overlay()||frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
             if ((lines_only||editing_depth)&&!scene_depth)
                 prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
             if (!lighting && !lines_only && !cavity_projection && !scene)
@@ -829,6 +829,7 @@ struct Renderer::State {
                     require(gfxCommandClearTexture(gfx,depth),"Clear sampled scene depth for editing");
                     draw_batches(scene_depth,2);
                 }
+                scene_lit->draw_debug(frame,extent,depth,stats);
                 draw_grid(frame,true);
                 draw_batches(visible_lines,1);
             } else if (lines_only) {
@@ -850,7 +851,10 @@ struct Renderer::State {
             }
         } else {
             materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();
-            if(has_viewport)draw_grid(frame,false);
+            if(has_viewport) {
+                if(scene_lit)scene_lit->draw_debug(frame,extent,depth,stats);
+                draw_grid(frame,false);
+            }
         }
         for(auto it=material_images.begin();it!=material_images.end();) {
             if(it->second.used) {++it;continue;}
@@ -1028,7 +1032,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     bool encoding = false;
     try {
         validate(frame);
-        if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&!frame.meshes.empty()&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
+        if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&(!frame.meshes.empty()||frame.view.lit.probe_overlay())&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
             if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
             s.scene_lit->validate(frame);
         }

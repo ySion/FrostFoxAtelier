@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| DDGI 诊断 | 2026-10-11 工作树：真实探针/Volume、八邻接收覆盖、年龄、深度与历史隔离，见[DDGI 诊断](#ddgi-诊断2026-10-11) |
 | 工作室 Cavity | 2026-10-11 工作树：屏幕凹凸增强、显示隔离与生命周期，见[工作室 Cavity](#工作室-cavity2026-10-11) |
 | 标准材质 | 2026-10-11 工作树：Dev/Release 材质与原 Renderer 全套 GPU 验收，见[标准材质](#标准材质2026-10-11) |
 | 选中边线 | `a7ab99f`：Dev／Release 原生 Renderer 裁剪矩阵；另有独立 Release 官方 Sponza 编辑器集成捕获，见[选中修复](#跨相机平面的选中边线铺黄2026-10-10) |
@@ -14,6 +15,23 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## DDGI 诊断（2026-10-11）
+
+来源为 `codex/viewport-rendering` 工作树，基线 `72843f7a24d51542620f5bebedb83433cfca914b` 加本批未提交改动。硬件为 AMD Radeon RX 6800 XT。Dev/Release 受影响 Renderer、Editor、Control 验收目标均编译通过；没有调整 RHI 或调用另一套图形 API。
+
+| 实际入口 | 结果与范围 | 本机证据 |
+| --- | --- | --- |
+| Dev `--scene-lit-debug`，GPU validation | PASS：真实八邻 pending/有效零照度/体积外诊断、重定位后的 inside 球、Volume、X-Ray、年龄、方向辐照度/距离、TAA/T2x/正交、空场景、深度不变和历史隔离 | `out/ddgi-debug-dev.log`、`out/ddgi-debug-dev/` |
+| Release `--scene-lit-debug`，GPU validation | PASS：上述范围，另覆盖首次空场显示、4096 探针显示、窗口缩放与非法半径后继续渲染 | `out/ddgi-debug-release.log`、`out/ddgi-debug-release/` |
+| Dev 正式编辑器 `--ddgi-debug`，正常启动 | PASS：共享 Control schema、重复 patch 不改变 state token、非法 patch 原子拒绝、四组真实 render.compare、基础 view/Actor/Undo 恢复、原场景文件不变、干净关闭 | `out/ddgi-control-dev.log`、`out/ddgi-control-dev/fbd82ae72930994ea0e62b134e11061b/` |
+| Release 正式编辑器 `--ddgi-debug`，正常启动 | PASS：与 Dev 相同的完整 Control 链，独立编辑器干净关闭 | `out/ddgi-control-release.log`、`out/ddgi-control-release/73d10115395a3744ae891708069a5f6e/` |
+
+图像检查包括 `debug-02-coverage-dark-outside.png`（青色为有支持但零照度，蓝色为超出体积）、`debug-05-xray.png` 和 `debug-12-inside.png`（红球位于真实 offset 位置，紫线连接原格点）。原接收面伪彩进入光照路径的实现已退役；生产 gather 与诊断共用查询代码，空间绘制使用私有 D32_FLOAT，真实场景 Capture 深度逐值保持一致。
+
+首轮 inside 断言误把原格点作为重定位后球心，已根据实际显示和探针合同修正为验证实体内的实际红球；未修改生产分类或放宽照明质量门限。Control 的非法数值沿既有 `operation_failed` 合同拒绝，验收修正了错误码预期；没有修改协议。GPU validation 的首次 SMAA 驱动 PSO 准备较慢，调用栈定位在既有 SMAA dispatch；本批未改 SMAA。该准备耗时、同步截图耗时均不作为 GPU 帧时或性能提升证据。
+
+这些用例验证诊断设施，不代表已完成用户未保存 Dungeons 黑区的逐像素归因、滚动 DDGI 或 ReSTIR DI。
 
 ## 工作室 Cavity（2026-10-11）
 

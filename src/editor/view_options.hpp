@@ -12,6 +12,7 @@ enum class ViewOption {
     shadow_bias, shadow_light_budget, shadow_samples, ao_radius, reflection_distance, reflection_roughness,
     probe_min_x, probe_min_y, probe_min_z, probe_max_x, probe_max_y, probe_max_z,
     probe_count_x, probe_count_y, probe_count_z, probe_update_budget, probe_rays, probe_debug,
+    probe_visualization, probe_volume, probe_relocation, probe_xray, probe_radius,
     cavity, cavity_ridge, cavity_valley, cavity_radius
 };
 enum class ViewValueKind { boolean, number, integer, enumeration };

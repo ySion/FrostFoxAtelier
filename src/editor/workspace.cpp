@@ -21,6 +21,13 @@ constexpr std::array lighting_options{
     LightingOption{L"Bloom",ViewOption::bloom},
     LightingOption{L"Local GI",ViewOption::ssil}};
 constexpr std::array antialiasing_titles{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
+constexpr std::array probe_titles{L"Off",L"Irradiance",L"State",L"Update Age",L"Hit Distance"};
+constexpr std::array probe_options{
+    LightingOption{L"Volume Bounds",ViewOption::probe_volume},
+    LightingOption{L"Relocation Lines",ViewOption::probe_relocation},
+    LightingOption{L"X-Ray",ViewOption::probe_xray},
+    LightingOption{L"Receiver Coverage",ViewOption::probe_debug}};
+constexpr std::array probe_radii{.06f,.12f,.2f};
 constexpr std::array cavity_options{
     LightingOption{L"Ridge",ViewOption::cavity_ridge},LightingOption{L"Valley",ViewOption::cavity_valley},
     LightingOption{L"Radius",ViewOption::cavity_radius}};
@@ -256,6 +263,13 @@ bool Workspace::apply_view(const ui::Action& action) {
         set(ViewOption::exposure_ev,double(int(key-control::lit_exposure_first)-2));
     else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
         set(ViewOption::shadow_light_budget,double(4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first)));
+    else if(key>=control::probe_modes_first && key<control::probe_modes_first+probe_titles.size())
+        set(ViewOption::probe_visualization,double(key-control::probe_modes_first));
+    else if(key>=control::probe_options_first && key<control::probe_options_first+probe_options.size()) {
+        const auto* checked=std::get_if<bool>(&action.value);if(!checked)return false;
+        set(probe_options[key-control::probe_options_first].option,*checked?1:0);
+    } else if(key>=control::probe_radius_first && key<control::probe_radius_first+probe_radii.size())
+        set(ViewOption::probe_radius,probe_radii[key-control::probe_radius_first]);
     else if (key>=control::edges_first && key<control::edges_first+4) {
         const auto option=key-control::edges_first;
         set(ViewOption::wireframe,double(option<2?option:2));
@@ -977,7 +991,34 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     ui::MenuItem option{control::lit_shadow_budget_first+i,std::to_wstring(limit)+L" lights",true,this->view.lit.shadow_light_budget==limit,{}};
                     option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_shadow_budget_first;budget.children.push_back(std::move(option));
                 }
-                lighting.children.push_back(std::move(budget));items.push_back(std::move(lighting));
+                lighting.children.push_back(std::move(budget));
+                ui::MenuItem debug{control::probe_debug_menu,L"DDGI Debug",true,false,{},L"",true};
+                ui::MenuItem probes{control::probe_modes_menu,L"Probe Spheres",true,false,{}};
+                for(std::size_t i=0;i<probe_titles.size();++i) {
+                    ui::MenuItem option{control::probe_modes_first+i,probe_titles[i],true,
+                        this->view.lit.probe_visualization==static_cast<renderer::ProbeVisualization>(i),{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::probe_modes_first;probes.children.push_back(std::move(option));
+                }
+                debug.children.push_back(std::move(probes));
+                for(std::size_t i=0;i<probe_options.size();++i) {
+                    ui::MenuItem option{control::probe_options_first+i,std::wstring(probe_options[i].title),true,view_value(this->view,probe_options[i].option)!=0,{}};
+                    option.behavior=ui::MenuBehavior::checkbox;debug.children.push_back(std::move(option));
+                }
+                ui::MenuItem radius{control::probe_radius_menu,L"Sphere Size",true,false,{}};
+                constexpr std::array sizes{L"Small",L"Medium",L"Large"};
+                for(std::size_t i=0;i<probe_radii.size();++i) {
+                    ui::MenuItem option{control::probe_radius_first+i,sizes[i],true,this->view.lit.probe_radius==probe_radii[i],{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::probe_radius_first;radius.children.push_back(std::move(option));
+                }
+                debug.children.push_back(std::move(radius));
+                ui::MenuItem legend{control::probe_legend_menu,L"Legend",true,false,{}};
+                const std::array<std::wstring,9> hints{
+                    L"Coverage: blue = outside volume",L"Orange = pending; red = inside solid",L"Purple = no usable visible support",
+                    L"Cyan = supported, zero light",L"Green = lit; brighter = more contributors",
+                    L"Age: cyan = updated now; gray = never",L"Age: green to red = one update cycle",
+                    L"Distance: white = 4 grid spacings",L"DDGI off: gray = no current field"};
+                for(std::size_t i=0;i<hints.size();++i)legend.children.push_back({control::probe_legend_first+i,hints[i],false,false,{}});
+                debug.children.push_back(std::move(legend));lighting.children.push_back(std::move(debug));items.push_back(std::move(lighting));
             } else if(source->key==control::viewport_cavity) {
                 const bool available=this->view.shading!=renderer::Shading::scene_lit && this->view.wireframe!=renderer::Wireframe::only;
                 ui::MenuItem enabled{control::cavity_enabled,L"Screen Cavity",available,this->view.cavity.enabled,{}};

@@ -11,6 +11,7 @@ constexpr std::array<std::string_view, 3> wire{"off", "overlay", "only"};
 constexpr std::array<std::string_view, 2> background{"none", "gradient"};
 constexpr std::array<std::string_view, 3> plane{"xz", "xy", "yz"};
 constexpr std::array<std::string_view, 4> aa{"off", "taa", "smaa", "smaa_t2x"};
+constexpr std::array<std::string_view, 5> probes{"off", "irradiance", "state", "update_age", "distance"};
 #define FIELD(id, kind, low, high) ViewOptionInfo{ViewOption::id, #id, K::kind, low, high}
 constexpr std::array options{
     ViewOptionInfo{ViewOption::shading,"shading",K::enumeration,0,3,shading},
@@ -29,6 +30,8 @@ constexpr std::array options{
     FIELD(probe_max_x,number,-100000,100000),FIELD(probe_max_y,number,-100000,100000),FIELD(probe_max_z,number,-100000,100000),
     FIELD(probe_count_x,integer,2,32),FIELD(probe_count_y,integer,2,32),FIELD(probe_count_z,integer,2,32),
     FIELD(probe_update_budget,integer,1,4096),FIELD(probe_rays,integer,1,256),FIELD(probe_debug,boolean,0,1),
+    ViewOptionInfo{ViewOption::probe_visualization,"probe_visualization",K::enumeration,0,4,probes},
+    FIELD(probe_volume,boolean,0,1),FIELD(probe_relocation,boolean,0,1),FIELD(probe_xray,boolean,0,1),FIELD(probe_radius,number,.01f,.45f),
     FIELD(cavity,boolean,0,1),FIELD(cavity_ridge,number,0,2),FIELD(cavity_valley,number,0,2),FIELD(cavity_radius,number,.5,4)
 };
 #undef FIELD
@@ -50,6 +53,8 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_max_x,lit.probe_max[0]);VALUE(probe_max_y,lit.probe_max[1]);VALUE(probe_max_z,lit.probe_max[2]);
     VALUE(probe_count_x,lit.probe_counts[0]);VALUE(probe_count_y,lit.probe_counts[1]);VALUE(probe_count_z,lit.probe_counts[2]);
     VALUE(probe_update_budget,lit.probe_update_budget);VALUE(probe_rays,lit.probe_rays);VALUE(probe_debug,lit.probe_debug);
+    VALUE(probe_visualization,lit.probe_visualization);VALUE(probe_volume,lit.probe_volume);VALUE(probe_relocation,lit.probe_relocation);
+    VALUE(probe_xray,lit.probe_xray);VALUE(probe_radius,lit.probe_radius);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
     }
@@ -74,6 +79,8 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_max_x,lit.probe_max[0]);SET(probe_max_y,lit.probe_max[1]);SET(probe_max_z,lit.probe_max[2]);
     SET(probe_count_x,lit.probe_counts[0]);SET(probe_count_y,lit.probe_counts[1]);SET(probe_count_z,lit.probe_counts[2]);
     SET(probe_update_budget,lit.probe_update_budget);SET(probe_rays,lit.probe_rays);SET(probe_debug,lit.probe_debug);
+    SET(probe_visualization,lit.probe_visualization);SET(probe_volume,lit.probe_volume);SET(probe_relocation,lit.probe_relocation);
+    SET(probe_xray,lit.probe_xray);SET(probe_radius,lit.probe_radius);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET
     }

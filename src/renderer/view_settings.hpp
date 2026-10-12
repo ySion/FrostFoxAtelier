@@ -10,6 +10,7 @@ enum class Wireframe : std::uint32_t { off, overlay, only };
 enum class Background : std::uint32_t { none, gradient };
 enum class GridPlane : std::uint32_t { xz, xy, yz };
 enum class Antialiasing : std::uint32_t { none, taa, smaa, smaa_t2x };
+enum class ProbeVisualization : std::uint32_t { off, irradiance, state, update_age, distance };
 
 struct CavitySettings {
     bool operator==(const CavitySettings&) const = default;
@@ -39,7 +40,13 @@ struct SceneLitSettings {
     std::array<std::uint32_t, 3> probe_counts{8, 4, 8};
     std::uint32_t probe_update_budget{64}; // Probes per frame, including initialization.
     std::uint32_t probe_rays{128}; // At most 256 rays per probe update.
-    bool probe_debug{};
+    bool probe_debug{}; // Actual receiver coverage, independent of the lighting histories.
+    ProbeVisualization probe_visualization{ProbeVisualization::off};
+    bool probe_volume{}, probe_relocation{}, probe_xray{};
+    float probe_radius{.12f}; // Fraction of minimum grid spacing; display geometry only.
+    bool probe_overlay() const noexcept {
+        return probe_volume || probe_relocation || probe_visualization != ProbeVisualization::off;
+    }
 };
 
 // Per-view display policy, independent of World materials and simulation state.

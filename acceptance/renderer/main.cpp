@@ -286,13 +286,13 @@ int main(int argc, char** argv) try {
     if (argc > 1&&!materials_only&&!cavity_only) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
         return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal",
-                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts");
+                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts", mode == "--scene-lit-debug");
     }
     Window window;
     auto renderer = take(

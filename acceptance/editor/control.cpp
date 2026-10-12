@@ -124,11 +124,54 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
     write(root/"result.json",Json{{"status","passed"},{"cases",{"long-destination","long-source","deep-project-reopen-save","source-archive","cli-request","descriptor-cleanup"}},{"deep_control",deep_control},{"last_repro",utf8(repro.wstring())}}.dump(2));
     std::cout<<"Editor Control path E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
+void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto project=root/"Project",directory=root/"Control";project_fixture(project);
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+    Driver d(discover_editor(editor,directory));
+    if(auto window=editor.window())SetWindowPos(window,HWND_TOPMOST,12,80,960,640,SWP_NOACTIVATE);
+    auto state=d.inspect();unsigned stable=0;
+    for(unsigned i=0;i<200 && stable<5;++i) {
+        const auto token=d.token;std::this_thread::sleep_for(30ms);state=d.inspect();
+        stable=token==d.token&&!state.at("last_frame").empty()?stable+1:0;
+    }
+    require(stable==5,"DDGI diagnostic editor did not settle");
+    const auto capabilities=d.ok("capabilities");
+    for(const char* name:{"probe_visualization","probe_volume","probe_relocation","probe_xray","probe_radius","probe_debug"})
+        require(capabilities.at("display_options").contains(name),"DDGI debug option absent from shared Control schema");
+    d.ok("scene.create",{{"kind","mesh"}});
+    d.ok("camera.look_at",{{"eye",{5,4,-7}},{"target",{0,0,0}}});
+    Json patch{{"shading","scene_lit"},{"ddgi",true},{"gtao",false},{"ssil",false},{"sssr",false},{"bloom",false},
+        {"probe_count_x",3},{"probe_count_y",3},{"probe_count_z",3},{"probe_update_budget",27},{"probe_rays",32},
+        {"probe_min_x",-2},{"probe_min_y",-2},{"probe_min_z",-2},{"probe_max_x",2},{"probe_max_y",2},{"probe_max_z",2},
+        {"probe_visualization","state"},{"probe_volume",true},{"probe_relocation",true},{"probe_xray",true},{"probe_radius",.12}};
+    d.ok("view.set",{{"patch",patch}});state=d.inspect();const auto base_view=state.at("view"),actors=state.at("actors"),undo=state.at("undo");
+    const auto token=d.token;d.ok("view.set",{{"patch",patch}});require(d.token==token,"Repeated DDGI view patch changed the state token");
+    error(d.call("view.set",{{"patch",{{"probe_radius",0},{"probe_debug",true}}}}),"operation_failed");
+    require(d.inspect().at("view")==base_view,"Rejected debug patch partially mutated the view");
+    error(d.call("view.set",{{"patch",{{"probe_visualization","unknown"}}}}),"invalid_request");
+    const auto id=unique_id();
+    const Json cases=Json::array({
+        {{"name","probe-state"},{"patch",Json::object()}},
+        {{"name","probe-age"},{"patch",{{"probe_visualization","update_age"}}}},
+        {{"name","receiver-coverage"},{"patch",{{"probe_visualization","off"},{"probe_volume",false},{"probe_relocation",false},{"probe_debug",true}}}},
+        {{"name","ddgi-disabled"},{"patch",{{"ddgi",false},{"probe_debug",true}}}}});
+    auto pending=d.call("render.compare",{{"cases",cases},{"sample_frames",{2}},{"timeout_ms",120000}},id);
+    require(pending.at("status")=="pending",pending.dump());const auto compared=d.wait(id);require(compared.at("status")=="ok",compared.dump());
+    require(compared.at("result").at("samples").size()==4,"DDGI comparison did not produce every accepted sample");
+    state=d.inspect();require(state.at("view")==base_view&&state.at("actors")==actors&&state.at("undo")==undo,
+        "DDGI diagnostic comparison changed scene, undo or base display policy");
+    write(root/"captures.json",compared.dump(2));write(root/"capabilities.json",capabilities.dump(2));
+    d.ok("scene.undo");d.client.reset();editor.close();
+    require(read(project/"Content/Scenes/Main.scene").at("actors").empty(),"Diagnostic session changed the saved scene");
+    write(root/"result.json",Json{{"status","passed"},{"cases",{"shared-schema","idempotent-patch","atomic-rejection","real-render-compare","history-and-scene-isolation","clean-close"}}}.dump(2));
+    std::cout<<"Editor DDGI Control E2E: PASS | "<<utf8(root.wstring())<<'\n';
+}
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && std::wstring_view(argv[3])==L"--repro-paths"),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths]");
+        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug]");
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
+        if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
         if(argc==4) {
             repro_paths(argv[1],root/"exports",false);repro_paths(argv[1],root/"deep-control",true);
             reject_nested_destination(argv[1],root);
