@@ -24,7 +24,8 @@ enum class Command : std::uint64_t {
     view_perspective=830, view_top=831, view_front=832, view_right=833, viewport_options=834,
     create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838,
     example_sponza=841, example_scene_lit=842, example_physic=843, example_dungeons=844,
-    view_bottom=900, view_back=901, view_left=902, show_fps=903
+    view_bottom=900, view_back=901, view_left=902, show_fps=903,
+    show_world_settings=906,fit_probe_scene=907,fit_probe_scene_focus=908
 };
 inline constexpr std::array camera_commands{Command::view_perspective,Command::view_top,Command::view_front,
     Command::view_right,Command::view_bottom,Command::view_back,Command::view_left};
@@ -146,6 +147,9 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::show_code,CommandGroup::window,L"Code",L""},
     CommandDefinition{Command::show_output,CommandGroup::window,L"Project Output",L""},
     CommandDefinition{Command::show_controls,CommandGroup::window,L"Controls",L""},
+    CommandDefinition{Command::show_world_settings,CommandGroup::window,L"World Settings",L""},
+    CommandDefinition{Command::fit_probe_scene,CommandGroup::view,L"Fit Scene Lighting Coverage",L""},
+    CommandDefinition{Command::fit_probe_scene_focus,CommandGroup::view,L"Scene + Follow Focus Lighting",L""},
     CommandDefinition{Command::previous_tab,CommandGroup::window,L"Previous Pane Tab",L"Ctrl+Shift+Tab",true},
     CommandDefinition{Command::next_tab,CommandGroup::window,L"Next Pane Tab",L"Ctrl+Tab"},
     CommandDefinition{Command::close_tab,CommandGroup::window,L"Close Pane Tab",L"Ctrl+W"},

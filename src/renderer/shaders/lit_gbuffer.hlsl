@@ -2,7 +2,7 @@ struct LitTriangle { LitVertex vertices[3]; uint edge_mask; float3 face_normal; 
 StructuredBuffer<LitTriangle> lit_triangles;
 uint lit_first_instance;
 struct LitRaster {
-    float4 position:SV_Position;
+    precise float4 position:SV_Position;
     float3 normal:NORMAL;
     float4 previous:TEXCOORD0;
     float2 uv:TEXCOORD1;
@@ -14,8 +14,8 @@ struct LitRaster {
 LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     LitVertex v=lit_triangles[vertex/3].vertices[vertex%3];
     LitInstance i=lit_instances[lit_first_instance+instance]; LitRaster o;
-    o.position=mul(mul(float4(v.position,1),i.world),lit_view_projection);
-    o.previous=mul(mul(float4(v.position,1),i.previous_world),lit_previous_view_projection);
+    o.position=raster_position(v.position,i.world,lit_view_projection);
+    o.previous=raster_position(v.position,i.previous_world,lit_previous_view_projection);
     o.normal=v.normal.x*i.normal_x.xyz+v.normal.y*i.normal_y.xyz+v.normal.z*i.normal_z.xyz;
     o.uv=v.uv;
     o.tangent=float4(material_transform_tangent(v.tangent.xyz,i.world),v.tangent.w*i.normal_x.w);

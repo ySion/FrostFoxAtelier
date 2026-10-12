@@ -1287,7 +1287,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 std::holds_alternative<EnumValue>(*field.default_value) || impl_->scalar_type(*field.default_value) != target->info.id))
                 return failure(ErrorCode::invalid_definition, "Default value requires a described object's exact scalar field type.");
             type.fields.push_back({0, field.native_address, value, nullptr, field.default_value});
-            if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset, field.default_value});
+            if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value,
+                field.native_offset, field.default_value, std::move(field.label), std::move(field.category)});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());

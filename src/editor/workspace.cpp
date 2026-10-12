@@ -21,6 +21,13 @@ constexpr std::array lighting_options{
     LightingOption{L"Bloom",ViewOption::bloom},
     LightingOption{L"Local GI",ViewOption::ssil}};
 constexpr std::array antialiasing_titles{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
+constexpr std::array probe_titles{L"Off",L"Irradiance",L"State",L"Update Age",L"Hit Distance"};
+constexpr std::array probe_options{
+    LightingOption{L"Volume Bounds",ViewOption::probe_volume},
+    LightingOption{L"Relocation Lines",ViewOption::probe_relocation},
+    LightingOption{L"X-Ray",ViewOption::probe_xray},
+    LightingOption{L"Receiver Coverage",ViewOption::probe_debug}};
+constexpr std::array probe_radii{.06f,.12f,.2f};
 constexpr std::array cavity_options{
     LightingOption{L"Ridge",ViewOption::cavity_ridge},LightingOption{L"Valley",ViewOption::cavity_valley},
     LightingOption{L"Radius",ViewOption::cavity_radius}};
@@ -34,7 +41,8 @@ Workspace::Workspace() : dock(1ULL<<48,{
     {control::structure_tab,control::structure_content,L"Actor Structure",{200,140}},
     {control::assets_tab,control::assets_content,L"Asset Browser",{240,140}},
     {source_control::tab,source_control::content,L"Code",{300,180}},
-    {control::output_tab,control::output_content,L"Project Output",{240,120}}}) {
+    {control::output_tab,control::output_content,L"Project Output",{240,120}},
+    {world_control::tab,world_control::content,L"World",{280,240}}}) {
     const auto registered=ui_language::register_types(ui_runtime_);
     if (!registered) throw std::runtime_error(registered.error().message);
     auto messages=std::make_shared<ui::TableData>();messages->columns.push_back({1,L"Message",1000,160,ui::TextAlign::left,false});output=std::move(messages);
@@ -54,7 +62,9 @@ void Workspace::log(std::wstring text) {
     output=std::move(messages);
 }
 void Workspace::reset_layout() {
+    lighting.cancel();
     dock.reset();
+    dock.move(world_control::tab,control::parameters_tab,ui::DockSide::tabs);
     dock.move(control::scene_tab,control::parameters_tab,ui::DockSide::left,.62f);
     dock.move(control::actors_tab,control::parameters_tab,ui::DockSide::bottom,.7f);
     dock.move(control::structure_tab,control::actors_tab,ui::DockSide::tabs);
@@ -67,6 +77,9 @@ void Workspace::reset_layout() {
     dock.select(control::parameters_tab); menu.reset(); menu_bar_collapsed=shelf_collapsed=false;
 }
 void Workspace::reset_document() {
+    category_keys_.clear();
+    lighting.cancel();
+    lighting.observe(renderer::FrameStats{});
     if (ui_document_ && ui_document_->committed_source()) ui_checkpoint_=ui_document_->committed_source();
     ui_document_.reset();
     bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;
@@ -225,10 +238,21 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
     std::iter_swap(bindings_.begin()+static_cast<std::ptrdiff_t>(binding_cursor_),bindings_.end()-1);
     return bindings_[binding_cursor_++].key;
 }
-bool Workspace::apply_view(const ui::Action& action) {
+Result<bool> Workspace::apply_view(Session& session,const ui::Action& action,std::array<float,3> focus) {
+    if(action.kind==ui::ActionKind::activate && (action.key==control::group_components || action.key==control::group_categories)) {
+        if(auto cancelled=session.cancel_edit();!cancelled) return std::unexpected(cancelled.error());
+        parameter_by_category_=action.key==control::group_categories;return true;
+    }
+    sync_world(session);
+    auto candidate=view;
+    const auto edited=lighting.apply(action,candidate);
+    if(!edited) return std::unexpected(edited.error());
+    if(*edited) {
+        if(auto published=set_view_settings(session,candidate,focus);!published) return std::unexpected(published.error());
+        return true;
+    }
     if (action.kind!=ui::ActionKind::activate) return false;
     const auto key=action.key;
-    auto candidate=view;
     const auto set=[&](ViewOption option,double value) {
         auto changed=set_view_option(candidate,option,value);
         if(!changed) throw std::runtime_error(changed.error().message);
@@ -256,6 +280,13 @@ bool Workspace::apply_view(const ui::Action& action) {
         set(ViewOption::exposure_ev,double(int(key-control::lit_exposure_first)-2));
     else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
         set(ViewOption::shadow_light_budget,double(4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first)));
+    else if(key>=control::probe_modes_first && key<control::probe_modes_first+probe_titles.size())
+        set(ViewOption::probe_visualization,double(key-control::probe_modes_first));
+    else if(key>=control::probe_options_first && key<control::probe_options_first+probe_options.size()) {
+        const auto* checked=std::get_if<bool>(&action.value);if(!checked)return false;
+        set(probe_options[key-control::probe_options_first].option,*checked?1:0);
+    } else if(key>=control::probe_radius_first && key<control::probe_radius_first+probe_radii.size())
+        set(ViewOption::probe_radius,probe_radii[key-control::probe_radius_first]);
     else if (key>=control::edges_first && key<control::edges_first+4) {
         const auto option=key-control::edges_first;
         set(ViewOption::wireframe,double(option<2?option:2));
@@ -273,13 +304,21 @@ bool Workspace::apply_view(const ui::Action& action) {
         else set(ViewOption::origin_axes,*checked?1:0);
     }
     else return false;
-    if(auto updated=set_view_settings(candidate);!updated) return false;
+    if(auto updated=set_view_settings(session,candidate,focus);!updated) return std::unexpected(updated.error());
     status=L"Viewport display updated";
     return true;
 }
-Result<void> Workspace::set_view_settings(const renderer::ViewSettings& candidate) {
-    if(auto valid=validate_view_options(candidate);!valid) return valid;
-    if(view!=candidate) {view=candidate;++view_revision_;}
+void Workspace::sync_world(const Session& session) {
+    auto& author=static_cast<rendering::SceneLightingSettings&>(view.lit);
+    if(author!=session.world().lighting_settings()) {
+        lighting.cancel();author=session.world().lighting_settings();++view_revision_;
+    }
+}
+Result<void> Workspace::set_view_settings(Session& session,const renderer::ViewSettings& candidate,std::array<float,3> focus) {
+    if(auto valid=validate_view_options(candidate,focus);!valid) return valid;
+    if(static_cast<const rendering::SceneLightingSettings&>(candidate.lit)!=session.world().lighting_settings())
+        if(auto changed=session.set_world_lighting(candidate.lit);!changed) return changed;
+    if(view!=candidate) {lighting.cancel();view=candidate;++view_revision_;}
     return {};
 }
 namespace {
@@ -296,6 +335,7 @@ std::wstring parameter_label(std::string_view path) {
 }
 }
 std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project) {
+    sync_world(session);
     const auto take = []<class T>(Result<T> value) -> T {
         if (!value) throw std::runtime_error(value.error().message);
         return std::move(*value);
@@ -497,6 +537,15 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         static_cast<void>(ui_document_->append("ProjectOutput",view.content,keys,inputs,result));continue;
     }
     if (view.key==control::workbench) { workbench.append(result,view.content,*ui_document_); continue; }
+    if (view.key==world_control::tab) {
+        auto lights=std::make_shared<std::vector<ui_language::Item>>();
+        for(const auto& actor:members) for(const auto& component:take(world::components(runtime,actor.id()))) {
+            if(!take(runtime.is_a(take(runtime.type_of(component.id())),session.types().light_component))) continue;
+            const auto key=bind(component.id(),{},Binding::Kind::navigation);
+            lights->push_back({key,{std::wstring(session.name(actor.id())),ui_language::ActionBinding{key,!session.world().running()}}});
+        }
+        lighting.append(result,view.content,*ui_document_,this->view,!session.world().running(),ui_language::ItemList{std::move(lights)});continue;
+    }
     if (view.key==control::assets_tab) {
         assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame,*ui_document_);
         continue;
@@ -576,8 +625,17 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     const auto lowercase=[](std::wstring value) {for(auto& c:value)c=static_cast<wchar_t>(std::towlower(c));return value;};
     const auto folded=parameter_search_visible?lowercase(query):std::wstring{};
-    const bool show_position=material_object==ObjectId{} && transform && (inspected==selected || inspected==*transform);
+    const bool show_position=!parameter_by_category_ && material_object==ObjectId{} && transform && (inspected==selected || inspected==*transform);
     auto groups=std::make_shared<std::vector<ui_language::Item>>();
+    std::vector<std::pair<std::string,std::shared_ptr<std::vector<ui_language::Item>>>> category_rows;
+    const auto category_properties=[&](std::string_view category) {
+        auto at=std::ranges::find_if(category_rows,[&](const auto& group){return group.first==category;});
+        if(at==category_rows.end()) {
+            category_rows.emplace_back(std::string(category),std::make_shared<std::vector<ui_language::Item>>());
+            at=std::prev(category_rows.end());
+        }
+        return at->second;
+    };
     const auto append_properties=[&](ObjectId object,ObjectId material_component=ObjectId{},std::string_view slot=std::string_view{}) {
         const bool resource=session.is_material(object);
         const bool instance=material_component!=ObjectId{};
@@ -589,8 +647,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 return std::ranges::find(*material_bindings,world::material_slot_name(*mesh->mesh.resolved,part.material),
                     &world::MaterialBinding::slot)!=material_bindings->end();
             });
-        const auto property_caption=[&](std::string_view name) {
-            auto label=parameter_label(name);
+        const auto property_caption=[&](std::string_view name,std::string_view declared) {
+            auto label=declared.empty()?parameter_label(name):wide(declared);
             if(!resource && material_bindings && !material_bindings->empty() && !all_slots_bound && name.starts_with("material."))
                 label+=L" (Unbound)";
             return label;
@@ -601,12 +659,18 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const auto type=take(runtime.type_of(object));
         const auto title=instance?L"Material Overrides · "+wide(slot):short_type(object);
         const bool group_matches=lowercase(title).find(folded)!=std::wstring::npos;
-        auto properties=std::make_shared<std::vector<ui_language::Item>>();
+        auto component_properties=std::make_shared<std::vector<ui_language::Item>>();
+        auto properties=component_properties;
         const auto schema=take(session.properties(object));
         const auto light=take(runtime.is_a(type,session.types().light_component))?
             std::optional(take(world::read_light(runtime,object))):std::nullopt;
         for(std::size_t index=0;index<schema.size();++index) {
             const auto& property=schema[index];
+            if(parameter_by_category_ && material_object==ObjectId{}) {
+                const std::string_view category=resource?std::string_view{"Material"}:
+                    property.category.empty()?std::string_view{"General"}:std::string_view{property.category};
+                properties=category_properties(category);
+            }
             if(instance && !property.name.starts_with("parameters.")) continue;
             if(all_slots_bound && property.name.starts_with("material.")) continue;
             const auto override_bit=instance?take(material::override_bit(runtime,property.path)):0u;
@@ -644,7 +708,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     property.path[property.path.size()-2]==take(runtime.find_field(session.types().light_settings,"color"));
                 const bool color=base_color || emission || light_color;
                 const auto euler=spatial_rotation?euler_degrees(take(world::read_transform(runtime,object)).rotation):math::Vector3{};
-                std::vector<ui::NumberField> tuple;bool matches=group_matches || lowercase(wide(name)).find(folded)!=std::wstring::npos;
+                std::vector<ui::NumberField> tuple;bool matches=group_matches || lowercase(wide(name+" "+property.label+" "+property.category)).find(folded)!=std::wstring::npos;
                 for(std::size_t lane=0;lane<count && index+lane<schema.size();++lane) {
                     const auto& field=schema[index+lane];
                     if(field.path.size()!=property.path.size() || !std::equal(prefix.begin(),prefix.end(),field.path.begin())) break;
@@ -658,7 +722,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     const double minimum=color?0:spatial_position?session.parameters()[lane].minimum:spatial_scale?Session::minimum_scale:spatial_rotation?-360000:-limit;
                     const double maximum=base_color?1:emission?65504:spatial_position?session.parameters()[lane].maximum:spatial_scale?Session::maximum_scale:spatial_rotation?360000:limit;
                     const auto key=property_key(field.path,spatial_rotation?Binding::Kind::rotation:Binding::Kind::field);
-                    tuple.push_back({key,std::wstring(1,(color?L"RGBW":L"XYZW")[lane]),value,spatial_rotation?0:value,
+                    tuple.push_back({key,std::wstring(1,(color?L"RGBW":L"XYZW")[lane]),value,spatial_position || spatial_rotation?0:spatial_scale?1:value,
                         minimum,maximum,spatial_rotation?1:.01,spatial_rotation?.1:.001,static_cast<ui::VectorAxis>(lane+1)});
                     tuple.back().single_precision=parent->math.precision==math::Precision::f32;
                 }
@@ -669,13 +733,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     const auto channel=[&](std::size_t lane){return tuple.size()>lane?std::clamp(tuple[lane].value,0.0,1.0):0.0;};
                     const double r=channel(0),g=channel(1),b=channel(2);
                     properties->push_back({property_key(prefix,Binding::Kind::property_row),
-                        {spatial_rotation?std::wstring(L"Rotation (°)"):property_caption(name),ui_language::EditBinding{0,editable,false,std::move(tuple)},
+                        {spatial_rotation?std::wstring(L"Rotation (°)"):property_caption(name,property.label),ui_language::EditBinding{spatial_position?bind(object,{},Binding::Kind::position_default):spatial_rotation?bind(object,{},Binding::Kind::rotation_default):spatial_scale?bind(object,{},Binding::Kind::scale_default):ui::ControlKey{},editable,false,std::move(tuple)},
                         false,false,editable,ui_language::ActionBinding{field_key,editable},false,std::wstring{},field_key,
                         color,r,g,b,override_available,overridden,ui_language::ActionBinding{instance?override_key:field_key,override_available && !session.world().running()}}});
                 }
                 continue;
             }
-            auto caption=property_caption(property.name);
+            auto caption=property_caption(property.name,property.label);
             if(light && property.name.starts_with("settings.")) {
                 const auto field=std::string_view(property.name).substr(9);
                 if(field=="kind") caption=L"Light Type";
@@ -689,7 +753,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 else if(field=="two_sided") caption=L"Two Sided";
                 else if(field=="casts_shadow") caption=L"Cast Shadows";
             }
-            if(!group_matches && lowercase(caption).find(folded)==std::wstring::npos) continue;
+            if(!group_matches && lowercase(caption+L" "+wide(property.name+" "+property.category)).find(folded)==std::wstring::npos) continue;
             std::optional<Scalar> default_value;auto owner=type;
             for(const auto id:property.path) {
                 const auto info=take(runtime.describe(owner));const auto at=std::ranges::find(info->fields,id,&FieldInfo::id);
@@ -725,6 +789,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 {caption,std::move(edit),boolean,boolean && std::get<bool>(property.value),editable,
                  ui_language::ActionBinding{key,editable},enumeration!=nullptr,std::move(choice),key,false,0.0,0.0,0.0,override_available,overridden,ui_language::ActionBinding{instance?override_key:key,override_available && !session.world().running()}}});
         }
+        properties=parameter_by_category_ && material_object==ObjectId{} && material_bindings?
+            category_properties("Material"):component_properties;
         const auto selector=[&](ui::ControlKey key,std::wstring caption,std::wstring choice) {
             if(!group_matches && lowercase(caption+L" "+choice).find(folded)==std::wstring::npos)return;
             properties->push_back({key,{std::move(caption),ui_language::EditBinding{},false,false,!session.world().running(),
@@ -751,8 +817,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+wide(slot_name),std::move(choice));
             }
         }
-        if(!properties->empty()) groups->push_back({property_key({},Binding::Kind::property_group),
-            {title,double(object==selected?ui::ControlIcon::object:ui::ControlIcon::component),ui_language::ItemList{std::move(properties)}}});
+        if(!component_properties->empty()) groups->push_back({property_key({},Binding::Kind::property_group),
+            {title,double(object==selected?ui::ControlIcon::object:ui::ControlIcon::component),ui_language::ItemList{std::move(component_properties)}}});
     };
     if(material_object!=ObjectId{}) {
         append_properties(material_object);
@@ -771,6 +837,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     if(inspected!=ObjectId{}) {
         append_object(inspected);
         if(inspected==selected) for(const auto& component:take(world::components(runtime,selected))) append_object(component.id());
+    }
+    for(auto& [category,rows]:category_rows) if(!rows->empty()) {
+        auto& key=category_keys_[category];if(!key) key=next_binding_++;
+        groups->push_back({key,{wide(category),0.,ui_language::ItemList{std::move(rows)}}});
     }
     constexpr std::array aliases{L"transform scene root position 变换 位置 x", L"transform scene root position 变换 位置 y", L"transform scene root position 变换 位置 z"};
     constexpr std::array names{L"X", L"Y", L"Z"};
@@ -802,7 +872,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     ui_language::EditBinding position{show_position?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},
         actor_status.can_edit && show_position,group_modified,std::move(fields)};
     const bool actor_selected=inspected!=ObjectId{} && inspected==selected;
-    const std::array<ui_language::InputValue,22> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
+    const std::array<ui_language::InputValue,25> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
         ui_language::TextEditBinding{actor_selected?bind(selected,{},Binding::Kind::name):ui::ControlKey{77},
             inspected==ObjectId{}?L"No selection":actor_selected?std::wstring(session.name(selected)):short_type(inspected),actor_selected && actor_status.can_edit},
         ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
@@ -810,8 +880,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         inspected!=ObjectId{},ui_language::ItemList{std::move(groups)},matches,std::move(position),ui_language::TextEditBinding{control::parameter_search,query},empty,
         double(actor_selected?(take(runtime.is_a(actor_status.type,session.types().static_mesh_actor))?ui::ControlIcon::mesh:ui::ControlIcon::object):ui::ControlIcon::component),double(ui::ControlIcon::search),
         parameter_search_visible && inspected!=ObjectId{},ui_language::ActionBinding{control::parameter_search_toggle,inspected!=ObjectId{}},
-        std::move(rotation_edit),std::move(scale_edit),position_matches,rotation_matches,scale_matches};
-    const std::array<ui_language::KeyBinding,12> keys{{{"path.bar",75},
+        std::move(rotation_edit),std::move(scale_edit),position_matches,rotation_matches,scale_matches,parameter_by_category_,
+        ui_language::ActionBinding{control::group_components,true},ui_language::ActionBinding{control::group_categories,true}};
+    const std::array<ui_language::KeyBinding,14> keys{{{"components",control::group_components},{"categories",control::group_categories},{"path.bar",75},
         {"path.path",control::parameter_path},{"path.back",control::parameter_back},{"path.forward",control::parameter_forward},
         {"header.row",51},{"header.type",52},{"header.search",control::parameter_search_toggle},
         {"scroll",control::parameter_list},{"transform",85},
@@ -868,7 +939,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 }
             };
             std::vector<ui::MenuItem> items=dock.menu_items(source->key,frame);
-            if (const auto* group=command_group(source->key)) {
+            if(auto lighting_items=lighting.menu(source->context_target?source->context_target:source->key,this->view);!lighting_items.empty()) {
+                items=std::move(lighting_items);
+            } else if (const auto* group=command_group(source->key)) {
                 if(group->id==CommandGroup::view) {
                     items.push_back(command_item(Command::focus));
                     for(const auto& [key,title]:std::array<std::pair<ui::ControlKey,std::wstring_view>,4>{{
@@ -951,6 +1024,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 group(control::edges_first,edge_titles,edge_option);
                 group(control::topology_first,topology_titles,this->view.triangle_edges?1u:0u);
                 ui::MenuItem lighting{control::lit_menu,L"Scene Lighting",true,false,{},L"",true};
+                lighting.children.push_back(command_item(Command::show_world_settings));
                 for(std::size_t i=0;i<lighting_options.size();++i) {
                     ui::MenuItem option{control::lit_effects_first+i,std::wstring(lighting_options[i].title),true,view_value(this->view,lighting_options[i].option)!=0,{}};
                     option.behavior=ui::MenuBehavior::checkbox;lighting.children.push_back(std::move(option));
@@ -977,7 +1051,34 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     ui::MenuItem option{control::lit_shadow_budget_first+i,std::to_wstring(limit)+L" lights",true,this->view.lit.shadow_light_budget==limit,{}};
                     option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_shadow_budget_first;budget.children.push_back(std::move(option));
                 }
-                lighting.children.push_back(std::move(budget));items.push_back(std::move(lighting));
+                lighting.children.push_back(std::move(budget));
+                ui::MenuItem debug{control::probe_debug_menu,L"DDGI Debug",true,false,{},L"",true};
+                ui::MenuItem probes{control::probe_modes_menu,L"Probe Spheres",true,false,{}};
+                for(std::size_t i=0;i<probe_titles.size();++i) {
+                    ui::MenuItem option{control::probe_modes_first+i,probe_titles[i],true,
+                        this->view.lit.probe_visualization==static_cast<renderer::ProbeVisualization>(i),{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::probe_modes_first;probes.children.push_back(std::move(option));
+                }
+                debug.children.push_back(std::move(probes));
+                for(std::size_t i=0;i<probe_options.size();++i) {
+                    ui::MenuItem option{control::probe_options_first+i,std::wstring(probe_options[i].title),true,view_value(this->view,probe_options[i].option)!=0,{}};
+                    option.behavior=ui::MenuBehavior::checkbox;debug.children.push_back(std::move(option));
+                }
+                ui::MenuItem radius{control::probe_radius_menu,L"Sphere Size",true,false,{}};
+                constexpr std::array sizes{L"Small",L"Medium",L"Large"};
+                for(std::size_t i=0;i<probe_radii.size();++i) {
+                    ui::MenuItem option{control::probe_radius_first+i,sizes[i],true,this->view.lit.probe_radius==probe_radii[i],{}};
+                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::probe_radius_first;radius.children.push_back(std::move(option));
+                }
+                debug.children.push_back(std::move(radius));
+                ui::MenuItem legend{control::probe_legend_menu,L"Legend",true,false,{}};
+                const std::array<std::wstring,9> hints{
+                    L"Coverage: blue = outside volume",L"Orange = pending; red = inside solid",L"Purple = no usable visible support",
+                    L"Cyan = supported, zero light",L"Green = lit; brighter = more contributors",
+                    L"Age: cyan = updated now; gray = never",L"Age: green to red = one update cycle",
+                    L"Distance: white = 4 grid spacings",L"DDGI off: gray = no current field"};
+                for(std::size_t i=0;i<hints.size();++i)legend.children.push_back({control::probe_legend_first+i,hints[i],false,false,{}});
+                debug.children.push_back(std::move(legend));lighting.children.push_back(std::move(debug));items.push_back(std::move(lighting));
             } else if(source->key==control::viewport_cavity) {
                 const bool available=this->view.shading!=renderer::Shading::scene_lit && this->view.wireframe!=renderer::Wireframe::only;
                 ui::MenuItem enabled{control::cavity_enabled,L"Screen Cavity",available,this->view.cavity.enabled,{}};

@@ -15,6 +15,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry；Scene Lit 还消费粗糙度、金属度、HDR 自发光及稳定组件键。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。全部表面路径消费同一标准材质和 Opaque/Mask 覆盖；具体范围见[材质系统](materials.md)和 [Scene Lit](scene-lit.md)。
 - 场景管线和深度纹理在首次绘制非空场景且 viewport 非零时创建；后续按原生命周期复用，深度尺寸在实际场景绘制时跟随目标更新。纯 UI 窗口仍使用同一 Renderer/Context，无场景管线创建、深度分配或清除。UI 管线在 `open` 时准备，应用可提前创建并保留隐藏的弹出窗口以移出首次点击的初始化成本。
 - 相机为左手系，+Y 向上，使用有限 Reversed-Z：D3D 深度近端为 1、远端为 0，背景清除值为 0。矩阵为 row-major，行向量按 `p * world * view * projection` 执行；透视和正交都遵循同一深度约定。renderer 不维护相机控制状态。
+- `Frame::lighting_focus` 由宿主提供 DDGI 跟随关注点，默认世界原点，与相机眼点及 Edit/Play 独立；编辑器使用观察 target，游戏可提供其接收区域关注点。宿主发布 camera/view 前共用 `probe_focus_error` 校验实际世界精度；Renderer 编码前再次校验。体积组织、历史与预算合同见 [Scene Lit](scene-lit.md#ddgi-探针场)。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
 - 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留作者朝向，默认双面；显式单面材质在共享表面路径中裁弃背面。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 仍限定正、非零、有限。
 - 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
@@ -24,7 +25,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 视口显示策略
 
-应用的 Workspace 持有视口设置，经同一 `Frame::view` 提交。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
+应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
 - **Shading**：Smooth 使用顶点法线，Flat 使用依据作者法线定向的几何面法线；两者消费解析后的标准材质基础色和法线图，遵循材质双面设置。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
 - **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。
@@ -32,6 +33,8 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - 线宽以物理像素计，默认 1.25，接受范围 (0,8]；叠线不透明度默认 0.7，范围 [0,1]。原始三角形重心坐标与 clip w 使用同一透视插值，两者相除得到屏幕仿射边函数；以函数绝对值除以屏幕梯度长度得到到原始边的像素距离，跨相机平面或近裁剪面时仍成立。梯度先按最大分量归一化，避免极端投影尺度在平方时溢出或下溢；常量边函数不生成有限边界。选中边至少 2 像素，显示橙色；表面不整体染黄。仅线模式的可见线为不透明浅灰（抗锯齿边缘除外）。
 
 全部资源仍在当前 Context 的借用 gfx 合同内创建、绑定和录制。场景采用 D32_FLOAT 深度和 GREATER 比较；深度预通道使用 gfx 的 ZERO/ONE 混合保持颜色，可见线通道使用 GREATER_EQUAL，全部线使用 ALWAYS，两者关闭深度写入。没有新建原生设备、队列、提交或等待入口。pipeline 和 MatCap 随 Renderer 保有、关闭时沿原机制退休；纯 UI 窗口继续不创建场景资源。
+
+表面、编辑深度与边线共用 `raster_position.hlsl`：CPU 以相同顺序合成 view-projection，再由 GPU 计算 world → view-projection。位置计算及 `SV_Position` 使用 HLSL `precise`，保持独立编译 pass 的运算顺序；这是 [Microsoft 文档](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-variable-syntax)建议的多 pass 深度一致性约束。避免一条路径在 GPU 连乘三矩阵、另一条路径预先合成矩阵所产生的深度舍入差异。TAA / T2x 的颜色仍使用抖动投影，编辑深度与边线使用同一无抖动投影；没有用深度偏移或关闭遮挡来掩盖误差。
 
 选中高亮目前表达原始网格边，与用户显式 wireframe 共用同一个测距机制。独立 ID/mask 加深度的屏幕轮廓适合表达对象外轮廓：例如 [Blender 的轮廓解析](https://github.com/blender/blender/blob/main/source/blender/draw/engines/overlay/shaders/overlay_outline_detect_frag.glsl)读取邻近 ID 与场景／轮廓深度，[Unreal Custom Depth/Stencil](https://dev.epicgames.com/documentation/en-us/unreal-engine/post-process-materials?application_version=4.27)也支持类似对象轮廓。它不等同于显示原始多边形边，并需要额外屏幕资源与解析工作；对于作为单个对象导入的复杂场景，相同 ID 内部不会自动给出原始网格拓扑。当前不把两者互换，保留显式线框；没有复制这些引擎的实现。
 

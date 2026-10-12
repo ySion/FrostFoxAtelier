@@ -1,6 +1,7 @@
 #include "application/application.hpp"
 #include "dungeons_roundtrip.hpp"
 #include "atelier/build_info.hpp"
+#include "control/control.hpp"
 #include "ui/text.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <numeric>
 #include <stdexcept>
 #include <thread>
@@ -120,7 +122,7 @@ struct EditorAcceptanceAccess {
     }
     static void require_camera(const Application& app,bool passed,UINT reason,const char* message) {
         if (!passed) throw std::runtime_error(std::string(message)+"; reason="+std::to_string(reason)+
-            "; orbit="+std::to_string(app.orbiting_)+"; last=("+std::to_string(app.last_x_)+","+std::to_string(app.last_y_)+")");
+            "; camera drag="+std::to_string(bool(app.camera_drag_))+"; pointer=("+std::to_string(app.pointer_position_.x)+","+std::to_string(app.pointer_position_.y)+")");
     }
     static void move_pointer(Application& app,POINT target,UINT reason=0) {
         const auto verify=[&](bool passed,const char* message) {
@@ -1012,10 +1014,12 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     std::puts("Editor snapshot: written");return 0;
 }
 #include "surfaces.inl"
+#include "native_dialogs.inl"
 #include "dock_resize.inl"
 #include "viewport_navigation.inl"
 int verify_editor_shortcuts(Application& app,const char* output_directory) {
     using namespace atelier;
+    namespace control=atelier::editor::control;
     using Access=application::EditorAcceptanceAccess;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;

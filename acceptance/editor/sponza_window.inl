@@ -11,7 +11,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         "Sponza Scene Lit did not consume the complete model and three World lights.");
     for(const auto& item:model(app.document().world().render_items())) for(const auto& vertex:item.geometry->vertices()) {
         const auto p=atelier::math::transform_point(atelier::math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world);
-        for(unsigned axis=0;axis<3;++axis) require(p[axis]>=settings.probe_min[axis] && p[axis]<=settings.probe_max[axis],
+        for(unsigned axis=0;axis<3;++axis) require(p[axis]>=settings.probe_volumes[0].minimum[axis] && p[axis]<=settings.probe_volumes[0].maximum[axis],
             "Sponza DDGI volume excludes authored geometry.");
     }
     const auto bounds=app.presented()->find(atelier::editor::control::viewport)->bounds;
@@ -49,9 +49,9 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         "Sponza did not execute hardware probe and visibility rays.");
     std::ofstream report(output/"ddgi.txt");
     report<<"Sponza DDGI: 262267 triangles, 3 World lights; real D3D12 GPU validation.\n"
-        <<"Volume min="<<settings.probe_min[0]<<','<<settings.probe_min[1]<<','<<settings.probe_min[2]
-        <<" max="<<settings.probe_max[0]<<','<<settings.probe_max[1]<<','<<settings.probe_max[2]
-        <<" grid="<<settings.probe_counts[0]<<'x'<<settings.probe_counts[1]<<'x'<<settings.probe_counts[2]
+        <<"Volume min="<<settings.probe_volumes[0].minimum[0]<<','<<settings.probe_volumes[0].minimum[1]<<','<<settings.probe_volumes[0].minimum[2]
+        <<" max="<<settings.probe_volumes[0].maximum[0]<<','<<settings.probe_volumes[0].maximum[1]<<','<<settings.probe_volumes[0].maximum[2]
+        <<" grid="<<settings.probe_volumes[0].counts[0]<<'x'<<settings.probe_volumes[0].counts[1]<<'x'<<settings.probe_volumes[0].counts[2]
         <<" budget="<<settings.probe_update_budget<<" rays/probe="<<settings.probe_rays<<'\n';
     // Sponza has no Sky Light; isolate indirect diffuse from AO, screen reflections and bloom.
     require(Access::scene_snapshot(app).environment==std::array<float,3>{},"Sponza unexpectedly has environment radiance.");
@@ -114,7 +114,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     edit(moving->component,"position.x",original.position.x);
     require(model(app.document().serialize())==authored,"Sponza dynamic acceptance did not restore authored World data.");
     model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit));
-    require(Access::scene_lit_view(app).lit.probe_min==settings.probe_min,"Camera configuration unexpectedly rebuilt the DDGI volume.");
+    require(Access::scene_lit_view(app).lit.probe_volumes[0].minimum==settings.probe_volumes[0].minimum,"Camera configuration unexpectedly rebuilt the DDGI volume.");
     report<<"PASS. Scene Lit currently uses instance colors and opaque coverage; diffuse/opacity textures are verified separately in Smooth.\n";
     require(report.good() && motion.good(),"Cannot write Sponza DDGI evidence.");
 }

@@ -5,15 +5,21 @@
 #include <string_view>
 
 namespace atelier::editor {
+enum class ProbeVolumeField { enabled, placement, min_x, min_y, min_z, max_x, max_y, max_z, count_x, count_y, count_z, blend_cells, count };
 enum class ViewOption {
     shading, wireframe, hidden_lines, triangle_edges, wire_width, wire_opacity,
     background, reference_grid, origin_axes, grid_spacing, grid_plane,
     shadows, ddgi, gtao, sssr, bloom, ssil, antialiasing, exposure_ev,
     shadow_bias, shadow_light_budget, shadow_samples, ao_radius, reflection_distance, reflection_roughness,
-    probe_min_x, probe_min_y, probe_min_z, probe_max_x, probe_max_y, probe_max_z,
-    probe_count_x, probe_count_y, probe_count_z, probe_update_budget, probe_rays, probe_debug,
-    cavity, cavity_ridge, cavity_valley, cavity_radius
+    probe_update_budget, probe_rays, probe_debug, probe_bounce, indirect_gain, probe_feedback_visibility,
+    probe_visualization, probe_volume, probe_relocation, probe_xray, probe_radius,
+    probe_coverage, probe_debug_volume,
+    cavity, cavity_ridge, cavity_valley, cavity_radius,
+    volume_first, volume_last=volume_first+4*static_cast<int>(ProbeVolumeField::count)-1
 };
+constexpr ViewOption probe_volume_option(unsigned slot,ProbeVolumeField field) noexcept {
+    return static_cast<ViewOption>(static_cast<unsigned>(ViewOption::volume_first)+slot*static_cast<unsigned>(ProbeVolumeField::count)+static_cast<unsigned>(field));
+}
 enum class ViewValueKind { boolean, number, integer, enumeration };
 struct ViewOptionInfo {
     ViewOption option;
@@ -24,9 +30,12 @@ struct ViewOptionInfo {
 };
 std::span<const ViewOptionInfo> view_options() noexcept;
 const ViewOptionInfo* view_option(std::string_view) noexcept;
+struct ViewOptionAlias {std::string_view name;ViewOption option;};
+std::span<const ViewOptionAlias> view_option_aliases() noexcept;
+bool world_option(ViewOption) noexcept;
 double view_value(const renderer::ViewSettings&, ViewOption) noexcept;
 // UI and control callers use the same typed operation. Enabling one near-field
 // policy disables the other. Callers applying batches publish a complete candidate.
 Result<bool> set_view_option(renderer::ViewSettings&, ViewOption, double);
-Result<void> validate_view_options(const renderer::ViewSettings&);
+Result<void> validate_view_options(const renderer::ViewSettings&,std::array<float,3> focus = {});
 }

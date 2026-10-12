@@ -1,4 +1,5 @@
 #pragma once
+#include "rendering/scene_lighting.hpp"
 
 #include "runtime/execution.hpp"
 #include "runtime/reflection.hpp"
@@ -61,11 +62,11 @@ ACLASS(Name="world.SceneComponent")
 class SceneComponent : public Component {
     AGENERATED_BODY(SceneComponent)
 public:
-    AFIELD()
+    AFIELD(Label="Position (m)", Category="Transform")
     math::Vector3 position;
-    AFIELD()
+    AFIELD(Label="Rotation", Category="Transform")
     math::Quaternion rotation;
-    AFIELD()
+    AFIELD(Label="Scale", Category="Transform")
     math::Vector3 scale{1.f, 1.f, 1.f};
 private:
     friend struct detail::Access;
@@ -130,7 +131,7 @@ ACLASS(Name="world.PrimitiveComponent")
 class PrimitiveComponent : public SceneComponent {
     AGENERATED_BODY(PrimitiveComponent)
 public:
-    AFIELD()
+    AFIELD(Category="Physics")
     BodySettings body{.enabled=false};
 };
 
@@ -161,7 +162,7 @@ ACLASS(Name="world.StaticMeshComponent")
 class StaticMeshComponent : public PrimitiveComponent {
     AGENERATED_BODY(StaticMeshComponent)
 public:
-    AFIELD()
+    AFIELD(Category="Material")
     Material material;
 private:
     friend struct detail::Access;
@@ -213,7 +214,7 @@ ACLASS(Name="world.LightComponent")
 class LightComponent : public SceneComponent {
     AGENERATED_BODY(LightComponent)
 public:
-    AFIELD()
+    AFIELD(Category="Lighting")
     LightSettings settings;
 };
 
@@ -411,6 +412,8 @@ public:
     World& operator=(World&&) = delete;
 
     [[nodiscard]] Runtime& runtime() const noexcept;
+    const rendering::SceneLightingSettings& lighting_settings() const noexcept;
+    [[nodiscard]] Result<void> set_lighting_settings(const rendering::SceneLightingSettings&);
     [[nodiscard]] const Types& types() const noexcept;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool closed() const noexcept;

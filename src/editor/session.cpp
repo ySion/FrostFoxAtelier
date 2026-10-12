@@ -69,6 +69,13 @@ Result<void> Session::validate_name(std::wstring_view name) {
         return invalid("Use a name with 1–256 visible characters.");
     return {};
 }
+Result<void> Session::set_world_lighting(const rendering::SceneLightingSettings& settings) {
+    const auto before=world_.lighting_settings();
+    if(before==settings) return world_.set_lighting_settings(settings);
+    if(editing()) return invalid("Finish the current property edit before changing World settings.");
+    if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
+    remember(LightingChange{before,settings});return {};
+}
 Result<void> Session::rename(ObjectId actor, std::wstring name) {
     if (auto valid=validate_name(name);!valid) return valid;
     if (auto ready = admit_actor_edit(actor); !ready) return ready;
@@ -287,7 +294,7 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
         auto value=read_property(object,field.path); if (!value) return std::unexpected(value.error());
         std::string name;
         for (const auto& part:field.names) { if (!name.empty()) name+='.'; name+=part; }
-        result.push_back({std::move(name),std::move(field.path),field.type,std::move(*value)});
+        result.push_back({std::move(name),std::move(field.path),field.type,std::move(*value),std::move(field.label),std::move(field.category)});
     }
     return result;
 }
@@ -542,7 +549,11 @@ Result<void> Session::reset_position(ObjectId component) {
 Result<world::Commit> Session::replay(Change& change, bool forward) {
     return std::visit([&](auto& item) -> Result<world::Commit> {
         using T = std::decay_t<decltype(item)>;
-        if constexpr (std::is_same_v<T, NameChange>) {
+        if constexpr (std::is_same_v<T, LightingChange>) {
+            auto changed=world_.set_lighting_settings(forward?item.after:item.before);
+            if(!changed) return std::unexpected(changed.error());
+            return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, NameChange>) {
             if (auto ready = admit_actor_edit(item.root.id()); !ready) return std::unexpected(ready.error());
             names_.at(item.root.id())=forward?item.after:item.before;
             set_selection({item.root.id(),item.root.id()});

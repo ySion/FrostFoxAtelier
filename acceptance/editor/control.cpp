@@ -124,11 +124,146 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
     write(root/"result.json",Json{{"status","passed"},{"cases",{"long-destination","long-source","deep-project-reopen-save","source-archive","cli-request","descriptor-cleanup"}},{"deep_control",deep_control},{"last_repro",utf8(repro.wstring())}}.dump(2));
     std::cout<<"Editor Control path E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
+void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto project=root/"Project",directory=root/"Control";project_fixture(project);
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+    Driver d(discover_editor(editor,directory));
+    if(auto window=editor.window())SetWindowPos(window,HWND_TOPMOST,12,80,960,640,SWP_NOACTIVATE);
+    auto state=d.inspect();unsigned stable=0;
+    for(unsigned i=0;i<200 && stable<5;++i) {
+        const auto token=d.token;std::this_thread::sleep_for(30ms);state=d.inspect();
+        stable=token==d.token&&!state.at("last_frame").empty()?stable+1:0;
+    }
+    require(stable==5,"DDGI diagnostic editor did not settle");
+    const auto default_view=state.at("view");
+    const auto capabilities=d.ok("capabilities");
+    for(const char* name:{"probe_visualization","probe_volume","probe_relocation","probe_xray","probe_radius","probe_debug",
+        "probe_bounce","indirect_gain","probe_feedback_visibility","probe_coverage","probe_debug_volume"})
+        require(capabilities.at("display_options").contains(name),"DDGI debug option absent from shared Control schema");
+    for(unsigned slot=0;slot<4;++slot) for(const char* field:{"enabled","placement","min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z","blend_cells"})
+        require(capabilities.at("display_options").contains("probe_volume_"+std::to_string(slot)+"_"+field),"Volume field absent from Control schema");
+    const auto summary=d.ok("editor.inspect",{{"detail","summary"}});
+    require(!summary.contains("actors") && !summary.contains("assets") && !summary.contains("component_types") &&
+        summary.at("view")==state.at("view") && summary.contains("last_frame"),"Summary inspection enumerated the document or omitted view state");
+    d.ok("scene.create",{{"kind","mesh"}});
+    d.ok("camera.look_at",{{"eye",{5,4,-7}},{"target",{0,0,0}}});
+    Json patch{{"shading","scene_lit"},{"ddgi",true},{"gtao",false},{"ssil",false},{"sssr",false},{"bloom",false},
+        {"probe_count_x",3},{"probe_count_y",3},{"probe_count_z",3},{"probe_update_budget",27},{"probe_rays",32},
+        {"probe_min_x",-2},{"probe_min_y",-2},{"probe_min_z",-2},{"probe_max_x",2},{"probe_max_y",2},{"probe_max_z",2},
+        {"probe_visualization","state"},{"probe_volume",true},{"probe_relocation",true},{"probe_xray",true},{"probe_radius",.12}};
+    d.ok("view.set",{{"patch",patch}});state=d.inspect();const auto base_view=state.at("view"),actors=state.at("actors"),undo=state.at("undo");
+    const auto token=d.token;d.ok("view.set",{{"patch",patch}});require(d.token==token,"Repeated DDGI view patch changed the state token");
+    error(d.call("view.set",{{"patch",{{"probe_radius",0},{"probe_debug",true}}}}),"operation_failed");
+    require(d.inspect().at("view")==base_view,"Rejected debug patch partially mutated the view");
+    error(d.call("view.set",{{"patch",{{"probe_visualization","unknown"}}}}),"invalid_request");
+    error(d.call("view.set",{{"patch",{{"probe_min_x",-3},{"probe_volume_0_min_x",-3}}}}),"invalid_request");
+    require(d.inspect().at("view")==base_view,"Duplicate slot-zero aliases partially published settings");
+    const auto id=unique_id();
+    const Json cases=Json::array({
+        {{"name","probe-state"},{"patch",Json::object()}},
+        {{"name","probe-age"},{"patch",{{"probe_visualization","update_age"}}}},
+        {{"name","receiver-coverage"},{"patch",{{"probe_visualization","off"},{"probe_volume",false},{"probe_relocation",false},{"probe_debug",true}}}},
+        {{"name","ddgi-disabled"},{"patch",{{"ddgi",false},{"probe_debug",true}}}}});
+    auto pending=d.call("render.compare",{{"cases",cases},{"sample_frames",{2}},{"timeout_ms",120000}},id);
+    require(pending.at("status")=="pending",pending.dump());const auto compared=d.wait(id);require(compared.at("status")=="ok",compared.dump());
+    require(compared.at("result").at("samples").size()==4,"DDGI comparison did not produce every accepted sample");
+    state=d.inspect();require(state.at("view")==base_view&&state.at("actors")==actors&&state.at("undo")==undo,
+        "DDGI diagnostic comparison changed scene, undo or base display policy");
+    write(root/"captures.json",compared.dump(2));write(root/"capabilities.json",capabilities.dump(2));
+    d.ok("view.set",{{"patch",{{"probe_bounce",.5},{"indirect_gain",1.25},{"probe_feedback_visibility",false}}}});
+    d.ok("view.layout",{{"layout","fit_scene"}});state=d.inspect();
+    require(state.at("view").at("probe_volume_0_placement")=="fixed" && state.at("view").at("probe_bounce")==.5 &&
+        state.at("view").at("indirect_gain")==1.25,"Fit Scene changed propagation preferences");
+    d.ok("view.layout",{{"layout","scene_focus"}});state=d.inspect();
+    const auto focus_view=state.at("view");const auto layout_token=d.token;
+    require(focus_view.at("probe_volume_0_placement")=="follow_focus" && focus_view.at("probe_volume_1_enabled")==true &&
+        focus_view.at("probe_volume_1_placement")=="fixed" && state.at("actors")==actors && state.at("undo").get<unsigned>()==undo.get<unsigned>()+3,
+        "Scene+Focus layout lost a volume or did not commit to scene history");
+    d.ok("view.layout",{{"layout","scene_focus"}});require(d.token==layout_token,"Repeated layout changed the state token");
+    for(const auto& invalid:std::vector<Json>{
+        {{"probe_volume_0_count_y",4}},
+        {{"probe_volume_0_count_x",32},{"probe_volume_0_count_y",32},{"probe_volume_0_count_z",32}},
+        {{"probe_volume_0_max_x",-6}},
+        {{"probe_volume_2_placement","follow_focus"},{"probe_volume_2_count_x",3}}}) {
+        error(d.call("view.set",{{"patch",invalid}}),"operation_failed");
+        require(d.ok("editor.inspect",{{"detail","summary"}}).at("view")==focus_view && d.token==layout_token,
+            "Rejected volume configuration changed state or token");
+    }
+    d.ok("camera.look_at",{{"eye",{12,4,-7}},{"target",{7,0,0}}});
+    const auto capture_id=unique_id();
+    pending=d.call("render.capture",{{"sample_frames",{2}},{"timeout_ms",120000}},capture_id);
+    require(pending.at("status")=="pending",pending.dump());const auto captured=d.wait(capture_id);
+    require(captured.at("status")=="ok",captured.dump());const auto& frame=captured.at("result").at("samples").at(0);
+    const auto& volumes=frame.at("frame_stats").at("probe_volumes");
+    require(frame.at("lighting_focus")==Json::array({7,0,0}) && volumes.size()==4 && volumes.at(0).at("rolling")==true &&
+        volumes.at(0).at("minimum").at(0).get<float>()>=0 && volumes.at(1).at("enabled")==true &&
+        frame.at("frame_stats").at("probe_volumes_source")=="cpu_layout_and_schedule",
+        "Accepted frame did not report camera-target rolling volume placement and CPU schedule provenance");
+    write(root/"focus-capture.json",captured.dump(2));
+    const Json tiny{{"probe_volume_0_count_x",5},{"probe_volume_0_count_y",5},{"probe_volume_0_count_z",5},
+        {"probe_volume_0_min_x",-.004},{"probe_volume_0_min_y",-.004},{"probe_volume_0_min_z",-.004},
+        {"probe_volume_0_max_x",.004},{"probe_volume_0_max_y",.004},{"probe_volume_0_max_z",.004}};
+    d.ok("camera.look_at",{{"eye",{100005,4,-7}},{"target",{100000,0,0}}});
+    const auto far_state=d.ok("editor.inspect",{{"detail","summary"}});const auto far_token=d.token;
+    error(d.call("view.set",{{"patch",tiny}}),"operation_failed");
+    require(d.ok("editor.inspect",{{"detail","summary"}}).at("view")==far_state.at("view") && d.token==far_token,
+        "World-precision failure published unusable view settings");
+    d.ok("camera.look_at",{{"eye",{5,4,-7}},{"target",{0,0,0}}});d.ok("view.set",{{"patch",tiny}});
+    const auto small_state=d.ok("editor.inspect",{{"detail","summary"}});const auto small_token=d.token;
+    error(d.call("camera.look_at",{{"eye",{100005,4,-7}},{"target",{100000,0,0}}}),"operation_failed");
+    auto far_camera=small_state.at("camera");far_camera["target"]=Json::array({100000,0,0});
+    error(d.call("camera.set",{{"state",far_camera}}),"operation_failed");
+    require(d.ok("editor.inspect",{{"detail","summary"}}).at("camera")==small_state.at("camera") && d.token==small_token,
+        "World-precision failure published an unusable camera");
+    d.ok("view.layout",{{"layout","scene_focus"}});
+    d.ok("view.set",{{"patch",{{"probe_volume_2_enabled",true},{"probe_volume_3_enabled",true},
+        {"probe_volume_2_count_x",3},{"probe_volume_3_count_x",2},{"probe_debug_volume",2},{"probe_coverage","contributors"}}}});
+    const auto repro_view=d.inspect().at("view");const auto export_id=unique_id();
+    require(d.call("repro.export",Json::object(),export_id).at("status")=="pending","Multi-volume export did not start");
+    const auto exported=d.wait(export_id);require(exported.at("status")=="ok",exported.dump());
+    const std::filesystem::path repro=wide(exported.at("result").at("directory").get<std::string>());
+    auto manifest=read(repro/"manifest.json");require(manifest.at("view")==repro_view,"Repro lost canonical volume settings");
+    d.ok("scene.undo");d.ok("scene.save",{{"path","Content/Scenes/Editing.scene"}});d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
+    require(d.inspect().at("view")==repro_view,"Repro did not restore all four volume settings");
+    for(const char* field:{"min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z"}) {
+        const auto canonical=std::string("probe_volume_0_")+field;
+        manifest["view"][std::string("probe_")+field]=manifest.at("view").at(canonical);manifest["view"].erase(canonical);
+    }
+    write(repro/"manifest.json",manifest.dump(2));d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
+    require(d.inspect().at("view")==repro_view,"Legacy slot-zero names changed canonical repro settings");
+    // A genuine older repro includes a v3 scene, not a v4 scene that disagrees with its snapshot.
+    const auto config=read(repro/"Project/Config/Project.json");
+    const auto legacy_scene_path=repro/"Project"/wide(config.at("startup_scene").get<std::string>());
+    auto legacy_scene=read(legacy_scene_path);legacy_scene["version"]=3;legacy_scene.erase("world");write(legacy_scene_path,legacy_scene.dump(2));
+    for(auto& file:manifest["files"]) if(repro/wide(file.at("path").get<std::string>())==legacy_scene_path) {
+        file["sha256"]=sha256_file(legacy_scene_path);file["bytes"]=std::filesystem::file_size(legacy_scene_path);
+    }
+    auto legacy_expected=repro_view;
+    for(unsigned slot=0;slot<4;++slot) for(const char* field:{"enabled","placement","min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z","blend_cells"}) {
+        const auto name="probe_volume_"+std::to_string(slot)+"_"+field;manifest["view"].erase(name);legacy_expected[name]=default_view.at(name);
+    }
+    for(const char* name:{"probe_bounce","indirect_gain","probe_feedback_visibility","probe_debug_volume","probe_coverage"}) {
+        manifest["view"].erase(name);legacy_expected[name]=default_view.at(name);
+    }
+    for(const char* field:{"min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z"}) {
+        const auto canonical=std::string("probe_volume_0_")+field;
+        manifest["view"][std::string("probe_")+field]=base_view.at(canonical);legacy_expected[canonical]=base_view.at(canonical);
+    }
+    manifest["view"]["probe_count_y"]=4;legacy_expected["probe_volume_0_count_y"]=4;
+    write(repro/"manifest.json",manifest.dump(2));d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
+    require(d.inspect().at("view")==legacy_expected,"A genuine old repro inherited current volume or propagation settings");
+    d.client.reset();editor.close();
+    require(read(project/"Content/Scenes/Main.scene").at("actors").empty(),"Diagnostic session changed the saved scene");
+    write(root/"result.json",Json{{"status","passed"},{"cases",{"shared-schema","summary-inspection","idempotent-patch","atomic-rejection","real-render-compare",
+        "coverage-presets","rolling-focus-capture","focus-precision-atomicity","four-volume-repro","legacy-aliases","legacy-repro-defaults","history-and-scene-isolation","clean-close"}}}.dump(2));
+    std::cout<<"Editor DDGI Control E2E: PASS | "<<utf8(root.wstring())<<'\n';
+}
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && std::wstring_view(argv[3])==L"--repro-paths"),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths]");
+        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug]");
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
+        if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
         if(argc==4) {
             repro_paths(argv[1],root/"exports",false);repro_paths(argv[1],root/"deep-control",true);
             reject_nested_destination(argv[1],root);

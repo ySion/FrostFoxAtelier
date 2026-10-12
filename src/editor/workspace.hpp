@@ -3,6 +3,7 @@
 #include "editor/session.hpp"
 #include "editor/commands.hpp"
 #include "editor/control_workbench.hpp"
+#include "editor/world_panel.hpp"
 #include "editor/asset_browser.hpp"
 #include "editor/source_editor.hpp"
 #include "editor/project_code.hpp"
@@ -40,6 +41,8 @@ inline constexpr ui::ControlKey shading_scene_lit=772;
 inline constexpr ui::ControlKey lit_menu=860,lit_effects_first=861,lit_exposure_first=867,lit_exposure_menu=872;
 inline constexpr ui::ControlKey lit_shadow_budget_menu=873,lit_shadow_budget_first=874;
 inline constexpr ui::ControlKey lit_aa_menu=877,lit_aa_first=878;
+inline constexpr ui::ControlKey probe_debug_menu=940,probe_modes_menu=941,probe_modes_first=942,
+    probe_options_first=947,probe_radius_menu=951,probe_radius_first=952,probe_legend_menu=955,probe_legend_first=956;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
@@ -51,7 +54,7 @@ constexpr int navigation_direction(ui::ControlKey key) {
 }
 inline constexpr ui::ControlKey parameter_search = 54, parameter_search_toggle=86;
 inline constexpr ui::ControlKey add_component=87,component_choice_first=1ULL<<40,property_choice_first=1ULL<<39;
-inline constexpr ui::ControlKey parameter_list=84;
+inline constexpr ui::ControlKey parameter_list=84, group_components=1ULL<<42, group_categories=group_components+1;
 inline constexpr ui::ControlKey parameter_menu=500, menu_group_reset=501, menu_reset=502, menu_copy=503, menu_paste=504;
 inline constexpr auto file_menu=menu_key(CommandGroup::file), edit_menu=menu_key(CommandGroup::edit),
     create_menu=menu_key(CommandGroup::create), view_menu=menu_key(CommandGroup::view),
@@ -100,8 +103,9 @@ struct Workspace {
     Result<void> navigate(Session&,int direction);
     Result<void> select_tree(Session&,ui::ControlKey,ui::SelectionModifiers = {},const ui::UiFrame* = nullptr);
     bool command_enabled(Command,const Session&) const;
-    bool apply_view(const ui::Action&);
-    Result<void> set_view_settings(const renderer::ViewSettings&);
+    Result<bool> apply_view(Session&,const ui::Action&,std::array<float,3> focus = {});
+    void sync_world(const Session&);
+    Result<void> set_view_settings(Session&,const renderer::ViewSettings&,std::array<float,3> focus = {});
     std::uint64_t view_revision() const noexcept {return view_revision_;}
     Result<bool> apply_ui(const ui::Action&);
     std::string_view ui_error() const noexcept {return ui_document_?ui_document_->diagnostic():std::string_view{};}
@@ -132,6 +136,7 @@ struct Workspace {
     bool menu_bar_collapsed{}, shelf_collapsed{};
     bool parameter_search_visible{};
     ControlWorkbench workbench;
+    WorldPanel lighting;
     std::wstring status{L"Ready"};
     std::wstring query;
     std::wstring render_notice; // Derived from the last accepted renderer frame.
@@ -155,6 +160,8 @@ struct Workspace {
     std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
+    std::unordered_map<std::string,ui::ControlKey> category_keys_;
+    bool parameter_by_category_{};
     std::uint64_t view_revision_{};
     Runtime ui_runtime_; // Editor authoring scopes outlive individual scene documents.
     std::unique_ptr<ui_language::LiveDocument> ui_document_;

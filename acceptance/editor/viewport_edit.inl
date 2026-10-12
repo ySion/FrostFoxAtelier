@@ -283,9 +283,9 @@ void verify_viewport_editing() {
         require(box && box->bounds.x+box->bounds.width<=box->clip.right+1 && box->bounds.y+box->bounds.height<=box->clip.bottom+1,
             "Pie slots were clipped by a scroll gutter or popup bounds.");
     }
-    require(workspace.apply_view({ui::ActionKind::activate,control::shading_preset_first,true}) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first,true})) &&
         workspace.view.wireframe==renderer::Wireframe::only,"Wireframe pie action did not reach the view model.");
-    require(workspace.apply_view({ui::ActionKind::activate,control::shading_preset_first+2,true}) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first+2,true})) &&
         workspace.view.wireframe==renderer::Wireframe::off && workspace.view.shading==renderer::Shading::matcap,
         "Shading preset retained stale wireframe state.");
     {

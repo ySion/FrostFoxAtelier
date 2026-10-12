@@ -39,7 +39,8 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 | 操作 | 权威入口与行为 |
 | --- | --- |
-| editor.inspect | 工程、内存场景、Actor/Component 句柄、反射属性、选择、资源、组件类型、相机、基础显示设置和最近接受帧 |
+| editor.inspect | 默认 `detail: full` 返回工程、内存场景、Actor/Component 句柄、反射属性、选择、资源、组件类型、相机、基础显示设置和最近接受帧；`detail: summary` 只返回工程/文档状态、忙碌项、历史计数、相机、显示和最近接受帧，不遍历场景或资源 |
+| view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | project.open、scene.open、scene.save | Application 工程/场景命令；替换拒绝未保存场景或源码草稿，避免无人处理的保存对话框 |
 | scene.create | Actor、StaticMeshActor、Point/Rectangle/Directional/Sky Light，共用现有命令和 World 工厂 |
 | scene.select、scene.rename、scene.delete | Session 的选择、名称和删除；rename 只修改 Actor 名称，Component 使用类型名 |
@@ -66,6 +67,14 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 启用 GTAO 或 Local GI/SSIL 会关闭另一项；同一个 patch 同时请求两者为 true 会失败。持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自场景的唯一 Sky Light；background 仍保存工作室模式偏好。
 
+DDGI 诊断通过相同的 `view.set` / `render.compare` 使用 `probe_visualization`（off/irradiance/state/update_age/distance）、`probe_volume`、`probe_relocation`、`probe_xray`、`probe_radius`（最小间距的 0.01～0.45 倍）。既有 `probe_debug` 改为真实八邻 Receiver Coverage，默认为 false。具体显示、年龄、资源和精度合同见 [Scene Lit](../renderer/scene-lit.md#ddgi-空间与接收面诊断)；关闭 DDGI 不会自动开启光照，灰色表示当前无数据。
+
+多体积字段统一命名为 `probe_volume_0_*` 至 `probe_volume_3_*`，后缀为 `enabled`、`placement`、`min_x/y/z`、`max_x/y/z`、`count_x/y/z` 和 `blend_cells`。`placement` 取 `fixed` / `follow_focus`；后者以相机 target 为中心解释边界偏移。共享传播设置为 `probe_update_budget`、`probe_rays`、`probe_bounce`、`indirect_gain` 和 `probe_feedback_visibility`。`probe_debug_volume` 为 −1（全部）或 0–3，`probe_coverage` 为 status / volume / contributors / dominance。范围由 `capabilities.display_options` 返回，跨字段约束复用 Renderer 校验，整个 patch 原子发布。
+
+旧九个 `probe_min_*` / `probe_max_*` / `probe_count_*` 名称仅映射槽位 0，映射见 `capabilities.display_aliases`；没有第二份存储。同一 patch 同时提供别名和对应正式名称会拒绝。观察与复现导出只写正式名称，重开仍接受旧名称；复现设置从默认值恢复，不继承当前会话中的额外体积或跟随模式。反馈/可见性改变会重建光场历史，最终间接光增益只影响合成；各体积容量和滚动网格的约束见 [Scene Lit](../renderer/scene-lit.md)。
+
+显示发布、相机更新和复现恢复在提交前用候选相机 target 校验跟随网格的世界坐标精度。超出受支持位置范围、或网格在该位置因浮点精度而塌缩时，整个操作失败，保留原相机、设置和 token；临时渲染对照也使用同一校验。
+
 工作室 Cavity 同样通过 `view.set`、`render.compare` 和复现工程使用统一 ViewOption：`cavity` 为 bool，`cavity_ridge` / `cavity_valley` 为 0–2，`cavity_radius` 为 0.5–4 物理像素。默认开启且三个数值均为 1。MatCap、Smooth、Flat 使用该效果；Scene Lit 与纯线框保留设置但不执行效果。非法值使整个 patch 失败，不部分应用。
 
 当前不包括布局编辑、Source 文本编辑、Play 命令、鼠标回放或任意 C++/JIT 调用。后续能力按业务名称接入现有权威模块。
@@ -84,10 +93,12 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 - 对象句柄仅在当前实例和文档代次内有效，不持有对象；离开成员关系返回 stale_object。重开文档后重新发现。
 - 缓存最近至多 256 个改变状态的请求，总计最多 8 MiB。同 ID、同内容重放缓存响应；异步任务完成后，缓存更新为最终结果。同 ID 改内容返回 request_id_conflict。只读轮询不挤占缓存。这是有界重试缓存，不是持久事务日志；旧响应的 token 不是当前状态的新证明。
 - 未提交的字段草稿、IME/剪贴板请求、菜单、按压/拖动或相机手势返回 busy，不会先取消用户操作。单纯文本焦点及提交/取消后保留的输入绑定不构成 busy。业务通知可能在提交后失败，此时应重新观察返回状态。
-- editor.inspect 的 busy_reasons 列出实际阻塞项：document_edit、viewport_tool、camera_orbit、camera_pan、menu、ui_pointer、ui_key、text_draft、ime、clipboard、ui_popup；text_focus 单独表示文本键盘焦点，不参与忙碌判定。交互导致的 busy 错误同时附带 busy_reasons。Code 文档的稳定未保存草稿仍由既有保存/替换规则保护，repro.export 可将其单独保存为 drafts.json。
+- editor.inspect 的 busy_reasons 列出实际阻塞项：document_edit、viewport_tool、camera_orbit、camera_pan、view_edit、menu、ui_pointer、ui_key、text_draft、ime、clipboard、ui_popup；`view_edit` 表示 World 数值草稿。text_focus 单独表示文本键盘焦点，不参与忙碌判定。交互导致的 busy 错误同时附带 busy_reasons。Code 文档的稳定未保存草稿仍由既有保存/替换规则保护，repro.export 可将其单独保存为 drafts.json。
 - 首版一个活动连接、一个异步任务，保留最近 16 个任务。job_id 是原请求 ID；轮询响应的 request_id 属于本次查询。请求内容已淘汰但任务仍保留时，同 ID 返回 request_id_expired，应以 job.status 查询；不会再创建同 ID 的任务。任务记录淘汰前保存其最终缓存结果。两种记录均已淘汰后没有重试保证。
 
 主要错误为 invalid_request、unknown_operation、busy、unsaved_changes、stale_state、stale_object、request_id_conflict、request_id_expired、not_ready、cancelled、state_changed、timeout、render_failure、dependency_mismatch、invalid_destination、storage_error、result_too_large。上下文取消会附上改变的状态类别。
+
+相机平移和旋转属于同一个活动手势的互斥模式。模式、按键和上次指针位置只在手势存活期间保有；松手、失焦、捕获丢失及转入菜单会结束该手势。`camera_pan` / `camera_orbit` 只报告当前操作，不依据上次使用过的模式。结束后 Control 恢复可调用，活动期间仍按原合同拒绝改变状态的请求。
 
 ## 渲染对照
 
@@ -125,6 +136,8 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 - manifest.json：文件大小及 SHA-256，最后发布的完整产物标记。
 
 GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sample.ddgi_pass_ms` 的两项分别为探针更新/传输与接收点 gather 耗时；`ddgi_visibility_rays` 的两项分别为探针命中着色与接收点 gather 的可见性查询数。它们共用 `valid`、`sequence`、`frame_id`，分别是 `pass_ms[3]` 和 `shadow_rays` 的细分，不能再次相加。相机矩阵与深度使用不抖动的编辑器投影；TAA/SMAA T2x 内部栅格投影有抖动，本接口不提供该内部矩阵。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护历史；接口不承诺完整清空 DDGI 探针、逐位确定性或恢复原 GPU 历史。
+
+接受帧与捕获元数据的 `lighting_focus` 是实际传入 Renderer 的观察目标。`frame_stats.probe_volumes` 按固定槽位返回启用/滚动状态、世界边界、间距、数量、resident、updated 和 reset_probes；`probe_volumes_source: cpu_layout_and_schedule` 明确其来源。resident 是分配的槽位数，updated 是本帧计划更新数，均不能当成 GPU 完成数或有效探针数。
 
 ## 复现工程
 
@@ -178,3 +191,14 @@ repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、
     cmake --build --preset release --target editor_control_path_acceptance
 
 独立工程和真实编辑器进程通过命名管道验收：发现与 CLI、创建/选择/组件/属性/TRS、Undo/Redo、相机、显示约束、重复请求、请求/任务淘汰、过期 token、未保存场景导出/重开、游戏和 UI 发布快照、额外文件拒绝、重开失败保留原文档、嵌套输出拒绝、多接受帧捕获、Scene Lit、失败与无效修改保留任务、取消、上下文变化、超时、断线和关闭。需要可绘制的独立窗口，不要求键盘焦点或人工输入；报告和图像保存在构建目录 control-acceptance/。
+
+DDGI 接线专项沿同一驱动运行：
+
+    ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/ddgi-control-dev --ddgi-debug
+    ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/ddgi-control-release --ddgi-debug
+
+覆盖四体积共享 schema、summary 观察、原子拒绝和幂等、覆盖预设、相机目标滚动的真实捕获、世界坐标精度、完整复现及真正旧格式恢复。World 页的输入预览/提交/取消、关闭和槽位切换在既有 `--acceptance-surfaces` 窗口链中验收；`atelier_editor_document_acceptance --scene-lit` 验证正式 DSL 页面与文档交互边界。
+
+### World 配置与字段显示元数据
+
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`scene.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label` 和 `category`，显示文本不参与字段身份。

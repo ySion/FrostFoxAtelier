@@ -179,17 +179,17 @@ popup.value-ladder {
     color: #cccccc; selection-color: #b88c1c; font-family: 'Sarasa UI SC'; font-weight: 400;
     text-align: center;
 }
-.parameter-tabs { background: token(chrome-recess); accent-color: #565656; accent-width: 0.667dip; }
-button.parameter-tab { padding: 2dip 9dip; }
-button.parameter-tab, button.parameter-tab:hover, button.parameter-tab:focus {
-    background: token(chrome-recess); background-image: none; border-color: #262626; border-style: solid;
+.section-tabs { background: #3a3a3a; accent-color: #565656; accent-width: 0.667dip; }
+button.section-tab { padding: 2dip 9dip; font-weight: 400; }
+button.section-tab, button.section-tab:hover, button.section-tab:focus {
+    background: #3a3a3a; background-image: linear-gradient(#555555, #303030); border-color: #262626; border-style: solid;
     border-width: 0.667dip; color: #cccccc;
 }
-button.parameter-tab.joined { border-edges: top right bottom; }
-button.parameter-tab:selected, button.parameter-tab:selected:hover {
+button.section-tab.joined { border-edges: top right bottom; }
+button.section-tab:selected, button.section-tab:selected:hover {
     background: #4f4f4f; background-image: none; border-edges: top right left; color: #cccccc;
 }
-button.parameter-tab.joined:selected { border-edges: top right; }
+button.section-tab.joined:selected { border-edges: top right; }
 .parameter-section { background: #4a4a4a; padding: 2dip 7dip; }
 .color-swatch { border-color: #777777; border-width: 1dip; border-style: inset; }
 

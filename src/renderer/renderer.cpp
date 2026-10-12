@@ -736,7 +736,7 @@ struct Renderer::State {
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
             const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
             const bool editing_depth=jittered&&(capture||frame.view.reference_grid||frame.view.origin_axes||
-                frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
+                frame.view.lit.probe_overlay()||frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
             if ((lines_only||editing_depth)&&!scene_depth)
                 prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
             if (!lighting && !lines_only && !cavity_projection && !scene)
@@ -788,6 +788,14 @@ struct Renderer::State {
                 }
                 geometry.used = true;
             }
+            // Match SceneLit's CPU-composed view/projection before the shared
+            // precise world-to-clip shader path. Chained GPU matrices differ by
+            // ULPs and make coplanar editing ink fail the surface depth test.
+            math::Matrix4d camera_view,camera_projection;
+            for(std::size_t i=0;i<16;++i) {camera_view.elements[i]=frame.camera.view[i];camera_projection.elements[i]=frame.camera.projection[i];}
+            const auto combined=camera_view*camera_projection;
+            std::array<float,16> view_projection;
+            for(std::size_t i=0;i<16;++i)view_projection[i]=static_cast<float>(combined.elements[i]);
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const auto program = pipeline.program();
                 detail::bind_materials(gfx,program,materials);
@@ -798,6 +806,7 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
+                require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
                 require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy");
                 require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
@@ -829,6 +838,7 @@ struct Renderer::State {
                     require(gfxCommandClearTexture(gfx,depth),"Clear sampled scene depth for editing");
                     draw_batches(scene_depth,2);
                 }
+                scene_lit->draw_debug(frame,extent,depth,stats);
                 draw_grid(frame,true);
                 draw_batches(visible_lines,1);
             } else if (lines_only) {
@@ -850,7 +860,10 @@ struct Renderer::State {
             }
         } else {
             materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();
-            if(has_viewport)draw_grid(frame,false);
+            if(has_viewport) {
+                if(scene_lit)scene_lit->draw_debug(frame,extent,depth,stats);
+                draw_grid(frame,false);
+            }
         }
         for(auto it=material_images.begin();it!=material_images.end();) {
             if(it->second.used) {++it;continue;}
@@ -1020,7 +1033,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
     s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
-    s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;
+    s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)
@@ -1028,7 +1041,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     bool encoding = false;
     try {
         validate(frame);
-        if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&!frame.meshes.empty()&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
+        if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&(!frame.meshes.empty()||frame.view.lit.probe_overlay())&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
             if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
             s.scene_lit->validate(frame);
         }

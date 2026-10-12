@@ -58,6 +58,11 @@ function Run-Generator([string]$name, [string]$declarations, [string]$expectedEr
 # A scan must not depend on stale generated output, including during bootstrap.
 '#error stale generated header was read' | Set-Content $generatedHeader -Encoding utf8
 Run-Generator 'valid' $valid
+Run-Generator 'empty-presentation' $valid.Replace('AFIELD()', 'AFIELD(Label="", Category="")')
+Run-Generator 'presentation' $valid.Replace('AFIELD()', 'AFIELD(Name="value", Label="Position", Category="Transform")')
+if (-not (Get-Content -Raw $generatedSource).Contains('"Position", "Transform"')) {
+    throw 'Generated registration lost field presentation metadata.'
+}
 $originalHeader = Get-FileHash $generatedHeader -Algorithm SHA256
 $originalSource = Get-FileHash $generatedSource -Algorithm SHA256
 $headerTime = (Get-Item $generatedHeader).LastWriteTimeUtc.Ticks
@@ -69,6 +74,13 @@ if ($LASTEXITCODE -ne 0 -or (Get-FileHash $generatedSource -Algorithm SHA256).Ha
 }
 if ((Get-Content -Raw "$OutputDirectory/probe.d") -notmatch 'dependency\.hpp') { throw 'Included header is missing from the depfile.' }
 $cases = @(
+    @{name='category-spelling'; text=$valid.Replace('AFIELD()', 'AFIELD(Catagory="Transform")'); error='Unknown or duplicate reflection option: Catagory'},
+    @{name='duplicate-label'; text=$valid.Replace('AFIELD()', 'AFIELD(Label="A", Label="B")'); error='Unknown or duplicate reflection option: Label'},
+    @{name='duplicate-category'; text=$valid.Replace('AFIELD()', 'AFIELD(Category="A", Category="B")'); error='Unknown or duplicate reflection option: Category'},
+    @{name='category-value'; text=$valid.Replace('AFIELD()', 'AFIELD(Category=42)'); error='requires an ordinary string literal'},
+    @{name='label-control'; text=$valid.Replace('AFIELD()', 'AFIELD(Label="line\nfeed")'); error='no control characters'},
+    @{name='empty-field-name'; text=$valid.Replace('AFIELD()', 'AFIELD(Name="")'); error='requires a nonempty string'},
+    @{name='class-label'; text=$valid.Replace('Name="probe.Widget"', 'Label="Widget"'); error='Unknown or duplicate reflection option: Label'},
     @{name='view-field'; text=('#include "foundation/string.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() atelier::StringView view;')); error='Borrowed views cannot be persistent fields'},
     @{name='array-ref-field'; text=('#include "foundation/array.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() atelier::Array<atelier::ReferenceSlot> references;')); error='reference-free Array'},
     @{name='array-hidden-ref'; text=('#include "foundation/array.hpp"' + "`n" + 'struct Nested { atelier::ReferenceSlot slot; };' + $valid.Replace('AFIELD() ProbeScalar value{};', 'atelier::Array<Nested> references;')); error='requires an explicit AFIELD'},
@@ -92,4 +104,4 @@ foreach ($case in $cases) {
         throw "Rejected input replaced a prior output: $($case.name)"
     }
 }
-"Reflection CLI: PASS (stale output isolation, deterministic writes, include dependencies, $($cases.Count) located failures preserving output)"
+"Reflection CLI: PASS (field presentation, stale output isolation, deterministic writes, include dependencies, $($cases.Count) located failures preserving output)"

@@ -1,7 +1,10 @@
 #pragma once
 
+#include "rendering/scene_lighting.hpp"
 #include <cstdint>
 #include <array>
+#include <algorithm>
+#include <cmath>
 
 namespace atelier::renderer {
 
@@ -9,7 +12,14 @@ enum class Shading : std::uint32_t { smooth, flat, matcap, scene_lit };
 enum class Wireframe : std::uint32_t { off, overlay, only };
 enum class Background : std::uint32_t { none, gradient };
 enum class GridPlane : std::uint32_t { xz, xy, yz };
-enum class Antialiasing : std::uint32_t { none, taa, smaa, smaa_t2x };
+using rendering::Antialiasing;
+enum class ProbeVisualization : std::uint32_t { off, irradiance, state, update_age, distance };
+using rendering::ProbePlacement;
+enum class ProbeCoverage : std::uint32_t { status, volume, contributors, dominance };
+
+using rendering::ProbeVolumeSettings;
+using rendering::probe_volume_limit;
+using rendering::probe_resident_limit;
 
 struct CavitySettings {
     bool operator==(const CavitySettings&) const = default;
@@ -18,30 +28,32 @@ struct CavitySettings {
     float radius{1.f}; // Screen-space radius, 0.5..4 physical pixels.
 };
 
-struct SceneLitSettings {
+struct SceneLitSettings : rendering::SceneLightingSettings {
     bool operator==(const SceneLitSettings&) const = default;
-    bool shadows{true};
-    bool ddgi{true};
-    bool gtao{true};
-    bool sssr{true};
-    bool bloom{true};
-    bool ssil{false}; // Bounded screen-space near-field correction; takes precedence over GTAO.
-    Antialiasing antialiasing{Antialiasing::smaa};
-    float exposure_ev{}; // Display exposure; HDR histories remain scene linear.
-    float shadow_bias{0.002f}; // World meters.
-    std::uint32_t shadow_light_budget{4}; // Explicit maximum simultaneously traced lights.
-    std::uint32_t shadow_samples{1}; // 1..64; deterministic reference uses 64.
-    float ao_radius{0.35f};
-    float reflection_distance{30.f};
-    float reflection_roughness{0.6f};
-    std::array<float, 3> probe_min{-6.f, -1.f, -6.f};
-    std::array<float, 3> probe_max{6.f, 5.f, 6.f};
-    std::array<std::uint32_t, 3> probe_counts{8, 4, 8};
-    std::uint32_t probe_update_budget{64}; // Probes per frame, including initialization.
-    std::uint32_t probe_rays{128}; // At most 256 rays per probe update.
-    bool probe_debug{};
+    bool probe_feedback_visibility{true}; // False is a diagnostic moment-only comparison.
+    bool probe_debug{}; // Actual receiver coverage, independent of the lighting histories.
+    ProbeCoverage probe_coverage{ProbeCoverage::status};
+    std::int32_t probe_debug_volume{-1}; // Geometry overlay selection; -1 draws all slots.
+    ProbeVisualization probe_visualization{ProbeVisualization::off};
+    bool probe_volume{}, probe_relocation{}, probe_xray{};
+    float probe_radius{.12f}; // Fraction of minimum grid spacing; display geometry only.
+    bool probe_overlay() const noexcept {
+        return probe_volume || probe_relocation || probe_visualization != ProbeVisualization::off;
+    }
 };
 
+inline const char* probe_settings_error(const SceneLitSettings& settings) noexcept {
+    if(const auto* error=rendering::probe_layout_error(settings)) return error;
+    if(settings.probe_coverage>ProbeCoverage::dominance || settings.probe_debug_volume < -1 ||
+       settings.probe_debug_volume>=static_cast<std::int32_t>(probe_volume_limit)) return "Invalid DDGI diagnostic selection";
+    return nullptr;
+}
+inline const char* probe_focus_error(const SceneLitSettings& settings,const std::array<float,3>& focus) noexcept {
+    if(const auto* error=probe_settings_error(settings)) return error;
+    return rendering::scene_lighting_focus_error(settings,focus);
+}
+
+// Evaluated frame settings: World authoring values plus per-view preferences.
 // Per-view display policy, independent of World materials and simulation state.
 // Width is in physical pixels; UI DPI must not be applied a second time.
 struct ViewSettings {

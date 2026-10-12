@@ -49,11 +49,23 @@ Json view_json(const renderer::ViewSettings& view) {
     }
     return result;
 }
-renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch) {
+Json probe_volumes_json(const renderer::FrameStats& stats) {
+    auto result=Json::array();
+    for(std::size_t i=0;i<stats.scene_lit_probe_volumes.size();++i) {
+        const auto& volume=stats.scene_lit_probe_volumes[i];
+        result.push_back({{"slot",i},{"enabled",volume.enabled},{"rolling",volume.rolling},
+            {"minimum",volume.minimum},{"maximum",volume.maximum},{"spacing",volume.spacing},{"counts",volume.counts},
+            {"resident",volume.resident},{"updated",volume.updated},{"reset_probes",volume.reset_probes}});
+    }
+    return result;
+}
+renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch,std::array<float,3> focus) {
     if(!patch.is_object()) throw Failure("invalid_request","Display patch must be an object");
     if(patch.value("gtao",false) && patch.value("ssil",false)) throw Failure("invalid_request","GTAO and Local GI are mutually exclusive");
+    std::set<editor::ViewOption> assigned;
     for(const auto& [name,value]:patch.items()) {
         const auto* option=editor::view_option(name);if(!option) throw Failure("invalid_request","Unknown display option: "+name);
+        if(!assigned.insert(option->option).second) throw Failure("invalid_request","Display option specified through multiple names: "+name);
         double scalar{};
         if(option->kind==editor::ViewValueKind::enumeration) {
             const auto choice=text(value);const auto found=std::ranges::find(option->choices,choice);
@@ -64,7 +76,7 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patc
         } else scalar=number(value);
         take(editor::set_view_option(view,option->option,scalar));
     }
-    take(editor::validate_view_options(view));return view;
+    take(editor::validate_view_options(view,focus));return view;
 }
 Json scalar_json(const Scalar& scalar,const Runtime& runtime) {
     return std::visit([&](const auto& value)->Json {
@@ -96,7 +108,7 @@ const std::vector<Operation>& operations() {
     static const Json str{{"type","string"}},obj{{"type","object"}},arr{{"type","array"}};
     static const std::vector<Operation> values{
         {"capabilities","Discover operations, arguments, limits and display options",false,{},{}},
-        {"editor.inspect","Read document objects, properties, assets, camera, display and accepted-frame metadata",false,{},{}},
+        {"editor.inspect","Read editor state; detail=summary omits object and asset enumeration",false,{{"detail",{{"enum",{"full","summary"}}}}},{}},
         {"project.open","Open an existing project; refuses unsaved scene or source drafts",true,{{"path",str}},{"path"}},
         {"scene.open","Open a project-relative scene; refuses unsaved scene",true,{{"path",str}},{"path"}},
         {"scene.save","Save the current scene through the normal project save command",true,{{"path",str}},{}},
@@ -123,6 +135,7 @@ const std::vector<Operation>& operations() {
         {"camera.set","Restore an exact camera state from editor.inspect",true,{{"state",obj}},{"state"}},
         {"camera.look_at","Aim a perspective camera at a world-space target (metres, +Y up)",true,{{"eye",arr},{"target",arr}},{"eye","target"}},
         {"view.set","Atomically apply a typed display patch using the same rules as menus",true,{{"patch",obj}},{"patch"}},
+        {"view.layout","Apply an explicit DDGI coverage layout; retain propagation and display settings",true,{{"layout",{{"enum",{"fit_scene","scene_focus"}}}}},{"layout"}},
         {"repro.export","Export an independent project from the current memory scene; does not save the original",true,{},{}},
         {"repro.open","Open a completed repro bundle and restore its camera, display and actor selection",true,{{"directory",str}},{"directory"}},
         {"render.prepare","Prepare Scene Lit pipelines through a real accepted frame; restores base display settings",true,{{"patch",obj},{"timeout_ms",{{"type","integer"}}}},{}},
@@ -141,9 +154,13 @@ Json capabilities() {
         if(option.kind==editor::ViewValueKind::enumeration) {schema={{"type","string"},{"enum",Json::array()}};for(auto choice:option.choices) schema["enum"].push_back(choice);}
         else if(option.kind==editor::ViewValueKind::boolean) schema={{"type","boolean"}};
         else schema={{"type",option.kind==editor::ViewValueKind::integer?"integer":"number"},{"minimum",option.minimum},{"maximum",option.maximum}};
-        if(option.option==editor::ViewOption::grid_plane) schema["scope"]="render.compare only; persistent value follows camera";
+        if(option.option==editor::ViewOption::grid_plane) schema["availability"]="render.compare only; persistent value follows camera";
+        schema["scope"]=editor::world_option(option.option)?"scene":"view";
         result["display_options"][option.name]=std::move(schema);
     }
+    result["display_aliases"]=Json::object();
+    for(const auto& alias:editor::view_option_aliases()) result["display_aliases"][alias.name]=editor::view_option(alias.name)->name;
+    result["probe_volume_stats_semantics"]="CPU accepted-frame layout and update schedule; not GPU completion or valid-support counts";
     result["coordinates"]="metres, left-handed +Y up, row-major matrices, row vectors; TRS rotation is quaternion xyzw";
     result["history_policy"]="Renderer histories evolve naturally across cases; no probe reset or GPU-history restoration is promised";
     return result;
@@ -182,15 +199,16 @@ struct EditorControl::Impl {
     std::deque<std::unique_ptr<Job>> jobs;
     struct AcceptedFrame {
         std::uint64_t id{},count{};ui::Rect bounds;ui::PixelExtent extent;renderer::Camera camera;
-        renderer::ViewSettings view;std::array<float,3> environment;renderer::FrameStats stats;
+        renderer::ViewSettings view;std::array<float,3> environment,lighting_focus;renderer::FrameStats stats;
     };
     std::optional<AcceptedFrame> last_frame;
     Json frame_json() const {
         if(!last_frame) return Json::object();const auto& f=*last_frame;const auto& s=f.stats;
         return {{"frame_id",f.id},{"accepted_count",f.count},{"viewport",{f.bounds.x,f.bounds.y,f.bounds.width,f.bounds.height}},
             {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
-            {"environment",f.environment},{"extent",{f.extent.width,f.extent.height}},
-            {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"shadow_lights",s.scene_lit_shadow_lights},{"unshadowed_lights",s.scene_lit_unshadowed_lights}}},
+            {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
+            {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"shadow_lights",s.scene_lit_shadow_lights},{"unshadowed_lights",s.scene_lit_unshadowed_lights},
+                {"probe_volumes",probe_volumes_json(s)},{"probe_volumes_source","cpu_layout_and_schedule"}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
             {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
             {"resource_bytes",s.scene_lit_resource_bytes},{"shadow_rays",s.scene_lit_shadow_rays},{"probe_rays",s.scene_lit_probe_rays}}}};
@@ -210,7 +228,8 @@ struct EditorControl::Impl {
         const auto ui=app.ui_.interaction_state();
         using State=std::pair<std::string_view,bool>;
         return std::array{State{"document_edit",app.document_->editing()},State{"viewport_tool",app.viewport_tool_.active()},
-            State{"camera_orbit",app.orbiting_},State{"camera_pan",app.panning_},State{"menu",app.workspace_.menu.has_value()},
+            State{"camera_orbit",app.camera_drag_ && !app.camera_drag_->pan},State{"camera_pan",app.camera_drag_ && app.camera_drag_->pan},
+            State{"view_edit",app.workspace_.lighting.editing()},State{"menu",app.workspace_.menu.has_value()},
             State{"ui_pointer",ui.pointer},State{"ui_key",ui.keyboard},State{"text_draft",ui.text_draft},
             State{"ime",ui.composition},State{"clipboard",ui.clipboard},State{"ui_popup",ui.popup}};
     }
@@ -311,7 +330,7 @@ struct EditorControl::Impl {
         Json result{{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type->name},{"properties",Json::array()}};
         for(const auto& property:take(app.document_->properties(id))) {
             const auto* prop_type=take(runtime.describe(property.type));
-            Json field{{"name",property.name},{"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
+            Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
             if(prop_type->enumeration) {field["choices"]=Json::array();for(const auto& [name,bits]:prop_type->enumeration->values) {static_cast<void>(bits);field["choices"].push_back(name);}}
             result["properties"].push_back(std::move(field));
         }
@@ -328,13 +347,15 @@ struct EditorControl::Impl {
         }
         return result;
     }
-    Json inspect() {
+    Json inspect(bool summary=false) {
         Json result{{"identity",server.identity()},{"project",app.project_?control::utf8(app.project_->root().generic_wstring()):""},
             {"scene_path",control::utf8(app.scene_path_.generic_wstring())},{"dirty",app.document_->dirty()},{"busy",busy()},
             {"busy_reasons",busy_reasons()},{"text_focus",app.ui_.wants_keyboard()},
             {"undo",app.document_->undo_count()},{"redo",app.document_->redo_count()},{"camera",camera_json(app.camera_.state())},
-            {"view",view_json(app.workspace_.view)},{"actors",Json::array()},{"selection",Json::array()},{"assets",Json::array()},
-            {"component_types",Json::array()},{"accepted_frames",app.accepted_frames_},{"last_frame",frame_json()}};
+            {"view",view_json(app.workspace_.view)},{"accepted_frames",app.accepted_frames_},{"last_frame",frame_json()}};
+        if(auto* job=active()) result["active_job"]={{"job_id",job->id},{"rendering",job->rendering},{"cancel_requested",job->cancel->load()}};
+        if(summary) {result["detail"]="summary";return result;}
+        for(const char* field:{"actors","selection","assets","component_types"}) result[field]=Json::array();
         for(const auto& actor:take(app.document_->world().members())) {
             auto value=object_json(actor.id());value["components"]=Json::array();
             for(const auto& component:take(world::components(app.document_->world().runtime(),actor.id()))) value["components"].push_back(object_json(component.id()));
@@ -349,7 +370,6 @@ struct EditorControl::Impl {
         for(const auto& type:take(app.document_->component_types())) result["component_types"].push_back(type.name);
         for(const auto& asset:editor::mesh_assets()) result["assets"].push_back({{"key",asset.key},{"name",control::utf8(asset.name)},{"kind","mesh"}});
         if(app.project_) for(const auto& entry:app.project_->entries()) result["assets"].push_back({{"key",entry.key},{"path",control::utf8(entry.path.generic_wstring())},{"kind",static_cast<unsigned>(entry.kind)}});
-        if(auto* job=active()) result["active_job"]={{"job_id",job->id},{"rendering",job->rendering},{"cancel_requested",job->cancel->load()}};
         return result;
     }
     Job& new_job(const std::string& id,const std::shared_ptr<control::Peer>& peer) {
@@ -399,13 +419,13 @@ struct EditorControl::Impl {
             const auto& input=args.at("cases");if(!input.is_array() || input.empty() || input.size()>8) throw Failure("invalid_request","Expected 1 to 8 cases");std::set<std::string> names;
             for(const auto& item:input) {control::fields(item,{"name","patch"});auto name=text(item.at("name"),80);
                 if(name.empty() || !names.insert(name).second) throw Failure("invalid_request","Case names must be nonempty and unique");
-                cases.push_back({name,patched_view(app.workspace_.view,item.at("patch"))});}
+                cases.push_back({name,patched_view(app.workspace_.view,item.at("patch"),app.lighting_focus())});}
         } else if(prepare) {
             auto patch=args.value("patch",Json::object());
             if(!patch.is_object()) throw Failure("invalid_request","Preparation patch must be an object");
             if(!patch.contains("shading")) patch["shading"]="scene_lit";
             if(!patch.contains("wireframe")) patch["wireframe"]="off";
-            auto view=patched_view(app.workspace_.view,patch);
+            auto view=patched_view(app.workspace_.view,patch,app.lighting_focus());
             if(view.shading!=renderer::Shading::scene_lit || view.wireframe==renderer::Wireframe::only || app.scene_.meshes.empty()) throw Failure("not_ready","Scene Lit preparation requires a filled view and a mesh instance");
             cases.push_back({"prepare",view});
         } else cases.push_back({"current",app.workspace_.view});
@@ -423,7 +443,11 @@ struct EditorControl::Impl {
     Json dispatch(std::string_view op,const Json& args,const std::string& id,const std::shared_ptr<control::Peer>& peer) {
         auto& doc=*app.document_;auto& runtime=doc.world().runtime();
         if(op=="capabilities") return capabilities();
-        if(op=="editor.inspect") return inspect();
+        if(op=="editor.inspect") {
+            const auto detail=args.contains("detail")?text(args.at("detail")):std::string{"full"};
+            if(detail!="full" && detail!="summary") throw Failure("invalid_request","Unsupported editor inspection detail");
+            return inspect(detail=="summary");
+        }
         if(op=="material.inspect") {
             if(!app.project_) throw Failure("not_ready","No project is open");
             if(args.contains("asset")==args.contains("object")) throw Failure("invalid_request","Specify exactly one material asset or object");
@@ -512,26 +536,37 @@ struct EditorControl::Impl {
             if(found==types.end()) throw Failure("invalid_request","Component type is not available");committed(doc.add_component(found->type));return {{"object",handle(doc.selection().object)}};
         } else if(op=="scene.remove_component") committed(doc.remove_component(object(args.at("object"))));
         else if(op=="scene.delete") committed(doc.erase_selected());
-        else if(op=="scene.undo") committed(doc.undo());
-        else if(op=="scene.redo") committed(doc.redo());
+        else if(op=="scene.undo") {committed(doc.undo());app.sync_world_view();}
+        else if(op=="scene.redo") {committed(doc.redo());app.sync_world_view();}
         else if(op=="camera.set" || op=="camera.look_at") {
             auto camera=app.camera_;
             const auto valid=op=="camera.set"?camera.set_state(camera_state(args.at("state"))):camera.look_at(vector3(args.at("eye")),vector3(args.at("target")));
             if(!valid) throw Failure("invalid_request","Invalid camera state or eye/target");
-            if(camera.state()!=app.camera_.state()) {app.camera_=camera;app.camera_cut_=true;}
+            take(app.set_camera(camera,true));
+        }
+        else if(op=="view.layout") {
+            idle();const auto layout=text(args.at("layout"));
+            if(layout!="fit_scene" && layout!="scene_focus") throw Failure("invalid_request","Unsupported DDGI coverage layout");
+            take(app.execute(layout=="fit_scene"?editor::Command::fit_probe_scene:editor::Command::fit_probe_scene_focus));
         }
         else if(op=="view.set") {
             if(args.at("patch").contains("grid_plane")) throw Failure("invalid_request","Persistent grid plane follows camera view; temporary render cases may override it");
-            auto view=patched_view(app.workspace_.view,args.at("patch"));take(app.workspace_.set_view_settings(view));app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
+            auto view=patched_view(app.workspace_.view,args.at("patch"),app.lighting_focus());take(app.workspace_.set_view_settings(*app.document_,view,app.lighting_focus()));app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
         } else if(op=="repro.export") return start_export(id,peer);
         else if(op=="render.capture" || op=="render.compare" || op=="render.prepare") return start_render(id,peer,args,op=="render.compare",op=="render.prepare");
         else if(op=="repro.open") {
             replaceable();const std::filesystem::path root=control::wide(text(args.at("directory")));
             const auto manifest=control_artifacts::validate_repro(root);
             auto camera=app.camera_;if(!camera.set_state(camera_state(manifest.at("camera")))) throw Failure("invalid_request","Invalid repro camera");
-            auto view=patched_view(app.workspace_.view,manifest.at("view"));
+            const auto focus=camera.state().target;
+            auto view=patched_view(renderer::ViewSettings{},manifest.at("view"),{focus.x,focus.y,focus.z});
             auto project=take(editor::Project::open(root/"Project"));
             const auto scene=editor::json_format::parse(take(editor::read_file(take(project.resolve(project.startup_scene())))));
+            if(scene.at("version").get<unsigned>()>=4) {
+                const auto authored=patched_view(renderer::ViewSettings{},scene.at("world"),{focus.x,focus.y,focus.z});
+                if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))
+                    throw Failure("dependency_mismatch","Repro frame snapshot disagrees with its Scene World settings");
+            }
             const auto& frozen_actors=scene.at("actors");std::vector<unsigned> indices;
             for(const auto& index:manifest.at("selection_indices")) {
                 const auto i=integer(index,0,editor::Session::maximum_actors);
@@ -543,7 +578,8 @@ struct EditorControl::Impl {
                 auto a=integer(value.at("actor"),0,editor::Session::maximum_actors),c=integer(value.at("component"),0,editor::Session::maximum_components);
                 if(indices.size()!=1 || indices[0]!=a || c>=frozen_actors[a].at("components").size()) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection={{a,c}};
             }
-            take(app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene));app.camera_=camera;app.camera_cut_=true;take(app.workspace_.set_view_settings(view));app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
+            take(app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene));
+            take(app.workspace_.set_view_settings(*app.document_,view,{focus.x,focus.y,focus.z}));app.document_->mark_saved();app.camera_=camera;app.camera_cut_=true;app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
             const auto members=take(app.document_->world().members());std::vector<ObjectId> selected;
             for(const auto i:indices) {if(i>=members.size()) throw Failure("dependency_mismatch","Repro selection exceeds scene size");selected.push_back(members[i].id());}
             take(app.document_->select_actors(selected,selected.empty()?ObjectId{}:selected.back()));
@@ -552,6 +588,7 @@ struct EditorControl::Impl {
         return Json::object();
     }
     Json request(const Json& request,const std::shared_ptr<control::Peer>& peer) {
+        app.sync_world_view();
         Json response;std::string id,canonical;bool remember{};
         try {
             control::fields(request,{"protocol","instance_id","request_id","op","args","state_token"});
@@ -601,7 +638,7 @@ void EditorControl::rendered(const renderer::Frame& frame,const renderer::FrameR
     if(job && job->rendering) job->history_resets+=result.stats.scene_lit_history_resets;
     if(result.status!=renderer::FrameStatus::accepted) {if(job && job->rendering) ++job->skipped;return;}
     const auto& bounds=frame.scene_viewport;
-    state.last_frame=Impl::AcceptedFrame{result.accepted_id,state.app.accepted_frames_,bounds,result.accepted_extent,frame.camera,frame.view,frame.environment,result.stats};
+    state.last_frame=Impl::AcceptedFrame{result.accepted_id,state.app.accepted_frames_,bounds,result.accepted_extent,frame.camera,frame.view,frame.environment,frame.lighting_focus,result.stats};
     if(!job || !job->rendering) return;
     if(bounds!=job->bounds) {state.cancel(*job,"state_changed","Viewport layout changed");return;}
     ++job->accepted;

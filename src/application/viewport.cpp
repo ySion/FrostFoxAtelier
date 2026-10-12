@@ -7,14 +7,17 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
     const auto& view=*accepted_view_;
     const bool pointer=event.kind==ui::EventKind::pointer_down || event.kind==ui::EventKind::pointer_up ||
         event.kind==ui::EventKind::pointer_move || event.kind==ui::EventKind::wheel;
-    if(orbiting_) {
+    if(camera_drag_) {
+        auto& drag=*camera_drag_;
         if(event.kind==ui::EventKind::pointer_move) {
-            if(panning_) camera_.pan(event.x-last_x_,event.y-last_y_,view.bounds.height);
-            else camera_.orbit((event.x-last_x_)/window_.dpi_scale(),(event.y-last_y_)/window_.dpi_scale());
-            last_x_=event.x;last_y_=event.y;return true;
+            auto camera=camera_;
+            if(drag.pan) camera.pan(event.x-drag.previous.x,event.y-drag.previous.y,view.bounds.height);
+            else camera.orbit((event.x-drag.previous.x)/window_.dpi_scale(),(event.y-drag.previous.y)/window_.dpi_scale());
+            if(auto changed=set_camera(camera,false);!changed) status(changed,L"");
+            drag.previous={event.x,event.y};return true;
         }
-        if(event.kind==ui::EventKind::pointer_up && event.button==camera_button_) {
-            orbiting_=false;window_.capture(false);window_.cursor(ui::Cursor::arrow);return true;
+        if(event.kind==ui::EventKind::pointer_up && event.button==drag.button) {
+            camera_drag_.reset();window_.capture(false);window_.cursor(ui::Cursor::arrow);return true;
         }
         return pointer;
     }
@@ -24,8 +27,8 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
     if(pointer && event.kind==ui::EventKind::pointer_down && !viewport_tool_.active()) {
         effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
         if(event.button==ui::PointerButton::middle || (event.button==ui::PointerButton::primary && event.alt)) {
-            orbiting_=true;panning_=event.button==ui::PointerButton::middle && event.shift;camera_button_=event.button;
-            last_x_=event.x;last_y_=event.y;window_.capture(true);window_.cursor(ui::Cursor::pan);return true;
+            camera_drag_=CameraDrag{event.button,event.button==ui::PointerButton::middle && event.shift,{event.x,event.y}};
+            window_.capture(true);window_.cursor(ui::Cursor::pan);return true;
         }
     }
     if(!pointer && !viewport_tool_.active() && ui_.wants_keyboard()) return false;

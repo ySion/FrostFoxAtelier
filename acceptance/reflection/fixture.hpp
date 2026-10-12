@@ -9,7 +9,7 @@ namespace atelier::acceptance::reflection {
 ASTRUCT(Name = "reflection.Sample")
 struct Sample {
     AGENERATED_BODY(Sample)
-    AFIELD() float value{3};
+    AFIELD(Label = "数值 \"value\" \\ preview", Category = "Transform") float value{3};
     AFIELD() std::uint32_t count{};
 };
 
@@ -24,12 +24,12 @@ public:
     AFUNCTION(Name = "count") std::uint32_t advance(const std::uint32_t amount) noexcept { return sample_.count += amount; }
     AFUNCTION(Name = "scale") float advance(float scale) { return sample_.value *= scale; }
 #if defined(_DEBUG)
-    AFIELD() float debug_only{};
+    AFIELD(Label = "Debug value") float debug_only{};
 #else
-    AFIELD() std::uint32_t release_only{};
+    AFIELD(Label = "Release value") std::uint32_t release_only{};
 #endif
 private:
-    AFIELD(Hidden) Sample sample_;
+    AFIELD(Hidden, Label = "Internal sample", Category = "Internal") Sample sample_;
 };
 
 AENUM(Name = "reflection.Mode")
@@ -58,10 +58,10 @@ struct CallProbe {
     AFIELD() Sample sample;
     AFIELD() std::uint32_t bits{};
     AFIELD() double precise_value{};
-    AFIELD() math::Vector3d direction;
+    AFIELD(Label = "Position", Category = "Transform") math::Vector3d direction;
     AFIELD() Array<double> samples;
-    AFIELD() bool enabled{};
-    AFIELD() bool before{true};
+    AFIELD(Category = "Flags") bool enabled{};
+    AFIELD(Label = "", Category = "") bool before{true};
     AFIELD() bool after{true};
     AFIELD() Array<bool> flags;
     AFUNCTION() bool bool_alias(bool copy, const bool& read, bool& write) { write = copy; return read; }

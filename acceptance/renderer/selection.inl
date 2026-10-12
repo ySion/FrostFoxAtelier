@@ -1,3 +1,81 @@
+void selection_depth_cases(render::Renderer& renderer,ui::PixelExtent extent) {
+    using atelier::geometry::Mesh;
+    using atelier::geometry::Vertex;
+    ui::Frame drawing{.id=18000,.extent=extent,.draws={}};
+    render::MeshInstance mesh;mesh.stable_key=1;mesh.selected=true;
+    mesh.color={.06f,.06f,.06f,1};mesh.material.emissive={.01f,.01f,.01f};
+    mesh.world={1.071f,0,0,0, 0,.931f,0,0, 0,0,1.301f,0, -.731f,.427f,2.173f,1};
+    mesh.geometry=std::make_shared<const Mesh>(std::vector<Vertex>{
+        {{-3,-2,-.6f},{0,0,-1}},{{-3,2,.8f},{0,0,-1}},{{3,2,1.2f},{0,0,-1}},
+        {{-3,-2,-.6f},{0,0,-1}},{{3,2,1.2f},{0,0,-1}},{{3,-2,-.2f},{0,0,-1}}});
+    render::Frame frame{drawing,{}, {0,0,float(extent.width),float(extent.height)},{&mesh,1}};
+    frame.camera.projection={1.8f*float(extent.height)/float(extent.width),0,0,0, 0,1.8f,0,0,
+        0,0,-.1f/99.9f,1, 0,0,10.f/99.9f,0};
+    frame.view.cavity.enabled=false;
+    frame.view.lit.shadows=frame.view.lit.ddgi=frame.view.lit.gtao=false;
+    frame.view.lit.sssr=frame.view.lit.ssil=frame.view.lit.bloom=false;
+    const auto yellow=[](const std::uint8_t* p){return p[0]>225 && p[1]>150 && p[2]<80;};
+    render::Capture capture;
+    const auto draw=[&] {++drawing.id;check(take(renderer.render(frame,&capture)).status==render::FrameStatus::accepted,"selection depth frame accepted");};
+    bool continuous=true;
+    for(unsigned pose=0;pose<8;++pose) {
+        const float angle=.317f+pose*.027f,c=std::cos(angle),s=std::sin(angle);
+        const float offset=pose<4?0:37.173f*float(pose-3);
+        mesh.world[12]=-.731f+offset;mesh.world[13]=.427f-offset*.137f;mesh.world[14]=2.173f+offset*.713f;
+        frame.camera.view={c,0,s,0, 0,1,0,0, -s,0,c,0,
+            .137f+pose*.013f-c*offset+s*offset*.713f,-.239f+offset*.137f,8.731f-s*offset-c*offset*.713f,1};
+        frame.view.shading=render::Shading::flat;draw();const auto reference=capture;
+        for(const auto aa:{render::Antialiasing::none,render::Antialiasing::smaa,render::Antialiasing::taa,render::Antialiasing::smaa_t2x}) {
+            frame.view.shading=render::Shading::scene_lit;frame.view.lit.antialiasing=aa;draw();
+            const auto name="selection-depth-"+std::to_string(pose)+"-"+std::to_string(static_cast<unsigned>(aa))+".ppm";
+            snapshot(capture,name.c_str());
+            std::size_t expected{},visible{};
+            for(unsigned y=0;y<extent.height;++y)for(unsigned x=0;x<extent.width;++x) {
+                if(!yellow(pixel(reference,x,y)))continue;
+                ++expected;if(yellow(pixel(capture,x,y)))++visible;
+            }
+            std::printf("Selection depth pose=%u aa=%u: %zu/%zu edge pixels\n",pose,static_cast<unsigned>(aa),visible,expected);
+            check(expected>200,"transformed selection fixture has enough edge pixels");
+            continuous=continuous && visible*100>=expected*98;
+        }
+    }
+    check(continuous,"Scene Lit selection must retain continuous surface edges across camera poses and AA modes");
+    // Spatial diagnostics use private depth, then restore the editing target
+    // before the selected-wire pass. Exercise that boundary in every AA mode.
+    auto& lighting=frame.view.lit;
+    lighting.probe_volumes[0].counts={2,2,2};
+    for(unsigned axis=0;axis<3;++axis) {
+        lighting.probe_volumes[0].minimum[axis]=mesh.world[12+axis]-2;
+        lighting.probe_volumes[0].maximum[axis]=mesh.world[12+axis]+2;
+    }
+    for(const auto aa:{render::Antialiasing::none,render::Antialiasing::smaa,render::Antialiasing::taa,render::Antialiasing::smaa_t2x}) {
+        lighting.antialiasing=aa;draw();const auto reference=capture;
+        lighting.probe_visualization=render::ProbeVisualization::state;lighting.probe_volume=true;draw();
+        check(capture.depth==reference.depth,"DDGI overlays preserve selected surface depth");
+        for(unsigned y=0;y<extent.height;++y)for(unsigned x=0;x<extent.width;++x)
+            if(yellow(pixel(reference,x,y)))check(yellow(pixel(capture,x,y)),"DDGI overlays retain selected edges");
+        lighting.probe_visualization=render::ProbeVisualization::off;lighting.probe_volume=false;
+    }
+    // Cover the selected plane with the same slope, extended beyond its edges
+    // and only 2 mm nearer the camera. A broad depth bias must not reveal it.
+    auto cover=mesh;cover.selected=false;cover.stable_key=2;
+    cover.geometry=std::make_shared<const Mesh>(std::vector<Vertex>{
+        {{-4.5f,-3,-1.05f},{0,0,-1}},{{-4.5f,3,1.05f},{0,0,-1}},{{4.5f,3,1.65f},{0,0,-1}},
+        {{-4.5f,-3,-1.05f},{0,0,-1}},{{4.5f,3,1.65f},{0,0,-1}},{{4.5f,-3,-.45f},{0,0,-1}}});
+    cover.world[12]-=frame.camera.view[2]*.002f;
+    cover.world[14]-=frame.camera.view[10]*.002f;
+    std::array instances{mesh,cover};frame.meshes=instances;
+    for(const auto aa:{render::Antialiasing::none,render::Antialiasing::smaa,render::Antialiasing::taa,render::Antialiasing::smaa_t2x}) {
+        frame.view.lit.antialiasing=aa;
+        instances[0].selected=false;draw();const auto reference=capture;
+        instances[0].selected=true;draw();
+        check(capture.depth==reference.depth,"occluded selection preserves surface depth");
+        for(unsigned y=0;y<extent.height;++y)for(unsigned x=0;x<extent.width;++x)
+            check(!yellow(pixel(capture,x,y)),"nearby foreground surface hides selected edges");
+    }
+    std::puts("Renderer selection depth: PASS (camera poses, translated scenes, four AA modes, DDGI overlay coexistence, nearby occlusion)");
+}
+
 void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     using atelier::geometry::Mesh;
     using atelier::geometry::Vertex;

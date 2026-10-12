@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "editor/json_format.hpp"
 #include "editor/fields.hpp"
+#include "editor/view_options.hpp"
 #include "editor/material_format.hpp"
 #include "physics/physics.hpp"
 #include <limits>
@@ -19,6 +20,47 @@ template<class T> T take(Result<T> value) {
 }
 void committed(Result<world::Commit> value) {
     auto result=take(std::move(value)); if (result.notification_error) throw std::runtime_error(result.notification_error->message);
+}
+// Persistence and UI/Control share the same author-option directory. Labels and
+// diagnostic preferences never become keys in a scene document.
+Json world_settings(const rendering::SceneLightingSettings& settings) {
+    renderer::ViewSettings view;static_cast<rendering::SceneLightingSettings&>(view.lit)=settings;
+    Json result=Json::object();
+    for(const auto& option:view_options()) if(world_option(option.option)) {
+        const auto value=view_value(view,option.option);
+        switch(option.kind) {
+        case ViewValueKind::boolean:result[option.name]=value!=0;break;
+        case ViewValueKind::enumeration:result[option.name]=option.choices[static_cast<std::size_t>(value)];break;
+        case ViewValueKind::integer:result[option.name]=static_cast<std::int64_t>(value);break;
+        case ViewValueKind::number:result[option.name]=value;break;
+        }
+    }
+    return result;
+}
+rendering::SceneLightingSettings world_settings(const Json& data) {
+    if(!data.is_object()) throw std::runtime_error("Expected World settings object.");
+    renderer::ViewSettings candidate;
+    for(const auto& [name,value]:data.items()) {
+        const auto* option=view_option(name);
+        if(!option || option->name!=name || !world_option(option->option))
+            throw std::runtime_error("Unknown World setting: "+name);
+        double number{};
+        if(option->kind==ViewValueKind::boolean) number=value.get<bool>()?1:0;
+        else if(option->kind==ViewValueKind::enumeration) {
+            const auto text=value.get<std::string>();const auto at=std::ranges::find(option->choices,text);
+            if(at==option->choices.end()) throw std::runtime_error("Unknown World option value: "+text);
+            number=static_cast<double>(at-option->choices.begin());
+        } else {
+            if(!value.is_number()) throw std::runtime_error("Expected a numeric World option.");
+            number=value.get<double>();
+        }
+        take(set_view_option(candidate,option->option,number));
+    }
+    // Reject contradictory input instead of letting the interactive mutual-
+    // exclusion setter choose according to JSON object iteration order.
+    if(data.value("gtao",true) && data.value("ssil",false)) throw std::runtime_error("GTAO and Local GI are mutually exclusive.");
+    if(const auto* error=rendering::scene_lighting_error(candidate.lit)) throw std::runtime_error(error);
+    return candidate.lit;
 }
 Json vector(math::Vector3 value) { return Json::array({value.x,value.y,value.z}); }
 math::Vector3 vector(const Json& value) {
@@ -332,7 +374,7 @@ Result<std::string> Session::serialize() const {
                 {"root",object_key(root)},{"components",std::move(values)},
                 {"properties",write_properties(runtime,types_,member.id(),actor.type)}});
         }
-        auto text=Json{{"version",3},{"actors",std::move(actors)}}.dump(2)+"\n";
+        auto text=Json{{"version",4},{"world",world_settings(world_.lighting_settings())},{"actors",std::move(actors)}}.dump(2)+"\n";
         if (text.size()>json_format::maximum_bytes) throw std::runtime_error("Scene exceeds the 16 MiB file limit.");
         return text;
     } catch (const std::exception& error) { return failed(error); }
@@ -340,12 +382,14 @@ Result<std::string> Session::serialize() const {
 Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Project& project,Prepare prepare) {
     try {
         auto data=json_format::parse(text);
-        fields(data,{"version","actors"});
+        fields(data,{"version","actors","world"});
         const auto version=json_format::identity(data.at("version"));
-        if (version<1 || version>3) throw std::runtime_error("Unsupported scene format version.");
+        if (version<1 || version>4) throw std::runtime_error("Unsupported scene format version.");
         const auto& actors=data.at("actors");
         if (!actors.is_array() || actors.size()>maximum_actors) throw std::runtime_error("Invalid scene Actor count.");
         auto session=std::make_unique<Session>(std::move(prepare)); auto& world=session->world_; auto& runtime=session->runtime_;
+        if(version>=4) take(world.set_lighting_settings(world_settings(data.at("world"))));
+        else if(data.contains("world")) throw std::runtime_error("World settings require scene version 4.");
         const auto& types=session->types_;
         std::vector<ObjectId> actor_ids;
         std::vector<std::pair<ObjectId,std::size_t>> constraint_targets;

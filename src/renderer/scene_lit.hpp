@@ -25,6 +25,8 @@ public:
     void draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,
               std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats);
     // Called only after CPU preparation succeeds, inside the encoding phase.
+    // Post-AA diagnostics use the public camera and preserve scene depth.
+    void draw_debug(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,FrameStats& stats);
     void invalidate(bool empty_scene,FrameStats& stats);
     Result<void> close();
 private:

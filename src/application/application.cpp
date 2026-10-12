@@ -12,6 +12,7 @@
 #include <format>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace atelier::application {
 namespace {
@@ -91,6 +92,24 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
 }
 
 Result<void> Application::focus_selected() { return frame_actors(true); }
+void Application::sync_world_view() {
+    workspace_.sync_world(*document_);
+    // Undo/reopen may restore a finer follow-focus lattice. The scene remains
+    // authoritative; re-anchor this view if its old target cannot represent it.
+    if(rendering::scene_lighting_focus_error(workspace_.view.lit,lighting_focus())) {
+        auto state=camera_.state();state.target={};camera_.set_state(state);camera_cut_=true;
+    }
+}
+std::array<float,3> Application::lighting_focus() const {
+    const auto target=camera_.state().target;return {target.x,target.y,target.z};
+}
+Result<void> Application::set_camera(const editor::Camera& camera,bool cut) {
+    const auto target=camera.state().target;
+    if(const auto* error=renderer::probe_focus_error(workspace_.view.lit,{target.x,target.y,target.z}))
+        return std::unexpected(Error{ErrorCode::invalid_definition,error});
+    if(camera.state()!=camera_.state()) {camera_=camera;camera_cut_|=cut;}
+    return {};
+}
 Result<void> Application::frame_actors(bool selected_only) {
     // Bounds of the rendered geometry (Blender View Selected / View All); locators count as points.
     auto& runtime=document_->world().runtime();
@@ -113,33 +132,53 @@ Result<void> Application::frame_actors(bool selected_only) {
         include({(*matrix)[12],(*matrix)[13],(*matrix)[14]});
     }
     if(!any) return std::unexpected(Error{ErrorCode::invalid_definition,selected_only?"Select an Actor with a root SceneComponent to frame.":"The scene has nothing to frame."});
-    camera_.frame((low+high)*.5f,math::length(high-low)*.5f);camera_cut_=true;
-    return {};
+    auto camera=camera_;camera.frame((low+high)*.5f,math::length(high-low)*.5f);return set_camera(camera,true);
+}
+Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
+    auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    if(items->empty()) return std::unexpected(Error{ErrorCode::invalid_definition,"DDGI volume fitting requires rendered geometry."});
+    struct Bounds {math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;};
+    Bounds world_bounds;
+    std::unordered_map<const geometry::Mesh*,Bounds> local_bounds;
+    const auto include=[](Bounds& bounds,math::Vector3 point) {
+        for(unsigned axis=0;axis<3;++axis) {bounds.low[axis]=std::min(bounds.low[axis],point[axis]);bounds.high[axis]=std::max(bounds.high[axis],point[axis]);}
+    };
+    for(const auto& item:*items) {
+        const auto [found,inserted]=local_bounds.try_emplace(item.geometry.get());
+        if(inserted) for(const auto& vertex:item.geometry->vertices()) include(found->second,{vertex.position[0],vertex.position[1],vertex.position[2]});
+        // Eight corners cover each transformed instance; shared mesh vertices
+        // are scanned once for this explicit layout command.
+        for(unsigned corner=0;corner<8;++corner) {
+            math::Vector3 point;for(unsigned axis=0;axis<3;++axis) point[axis]=(corner&(1u<<axis))?found->second.high[axis]:found->second.low[axis];
+            include(world_bounds,math::transform_point(point,item.world));
+        }
+    }
+    auto candidate=workspace_.view;auto& lighting=candidate.lit;lighting.probe_volumes={};
+    auto& coarse=lighting.probe_volumes[follow_focus?1:0];coarse.enabled=true;
+    for(unsigned axis=0;axis<3;++axis) {
+        coarse.minimum[axis]=std::floor(world_bounds.low[axis]-.5f);coarse.maximum[axis]=std::ceil(world_bounds.high[axis]+.5f);
+        coarse.counts[axis]=static_cast<std::uint32_t>(std::clamp(std::ceil((coarse.maximum[axis]-coarse.minimum[axis])/2.f)+1.f,2.f,follow_focus?12.f:16.f));
+    }
+    if(follow_focus) {
+        auto& focused=lighting.probe_volumes[0];focused.enabled=true;focused.placement=renderer::ProbePlacement::follow_focus;
+        focused.minimum={-6,-2,-6};focused.maximum={6,4,6};focused.counts={13,7,13};focused.blend_cells=1;
+    }
+    if(auto valid=editor::validate_view_options(candidate,lighting_focus());!valid) return std::unexpected(valid.error());
+    return candidate;
 }
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
-    auto lighting=workspace_.view.lit;
+    workspace_.sync_world(*document_);
+    auto candidate=workspace_.view;
     if(fit_ddgi_volume) {
-        auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
-        if(items->empty()) return std::unexpected(Error{ErrorCode::invalid_definition,"DDGI volume fitting requires rendered geometry."});
-        math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;
-        for(const auto& item:*items) for(const auto& vertex:item.geometry->vertices()) {
-            const auto point=math::transform_point(math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world);
-            for(int axis=0;axis<3;++axis) {low[axis]=std::min(low[axis],point[axis]);high[axis]=std::max(high[axis],point[axis]);}
-        }
-        std::uint32_t probes=1;
-        for(int axis=0;axis<3;++axis) {
-            lighting.probe_min[axis]=std::floor(low[axis]-.5f);
-            lighting.probe_max[axis]=std::ceil(high[axis]+.5f);
-            // Aim for two-meter cells, bounded to 4096 probes and a four-frame sweep.
-            lighting.probe_counts[axis]=static_cast<std::uint32_t>(std::clamp(
-                std::ceil((lighting.probe_max[axis]-lighting.probe_min[axis])/2.f)+1.f,2.f,16.f));
-            probes*=lighting.probe_counts[axis];
-        }
-        lighting.probe_update_budget=(probes+3)/4;
+        auto fitted=fitted_probe_view(false);if(!fitted) return std::unexpected(fitted.error());candidate=*fitted;
+        const auto& counts=candidate.lit.probe_volumes[0].counts;
+        candidate.lit.probe_update_budget=(counts[0]*counts[1]*counts[2]+3)/4;
     }
-    if(shading>renderer::Shading::scene_lit || !camera_.look_at(eye,target))
+    auto camera=camera_;
+    if(shading>renderer::Shading::scene_lit || !camera.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
-    workspace_.view.shading=shading;workspace_.view.lit=lighting;camera_cut_=true;invalidate_surface();return {};
+    candidate.shading=shading;if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
+    camera_=camera;camera_cut_=true;invalidate_surface();return {};
 }
 Result<void> Application::action(const ui::Action& source) {
     // UI instance keys and host command/target keys occupy different roles.
@@ -222,7 +261,9 @@ Result<void> Application::action(const ui::Action& source) {
         }
         return {};
     }
-    if (workspace_.apply_view(event)) return {};
+    const auto view_action=workspace_.apply_view(*document_,event,lighting_focus());
+    if(!view_action) return std::unexpected(view_action.error());
+    if(*view_action) return {};
     if (!source.target) {
         const auto local_event=workspace_.apply_ui(source);
         if (!local_event) return std::unexpected(local_event.error());
@@ -288,7 +329,7 @@ Result<void> Application::action(const ui::Action& source) {
         if (event.kind==ui::ActionKind::select && (binding->kind==editor::Workspace::Binding::Kind::object || binding->kind==editor::Workspace::Binding::Kind::structure) && binding->path.empty())
             return done(workspace_.select_tree(*document_,event.key,std::get_if<ui::SelectionModifiers>(&event.value)?std::get<ui::SelectionModifiers>(event.value):ui::SelectionModifiers{},ui_.presented().get()),L"Tree selection updated");
         if (binding->kind==editor::Workspace::Binding::Kind::navigation) {
-            if (event.kind==ui::ActionKind::activate) {workspace_.inspecting_asset=false;return done(document_->select(binding->object),L"Actor selected");}
+            if (event.kind==ui::ActionKind::activate) {workspace_.inspecting_asset=false;workspace_.dock.select(editor::control::parameters_tab);return done(document_->select(binding->object),L"Object selected");}
             return {};
         }
         if (binding->kind==editor::Workspace::Binding::Kind::name) {
@@ -419,15 +460,23 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
             workspace_.source_editor.active()->document->edit().history(command==redo);pending_source_focus_=true;
         } else if(workspace_.inspecting_asset && !workspace_.material_inspection.empty()) result=document_->material_undo(workspace_.material_inspection,command==redo);
         else if (workspace_.sample_history()) { if (command==undo) workspace_.workbench.undo(); else workspace_.workbench.redo(); }
-        else {workspace_.inspecting_asset=false;result=completion(command==undo?document_->undo():document_->redo());}
+        else {
+            workspace_.inspecting_asset=false;result=completion(command==undo?document_->undo():document_->redo());
+            sync_world_view();
+        }
         break;
     case focus: result=focus_selected();if(result) camera_cut_=true;break;
-    case reset_camera: camera_.reset();camera_cut_=true;break;
+    case reset_camera: {auto camera=camera_;camera.reset();result=set_camera(camera,true);break;}
     case show_scene: workspace_.dock.select(editor::control::scene_tab); break;
     case show_parameters: workspace_.dock.select(editor::control::parameters_tab); break;
     case show_controls: workspace_.dock.select(editor::control::workbench); break;
     case show_actors: workspace_.dock.select(editor::control::actors_tab); break;
     case show_structure: workspace_.dock.select(editor::control::structure_tab); break;
+    case show_world_settings: workspace_.dock.select(editor::world_control::tab); break;
+    case fit_probe_scene:case fit_probe_scene_focus: {
+        auto fitted=fitted_probe_view(command==fit_probe_scene_focus);if(!fitted) return std::unexpected(fitted.error());
+        return workspace_.set_view_settings(*document_,*fitted,lighting_focus());
+    }
     case show_assets: workspace_.dock.select(editor::control::assets_tab); break;
     case maximize_pane: workspace_.dock.maximize(workspace_.dock.focused_tab()); break;
     case previous_tab: case next_tab: workspace_.dock.cycle(command==previous_tab?-1:1); break;
@@ -516,7 +565,8 @@ void Application::sync_text_input() {
 void Application::cancel_interaction(const ui::Reply& reply) {
     // Session distinguishes native focus/capture loss from a forced UI cancellation.
     // Application-owned gestures must end for either kind before capture is released.
-    orbiting_ = false;
+    camera_drag_.reset();
+    workspace_.lighting.cancel();
     close_menu(false);
     effects(reply);
     const auto cancelled = document_->cancel_edit();
@@ -556,7 +606,7 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     pie_release_pending_=pie_release_select_=pie_pressed_=false;pie_hot_=0;
     menu_context_target_=source->context_target; menu_context_group_=source->context_group;
     menu_table_layout_=source->table_layout;
-    orbiting_=false; window_.capture(false);
+    camera_drag_.reset(); window_.capture(false);
 }
 void Application::close_menu(bool restore_focus) {
     pending_menu_=0;
@@ -962,10 +1012,11 @@ bool Application::step(renderer::Capture* capture) {
     const bool capturing_control=control_ && control_->wants_capture();
     auto* frame_capture=capture?capture:capturing_control?&control_capture:nullptr;
     const auto effective_view=control_?control_->view():workspace_.view;
+    const auto lighting_focus=camera_.state().target;
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
         viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
-        scene_.environment};
+        scene_.environment,{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, frame_capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
@@ -981,6 +1032,7 @@ bool Application::step(renderer::Capture* capture) {
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
         accepted_view_=viewport?std::optional(viewport_view):std::nullopt;
+        workspace_.lighting.observe(rendered->stats);
         if(viewport) camera_cut_=false;
         workspace_.render_notice.clear();
         if(viewport && effective_view.shading==renderer::Shading::scene_lit && effective_view.lit.shadows &&

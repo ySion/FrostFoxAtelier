@@ -1,6 +1,7 @@
 #include "application/project_runner.hpp"
 #include "application/window.hpp"
 #include "application/presentation.hpp"
+#include "application/scene_snapshot.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "editor/camera.hpp"
@@ -103,6 +104,7 @@ int run_project(const RunOptions& options) {
             }
         };
         if(project_ui.configured()) {std::printf("Project UI evaluating\n");std::fflush(stdout);}
+        SceneSnapshot scene;
         editor::Camera camera;std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
         // Frame the authored mesh centers once; large collision floors should
         // not force a tiny view of the moving Actors. Navigation stays a host concern.
@@ -157,13 +159,15 @@ int run_project(const RunOptions& options) {
             if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty()) {std::printf("Project UI: %s\n",ui_error.c_str());std::fflush(stdout);}}
             if(prepared) {
                 if(renderer) {
-                    const auto items=take(document.world().render_items());std::vector<renderer::MeshInstance> meshes;meshes.reserve(items.size());
-                    for(const auto& item:items) meshes.push_back({item.world.elements,{item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1},false,item.geometry});
+                    take(scene.refresh(document));
+                    for(auto& mesh:scene.meshes) mesh.selected=false;
                     const auto matrices=camera.matrices(static_cast<float>(extent.width)/std::max(extent.height,1u));
-                    const renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
-                        options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},meshes,
-                        {.shading=document.physics_scene() && document.physics_scene()->body_count()?renderer::Shading::smooth:renderer::Shading::matcap,
-                         .background=renderer::Background::gradient,.reference_grid=true,.origin_axes=true}};
+                    renderer::ViewSettings view;view.shading=renderer::Shading::scene_lit;
+                    static_cast<rendering::SceneLightingSettings&>(view.lit)=document.world().lighting_settings();
+                    const auto focus=camera.state().target;
+                    renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
+                        options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},scene.meshes,
+                        view,{},scene.lights,scene.identity,scene.revision,false,scene.environment,{focus.x,focus.y,focus.z}};
                     const auto result=graphics(renderer->render(rendered));
                     if(result.status==renderer::FrameStatus::accepted && !ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
                 } else if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the headless frame.");

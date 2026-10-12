@@ -36,6 +36,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/image_decode.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/obj_import.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/session_materials.cpp"
@@ -57,7 +58,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/control_artifacts.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace_materials.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/world_panel.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/asset_browser.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/source_editor.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_ui.cpp"
@@ -152,6 +153,9 @@ function(atelier_add_editor)
         DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_surfaces_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-surfaces "${CMAKE_BINARY_DIR}/surface-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_dialogs_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dialogs "${CMAKE_BINARY_DIR}/dialog-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_scene_lit_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --scene-lit "${PROJECT_SOURCE_DIR}/assets/examples"

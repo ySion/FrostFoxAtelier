@@ -25,11 +25,21 @@ public:
 | `ACLASS(Name = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
 | `ASTRUCT(Name = "...")` | 声明 Runtime 记录值，允许内联使用 |
 | `AENUM(Name = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t，不需要 AGENERATED_BODY |
-| `AFIELD(Name = "...", Hidden, Strong = "...")` | 声明字段；各选项按需要填写，引用形式见下文 |
+| `AFIELD(Name = "...", Label = "...", Category = "...", Hidden, Strong = "...")` | 声明字段；展示名称与分组可省略，引用形式见下文 |
 | `AFUNCTION(Name = "...")` | 声明成员方法；名称可省略，重载须使用不同的反射名称 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
 `ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden` 是无值标记。未知或重复参数直接报错。
+
+`AFIELD` 的 `Label` 和 `Category` 是可选展示文本，例如：
+
+```cpp
+AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
+```
+
+该字段仍以 `position` 查找和保存；`Label` 不改变字段名称，`Category` 不创建类型或命名空间。两项支持普通 UTF-8 字符串及 C++ 转义，允许显式空字符串；省略或为空时，由消费者回退到字段名或未分类。控制字符、重复参数和未知参数仍报错，只接受标准拼写 `Category`。
+
+生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。`.source` 生产者本轮保持空值，不增加语法。
 
 标记紧邻一个声明，可隔空白和注释；每个字段独立标记、独立声明。标记必须直接写在源码中，不再包在另一层宏内。模板、局部类、匿名命名空间和嵌套类型不在首片支持范围。前向声明可以存在，最终必须在本生成组中找到完整定义；重复标注必须一致。
 
@@ -118,6 +128,6 @@ cmake --preset release
 cmake --build --preset release --target reflection_acceptance world_acceptance
 ```
 
-[生成消费者](../acceptance/reflection/main.cpp)实际编译并调用生成方法，检查私有记录、重载别名、const/noexcept、配置宏和构析，以及 double、数学值的字段/参数/结果和 Array<double>。[调用链消费者](../acceptance/reflection/calls.cpp)覆盖 i32、枚举、三种传递方式、原生/描述型存储、JIT 双向调用、别名、错误、协程与签名更新。[命令行消费者](../acceptance/reflection/cli.ps1)检查旧输出隔离、可重现写入、include 依赖及带位置的非法输入诊断。World 验收继续覆盖实际对象图、字段/方法、GC、JIT、协程和业务生命周期。
+[生成消费者](../acceptance/reflection/main.cpp)实际编译并调用生成方法，检查私有记录、重载别名、const/noexcept、配置宏和构析，以及 double、数学值的字段/参数/结果和 Array<double>。字段展示验收覆盖原生/描述定义、空值、UTF-8 与转义、隐藏与继承、字段身份和布局，以及定义与 Runtime 销毁后的描述副本寿命。[调用链消费者](../acceptance/reflection/calls.cpp)覆盖 i32、枚举、三种传递方式、原生/描述型存储、JIT 双向调用、别名、错误、协程与签名更新。[命令行消费者](../acceptance/reflection/cli.ps1)检查展示参数生成、旧输出隔离、可重现写入、include 依赖及带位置的非法输入诊断。World 验收继续覆盖实际对象图、字段/方法、GC、JIT、协程和业务生命周期。
 
 当前生成组要求共同解析其反射基类、记录与引用目标；跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。初始 C#/ClangSharp、Attribute 路线对照见[选型记录](research/attribute-reflection-feasibility.md)。
