@@ -51,17 +51,22 @@ void scene_lit_antialiasing(Application& app,unsigned mode) {
     using Access=atelier::application::EditorAcceptanceAccess;
     const auto history=app.document().undo_count();
     const auto document=model(app.document().serialize());
-    click(app,control::scene_shading);
-    click(app,control::lit_menu);
-    click(app,control::lit_aa_menu);
-    const auto option=control::lit_aa_first+mode;
+    const auto previous=Access::scene_lit_view(app).lit.antialiasing;
+    require(bool(Access::command(app,atelier::editor::Command::show_world_settings)),"World settings did not open.");tick(app,1);
+    click(app,atelier::editor::world_control::effects_tab);
+    const auto field=atelier::editor::world_control::field(atelier::editor::ViewOption::antialiasing);
+    const auto selector=std::ranges::find(app.presented()->controls,field,&atelier::ui::ControlBox::context_target);
+    require(selector!=app.presented()->controls.end(),"World AA selector is absent.");click(app,selector->key);
+    const auto option=atelier::editor::world_control::choice(atelier::editor::ViewOption::antialiasing,mode);
     const auto* item=app.menu_frame()?app.menu_frame()->find(option):nullptr;
-    require(item && item->menu_behavior==atelier::ui::MenuBehavior::radio && item->radio_group==control::lit_aa_first,
-        "Native Scene Lit menu omitted the formal AA radio policy.");
+    require(item && item->menu_behavior==atelier::ui::MenuBehavior::radio && item->radio_group==field,
+        "World AA selector omitted the formal radio policy.");
     click(app,option);tick(app,2);
+    const bool changed=previous!=static_cast<atelier::renderer::Antialiasing>(mode);
     require(!app.menu_frame() && Access::scene_lit_view(app).lit.antialiasing==static_cast<atelier::renderer::Antialiasing>(mode) &&
-        app.document().undo_count()==history && model(app.document().serialize())==document,
-        "Native AA selection did not reach the accepted view policy independently of authored scene data/history.");
+        app.document().undo_count()==history+(changed?1:0) && (model(app.document().serialize())!=document)==changed,
+        "World AA selection did not update scene data/history exactly once.");
+    require(bool(Access::command(app,atelier::editor::Command::show_parameters)),"Parameters did not reopen.");tick(app,1);
 }
 void verify_scene_lit_window(Application& app,const std::filesystem::path& output,const std::filesystem::path& requested) {
     using Access=atelier::application::EditorAcceptanceAccess;

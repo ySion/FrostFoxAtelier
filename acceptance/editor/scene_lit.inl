@@ -254,62 +254,60 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(!take(workspace.apply_view(document,{ui::ActionKind::activate,control::guide_background,true})) &&
         workspace.view.background==renderer::Background::gradient,"Scene Lit can enable a studio gradient or destroys the stored studio preference.");
     const auto antialiasing=workspace.view.lit.antialiasing;
-    for(std::uint64_t i=0;i<6;++i) {
-        require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+i,false})),"Scene Lit effect toggle was not routed.");
-        require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+i,false})),"Repeated Scene Lit toggle was rejected.");
+    constexpr std::array effects{ViewOption::shadows,ViewOption::ddgi,ViewOption::gtao,ViewOption::sssr,ViewOption::bloom,ViewOption::ssil};
+    for(const auto effect:effects) {
+        require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(effect),false})),"Scene Lit effect toggle was not routed.");
+        require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(effect),false})),"Repeated Scene Lit toggle was rejected.");
     }
     require(!workspace.view.lit.shadows && !workspace.view.lit.ddgi && !workspace.view.lit.gtao && !workspace.view.lit.sssr &&
         !workspace.view.lit.bloom && !workspace.view.lit.ssil && workspace.view.lit.antialiasing==antialiasing,
         "Scene Lit effect toggles were coupled, changed AA policy or were non-idempotent.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+2,true})) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::gtao),true})) &&
         workspace.view.lit.gtao && !workspace.view.lit.ssil,
         "Enabling GTAO did not choose the independent occlusion policy.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+5,true})) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::ssil),true})) &&
         workspace.view.lit.ssil && !workspace.view.lit.gtao,
         "Local GI did not replace GTAO through the formal view action.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+5,false})) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::ssil),false})) &&
         !workspace.view.lit.ssil && !workspace.view.lit.gtao,
         "Disabling Local GI unexpectedly enabled GTAO.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+5,true})),
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::ssil),true})),
         "Local GI could not be enabled after disabling the shared local policy.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+2,true})) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::gtao),true})) &&
         workspace.view.lit.gtao && !workspace.view.lit.ssil,
         "GTAO did not replace Local GI through the formal view action.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_effects_first+2,false})) &&
+    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::gtao),false})) &&
         !workspace.view.lit.gtao && !workspace.view.lit.ssil && document.undo_count()>history,
         "Disabling the chosen local policy enabled another effect or changed scene history.");
     for(std::uint64_t i=0;i<4;++i) {
-        require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_aa_first+i,{}})) &&
-            take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_aa_first+i,{}})) &&
+        require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::choice(ViewOption::antialiasing,static_cast<unsigned>(i)),{}})) &&
+            take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::choice(ViewOption::antialiasing,static_cast<unsigned>(i)),{}})) &&
             workspace.view.lit.antialiasing==static_cast<renderer::Antialiasing>(i) && document.undo_count()>history,
             "World AA choices did not route through scene history.");
     }
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_exposure_first+4,{}})) && workspace.view.lit.exposure_ev==2 && document.undo_count()>history,
-        "World exposure did not enter scene history or used the wrong units.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_shadow_budget_first+2,{}})) && workspace.view.lit.shadow_light_budget==16,
-        "Shadow budget was not routed through the shared display settings.");
+    const auto set_world_number=[&](ViewOption option,double value) {
+        const auto key=world_control::field(option);
+        take(workspace.apply_view(document,{ui::ActionKind::edit_begin,key,{}}));
+        require(take(workspace.apply_view(document,{ui::ActionKind::edit_commit,key,value})),"World numeric setting was not routed.");
+    };
+    set_world_number(ViewOption::exposure_ev,2);
+    require(workspace.view.lit.exposure_ev==2 && document.undo_count()>history,"World exposure did not enter scene history or used the wrong units.");
+    set_world_number(ViewOption::shadow_light_budget,16);
+    require(workspace.view.lit.shadow_light_budget==16,"World shadow budget did not reach the renderer settings.");
     workspace.menu=ui::ContextMenuRequest{control::scene_shading,0,0,0};publish();
     const auto lit=std::ranges::find(workspace.menu_items,control::shading_scene_lit,&ui::MenuItem::key);
-    const auto options=std::ranges::find(workspace.menu_items,control::lit_menu,&ui::MenuItem::key);
     require(lit!=workspace.menu_items.end() && lit->selected && lit->behavior==ui::MenuBehavior::radio &&
-        options!=workspace.menu_items.end(),
-        "The display menu lost Scene Lit radio/effect checkbox semantics.");
-    require(std::ranges::find(options->children,static_cast<ui::ControlKey>(Command::show_world_settings),&ui::MenuItem::key)!=options->children.end(),
-        "Scene Lighting omitted its dockable configuration page.");
-    for(unsigned i=0;i<6;++i) {
-        const auto item=std::ranges::find(options->children,control::lit_effects_first+i,&ui::MenuItem::key);
-        require(item!=options->children.end() && item->behavior==ui::MenuBehavior::checkbox,
-            "A Scene Lighting effect lost its checkbox behavior.");
-    }
-    const auto aa=std::ranges::find(options->children,control::lit_aa_menu,&ui::MenuItem::key);
-    require(aa!=options->children.end() && aa->children.size()==4,
-        "Scene Lit menu omitted the four independent AA policies.");
-    for(std::size_t i=0;i<aa->children.size();++i)
-        require(aa->children[i].key==control::lit_aa_first+i && aa->children[i].behavior==ui::MenuBehavior::radio &&
-            aa->children[i].radio_group==control::lit_aa_first && aa->children[i].selected==(i==3),
-            "Scene Lit AA menu did not publish the selected policy through one radio group.");
+        std::ranges::all_of(workspace.menu_items,[](const auto& item){return item.children.empty() && item.behavior==ui::MenuBehavior::radio;}),
+        "The preview menu lost Scene Lit or retained scene authoring settings.");
+    const auto aa=workspace.lighting.menu(world_control::field(ViewOption::antialiasing),workspace.view);
+    require(aa.size()==4,"World AA selector omitted a rendering policy.");
+    for(unsigned i=0;i<aa.size();++i)
+        require(aa[i].key==world_control::choice(ViewOption::antialiasing,i) && aa[i].behavior==ui::MenuBehavior::radio &&
+            aa[i].radio_group==world_control::field(ViewOption::antialiasing) && aa[i].selected==(i==3),
+            "World AA selector did not publish its selected policy through one radio group.");
     {
     workspace.menu.reset();workspace.dock.select(world_control::tab);publish();
+    require(!has_text(L"Scene lights"),"World settings retained a per-light navigation list.");
     take(workspace.apply_ui({ui::ActionKind::activate,world_control::ddgi_tab,{}}));publish();
     require(has_text(L"Propagation") && has_text(L"World min (m)") && has_text(L"Current layout (CPU)"),
         "Lighting DSL page omitted its volume, propagation or accepted-frame layout controls.");

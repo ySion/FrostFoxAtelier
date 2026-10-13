@@ -62,7 +62,8 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
 }
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
-    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout || control.kind==ControlKind::menu_item ? style.indicator_size+6 : 0.f;
+    const float marker = control.kind == ControlKind::checkbox || control.kind == ControlKind::foldout ||
+        (control.kind==ControlKind::menu_item && control.menu_behavior!=MenuBehavior::command) ? style.indicator_size+6 : 0.f;
     const bool captioned=control.icon!=ControlIcon::none && !control.text.empty();
     const float leading=captioned && style.icon_placement==IconPlacement::leading?style.indicator_size+6:0.f;
     const float above=captioned && style.icon_placement==IconPlacement::above?style.indicator_size+2:0.f;

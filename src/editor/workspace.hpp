@@ -27,7 +27,7 @@ inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport
 inline constexpr ui::ControlKey viewport_delete_menu=855, viewport_shading_pie=856, shading_preset_first=890;
 inline constexpr ui::ControlKey viewport_axis_pie=857, viewport_cavity=858, viewport_pie=859;
 inline constexpr ui::ControlKey cavity_enabled=910, cavity_group_first=911, cavity_value_first=920;
-inline constexpr ui::ControlKey viewport_fps=904;
+inline constexpr ui::ControlKey viewport_fps=904, viewport_fly_reticle=860, viewport_hint=861;
 inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
@@ -38,11 +38,6 @@ inline constexpr ui::ControlKey scene_shading=646;
 inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_first=767;
 inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
 inline constexpr ui::ControlKey shading_scene_lit=772;
-inline constexpr ui::ControlKey lit_menu=860,lit_effects_first=861,lit_exposure_first=867,lit_exposure_menu=872;
-inline constexpr ui::ControlKey lit_shadow_budget_menu=873,lit_shadow_budget_first=874;
-inline constexpr ui::ControlKey lit_aa_menu=877,lit_aa_first=878;
-inline constexpr ui::ControlKey probe_debug_menu=940,probe_modes_menu=941,probe_modes_first=942,
-    probe_options_first=947,probe_radius_menu=951,probe_radius_first=952,probe_legend_menu=955,probe_legend_first=956;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
 inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
 inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
@@ -88,6 +83,7 @@ struct Workspace {
     Workspace& operator=(Workspace&&)=delete;
     ui::DockSpace dock;
     ViewportTool::Settings viewport_settings;
+    bool camera_flying{}; // Projection only; Application owns the navigation lifecycle.
     TransformTool viewport_mode{TransformTool::transform}; // Current operation, including a modal gesture.
     std::wstring viewport_readout; // Modal G/R/S header text; empty hides the band.
     CameraView camera_view{CameraView::perspective};

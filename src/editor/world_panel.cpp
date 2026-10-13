@@ -111,7 +111,7 @@ void WorldPanel::observe(const renderer::FrameStats& stats) {
         text[5]=value.enabled?std::format(L"{} scheduled · {} reset",value.updated,value.reset_probes):L"—";
     }
 }
-void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent,ui_language::LiveDocument& document,const renderer::ViewSettings& view,bool editable,ui_language::ItemList lights) const {
+void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent,ui_language::LiveDocument& document,const renderer::ViewSettings& view,bool editable) const {
     using namespace ui_language;namespace key=world_control;
     static const renderer::ViewSettings defaults;
     auto groups=std::make_shared<std::vector<Item>>();
@@ -180,8 +180,8 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     constexpr std::array labels{L"Placement",L"World min (m)",L"World max (m)",L"Spacing (m)",L"Resident (CPU)",L"This frame (CPU)"};
     for(std::size_t i=0;i<labels.size();++i) actual->push_back({key::root+128+i,{std::wstring(labels[i]),readouts_[slot_][i].empty()?std::wstring(L"—"):readouts_[slot_][i]}});
     std::uint32_t total{};for(const auto& item:view.lit.probe_volumes) if(item.enabled) total+=item.counts[0]*item.counts[1]*item.counts[2];
-    const std::array<InputValue,10> inputs{L"Volume "+std::to_wstring(slot_),ItemList{std::move(volume_groups)},ItemList{std::move(propagation)},ItemList{std::move(actual)},
-        std::to_wstring(total)+L" / 4096 configured probes",ItemList{std::move(lighting_groups)},ItemList{std::move(groups)},ItemList{std::move(diagnostics)},editable,std::move(lights)};
+    const std::array<InputValue,9> inputs{L"Volume "+std::to_wstring(slot_),ItemList{std::move(volume_groups)},ItemList{std::move(propagation)},ItemList{std::move(actual)},
+        std::to_wstring(total)+L" / 4096 configured probes",ItemList{std::move(lighting_groups)},ItemList{std::move(groups)},ItemList{std::move(diagnostics)},editable};
     const std::array keys{KeyBinding{"slot",key::slot},KeyBinding{"setup",key::setup},KeyBinding{"scroll",key::root+80},KeyBinding{"lighting_tab",key::lighting_tab},KeyBinding{"ddgi_tab",key::ddgi_tab},KeyBinding{"effects_tab",key::effects_tab},KeyBinding{"diagnostics_tab",key::diagnostics_tab}};
     static_cast<void>(document.append("WorldPanel",parent,keys,inputs,controls));
 }

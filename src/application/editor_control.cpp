@@ -229,7 +229,7 @@ struct EditorControl::Impl {
         using State=std::pair<std::string_view,bool>;
         return std::array{State{"document_edit",app.document_->editing()},State{"viewport_tool",app.viewport_tool_.active()},
             State{"camera_orbit",app.camera_drag_ && !app.camera_drag_->pan},State{"camera_pan",app.camera_drag_ && app.camera_drag_->pan},
-            State{"view_edit",app.workspace_.lighting.editing()},State{"menu",app.workspace_.menu.has_value()},
+            State{"camera_fly",app.camera_fly_.has_value()},State{"view_edit",app.workspace_.lighting.editing()},State{"menu",app.workspace_.menu.has_value()},
             State{"ui_pointer",ui.pointer},State{"ui_key",ui.keyboard},State{"text_draft",ui.text_draft},
             State{"ime",ui.composition},State{"clipboard",ui.clipboard},State{"ui_popup",ui.popup}};
     }

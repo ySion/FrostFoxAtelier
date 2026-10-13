@@ -69,7 +69,7 @@ ui NumericProperty(in Text title, in EditBinding edit, in bool swatch, in double
 
 ui BooleanProperty(in Text title, in bool checked, in bool enabled, in ActionBinding change) {
     ParameterRow row { text: "";
-        Checkbox toggle { text: input.title; selected: input.checked; enabled: input.enabled; action: input.change; height: 23; expand_width: true; }
+        Checkbox toggle { text: input.title; selected: input.checked; enabled: input.enabled; action: input.change; height: 26.667; expand_width: true; }
     }
 }
 
@@ -77,7 +77,7 @@ ui EnumProperty(in Text title, in Text choice, in bool enabled, in Key target) {
     // Houdini menu buttons hug their label (e.g. "Scale Rot Trans") instead of
     // spanning the row; a minimum keeps short choices clickable.
     ParameterRow row { text: input.title;
-        Combo choice { text: input.choice; context: input.target; enabled: input.enabled; height: 23; content_width: 0; min_width: 96;
+        Combo choice { text: input.choice; context: input.target; enabled: input.enabled; height: 26.667; content_width: 0; min_width: 96;
             classes: "parameter-menu"; }
     }
 }
@@ -275,7 +275,7 @@ ui ActorStructure(in Text title, in Items<ActorRow> objects, in TextEditBinding 
     Row toolbar {
         align_center: true; gap: 3; padding_left: 4; padding_right: 4; padding_top: 3; padding_bottom: 3;
         Text title { text: input.title; expand_width: true; single_line: true; }
-        Combo add { text: "Add Component"; context: input.add_component; enabled: input.editable; height: 23; content_width: 112; }
+        Combo add { text: "Add Component"; context: input.add_component; enabled: input.editable; height: 26.667; content_width: 112; classes: "parameter-menu"; }
         Button remove { icon: input.remove_icon; action: input.remove; width: 23; height: 23; classes: "browser-icon"; }
     }
     Tree tree { expand_height: true; filter: input.filter; Repeat rows { items: input.objects; } }
@@ -304,7 +304,7 @@ ui Parameters(in Text type_name, in TextEditBinding name,
         Column search { classes: "parameter-search"; collapsed: !input.has_selection || !input.search_visible;
             QueryRow query { edit: input.filter; label_width: 48; gap: 4; caption: true; }
         }
-        Row grouping { height: 26.667; padding_left: 7; padding_bottom: 0.667; classes: "section-tabs"; collapsed: !input.has_selection;
+        Row grouping { height: 26.667; padding_bottom: 0.667; classes: "section-tabs"; collapsed: !input.has_selection;
             ChoiceButton components { text: "Component"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab"; }
             ChoiceButton categories { text: "Category"; action: input.categories; selected: input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab joined"; }
         }
@@ -332,32 +332,26 @@ ui ResourceProperty(in Text title, in Text value) {
         }
     }
 }
-ui WorldLight(in Text title, in ActionBinding inspect) {
-    Button light { text: input.title; action: input.inspect; height: 23; classes: "world-light"; }
-}
 ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
               in Items<PropertyGroup> propagation, in Items<ResourceProperty> actual, in Text configured,
               in Items<PropertyGroup> lighting, in Items<PropertyGroup> effects, in Items<PropertyGroup> diagnostics,
-              in bool editable, in Items<WorldLight> lights) {
+              in bool editable) {
     state double page = 0.0d;
     state bool show_actual = true;
     Column pane { expand_height: true; panel: true; classes: "parameter-pane";
-        Row tabs { height: 26.667; padding_top: 0; padding_left: 7; padding_bottom: 0.667; classes: "section-tabs";
+        Row tabs { height: 26.667; padding_top: 0; padding_bottom: 0.667; classes: "section-tabs";
             ChoiceButton lighting_tab { text: "Lighting"; height: 26; selected: state.page == 0.0d; selection_group: node.tabs; classes: "section-tab"; on activate { state.page = 0.0d; } }
             ChoiceButton ddgi_tab { text: "DDGI"; height: 26; selected: state.page == 1.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 1.0d; } }
             ChoiceButton effects_tab { text: "Effects"; height: 26; selected: state.page == 2.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 2.0d; } }
             ChoiceButton diagnostics_tab { text: "Diagnostics"; height: 26; selected: state.page == 3.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 3.0d; } }
         }
         Row header { height: 28; align_center: true; gap: 5; padding_left: 6; padding_right: 6; collapsed: state.page != 1.0d && state.page != 3.0d;
-            Combo slot { text: input.selected_volume; height: 23; min_width: 100; classes: "parameter-menu"; }
+            Combo slot { text: input.selected_volume; height: 26.667; min_width: 100; classes: "parameter-menu"; }
             Column space { expand_width: true; }
-            Combo setup { text: "Coverage"; enabled: input.editable; height: 23; content_width: 0; min_width: 88; classes: "parameter-menu"; collapsed: state.page != 1.0d; }
+            Combo setup { text: "Coverage"; enabled: input.editable; height: 26.667; content_width: 0; min_width: 88; classes: "parameter-menu"; collapsed: state.page != 1.0d; }
         }
         List scroll { expand_height: true; gap: 7; padding_top: 5; classes: "parameter-inset parameter-list";
-            Column lighting { gap: 5; collapsed: state.page != 0.0d; Repeat lighting_settings { items: input.lighting; }
-                Text title { text: "Scene lights"; single_line: true; classes: "section"; }
-                Repeat lights { items: input.lights; }
-            }
+            Column lighting { gap: 5; collapsed: state.page != 0.0d; Repeat lighting_settings { items: input.lighting; } }
             Column ddgi { gap: 7; collapsed: state.page != 1.0d; Repeat volume { items: input.volume; } Repeat propagation { items: input.propagation; } }
             Column effects { gap: 5; collapsed: state.page != 2.0d; Repeat effect_settings { items: input.effects; } }
             Column diagnostics { gap: 5; collapsed: state.page != 3.0d;
@@ -576,7 +570,7 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
                  in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon,
                  in Text readout, in bool modal, in ActionBinding rail_snap, in Text tool_hint, in Text tool_hint_style,
-                 in bool cavity_open, in bool show_fps, in Text fps) {
+                 in bool cavity_open, in bool show_fps, in Text fps, in bool camera_flying) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -623,6 +617,9 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                     out_of_flow: true; offset_x: 12; offset_y: 10; width: 200; height: 26; classes: "viewport-mode-label"; }
                 Text fps { text: input.fps; collapsed: !input.show_fps; enabled: false; single_line: true;
                     out_of_flow: true; offset_x: 12; offset_y: 40; width: 220; classes: "viewport-fps"; }
+                Text fly_reticle { text: "+"; collapsed: !input.camera_flying; enabled: false;
+                    out_of_flow: true; anchor_x: 0.5; anchor_y: 0.5; pivot_x: 0.5; pivot_y: 0.5;
+                    width: 20; height: 20; classes: "viewport-fly-reticle"; }
                 // Houdini prints the active tool's mouse bindings on the scene's lower edge.
                 Text tool_hint { text: input.tool_hint; enabled: false; out_of_flow: true; anchor_y: 1; pivot_y: 1;
                     offset_x: 12; offset_y: -8; width: 640; height: 20; classes: input.tool_hint_style; }

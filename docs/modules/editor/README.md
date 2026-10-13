@@ -89,7 +89,8 @@ Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采�
 | Shift+D | 复制所选 Actor 及其组件并进入移动；左键或 Enter 确认，Esc/右键只取消位移、保留原位副本。复制和初次移动合为一次撤销 |
 | X | 在指针下打开删除确认项；取消不修改场景。视口始终删除 Actor，检查某个 Component 时也不会误删成单个组件 |
 | Shift+A | 在指针处打开添加菜单（Create 组命令，于 3D 游标处创建） |
-| Shift+S | 渲染模式饼菜单：左 Wireframe、右 Solid、下 MatCap、上 Scene Lit。轻按后点击，或按住、划向选项、松开 S 确认；中心死区内长按松开取消。Esc/右键取消 |
+| Z | 渲染模式饼菜单：左 Wireframe、右 Solid、下 MatCap、上 Scene Lit。轻按后点击，或按住、划向选项、松开 Z 确认；中心死区内长按松开取消。Esc/右键取消 |
+| Shift+反引号 | FPS 自由视角：鼠标看向，WASD 移动，Q/E 下降/上升，滚轮调速，Shift 加速。Enter/左键确认，Esc/右键恢复进入前的相机；显示 Fly、中心准星和操作提示 |
 | 吸附开关 / Shift+Tab | 开关移动与游标的网格吸附；步长为 0.1、0.2、0.5 或 1 米，与参考网格共用设置。移动时对齐活动 Actor 原点，保留组内偏移与被约束的坐标 |
 | Ctrl / Shift 拖动 | Ctrl 临时反转移动网格吸附开关；旋转为 15°、缩放为 0.1 倍率吸附。Shift 使用十分之一步长；键入数值仍按精确值执行 |
 | 左键单击空白或物体 | 放置 3D 游标，不修改选择或场景历史。游标是带朝向的三维坐标系：表面定位时局部 Z 对齐命中面法线，X 尽量对齐视图右方向；绘制为 Blender 4.x 样式的 16 段红白虚线圆环，四根黑色刻度沿游标自身 X/Y 轴投影，因此贴面放置时可见其倾斜。无命中时使用当前视图的构造平面，射线平行时使用穿过旧游标的视平面；关闭 Surface Cursor 后只使用平面定位，重置游标同时清除朝向 |
@@ -100,7 +101,9 @@ Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键
 
 `ViewportTool` 只持有手势，`Session` 是业务修改入口；一个手势记录一次历史，组内任一目标拒绝时恢复前一有效预览。非法或未完成的数值不能确认；Esc、右键、失焦、捕获丢失、尺寸/DPI 改变、菜单转移、文档更换都取消草稿。Ctrl+Z/Y 先结束视口草稿，再执行同一场景历史。活动变换期间拒绝保存快照与启动 World。
 
-复制沿用场景可编辑属性的同一字段规则，创建独立 Actor/Component 身份，重建组件父子、根、启用状态，复制业务属性、材质与物理配置，复用不可变网格/碰撞资源。整组选中先在脱离 World 的状态下准备，成员发布失败时回退；不复制运行期句柄、速度或外部业务引用。初次定位只允许合入刚建立且未保存的创建记录，之后的普通移动照常单独记历史。交互参照 [Blender Duplicate](https://docs.blender.org/manual/en/4.3/scene_layout/object/editing/duplicate.html) 和 [Pie Menus](https://docs.blender.org/manual/en/latest/interface/controls/buttons/menus.html)；本编辑器按项目约定将 Shift+S 用于渲染模式，吸附保留在磁铁菜单和 Shift+Tab。
+复制沿用场景可编辑属性的同一字段规则，创建独立 Actor/Component 身份，重建组件父子、根、启用状态，复制业务属性、材质与物理配置，复用不可变网格/碰撞资源。整组选中先在脱离 World 的状态下准备，成员发布失败时回退；不复制运行期句柄、速度或外部业务引用。初次定位只允许合入刚建立且未保存的创建记录，之后的普通移动照常单独记历史。交互参照 [Blender Duplicate](https://docs.blender.org/manual/en/4.3/scene_layout/object/editing/duplicate.html) 和 [Pie Menus](https://docs.blender.org/manual/en/latest/interface/controls/buttons/menus.html)；渲染模式使用 Z，吸附保留在磁铁菜单和 Shift+Tab。
+
+自由视角采用 [Blender Walk Navigation](https://docs.blender.org/manual/en/latest/editors/3dview/navigate/walk_fly.html) 的无重力移动方式。相对鼠标只在前台视口手势期间注册、隐藏并约束；失焦、捕获丢失、尺寸变化、菜单转移或文档更换时取消并释放。它复用同一 Camera，不修改 Scene、3D 游标或撤销栈；Control 在飞行期间报告 `camera_fly` 忙状态。真实原始鼠标输入由需要前台的窗口验收覆盖，后台快捷键验收不会注入桌面鼠标。
 
 视角与渲染模式饼菜单共用 DSL 的 `ViewportPie` / `PieEntry` 和稳定的根节点身份，只更新标题与条目；叠在同一接受帧内，复用菜单项模型与命令执行入口。普通列表菜单继续使用可跨窗边界的原生 PopupHost。方向选择基于接受帧的槽位，显示位置受客户区约束；边缘位置可直接点击可见项。快速划动松键在首次呈现后结算；菜单打开期间屏蔽场景输入，关闭、失焦和 surface 变化撤销模态状态。六向相机的投影、平移、拾取与游标构造平面使用同一相机基底；切换视角不进入场景历史。快捷键参照 [Blender 默认键位](https://docs.blender.org/manual/en/5.0/interface/keymap/blender_default.html)。
 
@@ -120,9 +123,9 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 ### 场景光照
 
-Scene View 的显示菜单将 `Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。`Scene Lighting` 子菜单提供 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI 开关；Antialiasing 在 Off / TAA / SMAA / SMAA T2x 中单选，默认 SMAA。Local GI 与 GTAO 互斥。Exposure 提供 −2 至 +2 EV，Shadow Budget 提供 4/8/16 盏投影灯预算。这些光照与效果参数属于 Scene 的 World 配置，保存随场景，修改进入同一场景撤销栈；显示模式、相机及诊断开关仍属于视口。实际请求超预算时，状态栏持续显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
+Scene View 的显示菜单只提供着色预览与边线模式：`Scene Lit`、Smooth、Flat、MatCap 共用互斥组。场景光照与效果参数统一在 World 页编辑，随 Scene 保存并进入同一撤销栈；显示模式、相机及诊断开关仍属于视口。Local GI 与 GTAO 互斥。实际请求超阴影预算时，状态栏显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
 
-**Window → World Settings** 或 **Scene Lighting → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics。Lighting 提供曝光、阴影及当前场景灯光列表；点击灯光进入原有组件 Parameters，不复制灯光属性。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
+**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics。Lighting 只提供全局曝光与阴影配置。具体灯光仍通过 Scene Tree / Actor Structure 选择，并在 Parameters 编辑；World 页不枚举场景灯光。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
 
 **Coverage → Fit Scene** 按当前可渲染几何的世界边界建立固定覆盖；**Scene + Follow Focus** 保留粗层场景覆盖，并用高优先级体积跟随观察目标。两者保留传播与诊断值，按一次完整 World 修改进入场景历史；重复应用不产生新历史。示例初始化可显式拟合其场景覆盖；普通场景读取自身配置，旧格式使用默认值，不继承上一场景。数值输入和拖动只更新字段草稿，提交后才通过 Session 发布 World 配置与渲染快照；取消、关闭页面和替换文档会结束未提交编辑。无效配置整体拒绝，规则与 Renderer / Control 共用。
 
@@ -161,7 +164,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 
 **Controls** 标签打开实验台；选择 **Parameters** 回到实际场景参数，也可将两者分栏同时显示。实验台使用同一个 `ui::Session`、SS、布局、输入法和 renderer，没有独立绘制循环。
 
-- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4 和 Projection 下拉样本。Position / Vector4 使用显式轴提示色线；Exposure 同时提供数值框和滑条，合法数值为 0–32、滑条显示 0–16，支持拖动、键盘细调、撤销及取消。数值与下拉共用右对齐标签列，名称位于固定的 Sample 标题行；数值字段从 23 DIP 起，共用黑色输入框、凹入边缘、轻渐变按钮；默认灰白文字、非默认数值加粗、灰色编辑边界和菜单定位；勾选使用勾号，折叠使用三角。
+- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4 和 Projection 下拉样本。Position / Vector4 使用显式轴提示色线；Exposure 同时提供数值框和滑条，合法数值为 0–32、滑条显示 0–16，支持拖动、键盘细调、撤销及取消。数值与下拉共用右对齐标签列，名称位于固定的 Sample 标题行；数值字段从 23 DIP 起，共用黑色输入框、凹入边缘、轻渐变按钮；默认灰白文字、非默认数值加粗、灰色编辑边界和菜单定位；勾选使用勾号，折叠使用三角。参数勾选项与折叠标题没有悬停或按下底色。参数下拉按钮高 26.667 DIP（150% 缩放下约 40 px），文字两侧保留 14 / 12 DIP，尾部使用单向下箭头。普通命令菜单不绘制勾选或互斥圆环，也不预留空的标记列；只有布尔项和单选项使用对应标记。
 - 右键菜单提供分量/整组默认值、复制和粘贴；Ctrl+中键直接恢复默认值，中键按住调出数值阶梯。整组恢复仍只记一次撤销，全部样本保留统一 Reset。Projection 和 Vector4 均为独立样本，不向 World 添加虚构字段。
 - Disable sample fields 检查禁用传播，Show long labels 检查换行，Transform and display 与 Color components 标题支持鼠标与 Enter/Space 折叠。
 - 分隔条由视图最小尺寸和当前工作区空间共同约束。窄面板保持字段可达，超出可用高度的样本通过同一 list 滚动。
@@ -188,14 +191,14 @@ Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单
 文本与数值共用 Unicode 字素边界、视觉光标、双向选区、横滚及本地撤销/重做。Ctrl+A/C/X/V 提供全选、复制、剪切、粘贴。存在本地事务时 Ctrl+Z/Y 只操作本地历史，即使历史耗尽也不穿透；仅聚焦无事务时进入场景历史，Ctrl+Shift+Z 同样重做。历史合组、容量和 Unicode 覆盖见 [UI 模块](../ui/README.md#共享单行编辑)。
 Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Position (m)", Category="Transform")` 提供显示名与分类；`Category` 是标准拼写。内联记录的分类向下继承，子字段的非空分类可覆盖；向量分量沿用聚合字段的标签。无标签时按字段名生成标题，无分类时归入 General。Component 模式保留根 TRS 的整组编辑与默认值恢复；Category 模式按元数据汇集属性，字段仍绑定同一 ObjectId/FieldPath，分组不改变持久身份或场景历史。Source 生成的未声明元数据保持空值，本轮没有添加 Source 注解语法。
 
-子区域使用共享 `section-tabs` / `section-tab`：26 DIP 页签、0.667 DIP 细边、未选中 #555555→#303030 渐变、选中 #4F4F4F 平面与 #3A3A3A 条带；停靠页签继续使用自己的 `dock-tab` 样式。
+子区域使用共享 `section-tabs` / `section-tab`：26 DIP 页签、0.667 DIP 细边、未选中 #555555→#303030 渐变、选中 #4F4F4F 平面与 #3A3A3A 条带。Parameters 和 World 的第一个页签从条带左边缘起排，不预留空槽；停靠页签继续使用自己的 `dock-tab` 样式。
 
 参数搜索按实际属性、类型名，以及位置/旋转/缩放行的名称与别名过滤。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。相机与变换操作见上方[视口编辑](#视口编辑)。
 调整窗口尺寸、DPI变化、失焦或外部捕获丢失都会取消当前未提交编辑。应用主动释放捕获产生的同步通知不会误取消刚进入的文本编辑。
 
 ### 独立菜单窗口
 
-菜单栏、参数右键、Projection 下拉和 Pane 菜单全部通过同一个 PopupHost，使用独立 owned HWND，主窗口保留输入焦点。F10 或 Alt+F/E/C/V/W 打开顶部菜单；打开后左右键或悬停切换菜单，上下/Home/End 导航，Enter/Space 执行，Esc/Tab 关闭并返回原焦点。快捷键列与分隔线来自同一菜单模型。窗口外点击只关闭，不执行背后的编辑器命令；视口和场景快捷键在菜单期间暂停。
+菜单栏、参数右键、Projection 下拉和 Pane 菜单全部通过同一个 PopupHost，使用独立 owned HWND，主窗口保留输入焦点。F10 或 Alt+F/E/C/V/W 打开顶部菜单；打开后左右键或悬停切换菜单，上下/Home/End 导航，Enter/Space 执行，Esc/Tab 关闭并返回原焦点。快捷键列与分隔线来自同一菜单模型。首项始终不绘制组间分隔线。菜单尺寸通过独立的 CPU 测量会话计算；勾选或可用性更新在尺寸不变时直接更新当前输入表面，保留悬停、焦点、滚动和行身份。窗口外点击只关闭，不执行背后的编辑器命令；视口和场景快捷键在菜单期间暂停。
 
 顶部菜单在未展开时不因 hover 改色；按下和展开的标题，以及展开菜单中当前指向的条目，共用 `#b36600` 橙色底面。菜单背景为 `#3a3a3a`，细框上/左为 `#949494`、下/右为 `#262626`。条目最低高 25⅓ DIP，快捷键为右对齐的灰色斜体，分隔线位于组间留白中央。PopupHost 用同一个 SS/文字测量入口计算标题与快捷键两列的宽度；短菜单不留空滚动槽，超出屏幕高度时预留实际滚动条空间。
 
@@ -264,14 +267,14 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 2026-10-07 的范围、修正及证据见[视口编辑验收记录](../../research/editor-viewport-edit-20261007.md)。
 `--viewport-edit` 另覆盖 A/Alt+A/Ctrl+I、Alt+G/R/S 单次历史、表面游标朝向、G/R/S 中键选轴、添加/饼菜单内容和框选相机距离；复制验收比较完整场景序列化结果、组件关系、物理配置和共享网格，检查组合撤销、取消、空选择和容量拒绝。窗口验收覆盖经 `WM_SYSKEYDOWN` 的 Alt 组合键与模态读数栏截图 `modal-readout.png`。
 
-`editor_shortcuts_acceptance` 先执行上述文档链，再通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Shift+S、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；GPU 截图、菜单 CPU 耗时与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
+`editor_shortcuts_acceptance` 先执行上述文档链，再通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Z、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；GPU 截图、菜单 CPU 耗时与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
 
 本轮集成的 Dev / Release 编译、World、场景/JIT、材质及原生窗口快捷键/弹窗尺寸端到端均通过；包含 FPS 开关、采样、重复设置、被动文字绘制与关闭清理。发布版完整编辑器文档链及地牢的 2332 个模型、30 张共享图集、三个场景保存重开也通过。日志为 `out/stage-{dev,release}-{world,scene,materials,shortcuts,surfaces}.log`，发布版完整链为 `out/stage-release-{documents,dungeons}.log`；FPS 截图与逐移动记录在 `out/stage-{dev,release}-shortcuts/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 `editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口且仅需一次 Present、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；`surface-evidence/surfaces.csv` 保存每次打开的提交次数、CPU 耗时与整个 step 耗时，PNG 保存拖动预览和提交后的画面。耗时包含当前机器负载，不代表输入到显示器的端到端延迟。
 
 2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门复现与验证见[渲染验收](../renderer/acceptance.md#选中边线深度一致性2026-10-11)。
 
-DDGI 整合后，同一窗口入口还实际点击 Scene Lighting → DDGI Debug → Probe Spheres 的互斥项与 Volume Bounds 的勾选项，确认显示设置生效且不写场景历史。Dev 与独立 Release 均通过，菜单截图和日志在 `out/ddgi-integration-20261011/surfaces-{dev,release}/` 及对应 `.log`。
+2026-10-11 的 DDGI 整合验收通过当时的 Scene Lighting → DDGI Debug 菜单点击 Probe Spheres 互斥项与 Volume Bounds 勾选项（当前入口已迁至 World → Diagnostics），确认显示设置生效且不写场景历史。Dev 与独立 Release 均通过，菜单截图和日志在 `out/ddgi-integration-20261011/surfaces-{dev,release}/` 及对应 `.log`。
 
 2026-10-12 相机手势与 Control 联合验收：通过真实 Application 输入及命名管道复现松手后残留 `camera_pan` 的拒绝，失败证据为 `out/camera-control-red.log`。相机状态合并后，Dev/Release 的同一入口均通过，覆盖 Shift+中键平移、中键旋转、Alt+左键旋转，以及正常松手、失焦、捕获丢失、转入菜单四种结束路径；还检查活动期间拒绝请求、非所属按键释放、迟到移动、原生捕获释放及场景历史隔离。证据在 `out/camera-control-{dev,release}.log` 和对应目录的 `surfaces.csv`。标准 `out/release/atelier_editor.exe` 已重新构建，包含 DDGI 整合与相机修复；旧进程继续使用其启动时加载的程序。
 `atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。

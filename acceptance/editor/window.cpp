@@ -25,6 +25,7 @@ struct EditorAcceptanceAccess {
     static auto focused(const Application& app) {return app.ui_.focused_control();}
     static void finish_menu_hold(Application& app) {app.menu_requested_-=std::chrono::seconds(1);}
     static bool tool_active(const Application& app) {return app.viewport_tool_.active();}
+    static bool camera_flying(const Application& app) {return app.camera_fly_.has_value();}
     static editor::Session& physics_document(Application& app) {return *app.document_;}
     static void ui_source(Application& app,const std::filesystem::path& path) {
         auto source=editor::read_file(app.workspace_.ui_source());
@@ -1063,19 +1064,19 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     const auto warm_open=app.menu_open_cpu_us();
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x,.y=y});tick(app);
     require(app.document().world().members()->size()==1 && !Access::menu_open(app),"Delete confirmation click missed its command.");
-    key('S',ui::Key::none,true);key('S',ui::Key::none,true,false,true);tick(app);
-    require(Access::menu_open(app) && app.presented()->popup==control::viewport_pie,"Tapping Shift+S did not retain its pie menu.");
+    key('Z',ui::Key::z);key('Z',ui::Key::z,false,false,true);tick(app);
+    require(Access::menu_open(app) && app.presented()->popup==control::viewport_pie,"Tapping Z did not retain its pie menu.");
     move(x-90,y);tick(app);capture(app,output/"shading-pie.png");
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x-90,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x-90,.y=y});tick(app);
     require(!Access::menu_open(app) && Access::scene_lit_view(app).wireframe==renderer::Wireframe::only,"Pie click did not select Wireframe.");
-    move(x,y);key('S',ui::Key::none,true);move(x,y+90);key('S',ui::Key::none,true,false,true);tick(app);
+    move(x,y);key('Z',ui::Key::z);move(x,y+90);key('Z',ui::Key::z,false,false,true);tick(app);
     require(!Access::menu_open(app) && Access::scene_lit_view(app).shading==renderer::Shading::matcap &&
         Access::scene_lit_view(app).wireframe==renderer::Wireframe::off,"Fast hold/swipe/release was lost before the first pie frame.");
-    move(x,y);key('S',ui::Key::none,true);tick(app);Access::finish_menu_hold(app);key('S',ui::Key::none,true,false,true);tick(app);
+    move(x,y);key('Z',ui::Key::z);tick(app);Access::finish_menu_hold(app);key('Z',ui::Key::z,false,false,true);tick(app);
     require(!Access::menu_open(app),"Held pie release in the dead zone did not cancel.");
-    key('S',ui::Key::none,true);tick(app);key(VK_ESCAPE,ui::Key::escape);tick(app);
+    key('Z',ui::Key::z);tick(app);key(VK_ESCAPE,ui::Key::escape);tick(app);
     require(!Access::menu_open(app) && !app.presented()->popup,"Pie cancellation leaked modal state.");
-    move(viewport.x+viewport.width-6,viewport.y+6);key('S',ui::Key::none,true);key('S',ui::Key::none,true,false,true);tick(app);
+    move(viewport.x+viewport.width-6,viewport.y+6);key('Z',ui::Key::z);key('Z',ui::Key::z,false,false,true);tick(app);
     const auto edge_item=app.presented()->find(control::shading_preset_first+1)->bounds;
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=edge_item.x+edge_item.width*.5f,.y=edge_item.y+edge_item.height*.5f});
     Access::input(app,{.kind=ui::EventKind::pointer_up,.x=edge_item.x+edge_item.width*.5f,.y=edge_item.y+edge_item.height*.5f});tick(app);
@@ -1098,7 +1099,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     require(bool(Access::select_actor(app,first)),"Text focus setup failed.");tick(app);
     const auto name=app.presented()->find(Access::name_control(app,first))->bounds;
     click(name.x+name.width*.5f,name.y+name.height*.5f);move(x,y);const auto text_history=app.document().undo_count();
-    key('D',ui::Key::none,true);key('X');key('S',ui::Key::none,true);tick(app);
+    key('D',ui::Key::none,true);key('X');key('Z',ui::Key::z);tick(app);
     require(!Access::menu_open(app) && !Access::tool_active(app) && app.document().undo_count()==text_history,
         "Viewport shortcuts escaped text focus.");
     Access::mark_saved(app);app.close();
@@ -1222,6 +1223,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     const auto host=await_acceptance_activation(app,output,viewport_only?"viewport":"window");
     tick(app);
     require(actors(app).empty(),"The production editor did not start with an empty scene.");
+    verify_viewport_fly(app,output);
     if (viewport_only) {
         verify_viewport_display(app,output);
         atelier::application::EditorAcceptanceAccess::mark_saved(app);

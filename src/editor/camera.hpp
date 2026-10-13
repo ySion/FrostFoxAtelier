@@ -37,6 +37,9 @@ public:
     void frame(math::Vector3 center, float radius) noexcept;
     void orbit(float logical_dx, float logical_dy) noexcept;
     void zoom(float wheel_steps) noexcept;
+    // First-person navigation retains eye position while looking; movement uses metres.
+    void look(float logical_dx, float logical_dy) noexcept;
+    void fly(math::Vector3 local_metres) noexcept;
     // Moves the target in the view plane so the grabbed point follows the pointer.
     void pan(float pixel_dx, float pixel_dy, float viewport_pixel_height) noexcept;
     math::Vector3 target() const noexcept { return target_; }

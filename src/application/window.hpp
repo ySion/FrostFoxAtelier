@@ -16,6 +16,8 @@ struct NativeEvent {
     std::wstring text;
     std::optional<ui::CompositionEvent> composition;
     std::uint32_t error{};
+    struct Motion {float x{},y{};};
+    std::optional<Motion> relative_motion;
 };
 struct NativeInputStatistics {
     std::uint64_t compositions{}, updates{}, results{}, cancellations{}, candidate_opens{}, candidate_changes{};
@@ -42,6 +44,8 @@ public:
     void cancel_close() noexcept { closing_=false; }
     float dpi_scale() const noexcept;
     void capture(bool enabled);
+    // Raw mouse ownership is bounded by capture/focus; disabling also restores the pointer.
+    bool relative_pointer(bool enabled);
     void cursor(ui::Cursor);
     ui::ClipboardResult clipboard(const ui::ClipboardRequest&);
     ui::ImeResult ime(const ui::ImeRequest&);
@@ -51,8 +55,13 @@ private:
     HWND handle_{};
     HCURSOR cursor_{}, adjustment_cursor_{};
     int cursor_size_{};
+    struct ToolCursor {ui::Cursor intent;UINT dpi;HCURSOR handle;};
+    std::vector<ToolCursor> tool_cursors_; // Owned, keyed by semantic intent and display DPI.
     bool closing_{}, releasing_capture_{};
     bool popup_{};
+    bool relative_pointer_{};
+    POINT pointer_before_{};
+    RECT clip_before_{};
     std::vector<NativeEvent> events_;
     std::exception_ptr callback_failure_;
     std::optional<ui::EditToken> input_token_;

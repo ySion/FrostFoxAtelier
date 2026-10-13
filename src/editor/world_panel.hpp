@@ -16,7 +16,7 @@ class WorldPanel {
 public:
     Result<bool> apply(const ui::Action&,renderer::ViewSettings& candidate);
     std::vector<ui::MenuItem> menu(ui::ControlKey,const renderer::ViewSettings&) const;
-    void append(std::vector<ui::Control>&,ui::ControlKey,ui_language::LiveDocument&,const renderer::ViewSettings&,bool editable,ui_language::ItemList lights) const;
+    void append(std::vector<ui::Control>&,ui::ControlKey,ui_language::LiveDocument&,const renderer::ViewSettings&,bool editable) const;
     void observe(const renderer::FrameStats&);
     void cancel() noexcept {edit_.reset();}
     bool editing() const noexcept {return edit_.has_value();}

@@ -82,7 +82,7 @@ Local GI 关闭时，若接收材质的 `base_color × (1 − metallic)` 严格�
 
 ## DDGI 空间与接收面诊断
 
-Scene Lighting → DDGI Debug 与 Control 的 `view.set` / `render.compare` 共用 `ViewOption`。全部默认关闭；设置属于视口，不创建 Actor、TLAS 实例或发光体，不写场景撤销与保存数据。
+World → Diagnostics 与 Control 的 `view.set` / `render.compare` 共用 `ViewOption`。全部默认关闭；设置属于视口，不创建 Actor、TLAS 实例或发光体，不写场景撤销与保存数据。
 
 - `probe_visualization`：`off`、`irradiance`、`state`、`update_age`、`distance`。球心读取本帧完成更新的真实 offset；辐照度读取对应八面体方向，显示 `E / π × exposure` 经 `c / (1 + c)` 映射；它是探针数据预览，不是最终表面光照。距离读取 FP32 距离矩中的方向均值，黑到白对应 0～4 倍最小探针间距。
 - `probe_volume` 显示实际滚动后的边界，`probe_relocation` 连接原格点与实际位置；四个槽位用青/黄/紫/绿区分。`probe_debug_volume=-1` 显示全部，0～3 只显示对应槽位。`probe_radius` 为最小格间距的 0.01～0.45 倍，默认 0.12；半径只影响显示，不改变采样。
@@ -111,7 +111,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 ## 显示菜单与近场策略
 
-Scene Lighting 提供 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI 六个勾选项，以及 Antialiasing、Exposure、Shadow Budget、DDGI Debug 子菜单。光照与效果编辑进入同一 World 配置和 Session 历史；诊断仅改变视口偏好。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
+World 页统一提供 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI、Antialiasing、曝光与阴影预算。光照与效果编辑进入同一 World 配置和 Session 历史；Diagnostics 仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
 
 **Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics。覆盖布局与共享传播参数随 Scene 保存；探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
 

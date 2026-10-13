@@ -4,6 +4,7 @@
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/recovery.hpp"
 #include "dungeons_roundtrip.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -59,9 +60,11 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "viewport_edit.inl"
 #include "scene_lit.inl"
 #include "material_resources.inl"
+#include "recovery.inl"
 }
 int main(int argc, char** argv) {
     try {
+        if(argc==2 && std::string_view(argv[1])=="--recovery") {verify_scene_recovery();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
@@ -85,9 +88,10 @@ int main(int argc, char** argv) {
             std::puts("Editor physics project acceptance: PASS");
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
         verify_physics_test_project();
         verify_project_document();
+        verify_scene_recovery();
         verify_textured_obj();
         verify_declarative_parameters();
         verify_object_inspection();

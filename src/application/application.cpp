@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -81,8 +82,25 @@ Application::Application(bool validation,bool activate,std::filesystem::path exa
     window_.show(activate);
 }
 Application::~Application() {
+    if(std::uncaught_exceptions()) preserve_failure("Unhandled editor failure outside the frame loop");
     try { close(); }
     catch (const std::exception& error) { std::fprintf(stderr, "Editor shutdown: %s\n", error.what()); }
+}
+void Application::preserve_failure(std::string_view reason) noexcept {
+    if(recovery_.attempted() || !document_ || closed_) return;
+    try {
+        window_.capture(false);
+        window_.cursor(ui::Cursor::arrow);
+        const auto& saved=recovery_.preserve(*document_,project_?project_->root():std::filesystem::path{},scene_path_,reason);
+        if(!saved) std::fprintf(stderr,"Scene recovery failed: %s\n",saved.error().message.c_str());
+        else if(*saved) {
+            std::fprintf(stderr,"Scene recovery saved: %s\n",editor::utf8(saved->value().scene.wstring()).c_str());
+            if(!saved->value().warning.empty()) std::fprintf(stderr,"Scene recovery warning: %s\n",saved->value().warning.c_str());
+        }
+        std::fflush(stderr);
+    } catch(const std::exception& error) {
+        std::fprintf(stderr,"Scene recovery failed: %s\n",error.what());
+    } catch(...) {std::fputs("Scene recovery failed with an unknown error\n",stderr);}
 }
 void Application::status(Result<void> result, const wchar_t* success) {
     workspace_.status = result ? success : widen(result.error().message);
@@ -565,6 +583,7 @@ void Application::sync_text_input() {
 void Application::cancel_interaction(const ui::Reply& reply) {
     // Session distinguishes native focus/capture loss from a forced UI cancellation.
     // Application-owned gestures must end for either kind before capture is released.
+    finish_camera_fly(false);camera_fly_release_.reset();
     camera_drag_.reset();
     workspace_.lighting.cancel();
     close_menu(false);
@@ -592,6 +611,7 @@ bool Application::over_viewport(float x, float y) const noexcept {
         x < viewport->bounds.x + viewport->bounds.width && y < viewport->bounds.y + viewport->bounds.height;
 }
 void Application::request_menu(const ui::ContextMenuRequest& request) {
+    finish_camera_fly(false);
     const auto* source=ui_.presented()?ui_.presented()->find(request.source):nullptr;
     if (!source || !source->enabled || !live_table_context(*ui_.presented(),request,false)) return;
     if(auto cancelled=viewport_tool_.cancel(*document_);!cancelled) {status(cancelled,L"");return;}
@@ -643,7 +663,7 @@ void Application::update_menu() {
                 pie_release_pending_=false;
                 if (pie_release_select_) {
                     ui::Event release;release.kind=ui::EventKind::key_up;
-                    pie_input(release,request.group==editor::control::viewport_axis_pie?VK_OEM_3:'S');
+                    pie_input(release,request.group==editor::control::viewport_axis_pie?VK_OEM_3:'Z');
                 }
             }
         }
@@ -668,7 +688,11 @@ void Application::update_menu() {
     for (std::size_t depth=0;depth<menu_path_.size();++depth) {
         const auto at=std::find_if(items.begin(),items.end(),[&](const auto& item){return item.key==menu_path_[depth];});
         const auto* box=parent->presented()?parent->presented()->find(menu_path_[depth]):nullptr;
-        if (at==items.end() || at->children.empty() || !at->enabled || !box) { menu_path_.resize(depth); break; }
+        if (at==items.end() || at->children.empty() || !at->enabled || !box ||
+            box->bounds.x>=box->clip.right || box->bounds.x+box->bounds.width<=box->clip.left ||
+            box->bounds.y>=box->clip.bottom || box->bounds.y+box->bounds.height<=box->clip.top) {
+            menu_path_.resize(depth); break;
+        }
         if (depth==submenus_.size()) submenus_.push_back(std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_));
         POINT corners[2]{{static_cast<LONG>(box->bounds.x),static_cast<LONG>(box->bounds.y)},
                          {static_cast<LONG>(box->bounds.x+box->bounds.width),static_cast<LONG>(box->bounds.y+box->bounds.height)}};
@@ -766,7 +790,7 @@ bool Application::pie_input(const ui::Event& input,WPARAM native_key) {
     const bool pointer=input.kind==ui::EventKind::pointer_move || input.kind==ui::EventKind::pointer_down || input.kind==ui::EventKind::pointer_up;
     if (pointer) pointer_position_={input.x,input.y};
     const bool release=input.kind==ui::EventKind::key_up &&
-        native_key==(workspace_.menu->group==editor::control::viewport_axis_pie?VK_OEM_3:'S');
+        native_key==(workspace_.menu->group==editor::control::viewport_axis_pie?VK_OEM_3:'Z');
     if (release && !pie_release_select_) {
         const auto dx=pointer_position_.x-workspace_.menu->x,dy=pointer_position_.y-workspace_.menu->y;
         pie_release_select_=dx*dx+dy*dy>324*window_.dpi_scale()*window_.dpi_scale() ||
@@ -823,8 +847,9 @@ bool Application::pie_input(const ui::Event& input,WPARAM native_key) {
 }
 void Application::native(NativeEvent message) {
     if(control_) control_->input(message.message,message.wparam);
+    if(message.relative_motion) {look_camera_fly(message.relative_motion->x,message.relative_motion->y);return;}
     if (message.message == WM_SIZE || message.message == WM_DPICHANGED) { invalidate_surface(); return; }
-    if (message.message==WM_MOVE) { close_menu(false); return; }
+    if (message.message==WM_MOVE) { finish_camera_fly(false);close_menu(false); return; }
     if (message.message==WM_CANCELMODE || (message.message==WM_ACTIVATEAPP && !message.wparam)) {
         cancel_interaction(ui_.cancel_interaction()); return;
     }
@@ -851,9 +876,16 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
         if (ui_.presented()) workspace_.dock.focus_control(ui_.focused_control(),*ui_.presented());
         cancel_interaction(reply); return;
     }
+    if(event.kind==ui::EventKind::pointer_down) camera_fly_release_.reset();
+    if(camera_fly_release_ && event.kind==ui::EventKind::pointer_up && event.button==*camera_fly_release_) {
+        camera_fly_release_.reset();return;
+    }
+    if(camera_fly_ && event.kind==ui::EventKind::key_down &&
+        (event.key==ui::Key::f10 || event.alt || (event.control && (native_key==VK_TAB || native_key=='W'))))
+        finish_camera_fly(false);
     if (menu_input(event,native_key)) return;
     if(pointer) pointer_position_={event.x,event.y};
-    if(viewport_tool_.active() && viewport_input(event,static_cast<std::uint32_t>(native_key))) return;
+    if((camera_fly_ || viewport_tool_.active()) && viewport_input(event,static_cast<std::uint32_t>(native_key))) return;
     ui::ControlKey requested_menu{};
     if (event.kind==ui::EventKind::key_down) {
         if (event.key==ui::Key::f10 && !event.shift) requested_menu=editor::control::file_menu;
@@ -927,7 +959,7 @@ void Application::update_viewport_fps(bool accepted) {
     workspace_.viewport_fps=std::format(L"{:.1f} FPS  ·  {:.1f} ms",fps_frames_/seconds,seconds*1000/fps_frames_);
     fps_start_=now;fps_frames_=0;
 }
-bool Application::step(renderer::Capture* capture) {
+bool Application::step(renderer::Capture* capture) try {
     frame_timing_ = {};
     frame_statistics_ = {};
     if (closed_) return false;
@@ -952,8 +984,10 @@ bool Application::step(renderer::Capture* capture) {
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
     if (!target.drawable) { update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    update_camera_fly();
     if (!workspace_.show_fps || !workspace_.dock.visible(editor::control::scene_tab)) update_viewport_fps(false);
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
+    workspace_.camera_flying=camera_fly_.has_value();
     workspace_.viewport_mode=viewport_tool_.displayed_tool(workspace_.viewport_settings);
     workspace_.viewport_readout=viewport_tool_.readout();
     workspace_.camera_view=camera_.view();
@@ -997,6 +1031,7 @@ bool Application::step(renderer::Capture* capture) {
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};
+    if(camera_fly_ && (!viewport || (accepted_view_ && accepted_view_->bounds!=scene_bounds))) finish_camera_fly(false);
     const bool had_viewport_gesture=viewport_tool_.active();
     if(had_viewport_gesture && accepted_view_ && accepted_view_->bounds!=scene_bounds)
         status(viewport_tool_.cancel(*document_),L"Viewport changed; edit cancelled");
@@ -1067,9 +1102,14 @@ bool Application::step(renderer::Capture* capture) {
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     return true;
+} catch(const std::exception& error) {
+    preserve_failure(error.what());throw;
+} catch(...) {
+    preserve_failure("Unknown editor frame failure");throw;
 }
 void Application::close() {
     if (closed_) return;
+    finish_camera_fly(false);
     closed_ = true;
     control_.reset();
     play_.close();

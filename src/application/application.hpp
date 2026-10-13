@@ -4,6 +4,7 @@
 #include "application/popup.hpp"
 #include "application/play_process.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/recovery.hpp"
 #include "editor/camera.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
@@ -77,6 +78,8 @@ private:
     std::unique_ptr<EditorControl> control_;
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
+    SceneRecovery recovery_;
+    void preserve_failure(std::string_view) noexcept;
     std::optional<editor::Project> project_;
     std::filesystem::path examples_workspace_; // Empty selects the current user's local application data.
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.
@@ -122,6 +125,18 @@ private:
         math::Vector2 previous;
     };
     std::optional<CameraDrag> camera_drag_;
+    struct CameraFly {
+        editor::Camera entry;
+        std::array<bool,6> movement{}; // W, S, A, D, Q, E.
+        bool fast{};
+        float speed{5}; // Metres per second, before Shift acceleration.
+        std::chrono::steady_clock::time_point previous;
+    };
+    std::optional<CameraFly> camera_fly_;
+    std::optional<ui::PointerButton> camera_fly_release_;
+    void finish_camera_fly(bool accept);
+    void update_camera_fly();
+    void look_camera_fly(float dx,float dy);
     FrameTiming frame_timing_;
     std::chrono::steady_clock::time_point fps_start_{};
     std::uint64_t fps_frames_{};

@@ -50,16 +50,12 @@ number:focus, text_edit:focus { border-color: token(field-focus); border-style: 
 number:invalid, text_edit:invalid { border-color: #ef7766; border-style: solid; }
 number:modified:enabled { color: #eeeeee; font-weight: 700; }
 text_edit:modified:enabled { color: #eeeeee; }
-checkbox { padding: 1dip 0dip; border-width: 0dip; indicator-size: 14dip; indicator-background: token(field); indicator-border-color: #3e3e3e; }
-checkbox:selected:enabled { color: #dddddd; font-weight: 600; }
-checkbox:hover:enabled { color: #dddddd; }
-checkbox:focus { indicator-border-color: #969696; }
+checkbox { background: transparent; padding: 1dip 0dip; border-width: 0dip; indicator-size: 14dip; indicator-background: token(field); indicator-border-color: #3e3e3e; }
+checkbox:selected:enabled { color: #dddddd; }
 foldout { padding: 2dip 3dip; indicator-size: 10dip; border-width: 0dip; }
 foldout.section { background: #333333; border-width: 0dip; padding: 2dip 5dip; indicator-size: 12dip; font-weight: 400; }
 foldout.section:focus { color: #dddddd; }
-foldout.section:hover:enabled { background: #4f4f4f; color: token(text); }
-foldout.section:pressed:enabled { background: #464646; color: token(text); }
-combo { indicator-size: 14dip; indicator-color: #929292; combo-indicator: arrows; }
+combo { indicator-size: 8dip; indicator-color: #929292; combo-indicator: down; }
 combo:disabled { indicator-color: #616161; }
 .parameter-list { background: #3d3d3d; }
 .parameter-page { padding: 4dip 0dip 0dip 2dip; background: #3a3a3a; }
@@ -292,7 +288,7 @@ button.source-problem:disabled { color: #dfb38b; background: #3a2e29; }
 .viewport-options { background: #2e2e2e; border-color: #030303; border-inner-color: #424242; border-width: 0.667dip; border-edges: top; }
 .viewport-option-label { padding: 0dip 3dip; text-vertical-align: center; color: #cccccc; }
 .viewport-option-divider { background: #1f1f1f; }
-combo.viewport-option-menu { padding: 0dip 8dip 0dip 10dip; combo-indicator: arrows; text-vertical-align: center; }
+combo.viewport-option-menu { padding: 0dip 8dip 0dip 10dip; combo-indicator: down; text-vertical-align: center; }
 combo.viewport-option-menu { border-width: 0.667dip; border-style: solid; }
 combo.viewport-option-menu, combo.viewport-option-menu:hover {
     background-image: linear-gradient(#555555, #424242); border-color: #1c1c1c;
@@ -324,6 +320,11 @@ button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #73
     color: #ffffff; font-size: 12dip; padding: 0dip; text-shadow-color: #000000cc;
 }
 .viewport-fps:disabled { color: #ffffff; }
+.viewport-fly-reticle {
+    color: #ffffff; font-size: 20dip; font-weight: 400; padding: 0dip;
+    text-align: center; text-vertical-align: center; text-shadow-color: #000000ee;
+}
+.viewport-fly-reticle:disabled { color: #ffffff; }
 /* Floating view pill: translucent slate fill, light hairline, inline caret. */
 combo.viewport-view-menu {
     border-style: solid;
@@ -341,4 +342,4 @@ combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background
 .viewport-tool-hint.dark-background, .viewport-tool-hint.dark-background:disabled { color: #d9d9d9; }
 .viewport-frame { background: transparent; border-width: 0.667dip; border-edges: right bottom; border-style: solid; border-color: #424242; border-inner-color: #666666; }
 .status-text { text-vertical-align: center; padding: 0dip; }
-combo.parameter-menu { padding: 0dip 8dip 0dip 10dip; }
+combo.parameter-menu { padding: 0dip 12dip 0dip 14dip; }

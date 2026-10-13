@@ -22,12 +22,62 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         pointer(ui::EventKind::pointer_move,p);pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);
         tick(app,1);
         require(app.menu_frame()!=nullptr,"Surface menu was not ready after its opening frame.");
+        const auto menu_frame=app.menu_frame();
+        const auto first=std::ranges::find(menu_frame->controls,ui::ControlKind::menu_item,&ui::ControlBox::kind);
+        const auto root=std::ranges::find(menu_frame->controls,ui::ControlKind::popup,&ui::ControlBox::kind);
+        require(first!=menu_frame->controls.end() && root!=menu_frame->controls.end() &&
+            first->bounds.y-root->bounds.y<4*menu_frame->drawing->dpi_scale,"Popup has a leading separator or empty first row.");
         if(retained) require(retained==app.menu_window(),"Alternating menu sizes replaced the native popup.");
         retained=app.menu_window();
         const auto presents=Access::menu_presents(app);
         if(run && presents!=1) ++redundant_presents;
         const auto wall=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
         report<<menu<<','<<run<<','<<presents<<','<<app.menu_open_cpu_us()<<','<<wall<<'\n';report.flush();
+        escape();tick(app,1);
+    }
+    // A retained checkbox updates its accepted row without reopening the surface.
+    {
+        const auto p=point(control::scene_guides);
+        pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);
+        const auto window=app.menu_window();
+        const auto frame=app.menu_frame();
+        const auto* row=frame->find(control::guide_grid);require(row!=nullptr,"Guide checkbox is absent.");
+        RECT menu_bounds{};require(GetWindowRect(window,&menu_bounds)!=FALSE,"Guide menu bounds are unavailable.");
+        POINT owner{};ClientToScreen(app.window(),&owner);
+        const math::Vector2 indicator{float(menu_bounds.left-owner.x)+row->bounds.x+
+            (row->style->padding.left+row->style->indicator_size*.5f)*frame->drawing->dpi_scale,
+            float(menu_bounds.top-owner.y)+row->bounds.y+row->bounds.height*.5f};
+        pointer(ui::EventKind::pointer_move,indicator);tick(app,1);
+        const auto highlight=app.menu_frame()->find(control::guide_grid)->style->background;
+        const auto revision=app.menu_frame()->drawing->surface_revision;
+        const auto incarnation=app.menu_frame()->find(control::guide_grid)->incarnation;
+        for(unsigned i=0;i<4;++i) {
+            pointer(ui::EventKind::pointer_down,indicator);pointer(ui::EventKind::pointer_up,indicator);tick(app,1);
+            const auto updated=app.menu_frame();require(updated && app.menu_window()==window,"Checkbox replaced its popup.");
+            const auto* checked=updated->find(control::guide_grid);
+            require(checked && checked->style->background==highlight && checked->incarnation==incarnation &&
+                updated->drawing->surface_revision==revision,"Checkbox rebuilt its surface or moved the highlight on its first frame.");
+            for(const auto& item:updated->controls) if(item.kind==ui::ControlKind::menu_item && item.key!=control::guide_grid)
+                require(item.style->background!=highlight,"Checkbox left an unrelated menu row highlighted.");
+        }
+        capture(app,output/"menu-retained-highlight.png");escape();tick(app,1);
+    }
+    {
+        const auto p=point(control::viewport_cavity);
+        pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);
+        const auto frame=app.menu_frame();const auto* box=frame->find(control::cavity_enabled);
+        require(box!=nullptr,"Cavity toggle is absent.");
+        RECT bounds{};GetWindowRect(app.menu_window(),&bounds);POINT owner{};ClientToScreen(app.window(),&owner);
+        const math::Vector2 at{float(bounds.left-owner.x)+box->bounds.x+(box->style->padding.left+box->style->indicator_size*.5f)*frame->drawing->dpi_scale,
+            float(bounds.top-owner.y)+box->bounds.y+box->bounds.height*.5f};
+        pointer(ui::EventKind::pointer_move,at);tick(app,1);
+        const auto revision=app.menu_frame()->drawing->surface_revision;
+        const auto highlight=app.menu_frame()->find(control::cavity_enabled)->style->background;
+        for(unsigned i=0;i<2;++i) {
+            pointer(ui::EventKind::pointer_down,at);pointer(ui::EventKind::pointer_up,at);tick(app,1);
+            const auto updated=app.menu_frame();require(updated && updated->drawing->surface_revision==revision &&
+                updated->find(control::cavity_enabled)->style->background==highlight,"Changing menu availability reset its surface or highlight.");
+        }
         escape();tick(app,1);
     }
     const auto original=app.presented()->find(control::viewport)->bounds;
@@ -102,20 +152,6 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         const auto at=centre(app,key);const math::Vector2 p{float(at.x),float(at.y)};
         pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);
     };
-    const auto debug_menu=[&] {
-        menu_click(control::scene_shading);menu_click(control::lit_menu);menu_click(control::probe_debug_menu);
-    };
-    debug_menu();menu_click(control::probe_modes_menu);
-    capture(app,output/"ddgi-probe-menu.png");
-    menu_click(control::probe_modes_first+2);
-    require(!Access::menu_open(app) && Access::scene_lit_view(app).lit.probe_visualization==renderer::ProbeVisualization::state,
-        "DDGI Probe Spheres menu did not apply its radio selection.");
-    debug_menu();capture(app,output/"ddgi-debug-menu.png");
-    menu_click(control::probe_options_first);
-    require(!Access::menu_open(app) && Access::scene_lit_view(app).lit.probe_volume!=original_lighting.probe_volume,
-        "DDGI Volume Bounds menu did not apply its checkbox.");
-    require(app.document().undo_count()==history,"DDGI display menus entered scene history.");
-    Access::scene_lit_settings(app,original_lighting);
     // Exercise camera lifetime through actual input and the public pipe. The
     // client thread owns only protocol data; Application stays on this thread.
     namespace api=atelier::control;
@@ -140,7 +176,9 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         Access::input(app,{.kind=ui::EventKind::pointer_down,.x=camera_point.x,.y=camera_point.y,
             .button=button,.shift=gesture==0,.alt=gesture==2});
         const auto busy=control_reply();
-        require(busy.at("status")=="error" && busy.at("error").at("code")=="busy","Control did not protect an active camera gesture.");
+        if(busy.at("status")!="error" || busy.at("error").at("code")!="busy")
+            throw std::runtime_error("Control lost camera gesture "+std::to_string(gesture)+"/"+std::to_string(ending)+
+                ", foreground="+std::to_string(GetForegroundWindow()==app.window())+", capture="+std::to_string(GetCapture()==app.window())+": "+busy.dump());
         const auto& reasons=busy.at("error").at("busy_reasons");
         require(std::ranges::find(reasons,gesture==0?"camera_pan":"camera_orbit")!=reasons.end() &&
             std::ranges::find(reasons,gesture==0?"camera_orbit":"camera_pan")==reasons.end(),"Control reported the wrong camera gesture.");
@@ -166,9 +204,48 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     require(bool(Access::command(app,editor::Command::show_world_settings)),"Lighting page command failed.");tick(app,1);
     capture(app,output/"world-lighting.png");
     const auto press_tab=[&](ui::ControlKey key) {const auto p=point(key);pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);};
+    const auto action_control=[&](ui::ControlKey target) {
+        const auto at=std::ranges::find(app.presented()->controls,target,&ui::ControlBox::action_target);
+        require(at!=app.presented()->controls.end(),"World action binding is absent.");return at->key;
+    };
+    {
+        const auto key=action_control(editor::world_control::field(editor::ViewOption::shadows));
+        const auto normal=*app.presented()->find(key)->style;const auto p=point(key);
+        pointer(ui::EventKind::pointer_move,p);tick(app,1);
+        const auto unchanged=[&] {
+            const auto& current=*app.presented()->find(key)->style;
+            return current.background==normal.background && current.foreground==normal.foreground && current.font==normal.font &&
+                current.indicator_background==normal.indicator_background && current.indicator_border==normal.indicator_border;
+        };
+        require(unchanged(),"Parameter checkbox acquired a hover style.");
+        pointer(ui::EventKind::pointer_down,p);tick(app,1);
+        require(unchanged(),"Parameter checkbox acquired a pressed style.");
+        pointer(ui::EventKind::pointer_up,p);tick(app,1);press_tab(key);
+    }
     press_tab(editor::world_control::effects_tab);capture(app,output/"world-effects.png");
+    const auto diagnostics_history=app.document().undo_count();
     press_tab(editor::world_control::diagnostics_tab);capture(app,output/"world-diagnostics.png");
+    const auto sphere_field=editor::world_control::field(editor::ViewOption::probe_visualization);
+    const auto sphere_selector=std::ranges::find(app.presented()->controls,sphere_field,&ui::ControlBox::context_target);
+    require(sphere_selector!=app.presented()->controls.end(),"World probe selector is absent.");
+    menu_click(sphere_selector->key);capture(app,output/"ddgi-probe-menu.png");
+    menu_click(editor::world_control::choice(editor::ViewOption::probe_visualization,2));
+    require(!Access::menu_open(app) && Access::scene_lit_view(app).lit.probe_visualization==renderer::ProbeVisualization::state,
+        "World probe selector did not apply its radio selection.");
+    menu_click(action_control(editor::world_control::field(editor::ViewOption::probe_volume)));
+    require(Access::scene_lit_view(app).lit.probe_volume!=original_lighting.probe_volume,
+        "World volume diagnostic did not apply its checkbox.");
+    require(app.document().undo_count()==diagnostics_history,"World diagnostics entered scene history.");
+    Access::scene_lit_settings(app,original_lighting);tick(app,1);
     press_tab(editor::world_control::ddgi_tab);capture(app,output/"world-ddgi.png");
+    const auto* slot_button=app.presented()->find(editor::world_control::slot);
+    require(slot_button && slot_button->style->combo_indicator==ui::ComboIndicator::down &&
+        slot_button->bounds.height/app.presented()->drawing->dpi_scale>=26.6f,"Parameter menu button lost its height or single dropdown arrow.");
+    menu_click(editor::world_control::setup);
+    require(app.menu_frame()!=nullptr,"World Coverage menu did not open.");
+    for(const auto& item:app.menu_frame()->controls) if(item.kind==ui::ControlKind::menu_item)
+        require(item.menu_behavior==ui::MenuBehavior::command && !item.radio_group,"An ordinary command was rendered as a toggle/radio choice.");
+    capture(app,output/"world-coverage-actions.png");escape();tick(app,1);
     const auto world_history=app.document().undo_count();
     const auto count=editor::world_control::field(editor::probe_volume_option(0,editor::ProbeVolumeField::count_x));
     const auto lighting_before=Access::scene_lit_view(app);
@@ -216,5 +293,5 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens\n",resized_during_drag,redundant_presents);
     require(resized_during_drag==0,"Dock dragging resized the live viewport before release.");
     require(redundant_presents==0,"Popup resize presented an obsolete canvas before its accepted frame.");
-    std::puts("Editor surfaces acceptance: PASS (single-present menus, DDGI submenu actions, Lighting DSL edits/lifetime, deferred dock geometry, resizable asset directories, camera Control lifetime, both axes, Escape/focus/capture loss, late release)");return 0;
+    std::puts("Editor surfaces acceptance: PASS (retained menu highlight/availability, no leading separator, parameter states/button metrics, World diagnostics and edits/lifetime, deferred dock geometry, resizable asset directories, camera Control lifetime, both axes, Escape/focus/capture loss, late release)");return 0;
 }

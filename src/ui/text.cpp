@@ -1,4 +1,5 @@
 #include "ui/text.hpp"
+#include "ui/icons.hpp"
 #include <Windows.h>
 #include <dwrite_3.h>
 #include <wrl/client.h>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <exception>
 #include <map>
+#include <optional>
 #include <string>
 #include <tuple>
 
@@ -245,93 +247,78 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         ++impl_->statistics.coverage_cache_hits; return found->second;
     }
     auto coverage=std::make_shared<TrackedCoverage>(impl_->accounting,pixels,pixels);
-    const auto segment=[symbol](float x,float y,float ax,float ay,float bx,float by) {
-        const auto dx=bx-ax,dy=by-ay;
-        const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
-        const auto px=x-ax-t*dx,py=y-ay-t*dy;
-        return px*px+py*py<=((symbol==Symbol::world || symbol==Symbol::mesh || symbol==Symbol::folder || symbol>=Symbol::search)?.0016f:.0064f);
-    };
-    for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
-        unsigned inside{};
-        for (unsigned sy=0;sy<4;++sy) for (unsigned sx=0;sx<4;++sx) {
-            const auto px=(static_cast<float>(x)+(static_cast<float>(sx)+.5f)/4)/static_cast<float>(pixels);
-            const auto py=(static_cast<float>(y)+(static_cast<float>(sy)+.5f)/4)/static_cast<float>(pixels);
-            const auto outline=[&](float left,float top,float right,float bottom) {
-                return px>=left && px<=right && py>=top && py<=bottom &&
-                    (px<left+.1f || px>right-.1f || py<top+.1f || py>bottom-.1f);
-            };
-            const auto ax=symbol==Symbol::forward?1-px:px;
-            const bool hit=(symbol==Symbol::back || symbol==Symbol::forward)?
-                ((ax>=.08f && ax<=.53f && std::abs(py-.5f)<(ax-.08f)*.85f) || (ax>=.5f && ax<=.92f && py>=.37f && py<=.63f)):
-                symbol==Symbol::world?(std::abs(std::hypot(px-.5f,py-.5f)-.36f)<.035f ||
-                    (std::abs(py-.5f)<.025f && std::abs(px-.5f)<.36f) ||
-                    (std::abs(std::hypot((px-.5f)*2,py-.5f)-.36f)<.035f)):
-                symbol==Symbol::folder?(segment(px,py,.12f,.28f,.40f,.28f) || segment(px,py,.40f,.28f,.5f,.38f) ||
-                    segment(px,py,.5f,.38f,.88f,.38f) || segment(px,py,.88f,.38f,.88f,.80f) ||
-                    segment(px,py,.88f,.80f,.12f,.80f) || segment(px,py,.12f,.80f,.12f,.28f)):
-                symbol==Symbol::mesh?(segment(px,py,.16f,.30f,.50f,.12f) || segment(px,py,.50f,.12f,.84f,.30f) ||
-                    segment(px,py,.16f,.30f,.50f,.49f) || segment(px,py,.50f,.49f,.84f,.30f) ||
-                    segment(px,py,.16f,.30f,.16f,.70f) || segment(px,py,.84f,.30f,.84f,.70f) ||
-                    segment(px,py,.50f,.49f,.50f,.89f) || segment(px,py,.16f,.70f,.50f,.89f) || segment(px,py,.50f,.89f,.84f,.70f)):
-                symbol==Symbol::search?(std::abs(std::hypot(px-.4f,py-.4f)-.25f)<.04f || segment(px,py,.59f,.59f,.86f,.86f)):
-                symbol==Symbol::view_list?(segment(px,py,.33f,.25f,.86f,.25f) || segment(px,py,.33f,.5f,.86f,.5f) || segment(px,py,.33f,.75f,.86f,.75f) ||
-                    (px>=.12f && px<=.22f && (std::abs(py-.25f)<.05f || std::abs(py-.5f)<.05f || std::abs(py-.75f)<.05f))):
-                symbol==Symbol::view_details?(outline(.12f,.16f,.88f,.84f) || segment(px,py,.12f,.39f,.88f,.39f) || segment(px,py,.12f,.62f,.88f,.62f) || segment(px,py,.63f,.16f,.63f,.84f)):
-                symbol==Symbol::view_tiles?(outline(.12f,.12f,.43f,.43f) || outline(.57f,.12f,.88f,.43f) || outline(.12f,.57f,.43f,.88f) || outline(.57f,.57f,.88f,.88f)):
-                symbol==Symbol::filter?(segment(px,py,.13f,.2f,.87f,.2f) || segment(px,py,.13f,.2f,.43f,.55f) || segment(px,py,.87f,.2f,.57f,.55f) ||
-                    segment(px,py,.43f,.55f,.43f,.83f) || segment(px,py,.43f,.83f,.57f,.73f) || segment(px,py,.57f,.73f,.57f,.55f)):
-                symbol==Symbol::more?(std::hypot(px-.2f,py-.5f)<.075f || std::hypot(px-.5f,py-.5f)<.075f || std::hypot(px-.8f,py-.5f)<.075f):
-                symbol==Symbol::pointer?(segment(px,py,.23f,.12f,.23f,.79f) || segment(px,py,.23f,.12f,.78f,.59f) ||
-                    segment(px,py,.23f,.79f,.44f,.59f) || segment(px,py,.44f,.59f,.78f,.59f) || segment(px,py,.47f,.64f,.61f,.9f)):
-                symbol==Symbol::translate?(segment(px,py,.5f,.1f,.5f,.9f) || segment(px,py,.1f,.5f,.9f,.5f) ||
-                    segment(px,py,.5f,.1f,.35f,.27f) || segment(px,py,.5f,.1f,.65f,.27f) ||
-                    segment(px,py,.9f,.5f,.73f,.35f) || segment(px,py,.9f,.5f,.73f,.65f) ||
-                    segment(px,py,.5f,.9f,.35f,.73f) || segment(px,py,.1f,.5f,.27f,.65f)):
-                symbol==Symbol::rotate?((std::abs(std::hypot(px-.5f,py-.5f)-.32f)<.04f && !(px>.5f && py<.35f)) ||
-                    segment(px,py,.8f,.33f,.61f,.32f) || segment(px,py,.8f,.33f,.81f,.14f)):
-                symbol==Symbol::scale?(outline(.1f,.61f,.38f,.89f) || outline(.66f,.1f,.9f,.34f) ||
-                    segment(px,py,.34f,.66f,.72f,.28f)):
-                symbol==Symbol::cursor3d?(std::abs(std::hypot(px-.5f,py-.5f)-.25f)<.04f ||
-                    segment(px,py,.5f,.07f,.5f,.93f) || segment(px,py,.07f,.5f,.93f,.5f)):
-                // Houdini-style two-tone handle icons: a small cube body plus an accent layer.
-                symbol==Symbol::translate_accent?(segment(px,py,.5f,.36f,.5f,.06f) || segment(px,py,.5f,.06f,.38f,.2f) || segment(px,py,.5f,.06f,.62f,.2f) ||
-                    segment(px,py,.36f,.62f,.08f,.78f) || segment(px,py,.08f,.78f,.25f,.82f) || segment(px,py,.08f,.78f,.15f,.64f) ||
-                    segment(px,py,.64f,.62f,.92f,.78f) || segment(px,py,.92f,.78f,.75f,.82f) || segment(px,py,.92f,.78f,.85f,.64f)):
-                symbol==Symbol::rotate_accent?((std::abs(std::hypot((px-.5f)*.8f,(py-.66f)*1.6f)-.3f)<.05f && py>.56f) ||
-                    segment(px,py,.18f,.62f,.08f,.5f) || segment(px,py,.18f,.62f,.31f,.56f)):
-                symbol==Symbol::scale_accent?(segment(px,py,.5f,.36f,.5f,.08f) || (std::abs(px-.5f)<.08f && py>=.03f && py<=.16f) ||
-                    segment(px,py,.36f,.62f,.12f,.76f) || (std::abs(px-.12f)<.08f && std::abs(py-.78f)<.08f) ||
-                    segment(px,py,.64f,.62f,.88f,.76f) || (std::abs(px-.88f)<.08f && std::abs(py-.78f)<.08f)):
-                symbol==Symbol::transform_accent?(segment(px,py,.5f,.3f,.5f,.06f) || segment(px,py,.5f,.06f,.4f,.17f) || segment(px,py,.5f,.06f,.6f,.17f) ||
-                    segment(px,py,.36f,.62f,.1f,.77f) || segment(px,py,.64f,.62f,.9f,.77f) ||
-                    (std::abs(std::hypot((px-.5f)*.8f,(py-.72f)*1.6f)-.3f)<.045f && py>.74f)):
-                // Neutral body shared by the two-tone handle icons: an isometric cube at the centre.
-                symbol==Symbol::transform?((std::abs(px-.5f)<=.17f && py>=.42f && py<=.68f) ||
-                    (py>=.3f && py<.42f && std::abs(px-.5f)<=.17f-(.42f-py)*.2f)):
-                symbol==Symbol::caret?(py>=.42f && py<=.68f && std::abs(px-.5f)<=(.68f-py)*1.15f):
-                symbol==Symbol::magnet?((py>=.5f && std::abs(std::hypot(px-.5f,py-.5f)-.28f)<.09f) ||
-                    (py>=.3f && py<=.5f && ((px>=.13f && px<=.31f) || (px>=.69f && px<=.87f)))):
-                symbol==Symbol::magnet_tips?(py>=.12f && py<.3f && ((px>=.13f && px<=.31f) || (px>=.69f && px<=.87f))):
-                (symbol==Symbol::radio || symbol==Symbol::radio_checked)?(std::abs(std::hypot(px-.5f,py-.5f)-.33f)<.04f ||
-                    (symbol==Symbol::radio_checked && std::hypot(px-.5f,py-.5f)<.15f)):
-                symbol==Symbol::object?((px>=.18f && px<=.82f && py>=.28f && py<=.75f) || (py>=.12f && py<.28f && std::abs(px-.5f)<(py-.08f)*2)):
-                symbol==Symbol::axes?(segment(px,py,.45f,.55f,.85f,.75f) || segment(px,py,.45f,.55f,.15f,.85f) || segment(px,py,.45f,.55f,.45f,.10f)):
-                symbol==Symbol::component?((px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)<.16f && (px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)>.06f):
-                symbol==Symbol::close?(segment(px,py,.2f,.2f,.8f,.8f) || segment(px,py,.8f,.2f,.2f,.8f)):
-                symbol==Symbol::plus?(segment(px,py,.2f,.5f,.8f,.5f) || segment(px,py,.5f,.2f,.5f,.8f)):
-                symbol==Symbol::maximize?(px>=.15f && px<=.85f && py>=.225f && py<=.775f && px+py<1):
-                symbol==Symbol::restore?(outline(.1f,.3f,.7f,.9f) || ((py<.3f || px>.7f) && outline(.3f,.1f,.9f,.7f))):
-                symbol==Symbol::check?
-                (segment(px,py,.17f,.53f,.40f,.77f) || segment(px,py,.40f,.77f,.85f,.23f)):
-                symbol==Symbol::disclosure_right?(px>=.2f && px<=.8f && std::abs(py-.5f)<(.8f-px)*.75f):
-                symbol==Symbol::disclosure_down?(py>=.2f && py<=.8f && std::abs(px-.5f)<(.8f-py)*.75f):
-                symbol==Symbol::left?(px>=.25f && px<=.7f && std::abs(py-.5f)<(px-.25f)*.7f):
-                symbol==Symbol::up?(py>=.25f && py<=.7f && std::abs(px-.5f)<(py-.25f)*.7f):
-                symbol==Symbol::right?(px>=.3f && px<=.75f && std::abs(py-.5f)<(.75f-px)*.7f):
-                (py>=.3f && py<=.75f && std::abs(px-.5f)<(.75f-py)*.7f);
-            inside+=hit?1u:0u;
+    const auto bundled=[symbol]() -> std::optional<Icon> {
+        switch(symbol) {
+        case Symbol::pointer:return Icon::pointer;
+        case Symbol::translate:return Icon::translate;
+        case Symbol::rotate:return Icon::rotate;
+        case Symbol::scale:return Icon::scale;
+        case Symbol::transform:return Icon::transform;
+        case Symbol::cursor3d:return Icon::cursor3d;
+        case Symbol::magnet:return Icon::magnet;
+        case Symbol::fly:return Icon::fly;
+        default:return std::nullopt;
         }
-        coverage->pixels[static_cast<std::size_t>(y)*pixels+x]=static_cast<std::uint8_t>((inside*255+8)/16);
+    }();
+    if (bundled) raster_icon(*bundled,pixels,coverage->pixels);
+    else {
+        const auto segment=[symbol](float x,float y,float ax,float ay,float bx,float by) {
+            const auto dx=bx-ax,dy=by-ay;
+            const auto t=std::clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy),0.f,1.f);
+            const auto px=x-ax-t*dx,py=y-ay-t*dy;
+            return px*px+py*py<=((symbol==Symbol::world || symbol==Symbol::mesh || symbol==Symbol::folder || symbol>=Symbol::search)?.0016f:.0064f);
+        };
+        for (std::uint32_t y=0;y<pixels;++y) for (std::uint32_t x=0;x<pixels;++x) {
+            unsigned inside{};
+            for (unsigned sy=0;sy<4;++sy) for (unsigned sx=0;sx<4;++sx) {
+                const auto px=(static_cast<float>(x)+(static_cast<float>(sx)+.5f)/4)/static_cast<float>(pixels);
+                const auto py=(static_cast<float>(y)+(static_cast<float>(sy)+.5f)/4)/static_cast<float>(pixels);
+                const auto outline=[&](float left,float top,float right,float bottom) {
+                    return px>=left && px<=right && py>=top && py<=bottom &&
+                        (px<left+.1f || px>right-.1f || py<top+.1f || py>bottom-.1f);
+                };
+                const auto ax=symbol==Symbol::forward?1-px:px;
+                const bool hit=(symbol==Symbol::back || symbol==Symbol::forward)?
+                    ((ax>=.08f && ax<=.53f && std::abs(py-.5f)<(ax-.08f)*.85f) || (ax>=.5f && ax<=.92f && py>=.37f && py<=.63f)):
+                    symbol==Symbol::world?(std::abs(std::hypot(px-.5f,py-.5f)-.36f)<.035f ||
+                        (std::abs(py-.5f)<.025f && std::abs(px-.5f)<.36f) ||
+                        (std::abs(std::hypot((px-.5f)*2,py-.5f)-.36f)<.035f)):
+                    symbol==Symbol::folder?(segment(px,py,.12f,.28f,.40f,.28f) || segment(px,py,.40f,.28f,.5f,.38f) ||
+                        segment(px,py,.5f,.38f,.88f,.38f) || segment(px,py,.88f,.38f,.88f,.80f) ||
+                        segment(px,py,.88f,.80f,.12f,.80f) || segment(px,py,.12f,.80f,.12f,.28f)):
+                    symbol==Symbol::mesh?(segment(px,py,.16f,.30f,.50f,.12f) || segment(px,py,.50f,.12f,.84f,.30f) ||
+                        segment(px,py,.16f,.30f,.50f,.49f) || segment(px,py,.50f,.49f,.84f,.30f) ||
+                        segment(px,py,.16f,.30f,.16f,.70f) || segment(px,py,.84f,.30f,.84f,.70f) ||
+                        segment(px,py,.50f,.49f,.50f,.89f) || segment(px,py,.16f,.70f,.50f,.89f) || segment(px,py,.50f,.89f,.84f,.70f)):
+                    symbol==Symbol::search?(std::abs(std::hypot(px-.4f,py-.4f)-.25f)<.04f || segment(px,py,.59f,.59f,.86f,.86f)):
+                    symbol==Symbol::view_list?(segment(px,py,.33f,.25f,.86f,.25f) || segment(px,py,.33f,.5f,.86f,.5f) || segment(px,py,.33f,.75f,.86f,.75f) ||
+                        (px>=.12f && px<=.22f && (std::abs(py-.25f)<.05f || std::abs(py-.5f)<.05f || std::abs(py-.75f)<.05f))):
+                    symbol==Symbol::view_details?(outline(.12f,.16f,.88f,.84f) || segment(px,py,.12f,.39f,.88f,.39f) || segment(px,py,.12f,.62f,.88f,.62f) || segment(px,py,.63f,.16f,.63f,.84f)):
+                    symbol==Symbol::view_tiles?(outline(.12f,.12f,.43f,.43f) || outline(.57f,.12f,.88f,.43f) || outline(.12f,.57f,.43f,.88f) || outline(.57f,.57f,.88f,.88f)):
+                    symbol==Symbol::filter?(segment(px,py,.13f,.2f,.87f,.2f) || segment(px,py,.13f,.2f,.43f,.55f) || segment(px,py,.87f,.2f,.57f,.55f) ||
+                        segment(px,py,.43f,.55f,.43f,.83f) || segment(px,py,.43f,.83f,.57f,.73f) || segment(px,py,.57f,.73f,.57f,.55f)):
+                    symbol==Symbol::more?(std::hypot(px-.2f,py-.5f)<.075f || std::hypot(px-.5f,py-.5f)<.075f || std::hypot(px-.8f,py-.5f)<.075f):
+                    symbol==Symbol::caret?(py>=.42f && py<=.68f && std::abs(px-.5f)<=(.68f-py)*1.15f):
+                    (symbol==Symbol::radio || symbol==Symbol::radio_checked)?(std::abs(std::hypot(px-.5f,py-.5f)-.33f)<.04f ||
+                        (symbol==Symbol::radio_checked && std::hypot(px-.5f,py-.5f)<.15f)):
+                    symbol==Symbol::object?((px>=.18f && px<=.82f && py>=.28f && py<=.75f) || (py>=.12f && py<.28f && std::abs(px-.5f)<(py-.08f)*2)):
+                    symbol==Symbol::component?((px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)<.16f && (px-.5f)*(px-.5f)+(py-.5f)*(py-.5f)>.06f):
+                    symbol==Symbol::close?(segment(px,py,.2f,.2f,.8f,.8f) || segment(px,py,.8f,.2f,.2f,.8f)):
+                    symbol==Symbol::plus?(segment(px,py,.2f,.5f,.8f,.5f) || segment(px,py,.5f,.2f,.5f,.8f)):
+                    symbol==Symbol::maximize?(px>=.15f && px<=.85f && py>=.225f && py<=.775f && px+py<1):
+                    symbol==Symbol::restore?(outline(.1f,.3f,.7f,.9f) || ((py<.3f || px>.7f) && outline(.3f,.1f,.9f,.7f))):
+                    symbol==Symbol::check?
+                    (segment(px,py,.17f,.53f,.40f,.77f) || segment(px,py,.40f,.77f,.85f,.23f)):
+                    symbol==Symbol::disclosure_right?(px>=.2f && px<=.8f && std::abs(py-.5f)<(.8f-px)*.75f):
+                    symbol==Symbol::disclosure_down?(py>=.2f && py<=.8f && std::abs(px-.5f)<(.8f-py)*.75f):
+                    symbol==Symbol::left?(px>=.25f && px<=.7f && std::abs(py-.5f)<(px-.25f)*.7f):
+                    symbol==Symbol::up?(py>=.25f && py<=.7f && std::abs(px-.5f)<(py-.25f)*.7f):
+                    symbol==Symbol::right?(px>=.3f && px<=.75f && std::abs(py-.5f)<(.75f-px)*.7f):
+                    (py>=.3f && py<=.75f && std::abs(px-.5f)<(.75f-py)*.7f);
+                inside+=hit?1u:0u;
+            }
+            coverage->pixels[static_cast<std::size_t>(y)*pixels+x]=static_cast<std::uint8_t>((inside*255+8)/16);
+        }
     }
     ++impl_->statistics.rasterizations; impl_->statistics.raster_bytes+=coverage->pixels.size();
     impl_->symbols.emplace(key,coverage); return coverage;

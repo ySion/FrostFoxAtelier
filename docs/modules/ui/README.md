@@ -12,7 +12,7 @@
 
 `button_behavior` 显式区分 `command`（默认、空激活负载）与 `toggle`（请求接受帧 selected 的反值）。两者共用按钮外观；toggle 不绘制 Checkbox 指示器。行为改变与动作换绑一样取消在途鼠标/键盘按压，并使旧接受帧失效。选项组继续使用 `selection_group` 的导航合同，布尔开关值、组选中项与暂时按压不混为一个状态。
 
-`MenuItem::behavior` / `Control::menu_behavior` 区分普通命令、checkbox 和 radio。`selected` 是唯一权威勾选/单选值；checkbox 请求其反值，radio 请求 true，同一 `radio_group` 至多选中一个条目。空方框/空心圆与选中标记始终可观察，hover/focus 只高亮当前菜单行。图标拥有独立槽，不替代勾选标记。菜单行为、组或目标变化会取消旧按压；关闭菜单清理打开和悬浮状态，不更改业务值。只含图标的 Combo 在右下保留下拉角标。
+`MenuItem::behavior` / `Control::menu_behavior` 区分普通命令、checkbox 和 radio。`selected` 是唯一权威勾选/单选值；checkbox 请求其反值，radio 请求 true，同一 `radio_group` 至多选中一个条目。空方框/空心圆与选中标记始终可观察，hover/focus 只高亮当前菜单行。普通命令不预留勾选/单选标记列；checkbox 与 radio 才预留对应空间。图标拥有独立槽，不替代勾选标记。菜单行为、组或目标变化会取消旧按压；关闭菜单清理打开和悬浮状态，不更改业务值。只含图标的 Combo 在右下保留下拉角标。
 
 调用顺序：
 
@@ -110,7 +110,9 @@ Asset Browser 的 List、Details、Tiles 共用 DSL `Table` / `TableBinding`、�
 
 list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrollbar-width + 2 * scrollbar-inset` 的右侧空间，子内容裁剪到该区域之前，避免滚动条盖住字段；保留空间不依赖当前是否溢出，防止出现滚动条时反复换行。`overlay` 不预留或裁剪滚动槽，溢出时滚动条覆盖内容右侧。正式菜单首次测量使用 overlay，宿主确认溢出后使用 stable，为实际滚动条留出空间。溢出时发布 `UiFrame::scrollbars`，轨道、滑块和底部双步进按钮的绘制与命中消费同一份已接受几何。滑块按可见高度/总高度计算比例，拖动保留抓取点，轨道按页、按钮按 24 DIP、滚轮按 48 DIP 滚动。范围随内容变化夹取，失焦、Esc、捕获丢失、隐藏及 Surface 变化释放滚动捕获，保留当前滚动位置，不生成业务编辑或撤销。
 
-`Reply.cursor` 未提供时保留当前指针。指针意图由已接受命中或活动手势决定，数值调整、文本、分隔、停靠移动及视口观察各用相应形态。Window 缓存原生指针并处理客户区 `WM_SETCURSOR`；数值调整使用项目自己的双向箭头，按当前 DPI 创建并管理生命周期，其他形态复用 Windows 指针。捕获期间离开原控件仍保持手势指针。
+`Reply.cursor` 未提供时保留当前指针。指针意图由已接受命中或活动手势决定，数值调整、文本、分隔、停靠移动及视口观察各用相应形态。Window 缓存原生指针并处理客户区 `WM_SETCURSOR`；数值调整使用项目自己的双向箭头，文字和分隔条复用 Windows 指针。视口平移、环绕、移动、旋转和缩放使用独立语义指针，浅色笔画带暗描边，按意图与 DPI 缓存，销毁窗口时回收。捕获期间离开原控件仍保持手势指针。
+
+视口工具图标与语义指针共用精选 [Tabler Outline](https://github.com/tabler/tabler-icons) 图形（MIT）。原始 SVG、透明 PNG、版本与许可保存在 [assets/icons](../../../assets/icons/README.md)。构建使用离线生成的压缩 alpha，继续经过 `ControlIcon → TextStore::Symbol → Coverage` 的既有缓存与主题着色；不引入运行时 SVG/PNG 解码器或另一套图标资源管理。
 
 ### 菜单与下拉
 

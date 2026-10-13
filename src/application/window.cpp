@@ -1,4 +1,5 @@
 #include "application/window.hpp"
+#include "ui/icons.hpp"
 #include <imm.h>
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,42 @@ namespace {
 constexpr wchar_t window_class[] = L"FrostFoxAtelier.Editor";
 constexpr std::size_t text_limit = 4096;
 DWORD native_error() { const auto value = GetLastError(); return value ? value : ERROR_GEN_FAILURE; }
+// The same alpha glyph serves editor chrome and native tools. Premultiplied
+// BGRA plus a dark dilation keeps light strokes readable on any scene surface.
+HCURSOR tool_cursor(ui::Icon icon,UINT dpi) {
+    const auto size=std::clamp(MulDiv(32,static_cast<int>(dpi),96),16,256);
+    const auto glyph=size*3/4,padding=(size-glyph)/2;
+    std::vector<std::uint8_t> alpha(static_cast<std::size_t>(glyph*glyph));
+    ui::raster_icon(icon,static_cast<std::uint32_t>(glyph),alpha);
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(size*size));
+    const auto sample=[&](int x,int y)->unsigned {
+        x-=padding;y-=padding;
+        return x>=0 && y>=0 && x<glyph && y<glyph?alpha[static_cast<std::size_t>(y*glyph+x)]:0;
+    };
+    const auto radius=std::max(1,MulDiv(1,static_cast<int>(dpi),96));
+    for(int y=0;y<size;++y) for(int x=0;x<size;++x) {
+        const auto ink=sample(x,y);unsigned outline{};
+        for(int dy=-radius;dy<=radius;++dy) for(int dx=-radius;dx<=radius;++dx)
+            if(dx*dx+dy*dy<=radius*radius+1) outline=std::max(outline,sample(x+dx,y+dy));
+        const auto shadow=outline*(255-ink)/255;
+        const auto opacity=ink+shadow,color=(240*ink+18*shadow)/255;
+        pixels[static_cast<std::size_t>(y*size+x)]=(opacity<<24)|(color<<16)|(color<<8)|color;
+    }
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=size;info.bmiHeader.biHeight=-size;
+    info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    const auto stride=((size+15)/16)*2;
+    std::vector<std::uint8_t> mask_bits(static_cast<std::size_t>(stride*size),0);
+    void* bits{};const auto color=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+    if(!color) return nullptr;
+    std::memcpy(bits,pixels.data(),pixels.size()*sizeof(std::uint32_t));
+    const auto mask=CreateBitmap(size,size,1,1,mask_bits.data());
+    if(!mask) {DeleteObject(color);return nullptr;}
+    ICONINFO cursor{};cursor.fIcon=FALSE;cursor.xHotspot=cursor.yHotspot=static_cast<DWORD>(size/2);
+    cursor.hbmMask=mask;cursor.hbmColor=color;
+    const auto handle=static_cast<HCURSOR>(CreateIconIndirect(&cursor));
+    DeleteObject(mask);DeleteObject(color);return handle;
+}
 struct InputContext {
     HWND window;
     HIMC context;
@@ -55,6 +92,10 @@ Window::Window(HWND popup_owner) : popup_(popup_owner!=nullptr) {
     if (!handle_) throw std::runtime_error("Cannot create editor window.");
 }
 Window::~Window() {
+    relative_pointer(false);
+    SetCursor(LoadCursorW(nullptr,IDC_ARROW));
+    for(const auto& cursor:tool_cursors_) DestroyCursor(cursor.handle);
+    tool_cursors_.clear();cursor_=LoadCursorW(nullptr,IDC_ARROW);
     if (handle_) DestroyWindow(handle_);
     if (adjustment_cursor_) {
         if (GetCursor()==adjustment_cursor_) SetCursor(LoadCursorW(nullptr,IDC_ARROW));
@@ -67,7 +108,6 @@ void Window::cursor(ui::Cursor intent) {
     else if (intent==ui::Cursor::resize_horizontal || intent==ui::Cursor::drag_horizontal) standard=IDC_SIZEWE;
     else if (intent==ui::Cursor::resize_vertical) standard=IDC_SIZENS;
     else if (intent==ui::Cursor::move) standard=IDC_SIZEALL;
-    else if (intent==ui::Cursor::pan) standard=IDC_HAND;
     else if (intent==ui::Cursor::crosshair) standard=IDC_CROSS;
     cursor_=LoadCursorW(nullptr,standard);
     if (intent==ui::Cursor::drag_horizontal) {
@@ -95,7 +135,23 @@ void Window::cursor(ui::Cursor intent) {
         }
         if (adjustment_cursor_) cursor_=adjustment_cursor_;
     }
-    SetCursor(cursor_);
+    std::optional<ui::Icon> icon;
+    if(intent==ui::Cursor::pan) icon=ui::Icon::pan;
+    else if(intent==ui::Cursor::orbit) icon=ui::Icon::orbit;
+    else if(intent==ui::Cursor::translate) icon=ui::Icon::translate;
+    else if(intent==ui::Cursor::rotate) icon=ui::Icon::rotate;
+    else if(intent==ui::Cursor::scale) icon=ui::Icon::scale;
+    if(icon) {
+        const auto dpi=GetDpiForWindow(handle_);
+        const auto found=std::ranges::find_if(tool_cursors_,[&](const auto& value){return value.intent==intent && value.dpi==dpi;});
+        if(found!=tool_cursors_.end()) cursor_=found->handle;
+        else if(const auto handle=tool_cursor(*icon,dpi)) {
+            try {tool_cursors_.push_back({intent,dpi,handle});}
+            catch(...) {DestroyCursor(handle);throw;}
+            cursor_=handle;
+        }
+    }
+    SetCursor(relative_pointer_?nullptr:cursor_);
 }
 void Window::show(bool activate) {
     if (popup_ || !activate) { ShowWindow(handle_,SW_SHOWNOACTIVATE); UpdateWindow(handle_); return; }
@@ -108,6 +164,33 @@ void Window::capture(bool enabled) {
     else if (!enabled && GetCapture() == handle_) {
         releasing_capture_ = true; ReleaseCapture(); releasing_capture_ = false;
     }
+}
+bool Window::relative_pointer(bool enabled) {
+    // Capture/ClipCursor are desktop-wide effects, never granted to a background host.
+    if(enabled && (GetForegroundWindow()!=handle_ || GetFocus()!=handle_)) return false;
+    if(enabled==relative_pointer_) return true;
+    if(enabled) {
+        RECT bounds{};POINT origin{};
+        if(!GetCursorPos(&pointer_before_) || !GetClipCursor(&clip_before_) ||
+            !GetClientRect(handle_,&bounds) || !ClientToScreen(handle_,&origin)) return false;
+        OffsetRect(&bounds,origin.x,origin.y);
+        RAWINPUTDEVICE device{1,2,0,handle_};
+        if(!RegisterRawInputDevices(&device,1,sizeof(device))) return false;
+        capture(true);
+        if(GetCapture()!=handle_ || !ClipCursor(&bounds)) {
+            device.dwFlags=RIDEV_REMOVE;device.hwndTarget=nullptr;
+            RegisterRawInputDevices(&device,1,sizeof(device));capture(false);return false;
+        }
+        relative_pointer_=true;SetCursor(nullptr);
+    } else {
+        relative_pointer_=false;
+        RAWINPUTDEVICE device{1,2,RIDEV_REMOVE,nullptr};
+        RegisterRawInputDevices(&device,1,sizeof(device));
+        ClipCursor(&clip_before_);
+        if(GetForegroundWindow()==handle_) SetCursorPos(pointer_before_.x,pointer_before_.y);
+        SetCursor(cursor_?cursor_:LoadCursorW(nullptr,IDC_ARROW));capture(false);
+    }
+    return true;
 }
 void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
     const auto drain = [&] {
@@ -176,13 +259,26 @@ LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPA
 }
 LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     if (message==WM_SETCURSOR && LOWORD(lparam)==HTCLIENT) {
-        SetCursor(cursor_?cursor_:LoadCursorW(nullptr,IDC_ARROW)); return TRUE;
+        SetCursor(relative_pointer_?nullptr:cursor_?cursor_:LoadCursorW(nullptr,IDC_ARROW)); return TRUE;
     }
     switch (message) {
-    case WM_CLOSE: input_anchor_.reset(); closing_ = true; return 0;
+    case WM_INPUT: {
+        if(relative_pointer_) {
+            RAWINPUT raw{};UINT bytes=sizeof(raw);
+            if(GetRawInputData(reinterpret_cast<HRAWINPUT>(lparam),RID_INPUT,&raw,&bytes,sizeof(RAWINPUTHEADER))!=UINT(-1) &&
+                raw.header.dwType==RIM_TYPEMOUSE && !(raw.data.mouse.usFlags&MOUSE_MOVE_ABSOLUTE)) {
+                auto record=event(message,wparam);
+                record.relative_motion=NativeEvent::Motion{float(raw.data.mouse.lLastX),float(raw.data.mouse.lLastY)};
+                events_.push_back(std::move(record));
+            }
+        }
+        return DefWindowProcW(handle_,message,wparam,lparam);
+    }
+    case WM_CLOSE: relative_pointer(false);input_anchor_.reset(); closing_ = true; return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT paint; BeginPaint(handle_, &paint); EndPaint(handle_, &paint); return 0; }
     case WM_CANCELMODE:
+        relative_pointer(false);
         // A native modal loop can suspend poll(). Release OS capture now via
         // default processing; defer business cancellation until normal delivery.
         events_.push_back(event(message, wparam, lparam));
@@ -261,12 +357,14 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         events_.push_back(std::move(value)); return 0;
     }
     case WM_KILLFOCUS:
+        relative_pointer(false);
         input_anchor_.reset();
         high_surrogate_ = 0; key_owner_.fill(0);
         events_.push_back(event(message, wparam, lparam)); return 0;
     case WM_SYSCHAR: return 0; // Menu mnemonics are handled by their key event.
     case WM_CAPTURECHANGED:
         if (releasing_capture_) return 0;
+        relative_pointer(false);
         [[fallthrough]];
     case WM_SIZE:
         input_anchor_.reset(); events_.push_back(event(message, wparam, lparam)); return 0;

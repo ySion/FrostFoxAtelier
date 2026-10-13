@@ -459,7 +459,13 @@ Result<void> ViewportTool::cancel(Session& session) {
 void ViewportTool::forget(const Session& session) noexcept {
     if(gesture_ && !session.owns_edit(gesture_->session)) {gesture_.reset();hover_=Handle::none;hint_.clear();}
 }
-ui::Cursor ViewportTool::pointer_cursor() const noexcept {return active() || hover_!=Handle::none?ui::Cursor::crosshair:ui::Cursor::arrow;}
+ui::Cursor ViewportTool::pointer_cursor() const noexcept {
+    if(marquee_) return ui::Cursor::crosshair;
+    if(gesture_) return gesture_->operation==Operation::move?ui::Cursor::translate:
+        gesture_->operation==Operation::rotate?ui::Cursor::rotate:ui::Cursor::scale;
+    if(hover_==Handle::none) return ui::Cursor::arrow;
+    return hover_>=Handle::scale_x?ui::Cursor::scale:hover_>=Handle::rotate_x?ui::Cursor::rotate:ui::Cursor::translate;
+}
 Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,const ui::Event& event,Settings settings) {
     const V2 p{event.x,event.y};
     if(event.kind==ui::EventKind::pointer_down && event.button==ui::PointerButton::secondary && (gesture_ || (marquee_ && marquee_->await_press))) {

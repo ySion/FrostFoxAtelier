@@ -28,6 +28,7 @@ public:
 private:
     Window window_;
     ui::Session ui_;
+    ui::Session measurement_;
     renderer::Renderer renderer_;
     std::vector<ui::MenuItem> items_;
     std::vector<ui::Control> controls_;
@@ -41,11 +42,13 @@ private:
     ui::ControlKey source_{};
     ui::ControlKey restore_focus_{};
     std::uint64_t revision_{};
+    std::uint64_t measurement_revision_{};
     bool visible_{}, dirty_{}, closed_{};
     double open_cpu_us_{};
     unsigned open_present_count_{};
     bool opening_{};
     float measured_dpi_{};
+    float surface_dpi_{};
     ui::PixelExtent measured_area_;
     void suspend();
     void retarget(ui::PixelExtent);

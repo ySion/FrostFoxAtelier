@@ -59,6 +59,20 @@ void Camera::orbit(float dx, float dy) noexcept {
     yaw_ += dx * .006f;
     pitch_ = std::clamp(pitch_ + dy * .006f, -1.45f, 1.45f);
 }
+void Camera::look(float dx, float dy) noexcept {
+    const auto position=eye();
+    view_=CameraView::perspective;
+    yaw_ += dx * .003f;
+    pitch_=std::clamp(pitch_+dy*.003f,-1.55f,1.55f);
+    target_ += position-eye();
+}
+void Camera::fly(math::Vector3 local) noexcept {
+    const auto forward=math::try_normalize(target_-eye());
+    if(!forward) return;
+    const auto right=math::try_normalize(math::cross(math::Vector3{0,1,0},*forward));
+    if(!right) return;
+    target_ += *right*local.x+math::Vector3{0,local.y,0}+*forward*local.z;
+}
 void Camera::zoom(float steps) noexcept { distance_ = std::clamp(distance_ * std::exp(-steps * .12f), .5f, 2000.f); }
 math::Vector3 Camera::eye() const noexcept {
     return {target_.x + distance_ * std::cos(pitch_) * std::sin(yaw_), target_.y + distance_ * std::sin(pitch_),

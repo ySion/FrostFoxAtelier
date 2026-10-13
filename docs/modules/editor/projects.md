@@ -21,6 +21,20 @@ MyGame/
 - Config 的 `startup_scene` 是打开工程时加载的场景，路径相对工程根。另存场景不隐式修改启动场景配置。
 - Source 文件由工程统一采集、编译并绑定到真实场景类型。Project 菜单提供创建组件源码、构建、重建类型、运行、停止和项目 UI 预览。
 
+## 异常退出时的场景保全
+
+Application 捕获帧循环异常（包括 Renderer 返回的终态错误）后，在 Session 释放前尝试一次保全；帧循环外的异常栈展开由析构入口兜底。正常关闭沿用原来的保存/放弃流程。
+
+未确认的参数或变换手势先取消，再使用同一个 `Session::serialize` 保存最后已提交的作者 Scene。输出为 `%LOCALAPPDATA%/FrostFoxAtelier/Recovery/<唯一标识>/Scene.scene`，日志以 `Scene recovery saved:` 报告完整路径。写入复用原子文件创建，不覆盖原场景、不标记文档已保存；重复失败不会重写快照或替换首次原因。
+
+Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原场景、失败原因、时间、未确认手势与脏材质资源名称。侧记写出失败时仍保留已经写成的 Scene，并输出警告。序列化或磁盘失败明确输出 `Scene recovery failed:`，不宣称恢复成功。
+
+这条路径不复制或解析资产，缺失 mesh 等外部资源不会阻止有效作者 Scene 的原始引用写出。它不是完整工程备份：独立材质资产、Source 文本草稿和没有持久化来源的程序化网格不在本次保全范围内；原 Scene 序列化本身拒绝的状态仍会失败。强制结束进程、访问违规或断电不能保证执行异常保全。
+
+恢复时先保留原工程及快照，将 `Scene.scene` **复制为原工程 Content/Scenes 下的新文件名**，再通过同一工程的 Open Scene 验证类型和资源；确认后再决定保存位置。不要直接覆盖原文件。
+
+独立 CPU 端到端入口：`cmake --build --preset dev --target editor_recovery_acceptance`，发布配置对应 `release`；也可直接运行 `atelier_editor_document_acceptance --recovery`。它使用真实 Session、作者场景序列化、原子文件写入和重新加载，覆盖未确认手势取消、缺失资源、幂等和 IO 失败，不创建设备或启动窗口。真实设备失效后的 Application 调用链需在 GPU 故障风险消除后复验。
+
 ## 后续方向：可响应加载与多场景文档
 
 以下为设计方向，尚未实现。当前 Application 只持有一个 Session、一条场景路径、一台 Camera 和一个已接受的视口状态；Open Scene 会同步读取文件、构建源码、反序列化对象及解析资源，再替换旧文档。停靠标签不等于独立场景，现有加载也不能保证大场景期间持续响应。

@@ -21,11 +21,11 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
     using Icon=ControlIcon; using Symbol=detail::TextStore::Symbol;
     return icon==Icon::close?Symbol::close:icon==Icon::maximize?Symbol::maximize:icon==Icon::restore?Symbol::restore:icon==Icon::plus?Symbol::plus:
         icon==Icon::back?Symbol::back:icon==Icon::forward?Symbol::forward:icon==Icon::world?Symbol::world:icon==Icon::object?Symbol::object:
-        icon==Icon::axes?Symbol::axes:icon==Icon::component?Symbol::component:icon==Icon::mesh?Symbol::mesh:icon==Icon::folder?Symbol::folder:
+        icon==Icon::axes?Symbol::transform:icon==Icon::component?Symbol::component:icon==Icon::mesh?Symbol::mesh:icon==Icon::folder?Symbol::folder:
         icon==Icon::search?Symbol::search:icon==Icon::view_list?Symbol::view_list:icon==Icon::view_details?Symbol::view_details:
         icon==Icon::view_tiles?Symbol::view_tiles:icon==Icon::filter?Symbol::filter:icon==Icon::more?Symbol::more:
         icon==Icon::pointer?Symbol::pointer:icon==Icon::translate?Symbol::translate:icon==Icon::rotate?Symbol::rotate:
-        icon==Icon::scale?Symbol::scale:icon==Icon::cursor3d?Symbol::cursor3d:icon==Icon::magnet?Symbol::magnet:
+        icon==Icon::scale?Symbol::scale:icon==Icon::cursor3d?Symbol::cursor3d:icon==Icon::magnet?Symbol::magnet:icon==Icon::fly?Symbol::fly:
         icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
 }
 bool text_kind(ControlKind kind) {
@@ -94,7 +94,7 @@ Result<void> validate_control_properties(const Control& control) {
         static_cast<unsigned>(control.button_behavior)>static_cast<unsigned>(ButtonBehavior::toggle) ||
         static_cast<unsigned>(control.menu_behavior)>static_cast<unsigned>(MenuBehavior::radio))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::magnet) ||
+    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::fly) ||
         (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
          control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item && control.kind!=ControlKind::menu_item) ||
         (control.click_action && control.kind!=ControlKind::splitter) ||
@@ -746,21 +746,6 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                             const auto stroke=std::max(1.f,std::round(scale));
                             if (size>stroke*2) quad({x+stroke,y+stroke,size-2*stroke,size-2*stroke},icon_clip,appearance.foreground,
                                 self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size-2*stroke))));
-                        } else if (appearance.indicator_background.a>0 &&
-                            (icon==Icon::translate || icon==Icon::rotate || icon==Icon::scale || icon==Icon::axes)) {
-                            // Two-tone handle tool: neutral cube body, then handles in indicator-background.
-                            using Symbol=detail::TextStore::Symbol;
-                            const auto pixels=static_cast<std::uint32_t>(std::ceil(size));
-                            const auto accent=icon==Icon::translate?Symbol::translate_accent:icon==Icon::rotate?Symbol::rotate_accent:
-                                icon==Icon::scale?Symbol::scale_accent:Symbol::transform_accent;
-                            quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(Symbol::transform,pixels));
-                            quad({x,y,size,size},icon_clip,appearance.indicator_background,self.text.symbol(accent,pixels));
-                        } else if (icon==Icon::magnet && appearance.indicator_background.a>0) {
-                            // Houdini snap magnet: accent-coloured horseshoe with neutral pole tips.
-                            using Symbol=detail::TextStore::Symbol;
-                            const auto pixels=static_cast<std::uint32_t>(std::ceil(size));
-                            quad({x,y,size,size},icon_clip,appearance.indicator_background,self.text.symbol(Symbol::magnet,pixels));
-                            quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(Symbol::magnet_tips,pixels));
                         } else quad({x,y,size,size},icon_clip,appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(symbol,static_cast<std::uint32_t>(std::ceil(size))));
                     }
                 }

@@ -65,6 +65,7 @@ bool Application::confirm_discard(bool sources) {
     return saved.has_value();
 }
 void Application::publish_document(std::unique_ptr<editor::Session> next,editor::ProjectCode* code) {
+    finish_camera_fly(false);camera_fly_release_.reset();
     if(control_) control_->document_replaced();
     const auto cancelled=viewport_tool_.cancel(*document_);if(!cancelled) throw std::runtime_error(cancelled.error().message);
     viewport_tool_.cursor={};accepted_view_.reset();

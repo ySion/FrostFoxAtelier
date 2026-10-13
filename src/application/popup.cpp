@@ -19,7 +19,7 @@ template<class T> T graphics(renderer::Result<T> result) {
     return std::move(*result);
 }
 }
-PopupHost::PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validation) : window_(owner),ui_(fonts) {
+PopupHost::PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validation) : window_(owner),ui_(fonts),measurement_(fonts) {
     renderer::Options options;
     options.validation=validation?rhi::Validation::gpu:rhi::Validation::disabled;
     options.vsync=false; // The main surface owns frame pacing.
@@ -32,8 +32,8 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
         measured_dpi_=0; // A refused projection must never reuse the old geometry for new items.
     };
     if (!component) {reject("PopupMenu is missing from the accepted UI authoring module.");return;}
-    if (visible_ && source_==source && std::ranges::equal(items,items_) && style==ui_.style() && sheet_==sheet && component_==component) return;
-    const auto previous_focus=visible_ && source_==source?ui_.focused_control():0;
+    const bool continuing=visible_ && source_==source;
+    const auto previous_focus=continuing?ui_.focused_control():0;
     const auto start=std::chrono::steady_clock::now();
     const auto monitor_handle=MonitorFromRect(&anchor,MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
@@ -52,16 +52,13 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     source_=source;
     LONG width=static_cast<LONG>(extent_.width), height=static_cast<LONG>(extent_.height);
     if (measure) {
-    suspend();
-    take(ui_.set_style(style)); take(ui_.set_style_sheet(sheet)); sheet_=std::move(sheet);
-    take(ui_.set_surface({work_area,dpi,++revision_}));
     auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(items.size());
     std::erase_if(row_keys_,[&](const auto& entry){return std::ranges::none_of(items,[&](const auto& item){return item.key==entry.first;});});
     for (const auto& item:items) {
         auto [at,inserted]=row_keys_.try_emplace(item.key,0);
         if (inserted) at->second=next_key_++;
         const bool branch=!item.children.empty();
-        rows->push_back({at->second,{item.text,branch?std::wstring{}:item.shortcut,item.enabled,item.selected,branch,item.separator_before,
+        rows->push_back({at->second,{item.text,branch?std::wstring{}:item.shortcut,item.enabled,item.selected,branch,!rows->empty() && item.separator_before,
             std::wstring(item.behavior==ui::MenuBehavior::radio?L"radio":item.behavior==ui::MenuBehavior::checkbox?L"checkbox":L"command"),item.radio_group,
             double(item.icon),double(branch?ui::ControlIcon::right:ui::ControlIcon::none),
             std::wstring(item.enabled?L"menu-shortcut":L"menu-shortcut unavailable")},{{"item",item.key}}});
@@ -77,13 +74,18 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     if (controls.empty() || controls.front().key!=500 || controls.front().kind!=ui::ControlKind::popup || controls.front().parent) {
         reject("PopupMenu requires its named root to be a standalone Popup.");return;
     }
+    // Intrinsic measurement has its own retained CPU session. A checked/enabled
+    // update must not resize the live input surface to the monitor and back.
+    take(measurement_.set_style(style));take(measurement_.set_style_sheet(sheet));
+    if(!measurement_revision_ || measured_dpi_!=dpi || measured_area_!=work_area) ++measurement_revision_;
+    take(measurement_.set_surface({work_area,dpi,measurement_revision_}));
     // Measure both text columns with the same SS/font/layout path used to draw.
     for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item)
         control.layout.width=ui_layout::Axis::content();
-    if (auto accepted=ui_.set_controls(controls);!accepted) {
+    if (auto accepted=measurement_.set_controls(controls);!accepted) {
         reject("PopupMenu controls were rejected at key "+std::to_string(accepted.error().key));return;
     }
-    const auto prepared=ui_.prepare();
+    const auto prepared=measurement_.prepare();
     if (!prepared) {reject("PopupMenu layout failed at key "+std::to_string(prepared.error().key));return;}
     const auto& measurement=*prepared;
     const auto* menu=measurement->find(500);
@@ -110,6 +112,7 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     }
     items_.assign(items.begin(),items.end());
     controls_=std::move(controls); measured_dpi_=dpi; measured_area_=work_area;
+    take(ui_.set_style(style));take(ui_.set_style_sheet(sheet));sheet_=std::move(sheet);
     instance_->commit_controls();component_=std::move(component);diagnostic_.clear();
     }
     auto x=below?anchor.left:anchor.right, y=below?anchor.bottom:anchor.top;
@@ -118,13 +121,25 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     if (!below && x+width>area.right) x=anchor.left-width;
     if (y+height>area.bottom) y=below?anchor.top-height:area.bottom-height;
     x=std::clamp(x,area.left,area.right-width); y=std::clamp(y,area.top,area.bottom-height);
-    if (!SetWindowPos(window(),HWND_TOP,x,y,width,height,SWP_NOACTIVATE)) throw std::runtime_error("Cannot size popup window.");
+    RECT previous_bounds{};
+    const bool place=!continuing || !GetWindowRect(window(),&previous_bounds) || previous_bounds.left!=x || previous_bounds.top!=y ||
+        previous_bounds.right-previous_bounds.left!=width || previous_bounds.bottom-previous_bounds.top!=height;
+    const ui::PixelExtent extent{static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)};
+    const bool resize_surface=!continuing || extent!=extent_ || dpi!=surface_dpi_;
+    // A scrolling parent can move this anchor without changing menu content.
+    // Reuse its measured extent, but still resolve placement before returning.
+    if (!measure && !place && !resize_surface) return;
+    if (place && !SetWindowPos(window(),HWND_TOP,x,y,width,height,SWP_NOACTIVATE)) throw std::runtime_error("Cannot size popup window.");
     // Match the client before showing a newly opened popup; never paint its old-sized canvas.
-    static_cast<void>(graphics(renderer_.sync_window_target()));
-    retarget({static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)});
-    restore_focus_=previous_focus;
-    window_.show(); visible_=dirty_=opening_=true;open_present_count_=0;
-    open_cpu_us_=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
+    if(place) static_cast<void>(graphics(renderer_.sync_window_target()));
+    if(resize_surface) {
+        retarget(extent);restore_focus_=previous_focus;
+    } else if(measure) take(ui_.set_controls(controls_));
+    if(!continuing) {
+        window_.show();opening_=true;open_present_count_=0;
+        open_cpu_us_=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
+    }
+    visible_=true;dirty_|=measure || resize_surface;
 }
 void PopupHost::suspend() {
     if (controls_.empty()) return;
@@ -135,7 +150,7 @@ void PopupHost::retarget(ui::PixelExtent extent) {
     suspend();
     take(ui_.set_surface({extent,window_.dpi_scale(),++revision_}));
     controls_.front().layout.collapsed=false; take(ui_.set_controls(controls_));
-    extent_=extent;
+    extent_=extent;surface_dpi_=window_.dpi_scale();
 }
 void PopupHost::render(renderer::Capture* capture) {
     if (!visible_) return;
@@ -180,7 +195,7 @@ void PopupHost::hide() {
     suspend();
 }
 void PopupHost::reset_document() {
-    hide();take(ui_.set_controls({}));controls_.clear();items_.clear();row_keys_.clear();
+    hide();take(ui_.set_controls({}));take(measurement_.set_controls({}));controls_.clear();items_.clear();row_keys_.clear();
     instance_.reset();component_.reset();diagnostic_.clear();
 }
 void PopupHost::close() {

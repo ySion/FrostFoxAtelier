@@ -54,6 +54,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/project_runner.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/application.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/recovery.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/editor_control.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/control_artifacts.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
@@ -94,6 +95,9 @@ function(atelier_add_editor)
     target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
     add_custom_target(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
+        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    add_custom_target(editor_recovery_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --recovery
         DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_material_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --materials

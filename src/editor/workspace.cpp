@@ -12,25 +12,10 @@
 
 namespace atelier::editor {
 namespace {
-struct LightingOption {std::wstring_view title;ViewOption option;};
-constexpr std::array lighting_options{
-    LightingOption{L"Shadows",ViewOption::shadows},
-    LightingOption{L"DDGI",ViewOption::ddgi},
-    LightingOption{L"GTAO",ViewOption::gtao},
-    LightingOption{L"SSSR",ViewOption::sssr},
-    LightingOption{L"Bloom",ViewOption::bloom},
-    LightingOption{L"Local GI",ViewOption::ssil}};
-constexpr std::array antialiasing_titles{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
-constexpr std::array probe_titles{L"Off",L"Irradiance",L"State",L"Update Age",L"Hit Distance"};
-constexpr std::array probe_options{
-    LightingOption{L"Volume Bounds",ViewOption::probe_volume},
-    LightingOption{L"Relocation Lines",ViewOption::probe_relocation},
-    LightingOption{L"X-Ray",ViewOption::probe_xray},
-    LightingOption{L"Receiver Coverage",ViewOption::probe_debug}};
-constexpr std::array probe_radii{.06f,.12f,.2f};
+struct CavityOption {std::wstring_view title;ViewOption option;};
 constexpr std::array cavity_options{
-    LightingOption{L"Ridge",ViewOption::cavity_ridge},LightingOption{L"Valley",ViewOption::cavity_valley},
-    LightingOption{L"Radius",ViewOption::cavity_radius}};
+    CavityOption{L"Ridge",ViewOption::cavity_ridge},CavityOption{L"Valley",ViewOption::cavity_valley},
+    CavityOption{L"Radius",ViewOption::cavity_radius}};
 constexpr std::array<std::array<double,5>,3> cavity_values{{{0,.5,1,1.5,2},{0,.5,1,1.5,2},{.5,1,2,3,4}}};
 }
 Workspace::Workspace() : dock(1ULL<<48,{
@@ -77,6 +62,7 @@ void Workspace::reset_layout() {
     dock.select(control::parameters_tab); menu.reset(); menu_bar_collapsed=shelf_collapsed=false;
 }
 void Workspace::reset_document() {
+    camera_flying=false;
     category_keys_.clear();
     lighting.cancel();
     lighting.observe(renderer::FrameStats{});
@@ -271,22 +257,6 @@ Result<bool> Workspace::apply_view(Session& session,const ui::Action& action,std
     } else if (key>=control::shading_first && key<control::shading_first+3)
         set(ViewOption::shading,double(key-control::shading_first));
     else if(key==control::shading_scene_lit) set(ViewOption::shading,double(renderer::Shading::scene_lit));
-    else if(key>=control::lit_effects_first && key<control::lit_effects_first+lighting_options.size()) {
-        const auto* checked=std::get_if<bool>(&action.value);if(!checked) return false;
-        set(lighting_options[key-control::lit_effects_first].option,*checked?1:0);
-    } else if(key>=control::lit_aa_first && key<control::lit_aa_first+antialiasing_titles.size())
-        set(ViewOption::antialiasing,double(key-control::lit_aa_first));
-    else if(key>=control::lit_exposure_first && key<control::lit_exposure_first+5)
-        set(ViewOption::exposure_ev,double(int(key-control::lit_exposure_first)-2));
-    else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
-        set(ViewOption::shadow_light_budget,double(4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first)));
-    else if(key>=control::probe_modes_first && key<control::probe_modes_first+probe_titles.size())
-        set(ViewOption::probe_visualization,double(key-control::probe_modes_first));
-    else if(key>=control::probe_options_first && key<control::probe_options_first+probe_options.size()) {
-        const auto* checked=std::get_if<bool>(&action.value);if(!checked)return false;
-        set(probe_options[key-control::probe_options_first].option,*checked?1:0);
-    } else if(key>=control::probe_radius_first && key<control::probe_radius_first+probe_radii.size())
-        set(ViewOption::probe_radius,probe_radii[key-control::probe_radius_first]);
     else if (key>=control::edges_first && key<control::edges_first+4) {
         const auto option=key-control::edges_first;
         set(ViewOption::wireframe,double(option<2?option:2));
@@ -505,11 +475,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             L"Drag a box to scale an axis, the centre for uniform scale. S then X/Y/Z constrains."};
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,37> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,38> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
-            std::wstring(mode_names[std::size_t(viewport_mode)]),double(icons[std::size_t(viewport_mode)]),
+            std::wstring(camera_flying?L"Fly":mode_names[std::size_t(viewport_mode)]),double(camera_flying?ui::ControlIcon::fly:icons[std::size_t(viewport_mode)]),
             std::wstring(viewport_mode==TransformTool::scale?L"Local axes":L"World axes"),
             std::wstring(viewport_settings.pivot==PivotMode::median?L"Selection Center":L"3D Cursor"),
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::snap_toggle)},double(ui::ControlIcon::magnet),viewport_settings.grid_snap,
@@ -517,12 +487,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},std::wstring(camera_view_name(camera_view)),
             menu && menu->source==control::viewport_camera,ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
             viewport_options_collapsed,double(ui::ControlIcon::up),double(ui::ControlIcon::down),viewport_readout,!viewport_readout.empty(),
-            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(tool_hints[std::size_t(viewport_mode)]),
+            ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(camera_flying?L"WASD move · Q/E down/up · Wheel speed · Shift fast · Enter/LMB confirm · Esc/RMB cancel":tool_hints[std::size_t(viewport_mode)]),
             std::wstring(this->view.shading==renderer::Shading::scene_lit || this->view.background==renderer::Background::none?
                 L"viewport-tool-hint dark-background":L"viewport-tool-hint"),menu && menu->source==control::viewport_cavity,
-            show_fps,viewport_fps.empty()?std::wstring(L"FPS —"):viewport_fps};
-        const std::array<ui_language::KeyBinding,16> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
-            {"fps",control::viewport_fps},
+            show_fps,viewport_fps.empty()?std::wstring(L"FPS —"):viewport_fps,camera_flying};
+        const std::array<ui_language::KeyBinding,18> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
+            {"fps",control::viewport_fps},{"fly_reticle",control::viewport_fly_reticle},{"tool_hint",control::viewport_hint},
             {"cavity",control::viewport_cavity},
             {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
             {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},
@@ -538,13 +508,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     if (view.key==control::workbench) { workbench.append(result,view.content,*ui_document_); continue; }
     if (view.key==world_control::tab) {
-        auto lights=std::make_shared<std::vector<ui_language::Item>>();
-        for(const auto& actor:members) for(const auto& component:take(world::components(runtime,actor.id()))) {
-            if(!take(runtime.is_a(take(runtime.type_of(component.id())),session.types().light_component))) continue;
-            const auto key=bind(component.id(),{},Binding::Kind::navigation);
-            lights->push_back({key,{std::wstring(session.name(actor.id())),ui_language::ActionBinding{key,!session.world().running()}}});
-        }
-        lighting.append(result,view.content,*ui_document_,this->view,!session.world().running(),ui_language::ItemList{std::move(lights)});continue;
+        lighting.append(result,view.content,*ui_document_,this->view,!session.world().running());continue;
     }
     if (view.key==control::assets_tab) {
         assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame,*ui_document_);
@@ -1023,62 +987,6 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 lit.behavior=ui::MenuBehavior::radio;lit.radio_group=control::shading_first;items.push_back(std::move(lit));
                 group(control::edges_first,edge_titles,edge_option);
                 group(control::topology_first,topology_titles,this->view.triangle_edges?1u:0u);
-                ui::MenuItem lighting{control::lit_menu,L"Scene Lighting",true,false,{},L"",true};
-                lighting.children.push_back(command_item(Command::show_world_settings));
-                for(std::size_t i=0;i<lighting_options.size();++i) {
-                    ui::MenuItem option{control::lit_effects_first+i,std::wstring(lighting_options[i].title),true,view_value(this->view,lighting_options[i].option)!=0,{}};
-                    option.behavior=ui::MenuBehavior::checkbox;lighting.children.push_back(std::move(option));
-                }
-                ui::MenuItem antialiasing{control::lit_aa_menu,L"Antialiasing",true,false,{},L"",true};
-                for(std::size_t i=0;i<antialiasing_titles.size();++i) {
-                    ui::MenuItem option{control::lit_aa_first+i,antialiasing_titles[i],true,
-                        this->view.lit.antialiasing==static_cast<renderer::Antialiasing>(i),{}};
-                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_aa_first;
-                    antialiasing.children.push_back(std::move(option));
-                }
-                lighting.children.push_back(std::move(antialiasing));
-                ui::MenuItem exposure{control::lit_exposure_menu,L"Exposure",true,false,{},L"",true};
-                for(int i=0;i<5;++i) {
-                    const auto ev=i-2;
-                    ui::MenuItem option{control::lit_exposure_first+std::uint64_t(i),(ev>0?L"+":L"")+std::to_wstring(ev)+L" EV",true,this->view.lit.exposure_ev==float(ev),{}};
-                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_exposure_first;
-                    exposure.children.push_back(std::move(option));
-                }
-                lighting.children.push_back(std::move(exposure));
-                ui::MenuItem budget{control::lit_shadow_budget_menu,L"Shadow Budget",true,false,{}};
-                for(unsigned i=0;i<3;++i) {
-                    const auto limit=4u<<i;
-                    ui::MenuItem option{control::lit_shadow_budget_first+i,std::to_wstring(limit)+L" lights",true,this->view.lit.shadow_light_budget==limit,{}};
-                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_shadow_budget_first;budget.children.push_back(std::move(option));
-                }
-                lighting.children.push_back(std::move(budget));
-                ui::MenuItem debug{control::probe_debug_menu,L"DDGI Debug",true,false,{},L"",true};
-                ui::MenuItem probes{control::probe_modes_menu,L"Probe Spheres",true,false,{}};
-                for(std::size_t i=0;i<probe_titles.size();++i) {
-                    ui::MenuItem option{control::probe_modes_first+i,probe_titles[i],true,
-                        this->view.lit.probe_visualization==static_cast<renderer::ProbeVisualization>(i),{}};
-                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::probe_modes_first;probes.children.push_back(std::move(option));
-                }
-                debug.children.push_back(std::move(probes));
-                for(std::size_t i=0;i<probe_options.size();++i) {
-                    ui::MenuItem option{control::probe_options_first+i,std::wstring(probe_options[i].title),true,view_value(this->view,probe_options[i].option)!=0,{}};
-                    option.behavior=ui::MenuBehavior::checkbox;debug.children.push_back(std::move(option));
-                }
-                ui::MenuItem radius{control::probe_radius_menu,L"Sphere Size",true,false,{}};
-                constexpr std::array sizes{L"Small",L"Medium",L"Large"};
-                for(std::size_t i=0;i<probe_radii.size();++i) {
-                    ui::MenuItem option{control::probe_radius_first+i,sizes[i],true,this->view.lit.probe_radius==probe_radii[i],{}};
-                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::probe_radius_first;radius.children.push_back(std::move(option));
-                }
-                debug.children.push_back(std::move(radius));
-                ui::MenuItem legend{control::probe_legend_menu,L"Legend",true,false,{}};
-                const std::array<std::wstring,9> hints{
-                    L"Coverage: blue = outside volume",L"Orange = pending; red = inside solid",L"Purple = no usable visible support",
-                    L"Cyan = supported, zero light",L"Green = lit; brighter = more contributors",
-                    L"Age: cyan = updated now; gray = never",L"Age: green to red = one update cycle",
-                    L"Distance: white = 4 grid spacings",L"DDGI off: gray = no current field"};
-                for(std::size_t i=0;i<hints.size();++i)legend.children.push_back({control::probe_legend_first+i,hints[i],false,false,{}});
-                debug.children.push_back(std::move(legend));lighting.children.push_back(std::move(debug));items.push_back(std::move(lighting));
             } else if(source->key==control::viewport_cavity) {
                 const bool available=this->view.shading!=renderer::Shading::scene_lit && this->view.wireframe!=renderer::Wireframe::only;
                 ui::MenuItem enabled{control::cavity_enabled,L"Screen Cavity",available,this->view.cavity.enabled,{}};

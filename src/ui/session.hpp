@@ -276,7 +276,7 @@ template<class T> using Result = std::expected<T, Error>;
 // tree references, table contents or solve layout; Session remains the complete batch boundary.
 Result<void> validate_control_properties(const Control&);
 enum class Capture { unchanged, acquire, release };
-enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan, crosshair };
+enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan, crosshair, orbit, translate, rotate, scale };
 struct Reply {
     bool consumed{}, redraw{};
     Capture capture{Capture::unchanged};
