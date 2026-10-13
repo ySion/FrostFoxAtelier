@@ -343,3 +343,4 @@ combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background
 .viewport-frame { background: transparent; border-width: 0.667dip; border-edges: right bottom; border-style: solid; border-color: #424242; border-inner-color: #666666; }
 .status-text { text-vertical-align: center; padding: 0dip; }
 combo.parameter-menu { padding: 0dip 12dip 0dip 14dip; }
+.status-facts { color: #8a8a8a; }

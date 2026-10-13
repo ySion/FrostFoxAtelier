@@ -6,6 +6,7 @@ namespace atelier::ui {
 
 enum class VectorAxis { none, x, y, z, w };
 inline constexpr float single_line_height=23;
+inline constexpr float scalar_field_width=140; // One tuple column in a default-width Parameters pane.
 inline constexpr float stow_rail_width=12, stow_collapsed_height=12, stow_arrow_region_height=12;
 // Shared number/text editor geometry. Content may grow for larger fonts.
 ui_layout::NodeInput single_line_layout(float width=0);

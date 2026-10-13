@@ -25,7 +25,8 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
         icon==Icon::search?Symbol::search:icon==Icon::view_list?Symbol::view_list:icon==Icon::view_details?Symbol::view_details:
         icon==Icon::view_tiles?Symbol::view_tiles:icon==Icon::filter?Symbol::filter:icon==Icon::more?Symbol::more:
         icon==Icon::pointer?Symbol::pointer:icon==Icon::translate?Symbol::translate:icon==Icon::rotate?Symbol::rotate:
-        icon==Icon::scale?Symbol::scale:icon==Icon::cursor3d?Symbol::cursor3d:icon==Icon::magnet?Symbol::magnet:icon==Icon::fly?Symbol::fly:
+        icon==Icon::scale?Symbol::scale:icon==Icon::cursor3d?Symbol::cursor3d:icon==Icon::magnet?Symbol::magnet:icon==Icon::fly?Symbol::fly:icon==Icon::point_light?Symbol::point_light:icon==Icon::area_light?Symbol::area_light:
+        icon==Icon::sun_light?Symbol::sun_light:icon==Icon::sky_light?Symbol::sky_light:
         icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
 }
 bool text_kind(ControlKind kind) {
@@ -94,7 +95,7 @@ Result<void> validate_control_properties(const Control& control) {
         static_cast<unsigned>(control.button_behavior)>static_cast<unsigned>(ButtonBehavior::toggle) ||
         static_cast<unsigned>(control.menu_behavior)>static_cast<unsigned>(MenuBehavior::radio))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::fly) ||
+    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::sky_light) ||
         (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
          control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item && control.kind!=ControlKind::menu_item) ||
         (control.click_action && control.kind!=ControlKind::splitter) ||

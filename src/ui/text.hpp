@@ -50,7 +50,7 @@ public:
     ~TextStore();
     std::uint64_t set(TextKey key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left, bool ellipsis = false);
     enum class Symbol { check, right, down, close, maximize, restore, left, up, plus, back, forward, world, disclosure_right, disclosure_down, object, component, mesh, folder, search, view_list, view_details, view_tiles, filter, more, radio, radio_checked, pointer, translate, rotate, scale, cursor3d, magnet, caret,
-        transform, fly };
+        transform, fly, point_light, area_light, sun_light, sky_light };
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);
     std::uint64_t provider_revision() const noexcept;
     void set_provider_revision(std::uint64_t) noexcept;

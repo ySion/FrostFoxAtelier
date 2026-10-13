@@ -57,6 +57,9 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
         constexpr std::array axis_classes{"","axis-x","axis-y","axis-z","axis-w"};
         if (field.axis!=VectorAxis::none) number.classes.push_back(axis_classes.at(static_cast<std::size_t>(field.axis)));
         if (field.slider) number.layout.width=ui_layout::Axis::fixed(72);
+        // Houdini: a lone scalar is one tuple column wide (about a third of the
+        // body), never a row-wide strip; tuples and slider pairs keep expanding.
+        else if (fields.size()==1) number.layout.width=ui_layout::Axis::flex(ui_layout::Basis::fixed(scalar_field_width),0,1,field_minimum);
         controls.push_back(std::move(number));
         if (field.slider) {
             Control slider;

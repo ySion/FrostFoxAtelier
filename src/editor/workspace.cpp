@@ -294,6 +294,28 @@ Result<void> Workspace::set_view_settings(Session& session,const renderer::ViewS
 namespace {
 // Houdini-style parameter label from a reflected field path: "material.base_color"
 // becomes "Base Color". The path still identifies the field; only the caption changes.
+ui::ControlIcon light_icon(world::LightKind kind) {
+    switch(kind) {
+    case world::LightKind::point:return ui::ControlIcon::point_light;
+    case world::LightKind::rectangle:return ui::ControlIcon::area_light;
+    case world::LightKind::directional:return ui::ControlIcon::sun_light;
+    case world::LightKind::sky:return ui::ControlIcon::sky_light;
+    }
+    return ui::ControlIcon::point_light;
+}
+// One glyph per Actor, as Houdini's network/tree icons: the type is carried by
+// the icon so rows can show only the name.
+ui::ControlIcon actor_icon(const Session& session,ObjectId actor) {
+    auto& runtime=session.world().runtime();
+    const auto state=world::inspect_actor(runtime,actor);
+    if(state && runtime.is_a(state->type,session.types().static_mesh_actor).value_or(false)) return ui::ControlIcon::mesh;
+    if(const auto parts=world::components(runtime,actor)) for(const auto& part:*parts) {
+        const auto type=runtime.type_of(part.id());
+        if(type && runtime.is_a(*type,session.types().light_component).value_or(false))
+            if(const auto light=world::read_light(runtime,part.id())) return light_icon(light->kind);
+    }
+    return ui::ControlIcon::object;
+}
 std::wstring parameter_label(std::string_view path) {
     if(const auto dot=path.rfind('.');dot!=path.npos) path=path.substr(dot+1);
     std::wstring label;bool start=true;
@@ -384,10 +406,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     auto menus=std::make_shared<std::vector<ui_language::Item>>();
     for (const auto& group:command_groups)
         menus->push_back({group.key,{std::wstring(group.title),menu && menu->source==group.key,group.key}});
-    const std::array<ui_language::InputValue,9> shell_inputs{menu_bar_collapsed,ui_language::ItemList{std::move(menus)},
-        status_text+L"  |  "+std::to_wstring(members.size())+L" Actors",ui_language::ActionBinding{control::menu_bar_handle},
+    // Houdini status line: the message, then muted scene facts separated by space, not a rule.
+    const std::array<ui_language::InputValue,10> shell_inputs{menu_bar_collapsed,ui_language::ItemList{std::move(menus)},
+        status_text,ui_language::ActionBinding{control::menu_bar_handle},
         double(ui::stow_rail_width),double(ui::stow_collapsed_height),double(ui::stow_arrow_region_height),
-        double(ui::ControlIcon::up),double(ui::ControlIcon::down)};
+        double(ui::ControlIcon::up),double(ui::ControlIcon::down),
+        std::to_wstring(members.size())+(members.size()==1?L" Actor":L" Actors")};
     const std::array<ui_language::KeyBinding,8> shell_keys{{{"root",1},{"menubar",2},{"stow",control::menu_bar_handle},
         {"menu_body",control::menu_bar_body},{"shelf_slot",3},{"workspace",20},{"footer",100},{"status",101}}};
     static_cast<void>(ui_document_->append("EditorShell",0,shell_keys,shell_inputs,result));
@@ -399,7 +423,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if (definition.group==CommandGroup::view && definition.shelf_title.empty()) continue;
         if (!shelf_items_[index]) shelf_items_[index]=next_binding_++;
         const auto title=definition.shelf_title.empty()?definition.title:definition.shelf_title;
-        const auto icon=definition.id>=Command::create_point_light && definition.id<=Command::create_sky_light?ui::ControlIcon::component:
+        const auto icon=definition.id==Command::create_point_light?ui::ControlIcon::point_light:
+            definition.id==Command::create_rectangle_light?ui::ControlIcon::area_light:
+            definition.id==Command::create_directional_light?ui::ControlIcon::sun_light:
+            definition.id==Command::create_sky_light?ui::ControlIcon::sky_light:
             definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
             definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
@@ -519,14 +546,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         for (const auto& member:members) {
             const auto state=take(world::inspect_actor(runtime,member.id()));
             const auto actor_key=bind(member.id());
-            const auto type=take(runtime.describe(state.type));auto type_name=type->name;
-            if (const auto dot=type_name.find_last_of('.');dot!=type_name.npos) type_name=type_name.substr(dot+1);
-            auto title=std::wstring(session.name(member.id()))+L"   ("+std::wstring(type_name.begin(),type_name.end())+L")";
+            auto title=std::wstring(session.name(member.id()));
             const bool mesh_actor=take(runtime.is_a(state.type,session.types().static_mesh_actor));
             const auto expansion=tree_expansion_.find(actor_key);
             rows->push_back({actor_key,{std::move(title),
                 state.state==world::ActorState::attached_inactive || state.state==world::ActorState::active,
-                session.is_selected(member.id()),static_cast<double>(mesh_actor?ui::ControlIcon::mesh:ui::ControlIcon::object),
+                session.is_selected(member.id()),static_cast<double>(actor_icon(session,member.id())),
                 control::tree_world,expansion!=tree_expansion_.end() && expansion->second,std::wstring(mesh_actor?L"mesh-actor":L"actor")}});
         }
         const auto expansion=tree_expansion_.find(control::tree_world);
@@ -550,7 +575,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if(selected!=ObjectId{}) {
             const auto actor_key=bind(selected,{},Binding::Kind::structure);
             const auto expansion=tree_expansion_.find(actor_key);
-            rows->push_back({actor_key,{std::wstring(session.name(selected)),true,inspected==selected,double(ui::ControlIcon::object),
+            rows->push_back({actor_key,{std::wstring(session.name(selected)),true,inspected==selected,double(actor_icon(session,selected)),
                 ui::ControlKey{},expansion==tree_expansion_.end() || expansion->second,std::wstring(L"actor")}});
             for(const auto& component:take(world::components(runtime,selected))) {
                 const auto key=bind(component.id(),{},Binding::Kind::structure);
@@ -842,7 +867,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
         double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
         inspected!=ObjectId{},ui_language::ItemList{std::move(groups)},matches,std::move(position),ui_language::TextEditBinding{control::parameter_search,query},empty,
-        double(actor_selected?(take(runtime.is_a(actor_status.type,session.types().static_mesh_actor))?ui::ControlIcon::mesh:ui::ControlIcon::object):ui::ControlIcon::component),double(ui::ControlIcon::search),
+        double(actor_selected?actor_icon(session,selected):ui::ControlIcon::component),double(ui::ControlIcon::search),
         parameter_search_visible && inspected!=ObjectId{},ui_language::ActionBinding{control::parameter_search_toggle,inspected!=ObjectId{}},
         std::move(rotation_edit),std::move(scale_edit),position_matches,rotation_matches,scale_matches,parameter_by_category_,
         ui_language::ActionBinding{control::group_components,true},ui_language::ActionBinding{control::group_categories,true}};

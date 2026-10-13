@@ -257,6 +257,17 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         case Symbol::cursor3d:return Icon::cursor3d;
         case Symbol::magnet:return Icon::magnet;
         case Symbol::fly:return Icon::fly;
+        // Object-type glyphs come from the same Tabler set as the tools.
+        case Symbol::point_light:return Icon::point_light;
+        case Symbol::area_light:return Icon::area_light;
+        case Symbol::sun_light:return Icon::sun_light;
+        case Symbol::sky_light:return Icon::sky_light;
+        case Symbol::mesh:return Icon::mesh;
+        case Symbol::object:return Icon::object;
+        case Symbol::component:return Icon::component;
+        case Symbol::world:return Icon::world;
+        case Symbol::folder:return Icon::folder;
+        case Symbol::search:return Icon::search;
         default:return std::nullopt;
         }
     }();

@@ -256,7 +256,7 @@ struct Context {
         if (!std::isfinite(value) || value<(signed_value?-32768:0) || value>32768) throw std::runtime_error("UI layout value is outside its supported range.");
         auto& state=target(slot);auto& node=state.control;
         if (static_cast<Property>(property)==Property::icon) {
-            if (std::floor(value)!=value || value>static_cast<double>(ui::ControlIcon::fly)) throw std::runtime_error("Invalid UI icon.");
+            if (std::floor(value)!=value || value>static_cast<double>(ui::ControlIcon::sky_light)) throw std::runtime_error("Invalid UI icon.");
             node.icon=static_cast<ui::ControlIcon>(static_cast<unsigned>(value));return;
         }
         auto& layout=node.layout;

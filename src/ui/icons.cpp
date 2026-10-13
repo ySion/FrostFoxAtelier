@@ -20,6 +20,16 @@ std::span<const Run> data(Icon icon) {
     case Icon::orbit:return orbit_runs;
     case Icon::pan:return pan_runs;
     case Icon::fly:return fly_runs;
+    case Icon::point_light:return point_light_runs;
+    case Icon::area_light:return area_light_runs;
+    case Icon::sun_light:return sun_light_runs;
+    case Icon::sky_light:return sky_light_runs;
+    case Icon::mesh:return mesh_runs;
+    case Icon::object:return object_runs;
+    case Icon::component:return component_runs;
+    case Icon::world:return world_runs;
+    case Icon::folder:return folder_runs;
+    case Icon::search:return search_runs;
     }
     throw std::invalid_argument("Unknown UI icon");
 }

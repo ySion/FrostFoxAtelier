@@ -14,6 +14,16 @@
     "magnet": "magnet",
     "orbit": "rotate-360",
     "pan": "hand-grab",
-    "fly": "navigation"
+    "fly": "navigation",
+    "point_light": "bulb",
+    "area_light": "rectangle",
+    "sun_light": "sun",
+    "sky_light": "cloud",
+    "mesh": "box",
+    "object": "cube-3d-sphere",
+    "component": "packages",
+    "world": "world",
+    "folder": "folder",
+    "search": "search"
   }
 }
