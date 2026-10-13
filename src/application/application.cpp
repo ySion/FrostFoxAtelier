@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -81,8 +82,25 @@ Application::Application(bool validation,bool activate,std::filesystem::path exa
     window_.show(activate);
 }
 Application::~Application() {
+    if(std::uncaught_exceptions()) preserve_failure("Unhandled editor failure outside the frame loop");
     try { close(); }
     catch (const std::exception& error) { std::fprintf(stderr, "Editor shutdown: %s\n", error.what()); }
+}
+void Application::preserve_failure(std::string_view reason) noexcept {
+    if(recovery_.attempted() || !document_ || closed_) return;
+    try {
+        window_.capture(false);
+        window_.cursor(ui::Cursor::arrow);
+        const auto& saved=recovery_.preserve(*document_,project_?project_->root():std::filesystem::path{},scene_path_,reason);
+        if(!saved) std::fprintf(stderr,"Scene recovery failed: %s\n",saved.error().message.c_str());
+        else if(*saved) {
+            std::fprintf(stderr,"Scene recovery saved: %s\n",editor::utf8(saved->value().scene.wstring()).c_str());
+            if(!saved->value().warning.empty()) std::fprintf(stderr,"Scene recovery warning: %s\n",saved->value().warning.c_str());
+        }
+        std::fflush(stderr);
+    } catch(const std::exception& error) {
+        std::fprintf(stderr,"Scene recovery failed: %s\n",error.what());
+    } catch(...) {std::fputs("Scene recovery failed with an unknown error\n",stderr);}
 }
 void Application::status(Result<void> result, const wchar_t* success) {
     workspace_.status = result ? success : widen(result.error().message);
@@ -927,7 +945,7 @@ void Application::update_viewport_fps(bool accepted) {
     workspace_.viewport_fps=std::format(L"{:.1f} FPS  ·  {:.1f} ms",fps_frames_/seconds,seconds*1000/fps_frames_);
     fps_start_=now;fps_frames_=0;
 }
-bool Application::step(renderer::Capture* capture) {
+bool Application::step(renderer::Capture* capture) try {
     frame_timing_ = {};
     frame_statistics_ = {};
     if (closed_) return false;
@@ -1035,12 +1053,6 @@ bool Application::step(renderer::Capture* capture) {
         workspace_.lighting.observe(rendered->stats);
         if(viewport) camera_cut_=false;
         workspace_.render_notice.clear();
-        if(viewport && effective_view.shading==renderer::Shading::scene_lit && effective_view.lit.shadows &&
-            effective_view.wireframe!=renderer::Wireframe::only) {
-            const auto requested=std::ranges::count_if(scene_.lights,[](const auto& light){return light.casts_shadow;});
-            if(std::uint64_t(requested)>effective_view.lit.shadow_light_budget)
-                workspace_.render_notice=L"Shadows "+std::to_wstring(rendered->stats.scene_lit_shadow_lights)+L"/"+std::to_wstring(requested);
-        }
         ++accepted_frames_;
         update_viewport_fps(workspace_.show_fps && viewport && !frame_capture);
         if(control_) {
@@ -1067,6 +1079,10 @@ bool Application::step(renderer::Capture* capture) {
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     return true;
+} catch(const std::exception& error) {
+    preserve_failure(error.what());throw;
+} catch(...) {
+    preserve_failure("Unknown editor frame failure");throw;
 }
 void Application::close() {
     if (closed_) return;

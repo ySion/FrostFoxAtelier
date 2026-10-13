@@ -31,7 +31,7 @@ float lit_ssil_pixel_size(int2 p) {
                           length(lit_world(uv + float2(0, 1.0 / lit_size_frame.y), z) - position)));
 }
 float3 lit_ssil_baseline(int2 p) {
-    return max(0, lit_ssil_finite((lit_counts.w & 2) != 0 ?
+    return max(0, lit_ssil_finite((lit_effect_flags & 2) != 0 ?
         lit_indirect_source.Load(int3(p, 0)).rgb : lit_environment.rgb * LIT_PI));
 }
 float3 lit_ssil_bound(float3 residual, float3 baseline) {

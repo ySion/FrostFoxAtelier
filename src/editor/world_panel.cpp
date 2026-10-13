@@ -157,6 +157,7 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     group(key::root+101,L"Propagation",std::move(global));
     auto propagation=groups;groups=std::make_shared<std::vector<Item>>();
     auto debug=std::make_shared<std::vector<Item>>();
+    scalar(*debug,L"Direct reference",ViewOption::direct_reference);
     scalar(*debug,L"Feedback visibility",ViewOption::probe_feedback_visibility);
     scalar(*debug,L"Probe spheres",ViewOption::probe_visualization);scalar(*debug,L"Debug volume",ViewOption::probe_debug_volume);
     scalar(*debug,L"Receiver coverage",ViewOption::probe_debug);scalar(*debug,L"Coverage metric",ViewOption::probe_coverage);
@@ -166,8 +167,8 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     auto diagnostics=groups;groups=std::make_shared<std::vector<Item>>();
     auto lighting=std::make_shared<std::vector<Item>>();
     scalar(*lighting,L"Exposure (EV)",ViewOption::exposure_ev);
-    scalar(*lighting,L"Shadows",ViewOption::shadows);scalar(*lighting,L"Shadow lights",ViewOption::shadow_light_budget);
-    scalar(*lighting,L"Shadow samples",ViewOption::shadow_samples);scalar(*lighting,L"Shadow bias (m)",ViewOption::shadow_bias);
+    scalar(*lighting,L"Shadows",ViewOption::shadows);scalar(*lighting,L"Direct candidates",ViewOption::direct_candidates);
+    scalar(*lighting,L"Shadow bias (m)",ViewOption::shadow_bias);
     group(key::root+103,L"Lighting",std::move(lighting));
     auto lighting_groups=groups;groups=std::make_shared<std::vector<Item>>();
     auto effects=std::make_shared<std::vector<Item>>();

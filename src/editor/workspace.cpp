@@ -278,8 +278,6 @@ Result<bool> Workspace::apply_view(Session& session,const ui::Action& action,std
         set(ViewOption::antialiasing,double(key-control::lit_aa_first));
     else if(key>=control::lit_exposure_first && key<control::lit_exposure_first+5)
         set(ViewOption::exposure_ev,double(int(key-control::lit_exposure_first)-2));
-    else if(key>=control::lit_shadow_budget_first && key<control::lit_shadow_budget_first+3)
-        set(ViewOption::shadow_light_budget,double(4u<<static_cast<unsigned>(key-control::lit_shadow_budget_first)));
     else if(key>=control::probe_modes_first && key<control::probe_modes_first+probe_titles.size())
         set(ViewOption::probe_visualization,double(key-control::probe_modes_first));
     else if(key>=control::probe_options_first && key<control::probe_options_first+probe_options.size()) {
@@ -1045,13 +1043,6 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     exposure.children.push_back(std::move(option));
                 }
                 lighting.children.push_back(std::move(exposure));
-                ui::MenuItem budget{control::lit_shadow_budget_menu,L"Shadow Budget",true,false,{}};
-                for(unsigned i=0;i<3;++i) {
-                    const auto limit=4u<<i;
-                    ui::MenuItem option{control::lit_shadow_budget_first+i,std::to_wstring(limit)+L" lights",true,this->view.lit.shadow_light_budget==limit,{}};
-                    option.behavior=ui::MenuBehavior::radio;option.radio_group=control::lit_shadow_budget_first;budget.children.push_back(std::move(option));
-                }
-                lighting.children.push_back(std::move(budget));
                 ui::MenuItem debug{control::probe_debug_menu,L"DDGI Debug",true,false,{},L"",true};
                 ui::MenuItem probes{control::probe_modes_menu,L"Probe Spheres",true,false,{}};
                 for(std::size_t i=0;i<probe_titles.size();++i) {

@@ -1033,7 +1033,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
     s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
-    s.stats.scene_lit_shadow_lights=0;s.stats.scene_lit_unshadowed_lights=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
+    s.stats.scene_lit_light_sources=0;s.stats.scene_lit_shadow_sources=0;s.stats.scene_lit_di_candidates=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)

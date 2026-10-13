@@ -8,6 +8,7 @@ struct LitRaster {
     float2 uv:TEXCOORD1;
     nointerpolation uint material_index:TEXCOORD2;
     nointerpolation uint valid:TEXCOORD3;
+    nointerpolation uint2 identity:TEXCOORD5;
     float4 tangent:TEXCOORD4;
     nointerpolation float3 geometric_normal:TEXCOORD6;
 };
@@ -22,7 +23,7 @@ LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     float3 gn=lit_triangles[vertex/3].face_normal;
     o.geometric_normal=gn.x*i.normal_x.xyz+gn.y*i.normal_y.xyz+gn.z*i.normal_z.xyz;
     o.material_index=material_indices[material_offsets[lit_first_instance+instance]+lit_triangles[vertex/3].material_slot];
-    o.valid=i.geometry.z;
+    o.valid=i.geometry.z;o.identity=i.geometry.yw;
     return o;
 }
 struct LitGBuffer {
@@ -32,6 +33,7 @@ struct LitGBuffer {
     float4 motion:SV_Target3;
     float previous_depth:SV_Target4;
     float2 geometry_normal:SV_Target5;
+    uint2 identity:SV_Target6;
 };
 LitGBuffer lit_gbuffer_ps(LitRaster i) {
     MaterialSurface surface=material_surfaces[i.material_index];
@@ -45,7 +47,7 @@ LitGBuffer lit_gbuffer_ps(LitRaster i) {
     normal=material_normal(surface,i.uv,dx,dy,0,true,normal,i.tangent,material.roughness);
     float3 geometric_normal=lit_safe_normal(i.geometric_normal);
     if(surface.flags.y!=0&&dot(geometric_normal,view_direction)<0) {geometric_normal=-geometric_normal;normal=-normal;}
-    LitGBuffer o;o.geometry_normal=lit_encode_normal(geometric_normal);o.normal=float4(normal,material.roughness);
+    LitGBuffer o;o.identity=i.identity;o.geometry_normal=lit_encode_normal(geometric_normal);o.normal=float4(normal,material.roughness);
     o.base=float4(material.base,material.metallic); o.emissive=float4(material.emissive,1);
     float2 current=i.position.xy/lit_size_frame.xy;
     o.motion=float4(lit_window_uv(i.previous)-current,1,i.valid!=0&&i.previous.w>0?1:0);

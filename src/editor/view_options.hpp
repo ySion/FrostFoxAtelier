@@ -10,10 +10,10 @@ enum class ViewOption {
     shading, wireframe, hidden_lines, triangle_edges, wire_width, wire_opacity,
     background, reference_grid, origin_axes, grid_spacing, grid_plane,
     shadows, ddgi, gtao, sssr, bloom, ssil, antialiasing, exposure_ev,
-    shadow_bias, shadow_light_budget, shadow_samples, ao_radius, reflection_distance, reflection_roughness,
+    shadow_bias, direct_candidates, ao_radius, reflection_distance, reflection_roughness,
     probe_update_budget, probe_rays, probe_debug, probe_bounce, indirect_gain, probe_feedback_visibility,
     probe_visualization, probe_volume, probe_relocation, probe_xray, probe_radius,
-    probe_coverage, probe_debug_volume,
+    probe_coverage, probe_debug_volume, direct_reference,
     cavity, cavity_ridge, cavity_valley, cavity_radius,
     volume_first, volume_last=volume_first+4*static_cast<int>(ProbeVolumeField::count)-1
 };

@@ -286,8 +286,10 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     }
     require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_exposure_first+4,{}})) && workspace.view.lit.exposure_ev==2 && document.undo_count()>history,
         "World exposure did not enter scene history or used the wrong units.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::lit_shadow_budget_first+2,{}})) && workspace.view.lit.shadow_light_budget==16,
-        "Shadow budget was not routed through the shared display settings.");
+    auto direct_view=workspace.view;direct_view.lit.direct_candidates=32;
+    take(workspace.set_view_settings(document,direct_view));
+    require(workspace.view.lit.direct_candidates==32 && document.world().lighting_settings().direct_candidates==32,
+        "Direct candidates were not routed through World author settings.");
     workspace.menu=ui::ContextMenuRequest{control::scene_shading,0,0,0};publish();
     const auto lit=std::ranges::find(workspace.menu_items,control::shading_scene_lit,&ui::MenuItem::key);
     const auto options=std::ranges::find(workspace.menu_items,control::lit_menu,&ui::MenuItem::key);
@@ -353,11 +355,53 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(document.redo());workspace.sync_world(document);
     const auto saved=take(document.serialize());auto restored=take(Session::deserialize(saved,project));
     require(restored->world().lighting_settings()==candidate && take(restored->serialize())==saved && !restored->dirty(),
-        "Scene v4 did not round-trip World authoring values into a clean document.");
+        "Scene v5 did not round-trip World authoring values into a clean document.");
     const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
     auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
+    diagnostic_view.lit.direct_reference=true;
     take(workspace.set_view_settings(document,diagnostic_view));
     require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
+    const auto saved_json=nlohmann::json::parse(saved);
+    require(saved_json.at("version")==5 && !saved_json.at("world").contains("direct_reference") &&
+        !saved_json.at("world").contains("shadow_samples") && !saved_json.at("world").contains("shadow_light_budget"),
+        "Scene v5 retained reference diagnostics or retired per-light shadow options.");
+    auto v4=saved_json;v4["version"]=4;v4["world"].erase("direct_candidates");
+    v4["world"]["shadow_light_budget"]=16;v4["world"]["shadow_samples"]=64;
+    auto migrated=take(Session::deserialize(v4.dump(),project));
+    auto migrated_settings=candidate;migrated_settings.direct_candidates=8;
+    require(migrated->world().lighting_settings()==migrated_settings,
+        "Scene v4 migration failed to preserve author values and use eight direct candidates.");
+    const auto migrated_saved=take(migrated->serialize());
+    auto reopened=take(Session::deserialize(migrated_saved,project));
+    require(reopened->world().lighting_settings()==migrated_settings && take(reopened->serialize())==migrated_saved &&
+        nlohmann::json::parse(migrated_saved).at("version")==5,
+        "Migrated v4 scene did not save and reopen through the sole v5 author format.");
+    Workspace migrated_workspace;migrated_workspace.sync_world(*reopened);
+    require(!migrated_workspace.view.lit.direct_reference,
+        "Legacy 64 shadow samples silently enabled the viewport reference diagnostic.");
+    for(const auto key:{"shadow_light_budget","shadow_samples"}) {
+        for(const auto& bad:std::array<nlohmann::json,5>{-1,65,1.5,"8",true}) {
+            auto invalid_legacy=v4;invalid_legacy["world"][key]=bad;
+            require(!Session::deserialize(invalid_legacy.dump(),project),
+                "Malformed legacy shadow value was accepted during v4 migration.");
+        }
+        auto retired=saved_json;retired["world"][key]=1;
+        require(!Session::deserialize(retired.dump(),project),"Scene v5 accepted a retired shadow key.");
+        auto mixed=v4;mixed["world"]["direct_candidates"]=8;
+        require(!Session::deserialize(mixed.dump(),project),"Scene v4 accepted mixed new and retired direct-light options.");
+    }
+    for(const auto key:{"probe_debug","direct_reference"}) {
+        auto diagnostic_json=saved_json;diagnostic_json["world"][key]=true;
+        require(!Session::deserialize(diagnostic_json.dump(),project),"Viewport diagnostic was accepted as a World author option.");
+    }
+    auto bad_budget=v4;bad_budget["world"]["shadow_light_budget"]=17;
+    auto bad_samples=v4;bad_samples["world"]["shadow_samples"]=0;
+    require(!Session::deserialize(bad_budget.dump(),project) && !Session::deserialize(bad_samples.dump(),project),
+        "Scene v4 migration ignored the legacy budget or sample-count boundary.");
+    for(const auto bad:{0.,33.,1.5}) {
+        auto bad_candidates=saved_json;bad_candidates["world"]["direct_candidates"]=bad;
+        require(!Session::deserialize(bad_candidates.dump(),project),"Scene v5 accepted invalid direct candidates.");
+    }
     auto invalid=candidate;invalid.probe_volumes[0].maximum=invalid.probe_volumes[0].minimum;
     require(!document.set_world_lighting(invalid) && document.world().lighting_settings()==candidate && document.undo_count()==stable_history,
         "Invalid World configuration partially published.");

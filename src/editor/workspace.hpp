@@ -39,7 +39,6 @@ inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_fir
 inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
 inline constexpr ui::ControlKey shading_scene_lit=772;
 inline constexpr ui::ControlKey lit_menu=860,lit_effects_first=861,lit_exposure_first=867,lit_exposure_menu=872;
-inline constexpr ui::ControlKey lit_shadow_budget_menu=873,lit_shadow_budget_first=874;
 inline constexpr ui::ControlKey lit_aa_menu=877,lit_aa_first=878;
 inline constexpr ui::ControlKey probe_debug_menu=940,probe_modes_menu=941,probe_modes_first=942,
     probe_options_first=947,probe_radius_menu=951,probe_radius_first=952,probe_legend_menu=955,probe_legend_first=956;

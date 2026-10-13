@@ -21,6 +21,20 @@ MyGame/
 - Config 的 `startup_scene` 是打开工程时加载的场景，路径相对工程根。另存场景不隐式修改启动场景配置。
 - Source 文件由工程统一采集、编译并绑定到真实场景类型。Project 菜单提供创建组件源码、构建、重建类型、运行、停止和项目 UI 预览。
 
+## 异常退出时的场景保全
+
+Application 捕获帧循环异常（包括 Renderer 返回的终态错误）后，在 Session 释放前尝试一次保全；帧循环外的异常栈展开由析构入口兜底。正常关闭沿用原来的保存/放弃流程。
+
+未确认的参数或变换手势先取消，再使用同一个 `Session::serialize` 保存最后已提交的作者 Scene。输出为 `%LOCALAPPDATA%/FrostFoxAtelier/Recovery/<唯一标识>/Scene.scene`，日志以 `Scene recovery saved:` 报告完整路径。写入复用原子文件创建，不覆盖原场景、不标记文档已保存；重复失败不会重写快照或替换首次原因。
+
+Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原场景、失败原因、时间、未确认手势与脏材质资源名称。侧记写出失败时仍保留已经写成的 Scene，并输出警告。序列化或磁盘失败明确输出 `Scene recovery failed:`，不宣称恢复成功。
+
+这条路径不复制或解析资产，缺失 mesh 等外部资源不会阻止有效作者 Scene 的原始引用写出。它不是完整工程备份：独立材质资产、Source 文本草稿和没有持久化来源的程序化网格不在本次保全范围内；原 Scene 序列化本身拒绝的状态仍会失败。强制结束进程、访问违规或断电不能保证执行异常保全。
+
+恢复时先保留原工程及快照，将 `Scene.scene` **复制为原工程 Content/Scenes 下的新文件名**，再通过同一工程的 Open Scene 验证类型和资源；确认后再决定保存位置。不要直接覆盖原文件。
+
+独立 CPU 端到端入口：`cmake --build --preset dev --target editor_recovery_acceptance`，发布配置对应 `release`；也可直接运行 `atelier_editor_document_acceptance --recovery`。它使用真实 Session、作者场景序列化、原子文件写入和重新加载，覆盖未确认手势取消、缺失资源、幂等和 IO 失败，不创建设备或启动窗口。真实设备失效后的 Application 调用链需在 GPU 故障风险消除后复验。
+
 ## 后续方向：可响应加载与多场景文档
 
 以下为设计方向，尚未实现。当前 Application 只持有一个 Session、一条场景路径、一台 Camera 和一个已接受的视口状态；Open Scene 会同步读取文件、构建源码、反序列化对象及解析资源，再替换旧文档。停靠标签不等于独立场景，现有加载也不能保证大场景期间持续响应。
@@ -111,16 +125,16 @@ Actor/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提�
 
 外部图片改写目前不会自动替换已载入 Runtime 中的 Texture 对象。Project Refresh 更新目录及解析缓存；已有会话保留既有图片版本，重新打开工程/场景重新解析。替换为其他 Texture GUID 会立即使用对应资源。本轮没有接入 UI Image 控件的 Runtime Texture 资源。
 
-Scene v3 在 StaticMeshComponent 的 `materials` 中保存槽名、共享资源 GUID、赋予意图，以及实例的父 GUID、显式覆盖名称和值。v1/v2 读取路径保留，写出统一升级到 v3。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
+Scene 自 v3 起在 StaticMeshComponent 的 `materials` 中保存槽名、共享资源 GUID、赋予意图，以及实例的父 GUID、显式覆盖名称和值；当前统一写出 v5，旧版读取范围见下节。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
 
 新增 `editor_material_acceptance` 是真实 Project → Runtime → World → Session → SceneSnapshot/DSL → 文件重开的端到端消费者；同时应运行原 document/project scene 消费者和 renderer GPU 材质验收。新增用例不等于已验收通过，实际结果以本次集成日志为准。
 
 ## 持久格式与责任
 
-- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 4`，继续读取 v1/v2/v3。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
+- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 5`，继续读取 v1/v2/v3/v4。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene 保存有序 Actor、真实类型名称、名称、enabled、有序组件、局部组件 ID、显式 root/parent、TRS、材质和资源键。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
-- Scene v4 根 `world` 保存 World 光照与效果值，字段来自与 UI / Control 共用的 author-option 目录。v1–v3 使用固定默认值；v4 必须提供 `world` 对象，未保存字段使用默认值，非法/未知/诊断字段整体拒绝。`World::lighting_settings` 是权威值，`Session::set_world_lighting` 是编辑入口，完整候选仅记录一次 Undo；无变化为空操作。运行中或关闭后的 World 拒绝 authoring 写入。World 是宿主服务，配置目前是共享值类型，不伪装成带 ObjectId 的反射对象。
+- Scene v5 根 `world` 保存 World 光照与效果值，字段来自与 UI / Control 共用的 author-option 目录，包括 `direct_candidates`。v1–v3 使用固定默认值；v4/v5 必须提供 `world` 对象，未保存字段使用默认值，非法/未知/诊断字段整体拒绝。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5 不接受这两个旧字段；`direct_reference` 始终是视口诊断，不进入 Scene。`World::lighting_settings` 是权威值，`Session::set_world_lighting` 是编辑入口，完整候选仅记录一次 Undo；无变化为空操作。运行中或关闭后的 World 拒绝 authoring 写入。World 是宿主服务，配置目前是共享值类型，不伪装成带 ObjectId 的反射对象。
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质、灯光与天空。没有 Sky Light 时环境光仍为零。探针滚动位置、历史、统计、可视化与相机不写入 Scene。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致，因此 Scene v1 继续可读，无需版本迁移或旧类型别名。
 - Scene 按限定类型名恢复已注册的 Actor/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置由专有字段保存。未知版本、未知类型、未知已保存属性、失效关系、缺失资源和无法编码的字段明确失败；空网格保留为空。单场景最多 8192 Actor、每个 Actor 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。

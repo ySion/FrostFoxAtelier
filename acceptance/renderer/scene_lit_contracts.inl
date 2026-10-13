@@ -17,17 +17,19 @@ void quality_contracts(Fixture& f) {
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;options={};
     options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-    options.antialiasing=render::Antialiasing::none;options.shadow_samples=64;
+    options.antialiasing=render::Antialiasing::none;options.direct_reference=true;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     ++f.frame.scene_identity;f.edited();f.frame.camera_cut=true;
     const auto region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{0,0,4},12);
-    const auto point=f.capture("contract-point-radius",3);
+    const auto point=lighting_mean(f,"contract-point-radius",region,1,24);
     light.width=light.height=20;f.edited();
-    const auto unrelated_dimensions=f.capture("contract-point-unused-dimensions",2);
-    check(mean_rgb(point,region)[0]>5 && point.rgba==unrelated_dimensions.rgba,
-          "point sphere support reaches receivers beyond center range; ignored rectangle dimensions cannot change its light");
+    const auto unrelated_dimensions=lighting_mean(f,"contract-point-unused-dimensions",region,1,24);
+    check(point[0]>5,"point sphere support reaches receivers beyond center range");
+    for(unsigned channel=0;channel<3;++channel)
+        check(std::abs(point[channel]-unrelated_dimensions[channel])<=std::max(2.,point[channel]*.06),
+              "ignored rectangle dimensions preserve the independent reference's mean point illumination");
     light.kind=render::LightKind::directional;light.range=light.width=light.height=0;
     light.direction={0,0,1};light.source_radius=1.55f;light.intensity=1;f.edited();f.step();
     light.kind=render::LightKind::rectangle;light.range=2;light.width=light.height=1;light.source_radius=0;

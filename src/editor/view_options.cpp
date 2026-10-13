@@ -31,14 +31,15 @@ constexpr std::array options{
     FIELD(shadows,boolean,0,1),FIELD(ddgi,boolean,0,1),FIELD(gtao,boolean,0,1),FIELD(sssr,boolean,0,1),
     FIELD(bloom,boolean,0,1),FIELD(ssil,boolean,0,1),
     ViewOptionInfo{ViewOption::antialiasing,"antialiasing",K::enumeration,0,3,aa},
-    FIELD(exposure_ev,number,-16,16),FIELD(shadow_bias,number,.000001f,.1f),FIELD(shadow_light_budget,integer,0,16),
-    FIELD(shadow_samples,integer,1,64),FIELD(ao_radius,number,.001f,100),FIELD(reflection_distance,number,.001f,10000),
+    FIELD(exposure_ev,number,-16,16),FIELD(shadow_bias,number,.000001f,.1f),FIELD(direct_candidates,integer,1,32),
+    FIELD(ao_radius,number,.001f,100),FIELD(reflection_distance,number,.001f,10000),
     FIELD(reflection_roughness,number,0,1),
     FIELD(probe_update_budget,integer,1,4096),FIELD(probe_rays,integer,1,256),FIELD(probe_debug,boolean,0,1),
     FIELD(probe_bounce,number,0,.99f),FIELD(indirect_gain,number,0,8),FIELD(probe_feedback_visibility,boolean,0,1),
     ViewOptionInfo{ViewOption::probe_visualization,"probe_visualization",K::enumeration,0,4,probes},
     FIELD(probe_volume,boolean,0,1),FIELD(probe_relocation,boolean,0,1),FIELD(probe_xray,boolean,0,1),FIELD(probe_radius,number,.01f,.45f),
     ViewOptionInfo{ViewOption::probe_coverage,"probe_coverage",K::enumeration,0,3,coverage},FIELD(probe_debug_volume,integer,-1,3),
+    FIELD(direct_reference,boolean,0,1),
     FIELD(cavity,boolean,0,1),FIELD(cavity_ridge,number,0,2),FIELD(cavity_valley,number,0,2),FIELD(cavity_radius,number,.5,4),
     VOLUME(0),VOLUME(1),VOLUME(2),VOLUME(3)
 };
@@ -87,13 +88,14 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(origin_axes,origin_axes);VALUE(grid_spacing,grid_spacing);VALUE(grid_plane,grid_plane);
     VALUE(shadows,lit.shadows);VALUE(ddgi,lit.ddgi);VALUE(gtao,lit.gtao);VALUE(sssr,lit.sssr);VALUE(bloom,lit.bloom);VALUE(ssil,lit.ssil);
     VALUE(antialiasing,lit.antialiasing);VALUE(exposure_ev,lit.exposure_ev);VALUE(shadow_bias,lit.shadow_bias);
-    VALUE(shadow_light_budget,lit.shadow_light_budget);VALUE(shadow_samples,lit.shadow_samples);VALUE(ao_radius,lit.ao_radius);
+    VALUE(direct_candidates,lit.direct_candidates);VALUE(ao_radius,lit.ao_radius);
     VALUE(reflection_distance,lit.reflection_distance);VALUE(reflection_roughness,lit.reflection_roughness);
     VALUE(probe_update_budget,lit.probe_update_budget);VALUE(probe_rays,lit.probe_rays);VALUE(probe_debug,lit.probe_debug);
     VALUE(probe_bounce,lit.probe_bounce);VALUE(indirect_gain,lit.indirect_gain);VALUE(probe_feedback_visibility,lit.probe_feedback_visibility);
     VALUE(probe_visualization,lit.probe_visualization);VALUE(probe_volume,lit.probe_volume);VALUE(probe_relocation,lit.probe_relocation);
     VALUE(probe_xray,lit.probe_xray);VALUE(probe_radius,lit.probe_radius);
     VALUE(probe_coverage,lit.probe_coverage);VALUE(probe_debug_volume,lit.probe_debug_volume);
+    VALUE(direct_reference,lit.direct_reference);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
     case ViewOption::volume_first:case ViewOption::volume_last:break;
@@ -122,13 +124,14 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(origin_axes,origin_axes);SET(grid_spacing,grid_spacing);SET(grid_plane,grid_plane);
     SET(shadows,lit.shadows);SET(ddgi,lit.ddgi);SET(gtao,lit.gtao);SET(sssr,lit.sssr);SET(bloom,lit.bloom);SET(ssil,lit.ssil);
     SET(antialiasing,lit.antialiasing);SET(exposure_ev,lit.exposure_ev);SET(shadow_bias,lit.shadow_bias);
-    SET(shadow_light_budget,lit.shadow_light_budget);SET(shadow_samples,lit.shadow_samples);SET(ao_radius,lit.ao_radius);
+    SET(direct_candidates,lit.direct_candidates);SET(ao_radius,lit.ao_radius);
     SET(reflection_distance,lit.reflection_distance);SET(reflection_roughness,lit.reflection_roughness);
     SET(probe_update_budget,lit.probe_update_budget);SET(probe_rays,lit.probe_rays);SET(probe_debug,lit.probe_debug);
     SET(probe_bounce,lit.probe_bounce);SET(indirect_gain,lit.indirect_gain);SET(probe_feedback_visibility,lit.probe_feedback_visibility);
     SET(probe_visualization,lit.probe_visualization);SET(probe_volume,lit.probe_volume);SET(probe_relocation,lit.probe_relocation);
     SET(probe_xray,lit.probe_xray);SET(probe_radius,lit.probe_radius);
     SET(probe_coverage,lit.probe_coverage);SET(probe_debug_volume,lit.probe_debug_volume);
+    SET(direct_reference,lit.direct_reference);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET
     case ViewOption::volume_first:case ViewOption::volume_last:break;

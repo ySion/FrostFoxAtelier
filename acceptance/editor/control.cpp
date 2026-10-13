@@ -73,6 +73,102 @@ Json discover_editor(const Process& editor,const std::filesystem::path& director
     throw std::runtime_error("Editor did not publish its endpoint");
 }
 void error(const Json& result,std::string_view expected) {require(result.value("status","")=="error" && result.at("error").at("code").get<std::string>()==expected,result.dump());}
+void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
+    const auto original=read(repro/"manifest.json");
+    const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
+    require(original.at("view_schema")==2 && original_scene.at("version")==5,
+        "Current repro export did not identify view schema 2 and Scene v5");
+    const auto legacy=root/"LegacyLightingRepro";
+    std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(legacy),
+        std::filesystem::copy_options::recursive);
+    const auto scene_path=legacy/"Project"/wide(original.at("scene").get<std::string>());
+    auto old_manifest=original;old_manifest.erase("view_schema");
+    old_manifest["view"].erase("direct_candidates");old_manifest["view"].erase("direct_reference");
+    old_manifest["view"]["shadow_light_budget"]=16;old_manifest["view"]["shadow_samples"]=64;
+    auto old_scene=original_scene;old_scene["version"]=4;old_scene["world"].erase("direct_candidates");
+    old_scene["world"]["shadow_light_budget"]=16;old_scene["world"]["shadow_samples"]=64;
+    const auto publish=[&](Json manifest,const Json& scene) {
+        write(scene_path,scene.dump(2));bool listed=false;
+        for(auto& file:manifest.at("files")) if(legacy/wide(file.at("path").get<std::string>())==scene_path) {
+            file["sha256"]=sha256_file(scene_path);
+            file["bytes"]=std::filesystem::file_size(atelier::platform::windows_file_path(scene_path));listed=true;
+        }
+        require(listed,"Repro scene was absent from the dependency manifest");
+        write(legacy/"manifest.json",manifest.dump(2));
+    };
+    const auto rejected=[&](const Json& manifest,const Json& scene,std::string_view code="invalid_request") {
+        publish(manifest,scene);const auto before=d.inspect();const auto token=d.token;
+        error(d.call("repro.open",{{"directory",utf8(legacy.wstring())}}),code);
+        const auto after=d.inspect();
+        for(const auto* field:{"project","scene_path","actors","selection","inspected_object","camera","view","dirty","undo","redo"})
+            require(after.at(field)==before.at(field),std::string("Rejected lighting repro changed ")+field);
+        require(d.token==token,"Rejected lighting repro changed the accepted editor state token");
+    };
+    for(const auto* key:{"shadow_light_budget","shadow_samples"}) {
+        const bool samples=std::string_view(key)=="shadow_samples";
+        for(const auto& bad:Json::array({-1,samples?65:17,1.5,"8",true})) {
+            auto manifest=old_manifest;manifest["view"][key]=bad;rejected(manifest,old_scene);
+            auto scene=old_scene;scene["world"][key]=bad;rejected(old_manifest,scene);
+        }
+        auto current=original;current["view"][key]=1;rejected(current,original_scene);
+        auto current_scene=original_scene;current_scene["world"][key]=1;rejected(original,current_scene);
+    }
+    auto zero_samples=old_manifest;zero_samples["view"]["shadow_samples"]=0;rejected(zero_samples,old_scene);
+    auto zero_scene=old_scene;zero_scene["world"]["shadow_samples"]=0;rejected(old_manifest,zero_scene);
+    auto mixed=old_manifest;mixed["view"]["direct_candidates"]=8;rejected(mixed,old_scene);
+    auto mixed_scene=old_scene;mixed_scene["world"]["direct_candidates"]=8;rejected(old_manifest,mixed_scene);
+    auto unknown=original;unknown["view_schema"]=3;rejected(unknown,original_scene);
+    auto disagrees=old_manifest;disagrees["view"]["exposure_ev"]=old_scene.at("world").at("exposure_ev").get<double>()+.25;
+    rejected(disagrees,old_scene,"dependency_mismatch");
+
+    auto expected_view=original.at("view");expected_view["direct_candidates"]=8;expected_view["direct_reference"]=false;
+    auto expected_world=original_scene.at("world");expected_world["direct_candidates"]=8;
+    for(unsigned schema:{0u,1u}) {
+        auto manifest=old_manifest;auto scene=old_scene;
+        if(schema==1) {
+            manifest["view_schema"]=1;
+            // Both endpoints of the retired ranges migrate to the same defaults.
+            manifest["view"]["shadow_light_budget"]=0;manifest["view"]["shadow_samples"]=1;
+            scene["world"]["shadow_light_budget"]=0;scene["world"]["shadow_samples"]=1;
+        }
+        publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
+        const auto migrated=d.inspect();
+        require(migrated.at("view")==expected_view && migrated.at("camera")==original.at("camera") &&
+            !migrated.at("dirty").get<bool>() && migrated.at("selection").size()==original.at("selection_indices").size(),
+            "Legacy repro lost view/camera/selection or inferred reference mode from old shadow samples");
+        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Migrated repro export did not start");
+        const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
+        const std::filesystem::path new_repro=wide(exported.at("result").at("directory").get<std::string>());
+        const auto saved=read(new_repro/"manifest.json");
+        const auto saved_scene=read(new_repro/"Project"/wide(saved.at("scene").get<std::string>()));
+        require(saved.at("view_schema")==2 && saved.at("view")==expected_view && saved_scene.at("version")==5 &&
+            saved_scene.at("world")==expected_world && saved_scene.at("actors")==original_scene.at("actors") &&
+            saved.at("selection_indices")==original.at("selection_indices"),
+            "Migrated repro export lost author data or retained a legacy view/scene format");
+        require(!saved.at("view").contains("shadow_light_budget") && !saved.at("view").contains("shadow_samples") &&
+            !saved_scene.at("world").contains("direct_reference"),"Migrated repro retained retired author options or persisted reference diagnostics");
+        d.ok("repro.open",{{"directory",utf8(new_repro.wstring())}});
+        const auto reopened=d.inspect();
+        require(reopened.at("view")==expected_view && reopened.at("camera")==original.at("camera") &&
+            !reopened.at("dirty").get<bool>() && reopened.at("selection").size()==original.at("selection_indices").size(),
+            "New-schema export of the migrated repro did not reopen cleanly");
+    }
+}
+void repro_lighting(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto project=root/"Project",directory=root/"Control";project_fixture(project);
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+    Driver d(discover_editor(editor,directory));d.inspect();d.ok("scene.create",{{"kind","mesh"}});
+    d.ok("camera.look_at",{{"eye",{8,5,-10}},{"target",{1,2,3}}});
+    d.ok("view.set",{{"patch",{{"direct_candidates",16},{"direct_reference",true},{"exposure_ev",1.25}}}});
+    d.ok("scene.save");const auto id=unique_id();
+    require(d.call("repro.export",Json::object(),id).at("status")=="pending","Lighting repro export did not start");
+    const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
+    repro_lighting_migration(d,wide(exported.at("result").at("directory").get<std::string>()),root);
+    d.client.reset();editor.close();
+    write(root/"result.json",Json{{"status","passed"},{"cases",{"legacy-shadow-ranges","legacy-view-and-world-agreement",
+        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema2-scene5-export-reopen","no-implicit-reference"}}}.dump(2));
+    std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
+}
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"NestedProject";project_fixture(project);const auto directory=project/"Content/Control";
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"nested-editor.log");
@@ -261,9 +357,10 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug]");
+        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting]");
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
         if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
+        if(argc==4 && std::wstring_view(argv[3])==L"--repro-lighting") {repro_lighting(argv[1],root);return 0;}
         if(argc==4) {
             repro_paths(argv[1],root/"exports",false);repro_paths(argv[1],root/"deep-control",true);
             reject_nested_destination(argv[1],root);
@@ -399,6 +496,7 @@ int wmain(int argc,wchar_t** argv) {
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});current=d.inspect();
         require(current.at("actors").size()==1 && current.at("actors")[0].at("name")=="Control cube" && !current.at("dirty").get<bool>(),"Repro reopen failed");
         error(d.call("scene.rename",{{"object",actor},{"name","Old handle"}}),"stale_object");
+        repro_lighting_migration(d,repro,root);
         d.ok("scene.delete");require(d.inspect().at("actors").empty(),"Delete command did not remove the selected actor");d.ok("scene.undo");require(d.inspect().at("actors").size()==1,"Undo did not restore the actor");
         d.client.reset();
         Process cli(std::filesystem::path(argv[1]).parent_path()/"atelier_control.exe",L"--list --directory "+quote(directory),root/"cli.json");
@@ -411,7 +509,7 @@ int wmain(int argc,wchar_t** argv) {
         const auto cli_result=read(root/"cli-capture.json");require(cli_result.at("status")=="ok" && cli_result.at("result").at("samples").size()==1,"CLI did not await its capture job");
         editor.close();require(discover(directory).empty(),"Closed editor descriptor remained live");
         reject_nested_destination(argv[1],root);
-        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
+        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","legacy-lighting-repro","rejected-repro-preserves-camera-selection","schema2-scene5-reopen","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
         std::cout<<"Editor Control E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
     } catch(const std::exception& error) {std::cerr<<"Editor Control E2E: FAIL: "<<error.what()<<'\n';return 1;}
 }

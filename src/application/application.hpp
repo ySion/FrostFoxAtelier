@@ -4,6 +4,7 @@
 #include "application/popup.hpp"
 #include "application/play_process.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/recovery.hpp"
 #include "editor/camera.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
@@ -77,6 +78,8 @@ private:
     std::unique_ptr<EditorControl> control_;
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
+    SceneRecovery recovery_;
+    void preserve_failure(std::string_view) noexcept;
     std::optional<editor::Project> project_;
     std::filesystem::path examples_workspace_; // Empty selects the current user's local application data.
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.

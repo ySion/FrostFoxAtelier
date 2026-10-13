@@ -96,7 +96,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     }
     scene_lit_e2e::png(capture,output/"material-lit-coverage.png");
     frame.view.lit.antialiasing=render::Antialiasing::none;
-    frame.environment={};frame.view.lit.shadow_samples=64;
+    frame.environment={};frame.view.lit.direct_reference=true;
     sunlight[0].direction={.89442719f,0,.4472136f};sunlight[0].casts_shadow=true;
     ++ui_frame.id;take(renderer.render(frame,&capture));const auto unshadowed=pixel(capture,x*3,y)[1];
     frame.view.lit.shadows=true;
@@ -219,11 +219,16 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     ui::Frame drawing{.id=12000,.extent=take(renderer.target()).extent,.draws={}};
     render::Frame frame{drawing,camera(drawing.extent),{0,0,float(drawing.extent.width),float(drawing.extent.height)},room.meshes};
     frame.scene_identity=12000;frame.scene_revision=1;frame.lights=lights;frame.view.shading=render::Shading::scene_lit;
-    auto& options=frame.view.lit;options.antialiasing=render::Antialiasing::none;options.gtao=false;options.sssr=false;options.bloom=false;
+    auto& options=frame.view.lit;options.antialiasing=render::Antialiasing::none;
+    options.gtao=options.sssr=options.ssil=options.bloom=false;
     options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};options.probe_volumes[0].counts={11,7,10};options.probe_update_budget=96;options.probe_rays=64;
     const auto capture=[&](const char* name) {
         render::Capture result;
-        for(unsigned i=0;i<warmup_frames;++i) {pump();++drawing.id;take(renderer.render(frame,i+1==warmup_frames?&result:nullptr));}
+        // With AA and other temporal effects disabled above, reference DI
+        // without DDGI has no history to settle. Each captured frame still
+        // integrates 64 independent estimates; discarded frames add no evidence.
+        const unsigned frames=options.direct_reference&&!options.ddgi?1u:warmup_frames;
+        for(unsigned i=0;i<frames;++i) {pump();++drawing.id;take(renderer.render(frame,i+1==frames?&result:nullptr));}
         png(result,output/name);return result;
     };
     const auto left=project_region(frame.camera,frame.scene_viewport,drawing.extent,{-3.15f,.01f,1.f});
@@ -251,7 +256,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     check(lu[2]-ld[2]>lu[0]-ld[0]+1,"texture-only edit updates DDGI without replacing geometry or object identity");
     // The source is above the camera frustum. Its image must still illuminate
     // receivers through mesh NEE, independent of screen visibility and DDGI.
-    frame.lights={};options.shadow_samples=64;
+    frame.lights={};options.direct_reference=true;
     room.meshes[7].geometry=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
         {{-2,6,2},{0,-1,0},{0,0}},{{2,6,2},{0,-1,0},{1,0}},{{2,6,6},{0,-1,0},{1,1}},
         {{-2,6,2},{0,-1,0},{0,0}},{{2,6,6},{0,-1,0},{1,1}},{{-2,6,6},{0,-1,0},{0,1}}});

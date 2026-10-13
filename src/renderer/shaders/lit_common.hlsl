@@ -14,46 +14,23 @@ row_major float4x4 lit_view_projection;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
 row_major float4x4 lit_previous_inverse_view_projection;
-float4 lit_camera_position;
 float4 lit_environment; // RGB radiance, reserved
-uint4 lit_counts; // lights,shadow slots,samples,effect flags
+uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom, local GI
 uint lit_history_invalid; // Per-signal incompatibility: direct=1, reflection=2, AO=4, final TAA=8, SSIL=16.
 float4 lit_controls; // exposure multiplier,shadow bias,AO radius,SSR max distance
 float4 lit_temporal; // history weight,roughness threshold,radiance change,visibility geometry change
 float4 lit_jitter; // current xy,previous xy; viewport pixel units
 
-struct LitLight {
-    float4 position_range;
-    float4 direction_radius;
-    float4 color_intensity;
-    float4 right_width;
-    float4 up_height;
-    uint4 meta; // kind(point=0,rect=1,dir=2),shadow slot/~0,flags(two-sided=1,casts-shadow=2),stable hash
-};
-// Derived from emissive mesh triangles; the material defines emission sidedness.
-// The probability is the selected face's PMF, not its alias acceptance.
-struct LitEmitter {
-    float4 origin_area;
-    float4 edge1_probability;
-    float4 edge2_accept;
-    float3 normal;
-    uint alias;
-    uint instance,primitive;
-    uint2 reserved;
-};
-uint lit_emitter_count;
 struct LitInstance {
     row_major float4x4 world;
     row_major float4x4 previous_world;
     float4 normal_x, normal_y, normal_z;
-    uint4 geometry; // global RT face offset,reserved,history valid,stable hash
+    uint4 geometry; // RT face offset, stable key low, history valid, stable key high; zero key has no correspondence.
 };
 // Shares the uploaded geometry::Vertex layout with the studio raster path.
 // UV and slot lookup are identical in primary and secondary surface evaluation.
 struct LitVertex { float3 position; float3 normal; float2 uv; float4 tangent; };
 struct LitRayTriangle { LitVertex vertices[3]; float3 geometric_normal; uint closed; uint material_slot; uint closure_first,closure_count,reserved; };
-StructuredBuffer<LitLight> lit_lights;
-StructuredBuffer<LitEmitter> lit_emitters;
 StructuredBuffer<LitInstance> lit_instances;
 StructuredBuffer<LitRayTriangle> lit_rt_triangles;
 StructuredBuffer<uint> lit_closed_slots;
@@ -61,6 +38,7 @@ RaytracingAccelerationStructure lit_scene;
 RWStructuredBuffer<uint> lit_ray_counters; // Four low words followed by their four high words.
 Texture2D<float> lit_depth;
 Texture2D<float> lit_previous_depth;
+Texture2D<uint2> lit_surface_id;
 Texture2D<float4> lit_normal_roughness;
 Texture2D<float2> lit_geometry_normal;
 Texture2D<float2> lit_history_geometry_normal;
@@ -106,10 +84,6 @@ float3 lit_view_direction(float2 uv) {
     return normalize(lit_world(uv,lit_depth_near_value())-lit_world(uv,middle));
 }
 uint lit_hash(uint x) { x^=x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; return x^(x>>16); }
-uint lit_light_seed(uint2 pixel,uint light_index) {
-    uint sequence=lit_counts.z==64?0:lit_size_frame.z;
-    return lit_hash(pixel.x+pixel.y*lit_size_frame.x+sequence*7919+light_index*104729);
-}
 float lit_random(inout uint seed) { seed=lit_hash(seed); return (seed>>8)*(1.0/16777216.0); }
 float3 lit_safe_normal(float3 n) {
     float largest = max(abs(n.x), max(abs(n.y), abs(n.z)));
@@ -183,105 +157,6 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
     query.TraceRayInline(lit_scene, 0, 255, ray); while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
         lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     return query.CommittedStatus() == COMMITTED_NOTHING;
-}
-uint lit_emitter_sample_count() {
-    return lit_emitter_count > 0 ? clamp(lit_counts.z, 4u, 64u) : 0;
-}
-// Returns Le / solid-angle PDF, including face selection and uniform
-// area sampling. The receiver cosine belongs exclusively to lit_brdf_components.
-float3 lit_sample_emitter(float3 p, inout uint seed, out float3 direction, out float3 target) {
-    direction = 0; target = p;
-    if (lit_emitter_count == 0) return 0;
-    uint index = min(uint(lit_random(seed) * lit_emitter_count), lit_emitter_count - 1);
-    LitEmitter emitter = lit_emitters[index];
-    if (lit_random(seed) >= emitter.edge2_accept.w) emitter = lit_emitters[emitter.alias];
-    float root = sqrt(lit_random(seed)), split = lit_random(seed);
-    target = emitter.origin_area.xyz + root * (1 - split) * emitter.edge1_probability.xyz +
-        root * split * emitter.edge2_accept.xyz;
-    float3 delta = target - p;
-    float distance_squared = dot(delta, delta);
-    float area = emitter.origin_area.w, probability = emitter.edge1_probability.w;
-    if (distance_squared <= 0 || !isfinite(distance_squared) || area <= 0 || probability <= 0) return 0;
-    direction = delta * rsqrt(distance_squared);
-    float3 normal = lit_safe_normal(emitter.normal);
-    LitRayTriangle face=lit_rt_triangles[lit_instances[emitter.instance].geometry.x+emitter.primitive];
-    MaterialSurface surface=lit_ray_material(emitter.instance,face);
-    float2 uv=lit_triangle_uv(face,float2(root*(1-split),root*split));
-    if(!material_covered(surface,uv,0,0,0,false))return 0;
-    float cosine=dot(normal,-direction);
-    cosine=surface.flags.z!=0?abs(cosine):saturate(cosine);
-    float3 emission=surface.emissive_metallic.rgb*material_read(surface,4,uv,0,0,0,false).rgb;
-    return max(emission,0)*(area*cosine/(probability*distance_squared));
-}
-void lit_emitter_lighting(float3 p, float3 n, float3 geometric_normal, float3 v, float3 base, float roughness, float metallic,
-                          bool shadows, bool include_specular, inout uint seed,
-                          out float3 diffuse_result, out float3 specular_result) {
-    diffuse_result = 0; specular_result = 0;
-    uint samples = lit_emitter_sample_count();
-    uint candidates = lit_counts.z == 64 ? 1u : 4u;
-    [loop] for (uint sample_index = 0; sample_index < samples; ++sample_index) {
-        float3 selected_target = p, selected_diffuse = 0, selected_specular = 0;
-        float weight_sum = 0, selected_weight = 0;
-        [loop] for (uint candidate = 0; candidate < candidates; ++candidate) {
-            float3 direction, target;
-            float3 incoming = lit_sample_emitter(p, seed, direction, target);
-            if (dot(n, direction) <= 0 || dot(geometric_normal,direction)<=0 || !any(incoming > 0)) continue;
-            float3 diffuse, specular;
-            lit_brdf_components(base, roughness, metallic, n, v, direction, diffuse, specular);
-            diffuse *= incoming;
-            specular = include_specular ? specular * incoming : 0;
-            // These contributions already include the proposal PDF inverse,
-            // so luminance is the RIS weight, not a second light-selection PDF.
-            float weight = dot(diffuse + specular, float3(.2126, .7152, .0722));
-            if (weight <= 0) continue;
-            weight_sum += weight;
-            bool replace = selected_weight == 0;
-            // One-candidate reference mode consumes no reservoir random value.
-            if (!replace) replace = lit_random(seed) * weight_sum < weight;
-            if (replace) {
-                selected_target = target;
-                selected_diffuse = diffuse; selected_specular = specular;
-                selected_weight = weight;
-            }
-        }
-        if (selected_weight <= 0) continue;
-        if (shadows && !lit_visible_target(p, geometric_normal, selected_target)) continue;
-        // Zero-contribution candidates still count in M. Only the selected
-        // candidate traces visibility; no previous visibility is reused.
-        float correction = (weight_sum / selected_weight) / candidates;
-        diffuse_result += selected_diffuse * correction;
-        specular_result += selected_specular * correction;
-    }
-    // Rejected and shadowed samples remain in the denominator.
-    diffuse_result /= max(samples, 1u);
-    specular_result /= max(samples, 1u);
-}
-// Returns incoming radiance integrated against the sampling solid angle.
-// Rectangle uses uniform area samples, including its emitting cosine and area.
-float3 lit_sample_light(LitLight light,float3 p,inout uint seed,out float3 l,out float distance) {
-    uint kind=light.meta.x; float3 q=light.position_range.xyz;
-    if(kind==2) {
-        l=-normalize(light.direction_radius.xyz);
-        if(light.direction_radius.w>0) {
-            float3 t,b; lit_basis(l,t,b); float r=sqrt(lit_random(seed))*tan(light.direction_radius.w);
-            float phi=2*LIT_PI*lit_random(seed); l=normalize(l+r*(cos(phi)*t+sin(phi)*b));
-        }
-        distance=1e5; return light.color_intensity.rgb*light.color_intensity.w;
-    }
-    if(kind==1) q+=(lit_random(seed)-.5)*light.right_width.xyz*light.right_width.w+
-                       (lit_random(seed)-.5)*light.up_height.xyz*light.up_height.w;
-    else if(light.direction_radius.w>0) {
-        float z=2*lit_random(seed)-1,phi=2*LIT_PI*lit_random(seed);
-        q+=light.direction_radius.w*float3(sqrt(1-z*z)*cos(phi),z,sqrt(1-z*z)*sin(phi));
-    }
-    float3 delta=q-p; distance=length(delta); l=delta/max(distance,1e-5);
-    float cutoff=saturate(1-pow(distance/max(light.position_range.w,1e-3),4)); cutoff*=cutoff;
-    float attenuation=cutoff/max(distance*distance,max(.0025,light.direction_radius.w*light.direction_radius.w));
-    if(kind==1) {
-        float cosine=dot(normalize(light.direction_radius.xyz),-l);
-        attenuation*= ((light.meta.z&1)!=0?abs(cosine):saturate(cosine))*light.right_width.w*light.up_height.w;
-    }
-    return light.color_intensity.rgb*light.color_intensity.w*attenuation;
 }
 struct LitSurface { float3 position,normal,geometric_normal,base; float roughness,metallic; bool closed,double_sided; };
 LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float footprint) {

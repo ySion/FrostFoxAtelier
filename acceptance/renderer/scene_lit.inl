@@ -265,6 +265,19 @@ struct Fixture {
     void close() { check(bool(renderer.close()), "SceneLit drains GPU resources before HWND destruction"); }
 };
 
+std::array<double,3> lighting_mean(Fixture& f,const char* name,Region region,unsigned settle=64,unsigned samples=16) {
+    for(unsigned i=0;i<settle;++i) f.step();
+    std::array<double,3> sum{};
+    render::Capture image;
+    for(unsigned i=0;i<samples;++i) {
+        f.step(&image);const auto value=mean_rgb(image,region);
+        for(unsigned channel=0;channel<3;++channel) sum[channel]+=value[channel];
+    }
+    for(auto& value:sum)value/=samples;
+    png(image,f.output/(std::string(name)+".png"));
+    return sum;
+}
+
 void benchmark(Fixture& f) {
     for (unsigned frame = 0; frame < warmup_frames; ++frame) f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
@@ -305,7 +318,7 @@ void benchmark(Fixture& f) {
         samples<<'\n';
     }
     check(totals.size() >= 120 && percentile(totals, 95) > 0, "SceneLit benchmark obtains completed GPU timestamp samples");
-    f.metrics << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle, four shadow lights\n"
+    f.metrics << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle plus mesh emission\n"
               << "warmup_frames=" << warmup_frames << " gpu_samples=" << totals.size() << "\n"
               << "GPU timestamps exclude capture/readback, CPU Present duration and display scanout.\n"
               << "sum_of_measured_passes_ms p50=" << percentile(totals,50) << " p95=" << percentile(totals,95)
@@ -348,7 +361,7 @@ void environment_cases(Fixture& f) {
     const auto sky=f.capture("sky-authored-on",warmup_frames);
     check(f.compare("sky-authored-response",dark,sky).changed>1000,
         "explicit scene sky radiance illuminates real surfaces");
-    check(f.step().stats.scene_lit_shadow_lights==0,"sky does not consume direct shadow slots");
+    check(f.step().stats.scene_lit_shadow_sources==0,"sky is independent of direct shadow sources");
     f.frame.environment={};++f.frame.scene_revision;
     // Allow the budgeted multi-bounce histories to decay to a one-code-value
     // SDR endpoint; the scene radiance input itself is already exactly zero.
@@ -378,7 +391,7 @@ void image_cases(Fixture& f) {
     f.room.meshes = original_meshes; f.edited();
     const auto combined = f.capture("01-combined", warmup_frames);
     const auto initial = f.step().stats;
-    check(initial.scene_lit_shadow_lights == 4 && initial.scene_lit_unshadowed_lights == 0 &&
+    check(initial.scene_lit_shadow_sources >= 4 && initial.scene_lit_shadow_sources == initial.scene_lit_light_sources &&
               initial.scene_lit_resource_bytes > 0 && initial.scene_draw_calls > 0,
           "SceneLit shades a real room with all four requested shadow lights");
     check(pixel(combined,12,12)[1] == 255 && depth(combined,12,12) == 0 && depth(combined,20,270) == 0,
@@ -388,18 +401,15 @@ void image_cases(Fixture& f) {
     f.lights.push_back(overflow_light); f.edited();
     render::Capture overflow;
     const auto overflow_result = f.step(&overflow);
-    png(overflow,f.output/"01-shadow-budget-overflow.png");
-    // The budget limits visibility queries, not scene acceptance or lighting.
-    // All five producers still request shadows; the fifth remains explicitly
-    // accounted as unshadowed while the four budgeted lights trace visibility.
-    check(overflow_result.stats.scene_lit_shadow_lights == 4 &&
-              overflow_result.stats.scene_lit_unshadowed_lights == 1 &&
+    png(overflow,f.output/"01-five-shadow-lights.png");
+    check(overflow_result.stats.scene_lit_shadow_sources == initial.scene_lit_shadow_sources+1 &&
+              overflow_result.stats.scene_lit_shadow_sources == overflow_result.stats.scene_lit_light_sources &&
               overflow_result.stats.ui_draw_calls == initial.ui_draw_calls &&
               overflow_result.stats.scene_draw_calls == initial.scene_draw_calls &&
               pixel(overflow,12,12)[1] == 255 && depth(overflow,12,12) == 0 &&
               std::count_if(overflow.depth.begin(),overflow.depth.end(),[](float value) { return value > 0; }) > 1000,
-          "five casting lights with budget four accept: four shadowed, one unshadowed, scene/UI/depth intact");
-    std::puts("SceneLit shadow-budget overflow: accepted (requested=5, budget=4, shadowed=4, unshadowed=1)");
+          "fifth casting light remains a shadow source with scene/UI/depth intact");
+    std::puts("SceneLit all-light visibility: accepted (all five analytic lights and emitters retain shadows)");
     f.lights = original_lights; f.edited();
 
     // Hold unrelated contributions at zero; compare the same receiver/depth
@@ -407,7 +417,7 @@ void image_cases(Fixture& f) {
     auto& options = f.frame.view.lit;
     options.ddgi = options.gtao = options.sssr = options.bloom = false;
     options.antialiasing = render::Antialiasing::none;
-    f.frame.environment = {0,0,0}; options.shadow_samples = 64;
+    f.frame.environment = {0,0,0}; options.direct_reference=true;
     f.room.meshes[7].material.emissive = {0,0,0};
     for (std::size_t index = 0; index < original_lights.size(); ++index) {
         f.lights = {original_lights[index]};
@@ -428,7 +438,7 @@ void image_cases(Fixture& f) {
     const auto rect_back = f.capture("03-rect-back");
     check(f.compare("rectangle-backface",rect_large,rect_back).darker >= 64,
           "single-sided rectangle suppresses back-facing illumination");
-    options.shadow_samples = 1;
+    options.direct_reference=false;
 
     // Self-emission is scene-linear HDR RGB and remains distinct from exposure.
     f.lights.clear(); f.room.meshes[7].material.emissive = {4,.3f,.05f}; f.edited();
@@ -517,7 +527,7 @@ void image_cases(Fixture& f) {
     f.room.meshes = original_meshes; f.lights = original_lights; f.edited();
     options = original_lit; f.frame.environment = original_environment; options.bloom = options.ddgi = false;
     options.antialiasing = render::Antialiasing::none;
-    options.shadow_samples = 64; // Identical direct samples isolate SSR's contribution.
+    options.direct_reference=true; // Independent 64-estimate reference reduces unrelated direct noise.
     options.sssr = false;
     const auto fallback = f.capture("09-reflection-fallback",warmup_frames);
     options.sssr = true;
@@ -560,8 +570,9 @@ void image_cases(Fixture& f) {
           "identical Edit and Play snapshots converge to the same SceneLit appearance");
     f.lights.clear(); f.edited();
     render::Capture deleted; const auto deleted_result = f.step(&deleted); png(deleted,f.output/"10-lights-deleted.png");
-    check(deleted_result.stats.scene_lit_history_resets == 0 && deleted_result.stats.scene_lit_shadow_lights == 0,
-          "deleting lights removes current shadow work without resetting the stable geometry domain");
+    check(deleted_result.stats.scene_lit_history_resets == 0 &&
+              deleted_result.stats.scene_lit_shadow_sources+original_lights.size()==initial.scene_lit_shadow_sources,
+          "deleting analytic lights retains only emitter shadow sources without resetting the geometry domain");
     check(f.compare("light-deletion-immediate",stable1,deleted).changed >= 64,
           "light deletion visibly changes the current frame rather than leaving a temporal ghost");
 
@@ -625,7 +636,7 @@ void temporal_isolation(Fixture& f) {
         f.frame.view.lit=defaults;
         if(mode==1 || mode>=3) f.frame.view.lit.sssr=false;
         if(mode>=2) f.frame.view.lit.ddgi=false;
-        if(mode==4) f.frame.view.lit.shadow_samples=64;
+        if(mode==4) f.frame.view.lit.direct_reference=true;
         f.edited();
         const auto first=f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
         const auto second=f.capture((std::string(names[mode])+"-1").c_str(),8);
@@ -793,7 +804,7 @@ void quality_ssil(Fixture& f) {
     auto& options=f.frame.view.lit;
     options.antialiasing=render::Antialiasing::none;
     options.ddgi=options.gtao=options.sssr=options.bloom=options.ssil=false;
-    f.frame.environment={.15f,.15f,.15f};options.shadow_samples=64;
+    f.frame.environment={.15f,.15f,.15f};options.direct_reference=true;
     // Keep both sides free of GTAO. Deterministic direct64 and the same fixed
     // isotropic fallback make the optional residual the only changing source.
     const auto local=f.region({0,.01f,2.05f});
@@ -862,7 +873,7 @@ void quality_emissive_nee(Fixture& f) {
     f.frame.environment={0,0,0};
     auto& options=f.frame.view.lit;
     options={};options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-    options.antialiasing=render::Antialiasing::none;options.shadow_samples=64;
+    options.antialiasing=render::Antialiasing::none;options.direct_reference=true;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
@@ -1041,7 +1052,7 @@ void quality_ddgi(Fixture& f) {
     const auto bright_edge=mean_rgb(subpixel,project_region(f.frame.camera,f.frame.scene_viewport,
         f.drawing.extent,{world_pixel*2,1.6f,5.38f},0));
     std::printf("SceneLit DDGI subpixel divider dark red=%.4f, lit red=%.4f\n",dark_edge[0],bright_edge[0]);
-    options.shadow_samples=64;
+    options.direct_reference=true;
     const auto subpixel_reference=f.capture("ddgi-subpixel-divider-direct64",16);
     const auto dark_reference=mean_rgb(subpixel_reference,project_region(f.frame.camera,f.frame.scene_viewport,
         f.drawing.extent,{0,1.6f,5.38f},0));
@@ -1060,6 +1071,7 @@ void quality_ddgi(Fixture& f) {
 }
 
 #include "scene_lit_work.inl"
+#include "scene_lit_restir.inl"
 #include "scene_lit_contracts.inl"
 #include "scene_lit_debug.inl"
 
@@ -1169,25 +1181,20 @@ void quality_cases(Fixture& f) {
         check(f.step().stats.scene_lit_history_resets==0,"camera-cut history recovers on the following accepted frame");
     }
 
-    // Direct64 is a deterministic finite-sample reference for this fixture,
-    // not an absolute lighting truth. Disable the other signals to attribute
-    // discrepancy to direct radiance reconstruction rather than GI or SSR.
+    // Compare long-term regional means against 64 independent RIS estimates.
+    // Other effects are disabled so they cannot mask direct estimator bias.
     f.room.meshes=meshes;f.lights=lights;f.frame.camera=camera;f.edited();
     auto& options=f.frame.view.lit;
     options=defaults;options.antialiasing=render::Antialiasing::none;
-    options.ddgi=options.gtao=options.sssr=options.bloom=false;
-    options.shadow_samples=1;
-    const auto sampled=f.capture("quality-direct-one-converged",warmup_frames);
-    options.shadow_samples=64;
-    const auto reference=f.capture("quality-direct64-reference",warmup_frames);
-    const auto reference_later=f.capture("quality-direct64-reference-settled",8);
-    const auto reference_stability=f.compare("direct64-reference-stability",reference,reference_later);
-    check(reference_stability.mean<=3 && reference_stability.p95<=8,
-          "finite direct64 reference itself has converged within the existing stability bounds");
-    const auto reference_delta=region_difference(sampled,reference,penumbra);
-    f.metrics<<"direct64-penumbra-reference,"<<reference_delta.mean<<','<<reference_delta.p95<<','<<reference_delta.changed<<",0\n";
-    check(reference_delta.mean<=3 && reference_delta.p95<=8,
-          "converged one-sample direct receiver remains close to the finite direct64 reference");
+    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.direct_reference=false;
+    const auto sampled=lighting_mean(f,"quality-direct-converged",penumbra,warmup_frames,32);
+    options.direct_reference=true;
+    const auto reference=lighting_mean(f,"quality-direct64-reference",penumbra,1,32);
+    const auto reference_later=f.capture("quality-direct64-reference-depth");
+    for(unsigned channel=0;channel<3;++channel)
+        check(std::abs(sampled[channel]-reference[channel])<=std::max(3.,reference[channel]*.08),
+              "converged direct receiver mean remains close to the independent direct64 reference");
     // Legacy mesh index 4 used to occupy the same scalar key as an authored
     // UINT64_MAX-4. Both blockers must survive in their distinct object domains.
     const auto central_key=f.room.meshes[4].stable_key;
@@ -1195,9 +1202,13 @@ void quality_cases(Fixture& f) {
     f.room.meshes[4].stable_key=0;
     f.room.meshes[5].stable_key=std::numeric_limits<std::uint64_t>::max()-4;
     f.edited();
-    const auto distinct_keys=f.capture("quality-legacy-authored-key-domains");
-    check(distinct_keys.depth==reference_later.depth && distinct_keys.rgba==reference_later.rgba,
-          "legacy fallback and authored uint64 keys preserve both blockers and identical deterministic lighting/depth");
+    const auto distinct_mean=lighting_mean(f,"quality-legacy-authored-key-domains",penumbra,1,32);
+    const auto distinct_keys=f.capture("quality-legacy-authored-key-depth");
+    check(distinct_keys.depth==reference_later.depth,
+          "legacy fallback and authored uint64 keys preserve both blockers and their exact geometry depth");
+    for(unsigned channel=0;channel<3;++channel)
+        check(std::abs(distinct_mean[channel]-reference[channel])<=3,
+              "legacy fallback and authored uint64 keys preserve the reference lighting mean");
     f.room.meshes[4].stable_key=central_key;f.room.meshes[5].stable_key=metal_key;f.edited();
     quality_ssil(f);
     quality_depth(f);
@@ -1208,9 +1219,10 @@ void quality_cases(Fixture& f) {
 }
 } // namespace scene_lit_e2e
 
-int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false, bool volumes_only=false) {
+int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false, bool volumes_only=false, bool restir_only=false) {
     scene_lit_e2e::Fixture fixture(benchmark_mode,output,ddgi_only?atelier::rhi::Validation::debug_layer:atelier::rhi::Validation::gpu);
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
+    else if(restir_only) scene_lit_e2e::restir_cases(fixture);
     else if(volumes_only) {
         // Reuse the prepared renderer for the related real-GPU regressions;
         // shader preparation is not repeated for each independent scene.
