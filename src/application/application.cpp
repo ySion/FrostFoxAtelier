@@ -1070,12 +1070,6 @@ bool Application::step(renderer::Capture* capture) try {
         workspace_.lighting.observe(rendered->stats);
         if(viewport) camera_cut_=false;
         workspace_.render_notice.clear();
-        if(viewport && effective_view.shading==renderer::Shading::scene_lit && effective_view.lit.shadows &&
-            effective_view.wireframe!=renderer::Wireframe::only) {
-            const auto requested=std::ranges::count_if(scene_.lights,[](const auto& light){return light.casts_shadow;});
-            if(std::uint64_t(requested)>effective_view.lit.shadow_light_budget)
-                workspace_.render_notice=L"Shadows "+std::to_wstring(rendered->stats.scene_lit_shadow_lights)+L"/"+std::to_wstring(requested);
-        }
         ++accepted_frames_;
         update_viewport_fps(workspace_.show_fps && viewport && !frame_capture);
         if(control_) {

@@ -12,6 +12,7 @@ inline constexpr char image_ps[] = R"shader(@image_ps@)shader";
 inline constexpr char viewport_vs[] = R"shader(@viewport_vs@)shader";
 inline constexpr char background_ps[] = R"shader(@background_ps@)shader";
 inline constexpr char lit_gbuffer[] = R"shader(@lit_gbuffer@)shader";
+inline constexpr char lit_restir[] = R"shader(@lit_restir@)shader";
 inline constexpr char lit_direct[] = R"shader(@lit_direct@)shader";
 inline constexpr char lit_ddgi_debug[] = R"shader(@lit_ddgi_debug@)shader";
 inline constexpr char lit_ddgi[] = R"shader(@lit_ddgi@)shader";

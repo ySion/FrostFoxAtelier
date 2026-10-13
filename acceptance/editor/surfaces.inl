@@ -162,9 +162,15 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     const auto control_reply=[&] {
         auto pending=std::async(std::launch::async,[descriptor=*instance] {
             api::Client client(descriptor,std::chrono::seconds(5));
-            const auto state=client.call({{"op","capabilities"}});
-            return client.call({{"op","view.set"},{"state_token",state.at("state_token")},
-                {"args",{{"patch",api::Json::object()}}}});
+            // Native input can advance the token between these two pipe calls.
+            // Refresh only stale requests; a fresh request must still prove busy/idle.
+            for(unsigned attempt=0;attempt<8;++attempt) {
+                const auto state=client.call({{"op","editor.inspect"},{"args",{{"detail","summary"}}}});
+                auto reply=client.call({{"op","view.set"},{"state_token",state.at("state_token")},
+                    {"args",{{"patch",api::Json::object()}}}});
+                if(reply.at("status")!="error" || reply.at("error").at("code")!="stale_state") return reply;
+            }
+            throw std::runtime_error("Camera Control acceptance could not obtain a stable state token.");
         });
         while(pending.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready)
             require(app.step(),"Editor closed during camera Control acceptance.");

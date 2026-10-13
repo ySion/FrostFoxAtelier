@@ -47,6 +47,8 @@ RWTexture2D<float4> lit_taa_output;
 RWTexture2D<float4> lit_history_normal_output;
 RWTexture2D<float2> lit_history_geometry_normal_output;
 RWTexture2D<float> lit_history_depth_output;
+RWTexture2D<float4> lit_history_base_metallic_output;
+RWTexture2D<uint2> lit_history_surface_id_output;
 Texture2D<float4> lit_taa;
 Texture2D<float4> lit_bloom;
 Texture2D<float4> lit_bloom_input;
@@ -113,7 +115,7 @@ float lit_gtao_arc(float angle, float normal_angle) {
 void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
     if (any(p >= lit_size_frame.xy)) return;
-    if (!lit_post_surface(p) || lit_controls.z <= 0 || (lit_counts.w & 4) == 0) { lit_ao_output[p] = 1; return; }
+    if (!lit_post_surface(p) || lit_controls.z <= 0 || (lit_effect_flags & 4) == 0) { lit_ao_output[p] = 1; return; }
     float2 uv = lit_post_uv(p);
     float depth = lit_depth.Load(int3(p, 0));
     float3 center = lit_world(uv, depth);
@@ -269,7 +271,7 @@ bool lit_reflection_same_material(uint2 p, int2 q) {
 [numthreads(1, 1, 1)]
 void lit_ssr_reset_cs(uint3 id : SV_DispatchThreadID) { lit_reflection_counter[0] = 0; }
 bool lit_ssr_eligible(uint2 p, float4 nr) {
-    return (lit_counts.w & 8) != 0 && nr.w <= lit_temporal.y && lit_controls.w > 0 &&
+    return (lit_effect_flags & 8) != 0 && nr.w <= lit_temporal.y && lit_controls.w > 0 &&
         dot(lit_safe_normal(nr.xyz), lit_view_direction(lit_post_uv(p))) > .005;
 }
 [numthreads(8, 8, 1)]
@@ -564,7 +566,7 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
 void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p = id.xy;
     if (any(p >= lit_size_frame.xy)) return;
-    if (!lit_post_surface(p) || (lit_counts.w & 4) == 0 || lit_controls.z <= 0) {
+    if (!lit_post_surface(p) || (lit_effect_flags & 4) == 0 || lit_controls.z <= 0) {
         lit_ao_resolved_output[p] = 1; lit_ao_history_output[p] = float2(1, 0); return;
     }
     float2 uv = lit_post_uv(p);
@@ -682,7 +684,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float2 gradient = lit_post_previous_depth_gradient(position,lit_geometry_normal_at(p));
     float expected_depth = lit_previous_device_depth(p, motion);
     float4 previous_signal; float2 previous_moments; float support;
-    bool valid = (lit_history_invalid & 2) == 0 && (lit_counts.w & 8) != 0 && motion.w > .5 &&
+    bool valid = (lit_history_invalid & 2) == 0 && (lit_effect_flags & 8) != 0 && motion.w > .5 &&
         lit_post_reflection_history(previous_uv, expected_depth, normal, nr.w, tolerance,
                                     gradient, previous_signal, previous_moments, support);
     float geometry_response = 0;
@@ -771,7 +773,7 @@ void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
     if (any(p >= lit_size_frame.xy)) return;
     float4 center = lit_reflection_filter_input.Load(int3(p, 0));
     lit_reflection_filter_output[p] = center;
-    if (!lit_post_surface(p) || (lit_counts.w & 8) == 0) return;
+    if (!lit_post_surface(p) || (lit_effect_flags & 8) == 0) return;
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
     if (!lit_ssr_eligible(p, nr)) return;
     // True mirrors retain their association and sharp signal, including edges.
@@ -832,6 +834,8 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     lit_history_depth_output[p] = lit_inside(p) ? depth : lit_depth_far_value();
     lit_history_normal_output[p] = lit_inside(p) ? nr : 0;
     lit_history_geometry_normal_output[p]=lit_inside(p)?lit_geometry_normal.Load(int3(p,0)):0;
+    lit_history_base_metallic_output[p]=lit_inside(p)?lit_base_metallic.Load(int3(p,0)):0;
+    lit_history_surface_id_output[p]=lit_inside(p)?lit_surface_id.Load(int3(p,0)):0;
     if (!lit_inside(p)) { lit_taa_output[p] = 0; return; }
     float3 current = lit_post_current_hdr(p);
     if (!lit_post_surface(p)) { lit_taa_output[p] = float4(current, 1); return; }
@@ -842,7 +846,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     float tolerance = lit_post_previous_depth_tolerance(position, lit_view_direction(uv));
     float2 gradient = lit_post_previous_depth_gradient(position,lit_geometry_normal_at(p));
     float expected_depth = lit_previous_device_depth(p, motion);
-    if ((lit_history_invalid & 8) != 0 || (lit_counts.w & 16) == 0 || motion.w <= .5) {
+    if ((lit_history_invalid & 8) != 0 || (lit_effect_flags & 16) == 0 || motion.w <= .5) {
         lit_taa_output[p] = float4(current, 1); return;
     }
     float3 center_encoded = lit_post_ycocg(current), minimum = center_encoded, maximum = center_encoded;
@@ -930,7 +934,7 @@ void lit_bloom_blur_cs(uint3 id : SV_DispatchThreadID) {
 float4 lit_post_tonemap(uint2 p) {
     if (!lit_inside(p)) return 0;
     float2 uv = lit_post_uv(p);
-    float3 bloom = (lit_counts.w & 32) != 0 ? lit_bloom.SampleLevel(lit_linear_sampler, uv, 0).rgb : 0;
+    float3 bloom = (lit_effect_flags & 32) != 0 ? lit_bloom.SampleLevel(lit_linear_sampler, uv, 0).rgb : 0;
     float3 color = lit_post_finite(lit_taa.Load(int3(p, 0)).rgb +
                                   bloom * clamp(lit_bloom_controls.z, 0, 1));
     color = lit_post_finite(color * max(lit_controls.x, 0));

@@ -15,6 +15,7 @@
 namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
+constexpr unsigned repro_view_schema=2;
 template<class T> T take(Result<T> value) {if(!value) throw Failure("operation_failed",value.error().message);return std::move(*value);}
 void take(Result<void> value) {if(!value) throw Failure("operation_failed",value.error().message);}
 void committed(Result<world::Commit> value) {auto commit=take(std::move(value));if(commit.notification_error) throw Failure("operation_failed",commit.notification_error->message);}
@@ -77,6 +78,20 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patc
         take(editor::set_view_option(view,option->option,scalar));
     }
     take(editor::validate_view_options(view,focus));return view;
+}
+renderer::ViewSettings repro_view(const Json& snapshot,bool legacy_shadow_settings,std::array<float,3> focus) {
+    if(!legacy_shadow_settings || !snapshot.is_object())return patched_view({},snapshot,focus);
+    auto migrated=snapshot;
+    // Only persisted repro input accepts retired settings. Validate the old
+    // authoring ranges, then retain today's defaults rather than infer reference mode.
+    for(const auto* name:{"shadow_light_budget","shadow_samples"}) {
+        const auto found=migrated.find(name);if(found==migrated.end())continue;
+        if(migrated.contains("direct_candidates"))throw Failure("invalid_request","Legacy shadow settings cannot be combined with direct_candidates");
+        const bool samples=std::string_view(name)=="shadow_samples";
+        static_cast<void>(integer(*found,samples?1u:0u,samples?64u:16u));
+        migrated.erase(found);
+    }
+    return patched_view({},migrated,focus);
 }
 Json scalar_json(const Scalar& scalar,const Runtime& runtime) {
     return std::visit([&](const auto& value)->Json {
@@ -207,7 +222,7 @@ struct EditorControl::Impl {
         return {{"frame_id",f.id},{"accepted_count",f.count},{"viewport",{f.bounds.x,f.bounds.y,f.bounds.width,f.bounds.height}},
             {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
-            {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"shadow_lights",s.scene_lit_shadow_lights},{"unshadowed_lights",s.scene_lit_unshadowed_lights},
+            {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
                 {"probe_volumes",probe_volumes_json(s)},{"probe_volumes_source","cpu_layout_and_schedule"}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
             {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
@@ -380,7 +395,7 @@ struct EditorControl::Impl {
         auto job=std::make_unique<Job>();job->id=id;job->peer=peer;job->token=token();job->context=observed;job->started=std::chrono::steady_clock::now();job->deadline=job->started+std::chrono::seconds(120);
         job->directory=server.directory()/"artifacts"/server.identity().at("instance_id").get<std::string>()/control::unique_id();
         job->manifest={{"protocol",control::protocol_version},{"identity",server.identity()},{"state_token",token()},{"request_id",id},
-            {"camera",camera_json(app.camera_.state())},{"view",view_json(app.workspace_.view)}};
+            {"camera",camera_json(app.camera_.state())},{"view_schema",repro_view_schema},{"view",view_json(app.workspace_.view)}};
         jobs.push_back(std::move(job));return *jobs.back();
     }
     Json start_export(const std::string& id,const std::shared_ptr<control::Peer>& peer) {
@@ -557,13 +572,15 @@ struct EditorControl::Impl {
         else if(op=="repro.open") {
             replaceable();const std::filesystem::path root=control::wide(text(args.at("directory")));
             const auto manifest=control_artifacts::validate_repro(root);
+            const auto view_schema=manifest.contains("view_schema")?integer(manifest.at("view_schema"),1,repro_view_schema):1u;
             auto camera=app.camera_;if(!camera.set_state(camera_state(manifest.at("camera")))) throw Failure("invalid_request","Invalid repro camera");
             const auto focus=camera.state().target;
-            auto view=patched_view(renderer::ViewSettings{},manifest.at("view"),{focus.x,focus.y,focus.z});
+            auto view=repro_view(manifest.at("view"),view_schema==1,{focus.x,focus.y,focus.z});
             auto project=take(editor::Project::open(root/"Project"));
             const auto scene=editor::json_format::parse(take(editor::read_file(take(project.resolve(project.startup_scene())))));
-            if(scene.at("version").get<unsigned>()>=4) {
-                const auto authored=patched_view(renderer::ViewSettings{},scene.at("world"),{focus.x,focus.y,focus.z});
+            const auto scene_version=editor::json_format::identity(scene.at("version"));
+            if(scene_version>=4) {
+                const auto authored=repro_view(scene.at("world"),scene_version==4,{focus.x,focus.y,focus.z});
                 if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))
                     throw Failure("dependency_mismatch","Repro frame snapshot disagrees with its Scene World settings");
             }

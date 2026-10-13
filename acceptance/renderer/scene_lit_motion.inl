@@ -15,7 +15,7 @@ void quality_motion_history(Fixture& f) {
         auto& options=f.frame.view.lit;
         options.antialiasing=render::Antialiasing::smaa;
         options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-        options.shadows=true;options.shadow_samples=1;
+        options.shadows=true;options.direct_reference=false;
         f.room.meshes={meshes[0],meshes[4]};
         auto& floor=f.room.meshes[0];auto& mover=f.room.meshes[1];
         floor.color={.7f,.7f,.7f,1};floor.material={.roughness=1};

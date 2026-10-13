@@ -30,6 +30,7 @@ struct CavitySettings {
 
 struct SceneLitSettings : rendering::SceneLightingSettings {
     bool operator==(const SceneLitSettings&) const = default;
+    bool direct_reference{}; // Diagnostic: average 64 independent RIS estimates without reuse or denoising.
     bool probe_feedback_visibility{true}; // False is a diagnostic moment-only comparison.
     bool probe_debug{}; // Actual receiver coverage, independent of the lighting histories.
     ProbeCoverage probe_coverage{ProbeCoverage::status};

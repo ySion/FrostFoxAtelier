@@ -33,8 +33,7 @@ struct SceneLightingSettings {
     Antialiasing antialiasing{Antialiasing::smaa};
     float exposure_ev{}; // Display exposure; HDR histories remain scene linear.
     float shadow_bias{0.002f}; // World meters.
-    std::uint32_t shadow_light_budget{4}; // Explicit maximum simultaneously traced lights.
-    std::uint32_t shadow_samples{1}; // 1..64; deterministic reference uses 64.
+    std::uint32_t direct_candidates{8}; // 1..32 local-light candidates per receiver; every selected shadow caster is traced.
     float ao_radius{0.35f};
     float reflection_distance{30.f};
     float reflection_roughness{0.6f};
@@ -83,8 +82,8 @@ inline const char* scene_lighting_error(const SceneLightingSettings& settings) n
     if(const auto* error=probe_layout_error(settings)) return error;
     const auto range=[](float v,float low,float high){return std::isfinite(v) && v>=low && v<=high;};
     if(settings.antialiasing>Antialiasing::smaa_t2x || !range(settings.exposure_ev,-16,16) ||
-       !range(settings.shadow_bias,.000001f,.1f) || settings.shadow_light_budget>16 ||
-       settings.shadow_samples<1 || settings.shadow_samples>64 || !range(settings.ao_radius,.001f,100) ||
+       !range(settings.shadow_bias,.000001f,.1f) || settings.direct_candidates<1 ||
+       settings.direct_candidates>32 || !range(settings.ao_radius,.001f,100) ||
        !range(settings.reflection_distance,.001f,10000) || !range(settings.reflection_roughness,0,1))
         return "Invalid World lighting or effects settings";
     if(settings.gtao && settings.ssil) return "GTAO and Local GI are mutually exclusive";

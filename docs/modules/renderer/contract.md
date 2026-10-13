@@ -27,6 +27,8 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
+World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v5 保存；Diagnostics 的 `direct_reference` 属于视口，仅启用 64 次独立估计并关闭直接光复用/降噪。旧四灯阴影槽与单灯样本参数已退出当前接口；Scene v4 只在读取边界严格校验旧字段并丢弃。解析灯和发光面经同一光源快照、采样及可见性入口，方向光独立评估；屏幕 reservoir 和 DDGI 独立采样不互借历史。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。该原生实现未引入 RTXDI SDK，具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
+
 - **Shading**：Smooth 使用顶点法线，Flat 使用依据作者法线定向的几何面法线；两者消费解析后的标准材质基础色和法线图，遵循材质双面设置。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
 - **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。
 - **Topology**：Polygons 尊重生产者提交的边标记；Triangles 显示全部三角形边。每个三角形的三位 mask 中，bit i 表示顶点 i 对边。没有 mask 的既有资源按全部三角形边处理；不通过位置焊接或共面关系猜测原始拓扑。内置 cube、plane、sphere 提供边标记，过滤三角化对角线。OBJ 导入器对简单多边形三角化并保留边界；已三角化源文件无法恢复丢失的原始边。

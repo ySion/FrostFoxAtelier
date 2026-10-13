@@ -21,10 +21,23 @@ float4 lit_probe_history; // sampled irradiance/distance/display old weights xyz
 uint lit_probe_sequence; // Advances only with this field's updates; resets with its lifetime.
 uint4 lit_probe_update; // reserved, bounded count, illumination rays, reset bit
 
+// Transient trace-to-shade record: 64 bytes, indexed by work ordinal and ray.
+// Distances remain signed FP32 scene units until the moment convolution.
+struct DDGIRayHit {
+    float4 base_roughness;
+    float4 normal_metallic;
+    float3 geometric_normal;
+    uint flags;
+    float4 radiance_distance;
+};
+RWStructuredBuffer<DDGIRayHit> lit_probe_ray_hits_output;
+StructuredBuffer<DDGIRayHit> lit_probe_ray_hits;
+
 Texture2D<float4> lit_probe_irradiance_previous;
 Texture2D<float4> lit_probe_target_previous;
 Texture2D<float2> lit_probe_distance_previous;
 Texture2D<float4> lit_probe_offsets_previous;
+Texture2D<float4> lit_probe_offsets_current;
 RWTexture2D<float4> lit_probe_irradiance_output;
 RWTexture2D<float4> lit_probe_target_output;
 RWTexture2D<float2> lit_probe_distance_output;
@@ -36,11 +49,13 @@ Texture2D<uint> lit_probe_age;
 static const uint DDGI_TILE_SIZE = 8;
 static const uint DDGI_MAX_RAYS = 256;
 static const uint DDGI_FIXED_RAYS = 32;
+static const uint DDGI_RAY_SHADEABLE = 1;
+static const uint DDGI_RAY_DISCARD_HISTORY = 2;
 
 float3 ddgi_finite_radiance(float3 radiance) {
-    // The irradiance atlas is linear HDR FP16. Clamp only at its representable
-    // ceiling; exposure is applied later and is not part of the light field.
-    return all(isfinite(radiance)) ? clamp(radiance, 0, 65504) : 0;
+    // FP32 linear irradiance preserves importance-weighted samples before
+    // accumulation. Exposure and display-range clamping belong to composition.
+    return all(isfinite(radiance)) ? max(radiance, 0) : 0;
 }
 
 uint ddgi_volume_count(DDGIVolume v) { return v.grid.x * v.grid.y * v.grid.z; }

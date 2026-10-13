@@ -128,7 +128,7 @@ struct FrameStats {
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
-    std::uint32_t scene_lit_shadow_lights{}, scene_lit_unshadowed_lights{}; // This frame's traced slots / requested fallback shadows.
+    std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{},scene_lit_di_candidates{}; // Analytic lights + emissive faces; shadows eligible for every selected source.
     std::uint64_t scene_lit_history_resets{}; // Reset events in this encoded render; ordinary next frame is zero.
     bool scene_lit_gpu_timing_valid{};
     std::uint64_t scene_lit_gpu_sample_sequence{}, scene_lit_gpu_sample_frame_id{};

@@ -99,7 +99,8 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     require(scene_lit_pixel_difference(matcap,lit)>100,"Native Scene Lit selection did not change actual geometry pixels.");
     const auto& initial=Access::scene_snapshot(app);
     require(initial.meshes.size()==10 && initial.lights.size()==4 && initial.identity &&
-        app.frame_statistics().scene_lit_shadow_lights==4 && app.frame_statistics().scene_lit_unshadowed_lights==0 &&
+        app.frame_statistics().scene_lit_shadow_sources>=4 &&
+        app.frame_statistics().scene_lit_shadow_sources==app.frame_statistics().scene_lit_light_sources &&
         app.frame_statistics().scene_draw_calls>0 && app.frame_statistics().ui_draw_calls>0 &&
         std::ranges::all_of(initial.meshes,[](const auto& mesh){return mesh.stable_key!=0;}) &&
         std::ranges::all_of(initial.lights,[](const auto& light){return light.stable_key!=0;}),
@@ -194,11 +195,11 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         if(index==0) {
             tick(app,2);
             const auto* status=app.presented()->find(101); // EditorShell's accepted static status label.
-            require(Access::scene_snapshot(app).lights.size()==5 && app.frame_statistics().scene_lit_shadow_lights==4 &&
-                app.frame_statistics().scene_lit_unshadowed_lights==1 && Access::render_notice(app)==L"Shadows 4/5" &&
+            require(Access::scene_snapshot(app).lights.size()==5 && app.frame_statistics().scene_lit_shadow_sources>=5 &&
+                app.frame_statistics().scene_lit_shadow_sources==app.frame_statistics().scene_lit_light_sources && Access::render_notice(app).empty() &&
                 status && text_coverage(*app.presented(),101)!=nullptr,
-                "Fifth casting light did not remain accepted with the formal Shadows 4/5 budget status.");
-            capture(app,output/"04-shadow-budget-4-of-5.png");
+                "Fifth casting light did not remain shadowed or retained the retired shadow-budget warning.");
+            capture(app,output/"04-five-shadow-lights.png");
         }
     }
 
@@ -209,8 +210,8 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     scene_lit_display(app,control::shading_first+2);
     capture(app,output/"05-matcap-seven-lights.png");
     scene_lit_display(app,control::shading_scene_lit);tick(app,16);
-    require(app.frame_statistics().scene_lit_shadow_lights==4 &&
-        app.frame_statistics().scene_lit_unshadowed_lights==3,
+    require(app.frame_statistics().scene_lit_shadow_sources>=7 &&
+        app.frame_statistics().scene_lit_shadow_sources==app.frame_statistics().scene_lit_light_sources,
         "Scene Lit did not consume all seven authored lights after the native display mode change.");
     capture(app,output/"06-scene-lit-seven-lights.png");
     require(!app.document().world().running() && Access::scene_lit_view(app).shading==render::Shading::scene_lit &&
@@ -225,7 +226,8 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     require(model(app.document().serialize())==saved && actors(app).size()==18 &&
         Access::scene_snapshot(app).meshes.size()==10 && Access::scene_snapshot(app).lights.size()==7 &&
         Access::scene_snapshot(app).environment==std::array{.12f,.12f,.12f} &&
-        app.frame_statistics().scene_lit_shadow_lights==4 && app.frame_statistics().scene_lit_unshadowed_lights==3,
+        app.frame_statistics().scene_lit_shadow_sources>=7 &&
+        app.frame_statistics().scene_lit_shadow_sources==app.frame_statistics().scene_lit_light_sources,
         "Reopening the actual saved Scene lost edited World lights, materials or Scene Lit rendering.");
     for(auto intensity:std::span(intensities).first(3)) require(std::ranges::any_of(Access::scene_snapshot(app).lights,
         [&](const auto& light){return light.intensity==intensity;}),"Reopened Scene lost a light edited through native Parameters.");

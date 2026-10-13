@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <crtdbg.h>
 #include <fstream>
 #include <filesystem>
 #include <limits>
@@ -275,6 +276,13 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
 #include "cavity.inl"
 
 int main(int argc, char** argv) try {
+    // Automated GPU failures must terminate with diagnostics, never wait for
+    // someone to dismiss a CRT dialog while the failed device is still owned.
+    _set_error_mode(_OUT_TO_STDERR);
+    _set_abort_behavior(0,_CALL_REPORTFAULT);
+    SetErrorMode(GetErrorMode()|SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+    (void)_CrtSetReportMode(_CRT_ASSERT,_CRTDBG_MODE_FILE);
+    (void)_CrtSetReportFile(_CRT_ASSERT,_CRTDBG_FILE_STDERR);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const bool materials_only=argc>1&&std::string_view(argv[1])=="--materials";
     const bool cavity_only=argc>1&&std::string_view(argv[1])=="--cavity";
@@ -287,13 +295,44 @@ int main(int argc, char** argv) try {
     if (argc > 1&&!materials_only&&!cavity_only&&!selection_only) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes" || mode == "--scene-lit-restir" || mode == "--scene-lit-restir-suite"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes|--scene-lit-restir|--scene-lit-restir-suite [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
+        if(mode=="--scene-lit-restir-suite") {
+            scene_lit_e2e::Fixture fixture(false,output);
+            const auto initial_view=fixture.frame.view;
+            const auto initial_environment=fixture.frame.environment;
+            // Material fixtures use frame IDs 9000 and 12000 before this
+            // fixture's 20000 sequence. Keep that sequence advancing thereafter.
+            material_cases(fixture.renderer,output);
+            material_transport_cases(fixture.renderer,output);
+            fixture.frame.scene_identity=fixture.drawing.id;
+            const auto restore=[&] {
+                fixture.drawing.extent=take(fixture.renderer.sync_window_target()).extent;
+                fixture.frame.scene_viewport={24,32,float(fixture.drawing.extent.width)-48,
+                    float(fixture.drawing.extent.height)-56};
+                fixture.frame.camera=scene_lit_e2e::camera({
+                    static_cast<unsigned>(fixture.frame.scene_viewport.width),
+                    static_cast<unsigned>(fixture.frame.scene_viewport.height)});
+                fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
+                fixture.frame.view=initial_view;fixture.frame.environment=initial_environment;
+                fixture.frame.lighting_focus={};fixture.frame.camera_cut=true;
+                ++fixture.frame.scene_identity;fixture.edited();
+            };
+            restore();scene_lit_e2e::restir_cases(fixture);
+            restore();scene_lit_e2e::probe_volume_cases(fixture);
+            restore();scene_lit_e2e::quality_ddgi(fixture);
+            restore();scene_lit_e2e::probe_debug_cases(fixture);
+            // Contracts exercise terminal/repeated close and must run last.
+            restore();scene_lit_e2e::quality_contracts(fixture);
+            fixture.close();
+            std::puts("Renderer ReSTIR suite: PASS (materials, transport, ReSTIR, volumes, DDGI quality/debug, contracts; one Renderer)");
+            return 0;
+        }
         return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal",
-                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts", mode == "--scene-lit-debug", mode == "--scene-lit-volumes");
+                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts", mode == "--scene-lit-debug", mode == "--scene-lit-volumes", mode == "--scene-lit-restir");
     }
     Window window;
     auto renderer = take(

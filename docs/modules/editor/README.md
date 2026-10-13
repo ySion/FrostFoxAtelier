@@ -51,7 +51,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 参数和坐标
 
-材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Actor 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v4、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
+材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Actor 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v5、旧版兼容读取、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
 
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
@@ -123,9 +123,9 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 ### 场景光照
 
-Scene View 的显示菜单只提供着色预览与边线模式：`Scene Lit`、Smooth、Flat、MatCap 共用互斥组。场景光照与效果参数统一在 World 页编辑，随 Scene 保存并进入同一撤销栈；显示模式、相机及诊断开关仍属于视口。Local GI 与 GTAO 互斥。实际请求超阴影预算时，状态栏显示上一个 accepted frame 的 `Shadows 实际/请求`；关闭 shadows 的灯不计请求数，创建灯数量不受该质量预算限制。
+Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光采用 ReSTIR DI；`Direct candidates`（1～32，默认 8）控制局部光初始候选数，每个被选中的投影光源都执行当前帧遮挡查询。旧 Shadow Budget 和 Shadows 实际/请求提示已退役。Local GI 与 GTAO 在作者配置中互斥，AA 默认 SMAA；显示模式、相机和诊断开关仍属于视口。
 
-**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics。Lighting 只提供全局曝光与阴影配置。具体灯光仍通过 Scene Tree / Actor Structure 选择，并在 Parameters 编辑；World 页不枚举场景灯光。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
+**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics。Lighting 提供曝光、阴影与直接光候选数；具体灯光通过 Scene Tree / Actor Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含独立高样本 Direct reference（不改变 World 作者参数或历史）、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
 
 **Coverage → Fit Scene** 按当前可渲染几何的世界边界建立固定覆盖；**Scene + Follow Focus** 保留粗层场景覆盖，并用高优先级体积跟随观察目标。两者保留传播与诊断值，按一次完整 World 修改进入场景历史；重复应用不产生新历史。示例初始化可显式拟合其场景覆盖；普通场景读取自身配置，旧格式使用默认值，不继承上一场景。数值输入和拖动只更新字段草稿，提交后才通过 Session 发布 World 配置与渲染快照；取消、关闭页面和替换文档会结束未提交编辑。无效配置整体拒绝，规则与 Renderer / Control 共用。
 

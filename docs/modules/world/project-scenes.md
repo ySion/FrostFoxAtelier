@@ -18,7 +18,7 @@ Actor 和 Component 的标量属性使用相同的 `begin_edit / preview_edit(Sc
 
 ## Scene 格式
 
-统一写出版本 4，继续读取版本 1/2/3；其他版本拒绝。旧版本保存时升级为 v4，已有类型、TRS、组成、网格来源和材质保留。
+统一写出版本 5，继续读取版本 1/2/3/4；其他版本拒绝。旧版本保存时升级为 v5，已有类型、TRS、组成、网格来源和材质保留。v4 的旧阴影预算和单灯样本字段仅在读取边界严格校验后丢弃，新的直接光候选预算采用默认值，不映射为另一份运行参数。
 
 每个 Actor/Component 保存完整类型名称，并使用 Runtime `find_type / is_a` 校验。每个对象有 `properties` 对象，按声明字段名递归保存业务标量；新增缺省字段保留 Runtime 构造默认值，未知已保存属性报错。整数严格检查范围和符号，不做环绕转换；浮点必须有限。
 
@@ -48,4 +48,4 @@ End 回调内同步调用 Session::stop 会沿 World 准入返回 busy；被拒�
 
 ## World authoring 配置
 
-Scene v4 根 `world` 保存共享 `rendering::SceneLightingSettings`。它由 World 持有，Scene 编解码和 Session 历史负责持久化与撤销；Renderer 只消费副本。v1–v3 使用类型默认值。诊断偏好、GPU 缓存和实际 follow-focus 锚点不属于存档，完整规则见[持久格式与责任](../editor/projects.md#持久格式与责任)。
+Scene v5 根 `world` 保存共享 `rendering::SceneLightingSettings`，包括直接光候选预算。它由 World 持有，Scene 编解码和 Session 历史负责持久化与撤销；Renderer 只消费副本。v1–v3 使用类型默认值，v4 恢复兼容的 World 字段并在读取边界处理已退役字段。诊断参考模式、GPU 缓存和实际 follow-focus 锚点不属于存档，完整规则见[持久格式与责任](../editor/projects.md#持久格式与责任)。

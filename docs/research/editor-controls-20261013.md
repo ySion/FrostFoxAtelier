@@ -39,9 +39,9 @@ SVG 离线生成透明 PNG 和压缩 alpha，运行时复用 `ControlIcon → Sy
 
 当前快捷键和输入合同以 [编辑器模块](../modules/editor/README.md#视口编辑) 为准；此记录只说明本轮比对与取舍。
 
-## 本轮验收
+## 集成前 UI 验收（703b89e）
 
-主目录 Debug（`out/dev`）与独立 Release（`out/dialog-release`）均完成构建；原来运行的、带未保存场景的 Release 实例保持打开。
+主目录 Debug（`out/dev`）与独立 Release（`out/dialog-release`）均完成构建；这轮 UI 验收未关闭或替换当时运行的、带未保存场景的 Release 实例。
 
 | 正式入口 | Debug / Release 结果 |
 |---|---|
@@ -53,3 +53,21 @@ SVG 离线生成透明 PNG 和压缩 alpha，运行时复用 `ControlIcon → Sy
 两配置均记录：分隔条拖动中 8 个检查帧的 RT 重建为 0；5 次菜单重复打开的多余呈现为 0。这些计数不等于端到端输入延迟或通用性能基准。日志和原始 PNG 保存在主目录 `out/ui-input-{dev,release}-*`，其中 `viewport-fly.png`、`parameters-component.png` 用于视觉检查。
 
 Astra 分别审查了 UI/DSL 菜单机制、视口输入生命周期及图标/指针资源路径。落地的结构修正包括子菜单定位早退、原生输入仅由前台持有、工具图标共用源与缓存、原生指针资源回收；最终代码未保留被替换的工具图案或 Shift+S 着色入口。
+
+## 与渲染分支的主目录集成
+
+将 UI 提交 `703b89e` 与渲染提交 `c868ef9` 合入主目录。共享文件保留精简的视口预览菜单和 World 的九输入 DSL 契约，World 不枚举灯光；直接光候选数经正式数值字段进入作者配置、撤销和 Scene v5。场景保全只有同一份实现。示例和模块文档同步更新已退役的阴影预算与菜单入口。
+
+主目录 `out/dev`、`out/release` 均构建成功，并通过以下端到端入口：
+
+| 正式入口 | 两配置结果 |
+|---|---|
+| `atelier_editor_document_acceptance --recovery` | PASS：已提交状态保全、原子写入与重开、缺失资产、幂等、IO 失败及原文件保护 |
+| `atelier_editor_document_acceptance --scene-lit <官方示例目录>` | PASS：World 编辑、持久化、撤销、DSL、过期动作及 Scene v4/v5 兼容边界 |
+| `atelier_editor --acceptance-surfaces <输出目录>` | PASS：菜单、参数、World、停靠与资源目录拖动、相机手势和 Control 生命周期 |
+| `atelier_editor --acceptance-shortcuts <输出目录>` | PASS：Z 饼菜单、快捷键隔离、导航、吸附、FPS 显示与分隔条 |
+| `atelier_editor_control_acceptance <editor.exe> <输出目录> --repro-lighting` | PASS：旧复现格式校验、迁移、拒绝后状态保留及新格式导出重开 |
+
+首次 Debug surfaces 验收遇到两次管道调用之间状态令牌变化：客户端把合法的 `stale_state` 当作手势失效。验收客户端现仅对这一错误重新读取概要并有限重试，仍严格断言新鲜请求的 busy/idle 状态。生产 Control 的令牌与拒绝规则不变；修正后两配置 surfaces 均通过。初次日志保留为 `out/integrated-dev-surfaces.log`，最终结果为 `out/integrated-{dev,release}-surfaces-final.log`；其他构建、验收日志与 PNG 使用 `out/integrated-{dev,release}-*`。已检查合并后的 World Lighting 与 Parameters 实际截图。
+
+Renderer、共享渲染契约与渲染构建定义与 `c868ef9` 一致，完整 GPU 组合验收依据该提交的双配置记录。本次没有再次注入设备故障，也未重跑前台真实鼠标 Fly 验收；后者沿用上一节的 UI 提交证据。地牢能量和部分地板 GI 支持缺口、Control 完整检查的 4 MiB 边界仍按对应模块记录保留，不计为本轮已解决问题。
