@@ -39,7 +39,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 | 操作 | 权威入口与行为 |
 | --- | --- |
-| editor.inspect | 默认 `detail: full` 返回工程、内存场景、Actor/Component 句柄、反射属性、选择、资源、组件类型、相机、基础显示设置和最近接受帧；`detail: summary` 只返回工程/文档状态、忙碌项、历史计数、相机、显示和最近接受帧，不遍历场景或资源 |
+| editor.inspect | 默认 `detail: full` 返回工程、内存场景、Actor/Component 句柄、反射属性、选择、资源、组件类型、相机、基础显示设置和最近接受帧；`detail: summary` 返回工程/文档状态、忙碌项、历史计数、相机、显示和最近接受帧，不遍历场景或资源；两者的 `performance` 共用 World 性能表的有界统计快照 |
 | view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | project.open、scene.open、scene.save | Application 工程/场景命令；替换拒绝未保存场景或源码草稿，避免无人处理的保存对话框 |
 | scene.create | Actor、StaticMeshActor、Point/Rectangle/Directional/Sky Light，共用现有命令和 World 工厂 |
@@ -140,6 +140,14 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sample.ddgi_pass_ms` 的两项分别为探针更新/传输与接收点 gather 耗时；`ddgi_visibility_rays` 的两项分别为探针命中着色与接收点 gather 的可见性查询数。它们共用 `valid`、`sequence`、`frame_id`，分别是 `pass_ms[3]` 和 `shadow_rays` 的细分，不能再次相加。相机矩阵与深度使用不抖动的编辑器投影；TAA/SMAA T2x 内部栅格投影有抖动，本接口不提供该内部矩阵。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护历史；接口不承诺完整清空 DDGI 探针、逐位确定性或恢复原 GPU 历史。
 
 接受帧与捕获元数据的 `lighting_focus` 是实际传入 Renderer 的观察目标。`frame_stats.probe_volumes` 按固定槽位返回启用/滚动状态、世界边界、间距、数量、resident、updated 和 reset_probes；`probe_volumes_source: cpu_layout_and_schedule` 明确其来源。resident 是分配的槽位数，updated 是本帧计划更新数，均不能当成 GPU 完成数或有效探针数。
+
+### 性能观测
+
+`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、直接光/AA/DDGI 配置，以及 17 行层级统计（八个主阶段、八个子阶段、一个合计）。`current_ms`、`mean_ms`、`p95_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
+
+`logical_resource_bytes` 是当前 CPU 所知的 Scene Lit 逻辑资源分配，和异步计时样本不是同一时刻的物理显存统计。`total_semantics` 明确只合计八个主区间；子项通过 `parent` 关联，`included_in_total` 防止重复累加。生命周期与统计范围以[性能表](README.md#gpu-pass-耗时)为准。
+
+原始 `last_frame.gpu_sample` 继续保留八项 `pass_ms` 与两项 `ddgi_pass_ms`，新增 `direct_pass_ms` 四项、`ddgi_update_pass_ms` 两项及 `pass_mask`。mask 位 0～7 为主阶段、8～9 为 DDGI update/gather、10～13 为 direct 子阶段、14～15 为 DDGI update 子阶段；这些数组和 mask 共用完成 sequence。`resource_bytes_source: current_cpu_logical` 说明旧 `resource_bytes` 字段的来源，不能把它当作采样帧物理驻留量。
 
 ## 复现工程
 

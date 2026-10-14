@@ -66,6 +66,7 @@ void Workspace::reset_document() {
     category_keys_.clear();
     lighting.cancel();
     lighting.observe(renderer::FrameStats{});
+    lighting.performance().reset();
     if (ui_document_ && ui_document_->committed_source()) ui_checkpoint_=ui_document_->committed_source();
     ui_document_.reset();
     bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;

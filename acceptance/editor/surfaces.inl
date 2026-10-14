@@ -295,6 +295,7 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         "Category grouping hid the primary transform or changed field identity.");
     press_tab(control::group_components);capture(app,output/"parameters-component.png");
     require(property_control(app,actor,0)==position_key,"Component grouping changed field identity.");
+    verify_render_performance(app,output);
     Access::mark_saved(app);app.close();
     std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens\n",resized_during_drag,redundant_presents);
     require(resized_during_drag==0,"Dock dragging resized the live viewport before release.");

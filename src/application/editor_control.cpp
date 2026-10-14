@@ -60,6 +60,34 @@ Json probe_volumes_json(const renderer::FrameStats& stats) {
     }
     return result;
 }
+Json performance_json(const editor::RenderPerformance& performance) {
+    const auto& sample=performance.snapshot();
+    constexpr std::array states{"unavailable","waiting","ready"};
+    constexpr std::array aa_names{"off","taa","smaa","smaa_t2x"};
+    Json result{{"state",states[static_cast<unsigned>(sample.state)]},{"window_capacity",editor::RenderPerformance::window_size},
+        {"publish_interval_ms",250},{"samples",sample.samples},{"sequence",sample.sequence},{"frame_id",sample.frame_id},
+        {"scene_identity",sample.scene_identity},{"domain_first_frame",sample.first_frame},
+        {"extent",{sample.extent.width,sample.extent.height}},
+        {"viewport",{sample.viewport.x,sample.viewport.y,sample.viewport.width,sample.viewport.height}},
+        {"configuration",{{"antialiasing",aa_names[static_cast<unsigned>(sample.antialiasing)]},{"direct_candidates",sample.direct_candidates},
+            {"direct_reference",sample.direct_reference},{"ddgi",sample.ddgi}}},
+        {"logical_resource_bytes",sample.resource_bytes?Json(*sample.resource_bytes):Json(nullptr)},
+        {"resource_semantics","Current logical Scene Lit allocation; excludes retired resources and physical residency"},
+        {"total_semantics","Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present"},
+        {"passes",Json::array()}};
+    const auto definitions=editor::RenderPerformance::passes();
+    for(std::size_t i=0;i<definitions.size();++i) {
+        const auto& pass=definitions[i];const auto& timing=sample.timings[i];const bool active=timing && timing->active_samples;
+        result["passes"].push_back({{"id",pass.key},{"title",pass.title},{"parent",pass.parent<0?Json(nullptr):Json(definitions[pass.parent].key)},
+            {"depth",pass.depth},{"included_in_total",pass.in_total},
+            {"state",!timing?"unavailable":timing->current_active?"measured":"skipped"},
+            {"active_samples",timing?timing->active_samples:0},
+            {"current_ms",timing && timing->current_active?Json(timing->current):Json(nullptr)},
+            {"mean_ms",active?Json(timing->mean):Json(nullptr)},{"p95_ms",active?Json(timing->p95):Json(nullptr)},
+            {"share_percent",active && timing->share?Json(*timing->share):Json(nullptr)}});
+    }
+    return result;
+}
 renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch,std::array<float,3> focus) {
     if(!patch.is_object()) throw Failure("invalid_request","Display patch must be an object");
     if(patch.value("gtao",false) && patch.value("ssil",false)) throw Failure("invalid_request","GTAO and Local GI are mutually exclusive");
@@ -225,8 +253,10 @@ struct EditorControl::Impl {
             {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
                 {"probe_volumes",probe_volumes_json(s)},{"probe_volumes_source","cpu_layout_and_schedule"}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
-            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
-            {"resource_bytes",s.scene_lit_resource_bytes},{"shadow_rays",s.scene_lit_shadow_rays},{"probe_rays",s.scene_lit_probe_rays}}}};
+            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"direct_pass_ms",s.scene_lit_direct_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
+            {"pass_mask",s.scene_lit_gpu_pass_mask},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
+            {"resource_bytes",s.scene_lit_resource_bytes},{"resource_bytes_source","current_cpu_logical"},
+            {"shadow_rays",s.scene_lit_shadow_rays},{"probe_rays",s.scene_lit_probe_rays}}}};
     }
     Impl(Application& owner,const std::filesystem::path& directory):app(owner),server(directory,{{"revision",build_info::revision},{"configuration",build_info::configuration}}) {
         std::filesystem::create_directories(platform::windows_file_path(server.directory()/"artifacts"/server.identity().at("instance_id").get<std::string>()));observe();
@@ -368,6 +398,7 @@ struct EditorControl::Impl {
             {"busy_reasons",busy_reasons()},{"text_focus",app.ui_.wants_keyboard()},
             {"undo",app.document_->undo_count()},{"redo",app.document_->redo_count()},{"camera",camera_json(app.camera_.state())},
             {"view",view_json(app.workspace_.view)},{"accepted_frames",app.accepted_frames_},{"last_frame",frame_json()}};
+        result["performance"]=performance_json(app.workspace_.lighting.performance());
         if(auto* job=active()) result["active_job"]={{"job_id",job->id},{"rendering",job->rendering},{"cancel_requested",job->cancel->load()}};
         if(summary) {result["detail"]="summary";return result;}
         for(const char* field:{"actors","selection","assets","component_types"}) result[field]=Json::array();

@@ -88,6 +88,14 @@ struct EditorAcceptanceAccess {
     static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
     static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
     static auto scene_lit_view(const Application& app) {return app.workspace_.view;}
+    static const auto& performance(const Application& app) {return app.workspace_.lighting.performance();}
+    static Result<void> performance_view(Application& app,const renderer::ViewSettings& view) {
+        return app.workspace_.set_view_settings(*app.document_,view,app.lighting_focus());
+    }
+    static void performance_panel(Application& app) {
+        app.workspace_.dock.move(editor::world_control::tab,editor::control::parameters_tab,ui::DockSide::tabs);
+        app.workspace_.dock.select(editor::world_control::tab);
+    }
     static const auto& fps_text(const Application& app) {return app.workspace_.viewport_fps;}
     static Result<void> fps_setting(Application& app,bool enabled) {
         return app.action({ui::ActionKind::activate,editor::control::command_key(editor::Command::show_fps),enabled});
@@ -1014,6 +1022,7 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;
 }
+#include "performance.inl"
 #include "surfaces.inl"
 #include "native_dialogs.inl"
 #include "dock_resize.inl"

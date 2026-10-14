@@ -1062,6 +1062,7 @@ bool Application::step(renderer::Capture* capture) try {
         workspace_.status = widen(rendered.error().cause.message); return true;
     }
     frame_statistics_ = rendered->stats;
+    workspace_.lighting.performance().observe(render_frame,*rendered);
     if (rendered->status == renderer::FrameStatus::accepted) {
         if (rendered->accepted_id != frame.drawing->id || rendered->accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");

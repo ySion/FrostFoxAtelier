@@ -60,6 +60,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace_materials.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/world_panel.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/performance.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/asset_browser.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/source_editor.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_ui.cpp"

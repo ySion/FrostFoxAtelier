@@ -335,7 +335,7 @@ ui ResourceProperty(in Text title, in Text value) {
 ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
               in Items<PropertyGroup> propagation, in Items<ResourceProperty> actual, in Text configured,
               in Items<PropertyGroup> lighting, in Items<PropertyGroup> effects, in Items<PropertyGroup> diagnostics,
-              in bool editable) {
+              in bool editable, in TableBinding performance, in Text performance_status, in Text performance_resources) {
     state double page = 0.0d;
     state bool show_actual = true;
     Column pane { expand_height: true; panel: true; classes: "parameter-pane";
@@ -344,13 +344,14 @@ ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
             ChoiceButton ddgi_tab { text: "DDGI"; height: 26; selected: state.page == 1.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 1.0d; } }
             ChoiceButton effects_tab { text: "Effects"; height: 26; selected: state.page == 2.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 2.0d; } }
             ChoiceButton diagnostics_tab { text: "Diagnostics"; height: 26; selected: state.page == 3.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 3.0d; } }
+            ChoiceButton performance_tab { text: "Performance"; height: 26; selected: state.page == 4.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 4.0d; } }
         }
         Row header { height: 28; align_center: true; gap: 5; padding_left: 6; padding_right: 6; collapsed: state.page != 1.0d && state.page != 3.0d;
             Combo slot { text: input.selected_volume; height: 26.667; min_width: 100; classes: "parameter-menu"; }
             Column space { expand_width: true; }
             Combo setup { text: "Coverage"; enabled: input.editable; height: 26.667; content_width: 0; min_width: 88; classes: "parameter-menu"; collapsed: state.page != 1.0d; }
         }
-        List scroll { expand_height: true; gap: 7; padding_top: 5; classes: "parameter-inset parameter-list";
+        List scroll { expand_height: true; gap: 7; padding_top: 5; collapsed: state.page == 4.0d; classes: "parameter-inset parameter-list";
             Column lighting { gap: 5; collapsed: state.page != 0.0d; Repeat lighting_settings { items: input.lighting; } }
             Column ddgi { gap: 7; collapsed: state.page != 1.0d; Repeat volume { items: input.volume; } Repeat propagation { items: input.propagation; } }
             Column effects { gap: 5; collapsed: state.page != 2.0d; Repeat effect_settings { items: input.effects; } }
@@ -360,6 +361,20 @@ ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
                     on activate { state.show_actual = event.checked; }
                 }
                 Column actual { gap: 1; collapsed: !state.show_actual; Repeat rows { items: input.actual; } }
+            }
+        }
+        Column performance { expand_height: true; collapsed: state.page != 4.0d;
+            Row performance_header { height: 26; padding_left: 6; align_center: true;
+                Text performance_status { text: input.performance_status; single_line: true; expand_width: true; }
+            }
+            Table performance_table { model: input.performance; expand_height: true; view: "details";
+                row_height: 23; header_height: 25; classes: "asset-table";
+            }
+            Row performance_memory { height: 24; padding_left: 6; align_center: true;
+                Text performance_resources { text: input.performance_resources; single_line: true; expand_width: true; }
+            }
+            Row performance_note { height: 24; padding_left: 6; align_center: true;
+                Text performance_scope { text: "Scene Lit GPU only · subpasses included in parents"; single_line: true; expand_width: true; }
             }
         }
         Row footer { height: 23; padding_left: 6; align_center: true; collapsed: state.page != 1.0d && state.page != 3.0d;
