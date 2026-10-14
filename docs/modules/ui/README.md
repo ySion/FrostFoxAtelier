@@ -50,7 +50,16 @@
 
 DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label、text_edit、button 组合路径、类型＋名称与内容页签。对象字段仍由宿主绑定实际身份和历史。内容页签使用 `selection_group`：左右键/Home/End 切换，Tab 只访问组内选中项；宿主保存选择并折叠对应内容容器。它与可拖动的工作区 `tab` 职责分开，多层页签和折叠组可直接嵌套在同一布局树中。
 
-布局缩进由父容器负责。内容页签本身没有左、右或顶部缩进，只保留底部细分隔线的空间；调用方通过普通 column 的 padding 安排顶层位置和嵌套内容。折叠标题铺满所属内容区，字段缩进放在其内容容器。编辑器 SS 用 `parameter-page`、`parameter-body`、`parameter-inset` 表达这些现有容器的角色，不引入独立布局节点或另一个页面状态系统。
+布局缩进由父容器负责，编辑器所有参数类页面（Parameters、World、Material、Resource、Controls）只遵循一条规则：
+
+- 页面级列表（`parameter-list`）从父区域顶格开始，没有页面级内边距；列表、页签行或标题行之间不插入额外空隙。
+- 折叠标题（`foldout.section`，24 DIP）铺满父区域全宽，组之间以 1 DIP 间隔区分。
+- 只有折叠标题下的行容器（`section-body`）缩进：左 8、上 5、下 7 DIP，行距 5 DIP。
+- 页签行（`section-tabs`）固定 26.667 DIP，含底部 0.667 DIP 分隔线；页签本身没有左、右或顶部缩进。
+- 页头行（`object-header`：参数头、Entity Structure 工具栏、Material/Resource 头、Controls 头）固定 32 DIP，左 6、右 4 DIP，24 DIP 控件垂直居中。
+- 占位文字（`empty-state`）与页头使用相同的 6 DIP 起始缩进。
+
+新增页面复用这些类，不在 DSL 节点上另写 padding_top/padding_left 来调整同类区域，避免同一角色出现不同边距。
 
 `PathBar` 提供宿主拥有的路径 combo、后退/前进按钮身份及可用状态；路径图标与文字使用同一测量入口。`Control.icon` 可与文字并存，前置图标保留 indicator-size 加 6 DIP 的空间；没有文字时默认居中，可通过 `icon-align` 左/中/右对齐。下拉的方向标记限制在右侧预留区域内，较大的前置图标不会放大右侧箭头。路径菜单与普通下拉继续调用原菜单入口。
 

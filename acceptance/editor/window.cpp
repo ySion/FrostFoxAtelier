@@ -105,6 +105,8 @@ struct EditorAcceptanceAccess {
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}
     static void set_cursor(Application& app,math::Vector3 at) {app.viewport_tool_.cursor=at;}
+    static Result<void> ui_action(Application& app,ui::ControlKey key,ui::ActionValue value={}) {return app.action({ui::ActionKind::activate,key,std::move(value)});}
+    static void select_tab(Application& app,ui::ControlKey tab) {app.workspace_.dock.select(tab);}
     static ui::ControlKey viewport_readout_key(const Application&) {return editor::control::viewport_readout;}
     // Drive the real tool entry points without OS input (snapshot only).
     static void tool_key(Application& app,std::uint32_t vk,math::Vector2 pointer) {
@@ -1021,6 +1023,12 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     Access::tool_cancel(app);
     // An enum menu and colour swatch row, through the real light creation command.
     model(Access::command(app,Command::create_rectangle_light));shot("snapshot-light-parameters.png");
+    // Layout review: category grouping and the Entity Structure page.
+    model(Access::ui_action(app,atelier::editor::control::group_categories,true));shot("snapshot-parameters-category.png");
+    model(Access::ui_action(app,atelier::editor::control::group_components,true));
+    Access::select_tab(app,atelier::editor::control::structure_tab);shot("snapshot-structure.png");
+    Access::performance_panel(app);shot("snapshot-world.png");
+    Access::select_tab(app,atelier::editor::control::workbench);shot("snapshot-controls.png");
     Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);
     while(app.step()) {}
     std::puts("Editor snapshot: written");return 0;

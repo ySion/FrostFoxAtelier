@@ -309,6 +309,9 @@ struct Session::Impl {
         if (control.style_scope) sheets.push_back(control.style_scope);
         auto inherited=parent?parent->inherited:StyleProperties{};
         auto value=resolve_style(style,control.role,control.kind,visual);
+        // A one-line label sits on its box's centre line like every control beside it;
+        // paragraphs stay top-aligned. Sheets may still override either.
+        if (control.kind==ControlKind::label && control.single_line) value.text_vertical_align=TextVerticalAlign::center;
         apply_properties(value,inherited);
         for (const auto& sheet:sheets) for (const auto& rule:sheet->rules()) if (matches(rule.selector,control,visual)) {
             apply_properties(value,rule.properties); inherit_properties(inherited,rule.properties);

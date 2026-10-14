@@ -57,10 +57,13 @@ foldout.section { background: #333333; border-width: 0dip; padding: 2dip 5dip; i
 foldout.section:focus { color: #dddddd; }
 combo { indicator-size: 8dip; indicator-color: #929292; combo-indicator: down; }
 combo:disabled { indicator-color: #616161; }
-.parameter-list { background: #3d3d3d; }
-.parameter-page { padding: 4dip 0dip 0dip 2dip; background: #3a3a3a; }
-.parameter-inset { padding: 0dip 0dip 0dip 8dip; }
-.parameter-body { padding: 7.333dip 0dip 0dip 8dip; background: #3d3d3d; }
+/* Parameter layout, one rule for every page (Parameters, World, Material,
+   Resource, Controls): a list starts flush with its parent; section bars span
+   the full width; only the rows under a section are inset, by .section-body. */
+.parameter-list { background: #3d3d3d; padding: 0dip; }
+.section-body { padding: 5dip 0dip 7dip 8dip; }
+/* Placeholder lines share the header rows' 6 DIP leading inset. */
+.empty-state { padding: 6dip 6dip; }
 .parameter-nested-body { background: #363636; }
 .parameter-pane { background: token(panel); }
 .parameter-search { padding: 2dip 4dip 3dip 4dip; }
