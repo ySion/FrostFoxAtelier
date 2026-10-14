@@ -53,7 +53,7 @@ void verify_about(Application& app,std::wstring_view expected_project) {
     require(!app.menu_window() && app.document().undo_count()==history,"About changed document history or retained its menu.");
 }
 
-void verify_native_menus(Application& app,const std::filesystem::path& output,atelier::ObjectId actor) {
+void verify_native_menus(Application& app,const std::filesystem::path& output,atelier::ObjectId entity) {
     const auto live_menu=[&]() {
         require(app.menu_frame()!=nullptr,"Expected a live accepted native menu frame.");
         return app.menu_frame();
@@ -70,7 +70,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     };
     require(app.presented()->find(control::file_menu) && !app.presented()->find(control::undo),
         "Main commands were not moved into the menubar.");
-    const auto field=property_control(app,actor,0);
+    const auto field=property_control(app,entity,0);
     const auto pane=app.docking().pane(control::scene_tab);
     const auto expanded=app.presented()->find(pane)->bounds;
     const auto history=app.document().undo_count();
@@ -95,7 +95,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     verify_about(app,L"No project open");closed_titles();
     for (const bool middle:{false,true}) {
         key(app,VK_ESCAPE);
-        const auto original=x(app,actor);
+        const auto original=x(app,entity);
         const auto before_history=app.document().undo_count();
         const auto from=centre(app,field);
         auto physical=from; ClientToScreen(app.window(),&physical);
@@ -104,14 +104,14 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
         const auto dx=static_cast<LONG>(std::lround(24*dpi_before));
         require(SetCursorPos(physical.x+dx,physical.y)!=FALSE,"Cannot align menu-transition drag.");
         SendMessageW(app.window(),WM_MOUSEMOVE,middle?MK_MBUTTON:MK_LBUTTON,MAKELPARAM(from.x+dx,from.y)); tick(app,2);
-        require(app.document().editing() && x(app,actor)!=original,"Menu-transition drag did not start an actual edit.");
+        require(app.document().editing() && x(app,entity)!=original,"Menu-transition drag did not start an actual edit.");
         key(app,VK_F10);
-        require(app.menu_window() && !app.document().editing() && x(app,actor)==original && !app.presented()->value_ladder,
+        require(app.menu_window() && !app.document().editing() && x(app,entity)==original && !app.presented()->value_ladder,
             "Opening a native menu retained its owner's captured edit.");
         SendMessageW(app.window(),middle?WM_MBUTTONUP:WM_LBUTTONUP,0,MAKELPARAM(from.x+dx,from.y)); tick(app,1);
         key(app,VK_ESCAPE);
         SendMessageW(app.window(),WM_MOUSEMOVE,0,MAKELPARAM(from.x+dx*2,from.y)); tick(app,2);
-        require(!app.document().editing() && x(app,actor)==original && app.document().undo_count()==before_history && GetCapture()!=app.window(),
+        require(!app.document().editing() && x(app,entity)==original && app.document().undo_count()==before_history && GetCapture()!=app.window(),
             "Dismissed native menu resumed a stale drag or changed history.");
         RECT host{}; GetWindowRect(app.window(),&host);
         require(SetCursorPos(host.left+32,host.top+12)!=FALSE,"Cannot park menu-transition pointer."); tick(app,2);
@@ -140,7 +140,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     key(app,VK_RIGHT);
     require(live_menu()->find(control::undo),"Right arrow did not switch to Edit.");
     key(app,VK_RIGHT);
-    require(live_menu()->find(control::add_actor) && app.menu_window()==native_popup,"Menu switching rebuilt its native host.");
+    require(live_menu()->find(control::add_entity) && app.menu_window()==native_popup,"Menu switching rebuilt its native host.");
     mouse(app,WM_MOUSEMOVE,centre(app,control::view_menu));
     require(live_menu()->find(control::reset),"Menubar hover did not switch the open dropdown.");
     atelier::renderer::Capture menu_pixels; app.capture_menu(menu_pixels);
@@ -180,7 +180,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     tick(app,4);
     // Anchor at the rightmost tuple field; its position is independent of the
     // inspector's caption width and field wrapping.
-    const auto edge_field=property_control(app,app.document().selection().actor,2);
+    const auto edge_field=property_control(app,app.document().selection().entity,2);
     auto point=centre(app,edge_field);
     point.x=static_cast<LONG>(app.presented()->find(edge_field)->bounds.x+app.presented()->find(edge_field)->bounds.width-3);
     const auto context_at=[&] {

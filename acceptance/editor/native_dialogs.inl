@@ -12,10 +12,10 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
     std::ofstream report(output/"dialogs.txt");
     for(const auto command:{editor::Command::about,editor::Command::open_source,editor::Command::open_project,editor::Command::example_sponza}) {
         if(command==editor::Command::example_sponza) {
-            require(bool(Access::command(app,editor::Command::create_actor)),"Unsaved dialog scene creation failed.");tick(app);
+            require(bool(Access::command(app,editor::Command::create_entity)),"Unsaved dialog scene creation failed.");tick(app);
         }
         const auto history=app.document().undo_count();
-        const auto actor_count=actors(app).size();
+        const auto entity_count=entities(app).size();
         const auto pointer=[&](ui::EventKind kind,POINT point) {
             Access::input(app,{.kind=kind,.x=static_cast<float>(point.x),.y=static_cast<float>(point.y),.button=ui::PointerButton::primary});
         };
@@ -83,7 +83,7 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
         require(!captured,"Native dialog left mouse capture on its disabled editor owner.");
         require(IsWindowEnabled(owner)!=FALSE,"Native dialog left its owner disabled.");
         tick(app);
-        require(app.document().undo_count()==history && actors(app).size()==actor_count,
+        require(app.document().undo_count()==history && entities(app).size()==entity_count,
             "Cancelling a native dialog modified the scene or its undo history.");
         require(!app.menu_window() && GetCapture()!=owner,"Native dialog dismissal retained menu input ownership.");
         report<<static_cast<unsigned long long>(command)<<": responsive, cancelled, editor resumed\n";report.flush();

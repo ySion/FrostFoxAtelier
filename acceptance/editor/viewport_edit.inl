@@ -1,29 +1,35 @@
 void verify_viewport_duplication() {
     editor::Session document;
     changed(document.create_static_mesh(editor::mesh_assets().front(),{1,2,3}));
-    const auto first=document.selection().actor;
-    changed(document.add_component(document.types().scene_component));
+    const auto first=document.selection().entity;
+    changed(document.add_component(document.types().component));
     changed(document.add_component(document.types().collision_component));
     auto body=physics::BodySettings{};body.sensor=true;body.radius=2.f;
     take(document.configure_body(document.selection().object,body));
     changed(document.create_light(world::LightKind::point,{4,5,6}));
-    const auto second=document.selection().actor;
-    const std::array selected{first,second};take(document.select_actors(selected,second));
+    const auto second=document.selection().entity;
+    const std::array selected{first,second};take(document.select_entities(selected,second));
     const auto history=document.undo_count();
     const auto before=nlohmann::json::parse(take(document.serialize()));
     changed(document.duplicate_selected());
-    const std::vector copies(document.selected_actors().begin(),document.selected_actors().end());
+    const std::vector copies(document.selected_entities().begin(),document.selected_entities().end());
     require(copies.size()==2 && copies[0]!=first && copies[1]!=second && document.undo_count()==history+1,
         "Duplicate did not create independent identities in one history entry.");
     auto after=nlohmann::json::parse(take(document.serialize()));
     for (std::size_t i=0;i<2;++i) {
-        after["actors"][i+2]["name"]=before["actors"][i]["name"];
-        require(after["actors"][i+2]==before["actors"][i],"Duplicate lost component state, links, physics settings or reflected properties.");
+        after["entities"][i+2]["name"]=before["entities"][i]["name"];
+        auto& clone=after["entities"][i+2];const auto& original=before["entities"][i];
+        require(clone["id"]!=original["id"],"Duplicate reused its source Entity local ID.");clone["id"]=original["id"];
+        for(std::size_t j=0;j<clone["components"].size();++j) {
+            require(clone["components"][j]["id"]!=original["components"][j]["id"],"Duplicate reused a source Component local ID.");
+            clone["components"][j]["id"]=original["components"][j]["id"];
+        }
+        require(clone==original,"Duplicate lost component state, links, physics settings or reflected properties.");
     }
-    const auto root=[&](ObjectId actor){return *take(world::root_component(document.world().runtime(),actor));};
-    const auto original_mesh=take(world::read_static_mesh(document.world().runtime(),root(first)));
-    require(take(world::read_static_mesh(document.world().runtime(),root(copies[0]))).mesh.resolved==original_mesh.mesh.resolved,
-        "Duplicating an Actor unnecessarily copied its immutable mesh resource.");
+    const auto root=[&](ObjectId entity){return entity;};
+    const auto original_mesh=take(world::read_static_mesh(document.world().runtime(),component(document,first,document.types().static_mesh_component)));
+    require(take(world::read_static_mesh(document.world().runtime(),component(document,copies[0],document.types().static_mesh_component))).mesh.resolved==original_mesh.mesh.resolved,
+        "Duplicating an Entity unnecessarily copied its immutable mesh resource.");
     editor::ViewportTool tool;editor::Camera camera;
     const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1.f);
     take(tool.place_duplicates(document,view,{}, {500,350}));
@@ -34,46 +40,56 @@ void verify_viewport_duplication() {
     require(document.undo_count()==history+1 && take(world::read_transform(document.world().runtime(),root(copies[0]))).position.x==3,
         "Duplicate placement was split into another undo step.");
     changed(document.undo());require(take(document.world().members()).size()==2,"Undo did not remove the complete duplicate graph.");
-    changed(document.redo());require(document.selected_actors().size()==2 && document.selected_actors()[0]==copies[0] &&
+    changed(document.redo());require(document.selected_entities().size()==2 && document.selected_entities()[0]==copies[0] &&
         take(world::read_transform(document.world().runtime(),root(copies[0]))).position.x==3,"Redo did not retain duplicate identity and final placement.");
-    changed(document.duplicate_selected());const auto stationary=document.selection().actor;
+    changed(document.duplicate_selected());const auto stationary=document.selection().entity;
     const auto transform=take(world::read_transform(document.world().runtime(),root(stationary)));
     take(tool.place_duplicates(document,view,{}, {500,350}));
     event({.kind=ui::EventKind::key_down},'X');event({.kind=ui::EventKind::text,.data=std::wstring{L"7"}});
     event({.kind=ui::EventKind::key_down,.key=ui::Key::escape});
     require(take(document.world().members()).size()==6 && take(world::read_transform(document.world().runtime(),root(stationary)))==transform,
         "Cancelling duplicate movement removed copies or kept the preview displacement.");
-    take(document.select(root(stationary)));changed(document.erase_actors());
+    take(document.select(root(stationary)));changed(document.erase_entities());
     require(take(document.world().members()).size()==5,"Viewport deletion removed only the inspected Component.");
     changed(document.undo());take(document.select({}));const auto count=document.undo_count();
     changed(document.duplicate_selected());require(document.undo_count()==count,"Empty duplicate changed history.");
     editor::Session restricted;
-    changed(restricted.create_static_mesh(editor::mesh_assets().front()));const auto mesh_actor=restricted.selection().actor;
-    changed(restricted.create_light(world::LightKind::sky));const auto sky_actor=restricted.selection().actor;
-    const std::array mixed{mesh_actor,sky_actor};take(restricted.select_actors(mixed,sky_actor));
+    changed(restricted.create_static_mesh(editor::mesh_assets().front()));const auto mesh_entity=restricted.selection().entity;
+    changed(restricted.create_light(world::LightKind::sky));const auto sky_entity=restricted.selection().entity;
+    const std::array mixed{mesh_entity,sky_entity};take(restricted.select_entities(mixed,sky_entity));
     const auto checkpoint=take(restricted.serialize());const auto checkpoint_history=restricted.undo_count();
     require(!restricted.duplicate_selected() && restricted.undo_count()==checkpoint_history && take(restricted.serialize())==checkpoint &&
-        restricted.selection().actor==sky_actor,"Failed group duplication left a partial Actor, changed selection or changed history.");
+        restricted.selection().entity==sky_entity,"Failed group duplication left a partial Entity, changed selection or changed history.");
     take(document.select(first));take(document.rename(first,std::wstring(256,L'A')));changed(document.duplicate_selected());
-    require(document.name(document.selection().actor).size()<=256,"Duplicating a maximum-length name exceeded the name limit.");
-    editor::Session full;
-    for (std::size_t i=0;i<editor::Session::maximum_actors;++i) changed(full.add_actor());
-    const auto limit_history=full.undo_count();
-    require(!full.duplicate_selected() && full.undo_count()==limit_history && take(full.world().members()).size()==editor::Session::maximum_actors,
-        "Actor limit rejection partially published a duplicate.");
+    require(document.name(document.selection().entity).size()<=256,"Duplicating a maximum-length name exceeded the name limit.");
+    const auto limit_folder=std::filesystem::current_path()/"out/viewport-limit-evidence"/std::to_string(GetTickCount64());
+    auto limit_project=take(editor::Project::create(limit_folder));editor::Session empty;
+    auto limit_graph=nlohmann::json::parse(take(empty.serialize()));
+    for(std::size_t i=0;i<editor::Session::maximum_entities;++i) {
+        const auto id=std::to_string(i+1);limit_graph["roots"].push_back(id);
+        limit_graph["entities"].push_back({{"id",id},{"type","world.Entity"},{"name","Limit "+id},{"enabled",true},
+            {"space",nullptr},{"children",nlohmann::json::array()},{"components",nlohmann::json::array()},{"properties",nlohmann::json::object()}});
+    }
+    limit_graph["next_id"]=std::to_string(editor::Session::maximum_entities+1);
+    auto full=take(editor::Session::deserialize(limit_graph.dump(),limit_project));
+    const auto last=take(full->world().members()).back().id();take(full->select(last));
+    const auto limit_history=full->undo_count();const auto limit_checkpoint=take(full->serialize());
+    require(!full->duplicate_selected() && full->undo_count()==limit_history && full->selection().entity==last &&
+        take(full->world().members()).size()==editor::Session::maximum_entities && take(full->serialize())==limit_checkpoint,
+        "Entity limit rejection partially published a duplicate.");
 }
 void verify_viewport_editing() {
     verify_viewport_duplication();
     using namespace editor;
     Session document;
-    const auto create=[&](math::Vector3 at) {changed(document.create_static_mesh(mesh_assets().front(),at));return document.selection().actor;};
+    const auto create=[&](math::Vector3 at) {changed(document.create_static_mesh(mesh_assets().front(),at));return document.selection().entity;};
     const auto first=create({-1.5f,0,0}),second=create({1.5f,0,0});
-    const auto root=[&](ObjectId actor){return *take(world::root_component(document.world().runtime(),actor));};
-    const auto transform=[&](ObjectId actor){return take(world::read_transform(document.world().runtime(),root(actor)));};
+    const auto root=[&](ObjectId entity){return entity;};
+    const auto transform=[&](ObjectId entity){return take(world::read_transform(document.world().runtime(),root(entity)));};
     const auto first_root=root(first),second_root=root(second);
     Camera camera;const auto view=ViewportView::make(camera,{30,40,1000,700},1.5f);
     ViewportTool tool;ViewportTool::Settings settings{TransformTool::select,PivotMode::median};
-    const auto point=[&](ObjectId actor){return *view.project(transform(actor).position);};
+    const auto point=[&](ObjectId entity){return *view.project(transform(entity).position);};
     const auto pointer=[&](ui::EventKind kind,math::Vector2 p,bool shift=false,bool control=false,ui::PointerButton button=ui::PointerButton::secondary) {
         ui::Event event;event.kind=kind;event.x=p.x;event.y=p.y;event.shift=shift;event.control=control;event.button=button;
         return tool.pointer(document,view,event,settings);
@@ -92,11 +108,11 @@ void verify_viewport_editing() {
     require(tool.pick(document,view,point(second).x,point(second).y)==second,"Viewport ray did not hit the actual second mesh.");
     const auto before_cursor_history=document.undo_count();
     take(pointer(ui::EventKind::pointer_down,point(first),false,false,ui::PointerButton::primary));
-    require(document.selection().actor==second && document.undo_count()==before_cursor_history && tool.cursor!=math::Vector3{},
-        "Left click selected an Actor or failed to place the cursor on actual geometry.");
+    require(document.selection().entity==second && document.undo_count()==before_cursor_history && tool.cursor!=math::Vector3{},
+        "Left click selected an Entity or failed to place the cursor on actual geometry.");
     take(pointer(ui::EventKind::pointer_down,point(first)));take(pointer(ui::EventKind::pointer_up,point(first)));
     take(pointer(ui::EventKind::pointer_down,point(second),true));take(pointer(ui::EventKind::pointer_up,point(second),true));
-    require(document.selected_actors().size()==2 && document.selection().actor==second,"Shift click did not preserve and extend the Actor selection.");
+    require(document.selected_entities().size()==2 && document.selection().entity==second,"Shift click did not preserve and extend the Entity selection.");
     const auto history=document.undo_count();const auto before_first=transform(first),before_second=transform(second);
     take(key('G'));take(key('X'));take(text(L"2"));
     require(std::abs(transform(first).position.x-before_first.position.x-2)<.0001f &&
@@ -104,7 +120,7 @@ void verify_viewport_editing() {
         "Modal move did not preview the whole selection without history.");
     require(!document.serialize() && !document.start(),"An active viewport draft could be saved or played.");
     take(key(13,ui::Key::enter));require(document.undo_count()==history+1 && !tool.active(),"One move gesture did not produce one history entry.");
-    changed(document.undo());require(transform(first)==before_first && transform(second)==before_second && document.selected_actors().size()==2,
+    changed(document.undo());require(transform(first)==before_first && transform(second)==before_second && document.selected_entities().size()==2,
         "Transform undo lost a member, selection or original TRS.");
     changed(document.redo());changed(document.undo());
     settings.grid_spacing=1;settings.grid_snap=true;
@@ -163,20 +179,20 @@ void verify_viewport_editing() {
     std::vector<renderer::OverlayShape> shapes;tool.overlay(document,view,settings,shapes);
     require(std::ranges::any_of(shapes,[](const auto& shape){return shape.kind==renderer::OverlayShape::Kind::rectangle;}),"Box selection has no visible accepted geometry.");
     take(pointer(ui::EventKind::pointer_up,{view.bounds.x+view.bounds.width-1,view.bounds.y+view.bounds.height-1}));
-    require(document.selected_actors().size()==2,"Box selection missed real projected geometry.");
+    require(document.selected_entities().size()==2,"Box selection missed real projected geometry.");
     const auto deletion_history=document.undo_count();changed(document.erase_selected());
     require(take(document.world().members()).empty() && document.undo_count()==deletion_history+1,"Multi-delete was not one document operation.");
     changed(document.undo());
-    require(take(document.world().members()).size()==2 && document.is_selected(first) && document.is_selected(second) && document.selection().actor==second,
-        "Multi-delete undo lost Actor identity, active member or membership.");
-    changed(document.redo());require(document.selected_actors().empty(),"Delete redo retained a stale selection.");changed(document.undo());
+    require(take(document.world().members()).size()==2 && document.is_selected(first) && document.is_selected(second) && document.selection().entity==second,
+        "Multi-delete undo lost Entity identity, active member or membership.");
+    changed(document.redo());require(document.selected_entities().empty(),"Delete redo retained a stale selection.");changed(document.undo());
     // Blender object-mode chords: A toggles all, Alt+A clears, Ctrl+I inverts.
     take(document.select(first));
-    take(key('A'));require(document.selected_actors().size()==2,"A did not select every Actor.");
-    take(key('A'));require(document.selected_actors().empty(),"A with everything selected did not deselect all.");
-    take(chord('A',false,false));take(chord('A',false,true));require(document.selected_actors().empty(),"Alt+A did not deselect.");
+    take(key('A'));require(document.selected_entities().size()==2,"A did not select every Entity.");
+    take(key('A'));require(document.selected_entities().empty(),"A with everything selected did not deselect all.");
+    take(chord('A',false,false));take(chord('A',false,true));require(document.selected_entities().empty(),"Alt+A did not deselect.");
     take(document.select(first));take(chord('I',true,false));
-    require(document.selected_actors().size()==1 && document.is_selected(second),"Ctrl+I did not invert the Actor selection.");
+    require(document.selected_entities().size()==1 && document.is_selected(second),"Ctrl+I did not invert the Entity selection.");
     take(key('A'));
     {
         // Alt+G/R/S clear one channel of every selected root, one undo entry each.
@@ -192,7 +208,7 @@ void verify_viewport_editing() {
         if(!(cleared.rotation==math::Quaternion{} && cleared.scale==math::Vector3{1,1,1} && document.undo_count()==history+3))
             throw std::runtime_error("Alt+R/S did not clear rotation and scale: q=("+std::to_string(cleared.rotation.x)+","+std::to_string(cleared.rotation.y)+","+
                 std::to_string(cleared.rotation.z)+","+std::to_string(cleared.rotation.w)+") s="+std::to_string(cleared.scale.x)+
-                " history="+std::to_string(document.undo_count()-history)+" selected="+std::to_string(document.selected_actors().size()));
+                " history="+std::to_string(document.undo_count()-history)+" selected="+std::to_string(document.selected_entities().size()));
         changed(document.undo());changed(document.undo());changed(document.undo());
         require(transform(first)==moved,"Clear channel undo did not restore the full TRS.");
         changed(document.undo());require(transform(first)==before_first,"Fixture transform was not undone.");
@@ -234,13 +250,13 @@ void verify_viewport_editing() {
     if(!frame) throw std::runtime_error("Viewport/parameter layout failed at "+std::to_string(frame.error().key)+" code "+std::to_string(int(frame.error().code)));
     require(bool(ui.accept(*frame)),"Viewport/parameter frame was refused.");
     for(const auto& paths:{document.types().position_fields,document.types().scale_fields}) {
-        const auto* a=ui.presented()->find(workspace.field_control(root(document.selection().actor),paths[0]));
-        const auto* b=ui.presented()->find(workspace.field_control(root(document.selection().actor),paths[1]));
-        const auto* c=ui.presented()->find(workspace.field_control(root(document.selection().actor),paths[2]));
+        const auto* a=ui.presented()->find(workspace.field_control(root(document.selection().entity),paths[0]));
+        const auto* b=ui.presented()->find(workspace.field_control(root(document.selection().entity),paths[1]));
+        const auto* c=ui.presented()->find(workspace.field_control(root(document.selection().entity),paths[2]));
         require(a && b && c && a->bounds.y==b->bounds.y && b->bounds.y==c->bounds.y,"A Vector3 was split across parameter rows.");
     }
-    const auto* rotation_x=ui.presented()->find(workspace.field_control(root(document.selection().actor),document.types().rotation_fields[0]));
-    require(rotation_x && !ui.presented()->find(workspace.field_control(root(document.selection().actor),document.types().rotation_fields[3])),
+    const auto* rotation_x=ui.presented()->find(workspace.field_control(root(document.selection().entity),document.types().rotation_fields[0]));
+    require(rotation_x && !ui.presented()->find(workspace.field_control(root(document.selection().entity),document.types().rotation_fields[3])),
         "Scene rotation exposed quaternion W instead of a three-angle editor.");
     workspace.commit_ui_controls();
     const auto hud=ui.presented()->find(control::viewport_hud)->bounds;

@@ -5,7 +5,7 @@ void verify_project_ui_reload(const std::filesystem::path& evidence) {
     auto project=take(editor::Project::create(root));
     const auto path=root/"Source/Main.ui.source";
     const auto source=[](unsigned height,std::string_view extra=std::string_view{}) {
-        return std::string{R"(ui ProjectUI(in Text title, in double elapsed, in double actors) {
+        return std::string{R"(ui ProjectUI(in Text title, in double elapsed, in double entities) {
     state bool checked = false;
     Column root {
         ToggleButton toggle {

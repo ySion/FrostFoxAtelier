@@ -60,13 +60,13 @@ Result<void> Session::begin_material_edit(ObjectId object,std::uint64_t control)
     if(state->parent.registered() || state->source.empty()) {
         ObjectId owner,component;
         const auto members=world_.members();if(!members) return std::unexpected(members.error());
-        for(const auto& actor:*members) {
-            auto parts=world::components(runtime_,actor.id());if(!parts) return std::unexpected(parts.error());
+        for(const auto& entity:*members) {
+            auto parts=world::components(runtime_,entity.id());if(!parts) return std::unexpected(parts.error());
             for(const auto& part:*parts) {
                 auto bindings=world::read_material_bindings(runtime_,part.id());if(!bindings) continue;
                 for(const auto& binding:*bindings) if(binding.resource.id()==object) {
                     if(component!=ObjectId{} && component!=part.id()) return failure("A material instance cannot be edited across multiple components.");
-                    owner=actor.id();component=part.id();
+                    owner=entity.id();component=part.id();
                 }
             }
         }
@@ -88,7 +88,7 @@ Result<void> Session::commit_material_edit(std::uint64_t control) {
     if(!material_edit_ || material_edit_->control!=control) return failure("No matching material edit.");
     auto state=material::read_material(runtime_,material_edit_->root.id());if(!state) return std::unexpected(state.error());
     if(material_edit_->component!=ObjectId{}) {
-        if(!same(*state,material_edit_->before)) remember(MaterialValueChange{material_edit_->root,material_edit_->actor,
+        if(!same(*state,material_edit_->before)) remember(MaterialValueChange{material_edit_->root,material_edit_->entity,
             material_edit_->component,material_edit_->before,std::move(*state)});
         material_edit_.reset();return {};
     }

@@ -69,10 +69,10 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     const auto& report=response.at("result").at("performance");
     require(report.at("state")=="ready" && report.at("samples")==Performance::window_size &&
         report.at("passes").size()==Performance::pass_count && report.at("passes")[3].at("current_ms").is_null() &&
-        !response.at("result").contains("actors"),"Summary inspection did not expose bounded performance with skipped/null semantics.");
+        !response.at("result").contains("entities"),"Summary inspection did not expose bounded performance with skipped/null semantics.");
     std::ofstream(output/"performance.json")<<report.dump(2);
     require(app.document().undo_count()==history,"Performance observations or table layout entered Scene history.");
-    require(bool(Access::select_actor(app,{})),"Performance selection check failed.");tick(app);
+    require(bool(Access::select_entity(app,{})),"Performance selection check failed.");tick(app);
     require(Access::performance(app).snapshot().first_frame==full.first_frame,"Selection cleared the performance domain.");
 
     view.lit.ddgi=true;view.lit.probe_update_budget=64;

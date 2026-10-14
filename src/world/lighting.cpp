@@ -76,7 +76,7 @@ Result<math::Quaterniond> light_rotation(Runtime& runtime,ObjectId object) {
         const auto composed=math::try_normalize(math::Quaterniond{q.x,q.y,q.z,q.w}*result);
         if (!composed) return error(ErrorCode::argument_mismatch,"Light orientation is not finite.");
         result=*composed;
-        auto parent=scene_parent(runtime,node); if (!parent) return std::unexpected(parent.error());
+        auto parent=spatial_parent(runtime,node); if (!parent) return std::unexpected(parent.error());
         node=*parent;
     }
     return result;
@@ -143,18 +143,25 @@ Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additio
     return {};
 }
 Result<void> World::set_material(ObjectId object,Material value) {
-    if (auto ready=impl_->admit(); !ready) return ready;
-    if (running()) return error(ErrorCode::busy,"Stop the World before editing Material.");
+    if (auto ready=impl_->admit_edit(object); !ready) return ready;
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
     if (auto valid=validate_material(value); !valid) return valid;
     return runtime().with_native<StaticMeshComponent>(object,[&](auto& mesh)->Result<void> {mesh.material=value;return {};});
 }
 Result<void> World::set_light(ObjectId object,LightSettings value) {
-    if (auto ready=impl_->admit(); !ready) return ready;
-    if (running()) return error(ErrorCode::busy,"Stop the World before editing LightSettings.");
+    if (auto ready=impl_->admit_edit(object); !ready) return ready;
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
     if (auto valid=validate_light(value); !valid) return valid;
-    if(value.kind==LightKind::sky)
+    bool registered{};
+    if(component->owner!=ObjectId{}) {
+        auto owner=impl_->composition_entity(component->owner);if(!owner) return std::unexpected(owner.error());
+        registered=owner->world!=nullptr;
+        if(registered && value.kind!=LightKind::sky) {
+            auto spatial=has_transform(runtime(),component->owner);if(!spatial) return std::unexpected(spatial.error());
+            if(!*spatial) return error(ErrorCode::invalid_member,"Spatial Light requires its owner Entity to have a Transform.");
+        }
+    }
+    if(registered && value.kind==LightKind::sky)
         if(auto valid=impl_->validate_sky_light({},object,&value);!valid) return valid;
     return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=value;return {};});
 }
@@ -188,27 +195,29 @@ Result<bool> write_lighting_property(World& world,ObjectId object,std::span<cons
 }
 Result<std::vector<LightRenderItem>> World::light_items() const {
     if (auto ready=impl_->admit(false); !ready) return std::unexpected(ready.error());
-    std::vector<LightRenderItem> result; result.reserve(impl_->presentation.size());
+    std::vector<LightRenderItem> result;
+    detail::SpaceGraph space{runtime()};
     bool has_sky=false;
     for (const auto object:impl_->presentation) {
         auto light=detail::is(runtime(),object,types().light_component); if (!light) return std::unexpected(light.error());
         if (!*light) continue;
         auto owner=impl_->component_owner(object); if (!owner) return std::unexpected(owner.error());
-        auto actor=detail::actor_data(runtime(),*owner); if (!actor) return std::unexpected(actor.error());
+        auto entity=detail::entity_data(runtime(),*owner); if (!entity) return std::unexpected(entity.error());
         auto component=detail::component_data(runtime(),object); if (!component) return std::unexpected(component.error());
         auto settings=read_light(runtime(),object); if (!settings) return std::unexpected(settings.error());
         if(settings->kind==LightKind::sky) {
             if(has_sky) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
             has_sky=true;
         }
-        if (!actor->enabled || !component->enabled) continue;
+        auto enabled=effective_enabled(runtime(),*owner); if (!enabled) return std::unexpected(enabled.error());
+        if (!*enabled || !component->enabled) continue;
         if (auto valid=validate_light(*settings); !valid) return std::unexpected(valid.error());
         if(settings->kind==LightKind::sky) {
             result.push_back({*owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
             continue;
         }
-        auto matrix=world_matrix(runtime(),object); if (!matrix) return std::unexpected(matrix.error());
-        auto rotation=light_rotation(runtime(),object); if (!rotation) return std::unexpected(rotation.error());
+        auto matrix=space.matrix(*owner); if (!matrix) return std::unexpected(matrix.error());
+        auto rotation=light_rotation(runtime(),*owner); if (!rotation) return std::unexpected(rotation.error());
         const auto axis=[&](math::Vector3d local) {
             const auto value=math::rotate(*rotation,local);
             return math::Vector3{float(value.x),float(value.y),float(value.z)};

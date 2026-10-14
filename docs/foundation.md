@@ -94,7 +94,7 @@ String/StringView 共用同一按长度的字节哈希和比较，包含嵌入�
 ### 正式消费者
 
 - AssetBrowser 的 String→ControlKey 字典维护既有 nav/item/row/type/size 身份域；刷新、过滤和临时不可见不更换已有键，reset 清表而计数继续增长。查询自身不构造 String，调用者的前缀拼接仍可能分配，不宣称整条路径零分配。
-- World 接纳 Actor/组件时的临时 `Set<ObjectId>` 拒绝重复身份，沿原顺序完成准备、验证与发布；Set 不保活对象。World 持久成员索引、Renderer 缓存及其他容器不在本片迁移范围。
+- World 接纳 Entity 子树/组件时的临时 `Set<ObjectId>` 拒绝重复身份，沿原顺序完成准备、验证与发布；Set 不保活对象。World 持久成员索引、Renderer 缓存及其他容器不在本片迁移范围。
 
 ## 文本与视图
 

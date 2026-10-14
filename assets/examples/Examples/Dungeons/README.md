@@ -14,7 +14,7 @@
 
 `Originals/Assets/` 保留包内的非脚本资源：1268 个 FBX、152 个材质文件、168 张原始贴图、1303 个 Prefab、703 个 `.asset`、3 个 Unity 场景，以及动画、Shader Graph、光照数据和 `.meta`。包内 9 个 C# 脚本及引用这些脚本的 MonoBehaviour 已移除。`.meta` 留在磁盘，不单列于资源浏览器。Originals 中的 Unity 文件用于保留源数据；引擎直接使用 Models 和 Scenes 下的转换结果。
 
-`Import/models.json` 记录每个转换网格的来源、材质槽、三角形数与资源身份；`materials.json` 包含 152 个源材质及 6 个内嵌/内置材质；`*-instances.json` 保留原始层级路径和变换；`summary.json` 给出转换规模与原始相机。场景中 52 个镜像实例使用 18 个额外网格变体，反射烘入顶点和法线并修正绕序，Actor 使用正缩放；所有实例保留原始世界摆放。场景模型以独立 Actor 保存世界 TRS，未恢复 Unity Prefab 的编辑关系。
+`Import/models.json` 记录每个转换网格的来源、材质槽、三角形数与资源身份；`materials.json` 包含 152 个源材质及 6 个内嵌/内置材质；`*-instances.json` 保留原始层级路径和变换；`summary.json` 给出转换规模与原始相机。场景中 52 个镜像实例使用 18 个额外网格变体，反射烘入顶点和法线并修正绕序，Entity 使用正缩放；所有实例保留原始世界摆放。场景模型以独立 Entity 保存世界 TRS，未恢复 Unity Prefab 的编辑关系。
 
 入口使用 **Smooth** 显示原始颜色贴图。192 盏灯已转为可编辑 LightComponent，切换 Scene Lit 可使用引擎光照，但当前 Scene Lit 不采样网格颜色贴图。此导入没有重建 Unity Shader Graph、透明水面、后处理、烘焙光照、骨骼动画或粒子行为；Demo 中 73 个粒子系统保留在源文件中，不作为运行组件执行。因此画面不等同于 Unity 原效果。
 

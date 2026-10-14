@@ -18,7 +18,7 @@ void ProjectUI::sync(const Project* project) {
         }
     }
 }
-Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& session,ui::Surface surface,double elapsed,std::size_t actors,
+Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& session,ui::Surface surface,double elapsed,std::size_t entities,
     const std::function<void(const ui::Reply&)>& effects) {
     const auto failed=[](std::string message) {return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)});};
     const auto describe=[](std::string_view stage,const ui::Error& error) {
@@ -46,7 +46,7 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
     std::vector<ui::Control> controls;
     if (document_) {
         document_->poll();
-        const std::array<ui_language::InputValue,3> inputs{title_,elapsed,static_cast<double>(actors)};
+        const std::array<ui_language::InputValue,3> inputs{title_,elapsed,static_cast<double>(entities)};
         auto appended=document_->append("ProjectUI",0,{},inputs,controls);
         if (!appended) return restore(appended.error().message);
         if (document_->candidate_failed()) return restore(std::string(document_->diagnostic()));

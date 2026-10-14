@@ -97,12 +97,12 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
             effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             const auto duplicated=execute(editor::Command::duplicate_selected);
             if (!duplicated) {status(duplicated,L"");return true;}
-            if (!document_->selected_actors().empty())
+            if (!document_->selected_entities().empty())
                 status(viewport_tool_.place_duplicates(*document_,view,workspace_.viewport_settings,pointer_position_),L"Duplicate · Move · Right click / Esc keeps copies in place");
             window_.capture(viewport_tool_.capture());window_.cursor(viewport_tool_.pointer_cursor());return true;
         }
         if (!event.shift && native_key=='X') {
-            if (!document_->selected_actors().empty())
+            if (!document_->selected_entities().empty())
                 request_menu({editor::control::viewport,editor::control::viewport_delete_menu,pointer_position_.x,pointer_position_.y});
             return true;
         }
@@ -115,8 +115,8 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
         using enum editor::Command;
         const auto view=[&](editor::Command command,const wchar_t* text){status(execute(command),text);return true;};
         if((native_key==VK_NUMPAD5 || native_key==VK_NUMPAD0) && !event.shift) return view(view_perspective,L"Perspective view");
-        if(native_key==VK_DECIMAL && !event.shift) {status(frame_actors(true),L"View Selected");return true;}
-        if(native_key==VK_HOME && !event.shift) {status(frame_actors(false),L"View All");return true;}
+        if(native_key==VK_DECIMAL && !event.shift) {status(frame_entities(true),L"View Selected");return true;}
+        if(native_key==VK_HOME && !event.shift) {status(frame_entities(false),L"View All");return true;}
         if(native_key==VK_OEM_3 && event.shift) {
             effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             const auto entry=camera_;

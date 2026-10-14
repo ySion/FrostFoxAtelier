@@ -1,33 +1,45 @@
 {
-  "version": 2,
-  "actors": [
+  "version": 6,
+  "next_id": "21",
+  "world": {},
+  "roots": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6"
+  ],
+  "entities": [
     {
-      "type": "world.Actor",
+      "id": "1",
+      "type": "world.Entity",
       "name": "Static triangle mesh floor",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          0,
+          -0.5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          40,
+          1,
+          40
+        ],
+        "origin": null
+      },
+      "children": [],
       "components": [
         {
           "type": "world.StaticMeshComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            0,
-            -0.5,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            40,
-            1,
-            40
-          ],
           "properties": {
             "body": {
               "enabled": true,
@@ -63,37 +75,44 @@
             0,
             0
           ],
-          "id": 1
+          "id": "7",
+          "name": "StaticMeshComponent",
+          "materials": []
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "2",
+      "type": "world.Entity",
       "name": "Sensor zone",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          0,
+          1,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [
+        "8"
+      ],
       "components": [
         {
           "type": "world.CollisionComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            0,
-            1,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "body": {
               "enabled": true,
@@ -116,73 +135,43 @@
               }
             }
           },
-          "id": 1
-        },
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "parent": 1,
-          "position": [
-            0,
-            0,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            4,
-            0.8,
-            4
-          ],
-          "properties": {},
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.15,
-            0.7,
-            0.3
-          ],
-          "roughness": 0.7,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "id": 2
+          "id": "9",
+          "name": "CollisionComponent"
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "3",
+      "type": "world.Entity",
       "name": "Sensor visitor",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          0,
+          5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [
+        "11"
+      ],
       "components": [
         {
           "type": "world.CollisionComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            0,
-            5,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "body": {
               "enabled": true,
@@ -205,73 +194,43 @@
               }
             }
           },
-          "id": 1
-        },
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "parent": 1,
-          "position": [
-            0,
-            0,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "properties": {},
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.2,
-            0.6,
-            0.9
-          ],
-          "roughness": 0.7,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "id": 2
+          "id": "12",
+          "name": "CollisionComponent"
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "4",
+      "type": "world.Entity",
       "name": "Ignored falling body",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          4,
+          5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [
+        "14"
+      ],
       "components": [
         {
           "type": "world.CollisionComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            4,
-            5,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "body": {
               "enabled": true,
@@ -294,73 +253,43 @@
               }
             }
           },
-          "id": 1
-        },
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "parent": 1,
-          "position": [
-            0,
-            0,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "properties": {},
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.9,
-            0.2,
-            0.2
-          ],
-          "roughness": 0.7,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "id": 2
+          "id": "15",
+          "name": "CollisionComponent"
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "5",
+      "type": "world.Entity",
       "name": "Blocking falling body",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          -4,
+          5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [
+        "17"
+      ],
       "components": [
         {
           "type": "world.CollisionComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            -4,
-            5,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "body": {
               "enabled": true,
@@ -383,74 +312,41 @@
               }
             }
           },
-          "id": 1
-        },
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "parent": 1,
-          "position": [
-            0,
-            0,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "properties": {},
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.2,
-            0.4,
-            0.9
-          ],
-          "roughness": 0.7,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "id": 2
+          "id": "18",
+          "name": "CollisionComponent"
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "6",
+      "type": "world.Entity",
       "name": "Main directional",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          0,
+          5,
+          -2
+        ],
+        "rotation": [
+          0.5367523272229081,
+          0.18786331452801783,
+          0,
+          0.8225596113810472
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [],
       "components": [
         {
-          "id": 1,
           "type": "world.LightComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            0,
-            5,
-            -2
-          ],
-          "rotation": [
-            0.5367523272229081,
-            0.18786331452801783,
-            0,
-            0.8225596113810472
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "settings": {
               "kind": "directional",
@@ -467,9 +363,212 @@
               "two_sided": false,
               "casts_shadow": true
             }
-          }
+          },
+          "id": "20",
+          "name": "LightComponent"
         }
-      ]
+      ],
+      "properties": {}
+    },
+    {
+      "id": "8",
+      "type": "world.Entity",
+      "name": "StaticMeshComponent",
+      "enabled": true,
+      "space": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          4,
+          0.8,
+          4
+        ],
+        "origin": null
+      },
+      "children": [],
+      "components": [
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.15,
+            0.7,
+            0.3
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": "10",
+          "name": "StaticMeshComponent",
+          "materials": []
+        }
+      ],
+      "properties": {}
+    },
+    {
+      "id": "11",
+      "type": "world.Entity",
+      "name": "StaticMeshComponent",
+      "enabled": true,
+      "space": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "origin": null
+      },
+      "children": [],
+      "components": [
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.2,
+            0.6,
+            0.9
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": "13",
+          "name": "StaticMeshComponent",
+          "materials": []
+        }
+      ],
+      "properties": {}
+    },
+    {
+      "id": "14",
+      "type": "world.Entity",
+      "name": "StaticMeshComponent",
+      "enabled": true,
+      "space": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "origin": null
+      },
+      "children": [],
+      "components": [
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.9,
+            0.2,
+            0.2
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": "16",
+          "name": "StaticMeshComponent",
+          "materials": []
+        }
+      ],
+      "properties": {}
+    },
+    {
+      "id": "17",
+      "type": "world.Entity",
+      "name": "StaticMeshComponent",
+      "enabled": true,
+      "space": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "origin": null
+      },
+      "children": [],
+      "components": [
+        {
+          "type": "world.StaticMeshComponent",
+          "enabled": true,
+          "properties": {},
+          "mesh": "builtin/cube",
+          "base_color": [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "roughness": 0.7,
+          "metallic": 0,
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "id": "19",
+          "name": "StaticMeshComponent",
+          "materials": []
+        }
+      ],
+      "properties": {}
     }
   ]
 }

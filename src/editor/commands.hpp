@@ -7,9 +7,9 @@
 
 namespace atelier::editor {
 enum class Command : std::uint64_t {
-    create_actor=10, erase_selected=11, undo=12, redo=13, focus=14, reset_camera=15, duplicate_selected=16,
-    create_static_mesh=17, erase_actors=19, reset_layout=603, exit=705,
-    show_scene=710, show_parameters=711, show_controls=712, show_actors=713, maximize_pane=714,
+    create_entity=10, erase_selected=11, undo=12, redo=13, focus=14, reset_camera=15, duplicate_selected=16,
+    create_static_mesh=17, erase_entities=19, reset_layout=603, exit=705,
+    show_scene=710, show_parameters=711, show_controls=712, show_entities=713, maximize_pane=714,
     show_assets=721, previous_tab=722, next_tab=723, close_tab=724,
     new_project=750, open_project=751, save_scene=752, save_scene_as=753, open_scene=754,
     import_mesh=755, refresh_assets=756, about=757,
@@ -25,7 +25,7 @@ enum class Command : std::uint64_t {
     create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838,
     example_sponza=841, example_scene_lit=842, example_physic=843, example_dungeons=844,
     view_bottom=900, view_back=901, view_left=902, show_fps=903,
-    show_world_settings=906,fit_probe_scene=907,fit_probe_scene_focus=908
+    show_world_settings=906,fit_probe_scene=907,fit_probe_scene_focus=908, add_transform=909,remove_transform=910
 };
 inline constexpr std::array camera_commands{Command::view_perspective,Command::view_top,Command::view_front,
     Command::view_right,Command::view_bottom,Command::view_back,Command::view_left};
@@ -88,11 +88,13 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::exit,CommandGroup::file,L"Exit",L"Alt+F4"},
     CommandDefinition{Command::undo,CommandGroup::edit,L"Undo",L"Ctrl+Z"},
     CommandDefinition{Command::redo,CommandGroup::edit,L"Redo",L"Ctrl+Shift+Z"},
-    CommandDefinition{Command::duplicate_selected,CommandGroup::edit,L"Duplicate Actors",L"Shift+D",true},
+    CommandDefinition{Command::duplicate_selected,CommandGroup::edit,L"Duplicate Entities",L"Shift+D",true},
+    CommandDefinition{Command::add_transform,CommandGroup::edit,L"Add Transform",L""},
+    CommandDefinition{Command::remove_transform,CommandGroup::edit,L"Remove Transform",L""},
     CommandDefinition{Command::erase_selected,CommandGroup::edit,L"Delete Selected Object",L"Delete",true},
-    CommandDefinition{Command::erase_actors,CommandGroup::edit,L"Delete Actors",L"X"},
-    CommandDefinition{Command::create_actor,CommandGroup::create,L"Actor",L""},
-    CommandDefinition{Command::create_static_mesh,CommandGroup::create,L"Static Mesh Actor",L"",false,L"Static Mesh"},
+    CommandDefinition{Command::erase_entities,CommandGroup::edit,L"Delete Entities",L"X"},
+    CommandDefinition{Command::create_entity,CommandGroup::create,L"Entity",L""},
+    CommandDefinition{Command::create_static_mesh,CommandGroup::create,L"Static Mesh Entity",L"",false,L"Static Mesh"},
     CommandDefinition{Command::create_point_light,CommandGroup::create,L"Point Light",L"",true,L"Point Light"},
     CommandDefinition{Command::create_rectangle_light,CommandGroup::create,L"Rectangle Light",L"",false,L"Area Light"},
     CommandDefinition{Command::create_directional_light,CommandGroup::create,L"Directional Light",L"",false,L"Sun Light"},
@@ -141,8 +143,8 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::reset_camera,CommandGroup::view,L"Reset Camera",L"",false,L"Reset View"},
     CommandDefinition{Command::show_scene,CommandGroup::window,L"Scene View",L""},
     CommandDefinition{Command::show_parameters,CommandGroup::window,L"Parameters",L""},
-    CommandDefinition{Command::show_actors,CommandGroup::window,L"Scene Tree",L""},
-    CommandDefinition{Command::show_structure,CommandGroup::window,L"Actor Structure",L""},
+    CommandDefinition{Command::show_entities,CommandGroup::window,L"Scene Tree",L""},
+    CommandDefinition{Command::show_structure,CommandGroup::window,L"Entity Structure",L""},
     CommandDefinition{Command::show_assets,CommandGroup::window,L"Asset Browser",L""},
     CommandDefinition{Command::show_code,CommandGroup::window,L"Code",L""},
     CommandDefinition{Command::show_output,CommandGroup::window,L"Project Output",L""},

@@ -109,7 +109,7 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
     status(completion(std::move(result)), success);
 }
 
-Result<void> Application::focus_selected() { return frame_actors(true); }
+Result<void> Application::focus_selected() { return frame_entities(true); }
 void Application::sync_world_view() {
     workspace_.sync_world(*document_);
     // Undo/reopen may restore a finer follow-focus lattice. The scene remains
@@ -128,28 +128,35 @@ Result<void> Application::set_camera(const editor::Camera& camera,bool cut) {
     if(camera.state()!=camera_.state()) {camera_=camera;camera_cut_|=cut;}
     return {};
 }
-Result<void> Application::frame_actors(bool selected_only) {
+Result<void> Application::frame_entities(bool selected_only) {
     // Bounds of the rendered geometry (Blender View Selected / View All); locators count as points.
     auto& runtime=document_->world().runtime();
     math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;
     bool any{};
     const auto include=[&](math::Vector3 p) {for(int i=0;i<3;++i) {low[i]=std::min(low[i],p[i]);high[i]=std::max(high[i],p[i]);} any=true;};
-    const auto wanted=[&](ObjectId actor){return !selected_only || document_->is_selected(actor) || actor==document_->selection().actor;};
+    const auto wanted=[&](ObjectId entity) {
+        if(!selected_only) return true;
+        while(entity!=ObjectId{}) {
+            if(document_->is_selected(entity) || entity==document_->selection().entity) return true;
+            const auto parent=world::parent_entity(runtime,entity);if(!parent) return false;entity=*parent;
+        }
+        return false;
+    };
     auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
     std::vector<ObjectId> rendered;
     for(const auto& item:*items) {
-        rendered.push_back(item.actor);if(!wanted(item.actor)) continue;
+        rendered.push_back(item.entity);if(!wanted(item.entity)) continue;
         for(const auto& vertex:item.geometry->vertices())
             include(math::transform_point(math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world));
     }
     auto members=document_->world().members();if(!members) return std::unexpected(members.error());
     for(const auto& member:*members) {
         if(!wanted(member.id()) || std::ranges::find(rendered,member.id())!=rendered.end()) continue;
-        auto root=world::root_component(runtime,member.id());if(!root || !*root) continue;
-        auto matrix=world::world_matrix(runtime,**root);if(!matrix) continue;
+        auto spatial=world::has_transform(runtime,member.id());if(!spatial || !*spatial) continue;
+        auto matrix=world::world_matrix(runtime,member.id());if(!matrix) continue;
         include({(*matrix)[12],(*matrix)[13],(*matrix)[14]});
     }
-    if(!any) return std::unexpected(Error{ErrorCode::invalid_definition,selected_only?"Select an Actor with a root SceneComponent to frame.":"The scene has nothing to frame."});
+    if(!any) return std::unexpected(Error{ErrorCode::invalid_definition,selected_only?"Select an Entity with a Transform to frame.":"The scene has nothing to frame."});
     auto camera=camera_;camera.frame((low+high)*.5f,math::length(high-low)*.5f);return set_camera(camera,true);
 }
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
@@ -352,7 +359,7 @@ Result<void> Application::action(const ui::Action& source) {
         }
         if (binding->kind==editor::Workspace::Binding::Kind::name) {
             if (event.kind==ui::ActionKind::edit_commit)
-                return done(document_->rename(binding->object,std::get<std::wstring>(event.value)),L"Actor renamed / Undo restores its name");
+                return done(document_->rename(binding->object,std::get<std::wstring>(event.value)),L"Entity renamed / Undo restores its name");
             return {};
         }
         if (binding->kind==editor::Workspace::Binding::Kind::position_default) {
@@ -407,7 +414,7 @@ Result<void> Application::action(const ui::Action& source) {
         default: return {};
         }
     }
-    if (event.kind != ui::ActionKind::activate) return {}; // Includes retired field/Actor bindings.
+    if (event.kind != ui::ActionKind::activate) return {}; // Includes retired field/Entity bindings.
     if (const auto* command=editor::command_definition(event.key)) return execute(command->id);
     return {};
 }
@@ -448,7 +455,9 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
-    case create_actor: workspace_.inspecting_asset=false;result=completion(document_->add_actor()); break;
+    case create_entity: workspace_.inspecting_asset=false;result=completion(document_->add_entity()); break;
+    case add_transform: result=document_->set_transform(document_->selection().entity,{});break;
+    case remove_transform: result=document_->remove_transform(document_->selection().entity);break;
     case create_point_light:case create_rectangle_light:case create_directional_light:case create_sky_light: {
         workspace_.inspecting_asset=false;
         const auto kind=command==create_point_light?world::LightKind::point:
@@ -471,7 +480,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         break;
     }
     case erase_selected: workspace_.inspecting_asset=false;result=completion(document_->erase_selected()); break;
-    case erase_actors: workspace_.inspecting_asset=false;result=completion(document_->erase_actors()); break;
+    case erase_entities: workspace_.inspecting_asset=false;result=completion(document_->erase_entities()); break;
     case duplicate_selected: workspace_.inspecting_asset=false;result=completion(document_->duplicate_selected()); break;
     case undo: case redo:
         if (workspace_.source_history()) {
@@ -488,7 +497,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case show_scene: workspace_.dock.select(editor::control::scene_tab); break;
     case show_parameters: workspace_.dock.select(editor::control::parameters_tab); break;
     case show_controls: workspace_.dock.select(editor::control::workbench); break;
-    case show_actors: workspace_.dock.select(editor::control::actors_tab); break;
+    case show_entities: workspace_.dock.select(editor::control::entities_tab); break;
     case show_structure: workspace_.dock.select(editor::control::structure_tab); break;
     case show_world_settings: workspace_.dock.select(editor::world_control::tab); break;
     case fit_probe_scene:case fit_probe_scene_focus: {

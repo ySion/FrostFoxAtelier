@@ -99,7 +99,7 @@ void quality_motion_history(Fixture& f) {
         if(mode<=1) {
             // Negative control: geometry beyond every visible light/ray moves
             // continuously. A global response hint must not erase a stationary
-            // stochastic signal or turn a neighboring actor into a noise switch.
+            // stochastic signal or turn a neighboring entity into a noise switch.
             auto distant=meshes[4];distant.stable_key=99999;
             distant.world=box(50,1,3,1,1,1);distant.material={.roughness=1};
             f.room.meshes.push_back(distant);f.edited();

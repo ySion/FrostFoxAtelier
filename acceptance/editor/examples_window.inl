@@ -6,7 +6,7 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     if(!snapshot_only) await_acceptance_activation(app,output,"Official examples");
-    require(actors(app).size()==4 && model(app.document().world().render_items()).front().geometry->vertices().size()==786801 &&
+    require(entities(app).size()==4 && model(app.document().world().render_items()).front().geometry->vertices().size()==786801 &&
         Access::scene_lit_view(app).shading==atelier::renderer::Shading::scene_lit && Access::scene_lit_view(app).lit.ddgi,
         "Editor default startup did not load the complete Sponza Scene Lit/DDGI scene.");
     tick(app,128);capture(app,output/"01-default-sponza.png");
@@ -29,7 +29,7 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
             "Example selection did not close the menu and configure Scene Lit.");
     };
     choose(Command::example_scene_lit);
-    require(actors(app).size()==14 && model(app.document().world().light_items()).size()==4,"Examples menu did not open Scene Lit Room.");
+    require(entities(app).size()==15 && model(app.document().world().light_items()).size()==4,"Examples menu did not open the complete Scene Lit Room, including its Sky Light Entity.");
     tick(app,96);capture(app,output/"03-scene-lit-room.png");
     const auto shipped=atelier::editor::asset_directory()/"examples/Examples/Scene Lit Room/Scenes/Main.scene";
     const auto original=model(atelier::editor::read_file(shipped));
@@ -39,7 +39,7 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     require(roughness!=fields.end(),"Scene Lit Room has no editable roughness.");
     model(Access::edit_field(app,mesh,roughness->path,.61f));model(app.save_scene());
     const auto saved=model(app.document().serialize());
-    choose(Command::example_sponza);require(actors(app).size()==4,"Examples menu did not return to Sponza.");
+    choose(Command::example_sponza);require(entities(app).size()==4,"Examples menu did not return to Sponza.");
     choose(Command::example_scene_lit);
     require(model(app.document().serialize())==saved && model(atelier::editor::read_file(shipped))==original,
         "Example switching lost the saved copy or modified the bundled template.");

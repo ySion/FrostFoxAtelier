@@ -11,15 +11,15 @@ void verify_material_picking() {
             std::vector<mat::Slot>{{"surface",std::make_shared<const mat::Surface>(value)}});
     };
     editor::Session document;
-    changed(document.create_static_mesh({{},L"Cutout",mesh(cutout)}));const auto front=document.selection().actor;
+    changed(document.create_static_mesh({{},L"Cutout",mesh(cutout)}));const auto front=document.selection().entity;
     const auto front_component=component(document,front,document.types().static_mesh_component);
-    changed(document.create_static_mesh({{},L"Receiver",mesh({})},{0,0,.8f}));const auto back=document.selection().actor;
+    changed(document.create_static_mesh({{},L"Receiver",mesh({})},{0,0,.8f}));const auto back=document.selection().entity;
     editor::Camera camera;require(camera.look_at({0,0,-5},{0,0,0}),"Material picking camera is invalid.");
     auto view=editor::ViewportView::make(camera,{0,0,800,600},1);
     editor::ViewportTool tool;
     const auto pick=[&](math::Vector3 position) {const auto p=view.project(position);require(p.has_value(),"Material picking point is outside its viewport.");return tool.pick(document,view,p->x,p->y);};
     require(pick({-.5f,.5f,0})==back && pick({.5f,.5f,0})==front,
-        "Point picking did not pass through transparent texels to the rear Actor.");
+        "Point picking did not pass through transparent texels to the rear Entity.");
     cutout.texture(mat::Input::opacity).scale[0]=-1;
     take(world::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
     require(pick({-.5f,.5f,0})==front && pick({.5f,.5f,0})==back,

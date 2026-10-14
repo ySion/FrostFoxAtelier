@@ -27,7 +27,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
-World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v5 保存；Diagnostics 的 `direct_reference` 属于视口，仅启用 64 次独立估计并关闭直接光复用/降噪。旧四灯阴影槽与单灯样本参数已退出当前接口；Scene v4 只在读取边界严格校验旧字段并丢弃。解析灯和发光面经同一光源快照、采样及可见性入口，方向光独立评估；屏幕 reservoir 和 DDGI 独立采样不互借历史。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。该原生实现未引入 RTXDI SDK，具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
+World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v6 保存；Diagnostics 的 `direct_reference` 属于视口，仅启用 64 次独立估计并关闭直接光复用/降噪。旧四灯阴影槽与单灯样本参数已退出当前接口；Scene v4 只在读取边界严格校验旧字段并丢弃。解析灯和发光面经同一光源快照、采样及可见性入口，方向光独立评估；屏幕 reservoir 和 DDGI 独立采样不互借历史。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。该原生实现未引入 RTXDI SDK，具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
 
 - **Shading**：Smooth 使用顶点法线，Flat 使用依据作者法线定向的几何面法线；两者消费解析后的标准材质基础色和法线图，遵循材质双面设置。MatCap 按视空间法线采样一个 256×256 sRGB 陶土球图，覆盖基础色；球图在第一次实际场景绘制时生成并上传一次，不消费场景灯光。相机 view 沿既有刚体 LookAt 约定。MatCap 自身不产生物体间阴影、接触遮蔽或真实环境反射。
 - **Edges**：Off 只保留选中边高亮；Overlay 将边线直接合成到表面着色中，沿原几何批次一次绘制；Lines: Visible 先绘制整个场景的深度，再绘制通过深度测试的边；Lines: All 使用相同深度结果，显示包括被遮挡部分在内的边。两种纯线框均保留完整场景深度供诊断读取，未覆盖的颜色保留背景。
@@ -42,7 +42,7 @@ World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1�
 
 ### 背景与参考辅助显示
 
-`ViewSettings.background` 保存 MatCap / Smooth / Flat 工作室模式的背景偏好，正式编辑器默认蓝灰渐变；Scene Lit 始终使用黑背景，包括空场景与纯线框显示。Guides 中的 Gradient Background 在 Scene Lit 下禁用，切回工作室模式恢复原偏好。`reference_grid`、`origin_axes` 仍独立于着色模式；正式编辑器默认开启 XZ 平面 Y=0 参考网格及 X/Z 原点轴线，直接 Renderer 调用默认关闭。辅助显示不创建 Actor，也不改变几何、材质、场景序列化、选择或撤销历史。
+`ViewSettings.background` 保存 MatCap / Smooth / Flat 工作室模式的背景偏好，正式编辑器默认蓝灰渐变；Scene Lit 始终使用黑背景，包括空场景与纯线框显示。Guides 中的 Gradient Background 在 Scene Lit 下禁用，切回工作室模式恢复原偏好。`reference_grid`、`origin_axes` 仍独立于着色模式；正式编辑器默认开启 XZ 平面 Y=0 参考网格及 X/Z 原点轴线，直接 Renderer 调用默认关闭。辅助显示不创建 Entity，也不改变几何、材质、场景序列化、选择或撤销历史。
 
 背景只绘制 scene viewport；网格与轴线通过程序化全屏三角形生成，没有网格顶点缓冲或贴图。网格基准为 0.2 米细格、每五格主线，根据投影像素密度在十倍尺度之间交叉渐变，并在接近地平线和远处淡出。颜色输入为线性值，由既有 sRGB RTV 编码；线宽以物理像素计算。
 

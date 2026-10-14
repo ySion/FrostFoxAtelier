@@ -18,7 +18,7 @@ struct Parameter {
 struct ComponentType { TypeId type; std::string name; };
 struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category; };
 struct Selection {
-    ObjectId actor, object; // Actor context and inspected Actor/Component, in this document only.
+    ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;
 };
 
@@ -38,21 +38,27 @@ public:
     physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     Selection selection() const noexcept { return selection_; }
-    // Actor-level multi-selection; the active Actor (selection().actor) is the
+    // Entity-level multi-selection; the active Entity (selection().entity) is the
     // last entry when it is one of them. Selection is view state, not history.
-    std::span<const ObjectId> selected_actors() const noexcept { return selected_actors_; }
-    bool is_selected(ObjectId actor) const noexcept { return std::ranges::find(selected_actors_,actor)!=selected_actors_.end(); }
+    std::span<const ObjectId> selected_entities() const noexcept { return selected_entities_; }
+    bool is_selected(ObjectId entity) const noexcept { return std::ranges::find(selected_entities_,entity)!=selected_entities_.end(); }
     std::wstring_view name(ObjectId) const noexcept;
     Result<void> set_world_lighting(const rendering::SceneLightingSettings&);
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
-    Result<void> select_actors(std::span<const ObjectId> actors, ObjectId active);
-    Result<world::Commit> add_actor(TypeId actual = {});
+    Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
+    Result<world::Commit> add_entity(TypeId actual = {});
     Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {});
     Result<world::Commit> create_light(world::LightKind, math::Vector3 position = {});
-    Result<world::Commit> erase_selected(); // All selected Actors form one history entry.
-    Result<world::Commit> erase_actors(); // Viewport actions target Actors even while inspecting a Component.
-    Result<world::Commit> duplicate_selected(); // Fresh Actor/Component identities; immutable resources stay shared.
+    Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
+    Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
+    Result<world::Commit> duplicate_selected(); // Fresh Entity/Component identities; immutable resources stay shared.
+    Result<world::Commit> reparent(ObjectId child,ObjectId parent,
+        world::ReparentRule = world::ReparentRule::keep_world,std::size_t index = world::append);
+    Result<void> set_transform(ObjectId,world::Trs);
+    Result<void> remove_transform(ObjectId);
+    Result<world::Commit> set_space_reference(ObjectId,std::optional<ObjectId>,
+        world::ReparentRule = world::ReparentRule::keep_world);
     Result<world::Commit> add_component(TypeId);
     Result<world::Commit> remove_component(ObjectId);
     Result<std::vector<ComponentType>> component_types() const;
@@ -60,10 +66,10 @@ public:
     Result<Scalar> read_property(ObjectId, std::span<const FieldId>) const;
     Result<void> configure_body(ObjectId component, physics::BodySettings);
     Result<void> begin_edit(ObjectId component, std::span<const FieldId>, std::uint64_t control_session);
-    // Whole-TRS edit of several SceneComponents (viewport handles, modal G/R/S,
+    // Whole-TRS edit of several Entities (viewport handles, modal G/R/S,
     // Euler fields). Preview writes complete transforms in the same order;
     // commit_edit records one history entry, cancel_edit restores all.
-    Result<void> begin_transform(std::span<const ObjectId> scene_components, std::uint64_t control_session, bool amend_creation = false);
+    Result<void> begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session, bool amend_creation = false);
     static constexpr float minimum_scale=.0001f, maximum_scale=10000.f;
     // Stable gesture origin; previews never feed their converted values back into the next preview.
     Result<world::Trs> original_transform(std::uint64_t control_session, ObjectId component) const;
@@ -104,7 +110,16 @@ public:
     Result<world::Commit> stop();
     Result<void> collect_step();
     Result<std::string> serialize() const;
+    Result<std::string> serialize_subtree(ObjectId) const;
+    // Imports a complete detached graph, remaps internal references and records
+    // one creation history item. Document identities are always fresh.
+    Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
     static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {});
+    // Legacy control bundles refer to pre-migration Actor/Component indices.
+    // Resolve them through the scene importer, then select live document IDs.
+    static Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> legacy_selection(std::string_view,
+        std::span<const std::pair<std::size_t,std::optional<std::size_t>>>);
+    Result<ObjectId> local_object(std::uint64_t) const;
     bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
     void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
     void mark_modified() noexcept { if(saved_cursor_) {saved_cursor_.reset();++revision_;} }
@@ -113,22 +128,35 @@ public:
     bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
-    static constexpr std::size_t maximum_actors = 8192;
+    static constexpr std::size_t maximum_entities = 8192;
     static constexpr std::size_t maximum_components = 1024;
 private:
-    // Removals are ordered as detached; restore runs in reverse.
-    struct ActorChange { bool added{}; std::vector<world::ActorRemoval> removals; };
-    struct ComponentChange { bool added{}; world::ComponentRemoval removal; };
+    // Removal records restore together as one forest transaction.
+    struct EntityChange { bool added{}; std::vector<world::EntityRemoval> removals; };
+    struct ComponentChange { bool added{}; world::ComponentRemoval removal; bool created_transform{}; };
+    struct ReparentChange {
+        struct Entry {ObjectRoot root;world::Trs before,after;};
+        ObjectRoot root;
+        ObjectId before_parent,after_parent;
+        std::size_t before_index{},after_index{};
+        std::vector<Entry> transforms;
+    };
+    struct TransformPresenceChange {
+        ObjectRoot root;
+        std::optional<world::Trs> before,after;
+        std::optional<ObjectId> before_origin,after_origin;
+    };
+    struct SpaceReferenceChange {ObjectRoot root;std::optional<ObjectId> before_origin,after_origin;world::Trs before,after;bool spatial{};};
     struct FieldChange {
         ObjectRoot root;
-        ObjectId actor;
+        ObjectId entity;
         world::FieldPath path;
         std::uint64_t control_session{};
         // TRS is one invariant group; ordinary business properties keep exact scalar types.
         std::variant<world::Trs,Scalar> before, after;
     };
     struct TransformChange {
-        struct Entry { ObjectRoot root; ObjectId actor; world::Trs before, after; };
+        struct Entry { ObjectRoot root; ObjectId entity; world::Trs before, after; };
         std::vector<Entry> entries;
         std::uint64_t control_session{};
         Selection inspection;
@@ -136,10 +164,10 @@ private:
     };
     struct LightingChange { rendering::SceneLightingSettings before,after; };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
-    struct BodyChange { ObjectRoot root; ObjectId actor; physics::BodySettings before, after; };
-    struct MaterialBindingChange {ObjectRoot root;ObjectId actor;std::vector<world::MaterialBinding> before,after;};
-    struct MaterialValueChange {ObjectRoot root;ObjectId actor,component;material::State before,after;};
-    using Change = std::variant<LightingChange, ActorChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange>;
+    struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
+    struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<world::MaterialBinding> before,after;};
+    struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
+    using Change = std::variant<LightingChange, EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -153,26 +181,31 @@ private:
     std::uint64_t revision_{1};
     std::optional<std::size_t> saved_cursor_{0};
     Selection selection_;
-    std::vector<ObjectId> selected_actors_; // Non-owning; validated on write, pruned with membership.
+    std::vector<ObjectId> selected_entities_; // Non-owning; validated on write, pruned with membership.
     std::optional<FieldChange> active_;
     std::optional<TransformChange> transform_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
+    // Document-local identities never confer Runtime validity or World membership.
+    // Detached history objects retain their ID; IDs are never reused.
+    mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
+    mutable std::uint64_t next_local_id_{1};
+    struct GraphCodec;
     std::uint64_t next_name_{1};
     struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};
     std::unordered_map<std::string,MaterialDocument> materials_;
     std::unordered_map<std::string,ObjectRoot> textures_;
-    struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};world::FieldPath path;ObjectId actor,component;};
+    struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};world::FieldPath path;ObjectId entity,component;};
     std::optional<MaterialEdit> material_edit_;
     Result<ObjectRoot> texture_resource(Project&,std::string_view);
     Result<void> replace_material_bindings(ObjectId,std::vector<world::MaterialBinding>);
-    Result<void> admit_actor_edit(ObjectId) const;
+    Result<void> admit_entity_edit(ObjectId) const;
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     Result<ObjectId> admit_property_edit(ObjectId) const;
     Result<void> apply_field(const FieldChange&, bool forward);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
-    void set_selection(Selection); // Single-object selection; resets the Actor set.
+    void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
-    void forget_actor(ObjectId) noexcept;
+    void forget_entity(ObjectId) noexcept;
     void remember(Change);
     static Result<void> validate_name(std::wstring_view);
     Result<world::Commit> replay(Change&, bool forward);

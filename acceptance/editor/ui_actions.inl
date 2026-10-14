@@ -16,7 +16,7 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     auto component=take(language::Component::compile(runtime,"actions.ui.source",source));
     ui::ControlKey next=2000;
     const std::array<language::KeyBinding,4> keys{{{"first",501},{"second",502},{"local",503},{"value",504}}};
-    const auto create=static_cast<ui::ControlKey>(editor::Command::create_actor);
+    const auto create=static_cast<ui::ControlKey>(editor::Command::create_entity);
     const auto undo=static_cast<ui::ControlKey>(editor::Command::undo);
     std::array<language::InputValue,3> inputs{language::ActionBinding{create,true},language::ActionBinding{create,true},true};
     auto instance=take(language::Instance::create(component,0,next,keys,inputs));
@@ -26,7 +26,7 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     const auto dispatch=[&](ui::Reply reply) {
         for (const auto& effect:reply.effects) if (const auto* action=std::get_if<ui::Action>(&effect)) {
             emitted.push_back(*action);
-            if (action->target==create) changed(document.add_actor());
+            if (action->target==create) changed(document.add_entity());
             else if (action->target==undo) changed(document.undo());
             else take(instance->event(*action));
         }

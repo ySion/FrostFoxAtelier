@@ -17,17 +17,17 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 ./out/release/atelier_physics_acceptance.exe --scenario world_ownership
 ```
 
-不带参数运行全部 20 项；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。每项输出 RUN 和 PASS/FAIL，汇总成功为 `Physics acceptance: PASS (20/20 scenarios)`。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
+不带参数运行全部场景；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。`--list` 列出当前场景，每项输出 RUN 和 PASS/FAIL，最后汇总成功数与总数。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
 
 ## 场景与检查点
 
 | 场景名 | 构建的物理场景 | 主要检查 |
 | --- | --- | --- |
-| `world_mesh` | 三角网格地面、球、箱体 | 下落与支撑高度、根位姿回写、网格替换、动态三角网格拒绝、前后步回调、接触和停止清理 |
+| `world_mesh` | 三角网格地面、球、箱体 | 下落与支撑高度、Entity 位姿回写、网格替换、动态三角网格拒绝、前后步回调、接触和停止清理 |
 | `rigid_shapes` | Box/Sphere/Capsule 下落及运动学平台 | 重力、各形状支撑高度、休眠、静态体拒绝施力、运动学目标、非法配置不覆盖原值 |
 | `forces` | 零重力下三个相同动态体 | 等效力与冲量、延迟消费且只消费一次、传送保留/清除速度、自定义重力、NaN 拒绝 |
-| `primitive_composition` | 同 Actor 的网格刚体、动态碰撞子体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |
-| `primitive_authoring` | 反射配置的缩放网格与运动学触发子组件 | 属性验证回滚、Box 缩放、显式根查找、运动学目标到达后停止、局部位姿转换、非法缩放拒绝并清理 |
+| `primitive_composition` | Entity 子树中的网格刚体、动态碰撞子实体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |
+| `primitive_authoring` | 反射配置的缩放网格与运动学触发子实体 | 属性验证回滚、Box 缩放、owner Entity 刚体查找、运动学目标到达后停止、局部位姿转换、非法缩放拒绝并清理 |
 | `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤；事件保留场景与刚体代际，历史结束事件不能操作重建后的刚体 |
 | `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
 | `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |
@@ -40,9 +40,11 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `ragdoll` | 两部件布娃娃落到地面 | 层级拒绝、全部部件位姿/步号、重力和碰撞、重复创建/销毁拒绝、重建及 World stop 清理 |
 | `vehicle` | 四轮车在平面加速、转向和刹车 | 四轮接地、位移/速度/转向、刹车减速、底盘及输入合法性、控制器重建与底盘停用 |
 | `special_integration` | 角色台阶/坡道/移动平台、旋转布娃娃、受约束车辆 | 组合运动、布娃娃局部转世界、平台继承、普通 Body 替换专用系统、停用/退出清理 |
-| `components` | 组件拥有的角色、车辆、布娃娃及摆锤 | 重复 reconcile 幂等、停用根/控制器/部件/底盘、删除/恢复、detach/重启代际、单根写入者、约束端点释放/唤醒、跨 World 目标拒绝 |
-| `trace_queries` | 触碰、首个阻挡、遮挡后目标、通道忽略对象和 Sensor | 通道/对象类型 test/single/multi、Actor/Component 忽略集合、容量摘要、旧 closest 合同、球心与接触点、初始穿透、掩码/枚举/零长度/浮点溢出边界 |
-| `query_components` | 有空间父节点的查询组件和可停用目标 | 局部旋转/缩放、自身忽略、自动/一次请求、暂停与立即查询、失败清空结果、祖先停用、删除恢复、跨 World、旧命中失效、未登记请求的停止重启 |
+| `components` | 组件拥有的角色、车辆、布娃娃及摆锤 | 重复 reconcile 幂等、keep_world 重挂保留句柄/冲量状态/运动相位、组合停用与独立空间参考停用的区分、删除恢复、detach/重启代际、位姿写入者排他、约束释放/唤醒、跨 World 目标拒绝 |
+| `trace_queries` | 触碰、首个阻挡、遮挡后目标、通道忽略对象和 Sensor | 通道/对象类型 test/single/multi、Entity/Component 忽略集合、容量摘要、旧 closest 合同、球心与接触点、初始穿透、掩码/枚举/零长度/浮点溢出边界 |
+| `query_components` | 有空间父节点的查询组件和可停用目标 | 旋转/缩放与剪切空间链、独立空间参考停用时保留请求、自身忽略、自动/一次请求、暂停与立即查询、失败清空结果、组合祖先停用、删除恢复、跨 World、旧命中失效 |
+| `entity_bindings` | 嵌套角色、底盘与显式车轮 Entity 绑定，metadata 与网格分离 | world/local 位姿转换、公开持有引用序列、重复/活动绑定拒绝、批姿态发布保留显示尺度、part/wheel 上原生控制器创建的原子拒绝、非零初始部件位姿的幂等、目标禁用/恢复 |
+| `query_exclusions` | 组合父与同组物理部件、actual owner 自体和远近目标 | ignore_self 不猜父组、活动显式排除与调用方集合合并、重复/空绑定拒绝保留旧集合、固定步消费与清空生效 |
 
 ## 官方 Physic 场景
 
@@ -54,25 +56,12 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 `Raycasts.scene` 的六个查询组件经真实磁盘保存重开，验证通道最近阻挡、通道多命中截断、对象类型穿过阻挡、布尔无载荷、球扫掠与 Sensor 重叠。`project_scene_acceptance` 还通过正式 JIT 绑定查询派生组件 Tick，验证原生继承方法、一次请求、布尔/计数/距离/Vector3 返回、保存后瞬态清空和代码拥有者释放。
 
-## 2026-10-10 Primitive 组件改造
-
-开发与发布配置均已实际构建并运行，所有下列入口最终退出码为 0：
-
-| 验收 | dev | release |
-| --- | --- | --- |
-| 普通与既有专用物理场景 | 20/20 PASS | 20/20 PASS |
-| World 生命周期与对象图 | 9/9 PASS | 9/9 PASS |
-| Project Scene，含生成反射、Primitive JIT 字段、通用属性保存和 Jolt 生命周期 | PASS | PASS |
-| 完整编辑器文档、参数编辑、历史、v1/v2 与旧 Body 迁移 | PASS | PASS |
-| 官方物理场景磁盘往返、模拟、查询、暂停和重启 | 10/10 PASS | 10/10 PASS |
-| 正式编辑器与真实 D3D12 GPU 场景截图 | 10 场景 PASS | 10 场景 PASS |
-
-新增场景验证同 Actor 多 Primitive、倒置组成顺序的空间回写、同 Actor 约束端点清理、独立句柄/查询/命令、只卸载目标、形状缩放、运动学目标保持、非法祖先缩放和移动祖先下从属 Sensor 的拒绝。旧场景中的空间、网格和物理配置迁移后保持意义；默认视觉网格不会意外开启碰撞。验收中的组件选择按实际类型与查询用途定位，避免依赖已删除旧组件的数组位置。
-
-日志在 `out/primitive-physics-<配置>.log`、`out/primitive-final-<配置>.log`、`out/primitive-documents-<配置>.log`、`out/primitive-examples-<配置>.log`。两种配置各输出 20 张编辑/模拟 PNG 到 `out/<配置>/physics-examples-evidence`，GPU 为 RX 6800 XT；发布版 Overview 模拟画面另经目视确认。结果验证当前功能与边界，没有据此宣称并行性能或完整复合碰撞能力。
-
 ## 边界
 
-底层 20 项是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
+底层场景是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。
+
+## Entity 迁移验收状态
+
+当前官方内容使用 Scene v6，物理姿态写入 owner Entity，布娃娃和车辆通过 parts / wheels 显式绑定子 Entity。CPU 结果、实际日志和未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)，旧模型的历史 PASS 不代表当前模型通过。

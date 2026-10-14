@@ -1,4 +1,5 @@
 #include "editor/project.hpp"
+#include "editor/session.hpp"
 #include "platform/windows_path.hpp"
 #include "editor/obj_import.hpp"
 #include "editor/json_format.hpp"
@@ -91,7 +92,7 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
             return failure("Create Project requires an empty folder; existing files were not changed.");
         for (const auto* directory:{L"Config",L"Content/Scenes",L"Source",L"Cache"}) std::filesystem::create_directories(platform::windows_file_path(folder/directory));
         const Json config={{"version",1},{"name",utf8(std::filesystem::canonical(native).filename().wstring())},{"startup_scene","Content/Scenes/Main.scene"}};
-        take(write_file(folder/"Content/Scenes/Main.scene",Json{{"version",2},{"actors",Json::array()}}.dump(2)+"\n",WriteMode::create));
+        Session empty_scene;take(write_file(folder/"Content/Scenes/Main.scene",take(empty_scene.serialize()),WriteMode::create));
         take(write_file(folder/".gitignore","/Cache/\n",WriteMode::create));
         take(write_file(folder/"Config/Project.json",config.dump(2)+"\n",WriteMode::create)); // Marker is published last.
         return open(folder);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/world.hpp"
+#include <unordered_set>
 
 namespace atelier::physics {
 
@@ -25,7 +26,7 @@ struct Types {
 [[nodiscard]] Result<BodySettings> read_settings(Runtime&, ObjectId component);
 
 struct BodyHandle {
-    ObjectId actor, component;
+    ObjectId entity, component;
     std::uint64_t scene{}, revision{};
     bool operator==(const BodyHandle&) const = default;
 };
@@ -52,7 +53,7 @@ struct BodyState {
     bool sleeping{};
 };
 struct SpecialHandle {
-    ObjectId actor;
+    ObjectId entity;
     std::uint64_t scene{}, revision{};
     bool operator==(const SpecialHandle&) const = default;
 };
@@ -97,17 +98,20 @@ struct VehicleState {
 // Authoring components use the existing Runtime graph and scene properties.
 // Inputs are sampled per fixed step. Backend handles remain scene-owned.
 // Shape/constraint configuration is sampled on activation; disable/re-enable to
-// rebuild it. Parts/wheels must be direct children of a unit-scale Actor root.
+// rebuild it. Parts/wheels explicitly bind spatial Entity children.
 class CharacterComponent : public world::Component {
 public:
     CharacterSettings settings;
     math::Vector3 velocity{};
     bool jump{};
 };
-class RagdollComponent : public world::Component {};
-// Parts are ordered in Actor composition order; parent_index must precede the part.
-// rest_position is relative to the Actor root, independent of simulated transforms.
-class RagdollPartComponent : public world::StaticMeshComponent {
+class RagdollComponent : public world::Component {
+public:
+    ReferenceSequence parts;
+};
+// Binding order defines backend part indices; parent_index must precede the part.
+// rest_position is relative to the controller Entity, independent of simulated poses.
+class RagdollPartComponent : public world::Component {
 public:
     std::int32_t parent_index{-1};
     math::Vector3 rest_position{};
@@ -115,16 +119,17 @@ public:
 };
 class VehicleComponent : public world::Component {
 public:
+    ReferenceSequence wheels;
     VehicleSettings settings;
     float throttle{}, steering{}, brake{};
 };
-class VehicleWheelComponent : public world::StaticMeshComponent {
+class VehicleWheelComponent : public world::Component {
 public:
     std::uint32_t wheel_index{};
 };
 class DistanceConstraintComponent : public world::Component {
 public:
-    ReferenceSlot target; // Registered weak Actor reference, persisted as a scene-local identity.
+    ReferenceSlot target; // Registered weak Entity reference, persisted as a scene-local identity.
     float minimum{1}, maximum{1};
 };
 class ForceComponent : public world::Component {
@@ -136,8 +141,15 @@ public:
     math::Vector3 velocity{}, amplitude{};
     float period{4};
 };
-[[nodiscard]] Result<void> set_constraint_target(Runtime&, ObjectId component, ObjectId actor);
+[[nodiscard]] Result<void> set_constraint_target(Runtime&, ObjectId component, ObjectId entity);
 [[nodiscard]] Result<ObjectId> constraint_target(Runtime&, ObjectId component);
+[[nodiscard]] Result<void> set_ragdoll_parts(Runtime&, ObjectId component, std::span<const ObjectId> entities);
+[[nodiscard]] Result<std::vector<ObjectId>> ragdoll_parts(Runtime&, ObjectId component);
+[[nodiscard]] Result<void> set_vehicle_wheels(Runtime&, ObjectId component, std::span<const ObjectId> entities);
+[[nodiscard]] Result<std::vector<ObjectId>> vehicle_wheels(Runtime&, ObjectId component);
+// Persistent query exclusions may change while active and affect the next sample.
+[[nodiscard]] Result<void> set_query_ignored_entities(Runtime&, ObjectId component, std::span<const ObjectId> entities);
+[[nodiscard]] Result<std::vector<ObjectId>> query_ignored_entities(Runtime&, ObjectId component);
 namespace detail { class ComponentSimulation; }
 struct ConstraintHandle {
     std::uint64_t scene{}, revision{};
@@ -148,7 +160,7 @@ enum class QueryMode : std::uint8_t { any, closest, all };
 enum class QueryPolicy : std::uint8_t { interaction, channel, object_type };
 struct QueryFilter {
     std::uint16_t categories{0xffff};
-    ObjectId ignore_actor{};
+    ObjectId ignore_entity{};
     ObjectId ignore_component{};
     QueryMode mode{QueryMode::closest};
     std::size_t capacity{64};
@@ -160,7 +172,7 @@ struct QueryFilter {
     }();
     QueryPolicy policy{QueryPolicy::interaction};
     // Borrowed only for the duration of the synchronous call.
-    std::span<const ObjectId> ignored_actors{}, ignored_components{};
+    std::span<const ObjectId> ignored_entities{}, ignored_components{};
     bool include_sensors{true}, ignore_touches{}, stop_at_block{};
 };
 struct QueryHit {
@@ -194,14 +206,15 @@ struct TraceSettings {
     bool include_sensors{true};
 };
 struct QueryIgnore {
-    std::span<const ObjectId> actors{}, components{};
+    std::span<const ObjectId> entities{}, components{};
 };
 // Configuration is persistent; results/requests are transient. Script Tick reads
 // the previous completed physics step, then may request the next fixed-step query.
-class SceneQueryComponent : public world::SceneComponent {
+class SceneQueryComponent : public world::Component {
 public:
+    ReferenceSequence ignored_entities;
     TraceSettings settings;
-    math::Vector3 start{}, end{0,0,10}; // Component-local endpoints; overlap uses start.
+    math::Vector3 start{}, end{0,0,10}; // Owner Entity-local endpoints; overlap uses start.
     bool automatic{true}, ignore_self{true};
     void request_query() noexcept { pending_=true; }
     bool query_ready() const noexcept { return ready_; }
@@ -238,12 +251,12 @@ public:
 
     [[nodiscard]] Result<StepResult> update(float elapsed);
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
-    [[nodiscard]] Result<void> add_force(ObjectId actor, math::Vector3);
-    [[nodiscard]] Result<void> add_impulse(ObjectId actor, math::Vector3);
+    [[nodiscard]] Result<void> add_force(ObjectId entity, math::Vector3);
+    [[nodiscard]] Result<void> add_impulse(ObjectId entity, math::Vector3);
     [[nodiscard]] Result<void> add_force(BodyHandle, math::Vector3);
     [[nodiscard]] Result<void> add_impulse(BodyHandle, math::Vector3);
-    // A Primitive selects its own body; an Actor selects only its explicit root.
-    [[nodiscard]] Result<BodyHandle> body_handle(ObjectId actor_or_primitive) const;
+    // A Primitive selects its own body; an Entity selects its unique active body.
+    [[nodiscard]] Result<BodyHandle> body_handle(ObjectId entity_or_primitive) const;
     [[nodiscard]] Result<BodyState> read_body_state(BodyHandle) const;
     [[nodiscard]] Result<void> set_kinematic_target(BodyHandle, math::Vector3 position,
         math::Quaternion rotation);
@@ -253,21 +266,21 @@ public:
         BodyHandle second, float minimum, float maximum);
     // Explicit removal or endpoint removal wakes the surviving endpoints.
     [[nodiscard]] Result<void> destroy_constraint(ConstraintHandle);
-    // Character and ragdoll Actors must be active members of this scene's World.
-    [[nodiscard]] Result<SpecialHandle> create_character(ObjectId actor, CharacterSettings = {});
-    [[nodiscard]] Result<SpecialHandle> character_handle(ObjectId actor) const;
+    // Character and ragdoll Entities must be active spatial members of this World.
+    [[nodiscard]] Result<SpecialHandle> create_character(ObjectId entity, CharacterSettings = {});
+    [[nodiscard]] Result<SpecialHandle> character_handle(ObjectId entity) const;
     [[nodiscard]] Result<void> set_character_input(SpecialHandle, math::Vector3 planar_velocity,
         bool jump = false);
     [[nodiscard]] Result<CharacterState> read_character_state(SpecialHandle) const;
     [[nodiscard]] Result<void> destroy_character(SpecialHandle);
-    [[nodiscard]] Result<SpecialHandle> create_ragdoll(ObjectId actor,
+    [[nodiscard]] Result<SpecialHandle> create_ragdoll(ObjectId entity,
         std::span<const RagdollPart> parts);
-    [[nodiscard]] Result<SpecialHandle> ragdoll_handle(ObjectId actor) const;
+    [[nodiscard]] Result<SpecialHandle> ragdoll_handle(ObjectId entity) const;
     [[nodiscard]] Result<RagdollPose> read_ragdoll_pose(SpecialHandle) const;
     [[nodiscard]] Result<void> destroy_ragdoll(SpecialHandle);
     [[nodiscard]] Result<SpecialHandle> create_vehicle(BodyHandle chassis,
         VehicleSettings = {});
-    [[nodiscard]] Result<SpecialHandle> vehicle_handle(ObjectId actor) const;
+    [[nodiscard]] Result<SpecialHandle> vehicle_handle(ObjectId entity) const;
     [[nodiscard]] Result<void> set_vehicle_input(SpecialHandle, float throttle,
         float steering, float brake);
     [[nodiscard]] Result<VehicleState> read_vehicle_state(SpecialHandle) const;
@@ -283,7 +296,7 @@ public:
     [[nodiscard]] Result<QueryResult> trace(math::Vector3 start, math::Vector3 end,
         const TraceSettings& = {}, QueryIgnore = {}) const;
     // Component must be active and reconciled by update(0). Manual sampling works
-    // while paused. Returned snapshots own values, never the hit Actors/bodies.
+    // while paused. Returned snapshots own values, never the hit Entities/bodies.
     [[nodiscard]] Result<QueryResult> execute_query(ObjectId component, QueryIgnore = {});
     [[nodiscard]] Result<QueryResult> read_query_result(ObjectId component) const;
     void set_paused(bool paused) noexcept { paused_ = paused; }
@@ -297,13 +310,16 @@ public:
     [[nodiscard]] std::size_t body_count() const noexcept;
 
 private:
+    friend class detail::ComponentSimulation;
     struct Impl;
     explicit PhysicsScene(world::World&, Types);
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
-    [[nodiscard]] Result<void> reconcile(ObjectId actor);
-    [[nodiscard]] Result<void> reconcile_component(ObjectId actor, ObjectId component);
+    [[nodiscard]] Result<void> reconcile(ObjectId entity,const std::unordered_set<ObjectId>* membership = nullptr);
+    [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component,const std::unordered_set<ObjectId>* membership);
+    [[nodiscard]] ObjectId pose_writer(ObjectId entity) const noexcept;
+    [[nodiscard]] Result<bool> controller_transform_matches(ObjectId,math::Vector3,math::Quaternion) const;
     void remove(ObjectId component) noexcept;
-    void remove_special(ObjectId actor) noexcept;
+    void remove_special(ObjectId entity) noexcept;
     world::World& world_;
     Types types_;
     std::unique_ptr<Impl> impl_;

@@ -109,7 +109,7 @@ ui PropertyGroup(in Text title, in double icon, in Items<PropertyRow> properties
     }
 }
 
-ui ActorRow(in Text title, in bool enabled, in bool selected, in double icon,
+ui EntityRow(in Text title, in bool enabled, in bool selected, in double icon,
             in Key parent, in bool expanded, in Text style) {
     TreeItem row {
         text: input.title;
@@ -122,7 +122,7 @@ ui ActorRow(in Text title, in bool enabled, in bool selected, in double icon,
     }
 }
 
-ui SceneTree(in Items<ActorRow> actors, in TextEditBinding filter,
+ui SceneTree(in Items<EntityRow> entities, in TextEditBinding filter,
              in bool world_selected, in bool world_expanded, in double world_icon,
              in ActionBinding back, in ActionBinding forward, in double back_icon, in double forward_icon, in double path_icon) {
     PanePath path { title: "World"; back: input.back; forward: input.forward; back_icon: input.back_icon; forward_icon: input.forward_icon; path_icon: input.path_icon; }
@@ -135,7 +135,7 @@ ui SceneTree(in Items<ActorRow> actors, in TextEditBinding filter,
             selected: input.world_selected;
             initially_expanded: input.world_expanded;
         }
-        Repeat rows { items: input.actors; }
+        Repeat rows { items: input.entities; }
     }
     Column filter_area {
         padding_left: 4;
@@ -270,7 +270,7 @@ ui ViewportTools(in double display_icon, in double guides_icon, in bool display_
     }
 }
 
-ui ActorStructure(in Text title, in Items<ActorRow> objects, in TextEditBinding filter, in bool has_actor,
+ui EntityStructure(in Text title, in Items<EntityRow> objects, in TextEditBinding filter, in bool has_entity,
                   in bool editable, in Key add_component, in ActionBinding remove, in double remove_icon) {
     Row toolbar {
         align_center: true; gap: 3; padding_left: 4; padding_right: 4; padding_top: 3; padding_bottom: 3;
@@ -279,7 +279,7 @@ ui ActorStructure(in Text title, in Items<ActorRow> objects, in TextEditBinding 
         Button remove { icon: input.remove_icon; action: input.remove; width: 23; height: 23; classes: "browser-icon"; }
     }
     Tree tree { expand_height: true; filter: input.filter; Repeat rows { items: input.objects; } }
-    Text empty { text: "Select an Actor in Scene Tree."; collapsed: input.has_actor; single_line: true; classes: "empty-state"; }
+    Text empty { text: "Select an Entity in Scene Tree."; collapsed: input.has_entity; single_line: true; classes: "empty-state"; }
     Column filter_area { padding_left: 4; padding_right: 3; padding_top: 2; padding_bottom: 2;
         QueryRow query { edit: input.filter; label_width: 36; gap: 6; caption: false; }
     }
@@ -305,7 +305,7 @@ ui Parameters(in Text type_name, in TextEditBinding name,
             QueryRow query { edit: input.filter; label_width: 48; gap: 4; caption: true; }
         }
         Row grouping { height: 26.667; padding_bottom: 0.667; classes: "section-tabs"; collapsed: !input.has_selection;
-            ChoiceButton components { text: "Component"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab"; }
+            ChoiceButton components { text: "Object"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab"; }
             ChoiceButton categories { text: "Category"; action: input.categories; selected: input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab joined"; }
         }
         Text no_selection { text: "Select an object to inspect its properties."; classes: "empty-state";
@@ -410,7 +410,7 @@ ui MaterialParameters(in Text name, in bool dirty, in Items<PropertyGroup> group
         }
     }
 }
-ui AssetBrowserShell(in Items<ActorRow> directories, in TextEditBinding query,
+ui AssetBrowserShell(in Items<EntityRow> directories, in TextEditBinding query,
                      in Text path, in Text status,
                      in ActionBinding back, in ActionBinding up, in ActionBinding clear,
                      in bool filter_selected, in double view_icon,

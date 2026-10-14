@@ -1,6 +1,7 @@
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
+#include "world/world.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -12,17 +13,12 @@ using source::Program;
 void require(bool value, const char* text) { if (!value) throw std::runtime_error(text); }
 template<class T> T take(Result<T> result) { if (!result) throw std::runtime_error(result.error().message); return std::move(*result); }
 void take(Result<void> result) { if (!result) throw std::runtime_error(result.error().message); }
-// A real native base and typed inherited method. Project consumers supply their
-// World Component definition through exactly the same registration interface.
-struct Component {
-    float x{};
-    void translate_owner(float dx, float, float) { x += dx; }
-};
+namespace w = atelier::world;
 source::SourceSnapshot sources(float factor = 1) {
     return {"project", 5, {
         {"Source/Math.source", 17, "float distance(float speed, float dt) { return speed * dt * " + std::to_string(factor) + "f; }"},
         {"Source/Move.source", 23, R"(
-class game.Move : project.SceneComponent {
+class game.Move : world.Component {
     float speed = 1.0f + 1.0f;
     double precise = 2.0d;
     bool enabled = true;
@@ -41,14 +37,14 @@ void publish(Program& program, source::SourceSnapshot snapshot) {
 }
 void verify_declaration_only_project() {
     Runtime runtime;
-    take(runtime.register_type(NativeRegistration<Component>(runtime,"project.SceneComponent",TypeKind::object).build()));
+    take(w::register_types(runtime));
     Program program(runtime);
     source::SourceSnapshot input{"data", 1, {{"Data.source", 7,
-        "const float bad = missing; class game.Settings : project.SceneComponent { float speed = 2.0f; }"}}};
+        "const float bad = missing; class game.Settings : world.Component { float speed = 2.0f; }"}}};
     auto rejected = Program::prepare(take(program.request(input)));
     require(!rejected && rejected.error().source && rejected.error().source->path == "Data.source" &&
         !runtime.find_type("game.Settings"), "Declaration-only project bypassed typed validation or partially published.");
-    input.files[0].source = "const float __source_validate = 1.0f; class game.Settings : project.SceneComponent { float speed = -0.0f; double value = 0.0d / 0.0d; }";
+    input.files[0].source = "const float __source_validate = 1.0f; class game.Settings : world.Component { float speed = -0.0f; double value = 0.0d / 0.0d; }";
     publish(program, input);
     require(program.entries().empty() && program.classes().size() == 1, "Declaration-only project exported a synthetic entry.");
     const auto type = program.classes()[0].type;
@@ -104,8 +100,8 @@ class game.Probe : project.Probe {
 
 void verify_source_projects() {
     Runtime runtime;
-    const auto base = take(runtime.register_type(NativeRegistration<Component>(runtime,"project.SceneComponent",TypeKind::object)
-        .field<&Component::x>("x").method<&Component::translate_owner>("translate_owner",true).build()));
+    const auto world_types=take(w::register_types(runtime));
+    const auto base=world_types.component;
     Program program(runtime);
     auto bad = sources(); bad.files[1].source.replace(bad.files[1].source.find("self.begins + 1"), 15, "unknown_value");
     auto bad_request = take(program.request(bad));
@@ -129,7 +125,15 @@ void verify_source_projects() {
     require(program.classes().size() == 1 && program.entries().size() == 4, "Project discovery lost a class or typed entry.");
     const auto type = program.classes()[0].type;
     require(program.classes()[0].base == base && take(runtime.is_a(type,base)), "Source class did not share native inheritance.");
-    auto instance = take(runtime.create(type));
+    w::World world(runtime,world_types);
+    auto owner=take(w::create_entity(runtime));
+    auto instance=take(w::create_component(runtime,type));
+    take(world.set_transform(owner.id(),{}));
+    const std::array capabilities{w::Attachment{instance.id()}};
+    const auto composed=take(world.attach_components(owner.id(),capabilities));
+    require(!composed.notification_error,"Source class capability assembly failed.");
+    const auto attached=take(world.attach(owner.id()));
+    require(!attached.notification_error,"Source owner Entity attachment failed.");
     const auto speed = take(runtime.find_field(type,"speed"));
     const auto begins = take(runtime.find_field(type,"begins"));
     require(std::get<float>(take(runtime.read(instance.id(),speed))) == 2.f, "Runtime create did not apply a constant field default.");
@@ -148,18 +152,29 @@ void verify_source_projects() {
     auto tick = take(program.entry("game.Move.tick"));
     auto end = take(program.entry("game.Move.end"));
     auto old = take(program.pin("game.Move.tick"));
-    take(begin.invoke(instance.id(),{}));
+    bool replay_old{};
+    take(world.bind_behavior(type,{
+        .begin=[begin](Runtime&,ObjectId id)->Result<void>{auto result=begin.invoke(id,{});if(!result)return std::unexpected(result.error());return {};},
+        .tick=[&](Runtime&,ObjectId id,float dt)->Result<void>{
+            const std::array args{Scalar{dt}};
+            auto result=tick.invoke(id,args);if(!result)return std::unexpected(result.error());
+            if(replay_old){auto pinned=old.invoke(id,args);if(!pinned)return std::unexpected(pinned.error());}
+            return {};
+        },
+        .end=[end](Runtime&,ObjectId id)->Result<void>{auto result=end.invoke(id,{});if(!result)return std::unexpected(result.error());return {};}
+    }));
+    const auto started=take(world.start());require(!started.notification_error,"Source lifecycle Begin failed.");
     require(std::get<std::uint32_t>(take(runtime.read(instance.id(),begins))) == 1, "Begin did not use the real instance.");
     const std::array args{Scalar{.5f}};
     auto wrong_receiver = take(runtime.create(base));
     require(!tick.invoke(wrong_receiver.id(),args), "Source method accepted its native base as an exact derived receiver.");
-    take(tick.invoke(instance.id(),args));
-    const auto x = take(runtime.find_field(type,"x"));
-    require(std::get<float>(take(runtime.read(instance.id(),x))) == 1.f, "Cross-file helper or inherited native action failed.");
+    take(world.update(.5f));
+    const auto x=[&]{return take(w::read_transform(runtime,owner.id())).position.x;};
+    require(x() == 1.f, "Cross-file helper or inherited native action failed.");
     take(runtime.write(instance.id(),speed,4.f));
     publish(program,sources(2));
-    take(tick.invoke(instance.id(),args)); take(old.invoke(instance.id(),args));
-    require(std::get<float>(take(runtime.read(instance.id(),x))) == 7.f &&
+    replay_old=true;take(world.update(.5f));replay_old=false;
+    require(x() == 7.f &&
         std::get<float>(take(runtime.read(instance.id(),speed))) == 4.f, "Batch hot update lost identity, state or old code lease.");
     auto reordered = sources(2);
     auto& body = reordered.files[1].source;
@@ -179,8 +194,8 @@ void verify_source_projects() {
     failed = Program::prepare(take(program.request(changed)));
     require(!failed && failed.error().code == ErrorCode::rebuild_required, "Global signature change was hidden by a body diagnostic.");
     failed = Program::prepare(take(program.request(bad)));
-    require(!failed, "Invalid replacement compiled."); take(tick.invoke(instance.id(),args));
-    require(std::get<float>(take(runtime.read(instance.id(),x))) == 11.f, "Failed candidate replaced the active code.");
+    require(!failed, "Invalid replacement compiled."); take(world.update(.5f));
+    require(x() == 11.f, "Failed candidate replaced the active code.");
     auto stale = take(Program::prepare(take(program.request(sources(3)))));
     auto latest = take(Program::prepare(take(program.request(sources(4)))));
     require(!program.try_publish(stale), "An older project snapshot published.");
@@ -189,9 +204,17 @@ void verify_source_projects() {
     require(!program.try_publish(latest) && !latest, "Repeated project publication was accepted.");
     take(end.invoke(instance.id(),{}));
     require(!std::get<bool>(take(runtime.read(instance.id(),take(runtime.find_field(type,"enabled"))))), "End did not use the real instance.");
+    const auto stopped=take(world.stop());require(!stopped.notification_error,"Source lifecycle End failed.");
     program.close(); program.close(); require(!tick.invoke(instance.id(),args), "Closed program allowed a new entry call.");
-    take(old.invoke(instance.id(),args));
-    take(runtime.destroy(instance.id())); require(!old.invoke(instance.id(),args), "Lease accepted a destroyed receiver.");
+    take(world.bind_behavior(type,{.tick=[old](Runtime&,ObjectId id,float dt)->Result<void>{
+        const std::array values{Scalar{dt}};auto result=old.invoke(id,values);if(!result)return std::unexpected(result.error());return {};
+    }}));
+    const auto resumed=take(world.start());require(!resumed.notification_error,"Pinned World behavior failed to resume.");
+    take(world.update(.5f));
+    require(x()==13.f,"Pinned source lease failed to translate its real owner Entity after Program close.");
+    const auto closed=take(world.close());require(!closed.notification_error,"Pinned World behavior cleanup failed.");
+    const auto destroyed=take(w::destroy_entity(runtime,owner.id()));require(!destroyed.notification_error,"Source owner Entity termination failed.");
+    require(!old.invoke(instance.id(),args), "Lease accepted a destroyed receiver.");
     verify_declaration_only_project();
     verify_project_borrow_effects();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime)");

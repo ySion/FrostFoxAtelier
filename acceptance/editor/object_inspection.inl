@@ -5,7 +5,7 @@ void verify_object_inspection() {
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project=take(editor::Project::create(folder));
     take(project.create_source("Source/Objects.source",R"(
-class inspection.Agent : world.Actor { int health = 100; bool awake = true; }
+class inspection.Agent : world.Entity { int health = 100; bool awake = true; }
 class inspection.Stats : world.Component { float energy = 5.0f; }
 )"));
     const editor::Session::Prepare prepare=[&](world::World& world)->Result<std::shared_ptr<void>> {
@@ -18,15 +18,15 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         auto code=std::make_shared<editor::ProjectCode>(world);take(code->build(project));return std::static_pointer_cast<void>(code);
     };
     editor::Session document(prepare);auto& runtime=document.world().runtime();
-    const auto actor_type=take(runtime.find_type("inspection.Agent"));
+    const auto entity_type=take(runtime.find_type("inspection.Agent"));
     const auto stats_type=take(runtime.find_type("inspection.Stats"));
     const auto settings_type=take(runtime.find_type("inspection.Settings"));
     const auto enum_type=take(runtime.find_type("inspection.Mode"));
-    const std::array health{take(runtime.find_field(actor_type,"health"))},energy{take(runtime.find_field(stats_type,"energy"))},
+    const std::array health{take(runtime.find_field(entity_type,"health"))},energy{take(runtime.find_field(stats_type,"energy"))},
         mode{take(runtime.find_field(settings_type,"mode"))};
-    changed(document.add_actor(actor_type));const auto actor=document.selection().actor;
-    require(document.selection()==editor::Selection{actor,actor} && !take(world::root_component(runtime,actor)),
-        "A Source Actor acquired an assumed transform or a different inspected identity.");
+    changed(document.add_entity(entity_type));const auto entity=document.selection().entity;
+    require(document.selection()==editor::Selection{entity,entity} && !take(world::has_transform(runtime,entity)),
+        "A Source Entity acquired an assumed transform or a different inspected identity.");
     editor::Workspace workspace;workspace.project_open=true;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
@@ -56,52 +56,52 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         dispatch(surface.input({.kind=ui::EventKind::pointer_up,.x=x,.y=y}));
     };
     publish();
-    const auto health_key=workspace.field_control(actor,health);
+    const auto health_key=workspace.field_control(entity,health);
     require(health_key && surface.presented()->find(health_key) && !surface.presented()->find(editor::control::position_fold),
-        "A rootless Source Actor did not expose its own reflected property set.");
+        "A rootless Source Entity did not expose its own reflected property set.");
     require(!surface.presented()->find(editor::control::add_component),"Parameters retained structural component creation.");
-    const auto scene_key=workspace.object_control(actor);require(scene_key,"Scene Tree lost its Actor identity.");
+    const auto scene_key=workspace.object_control(entity);require(scene_key,"Scene Tree lost its Entity identity.");
     changed(document.add_component(stats_type));const auto stats=document.selection().object;
-    require(stats!=actor && document.selection().actor==actor,"Adding a component did not select the new object in its Actor context.");
+    require(stats!=entity && document.selection().entity==entity,"Adding a component did not select the new object in its Entity context.");
     publish();require(surface.presented()->find(workspace.field_control(stats,energy)) && !surface.presented()->find(health_key),
-        "Inspecting a component continued to show the Actor's property set.");
-    require(workspace.dock.select(editor::control::structure_tab),"Actor Structure is not a dockable tab.");publish();
+        "Inspecting a component continued to show the Entity's property set.");
+    require(workspace.dock.select(editor::control::structure_tab),"Entity Structure is not a dockable tab.");publish();
     const auto structure_key=[&](ObjectId object) {
         for(const auto& control:controls) if(const auto* binding=workspace.binding(control.key);
             binding && binding->kind==editor::Workspace::Binding::Kind::structure && binding->object==object) return control.key;
         return ui::ControlKey{};
     };
-    const auto actor_row=structure_key(actor),component_row=structure_key(stats);
-    require(actor_row && component_row && actor_row!=scene_key && surface.presented()->find(component_row)->tree_parent==actor_row &&
-        surface.presented()->find(editor::control::add_component),"Actor Structure did not separate ownership, Scene Tree identity and structural commands.");
-    click(actor_row);publish();
-    require(document.selection()==editor::Selection{actor,actor} && surface.presented()->find(health_key) &&
-        surface.presented()->find(workspace.field_control(stats,energy)),"Actor inspection did not compose its actual owned properties.");
-    click(component_row);publish();require(document.selection()==editor::Selection{actor,stats},"The structure tree selected the Actor instead of its component.");
+    const auto entity_row=structure_key(entity),component_row=structure_key(stats);
+    require(entity_row && component_row && entity_row!=scene_key && surface.presented()->find(component_row)->tree_parent==entity_row &&
+        surface.presented()->find(editor::control::add_component),"Entity Structure did not separate ownership, Scene Tree identity and structural commands.");
+    click(entity_row);publish();
+    require(document.selection()==editor::Selection{entity,entity} && surface.presented()->find(health_key) &&
+        surface.presented()->find(workspace.field_control(stats,energy)),"Entity inspection did not compose its actual owned properties.");
+    click(component_row);publish();require(document.selection()==editor::Selection{entity,stats},"The structure tree selected the Entity instead of its component.");
     const auto field_key=workspace.field_control(stats,energy);const auto history=document.undo_count();
     take(document.begin_edit(stats,energy,field_key));take(document.preview_edit(field_key,8.f));
     take(workspace.select_tree(document,component_row));
     require(document.owns_edit(field_key) && std::get<float>(take(document.read_property(stats,energy)))==8 && document.undo_count()==history,
         "Selecting the same object cancelled or committed its active draft.");
     auto detached=take(world::create_component(runtime,stats_type));
-    require(!document.select(detached.id()) && document.owns_edit(field_key) && document.selection()==editor::Selection{actor,stats},
+    require(!document.select(detached.id()) && document.owns_edit(field_key) && document.selection()==editor::Selection{entity,stats},
         "An invalid selection changed the inspected identity or active draft.");
-    take(document.select(actor));require(!document.editing() && std::get<float>(take(document.read_property(stats,energy)))==5 && document.undo_count()==history,
+    take(document.select(entity));require(!document.editing() && std::get<float>(take(document.read_property(stats,energy)))==5 && document.undo_count()==history,
         "Changing inspected objects did not cancel the old draft exactly once.");
-    changed(document.add_actor(actor_type));const auto other=document.selection().actor;
+    changed(document.add_entity(entity_type));const auto other=document.selection().entity;
     take(document.select(stats));take(document.set_property(stats,energy,Scalar{9.f},field_key));
     take(document.select(other));changed(document.undo());
-    require(document.selection()==editor::Selection{actor,stats} && std::get<float>(take(document.read_property(stats,energy)))==5,
-        "Field undo restored only the Actor context rather than the edited object.");
+    require(document.selection()==editor::Selection{entity,stats} && std::get<float>(take(document.read_property(stats,energy)))==5,
+        "Field undo restored only the Entity context rather than the edited object.");
     changed(document.redo());publish();const auto retired_row=structure_key(stats);
     changed(document.erase_selected());publish();
-    require(document.selection()==editor::Selection{actor,actor} && !surface.presented()->find(retired_row) && !document.select(stats),
-        "Deleting a selected component retained a stale inspection target or removed its Actor.");
-    take(workspace.select_tree(document,retired_row));require(document.selection()==editor::Selection{actor,actor},"A retired structure key selected a stale component.");
+    require(document.selection()==editor::Selection{entity,entity} && !surface.presented()->find(retired_row) && !document.select(stats),
+        "Deleting a selected component retained a stale inspection target or removed its Entity.");
+    take(workspace.select_tree(document,retired_row));require(document.selection()==editor::Selection{entity,entity},"A retired structure key selected a stale component.");
     changed(document.undo());publish();
-    require(document.selection()==editor::Selection{actor,stats} && structure_key(stats) && structure_key(stats)!=retired_row &&
+    require(document.selection()==editor::Selection{entity,stats} && structure_key(stats) && structure_key(stats)!=retired_row &&
         std::get<float>(take(document.read_property(stats,energy)))==9,"Component undo lost identity, value, selection or fresh UI lifetime.");
-    changed(document.redo());require(document.selection()==editor::Selection{actor,actor},"Repeated component removal did not restore owner selection.");
+    changed(document.redo());require(document.selection()==editor::Selection{entity,entity},"Repeated component removal did not restore owner selection.");
     changed(document.undo());changed(document.add_component(settings_type));const auto settings=document.selection().object;publish();
     const auto mode_key=workspace.field_control(settings,mode);
     const auto choice=std::ranges::find_if(controls,[&](const auto& control){return control.kind==ui::ControlKind::combo && control.context_target==mode_key;});
@@ -120,5 +120,5 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     require(take(reopened->serialize())==saved,"Object inspection edits did not preserve Source classes and enum values through a scene roundtrip.");
     changed(document.close());changed(document.close());
     require(document.selection()==editor::Selection{} && !document.select(settings),"Closing the document retained a usable component selection.");
-    std::puts("Object inspection: PASS (Source Actor fields, flat properties, ownership, selection lifetime, idempotence, enum menus, persistence)");
+    std::puts("Object inspection: PASS (Source Entity fields, flat properties, ownership, selection lifetime, idempotence, enum menus, persistence)");
 }

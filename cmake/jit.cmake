@@ -102,7 +102,7 @@ function(atelier_add_source)
         acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp
         acceptance/source/diagnostics.cpp acceptance/source/debugger.cpp)
     atelier_target(atelier_source_minimal)
-    target_link_libraries(atelier_source_minimal PRIVATE atelier_source mimalloc psapi)
+    target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
     add_custom_target(source_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal>

@@ -9,40 +9,83 @@ using detail::error;
 Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
-    auto actor_kind = detail::is(runtime(), object, types().actor);
-    if (!actor_kind) return std::unexpected(actor_kind.error());
-    bool before{}, owner_enabled{true}, registered{};
-    if (*actor_kind) {
-        auto data = state.composition_actor(object);
+    auto entity_kind = detail::is(runtime(), object, types().entity);
+    if (!entity_kind) return std::unexpected(entity_kind.error());
+    if (*entity_kind) {
+        auto data = state.composition_entity(object);
         if (!data) return std::unexpected(data.error());
-        before = data->enabled;
-        registered = data->world != nullptr;
-    } else {
-        auto data = state.composition_component(object);
-        if (!data) return std::unexpected(data.error());
-        before = data->enabled;
-        if (data->owner != ObjectId{}) {
-            auto actor = state.composition_actor(data->owner);
-            if (!actor) return std::unexpected(actor.error());
-            owner_enabled = actor->enabled;
-            registered = actor->world != nullptr;
+        if (data->enabled == enabled) return Commit{};
+        auto owned = detail::subtree(runtime(), object);
+        if (!owned) return std::unexpected(owned.error());
+        std::vector<bool> before;
+        before.reserve(owned->size());
+        for (const auto& root : *owned) {
+            auto member = state.composition_entity(root.id());
+            if (!member) return std::unexpected(member.error());
+            if (member->world != data->world) return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
+            auto eligible = effective_enabled(runtime(), root.id());
+            if (!eligible) return std::unexpected(eligible.error());
+            before.push_back(*eligible);
         }
+        if (data->world) state.prepare_activity();
+        {
+            detail::FlagScope transition{state.transitioning};
+            auto changed = runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
+                Access::enabled(entity) = enabled; return {};
+            });
+            if (!changed) return std::unexpected(changed.error());
+        }
+        if (!data->world) return Commit{true, {}};
+        if (auto refreshed = state.refresh(); !refreshed) return state.finish(true, refreshed.error());
+        std::optional<Error> failure;
+        // Entity notifications cover its capability registrations. Emit only
+        // actual effective transitions, without repeating Begin/End.
+        for (std::size_t i = owned->size(); i-- > 0;) {
+            auto eligible = effective_enabled(runtime(), (*owned)[i].id());
+            if (!eligible) { if (!failure) failure = eligible.error(); continue; }
+            if (before[i] && !*eligible) {
+                state.cancel_tasks((*owned)[i].id());
+                if (state.running) {
+                    auto notified = state.notify(Lifecycle::deactivated, (*owned)[i].id());
+                    if (!failure) failure = std::move(notified);
+                }
+            }
+        }
+        if (state.running) for (std::size_t i = 0; i < owned->size(); ++i) {
+            auto eligible = effective_enabled(runtime(), (*owned)[i].id());
+            if (!eligible) { if (!failure) failure = eligible.error(); continue; }
+            if (!before[i] && *eligible) {
+                auto notified = state.notify(Lifecycle::activated, (*owned)[i].id());
+                if (!failure) failure = std::move(notified);
+            }
+        }
+        return state.finish(true, std::move(failure));
     }
-    if (before == enabled) return Commit{};
+    auto data = state.composition_component(object);
+    if (!data) return std::unexpected(data.error());
+    if (data->enabled == enabled) return Commit{};
+    bool registered{}, owner_enabled{};
+    if (data->owner != ObjectId{}) {
+        auto owner = state.composition_entity(data->owner);
+        if (!owner) return std::unexpected(owner.error());
+        registered = owner->world != nullptr;
+        auto eligible = effective_enabled(runtime(), data->owner);
+        if (!eligible) return std::unexpected(eligible.error());
+        owner_enabled = *eligible;
+    }
     if (registered) state.prepare_activity();
     {
         detail::FlagScope transition{state.transitioning};
-        if (!enabled) state.cancel_tasks(object, *actor_kind);
-        auto changed = *actor_kind
-            ? runtime().with_native<Actor>(object, [&](Actor& actor) -> Result<void> { Access::enabled(actor) = enabled; return {}; })
-            : runtime().with_native<Component>(object, [&](Component& component) -> Result<void> { Access::enabled(component) = enabled; return {}; });
+        auto changed = runtime().with_native<Component>(object, [&](Component& component) -> Result<void> {
+            Access::enabled(component) = enabled; return {};
+        });
         if (!changed) return std::unexpected(changed.error());
+        if (!enabled) state.cancel_tasks(object, false);
     }
     if (!registered) return Commit{true, {}};
-    auto refreshed = state.refresh();
-    if (!refreshed) return state.finish(true, refreshed.error());
-    const bool activation_changed = state.running && owner_enabled;
-    return state.finish(true, activation_changed ? state.notify(enabled ? Lifecycle::activated : Lifecycle::deactivated, object) : std::nullopt);
+    if (auto refreshed = state.refresh(); !refreshed) return state.finish(true, refreshed.error());
+    return state.finish(true, state.running && owner_enabled
+        ? state.notify(enabled ? Lifecycle::activated : Lifecycle::deactivated, object) : std::nullopt);
 }
 
 std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) {
@@ -62,8 +105,8 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
     return {};
 }
 Result<bool> World::Impl::begun(const Scheduled& item) const {
-    if (item.object == item.actor) {
-        auto data = detail::actor_data(runtime, item.object);
+    if (item.object == item.entity) {
+        auto data = detail::entity_data(runtime, item.object);
         if (!data) return std::unexpected(data.error());
         return data->begun;
     }
@@ -73,12 +116,12 @@ Result<bool> World::Impl::begun(const Scheduled& item) const {
 }
 Result<void> World::Impl::mark_begun(const Scheduled& item, bool value) {
     const auto mark = [value](auto& object) -> Result<void> { Access::begun(object) = value; return {}; };
-    return item.object == item.actor ? runtime.with_native<Actor>(item.object, mark)
+    return item.object == item.entity ? runtime.with_native<Entity>(item.object, mark)
                                     : runtime.with_native<Component>(item.object, mark);
 }
-std::optional<Error> World::Impl::begin(ObjectId actor, ObjectId component) {
+std::optional<Error> World::Impl::begin(ObjectId entity, ObjectId component) {
     for (const auto& item : ordered) {
-        if ((actor != ObjectId{} && item.actor != actor) || (component != ObjectId{} && item.object != component)) continue;
+        if ((entity != ObjectId{} && item.entity != entity) || (component != ObjectId{} && item.object != component)) continue;
         auto started = begun(item);
         if (!started) return started.error();
         if (*started) continue;
@@ -88,10 +131,10 @@ std::optional<Error> World::Impl::begin(ObjectId actor, ObjectId component) {
     }
     return {};
 }
-std::optional<Error> World::Impl::end(ObjectId actor, ObjectId component) {
+std::optional<Error> World::Impl::end(ObjectId entity, ObjectId component) {
     std::optional<Error> failure;
     for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
-        if ((actor != ObjectId{} && it->actor != actor) || (component != ObjectId{} && it->object != component)) continue;
+        if ((entity != ObjectId{} && it->entity != entity) || (component != ObjectId{} && it->object != component)) continue;
         auto started = begun(*it);
         if (!started) { if (!failure) failure = started.error(); continue; }
         if (!*started) continue;
@@ -107,14 +150,15 @@ std::optional<Error> World::Impl::shutdown() {
     const bool was_running = running;
     halt(); // Cancel tasks before End and suppress all further Tick calls.
     auto failure = end();
-    // Every exit from a running World withdraws subsystem participation, even
-    // when Begin, Tick, End or another observer failed. A second shutdown is inert.
-    if (was_running) for (auto it = members.rbegin(); it != members.rend(); ++it) {
-        auto data = detail::actor_data(runtime, it->id());
-        if (!data) { if (!failure) failure = data.error(); continue; }
-        if (data->enabled) {
-            auto notification = notify(Lifecycle::deactivated, it->id());
-            if (!failure) failure = std::move(notification);
+    // Keep the graph and registration indexes available to cleanup observers.
+    // Reverse the current composition order, including after running reparent.
+    if (was_running) for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
+        if (it->object != it->entity) continue;
+        auto eligible = effective_enabled(runtime, it->entity);
+        if (!eligible) { if (!failure) failure = eligible.error(); continue; }
+        if (*eligible) {
+            auto notified = notify(Lifecycle::deactivated, it->entity);
+            if (!failure) failure = std::move(notified);
         }
     }
     return failure;
@@ -129,11 +173,12 @@ Result<Commit> World::start() {
     if (!refreshed) return state.finish(true, refreshed.error());
     auto failure = state.begin();
     if (!failure) { auto active = state.refresh(); if (!active) failure = active.error(); }
-    if (!failure) for (const auto& member : state.members) {
-        auto data = detail::actor_data(runtime(), member.id());
-        if (!data) { failure = data.error(); break; }
-        if (data->enabled) {
-            failure = state.notify(Lifecycle::activated, member.id());
+    if (!failure) for (const auto& item : state.ordered) {
+        if (item.object != item.entity) continue;
+        auto eligible = effective_enabled(runtime(), item.entity);
+        if (!eligible) { failure = eligible.error(); break; }
+        if (*eligible) {
+            failure = state.notify(Lifecycle::activated, item.entity);
             if (failure) break;
         }
     }
@@ -152,45 +197,31 @@ Result<Commit> World::close() {
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
     state.closing = true;
     state.lifetime->open = false;
-    std::optional<Error> failure;
+    // closing blocks mutation, but deactivated observers still need read-only
+    // access to the complete registered graph to release subsystem state.
+    auto failure = state.shutdown();
     {
         detail::FlagScope transition{state.transitioning};
         for (const auto& member : state.members) {
-            auto marked = runtime().with_native<Actor>(member.id(), [&](Actor& actor) -> Result<void> {
-                Access::transitioning(actor) = true;
-                return {};
-            });
-            if (!marked && !failure) failure = marked.error();
-        }
-        auto stopped = state.shutdown();
-        if (!failure) failure = std::move(stopped);
-        state.presentation.clear();
-        for (const auto& member : state.members) {
-            auto cleared = runtime().with_native<Actor>(member.id(), [&](Actor& actor) -> Result<void> {
-                Access::member_world(actor) = nullptr;
-                return {};
+            auto cleared = runtime().with_native<Entity>(member.id(), [&](Entity& entity) -> Result<void> {
+                Access::member_world(entity) = nullptr; return {};
             });
             if (!cleared && !failure) failure = cleared.error();
         }
-        for (const auto& member : state.members) {
-            auto cleared = runtime().with_native<Actor>(member.id(), [&](Actor& actor) -> Result<void> {
-                Access::transitioning(actor) = false;
-                return {};
-            });
-            if (!cleared && !failure) failure = cleared.error();
-        }
+        state.presentation.clear();state.buckets.clear();state.positions.clear();
     }
-    // All members now observe a detached graph; keep roots until every reverse
-    // registration notification has run, even if one consumer reports failure.
-    for (auto it = state.ordered.rbegin(); it != state.ordered.rend(); ++it) {
-        auto notification = state.notify(Lifecycle::detached, it->object);
-        if (!failure) failure = std::move(notification);
+    // Member roots retain every object until all reverse deregistrations finish.
+    // The public directory is already empty and every object is Detached.
+    auto roots = std::move(state.members);
+    auto exiting = std::move(state.ordered);
+    for (auto it = exiting.rbegin(); it != exiting.rend(); ++it) {
+        auto notified = state.notify(Lifecycle::detached, it->object);
+        if (!failure) failure = std::move(notified);
     }
-    state.ordered.clear(); state.buckets.clear(); state.positions.clear(); state.members.clear();
     state.closed = true;
     state.closing = false;
-    // Pending requests remain available to flush as failed receipts. They contain
-    // only identities/conditions and never keep an Actor or the World alive.
+    roots.clear();
+    // Pending requests hold identities/conditions only; flush returns failures.
     return {Commit{true, std::move(failure)}};
 }
 
@@ -209,9 +240,9 @@ Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     if (impl_->running) return error(ErrorCode::busy, "Stop the World before replacing a behavior binding.");
     auto component = runtime().is_a(type, types().component);
     if (!component) return std::unexpected(component.error());
-    auto actor = runtime().is_a(type, types().actor);
-    if (!actor) return std::unexpected(actor.error());
-    if (!*component && !*actor) return error(ErrorCode::type_mismatch, "Behavior requires an Actor or Component type.");
+    auto entity = runtime().is_a(type, types().entity);
+    if (!entity) return std::unexpected(entity.error());
+    if (!*component && !*entity) return error(ErrorCode::type_mismatch, "Behavior requires an Entity or Component type.");
     auto found = std::ranges::find(impl_->behaviors, type, &Impl::Binding::type);
     if (found == impl_->behaviors.end()) impl_->behaviors.push_back({type, std::move(binding)});
     else found->behavior = std::move(binding);
@@ -246,23 +277,23 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return ready;
     if (!starter) return error(ErrorCode::argument_mismatch, "Task starter is empty.");
-    auto actor_kind = detail::is(runtime(), object, types().actor);
-    if (!actor_kind) return std::unexpected(actor_kind.error());
-    ObjectId actor_id;
-    if (*actor_kind) {
+    auto entity_kind = detail::is(runtime(), object, types().entity);
+    if (!entity_kind) return std::unexpected(entity_kind.error());
+    ObjectId entity_id;
+    if (*entity_kind) {
         auto member = state.member(object);
         if (!member) return std::unexpected(member.error());
-        auto status = inspect_actor(runtime(), object);
+        auto status = inspect_entity(runtime(), object);
         if (!status) return std::unexpected(status.error());
-        if (status->state != ActorState::active) return error(ErrorCode::invalid_member, "Tasks require an active Actor.");
-        actor_id = object;
+        if (status->state != EntityState::active) return error(ErrorCode::invalid_member, "Tasks require an active Entity.");
+        entity_id = object;
     } else {
         auto owner = state.component_owner(object);
         if (!owner) return std::unexpected(owner.error());
         auto status = inspect_component(runtime(), object);
         if (!status) return std::unexpected(status.error());
         if (!status->valid || !status->active) return error(ErrorCode::invalid_member, "Tasks require an active Component.");
-        actor_id = *owner;
+        entity_id = *owner;
     }
     auto root = runtime().hold(object);
     if (!root) return std::unexpected(root.error());
@@ -275,7 +306,7 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
         if (!task) return std::unexpected(task.error());
         if (task->state() != CoroutineState::ready && task->state() != CoroutineState::suspended)
             return error(ErrorCode::argument_mismatch, "World accepts only ready or suspended tasks.");
-        state.tasks.push_back({object, actor_id, std::move(*task)});
+        state.tasks.push_back({object, entity_id, std::move(*task)});
     } catch (const std::exception& exception) {
         return error(ErrorCode::invocation_failed, exception.what());
     } catch (...) { return error(ErrorCode::invocation_failed, "Task starter threw an unknown exception."); }
@@ -330,27 +361,27 @@ Result<std::uint64_t> World::request(Request command) {
     if (state.next_request == std::numeric_limits<std::uint64_t>::max()) return error(ErrorCode::capacity_exceeded, "World request identity space is exhausted.");
     Impl::Pending pending{state.next_request, command, {}, false};
     switch (command.kind) {
-    case RequestKind::attach_actor: {
-        auto actor = detail::actor_data(runtime(), command.target);
-        if (!actor) return std::unexpected(actor.error());
-        if (actor->world) return error(ErrorCode::invalid_member, "Queued attach requires a detached Actor.");
+    case RequestKind::attach_entity: {
+        auto entity = detail::entity_data(runtime(), command.target);
+        if (!entity) return std::unexpected(entity.error());
+        if (entity->world) return error(ErrorCode::invalid_member, "Queued attach requires a detached Entity.");
         break;
     }
-    case RequestKind::detach_actor:
-    case RequestKind::destroy_actor:
-    case RequestKind::actor_enabled: {
+    case RequestKind::detach_entity:
+    case RequestKind::destroy_entity:
+    case RequestKind::entity_enabled: {
         auto member = state.member(command.target);
         if (!member) return std::unexpected(member.error());
         pending.member_required = true;
         break;
     }
     case RequestKind::attach_component: {
-        auto member = state.member(command.actor);
+        auto member = state.member(command.entity);
         if (!member) return std::unexpected(member.error());
         auto component = detail::component_data(runtime(), command.target);
         if (!component) return std::unexpected(component.error());
         if (component->owner != ObjectId{}) return error(ErrorCode::invalid_member, "Queued component attach requires an unowned component.");
-        pending.owner = command.actor;
+        pending.owner = command.entity;
         break;
     }
     case RequestKind::remove_component:
@@ -396,8 +427,8 @@ Result<std::vector<RequestCompletion>> World::flush() {
                 }
             }
             switch (command.kind) {
-            case RequestKind::attach_actor: return attach(command.target, command.index);
-            case RequestKind::detach_actor: {
+            case RequestKind::attach_entity: return attach(command.target, command.index, command.parent);
+            case RequestKind::detach_entity: {
                 auto removed = detach(command.target);
                 if (!removed) return std::unexpected(removed.error());
                 return std::move(removed->commit);
@@ -405,7 +436,7 @@ Result<std::vector<RequestCompletion>> World::flush() {
             case RequestKind::attach_component: {
                 auto member = state.member(item.owner);
                 if (!member) return std::unexpected(member.error());
-                const std::array added{Attachment{command.target, command.parent, command.root}};
+                const std::array added{Attachment{command.target}};
                 return attach_components(item.owner, added, command.index);
             }
             case RequestKind::remove_component: {
@@ -413,9 +444,9 @@ Result<std::vector<RequestCompletion>> World::flush() {
                 if (!removed) return std::unexpected(removed.error());
                 return std::move(removed->commit);
             }
-            case RequestKind::destroy_actor: return world::destroy_actor(runtime(), command.target);
+            case RequestKind::destroy_entity: return world::destroy_entity(runtime(), command.target);
             case RequestKind::destroy_component: return world::destroy_component(runtime(), command.target);
-            case RequestKind::actor_enabled: case RequestKind::component_enabled: return set_enabled(command.target, command.enabled);
+            case RequestKind::entity_enabled: case RequestKind::component_enabled: return set_enabled(command.target, command.enabled);
             case RequestKind::start: return start();
             case RequestKind::stop: return stop();
             case RequestKind::close: return close();

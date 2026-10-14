@@ -22,8 +22,8 @@ Workspace::Workspace() : dock(1ULL<<48,{
     {control::scene_tab,control::scene_content,L"Scene View",{240,160}},
     {control::parameters_tab,50,L"Parameters",{220,260}},
     {control::workbench,300,L"Controls",{220,280}},
-    {control::actors_tab,21,L"Scene Tree",{180,140}},
-    {control::structure_tab,control::structure_content,L"Actor Structure",{200,140}},
+    {control::entities_tab,21,L"Scene Tree",{180,140}},
+    {control::structure_tab,control::structure_content,L"Entity Structure",{200,140}},
     {control::assets_tab,control::assets_content,L"Asset Browser",{240,140}},
     {source_control::tab,source_control::content,L"Code",{300,180}},
     {control::output_tab,control::output_content,L"Project Output",{240,120}},
@@ -51,9 +51,9 @@ void Workspace::reset_layout() {
     dock.reset();
     dock.move(world_control::tab,control::parameters_tab,ui::DockSide::tabs);
     dock.move(control::scene_tab,control::parameters_tab,ui::DockSide::left,.62f);
-    dock.move(control::actors_tab,control::parameters_tab,ui::DockSide::bottom,.7f);
-    dock.move(control::structure_tab,control::actors_tab,ui::DockSide::tabs);
-    dock.select(control::actors_tab);
+    dock.move(control::entities_tab,control::parameters_tab,ui::DockSide::bottom,.7f);
+    dock.move(control::structure_tab,control::entities_tab,ui::DockSide::tabs);
+    dock.select(control::entities_tab);
     dock.move(control::assets_tab,control::scene_tab,ui::DockSide::bottom,.73f);
     dock.move(source_control::tab,control::scene_tab,ui::DockSide::tabs);
     dock.move(control::output_tab,control::assets_tab,ui::DockSide::tabs);
@@ -147,29 +147,37 @@ Result<void> Workspace::select_tree(Session& session,ui::ControlKey key,ui::Sele
     const auto* target=binding(key);
     if(target && target->kind==Binding::Kind::object && (modifiers.shift || modifiers.control)) {
         std::vector<ObjectId> selected;
-        if(modifiers.control) selected.assign(session.selected_actors().begin(),session.selected_actors().end());
+        if(modifiers.control) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
         if(modifiers.shift) {
             const auto members=session.world().members();if(!members) return std::unexpected(members.error());
             std::vector<ObjectId> visible;
-            for(const auto& actor:*members) if(!frame || frame->find(object_control(actor.id()))) visible.push_back(actor.id());
-            const auto first=std::ranges::find(visible,session.selection().actor),last=std::ranges::find(visible,target->object);
+            for(const auto& entity:*members) if(!frame || frame->find(object_control(entity.id()))) visible.push_back(entity.id());
+            const auto first=std::ranges::find(visible,session.selection().entity),last=std::ranges::find(visible,target->object);
             if(first!=visible.end() && last!=visible.end()) {
                 for(auto at=std::min(first,last);at<=std::max(first,last);++at)
                     if(std::ranges::find(selected,*at)==selected.end()) selected.push_back(*at);
             } else selected.push_back(target->object);
         } else if(std::ranges::find(selected,target->object)!=selected.end()) std::erase(selected,target->object);
         else selected.push_back(target->object);
-        return session.select_actors(selected,target->object);
+        return session.select_entities(selected,target->object);
     }
     return target && (target->kind==Binding::Kind::object || target->kind==Binding::Kind::structure)?session.select(target->object):Result<void>{};
 }
 bool Workspace::command_enabled(Command command,const Session& session) const {
     switch (command) {
-    case Command::erase_actors: return scene_available && !project_running && !session.selected_actors().empty();
+    case Command::add_transform: case Command::remove_transform: {
+        const auto entity=session.selection().entity;
+        if(entity==ObjectId{} || !scene_available || project_running) return false;
+        const auto state=world::inspect_entity(session.world().runtime(),entity);
+        if(!state || !state->can_edit) return false;
+        const auto spatial=world::has_transform(session.world().runtime(),entity);
+        return spatial && (command==Command::add_transform?!*spatial:*spatial);
+    }
+    case Command::erase_entities: return scene_available && !project_running && !session.selected_entities().empty();
     case Command::duplicate_selected: {
         const auto members=session.world().members();
-        return scene_available && !project_running && !session.selected_actors().empty() && members &&
-            members->size()+session.selected_actors().size()<=Session::maximum_actors;
+        return scene_available && !project_running && !session.selected_entities().empty() && members &&
+            members->size()+session.selected_entities().size()<=Session::maximum_entities;
     }
     case Command::new_source: case Command::new_project_ui: case Command::build_project: return project_open;
     case Command::rebuild_project:return project_open && !project_running;
@@ -184,10 +192,10 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
     case Command::undo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_undo();if(inspecting_asset && !material_inspection.empty()) return session.material_can_undo(material_inspection);return (sample_history()?workbench.undo_count():session.undo_count())!=0;
     case Command::redo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_redo();if(inspecting_asset && !material_inspection.empty()) return session.material_can_undo(material_inspection,true);return (sample_history()?workbench.redo_count():session.redo_count())!=0;
-    case Command::create_actor: case Command::create_static_mesh:
+    case Command::create_entity: case Command::create_static_mesh:
     case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: case Command::create_sky_light: {
         const auto members=session.world().members();
-        if(!scene_available || !members || members->size()>=Session::maximum_actors) return false;
+        if(!scene_available || !members || members->size()>=Session::maximum_entities) return false;
         if(command==Command::create_sky_light) {
             const auto lights=session.world().query(session.types().light_component);
             if(!lights) return false;
@@ -198,14 +206,31 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
         }
         return true;
     }
+    case Command::focus: {
+        if(!scene_available || project_running || session.selected_entities().empty()) return false;
+        auto& runtime=session.world().runtime();
+        std::vector<ObjectId> pending(session.selected_entities().begin(),session.selected_entities().end());
+        std::unordered_set<ObjectId> seen;
+        while(!pending.empty()) {
+            const auto object=pending.back();pending.pop_back();
+            if(!seen.insert(object).second) continue;
+            const auto state=world::inspect_entity(runtime,object);if(!state || !state->can_edit) return false;
+            const auto spatial=world::has_transform(runtime,object);if(!spatial) return false;
+            // frame_entities includes geometry and every remaining spatial locator in this subtree.
+            if(*spatial) return true;
+            const auto children=world::children(runtime,object);if(!children) return false;
+            for(const auto& child:*children) pending.push_back(child.id());
+        }
+        return false;
+    }
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
-    case Command::erase_selected: case Command::focus: {
-        if (session.selection().actor==ObjectId{}) return false;
-        const auto state=world::inspect_actor(session.world().runtime(),session.selection().actor);
+    case Command::erase_selected: {
+        if (session.selection().entity==ObjectId{}) return false;
+        const auto state=world::inspect_entity(session.world().runtime(),session.selection().entity);
         if (!state || !state->can_edit) return false;
         if (command==Command::erase_selected) return true;
-        const auto root=world::root_component(session.world().runtime(),session.selection().actor);
-        return root && root->has_value();
+        const auto spatial=world::has_transform(session.world().runtime(),session.selection().entity);
+        return spatial && *spatial;
     }
     case Command::previous_tab: case Command::next_tab: case Command::close_tab: case Command::maximize_pane:
         return dock.focused_tab()!=0;
@@ -304,13 +329,13 @@ ui::ControlIcon light_icon(world::LightKind kind) {
     }
     return ui::ControlIcon::point_light;
 }
-// One glyph per Actor, as Houdini's network/tree icons: the type is carried by
+// One glyph per Entity, as Houdini's network/tree icons: the type is carried by
 // the icon so rows can show only the name.
-ui::ControlIcon actor_icon(const Session& session,ObjectId actor) {
+ui::ControlIcon entity_icon(const Session& session,ObjectId entity) {
     auto& runtime=session.world().runtime();
-    const auto state=world::inspect_actor(runtime,actor);
-    if(state && runtime.is_a(state->type,session.types().static_mesh_actor).value_or(false)) return ui::ControlIcon::mesh;
-    if(const auto parts=world::components(runtime,actor)) for(const auto& part:*parts) {
+    const auto state=world::inspect_entity(runtime,entity);
+    if(state && runtime.is_a(state->type,session.types().static_mesh_entity).value_or(false)) return ui::ControlIcon::mesh;
+    if(const auto parts=world::components(runtime,entity)) for(const auto& part:*parts) {
         const auto type=runtime.type_of(part.id());
         if(type && runtime.is_a(*type,session.types().light_component).value_or(false))
             if(const auto light=world::read_light(runtime,part.id())) return light_icon(light->kind);
@@ -376,7 +401,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     binding_cursor_=0;
     std::vector<ui::Control> result;
     result.reserve(64 + members.size());
-    const auto requested_selection=session.selection().actor;
+    const auto requested_selection=session.selection().entity;
     const auto selected=std::ranges::any_of(members,[&](const auto& member){return member.id()==requested_selection;})?
         requested_selection:ObjectId{};
     const auto inspected=selected!=ObjectId{} && live.contains(session.selection().object)?session.selection().object:ObjectId{};
@@ -395,8 +420,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if (navigation_.size()>64) navigation_.erase(navigation_.begin()+1); // Keep World reachable.
         navigation_cursor_=navigation_.size()-1;
     }
-    const auto actor_status = selected == ObjectId{} ? world::ActorStatus{} : take(world::inspect_actor(runtime, selected));
-    const auto transform = selected == ObjectId{} ? std::optional<ObjectId>{} : take(world::root_component(runtime, selected));
+    const auto entity_status = selected == ObjectId{} ? world::EntityStatus{} : take(world::inspect_entity(runtime, selected));
+    const auto transform = selected!=ObjectId{} && take(world::has_transform(runtime,selected))?std::optional(selected):std::nullopt;
     auto status_text=status;
     if(!render_notice.empty()) status_text+=L"  |  "+render_notice;
     if (!ui_error().empty()) {
@@ -412,7 +437,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         status_text,ui_language::ActionBinding{control::menu_bar_handle},
         double(ui::stow_rail_width),double(ui::stow_collapsed_height),double(ui::stow_arrow_region_height),
         double(ui::ControlIcon::up),double(ui::ControlIcon::down),
-        std::to_wstring(members.size())+(members.size()==1?L" Actor":L" Actors")};
+        std::to_wstring(members.size())+(members.size()==1?L" Entity":L" Entities")};
     const std::array<ui_language::KeyBinding,8> shell_keys{{{"root",1},{"menubar",2},{"stow",control::menu_bar_handle},
         {"menu_body",control::menu_bar_body},{"shelf_slot",3},{"workspace",20},{"footer",100},{"status",101}}};
     static_cast<void>(ui_document_->append("EditorShell",0,shell_keys,shell_inputs,result));
@@ -429,7 +454,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             definition.id==Command::create_directional_light?ui::ControlIcon::sun_light:
             definition.id==Command::create_sky_light?ui::ControlIcon::sky_light:
             definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
-            definition.id==Command::create_actor?ui::ControlIcon::object:ui::ControlIcon::axes;
+            definition.id==Command::create_entity?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
         items->push_back({shelf_items_[index],{std::wstring(title),static_cast<double>(icon),
             ui_language::ActionBinding{static_cast<ui::ControlKey>(definition.id),command_enabled(definition.id,session)}}});
@@ -542,27 +567,30 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame,*ui_document_);
         continue;
     }
-    if (view.key==control::actors_tab) {
+    if (view.key==control::entities_tab) {
         auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(members.size());
+        std::unordered_map<ObjectId,ui::ControlKey> entity_keys;
         for (const auto& member:members) {
-            const auto state=take(world::inspect_actor(runtime,member.id()));
-            const auto actor_key=bind(member.id());
+            const auto state=take(world::inspect_entity(runtime,member.id()));
+            const auto entity_key=bind(member.id());entity_keys.emplace(member.id(),entity_key);
+            const auto parent=take(world::parent_entity(runtime,member.id()));
+            const auto parent_key=parent==ObjectId{}?control::tree_world:entity_keys.at(parent);
             auto title=std::wstring(session.name(member.id()));
-            const bool mesh_actor=take(runtime.is_a(state.type,session.types().static_mesh_actor));
-            const auto expansion=tree_expansion_.find(actor_key);
-            rows->push_back({actor_key,{std::move(title),
-                state.state==world::ActorState::attached_inactive || state.state==world::ActorState::active,
-                session.is_selected(member.id()),static_cast<double>(actor_icon(session,member.id())),
-                control::tree_world,expansion!=tree_expansion_.end() && expansion->second,std::wstring(mesh_actor?L"mesh-actor":L"actor")}});
+            const bool mesh_entity=take(runtime.is_a(state.type,session.types().static_mesh_entity));
+            const auto expansion=tree_expansion_.find(entity_key);
+            rows->push_back({entity_key,{std::move(title),
+                state.state==world::EntityState::attached_inactive || state.state==world::EntityState::active,
+                session.is_selected(member.id()),static_cast<double>(entity_icon(session,member.id())),
+                parent_key,expansion!=tree_expansion_.end() && expansion->second,std::wstring(mesh_entity?L"mesh-entity":L"entity")}});
         }
         const auto expansion=tree_expansion_.find(control::tree_world);
         const std::array<ui_language::InputValue,10> inputs{ui_language::ItemList{std::move(rows)},
             ui_language::TextEditBinding{control::tree_filter,tree_query},selected==ObjectId{},
             expansion==tree_expansion_.end() || expansion->second,static_cast<double>(ui::ControlIcon::world),
-            ui_language::ActionBinding{control::actor_back,can_navigate(-1)},ui_language::ActionBinding{control::actor_forward,can_navigate(1)},
+            ui_language::ActionBinding{control::entity_back,can_navigate(-1)},ui_language::ActionBinding{control::entity_forward,can_navigate(1)},
             double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world)};
-        const std::array<ui_language::KeyBinding,6> keys{{{"tree",control::actor_tree},{"world",control::tree_world},
-            {"path.bar",24},{"path.path",control::actor_path},{"path.back",control::actor_back},{"path.forward",control::actor_forward}}};
+        const std::array<ui_language::KeyBinding,6> keys{{{"tree",control::entity_tree},{"world",control::tree_world},
+            {"path.bar",24},{"path.path",control::entity_path},{"path.back",control::entity_back},{"path.forward",control::entity_forward}}};
         static_cast<void>(ui_document_->append("SceneTree",21,keys,inputs,result));
         continue;
     }
@@ -574,23 +602,30 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     if(view.key==control::structure_tab) {
         auto rows=std::make_shared<std::vector<ui_language::Item>>();
         if(selected!=ObjectId{}) {
-            const auto actor_key=bind(selected,{},Binding::Kind::structure);
-            const auto expansion=tree_expansion_.find(actor_key);
-            rows->push_back({actor_key,{std::wstring(session.name(selected)),true,inspected==selected,double(actor_icon(session,selected)),
-                ui::ControlKey{},expansion==tree_expansion_.end() || expansion->second,std::wstring(L"actor")}});
-            for(const auto& component:take(world::components(runtime,selected))) {
-                const auto key=bind(component.id(),{},Binding::Kind::structure);
-                const auto label=short_type(component.id())+(transform==component.id()?L"  (Root)":L"");
-                rows->push_back({key,{label,actor_status.can_edit,inspected==component.id(),double(ui::ControlIcon::component),
-                    actor_key,false,std::wstring(L"component")}});
+            struct Pending {ObjectId entity;ui::ControlKey parent;};
+            std::vector<Pending> pending{{selected,{}}};
+            while(!pending.empty()) {
+                const auto entry=pending.back();pending.pop_back();
+                const auto entity_key=bind(entry.entity,{},Binding::Kind::structure);
+                const auto expansion=tree_expansion_.find(entity_key);
+                const auto state=take(world::inspect_entity(runtime,entry.entity));
+                rows->push_back({entity_key,{std::wstring(session.name(entry.entity)),state.can_edit,inspected==entry.entity,double(entity_icon(session,entry.entity)),
+                    entry.parent,expansion==tree_expansion_.end() || expansion->second,std::wstring(L"entity")}});
+                for(const auto& component:take(world::components(runtime,entry.entity))) {
+                    const auto key=bind(component.id(),{},Binding::Kind::structure);
+                    rows->push_back({key,{short_type(component.id()),state.can_edit,inspected==component.id(),double(ui::ControlIcon::component),
+                        entity_key,false,std::wstring(L"component")}});
+                }
+                const auto children=take(world::children(runtime,entry.entity));
+                for(auto child=children.rbegin();child!=children.rend();++child) pending.push_back({child->id(),entity_key});
             }
         }
-        const std::array<ui_language::InputValue,8> inputs{selected==ObjectId{}?std::wstring(L"Actor Structure"):std::wstring(session.name(selected)),
+        const std::array<ui_language::InputValue,8> inputs{selected==ObjectId{}?std::wstring(L"Entity Structure"):std::wstring(session.name(selected)),
             ui_language::ItemList{std::move(rows)},ui_language::TextEditBinding{control::structure_filter,structure_query},selected!=ObjectId{},
-            selected!=ObjectId{} && actor_status.can_edit,control::add_component,
+            selected!=ObjectId{} && entity_status.can_edit,control::add_component,
             ui_language::ActionBinding{control::remove_selected,command_enabled(Command::erase_selected,session)},double(ui::ControlIcon::close)};
         const std::array<ui_language::KeyBinding,2> keys{{{"tree",control::structure_tree},{"add",control::add_component}}};
-        static_cast<void>(ui_document_->append("ActorStructure",view.content,keys,inputs,result));
+        static_cast<void>(ui_document_->append("EntityStructure",view.content,keys,inputs,result));
         continue;
     }
     if(inspecting_asset && material_object==ObjectId{}) {
@@ -666,7 +701,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             const auto override_bit=instance?take(material::override_bit(runtime,property.path)):0u;
             const bool overridden=instance && (material_state->overrides & override_bit)!=0;
             const bool override_available=instance && (material_state->parent.registered() || !material_state->source.empty());
-            const bool editable=(resource?!session.world().running():actor_status.can_edit) && (!override_available || overridden);
+            const bool editable=(resource?!session.world().running():entity_status.can_edit) && (!override_available || overridden);
             const auto override_key=instance?bind_material(object,property.path,Binding::Kind::material_override,material_component,slot):ui::ControlKey{};
             if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
             if(light) {
@@ -832,7 +867,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         auto& key=category_keys_[category];if(!key) key=next_binding_++;
         groups->push_back({key,{wide(category),0.,ui_language::ItemList{std::move(rows)}}});
     }
-    constexpr std::array aliases{L"transform scene root position 变换 位置 x", L"transform scene root position 变换 位置 y", L"transform scene root position 变换 位置 z"};
+    constexpr std::array aliases{L"transform entity position 变换 位置 x", L"transform entity position 变换 位置 y", L"transform entity position 变换 位置 z"};
     constexpr std::array names{L"X", L"Y", L"Z"};
     const auto definitions=session.parameters();
     std::vector<ui::NumberField> fields;bool group_modified{};
@@ -850,8 +885,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     ui_language::EditBinding rotation_edit,scale_edit;
     if(show_position) {
         const auto trs=take(world::read_transform(runtime,*transform));const auto angles=euler_degrees(trs.rotation);
-        rotation_edit={bind(*transform,{},Binding::Kind::rotation_default),actor_status.can_edit,angles!=math::Vector3{}, {}};
-        scale_edit={bind(*transform,{},Binding::Kind::scale_default),actor_status.can_edit,trs.scale!=math::Vector3{1,1,1}, {}};
+        rotation_edit={bind(*transform,{},Binding::Kind::rotation_default),entity_status.can_edit,angles!=math::Vector3{}, {}};
+        scale_edit={bind(*transform,{},Binding::Kind::scale_default),entity_status.can_edit,trs.scale!=math::Vector3{1,1,1}, {}};
         for(std::size_t axis=0;axis<3;++axis) {
             rotation_edit.fields.push_back({bind(*transform,session.types().rotation_fields[axis],Binding::Kind::rotation),names[axis],angles[axis],0,-360000,360000,1,.1,static_cast<ui::VectorAxis>(axis+1)});
             scale_edit.fields.push_back({bind(*transform,session.types().scale_fields[axis]),names[axis],trs.scale[axis],1,Session::minimum_scale,Session::maximum_scale,.01,.001,static_cast<ui::VectorAxis>(axis+1)});
@@ -860,15 +895,15 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     const bool matches=position_matches || rotation_matches || scale_matches,empty=groups->empty() && !matches;
     ui_language::EditBinding position{show_position?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},
-        actor_status.can_edit && show_position,group_modified,std::move(fields)};
-    const bool actor_selected=inspected!=ObjectId{} && inspected==selected;
+        entity_status.can_edit && show_position,group_modified,std::move(fields)};
+    const bool entity_selected=inspected!=ObjectId{} && inspected==selected;
     const std::array<ui_language::InputValue,25> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
-        ui_language::TextEditBinding{actor_selected?bind(selected,{},Binding::Kind::name):ui::ControlKey{77},
-            inspected==ObjectId{}?L"No selection":actor_selected?std::wstring(session.name(selected)):short_type(inspected),actor_selected && actor_status.can_edit},
+        ui_language::TextEditBinding{entity_selected?bind(selected,{},Binding::Kind::name):ui::ControlKey{77},
+            inspected==ObjectId{}?L"No selection":entity_selected?std::wstring(session.name(selected)):short_type(inspected),entity_selected && entity_status.can_edit},
         ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
         double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
         inspected!=ObjectId{},ui_language::ItemList{std::move(groups)},matches,std::move(position),ui_language::TextEditBinding{control::parameter_search,query},empty,
-        double(actor_selected?actor_icon(session,selected):ui::ControlIcon::component),double(ui::ControlIcon::search),
+        double(entity_selected?entity_icon(session,selected):ui::ControlIcon::component),double(ui::ControlIcon::search),
         parameter_search_visible && inspected!=ObjectId{},ui_language::ActionBinding{control::parameter_search_toggle,inspected!=ObjectId{}},
         std::move(rotation_edit),std::move(scale_edit),position_matches,rotation_matches,scale_matches,parameter_by_category_,
         ui_language::ActionBinding{control::group_components,true},ui_language::ActionBinding{control::group_categories,true}};
@@ -961,8 +996,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     items.push_back(std::move(item));
                 }
             } else if(source->key==control::viewport && menu->group==control::viewport_delete_menu) {
-                auto item=command_item(Command::erase_actors);item.separator_before=false;
-                item.text=session.selected_actors().size()==1?L"Delete Actor":L"Delete "+std::to_wstring(session.selected_actors().size())+L" Actors";
+                auto item=command_item(Command::erase_entities);item.separator_before=false;
+                item.text=session.selected_entities().size()==1?L"Delete Entity":L"Delete "+std::to_wstring(session.selected_entities().size())+L" Entities";
                 items.push_back(std::move(item));
             } else if(source->key==control::viewport && menu->group==control::viewport_axis_pie) {
                 using enum Command;
@@ -977,7 +1012,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 items=viewport_commands(control::viewport_tools_menu);
                 if(source->key==control::viewport) {
                     items.push_back({.key=control::viewport_snap,.text=L"Snap",.edit_command={},.children=viewport_commands(control::viewport_snap)});
-                    for(auto item:commands({focus,create_static_mesh,duplicate_selected,erase_actors})) items.push_back(std::move(item));
+                    for(auto item:commands({focus,create_static_mesh,duplicate_selected,erase_entities})) items.push_back(std::move(item));
                 }
             } else if(source->key==control::viewport_snap || source->key==control::viewport_camera || source->key==control::viewport_pivot) {
                 items=viewport_commands(source->key);
@@ -992,7 +1027,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     for(const auto& member:take(runtime.describe(enumeration->type))->enumeration->values) {
                         const auto key=control::property_choice_first+property_choices_.size();
                         property_choices_.push_back({target->object,target->path,{enumeration->type,member.second},target->key});
-                        ui::MenuItem item{key,parameter_label(member.first),(session.is_material(target->object)?!session.world().running():actor_status.can_edit),member.second==enumeration->bits,{}};
+                        ui::MenuItem item{key,parameter_label(member.first),(session.is_material(target->object)?!session.world().running():entity_status.can_edit),member.second==enumeration->bits,{}};
                         item.behavior=ui::MenuBehavior::radio;item.radio_group=source->key;items.push_back(std::move(item));
                     }
                 }
@@ -1033,6 +1068,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             } else if (source->key==source_control::files) {
                 items=source_editor.menu_items();
             } else if(source->key==control::add_component) {
+                items.push_back(command_item(take(world::has_transform(runtime,selected))?Command::remove_transform:Command::add_transform));
                 component_choices_=take(session.component_types());
                 for(std::size_t i=0;i<component_choices_.size();++i)
                     items.push_back({control::component_choice_first+i,wide(component_choices_[i].name),selected!=ObjectId{},false,{}});

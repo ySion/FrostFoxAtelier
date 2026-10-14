@@ -27,9 +27,9 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
         verify_stow_alignment(app);
     }
     const auto dpi=app.presented()->drawing->dpi_scale;
-    const auto selected=app.document().selection().actor;
+    const auto selected=app.document().selection().entity;
     const auto history=app.document().undo_count();
-    const auto members=actors(app).size();
+    const auto members=entities(app).size();
     const auto shelf=app.presented()->find(control::shelf)->bounds;
     const auto viewport=app.presented()->find(control::viewport)->bounds;
     std::vector<std::pair<ControlKey,ControlKey>> tool_keys;
@@ -48,24 +48,24 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
         }
     };
     verify_commands(atelier::editor::CommandGroup::create);
-    const auto* tool=command_tool(app,control::add_actor);
-    require(tool && tool->key!=control::add_actor,"DSL shelf command retained its command ID as the visual identity.");
+    const auto* tool=command_tool(app,control::add_entity);
+    require(tool && tool->key!=control::add_entity,"DSL shelf command retained its command ID as the visual identity.");
     require(std::abs(shelf.height/dpi-56)<.1f && std::abs(tool->bounds.width/dpi-64)<.1f &&
         tool->style->icon_placement==atelier::ui::IconPlacement::above && tool->style->font.size==10.5f,
         "Tool shelf did not use the compact icon-over-caption layout.");
     // The icon and caption must both activate the same command exactly once.
     for (bool icon:{true,false}) {
-        const auto bounds=command_tool(app,control::add_actor)->bounds;
+        const auto bounds=command_tool(app,control::add_entity)->bounds;
         click_at(app,{static_cast<LONG>(bounds.x+bounds.width*.5f),
             static_cast<LONG>(icon?bounds.y+10*dpi:bounds.y+bounds.height-6*dpi)});
-        require(actors(app).size()==members+1 && app.document().undo_count()==history+1,
+        require(entities(app).size()==members+1 && app.document().undo_count()==history+1,
             "Shelf icon/caption did not activate exactly one document command.");
         require(app.presented()->find(control::parameter_list) && !app.presented()->find(control::position_fold) &&
             !app.presented()->find(control::add_component),
-            "An empty Actor acquired spatial controls or parameter-side component commands.");
+            "An empty Entity acquired spatial controls or parameter-side component commands.");
         click(app,control::undo); click(app,app.object_control(selected));
         require(app.presented()->find(control::position_fold) && app.presented()->find(property_control(app,selected,0)),
-            "Returning to the spatial Actor did not restore its actual root properties.");
+            "Returning to the spatial Entity did not restore its actual root properties.");
     }
     click(app,control::shelf_create);key(app,VK_TAB);key(app,VK_TAB,false,true);key(app,VK_END);
     require(app.presented()->find(control::shelf_view)->selected,"Shelf Tab/End did not enter and switch the category group.");
@@ -101,7 +101,7 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
         return atelier::application::EditorAcceptanceAccess::property_group(app,component(app,selected,app.document().types().static_mesh_component));
     };
     require(app.presented()->find(field) && property_group() && !app.presented()->find(control::add_component),
-        "Actor properties were split into fixed pages or retained component commands in Parameters.");
+        "Entity properties were split into fixed pages or retained component commands in Parameters.");
     click(app,field);type(app,(std::to_wstring(original+1)+L"x").c_str());key(app,VK_RETURN);
     require(app.document().editing() && x(app,selected)!=original && app.document().undo_count()==history,
         "Parameter fixture did not retain an invalid draft after a real field preview.");
@@ -110,7 +110,7 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
         !app.presented()->find(field) && !app.text_input(),"Changing inspected objects failed to cancel the invalid draft and its preview.");
     click(app,app.object_control(selected));
     require(property_control(app,selected,0)==field && app.presented()->find(field) && x(app,selected)==original,
-        "Returning to the Actor lost field identity or restored a cancelled draft.");
+        "Returning to the Entity lost field identity or restored a cancelled draft.");
     click(app,control::parameter_search);type(app,L"staticmesh");key(app,VK_RETURN);
     require(property_group() && !app.presented()->find(field),"Shared Filter did not match the real component group and exclude unrelated Position.");
     require(app.presented()->find(control::parameter_search)->incarnation==filter_incarnation &&
@@ -154,6 +154,6 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
     require(app.presented()->find(control::shelf)->bounds==shelf &&
         app.presented()->find(control::viewport)->bounds==viewport,
         "Restoring both bars changed the workspace geometry.");
-    require(app.document().selection().actor==selected && app.document().undo_count()==history,
+    require(app.document().selection().entity==selected && app.document().undo_count()==history,
         "Shelf layout operations changed document selection or history.");
 }

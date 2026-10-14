@@ -169,7 +169,7 @@ uint process(combat.DamageInfo& damage) {
 float distance(float speed, float dt) { return speed * dt; }
 
 // Source/Move.source
-class game.Move : world.SceneComponent {
+class game.Move : world.Component {
     float speed = 2.0f;
     void begin() {}
     void tick(float dt) { self.translate_owner(distance(self.speed, dt), 0.0f, 0.0f); }

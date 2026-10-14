@@ -15,7 +15,7 @@
 
 ## 灯类型与参数
 
-`LightComponent : SceneComponent` 是真实 Runtime 对象。它只有一个新增的公开反射字段 `settings : world.LightSettings`，沿现有 owner、根、空间父链、组成顺序、生命周期和派生类型查询运行。
+`LightComponent : Component` 是真实 Runtime 能力对象。公开字段 `settings : world.LightSettings` 保存灯参数；空间来自 owner Entity，沿实体空间参考链、组合顺序、生命周期和派生类型查询运行。
 
 `world.LightKind` 是 uint32 枚举：point=0、rectangle=1、directional=2、sky=3。Sky Light 是天光，沿同一 LightComponent 身份、属性和持久化入口表示。`LightSettings` 的反射字段如下：
 
@@ -34,7 +34,7 @@
 
 点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
 
-同一 World 最多有一个 Sky Light，停用的组件也占该位置。Actor 入场、向已入场 Actor 添加组件以及 Light Type 修改，在发布前检查唯一性；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段后，`light_items()` 仍会拒绝重复天光，不进行相加或静默选取。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
+同一 World 最多有一个 Sky Light，停用的组件也占该位置。Entity 入场、向已入场 Entity 添加组件以及 Light Type 修改，在发布前检查唯一性；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段后，`light_items()` 仍会拒绝重复天光，不进行相加或静默选取。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
 
 首版 Sky Light 提供均匀天空入射辐射；位置、旋转、缩放、range、发光面尺寸和直接灯阴影开关不影响它。空间字段只保留统一组件组成能力。没有启用的天光组件时环境辐射为零；没有可见天空、HDRI 或方向性天空分布的隐式资源。
 
@@ -42,11 +42,11 @@
 
 ## 提取与坐标
 
-`World::light_items()` 返回 `LightRenderItem { actor, component, position, direction, right, up, settings }`。两个身份都是完整 ObjectId；它们只用于当前 Runtime 的关联，不落盘、不转换成裸地址，也不额外保活对象。Renderer 的 key 映射由应用适配，Renderer 无需依赖 World。
+`World::light_items()` 返回 `LightRenderItem { entity, component, position, direction, right, up, settings }`。两个身份都是完整 ObjectId；它们只用于当前 Runtime 的关联，不落盘、不转换成裸地址，也不额外保活对象。Renderer 的 key 映射由应用适配，Renderer 无需依赖 World。
 
-World 使用现有 presentation 目录共同登记网格与灯光。render_items 只返回网格，light_items 只返回 Actor 和 Component 均启用的灯，顺序仍为 Actor 成员顺序及组件组成顺序。停止的编辑 World 可以提取；零 intensity 仍保留条目和身份；Detached/已移除对象不会出现；关闭后的提取返回错误。`can_present` 和 presentation_registrations 表示登记，不等于该帧产生可见能量。
+World 使用现有 presentation 目录共同登记网格与灯光。render_items 只返回网格，light_items 只返回 Entity 和 Component 均启用的灯，顺序仍为 Entity 成员顺序及组件组成顺序。停止的编辑 World 可以提取；零 intensity 仍保留条目和身份；Detached/已移除对象不会出现；关闭后的提取返回错误。`can_present` 和 presentation_registrations 表示登记，不等于该帧产生可见能量。
 
-对 point / rectangle / directional，position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子节点的位置偏移。方向基由局部 quaternion 从子至根组合并归一化，忽略各级 scale/shear，得到正交单位 right(+X)、up(+Y)、direction(+Z)。direction 是光传播方向，矩形位于局部 XY 平面。range、source_radius 的物理长度、width/height 是世界米，不再乘任何 scale；方向光的 source_radius 为角度量。Sky Light 提取为中性位置/方向基，Application 单独发布它的均匀天光辐射。
+对 point / rectangle / directional，position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子节点的位置偏移。方向基由局部 quaternion 沿 Entity 空间参考链组合并归一化，忽略各级 scale/shear，得到正交单位 right(+X)、up(+Y)、direction(+Z)。direction 是光传播方向，矩形位于局部 XY 平面。range、source_radius 的物理长度、width/height 是世界米，不再乘任何 scale；方向光的 source_radius 为角度量。Sky Light 提取为中性位置/方向基，Application 单独发布它的均匀天光辐射。
 
 参数值和坐标都在提取时验证。快照包含自有值，可在对象离场后继续读取；它不保存对象地址、ObjectRoot 或可重入回调。真实删除、撤销恢复与重新启用都沿原 Component 身份，不另建灯管理器或对象索引权威。
 

@@ -16,7 +16,7 @@ void write(const std::filesystem::path& path,std::string_view text) {
     require(bool(stream),"Cannot write E2E fixture");
 }
 constexpr std::string_view published_code="class project.ControlProbe : world.Component { float speed = 1.0f; void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); } }\n";
-constexpr std::string_view published_ui="ui ProjectUI(in Text title, in double elapsed, in double actors) { Column hud { Text title { text: input.title; } } }\n";
+constexpr std::string_view published_ui="ui ProjectUI(in Text title, in double elapsed, in double entities) { Column hud { Text title { text: input.title; } } }\n";
 void project_fixture(const std::filesystem::path& project) {
     write(project/"Content/Scenes/Main.scene",Json{{"version",2},{"actors",Json::array()}}.dump());
     write(project/"Source/Published.source",published_code);write(project/"Source/Published.ui.source",published_ui);
@@ -76,8 +76,8 @@ void error(const Json& result,std::string_view expected) {require(result.value("
 void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema")==2 && original_scene.at("version")==5,
-        "Current repro export did not identify view schema 2 and Scene v5");
+    require(original.at("view_schema")==2 && original_scene.at("version")==6,
+        "Current repro export did not identify view schema 2 and Scene v6");
     const auto legacy=root/"LegacyLightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(legacy),
         std::filesystem::copy_options::recursive);
@@ -85,7 +85,20 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
     auto old_manifest=original;old_manifest.erase("view_schema");
     old_manifest["view"].erase("direct_candidates");old_manifest["view"].erase("direct_reference");
     old_manifest["view"]["shadow_light_budget"]=16;old_manifest["view"]["shadow_samples"]=64;
-    auto old_scene=original_scene;old_scene["version"]=4;old_scene["world"].erase("direct_candidates");
+    // The legacy lighting repro contains one flat mesh Actor. Encode the real
+    // v4 Actor boundary instead of relabeling a v6 Entity directory as v4.
+    require(original_scene.at("entities").size()==1 && original_scene.at("roots").size()==1,
+        "Legacy lighting migration requires its single-mesh fixture.");
+    const auto& current_entity=original_scene.at("entities")[0];
+    require(current_entity.at("type")=="world.StaticMeshEntity" && current_entity.at("children").empty() &&
+        current_entity.at("components").size()==1 && current_entity.at("components")[0].at("type")=="world.StaticMeshComponent" &&
+        current_entity.at("space").at("origin").is_null(),"Legacy lighting fixture acquired a modern-only composition relation.");
+    auto old_component=current_entity.at("components")[0];old_component.erase("name");old_component["id"]=1;old_component["parent"]=0;
+    for(const auto* field:{"position","rotation","scale"}) old_component[field]=current_entity.at("space").at(field);
+    const Json old_actor{{"type","world.StaticMeshActor"},{"name",current_entity.at("name")},{"enabled",current_entity.at("enabled")},
+        {"root",1},{"components",Json::array({old_component})},{"properties",current_entity.at("properties")}};
+    Json old_scene{{"version",4},{"actors",Json::array({old_actor})},{"world",original_scene.at("world")}};
+    old_scene["world"].erase("direct_candidates");
     old_scene["world"]["shadow_light_budget"]=16;old_scene["world"]["shadow_samples"]=64;
     const auto publish=[&](Json manifest,const Json& scene) {
         write(scene_path,scene.dump(2));bool listed=false;
@@ -100,7 +113,7 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
         publish(manifest,scene);const auto before=d.inspect();const auto token=d.token;
         error(d.call("repro.open",{{"directory",utf8(legacy.wstring())}}),code);
         const auto after=d.inspect();
-        for(const auto* field:{"project","scene_path","actors","selection","inspected_object","camera","view","dirty","undo","redo"})
+        for(const auto* field:{"project","scene_path","entities","selection","inspected_object","camera","view","dirty","undo","redo"})
             require(after.at(field)==before.at(field),std::string("Rejected lighting repro changed ")+field);
         require(d.token==token,"Rejected lighting repro changed the accepted editor state token");
     };
@@ -141,8 +154,12 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
         const std::filesystem::path new_repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto saved=read(new_repro/"manifest.json");
         const auto saved_scene=read(new_repro/"Project"/wide(saved.at("scene").get<std::string>()));
-        require(saved.at("view_schema")==2 && saved.at("view")==expected_view && saved_scene.at("version")==5 &&
-            saved_scene.at("world")==expected_world && saved_scene.at("actors")==original_scene.at("actors") &&
+        const auto authored=[](Json entities) {
+            for(auto& entity:entities) {entity.erase("id");for(auto& component:entity.at("components")) component.erase("id");}
+            return entities;
+        };
+        require(saved.at("view_schema")==2 && saved.at("view")==expected_view && saved_scene.at("version")==6 &&
+            saved_scene.at("world")==expected_world && authored(saved_scene.at("entities"))==authored(original_scene.at("entities")) &&
             saved.at("selection_indices")==original.at("selection_indices"),
             "Migrated repro export lost author data or retained a legacy view/scene format");
         require(!saved.at("view").contains("shadow_light_budget") && !saved.at("view").contains("shadow_samples") &&
@@ -153,6 +170,43 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
             !reopened.at("dirty").get<bool>() && reopened.at("selection").size()==original.at("selection_indices").size(),
             "New-schema export of the migrated repro did not reopen cleanly");
     }
+    // Old Actor indices must survive inserted spatial Entities in the preceding Actor.
+    auto expanded_actor=old_actor;
+    expanded_actor["components"].push_back(Json{{"id",2},{"type","world.SceneComponent"},{"enabled",true},{"parent",1},
+        {"position",{2,3,4}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
+    expanded_actor["components"].push_back(Json{{"id",3},{"type","world.CollisionComponent"},{"enabled",true},{"parent",1},
+        {"position",{4,5,6}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
+    auto other_actor=old_actor;other_actor["name"]="Legacy Other";
+    for(unsigned version=1;version<=5;++version) {
+        auto scene=old_scene;scene["version"]=version;scene["actors"]=Json::array({expanded_actor,other_actor});
+        if(version<4) scene.erase("world");
+        if(version==5) scene["world"]=expected_world;
+        if(version==1) for(auto& actor:scene["actors"]) {
+            actor.erase("properties");for(auto& part:actor["components"]) part.erase("properties");
+        }
+        auto manifest=old_manifest;manifest["selection_indices"]=Json::array({1});manifest.erase("inspection");
+        publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
+        const auto selected=d.inspect();const auto& entities=selected.at("entities");
+        require(entities.size()==4 && selected.at("selection")==Json::array({entities[3].at("handle")}) &&
+            entities[3].at("name")=="Legacy Other" && selected.at("inspected_object")==entities[3].at("handle"),
+            "Legacy repro Actor selection used expanded Entity indices instead of migrated identities");
+        if(version==5) for(unsigned component_index:{1u,2u}) {
+            manifest["selection_indices"]=Json::array({0});manifest["inspection"]={{"actor",0},{"component",component_index}};
+            publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
+            const auto inspected=d.inspect();const auto& owner=inspected.at("entities")[component_index];
+            require(inspected.at("selection")==Json::array({owner.at("handle")}) &&
+                owner.at("parent")==inspected.at("entities")[0].at("handle"),
+                "Legacy spatial component inspection lost its actual migrated owner Entity");
+            if(component_index==1) require(owner.at("components").empty() && inspected.at("inspected_object")==owner.at("handle") &&
+                owner.at("transform").at("position")==Json::array({2,3,4}),
+                "Legacy pure SceneComponent did not inspect its mapped spatial Entity");
+            else require(owner.at("components").size()==1 && owner.at("components")[0].at("type")=="world.CollisionComponent" &&
+                inspected.at("inspected_object")==owner.at("components")[0].at("handle"),
+                "Legacy Primitive inspection guessed the old Actor owner instead of the bound child Entity");
+        }
+    }
+    // Restore the caller's repro after exercising expanded legacy object graphs.
+    d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
 }
 void repro_lighting(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"Project",directory=root/"Control";project_fixture(project);
@@ -166,7 +220,7 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
     repro_lighting_migration(d,wide(exported.at("result").at("directory").get<std::string>()),root);
     d.client.reset();editor.close();
     write(root/"result.json",Json{{"status","passed"},{"cases",{"legacy-shadow-ranges","legacy-view-and-world-agreement",
-        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema2-scene5-export-reopen","no-implicit-reference"}}}.dump(2));
+        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema2-scene6-export-reopen","no-implicit-reference"}}}.dump(2));
     std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
@@ -202,11 +256,11 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
         const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
         repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto manifest=read(repro/"manifest.json");const auto frozen=repro/"Project"/wide(manifest.at("scene").get<std::string>());
-        require(frozen.wstring().size()>260 && read(frozen).at("actors").size()==1,"Deep-path export did not preserve the scene");
+        require(frozen.wstring().size()>260 && read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
         if(pass==0) require(std::filesystem::exists(atelier::platform::windows_file_path(repro/"unpublished"/unpublished)),"Deep-path source archive is missing");
         if(pass==0) d.ok("scene.undo");
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
-        const auto reopened=d.inspect();require(reopened.at("actors").size()==1 && !reopened.at("dirty").get<bool>(),"Deep-path repro did not reopen");
+        const auto reopened=d.inspect();require(reopened.at("entities").size()==1 && !reopened.at("dirty").get<bool>(),"Deep-path repro did not reopen");
         d.ok("scene.save");
     }
     const auto instance=d.descriptor.at("instance_id").get<std::string>();
@@ -239,7 +293,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     for(unsigned slot=0;slot<4;++slot) for(const char* field:{"enabled","placement","min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z","blend_cells"})
         require(capabilities.at("display_options").contains("probe_volume_"+std::to_string(slot)+"_"+field),"Volume field absent from Control schema");
     const auto summary=d.ok("editor.inspect",{{"detail","summary"}});
-    require(!summary.contains("actors") && !summary.contains("assets") && !summary.contains("component_types") &&
+    require(!summary.contains("entities") && !summary.contains("assets") && !summary.contains("component_types") &&
         summary.at("view")==state.at("view") && summary.contains("last_frame"),"Summary inspection enumerated the document or omitted view state");
     d.ok("scene.create",{{"kind","mesh"}});
     d.ok("camera.look_at",{{"eye",{5,4,-7}},{"target",{0,0,0}}});
@@ -247,7 +301,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
         {"probe_count_x",3},{"probe_count_y",3},{"probe_count_z",3},{"probe_update_budget",27},{"probe_rays",32},
         {"probe_min_x",-2},{"probe_min_y",-2},{"probe_min_z",-2},{"probe_max_x",2},{"probe_max_y",2},{"probe_max_z",2},
         {"probe_visualization","state"},{"probe_volume",true},{"probe_relocation",true},{"probe_xray",true},{"probe_radius",.12}};
-    d.ok("view.set",{{"patch",patch}});state=d.inspect();const auto base_view=state.at("view"),actors=state.at("actors"),undo=state.at("undo");
+    d.ok("view.set",{{"patch",patch}});state=d.inspect();const auto base_view=state.at("view"),entities=state.at("entities"),undo=state.at("undo");
     const auto token=d.token;d.ok("view.set",{{"patch",patch}});require(d.token==token,"Repeated DDGI view patch changed the state token");
     error(d.call("view.set",{{"patch",{{"probe_radius",0},{"probe_debug",true}}}}),"operation_failed");
     require(d.inspect().at("view")==base_view,"Rejected debug patch partially mutated the view");
@@ -263,7 +317,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     auto pending=d.call("render.compare",{{"cases",cases},{"sample_frames",{2}},{"timeout_ms",120000}},id);
     require(pending.at("status")=="pending",pending.dump());const auto compared=d.wait(id);require(compared.at("status")=="ok",compared.dump());
     require(compared.at("result").at("samples").size()==4,"DDGI comparison did not produce every accepted sample");
-    state=d.inspect();require(state.at("view")==base_view&&state.at("actors")==actors&&state.at("undo")==undo,
+    state=d.inspect();require(state.at("view")==base_view&&state.at("entities")==entities&&state.at("undo")==undo,
         "DDGI diagnostic comparison changed scene, undo or base display policy");
     write(root/"captures.json",compared.dump(2));write(root/"capabilities.json",capabilities.dump(2));
     d.ok("view.set",{{"patch",{{"probe_bounce",.5},{"indirect_gain",1.25},{"probe_feedback_visibility",false}}}});
@@ -273,7 +327,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     d.ok("view.layout",{{"layout","scene_focus"}});state=d.inspect();
     const auto focus_view=state.at("view");const auto layout_token=d.token;
     require(focus_view.at("probe_volume_0_placement")=="follow_focus" && focus_view.at("probe_volume_1_enabled")==true &&
-        focus_view.at("probe_volume_1_placement")=="fixed" && state.at("actors")==actors && state.at("undo").get<unsigned>()==undo.get<unsigned>()+3,
+        focus_view.at("probe_volume_1_placement")=="fixed" && state.at("entities")==entities && state.at("undo").get<unsigned>()==undo.get<unsigned>()+3,
         "Scene+Focus layout lost a volume or did not commit to scene history");
     d.ok("view.layout",{{"layout","scene_focus"}});require(d.token==layout_token,"Repeated layout changed the state token");
     for(const auto& invalid:std::vector<Json>{
@@ -349,7 +403,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     write(repro/"manifest.json",manifest.dump(2));d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
     require(d.inspect().at("view")==legacy_expected,"A genuine old repro inherited current volume or propagation settings");
     d.client.reset();editor.close();
-    require(read(project/"Content/Scenes/Main.scene").at("actors").empty(),"Diagnostic session changed the saved scene");
+    require(read(project/"Content/Scenes/Main.scene").at("entities").empty(),"Diagnostic session changed the saved scene");
     write(root/"result.json",Json{{"status","passed"},{"cases",{"shared-schema","summary-inspection","idempotent-patch","atomic-rejection","real-render-compare",
         "coverage-presets","rolling-focus-capture","focus-precision-atomicity","four-volume-repro","legacy-aliases","legacy-repro-defaults","history-and-scene-isolation","clean-close"}}}.dump(2));
     std::cout<<"Editor DDGI Control E2E: PASS | "<<utf8(root.wstring())<<'\n';
@@ -380,25 +434,26 @@ int wmain(int argc,wchar_t** argv) {
             stable=token==d.token && !initial.at("last_frame").empty()?stable+1:0;
         }
         require(stable==5,"Initial surface mapping did not stabilize");
-        require(initial.at("actors").empty() && !initial.at("last_frame").empty(),"Initial editor state is not ready");
+        require(initial.at("entities").empty() && !initial.at("last_frame").empty(),"Initial editor state is not ready");
         const auto original_scene=read(project/"Content/Scenes/Main.scene");
         Json request{{"op","scene.create"},{"args",{{"kind","mesh"}}},{"state_token",d.token},{"request_id",unique_id()}};
         const auto first=d.client->call(request);require(first.at("status")=="ok",first.dump());
         const auto replay=d.client->call(request);require(first==replay,"Duplicate mutation did not replay its response");
-        request["args"]["kind"]="actor";error(d.client->call(request),"request_id_conflict");
-        auto current=d.inspect();require(current.at("actors").size()==1 && current.at("undo")==1,"Duplicate request repeated creation");
-        auto actor=current.at("actors")[0].at("handle").get<std::string>();auto component=current.at("actors")[0].at("root").get<std::string>();
+        request["args"]["kind"]="entity";error(d.client->call(request),"request_id_conflict");
+        auto current=d.inspect();require(current.at("entities").size()==1 && current.at("undo")==1,"Duplicate request repeated creation");
+        auto entity=current.at("entities")[0].at("handle").get<std::string>();auto component=current.at("entities")[0].at("components")[0].at("handle").get<std::string>();
         const auto stale=d.token;
-        d.ok("scene.rename",{{"object",actor},{"name","Control cube"}});
-        error(d.client->call({{"op","scene.rename"},{"args",{{"object",actor},{"name","Wrong"}}},{"state_token",stale}}),"stale_state");
-        d.ok("scene.transform",{{"object",actor},{"position",{1,2,3}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
-        d.ok("scene.set_property",{{"object",component},{"property","position.x"},{"value",4}});
-        current=d.inspect();require(current.at("actors")[0].at("components")[0].at("transform").at("position")[0]==4,"Property command did not write the document");
-        d.ok("scene.undo");current=d.inspect();require(current.at("actors")[0].at("components")[0].at("transform").at("position")[0]==1,"Undo did not restore the transform");d.ok("scene.redo");
-        d.ok("scene.select",{{"actors",{actor}}});
-        const auto added=d.ok("scene.add_component",{{"type","world.SceneComponent"}}).at("object");
-        current=d.inspect();require(current.at("actors")[0].at("components").size()==2,"Component addition failed");
-        d.ok("scene.remove_component",{{"object",added}});current=d.inspect();require(current.at("actors")[0].at("components").size()==1,"Component removal failed");
+        d.ok("scene.rename",{{"object",entity},{"name","Control cube"}});
+        error(d.client->call({{"op","scene.rename"},{"args",{{"object",entity},{"name","Wrong"}}},{"state_token",stale}}),"stale_state");
+        d.ok("scene.transform",{{"object",entity},{"position",{1,2,3}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
+        d.ok("scene.set_property",{{"object",entity},{"property","position.x"},{"value",4}});
+        current=d.inspect();require(current.at("entities")[0].at("transform").at("position")[0]==4,"Property command did not write the document");
+        d.ok("scene.undo");current=d.inspect();require(current.at("entities")[0].at("transform").at("position")[0]==1,"Undo did not restore the transform");d.ok("scene.redo");
+        d.ok("scene.select",{{"entities",{entity}}});
+        const auto added=d.ok("scene.add_component",{{"type","world.Component"}}).at("object");
+        current=d.inspect();require(current.at("entities")[0].at("components").size()==2,"Component addition failed");
+        d.ok("scene.remove_component",{{"object",added}});current=d.inspect();require(current.at("entities")[0].at("components").size()==1 &&
+            current.at("entities")[0].at("components")[0].at("handle")==component,"Component removal failed or replaced the existing mesh identity");
         const auto camera=current.at("camera");d.ok("camera.look_at",{{"eye",{8,5,-10}},{"target",{0,0,0}}});d.ok("camera.set",{{"state",camera}});
         auto invalid_camera=camera;invalid_camera["distance"]=0.0000000001;error(d.call("camera.set",{{"state",invalid_camera}}),"invalid_request");
         error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
@@ -422,7 +477,7 @@ int wmain(int argc,wchar_t** argv) {
             !std::filesystem::exists(repro/"unpublished/Source/Published.source"),"Repro mixed live and unpublished source inputs");
         require(sha256_file(repro/"Project/Source/Published.ui.source")==sha256(std::as_bytes(std::span(published_ui))),"Repro lost the published UI source");
         require(manifest.at("publication_version")!=0 && manifest.at("ui_source_version")!=0,"Repro did not identify the full publication");
-        require(frozen.at("actors").size()==1,"Export did not contain the dirty memory scene");
+        require(frozen.at("entities").size()==1,"Export did not contain the dirty memory scene");
         require(read(project/"Content/Scenes/Main.scene")==original_scene,"Repro export overwrote the original scene");
         current=d.inspect();require(current.at("dirty")==true && current.at("undo")==dirty_undo && current.at("scene_path")==dirty_path,"Repro export changed authoring state");
         d.ok("camera.look_at",{{"eye",{9,7,-8}},{"target",{4,2,3}}});
@@ -453,8 +508,8 @@ int wmain(int argc,wchar_t** argv) {
         const Json cancelled_request{{"op","render.capture"},{"state_token",d.token},{"request_id",cancelled_id},{"args",{{"sample_frames",{4096}}}}};
         pending=d.client->call(cancelled_request);require(pending.at("status")=="pending",pending.dump());
         const auto unchanged=d.token;
-        error(d.call("scene.transform",{{"object",actor},{"position",{4,2,3}},{"rotation",{0,0,0,1}},{"scale",{0,1,1}}}),"operation_failed");
-        error(d.call("scene.set_property",{{"object",component},{"property","scale.x"},{"value",0}}),"operation_failed");
+        error(d.call("scene.transform",{{"object",entity},{"position",{4,2,3}},{"rotation",{0,0,0,1}},{"scale",{0,1,1}}}),"operation_failed");
+        error(d.call("scene.set_property",{{"object",entity},{"property","scale.x"},{"value",0}}),"operation_failed");
         error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
         d.ok("camera.set",{{"state",d.inspect().at("camera")}});d.ok("view.set",{{"patch",Json::object()}});
         require(d.token==unchanged && d.call("job.status",{{"job_id",cancelled_id}}).at("status")=="pending","Rejected or no-op requests cancelled unchanged rendering");
@@ -473,11 +528,11 @@ int wmain(int argc,wchar_t** argv) {
         error(d.call("job.status",{{"job_id",retired_request.at("request_id")}}),"unknown_job");
         error(d.client->call(retired_request),"cancelled");
         auto changed_id=unique_id();pending=d.call("render.capture",{{"sample_frames",{4096}}},changed_id);require(pending.at("status")=="pending",pending.dump());
-        d.ok("scene.rename",{{"object",actor},{"name","Changed during capture"}});error(d.wait(changed_id),"state_changed");
+        d.ok("scene.rename",{{"object",entity},{"name","Changed during capture"}});error(d.wait(changed_id),"state_changed");
         auto timed_id=unique_id();pending=d.call("render.capture",{{"sample_frames",{4096}},{"timeout_ms",1}},timed_id);require(pending.at("status")=="pending",pending.dump());error(d.wait(timed_id),"timeout");
         const auto disconnected_id=unique_id();pending=d.call("render.capture",{{"sample_frames",{4096}}},disconnected_id);require(pending.at("status")=="pending",pending.dump());
         d.client.reset();std::this_thread::sleep_for(80ms);d.client=std::make_unique<Client>(descriptor);error(d.wait(disconnected_id),"cancelled");
-        d.inspect();d.ok("scene.save");const auto saved=read(project/"Content/Scenes/Main.scene");require(saved.at("actors").size()==1,"Explicit scene.save failed");
+        d.inspect();d.ok("scene.save");const auto saved=read(project/"Content/Scenes/Main.scene");require(saved.at("entities").size()==1,"Explicit scene.save failed");
         const auto before_failed_open=d.inspect();
         write(repro/"Project/Source/Injected.source","invalid added source");
         error(d.call("repro.open",{{"directory",utf8(repro.wstring())}}),"dependency_mismatch");
@@ -491,13 +546,13 @@ int wmain(int argc,wchar_t** argv) {
         }
         write(repro/"manifest.json",broken.dump());
         error(d.call("repro.open",{{"directory",utf8(repro.wstring())}}),"operation_failed");
-        current=d.inspect();require(current.at("project")==before_failed_open.at("project") && current.at("actors")==before_failed_open.at("actors") && current.at("selection")==before_failed_open.at("selection"),"Failed repro open replaced the current document");
+        current=d.inspect();require(current.at("project")==before_failed_open.at("project") && current.at("entities")==before_failed_open.at("entities") && current.at("selection")==before_failed_open.at("selection"),"Failed repro open replaced the current document");
         write(repro/"Project/Source/Published.source",published_code);write(repro/"manifest.json",manifest.dump());
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});current=d.inspect();
-        require(current.at("actors").size()==1 && current.at("actors")[0].at("name")=="Control cube" && !current.at("dirty").get<bool>(),"Repro reopen failed");
-        error(d.call("scene.rename",{{"object",actor},{"name","Old handle"}}),"stale_object");
+        require(current.at("entities").size()==1 && current.at("entities")[0].at("name")=="Control cube" && !current.at("dirty").get<bool>(),"Repro reopen failed");
+        error(d.call("scene.rename",{{"object",entity},{"name","Old handle"}}),"stale_object");
         repro_lighting_migration(d,repro,root);
-        d.ok("scene.delete");require(d.inspect().at("actors").empty(),"Delete command did not remove the selected actor");d.ok("scene.undo");require(d.inspect().at("actors").size()==1,"Undo did not restore the actor");
+        d.ok("scene.delete");require(d.inspect().at("entities").empty(),"Delete command did not remove the selected entity");d.ok("scene.undo");require(d.inspect().at("entities").size()==1,"Undo did not restore the entity");
         d.client.reset();
         Process cli(std::filesystem::path(argv[1]).parent_path()/"atelier_control.exe",L"--list --directory "+quote(directory),root/"cli.json");
         require(WaitForSingleObject(cli.process,10000)==WAIT_OBJECT_0,"CLI discovery did not finish");require(read(root/"cli.json").at("instances").size()==1,"CLI did not discover the live editor");
@@ -509,7 +564,7 @@ int wmain(int argc,wchar_t** argv) {
         const auto cli_result=read(root/"cli-capture.json");require(cli_result.at("status")=="ok" && cli_result.at("result").at("samples").size()==1,"CLI did not await its capture job");
         editor.close();require(discover(directory).empty(),"Closed editor descriptor remained live");
         reject_nested_destination(argv[1],root);
-        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","legacy-lighting-repro","rejected-repro-preserves-camera-selection","schema2-scene5-reopen","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
+        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","legacy-lighting-repro","rejected-repro-preserves-camera-selection","schema2-scene6-reopen","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
         std::cout<<"Editor Control E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
     } catch(const std::exception& error) {std::cerr<<"Editor Control E2E: FAIL: "<<error.what()<<'\n';return 1;}
 }

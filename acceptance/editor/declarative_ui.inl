@@ -128,8 +128,8 @@ void verify_declarative_parameters() {
     auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
     require(theme.has_value() && ui.set_style_sheet(*theme).has_value(),"Declarative Parameters theme failed.");
     changed(document.create_static_mesh(editor::mesh_assets().front()));
-    const auto actor=document.selection().actor;
-    const auto root=*take(world::root_component(document.world().runtime(),actor));
+    const auto entity=document.selection().entity;
+    const auto root=entity;
     const auto surface=ui.set_surface({{1600,1000},1,1});
     require(surface.has_value(),"Declarative UI surface failed.");
     std::vector<ui::Control> controls;
@@ -194,7 +194,7 @@ void verify_declarative_parameters() {
         "Opening search did not reserve space above properties or select its magnifier.");
     require(!ui.presented()->find(editor::control::add_component),"Parameters retained a structural Add Component action.");
     require(ui.presented()->find(workspace.reset_control(root)),"Position lost its typed group-reset binding.");
-    require(ui.presented()->find(workspace.name_control(actor)),"ObjectHeader lost the typed Actor name binding.");
+    require(ui.presented()->find(workspace.name_control(entity)),"ObjectHeader lost the typed Entity name binding.");
     require(workspace.ui_statistics("ToolShelf").has_value() && !workspace.ui_statistics("ToolShelfTools"),
         "Only the tool buttons, rather than the complete shelf, came from the Source/JIT region.");
     const auto shelf_first=*workspace.ui_statistics("ToolShelf");
@@ -287,9 +287,9 @@ void verify_declarative_parameters() {
     const auto inspection_history=document.undo_count();
     const auto root_group=std::ranges::find_if(controls,[&](const auto& control) {
         const auto* binding=workspace.binding(control.key);
-        return binding && binding->kind==editor::Workspace::Binding::Kind::property_group && binding->object==root;
+        return binding && binding->kind==editor::Workspace::Binding::Kind::property_group && binding->object==component(document,entity,document.types().static_mesh_component);
     });
-    require(root_group!=controls.end(),"The actual root component has no property group.");
+    require(root_group!=controls.end(),"The mesh capability has no property group.");
     const auto root_group_key=root_group->key;
     workspace.query=L"staticmesh";publish();
     require(ui.presented()->find(root_group_key) && !ui.presented()->find(x),
@@ -309,32 +309,32 @@ void verify_declarative_parameters() {
     workspace.query.clear();publish();
     require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
         document.undo_count()==inspection_history,"Clearing Filter changed the World field key or document history.");
-    changed(document.add_actor());publish();
+    changed(document.add_entity());publish();
     require(!ui.presented()->find(editor::control::position_fold) && !ui.presented()->find(x) && empty_state() &&
-        !ui.presented()->find(editor::control::add_component),"An Actor without a root acquired assumed transform or structure controls.");
-    changed(document.undo());take(document.select(actor));publish();
+        !ui.presented()->find(editor::control::add_component),"An Entity without a root acquired assumed transform or structure controls.");
+    changed(document.undo());take(document.select(entity));publish();
     require(ui.presented()->find(editor::control::position_fold) && ui.presented()->find(x),
-        "Returning to a rooted Actor did not expose its actual spatial properties.");
+        "Returning to a rooted Entity did not expose its actual spatial properties.");
     take(document.select({}));publish();
     require(!ui.presented()->find(editor::control::position_fold) && !ui.presented()->find(editor::control::parameter_search) &&
         !ui.presented()->find(x) && empty_state(),
-        "No selection retained Actor-specific controls or lost its neutral empty state.");
-    take(document.select(actor));publish();
+        "No selection retained Entity-specific controls or lost its neutral empty state.");
+    take(document.select(entity));publish();
     require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
         document.undo_count()==inspection_history,"Object inspection availability changed World field routing or scene history.");
     changed(document.create_static_mesh(editor::mesh_assets()[1]));
-    const auto other=document.selection().actor;const auto other_root=*take(world::root_component(document.world().runtime(),other));
+    const auto other=document.selection().entity;const auto other_root=other;
     publish();
     const auto other_x=workspace.field_control(other_root,document.parameters()[0].path);
-    require(other_x!=x && !ui.presented()->find(x) && ui.presented()->find(other_x),"Changing the selected Actor reused an old field route.");
+    require(other_x!=x && !ui.presented()->find(x) && ui.presented()->find(other_x),"Changing the selected Entity reused an old field route.");
     take(document.begin_edit(root,document.parameters()[0].path,9999));take(document.preview_edit(9999,9));take(document.commit_edit(9999));
     const auto selected_evaluations=workspace.ui_statistics("Parameters")->binding_evaluations;publish();
-    require(workspace.ui_statistics("Parameters")->binding_evaluations==selected_evaluations,"An old Actor invalidated the new Inspector.");
+    require(workspace.ui_statistics("Parameters")->binding_evaluations==selected_evaluations,"An old Entity invalidated the new Inspector.");
     // Exercise a World lifecycle change outside the editor's history writer.
     auto& external_world=const_cast<world::World&>(document.world());
     auto removal=take(external_world.detach(other));publish();
     require(!ui.presented()->find(other_x) && !workspace.field_control(other_root,document.parameters()[0].path),
-        "An externally detached Actor remained an Inspector target.");
+        "An externally detached Entity remained an Inspector target.");
     const auto detached=*workspace.ui_statistics("Parameters");publish();
     require(workspace.ui_statistics("Parameters")->node_creations==detached.node_creations &&
         workspace.ui_statistics("Parameters")->binding_evaluations==detached.binding_evaluations,
@@ -342,9 +342,9 @@ void verify_declarative_parameters() {
     changed(external_world.restore(removal));publish();
     const auto restored_x=workspace.field_control(other_root,document.parameters()[0].path);
     require(restored_x && restored_x!=other_x && ui.presented()->find(restored_x),
-        "Restoring World membership failed to rebind the selected Actor with fresh field keys.");
+        "Restoring World membership failed to rebind the selected Entity with fresh field keys.");
     changed(document.erase_selected());publish();
-    require(!ui.presented()->find(restored_x),"Deleting the selected Actor kept a live field route.");
+    require(!ui.presented()->find(restored_x),"Deleting the selected Entity kept a live field route.");
     // Exercise the remaining editor regions through the real authoring file,
     // accepted hit geometry and native workbench/dock state owners.
     require(workspace.ui_statistics("EditorShell") && workspace.ui_statistics("DockWorkspace") && workspace.ui_statistics("SceneTree"),

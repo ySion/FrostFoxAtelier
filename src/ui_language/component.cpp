@@ -125,7 +125,7 @@ struct DefinitionState {
     Result<void> publish(std::span<const InputValue>);
 };
 
-// Source's self is this UI scope, never an Actor wrapper. All callbacks copy
+// Source's self is this UI scope, never an Entity wrapper. All callbacks copy
 // borrowed data and finish synchronously; none constructs/destroys Runtime
 // objects, reenters JIT, or executes World/editor commands.
 struct Context {

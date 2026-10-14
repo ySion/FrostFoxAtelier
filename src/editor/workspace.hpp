@@ -16,7 +16,7 @@
 namespace atelier::editor {
 namespace control {
 constexpr ui::ControlKey command_key(Command command) { return static_cast<ui::ControlKey>(command); }
-inline constexpr auto add_actor=command_key(Command::create_actor), remove_selected=command_key(Command::erase_selected),
+inline constexpr auto add_entity=command_key(Command::create_entity), remove_selected=command_key(Command::erase_selected),
     undo=command_key(Command::undo), redo=command_key(Command::redo), focus=command_key(Command::focus), reset=command_key(Command::reset_camera),
     add_static_mesh=command_key(Command::create_static_mesh);
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
@@ -28,7 +28,7 @@ inline constexpr ui::ControlKey viewport_delete_menu=855, viewport_shading_pie=8
 inline constexpr ui::ControlKey viewport_axis_pie=857, viewport_cavity=858, viewport_pie=859;
 inline constexpr ui::ControlKey cavity_enabled=910, cavity_group_first=911, cavity_value_first=920;
 inline constexpr ui::ControlKey viewport_fps=904, viewport_fly_reticle=860, viewport_hint=861;
-inline constexpr ui::ControlKey scene_tab=600, actors_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
+inline constexpr ui::ControlKey scene_tab=600, entities_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
 inline constexpr ui::ControlKey structure_tab=608,structure_content=694,structure_tree=695,structure_filter=696;
@@ -39,13 +39,13 @@ inline constexpr ui::ControlKey shading_first=760, edges_first=763, topology_fir
 inline constexpr ui::ControlKey scene_guides=645, guide_background=769, guide_grid=770, guide_axes=771;
 inline constexpr ui::ControlKey shading_scene_lit=772;
 inline constexpr ui::ControlKey scene_path=642, scene_back=643, scene_forward=644;
-inline constexpr ui::ControlKey actor_path=22, actor_back=25, actor_forward=26;
-inline constexpr ui::ControlKey actor_tree=23, tree_world=27, tree_filter=28;
+inline constexpr ui::ControlKey entity_path=22, entity_back=25, entity_forward=26;
+inline constexpr ui::ControlKey entity_tree=23, tree_world=27, tree_filter=28;
 inline constexpr ui::ControlKey parameter_path=76, parameter_back=78, parameter_forward=79, world_context=720;
-constexpr bool is_path(ui::ControlKey key) { return key==scene_path || key==actor_path || key==parameter_path; }
+constexpr bool is_path(ui::ControlKey key) { return key==scene_path || key==entity_path || key==parameter_path; }
 constexpr int navigation_direction(ui::ControlKey key) {
-    return key==scene_back || key==actor_back || key==parameter_back?-1:
-        key==scene_forward || key==actor_forward || key==parameter_forward?1:0;
+    return key==scene_back || key==entity_back || key==parameter_back?-1:
+        key==scene_forward || key==entity_forward || key==parameter_forward?1:0;
 }
 inline constexpr ui::ControlKey parameter_search = 54, parameter_search_toggle=86;
 inline constexpr ui::ControlKey add_component=87,component_choice_first=1ULL<<40,property_choice_first=1ULL<<39;
@@ -56,7 +56,7 @@ inline constexpr auto file_menu=menu_key(CommandGroup::file), edit_menu=menu_key
     window_menu=menu_key(CommandGroup::window), help_menu=menu_key(CommandGroup::help);
 inline constexpr auto exit=command_key(Command::exit), show_scene=command_key(Command::show_scene),
     show_parameters=command_key(Command::show_parameters), show_controls=command_key(Command::show_controls),
-    show_actors=command_key(Command::show_actors), maximize_pane=command_key(Command::maximize_pane);
+    show_entities=command_key(Command::show_entities), maximize_pane=command_key(Command::maximize_pane);
 inline constexpr ui::ControlKey menu_bar_handle=715, menu_bar_body=716;
 constexpr bool is_menu(ui::ControlKey key) { return command_group(key)!=nullptr; }
 constexpr ui::ControlKey command_menu(ui::ControlKey key) {
@@ -90,7 +90,7 @@ struct Workspace {
     bool viewport_options_collapsed{};
     bool show_fps{};
     std::wstring viewport_fps; // Smoothed main-window presentation rate; empty while sampling starts.
-    bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Actor instance.
+    bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Entity instance.
     std::string material_inspection;
     void reset_layout();
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }

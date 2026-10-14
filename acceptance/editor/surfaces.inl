@@ -289,12 +289,12 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     require(app.document().undo_count()==world_history+1,"World controls did not commit exactly one scene history entry.");
     report<<"lighting,preview-cancel-commit-close-slot-switch,passed\n";report.flush();
     require(bool(Access::command(app,editor::Command::show_parameters)),"Parameters did not reopen.");tick(app,1);
-    const auto actor=app.document().selection().actor;const auto position_key=property_control(app,actor,0);
+    const auto entity=app.document().selection().entity;const auto position_key=property_control(app,entity,0);
     press_tab(control::group_categories);capture(app,output/"parameters-category.png");
-    require(property_control(app,actor,0)==position_key && app.presented()->find(position_key),
+    require(property_control(app,entity,0)==position_key && app.presented()->find(position_key),
         "Category grouping hid the primary transform or changed field identity.");
     press_tab(control::group_components);capture(app,output/"parameters-component.png");
-    require(property_control(app,actor,0)==position_key,"Component grouping changed field identity.");
+    require(property_control(app,entity,0)==position_key,"Component grouping changed field identity.");
     verify_render_performance(app,output);
     Access::mark_saved(app);app.close();
     std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens\n",resized_during_drag,redundant_presents);

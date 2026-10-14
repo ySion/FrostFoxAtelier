@@ -4,7 +4,7 @@
 
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
-光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 持有，随 Scene v5 的 `world` 字段保存并进入 Session 撤销历史。旧版继续读取；v4 的 `shadow_light_budget` / `shadow_samples` 只在兼容读取边界严格校验后丢弃，新字段采用默认值，v1～v3 使用默认 World 配置。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
+光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 持有，随 Scene v6 的 `world` 字段保存并进入 Session 撤销历史。旧版继续读取；v4 的 `shadow_light_budget` / `shadow_samples` 只在兼容读取边界严格校验后丢弃，新字段采用默认值，v1～v3 使用默认 World 配置。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
 
 实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线；相关资源在首次非空 Scene Lit 绘制时准备，关闭与尺寸变化沿既有 gfx 退休机制处理。
 
@@ -98,7 +98,7 @@ Local GI 关闭时，若接收材质的 `base_color × (1 − metallic)` 严格�
 
 ## DDGI 空间与接收面诊断
 
-World Settings → Diagnostics 中的 DDGI 显示与 Control 的 `view.set` / `render.compare` 共用 `ViewOption`。显示诊断默认关闭；设置属于视口，不创建 Actor、TLAS 实例或发光体，不写场景撤销与保存数据。
+World Settings → Diagnostics 中的 DDGI 显示与 Control 的 `view.set` / `render.compare` 共用 `ViewOption`。显示诊断默认关闭；设置属于视口，不创建 Entity、TLAS 实例或发光体，不写场景撤销与保存数据。
 
 - `probe_visualization`：`off`、`irradiance`、`state`、`update_age`、`distance`。球心读取本帧完成更新的真实 offset；辐照度读取对应八面体方向，显示 `E / π × exposure` 经 `c / (1 + c)` 映射；它是探针数据预览，不是最终表面光照。距离读取 FP32 距离矩中的方向均值，黑到白对应 0～4 倍最小探针间距。
 - `probe_volume` 显示实际滚动后的边界，`probe_relocation` 连接原格点与实际位置；四个槽位用青/黄/紫/绿区分。`probe_debug_volume=-1` 显示全部，0～3 只显示对应槽位。`probe_radius` 为最小格间距的 0.01～0.45 倍，默认 0.12；半径只影响显示，不改变采样。
@@ -129,7 +129,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 World 页统一编辑光照与效果的作者配置，进入同一 World 值和 Session 历史，包括 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI、抗锯齿、曝光和直接光候选预算；不再提供 Shadow Budget / Shadow Samples。诊断仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
 
-**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v5 保存；`direct_reference`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
+**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v6 保存；`direct_reference`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
 
 `SceneLitSettings::antialiasing` 为 `Antialiasing::{none,taa,smaa,smaa_t2x}`，菜单显示 Off / TAA / SMAA / SMAA T2x，默认 SMAA。所有模式均使用原生分辨率：
 

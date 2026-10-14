@@ -9,8 +9,9 @@ struct ScalarField {
     world::FieldPath path;
     TypeId type;
     std::string label,category;
+    ValueForm form{ValueForm::inline_value};
 };
-inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId type) {
+inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
     std::vector<ScalarField> result;
     const auto visit = [&](auto&& self, TypeId current, ScalarField prefix) -> Result<void> {
         if (prefix.path.size() > 16) return std::unexpected(Error{ErrorCode::invalid_definition,"Scene field nesting exceeds 16 levels."});
@@ -22,19 +23,26 @@ inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId t
         if (!prefix.path.empty() && (*info)->kind != TypeKind::record)
             return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene properties support scalars, enums and records of those values."});
         for (const auto& field : (*info)->fields) {
-            if (field.value.form != ValueForm::inline_value)
-                return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene business references are not supported: " + field.name});
             auto child = prefix; child.names.push_back(field.name); child.path.push_back(field.id);
             // A vector's lanes share the aggregate caption. Other record children
             // use their own caption, while categories inherit through records.
             if(!(*info)->math.vector() && (*info)->math.shape!=math::Shape::quaternion) child.label=field.label;
             else if(!field.label.empty()) child.label=field.label;
             if(!field.category.empty()) child.category=field.category;
+            if(field.value.form != ValueForm::inline_value) {
+                child.type=field.value.type;child.form=field.value.form;
+                result.push_back(std::move(child));continue;
+            }
             auto added = self(self, field.value.type, std::move(child)); if (!added) return added;
         }
         return {};
     };
     auto visited = visit(visit, type, {}); if (!visited) return std::unexpected(visited.error());
+    return result;
+}
+inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime,TypeId type) {
+    auto result=author_fields(runtime,type);
+    if(result) std::erase_if(*result,[](const auto& field){return field.form!=ValueForm::inline_value;});
     return result;
 }
 inline bool finite_scalar(const Scalar& value) {

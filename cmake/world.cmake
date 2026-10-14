@@ -3,6 +3,7 @@ function(atelier_add_world)
         src/material/resources.cpp
         src/world/math.cpp
         src/world/objects.cpp
+        src/world/hierarchy.cpp
         src/world/lighting.cpp
         src/world/materials.cpp
         src/world/world.cpp

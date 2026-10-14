@@ -9,7 +9,6 @@
     {
       "source": "Assets/Synty/PolygonDungeon/Scenes/Demo.unity",
       "file": "Scenes/Dungeon.scene",
-      "actors": 3617,
       "meshes": 3425,
       "visible_meshes": 3425,
       "lights": 192,
@@ -30,12 +29,12 @@
           ],
           "fieldOfView": 60.0
         }
-      ]
+      ],
+      "entities": 3617
     },
     {
       "source": "Assets/Synty/PolygonDungeon/Scenes/Overview.unity",
       "file": "Scenes/DungeonOverview.scene",
-      "actors": 627,
       "meshes": 626,
       "visible_meshes": 626,
       "lights": 1,
@@ -56,12 +55,12 @@
           ],
           "fieldOfView": 60.0
         }
-      ]
+      ],
+      "entities": 627
     },
     {
       "source": "Assets/Synty/PolygonGeneric/Scenes/Overview.unity",
       "file": "Scenes/GenericOverview.scene",
-      "actors": 381,
       "meshes": 380,
       "visible_meshes": 380,
       "lights": 1,
@@ -82,7 +81,8 @@
           ],
           "fieldOfView": 60.0
         }
-      ]
+      ],
+      "entities": 381
     }
   ]
 }
