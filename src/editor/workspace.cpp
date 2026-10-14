@@ -174,6 +174,10 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
         return spatial && (command==Command::add_transform?!*spatial:*spatial);
     }
     case Command::erase_entities: return scene_available && !project_running && !session.selected_entities().empty();
+    case Command::select_all: case Command::select_invert: case Command::select_box: return scene_available && !project_running;
+    case Command::select_none: return scene_available && !project_running && !session.selected_entities().empty();
+    case Command::clear_location: case Command::clear_rotation: case Command::clear_scale:
+        return scene_available && !project_running && !session.selected_entities().empty();
     case Command::duplicate_selected: {
         const auto members=session.world().members();
         return scene_available && !project_running && !session.selected_entities().empty() && members &&
@@ -526,11 +530,32 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             L"Drag an arrow or plane to move. G then X/Y/Z constrains, type a value, Enter confirms.",
             L"Drag a ring to rotate. R then X/Y/Z constrains, type degrees, Enter confirms.",
             L"Drag a box to scale an axis, the centre for uniform scale. S then X/Y/Z constrains."};
+        const auto open=[&](ui::ControlKey key){return menu && menu->source==key;};
+        // Blender's shading buttons: Wireframe / Solid / MatCap / Scene Lit, routed as the Z pie presets.
+        auto shading_modes=std::make_shared<std::vector<ui_language::Item>>();
+        const auto shading_selected=this->view.wireframe==renderer::Wireframe::only?0u:this->view.shading==renderer::Shading::matcap?2u:
+            this->view.shading==renderer::Shading::scene_lit?3u:1u;
+        constexpr std::array shading_icons{ui::ControlIcon::shade_wire,ui::ControlIcon::shade_solid,ui::ControlIcon::shade_matcap,ui::ControlIcon::shade_lit};
+        for(std::size_t i=0;i<shading_icons.size();++i) {
+            const auto key=control::shading_preset_first+i;
+            shading_modes->push_back({930+i,{ui_language::ActionBinding{key,true},double(shading_icons[i]),shading_selected==i,
+                control::viewport_shading_modes,std::wstring(i==0?L"viewport-segment-item first":i+1==shading_icons.size()?L"viewport-segment-item last":L"viewport-segment-item")}});
+        }
+        // Blender's select-mode segment: Set / Extend / Subtract / Invert / Intersect.
+        auto select_modes=std::make_shared<std::vector<ui_language::Item>>();
+        constexpr std::array select_icons{ui::ControlIcon::select_new,ui::ControlIcon::select_extend,ui::ControlIcon::select_subtract,
+            ui::ControlIcon::select_invert,ui::ControlIcon::select_intersect};
+        for(std::size_t i=0;i<select_icons.size();++i) {
+            const auto command=static_cast<ui::ControlKey>(Command::select_mode_set)+i;
+            select_modes->push_back({990+i,{ui_language::ActionBinding{command,true},double(select_icons[i]),
+                std::size_t(viewport_settings.select_mode)==i,control::viewport_select_modes,
+                std::wstring(i==0?L"viewport-segment-item first":i+1==select_icons.size()?L"viewport-segment-item last":L"viewport-segment-item")}});
+        }
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,38> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,46> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
-            double(ui::ControlIcon::mesh),double(ui::ControlIcon::axes),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
+            double(ui::ControlIcon::down),double(ui::ControlIcon::overlays),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
             std::wstring(camera_flying?L"Fly":mode_names[std::size_t(viewport_mode)]),double(camera_flying?ui::ControlIcon::fly:icons[std::size_t(viewport_mode)]),
             std::wstring(viewport_mode==TransformTool::scale?L"Local axes":L"World axes"),
@@ -543,13 +568,19 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             ui_language::ActionBinding{control::viewport_rail_snap},std::wstring(camera_flying?L"WASD move · Q/E down/up · Wheel speed · Shift fast · Enter/LMB confirm · Esc/RMB cancel":tool_hints[std::size_t(viewport_mode)]),
             std::wstring(this->view.shading==renderer::Shading::scene_lit || this->view.background==renderer::Background::none?
                 L"viewport-tool-hint dark-background":L"viewport-tool-hint"),menu && menu->source==control::viewport_cavity,
-            show_fps,viewport_fps.empty()?std::wstring(L"FPS —"):viewport_fps,camera_flying};
-        const std::array<ui_language::KeyBinding,18> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
+            show_fps,viewport_fps.empty()?std::wstring(L"FPS —"):viewport_fps,camera_flying,
+            ui_language::ItemList{std::move(shading_modes)},ui_language::ItemList{std::move(select_modes)},
+            open(control::viewport_view_menu),open(control::viewport_select_menu),open(control::viewport_header_add),open(control::viewport_object_menu),
+            open(control::viewport_tools_menu),pane.bounds.width<660};
+        const std::array<ui_language::KeyBinding,25> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"fps",control::viewport_fps},{"fly_reticle",control::viewport_fly_reticle},{"tool_hint",control::viewport_hint},
             {"cavity",control::viewport_cavity},
-            {"forward",control::scene_forward},{"tools.display",control::scene_shading},{"tools.guides",control::scene_guides},
+            {"forward",control::scene_forward},{"display",control::scene_shading},{"guides",control::scene_guides},
             {"viewport",control::viewport},{"pivot",control::viewport_pivot},{"edit_tools",control::viewport_modes},
-            {"actions",control::viewport_tools_menu},{"step",control::viewport_snap},{"camera",control::viewport_camera},{"mode",control::viewport_hud}}};
+            {"actions",control::viewport_tools_menu},{"step",control::viewport_snap},{"camera",control::viewport_camera},{"mode",control::viewport_hud},
+            {"view_menu",control::viewport_view_menu},{"select_menu",control::viewport_select_menu},{"add_menu",control::viewport_header_add},
+            {"object_menu",control::viewport_object_menu},{"shading_modes",control::viewport_shading_modes},{"selection_modes",control::viewport_select_modes},
+            {"snapping",control::viewport_snapping}}};
         static_cast<void>(ui_document_->append("SceneViewport",control::scene_content,keys,inputs,result));
         continue;
     }
@@ -909,7 +940,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         ui_language::ActionBinding{control::group_components,true},ui_language::ActionBinding{control::group_categories,true}};
     const std::array<ui_language::KeyBinding,14> keys{{{"components",control::group_components},{"categories",control::group_categories},{"path.bar",75},
         {"path.path",control::parameter_path},{"path.back",control::parameter_back},{"path.forward",control::parameter_forward},
-        {"header.row",51},{"header.type",52},{"header.search",control::parameter_search_toggle},
+        {"header",51},{"type",52},{"search_toggle",control::parameter_search_toggle},
         {"scroll",control::parameter_list},{"transform",85},
         {"position.section",control::position_fold},{"position.contents",58},{"position.position",70,72,73}}};
     static_cast<void>(ui_document_->append("Parameters",view.content,keys,inputs,result));
@@ -943,6 +974,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 } else if(const auto preset=camera_view_command(command))
                     radio(Command::view_perspective,*preset==camera_view);
                 else if(command==Command::show_fps) {item.behavior=ui::MenuBehavior::checkbox;item.selected=show_fps;}
+                else if(command>=Command::select_mode_set && command<=Command::select_mode_intersect)
+                    radio(Command::select_mode_set,key-static_cast<ui::ControlKey>(Command::select_mode_set)==std::size_t(viewport_settings.select_mode));
                 else if(command==Command::snap_toggle || command==Command::cursor_surface || command==Command::viewport_options) {
                     item.behavior=ui::MenuBehavior::checkbox;
                     item.selected=command==Command::snap_toggle?viewport_settings.grid_snap:command==Command::cursor_surface?viewport_settings.cursor_surface:!viewport_options_collapsed;
@@ -963,9 +996,50 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 default: return std::vector<ui::MenuItem>{};
                 }
             };
+            const auto submenu=[&](ui::ControlKey key,std::wstring_view title,std::vector<ui::MenuItem> children,bool separator=false) {
+                ui::MenuItem item{.key=key,.text=std::wstring(title),.edit_command={},.separator_before=separator,.children=std::move(children)};
+                item.enabled=std::ranges::any_of(item.children,&ui::MenuItem::enabled);return item;
+            };
+            const auto header_menu=[&](ui::ControlKey key)->std::vector<ui::MenuItem> {
+                using enum Command;
+                if(key==control::viewport_view_menu) {
+                    auto items=commands({focus,frame_all});
+                    items.push_back(submenu(control::view_viewpoint_menu,L"Viewpoint",viewport_commands(control::viewport_camera),true));
+                    auto options=commands({viewport_options,show_fps});options.front().separator_before=true;
+                    for(auto& item:options) items.push_back(std::move(item));
+                    return items;
+                }
+                if(key==control::viewport_select_menu) {
+                    auto items=commands({select_all,select_none,select_invert,select_box});
+                    items.front().separator_before=false;
+                    auto modes=commands({select_mode_set,select_mode_extend,select_mode_subtract,select_mode_invert,select_mode_intersect});
+                    modes.front().separator_before=false;
+                    items.push_back(submenu(control::select_mode_menu,L"Selection Mode",std::move(modes),true));
+                    return items;
+                }
+                if(key==control::viewport_header_add) {
+                    std::vector<ui::MenuItem> items;
+                    for(const auto& definition:command_definitions) if(definition.group==CommandGroup::create) items.push_back(command_item(definition.id));
+                    return items;
+                }
+                if(key==control::viewport_object_menu) {
+                    auto items=commands({duplicate_selected,erase_entities});items.front().separator_before=false;
+                    auto clear=commands({clear_location,clear_rotation,clear_scale});clear.front().separator_before=false;
+                    items.push_back(submenu(control::object_clear_menu,L"Clear",std::move(clear),true));
+                    auto snap=commands({selection_grid,selection_cursor,cursor_selected,cursor_grid,cursor_origin});
+                    for(auto& item:snap) item.separator_before=false;
+                    items.push_back(submenu(control::object_snap_menu,L"Snap",std::move(snap)));
+                    auto transform=commands({add_transform,remove_transform});transform.front().separator_before=true;
+                    for(auto& item:transform) items.push_back(std::move(item));
+                    return items;
+                }
+                return {};
+            };
             std::vector<ui::MenuItem> items=dock.menu_items(source->key,frame);
             if(auto lighting_items=lighting.menu(source->context_target?source->context_target:source->key,this->view);!lighting_items.empty()) {
                 items=std::move(lighting_items);
+            } else if(auto header_items=header_menu(source->key);!header_items.empty()) {
+                items=std::move(header_items);
             } else if (const auto* group=command_group(source->key)) {
                 if(group->id==CommandGroup::view) {
                     items.push_back(command_item(Command::focus));

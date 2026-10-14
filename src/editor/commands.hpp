@@ -25,7 +25,11 @@ enum class Command : std::uint64_t {
     create_point_light=835, create_rectangle_light=836, create_directional_light=837, create_sky_light=838,
     example_sponza=841, example_scene_lit=842, example_physic=843, example_dungeons=844,
     view_bottom=900, view_back=901, view_left=902, show_fps=903,
-    show_world_settings=906,fit_probe_scene=907,fit_probe_scene_focus=908, add_transform=909,remove_transform=910
+    show_world_settings=906,fit_probe_scene=907,fit_probe_scene_focus=908, add_transform=909,remove_transform=910,
+    // Blender viewport header semantics: Select menu, Object > Clear, View > Frame All, select modes.
+    select_all=961, select_none=962, select_invert=963, select_box=964,
+    clear_location=965, clear_rotation=966, clear_scale=967, frame_all=968,
+    select_mode_set=969, select_mode_extend=970, select_mode_subtract=971, select_mode_invert=972, select_mode_intersect=973
 };
 inline constexpr std::array camera_commands{Command::view_perspective,Command::view_top,Command::view_front,
     Command::view_right,Command::view_bottom,Command::view_back,Command::view_left};
@@ -93,6 +97,13 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::remove_transform,CommandGroup::edit,L"Remove Transform",L""},
     CommandDefinition{Command::erase_selected,CommandGroup::edit,L"Delete Selected Object",L"Delete",true},
     CommandDefinition{Command::erase_entities,CommandGroup::edit,L"Delete Entities",L"X"},
+    CommandDefinition{Command::select_all,CommandGroup::edit,L"Select All",L"A",true},
+    CommandDefinition{Command::select_none,CommandGroup::edit,L"Select None",L"Alt+A"},
+    CommandDefinition{Command::select_invert,CommandGroup::edit,L"Invert Selection",L"Ctrl+I"},
+    CommandDefinition{Command::select_box,CommandGroup::edit,L"Box Select",L"B"},
+    CommandDefinition{Command::clear_location,CommandGroup::edit,L"Clear Location",L"Alt+G",true},
+    CommandDefinition{Command::clear_rotation,CommandGroup::edit,L"Clear Rotation",L"Alt+R"},
+    CommandDefinition{Command::clear_scale,CommandGroup::edit,L"Clear Scale",L"Alt+S"},
     CommandDefinition{Command::create_entity,CommandGroup::create,L"Entity",L""},
     CommandDefinition{Command::create_static_mesh,CommandGroup::create,L"Static Mesh Entity",L"",false,L"Static Mesh"},
     CommandDefinition{Command::create_point_light,CommandGroup::create,L"Point Light",L"",true,L"Point Light"},
@@ -100,6 +111,12 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::create_directional_light,CommandGroup::create,L"Directional Light",L"",false,L"Sun Light"},
     CommandDefinition{Command::create_sky_light,CommandGroup::create,L"Sky Light",L"",false,L"Sky Light"},
     CommandDefinition{Command::focus,CommandGroup::view,L"Focus Selection",L"F",false,L"Focus"},
+    CommandDefinition{Command::frame_all,CommandGroup::view,L"Frame All",L"Home"},
+    CommandDefinition{Command::select_mode_set,CommandGroup::view,L"Set New Selection",L"",true},
+    CommandDefinition{Command::select_mode_extend,CommandGroup::view,L"Extend Selection",L""},
+    CommandDefinition{Command::select_mode_subtract,CommandGroup::view,L"Subtract Selection",L""},
+    CommandDefinition{Command::select_mode_invert,CommandGroup::view,L"Invert Selection Mode",L""},
+    CommandDefinition{Command::select_mode_intersect,CommandGroup::view,L"Intersect Selection",L""},
     CommandDefinition{Command::tool_select,CommandGroup::view,L"Select",L"Q",true},
     CommandDefinition{Command::tool_transform,CommandGroup::view,L"Universal Handle",L""},
     CommandDefinition{Command::tool_move,CommandGroup::view,L"Move Handle",L"G (modal)"},

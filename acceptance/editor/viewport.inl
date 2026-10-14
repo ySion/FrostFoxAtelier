@@ -5,13 +5,15 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     require(path && shading && guides,"Viewport path lost its compact display menus.");
     const auto* path_bar=app.presented()->find(path->parent);
     const auto dpi=app.presented()->drawing->dpi_scale;
+    // Blender header order: overlays dropdown before the shading segment, whose
+    // trailing arrow opens the full display menu at the row's end.
     require(path_bar && shading->kind==atelier::ui::ControlKind::combo && guides->kind==atelier::ui::ControlKind::combo &&
-        std::abs(shading->bounds.width/dpi-28)<.1f && std::abs(shading->bounds.height/dpi-28)<.1f &&
-        std::abs(guides->bounds.width/dpi-28)<.1f && std::abs(guides->bounds.height/dpi-28)<.1f &&
-        shading->bounds.x>=path->bounds.x+path->bounds.width-.1f && guides->bounds.x>=shading->bounds.x+shading->bounds.width-.1f &&
-        guides->bounds.x+guides->bounds.width<=path_bar->bounds.x+path_bar->bounds.width+.1f &&
+        std::abs(shading->bounds.width/dpi-16)<.1f && std::abs(shading->bounds.height/dpi-24)<.1f &&
+        std::abs(guides->bounds.width/dpi-34)<.1f && std::abs(guides->bounds.height/dpi-24)<.1f &&
+        guides->bounds.x>=path->bounds.x+path->bounds.width-.1f && shading->bounds.x>=guides->bounds.x+guides->bounds.width-.1f &&
+        shading->bounds.x+shading->bounds.width<=path_bar->bounds.x+path_bar->bounds.width+.1f &&
         std::abs(shading->bounds.y-path->bounds.y)<.1f && std::abs(guides->bounds.y-path->bounds.y)<.1f,
-        "Viewport menus must remain two compact targets at the end of the existing path row.");
+        "Viewport overlay and shading menus must stay compact header targets after the path.");
     atelier::renderer::Capture empty;
     require(app.step(&empty) && std::ranges::all_of(empty.depth,[](float z){return z==0;}),
             "Empty viewport guides changed geometry depth.");

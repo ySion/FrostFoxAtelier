@@ -14,6 +14,10 @@ namespace atelier::editor {
 // axis scale boxes and rotation rings in one handle (the default).
 enum class TransformTool : std::uint8_t { select, transform, move, rotate, scale };
 enum class PivotMode : std::uint8_t { median, cursor };
+// Blender header selection modes: how a click or box combines with the current selection.
+enum class SelectMode : std::uint8_t { set, extend, subtract, invert, intersect };
+enum class SelectAll : std::uint8_t { select, deselect, toggle, invert };
+enum class TransformChannel : std::uint8_t { location, rotation, scale };
 
 // XYZ Euler angles in degrees, applied X then Y then Z (Houdini "Rx Ry Rz").
 math::Vector3 euler_degrees(math::Quaternion) noexcept;
@@ -45,6 +49,7 @@ public:
     struct Settings {
         TransformTool tool{TransformTool::transform}; PivotMode pivot{PivotMode::median};
         bool grid_snap{}, cursor_surface{true}; float grid_spacing{.2f};
+        SelectMode select_mode{SelectMode::set};
     };
     math::Vector3 cursor{}; // Blender-style 3D cursor: pivot option and creation point.
     // The cursor is a full 3D frame like Blender's: surface placement aligns its
@@ -61,6 +66,11 @@ public:
     Result<void> cursor_to_selection(const Session&);
     Result<void> place_duplicates(Session&, const ViewportView&, Settings, math::Vector2 pointer);
     void cursor_to_grid(Settings) noexcept;
+    Result<void> select_all(Session&,SelectAll);
+    Result<void> clear(Session& session,TransformChannel channel) {
+        return clear_channel(session,channel==TransformChannel::location?Operation::move:channel==TransformChannel::rotation?Operation::rotate:Operation::scale);
+    }
+    void arm_box_select(math::Vector2 pointer,bool extend);
     ui::Cursor pointer_cursor() const noexcept;
     // Pointer events inside the viewport, or any pointer event while active().
     // Returns true when consumed; capture() reports whether the host should hold mouse capture.
@@ -125,7 +135,8 @@ private:
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine=false);
     Result<void> finish(Session&);
     Result<void> clear_channel(Session&, Operation);
-    Result<void> select_click(Session&, const ViewportView&, math::Vector2, bool shift, bool control);
-    Result<void> select_box(Session&, const ViewportView&, const Marquee&);
+    Result<void> select_click(Session&, const ViewportView&, math::Vector2, Settings, bool shift, bool control);
+    Result<void> select_box(Session&, const ViewportView&, Settings, const Marquee&);
+    static Result<void> combine(Session&, std::span<const ObjectId> hits, ObjectId active, SelectMode);
 };
 }

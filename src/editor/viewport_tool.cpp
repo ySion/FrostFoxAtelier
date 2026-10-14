@@ -356,25 +356,45 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session,const Viewpo
     }
     return found;
 }
-Result<void> ViewportTool::select_click(Session& session,const ViewportView& view,V2 p,bool shift,bool control) {
-    const auto object=pick(session,view,p.x,p.y);std::vector<ObjectId> selected;
-    if(shift || control) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
-    if(object) {
-        if(control || (shift && std::ranges::find(selected,*object)!=selected.end())) std::erase(selected,*object);
-        else selected.push_back(*object);
+// Shift/Ctrl keep their Blender meaning on top of the header mode: Shift toggles
+// (extend/remove), Ctrl subtracts; with neither, the header mode decides.
+Result<void> ViewportTool::combine(Session& session,std::span<const ObjectId> hits,ObjectId active,SelectMode mode) {
+    std::vector<ObjectId> selected;
+    if(mode!=SelectMode::set) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
+    const auto contains=[&](ObjectId entity){return std::ranges::find(selected,entity)!=selected.end();};
+    if(mode==SelectMode::intersect) std::erase_if(selected,[&](ObjectId entity){return std::ranges::find(hits,entity)==hits.end();});
+    else for(const auto entity:hits) {
+        if(mode==SelectMode::subtract || (mode==SelectMode::invert && contains(entity))) std::erase(selected,entity);
+        else if(!contains(entity)) selected.push_back(entity);
     }
-    return session.select_entities(selected,object.value_or(ObjectId{}));
+    if(!contains(active)) active=selected.empty()?ObjectId{}:selected.back();
+    return session.select_entities(selected,active);
 }
-Result<void> ViewportTool::select_box(Session& session,const ViewportView& view,const Marquee& marquee) {
+Result<void> ViewportTool::select_click(Session& session,const ViewportView& view,V2 p,Settings settings,bool shift,bool control) {
+    const auto object=pick(session,view,p.x,p.y);
+    const auto mode=control?SelectMode::subtract:shift?SelectMode::invert:settings.select_mode;
+    // A miss in Set mode clears (Blender's deselect-on-nothing); other modes keep the selection.
+    if(!object && mode!=SelectMode::set) return {};
+    std::vector<ObjectId> hits;if(object) hits.push_back(*object);
+    return combine(session,hits,object.value_or(ObjectId{}),mode);
+}
+Result<void> ViewportTool::select_box(Session& session,const ViewportView& view,Settings settings,const Marquee& marquee) {
     const auto a=marquee.start,b=marquee.current;
     const auto hits=pick_box(session,view,{std::min(a.x,b.x),std::min(a.y,b.y),std::abs(a.x-b.x),std::abs(a.y-b.y)});
-    std::vector<ObjectId> selected;
-    if(marquee.shift || marquee.control) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
-    for(const auto entity:hits) {
-        if(marquee.control) std::erase(selected,entity);
-        else if(std::ranges::find(selected,entity)==selected.end()) selected.push_back(entity);
-    }
-    return session.select_entities(selected,selected.empty()?ObjectId{}:selected.back());
+    const auto mode=marquee.control?SelectMode::subtract:marquee.shift?SelectMode::extend:settings.select_mode;
+    return combine(session,hits,hits.empty()?ObjectId{}:hits.back(),mode);
+}
+Result<void> ViewportTool::select_all(Session& session,SelectAll action) {
+    const auto items=session.world().members();if(!items) return std::unexpected(items.error());
+    std::vector<ObjectId> all;for(const auto& entity:*items) all.push_back(entity.id());
+    const bool everything=!all.empty() && std::ranges::all_of(all,[&](ObjectId entity){return session.is_selected(entity);});
+    if(action==SelectAll::deselect || (action==SelectAll::toggle && everything)) all.clear();
+    else if(action==SelectAll::invert) std::erase_if(all,[&](ObjectId entity){return session.is_selected(entity);});
+    hint_=all.empty()?L"Deselect All":action==SelectAll::invert?L"Invert Selection":L"Select All";
+    return session.select_entities(all,all.empty()?ObjectId{}:all.back());
+}
+void ViewportTool::arm_box_select(V2 pointer,bool extend) {
+    marquee_=Marquee{pointer,pointer,false,extend,false,true};hint_=L"Box select · Drag to select · Esc cancel";
 }
 Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView& view,Settings settings,V2 pointer) {
     if (!targets(session,settings.pivot,cursor)) return {}; // Nonspatial Entities still duplicate normally.
@@ -553,7 +573,7 @@ Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,con
             marquee_->dragging|=length(marquee_->current-marquee_->start)>=4*view.dpi_scale;
         }
         if(event.kind==ui::EventKind::pointer_up && event.button==marquee_->button && !marquee_->await_press) {
-            const auto result=marquee_->dragging?select_box(session,view,*marquee_):select_click(session,view,p,marquee_->shift,marquee_->control);
+            const auto result=marquee_->dragging?select_box(session,view,settings,*marquee_):select_click(session,view,p,settings,marquee_->shift,marquee_->control);
             marquee_.reset();hint_.clear();if(!result) return std::unexpected(result.error());
         }
         return true;
@@ -596,23 +616,16 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
         const auto result=update(session,view,pointer,event.control);if(!result) return std::unexpected(result.error());return true;
     }
     if(event.kind!=ui::EventKind::key_down) return false;
-    const auto members=[&]()->Result<std::vector<ObjectId>> {
-        std::vector<ObjectId> all;const auto items=session.world().members();if(!items) return std::unexpected(items.error());
-        for(const auto& entity:*items) all.push_back(entity.id());return all;
-    };
     // Blender object mode: Alt+A deselects, Ctrl+I inverts, Alt+G/R/S clear one TRS
     // channel of every selected root as a single history entry.
     if(event.alt && !event.control && vk=='A') {
-        const auto result=session.select_entities({},{});if(!result) return std::unexpected(result.error());hint_=L"Deselect All";return true;
+        const auto result=select_all(session,SelectAll::deselect);if(!result) return std::unexpected(result.error());return true;
     }
     if(event.control && !event.alt && vk=='I') {
-        auto all=members();if(!all) return std::unexpected(all.error());
-        std::erase_if(*all,[&](ObjectId entity){return session.is_selected(entity);});
-        const auto result=session.select_entities(*all,all->empty()?ObjectId{}:all->back());if(!result) return std::unexpected(result.error());
-        hint_=L"Invert Selection";return true;
+        const auto result=select_all(session,SelectAll::invert);if(!result) return std::unexpected(result.error());return true;
     }
     if(event.alt && !event.control && (vk=='G' || vk=='R' || vk=='S')) {
-        const auto result=clear_channel(session,vk=='G'?Operation::move:vk=='R'?Operation::rotate:Operation::scale);
+        const auto result=clear(session,vk=='G'?TransformChannel::location:vk=='R'?TransformChannel::rotation:TransformChannel::scale);
         if(!result) return std::unexpected(result.error());return true;
     }
     if(event.control || event.alt) return false;
@@ -620,14 +633,10 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
         const auto result=begin(session,view,settings,vk=='G'?Operation::move:vk=='R'?Operation::rotate:Operation::scale,Handle::none,true,pointer);
         if(!result) return std::unexpected(result.error());return true;
     }
-    if(vk=='B') {marquee_=Marquee{pointer,pointer,false,event.shift,false,true};hint_=L"Box select · Drag to select · Esc cancel";return true;}
+    if(vk=='B') {arm_box_select(pointer,event.shift);return true;}
     if(vk=='A') {
         // Blender 2.8+ keymap: A selects all; A again with everything selected clears.
-        auto all=members();if(!all) return std::unexpected(all.error());
-        const bool everything=!all->empty() && std::ranges::all_of(*all,[&](ObjectId entity){return session.is_selected(entity);});
-        if(everything) all->clear();
-        const auto result=session.select_entities(*all,all->empty()?ObjectId{}:all->back());
-        if(!result) return std::unexpected(result.error());hint_=everything?L"Deselect All":L"Select All";return true;
+        const auto result=select_all(session,SelectAll::toggle);if(!result) return std::unexpected(result.error());return true;
     }
     return false;
 }

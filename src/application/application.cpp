@@ -441,6 +441,15 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case cursor_selected:result=viewport_tool_.cursor_to_selection(*document_);break;
     case cursor_grid:viewport_tool_.cursor_to_grid(workspace_.viewport_settings);break;
     case cursor_surface:workspace_.viewport_settings.cursor_surface=!workspace_.viewport_settings.cursor_surface;break;
+    case select_all:case select_none:case select_invert:
+        result=viewport_tool_.select_all(*document_,command==select_all?editor::SelectAll::select:command==select_none?editor::SelectAll::deselect:editor::SelectAll::invert);break;
+    case select_box:viewport_tool_.arm_box_select(pointer_position_,false);window_.capture(true);break;
+    case clear_location:case clear_rotation:case clear_scale:
+        result=viewport_tool_.clear(*document_,command==clear_location?editor::TransformChannel::location:
+            command==clear_rotation?editor::TransformChannel::rotation:editor::TransformChannel::scale);break;
+    case frame_all:result=frame_entities(false);if(result) camera_cut_=true;break;
+    case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
+        workspace_.viewport_settings.select_mode=static_cast<editor::SelectMode>(static_cast<unsigned>(command)-static_cast<unsigned>(select_mode_set));break;
     case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
         camera_.set_view(*editor::camera_view_command(command));camera_cut_=true;break;
     case viewport_options:workspace_.viewport_options_collapsed=!workspace_.viewport_options_collapsed;break;

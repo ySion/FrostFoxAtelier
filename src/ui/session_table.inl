@@ -16,7 +16,7 @@
             if (!row.key || !rows.emplace(row.key,rows.size()).second || row.cells.size()!=data.columns.size()) return invalid();
             for (const auto& cell:row.cells)
                 if (!cell.key || !cells.insert(cell.key).second || cell.text.size()>4096 || !detail::valid_text(cell.text,false) ||
-                    static_cast<unsigned>(cell.icon)>static_cast<unsigned>(ControlIcon::sky_light)) return invalid();
+                    static_cast<unsigned>(cell.icon)>static_cast<unsigned>(last_control_icon)) return invalid();
         }
         return rows;
     }

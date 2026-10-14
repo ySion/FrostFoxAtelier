@@ -238,38 +238,6 @@ ui PanePath(in Text title, in ActionBinding back, in ActionBinding forward,
     }
 }
 
-ui ObjectHeader(in Text type_name, in TextEditBinding name, in double type_icon,
-                in double search_icon, in bool search_visible, in ActionBinding search) {
-    Row row {
-        classes: "object-header";
-        gap: 4;
-        align_center: true;
-        padding_left: 4;
-        padding_top: 3;
-        padding_right: 4;
-        padding_bottom: 3;
-        Text type { text: input.type_name; icon: input.type_icon; content_width: 0; single_line: true; classes: "object-type"; }
-        TextField name { edit: input.name; context: input.name; min_width: 32; classes: "object-name"; }
-        ToggleButton search {
-            icon: input.search_icon;
-            width: 26; height: 26;
-            selected: input.search_visible;
-            action: input.search;
-            classes: "parameter-tool";
-        }
-    }
-}
-
-ui ViewportTools(in double display_icon, in double guides_icon, in bool display_open, in bool guides_open) {
-    Row tools {
-        content_width: 60;
-        height: 28;
-        gap: 2;
-        Combo display { icon: input.display_icon; width: 28; height: 28; selected: input.display_open; classes: "icon-menu"; }
-        Combo guides { icon: input.guides_icon; width: 28; height: 28; selected: input.guides_open; classes: "icon-menu"; }
-    }
-}
-
 ui EntityStructure(in Text title, in Items<EntityRow> objects, in TextEditBinding filter, in bool has_entity,
                   in bool editable, in Key add_component, in ActionBinding remove, in double remove_icon) {
     Row toolbar {
@@ -298,15 +266,20 @@ ui Parameters(in Text type_name, in TextEditBinding name,
         PanePath path { title: "World"; back: input.back; forward: input.forward;
             back_icon: input.back_icon; forward_icon: input.forward_icon; path_icon: input.path_icon;
         }
-        ObjectHeader header { type_name: input.type_name; name: input.name; type_icon: input.type_icon;
-            search_icon: input.search_icon; search_visible: input.search_visible; search: input.search;
+        // Houdini's parameter header: type, name, grouping tabs and search on one line.
+        Row header {
+            classes: "object-header"; gap: 4; align_center: true;
+            padding_left: 4; padding_top: 3; padding_right: 4; padding_bottom: 3;
+            Text type { text: input.type_name; icon: input.type_icon; content_width: 0; single_line: true; classes: "object-type"; }
+            TextField name { edit: input.name; context: input.name; min_width: 32; classes: "object-name"; }
+            Row grouping { gap: 0; align_center: true; content_width: 0; collapsed: !input.has_selection;
+                ChoiceButton components { text: "Object"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 22; classes: "section-tab header-tab"; }
+                ChoiceButton categories { text: "Category"; action: input.categories; selected: input.by_category; selection_group: node.grouping; height: 22; classes: "section-tab header-tab joined"; }
+            }
+            ToggleButton search_toggle { icon: input.search_icon; width: 24; height: 24; selected: input.search_visible; action: input.search; classes: "parameter-tool"; }
         }
         Column search { classes: "parameter-search"; collapsed: !input.has_selection || !input.search_visible;
             QueryRow query { edit: input.filter; label_width: 48; gap: 4; caption: true; }
-        }
-        Row grouping { height: 26.667; padding_bottom: 0.667; classes: "section-tabs"; collapsed: !input.has_selection;
-            ChoiceButton components { text: "Object"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab"; }
-            ChoiceButton categories { text: "Category"; action: input.categories; selected: input.by_category; selection_group: node.grouping; height: 26; classes: "section-tab joined"; }
         }
         Text no_selection { text: "Select an object to inspect its properties."; classes: "empty-state";
             caption: true; padding_left: 8; single_line: true; collapsed: input.has_selection;
@@ -576,8 +549,14 @@ ui ViewportMode(in ActionBinding choose, in double icon, in bool selected, in Ke
     ChoiceButton mode { icon: input.icon; action: input.choose; selected: input.selected;
         selection_group: input.group; width: 32; height: 32; classes: input.style; }
 }
-// Houdini scene view: one operation-controls band, a full-height tool rail on
-// the left, and passive/interactive annotations floating over the scene.
+// One segment of a Blender header button group (shading, selection mode).
+ui HeaderChoice(in ActionBinding choose, in double icon, in bool selected, in Key group, in Text style) {
+    ChoiceButton choice { icon: input.icon; action: input.choose; selected: input.selected;
+        selection_group: input.group; width: 26; height: 22; classes: input.style; }
+}
+// Scene view: Blender's semantic header (interaction mode, View/Select/Add/Object,
+// pivot, snapping, overlays and shading as grouped widgets) over Houdini's tool
+// rail and operation band; passive and interactive annotations float over the scene.
 ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in double back_icon, in double forward_icon, in double path_icon,
                  in double display_icon, in double guides_icon, in bool display_open, in bool guides_open,
@@ -587,33 +566,53 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in bool surface, in ActionBinding surface_toggle, in Text view_name, in bool view_open,
                  in ActionBinding collapse_toggle, in bool collapsed, in double up_icon, in double down_icon,
                  in Text readout, in bool modal, in ActionBinding rail_snap, in Text tool_hint, in Text tool_hint_style,
-                 in bool cavity_open, in bool show_fps, in Text fps, in bool camera_flying) {
+                 in bool cavity_open, in bool show_fps, in Text fps, in bool camera_flying,
+                 in Items<HeaderChoice> shading, in Items<HeaderChoice> select_modes,
+                 in bool view_menu_open, in bool select_menu_open, in bool add_menu_open, in bool object_menu_open,
+                 in bool actions_open, in bool compact) {
     Column pane {
         expand_height: true;
         Row navigation {
-            height: 40; gap: 2; padding_left: 4; padding_top: 4; padding_right: 6; padding_bottom: 4;
+            height: 32; gap: 2; padding_left: 4; padding_top: 3; padding_right: 4; padding_bottom: 3;
             align_center: true; classes: "path-bar";
-            Button back { icon: input.back_icon; action: input.back; width: 26; height: 28; classes: "path-navigation"; }
-            Button forward { icon: input.forward_icon; action: input.forward; width: 26; height: 28; classes: "path-navigation"; }
-            Combo path { text: "World"; icon: input.path_icon; min_width: 32; expand_width: true; height: 28; classes: "pane-path"; }
-            ViewportTools tools { display_icon: input.display_icon; guides_icon: input.guides_icon; display_open: input.display_open; guides_open: input.guides_open; }
-            Combo cavity { text: "Cavity"; content_width: 0; min_width: 62; height: 28; selected: input.cavity_open; classes: "cavity-menu"; }
+            Button back { icon: input.back_icon; action: input.back; width: 22; height: 24; classes: "path-navigation"; }
+            Button forward { icon: input.forward_icon; action: input.forward; width: 22; height: 24; classes: "path-navigation"; }
+            Combo path { text: "World"; icon: input.path_icon; min_width: 32; shrink_width: 132; height: 24; classes: "pane-path"; }
+            Column lead_gap { width: 4; height: 1; }
+            Combo actions { icon: input.mode_icon; selected: input.actions_open; width: 34; height: 24; classes: "icon-menu viewport-header-icon"; }
+            Combo view_menu { collapsed: input.compact; text: "View"; selected: input.view_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Combo select_menu { collapsed: input.compact; text: "Select"; selected: input.select_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Combo add_menu { collapsed: input.compact; text: "Add"; selected: input.add_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Combo object_menu { collapsed: input.compact; text: "Object"; selected: input.object_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Column header_gap { expand_width: true; height: 1; }
+            Combo pivot { icon: input.pivot_icon; selected: input.pivot_open; width: 34; height: 24; classes: "icon-menu viewport-header-icon"; }
+            ToggleButton snapping { icon: input.snap_icon; action: input.snap; selected: input.snapping; width: 26; height: 24; classes: "viewport-header-toggle"; }
+            Combo step { text: input.grid_step; selected: input.snap_open; content_width: 0; height: 24; classes: "viewport-header-step"; }
+            Column overlay_gap { width: 6; height: 1; }
+            Combo guides { icon: input.guides_icon; selected: input.guides_open; width: 34; height: 24; classes: "icon-menu viewport-header-icon"; }
+            Combo cavity { collapsed: input.compact; text: "Cavity"; content_width: 0; height: 24; selected: input.cavity_open; classes: "viewport-header-step"; }
+            Column shading_gap { width: 4; height: 1; }
+            Row shading_modes { gap: 0; align_center: true; content_width: 0; classes: "viewport-segment";
+                Repeat shading { items: input.shading; }
+            }
+            Combo display { icon: input.display_icon; selected: input.display_open; width: 16; height: 24; classes: "viewport-header-more"; }
         }
-        Row options { height: choose(input.collapsed, 12.0d, 32.0d); wrap: false; classes: "viewport-options";
+        Row options { height: choose(input.collapsed, 12.0d, 28.0d); wrap: false; classes: "viewport-options";
             ToggleButton stow { action: input.collapse_toggle; icon: choose(input.collapsed, input.down_icon, input.up_icon);
                 selected: input.collapsed; min_width: 12; expand_width: input.collapsed; expand_height: true;
-                padding_bottom: choose(input.collapsed, 0.0d, 20.0d); classes: "bar-stow"; }
+                padding_bottom: choose(input.collapsed, 0.0d, 16.0d); classes: "bar-stow"; }
             Text readout { text: input.readout; collapsed: input.collapsed || !input.modal; expand_width: true; expand_height: true;
                 padding_left: 10; classes: "viewport-readout"; }
             Row settings { collapsed: input.collapsed || input.modal; expand_width: true; expand_height: true; align_center: true; gap: 6;
                 padding_left: 4; padding_right: 6;
-                Combo actions { icon: input.mode_icon; width: 30; height: 28; classes: "icon-menu viewport-operation"; }
+                Row selection_modes { gap: 0; align_center: true; content_width: 0; classes: "viewport-segment";
+                    Repeat select_modes { items: input.select_modes; }
+                }
+                Column divider { width: 1; height: 18; classes: "viewport-option-divider"; }
                 Text basis { text: input.basis; content_width: 0; single_line: true; classes: "viewport-option-label"; }
-                Combo pivot { text: input.pivot_name; selected: input.pivot_open; content_width: 0; height: 26; classes: "viewport-option-menu"; }
-                Column divider { width: 1; height: 20; classes: "viewport-option-divider"; }
-                ToggleButton snapping { icon: input.snap_icon; action: input.snap; selected: input.snapping; width: 28; height: 28; classes: "viewport-mode"; }
-                Combo step { text: input.grid_step; selected: input.snap_open; content_width: 0; height: 26; classes: "viewport-option-menu"; }
-                Checkbox surface { text: "Surface Cursor"; action: input.surface_toggle; selected: input.surface; content_width: 0; height: 26; classes: "viewport-option-check"; }
+                Text pivot_label { text: input.pivot_name; content_width: 0; single_line: true; classes: "viewport-option-label"; }
+                Column divider2 { width: 1; height: 18; classes: "viewport-option-divider"; }
+                Checkbox surface { text: "Surface Cursor"; action: input.surface_toggle; selected: input.surface; content_width: 0; height: 22; classes: "viewport-option-check"; }
             }
         }
         Row content { expand_height: true;
@@ -621,7 +620,7 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                 Repeat modes { items: input.modes; }
                 Column snap_separator { height: 1; classes: "viewport-rail-separator"; }
                 Column snap_spacing { height: 6; }
-                // Houdini keeps snapping beside the handles; here it shares the options toggle.
+                // Houdini keeps snapping beside the handles; here it shares the header toggle.
                 ToggleButton rail_snap { icon: input.snap_icon; action: input.rail_snap; selected: input.snapping;
                     width: 32; height: 32; classes: "viewport-mode"; }
             }

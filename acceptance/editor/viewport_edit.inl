@@ -265,14 +265,14 @@ void verify_viewport_editing() {
         ui.pointer_target(camera_menu.x+camera_menu.width*.5f,camera_menu.y+camera_menu.height*.5f)==control::viewport_camera,
         "Viewport chrome did not distinguish passive mode text from the interactive camera menu.");
     const auto expanded_height=ui.presented()->find(control::viewport)->bounds.height;
-    const auto publish=[&] {
-        auto controls=workspace.describe(document,{1200,800},ui.presented().get());
+    const auto publish=[&](ui_layout::Size size={1200,800}) {
+        auto controls=workspace.describe(document,size,ui.presented().get());
         require(bool(ui.set_controls(controls)),"Updated viewport chrome was refused.");
         const auto frame=ui.prepare();require(frame && ui.accept(*frame),"Updated viewport chrome did not lay out.");
         workspace.commit_ui_controls();return controls;
     };
     workspace.viewport_options_collapsed=true;publish();
-    require(std::abs(ui.presented()->find(control::viewport)->bounds.height-expanded_height-20)<.1f,
+    require(std::abs(ui.presented()->find(control::viewport)->bounds.height-expanded_height-16)<.1f,
         "Collapsed viewport options did not return their height to the scene.");
     workspace.viewport_options_collapsed=false;workspace.viewport_mode=TransformTool::rotate;
     const auto rotated_controls=publish();
@@ -304,6 +304,50 @@ void verify_viewport_editing() {
     require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first+2,true})) &&
         workspace.view.wireframe==renderer::Wireframe::off && workspace.view.shading==renderer::Shading::matcap,
         "Shading preset retained stale wireframe state.");
+    {
+        constexpr ui_layout::Size wide{1900,1000};
+        // Blender header: semantic menus project as real controls and their menus
+        // reuse the shared command model; header segments mirror the view and tool state.
+        workspace.menu.reset();const auto header=publish(wide);
+        // Narrow panes fold the text menus (W and the main View menu keep them reachable).
+        for(const auto key:{control::viewport_view_menu,control::viewport_select_menu,control::viewport_header_add,control::viewport_object_menu})
+            require(std::ranges::any_of(header,[&](const auto& item){return item.key==key;}),"A Blender header menu is missing from the viewport header.");
+        const auto has=[&](Command command){return std::ranges::any_of(workspace.menu_items,[&](const auto& item){return item.key==static_cast<ui::ControlKey>(command);});};
+        const auto branch=[&](ui::ControlKey key)->const ui::MenuItem* {
+            const auto at=std::ranges::find(workspace.menu_items,key,&ui::MenuItem::key);return at==workspace.menu_items.end()?nullptr:&*at;};
+        workspace.menu=ui::ContextMenuRequest{control::viewport_select_menu,0,0,0};publish(wide);
+        const auto* modes=branch(control::select_mode_menu);
+        require(has(Command::select_all) && has(Command::select_none) && has(Command::select_invert) && has(Command::select_box) &&
+            modes && modes->children.size()==5 && modes->children.front().selected && modes->children.front().behavior==ui::MenuBehavior::radio,
+            "Select menu lost its Blender operations or the active selection mode.");
+        workspace.menu=ui::ContextMenuRequest{control::viewport_object_menu,0,0,0};publish(wide);
+        const auto* clear=branch(control::object_clear_menu);
+        require(clear && clear->children.size()==3 && branch(control::object_snap_menu) && has(Command::duplicate_selected),
+            "Object menu lost Clear, Snap or Duplicate.");
+        workspace.menu=ui::ContextMenuRequest{control::viewport_view_menu,0,0,0};publish(wide);
+        require(has(Command::frame_all) && has(Command::focus) && branch(control::view_viewpoint_menu),"View menu lost framing or viewpoints.");
+        workspace.menu.reset();publish(wide);
+        // Select-mode routing: Extend keeps, Subtract removes, Intersect keeps only the overlap.
+        const std::array both{first,second};take(document.select_entities(both,second));
+        settings.select_mode=SelectMode::subtract;
+        take(pointer(ui::EventKind::pointer_down,point(first)));take(pointer(ui::EventKind::pointer_up,point(first)));
+        require(document.selected_entities().size()==1 && document.is_selected(second),"Subtract mode did not remove the clicked Entity.");
+        settings.select_mode=SelectMode::extend;
+        take(pointer(ui::EventKind::pointer_down,point(first)));take(pointer(ui::EventKind::pointer_up,point(first)));
+        require(document.selected_entities().size()==2,"Extend mode did not add the clicked Entity.");
+        settings.select_mode=SelectMode::intersect;
+        take(pointer(ui::EventKind::pointer_down,point(second)));take(pointer(ui::EventKind::pointer_up,point(second)));
+        require(document.selected_entities().size()==1 && document.is_selected(second),"Intersect mode did not keep only the clicked overlap.");
+        settings.select_mode=SelectMode::set;
+        take(tool.select_all(document,SelectAll::invert));
+        require(document.selected_entities().size()==1 && document.is_selected(first),"Invert Selection did not complement the selection.");
+        take(tool.select_all(document,SelectAll::deselect));require(document.selected_entities().empty(),"Select None kept a selection.");
+        take(tool.select_all(document,SelectAll::select));require(document.selected_entities().size()==2,"Select All missed an Entity.");
+        // Shading header segment reflects and drives the same presets as the Z pie.
+        take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first+1,true}));publish();
+        require(workspace.view.shading==renderer::Shading::smooth && workspace.view.wireframe==renderer::Wireframe::off,
+            "Solid header segment did not reach the view model.");
+    }
     {
         // View Selected frames the actual geometry bounds.
         Camera framing;framing.frame({1,2,3},.5f);

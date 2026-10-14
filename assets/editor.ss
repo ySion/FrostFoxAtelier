@@ -76,7 +76,7 @@ list { background: #2d2d2d; }
 table {
     background: #2d2d2d; tree-alternate-color: #353535; tree-line-color: #454545;
     selection-color: #55564c; border-color: #858585; border-width: 0dip;
-    padding: 0dip; text-vertical-align: center; indicator-size: 16dip; indicator-color: #a7c0cb;
+    padding: 0dip; text-vertical-align: center; indicator-size: 14dip; indicator-color: #a7c0cb;
 }
 table:focus { border-color: #a0a0a0; }
 item { padding: 2dip 6dip; border-width: 0dip; }
@@ -89,7 +89,7 @@ tree {
 }
 tree_item {
     background: transparent; border-width: 0dip; padding: 0dip 2dip;
-    text-vertical-align: center; indicator-size: 15dip;
+    text-vertical-align: center; indicator-size: 13dip;
     indicator-background: #b8beb5; indicator-border-color: #363936;
     indicator-color: #bacbd0; font-weight: 400;
 }
@@ -131,8 +131,8 @@ tab.dock-tab:focus { color: #eeeeee; }
 }
 .dock-close:selected { background: transparent; background-image: none; color: #d1d3c4; }
 .dock-close:hover, .dock-tool:hover, .dock-menu:hover, .dock-add:hover { background: transparent; background-image: none; color: #ffffff; }
-.dock-menu { indicator-size: 16dip; color: #c1d6db; }
-.dock-add { indicator-size: 16dip; color: #d1d3c4; }
+.dock-menu { indicator-size: 11dip; color: #c1d6db; }
+.dock-add { indicator-size: 13dip; color: #d1d3c4; }
 .dock-divider { background: #494949; border-color: #333333; border-shadow-color: #000000; border-width: 0.667dip; border-style: inset; }
 .dock-divider.vertical { border-edges: left right; }
 .dock-divider.horizontal { border-edges: top bottom; }
@@ -147,23 +147,23 @@ tab.dock-tab:focus { color: #eeeeee; }
 .dock-collapse:focus { color: #dddddd; }
 .dock-preview { background: #599ace50; border-color: #9ac6ea; border-width: 2dip; }
 .path-bar { background-image: linear-gradient(#494949,#3b3b3b); }
-combo.pane-path { padding: 1dip 4dip; indicator-size: 22dip; }
+combo.pane-path { padding: 1dip 4dip; indicator-size: 18dip; }
 combo.pane-path, combo.pane-path:hover {
     background-image: linear-gradient(#3d3d3d,#3a3a3a); border-color: #000000; border-inner-color: #5c5c5c;
     border-style: solid; border-width: 0.667dip;
     combo-indicator: down; color: #cccccc;
 }
-button.path-navigation { padding: 0dip; indicator-size: 26dip; }
+button.path-navigation { padding: 0dip; indicator-size: 20dip; }
 button.path-navigation, button.path-navigation:hover, button.path-navigation:pressed, button.path-navigation:disabled {
     background: transparent; background-image: none; border-width: 0dip;
     indicator-border-color: #263235; color: #bbcdcf;
 }
 button.path-navigation:disabled { color: #646b6c; }
 .object-header { background: #3d3d3d; accent-color: #202020; accent-width: 0.667dip; }
-.object-type { font-weight: 600; padding: 1dip 0dip; text-vertical-align: center; indicator-size: 20dip; indicator-color: #a7c0cb; }
+.object-type { font-weight: 600; padding: 1dip 0dip; text-vertical-align: center; indicator-size: 16dip; indicator-color: #a7c0cb; }
 button.parameter-tool {
     background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
-    indicator-size: 22dip; color: #bacbd0;
+    indicator-size: 17dip; color: #bacbd0;
 }
 button.parameter-tool:hover { background: #484848; background-image: none; color: #d9e1e4; }
 button.parameter-tool:selected { background: #536976; background-image: none; color: #d9e1e4; }
@@ -243,7 +243,7 @@ number:disabled { accent-color: #616161; }
 .shelf-tool {
     background: transparent; background-image: none; border-width: 0dip;
     text-align: center; text-vertical-align: bottom; font-size: 10.5dip;
-    padding: 1dip 3dip; icon-placement: above; indicator-size: 18dip; indicator-color: #9bbdc8;
+    padding: 1dip 3dip; icon-placement: above; indicator-size: 20dip; indicator-color: #9bbdc8;
 }
 button.shelf-tool:hover { background: #484848; }
 button.shelf-tool:pressed { background: #555555; }
@@ -253,11 +253,11 @@ tree_item.mesh-actor { indicator-color: #a7c0cb; }
 .browser-tool { padding: 1dip 5dip; font-size: 11dip; }
 .icon-menu, .browser-icon {
     background: transparent; background-image: none; border-width: 0dip;
-    padding: 0dip; indicator-size: 20dip; indicator-color: #a7c0cb; combo-indicator: down;
+    padding: 0dip; indicator-size: 17dip; indicator-color: #a7c0cb; combo-indicator: down;
 }
 combo.icon-menu:hover, .browser-icon:hover { background: #484848; background-image: none; }
 combo.icon-menu:selected, combo.icon-menu:pressed, .browser-icon:pressed, .browser-icon:selected { background: #555555; background-image: none; }
-.browser-icon { indicator-size: 16dip; }
+.browser-icon { indicator-size: 15dip; }
 .browser-icon:disabled, .icon-menu:disabled { background: transparent; background-image: none; indicator-color: #686868; }
 .browser-toolbar { background: #343434; }
 .browser-path { padding: 0dip 4dip; combo-indicator: down; }
@@ -302,7 +302,7 @@ button.viewport-mode.grouped { border-edges: top; border-width: 0.667dip; border
 button.viewport-mode.grouped:selected { border-edges: all; }
 .viewport-mode, .viewport-operation {
     background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
-    indicator-size: 24dip; indicator-color: #c4ccd0; indicator-background: #e04a1c;
+    indicator-size: 20dip; indicator-color: #c4ccd0; indicator-background: #e04a1c;
 }
 button.viewport-mode:hover, combo.viewport-operation:hover { background: #4b4b4b; background-image: none; }
 button.viewport-mode { border-style: solid; }
@@ -312,7 +312,7 @@ button.viewport-mode:selected, button.viewport-mode:selected:hover {
 button.viewport-mode:pressed, combo.viewport-operation:pressed { background: #738ba4; background-image: none; }
 /* Passive HUD: white semibold title with a dark drop shadow over the scene. */
 .viewport-mode-label {
-    color: #ffffff; font-size: 15.5dip; font-weight: 600; indicator-size: 26dip; indicator-color: #e8eef0; indicator-background: #e04a1c;
+    color: #ffffff; font-size: 15.5dip; font-weight: 600; indicator-size: 22dip; indicator-color: #e8eef0; indicator-background: #e04a1c;
     padding: 0dip; text-vertical-align: center; text-shadow-color: #00000099;
 }
 .viewport-mode-label:disabled { color: #ffffff; }
@@ -344,3 +344,47 @@ combo.viewport-view-menu:selected, combo.viewport-view-menu:pressed { background
 .status-text { text-vertical-align: center; padding: 0dip; }
 combo.parameter-menu { padding: 0dip 12dip 0dip 14dip; }
 .status-facts { color: #8a8a8a; }
+
+/* Blender-style semantic header in the Houdini palette (sampled Blender 4.5:
+   flat text menus, grouped icon segments with 1 px joins, icon dropdowns). */
+combo.viewport-header-mode {
+    padding: 0dip 7dip 0dip 6dip; combo-indicator: down; text-vertical-align: center; indicator-size: 15dip; indicator-color: #c4ccd0;
+    border-width: 0.667dip; border-style: solid; border-color: #1c1c1c; background-image: linear-gradient(#4a4a4a, #3c3c3c);
+}
+combo.viewport-header-mode:hover { background-image: linear-gradient(#585858, #464646); color: #ffffff; }
+combo.viewport-header-menu {
+    background: transparent; background-image: none; border-width: 0dip; padding: 0dip 7dip;
+    combo-indicator: none; text-vertical-align: center; color: #cccccc;
+}
+combo.viewport-header-menu:hover { background: #4b4b4b; background-image: none; color: #ffffff; }
+combo.viewport-header-menu:selected, combo.viewport-header-menu:pressed { background: token(menu-active); background-image: none; color: #ffffff; }
+combo.viewport-header-icon { padding: 0dip 0dip 0dip 3dip; indicator-size: 16dip; icon-align: left; }
+combo.viewport-header-step {
+    padding: 0dip 4dip 0dip 6dip; combo-indicator: down; text-vertical-align: center; indicator-size: 8dip;
+    border-width: 0.667dip; border-style: solid; border-color: #1c1c1c; background-image: linear-gradient(#4a4a4a, #3c3c3c);
+}
+combo.viewport-header-step:hover { background-image: linear-gradient(#585858, #464646); color: #ffffff; }
+button.viewport-header-toggle {
+    padding: 0dip; indicator-size: 16dip; indicator-color: #c4ccd0; border-width: 0.667dip; border-color: #1c1c1c;
+    background-image: linear-gradient(#4a4a4a, #3c3c3c);
+}
+button.viewport-header-toggle:hover { background-image: linear-gradient(#585858, #464646); }
+button.viewport-header-toggle:selected, button.viewport-header-toggle:selected:hover {
+    background: #5d7289; background-image: none; indicator-color: #ffffff; border-color: #374552;
+}
+combo.viewport-header-more {
+    background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
+    indicator-size: 9dip; indicator-color: #a8a8a8; icon-align: center;
+}
+combo.viewport-header-more:hover { background: #4b4b4b; background-image: none; }
+.viewport-segment { background: transparent; }
+button.viewport-segment-item {
+    padding: 0dip; indicator-size: 15dip; indicator-color: #c4ccd0; border-width: 0.667dip; border-style: solid;
+    border-color: #1c1c1c; border-edges: top bottom right; background-image: linear-gradient(#4a4a4a, #3c3c3c);
+}
+button.viewport-segment-item.first { border-edges: all; }
+button.viewport-segment-item:hover { background-image: linear-gradient(#585858, #464646); }
+button.viewport-segment-item:selected, button.viewport-segment-item:selected:hover {
+    background: #5d7289; background-image: none; indicator-color: #ffffff; border-color: #374552;
+}
+button.section-tab.header-tab { padding: 0dip 8dip; font-size: 12dip; }

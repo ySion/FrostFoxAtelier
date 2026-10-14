@@ -28,6 +28,10 @@ inline constexpr ui::ControlKey viewport_delete_menu=855, viewport_shading_pie=8
 inline constexpr ui::ControlKey viewport_axis_pie=857, viewport_cavity=858, viewport_pie=859;
 inline constexpr ui::ControlKey cavity_enabled=910, cavity_group_first=911, cavity_value_first=920;
 inline constexpr ui::ControlKey viewport_fps=904, viewport_fly_reticle=860, viewport_hint=861;
+// Blender header menus and grouped header widgets.
+inline constexpr ui::ControlKey viewport_view_menu=974, viewport_select_menu=975, viewport_object_menu=976, viewport_header_add=977;
+inline constexpr ui::ControlKey viewport_shading_modes=948, viewport_select_modes=949, viewport_snapping=978;
+inline constexpr ui::ControlKey object_clear_menu=979, object_snap_menu=980, view_viewpoint_menu=995, select_mode_menu=996;
 inline constexpr ui::ControlKey scene_tab=600, entities_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
