@@ -44,7 +44,7 @@ public:
     const ui::UiFrame* menu_frame() const noexcept { const auto* host=menu_host(); return host?host->presented().get():nullptr; }
     double menu_open_cpu_us() const noexcept { const auto* host=menu_host(); return host?host->open_cpu_us():0; }
     void capture_menu(renderer::Capture& capture) { if (auto* host=menu_host()) host->render(&capture); }
-    ui::ControlKey object_control(ObjectId actor) const noexcept { return workspace_.object_control(actor); }
+    ui::ControlKey object_control(ObjectId entity) const noexcept { return workspace_.object_control(entity); }
     ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
         return workspace_.field_control(component, path);
     }
@@ -162,7 +162,7 @@ private:
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
-    Result<void> frame_actors(bool selected_only);
+    Result<void> frame_entities(bool selected_only);
     Result<void> set_camera(const editor::Camera&,bool cut);
     void sync_world_view();
     std::array<float,3> lighting_focus() const;

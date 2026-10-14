@@ -18,3 +18,5 @@
 运行 `cmake --build --preset dev --target editor_examples_acceptance` 验证默认启动、原生菜单切换、示例保存重开、用户副本与模板隔离、工作目录独立性；发布配置换成 `release`。证据位于 `out/<配置>/examples-evidence/`。原独立 Physics Test 工程已迁出，旧 Body 场景作为 [验收夹具](../../acceptance/editor/fixtures/physics-project/README.md) 保留；未被场景使用的 Synty 动画移到 [独立资源目录](../animations/README.md)。
 
 `atelier_editor --snapshot-examples <输出目录>` 使用正式应用命令和 D3D12 捕获，检查真实目录树、场景切换、在新增 Examples 子目录中保存重开以及模板隔离；它不发送原生输入，也不代替原生菜单与 GPU validation 验收。
+
+官方模板统一使用 Scene v6：Entity 保存可选内联空间与有序子实体，能力组件不含空间。旧用户场景通过严格导入升级，模板更新仍不覆盖现有用户副本。Source 目录当前仅有占位文件。

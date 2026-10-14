@@ -100,7 +100,7 @@ renderer 只合并相邻且有效 scissor、管线、图片身份/版本相同�
 
 - `ui_acceptance`：正式生产消费者包含样式解析、作用域/继承/覆盖、错误保旧、资源接线，以及接受帧文字快照；当前完整覆盖见[UI 验收入口](README.md#限额与验收)，不沿用 SS 首次交付时的场景数量。
 - `renderer_acceptance`：真实 D3D12 debug/GBV 与颜色读回，包含非对称圆角、透明填充边框、RGBA 带 padding 行、图片版本与释放、合批/裁剪分界、A/B/A 透明顺序及错误帧恢复。
-- `atelier_editor --acceptance <目录>`：同一产品入口验证 SS 文件接线、交互状态、文字编辑、主题切换、256 Actor 场景和 GPU 捕获。真实系统 IME 有独立验收，本增量不以普通窗口验收替代它。
+- `atelier_editor --acceptance <目录>`：同一产品入口验证 SS 文件接线、交互状态、文字编辑、主题切换、256 Entity 场景和 GPU 捕获。真实系统 IME 有独立验收，本增量不以普通窗口验收替代它。
 
 2026-10-01 的双配置实测、review、滚动边距修复、旧文字接口清理及证据路径统一记录在[阶段收口](../../research/ui-rendering-20261001/closeout.md)。
 

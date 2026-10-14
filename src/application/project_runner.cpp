@@ -107,7 +107,7 @@ int run_project(const RunOptions& options) {
         SceneSnapshot scene;
         editor::Camera camera;std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
         // Frame the authored mesh centers once; large collision floors should
-        // not force a tiny view of the moving Actors. Navigation stays a host concern.
+        // not force a tiny view of the moving Entities. Navigation stays a host concern.
         const auto initial=take(document.world().render_items());
         if(!initial.empty()) {
             math::Vector3 low{initial.front().world.elements[12],initial.front().world.elements[13],initial.front().world.elements[14]},high=low;

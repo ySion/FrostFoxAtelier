@@ -8,7 +8,7 @@ namespace atelier::ui_language {
 namespace detail { struct InstanceData; struct DefinitionState; struct PreparedUpdate; struct ScopeLifetime; }
 
 // A sampled edit reference: field keys are owned by the host's existing typed
-// property/transaction routes. Neither the component nor this value retains Actors.
+// property/transaction routes. Neither the component nor this value retains Entities.
 struct EditBinding {
     ui::ControlKey group{};
     bool enabled{}, modified{};

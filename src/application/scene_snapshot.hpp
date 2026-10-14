@@ -4,6 +4,7 @@
 #include "renderer/renderer.hpp"
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace atelier::application {
 // An owning draw snapshot, not a registry of business objects. Opaque ObjectIds
@@ -24,12 +25,26 @@ public:
         for(auto& [object,key]:keys_) { (void)object;key.seen=false; }
         bool changed=meshes.size()!=geometry->size();
         meshes.reserve(geometry->size());lights.reserve(illumination->size());
+        const auto selection=document.selected_entities();
+        std::unordered_map<ObjectId,bool> inherited_selection;
+        if(!selection.empty()) {
+            const auto members=document.world().members();if(!members) return std::unexpected(members.error());
+            std::unordered_set<ObjectId> selected(selection.begin(),selection.end());
+            inherited_selection.reserve(members->size());
+            // The World directory is in composition preorder: each parent is already available.
+            for(const auto& member:*members) {
+                const auto parent=world::parent_entity(document.world().runtime(),member.id());
+                if(!parent) return std::unexpected(parent.error());
+                inherited_selection.emplace(member.id(),selected.contains(member.id()) ||
+                    (*parent!=ObjectId{} && inherited_selection.at(*parent)));
+            }
+        }
         const auto rgb=[](math::Vector3 value){return std::array{value.x,value.y,value.z};};
         for(std::size_t i=0;i<geometry->size();++i) {
             const auto& item=(*geometry)[i];
             renderer::MeshInstance value{item.world.elements,
                 {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1},
-                document.is_selected(item.actor),item.geometry,
+                !selection.empty() && inherited_selection.at(item.entity),item.geometry,
                 {item.material.roughness,item.material.metallic,rgb(item.material.emissive)},key(item.component)};
             value.surfaces=item.surfaces;
             if(i<meshes.size()) {

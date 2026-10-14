@@ -158,7 +158,7 @@ void style_sheets() {
         menu_item:selected { font-weight: 600; }
     )ss")));
     const std::array entries{ui::MenuItem{1,L"Scene View",true,true,{}},ui::MenuItem{2,L"Parameters",true,false,{}},
-        ui::MenuItem{3,L"Controls",true,false,{}},ui::MenuItem{4,L"Actors",true,false,{}}};
+        ui::MenuItem{3,L"Controls",true,false,{}},ui::MenuItem{4,L"Entities",true,false,{}}};
     for (const auto dpi:{1.f,1.25f,1.5f,1.75f,2.f}) {
         menu.controls.clear(); accepted(menu.ui.set_controls({}));
         accepted(menu.ui.set_surface({{1920,1080},dpi,++revision}));

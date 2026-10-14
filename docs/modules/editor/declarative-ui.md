@@ -1,8 +1,8 @@
 # 引擎原生声明式 UI
 
-编辑器现有界面的装配已统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Actor Structure、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。迁移范围与尚未实现的业务能力见[迁移清单](dsl-migration.md)。
+编辑器现有界面的装配已统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Entity Structure、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。迁移范围与尚未实现的业务能力见[迁移清单](dsl-migration.md)。
 
-Parameters 在对象标题下按需展开过滤器，连续展示检查目标的 Position/Rotation/Scale 数值行和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、Checkbox 或枚举 Combo；规范数学元组由 NumberRow 组合。资源选择使用 `ResourceParameters` 和 `Items<ResourceProperty>` 展示只读元数据，各行 key 来自同一宿主分配器。ActorStructure 用同一 Tree/Repeat 展示归属关系并提供组成命令；SceneTree 只展示 Actor。ViewportTools 在路径栏末尾提供显示菜单，ViewportMode 在视口左侧组成紧凑的选择组和枢轴菜单。所有视图沿同一原生控件和命令链工作。
+Parameters 在对象标题下按需展开过滤器，连续展示检查目标的 Position/Rotation/Scale 数值行和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、Checkbox 或枚举 Combo；规范数学元组由 NumberRow 组合。资源选择使用 `ResourceParameters` 和 `Items<ResourceProperty>` 展示只读元数据，各行 key 来自同一宿主分配器。EntityStructure 用同一 Tree/Repeat 递归展示 Entity 与组件归属，并提供组成及 Add/Remove Transform 命令；SceneTree 递归展示 Entity 组合层级。ViewportTools 在路径栏末尾提供显示菜单，ViewportMode 在视口左侧组成紧凑的选择组和枢轴菜单。所有视图沿同一原生控件和命令链工作。
 
 
 本文是当前实现的用法与契约说明，包含 2026-10-05 的源码局部更新。Qt/QML、Unity UI Toolkit 与 Flutter 的官方资料比对及演进起点见[更新机制研究](../../research/ui-dsl-update-comparison-20261005.md)。
@@ -108,7 +108,7 @@ ui Entries(in Items<Entry> entries, in bool visible) {
 }
 ```
 
-Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再插入建立新生命周期。不能用列表索引或 Actor 地址充当 key。每个被重复的类型须有一个具体声明根节点，不能以另一个组件或 Repeat 作为唯一根。普通声明根使用项 key，例如 Scene Tree 的 TreeItem；TextField 的实际控件 key 仍由 edit 输入决定，不能将项身份与编辑绑定身份混为一谈。列表是不可变快照，发布后不得通过保留的可变别名修改。
+Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再插入建立新生命周期。不能用列表索引或 Entity 地址充当 key。每个被重复的类型须有一个具体声明根节点，不能以另一个组件或 Repeat 作为唯一根。普通声明根使用项 key，例如 Scene Tree 的 TreeItem；TextField 的实际控件 key 仍由 edit 输入决定，不能将项身份与编辑绑定身份混为一谈。列表是不可变快照，发布后不得通过保留的可变别名修改。
 
 `mounted: false` 在成功提交后关闭子 scope；`collapsed` 只退出布局并保留实例。Source 组合循环被拒绝。每个宿主根区域最多展开 10000 个声明节点，并最多发布 10000 个控件；剩余额度逐层传入，新建子实例前检查，因此没有输出的空参数行也不能无限扩张作用域。最终完整批次继续受 Session 的容量和树结构校验约束。尚无插槽、跨文件模块或实例虚拟化。
 
@@ -368,7 +368,7 @@ Notice notice { title: "Additional settings"; }
 
 这条链独立于 World Tick。业务字段的写入仍是 `Action → editor::Session::begin/preview/commit/cancel → World`；JIT 回调只复制 UI 值，不重入 JIT，不调用 World 命令，不构造或销毁 Runtime 对象。
 
-编辑器的 UI 原生类型和 UI Source 共用 Workspace 独立拥有的 Runtime，与场景 Runtime 分开。项目 UI 使用运行进程自己的 UI Runtime。每个 Instance 创建一个 UI Context；不持有 Actor 根或业务地址。C++ 按当前 World 成员采样，即使撤销历史保活了已删除 Actor，也不会继续投影为可编辑目标。
+编辑器的 UI 原生类型和 UI Source 共用 Workspace 独立拥有的 Runtime，与场景 Runtime 分开。项目 UI 使用运行进程自己的 UI Runtime。每个 Instance 创建一个 UI Context；不持有 Entity 根或业务地址。C++ 按当前 World 成员采样，即使撤销历史保活了已删除 Entity，也不会继续投影为可编辑目标。
 
 一个 LiveDocument 管理一个作者文件及稳定的具名宿主区域表。区域的 parent 和 key aliases 在其生命周期内固定，变化会明确拒绝。候选 Module 在原实例上准备新定义，旧定义与待移除子实例在完整 Session 批次被接受且取消 effects 消费后释放。隐藏的宿主区域保留实例，以便重新显示时沿用状态。
 

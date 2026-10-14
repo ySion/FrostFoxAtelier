@@ -5,7 +5,7 @@ void lit_materials_and_lights() {
         .base<w::LightComponent>().field<&DerivedLight::extra>("extra").publish());
     require(take(runtime.native_type<w::LightKind>())==types.light_kind &&
         take(runtime.native_type<w::LightSettings>())==types.light_settings &&
-        take(runtime.find_type("world.LightComponent"))==types.light_component && take(runtime.is_a(derived,types.scene_component)),
+        take(runtime.find_type("world.LightComponent"))==types.light_component && take(runtime.is_a(derived,types.component)),
         "Light types did not enter the shared reflected hierarchy.");
     source::Program program(runtime,types.light_component);
     publish(program,"void tick(float dt) { self.settings.intensity = self.settings.intensity + dt; }");
@@ -22,8 +22,11 @@ void lit_materials_and_lights() {
     }));
     require(w::Material{}.roughness==.65f && w::Material{}.metallic==0 && w::Material{}.emissive==math::Vector3{},"Material defaults changed unexpectedly.");
     const w::Material material{{.2f,.3f,.4f},.25f,.75f,{4,8,16}};
-    auto actor=take(w::create_static_mesh_actor(world,{geometry::cube_mesh(),{},material}));
-    const auto root=*take(w::root_component(runtime,actor.id()));
+    auto entity=take(w::create_static_mesh_entity(world,{geometry::cube_mesh(),{},material}));
+    const auto root=take(w::components(runtime,entity.id())).front().id();
+    auto point_entity=take(w::create_entity(runtime));
+    auto rectangle_entity=take(w::create_entity(runtime));
+    auto directional_entity=take(w::create_entity(runtime));
     auto point=take(w::create_component(runtime,types.light_component));
     auto rectangle=take(w::create_component(runtime,derived));
     auto directional=take(w::create_component(runtime,types.light_component));
@@ -38,17 +41,27 @@ void lit_materials_and_lights() {
     const math::Quaternion parent_rotation{0,half,0,half};
     const math::Quaternion child_rotation{0,0,std::sin(.3f),std::cos(.3f)};
     const math::Quaternion rectangle_rotation{std::sin(.2f),0,0,std::cos(.2f)};
-    take(world.set_transform(root,{{10,20,30},parent_rotation,{2,3,4}}));
-    take(world.set_transform(point_id,{{1,0,0},child_rotation,{5,6,7}}));
-    take(world.set_transform(rectangle_id,{{0,1,0},rectangle_rotation,{8,9,10}}));
-    const std::array group{w::Attachment{rectangle_id,point_id},w::Attachment{point_id,root},w::Attachment{directional_id,root}};
-    committed(world.attach_components(actor.id(),group));committed(world.attach(actor.id()));
+    take(world.set_transform(entity.id(),{{10,20,30},parent_rotation,{2,3,4}}));
+    take(world.set_transform(point_entity.id(),{{1,0,0},child_rotation,{5,6,7}}));
+    take(world.set_transform(rectangle_entity.id(),{{0,1,0},rectangle_rotation,{8,9,10}}));
+    take(world.set_transform(directional_entity.id(),{}));
+    const std::array rect_group{w::Attachment{rectangle_id}},point_group{w::Attachment{point_id}},sun_group{w::Attachment{directional_id}};
+    committed(world.attach_components(rectangle_entity.id(),rect_group));
+    committed(world.attach_components(point_entity.id(),point_group));
+    committed(world.attach_components(directional_entity.id(),sun_group));
+    committed(world.reparent(rectangle_entity.id(),entity.id(),w::ReparentRule::keep_local));
+    committed(world.reparent(point_entity.id(),entity.id(),w::ReparentRule::keep_local));
+    committed(world.reparent(directional_entity.id(),entity.id(),w::ReparentRule::keep_local));
+    // Spatial reference is independent of composition order: the rectangle
+    // precedes its point origin in the authoritative lifecycle tree.
+    committed(world.set_space_reference(rectangle_entity.id(),point_entity.id(),w::ReparentRule::keep_local));
+    committed(world.attach(entity.id()));
     const auto roots=runtime.root_count();const auto snapshot=take(world.light_items());const auto meshes=take(world.render_items());
     require(runtime.root_count()==roots && snapshot.size()==3 && meshes.size()==1 && meshes[0].material==material,
         "Lighting snapshots retained business roots or mixed mesh/light projections.");
     require(snapshot[0].component==rectangle_id && snapshot[1].component==point_id && snapshot[2].component==directional_id &&
-        snapshot[0].actor==actor.id() && snapshot[0].settings==rect_settings,"Light projection lost identity, order or authored data.");
-    const auto matrix=take(w::world_matrix(runtime,rectangle_id));
+        snapshot[0].entity==rectangle_entity.id() && snapshot[0].settings==rect_settings,"Light projection lost identity, order or authored data.");
+    const auto matrix=take(w::world_matrix(runtime,rectangle_entity.id()));
     require(snapshot[0].position==math::Vector3{matrix[12],matrix[13],matrix[14]} && near(snapshot[1].position.z,28),"Light position ignored the actual TRS hierarchy.");
     const auto rotation=*math::try_normalize(parent_rotation*child_rotation*rectangle_rotation);
     const auto forward=math::rotate(rotation,math::Vector3{0,0,1});
@@ -84,15 +97,15 @@ void lit_materials_and_lights() {
     take(world.set_material(root,material));
     auto bad_material=material;bad_material.emissive.y=std::numeric_limits<float>::infinity();
     reject(world.set_material(root,bad_material),"Nonfinite emissive was accepted.");
-    reject(w::create_static_mesh_actor(world,{geometry::cube_mesh(),{},bad_material}),"Factory bypassed expanded Material validation.");
+    reject(w::create_static_mesh_entity(world,{geometry::cube_mesh(),{},bad_material}),"Factory bypassed expanded Material validation.");
     auto bad_light=point_settings;bad_light.color.z=std::numeric_limits<float>::quiet_NaN();
     reject(world.set_light(point_id,bad_light),"Nonfinite light color was accepted.");
     take(world.write(point_id,light_path("intensity"),0.f));
     require(take(world.light_items()).size()==3 && take(world.light_items())[1].settings.intensity==0,"Zero intensity dropped stable light identity.");
     take(world.set_light(point_id,point_settings));
     committed(world.set_enabled(point_id,false));require(take(world.light_items()).size()==2,"Disabled Component still illuminated the World.");
-    committed(world.set_enabled(actor.id(),false));require(take(world.light_items()).empty(),"Disabled Actor still illuminated the World.");
-    committed(world.set_enabled(actor.id(),true));committed(world.set_enabled(point_id,true));
+    committed(world.set_enabled(entity.id(),false));require(take(world.light_items()).empty(),"Disabled Entity still illuminated the World.");
+    committed(world.set_enabled(entity.id(),true));committed(world.set_enabled(point_id,true));
     auto removal=take(world.remove_component(rectangle_id));require(take(world.light_items()).size()==2,"Removed light stayed registered.");
     committed(world.restore(removal));removal.root.reset();require(take(world.light_items())[0].component==rectangle_id,"Undo changed light identity/order.");
     committed(world.start());committed(world.start());
@@ -107,17 +120,28 @@ void lit_materials_and_lights() {
     reject(world.light_items(),"Unsafe native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
     take(runtime.with_native<w::StaticMeshComponent>(root,[](auto& mesh)->Result<void>{mesh.material.metallic=2;return {};}));
     reject(world.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(world.set_material(root,material));
-    auto detached=take(world.detach(actor.id()));
+    auto detached=take(world.detach(entity.id()));
     require(take(world.light_items()).empty() && take(world.query(types.light_component)).empty(),"Detached history graph remained a light source.");
     committed(world.restore(detached));detached.root.reset();
-    auto light_actor=take(w::create_actor(runtime));auto light_root=take(w::create_component(runtime,types.light_component));
-    const std::array only_light{w::Attachment{light_root.id(),{},true}};
-    committed(world.attach_components(light_actor.id(),only_light));committed(world.attach(light_actor.id()));
-    require(take(world.render_items()).size()==1 && take(w::inspect_actor(runtime,light_actor.id())).can_present && take(world.light_items()).size()==4,
-        "A light-only Actor required a mesh or another root type.");
+    auto light_entity=take(w::create_entity(runtime));auto light_root=take(w::create_component(runtime,types.light_component));
+    const std::array only_light{w::Attachment{light_root.id()}};
+    take(world.set_transform(light_entity.id(),{}));committed(world.attach_components(light_entity.id(),only_light));committed(world.attach(light_entity.id()));
+    require(take(world.render_items()).size()==1 && take(w::inspect_entity(runtime,light_entity.id())).can_present && take(world.light_items()).size()==4,
+        "A light-only Entity required a mesh or another root type.");
+    w::LightSettings sky_settings;sky_settings.kind=w::LightKind::sky;
+    take(world.set_light(light_root.id(),sky_settings));take(world.remove_transform(light_entity.id()));
+    reject(world.set_light(light_root.id(),{}),"Nonspatial Sky owner accepted a point light without Transform.");
+    reject(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,static_cast<std::uint32_t>(w::LightKind::directional)}),
+        "Light field authoring bypassed its owner's spatial requirement.");
+    require(take(w::read_light(runtime,light_root.id()))==sky_settings && !take(w::has_transform(runtime,light_entity.id())) &&
+        take(world.light_items()).size()==4,"Rejected spatial Light edits changed settings or damaged presentation.");
+    take(world.set_transform(light_entity.id(),{}));
+    take(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,static_cast<std::uint32_t>(w::LightKind::point)}));
+    require(take(w::read_light(runtime,light_root.id())).kind==w::LightKind::point && take(world.light_items()).size()==4,
+        "Adding Transform did not permit the same spatial Light edit.");
     committed(world.close());committed(world.close());reject(world.light_items(),"Closed World exposed a stale light directory.");
     const auto saved_identity=snapshot.front().component;
-    actor.reset();point.reset();rectangle.reset();directional.reset();light_actor.reset();light_root.reset();collect(runtime);
+    entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();collect(runtime);
     require(runtime.live_objects()==0 && !runtime.type_of(saved_identity) && snapshot.front().settings==rect_settings,
         "Light snapshots retained business objects or depended on their later state.");
     std::puts("[pass] Lit data: reflected Material/LightSettings, HDR validation, Source inheritance, TRS extraction, identity/history and lifecycle");

@@ -75,11 +75,11 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     const auto light_items=model(scene.light_items());
     const auto moving=std::ranges::find_if(light_items,[](const auto& item){return item.settings.kind==world::LightKind::point && item.settings.color.x>.9f;});
     require(moving!=light_items.end(),"Sponza has no warm movable light.");
-    const auto original=model(world::read_transform(runtime,moving->component));
+    const auto original=model(world::read_transform(runtime,moving->entity));
     std::ofstream motion(output/"ddgi-motion.csv");motion<<"frame,x,y,z,history_resets\n";
     for(unsigned frame=1;frame<=32;++frame) {
         auto transform=original;transform.position.x+=8.f*static_cast<float>(frame)/32.f;
-        edit(moving->component,"position.x",transform.position.x);tick(app,1);
+        edit(moving->entity,"position.x",transform.position.x);tick(app,1);
         const auto resets=app.frame_statistics().scene_lit_history_resets;
         motion<<frame<<','<<transform.position.x<<','<<transform.position.y<<','<<transform.position.z<<','<<resets<<'\n';
         require(resets==0,"Moving a Sponza light reset the DDGI history domain.");
@@ -111,7 +111,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     report<<"Lights off luminance (0..255): early="<<luminance(dark_early)<<" settled="<<luminance(dark_late)<<'\n';report.flush();
     require(luminance(dark_late)<std::max(2.,luminance(dark_early)*.3),"Sponza retained stale probe lighting after lights were switched off.");
     for(const auto& item:light_items) edit(item.component,"settings.intensity",item.settings.intensity);
-    edit(moving->component,"position.x",original.position.x);
+    edit(moving->entity,"position.x",original.position.x);
     require(model(app.document().serialize())==authored,"Sponza dynamic acceptance did not restore authored World data.");
     model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit));
     require(Access::scene_lit_view(app).lit.probe_volumes[0].minimum==settings.probe_volumes[0].minimum,"Camera configuration unexpectedly rebuilt the DDGI volume.");

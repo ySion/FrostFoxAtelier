@@ -171,15 +171,63 @@ ViewportView::Ray ViewportView::ray(float x,float y) const noexcept {
 float ViewportView::pixel_size(V3 at) const noexcept {
     return (orthographic?1.f:std::max(math::dot(at-eye,forward),.05f))*2/(std::max(bounds.height,1.f)*projection[5]);
 }
+namespace {
+Result<world::Trs> viewport_frame(const Session& session,ObjectId entity,const math::Matrix4& matrix,std::optional<world::Trs> authored={}) {
+    auto& runtime=session.world().runtime();
+    auto value=authored?Result<world::Trs>{*authored}:world::read_transform(runtime,entity);if(!value) return std::unexpected(value.error());
+    auto parent=world::spatial_parent(runtime,entity);if(!parent) return std::unexpected(parent.error());
+    while(*parent!=ObjectId{}) {
+        const auto spatial=world::has_transform(runtime,*parent);if(!spatial) return std::unexpected(spatial.error());
+        if(*spatial) {auto pose=world::read_transform(runtime,*parent);if(!pose) return std::unexpected(pose.error());value->rotation=pose->rotation*value->rotation;}
+        parent=world::spatial_parent(runtime,*parent);if(!parent) return std::unexpected(parent.error());
+    }
+    value->position={matrix[12],matrix[13],matrix[14]};
+    for(std::size_t axis=0;axis<3;++axis) value->scale[axis]=math::length(V3{matrix[axis*4],matrix[axis*4+1],matrix[axis*4+2]});
+    return world::canonical_transform(*value);
+}
+}
 std::optional<ViewportTool::Targets> ViewportTool::targets(const Session& session,PivotMode mode,V3 cursor) {
     Targets result;
-    for(const auto actor:session.selected_actors()) {
-        const auto root=world::root_component(session.world().runtime(),actor);if(!root || !*root) continue;
-        const auto value=world::read_transform(session.world().runtime(),**root);if(!value) continue;
-        result.components.push_back(**root);result.transforms.push_back(*value);result.pivot+=value->position;
+    for(const auto entity:session.selected_entities()) {
+        const auto spatial=world::has_transform(session.world().runtime(),entity);if(!spatial || !*spatial) continue;
+        auto parent=world::spatial_parent(session.world().runtime(),entity);bool inherited{};
+        while(parent && *parent!=ObjectId{}) {
+            if(session.is_selected(*parent)) {inherited=true;break;}
+            parent=world::spatial_parent(session.world().runtime(),*parent);
+        }
+        if(inherited) continue;
+        const auto matrix=world::world_matrix(session.world().runtime(),entity);if(!matrix) continue;
+        const auto value=viewport_frame(session,entity,*matrix);if(!value) continue;
+        result.entities.push_back(entity);result.transforms.push_back(*value);result.pivot+=value->position;
     }
-    if(result.components.empty()) return {};
-    result.pivot=mode==PivotMode::cursor?cursor:result.pivot/float(result.components.size());return result;
+    if(result.entities.empty()) return {};
+    result.pivot=mode==PivotMode::cursor?cursor:result.pivot/float(result.entities.size());return result;
+}
+Result<void> ViewportTool::preview_world(Session& session,std::uint64_t token,std::span<const ObjectId> entities,std::span<const world::Trs> values,bool local_scale) {
+    std::vector<world::Trs> local;local.reserve(values.size());
+    for(std::size_t i=0;i<values.size();++i) {
+        auto parent=world::spatial_parent(session.world().runtime(),entities[i]);if(!parent) return std::unexpected(parent.error());
+        auto matrix=math::Matrix4::identity();
+        if(*parent!=ObjectId{}) {auto read=world::world_matrix(session.world().runtime(),*parent);if(!read) return std::unexpected(read.error());matrix=*read;}
+        const auto original=session.original_transform(token,entities[i]);if(!original) return std::unexpected(original.error());
+        const auto original_world=world::multiply(world::transform_matrix(*original),matrix);if(!original_world) return std::unexpected(original_world.error());
+        const auto frame=viewport_frame(session,entities[i],*original_world,*original);if(!frame) return std::unexpected(frame.error());
+        if(values[i]==*frame) {local.push_back(*original);continue;}
+        if(local_scale) {
+            auto desired=*original_world;desired[12]=values[i].position.x;desired[13]=values[i].position.y;desired[14]=values[i].position.z;
+            auto converted=world::relative_transform(desired,matrix);if(!converted) return std::unexpected(converted.error());
+            for(std::size_t axis=0;axis<3;++axis) converted->scale[axis]=original->scale[axis]*values[i].scale[axis]/frame->scale[axis];
+            local.push_back(*converted);continue;
+        }
+        const auto inverse=math::try_inverse(world::transform_matrix(*frame));if(!inverse) return invalid("The viewport frame is singular.");
+        // Keep the original affine frame, including inherited shear. The proxy
+        // TRS only expresses the gesture's delta; it never replaces object space.
+        auto delta=world::multiply(*inverse,world::transform_matrix(values[i]));if(!delta) return std::unexpected(delta.error());
+        auto desired=world::multiply(*original_world,*delta);if(!desired) return std::unexpected(desired.error());
+        auto converted=world::relative_transform(*desired,matrix);
+        if(!converted) return std::unexpected(converted.error());local.push_back(*converted);
+    }
+    return session.preview_transform(token,local);
 }
 ViewportTool::Handle ViewportTool::hit(const ViewportView& view,const Targets& selected,TransformTool tool,V2 p) const {
     Handle best=Handle::none;float closest=7*view.dpi_scale;
@@ -191,14 +239,14 @@ ViewportTool::Handle ViewportTool::hit(const ViewportView& view,const Targets& s
     });return best;
 }
 std::optional<ObjectId> ViewportTool::pick(const Session& session,const ViewportView& view,float x,float y) const {
-    const auto found=trace(session,view,x,y,true);return found?std::optional(found->actor):std::nullopt;
+    const auto found=trace(session,view,x,y,true);return found?std::optional(found->entity):std::nullopt;
 }
 std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,const ViewportView& view,float x,float y,bool locators) {
     const auto ray=view.ray(x,y);float nearest=std::numeric_limits<float>::max();std::optional<Hit> found;
     const auto items=session.world().render_items();if(!items) return {};
     std::unordered_set<ObjectId> rendered;
     for(const auto& item:*items) {
-        rendered.insert(item.actor);const auto inverse=math::try_inverse(item.world);if(!inverse) continue;
+        rendered.insert(item.entity);const auto inverse=math::try_inverse(item.world);if(!inverse) continue;
         const ViewportView::Ray local{math::transform_point(ray.origin,*inverse),math::transform_direction(ray.direction,*inverse)};
         const auto vertices=item.geometry->vertices();
         for(std::size_t i=0;i<vertices.size();i+=3) {
@@ -226,19 +274,19 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,cons
                     const auto edge1=math::transform_direction(at(i+1)-at(i),item.world),edge2=math::transform_direction(at(i+2)-at(i),item.world);
                     auto normal=math::try_normalize(math::cross(edge1,edge2)).value_or(V3{0,1,0});
                     if(math::dot(normal,ray.direction)>0) normal=-normal;
-                    nearest=t->distance;found=Hit{item.actor,point,normal};
+                    nearest=t->distance;found=Hit{item.entity,point,normal};
                 }
             }
         }
     }
     if(!locators) return found;
     const auto members=session.world().members();if(!members) return found;
-    for(const auto& actor:*members) if(!rendered.contains(actor.id())) {
-        const auto root=world::root_component(session.world().runtime(),actor.id());if(!root || !*root) continue;
-        const auto matrix=world::world_matrix(session.world().runtime(),**root);if(!matrix) continue;
+    for(const auto& entity:*members) if(!rendered.contains(entity.id())) {
+        const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
+        const auto matrix=world::world_matrix(session.world().runtime(),entity.id());if(!matrix) continue;
         const V3 origin{(*matrix)[12],(*matrix)[13],(*matrix)[14]};const auto p=view.project(origin);
         const auto depth=math::dot(origin-ray.origin,ray.direction);
-        if(p && length(*p-V2{x,y})<=8*view.dpi_scale && depth<nearest && depth>=0) {nearest=depth;found=Hit{actor.id(),origin};}
+        if(p && length(*p-V2{x,y})<=8*view.dpi_scale && depth<nearest && depth>=0) {nearest=depth;found=Hit{entity.id(),origin};}
     }
     return found;
 }
@@ -269,18 +317,18 @@ void ViewportTool::cursor_to_grid(Settings settings) noexcept {
     for(int axis=0;axis<3;++axis) cursor[axis]=std::round(cursor[axis]/settings.grid_spacing)*settings.grid_spacing;
 }
 Result<void> ViewportTool::cursor_to_selection(const Session& session) {
-    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Actor with a spatial root.");
+    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     cursor=selected->pivot;return {};
 }
 Result<void> ViewportTool::snap_selection(Session& session,Settings settings,bool to_cursor) {
-    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Actor with a spatial root.");
+    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     auto values=selected->transforms;
     for(auto& value:values) {
         if(to_cursor) value.position+=cursor-selected->pivot;
         else for(int axis=0;axis<3;++axis) value.position[axis]=std::round(value.position[axis]/settings.grid_spacing)*settings.grid_spacing;
     }
-    const auto token=next_session_++;auto result=session.begin_transform(selected->components,token);if(!result) return result;
-    result=session.preview_transform(token,values);
+    const auto token=next_session_++;auto result=session.begin_transform(selected->entities,token);if(!result) return result;
+    result=preview_world(session,token,selected->entities,values);
     if(result) return session.commit_edit(token);
     const auto cancelled=session.cancel_edit();return cancelled?result:cancelled;
 }
@@ -290,54 +338,54 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session,const Viewpo
         return left<=box.x+box.width && right>=box.x && top<=box.y+box.height && bottom>=box.y;
     };
     for(const auto& item:*items) {
-        if(std::ranges::find(found,item.actor)!=found.end()) continue;
+        if(std::ranges::find(found,item.entity)!=found.end()) continue;
         float left=std::numeric_limits<float>::max(),top=left,right=-left,bottom=-left;
         for(const auto& vertex:item.geometry->vertices()) {
             const auto& p=vertex.position;const auto projected=view.project(math::transform_point(V3{p[0],p[1],p[2]},item.world));
             if(!projected) continue;
             left=std::min(left,projected->x);right=std::max(right,projected->x);top=std::min(top,projected->y);bottom=std::max(bottom,projected->y);
         }
-        if(left<=right && intersects(left,top,right,bottom)) found.push_back(item.actor);
+        if(left<=right && intersects(left,top,right,bottom)) found.push_back(item.entity);
     }
     const auto members=session.world().members();if(!members) return found;
-    for(const auto& actor:*members) {
-        if(std::ranges::find(found,actor.id())!=found.end()) continue;
-        const auto root=world::root_component(session.world().runtime(),actor.id());if(!root || !*root) continue;
-        const auto transform=world::read_transform(session.world().runtime(),**root);if(!transform) continue;
-        const auto p=view.project(transform->position);if(p && intersects(p->x,p->y,p->x,p->y)) found.push_back(actor.id());
+    for(const auto& entity:*members) {
+        if(std::ranges::find(found,entity.id())!=found.end()) continue;
+        const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
+        const auto matrix=world::world_matrix(session.world().runtime(),entity.id());if(!matrix) continue;
+        const auto p=view.project({(*matrix)[12],(*matrix)[13],(*matrix)[14]});if(p && intersects(p->x,p->y,p->x,p->y)) found.push_back(entity.id());
     }
     return found;
 }
 Result<void> ViewportTool::select_click(Session& session,const ViewportView& view,V2 p,bool shift,bool control) {
     const auto object=pick(session,view,p.x,p.y);std::vector<ObjectId> selected;
-    if(shift || control) selected.assign(session.selected_actors().begin(),session.selected_actors().end());
+    if(shift || control) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
     if(object) {
         if(control || (shift && std::ranges::find(selected,*object)!=selected.end())) std::erase(selected,*object);
         else selected.push_back(*object);
     }
-    return session.select_actors(selected,object.value_or(ObjectId{}));
+    return session.select_entities(selected,object.value_or(ObjectId{}));
 }
 Result<void> ViewportTool::select_box(Session& session,const ViewportView& view,const Marquee& marquee) {
     const auto a=marquee.start,b=marquee.current;
     const auto hits=pick_box(session,view,{std::min(a.x,b.x),std::min(a.y,b.y),std::abs(a.x-b.x),std::abs(a.y-b.y)});
     std::vector<ObjectId> selected;
-    if(marquee.shift || marquee.control) selected.assign(session.selected_actors().begin(),session.selected_actors().end());
-    for(const auto actor:hits) {
-        if(marquee.control) std::erase(selected,actor);
-        else if(std::ranges::find(selected,actor)==selected.end()) selected.push_back(actor);
+    if(marquee.shift || marquee.control) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
+    for(const auto entity:hits) {
+        if(marquee.control) std::erase(selected,entity);
+        else if(std::ranges::find(selected,entity)==selected.end()) selected.push_back(entity);
     }
-    return session.select_actors(selected,selected.empty()?ObjectId{}:selected.back());
+    return session.select_entities(selected,selected.empty()?ObjectId{}:selected.back());
 }
 Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView& view,Settings settings,V2 pointer) {
-    if (!targets(session,settings.pivot,cursor)) return {}; // Nonspatial Actors still duplicate normally.
+    if (!targets(session,settings.pivot,cursor)) return {}; // Nonspatial Entities still duplicate normally.
     return begin(session,view,settings,Operation::move,Handle::none,true,pointer,true);
 }
 Result<void> ViewportTool::begin(Session& session,const ViewportView&,Settings settings,Operation operation,Handle handle,bool modal,V2 p,bool amend_creation) {
-    auto selected=targets(session,settings.pivot,cursor);if(!selected) return invalid("Select an Actor with a spatial root.");
+    auto selected=targets(session,settings.pivot,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     const auto token=next_session_++;
-    if(auto begun=session.begin_transform(selected->components,token,amend_creation);!begun) return begun;
+    if(auto begun=session.begin_transform(selected->entities,token,amend_creation);!begun) return begun;
     Gesture gesture;gesture.operation=operation;gesture.handle=handle;gesture.modal=modal;gesture.session=token;gesture.settings=settings;
-    gesture.before=std::move(selected->transforms);gesture.pivot=selected->pivot;
+    gesture.entities=std::move(selected->entities);gesture.before=std::move(selected->transforms);gesture.pivot=selected->pivot;
     gesture.start=gesture.last=p;
     if(handle>=Handle::move_x && handle<=Handle::move_z) gesture.axis=int(handle)-int(Handle::move_x);
     if(handle>=Handle::rotate_x && handle<=Handle::rotate_z) gesture.axis=int(handle)-int(Handle::rotate_x);
@@ -426,19 +474,21 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
             L"Scale X: "+number(factors.x,4)+L"   Y: "+number(factors.y,4)+L"  Z: "+number(factors.z,4)+basis();
     }
     g.last=p;
-    auto changed=session.preview_transform(g.session,values);if(!changed) return changed;g.valid=true;
+    auto changed=preview_world(session,g.session,g.entities,values,g.operation==Operation::scale);if(!changed) return changed;g.valid=true;
     // Typed input shows the raw entry in brackets like Blender: "[2|]".
     hint_=g.typed.empty()?readout:readout+L"  ["+g.typed+L"|]";return {};
 }
 Result<void> ViewportTool::clear_channel(Session& session,Operation channel) {
-    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Actor with a spatial root.");
+    const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     auto values=selected->transforms;
-    for(auto& value:values) {
+    for(std::size_t i=0;i<values.size();++i) {
+        auto original=world::read_transform(session.world().runtime(),selected->entities[i]);if(!original) return std::unexpected(original.error());
+        auto& value=values[i];value=*original;
         if(channel==Operation::move) value.position={};
         else if(channel==Operation::rotate) value.rotation={};
         else value.scale={1,1,1};
     }
-    const auto token=next_session_++;auto result=session.begin_transform(selected->components,token);if(!result) return result;
+    const auto token=next_session_++;auto result=session.begin_transform(selected->entities,token);if(!result) return result;
     result=session.preview_transform(token,values);
     if(result) result=session.commit_edit(token);
     if(!result) {const auto cancelled=session.cancel_edit();return cancelled?result:cancelled;}
@@ -548,17 +598,17 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
     if(event.kind!=ui::EventKind::key_down) return false;
     const auto members=[&]()->Result<std::vector<ObjectId>> {
         std::vector<ObjectId> all;const auto items=session.world().members();if(!items) return std::unexpected(items.error());
-        for(const auto& actor:*items) all.push_back(actor.id());return all;
+        for(const auto& entity:*items) all.push_back(entity.id());return all;
     };
     // Blender object mode: Alt+A deselects, Ctrl+I inverts, Alt+G/R/S clear one TRS
     // channel of every selected root as a single history entry.
     if(event.alt && !event.control && vk=='A') {
-        const auto result=session.select_actors({},{});if(!result) return std::unexpected(result.error());hint_=L"Deselect All";return true;
+        const auto result=session.select_entities({},{});if(!result) return std::unexpected(result.error());hint_=L"Deselect All";return true;
     }
     if(event.control && !event.alt && vk=='I') {
         auto all=members();if(!all) return std::unexpected(all.error());
-        std::erase_if(*all,[&](ObjectId actor){return session.is_selected(actor);});
-        const auto result=session.select_actors(*all,all->empty()?ObjectId{}:all->back());if(!result) return std::unexpected(result.error());
+        std::erase_if(*all,[&](ObjectId entity){return session.is_selected(entity);});
+        const auto result=session.select_entities(*all,all->empty()?ObjectId{}:all->back());if(!result) return std::unexpected(result.error());
         hint_=L"Invert Selection";return true;
     }
     if(event.alt && !event.control && (vk=='G' || vk=='R' || vk=='S')) {
@@ -574,9 +624,9 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
     if(vk=='A') {
         // Blender 2.8+ keymap: A selects all; A again with everything selected clears.
         auto all=members();if(!all) return std::unexpected(all.error());
-        const bool everything=!all->empty() && std::ranges::all_of(*all,[&](ObjectId actor){return session.is_selected(actor);});
+        const bool everything=!all->empty() && std::ranges::all_of(*all,[&](ObjectId entity){return session.is_selected(entity);});
         if(everything) all->clear();
-        const auto result=session.select_actors(*all,all->empty()?ObjectId{}:all->back());
+        const auto result=session.select_entities(*all,all->empty()?ObjectId{}:all->back());
         if(!result) return std::unexpected(result.error());hint_=everything?L"Deselect All":L"Select All";return true;
     }
     return false;
@@ -584,13 +634,13 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
 void ViewportTool::overlay(const Session& session,const ViewportView& view,Settings settings,std::vector<Shape>& out) const {
     const auto stroke=[&](V2 a,V2 b,float width,ui::Color color){out.push_back({Shape::Kind::segment,{a.x,a.y,b.x,b.y},width*view.dpi_scale,color});};
     const auto items=session.world().render_items();std::unordered_set<ObjectId> rendered;
-    if(items) for(const auto& item:*items) rendered.insert(item.actor);
+    if(items) for(const auto& item:*items) rendered.insert(item.entity);
     const auto members=session.world().members();
-    if(members) for(const auto& actor:*members) if(!rendered.contains(actor.id())) {
-        const auto root=world::root_component(session.world().runtime(),actor.id());if(!root || !*root) continue;
-        const auto matrix=world::world_matrix(session.world().runtime(),**root);if(!matrix) continue;
+    if(members) for(const auto& entity:*members) if(!rendered.contains(entity.id())) {
+        const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
+        const auto matrix=world::world_matrix(session.world().runtime(),entity.id());if(!matrix) continue;
         const auto p=view.project({(*matrix)[12],(*matrix)[13],(*matrix)[14]});if(!p) continue;
-        const float r=6*view.dpi_scale;const ui::Color color=session.is_selected(actor.id())?picked:srgb(0xd8,0xdc,0xe0);
+        const float r=6*view.dpi_scale;const ui::Color color=session.is_selected(entity.id())?picked:srgb(0xd8,0xdc,0xe0);
         stroke(*p-V2{r,0},*p+V2{r,0},1.5f,color);stroke(*p-V2{0,r},*p+V2{0,r},1.5f,color);
     }
     if(const auto selected=targets(session,settings.pivot,cursor))

@@ -40,12 +40,12 @@ Result<void> validate_ui(const source::SourceFile& file) {
     };
     if(!module) return reject(module.error().message);
     const auto entry=(*module)->find("ProjectUI");
-    if(!entry) return reject("Project UI requires ui ProjectUI(in Text title, in double elapsed, in double actors).");
+    if(!entry) return reject("Project UI requires ui ProjectUI(in Text title, in double elapsed, in double entities).");
     const auto& inputs=entry->declaration().inputs;
     if(inputs.size()!=3 || inputs[0].name!="title" || inputs[0].kind!=ui_language::InputKind::text ||
         inputs[1].name!="elapsed" || inputs[1].kind!=ui_language::InputKind::number ||
-        inputs[2].name!="actors" || inputs[2].kind!=ui_language::InputKind::number)
-        return reject("ProjectUI inputs must be title (Text), elapsed (double), actors (double).");
+        inputs[2].name!="entities" || inputs[2].kind!=ui_language::InputKind::number)
+        return reject("ProjectUI inputs must be title (Text), elapsed (double), entities (double).");
     return {};
 }
 }
@@ -118,9 +118,9 @@ Result<void> ProjectCode::build(const Project& project) {
 Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) const {
     auto& runtime=world_.runtime();
     for(const auto& type:candidate.classes()) {
-        const auto actor=runtime.is_a(type.base,world_.types().actor),component=runtime.is_a(type.base,world_.types().component);
-        if(!actor || !component) return fail("Cannot resolve a project class's published native base.");
-        if(!*actor && !*component) continue;
+        const auto entity=runtime.is_a(type.base,world_.types().entity),component=runtime.is_a(type.base,world_.types().component);
+        if(!entity || !component) return fail("Cannot resolve a project class's published native base.");
+        if(!*entity && !*component) continue;
         if(!bound_ && world_.running()) return std::unexpected(Error{ErrorCode::rebuild_required,"Stop and rebuild the project before adding its behavior bindings."});
 
     }
@@ -129,10 +129,10 @@ Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) 
 Result<void> ProjectCode::bind() {
     auto& runtime=world_.runtime();
     for (const auto& type:program_->classes()) {
-        const auto actor=runtime.is_a(type.type,world_.types().actor);
+        const auto entity=runtime.is_a(type.type,world_.types().entity);
         const auto component=runtime.is_a(type.type,world_.types().component);
-        if (!actor || !component) return fail("Cannot resolve a project behavior's base type.");
-        if (!*actor && !*component) continue;
+        if (!entity || !component) return fail("Cannot resolve a project behavior's base type.");
+        if (!*entity && !*component) continue;
         world::World::Behavior behavior;
         for (const auto& method:program_->entries()) {
             const auto prefix=type.name+".";if (!method.name.starts_with(prefix)) continue;
@@ -184,6 +184,6 @@ std::string ProjectCode::component_source(std::string_view name) {
     return "class project."+std::string(name)+" : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n";
 }
 std::string ProjectCode::ui_source() {
-    return "ui ProjectUI(in Text title, in double elapsed, in double actors) {\n    Column hud {\n        padding_left: 8; padding_top: 8; gap: 4;\n        Text title { text: input.title; }\n        Text hint { text: \"Edit this UI in your project.\"; }\n    }\n}\n";
+    return "ui ProjectUI(in Text title, in double elapsed, in double entities) {\n    Column hud {\n        padding_left: 8; padding_top: 8; gap: 4;\n        Text title { text: input.title; }\n        Text hint { text: \"Edit this UI in your project.\"; }\n    }\n}\n";
 }
 }

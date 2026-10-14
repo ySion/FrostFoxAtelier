@@ -43,7 +43,7 @@ Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原
 
 - 工程管理目录、资源身份和 Source 文档。场景文档管理 Session/World、场景路径、未保存状态、撤销、选择及已绑定代码的寿命。
 - Scene View 绑定一个稳定的文档身份，拥有自己的相机、显示设置、手势和接受帧。不同 Scene View 可以展示不同场景，同一场景也可被多个视图观察；打开场景不必先关闭当前场景。
-- Scene Tree、Actor Structure、Parameters 和场景命令随当前文档切换。已开始的拖动、编辑、菜单命令和异步请求必须保留原文档身份及代次，不能因用户切换标签而落到另一场景。
+- Scene Tree、Entity Structure、Parameters 和场景命令随当前文档切换。已开始的拖动、编辑、菜单命令和异步请求必须保留原文档身份及代次，不能因用户切换标签而落到另一场景。
 - 同工程重复打开同一路径默认激活现有文档；额外观察角度通过新建视图表达。关闭视图与关闭文档分开，关闭最后一个视图时处理未保存修改和正在执行的加载。非活动文档保留数据，默认不持续渲染或自行运行游戏。
 
 加载采用同一条阶段式流程：后台读取、解析与准备不可变资源，所有者线程按帧预算构建和连接对象，Renderer 按既有资源寿命与提交合同完成上传和首帧准备，候选就绪后发布。Runtime 当前是单线程拥有的上下文；不能直接将整个 `Session::deserialize` 丢入后台，并与主线程共用 Project 缓存或活动 Runtime。源码编译准备与 Runtime 类型绑定也需要明确分开。首帧 shader/pipeline 创建、纹理上传和旧 GPU 资源退休同样属于加载链，否则只把磁盘读取移到后台仍会在第一帧卡住。
@@ -54,7 +54,7 @@ Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原
 
 ### 加载与视图的发布规则
 
-文档身份独立于磁盘路径、Actor 身份与停靠标签；未保存的新场景也有稳定身份。每次加载另有请求代次，关闭、重新加载或换工程先撤销其发布资格。后台任务只持有拥有型输入、取消标记及候选结果，不借用活动 Session、UI 控件、Project 可变缓存或原生窗口。候选发布前再次验证工程、目标文档及请求代次。取消后仍在完成的磁盘操作可以结束，但其结果不得重新打开标签或覆盖当前文档。
+文档身份独立于磁盘路径、Entity 身份与停靠标签；未保存的新场景也有稳定身份。每次加载另有请求代次，关闭、重新加载或换工程先撤销其发布资格。后台任务只持有拥有型输入、取消标记及候选结果，不借用活动 Session、UI 控件、Project 可变缓存或原生窗口。候选发布前再次验证工程、目标文档及请求代次。取消后仍在完成的磁盘操作可以结束，但其结果不得重新打开标签或覆盖当前文档。
 
 第一步保留现有 Session 的独立 Runtime/World 寿命，同一文档的多个视图共享这一套对象；不为了后台加载将运行中的 Runtime 迁入工作线程。源码准备、对象构建、资源上传分别提供明确的暂停/继续边界，循环中按阶段计数或时间预算让出主循环。后台完成事件只通知所有者，UI、Runtime 和 GPU 发布仍在对应的安全阶段执行。加载不通过在反序列化中重入 Windows 消息循环来维持假响应。
 
@@ -66,7 +66,7 @@ Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原
 
 | 修改对象 | 历史拥有者 | 多视图行为 |
 | --- | --- | --- |
-| Actor、组件、场景属性、实例材质覆盖 | 场景文档的 Session | 同场景所有 View 共用；不同场景隔离 |
+| Entity、组件、场景属性、实例材质覆盖 | 场景文档的 Session | 同场景所有 View 共用；不同场景隔离 |
 | 共享 Material 等资源的作者属性 | 工程内该资产的文档，按资源 GUID 唯一 | 已打开场景消费同一已发布资产版本 |
 | Source/文本文件 | 该文件的源码文档 | 多个编辑视图共享文本历史 |
 | 尚未提交的字段文本、IME 组合 | 当前编辑控件的本地草稿 | 沿既有文本编辑规则先处理草稿 |
@@ -92,7 +92,7 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 目录树与结果区之间使用 DSL Splitter，可拖动调整目录宽度；两边分别保留至少 96/64 DIP。Esc、失焦、捕获丢失或关闭正在编辑的区域会取消本次调整；临时缩窄整个面板只限制显示宽度，不抹掉用户此前选择的宽度。目录宽度沿现有工作区状态保留，不进入场景撤销，不触发 viewport 渲染目标缩放。
 
-单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Actor。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshActor 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
+单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
 查询或类型过滤排除当前资源时立即清空选择，并禁用对应 Open/Add；仍匹配的选择保留。清除过滤不恢复先前的隐藏选择。目录导航使用共享 Tree 的展开、选择与键盘行为；从路径或内容进入目录时显露对应树行。视图和类型菜单使用互斥单选标记。目录刷新淘汰失效导航记录，当前目录消失时回到有效来源根。
 
@@ -100,13 +100,13 @@ Details 使用共享 Table 的 Name / Type / Size 列，列头显示排序方向
 
 工具行、目录树、内容槽和状态行由 `AssetBrowserShell` 声明，List/Details/Tiles 均由 `AssetResults` 的同一个 Table 节点声明，均位于 [editor.ui.source](../../../assets/editor.ui.source)。保存可更新这些区域的布局，同时保留兼容的控件身份、选择、排序列宽和搜索草稿。浏览器只提供目录/资源快照和既有命令；目录模板按实际变化缓存。全部结果由共享 Table 按当前视图虚拟绘制，原浏览器虚拟列表、合成资源按钮与逐项菜单选择路径已移除。
 
-Import OBJ 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Actor 使用白色实例颜色，避免默认蓝色染色。
+Import OBJ 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Entity 使用白色实例颜色，避免默认蓝色染色。
 
 MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与 DDGI 消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
 依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录，再独占创建依赖、网格与身份文件；已有同名文件不覆盖。发布后目录检查失败时仅删除本轮创建的文件，允许修复后重试；空目录可能保留，清理失败明确报告。
 
-Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Actor 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。Project 内多个 OBJ 引用规范路径与内容一致的贴图时共享不可变解码图像；缓存保留源字节和图像弱引用，刷新清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
+Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Entity 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。Project 内多个 OBJ 引用规范路径与内容一致的贴图时共享不可变解码图像；缓存保留源字节和图像弱引用，刷新清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
 
 
 每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
@@ -117,15 +117,17 @@ File 或 Asset Browser 菜单中的 New Material 创建 `Content/**/*.material`�
 
 选择 Material 后，Parameters 使用 Runtime `material.Material` 的实际反射字段：颜色/向量共用 NumberRow，开关和枚举使用既有控件，贴图由资源菜单选择。标量/颜色和采样设置沿 Session 的 begin/preview/commit/cancel 编辑链；菜单赋纹理也记录完整事务。每个材质资产拥有独立撤销历史与保存点，Ctrl+S 保存当前材质；Save All 保存材质、源码和场景。运行与重建类型先提交并保存材质草稿，避免新 Runtime 或独立进程读取旧文件。关闭、切换文档处理所有未保存资产；Control 替换文档直接拒绝未保存资产。
 
-Actor/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提供赋予共享 Material、Edit Shared Material 和 Use Mesh Default。已有资源绑定时不再显示会被覆盖的旧组件颜色/粗糙度字段。绑定的参数行旁有覆盖复选框：勾选后在同一 Runtime 惰性创建具有父材质强引用的实例；只记录被勾选参数的覆盖位，未覆盖参数继续继承。取消某项覆盖立即恢复父值。当前支持一层继承，覆盖颜色、透明度、粗糙度、金属度、发光、法线强度/Y 约定及覆盖/双面标志；纹理及采样设置从共享材质继承，未提供实例纹理覆盖。
+Entity/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提供赋予共享 Material、Edit Shared Material 和 Use Mesh Default。已有资源绑定时不再显示会被覆盖的旧组件颜色/粗糙度字段。绑定的参数行旁有覆盖复选框：勾选后在同一 Runtime 惰性创建具有父材质强引用的实例；只记录被勾选参数的覆盖位，未覆盖参数继续继承。取消某项覆盖立即恢复父值。当前支持一层继承，覆盖颜色、透明度、粗糙度、金属度、发光、法线强度/Y 约定及覆盖/双面标志；纹理及采样设置从共享材质继承，未提供实例纹理覆盖。
 
-例如两根柱子引用同一材质，仅 A 覆盖 roughness 后，修改父材质 base_color 会同时更新 A/B；A 保留自己的 roughness。资产修改不污染场景历史；槽赋予、实例参数及覆盖开关进入场景历史。复制 Actor 共享资产但复制其可变材质实例。更换网格保留名称唯一匹配的绑定，丢失/歧义槽被移除；清空网格清空材质引用。没有名称的槽使用 `slot/<index>`，命名槽按名称持久对应。
+例如两根柱子引用同一材质，仅 A 覆盖 roughness 后，修改父材质 base_color 会同时更新 A/B；A 保留自己的 roughness。资产修改不污染场景历史；槽赋予、实例参数及覆盖开关进入场景历史。复制 Entity 共享资产但复制其可变材质实例。更换网格保留名称唯一匹配的绑定，丢失/歧义槽被移除；清空网格清空材质引用。没有名称的槽使用 `slot/<index>`，命名槽按名称持久对应。
+
+编辑器的内联实例参数历史目前要求单组件归属；同一匿名实例绑定多个组件时，参数编辑明确拒绝。其共享身份仍可保存和复制，原生消费者通过 `material::update_material` 更新同一个资源对象。
 
 资源引用由 Runtime 强引用与 GC 管理；Project 保留不可变图像解析缓存和持久索引。渲染只借用拥有型 Surface 快照，不访问 Runtime 对象或磁盘。材质变化按内容发布快照，未变化帧复用；对象关闭后已发布捕获仍拥有图片内容。实例原生字段编辑须经过 `material::write_property / set_override` 明确覆盖意图，不能仅根据字段值与父值不同推断覆盖。
 
 外部图片改写目前不会自动替换已载入 Runtime 中的 Texture 对象。Project Refresh 更新目录及解析缓存；已有会话保留既有图片版本，重新打开工程/场景重新解析。替换为其他 Texture GUID 会立即使用对应资源。本轮没有接入 UI Image 控件的 Runtime Texture 资源。
 
-Scene 自 v3 起在 StaticMeshComponent 的 `materials` 中保存槽名、共享资源 GUID、赋予意图，以及实例的父 GUID、显式覆盖名称和值；当前统一写出 v5，旧版读取范围见下节。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
+Scene 统一写出 v6：顶层 `materials` 按文档 ID 保存材质定义，StaticMeshComponent 的槽绑定引用同一 ID 并保留赋予意图；实例保存父 GUID、显式覆盖名称和值。共享匿名材质往返后仍是同一个对象。旧逐槽 payload 仅在读取边界兼容，完整格式见[项目场景](../world/project-scenes.md#scene-v6)。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
 
 新增 `editor_material_acceptance` 是真实 Project → Runtime → World → Session → SceneSnapshot/DSL → 文件重开的端到端消费者；同时应运行原 document/project scene 消费者和 renderer GPU 材质验收。新增用例不等于已验收通过，实际结果以本次集成日志为准。
 
@@ -133,15 +135,15 @@ Scene 自 v3 起在 StaticMeshComponent 的 `materials` 中保存槽名、共享
 
 - Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 5`，继续读取 v1/v2/v3/v4。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
-- Scene 保存有序 Actor、真实类型名称、名称、enabled、有序组件、局部组件 ID、显式 root/parent、TRS、材质和资源键。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
-- Scene v5 根 `world` 保存 World 光照与效果值，字段来自与 UI / Control 共用的 author-option 目录，包括 `direct_candidates`。v1–v3 使用固定默认值；v4/v5 必须提供 `world` 对象，未保存字段使用默认值，非法/未知/诊断字段整体拒绝。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5 不接受这两个旧字段；`direct_reference` 始终是视口诊断，不进入 Scene。`World::lighting_settings` 是权威值，`Session::set_world_lighting` 是编辑入口，完整候选仅记录一次 Undo；无变化为空操作。运行中或关闭后的 World 拒绝 authoring 写入。World 是宿主服务，配置目前是共享值类型，不伪装成带 ObjectId 的反射对象。
+- Scene v6 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
+- Scene v6 根 `world` 保存 World 光照与效果值，字段来自与 UI / Control 共用的 author-option 目录，包括 `direct_candidates`。v1–v3 使用固定默认值；v4–v6 必须提供 `world` 对象，未保存字段使用默认值，非法/未知/诊断字段整体拒绝。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5/v6 不接受这两个旧字段；`direct_reference` 始终是视口诊断，不进入 Scene。`World::lighting_settings` 是权威值，`Session::set_world_lighting` 是编辑入口，完整候选仅记录一次 Undo；无变化为空操作。运行中或关闭后的 World 拒绝 authoring 写入。World 是宿主服务，配置目前是共享值类型，不伪装成带 ObjectId 的反射对象。
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质、灯光与天空。没有 Sky Light 时环境光仍为零。探针滚动位置、历史、统计、可视化与相机不写入 Scene。
-- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致，因此 Scene v1 继续可读，无需版本迁移或旧类型别名。
-- Scene 按限定类型名恢复已注册的 Actor/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置由专有字段保存。未知版本、未知类型、未知已保存属性、失效关系、缺失资源和无法编码的字段明确失败；空网格保留为空。单场景最多 8192 Actor、每个 Actor 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
-- 物理角色、布娃娃/部件、车辆/车轮、力和运动学组件复用上述属性格式。DistanceConstraint 的 `constraint_target` 是从 1 开始的场景 Actor 顺序，0 为空目标；全部 Actor 创建后恢复 Runtime 弱引用，越界目标拒绝，不保存后端句柄。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
-- SceneQueryComponent 复用 Scene v2 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
+- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。旧 Scene v1–v5 经严格导入进入 Entity 模型，保存统一写出 v6，旧 `actors` 目录与 world.Actor / world.StaticMeshActor / world.SceneComponent 名称只在严格导入边界解释，不作为现行 Runtime 或 Control 别名。
+- Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、未知类型、未知已保存属性、失效关系、缺失资源和无法编码的字段明确失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
+- 物理角色、布娃娃/部件、车辆/车轮、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts / VehicleComponent.wheels 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。旧 constraint_target 序号仅在 v1–v5 导入时解析。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
+- SceneQueryComponent 复用 Scene v6 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源和解析内容，`read_static_mesh` 覆盖 Detached 与空网格。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
-- 重建先创建真实类型对象和组件，恢复值，每个 Actor 一次 `attach_components` 恢复组成与空间关系，最后按文档顺序 attach。加载 StaticMeshActor 不重复调用带默认组成的快捷工厂。
+- 重建先创建全部真实 Entity/Component，恢复值、资源与普通引用，再恢复有序组合和 Entity 空间参考，完整 forest 经统一批次注册；无效关系拒绝候选。加载 StaticMeshEntity 不重复调用带默认组成的快捷工厂。
 - 保存先完成有效文本草稿，经同目录临时文件、FlushFileBuffers 和替换发布。写入失败保留旧文件；这不是跨文件事务或断电恢复保证。工程标记最后创建，未完成创建不会伪装成可打开工程。存档提交与目录刷新结果分开：成功保存后即更新保存点，资源刷新失败显示警告，不将成功写入误报为保存失败。
 - 场景撤销回到保存位置后恢复干净状态；历史分叉或裁剪使旧保存位置不可达时保持未保存状态。浏览、过滤和面板布局不进入场景历史。
 
@@ -157,7 +159,7 @@ Scene 自 v3 起在 StaticMeshComponent 的 `materials` 中保存槽名、共享
 
 ## 性能测量
 
-`out/release/atelier_editor_document_acceptance.exe --profile-json <新证据目录>` 使用现有消费者创建独立工程，测量 1/64/256 Actor，以及 256 Actor、每个 16 组件的真实存档。每项预热 2 次、采样 21 次，记录文件字节数、中位数、P95 与最大值。分别测量暖文件缓存读取、原始 DOM 解析、含输入边界检查的解析、DOM 输出、场景序列化、从文本重建和读盘重建。DOM 与文档销毁在计时外，不包含窗口、GPU 或磁盘冷读；没有测量解析器独占内存峰值。测量目录不得指向用户实用工程。
+`out/release/atelier_editor_document_acceptance.exe --profile-json <新证据目录>` 使用现有消费者创建独立工程，测量 1/64/256 Entity，以及 256 Entity、每个 16 组件的真实存档。每项预热 2 次、采样 21 次，记录文件字节数、中位数、P95 与最大值。分别测量暖文件缓存读取、原始 DOM 解析、含输入边界检查的解析、DOM 输出、场景序列化、从文本重建和读盘重建。DOM 与文档销毁在计时外，不包含窗口、GPU 或磁盘冷读；没有测量解析器独占内存峰值。测量目录不得指向用户实用工程。
 
 JSON 当前位于打开、保存和显式目录刷新路径；帧绘制不解析 JSON。尚未建立不同解析库的同条件比较，不能据此宣称极限吞吐。优化取舍应同时看格式解析和真实 World 重建成本。
 
@@ -176,7 +178,7 @@ JSON 当前位于打开、保存和显式目录刷新路径；帧绘制不解析
 
 1. 打开工程，在 Project → New Component Source 创建 `Source/Move.source`。创建使用独占写入，已有文件不会被覆盖。Code 面板的 New 使用同一入口。
 2. 编辑后 Ctrl+S。F6 或 Project → Build 编译所有工程 Source；外部保存由 500 ms 文件检查发现。新增类型、字段、默认值或改变公开函数签名后，停止运行并选择 Rebuild Types。
-3. 选择一个 Actor，打开 Window → Actor Structure，通过 Add Component 选择 `project.Move`。添加后自动检查该组件。Parameters 中公开数值使用单行参数编辑器，bool 使用 Checkbox，枚举使用命名选项菜单；结构页负责删除，属性修改与结构变化都进入场景文档。
+3. 选择一个 Entity，打开 Window → Entity Structure，通过 Add Component 选择 `project.Move`。添加后自动检查该组件。Parameters 中公开数值使用单行参数编辑器，bool 使用 Checkbox，枚举使用命名选项菜单；结构页负责删除，属性修改与结构变化都进入场景文档。
 4. 保存场景。F8 或 Run 启动独立游戏窗口；Shift+F8 或 Stop 停止。Project Output 显示构建、运行与退出信息。
 5. 运行时修改方法体并保存，兼容版本在下个安全点发布。语法或类型错误保留原代码；Code 的诊断可打开实际出错文件并定位行列。
 
@@ -198,7 +200,7 @@ class project.Move : world.Component {
 }
 ```
 
-`translate_owner` 将位移请求交给 World，在回调边界应用。含 `body.enabled=true` 的 Primitive、CharacterComponent 或 RagdollComponent 的 Actor 会拒绝此操作；停用组件不绕开已声明的物理所有权，物理移动使用 PhysicsScene 的命令。语言声明、原生派生和字段默认值的精确范围见[Source 类型声明](../../source-type-declarations.md)。
+`translate_owner` 将位移请求交给 World，在回调边界应用。含 `body.enabled=true` 的 Primitive、CharacterComponent 或 RagdollComponent 的 Entity 会拒绝此操作；停用组件不绕开已声明的物理所有权，物理移动使用 PhysicsScene 的命令。语言声明、原生派生和字段默认值的精确范围见[Source 类型声明](../../source-type-declarations.md)。
 
 ### 加载与执行链
 
@@ -206,7 +208,7 @@ class project.Move : world.Component {
 Project 配置 + Source 文件快照
   → Session::Prepare 注册原生 World / Physics 类型
   → ProjectCode → Source Program 准备并发布项目类型、行为
-  → Scene v2 解析类型名、属性、资源和关系
+  → Scene v6 解析类型名、属性、资源和关系
   → 停止的编辑文档
   → Run：序列化当前场景到 Cache/Play，启动同一可执行文件的运行入口
   → 独立 Session → start → update → stop
@@ -230,7 +232,7 @@ atelier_editor --run-project E:\ffa_testproj --preview-ui
 Project → New Project UI 创建 `.ui.source` 并写入 `Config/Project.json` 的 `ui_source`。Edit Project UI 打开该文件，Preview Project UI 使用独立预览窗口；游戏窗口也加载同一个入口：
 
 ```cpp
-ui ProjectUI(in Text title, in double elapsed, in double actors) {
+ui ProjectUI(in Text title, in double elapsed, in double entities) {
     Column hud {
         padding_left: 8; padding_top: 8; gap: 4;
         Text title { text: input.title; }
@@ -239,7 +241,7 @@ ui ProjectUI(in Text title, in double elapsed, in double actors) {
 }
 ```
 
-三个输入分别为工程名、运行秒数和 Actor 数量。项目 UI 复用 Source/JIT、LiveDocument、原生 UI、SS、字体、输入和 renderer。预览不启动游戏行为；游戏中 UI 与场景分别拥有 Runtime，只交换输入值。
+三个输入分别为工程名、运行秒数和 Entity 数量。项目 UI 复用 Source/JIT、LiveDocument、原生 UI、SS、字体、输入和 renderer。预览不启动游戏行为；游戏中 UI 与场景分别拥有 Runtime，只交换输入值。
 
 编辑器对项目 UI 只做编译检查，不求值表达式和事件。用户 UI 代码在子进程执行，所以表达式或事件陷入死循环也能停止。保存兼容 UI 变更保留局部状态。ProjectUI::prepare 统一完成源码、控件和真实布局准备，成功后才发布候选；错误恢复上次成功定义、状态与控件。窗口最小化或零 Surface 时暂停发布；冷启动无有效版本时报告失败。入口配置变更在下一次启动运行或预览时采用。
 
@@ -268,4 +270,4 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ## Dungeons 地牢资源
 
-[Dungeons](../../../assets/examples/Examples/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Actor。官方菜单及 `--dungeons` 配置原始 Demo 相机与 Smooth 贴图显示；无参数启动仍为 Sponza。全部非脚本 Unity 资源保留在 Originals，转换后的 2332 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。
+[Dungeons](../../../assets/examples/Examples/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。官方菜单及 `--dungeons` 配置原始 Demo 相机与 Smooth 贴图显示；无参数启动仍为 Sponza。全部非脚本 Unity 资源保留在 Originals，转换后的 2332 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。

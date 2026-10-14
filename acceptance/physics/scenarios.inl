@@ -11,31 +11,26 @@ struct PhysicsFixture {
     w::World world{runtime, world_types};
     std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types));
 
-    struct Actor {
-        atelier::ObjectRoot actor, root, body;
-        atelier::ObjectId id() const { return actor.id(); }
+    struct Entity {
+        atelier::ObjectRoot entity, body;
+        atelier::ObjectId id() const { return entity.id(); }
     };
-    Actor make(Vector3 position, p::BodySettings settings = {}, bool body_enabled = true) {
-        Actor result{take(w::create_actor(runtime)),
-            take(w::create_component(runtime, world_types.collision_component)), {}};
-        result.body=take(runtime.hold(result.root.id()));
-        committed(world.attach_components(result.id(), std::array{
-            w::Attachment{result.root.id(), {}, true}}));
-        take(world.set_transform(result.root.id(), w::Trs{position, {0, 0, 0, 1}, {1, 1, 1}}));
-        settings.enabled=body_enabled;
-        take(p::configure(runtime, result.body.id(), settings));
-        committed(world.attach(result.id()));
-        return result;
+    Entity make(Vector3 position, p::BodySettings settings = {}, bool body_enabled = true) {
+        Entity result{take(w::create_entity(runtime)),take(w::create_component(runtime,world_types.collision_component))};
+        committed(world.attach_components(result.id(),std::array{w::Attachment{result.body.id()}}));
+        take(world.set_transform(result.id(),w::Trs{position,{0,0,0,1},{1,1,1}}));
+        settings.enabled=body_enabled;take(p::configure(runtime,result.body.id(),settings));
+        committed(world.attach(result.id()));return result;
     }
-    Actor ground() {
+    Entity ground() {
         p::BodySettings settings;
         settings.half_extents = {100, .5f, 100};
         return make({0, -.5f, 0}, settings);
     }
     void start() { committed(world.start()); }
     void advance(unsigned steps) { for (unsigned i = 0; i < steps; ++i) take(scene->update(fixed_delta)); }
-    p::BodyHandle handle(const Actor& actor) { return take(scene->body_handle(actor.id())); }
-    p::BodyState state(const Actor& actor) { return take(scene->read_body_state(handle(actor))); }
+    p::BodyHandle handle(const Entity& entity) { return take(scene->body_handle(entity.id())); }
+    p::BodyState state(const Entity& entity) { return take(scene->read_body_state(handle(entity))); }
 };
 
 p::BodySettings dynamic_body(p::ShapeKind shape = p::ShapeKind::box) {
@@ -65,14 +60,14 @@ void rigid_shapes() {
         "rejected configuration preserves the previous shape");
     f.start();
     f.advance(30);
-    for (const auto* actor : {&box, &sphere, &capsule})
-        require(f.state(*actor).position.y < 3.5f && f.state(*actor).linear_velocity.y < -1,
+    for (const auto* entity : {&box, &sphere, &capsule})
+        require(f.state(*entity).position.y < 3.5f && f.state(*entity).linear_velocity.y < -1,
             "all primitive shapes fall under gravity");
     f.advance(330);
     require(near(f.state(box).position.y, .5f, .06f) && near(f.state(sphere).position.y, .5f, .06f) &&
         near(f.state(capsule).position.y, 1.f, .08f), "primitives rest at their respective support heights");
-    for (const auto* actor : {&box, &sphere, &capsule})
-        require(f.state(*actor).sleeping && speed(f.state(*actor).linear_velocity) < .01f,
+    for (const auto* entity : {&box, &sphere, &capsule})
+        require(f.state(*entity).sleeping && speed(f.state(*entity).linear_velocity) < .01f,
             "settled primitives sleep with negligible velocity");
     require(near(f.state(floor).position.y, -.5f), "static ground stays fixed");
     require(!f.scene->add_force(floor.id(), {0, 1, 0}), "static body refuses force");
@@ -122,15 +117,15 @@ void queries() {
     p::BodySettings settings;
     settings.category = 2;
     settings.material = {.friction = .6f, .restitution = .25f};
-    auto near_actor = f.make({0, 0, 0}, settings);
-    auto far_actor = f.make({0, 0, 3}, settings);
+    auto near_entity = f.make({0, 0, 0}, settings);
+    auto far_entity = f.make({0, 0, 3}, settings);
     f.start();
     p::QueryFilter filter;
     filter.mode = p::QueryMode::all;
     const auto all = take(f.scene->raycast({0, 0, -3}, {0, 0, 6}, filter));
-    require(all.hits.size() == 2 && all.hits[0].body.actor == near_actor.id() &&
-        all.hits[1].body.actor == far_actor.id() && all.hits[0].fraction < all.hits[1].fraction,
-        "all ray hits are sorted and carry Actor identities");
+    require(all.hits.size() == 2 && all.hits[0].body.entity == near_entity.id() &&
+        all.hits[1].body.entity == far_entity.id() && all.hits[0].fraction < all.hits[1].fraction,
+        "all ray hits are sorted and carry Entity identities");
     require(all.step_id == 0 && all.has_block && all.hits[0].material == settings.material &&
         near(all.hits[0].normal.z, -1), "ray reports completed step, material and outward normal");
     filter.mode = p::QueryMode::closest;
@@ -138,9 +133,9 @@ void queries() {
         "closest returns one hit");
     filter.mode = p::QueryMode::any;
     require(take(f.scene->raycast({0, 0, -3}, {0, 0, 6}, filter)).hits.size() == 1, "any returns one hit");
-    filter.ignore_component = near_actor.body.id();
+    filter.ignore_component = near_entity.body.id();
     const auto excluded = take(f.scene->raycast({0, 0, -3}, {0, 0, 6}, filter));
-    require(excluded.hits.size() == 1 && excluded.hits[0].body.actor == far_actor.id(),
+    require(excluded.hits.size() == 1 && excluded.hits[0].body.entity == far_entity.id(),
         "component exclusion removes only the selected component");
     filter.categories = 1;
     require(take(f.scene->raycast({0, 0, -3}, {0, 0, 6}, filter)).hits.empty(), "category mask excludes bodies");
@@ -160,7 +155,7 @@ void queries() {
 
 void fixed_step() {
     PhysicsFixture f;
-    auto actor = f.make({0, 10, 0}, dynamic_body());
+    auto entity = f.make({0, 10, 0}, dynamic_body());
     f.start();
     require(!f.scene->update(-1) && !f.scene->update(1.01f) &&
         !f.scene->update(std::numeric_limits<float>::quiet_NaN()), "invalid elapsed time rejected");
@@ -171,8 +166,8 @@ void fixed_step() {
         "long frames cap work and report dropped time");
     require(take(f.scene->update(0)).steps == 0, "zero elapsed does not repeat completed steps");
     f.scene->set_paused(true);
-    const auto before = f.state(actor);
-    require(take(f.scene->update(.5f)).steps == 0 && f.state(actor).position == before.position,
+    const auto before = f.state(entity);
+    require(take(f.scene->update(.5f)).steps == 0 && f.state(entity).position == before.position,
         "pause freezes simulation without accumulating wall time");
     f.scene->step_once();
     f.scene->step_once();
@@ -198,15 +193,15 @@ void fixed_step() {
 
     PhysicsFixture slow;
     PhysicsFixture fast;
-    auto slow_actor = slow.make({0, 10, 0}, dynamic_body());
-    auto fast_actor = fast.make({0, 10, 0}, dynamic_body());
+    auto slow_entity = slow.make({0, 10, 0}, dynamic_body());
+    auto fast_entity = fast.make({0, 10, 0}, dynamic_body());
     slow.start();
     fast.start();
     for (unsigned i = 0; i < 30; ++i) take(slow.scene->update(1.f / 30.f));
     for (unsigned i = 0; i < 120; ++i) take(fast.scene->update(1.f / 120.f));
     require(slow.scene->completed_step() == 60 && fast.scene->completed_step() == 60 &&
-        near(slow.state(slow_actor).position.y, fast.state(fast_actor).position.y) &&
-        near(slow.state(slow_actor).linear_velocity.y, fast.state(fast_actor).linear_velocity.y),
+        near(slow.state(slow_entity).position.y, fast.state(fast_entity).position.y) &&
+        near(slow.state(slow_entity).linear_velocity.y, fast.state(fast_entity).linear_velocity.y),
         "30 Hz and 120 Hz hosts produce the same 60 fixed steps");
 }
 
@@ -259,13 +254,13 @@ void world_ownership() {
     require(!other_scene->read_ragdoll_pose(doll), "ragdoll handles are scene-local");
     const auto removed = take(f.world.detach(owner.id()));
     require(!removed.commit.notification_error && !f.scene->read_ragdoll_pose(doll),
-        "detaching an Actor invalidates its special system");
+        "detaching an Entity invalidates its special system");
     require(!other_scene->create_character(owner.id()) && !other_scene->create_ragdoll(owner.id(), parts),
-        "detached Actors cannot own a special system");
+        "detached Entities cannot own a special system");
     committed(other.attach(owner.id()));
     const auto transferred = take(other_scene->create_character(owner.id()));
     require(!f.scene->create_character(owner.id()) && !f.scene->create_ragdoll(owner.id(), parts),
-        "transferred Actor belongs exclusively to its new World");
+        "transferred Entity belongs exclusively to its new World");
     take(other_scene->destroy_character(transferred));
 }
 
@@ -283,7 +278,7 @@ void failed_lifecycle() {
         PhysicsFixture f;
         auto first = f.make({0, 4, 0}, dynamic_body());
         auto second = f.make({4, 4, 0}, dynamic_body());
-        take(f.world.bind_behavior(f.world_types.actor, {
+        take(f.world.bind_behavior(f.world_types.entity, {
             .tick=[&](atelier::Runtime&, atelier::ObjectId, float)->atelier::Result<void> {
                 if (fail_tick) return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed,"primary failure"});
                 return {};
@@ -352,22 +347,22 @@ void failed_lifecycle() {
 void lifecycle() {
     failed_lifecycle();
     PhysicsFixture f;
-    auto actor = f.make({0, 4, 0}, dynamic_body());
+    auto entity = f.make({0, 4, 0}, dynamic_body());
     f.start();
     PhysicsFixture other;
-    auto other_actor = other.make({0, 4, 0}, dynamic_body());
+    auto other_entity = other.make({0, 4, 0}, dynamic_body());
     other.start();
-    const auto old = f.handle(actor);
+    const auto old = f.handle(entity);
     require(!other.scene->read_body_state(old) && !other.scene->teleport(old, {}, {0, 0, 0, 1}),
         "another scene rejects foreign body handles");
-    take(f.scene->add_impulse(actor.id(), {100, 0, 0}));
-    committed(f.world.set_enabled(actor.body.id(), false));
-    committed(f.world.set_enabled(actor.body.id(), false));
+    take(f.scene->add_impulse(entity.id(), {100, 0, 0}));
+    committed(f.world.set_enabled(entity.body.id(), false));
+    committed(f.world.set_enabled(entity.body.id(), false));
     require(f.scene->body_count() == 0 && !f.scene->read_body_state(old), "repeated disable is harmless");
-    committed(f.world.set_enabled(actor.body.id(), true));
-    require(f.handle(actor).revision != old.revision, "reenable creates a new body generation");
+    committed(f.world.set_enabled(entity.body.id(), true));
+    require(f.handle(entity).revision != old.revision, "reenable creates a new body generation");
     const auto step = take(f.scene->update(fixed_delta));
-    require(step.rejected_commands == 1 && near(f.state(actor).linear_velocity.x, 0),
+    require(step.rejected_commands == 1 && near(f.state(entity).linear_velocity.x, 0),
         "a queued command cannot affect a replacement body");
     committed(f.world.stop());
     committed(f.world.stop());
@@ -376,7 +371,7 @@ void lifecycle() {
     require(f.scene->body_count() == 1 && !f.scene->read_body_state(old), "restart retains no stale body generation");
     f.scene.reset();
     other.advance(1);
-    require(other.state(other_actor).linear_velocity.y < 0, "destroying one scene keeps other scenes alive");
+    require(other.state(other_entity).linear_velocity.y < 0, "destroying one scene keeps other scenes alive");
     f.scene = take(p::PhysicsScene::create(f.world, f.physics_types));
     require(f.scene->body_count() == 1, "new scene reconciles an already running World");
     committed(f.world.close());
@@ -388,11 +383,11 @@ void lifecycle() {
 void character() {
     PhysicsFixture f;
     auto floor = f.ground();
-    auto actor = f.make({0, 3, 0}, {}, false);
+    auto entity = f.make({0, 3, 0}, {}, false);
     f.start();
-    require(!f.scene->create_character(actor.id(), {.radius = 0}), "invalid character shape rejected");
-    const auto handle = take(f.scene->create_character(actor.id()));
-    require(!f.scene->create_character(actor.id()), "duplicate controller rejected");
+    require(!f.scene->create_character(entity.id(), {.radius = 0}), "invalid character shape rejected");
+    const auto handle = take(f.scene->create_character(entity.id()));
+    require(!f.scene->create_character(entity.id()), "duplicate controller rejected");
     f.advance(120);
     const auto landed = take(f.scene->read_character_state(handle));
     require(landed.grounded && landed.position.y > .8f && landed.position.y < 1.2f, "character lands on ground");
@@ -407,10 +402,10 @@ void character() {
     take(f.scene->destroy_character(handle));
     require(!f.scene->destroy_character(handle) && !f.scene->set_character_input(handle, {}),
         "stale controller cannot be destroyed or driven again");
-    const auto next = take(f.scene->create_character(actor.id()));
+    const auto next = take(f.scene->create_character(entity.id()));
     require(next.revision != handle.revision, "new controller has fresh identity");
-    committed(f.world.set_enabled(actor.root.id(), false));
-    require(!f.scene->read_character_state(next), "root deactivation removes the controller");
+    committed(f.world.set_enabled(entity.entity.id(), false));
+    require(!f.scene->read_character_state(next), "Entity deactivation removes the controller");
 }
 
 void constraint() {
@@ -449,15 +444,15 @@ void constraint() {
 void ragdoll() {
     PhysicsFixture f;
     auto floor = f.ground();
-    auto actor = f.make({0, 3, 0}, {}, false);
+    auto entity = f.make({0, 3, 0}, {}, false);
     f.start();
     std::array<p::RagdollPart, 2> parts{{{"hip", -1, {}}, {"head", 0, {0, .6f, 0}, .15f, .15f}}};
     auto invalid = parts;
     invalid[1].parent = 1;
-    require(!f.scene->create_ragdoll(actor.id(), invalid), "self-parented ragdoll part rejected");
-    require(!f.scene->create_ragdoll(actor.id(), {}), "empty ragdoll rejected");
-    const auto handle = take(f.scene->create_ragdoll(actor.id(), parts));
-    require(!f.scene->create_ragdoll(actor.id(), parts), "duplicate ragdoll rejected");
+    require(!f.scene->create_ragdoll(entity.id(), invalid), "self-parented ragdoll part rejected");
+    require(!f.scene->create_ragdoll(entity.id(), {}), "empty ragdoll rejected");
+    const auto handle = take(f.scene->create_ragdoll(entity.id(), parts));
+    require(!f.scene->create_ragdoll(entity.id(), parts), "duplicate ragdoll rejected");
     const auto initial = take(f.scene->read_ragdoll_pose(handle));
     f.advance(180);
     const auto pose = take(f.scene->read_ragdoll_pose(handle));
@@ -468,7 +463,7 @@ void ragdoll() {
             pose.positions[i].y < initial.positions[i].y, "ragdoll parts fall and collide with ground");
     take(f.scene->destroy_ragdoll(handle));
     require(!f.scene->destroy_ragdoll(handle), "stale ragdoll destruction rejected");
-    const auto next = take(f.scene->create_ragdoll(actor.id(), parts));
+    const auto next = take(f.scene->create_ragdoll(entity.id(), parts));
     require(next.revision != handle.revision, "ragdoll recreation uses a new generation");
     committed(f.world.stop());
     require(!f.scene->read_ragdoll_pose(next), "World stop removes the live ragdoll");

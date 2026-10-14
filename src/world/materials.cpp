@@ -26,9 +26,9 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
     if(!component->valid) return error(ErrorCode::invalid_member,"Material bindings need a live mesh component.");
     auto data=detail::component_data(runtime,id);if(!data) return std::unexpected(data.error());
     if(data->owner!=ObjectId{}) {
-        auto actor=detail::actor_data(runtime,data->owner);if(!actor) return std::unexpected(actor.error());
-        if(actor->transitioning || (actor->world && actor->world->running())) return error(ErrorCode::busy,"Stop the World before changing material slots.");
-        if(actor->world) if(auto ready=Access::state(*actor->world).admit();!ready) return ready;
+        auto entity=detail::entity_data(runtime,data->owner);if(!entity) return std::unexpected(entity.error());
+        if(entity->transitioning || (entity->world && entity->world->running())) return error(ErrorCode::busy,"Stop the World before changing material slots.");
+        if(entity->world) if(auto ready=Access::state(*entity->world).admit();!ready) return ready;
     }
     return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<void> {
         const auto& mesh=Access::geometry(value);

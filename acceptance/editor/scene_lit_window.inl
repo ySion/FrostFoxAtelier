@@ -16,9 +16,9 @@ std::string scene_lit_selection_diagnostic(Application& app) {
         return info?(*info)->name:std::string("unknown type");
     };
     const auto selected=app.document().selection();
-    std::string result="; selected Actor="+type_name(selected.actor)+"/"+atelier::editor::utf8(app.document().name(selected.actor))+
+    std::string result="; selected Entity="+type_name(selected.entity)+"/"+atelier::editor::utf8(app.document().name(selected.entity))+
         "; selected Object="+type_name(selected.object)+"; components=";
-    const auto components=atelier::world::components(runtime,selected.actor);
+    const auto components=atelier::world::components(runtime,selected.entity);
     if(!components) return result+components.error().message;
     for(const auto& component:*components) result+=type_name(component.id())+",";
     return result;
@@ -87,7 +87,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
             std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     std::filesystem::create_directories(copy/"Source");
     Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Examples/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
-    require(!app.document().dirty() && actors(app).size()==15 &&
+    require(!app.document().dirty() && entities(app).size()==15 &&
         model(app.document().world().render_items()).size()==10 && model(app.document().world().light_items()).size()==5,
         "The formal application failed to load the complete Scene Lit example World.");
     const auto loaded=model(app.document().serialize());
@@ -120,7 +120,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto authored_lights=model(app.document().world().light_items());
     const auto sky=std::ranges::find_if(authored_lights,[](const auto& light){return light.settings.kind==world::LightKind::sky;});
     require(sky!=authored_lights.end(),"Example has no explicit Sky Light to replace.");
-    model(Access::select_actor(app,sky->actor));tick(app,2);
+    model(Access::select_entity(app,sky->entity));tick(app,2);
     click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
     click(app,static_cast<ControlKey>(Command::erase_selected));tick(app,2);
     require(Access::scene_snapshot(app).environment==std::array<float,3>{},"Deleting the only Sky Light left environment radiance.");
@@ -131,26 +131,26 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     std::array<atelier::ObjectId,4> created;
     for (std::size_t index=0;index<commands.size();++index) {
         const auto history=app.document().undo_count();
-        const auto count=actors(app).size();
+        const auto count=entities(app).size();
         std::printf("Scene Lit window step: create light %zu (%llu)\n",index,static_cast<unsigned long long>(commands[index]));
         click(app,control::create_menu);
         const auto command=static_cast<ControlKey>(commands[index]);
         require(app.menu_frame() && app.menu_frame()->find(command),"Native Create menu omitted a real light command.");
         click(app,command);tick(app,2);
         const auto diagnostic=scene_lit_selection_diagnostic(app);
-        if(actors(app).size()!=count+1 || app.document().undo_count()!=history+1)
+        if(entities(app).size()!=count+1 || app.document().undo_count()!=history+1)
             throw std::runtime_error("Scene Lit native light creation step "+std::to_string(index)+
-                " did not publish one Actor/history entry"+diagnostic);
-        created[index]=app.document().selection().actor;
+                " did not publish one Entity/history entry"+diagnostic);
+        created[index]=app.document().selection().entity;
         auto& runtime=app.document().world().runtime();
-        const auto root=model(world::root_component(runtime,created[index]));
+        const auto root=std::optional(component_object(app.document(),created[index],app.document().types().light_component));
         if(!root || !model(runtime.is_a(model(runtime.type_of(*root)),app.document().types().light_component)))
             throw std::runtime_error("Scene Lit native light creation step "+std::to_string(index)+
-                " selected an Actor without its expected LightComponent root"+diagnostic);
+                " selected an Entity without its expected LightComponent root"+diagnostic);
         const auto light=*root;
-        require(actors(app).size()==count+1 && app.document().undo_count()==history+1 &&
+        require(entities(app).size()==count+1 && app.document().undo_count()==history+1 &&
             model(world::read_light(runtime,light)).kind==kinds[index],
-            "Native light creation did not create one complete, undoable World Actor.");
+            "Native light creation did not create one complete, undoable World Entity.");
         click(app,static_cast<ControlKey>(Command::show_parameters));
         const auto fields=model(app.document().properties(light));
         const auto has_field=[&](std::string_view name) {
@@ -223,7 +223,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto saved=model(atelier::editor::read_file(copy/"Content/Scenes/Acceptance.scene"));
     require(!app.document().dirty(),"Scene Lit temporary save did not mark the authored document clean.");
     model(app.open_scene("Content/Scenes/Acceptance.scene"));tick(app,96);
-    require(model(app.document().serialize())==saved && actors(app).size()==18 &&
+    require(model(app.document().serialize())==saved && entities(app).size()==18 &&
         Access::scene_snapshot(app).meshes.size()==10 && Access::scene_snapshot(app).lights.size()==7 &&
         Access::scene_snapshot(app).environment==std::array{.12f,.12f,.12f} &&
         app.frame_statistics().scene_lit_shadow_sources>=7 &&

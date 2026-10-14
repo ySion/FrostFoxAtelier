@@ -50,10 +50,10 @@ void verify_material_resources() {
     take(document.set_material_texture(project,resource.id(),material::Input::base_color,texture));
     require(take(material::capture(document.world().runtime(),resource.id()))->description().parameters.roughness==.4f &&
         !document.material_dirty(key),"Changing a texture committed a cancelled parameter draft or created no-op history.");
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));const auto actor_a=document.selection().actor;
-    const auto a=component(document,actor_a,document.types().static_mesh_component);
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));const auto actor_b=document.selection().actor;
-    const auto b=component(document,actor_b,document.types().static_mesh_component);
+    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));const auto entity_a=document.selection().entity;
+    const auto a=component(document,entity_a,document.types().static_mesh_component);
+    changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));const auto entity_b=document.selection().entity;
+    const auto b=component(document,entity_b,document.types().static_mesh_component);
     take(document.assign_material(project,a,"slot/0",key));take(document.assign_material(project,b,"slot/0",key));
     const auto count=document.undo_count();take(document.assign_material(project,a,"slot/0",key));
     require(document.undo_count()==count,"Idempotent slot assignment created history.");
@@ -93,9 +93,9 @@ void verify_material_resources() {
     auto changed_parent=take(project.material(key));changed_parent.description.parameters.base_color[1]=.35f;
     take(project.save_material(changed_parent));
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(project.root()/"Content/Scenes/Main.scene")),project));
-    const auto reopened_actors=take(reopened->world().members());
-    const auto reopened_a=component(*reopened,reopened_actors[0].id(),reopened->types().static_mesh_component);
-    const auto reopened_b=component(*reopened,reopened_actors[1].id(),reopened->types().static_mesh_component);
+    const auto reopened_entities=take(reopened->world().members());
+    const auto reopened_a=component(*reopened,reopened_entities[0].id(),reopened->types().static_mesh_component);
+    const auto reopened_b=component(*reopened,reopened_entities[1].id(),reopened->types().static_mesh_component);
     const auto reopened_bindings=take(world::read_material_bindings(reopened->world().runtime(),reopened_a));
     require(take(material::read_material(reopened->world().runtime(),reopened_bindings[0].resource.id())).overrides!=0,
         "Scene serialization inferred away explicit override intent.");
@@ -105,12 +105,12 @@ void verify_material_resources() {
     const auto reopened_surface=take(world::material_surfaces(reopened->world().runtime(),reopened_a))->front();
     require(reopened_surface->description().parameters.base_color[1]==.35f,"Saved instance values replaced a later parent-asset change.");
     reopened.reset();require(bool(reopened_surface->description().textures[0].image),"Closing a Runtime invalidated its published texture content.");
-    take(document.select(actor_a));changed(document.duplicate_selected());
-    const auto duplicate=component(document,document.selection().actor,document.types().static_mesh_component);
+    take(document.select(entity_a));changed(document.duplicate_selected());
+    const auto duplicate=component(document,document.selection().entity,document.types().static_mesh_component);
     const auto duplicate_material=take(world::read_material_bindings(document.world().runtime(),duplicate))[0].resource;
-    require(duplicate_material.id()!=instance.id(),"Duplicating an Actor shared mutable instance overrides.");
+    require(duplicate_material.id()!=instance.id(),"Duplicating an Entity shared mutable instance overrides.");
     require(take(material::read_material(document.world().runtime(),duplicate_material.id())).parent.id()==resource.id(),
-        "Duplicating an Actor copied the shared asset.");
+        "Duplicating an Entity copied the shared asset.");
     take(editor::write_file(evidence/"Replacement.mtl","newmtl replacement\nKd 1 1 1\n"));
     take(editor::write_file(evidence/"Replacement.obj",
         "mtllib Replacement.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl replacement\nf 1 2 3\n"));
@@ -131,12 +131,12 @@ void verify_material_resources() {
         editor::MaterialAsset asset;asset.description.parameters.roughness=.3f;asset.textures[0]=texture;
         const auto original=take(local.material_resource(project,asset));
         changed(local.create_static_mesh(take(project.mesh("builtin/cube"))));
-        const auto original_actor=local.selection().actor;
-        const auto original_mesh=component(local,original_actor,local.types().static_mesh_component);
+        const auto original_entity=local.selection().entity;
+        const auto original_mesh=component(local,original_entity,local.types().static_mesh_component);
         const std::array<world::MaterialBinding,1> bindings{{{"slot/0",original,true}}};
         take(world::set_material_bindings(local_runtime,original_mesh,bindings));
         changed(local.duplicate_selected());
-        const auto copied_mesh=component(local,local.selection().actor,local.types().static_mesh_component);
+        const auto copied_mesh=component(local,local.selection().entity,local.types().static_mesh_component);
         const auto copied=take(world::read_material_bindings(local_runtime,copied_mesh)).front().resource;
         const auto original_state=take(material::read_material(local_runtime,original.id()));
         const auto copied_state=take(material::read_material(local_runtime,copied.id()));
@@ -157,10 +157,10 @@ void verify_material_resources() {
         take(editor::write_file(path,take(local.serialize())));
         auto reopened_project=take(editor::Project::open(project.root()));
         auto reopened_local=take(editor::Session::deserialize(take(editor::read_file(path)),reopened_project));
-        const auto actors=take(reopened_local->world().members());require(actors.size()==2,"Inline material scene lost its Actors.");
+        const auto entities=take(reopened_local->world().members());require(entities.size()==2,"Inline material scene lost its Entities.");
         auto& reopened_runtime=reopened_local->world().runtime();
         const auto material_of=[&](std::size_t index) {
-            const auto mesh=component(*reopened_local,actors[index].id(),reopened_local->types().static_mesh_component);
+            const auto mesh=component(*reopened_local,entities[index].id(),reopened_local->types().static_mesh_component);
             return take(world::read_material_bindings(reopened_runtime,mesh)).front().resource;
         };
         const auto reopened_original=material_of(0),reopened_copy=material_of(1);
@@ -174,14 +174,14 @@ void verify_material_resources() {
     require(workspace.ui_error().empty() && !controls.empty(),"Material asset DSL projection failed.");
     const auto field=workspace.field_control(resource.id(),roughness.path);
     require(field!=0,"Material fields did not use the shared reflected field bindings.");
-    workspace.inspecting_asset=false;take(document.select(actor_a));
+    workspace.inspecting_asset=false;take(document.select(entity_a));
     const auto instance_controls=workspace.describe(document,{1200,800},nullptr,&project);
     require(workspace.ui_error().empty() && !instance_controls.empty(),"Material instance DSL projection failed.");
     take(editor::write_file(evidence/"Two.mtl","newmtl First\nKd 1 1 1\nnewmtl Second\nKd 1 1 1\n"));
     take(editor::write_file(evidence/"Two.obj","mtllib Two.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nusemtl First\nf 1 2 3\nusemtl Second\nf 2 4 3\n"));
     const auto two_slots=take(project.mesh(take(project.import_mesh(evidence/"Two.obj"))));
-    changed(document.create_static_mesh(two_slots));const auto partial_actor=document.selection().actor;
-    const auto partial=component(document,partial_actor,document.types().static_mesh_component);
+    changed(document.create_static_mesh(two_slots));const auto partial_entity=document.selection().entity;
+    const auto partial=component(document,partial_entity,document.types().static_mesh_component);
     const auto first_slot=world::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().front().material);
     const auto second_slot=world::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().back().material);
     take(document.assign_material(project,partial,first_slot,key));

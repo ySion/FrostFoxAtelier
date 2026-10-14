@@ -18,7 +18,7 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
 )"));
     model(app.build_project(true));tick(app,2);
     click(app,control::add_static_mesh);
-    const auto actor=app.document().selection().actor;
+    const auto entity=app.document().selection().entity;
     click(app,static_cast<ControlKey>(Command::show_parameters));
     require(!app.presented()->find(control::add_component),"Parameters still exposes component creation.");
     click(app,static_cast<ControlKey>(Command::show_structure));click(app,control::add_component);
@@ -27,24 +27,24 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
     auto& runtime=app.document().world().runtime();
     const auto component_type=model(runtime.find_type("project.Move"));
     atelier::ObjectId component;
-    for(const auto& item:model(atelier::world::components(runtime,actor)))
+    for(const auto& item:model(atelier::world::components(runtime,entity)))
         if(model(runtime.type_of(item.id()))==component_type) component=item.id();
     require(component!=atelier::ObjectId{},"Native component menu did not create the Source type.");
     const std::array speed{model(runtime.find_field(component_type,"speed"))},moving{model(runtime.find_field(component_type,"moving"))};
-    require(app.document().selection()==atelier::editor::Selection{actor,component} &&
+    require(app.document().selection()==atelier::editor::Selection{entity,component} &&
         app.presented()->find(app.field_control(component,speed)) && !app.presented()->find(control::position_fold),
-        "Source component inspection lost Actor context or included unrelated spatial properties.");
+        "Source component inspection lost Entity context or included unrelated spatial properties.");
     const auto component_row=Access::structure_control(app,component);
-    require(component_row,"Source component has no Actor Structure row.");click(app,component_row);key(app,VK_DELETE);
-    require(contains(app,actor) && app.document().selection()==atelier::editor::Selection{actor,actor} &&
-        !Access::structure_control(app,component),"Deleting a Source component deleted its Actor or kept a stale row.");
+    require(component_row,"Source component has no Entity Structure row.");click(app,component_row);key(app,VK_DELETE);
+    require(contains(app,entity) && app.document().selection()==atelier::editor::Selection{entity,entity} &&
+        !Access::structure_control(app,component),"Deleting a Source component deleted its Entity or kept a stale row.");
     key(app,'Z',true);
-    require(app.document().selection()==atelier::editor::Selection{actor,component} && Access::structure_control(app,component),
+    require(app.document().selection()==atelier::editor::Selection{entity,component} && Access::structure_control(app,component),
         "Source component Undo changed object identity or failed to restore inspection.");
-    const auto actor_row=Access::structure_control(app,actor);require(actor_row,"Source Actor has no structure row.");click(app,actor_row);
-    require(app.document().selection()==atelier::editor::Selection{actor,actor} &&
-        app.presented()->find(property_control(app,actor,0)) && app.presented()->find(app.field_control(component,speed)),
-        "Actor Parameters did not expose root and Source properties together in its flat list.");
+    const auto entity_row=Access::structure_control(app,entity);require(entity_row,"Source Entity has no structure row.");click(app,entity_row);
+    require(app.document().selection()==atelier::editor::Selection{entity,entity} &&
+        app.presented()->find(property_control(app,entity,0)) && app.presented()->find(app.field_control(component,speed)),
+        "Entity Parameters did not expose root and Source properties together in its flat list.");
     click(app,Access::structure_control(app,component));
     const auto history=app.document().undo_count();
     click(app,app.field_control(component,speed));type(app,L"3.5");key(app,VK_RETURN);

@@ -127,9 +127,9 @@ const std::vector<Operation>& operations() {
         {"project.open","Open an existing project; refuses unsaved scene or source drafts",true,{{"path",str}},{"path"}},
         {"scene.open","Open a project-relative scene; refuses unsaved scene",true,{{"path",str}},{"path"}},
         {"scene.save","Save the current scene through the normal project save command",true,{{"path",str}},{}},
-        {"scene.create","Create one actor, mesh, point/rectangle/directional/sky light",true,{{"kind",{{"enum",{"actor","mesh","point","rectangle","directional","sky"}}}},{"mesh",str}},{"kind"}},
-        {"scene.select","Select actor handles; optional inspected object must belong to active actor",true,{{"actors",arr},{"active",str},{"object",str}},{"actors"}},
-        {"scene.rename","Rename one actor through document history; components use their type names",true,{{"object",str},{"name",str}},{"object","name"}},
+        {"scene.create","Create one entity, mesh, point/rectangle/directional/sky light",true,{{"kind",{{"enum",{"entity","mesh","point","rectangle","directional","sky"}}}},{"mesh",str}},{"kind"}},
+        {"scene.select","Select entity handles; optional inspected object must belong to active entity",true,{{"entities",arr},{"active",str},{"object",str}},{"entities"}},
+        {"scene.rename","Rename one entity through document history; components use their type names",true,{{"object",str},{"name",str}},{"object","name"}},
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
         {"texture.import","Import a texture with a Project GUID",true,{{"path",str}},{"path"}},
@@ -141,10 +141,13 @@ const std::vector<Operation>& operations() {
         {"material.save","Save a shared material asset",true,{{"asset",str}},{"asset"}},
         {"material.undo","Undo one shared material asset edit",true,{{"asset",str}},{"asset"}},
         {"material.redo","Redo one shared material asset edit",true,{{"asset",str}},{"asset"}},
-        {"scene.transform","Set complete TRS on a scene component or actor root; one undo entry",true,{{"object",str},{"position",arr},{"rotation",arr},{"scale",arr}},{"object","position","rotation","scale"}},
-        {"scene.add_component","Add one discovered component type to the selected actor",true,{{"type",str}},{"type"}},
+        {"scene.transform","Set or add complete Entity TRS; one undo entry",true,{{"object",str},{"position",arr},{"rotation",arr},{"scale",arr}},{"object","position","rotation","scale"}},
+        {"scene.remove_transform","Remove optional Entity space through document history",true,{{"object",str}},{"object"}},
+        {"scene.set_space_reference","Set Entity spatial origin independently of composition; null inherits, empty string is world space",true,{{"object",str},{"origin",{{"type",{"string","null"}}}},{"keep_world",{{"type","boolean"}}}},{"object","origin"}},
+        {"scene.reparent","Reparent Entity composition with explicit transform preservation",true,{{"object",str},{"parent",{{"type",{"string","null"}}}},{"keep_world",{{"type","boolean"}}},{"index",{{"type","integer"},{"minimum",0}}}},{"object"}},
+        {"scene.add_component","Add one discovered component type to the selected entity",true,{{"type",str}},{"type"}},
         {"scene.remove_component","Remove a component through document history",true,{{"object",str}},{"object"}},
-        {"scene.delete","Delete selected actors through document history",true,{},{}},
+        {"scene.delete","Delete selected entities through document history",true,{},{}},
         {"scene.undo","Undo one document operation",true,{},{}},
         {"scene.redo","Redo one document operation",true,{},{}},
         {"camera.set","Restore an exact camera state from editor.inspect",true,{{"state",obj}},{"state"}},
@@ -152,7 +155,7 @@ const std::vector<Operation>& operations() {
         {"view.set","Atomically apply a typed display patch using the same rules as menus",true,{{"patch",obj}},{"patch"}},
         {"view.layout","Apply an explicit DDGI coverage layout; retain propagation and display settings",true,{{"layout",{{"enum",{"fit_scene","scene_focus"}}}}},{"layout"}},
         {"repro.export","Export an independent project from the current memory scene; does not save the original",true,{},{}},
-        {"repro.open","Open a completed repro bundle and restore its camera, display and actor selection",true,{{"directory",str}},{"directory"}},
+        {"repro.open","Open a completed repro bundle and restore its camera, display and entity selection",true,{{"directory",str}},{"directory"}},
         {"render.prepare","Prepare Scene Lit pipelines through a real accepted frame; restores base display settings",true,{{"patch",obj},{"timeout_ms",{{"type","integer"}}}},{}},
         {"render.capture","Capture at accepted-frame ordinals using current display settings",true,{{"sample_frames",arr},{"timeout_ms",{{"type","integer"}}}},{}},
         {"render.compare","Capture sequential temporary display cases; settings never enter document/undo",true,{{"cases",arr},{"sample_frames",arr},{"timeout_ms",{{"type","integer"}}}},{"cases"}},
@@ -310,7 +313,7 @@ struct EditorControl::Impl {
     }
     std::string handle(ObjectId object) {
         if(object==ObjectId{}) return {};
-        if(handles.size()>editor::Session::maximum_actors+editor::Session::maximum_components && pruned_revision!=app.document_->revision()) prune_handles();
+        if(handles.size()>editor::Session::maximum_entities+editor::Session::maximum_components && pruned_revision!=app.document_->revision()) prune_handles();
         auto [found,added]=handles.try_emplace(object);
         if(added) {found->second=std::to_string(document_generation)+"/"+std::to_string(next_handle++);objects.emplace(found->second,object);}
         return found->second;
@@ -318,7 +321,7 @@ struct EditorControl::Impl {
     void prune_handles() {
         pruned_revision=app.document_->revision();
         std::unordered_set<ObjectId> live;
-        for(const auto& actor:take(app.document_->world().members())) {live.insert(actor.id());for(const auto& component:take(world::components(app.document_->world().runtime(),actor.id()))) live.insert(component.id());}
+        for(const auto& entity:take(app.document_->world().members())) {live.insert(entity.id());for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id()))) live.insert(component.id());}
         for(const auto id:app.document_->material_objects()) live.insert(id);
         const auto objects_snapshot=live;
         for(const auto id:objects_snapshot) if(auto bindings=world::read_material_bindings(app.document_->world().runtime(),id);bindings)
@@ -327,8 +330,8 @@ struct EditorControl::Impl {
     }
     bool member(ObjectId object) const {
         const auto materials=app.document_->material_objects();if(std::ranges::find(materials,object)!=materials.end()) return true;
-        auto actors=app.document_->world().members();if(!actors) return false;
-        for(const auto& actor:*actors) {if(actor.id()==object) return true;auto components=world::components(app.document_->world().runtime(),actor.id());
+        auto entities=app.document_->world().members();if(!entities) return false;
+        for(const auto& entity:*entities) {if(entity.id()==object) return true;auto components=world::components(app.document_->world().runtime(),entity.id());
             if(components) for(const auto& component:*components) {
                 if(component.id()==object) return true;
                 if(auto bindings=world::read_material_bindings(app.document_->world().runtime(),component.id());bindings)
@@ -348,6 +351,9 @@ struct EditorControl::Impl {
             Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
             if(prop_type->enumeration) {field["choices"]=Json::array();for(const auto& [name,bits]:prop_type->enumeration->values) {static_cast<void>(bits);field["choices"].push_back(name);}}
             result["properties"].push_back(std::move(field));
+        }
+        if(take(runtime.is_a(take(runtime.type_of(id)),app.document_->types().entity))) {
+            const auto origin=take(world::space_reference(runtime,id));result["space_reference"]=origin?Json(*origin==ObjectId{}?"":handle(*origin)):Json(nullptr);
         }
         if(auto transform=world::read_transform(runtime,id)) result["transform"]={{"position",vector3(transform->position)},
             {"rotation",{transform->rotation.x,transform->rotation.y,transform->rotation.z,transform->rotation.w}},{"scale",vector3(transform->scale)}};
@@ -370,16 +376,17 @@ struct EditorControl::Impl {
             {"view",view_json(app.workspace_.view)},{"accepted_frames",app.accepted_frames_},{"last_frame",frame_json()}};
         if(auto* job=active()) result["active_job"]={{"job_id",job->id},{"rendering",job->rendering},{"cancel_requested",job->cancel->load()}};
         if(summary) {result["detail"]="summary";return result;}
-        for(const char* field:{"actors","selection","assets","component_types"}) result[field]=Json::array();
-        for(const auto& actor:take(app.document_->world().members())) {
-            auto value=object_json(actor.id());value["components"]=Json::array();
-            for(const auto& component:take(world::components(app.document_->world().runtime(),actor.id()))) value["components"].push_back(object_json(component.id()));
-            const auto root=take(world::root_component(app.document_->world().runtime(),actor.id()));value["root"]=root?handle(*root):"";
-            result["actors"].push_back(std::move(value));
+        for(const char* field:{"entities","selection","assets","component_types"}) result[field]=Json::array();
+        for(const auto& entity:take(app.document_->world().members())) {
+            auto value=object_json(entity.id());value["components"]=Json::array();
+            for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id()))) value["components"].push_back(object_json(component.id()));
+            const auto parent=take(world::parent_entity(app.document_->world().runtime(),entity.id()));value["parent"]=parent!=ObjectId{}?handle(parent):"";
+            value["children"]=Json::array();for(const auto& child:take(world::children(app.document_->world().runtime(),entity.id()))) value["children"].push_back(handle(child.id()));
+            result["entities"].push_back(std::move(value));
         }
         // Released IDs never retain Runtime objects, and are bounded by current membership.
         prune_handles();
-        for(auto actor:app.document_->selected_actors()) result["selection"].push_back(handle(actor));
+        for(auto entity:app.document_->selected_entities()) result["selection"].push_back(handle(entity));
         result["inspected_object"]=handle(app.document_->selection().object);
         result["dirty_materials"]=app.document_->dirty_materials();
         for(const auto& type:take(app.document_->component_types())) result["component_types"].push_back(type.name);
@@ -408,17 +415,17 @@ struct EditorControl::Impl {
         }
         data.drafts=Json::array();for(const auto& file:app.workspace_.source_editor.files()) if(file->dirty())
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
-        for(const auto& actor:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),actor.id())))
+        for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id())))
             if(auto mesh=world::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved)
                 if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.first==mesh->mesh.source;})) data.meshes.emplace_back(mesh->mesh.source,mesh->mesh.resolved);
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
         data.manifest["selection_indices"]=Json::array();const auto members=take(app.document_->world().members());
-        for(auto selected:app.document_->selected_actors()) for(std::size_t i=0;i<members.size();++i) if(members[i].id()==selected) data.manifest["selection_indices"].push_back(i);
+        for(auto selected:app.document_->selected_entities()) for(std::size_t i=0;i<members.size();++i) if(members[i].id()==selected) data.manifest["selection_indices"].push_back(i);
         const auto selection=app.document_->selection();
-        if(selection.object!=selection.actor && selection.object!=ObjectId{}) for(std::size_t i=0;i<members.size();++i) if(members[i].id()==selection.actor) {
-            const auto components=take(world::components(app.document_->world().runtime(),selection.actor));
-            for(std::size_t j=0;j<components.size();++j) if(components[j].id()==selection.object) data.manifest["inspection"]={{"actor",i},{"component",j}};
+        if(selection.object!=selection.entity && selection.object!=ObjectId{}) for(std::size_t i=0;i<members.size();++i) if(members[i].id()==selection.entity) {
+            const auto components=take(world::components(app.document_->world().runtime(),selection.entity));
+            for(std::size_t j=0;j<components.size();++j) if(components[j].id()==selection.object) data.manifest["inspection"]={{"entity",i},{"component",j}};
         }
         data.manifest["source_version"]=data.sources?data.sources->version:0;
         data.manifest["ui_source_version"]=data.ui_source?data.ui_source->version:0;
@@ -521,31 +528,39 @@ struct EditorControl::Impl {
         else if(op=="scene.save") take(app.save_scene(control::wide(text(args.value("path",Json(""))))));
         else if(op=="scene.create") {
             const auto kind=text(args.at("kind"),40);editor::Command command;
-            if(kind=="actor") command=editor::Command::create_actor;else if(kind=="mesh") command=editor::Command::create_static_mesh;
+            if(kind=="entity") command=editor::Command::create_entity;else if(kind=="mesh") command=editor::Command::create_static_mesh;
             else if(kind=="point") command=editor::Command::create_point_light;else if(kind=="rectangle") command=editor::Command::create_rectangle_light;
             else if(kind=="directional") command=editor::Command::create_directional_light;else if(kind=="sky") command=editor::Command::create_sky_light;
-            else throw Failure("invalid_request","Unknown actor creation kind");
+            else throw Failure("invalid_request","Unknown entity creation kind");
             if(!app.workspace_.command_enabled(command,doc)) throw Failure("unavailable","Creation is unavailable in this document");
-            take(app.execute(command,text(args.value("mesh",Json("")))));return {{"object",handle(doc.selection().actor)}};
+            take(app.execute(command,text(args.value("mesh",Json("")))));return {{"object",handle(doc.selection().entity)}};
         } else if(op=="scene.select") {
-            const auto& values=args.at("actors");if(!values.is_array() || values.size()>editor::Session::maximum_actors) throw Failure("invalid_request","Invalid actor selection");
+            const auto& values=args.at("entities");if(!values.is_array() || values.size()>editor::Session::maximum_entities) throw Failure("invalid_request","Invalid entity selection");
             std::vector<ObjectId> selected;for(const auto& value:values) selected.push_back(object(value));
             const auto active_id=args.contains("active")?object(args["active"]):(selected.empty()?ObjectId{}:selected.back());
-            if(active_id!=ObjectId{} && std::ranges::find(selected,active_id)==selected.end()) throw Failure("invalid_request","Active actor must be included in the selection");
+            if(active_id!=ObjectId{} && std::ranges::find(selected,active_id)==selected.end()) throw Failure("invalid_request","Active entity must be included in the selection");
             const auto inspected=args.contains("object")?object(args["object"]):active_id;
-            if(inspected!=active_id) {const auto status=take(world::inspect_component(runtime,inspected));if(!status.valid || status.owner!=active_id || selected.size()!=1) throw Failure("invalid_request","Inspected component must belong to the sole selected actor");}
-            take(doc.select_actors(selected,active_id));if(inspected!=active_id) take(doc.select(inspected));app.workspace_.inspecting_asset=false;
+            if(inspected!=active_id) {const auto status=take(world::inspect_component(runtime,inspected));if(!status.valid || status.owner!=active_id || selected.size()!=1) throw Failure("invalid_request","Inspected component must belong to the sole selected entity");}
+            take(doc.select_entities(selected,active_id));if(inspected!=active_id) take(doc.select(inspected));app.workspace_.inspecting_asset=false;
         } else if(op=="scene.rename") take(doc.rename(object(args.at("object")),control::wide(text(args.at("name"),1024))));
         else if(op=="scene.set_property") {
             const auto target=object(args.at("object"));const auto name=text(args.at("property"),256);const auto properties=take(doc.properties(target));
             const auto found=std::ranges::find(properties,name,&editor::Property::name);if(found==properties.end()) throw Failure("invalid_request","Unknown reflected property");
             take(doc.set_property(target,found->path,scalar_value(args.at("value"),found->value,runtime),++edit_id));
         } else if(op=="scene.transform") {
-            auto target=object(args.at("object"));if(auto root=world::root_component(runtime,target);root && *root) target=**root;
+            const auto target=object(args.at("object"));
             const auto& rotation=args.at("rotation");if(!rotation.is_array() || rotation.size()!=4) throw Failure("invalid_request","Rotation requires quaternion xyzw");
             world::Trs value{vector3(args.at("position")),{static_cast<float>(number(rotation[0])),static_cast<float>(number(rotation[1])),static_cast<float>(number(rotation[2])),static_cast<float>(number(rotation[3]))},vector3(args.at("scale"))};
-            take(doc.begin_transform({&target,1},++edit_id));auto preview=doc.preview_transform(edit_id,{&value,1});
-            if(!preview) {take(doc.cancel_edit());take(std::move(preview));}take(doc.commit_edit(edit_id));
+            take(doc.set_transform(target,value));
+        } else if(op=="scene.remove_transform") take(doc.remove_transform(object(args.at("object"))));
+        else if(op=="scene.set_space_reference") {
+            std::optional<ObjectId> origin;
+            if(!args.at("origin").is_null()) origin=text(args.at("origin"),80).empty()?ObjectId{}:object(args.at("origin"));
+            committed(doc.set_space_reference(object(args.at("object")),origin,args.value("keep_world",true)?world::ReparentRule::keep_world:world::ReparentRule::keep_local));
+        } else if(op=="scene.reparent") {
+            const auto parent=args.contains("parent") && !args.at("parent").is_null()?object(args.at("parent")):ObjectId{};
+            const auto rule=args.value("keep_world",true)?world::ReparentRule::keep_world:world::ReparentRule::keep_local;
+            committed(doc.reparent(object(args.at("object")),parent,rule,args.value("index",world::append)));
         } else if(op=="scene.add_component") {
             const auto name=text(args.at("type"),256);const auto types=take(doc.component_types());const auto found=std::ranges::find(types,name,&editor::ComponentType::name);
             if(found==types.end()) throw Failure("invalid_request","Component type is not available");committed(doc.add_component(found->type));return {{"object",handle(doc.selection().object)}};
@@ -577,30 +592,47 @@ struct EditorControl::Impl {
             const auto focus=camera.state().target;
             auto view=repro_view(manifest.at("view"),view_schema==1,{focus.x,focus.y,focus.z});
             auto project=take(editor::Project::open(root/"Project"));
-            const auto scene=editor::json_format::parse(take(editor::read_file(take(project.resolve(project.startup_scene())))));
+            const auto scene_text=take(editor::read_file(take(project.resolve(project.startup_scene()))));
+            const auto scene=editor::json_format::parse(scene_text);
             const auto scene_version=editor::json_format::identity(scene.at("version"));
             if(scene_version>=4) {
                 const auto authored=repro_view(scene.at("world"),scene_version==4,{focus.x,focus.y,focus.z});
                 if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))
                     throw Failure("dependency_mismatch","Repro frame snapshot disagrees with its Scene World settings");
             }
-            const auto& frozen_actors=scene.at("actors");std::vector<unsigned> indices;
+            const bool legacy_scene=scene_version<6;
+            const auto& frozen_entities=scene.at(legacy_scene?"actors":"entities");std::vector<unsigned> indices;
             for(const auto& index:manifest.at("selection_indices")) {
-                const auto i=integer(index,0,editor::Session::maximum_actors);
-                if(i>=frozen_actors.size() || std::ranges::find(indices,i)!=indices.end()) throw Failure("dependency_mismatch","Invalid repro selection");indices.push_back(i);
+                const auto i=integer(index,0,editor::Session::maximum_entities);
+                if(i>=frozen_entities.size() || std::ranges::find(indices,i)!=indices.end()) throw Failure("dependency_mismatch","Invalid repro selection");indices.push_back(i);
             }
             std::optional<std::pair<unsigned,unsigned>> inspection;
             if(manifest.contains("inspection")) {
-                const auto& value=manifest["inspection"];control::fields(value,{"actor","component"});
-                auto a=integer(value.at("actor"),0,editor::Session::maximum_actors),c=integer(value.at("component"),0,editor::Session::maximum_components);
-                if(indices.size()!=1 || indices[0]!=a || c>=frozen_actors[a].at("components").size()) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection={{a,c}};
+                const auto& value=manifest["inspection"];
+                if(legacy_scene) control::fields(value,{"actor","component"});else control::fields(value,{"entity","component"});
+                auto a=integer(value.at(legacy_scene?"actor":"entity"),0,editor::Session::maximum_entities),c=integer(value.at("component"),0,editor::Session::maximum_components);
+                if(indices.size()!=1 || indices[0]!=a || c>=frozen_entities[a].at("components").size()) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection={{a,c}};
+            }
+            std::vector<std::pair<std::uint64_t,std::uint64_t>> legacy_objects;
+            if(legacy_scene) {
+                std::vector<std::pair<std::size_t,std::optional<std::size_t>>> requests;
+                for(const auto index:indices) requests.emplace_back(index,std::nullopt);
+                if(inspection) requests.emplace_back(inspection->first,inspection->second);
+                // Validate and resolve all old identities before replacing the current document.
+                legacy_objects=take(editor::Session::legacy_selection(scene_text,requests));
             }
             take(app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene));
             take(app.workspace_.set_view_settings(*app.document_,view,{focus.x,focus.y,focus.z}));app.document_->mark_saved();app.camera_=camera;app.camera_cut_=true;app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
             const auto members=take(app.document_->world().members());std::vector<ObjectId> selected;
-            for(const auto i:indices) {if(i>=members.size()) throw Failure("dependency_mismatch","Repro selection exceeds scene size");selected.push_back(members[i].id());}
-            take(app.document_->select_actors(selected,selected.empty()?ObjectId{}:selected.back()));
-            if(inspection) {const auto components=take(world::components(app.document_->world().runtime(),members[inspection->first].id()));take(app.document_->select(components.at(inspection->second).id()));}
+            for(std::size_t index=0;index<indices.size();++index) {
+                if(legacy_scene) selected.push_back(take(app.document_->local_object(legacy_objects[index].first)));
+                else {const auto i=indices[index];if(i>=members.size()) throw Failure("dependency_mismatch","Repro selection exceeds scene size");selected.push_back(members[i].id());}
+            }
+            take(app.document_->select_entities(selected,selected.empty()?ObjectId{}:selected.back()));
+            if(inspection) {
+                if(legacy_scene) take(app.document_->select(take(app.document_->local_object(legacy_objects.back().second))));
+                else {const auto components=take(world::components(app.document_->world().runtime(),members[inspection->first].id()));take(app.document_->select(components.at(inspection->second).id()));}
+            }
         } else throw Failure("unknown_operation","Operation has no implementation");
         return Json::object();
     }

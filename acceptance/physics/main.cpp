@@ -33,6 +33,13 @@ void committed(atelier::Result<atelier::world::Commit> result) {
     if (value.notification_error) throw std::runtime_error(value.notification_error->message);
 }
 
+atelier::ObjectId mesh_component(atelier::Runtime& runtime,atelier::ObjectId entity) {
+    const auto type=take(runtime.native_type<atelier::world::StaticMeshComponent>());
+    for(const auto& component:take(atelier::world::components(runtime,entity)))
+        if(take(runtime.is_a(take(runtime.type_of(component.id())),type))) return component.id();
+    throw std::runtime_error("Expected a mesh component on the Entity.");
+}
+
 #include "integration.inl"
 #include "scenarios.inl"
 #include "components.inl"
@@ -57,8 +64,10 @@ const Scenario scenarios[]{
     {"vehicle", vehicle},
     {"special_integration", simulate_special_systems},
     {"components", component_lifecycle},
+    {"entity_bindings", entity_physics_bindings},
     {"trace_queries", trace_queries},
     {"query_components", query_components},
+    {"query_exclusions", query_exclusions},
     {"primitive_composition", primitive_composition},
     {"primitive_authoring", primitive_authoring},
 };

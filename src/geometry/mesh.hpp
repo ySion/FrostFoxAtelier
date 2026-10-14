@@ -28,7 +28,7 @@ struct MeshPart {
 };
 
 // Immutable CPU mesh resource, independent of World, Runtime and GPU lifetime.
-// Triangles use consecutive vertices. Sharing the resource never shares an Actor.
+// Triangles use consecutive vertices. Sharing the resource never shares an Entity.
 class Mesh final {
 public:
     // One optional mask per triangle: bit i displays the edge opposite vertex i.

@@ -12,9 +12,9 @@ void shared_tree_view() {
             row.tree_parent=parent; row.text=std::move(name); row.layout=ui_layout::NodeInput::box(0,20); row.layout.width=ui_layout::Axis::expand();
             c.controls.push_back(std::move(row));
         };
-        append(2,0,L"World"); append(3,2,L"Actor"); c.controls.back().tree_initially_expanded=false;
+        append(2,0,L"World"); append(3,2,L"Entity"); c.controls.back().tree_initially_expanded=false;
         append(4,3,L"Transform 位置"); append(5,3,L"Cube");
-        for (unsigned i=0;i<20;++i) append(10+i,2,L"Actor "+std::to_wstring(i));
+        for (unsigned i=0;i<20;++i) append(10+i,2,L"Entity "+std::to_wstring(i));
         c.prepare();
         const auto disclosure=[&](ui::ControlKey key) {
             const auto at=std::find_if(c.frame->tree_rows.begin(),c.frame->tree_rows.end(),[&](auto row){return row.key==key;});

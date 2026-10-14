@@ -2,6 +2,7 @@
 #include "runtime/foundation.hpp"
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -16,7 +17,7 @@ Result<Types> register_types(Runtime& runtime) {
     if (!vector) return std::unexpected(vector.error());
     if (!quaternion) return std::unexpected(quaternion.error());
     std::vector<TypeDefinition> definitions;
-    definitions.push_back(reflection::Definition<Actor>::build(runtime));
+    definitions.push_back(reflection::Definition<Entity>::build(runtime));
     definitions.push_back(reflection::Definition<Component>::build(runtime));
     SignatureDefinition translation;
     translation.parameters.resize(3, ParameterDefinition{{TypeReference::native<float>()}});
@@ -26,10 +27,9 @@ Result<Types> register_types(Runtime& runtime) {
         return detail::queue_translation(call.runtime,call.self,
             {call.arguments[0].get<float>(),call.arguments[1].get<float>(),call.arguments[2].get<float>()});
     },true});
-    definitions.push_back(reflection::Definition<SceneComponent>::build(runtime));
     definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<StaticMeshActor>::build(runtime));
+    definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
     definitions.push_back(reflection::Definition<LightKind>::build(runtime));
     definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
     definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
@@ -44,13 +44,13 @@ Result<Types> register_types(Runtime& runtime) {
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;
-    types.vector3 = *vector; types.quaternion = *quaternion; types.actor = (*ids)[0];
-    types.component = (*ids)[1]; types.scene_component = (*ids)[2]; types.material = (*ids)[3]; types.static_mesh_component = (*ids)[4];
-    types.static_mesh_actor = (*ids)[5];
-    types.light_kind = (*ids)[6]; types.light_settings = (*ids)[7]; types.light_component = (*ids)[8];
-    types.primitive_component = (*ids)[14]; types.collision_component = (*ids)[15];
+    types.vector3 = *vector; types.quaternion = *quaternion; types.entity = (*ids)[0];
+    types.component = (*ids)[1]; types.material = (*ids)[2]; types.static_mesh_component = (*ids)[3];
+    types.static_mesh_entity = (*ids)[4];
+    types.light_kind = (*ids)[5]; types.light_settings = (*ids)[6]; types.light_component = (*ids)[7];
+    types.primitive_component = (*ids)[13]; types.collision_component = (*ids)[14];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
-        auto outer = runtime.find_field(types.scene_component, name);
+        auto outer = runtime.find_field(types.entity, name);
         if (!outer) return std::unexpected(outer.error());
         constexpr std::array names{"x", "y", "z", "w"};
         for (std::size_t i = 0; i < paths.size(); ++i) {
@@ -99,9 +99,9 @@ Result<void> validate_body_settings(const BodySettings& value) {
 }
 
 namespace detail {
-Result<ActorData> actor_data(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Actor>(object, [](Actor& actor) -> Result<ActorData> {
-        return ActorData{Access::member_world(actor), Access::enabled(actor), Access::transitioning(actor), Access::begun(actor)};
+Result<EntityData> entity_data(Runtime& runtime, ObjectId object) {
+    return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<EntityData> {
+        return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity), Access::begun(entity)};
     });
 }
 Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
@@ -123,14 +123,14 @@ Result<void> validate_object(Runtime& runtime, ObjectId object, TypeId expected)
 
 }
 
-Result<ObjectRoot> create_actor(Runtime& runtime, TypeId actual) {
+Result<ObjectRoot> create_entity(Runtime& runtime, TypeId actual) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());
-    auto base = runtime.native_type<Actor>();
+    auto base = runtime.native_type<Entity>();
     if (!base) return std::unexpected(base.error());
     if (actual == TypeId{}) actual = *base;
     auto matches = runtime.is_a(actual, *base);
     if (!matches) return std::unexpected(matches.error());
-    if (!*matches) return error(ErrorCode::type_mismatch, "create_actor requires an Actor type.");
+    if (!*matches) return error(ErrorCode::type_mismatch, "create_entity requires an Entity type.");
     return runtime.create(actual);
 }
 Result<ObjectRoot> create_component(Runtime& runtime, TypeId actual) {
@@ -143,7 +143,7 @@ Result<ObjectRoot> create_component(Runtime& runtime, TypeId actual) {
     return runtime.create(actual);
 }
 
-Result<ObjectRoot> create_static_mesh_actor(World& world, const StaticMeshActorDesc& description) {
+Result<ObjectRoot> create_static_mesh_entity(World& world, const StaticMeshEntityDesc& description) {
     if (auto ready = Access::state(world).admit(); !ready) return std::unexpected(ready.error());
     auto transform = canonical_transform(description.transform);
     if (!transform) return std::unexpected(transform.error());
@@ -151,55 +151,62 @@ Result<ObjectRoot> create_static_mesh_actor(World& world, const StaticMeshActorD
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;
-        ObjectRoot actor, component;
+        ObjectRoot entity, component;
         ~Construction() {
             // The graph is unpublished. Either destruction entry also handles
             // ordinary strong-reference cycles; no partial factory result escapes.
-            if (actor.id() != ObjectId{}) (void)destroy_actor(runtime, actor.id());
+            if (entity.id() != ObjectId{}) (void)destroy_entity(runtime, entity.id());
             if (component.id() != ObjectId{} && runtime.type_of(component.id()))
                 (void)destroy_component(runtime, component.id());
         }
     } created{runtime, {}, {}};
-    auto actor = create_actor(runtime, world.types().static_mesh_actor);
-    if (!actor) return std::unexpected(actor.error());
-    created.actor = std::move(*actor);
+    auto entity = create_entity(runtime, world.types().static_mesh_entity);
+    if (!entity) return std::unexpected(entity.error());
+    created.entity = std::move(*entity);
     auto component = create_component(runtime, world.types().static_mesh_component);
     if (!component) return std::unexpected(component.error());
     created.component = std::move(*component);
-    auto configured = runtime.with_native<StaticMeshComponent>(created.component.id(), [&](StaticMeshComponent& value) -> Result<void> {
+    auto placed = runtime.with_native<Entity>(created.entity.id(), [&](Entity& value) -> Result<void> {
         value.position = transform->position;
         value.rotation = transform->rotation;
         value.scale = transform->scale;
+        Access::spatial(value) = true;
+        return {};
+    });
+    if (!placed) return std::unexpected(placed.error());
+    auto configured = runtime.with_native<StaticMeshComponent>(created.component.id(), [&](StaticMeshComponent& value) -> Result<void> {
         value.material = description.material;
         return {};
     });
     if (!configured) return std::unexpected(configured.error());
     auto geometry = set_mesh_binding(runtime, created.component.id(), {std::string(description.mesh_source),description.mesh});
     if (!geometry) return std::unexpected(geometry.error());
-    const std::array composition{Attachment{created.component.id(), {}, true}};
-    auto composed = world.attach_components(created.actor.id(), composition);
+    const std::array composition{Attachment{created.component.id()}};
+    auto composed = world.attach_components(created.entity.id(), composition);
     if (!composed) return std::unexpected(composed.error());
     if (composed->notification_error) return std::unexpected(std::move(*composed->notification_error));
-    created.component.reset(); // Actor composition now retains its root component.
-    return std::move(created.actor);
+    created.component.reset(); // Entity composition now retains its mesh capability.
+    return std::move(created.entity);
 }
 
-Result<ActorStatus> inspect_actor(Runtime& runtime, ObjectId object) {
-    if (object == ObjectId{}) return ActorStatus{};
-    if (!runtime.belongs_to_context(object)) return error(ErrorCode::invalid_object, "Actor identity belongs to another Runtime.");
+Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
+    if (object == ObjectId{}) return EntityStatus{};
+    if (!runtime.belongs_to_context(object)) return error(ErrorCode::invalid_object, "Entity identity belongs to another Runtime.");
     auto type = runtime.type_of(object);
     if (!type) {
-        if (type.error().code == ErrorCode::invalid_object) return ActorStatus{};
+        if (type.error().code == ErrorCode::invalid_object) return EntityStatus{};
         return std::unexpected(type.error());
     }
-    auto data = detail::actor_data(runtime, object);
+    auto data = detail::entity_data(runtime, object);
     if (!data) return std::unexpected(data.error());
-    if (data->transitioning) return error(ErrorCode::busy, "Actor is transitioning.");
-    ActorStatus status{ActorState::detached, *type, data->enabled, false, false};
+    if (data->transitioning) return error(ErrorCode::busy, "Entity is transitioning.");
+    auto eligible = effective_enabled(runtime, object);
+    if (!eligible) return std::unexpected(eligible.error());
+    EntityStatus status{EntityState::detached, *type, data->enabled, false, false, *eligible};
     if (data->world) {
         const auto& state = Access::state(*data->world);
         if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
-        status.state = state.running && data->begun && data->enabled ? ActorState::active : ActorState::attached_inactive;
+        status.state = state.running && data->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
         status.can_edit = !state.running && !state.dispatch_depth;
         const auto member = state.positions.find(object);
         if (member == state.positions.end()) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
@@ -219,14 +226,16 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
     if (!data) return std::unexpected(data.error());
     ComponentStatus status{true, *type, data->owner, data->enabled, false, false};
     if (data->owner != ObjectId{}) {
-        auto actor = detail::actor_data(runtime, data->owner);
-        if (!actor) return std::unexpected(actor.error());
-        if (actor->transitioning) return error(ErrorCode::busy, "Component owner is transitioning.");
-        if (actor->world) {
-            const auto& state = Access::state(*actor->world);
+        auto entity = detail::entity_data(runtime, data->owner);
+        if (!entity) return std::unexpected(entity.error());
+        if (entity->transitioning) return error(ErrorCode::busy, "Component owner is transitioning.");
+        if (entity->world) {
+            const auto& state = Access::state(*entity->world);
             if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
             // Components without a game updater still have activation eligibility.
-            status.active = state.running && data->begun && actor->enabled && data->enabled;
+            auto eligible = effective_enabled(runtime, data->owner);
+            if (!eligible) return std::unexpected(eligible.error());
+            status.active = state.running && data->begun && *eligible && data->enabled;
             status.can_present = std::ranges::find(state.presentation, object) != state.presentation.end();
         }
     }
@@ -234,12 +243,12 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
 }
 
 Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Actor>(object, [&](Actor& actor) -> Result<std::vector<ObjectRoot>> {
-        if (Access::transitioning(actor)) return error(ErrorCode::busy, "Actor is transitioning.");
-        if (auto* world = Access::member_world(actor)) {
+    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<std::vector<ObjectRoot>> {
+        if (Access::transitioning(entity)) return error(ErrorCode::busy, "Entity is transitioning.");
+        if (auto* world = Access::member_world(entity)) {
             if (auto ready = Access::state(*world).admit(false); !ready) return std::unexpected(ready.error());
         }
-        auto field = runtime.reference_field(object, Access::sequence(actor));
+        auto field = runtime.reference_field(object, Access::sequence(entity));
         if (!field) return std::unexpected(field.error());
         auto count = runtime.sequence_size(*field);
         if (!count) return std::unexpected(count.error());
@@ -256,8 +265,9 @@ Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
     });
 }
 Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<SceneComponent>(object, [](SceneComponent& component) -> Result<Trs> {
-        return Trs{component.position, component.rotation, component.scale};
+    return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<Trs> {
+        if (!Access::spatial(entity)) return error(ErrorCode::invalid_member, "Entity has no Transform.");
+        return Trs{entity.position, entity.rotation, entity.scale};
     });
 }
 Result<void> set_geometry(Runtime& runtime, ObjectId object, geometry::MeshRef geometry) {
@@ -282,9 +292,9 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
     if (!component) return std::unexpected(component.error());
     World* world{};
     if (component->owner != ObjectId{}) {
-        auto owner = detail::actor_data(runtime, component->owner);
+        auto owner = detail::entity_data(runtime, component->owner);
         if (!owner) return std::unexpected(owner.error());
-        if (owner->transitioning) return error(ErrorCode::busy, "Actor is transitioning.");
+        if (owner->transitioning) return error(ErrorCode::busy, "Entity is transitioning.");
         world = owner->world;
         if (world) {
             auto& state = Access::state(*world);
@@ -315,177 +325,106 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
     if (!changed) return changed;
     return world ? Access::state(*world).refresh() : Result<void>{};
 }
-Result<ObjectId> scene_parent(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<SceneComponent>(object, [](SceneComponent& component) -> Result<ObjectId> {
-        return Access::parent(component).id();
-    });
-}
-Result<math::Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
-    if (object == ObjectId{}) return error(ErrorCode::invalid_object, "World matrix requires a SceneComponent identity.");
-    auto result = math::Matrix4::identity();
-    // Private parent links are acyclic by construction. Evaluate all the way to
-    // the explicit root; composing matrices preserves shear introduced by TRS.
-    for (auto node = object; node != ObjectId{};) {
-        auto value = read_transform(runtime, node);
-        if (!value) return std::unexpected(value.error());
-        auto canonical = canonical_transform(*value);
-        if (!canonical) return std::unexpected(canonical.error());
-        auto product = multiply(result, transform_matrix(*canonical));
-        if (!product) return std::unexpected(product.error());
-        result = *product;
-        auto parent = scene_parent(runtime, node);
-        if (!parent) return std::unexpected(parent.error());
-        node = *parent;
-    }
-    return result;
-}
-Result<std::optional<ObjectId>> root_component(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Actor>(object, [](Actor& actor) -> Result<std::optional<ObjectId>> {
-        const auto root = Access::root(actor).id();
-        return root == ObjectId{} ? std::optional<ObjectId>{} : std::optional<ObjectId>{root};
-    });
-}
-namespace detail {
-Result<void> validate_tree(Runtime& runtime, ObjectId actor, std::span<const ObjectRoot> group) {
-    auto type = runtime.native_type<SceneComponent>();
-    if (!type) return std::unexpected(type.error());
-    auto root = root_component(runtime, actor);
-    if (!root) return std::unexpected(root.error());
-    std::unordered_map<ObjectId, ObjectId> parents;
-    for (const auto& item : group) {
-        auto scene = is(runtime, item.id(), *type);
-        if (!scene) return std::unexpected(scene.error());
-        if (!*scene) continue;
-        auto trs = read_transform(runtime, item.id());
-        if (!trs) return std::unexpected(trs.error());
-        auto canonical = canonical_transform(*trs);
-        if (!canonical) return std::unexpected(canonical.error());
-        auto parent = scene_parent(runtime, item.id());
-        if (!parent) return std::unexpected(parent.error());
-        parents.emplace(item.id(), *parent);
-    }
-    return validate_parents(root->value_or(ObjectId{}), parents);
-}
-Result<void> validate_parents(ObjectId root, const std::unordered_map<ObjectId, ObjectId>& parents) {
-    if (parents.empty()) {
-        if (root != ObjectId{}) return error(ErrorCode::invalid_member, "Actor root is absent from its composition.");
-        return {};
-    }
-    if (root == ObjectId{} || !parents.contains(root) || parents.at(root) != ObjectId{})
-        return error(ErrorCode::invalid_member, "Actor requires an explicit SceneComponent root without a parent.");
-    for (const auto& [node, parent] : parents) {
-        (void)parent;
-        auto current = node;
-        for (std::size_t depth = 0; current != root; ++depth) {
-            auto found = parents.find(current);
-            if (depth >= parents.size() || found == parents.end())
-                return error(ErrorCode::invalid_member, "Spatial hierarchy must be an acyclic tree within one Actor.");
-            current = found->second;
-        }
-    }
-    return {};
-}
-Result<void> can_remove(Runtime& runtime, ObjectId object, std::span<const ObjectRoot> group) {
-    auto type = runtime.native_type<SceneComponent>();
-    if (!type) return std::unexpected(type.error());
-    for (const auto& item : group) {
-        auto scene = is(runtime, item.id(), *type);
-        if (!scene) return std::unexpected(scene.error());
-        if (!*scene) continue;
-        auto parent = scene_parent(runtime, item.id());
-        if (!parent) return std::unexpected(parent.error());
-        if (*parent == object) return error(ErrorCode::invalid_member, "Reparent or remove the SceneComponent's children first.");
-    }
-    return {};
-}
-Result<void> clear_component(Runtime& runtime, ObjectId actor_id, ObjectId object, std::size_t index, bool root) {
-    auto actor_type = runtime.native_type<Actor>();
-    auto scene_type = runtime.native_type<SceneComponent>();
-    if (!actor_type) return std::unexpected(actor_type.error());
-    if (!scene_type) return std::unexpected(scene_type.error());
-    auto null_owner = runtime.null_reference(*actor_type);
-    auto null_scene = runtime.null_reference(*scene_type, ValueForm::weak_reference);
-    if (!null_owner) return std::unexpected(null_owner.error());
-    if (!null_scene) return std::unexpected(null_scene.error());
-    auto scene = is(runtime, object, *scene_type);
-    if (!scene) return std::unexpected(scene.error());
-    return runtime.with_native<Actor>(actor_id, [&](Actor& actor) -> Result<void> {
-        auto sequence = runtime.reference_field(actor_id, Access::sequence(actor));
-        auto root_slot = runtime.reference_field(actor_id, Access::root(actor));
-        if (!sequence) return std::unexpected(sequence.error());
-        if (!root_slot) return std::unexpected(root_slot.error());
-        auto owner = runtime.with_native<Component>(object, [&](Component& component) {
-            return runtime.reference_field(object, Access::owner(component));
-        });
-        if (!owner) return std::unexpected(owner.error());
-        std::vector<ReferenceChange> changes;
-        changes.push_back(SequenceSplice{*sequence, index, 1, {}});
-        changes.push_back(ReferenceWrite{*owner, *null_owner});
-        if (root) changes.push_back(ReferenceWrite{*root_slot, *null_scene});
-        if (*scene) {
-            auto parent = runtime.with_native<SceneComponent>(object, [&](SceneComponent& component) {
-                return runtime.reference_field(object, Access::parent(component));
-            });
-            if (!parent) return std::unexpected(parent.error());
-            changes.push_back(ReferenceWrite{*parent, *null_scene});
-        }
-        return runtime.apply_reference_changes(changes);
-    });
-}
-}
-
-Result<Commit> destroy_actor(Runtime& runtime, ObjectId object) {
+Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());
-    auto data = detail::actor_data(runtime, object);
+    auto data = detail::entity_data(runtime, object);
     if (!data) return std::unexpected(data.error());
-    if (data->transitioning) return error(ErrorCode::busy, "Actor is transitioning.");
-    auto actor_root = runtime.hold(object);
-    if (!actor_root) return std::unexpected(actor_root.error());
-    auto group = components(runtime, object);
-    if (!group) return std::unexpected(group.error());
-    for (const auto& component : *group) {
-        auto owned = detail::component_data(runtime, component.id());
-        if (!owned) return std::unexpected(owned.error());
-        if (owned->owner != object) return error(ErrorCode::invalid_member, "Actor composition has an inconsistent owner.");
+    if (data->transitioning) return error(ErrorCode::busy, "Entity is transitioning.");
+    if (data->world) {
+        if (auto ready = Access::state(*data->world).admit(); !ready) return std::unexpected(ready.error());
     }
+    // Hold and validate the complete composition before any exit or unlink.
+    auto owned = detail::subtree(runtime, object);
+    if (!owned) return std::unexpected(owned.error());
+    std::vector<std::vector<ObjectRoot>> groups;
+    groups.reserve(owned->size());
+    std::unordered_map<ObjectId, bool> component_ids;
+    for (const auto& root : *owned) {
+        auto entity = detail::entity_data(runtime, root.id());
+        if (!entity) return std::unexpected(entity.error());
+        if (entity->transitioning) return error(ErrorCode::busy, "Subtree Entity is transitioning.");
+        if (entity->world != data->world) return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
+        auto group = components(runtime, root.id());
+        if (!group) return std::unexpected(group.error());
+        for (const auto& component : *group) {
+            auto capability = detail::component_data(runtime, component.id());
+            if (!capability) return std::unexpected(capability.error());
+            if (capability->owner != root.id() || !component_ids.emplace(component.id(), true).second)
+                return error(ErrorCode::invalid_member, "Subtree has an inconsistent or duplicate component owner.");
+        }
+        groups.push_back(std::move(*group));
+    }
+    auto entity_type = runtime.native_type<Entity>();
+    if (!entity_type) return std::unexpected(entity_type.error());
+    auto null_owner = runtime.null_reference(*entity_type);
+    auto null_weak = runtime.null_reference(*entity_type, ValueForm::weak_reference);
+    if (!null_owner) return std::unexpected(null_owner.error());
+    if (!null_weak) return std::unexpected(null_weak.error());
     Commit committed{true, {}};
     if (data->world) {
         auto removed = data->world->detach(object);
         if (!removed) return std::unexpected(removed.error());
         committed.notification_error = std::move(removed->commit.notification_error);
+    } else {
+        // A detached child remains owned until explicitly removed from its parent.
+        auto unlinked = detail::unlink_parent(runtime, object);
+        if (!unlinked) return std::unexpected(unlinked.error());
     }
-    auto actor_type = runtime.native_type<Actor>();
-    if (!actor_type) return std::unexpected(actor_type.error());
-    auto null_owner = runtime.null_reference(*actor_type);
-    if (!null_owner) return std::unexpected(null_owner.error());
-    // One outer borrow protects all native locators; no native address escapes.
-    auto cleared = runtime.with_native<Actor>(object, [&](Actor& actor) -> Result<void> {
-        auto sequence = runtime.reference_field(object, Access::sequence(actor));
-        if (!sequence) return std::unexpected(sequence.error());
-        std::vector<ReferenceChange> changes;
-        changes.reserve(group->size() + 1);
-        changes.push_back(SequenceSplice{*sequence, 0, group->size(), {}});
-        for (const auto& component : *group) {
-            auto slot = runtime.with_native<Component>(component.id(), [&](Component& value) {
-                return runtime.reference_field(component.id(), Access::owner(value));
-            });
-            if (!slot) return std::unexpected(slot.error());
-            changes.push_back(ReferenceWrite{std::move(*slot), *null_owner});
+    const auto cleanup = [&](auto&& operation) {
+        try {
+            auto result = operation();
+            if (!result && !committed.notification_error) committed.notification_error = result.error();
+        } catch (const std::exception& exception) {
+            if (!committed.notification_error)
+                committed.notification_error = Error{ErrorCode::invocation_failed, exception.what()};
+        } catch (...) {
+            if (!committed.notification_error)
+                committed.notification_error = Error{ErrorCode::invocation_failed, "Entity termination cleanup threw an unknown exception."};
         }
-        auto result = runtime.apply_reference_changes(changes);
-        if (!result) return result;
-        Access::transitioning(actor) = true;
-        return {};
-    });
-    if (!cleared && !committed.notification_error) committed.notification_error = cleared.error();
-    // Once exit has committed, finish termination even if a trusted callback or
-    // allocation failed. Do not republish a half-destroyed group as live.
-    for (auto it = group->rbegin(); it != group->rend(); ++it) {
-        auto destroyed = runtime.destroy(it->id());
-        if (!destroyed && !committed.notification_error) committed.notification_error = destroyed.error();
+    };
+    // Clear all owning and observing edges while every target is still held.
+    // An outer native borrow protects the reference locators for each batch.
+    for (std::size_t i = 0; i < owned->size(); ++i) {
+        const auto id = (*owned)[i].id();
+        cleanup([&] { return runtime.with_native<Entity>(id, [&](Entity& entity) -> Result<void> {
+            Access::transitioning(entity) = true;
+            auto sequence = runtime.reference_field(id, Access::sequence(entity));
+            auto child_sequence = runtime.reference_field(id, Access::children(entity));
+            auto parent = runtime.reference_field(id, Access::parent(entity));
+            auto origin = runtime.reference_field(id, Access::origin(entity));
+            if (!sequence) return std::unexpected(sequence.error());
+            if (!child_sequence) return std::unexpected(child_sequence.error());
+            if (!parent) return std::unexpected(parent.error());
+            if (!origin) return std::unexpected(origin.error());
+            auto count = runtime.sequence_size(*child_sequence);
+            if (!count) return std::unexpected(count.error());
+            std::vector<ReferenceChange> changes;
+            changes.reserve(groups[i].size() + 4);
+            changes.push_back(SequenceSplice{*sequence, 0, groups[i].size(), {}});
+            changes.push_back(SequenceSplice{*child_sequence, 0, *count, {}});
+            changes.push_back(ReferenceWrite{*parent, *null_weak});
+            changes.push_back(ReferenceWrite{*origin, *null_weak});
+            for (const auto& component : groups[i]) {
+                auto owner = runtime.with_native<Component>(component.id(), [&](Component& value) {
+                    return runtime.reference_field(component.id(), Access::owner(value));
+                });
+                if (!owner) return std::unexpected(owner.error());
+                changes.push_back(ReferenceWrite{*owner, *null_owner});
+            }
+            auto cleared = runtime.apply_reference_changes(changes);
+            if (!cleared) return cleared;
+            Access::explicit_origin(entity) = false;
+            Access::world_origin(entity) = false;
+            return {};
+        }); });
     }
-    auto destroyed = runtime.destroy(object);
-    if (!destroyed && !committed.notification_error) committed.notification_error = destroyed.error();
+    // Reverse Entity/components/children preorder. Once exit has committed,
+    // cleanup failures must not republish any part of the subtree as live.
+    for (std::size_t i = owned->size(); i-- > 0;) {
+        for (auto it = groups[i].rbegin(); it != groups[i].rend(); ++it)
+            cleanup([&] { return runtime.destroy(it->id()); });
+        cleanup([&] { return runtime.destroy((*owned)[i].id()); });
+    }
     return committed;
 }
 
@@ -495,30 +434,35 @@ Result<Commit> destroy_component(Runtime& runtime, ObjectId object) {
     if (!data) return std::unexpected(data.error());
     auto root = runtime.hold(object);
     if (!root) return std::unexpected(root.error());
+    ObjectRoot owner_root;
     Commit committed{true, {}};
+    bool removed{};
     if (data->owner != ObjectId{}) {
-        auto actor = detail::actor_data(runtime, data->owner);
-        if (!actor) return std::unexpected(actor.error());
-        if (actor->world) {
-            auto removed = actor->world->remove_component(object);
-            if (!removed) return std::unexpected(removed.error());
-            committed.notification_error = std::move(removed->commit.notification_error);
+        auto entity = detail::entity_data(runtime, data->owner);
+        if (!entity) return std::unexpected(entity.error());
+        if (entity->transitioning) return error(ErrorCode::busy, "Component owner is transitioning.");
+        auto held = runtime.hold(data->owner);
+        if (!held) return std::unexpected(held.error());
+        owner_root = std::move(*held);
+        if (entity->world) {
+            auto removal = entity->world->remove_component(object);
+            if (!removal) return std::unexpected(removal.error());
+            committed.notification_error = std::move(removal->commit.notification_error);
         } else {
             auto group = components(runtime, data->owner);
             if (!group) return std::unexpected(group.error());
             const auto at = std::ranges::find_if(*group, [&](const ObjectRoot& item) { return item.id() == object; });
             if (at == group->end()) return error(ErrorCode::invalid_member, "Component is absent from its owner's composition.");
-            auto removable = detail::can_remove(runtime, object, *group);
-            if (!removable) return std::unexpected(removable.error());
-            auto actor_root = root_component(runtime, data->owner);
-            if (!actor_root) return std::unexpected(actor_root.error());
-            auto removed = detail::clear_component(runtime, data->owner, object,
-                std::size_t(at - group->begin()), *actor_root == object);
-            if (!removed) return std::unexpected(removed.error());
+            auto cleared = detail::clear_component(runtime, data->owner, object, std::size_t(at - group->begin()));
+            if (!cleared) return std::unexpected(cleared.error());
         }
+        removed = true;
     }
     auto destroyed = runtime.destroy(object);
-    if (!destroyed) return std::unexpected(destroyed.error());
+    if (!destroyed) {
+        if (!removed) return std::unexpected(destroyed.error());
+        if (!committed.notification_error) committed.notification_error = destroyed.error();
+    }
     return committed;
 }
 

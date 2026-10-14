@@ -19,13 +19,16 @@ def write_json(path, value):
 
 
 def component(kind, **values):
-    return dict(id=1, type=kind, enabled=True, parent=0, position=[0,0,0],
-                rotation=[0,0,0,1], scale=[1,1,1], properties={}, **values)
+    return dict(type=kind, name=kind.rsplit('.', 1)[-1], enabled=True,
+                properties={}, **values)
 
 
-def actor(name, part, active=True):
-    return dict(type='world.StaticMeshActor' if part['type']=='world.StaticMeshComponent' else 'world.Actor',
-                name=name[-256:], enabled=active, root=1, properties={}, components=[part])
+def entity(name, part, identity, position, rotation, scale, active=True):
+    part['id'] = str(identity + 1)
+    return dict(id=str(identity), type='world.StaticMeshEntity' if part['type']=='world.StaticMeshComponent' else 'world.Entity',
+                name=name[-256:], enabled=active,
+                space=dict(position=position, rotation=rotation, scale=scale, origin=None),
+                children=[], properties={}, components=[part])
 
 
 def scale_sign(instance):
@@ -122,7 +125,7 @@ def main():
                                  reflection=signs, path=obj.relative_to(root).as_posix(), resource=bindings[mesh['id'],slots,signs]))
     scenes = []
     for source in data['scenes']:
-        actors = []; paths = []; visible = 0
+        entities = []; paths = []; visible = 0; next_id = 1
         for instance in source['instances']:
             validate_transform(instance)
             active = instance['active'] and instance['enabled'] and instance['lod'] == 0
@@ -130,20 +133,23 @@ def main():
                 raise ValueError('Degenerate authored scale: '+instance['path'])
             c = component('world.StaticMeshComponent',mesh=bindings[instance['mesh'],tuple(instance['materials']),scale_sign(instance)],
                           base_color=[1,1,1],roughness=.8,metallic=0,emissive=[0,0,0])
-            c.update(position=instance['position'],rotation=instance['rotation'],scale=[abs(x) for x in instance['scale']])
-            actors.append(actor(instance['path'], c, active)); visible += active
-            paths.append(dict(actor=len(actors), **instance))
+            e = entity(instance['path'], c, next_id, instance['position'],
+                       instance['rotation'], [abs(x) for x in instance['scale']], active)
+            entities.append(e); next_id += 2; visible += active
+            paths.append(dict(entity=e['id'], **instance))
         for light in source['lights']:
             if light['type'] not in ('Point','Directional'): raise ValueError('Unsupported light '+light['type'])
             c = component('world.LightComponent')
-            c.update(position=light['position'],rotation=light['rotation'])
             c['properties'] = {'settings': dict(kind=light['type'].lower(), color=dict(zip(('x','y','z'),light['color'])),
                 intensity=max(0,light['intensity']),range=max(.1,light['range']),source_radius=.05,width=1,height=1,two_sided=False,casts_shadow=True)}
-            actors.append(actor(light['path'],c,light['enabled']))
+            entities.append(entity(light['path'], c, next_id, light['position'],
+                                   light['rotation'], [1, 1, 1], light['enabled']))
+            next_id += 2
         file = source['name'].replace(' ','') + '.scene'
-        write_json(root/'Scenes'/file,dict(version=2,actors=actors))
+        write_json(root/'Scenes'/file,dict(version=6, next_id=str(next_id), world={},
+                   roots=[e['id'] for e in entities], entities=entities))
         write_json(root/'Import'/ (source['name'].replace(' ','')+'-instances.json'),paths)
-        scenes.append(dict(source=source['source'],file='Scenes/'+file,actors=len(actors),meshes=len(paths),visible_meshes=visible,
+        scenes.append(dict(source=source['source'],file='Scenes/'+file,entities=len(entities),meshes=len(paths),visible_meshes=visible,
                            lights=len(source['lights']),particle_systems_preserved=source['particleSystems'],
                            unity_only_missing_script_components=source['missingScripts'],cameras=source['cameras']))
     write_json(root/'Import/models.json',exported)

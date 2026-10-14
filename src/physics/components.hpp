@@ -12,8 +12,10 @@ public:
     ~ComponentSimulation();
     Result<void> reconcile();
     Result<void> before_step(float fixed);
+    Result<void> append_poses(std::vector<world::SimulationPose>&);
     Result<void> after_step();
-    Result<void> removed(ObjectId);
+    Result<void> removed(ObjectId,bool detached);
+    ObjectId bound_pose_writer(ObjectId) const;
     void clear() noexcept;
     Result<QueryResult> execute_query(ObjectId,QueryIgnore = {});
     Result<QueryResult> read_query_result(ObjectId) const;
@@ -21,11 +23,11 @@ private:
     enum class Kind { character, ragdoll, vehicle, distance, force, kinematic, query };
     struct Entry {
         Kind kind;
-        ObjectId actor, component, root, target{};
+        ObjectId entity, component, target{};
         SpecialHandle special{};
         ConstraintHandle constraint{};
         BodyHandle body{}, other_body{};
-        std::vector<ObjectId> visuals{};
+        std::vector<ObjectId> targets{}, metadata{}, ancestors{};
         math::Vector3 origin{};
         math::Quaternion rotation{};
         double elapsed{};

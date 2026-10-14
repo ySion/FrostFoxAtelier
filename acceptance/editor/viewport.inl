@@ -19,17 +19,17 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     const auto browser_history=app.document().undo_count();
     const auto resource=atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere");
     click(app,resource);
-    require(actors(app).empty() && app.document().undo_count()==browser_history,
+    require(entities(app).empty() && app.document().undo_count()==browser_history,
         "Selecting a resource row created a scene object or changed document history.");
     double_click(app,resource);key(app,VK_RETURN);
-    require(actors(app).empty() && app.document().undo_count()==browser_history,
+    require(entities(app).empty() && app.document().undo_count()==browser_history,
         "Resource Open gestures implicitly created a scene object.");
     click(app,atelier::editor::browser_control::add);
     // Inspect actual faces at a useful scale, beyond the selected edge coverage.
     click(app,control::focus);
     require_input_focus(app);
     wheel(app,control::viewport,5);
-    const auto actor=app.document().selection().actor;
+    const auto entity=app.document().selection().entity;
     const auto history=app.document().undo_count();
     const auto items=model(app.document().world().render_items());
     require(items.size()==1,"Viewport fixture did not create a real sphere.");
@@ -74,7 +74,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
         atelier::renderer::Capture image;
         require(app.step(&image),"Viewport mode failed to render.");
         require(image.depth==initial.depth,"A display-only switch changed scene depth.");
-        require(app.document().selection().actor==actor && app.document().undo_count()==history,
+        require(app.document().selection().entity==entity && app.document().undo_count()==history,
                 "A viewport option changed selection or document history.");
         const auto current=model(app.document().world().render_items());
         require(current.size()==items.size() && current[0].geometry==items[0].geometry &&
@@ -125,5 +125,5 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     choose(control::scene_shading,control::edges_first+2); capture_mode("hidden-lines.png");
     choose(control::scene_shading,control::edges_first+3); capture_mode("all-lines.png");
     choose(control::scene_shading,control::edges_first); capture_mode("restored-matcap.png");
-    verify_transform_projection(app,output,actor);
+    verify_transform_projection(app,output,entity);
 }

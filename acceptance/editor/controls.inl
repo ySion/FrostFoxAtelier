@@ -1,10 +1,10 @@
 void verify_parameter_search(Application& app,const std::filesystem::path& output) {
-    const auto actor=app.document().selection().actor;
-    const auto field=property_control(app,actor,0);
+    const auto entity=app.document().selection().entity;
+    const auto field=property_control(app,entity,0);
     const auto incarnation=app.presented()->find(field)->incarnation;
     const auto history=app.document().undo_count();
     const auto closed_list=app.presented()->find(control::parameter_list)->bounds;
-    const auto name=atelier::application::EditorAcceptanceAccess::name_control(app,actor);
+    const auto name=atelier::application::EditorAcceptanceAccess::name_control(app,entity);
     const auto name_bounds=app.presented()->find(name)->bounds;
     const auto button=app.presented()->find(control::parameter_search_toggle)->bounds;
     require(!app.presented()->find(control::parameter_search) &&
@@ -28,7 +28,7 @@ void verify_parameter_search(Application& app,const std::filesystem::path& outpu
     capture(app,output/"parameters-search-open.png");
     click(app,control::parameter_search_toggle);
     require(!app.presented()->find(control::parameter_search) && app.presented()->find(field) &&
-        property_control(app,actor,0)==field && app.query()==L"no-such-parameter" &&
+        property_control(app,entity,0)==field && app.query()==L"no-such-parameter" &&
         app.presented()->find(control::parameter_list)->bounds==closed_list && !app.text_input(),
         "Closing search lost text or field identity, kept hidden filtering/focus, or retained row space.");
     key(app,VK_SPACE);
@@ -90,7 +90,7 @@ void verify_parameter_slider(Application& app,const std::filesystem::path& outpu
     capture(app,output/"controls-axis-slider.png");
 }
 
-void verify_basic_controls(Application& app, const std::filesystem::path& output, atelier::ObjectId actor) {
+void verify_basic_controls(Application& app, const std::filesystem::path& output, atelier::ObjectId entity) {
     const auto resize_panel=[&](float width) {
         require_input_focus(app);
         KeyStateScope modifiers;
@@ -105,34 +105,34 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         tick(app,2);
     };
     click(app,control::parameter_search); type(app,L""); key(app,VK_RETURN); key(app,VK_ESCAPE);
-    const auto target=model(atelier::world::root_component(app.document().world().runtime(),actor));
-    require(target.has_value(),"Parameter-row acceptance needs an actual component.");
+    const auto target=entity;
+    require(model(atelier::world::has_transform(app.document().world().runtime(),entity)),"Parameter-row acceptance needs Entity space.");
     const auto position=[&](std::size_t axis) {
-        return std::get<float>(model(app.document().world().read(*target,app.document().parameters()[axis].path)));
+        return std::get<float>(model(app.document().world().read(target,app.document().parameters()[axis].path)));
     };
     for (std::size_t axis=0;axis<3;++axis) {
-        click(app,property_control(app,actor,axis));
+        click(app,property_control(app,entity,axis));
         type(app,std::to_wstring(axis+1).c_str()); key(app,VK_RETURN);
     }
     const auto count=app.document().undo_count();
-    const auto reset=app.reset_control(*target);
+    const auto reset=app.reset_control(target);
     require(reset && tuple_reset_available(app,reset),"Modified vector has no reset action.");
-    const auto modified=app.presented()->find(property_control(app,actor,0))->style->foreground;
+    const auto modified=app.presented()->find(property_control(app,entity,0))->style->foreground;
     capture(app,output/"controls-vector-modified.png");
     reset_tuple(app,reset);
     require(position(0)==0 && position(1)==0 && position(2)==0 && app.document().undo_count()==count+1,
         "Vector reset did not apply as one history entry.");
     require(!tuple_reset_available(app,reset) &&
-        app.presented()->find(property_control(app,actor,0))->style->foreground!=modified,
+        app.presented()->find(property_control(app,entity,0))->style->foreground!=modified,
         "Restoring defaults did not clear the modified state and reset availability.");
     click(app,control::undo);
     require(position(0)==1 && position(1)==2 && position(2)==3,"Undo failed to restore the whole vector.");
     click(app,control::redo);
     require(position(0)==0 && position(1)==0 && position(2)==0,"Redo failed to reset the whole vector.");
 
-    click(app,property_control(app,actor,1)); type(app,L"5"); key(app,VK_RETURN);
+    click(app,property_control(app,entity,1)); type(app,L"5"); key(app,VK_RETURN);
     click(app,control::parameter_search); type(app,L"x"); key(app,VK_RETURN);
-    require(!app.presented()->find(property_control(app,actor,1)) && tuple_reset_available(app,reset),
+    require(!app.presented()->find(property_control(app,entity,1)) && tuple_reset_available(app,reset),
         "Filtering out the only modified component disabled the whole-vector reset.");
     const auto filtered_history=app.document().undo_count();
     reset_tuple(app,reset);
@@ -145,11 +145,11 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     click(app,control::redo);
     click(app,control::parameter_search); type(app,L""); key(app,VK_RETURN); key(app,VK_ESCAPE);
 
-    const auto stable=property_control(app,actor,0);
+    const auto stable=property_control(app,entity,0);
     click(app,control::position_fold);
     require(!app.presented()->find(stable) && !app.text_input(),"Collapsed group retained an editable target.");
     key(app,VK_SPACE);
-    require(app.presented()->find(stable) && property_control(app,actor,0)==stable,
+    require(app.presented()->find(stable) && property_control(app,entity,0)==stable,
         "Keyboard expansion changed field identity or failed to restore the group.");
 
     namespace sample=atelier::editor::workbench_control;
@@ -171,7 +171,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     key(app,VK_SPACE);
     require(app.control_workbench().values().enabled,"Checkbox keyboard activation did not toggle once.");
     key(app,VK_DELETE);
-    require(contains(app,actor),"Workbench keyboard command escaped into scene deletion.");
+    require(contains(app,entity),"Workbench keyboard command escaped into scene deletion.");
     click(app,sample::disable);
     require(!app.presented()->find(sample::position_x)->enabled,"Disabled group did not propagate to numeric fields.");
     click(app,sample::position_x); type(app,L"999");
@@ -225,7 +225,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     key(app,VK_ESCAPE);
     parameter_menu(app,sample::position_x);
     key(app,VK_DELETE);
-    require(app.menu_window() && contains(app,actor),"Popup leaked Delete to the scene.");
+    require(app.menu_window() && contains(app,entity),"Popup leaked Delete to the scene.");
     const auto view=atelier::application::EditorAcceptanceAccess::camera_view(app);
     wheel(app,control::viewport,3);
     require(atelier::application::EditorAcceptanceAccess::camera_view(app)==view,"Popup wheel escaped to the camera.");
@@ -364,6 +364,6 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(app.document().undo_count()==scene_history && position(0)==0,
         "Workbench values or history modified the actual scene.");
     click(app,control::parameters_tab);
-    require(!app.workbench_visible() && app.presented()->find(property_control(app,actor,0)),
+    require(!app.workbench_visible() && app.presented()->find(property_control(app,entity,0)),
         "Returning from the workbench did not restore scene controls.");
 }

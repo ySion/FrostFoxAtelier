@@ -5,10 +5,23 @@ int verify_physics_examples_window(Application& app,const char* output_directory
     struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     model(app.open_example(atelier::editor::Command::example_physic));
+    if(const auto& build=Access::project_build(app);build && build->error) throw std::runtime_error(build->error->message);
     require(Access::scene_lit_view(app).shading==atelier::renderer::Shading::smooth &&
-        !Access::scene_lit_view(app).lit.ddgi,"Physic did not open its simulation view.");
-    for(const auto* name:{"Overview","RigidBodies","Forces","Triggers","Queries","Character","Constraints","Ragdoll","Vehicle","Raycasts"}) {
+        static_cast<const atelier::rendering::SceneLightingSettings&>(Access::scene_lit_view(app).lit)==app.document().world().lighting_settings(),
+        "Physic did not open Smooth rendering with its authored lighting settings preserved.");
+    struct Example {const char* name;std::size_t entities,roots;};
+    constexpr std::array examples{
+        Example{"Overview",29,11},Example{"RigidBodies",8,5},Example{"Forces",8,5},Example{"Triggers",10,6},Example{"Queries",8,5},
+        Example{"Character",8,5},Example{"Constraints",6,4},Example{"Ragdoll",11,4},Example{"Vehicle",8,3},Example{"Raycasts",20,8}};
+    for(const auto& example:examples) {
+        const auto* name=example.name;
         model(app.open_scene(std::string("Examples/Physic/Scenes/")+name+".scene"));
+        const auto members=model(app.document().world().members());
+        const auto roots=std::ranges::count_if(members,[&](const auto& member) {
+            return model(atelier::world::parent_entity(app.document().world().runtime(),member.id()))==atelier::ObjectId{};
+        });
+        require(members.size()==example.entities && static_cast<std::size_t>(roots)==example.roots,
+            (std::string(name)+" lost authored Entity members or composition roots.").c_str());
         const bool overview=std::string_view(name)=="Overview";
         const bool close=std::string_view(name)=="Ragdoll" || std::string_view(name)=="Constraints" || std::string_view(name)=="Character";
         model(app.configure_view(overview?atelier::math::Vector3{22,18,-26}:close?atelier::math::Vector3{6,5,-8}:atelier::math::Vector3{10,8,-14},{0,2,0},atelier::renderer::Shading::smooth));

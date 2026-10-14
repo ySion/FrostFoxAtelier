@@ -7,11 +7,11 @@ void verify_scene_recovery() {
     const auto original_bytes=take(editor::read_file(original));
     editor::Session document;
     changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
-    take(document.rename(document.selection().actor,L"Recovered actor"));
-    const auto root=component(document,document.selection().actor,document.types().static_mesh_component);
+    take(document.rename(document.selection().entity,L"Recovered entity"));
+    const auto entity=document.selection().entity;
     const auto committed=take(document.serialize());
     const auto history=document.undo_count();
-    take(document.begin_edit(root,document.parameters().front().path,801));
+    take(document.begin_edit(entity,document.parameters().front().path,801));
     take(document.preview_edit(801,17.f));
     require(document.editing(),"Recovery fixture did not enter a real edit.");
 
@@ -22,7 +22,7 @@ void verify_scene_recovery() {
     require(take(editor::read_file(path))==committed && document.dirty() && !document.editing() && document.undo_count()==history,
         "Recovery saved a tentative gesture, changed history, or marked the original saved.");
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
-    require(take(reopened->world().members()).size()==1 && reopened->name(take(reopened->world().members()).front().id())==L"Recovered actor",
+    require(take(reopened->world().members()).size()==1 && reopened->name(take(reopened->world().members()).front().id())==L"Recovered entity",
         "Recovered scene did not reopen through the real scene loader.");
     const auto metadata=editor::json_format::parse(take(editor::read_file(path.parent_path()/"recovery.json")));
     require(metadata.at("reason")=="renderer execution failed" && metadata.at("unfinished_edit_cancelled")==true &&
@@ -35,7 +35,7 @@ void verify_scene_recovery() {
     editor::Session missing;
     const auto mesh=take(project.mesh("builtin/cube"));
     changed(missing.create_static_mesh(mesh));
-    const auto missing_root=component(missing,missing.selection().actor,missing.types().static_mesh_component);
+    const auto missing_root=component(missing,missing.selection().entity,missing.types().static_mesh_component);
     const std::string missing_key="project/{00000000-0000-0000-0000-000000000099}";
     take(world::set_mesh_binding(missing.world().runtime(),missing_root,{missing_key,mesh.mesh}));
     application::SceneRecovery missing_recovery;

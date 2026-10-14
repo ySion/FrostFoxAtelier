@@ -139,8 +139,8 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     using Access=atelier::application::EditorAcceptanceAccess;
     model(Access::command(app,atelier::editor::Command::create_static_mesh));tick(app,3);
     if (!app.presented()->find(control::parameter_search)) click(app,control::parameter_search_toggle);
-    const auto actor=app.document().selection().actor;
-    const auto field=property_control(app,actor,0);
+    const auto entity=app.document().selection().entity;
+    const auto field=property_control(app,entity,0);
     const auto field_incarnation=app.presented()->find(field)->incarnation;
     const auto path_bar=app.presented()->find(control::parameter_path)->parent;
     const auto path_height=app.presented()->find(path_bar)->bounds.height/app.presented()->drawing->dpi_scale;
@@ -203,7 +203,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     };
     const auto verify_query=[&] {
         require(app.text_input() && app.text_input()->token==token && app.query()==L"position" &&
-            !app.presented()->find(control::position_fold)->selected && !app.presented()->find(field) && property_control(app,actor,0)==field,
+            !app.presented()->find(control::position_fold)->selected && !app.presented()->find(field) && property_control(app,entity,0)==field,
             "Native source update lost the shared query draft, local foldout state or World field key.");
     };
     save("valid",changed,true,path_height+4,verify_query);capture(app,output/"ui-live-updated.png");
@@ -224,12 +224,12 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     auto draft_source=changed;draft_source.replace(height,std::string_view("height: 44;").size(),"height: 48;");
     save("field_draft",draft_source,true,path_height+8,[&] {
         require(app.text_input() && app.text_input()->token==field_token && app.document().editing() &&
-            property_control(app,actor,0)==field && app.presented()->find(field)->incarnation==field_incarnation &&
-            x(app,actor)==4.25f && app.document().undo_count()==field_history,
+            property_control(app,entity,0)==field && app.presented()->find(field)->incarnation==field_incarnation &&
+            x(app,entity)==4.25f && app.document().undo_count()==field_history,
             "A live Parameters shell resize replaced or committed the active numeric draft.");
     });
     key(app,VK_RETURN);
-    require(x(app,actor)==4.25f && !app.document().editing() && app.document().undo_count()==field_history+1,
+    require(x(app,entity)==4.25f && !app.document().editing() && app.document().undo_count()==field_history+1,
         "World field editing after live Source replacement did not commit exactly once.");
     auto minimized_source=draft_source;minimized_source.replace(height,std::string_view("height: 48;").size(),"height: 52;");
     require_input_focus(app);
@@ -246,17 +246,17 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     do {tick(app,1);if(Access::ui_revision(app)>minimized_revision) break;} while(GetTickCount64()-restored_start<10000);
     require(Access::ui_revision(app)==minimized_revision+1 && Access::ui_error(app).empty() &&
         std::abs(app.presented()->find(path_bar)->bounds.height/app.presented()->drawing->dpi_scale-path_height-12)<.1f &&
-        x(app,actor)==4.25f && app.document().undo_count()==field_history+1,
+        x(app,entity)==4.25f && app.document().undo_count()==field_history+1,
         "Restoring the surface did not prepare and publish the saved layout once while retaining scene values.");
     verify_hierarchy();
     timings<<"minimized_restore,"<<Access::ui_compile_milliseconds(app)<<','<<GetTickCount64()-restored_start<<','<<Access::ui_revision(app)<<'\n';
     capture(app,output/"ui-live-minimized-recovered.png");
-    const auto count=actors(app).size(),history=app.document().undo_count();
+    const auto count=entities(app).size(),history=app.document().undo_count();
     click(app,control::add_static_mesh);
-    require(actors(app).size()==count+1 && app.document().undo_count()==history+1,
+    require(entities(app).size()==count+1 && app.document().undo_count()==history+1,
         "A hot-updated tool did not dispatch exactly one real command.");
     click(app,control::undo);
-    require(actors(app).size()==count && x(app,actor)==4.25f,"Hot-updated tool command did not retain normal undo behavior.");
+    require(entities(app).size()==count && x(app,entity)==4.25f,"Hot-updated tool command did not retain normal undo behavior.");
     capture(app,output/"ui-live-recovered.png");
     require(timings.good(),"Cannot write live authoring evidence.");
     verify_asset_ui_authoring_window(app,output,path);

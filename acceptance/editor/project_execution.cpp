@@ -21,15 +21,15 @@ template<class T> T display(ui::Result<T> result) {
 }
 void require(bool value,const char* message){if(!value) throw std::runtime_error(message);}
 void complete(Result<world::Commit> result){auto value=take(std::move(result));if(value.notification_error) throw std::runtime_error(value.notification_error->message);}
-float position(editor::Session& document,ObjectId actor) {
-    const auto root=take(world::root_component(document.world().runtime(),actor));require(root.has_value(),"Actor lost its root.");
-    return take(world::read_transform(document.world().runtime(),*root)).position.x;
+float position(editor::Session& document,ObjectId entity) {
+    require(take(world::has_transform(document.world().runtime(),entity)),"Entity lost its Transform.");
+    return take(world::read_transform(document.world().runtime(),entity)).position.x;
 }
 void check_position(float value,float expected){require(std::abs(value-expected)<.0001f,"Source behavior produced the wrong transform.");}
-ObjectId actor(editor::Session& document) {return take(document.world().members()).front().id();}
+ObjectId entity(editor::Session& document) {return take(document.world().members()).front().id();}
 ObjectId behavior(editor::Session& document) {
     auto& runtime=document.world().runtime();const auto type=take(runtime.find_type("project.Move"));
-    for(const auto& component:take(world::components(runtime,actor(document)))) if(take(runtime.type_of(component.id()))==type) return component.id();
+    for(const auto& component:take(world::components(runtime,entity(document)))) if(take(runtime.type_of(component.id()))==type) return component.id();
     throw std::runtime_error("Source component disappeared.");
 }
 Scalar field(editor::Session& document,std::string_view name) {
@@ -50,7 +50,7 @@ void run(const std::filesystem::path& root) {
     {
         auto empty=editor::load_project_scene(project,take(editor::read_file(root/"Content/Scenes/Main.scene")));
         if(!empty.session) throw std::runtime_error("Empty project: "+empty.error->message);
-        complete(empty.session->add_actor());
+        complete(empty.session->add_entity());
         take(editor::write_file(helper,helpers));take(editor::write_file(component,declaration));
         const auto first=empty.code->poll(project,true);
         require(!first && first.error().code==ErrorCode::rebuild_required,"Adding the first Source type did not request a scene rebuild.");
@@ -80,15 +80,15 @@ void run(const std::filesystem::path& root) {
     require(std::ranges::any_of(controls,[](const auto& item){return item.kind==ui::ControlKind::checkbox && item.text==L"Moving" && item.selected;}),"Source boolean field did not reach its checkbox.");
 
     auto playing=editor::load_project_scene(project,original);require(playing.session!=nullptr,"Play snapshot failed to load.");
-    auto& play=*playing.session;const auto moving_actor=actor(play);
-    complete(play.start());take(play.update(.5f));check_position(position(play,moving_actor),1);check_position(position(document,actor(document)),0);
+    auto& play=*playing.session;const auto moving_entity=entity(play);
+    complete(play.start());take(play.update(.5f));check_position(position(play,moving_entity),1);check_position(position(document,entity(document)),0);
     require(!document.dirty(),"Playing modified the authoring document.");
     take(editor::write_file(helper,"float travel(float speed,float dt) { return speed * dt * 2.0f; }\n"));
-    take(playing.code->poll(project,true));take(play.update(.5f));check_position(position(play,moving_actor),3);
+    take(playing.code->poll(project,true));take(play.update(.5f));check_position(position(play,moving_entity),3);
     take(editor::write_file(helper,"float travel(float speed,float dt) { return missing; }\n"));
     require(!playing.code->poll(project,true),"Invalid project source was published.");
     require(playing.code->report()->error && playing.code->report()->error->source && playing.code->report()->error->source->path=="Source/Math.source","Compiler lost the failing file identity.");
-    take(play.update(.5f));check_position(position(play,moving_actor),5);complete(play.stop());complete(play.stop());
+    take(play.update(.5f));check_position(position(play,moving_entity),5);complete(play.stop());complete(play.stop());
     take(workspace.source_editor.open(component));workspace.project_build=playing.code->report();workspace.dock.select(editor::source_control::tab);
     controls=workspace.describe(document,{1280,800},ui.presented().get(),&project);display(ui.set_controls(controls));workspace.commit_ui_controls();
     require(workspace.source_editor.locate_problem(),"Cross-file compiler diagnostic could not open its source.");
@@ -116,7 +116,7 @@ void run(const std::filesystem::path& root) {
     const auto output=process.take_output();std::fwrite(output.data(),1,output.size(),stdout);
     require(process.exit_code()==0,"The real isolated runner failed.");
     auto executed=editor::load_project_scene(project,take(editor::read_file(report)));require(executed.session!=nullptr,"Run output did not restore through the shared scene loader.");
-    check_position(position(*executed.session,actor(*executed.session)),2.f/3);
+    check_position(position(*executed.session,entity(*executed.session)),2.f/3);
     require(take(editor::read_file(root/"Content/Scenes/Main.scene"))==original,"The runner overwrote the authored scene.");
 
     const std::string infinite="class project.Move : world.Component { float speed=2.0f; bool moving=true; uint ticks=0; float extra=7.0f; void tick(float dt) { while (true) {} } }";
@@ -128,7 +128,7 @@ void run(const std::filesystem::path& root) {
     take(editor::write_file(component,extended));
     const std::string infinite_ui=R"(
 double forever() { while (true) {} return 1.0d; }
-ui ProjectUI(in Text title, in double elapsed, in double actors) {
+ui ProjectUI(in Text title, in double elapsed, in double entities) {
     Column hud { width: forever(); Text title { text: input.title; } }
 })";
     take(editor::write_file(root/"Source/UI/Main.ui.source",infinite_ui));

@@ -23,7 +23,7 @@ UI 和快捷键直接调用负责业务不变量的执行层；外部调用经�
 将最近观察到的 state_token 填入 UTF-8 JSON 请求：
 
     {
-      "request_id": "create-first-actor",
+      "request_id": "create-first-entity",
       "op": "scene.create",
       "state_token": "INSTANCE_ID:VERSION",
       "args": {"kind": "mesh", "mesh": "builtin/cube"}
@@ -39,14 +39,17 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 | 操作 | 权威入口与行为 |
 | --- | --- |
-| editor.inspect | 默认 `detail: full` 返回工程、内存场景、Actor/Component 句柄、反射属性、选择、资源、组件类型、相机、基础显示设置和最近接受帧；`detail: summary` 只返回工程/文档状态、忙碌项、历史计数、相机、显示和最近接受帧，不遍历场景或资源 |
+| editor.inspect | 默认 `detail: full` 返回工程、内存场景、Entity/Component 句柄、反射属性、选择、资源、组件类型、相机、基础显示设置和最近接受帧；`detail: summary` 只返回工程/文档状态、忙碌项、历史计数、相机、显示和最近接受帧，不遍历场景或资源 |
 | view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | project.open、scene.open、scene.save | Application 工程/场景命令；替换拒绝未保存场景或源码草稿，避免无人处理的保存对话框 |
-| scene.create | Actor、StaticMeshActor、Point/Rectangle/Directional/Sky Light，共用现有命令和 World 工厂 |
-| scene.select、scene.rename、scene.delete | Session 的选择、名称和删除；rename 只修改 Actor 名称，Component 使用类型名 |
+| scene.create | Entity、StaticMeshEntity、Point/Rectangle/Directional/Sky Light，共用现有命令和 World 工厂 |
+| scene.select、scene.rename、scene.delete | Session 的选择、名称和删除；rename 只修改 Entity 名称，Component 使用类型名 |
 | scene.set_property | 按发现到的属性名及精确标量类型写入；枚举使用名称 |
-| scene.transform | Actor 根或 SceneComponent 的完整 TRS，一次撤销；位置/缩放三分量，旋转 quaternion xyzw |
+| scene.transform | Entity 的可选内联完整 TRS；无空间时显式添加空间，一次撤销；位置/缩放三分量，旋转 quaternion xyzw |
 | scene.add_component、scene.remove_component | 现有组件组合和生命周期；类型来自 component_types |
+| scene.remove_transform | 移除指定 Entity 的内联空间，一次撤销 |
+| scene.reparent | 调整 Entity 组合 parent；支持 keep_world 和组成 index，一次撤销 |
+| scene.set_space_reference | 设置 Entity 空间参考：继承组合祖先、世界或另一个 Entity；支持 keep_world，一次撤销 |
 | scene.undo、scene.redo | 文档原有撤销/重做链 |
 | material.create、texture.import | Project 创建 `.material` 或导入图片，沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
 | material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
@@ -60,6 +63,12 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | render.prepare | 通过真实接受帧准备当前实例的 Scene Lit 管线，结束后恢复基础显示；单独报告准备耗时 |
 | render.capture、render.compare | 当前显示捕获或临时设置对照 |
 | job.status、job.cancel | 查询和幂等取消任务 |
+
+场景身份与参数统一使用 Entity 名称：`editor.inspect` 的目录和 `scene.select` 的有序选择数组均为 `entities`；没有 actor/entitys 别名。`scene.create` 的空实体 `kind` 为 `entity`。`scene.add_component` 对当前选中 Entity 添加 `type` 指定的真实组件。
+
+`scene.transform / scene.remove_transform / scene.reparent / scene.set_space_reference` 的 `object` 必须是 Entity 句柄，组件不接受 TRS。reparent 的 parent 为 Entity 句柄，null 或省略表示顶层；keep_world 默认 true，index 可省略。set_space_reference 的 origin 为 null 时继承组合祖先，空字符串表示世界，Entity 句柄表示显式空间参考；keep_world 默认 true。
+
+完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。组件目录保留反射参数与材质，组件记录不含 TRS。创建子实体复用 scene.create 和 scene.reparent；没有第二套 create_child 工厂或对象身份。
 
 材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存实际材质草稿并核对已载入贴图内容，原工程不变。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
 
@@ -145,13 +154,15 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。复制 Config、Content、Source，排除 Cache；没有工程时创建独立工程容器。副本 startup scene 指向当前内存场景。
 
-保存相机、显示偏好、Actor 选择顺序和检查的 Component、构建身份及资源指纹。publication_version 标识完整已发布构建，source_version 标识游戏源码集，ui_source_version 标识 UI 输入。副本 Source 只包含该成功构建的游戏和 UI 源码；磁盘上新增或修改但未发布的源码移入 unpublished/，内存 Code 草稿另存 drafts.json。没有可用场景或成功发布构建的工程返回 not_ready。这是场景与代码复现，不保存整个桌面、编辑器布局或 GPU 历史。
+保存相机、显示偏好、Entity 选择顺序和检查的 Component、构建身份及资源指纹。publication_version 标识完整已发布构建，source_version 标识游戏源码集，ui_source_version 标识 UI 输入。副本 Source 只包含该成功构建的游戏和 UI 源码；磁盘上新增或修改但未发布的源码移入 unpublished/，内存 Code 草稿另存 drafts.json。没有可用场景或成功发布构建的工程返回 not_ready。这是场景与代码复现，不保存整个桌面、编辑器布局或 GPU 历史。
 
 复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的 Config、Content 或 Source 内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
 
 Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录身份比较、实例发现与清理以及 CLI 请求文件。路径拼接和 canonical 解析后，在文件操作边界使用现有 windows_file_path 统一转换；协议中的绝对路径、工程相对路径和资源身份保持原格式。深目录副本可以重开、保存并再次导出。
 
 repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、额外文件或链接；运行时生成的 Project/Cache 不参与复现依赖。随后通过同一工程入口的严格加载策略编译源码并读取场景，全部成功才替换当前文档并恢复视图与选择。编译或反序列化失败保留当前工程和对象；常规 UI 的修复工程模式保持原有行为。有未保存场景或源码时拒绝替换。失败/取消可能留下诊断目录，未返回成功的任务不应当作成功交付。
+
+含 v1–v5 场景的旧包通过同一场景迁移器解析选择与检查目标，再按文档 ID 查找新对象。空间组件展开成子 Entity 后，旧序号仍对应原来的对象；不会用展开后的 World 成员下标猜测身份。旧纯空间组件的检查目标映射到相应 Entity，能力组件则保留其真实 owner。正式 Control 请求继续使用 Entity 命名。
 
 新产物的 manifest 标记 `view_schema: 2`；无标记或显式版本 1 视为旧视图快照，未知版本拒绝。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`；旧值 64 不开启 `direct_reference`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4 的 World 设置在一致性预校验中应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
 
@@ -205,4 +216,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v5 保存；`direct_reference` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`scene.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label` 和 `category`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v6 保存；`direct_reference` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`scene.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label` 和 `category`，显示文本不参与字段身份。

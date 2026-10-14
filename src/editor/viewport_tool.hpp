@@ -74,7 +74,7 @@ public:
     // Drop tool state after Session already ended the transaction (undo, selection change...).
     void forget(const Session&) noexcept;
     void overlay(const Session&, const ViewportView&, Settings, std::vector<renderer::OverlayShape>&) const;
-    // Topmost Actor under a physical-pixel point.
+    // Topmost Entity under a physical-pixel point.
     std::optional<ObjectId> pick(const Session&, const ViewportView&, float x, float y) const;
     std::vector<ObjectId> pick_box(const Session&, const ViewportView&, ui::Rect) const;
 
@@ -86,7 +86,7 @@ public:
 private:
     enum class Operation : std::uint8_t { move, rotate, scale };
     struct Targets {
-        std::vector<ObjectId> components;
+        std::vector<ObjectId> entities;
         std::vector<world::Trs> transforms;
         math::Vector3 pivot;
     };
@@ -98,6 +98,7 @@ private:
         int axis{-1};       // Constraint axis, or -1.
         bool plane{};       // Constraint is the plane normal to axis.
         std::uint64_t session{};
+        std::vector<ObjectId> entities;
         std::vector<world::Trs> before;
         math::Vector3 pivot;
         math::Vector2 start, last;
@@ -114,8 +115,9 @@ private:
     std::wstring hint_;
     std::uint64_t next_session_{(1ULL<<62)+1};
 
+    static Result<void> preview_world(Session&,std::uint64_t,std::span<const ObjectId>,std::span<const world::Trs>,bool local_scale=false);
     static std::optional<Targets> targets(const Session&, PivotMode, math::Vector3 cursor);
-    struct Hit { ObjectId actor; math::Vector3 position, normal{0,1,0}; };
+    struct Hit { ObjectId entity; math::Vector3 position, normal{0,1,0}; };
     static std::optional<Hit> trace(const Session&,const ViewportView&,float x,float y,bool locators);
     Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,Settings,bool control);
     Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2) const;

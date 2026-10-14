@@ -34,8 +34,8 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
         std::ranges::any_of(scene.meshes,[](const auto& mesh){return mesh.material.roughness<.2f;}) &&
         std::ranges::any_of(scene.meshes,[](const auto& mesh){return std::ranges::any_of(mesh.material.emissive,[](float value){return value>1;});}),
         "Scene Lit example lost its real metal, reflection roughness or HDR emission.");
-    const auto actor=take(document->world().members()).front().id();
-    const auto mesh=*take(world::root_component(document->world().runtime(),actor));
+    const auto entity=take(document->world().members()).front().id();
+    const auto mesh=component(*document,entity,document->types().static_mesh_component);
     const auto fields=take(document->properties(mesh));
     const auto roughness=std::ranges::find(fields,"material.roughness",&Property::name);
     require(roughness!=fields.end(),"Scene Lit example floor has no reflected roughness.");
@@ -88,8 +88,8 @@ void verify_sky_light_application() {
     take(snapshot.refresh(document));
     require(snapshot.environment==dark,"A World without Sky Light has implicit environment radiance.");
     changed(document.create_light(world::LightKind::sky));
-    const auto actor=document.selection().actor;
-    const auto sky=*take(world::root_component(document.world().runtime(),actor));
+    const auto entity=document.selection().entity;
+    const auto sky=component(document,entity,document.types().light_component);
     const auto fields=take(document.properties(sky));
     const auto property=[&](std::string_view name) {
         const auto at=std::ranges::find(fields,name,&Property::name);
@@ -111,13 +111,13 @@ void verify_sky_light_application() {
     require(snapshot.environment==dark && !workspace.command_enabled(Command::create_sky_light,document),
         "Disabled Sky Light emits radiance or allows a second Sky Light.");
     changed(sky_world->set_enabled(sky,true));
-    changed(sky_world->set_enabled(actor,false));take(snapshot.refresh(document));
-    require(snapshot.environment==dark,"Disabled Sky Light Actor emits radiance.");
-    changed(sky_world->set_enabled(actor,true));take(snapshot.refresh(document));
+    changed(sky_world->set_enabled(entity,false));take(snapshot.refresh(document));
+    require(snapshot.environment==dark,"Disabled Sky Light Entity emits radiance.");
+    changed(sky_world->set_enabled(entity,true));take(snapshot.refresh(document));
     require(snapshot.environment==radiance,"Re-enabled Sky Light did not restore its authored radiance.");
     const auto before_point=snapshot.revision;
     changed(document.create_light(world::LightKind::point));
-    const auto point=*take(world::root_component(document.world().runtime(),document.selection().actor));
+    const auto point=component(document,document.selection().entity,document.types().light_component);
     take(snapshot.refresh(document));
     require(snapshot.lights.size()==1 && snapshot.revision==before_point+1 && snapshot.environment==radiance,
         "Appending a direct light failed to advance the scene revision independently of Sky Light.");
@@ -136,10 +136,10 @@ void verify_sky_light_application() {
     require(!document.set_property(point,property("settings.kind"),EnumValue{document.types().light_kind,static_cast<std::uint64_t>(world::LightKind::sky)},985) &&
         take(world::read_light(document.world().runtime(),point)).kind==world::LightKind::point && !document.editing(),
         "Changing Light Type created a second sky or left an active rejected edit.");
-    take(document.select(actor));changed(document.remove_component(sky));take(snapshot.refresh(document));
+    take(document.select(entity));changed(document.remove_component(sky));take(snapshot.refresh(document));
     require(snapshot.environment==dark && workspace.command_enabled(Command::create_sky_light,document),"Removed Sky Light remained effective or occupied the unique slot.");
     changed(document.undo());take(snapshot.refresh(document));
-    require(snapshot.environment==radiance && *take(world::root_component(document.world().runtime(),actor))==sky,
+    require(snapshot.environment==radiance && component(document,entity,document.types().light_component)==sky,
         "Undo did not restore the same Sky Light component and radiance.");
     const auto folder=std::filesystem::current_path()/"out/scene-lit-application-evidence"/
         ("sky-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -148,8 +148,11 @@ void verify_sky_light_application() {
     take(write_file(file,text,WriteMode::create));
     auto reopened=take(Session::deserialize(take(read_file(file)),project));take(snapshot.refresh(*reopened));
     require(snapshot.environment==radiance && snapshot.lights.size()==1,"Sky Light changed after saved scene reopen.");
-    auto duplicate=nlohmann::json::parse(text);duplicate["actors"].push_back(duplicate["actors"][0]);
-    duplicate["actors"].back()["name"]="Second Sky Light";
+    auto duplicate=nlohmann::json::parse(text);duplicate["entities"].push_back(duplicate["entities"][0]);
+    auto& extra=duplicate["entities"].back();extra["name"]="Second Sky Light";
+    extra["id"]="100000";extra["children"]=nlohmann::json::array();
+    for(std::size_t i=0;i<extra["components"].size();++i) extra["components"][i]["id"]=std::to_string(100001+i);
+    duplicate["roots"].push_back(extra["id"]);duplicate["next_id"]="200000";
     const auto rejected=Session::deserialize(duplicate.dump(),project);
     require(!rejected && rejected.error().message.find("one Sky Light")!=std::string::npos,
         "Scene loading accepted two Sky Lights or rejected for an unrelated reason.");
@@ -164,8 +167,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project=take(Project::create(folder));Session document;
     auto& runtime=document.world().runtime();
-    changed(document.create_static_mesh(mesh_assets().front()));const auto mesh_actor=document.selection().actor;
-    const auto mesh=*take(world::root_component(runtime,mesh_actor));
+    changed(document.create_static_mesh(mesh_assets().front()));const auto mesh_entity=document.selection().entity;
+    const auto mesh=component(document,mesh_entity,document.types().static_mesh_component);
     std::uint64_t edit_session=990000;
     const auto property=[&](ObjectId object,std::string_view name) {
         const auto fields=take(document.properties(object));
@@ -175,20 +178,20 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         take(document.set_property(object,property(object,name),std::move(value),edit_session++));
     };
     edit(mesh,"material.roughness",.27f);edit(mesh,"material.metallic",.6f);edit(mesh,"material.emissive.x",4.f);
-    std::array<ObjectId,3> light_actors,lights;
+    std::array<ObjectId,3> light_entities,lights;
     constexpr std::array kinds{world::LightKind::point,world::LightKind::rectangle,world::LightKind::directional};
     for(std::size_t i=0;i<kinds.size();++i) {
         const auto history=document.undo_count();changed(document.create_light(kinds[i],{float(i)*2,3,0}));
-        light_actors[i]=document.selection().actor;lights[i]=*take(world::root_component(runtime,light_actors[i]));
-        require(document.undo_count()==history+1 && take(world::components(runtime,light_actors[i])).size()==1 &&
-            take(world::read_light(runtime,lights[i])).kind==kinds[i],"Light creation did not publish one complete, undoable Actor composition.");
+        light_entities[i]=document.selection().entity;lights[i]=component(document,light_entities[i],document.types().light_component);
+        require(document.undo_count()==history+1 && take(world::components(runtime,light_entities[i])).size()==1 &&
+            take(world::read_light(runtime,lights[i])).kind==kinds[i],"Light creation did not publish one complete, undoable Entity composition.");
     }
     edit(lights[0],"settings.intensity",80.f);edit(lights[0],"settings.source_radius",.05f);
     edit(lights[1],"settings.width",2.f);edit(lights[1],"settings.height",3.f);edit(lights[1],"settings.two_sided",true);
     edit(lights[2],"settings.intensity",1000.f);edit(lights[2],"settings.source_radius",.0046f);
     const auto component_types=take(document.component_types());
     require(std::ranges::any_of(component_types,[&](const auto& type){return type.type==document.types().light_component;}),
-        "Actor Structure cannot discover LightComponent through the shared type list.");
+        "Entity Structure cannot discover LightComponent through the shared type list.");
     application::SceneSnapshot snapshot;take(snapshot.refresh(document));
     require(snapshot.meshes.size()==1 && snapshot.lights.size()==3 && snapshot.meshes[0].material.roughness==.27f &&
         snapshot.meshes[0].material.emissive[0]==4 && snapshot.lights[1].two_sided && snapshot.lights[1].width==2,
@@ -196,15 +199,15 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto key=snapshot.meshes[0].stable_key,light_key=snapshot.lights[0].stable_key,revision=snapshot.revision;
     require(key && light_key && key!=light_key,"Opaque component identities collided in the renderer projection.");
     take(snapshot.refresh(document));require(snapshot.revision==revision,"An unchanged scene reset temporal history.");
-    edit(mesh,"position.x",2.f);edit(lights[0],"position.x",3.f);take(document.select(mesh_actor));take(snapshot.refresh(document));
+    edit(mesh_entity,"position.x",2.f);edit(light_entities[0],"position.x",3.f);take(document.select(mesh_entity));take(snapshot.refresh(document));
     require(snapshot.revision==revision && snapshot.meshes[0].stable_key==key && snapshot.lights[0].stable_key==light_key &&
         snapshot.meshes[0].world[12]==2 && snapshot.lights[0].position[0]==3,"TRS or selection churn reset scene history or lost component identity.");
     edit(mesh,"material.roughness",.38f);take(snapshot.refresh(document));require(snapshot.revision==revision+1,"Material edits did not invalidate scene history.");
     changed(document.undo());take(snapshot.refresh(document));require(snapshot.revision==revision+2 && snapshot.meshes[0].material.roughness==.27f,"Material undo did not reach rendering.");
-    take(document.select(light_actors[0]));changed(document.remove_component(lights[0]));take(snapshot.refresh(document));
+    take(document.select(light_entities[0]));changed(document.remove_component(lights[0]));take(snapshot.refresh(document));
     require(snapshot.lights.size()==2,"Removed LightComponent remained in the renderer snapshot.");
     changed(document.undo());take(snapshot.refresh(document));
-    require(*take(world::root_component(runtime,light_actors[0]))==lights[0] && snapshot.lights.size()==3,
+    require(component(document,light_entities[0],document.types().light_component)==lights[0] && snapshot.lights.size()==3,
         "Component undo failed to restore the real light identity and presentation.");
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Lighting.scene"));
     take(write_file(file,text,WriteMode::create));auto reopened=take(Session::deserialize(take(read_file(file)),project));
@@ -212,11 +215,11 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(loaded.meshes.size()==1 && loaded.lights.size()==3 && loaded.meshes[0].material.emissive[0]==4 &&
         loaded.meshes[0].material.metallic==.6f && loaded.lights[0].intensity==80 && loaded.lights[2].source_radius==.0046f,
         "Project scene reopen lost material or light settings.");
-    auto data=nlohmann::json::parse(text);data["actors"][0]["components"][0]["roughness"]=2;
+    auto data=nlohmann::json::parse(text);data["entities"][0]["components"][0]["roughness"]=2;
     require(!Session::deserialize(data.dump(),project),"Invalid saved roughness bypassed World validation.");
-    data=nlohmann::json::parse(text);data["actors"][1]["components"][0]["properties"]["settings"]["intensity"]=-1;
+    data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["intensity"]=-1;
     require(!Session::deserialize(data.dump(),project),"Invalid saved light intensity bypassed World validation.");
-    data=nlohmann::json::parse(text);auto& old_material=data["actors"][0]["components"][0];
+    data=nlohmann::json::parse(text);auto& old_material=data["entities"][0]["components"][0];
     old_material.erase("roughness");old_material.erase("metallic");old_material.erase("emissive");
     auto old=take(Session::deserialize(data.dump(),project));const auto old_items=take(old->world().render_items());
     require(old_items[0].material.roughness==world::Material{}.roughness && old_items[0].material.emissive==math::Vector3{},
@@ -243,11 +246,11 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         if(!frame) throw std::runtime_error("Lighting DSL layout prepare failed: "+error(frame.error()));
         require(surface.accept(*frame),"Lighting DSL candidate accept failed after successful preparation.");
     };
-    take(document.select(light_actors[0]));publish();
+    take(document.select(light_entities[0]));publish();
     const auto has_text=[&](std::wstring_view text){return std::ranges::any_of(controls,[&](const auto& control){return control.text==text;});};
     require(has_text(L"Intensity (cd)") && !has_text(L"Width (m)"),"Point light parameters exposed the wrong units or rectangle-only fields.");
-    take(document.select(light_actors[1]));publish();require(has_text(L"Intensity (cd/m²)") && has_text(L"Width (m)"),"Rectangle parameters are missing their authored dimensions.");
-    take(document.select(light_actors[2]));publish();require(has_text(L"Illuminance (lux)") && !has_text(L"Range (m)"),"Directional parameters exposed a local light range.");
+    take(document.select(light_entities[1]));publish();require(has_text(L"Intensity (cd/m²)") && has_text(L"Width (m)"),"Rectangle parameters are missing their authored dimensions.");
+    take(document.select(light_entities[2]));publish();require(has_text(L"Illuminance (lux)") && !has_text(L"Range (m)"),"Directional parameters exposed a local light range.");
     const auto history=document.undo_count();
     require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_scene_lit,{}})) && workspace.view.shading==renderer::Shading::scene_lit,
         "The formal display command did not select Scene Lit.");
@@ -352,17 +355,17 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(document.redo());workspace.sync_world(document);
     const auto saved=take(document.serialize());auto restored=take(Session::deserialize(saved,project));
     require(restored->world().lighting_settings()==candidate && take(restored->serialize())==saved && !restored->dirty(),
-        "Scene v5 did not round-trip World authoring values into a clean document.");
+        "Scene v6 did not round-trip World authoring values into a clean document.");
     const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
     auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
     diagnostic_view.lit.direct_reference=true;
     take(workspace.set_view_settings(document,diagnostic_view));
     require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
     const auto saved_json=nlohmann::json::parse(saved);
-    require(saved_json.at("version")==5 && !saved_json.at("world").contains("direct_reference") &&
+    require(saved_json.at("version")==6 && !saved_json.at("world").contains("direct_reference") &&
         !saved_json.at("world").contains("shadow_samples") && !saved_json.at("world").contains("shadow_light_budget"),
-        "Scene v5 retained reference diagnostics or retired per-light shadow options.");
-    auto v4=saved_json;v4["version"]=4;v4["world"].erase("direct_candidates");
+        "Scene v6 retained reference diagnostics or retired per-light shadow options.");
+    auto v4=nlohmann::json{{"version",4},{"actors",nlohmann::json::array()},{"world",saved_json["world"]}};v4["world"].erase("direct_candidates");
     v4["world"]["shadow_light_budget"]=16;v4["world"]["shadow_samples"]=64;
     auto migrated=take(Session::deserialize(v4.dump(),project));
     auto migrated_settings=candidate;migrated_settings.direct_candidates=8;
@@ -371,8 +374,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto migrated_saved=take(migrated->serialize());
     auto reopened=take(Session::deserialize(migrated_saved,project));
     require(reopened->world().lighting_settings()==migrated_settings && take(reopened->serialize())==migrated_saved &&
-        nlohmann::json::parse(migrated_saved).at("version")==5,
-        "Migrated v4 scene did not save and reopen through the sole v5 author format.");
+        nlohmann::json::parse(migrated_saved).at("version")==6,
+        "Migrated v4 scene did not save and reopen through the current v6 author format.");
     Workspace migrated_workspace;migrated_workspace.sync_world(*reopened);
     require(!migrated_workspace.view.lit.direct_reference,
         "Legacy 64 shadow samples silently enabled the viewport reference diagnostic.");
@@ -383,7 +386,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
                 "Malformed legacy shadow value was accepted during v4 migration.");
         }
         auto retired=saved_json;retired["world"][key]=1;
-        require(!Session::deserialize(retired.dump(),project),"Scene v5 accepted a retired shadow key.");
+        require(!Session::deserialize(retired.dump(),project),"Scene v6 accepted a retired shadow key.");
         auto mixed=v4;mixed["world"]["direct_candidates"]=8;
         require(!Session::deserialize(mixed.dump(),project),"Scene v4 accepted mixed new and retired direct-light options.");
     }
@@ -397,22 +400,22 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         "Scene v4 migration ignored the legacy budget or sample-count boundary.");
     for(const auto bad:{0.,33.,1.5}) {
         auto bad_candidates=saved_json;bad_candidates["world"]["direct_candidates"]=bad;
-        require(!Session::deserialize(bad_candidates.dump(),project),"Scene v5 accepted invalid direct candidates.");
+        require(!Session::deserialize(bad_candidates.dump(),project),"Scene v6 accepted invalid direct candidates.");
     }
     auto invalid=candidate;invalid.probe_volumes[0].maximum=invalid.probe_volumes[0].minimum;
     require(!document.set_world_lighting(invalid) && document.world().lighting_settings()==candidate && document.undo_count()==stable_history,
         "Invalid World configuration partially published.");
     auto json=nlohmann::json::parse(saved);json["world"]["probe_debug"]=true;
     require(!Session::deserialize(json.dump(),project),"A diagnostic setting was accepted in persisted World configuration.");
-    json=nlohmann::json::parse(saved);json["version"]=3;json.erase("world");
+    json=nlohmann::json{{"version",3},{"actors",nlohmann::json::array()}};
     auto legacy=take(Session::deserialize(json.dump(),project));
     require(legacy->world().lighting_settings()==rendering::SceneLightingSettings{},"An old scene inherited another document's World settings.");
     take(restored->start());require(!restored->set_world_lighting(before),"Running World accepted author settings.");take(restored->stop());
     workspace.dock.select(control::parameters_tab);publish();
-    const auto actor=document.selection().actor;const auto root=*take(world::root_component(document.world().runtime(),actor));
+    const auto entity=document.selection().entity;const auto root=entity;
     const auto schema=take(document.properties(root));
     const auto position=std::ranges::find(schema,std::string("position.x"),&Property::name);
-    require(position!=schema.end() && position->label=="Position (m)" && position->category=="Transform","AFIELD metadata did not reach the real actor parameter schema.");
+    require(position!=schema.end() && position->label=="Position (m)" && position->category=="Transform","AFIELD metadata did not reach the real entity parameter schema.");
     const auto key=workspace.field_control(root,document.types().position_fields[0]);
     take(workspace.apply_view(document,{ui::ActionKind::activate,control::group_categories,true}));publish();
     require(has_text(L"Transform") && workspace.field_control(root,document.types().position_fields[0])==key,

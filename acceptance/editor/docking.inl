@@ -52,7 +52,7 @@ void verify_pane_handles(Application& app,const std::filesystem::path& output,Co
     require(app.presented()->find(parameters)->bounds==parameter_bounds,"Rotating twice changed the saved ratio.");
 }
 
-void verify_docking(Application& app,const std::filesystem::path& output,atelier::ObjectId actor) {
+void verify_docking(Application& app,const std::filesystem::path& output,atelier::ObjectId entity) {
     using atelier::ui::DockSpace;
     using atelier::ui::DragAxis;
     namespace sample=atelier::editor::workbench_control;
@@ -60,8 +60,8 @@ void verify_docking(Application& app,const std::filesystem::path& output,atelier
     SetWindowPos(app.window(),nullptr,0,0,static_cast<int>(1280*dpi),static_cast<int>(840*dpi),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
     tick(app,3);
     click(app,control::reset_layout);
-    const auto field=property_control(app,actor,0);
-    const auto value=x(app,actor); const auto history=app.document().undo_count();
+    const auto field=property_control(app,entity,0);
+    const auto value=x(app,entity); const auto history=app.document().undo_count();
     const auto parameter_pane=app.docking().pane(control::parameters_tab);
     click(app,control::workbench);
     click(app,sample::position_x); type(app,L"2"); key(app,VK_RETURN);
@@ -81,7 +81,7 @@ void verify_docking(Application& app,const std::filesystem::path& output,atelier
     mouse(app,WM_LBUTTONUP,target);
     require(!app.docking().dragging() && app.docking().pane(control::workbench)!=parameter_pane &&
             app.presented()->find(control::viewport) && app.presented()->find(sample::position_x),"Edge drop did not split the pane.");
-    require(property_control(app,actor,0)==field && x(app,actor)==value && app.document().undo_count()==history &&
+    require(property_control(app,entity,0)==field && x(app,entity)==value && app.document().undo_count()==history &&
             app.control_workbench().values().position[0]==2,"Docking changed document state or field binding.");
     const auto new_pane=app.docking().pane(control::workbench);
     auto divider=centre(app,app.docking().divider(control::workbench,DragAxis::vertical));
@@ -138,7 +138,7 @@ void verify_docking(Application& app,const std::filesystem::path& output,atelier
     capture(app,output/"workspace-add-tab.png");
     key(app,VK_HOME); key(app,VK_DOWN); key(app,VK_RETURN); // Move the existing Parameters view here.
     require(app.docking().pane(control::parameters_tab)==group && app.presented()->find(field) &&
-            x(app,actor)==value && app.document().undo_count()==history,"Add Tab copied or lost the existing view's document state.");
+            x(app,entity)==value && app.document().undo_count()==history,"Add Tab copied or lost the existing view's document state.");
     click(app,control::workbench);
     require(app.presented()->find(control::workbench)->style->border_width==0,
         "Focused dock tab unexpectedly draws a focus rectangle.");
@@ -149,7 +149,7 @@ void verify_docking(Application& app,const std::filesystem::path& output,atelier
             app.document().undo_count()==history,"Default layout restoration changed document state.");
     capture(app,output/"workspace-default.png");
     verify_pane_handles(app,output,field);
-    for (auto view:{control::workbench,control::parameters_tab,control::actors_tab,control::scene_tab}) {
+    for (auto view:{control::workbench,control::parameters_tab,control::entities_tab,control::scene_tab}) {
         click(app,view); key(app,'W',true);
     }
     require(!app.presented()->find(control::viewport) && !app.presented()->find(field),"Closing the final pane left stale content.");

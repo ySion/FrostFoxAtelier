@@ -1,71 +1,87 @@
 {
-  "version": 2,
-  "actors": [
+  "version": 6,
+  "next_id": "9",
+  "world": {},
+  "roots": [
+    "1",
+    "2",
+    "3",
+    "4"
+  ],
+  "entities": [
     {
-      "type": "world.StaticMeshActor",
+      "id": "1",
+      "type": "world.StaticMeshEntity",
       "name": "Sponza Atrium",
       "enabled": true,
-      "root": 1,
+      "space": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.01,
+          0.01,
+          0.01
+        ],
+        "origin": null
+      },
+      "children": [],
       "components": [
         {
-          "id": 1,
           "type": "world.StaticMeshComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            0,
-            0,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            0.01,
-            0.01,
-            0.01
-          ],
           "mesh": "project/{239AB1BE-160D-471D-96D5-84B58A7D549B}",
           "base_color": [
             0.55,
             0.55,
             0.55
           ],
-          "roughness": 0.85
+          "roughness": 0.85,
+          "id": "5",
+          "name": "StaticMeshComponent",
+          "properties": {},
+          "materials": []
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "2",
+      "type": "world.Entity",
       "name": "Atrium sun",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          0,
+          5,
+          -2
+        ],
+        "rotation": [
+          0.5367523272229081,
+          0.18786331452801783,
+          0,
+          0.8225596113810472
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [],
       "components": [
         {
-          "id": 1,
           "type": "world.LightComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            0,
-            5,
-            -2
-          ],
-          "rotation": [
-            0.5367523272229081,
-            0.18786331452801783,
-            0,
-            0.8225596113810472
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "settings": {
               "kind": "directional",
@@ -82,38 +98,42 @@
               "two_sided": false,
               "casts_shadow": true
             }
-          }
+          },
+          "id": "6",
+          "name": "LightComponent"
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "3",
+      "type": "world.Entity",
       "name": "Warm movable light",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          -4,
+          2,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [],
       "components": [
         {
-          "id": 1,
           "type": "world.LightComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            -4,
-            2,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "settings": {
               "kind": "point",
@@ -130,38 +150,42 @@
               "two_sided": false,
               "casts_shadow": true
             }
-          }
+          },
+          "id": "7",
+          "name": "LightComponent"
         }
-      ]
+      ],
+      "properties": {}
     },
     {
-      "type": "world.Actor",
+      "id": "4",
+      "type": "world.Entity",
       "name": "Cool east light",
       "enabled": true,
-      "root": 1,
-      "properties": {},
+      "space": {
+        "position": [
+          7,
+          3,
+          1
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "origin": null
+      },
+      "children": [],
       "components": [
         {
-          "id": 1,
           "type": "world.LightComponent",
           "enabled": true,
-          "parent": 0,
-          "position": [
-            7,
-            3,
-            1
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "scale": [
-            1,
-            1,
-            1
-          ],
           "properties": {
             "settings": {
               "kind": "point",
@@ -178,9 +202,12 @@
               "two_sided": false,
               "casts_shadow": true
             }
-          }
+          },
+          "id": "8",
+          "name": "LightComponent"
         }
-      ]
+      ],
+      "properties": {}
     }
   ]
 }

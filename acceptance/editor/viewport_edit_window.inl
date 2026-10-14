@@ -1,18 +1,18 @@
 void verify_viewport_edit_window(Application& app,const std::filesystem::path& output) {
     using Access=atelier::application::EditorAcceptanceAccess;
     using atelier::editor::Command;
-    const auto position=[&](atelier::ObjectId actor) {
+    const auto position=[&](atelier::ObjectId entity) {
         return model(atelier::world::read_transform(app.document().world().runtime(),
-            *model(atelier::world::root_component(app.document().world().runtime(),actor)))).position;
+            entity)).position;
     };
     const auto hover=[&](atelier::math::Vector3 at) {Access::move_pointer(app,Access::viewport_point(app,at));tick(app,1);};
     const auto digits=[&](const wchar_t* text) {
         require_input_focus(app);KeyStateScope modifiers;
         while(*text) SendMessageW(app.window(),WM_CHAR,static_cast<WPARAM>(*text++),0);tick(app,1);
     };
-    click(app,control::add_static_mesh);const auto first=app.document().selection().actor;
+    click(app,control::add_static_mesh);const auto first=app.document().selection().entity;
     click(app,property_control(app,first,0));type(app,L"-1.5");key(app,VK_RETURN);
-    click(app,control::add_static_mesh);const auto second=app.document().selection().actor;
+    click(app,control::add_static_mesh);const auto second=app.document().selection().entity;
     click(app,property_control(app,second,0));type(app,L"1.5");key(app,VK_RETURN);
     click(app,static_cast<ControlKey>(Command::tool_select));
     mouse(app,WM_RBUTTONDOWN,Access::viewport_point(app,position(first)));mouse(app,WM_RBUTTONUP,Access::viewport_point(app,position(first)));
@@ -22,7 +22,7 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
         SendMessageW(app.window(),WM_RBUTTONDOWN,MK_RBUTTON|MK_SHIFT,MAKELPARAM(point.x,point.y));
         SendMessageW(app.window(),WM_RBUTTONUP,MK_SHIFT,MAKELPARAM(point.x,point.y));tick(app,2);
     }
-    require(app.document().selected_actors().size()==2,"Native Shift click lost multi-selection.");
+    require(app.document().selected_entities().size()==2,"Native Shift click lost multi-selection.");
     click(app,static_cast<ControlKey>(Command::tool_transform));
     require(app.frame_statistics().overlay_shapes>100 && app.frame_statistics().overlay_draw_calls==1,
         "Universal handle was not rendered in one clipped overlay batch.");
@@ -30,7 +30,7 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     const auto history=app.document().undo_count();hover({0,0,0});
     key(app,'G');key(app,'X');digits(L"2");
     require(std::abs(x(app,first)-.5f)<.0001f && std::abs(x(app,second)-3.5f)<.0001f && app.document().undo_count()==history,
-        "Native modal preview failed to update both Actors and parameters.");
+        "Native modal preview failed to update both Entities and parameters.");
     key(app,VK_RETURN);require(app.document().undo_count()==history+1,"Modal confirmation was not one undo.");
     key(app,'Z',true);require(x(app,first)==-1.5f && x(app,second)==1.5f,"Native transform undo failed.");
     key(app,'Y',true);key(app,'Z',true);
@@ -48,7 +48,7 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     hover({0,0,0});key(app,'G');key(app,'X');digits(L"1");key(app,'Z',true);
     require(x(app,second)==0 && !app.document().editing(),"Ctrl+Z during a transform became an axis key or kept a draft.");
     key(app,'Y',true);
-    const auto root=*model(atelier::world::root_component(app.document().world().runtime(),second));
+    const auto root=second;
     const auto rotation=app.field_control(root,app.document().types().rotation_fields[0]);
     click(app,rotation);type(app,L"45");key(app,VK_RETURN);
     const auto transformed=model(atelier::world::read_transform(app.document().world().runtime(),root));
@@ -73,13 +73,13 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     POINT start{static_cast<LONG>(bounds.x+3),static_cast<LONG>(bounds.y+3)};
     POINT end{static_cast<LONG>(bounds.x+bounds.width-4),static_cast<LONG>(bounds.y+bounds.height-4)};
     mouse(app,WM_RBUTTONDOWN,start);mouse(app,WM_MOUSEMOVE,end);capture(app,output/"box-selection.png");mouse(app,WM_RBUTTONUP,end);
-    require(app.document().selected_actors().size()==2,"Native box selection missed Actors.");
-    key(app,VK_DELETE);require(actors(app).empty(),"Native delete did not delete the selected group.");key(app,'Z',true);
-    require(actors(app).size()==2,"Undo did not restore the deleted Actor group.");
+    require(app.document().selected_entities().size()==2,"Native box selection missed Entities.");
+    key(app,VK_DELETE);require(entities(app).empty(),"Native delete did not delete the selected group.");key(app,'Z',true);
+    require(entities(app).size()==2,"Undo did not restore the deleted Entity group.");
     click(app,Access::asset_key(app,"builtin/cube"));
     capture(app,output/"resource-parameters.png");
     require(Access::ui_error(app).empty(),"Resource inspector produced a rejected UI candidate.");
-    require(!app.presented()->find(property_control(app,app.document().selection().actor,0)) &&
+    require(!app.presented()->find(property_control(app,app.document().selection().entity,0)) &&
         Access::inspecting_resource(app,"builtin/cube"),"Resource selection did not replace instance inspection.");
     click(app,app.object_control(first));
     require(app.presented()->find(property_control(app,first,0)),"Scene Tree did not restore instance inspection.");
@@ -88,11 +88,11 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     click_at(app,Access::viewport_point(app,position(second)));
     const auto cursor=Access::cursor_position(app);
     require(cursor!=atelier::math::Vector3{} && app.document().selection()==selection_before && app.document().undo_count()==cursor_history,
-        "Left click failed to place the cursor independently of Actor selection/history.");
+        "Left click failed to place the cursor independently of Entity selection/history.");
     capture(app,output/"cursor-placement.png");
     const auto camera_before=Access::camera_view(app);
     mouse(app,WM_RBUTTONDOWN,Access::viewport_point(app,position(second)));mouse(app,WM_RBUTTONUP,Access::viewport_point(app,position(second)));
-    require(app.document().selection().actor==second && Access::cursor_position(app)==cursor && Access::camera_view(app)==camera_before,
+    require(app.document().selection().entity==second && Access::cursor_position(app)==cursor && Access::camera_view(app)==camera_before,
         "Right selection moved the cursor or orbited the camera.");
     hover(position(second));key(app,'W');
     require(app.menu_window()!=nullptr && Access::menu_item(app,L"Snap")!=0,"W did not open the viewport context menu.");
@@ -106,7 +106,7 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     require(Access::viewport_settings(app).grid_snap && Access::viewport_settings(app).grid_spacing==1,"Grid controls lost their shared settings.");
     hover(position(second));key(app,'G');key(app,'X');
     Access::move_pointer(app,Access::viewport_point(app,{2.23f,0,0}));tick(app,2);
-    require(std::abs(x(app,second)-2)<.001f,"Native grid drag did not align the active Actor to a world cell.");
+    require(std::abs(x(app,second)-2)<.001f,"Native grid drag did not align the active Entity to a world cell.");
     key(app,VK_RETURN);capture(app,output/"front-grid-snapping.png");key(app,'Z',true);
     require(std::abs(x(app,second)-1.5f)<.001f,"Grid drag did not undo as one edit.");
     {
@@ -121,7 +121,7 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
         system_key('G');
         require(x(app,second)==0 && app.document().undo_count()==chord_history+1 && !app.menu_window(),"Native Alt+G did not clear location as one edit.");
         key(app,'Z',true);require(std::abs(x(app,second)-1.5f)<.001f,"Alt+G did not undo.");
-        system_key('A');require(app.document().selected_actors().empty(),"Native Alt+A did not deselect all.");
+        system_key('A');require(app.document().selected_entities().empty(),"Native Alt+A did not deselect all.");
         click(app,static_cast<ControlKey>(Command::tool_select));
         mouse(app,WM_RBUTTONDOWN,Access::viewport_point(app,position(second)));mouse(app,WM_RBUTTONUP,Access::viewport_point(app,position(second)));
         // A modal gesture swaps the tool options for Blender's live header readout.

@@ -6,7 +6,7 @@ int verify_dungeons_window(Application& app,const char* output_directory) try {
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     model(app.open_example(atelier::editor::Command::example_dungeons));
     if(const auto& build=Access::project_build(app);build && build->error) throw std::runtime_error(build->error->message);
-    require(actors(app).size()==3617 && model(app.document().world().render_items()).size()==3425,
+    require(entities(app).size()==3617 && model(app.document().world().render_items()).size()==3425,
         "The official Dungeons entry did not load the complete demo.");
     require(Access::scene_lit_view(app).shading==atelier::renderer::Shading::smooth,"Dungeons did not select textured rendering.");
     tick(app,3);capture(app,output/"01-dungeon.png");

@@ -17,11 +17,11 @@ void verify_scene_v1(editor::Project& project) {
         take(runtime.native_type<math::Quaternion>())==document->types().quaternion &&
         !runtime.find_type("world.Vec3") && !runtime.find_type("world.Quaternion"),
         "Scene loading did not use the canonical Runtime math types.");
-    const auto actor=take(document->world().members()).front().id();
-    const auto root=component(*document,actor,document->types().static_mesh_component);
-    const auto child=component(*document,actor,document->types().scene_component);
-    require(take(world::root_component(runtime,actor))==root && take(world::scene_parent(runtime,child))==root &&
-        document->name(actor)==L"旧场景","Scene v1 lost its root, parent or Unicode name.");
+    const auto entity=take(document->world().members()).front().id();
+    const auto root=component(*document,entity,document->types().static_mesh_component);
+    const auto child=take(world::children(runtime,entity)).front().id();
+    require(take(world::has_transform(runtime,entity)) && take(world::parent_entity(runtime,child))==entity &&
+        document->name(entity)==L"旧场景","Scene v1 lost its root, parent or Unicode name.");
     const auto matrix=take(world::world_matrix(runtime,child));
     require(matrix[0]==-2 && matrix[5]==-6 && matrix[10]==4 &&
         matrix[12]==.25f && matrix[13]==-3.25f && matrix[14]==-.25f,
@@ -33,9 +33,9 @@ void verify_scene_v1(editor::Project& project) {
     take(editor::write_file(path,take(document->serialize())));
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
     auto upgraded=nlohmann::json::parse(source); upgraded["version"]=3;
-    for (auto& actor:upgraded["actors"]) {
-        actor["properties"]=nlohmann::json::object();
-        for (auto& component:actor["components"]) {
+    for (auto& entity:upgraded["actors"]) {
+        entity["properties"]=nlohmann::json::object();
+        for (auto& component:entity["components"]) {
             component["properties"]=nlohmann::json::object();
             if(component["type"]=="world.StaticMeshComponent") {
                 component["materials"]=nlohmann::json::array();
@@ -45,15 +45,11 @@ void verify_scene_v1(editor::Project& project) {
             }
         }
     }
-    auto migrated=nlohmann::json::parse(take(reopened->serialize()));
-    for (auto& actor:migrated["actors"]) for (auto& component:actor["components"])
-        if (component["type"]=="world.StaticMeshComponent") {
-            require(component["properties"]["body"]["enabled"]==false,
-                "Legacy visual mesh unexpectedly enabled collision.");
-            component["properties"].erase("body");
-        }
-    require(migrated==upgraded,
-        "Scene v1 migration lost authored values or did not write the explicit v2 schema.");
+    auto upgraded_document=take(editor::Session::deserialize(upgraded.dump(),project));
+    require(take(reopened->serialize())==take(upgraded_document->serialize()),
+        "Scene v1 and v3 migration disagreed on authored values or the canonical Entity graph.");
+    require(!take(physics::read_settings(reopened->world().runtime(),component(*reopened,take(reopened->world().members()).front().id(),reopened->types().static_mesh_component))).enabled,
+        "Legacy visual mesh unexpectedly enabled collision.");
 }
 
 void verify_physics_test_project() {
@@ -61,23 +57,34 @@ void verify_physics_test_project() {
     auto project=take(editor::Project::open(folder));
     auto document=take(editor::Session::deserialize(
         take(editor::read_file(take(project.resolve(project.startup_scene())))),project));
-    require(take(document->world().members()).size()==7,
-        "The sample physics project lost an Actor.");
-    const auto find_actor=[&](std::wstring_view name) {
-        for (const auto& actor:take(document->world().members()))
-            if (document->name(actor.id())==name) return actor.id();
-        throw std::runtime_error("The sample physics project lost a named Actor.");
+    const auto members=take(document->world().members());
+    const auto roots=std::ranges::count_if(members,[&](const auto& member) {
+        return take(world::parent_entity(document->world().runtime(),member.id()))==ObjectId{};
+    });
+    require(members.size()==8 && roots==7,
+        "The sample physics project lost an Entity root or the capsule's independently scaled visual child.");
+    const auto find_entity=[&](std::wstring_view name) {
+        for (const auto& entity:take(document->world().members()))
+            if (document->name(entity.id())==name) return entity.id();
+        throw std::runtime_error("The sample physics project lost a named Entity.");
     };
-    const auto ground=find_actor(L"Static Triangle Ground");
-    const auto box=find_actor(L"Dynamic Box");
-    const auto sphere=find_actor(L"Dynamic Sphere Through Sensor");
-    const auto capsule=find_actor(L"Actor Capsule Body");
-    const auto sensor=find_actor(L"Contact Sensor");
-    const auto platform=find_actor(L"Kinematic Platform");
-    const auto target=find_actor(L"Force And Impulse Target");
+    const auto ground=find_entity(L"Static Triangle Ground");
+    const auto box=find_entity(L"Dynamic Box");
+    const auto sphere=find_entity(L"Dynamic Sphere Through Sensor");
+    const auto capsule=find_entity(L"Actor Capsule Body");
+    const auto sensor=find_entity(L"Contact Sensor");
+    const auto platform=find_entity(L"Kinematic Platform");
+    const auto target=find_entity(L"Force And Impulse Target");
     auto& world=const_cast<world::World&>(document->world());
-    const auto body_settings=[&](ObjectId actor) {
-        return take(physics::read_settings(world.runtime(),*take(world::root_component(world.runtime(),actor))));
+    const auto capsule_children=take(world::children(world.runtime(),capsule));
+    require(capsule_children.size()==1 && take(world::read_transform(world.runtime(),capsule_children.front().id())).scale==math::Vector3{1,2,1} &&
+        take(world::read_static_mesh(world.runtime(),component(*document,capsule_children.front().id(),document->types().static_mesh_component))).mesh.source=="builtin/sphere",
+        "Legacy capsule body migration lost its independent visual space or sphere mesh.");
+    const auto body_settings=[&](ObjectId entity) {
+        for(const auto& component:take(world::components(world.runtime(),entity)))
+            if(take(world.runtime().is_a(take(world.runtime().type_of(component.id())),document->types().primitive_component)))
+                return take(physics::read_settings(world.runtime(),component.id()));
+        throw std::runtime_error("Physics example Entity has no primitive capability.");
     };
     require(body_settings(ground).shape==physics::ShapeKind::triangle_mesh &&
         body_settings(box).motion==physics::MotionKind::dynamic &&
@@ -94,8 +101,8 @@ void verify_physics_test_project() {
     bool entered_sensor=false;
     scene->on_contact([&](const physics::ContactEvent& event)->Result<void> {
         if (event.phase==physics::ContactPhase::began && event.trigger &&
-            ((event.first.actor==sphere && event.second.actor==sensor) ||
-             (event.second.actor==sphere && event.first.actor==sensor))) entered_sensor=true;
+            ((event.first.entity==sphere && event.second.entity==sensor) ||
+             (event.second.entity==sphere && event.first.entity==sensor))) entered_sensor=true;
         return {};
     });
     changed(world.start());
@@ -148,23 +155,23 @@ void verify_project_document() {
     require(!project.import_mesh(external),"Import silently overwrote an existing asset.");
     editor::Session document;
     changed(document.create_static_mesh(take(project.mesh(resource))));
-    const auto actor=document.selection().actor;
-    take(document.rename(actor,L"主角 Triangle"));
-    const auto mesh=component(document,actor,document.types().static_mesh_component);
-    take(const_cast<world::World&>(document.world()).set_transform(mesh,{{1,2,3},{0,0,0,1},{2,3,4}}));
-    changed(document.add_component(document.types().scene_component));
+    const auto entity=document.selection().entity;
+    take(document.rename(entity,L"主角 Triangle"));
+    const auto mesh=component(document,entity,document.types().static_mesh_component);
+    take(const_cast<world::World&>(document.world()).set_transform(entity,{{1,2,3},{0,0,0,1},{2,3,4}}));
+    changed(document.add_component(document.types().component));
     changed(document.add_component(document.types().static_mesh_component)); // Null mesh must survive.
     const auto saved=take(document.serialize());
     take(editor::write_file(take(project.resolve(project.startup_scene())),saved));document.mark_saved();
-    take(document.rename(actor,L"Changed"));require(document.dirty(),"Rename did not dirty the document.");
+    take(document.rename(entity,L"Changed"));require(document.dirty(),"Rename did not dirty the document.");
     changed(document.undo());require(!document.dirty(),"Undo to the saved history position remained dirty.");
     auto loaded=take(editor::Session::deserialize(saved,project));
     require(take(loaded->serialize())==saved,"Scene roundtrip lost identity relations, names, transforms or null meshes.");
     {
         editor::Session built_in;
         changed(built_in.create_static_mesh(take(project.mesh("builtin/sphere"))));
-        const auto built_in_actor=built_in.selection().actor;
-        const auto body=component(built_in,built_in_actor,built_in.types().static_mesh_component);
+        const auto built_in_entity=built_in.selection().entity;
+        const auto body=component(built_in,built_in_entity,built_in.types().static_mesh_component);
         physics::BodySettings settings;
         settings.shape=physics::ShapeKind::triangle_mesh;
         take(built_in.configure_body(body,settings));
@@ -184,11 +191,10 @@ void verify_project_document() {
     {
         editor::Session physical;
         changed(physical.create_static_mesh(take(project.mesh(resource))));
-        const auto physical_actor=physical.selection().actor;
-        const auto physical_root=component(physical,physical_actor,physical.types().static_mesh_component);
-        take(const_cast<world::World&>(physical.world()).set_transform(physical_root,
+        const auto physical_entity=physical.selection().entity;
+        take(const_cast<world::World&>(physical.world()).set_transform(physical_entity,
             {{0,0,0},{0,0,0,1},collision_scale}));
-        const auto body=component(physical,physical_actor,physical.types().static_mesh_component);
+        const auto body=component(physical,physical_entity,physical.types().static_mesh_component);
         physics::BodySettings settings;
         settings.shape=physics::ShapeKind::triangle_mesh;
         settings.material.friction=.65f;
@@ -198,6 +204,28 @@ void verify_project_document() {
             "Physics configuration undo did not restore the previous body.");
         changed(physical.redo());
         const auto physical_scene=take(physical.serialize());
+        {
+            editor::Session imported;changed(imported.add_entity());const auto parent=imported.selection().entity;
+            take(imported.set_transform(parent,{{10,0,0},{},{2,2,2}}));
+            const math::Vector3 final_scale{4,6,8};take(project.cook_collision(resource,final_scale));
+            changed(imported.instantiate_subtree(physical_scene,project,parent));const auto child=imported.selection().entity;
+            const auto primitive=component(imported,child,imported.types().static_mesh_component);
+            require(take(world::parent_entity(imported.world().runtime(),child))==parent &&
+                *take(physics::read_settings(imported.world().runtime(),primitive)).cooked_shape==*take(project.collision(resource,final_scale)),
+                "Composition import restored triangle Cook with Detached scale instead of its prospective parent space.");
+            changed(imported.start());take(imported.update(1.f/60.f));
+            require(imported.physics_scene()->body_count()==1,"Prospective Cook data did not create an actual triangle body.");changed(imported.stop());
+            changed(imported.undo());require(take(imported.world().members()).size()==1,"Imported physical subtree Undo left published children.");
+            changed(imported.redo());require(imported.selection().entity==child,"Imported physical subtree Redo changed identity.");
+        }
+        {
+            editor::Session imported;changed(imported.add_entity());const auto parent=imported.selection().entity;
+            take(imported.set_transform(parent,{{0,0,0},{},{3,3,3}}));const auto before=take(imported.serialize());
+            const auto cursor=imported.undo_count();
+            require(!imported.instantiate_subtree(physical_scene,project,parent) && take(imported.serialize())==before &&
+                imported.undo_count()==cursor && imported.selection().entity==parent,
+                "Missing prospective-scale Cook data partially published a composition or changed document identities/history.");
+        }
         auto restored_physics=take(editor::Session::deserialize(physical_scene,project));
         require(take(restored_physics->serialize())==physical_scene,
             "Physics body settings changed across scene save and reopen.");
@@ -213,34 +241,37 @@ void verify_project_document() {
             "Scene accepted a corrupt cooked collision asset.");
         take(project.cook_collision(resource,collision_scale));
     }
-    require(!editor::Session::deserialize("{\"version\":999,\"actors\":[]}",project),"Unknown scene version was accepted.");
+    require(!editor::Session::deserialize("{\"version\":999,\"entities\":[]}",project),"Unknown scene version was accepted.");
     require(!editor::Session::deserialize("{broken",project),"Broken scene was accepted.");
     const auto serialized=nlohmann::json::parse(saved);
     for (const auto& value:{nlohmann::json(1.5),nlohmann::json(-1),nlohmann::json(true)}) {
-        auto invalid=serialized;invalid["actors"][0]["components"][0]["id"]=value;
-        require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-integer identity.");
-        invalid=serialized;invalid["actors"][0]["root"]=value;
-        require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-integer root.");
-        invalid=serialized;invalid["actors"][0]["components"][0]["parent"]=value;
-        require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-integer parent.");
+        auto invalid=serialized;invalid["entities"][0]["components"][0]["id"]=value;
+        require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-string local identity.");
+        invalid=serialized;invalid["roots"][0]=value;
+        require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-string root identity.");
+        invalid=serialized;invalid["entities"][0]["children"].push_back(value);
+        require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-string child identity.");
     }
     for (const auto field:{"position","scale","rotation","base_color"}) {
-        auto invalid=serialized;invalid["actors"][0]["components"][0][field].push_back(999);
+        auto invalid=serialized;
+        if(std::string_view(field)=="base_color") invalid["entities"][0]["components"][0][field].push_back(999);
+        else invalid["entities"][0]["space"][field].push_back(999);
         require(!editor::Session::deserialize(invalid.dump(),project),"Scene silently truncated a vector.");
     }
-    auto invalid=serialized;invalid["actors"][0]["name"]="   ";
+    auto invalid=serialized;invalid["entities"][0]["name"]="   ";
     require(!editor::Session::deserialize(invalid.dump(),project),"Scene accepted a name rejected by editing.");
-    require(!editor::Session::deserialize("{\"version\":999,\"version\":1,\"actors\":[]}",project),"Scene accepted duplicate JSON fields.");
+    require(!editor::Session::deserialize("{\"version\":999,\"version\":1,\"entities\":[]}",project),"Scene accepted duplicate JSON fields.");
     require(!editor::Session::deserialize(std::string(64,'[')+std::string(64,']'),project),"Scene accepted excessive JSON nesting.");
     require(!editor::Session::deserialize(std::string(16*1024*1024+1,' '),project),"Scene direct input bypassed the file size bound.");
     auto bounded=serialized;
-    auto& bounded_components=bounded["actors"][0]["components"];
+    auto& bounded_components=bounded["entities"][0]["components"];
     while (bounded_components.size()<editor::Session::maximum_components) {
-        auto entry=bounded_components[1];entry["id"]=bounded_components.size()+1;bounded_components.push_back(std::move(entry));
+        auto entry=bounded_components[1];entry["id"]=std::to_string(bounded_components.size()+10);bounded_components.push_back(std::move(entry));
     }
+    bounded["next_id"]=std::to_string(editor::Session::maximum_components+100);
     auto full=take(editor::Session::deserialize(bounded.dump(),project));
-    const auto full_actor=take(full->world().members()).front().id();take(full->select(full_actor));
-    require(!full->add_component(full->types().scene_component) && take(world::components(full->world().runtime(),full_actor)).size()==editor::Session::maximum_components,
+    const auto full_entity=take(full->world().members()).front().id();take(full->select(full_entity));
+    require(!full->add_component(full->types().component) && take(world::components(full->world().runtime(),full_entity)).size()==editor::Session::maximum_components,
         "Editor admitted a component beyond its scene format limit.");
     full.reset();
     require(!editor::write_file(folder/"Content/Scenes/Main.scene","overwrite",editor::WriteMode::create) &&
