@@ -52,6 +52,7 @@ using ImageRef = std::shared_ptr<const Image>;
 enum class Input : std::uint32_t { base_color, roughness, metallic, normal, emissive, opacity, count };
 enum class Address : std::uint32_t { repeat, clamp, mirror };
 enum class Coverage : std::uint32_t { opaque, mask };
+inline constexpr float emission_limit = 65504.f; // Linear emission captured in the FP16 GBuffer.
 inline constexpr std::size_t input_count = static_cast<std::size_t>(Input::count);
 
 struct Texture {
@@ -118,7 +119,7 @@ public:
         const auto unit = [](float v) { return std::isfinite(v) && v >= 0 && v <= 1; };
         const auto& p = description_.parameters;
         for (float v : p.base_color) if (!unit(v)) throw std::invalid_argument("Invalid material base color.");
-        for (float v : p.emissive) if (!std::isfinite(v) || v < 0 || v > 65504)
+        for (float v : p.emissive) if (!std::isfinite(v) || v < 0 || v > emission_limit)
             throw std::invalid_argument("Invalid material emission.");
         if (!unit(p.roughness) || !unit(p.metallic) || !unit(p.alpha_cutoff) ||
             !std::isfinite(p.normal_scale) || p.normal_scale < 0 || p.normal_scale > 16 ||

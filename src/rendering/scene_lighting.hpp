@@ -3,10 +3,29 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // Scene-owned authoring values shared by World and rendering. No GPU resources,
 // camera position, rolling state or diagnostic preferences are persisted here.
 namespace atelier::rendering {
+// FP32 sampling input budget, separate from the final HDR storage range.
+// With bounded analytic attenuation (<2^9), BRDF (<2^28), the uniform
+// proposal floor and <=32 initial candidates, 2^32 leaves headroom for
+// the evaluator and initial sum. It does not bound every reservoir W.
+inline constexpr double analytic_light_radiance_limit = 0x1p32;
+inline const char* analytic_light_range_error(const std::array<float,3>& color,float intensity,
+                                              double area=1) noexcept {
+    if(!std::isfinite(area)||area<=0||area>std::numeric_limits<float>::max())
+        return "Analytic light area exceeds GPU float representation";
+    for(float channel:color) {
+        const double radiance=double(channel)*intensity;
+        if(!std::isfinite(radiance)||radiance<0||radiance>analytic_light_radiance_limit||
+           radiance*area>analytic_light_radiance_limit)
+            return "Analytic light color * intensity and rectangle area-weighted radiance must not exceed 2^32 per channel";
+    }
+    return nullptr;
+}
+
 enum class Antialiasing : std::uint32_t { none, taa, smaa, smaa_t2x };
 enum class ProbePlacement : std::uint32_t { fixed, follow_focus };
 inline constexpr std::size_t probe_volume_limit = 4;

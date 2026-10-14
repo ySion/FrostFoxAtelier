@@ -92,7 +92,7 @@ bool lit_ssil_intersect(float3 origin, float3 ray, float radius, out int2 hit_pi
 }
 [numthreads(8, 8, 1)]
 void lit_ssil_trace_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy; if (any(p >= lit_size_frame.xy)) return;
+    uint2 p; if (!lit_screen_pixel(id.xy, p)) return;
     lit_ssil_raw_output[p] = 0;
     if (!lit_ssil_surface(int2(p)) || lit_ssil_controls.y <= 0 ||
         lit_base_metallic.Load(int3(p, 0)).w >= .999) return;
@@ -142,7 +142,7 @@ void lit_ssil_previous_plane(float3 position, float3 normal, float pixel_size, f
 }
 [numthreads(8, 8, 1)]
 void lit_ssil_resolve_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy; if (any(p >= lit_size_frame.xy)) return;
+    uint2 p; if (!lit_screen_pixel(id.xy, p)) return;
     lit_ssil_history_output[p] = 0; lit_ssil_irradiance_output[p] = 0;
     if (!lit_ssil_surface(int2(p))) return;
     float3 baseline = lit_ssil_baseline(int2(p));
@@ -185,6 +185,7 @@ void lit_ssil_resolve_cs(uint3 id : SV_DispatchThreadID) {
         [unroll] for (int y = 0; y < 2; ++y) [unroll] for (int x = 0; x < 2; ++x) {
             int2 q = base + int2(x, y);
             if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_inside(uint2(q))) continue;
+            if (!lit_history_surface_matches(p, uint2(q))) continue;
             float depth = lit_history_depth.Load(int3(q, 0));
             float3 q_normal = lit_history_normal.Load(int3(q, 0)).xyz;
             float tap_depth = expected_depth + dot(lit_ssil_uv(q) - previous_uv, gradient);

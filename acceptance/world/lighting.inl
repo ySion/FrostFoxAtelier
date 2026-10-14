@@ -66,6 +66,7 @@ void lit_materials_and_lights() {
     const auto light_path=[&](std::string_view name){return w::FieldPath{light_field,take(runtime.find_field(types.light_settings,name))};};
     const auto material_path=[&](std::string_view name){return w::FieldPath{material_field,take(runtime.find_field(types.material,name))};};
     reject(world.write(point_id,light_path("intensity"),-1.f),"Negative intensity was accepted.");
+    reject(world.write(point_id,light_path("intensity"),1e38f),"Finite intensity beyond the analytic sampling range was accepted.");
     reject(world.write(point_id,light_path("range"),0.f),"Zero point range was accepted.");
     reject(world.write(point_id,light_path("kind"),EnumValue{types.light_kind,99}),"Unknown LightKind was accepted.");
     reject(world.write(point_id,light_path("kind"),std::uint32_t{1}),"Raw uint bypassed enum identity.");
@@ -78,10 +79,32 @@ void lit_materials_and_lights() {
     reject(world.write(root,material_path("metallic"),-.1f),"Negative metallic was accepted.");
     auto emissive=material_path("emissive");emissive.push_back(take(runtime.find_field(types.vector3,"x")));
     reject(world.write(root,emissive,-1.f),"Negative emissive was accepted.");
+    reject(world.write(root,emissive,std::nextafter(atelier::material::emission_limit,
+        std::numeric_limits<float>::infinity())),"World accepted emission rejected by its material capture.");
     require(take(w::read_static_mesh(runtime,root)).material==material,"Rejected Material edits changed the value.");
     take(world.write(root,emissive,32.f));take(world.write(root,material_path("roughness"),0.f));
     require(take(world.render_items()).front().material.emissive.x==32 && take(world.render_items()).front().material.roughness==0,"HDR emission or zero roughness was clamped away.");
     take(world.set_material(root,material));
+    auto boundary_material=material;boundary_material.emissive={atelier::material::emission_limit,0,0};
+    take(world.set_material(root,boundary_material));
+    require(take(world.render_items()).front().material==boundary_material,"Representable emission boundary did not survive World extraction.");
+    take(world.set_material(root,material));
+    auto boundary_light=sun_settings;
+    boundary_light.intensity=static_cast<float>(atelier::rendering::analytic_light_radiance_limit);
+    take(world.set_light(directional_id,boundary_light));
+    require(take(w::read_light(runtime,directional_id))==boundary_light,"Analytic range incorrectly used the smaller HDR storage limit.");
+    boundary_light.intensity=std::nextafter(boundary_light.intensity,std::numeric_limits<float>::infinity());
+    reject(world.set_light(directional_id,boundary_light),"Analytic radiance above the boundary was accepted.");
+    take(world.set_light(directional_id,sun_settings));
+    boundary_light=point_settings;boundary_light.intensity=1e20f;boundary_light.color={1e-20f,1e-20f,1e-20f};
+    take(world.set_light(point_id,boundary_light)); // Validate the product, not an arbitrary intensity cap.
+    take(world.set_light(point_id,point_settings));
+    boundary_light=rect_settings;boundary_light.color={1,1,1};boundary_light.width=boundary_light.height=2;
+    boundary_light.intensity=static_cast<float>(atelier::rendering::analytic_light_radiance_limit/4);
+    take(world.set_light(rectangle_id,boundary_light));
+    boundary_light.width=std::nextafter(2.f,std::numeric_limits<float>::infinity());
+    reject(world.set_light(rectangle_id,boundary_light),"Rectangle area-weighted radiance exceeded the shared sampling range.");
+    take(world.set_light(rectangle_id,rect_settings));
     auto bad_material=material;bad_material.emissive.y=std::numeric_limits<float>::infinity();
     reject(world.set_material(root,bad_material),"Nonfinite emissive was accepted.");
     reject(w::create_static_mesh_actor(world,{geometry::cube_mesh(),{},bad_material}),"Factory bypassed expanded Material validation.");
@@ -105,6 +128,8 @@ void lit_materials_and_lights() {
     require(ends==std::vector<ObjectId>{directional_id,point_id,rectangle_id},"Light End order/pairing is wrong.");
     take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=-1;return {};}));
     reject(world.light_items(),"Unsafe native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
+    take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=1e38f;return {};}));
+    reject(world.light_items(),"Finite overflowing native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
     take(runtime.with_native<w::StaticMeshComponent>(root,[](auto& mesh)->Result<void>{mesh.material.metallic=2;return {};}));
     reject(world.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(world.set_material(root,material));
     auto detached=take(world.detach(actor.id()));

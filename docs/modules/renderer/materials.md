@@ -39,10 +39,12 @@ Control 使用相同的资源、编辑和保存入口，`material.inspect` 可�
 | 粗糙度 | 0～1 因子乘线性图指定通道 |
 | 金属度 | 0～1 因子乘线性图指定通道；可与粗糙度共用同一张打包图 |
 | 法线 | 线性 RGB 切线空间图；强度 0～16，Y 符号 +1/-1 |
-| 自发光 | 线性 HDR RGB 因子乘 sRGB LDR 图；不是曝光后的亮度 |
+| 自发光 | 每通道 [0,65504] 的线性 HDR RGB 因子乘 sRGB LDR 图；不是曝光后的亮度 |
 | 透明度 | 独立线性图的指定通道，与基础 alpha 相乘后做 Mask |
 
 每个输入具有独立 UV 缩放、旋转（弧度）、偏移和 Repeat / Clamp / Mirror 寻址。标量图可以选择 R/G/B/A。图片为左上原点的不可变 RGBA8，单边最多 8192；PNG/JPEG/BMP 等沿 WIC 解码，不宣称支持 HDR 图文件。缺图以中性输入处理，法线图缺失保留网格法线。Opaque 忽略 alpha；Mask 的覆盖公式为 `base_alpha × color_texture.a × opacity_texture[channel] >= cutoff`，默认阈值 0.5。当前不支持半透明混合、折射或透明排序。
+
+自发光上限来自现有 FP16 GBuffer 的表达范围，未降低纹理精度；旧组件的 `world.Material`、不可变 Surface 与 Renderer 的旧实例入口现在在同一范围拒绝超界值，避免编辑成功后到捕获或渲染才失败。
 
 内置方块、平面和球提供 UV。OBJ 保留 UV（导入时转换 V 轴）和原始面边界；MTL 的 Kd、d/Tr、map_Kd、map_d 转成同一默认表面，其他 MTL 参数仍不作为标准 PBR 导入。切线在 Mesh 发布时由锁定的 [MikkTSpace](../../../third_party/mikktspace/README.md) 生成，保留作者法线和 lowpoly 硬边；退化 UV 使用稳定的正交回退。非均匀缩放、镜像及法线图 UV 旋转通过同一切线帧处理。
 

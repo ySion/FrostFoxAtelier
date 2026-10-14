@@ -18,7 +18,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - `Frame::lighting_focus` 由宿主提供 DDGI 跟随关注点，默认世界原点，与相机眼点及 Edit/Play 独立；编辑器使用观察 target，游戏可提供其接收区域关注点。宿主发布 camera/view 前共用 `probe_focus_error` 校验实际世界精度；Renderer 编码前再次校验。体积组织、历史与预算合同见 [Scene Lit](scene-lit.md#ddgi-探针场)。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
 - 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留作者朝向，默认双面；显式单面材质在共享表面路径中裁弃背面。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 仍限定正、非零、有限。
-- 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
+- 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。场景覆盖按像素中心处于逻辑视口半开区间判断。`RasterViewport` 统一导出整数外包硬件视口、像素中心 scissor 与最终 clip 补偿，避免 D3D 对小数 viewport 的隐式向下取整漏掉末列/末行；场景表面、深度、线框、辅助显示和 Lit 诊断复用同一转换。逻辑相机、运动、深度 Z/W 和屏幕重建矩阵不变，整数视口直接保留原 clip。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
 - UI 支持半开 scissor、实色矩形、R8 覆盖图与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
 - Coverage 的非零 identity 与 revision 一起标识不可变内容，renderer 缓存同时保有 `shared_ptr<const Coverage>`。CPU 行可有 padding；上传时收紧行。每个实际使用的版本只上传一次，无用缓存释放 CPU owner，GPU 资源沿 gfx 原有机制退休。当前没有字体图集、显存预算或资源管理器。

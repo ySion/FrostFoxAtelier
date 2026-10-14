@@ -6,6 +6,8 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| 多 Astra 审查与工作剔除 | 2026-10-13～14 主目录：历史身份、DDGI 响应、ROI、目标/深度副本、编辑绘制和数值域；双配置构建与 World 数据链、Dev GPU 合同、Release 光照组合及 Renderer 全套通过，空闲 GPU 对照已完成，见[本轮审计](#多-astra-审查与工作剔除2026-10-13) |
+| Scene Lit Pass 消耗统计 | 2026-10-13 主目录：16 个同帧计时区间、完成样本启用掩码、双配置构建、Dev GPU 合同与两次正常配置成本采样，见[分项统计](#scene-lit-pass-消耗统计2026-10-13) |
 | 原生 ReSTIR DI 与 DDGI 线性能量 | 2026-10-12～13 viewport-rendering 工作树：产品迁移、Dev/Release 完整 GPU 组合与 1440p 成本采样通过，见[本批合同与证据](#原生-restir-di-与-ddgi-线性能量2026-10-13) |
 | DDGI 多体积与反馈 | 2026-10-12 主目录工作树：Dev/Release 联合 GPU 回归、双配置编辑器/Control 与地牢同预算布局对照，见[覆盖演进](#ddgi-覆盖与反馈演进2026-10-12) |
 | 选中边线深度一致性 | `72843f7` 主目录工作树：Dev 专项与 Release 全套 GPU 验收、真实 Dungeons 桶模型，见[深度一致性](#选中边线深度一致性2026-10-11) |
@@ -18,6 +20,84 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## 多 Astra 审查与工作剔除（2026-10-13）
+
+来源为 `b0ede07d` 加 Pass Table 与本轮工作区改动。工业依据、审计发现、已实施与未实施边界见[研究记录](../../research/render-pipeline-audit-20261013.md)。本批不修改 RHI 原生实现，没有新测试框架或单元测试。
+
+数值收尾后的 Dev `atelier_world_acceptance atelier_renderer_acceptance`、Release `atelier_world_acceptance atelier_renderer_acceptance atelier_editor` 构建通过；36 个受影响计算/顶点/像素入口用项目固定 DXC 离线编译通过。最新日志为 `out/render-audit-numeric-dev-build.log`、`out/render-audit-numeric-release-build.log`、`out/render-audit-numeric-shaders/compile.log`，后者逐项记录编译结果并保留 DXIL。此前 `out/render-audit-*-final-build.log` 与 `out/render-audit-shaders/` 对应数值收尾之前的代码。编译不等同于最终 GPU 验收。
+
+World 的真实 Runtime / Source / JIT / 数据提取验收在 Dev、Release 均 **PASS（9/9）**，日志为 `out/render-audit-numeric-world-dev.log`、`out/render-audit-numeric-world-release.log`。新增覆盖解析光 `2^32` 乘积边界及相邻越界值、矩形面积乘积、高强度乘低颜色、65504 自发光边界、拒绝编辑的原子性和原生绕过 setter 后的提取检查。Astra 复审确认解析光计算域及 MIS 极大 target 的有序缩放；新增 Renderer 超界拒绝后保留 Capture / 历史的用例随后通过 Dev GPU 验收，见下节收尾证据。
+
+新用例接入 `--scene-lit-contracts`：高/低身份字、SSSR 来源替换、选中连续区间与实际 draw 数、奇数 Hi-Z 与单像素视口、小数视口移动及效果重入。第一次 Dev GPU validation 执行已通过 DI/SSSR 身份、selected run 和 337×191 真实反射，随后严格小数视口检查失败。DI 揭露后的蓝通道与 reset/reference64 都为 237；SSSR 8152 个旧反射像素在首帧旧红色最大值为 0。证据在 `out/render-audit-dev-contracts/` 与 `out/render-audit-dev-contracts-diagnosis/` 及同名日志。
+
+失败精确位于 viewport `{.25,.25,336.5,190.5}` 的 `(336,0)`：中心虽在逻辑视口内，深度和颜色仍为零。RHI 负责人回到 Direct3D §15.7 确认了硬件隐式向下取整裁剪；此后补入统一 `RasterViewport`、最终 SV_Position 补偿及 pixel-center scissor，未放宽原断言。两位 Astra 交叉复审覆盖补偿/历史坐标和 DDGI 单 target UAV 顺序依赖，未发现新可行动遗漏。上述为首错与定位记录；修复后的实际 GPU 结果见下节，不以这些部分通过替代最终验收。
+
+性能使用原 1440p、96 预热、240 唯一完成样本、关闭 validation 且测量中不 Capture 的固定场景。退出游戏后的旧二进制基线 `out/render-audit-before-idle/` 总计 p50/p95 为 **9.47060/9.62108 ms**，直接光 4.80104 ms（resolve/filter 2.43232），DDGI 1.06304 ms（update .13728、gather .92440）。首次 `out/render-audit-baseline/` 在 ARC Raiders 占用约 97% GPU 时测得总计 p50 179.762 ms；后测 `out/render-audit-after-idle/` 和旧版复测 `out/render-audit-before-confirm/` 又遇到重新启动的游戏进程，结果均保留并标记竞争污染，**不构成有效提速证据**。
+
+同一固定场景逻辑资源从 **1,758,393,304 B** 减至 **1,728,050,136 B**，减少 **28.9375 MiB**，对应删除全尺寸 Hi-Z 复制及当前探针池的第二份 target。该字节差是明确资源删除的结果，既不是物理显存峰值，也不证明毫秒或电耗改善。用户当时要求先完成其他工作、稍后再测性能，因此 2026-10-13 的数值收尾只执行构建、离线编译与 CPU 数据链验收；后续无竞争 A/B 和 GPU 收尾记录在下节。
+
+### 2026-10-14 空闲 GPU 性能对照
+
+用户确认空闲后，在同一 RX 6800 XT 上以旧→当前→当前→旧顺序执行 Release 固定场景，每次 96 帧预热、240 个唯一完成 GPU 样本，关闭 validation，计时期间不 Capture。源码、二进制哈希及日志保留在 `out/render-audit-20261014/`；`before-1/2` 为保留的旧二进制，`after-1/2` 为本轮审计候选。下表合并每组的 480 个样本，沿原 benchmark 的排序取下标规则计算分位数；没有平均单次 p95，也不把各 Pass 的 p50 相加当成整帧 p50。
+
+| GPU 阶段 | 旧版 p50 ms | 当前 p50 ms | 差值 |
+|---|---:|---:|---:|
+| 已计时阶段合计 | 9.29928 | 9.33224 | +0.35% |
+| 直接光与降噪 | 4.79392 | 4.87492 | +1.69% |
+| └ 初始/时间复用 | 1.30132 | 1.43624 | +10.37% |
+| └ 空间复用 | 0.80388 | 0.84596 | +5.23% |
+| └ 可见性/着色 | 0.25524 | 0.25764 | +0.94% |
+| └ 颜色 resolve/filter | 2.43200 | 2.33404 | −4.03% |
+| DDGI | 1.05672 | 1.03116 | −2.42% |
+| └ update/transfer | 0.13624 | 0.13176 | −3.29% |
+| └ receiver gather | 0.91964 | 0.89900 | −2.24% |
+| GTAO | 0.91080 | 0.96792 | +6.27% |
+| SSSR/HDR | 1.42636 | 1.36528 | −4.28% |
+| HDR resolve/表面历史 | 0.56428 | 0.55200 | −2.18% |
+| 最终显示合成 | 0.41708 | 0.41452 | −0.61% |
+
+合计 p95 为 **9.91382 → 9.93357 ms**。整体持平，不能把局部阶段的改善宣称为整帧提速。逻辑资源减少仍为 **28.9375 MiB**。该场景为 8 个共享 cube、1 方向光、2 点光、1 矩形光与网格自发光；结果不是地牢地图的性能，也不是 CPU 帧时、物理显存或电功率测量。独立 Pass 的尾部时长会受提交和系统调度影响，不能相加推断整帧尾部。
+
+针对新增 MIS 保护的实测成本尝试过两个等价候选：极端分支重算 target 的 `optimized-1` 合计 p50 **10.1245 ms**，显式加权分量的 `final-1` 为 **9.36016 ms**，均未优于原审计候选，已完整撤回。`final-1` 目录名只是当时的候选标签，不表示最终采用。最终 ReSTIR shader 的 SHA256 与本次测试初始清单完全一致；拒绝的测量继续保留作归因。原有数值保护与历史身份检查没有为提速而删除。
+
+首次本轮 Dev GPU 合同已通过小数视口覆盖、DI/SSSR 身份及奇数 Hi-Z，随后发现验收窗口在 150% DPI 下把请求的 1×1 客户区扩成 180×1。独立真实 Win32 窗口复现确认是装饰窗口的最小宽度；无装饰客户区可达到 1×1，但下一轮进一步确认 gfx 的窗口同步与逐帧 resize 路径将每轴保持在至少 8，即本例实际为 **8×8**。RHI 负责人确认首次创建和 headless 初始化没有这一相同限制，故不把它概括为硬件或所有 RHI 目标的下限。验收现使用无装饰 8×8 真实目标中的 **1×1 视口**，检查唯一接收像素、其余 63 个像素深度为零，以及反射回退保持；之后恢复窗口样式。`resize` 按实际样式计算客户区。没有修改 RHI 合同或绕过其入口；物理 1×1 后缓冲和单层 Hi-Z 特例不声称已经实机覆盖。两次失败记录保留在 `dev-contracts` 与 `dev-contracts-final`，用于说明夹具修正。新的 audit 已并入现有 `--scene-lit-restir-suite`，复用其 Renderer 并在关闭检查前运行。
+
+最终 Dev `--scene-lit-contracts` 开启 GPU validation，**退出 0、stderr 为空**；audit、work elision、contracts 均 PASS。包括新增数值拒绝的 Capture/历史隔离、高低 64 位身份、SSSR 来源替换、选中连续区间、奇数 Hi-Z、小数视口及单像素视口、原光源范围/支撑、Mask/闭合几何、精确射线预算、DDGI scratch 大小变化、空场景退休与重复关闭。证据为 `dev-contracts-accepted/` 及同名 `.stdout.log`、`.stderr.log`、`.status.json`。
+
+Release `--scene-lit-restir-suite` 开启 GPU validation，**退出 0、stderr 为空**，材质、材质光输运、272 个投影光源、独立参考能量、DDGI 多体积/滚动/反馈、发光网格质量、探针调试、上述 audit 和完整 contracts 均 PASS。证据为 `release-suite-complete/` 及同名日志与状态，运行于 16:27:41–16:45:54。此前 `release-restir-suite/` 虽产生了后段用例图像，但进程结束后没有最终退出记录且日志未落盘，不记为完整通过。收尾运行改用独立进程和原生日志文件句柄保存结果；它仅是 `out/` 中的本次执行辅助，不是另一套产品或验收入口。
+
+随后 Release 原 `atelier_renderer_acceptance` 无参数全套开启 GPU validation，**退出 0、stderr 为空**。Studio Cavity、标准材质、跨近面/眼平面的选择裁剪、各着色与 AA 模式、线框/边线、参考网格、UI 覆盖/混合/裁剪、资源 revision、resize、最小化/恢复和生命周期均 PASS，覆盖统一 `RasterViewport` 对既有 Studio 路径的影响。证据为 `release-renderer-full/` 及同名日志与状态，运行于 16:45:54–16:50:41。两组串行完成后已通知应用与编辑器、RHI 负责人恢复 GPU 工作。
+
+本次最终夹具的双配置构建日志为 `dev-min-target-build.log`、`release-min-target-build.log`；此前的 `dev-suite-build.log`、`release-suite-build.log` 对应组合入口接入 audit，`dev-accepted-build.log`、`release-accepted-build.log` 对应恢复实测采用的 shader。最终源码和二进制清单为 `accepted-source-sha256.csv`、`accepted-binaries-sha256.csv`，来源与完成状态汇总于 `completion-context.json`，均位于 `out/render-audit-20261014/`。审计起点为 `b0ede07d`；2026-10-14 采样清单记录的主线已为编辑器 UI 提交 `a0daaba`。原始源码清单对比确认渲染生产代码未变化，本轮最终变化是验收夹具、组合入口与记录。没有以本次 Renderer 验收替代新 UI 提交的编辑器交互验收，未自动提交或推送。
+
+## Scene Lit Pass 消耗统计（2026-10-13）
+
+来源为 `E:/FrostFoxAtelier` 的 `b0ede07` 加本批统计/UI 改动，RX 6800 XT。Dev/Release 的 `atelier_renderer_acceptance` 构建通过。新增的 4 个直接光和 2 个 DDGI update 时间区间、执行掩码与既有 8+2 区间/射线读回按同一完成序号一起发布；没有新增等待、同步读回或光照算法修改。父子时间的定义见[统计合同](scene-lit.md#诊断与性能边界)。
+
+Dev `--scene-lit-contracts` 开启 GPU validation，退出 0、stderr 为空。现有真实 Renderer 用例新增检查：候选/参考切换后的执行掩码属于当前完成帧，关闭 DDGI 的所有相关区间跳过，直接光和 DDGI update 的细分时长有限且非负。该入口同时覆盖原参考、预算、空场重入、scratch 大小变化与重复关闭。证据为 `out/pass-cost-dev-contracts/` 及同名 `.stdout.log`、`.stderr.log`、`.status.json`。
+
+Release 两次执行原 `--scene-lit-benchmark`，均为原生 2560×1440、8 个共享 cube、1 方向光/2 点光/1 矩形光及网格发光，关闭验证、预热 96 帧后记录 240 个唯一完成样本，测量期间没有 Capture。两次均通过全部区间非负、子区间之和不超过父区间和固定场景执行掩码 `0xffff` 的检查。
+
+| GPU 区间 | 首轮 p50 ms | 同条件复测 p50 ms |
+|---|---:|---:|
+| ReSTIR 初始/时间复用 | 1.30104 | 1.28488 |
+| ReSTIR 空间复用 | .80160 | .80364 |
+| 当前可见性/着色，含显式太阳 | .25324 | .25204 |
+| 以上三项逐样本合计 | **2.36524** | **2.33976** |
+| 直接光辐射 resolve/filter | 2.43460 | 2.43648 |
+| 直接光父阶段 | 4.80576 | 4.77360 |
+| DDGI update/transfer | .14336 | .14488 |
+| 其中：主射线/分类/重定位 | .03484 | .04152 |
+| 其中：命中照明/反馈/卷积 | .08140 | .07908 |
+| DDGI receiver gather | .90468 | .90348 |
+| DDGI 父阶段 | **1.05836** | **1.04992** |
+
+首轮八阶段合计 p50/p95 为 9.75076/66.226 ms，前 60 个测量样本存在明显长尾；复测为 11.5761/17.4206 ms，合成阶段仍有波动。保留全部样本，未事后裁剪首段、延长预热或宣称稳定帧时/提速。上述表格只描述本机该固定场景，不代表地牢；额外 timestamp 的净开销也没有独立 A/B 结论。两次逻辑资源峰值均为 1,758,393,304 字节，不是物理显存。
+
+原始 CSV、摘要与图像分别在 `out/pass-cost-release-benchmark/`、`out/pass-cost-release-benchmark-repeat/`，逐样本 ReSTIR 合计摘要在 `out/pass-cost-measurement-summary.json`。编辑器表格消费同一完成样本；应用/窗口验收证据由[编辑器文档](../editor/README.md)维护。
+
+主目录 Dev/Release 应用与 Control 构建、Scene Lit 文档链和最终 `--acceptance-surfaces` 均通过。性能表真实 E2E 收满 120 个完成样本，验证 DDGI 开启子项、关闭时 Skipped、父阶段独立合计、列宽刷新保持、Control 概要空值、选择不清窗，以及配置/目标尺寸/文档换域后拒绝旧样本。日志为 `out/performance-{dev,release}-verified.log`；对应目录保留 `world-performance-ddgi.png`、禁用/缩放/不可用截图和 `performance.json`。最终 Release 开启与缩放截图已人工核对，Target/View 与各列可读；这些小场景 UI 数字不冒充上述 1440p 房间成本。
 
 ## 原生 ReSTIR DI 与 DDGI 线性能量（2026-10-13）
 

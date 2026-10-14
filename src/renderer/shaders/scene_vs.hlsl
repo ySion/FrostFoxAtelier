@@ -33,5 +33,6 @@ SceneOutput main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
     o.edge_coordinates = float4(corner == 0, corner == 1, corner == 2, o.position.w);
     o.edge_mask = display.z != 0 ? 7 : face.edge_mask;
     o.selected = instance.selected;
+    o.position = raster_viewport_position(o.position);
     return o;
 }

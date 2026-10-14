@@ -11,7 +11,6 @@ Texture2D<float2> lit_depth_input;
 Texture2D<float2> lit_depth_pyramid[12];
 RWTexture2D<float2> lit_depth_output;
 uint2 lit_depth_output_size;
-uint lit_depth_source_is_device;
 uint lit_depth_level_count;
 RWTexture2D<float> lit_ao_output;
 Texture2D<float> lit_ao_raw;
@@ -113,8 +112,8 @@ float lit_gtao_arc(float angle, float normal_angle) {
 }
 [numthreads(8, 8, 1)]
 void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     if (!lit_post_surface(p) || lit_controls.z <= 0 || (lit_effect_flags & 4) == 0) { lit_ao_output[p] = 1; return; }
     float2 uv = lit_post_uv(p);
     float depth = lit_depth.Load(int3(p, 0));
@@ -173,29 +172,31 @@ void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
     lit_ao_output[p] = saturate(visibility / 3);
 }
 
-// Every level is a DIFFERENT RG32F image. Never bind an image simultaneously
-// as an SRV and UAV, even when addressing different logical hierarchy levels.
-[numthreads(8, 8, 1)]
-void lit_depth_pyramid_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
+// Logical level zero reads the original FP32 depth. Each reduced level is a
+// separate RG32F image; no image is bound as both an SRV and UAV.
+void lit_reduce_depth(uint2 p, bool device_source) {
     if (any(p >= lit_depth_output_size)) return;
-    if (lit_depth_source_is_device != 0) {
-        float z = lit_inside(p) ? lit_depth.Load(int3(p, 0)) : lit_depth_far_value();
-        lit_depth_output[p] = float2(z, z);
-        return;
-    }
     uint width, height;
-    lit_depth_input.GetDimensions(width, height);
+    if (device_source) { width = lit_size_frame.x; height = lit_size_frame.y; }
+    else lit_depth_input.GetDimensions(width, height);
     float2 range = float2(1, 0);
     [unroll] for (uint y = 0; y < 2; ++y) [unroll] for (uint x = 0; x < 2; ++x) {
         uint2 q = p * 2 + uint2(x, y);
         if (q.x >= width || q.y >= height) continue;
-        float2 sample_range = lit_depth_input.Load(int3(q, 0));
+        float2 sample_range;
+        if (device_source) {
+            float z = lit_inside(q) ? lit_depth.Load(int3(q, 0)) : lit_depth_far_value();
+            sample_range = float2(z, z);
+        } else sample_range = lit_depth_input.Load(int3(q, 0));
         range.x = min(range.x, sample_range.x);
         range.y = max(range.y, sample_range.y);
     }
     lit_depth_output[p] = range;
 }
+[numthreads(8, 8, 1)]
+void lit_depth_first_cs(uint3 id : SV_DispatchThreadID) { lit_reduce_depth(id.xy, true); }
+[numthreads(8, 8, 1)]
+void lit_depth_pyramid_cs(uint3 id : SV_DispatchThreadID) { lit_reduce_depth(id.xy, false); }
 
 float lit_post_smith_g1(float cosine, float alpha_squared) {
     return 2 * cosine / max(cosine + sqrt(alpha_squared + (1 - alpha_squared) * cosine * cosine), 1e-6);
@@ -301,13 +302,17 @@ float3 lit_post_project(float3 world) {
     return float3(lit_window_uv(clip), clip.z / clip.w);
 }
 float2 lit_ssr_cell_range(float2 uv, uint level, out float2 grid_size) {
-    uint2 size;
-    lit_depth_pyramid[NonUniformResourceIndex(level)].GetDimensions(size.x, size.y);
+    uint2 size = lit_size_frame.xy;
+    if (level != 0) lit_depth_pyramid[NonUniformResourceIndex(level - 1)].GetDimensions(size.x, size.y);
     // Ceil-half images retain two-parent-pixels per cell. Their UV boundaries
     // must follow that footprint instead of stretching odd-sized last cells.
     grid_size = float2(lit_size_frame.xy) / float(1u << level);
     int2 cell = clamp(int2(floor(uv * grid_size)), int2(0, 0), int2(size) - 1);
-    return lit_depth_pyramid[NonUniformResourceIndex(level)].Load(int3(cell, 0));
+    if (level == 0) {
+        float z = lit_inside(uint2(cell)) ? lit_depth.Load(int3(cell, 0)) : lit_depth_far_value();
+        return float2(z, z);
+    }
+    return lit_depth_pyramid[NonUniformResourceIndex(level - 1)].Load(int3(cell, 0));
 }
 float lit_ssr_cell_exit(float2 origin, float2 direction, float time, float2 grid_size) {
     float2 position = origin + direction * time;
@@ -454,17 +459,18 @@ float2 lit_post_previous_depth_gradient(float3 position, float3 normal) {
     float2 gradient = float2(db * ac.y - dc * ab.y, dc * ab.x - db * ac.x) / determinant;
     return all(isfinite(gradient)) ? gradient : 0;
 }
-bool lit_post_valid_history(float2 previous_uv, float expected_depth, float3 current_normal,
+bool lit_post_valid_history(uint2 current_pixel, float2 previous_uv, float expected_depth, float3 current_normal,
                              float depth_tolerance, float2 depth_gradient) {
     if (lit_size_frame.w == 0 || !lit_post_inside_uv(previous_uv)) return false;
     int2 q = lit_post_pixel(previous_uv);
+    if (!lit_history_surface_matches(current_pixel, uint2(q))) return false;
     float previous_depth = lit_history_depth.Load(int3(q, 0));
     float3 previous_normal = lit_safe_normal(lit_history_normal.Load(int3(q, 0)).xyz);
     float tap_depth = expected_depth + dot(lit_post_uv(q) - previous_uv, depth_gradient);
     return !lit_is_background_depth(previous_depth) && abs(previous_depth - tap_depth) <= depth_tolerance &&
            dot(current_normal, previous_normal) >= .94;
 }
-bool lit_post_sample_history(Texture2D<float4> source, float2 previous_uv, float expected_depth,
+bool lit_post_sample_history(Texture2D<float4> source, uint2 p, float2 previous_uv, float expected_depth,
                               float3 normal, float tolerance, float2 depth_gradient, out float4 history) {
     history = 0;
     if (lit_size_frame.w == 0 || !lit_post_inside_uv(previous_uv)) return false;
@@ -476,7 +482,7 @@ bool lit_post_sample_history(Texture2D<float4> source, float2 previous_uv, float
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy))) continue;
         float2 q_uv = lit_post_uv(q);
         float tap_depth = expected_depth + dot(q_uv - previous_uv, depth_gradient);
-        if (!lit_post_valid_history(q_uv, tap_depth, normal, tolerance, depth_gradient)) continue;
+        if (!lit_post_valid_history(p, q_uv, tap_depth, normal, tolerance, depth_gradient)) continue;
         float weight = (x == 0 ? 1 - fraction.x : fraction.x) * (y == 0 ? 1 - fraction.y : fraction.y);
         history += source.Load(int3(q, 0)) * weight; weight_sum += weight;
     }
@@ -490,7 +496,7 @@ float lit_post_response(float2 motion) {
     float motion_pixels = length(motion * lit_size_frame.xy);
     return lerp(1, .65, saturate(motion_pixels / 12));
 }
-bool lit_post_reflection_history(float2 previous_uv, float expected_depth, float3 normal,
+bool lit_post_reflection_history(uint2 p, float2 previous_uv, float expected_depth, float3 normal,
                                  float roughness, float tolerance, float2 gradient,
                                  out float4 signal, out float2 moments, out float support) {
     signal = 0; moments = 0; support = 0;
@@ -502,7 +508,7 @@ bool lit_post_reflection_history(float2 previous_uv, float expected_depth, float
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy))) continue;
         float2 q_uv = lit_post_uv(q);
         float tap_depth = expected_depth + dot(q_uv - previous_uv, gradient);
-        if (!lit_post_valid_history(q_uv, tap_depth, normal, tolerance, gradient) ||
+        if (!lit_post_valid_history(p, q_uv, tap_depth, normal, tolerance, gradient) ||
             abs(lit_history_normal.Load(int3(q, 0)).w - roughness) > .08) continue;
         float4 sample = lit_reflection_previous.Load(int3(q, 0));
         float2 sample_moments = lit_reflection_moments_previous.Load(int3(q, 0));
@@ -552,7 +558,7 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
     if (!lit_post_surface(current_pixel)) return false;
     // The source can retain identical geometry while its material/emission or
     // object identity changes. Geometry alone cannot validate its old radiance.
-    if (lit_motion.Load(int3(current_pixel, 0)).w <= .5) return false;
+    if (!lit_history_surface_matches(uint2(current_pixel), uint2(old_pixel))) return false;
     float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(current_pixel, 0)).xyz);
     float tolerance = max(.035, lit_post_pixel_world_size(lit_post_uv(current_pixel),
         lit_depth.Load(int3(current_pixel, 0))) * .5);
@@ -564,8 +570,8 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
 }
 [numthreads(8, 8, 1)]
 void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     if (!lit_post_surface(p) || (lit_effect_flags & 4) == 0 || lit_controls.z <= 0) {
         lit_ao_resolved_output[p] = 1; lit_ao_history_output[p] = float2(1, 0); return;
     }
@@ -600,7 +606,7 @@ void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
             int2 q = base + int2(x, y);
             if (any(q < 0) || any(q >= int2(lit_size_frame.xy))) continue;
             float2 q_uv = lit_post_uv(q);
-            if (!lit_post_valid_history(q_uv, expected_depth + dot(q_uv - previous_uv, gradient),
+            if (!lit_post_valid_history(p, q_uv, expected_depth + dot(q_uv - previous_uv, gradient),
                                         normal, tolerance, gradient)) continue;
             float2 sample = lit_ao_previous.Load(int3(q, 0));
             if (sample.y < 1 || !all(isfinite(sample))) continue;
@@ -685,7 +691,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
     float expected_depth = lit_previous_device_depth(p, motion);
     float4 previous_signal; float2 previous_moments; float support;
     bool valid = (lit_history_invalid & 2) == 0 && (lit_effect_flags & 8) != 0 && motion.w > .5 &&
-        lit_post_reflection_history(previous_uv, expected_depth, normal, nr.w, tolerance,
+        lit_post_reflection_history(p, previous_uv, expected_depth, normal, nr.w, tolerance,
                                     gradient, previous_signal, previous_moments, support);
     float geometry_response = 0;
     float2 previous_witness = 0;
@@ -703,7 +709,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
         float3 hit_position = lit_world(hit.xy, lit_depth.Load(int3(hit_pixel, 0)));
         float hit_tolerance = lit_post_previous_depth_tolerance(hit_position, lit_view_direction(hit.xy));
         float2 hit_gradient = lit_post_previous_depth_gradient(hit_position,lit_geometry_normal_at(hit_pixel));
-        valid = hit_motion.w > .5 && lit_post_valid_history(previous_hit_uv,
+        valid = hit_motion.w > .5 && lit_post_valid_history(uint2(hit_pixel), previous_hit_uv,
             lit_previous_device_depth(hit_pixel, hit_motion), hit_normal, hit_tolerance, hit_gradient);
         if (lit_temporal.w > 0) geometry_response = max(geometry_response, lit_post_geometry_motion(hit_pixel));
         // Independent GGX rays estimate one rough-lobe integral and need not
@@ -714,7 +720,7 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
             float2 previous_hit = lit_reflection_hit_previous.Load(int3(lit_post_pixel(previous_uv), 0));
             float hit_uv_error = length((previous_hit - previous_hit_uv) * lit_size_frame.xy);
             valid = any(previous_hit != 0) && hit_uv_error < 4 &&
-                lit_post_valid_history(previous_hit, lit_previous_device_depth(hit_pixel, hit_motion) +
+                lit_post_valid_history(uint2(hit_pixel), previous_hit, lit_previous_device_depth(hit_pixel, hit_motion) +
                     dot(previous_hit - previous_hit_uv, hit_gradient), hit_normal, hit_tolerance, hit_gradient);
         }
     } else if (valid && nr.w < .04) {
@@ -881,7 +887,7 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     // The shared footprint reconstruction validates each tap against the
     // projected plane, preserving low-poly edges without rejecting plane slope.
     float4 history_signal;
-    if (!lit_post_sample_history(lit_taa_previous, previous_uv, expected_depth, normal,
+    if (!lit_post_sample_history(lit_taa_previous, p, previous_uv, expected_depth, normal,
                                 tolerance, gradient, history_signal)) {
         lit_taa_output[p] = float4(current, 1); return;
     }

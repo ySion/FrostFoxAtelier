@@ -58,10 +58,11 @@ struct Window {
     }
     void resize(int width, int height) {
         RECT r{0, 0, width, height};
-        check(AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd)) != 0,
+        check(AdjustWindowRectExForDpi(&r, static_cast<DWORD>(GetWindowLongPtrW(hwnd,GWL_STYLE)),
+                                     FALSE, 0, GetDpiForWindow(hwnd)) != 0,
               "adjust fixture extent");
         check(SetWindowPos(hwnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top,
-                           SWP_NOMOVE | SWP_NOZORDER) != 0,
+                           SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED) != 0,
               "resize fixture");
         pump();
     }
@@ -325,10 +326,11 @@ int main(int argc, char** argv) try {
             restore();scene_lit_e2e::probe_volume_cases(fixture);
             restore();scene_lit_e2e::quality_ddgi(fixture);
             restore();scene_lit_e2e::probe_debug_cases(fixture);
+            restore();scene_lit_e2e::quality_audit(fixture);
             // Contracts exercise terminal/repeated close and must run last.
             restore();scene_lit_e2e::quality_contracts(fixture);
             fixture.close();
-            std::puts("Renderer ReSTIR suite: PASS (materials, transport, ReSTIR, volumes, DDGI quality/debug, contracts; one Renderer)");
+            std::puts("Renderer ReSTIR suite: PASS (materials, transport, ReSTIR, volumes, DDGI quality/debug, audit, contracts; one Renderer)");
             return 0;
         }
         return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal",

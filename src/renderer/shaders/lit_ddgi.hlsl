@@ -8,12 +8,11 @@ void DDGICopy(uint3 dispatch_id : SV_DispatchThreadID) {
         uint2 texel=ddgi_probe_texel(probe)*8+uint2(index%8,index%64/8);
         if (ddgi_probe_fresh(probe,volume)) {
             lit_probe_irradiance_output[texel] = 0;
-            lit_probe_target_output[texel] = 0;
+            lit_probe_target[texel] = 0;
             lit_probe_distance_output[texel] = float2(1, 1);
         } else {
-            float4 target = lit_probe_target_previous.Load(int3(texel, 0));
+            float4 target = lit_probe_target[texel];
             float4 previous = lit_probe_irradiance_previous.Load(int3(texel, 0));
-            lit_probe_target_output[texel] = target;
             // Sampling remains budgeted, while every valid probe approaches
             // its sampled target every frame. This removes the visible stop /
             // jump cadence without extra rays or a screen-space color history.
@@ -241,7 +240,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         // Rays were cast at the old position; never associate their radiance
         // or moments with a relocated origin. The next bounded visit retraces.
         lit_probe_irradiance_output[atlas_texel] = 0;
-        lit_probe_target_output[atlas_texel] = 0;
+        lit_probe_target[atlas_texel] = 0;
         lit_probe_distance_output[atlas_texel] = float2(1, 1);
         return;
     }
@@ -298,7 +297,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     float4 previous_irradiance = 0;
     float2 previous_distance = float2(1, 1);
     if (ddgi_discard_history == 0) {
-        previous_irradiance = lit_probe_target_previous.Load(int3(atlas_texel, 0));
+        previous_irradiance = lit_probe_target[atlas_texel];
         previous_distance = lit_probe_distance_previous.Load(int3(atlas_texel, 0));
     }
     if (!all(isfinite(previous_irradiance))) previous_irradiance = 0;
@@ -308,7 +307,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     // Preserve both the target and its observation count (or invalid initial
     // support), so a constant sky cannot be driven toward black by empty visits.
     if (irradiance_weight <= 1e-5) {
-        lit_probe_target_output[atlas_texel] = previous_irradiance;
+        lit_probe_target[atlas_texel] = previous_irradiance;
         lit_probe_distance_output[atlas_texel] = previous_distance;
         return;
     }
@@ -326,7 +325,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     // blending or clipping their rare positive contributions loses energy;
     // keep the authoritative irradiance history scene linear.
     float updates = min(previous_irradiance.w + 1, 32);
-    lit_probe_target_output[atlas_texel] = float4(
+    lit_probe_target[atlas_texel] = float4(
         ddgi_finite_radiance(lerp(irradiance, max(previous_irradiance.rgb, 0), irradiance_history)), updates);
     lit_probe_distance_output[atlas_texel] = distance_weight > 1e-8 ?
         lerp(moments, previous_distance, distance_history) : previous_distance;
@@ -334,8 +333,8 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
 
 [numthreads(8, 8, 1)]
 void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
-    uint2 pixel = dispatch_id.xy;
-    if (any(pixel >= lit_size_frame.xy)) return;
+    uint2 pixel;
+    if (!lit_screen_pixel(dispatch_id.xy, pixel)) return;
     float depth = lit_depth.Load(int3(pixel, 0));
     if (!lit_inside(pixel) || lit_is_background_depth(depth)) { lit_indirect[pixel] = 0; return; }
     if ((lit_effect_flags & 64) == 0) {

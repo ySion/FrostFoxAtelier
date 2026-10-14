@@ -104,7 +104,11 @@ LitLightEvaluation lit_evaluate_light_source(LitLightSource light, LitLightingSu
             if(kind==1) {
                 float cosine=dot(lit_safe_normal(light.direction_radius.xyz),-result.direction);
                 cosine=(light.meta.y&1u)!=0?abs(cosine):saturate(cosine);
-                attenuation*=cosine*light.edge1_area.w;
+                // The shared input contract bounds radiance * area, not
+                // attenuation * area. Multiply the validated pair first.
+                precise float3 area_radiance=incoming*light.edge1_area.w;
+                incoming=area_radiance;
+                attenuation*=cosine;
             }
         }
         incoming*=attenuation;

@@ -34,12 +34,13 @@ RWStructuredBuffer<DDGIRayHit> lit_probe_ray_hits_output;
 StructuredBuffer<DDGIRayHit> lit_probe_ray_hits;
 
 Texture2D<float4> lit_probe_irradiance_previous;
-Texture2D<float4> lit_probe_target_previous;
 Texture2D<float2> lit_probe_distance_previous;
 Texture2D<float4> lit_probe_offsets_previous;
 Texture2D<float4> lit_probe_offsets_current;
 RWTexture2D<float4> lit_probe_irradiance_output;
-RWTexture2D<float4> lit_probe_target_output;
+// Only Copy and the owning probe update access this sampled target. Feedback
+// reads the immutable display snapshot, so target history can stay in place.
+RWTexture2D<float4> lit_probe_target;
 RWTexture2D<float2> lit_probe_distance_output;
 RWTexture2D<float4> lit_probe_offsets_output;
 RWTexture2D<float4> lit_indirect; // irradiance, before surface albedo / pi
@@ -120,16 +121,31 @@ int2 ddgi_fold_texel(int2 texel) {
     return clamp(texel, 0, size - 1);
 }
 
-float4 ddgi_sample_tile(Texture2D<float4> atlas, uint probe, float3 direction) {
+struct DDGISampleStencil {
+    int2 a, b, c, d;
+    float2 fraction;
+};
+DDGISampleStencil ddgi_sample_stencil(float3 direction) {
     float2 location = ddgi_octahedral_encode(direction) * DDGI_TILE_SIZE - .5;
     int2 lower = int2(floor(location));
-    float2 fraction = frac(location);
+    DDGISampleStencil stencil;
+    stencil.fraction = frac(location);
+    stencil.a = ddgi_fold_texel(lower);
+    stencil.b = ddgi_fold_texel(lower + int2(1, 0));
+    stencil.c = ddgi_fold_texel(lower + int2(0, 1));
+    stencil.d = ddgi_fold_texel(lower + int2(1, 1));
+    return stencil;
+}
+float4 ddgi_sample_tile(Texture2D<float4> atlas, uint probe, DDGISampleStencil stencil) {
     int2 tile = int2(ddgi_probe_texel(probe) * DDGI_TILE_SIZE);
-    float4 a = atlas.Load(int3(tile + ddgi_fold_texel(lower), 0));
-    float4 b = atlas.Load(int3(tile + ddgi_fold_texel(lower + int2(1, 0)), 0));
-    float4 c = atlas.Load(int3(tile + ddgi_fold_texel(lower + int2(0, 1)), 0));
-    float4 d = atlas.Load(int3(tile + ddgi_fold_texel(lower + int2(1, 1)), 0));
-    return lerp(lerp(a, b, fraction.x), lerp(c, d, fraction.x), fraction.y);
+    float4 a = atlas.Load(int3(tile + stencil.a, 0));
+    float4 b = atlas.Load(int3(tile + stencil.b, 0));
+    float4 c = atlas.Load(int3(tile + stencil.c, 0));
+    float4 d = atlas.Load(int3(tile + stencil.d, 0));
+    return lerp(lerp(a, b, stencil.fraction.x), lerp(c, d, stencil.fraction.x), stencil.fraction.y);
+}
+float4 ddgi_sample_tile(Texture2D<float4> atlas, uint probe, float3 direction) {
+    return ddgi_sample_tile(atlas, probe, ddgi_sample_stencil(direction));
 }
 
 float ddgi_sample_visibility(uint probe, float3 direction, float normalized_distance, float distance_floor) {
@@ -187,7 +203,7 @@ struct DDGIResult {
     float dominance, weight_sum;
 };
 DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_normal,
-                             DDGIVolume v,bool trace_support,bool record_queries) {
+                             DDGIVolume v,DDGISampleStencil irradiance_stencil,bool trace_support,bool record_queries) {
     DDGIResult result=(DDGIResult)0;
     if(ddgi_volume_count(v)==0)return result;
     float minimum_spacing=ddgi_minimum_spacing(v);
@@ -222,7 +238,7 @@ DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_nor
         if(!all(isfinite(offset)) || offset.w==0){pending=true;continue;}
         if(offset.w<.5){inside=true;continue;}
         usable=true;
-        float4 irradiance=ddgi_sample_tile(lit_probe_irradiance_previous,probe,normal);
+        float4 irradiance=ddgi_sample_tile(lit_probe_irradiance_previous,probe,irradiance_stencil);
         if(irradiance.w<=0 || !all(isfinite(irradiance)))continue;
         observed=true;
         float3 probe_position=ddgi_probe_position(probe,offset.xyz,v);
@@ -259,11 +275,12 @@ DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
                        bool trace_support,bool record_queries) {
     DDGIResult result=(DDGIResult)0;result.volume=0xffffffff;
     if(lit_probe_pool.y==0 || !all(isfinite(position)) || !all(isfinite(normal)))return result;
+    DDGISampleStencil irradiance_stencil=ddgi_sample_stencil(normal);
     result.status=1;
     float largest_share=0;
     [loop] for(uint slot=0;slot<4;++slot) {
         DDGIResult local=ddgi_gather_volume(position,normal,geometric_normal,
-            lit_probe_volumes[slot],trace_support,record_queries);
+            lit_probe_volumes[slot],irradiance_stencil,trace_support,record_queries);
         if(local.status==5 || local.status==6) {
             float share=(1-result.coverage)*local.coverage;
             result.irradiance+=local.irradiance*share;

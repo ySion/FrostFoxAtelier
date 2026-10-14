@@ -90,6 +90,9 @@ Result<void> validate_material(const Material& material) {
         !std::isfinite(material.metallic) || material.metallic<0.f || material.metallic>1.f)
         return error(ErrorCode::argument_mismatch,"Material roughness and metallic must be finite and within [0,1].");
     if (!nonnegative(material.emissive)) return error(ErrorCode::argument_mismatch,"Material emissive must be finite and nonnegative.");
+    for(std::size_t channel=0;channel<3;++channel)
+        if(material.emissive[channel]>atelier::material::emission_limit)
+            return error(ErrorCode::argument_mismatch,"Material emissive exceeds the HDR scene range.");
     return {};
 }
 Result<void> validate_light(const LightSettings& settings) {
@@ -111,6 +114,11 @@ Result<void> validate_light(const LightSettings& settings) {
     if (!std::isfinite(settings.width) || !std::isfinite(settings.height) || settings.width<0.f || settings.height<0.f ||
         (settings.kind==LightKind::rectangle && (settings.width==0.f || settings.height==0.f)))
         return error(ErrorCode::argument_mismatch,"Rectangle width and height must be finite and positive.");
+    if(settings.kind!=LightKind::sky)
+        if(const auto* message=rendering::analytic_light_range_error(
+            {settings.color.x,settings.color.y,settings.color.z},settings.intensity,
+            settings.kind==LightKind::rectangle?double(settings.width)*settings.height:1))
+            return error(ErrorCode::argument_mismatch,message);
     return {};
 }
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {

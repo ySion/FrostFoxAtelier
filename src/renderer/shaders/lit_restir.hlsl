@@ -5,8 +5,6 @@ StructuredBuffer<LitReservoir> lit_di_previous;
 StructuredBuffer<LitReservoir> lit_di_input;
 RWStructuredBuffer<LitReservoir> lit_di_output;
 Texture2D<float4> lit_history_base_metallic;
-Texture2D<uint2> lit_history_surface_id;
-uint2 lit_di_dispatch_origin; // Shade only: global pixel origin for bounded reference dispatches.
 
 uint lit_di_pixel_index(uint2 p) {return p.x+p.y*lit_size_frame.x;}
 uint lit_di_seed(uint2 p,uint salt) {
@@ -54,7 +52,7 @@ bool lit_di_temporal_surface(uint2 p,LitLightingSurface current,out uint2 previo
     if(motion.w<=.5||!all(isfinite(uv))||any(uv<0)||any(uv>=1))return false;
     int2 q=int2(floor(uv*lit_size_frame.xy));
     if(!lit_inside(uint2(q)))return false;
-    if(any(lit_surface_id.Load(int3(p,0))!=lit_history_surface_id.Load(int3(q,0))))return false;
+    if(!lit_history_surface_matches(p,uint2(q)))return false;
     float depth=lit_history_depth.Load(int3(q,0));
     float expected_depth=lit_previous_depth.Load(int3(p,0));
     float4 nr=lit_history_normal.Load(int3(q,0));
@@ -92,16 +90,32 @@ LitReservoir lit_di_reuse(LitReuseInput inputs[3],uint count,bool temporal,inout
         // for this candidate and reuse it in both MIS numerator and denominator.
         float target=lit_di_input_target(inputs[0],source,candidate.uv,false);
         if(target<=0)continue;
-        float denominator=inputs[0].reservoir.confidence*target;
-        float source_target=i==0?target:0;
+        float3 targets=float3(target,0,0);
         [loop] for(uint j=1;j<count;++j) {
             // A null realized sample still represents a valid source distribution.
             // Its target/confidence belongs in every other candidate's denominator.
-            float input_target=lit_di_input_target(inputs[j],source,candidate.uv,temporal&&j==1);
-            denominator+=inputs[j].reservoir.confidence*input_target;
-            if(j==i)source_target=input_target;
+            targets[j]=lit_di_input_target(inputs[j],source,candidate.uv,temporal&&j==1);
         }
-        float numerator=candidate.confidence*source_target;
+        // Common scaling cancels from the MIS ratio. Keep ordinary targets
+        // unchanged; only extreme finite targets need the extra division.
+        float scale=max(targets.x,max(targets.y,targets.z));
+        float3 weighted_targets=0;
+        if(scale>1e30) {
+            [loop] for(uint j=0;j<count;++j) {
+                // Multiply small targets first so division cannot flush a
+                // representable weighted term; divide large targets first
+                // to avoid overflow. Preserve that order under optimization.
+                precise float weighted_target;
+                if(targets[j]<=1e30)weighted_target=(targets[j]*inputs[j].reservoir.confidence)/scale;
+                else weighted_target=(targets[j]/scale)*inputs[j].reservoir.confidence;
+                weighted_targets[j]=weighted_target;
+            }
+        } else {
+            [loop] for(uint j=0;j<count;++j)weighted_targets[j]=inputs[j].reservoir.confidence*targets[j];
+        }
+        float denominator=weighted_targets.x;
+        [loop] for(uint j=1;j<count;++j)denominator+=weighted_targets[j];
+        float numerator=weighted_targets[i];
         if(denominator<=0||numerator<=0)continue;
         float weight=(numerator/denominator)*target*candidate.weight;
         if(lit_reservoir_stream(output,sum,source,candidate.uv,weight,seed))selected_target=target;
@@ -113,7 +127,7 @@ LitReservoir lit_di_reuse(LitReuseInput inputs[3],uint count,bool temporal,inout
 
 [numthreads(8,8,1)]
 void lit_restir_initial_cs(uint3 dispatch:SV_DispatchThreadID) {
-    uint2 p=dispatch.xy;if(any(p>=lit_size_frame.xy))return;
+    uint2 p;if(!lit_screen_pixel(dispatch.xy,p))return;
     uint index=lit_di_pixel_index(p);
     lit_di_output[index]=lit_empty_reservoir();
     if(lit_source_counts.x==0)return;
@@ -156,7 +170,7 @@ bool lit_di_spatial_surface(uint2 p,int2 q,LitLightingSurface current,float pixe
 }
 [numthreads(8,8,1)]
 void lit_restir_spatial_cs(uint3 dispatch:SV_DispatchThreadID) {
-    uint2 p=dispatch.xy;if(any(p>=lit_size_frame.xy))return;
+    uint2 p;if(!lit_screen_pixel(dispatch.xy,p))return;
     uint index=lit_di_pixel_index(p);
     lit_di_output[index]=lit_empty_reservoir();
     if(lit_source_counts.x==0)return;
@@ -187,7 +201,7 @@ void lit_restir_spatial_cs(uint3 dispatch:SV_DispatchThreadID) {
 }
 [numthreads(8,8,1)]
 void lit_restir_shade_cs(uint3 dispatch:SV_DispatchThreadID) {
-    uint2 p=dispatch.xy+lit_di_dispatch_origin;if(any(p>=lit_size_frame.xy))return;
+    uint2 p;if(!lit_screen_pixel(dispatch.xy,p))return;
     lit_direct_diffuse_raw_output[p]=0;lit_direct_specular_raw_output[p]=0;
     if(!lit_direct_surface(int2(p)))return;
     LitLightingSurface surface=lit_di_surface(p);

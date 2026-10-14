@@ -25,11 +25,15 @@ LightComponent 不自动创建可见发光几何。`LightFrame` 沿同一 MeshIn
 
 局部源选择使用功率估计的统一 alias 表，混合 5% 均匀概率保留支持；发光面权重包含世界面积，贴图用线性平均辐射估计 proposal。CPU 用 double 建表，按实际上传的 float 阈值回算离散 PMF。共享采样域为 `(光源身份, u, v)`，面积 Jacobian、发光余弦、真实重心 UV 的 emission 与 Mask 覆盖在贡献求值中处理，不能把选择 PMF 冒充面积密度。
 
+解析光的输入计算域沿 [World 灯光合同](../world/lighting.md#灯类型与参数)，由共享检查同时约束 authoring 和低层 Frame；超界帧在编码前拒绝，保留已接受的画面与历史。矩形光先乘已验证的辐射量与面积，再施加有界衰减。MIS 在极大有限 target 下共同缩放 confidence 加权项，并按大小选择乘除顺序，避免中间溢出和过早丢失弱权重；普通范围保留原次序。未夹取 reservoir W。此范围保证的余量只覆盖解析光求值与初始累计，发光三角形的极近 `area/d²`、超出 FP32 的数学 W 及任意历史 target 倍率仍非全域保证，详见[数值审查](../../research/render-pipeline-audit-20261013.md#本轮代码审查与取舍)。
+
 屏幕原生 ReSTIR DI 以初始 RIS 和前帧 reservoir 生成 scratch，再从 scratch 复用最多两个合格空间邻居，写入 current；使用 GRIS generalized balance MIS 在每个输入接收面重新求目标。reservoir 保留样本、贡献权重与受限历史置信度，不保存 visibility；最终着色重新追踪选中源到当前接收点的遮挡。零实现仍代表一个候选分布，不能因本次选中贡献为零就删除其归一化责任。全局功率 proposal 尚不是按区域组织的光源树；RTXDI SDK 未引入。
 
 屏幕直接光负责发光面到当前表面的漫反射，DDGI 命中着色负责经过另一次表面散射的入射光，探针直接命中的 emission 不再重复注入。屏幕可见 emission 保留；SSIL 读取已稳定的去材质直接漫反射与 DDGI 间接项，不读取 SSR、镜面或表面 emission，避免重复的一跳发光贡献。发光面的镜面路径仍由现有 SSSR 表达，屏幕 mesh NEE 首版不再加一份镜面；离屏发光面镜面缺失仍是限制。没有发光网格与解析灯的绑定合同，样例发光板与解析面光源仍是独立光源，不应重合用于表示同一个发光面。
 
 ## 同一帧的执行链
+
+近期管线成本、剔除边界和工业依据见[审计研究](../../research/render-pipeline-audit-20261013.md)。
 
 1. 光栅 GBuffer 写入着色法线/粗糙度、基础色/金属度、HDR 自发光、运动信息、独立 R32_FLOAT 预期前帧设备深度与 RG16_FLOAT 八面体几何法线。法线贴图只改变着色法线；偏移、支持平面和历史深度梯度使用几何法线。当前 D32_FLOAT 深度、前帧 R32_FLOAT 深度与 RG32_FLOAT min/max Hi-Z 都遵循有限 Reversed-Z；方向和背景约定见 [Renderer 合同](contract.md#场景和-ui)。屏幕坐标使用整个窗口，`scene_viewport` 处理物理像素偏移，支持透视与正交投影。
 2. 共享不可变网格缓存 BLAS，稳定实例更新 TLAS。内联 RayQuery 完成灯光可见性和 DDGI 探针射线；能力由 RHI 的 `inline_ray_query` 明确报告。
@@ -46,7 +50,15 @@ LightComponent 不自动创建可见发光几何。`LightFrame` 沿同一 MeshIn
 
 关闭 SSSR 时仍写入环境回退和空来源历史，但跳过 HiZ 构建、工作列表 reset/prepare 与三个反射空间滤波通道；下一次开启重新构建这些输入。关闭 Bloom 时跳过下采样和两次模糊，色调映射沿原开关忽略 Bloom。实例上传比较完整 GPU 数据，包括 previous_world、历史有效位和几何偏移；静止帧复用缓冲，物体停止运动后的前帧矩阵更新仍会上传。法线矩阵按 world 变化计算，统一光源快照按真实 Renderer sequence 推进前后状态，不以可重复的 UI 帧号判定帧生命周期。
 
+直接光、DDGI 屏幕 gather、GTAO 和 Local GI 共用 `lit_screen_dispatch` 的整数原点与独占终点，只派发视口内接收像素；坐标、纹理索引和随机数仍使用原窗口坐标。范围按像素中心与小数视口相交，参考分块也使用独立终点，补齐线程不会写相邻 tile。Compose、公共表面历史和显示后处理仍定义完整窗口；邻域消费者先检查表面和视口，不能读未写的外部区域。这个裁剪不改变光源池、TLAS 或离屏探针更新。
+
+直接光每轮空间滤波在一次邻域遍历中共享漫反射/镜面的几何引导读取与世界位置重建；两种信号仍保留各自半径、权重、历史和原累积次序。SSSR 逻辑深度第零层直接读取既有 D32_FLOAT，物理 RG32_FLOAT 层从 2×2 min/max 归约开始，删除全尺寸 `(z,z)` 副本；FP32、奇数尺寸尾部和视口外远平面语义不变。首级与后续级使用同一归约算法的独立编译入口，避免单像素层级发生 SRV/UAV 别名。
+
 ## DDGI 探针场
+
+采样目标使用单份 RGBA32_FLOAT atlas。显示过渡读取该目标，但不在普通帧复制它；本轮唯一调度到的探针在自己的 texel 原地更新目标。新区仍先清零，反馈仍读取双缓冲显示照度的不可变快照，Copy→Update 沿 gfx 的 UAV 顺序依赖执行。4096 探针时少一份 4 MiB atlas 和每帧最多 4 MiB 目标写回。一个 receiver 的照度八面体编码与四个折叠 texel 偏移只计算一次，逐探针读取和 LOS 保持原规则。
+
+Mask 模式、alpha 因子/阈值或相关贴图采样描述改变，均属于实际遮挡变化；即使不需要重建 BLAS，也启动距离历史的两轮响应及屏幕可见性响应。阴影 bias 改变会启动探针照度响应。普通 Opaque 基础色编辑只改变辐射响应，不被当成距离变化。
 
 `SceneLitSettings::probe_volumes` 提供四个有稳定身份的槽位，按 0→3 优先查询；固定与跟随体积共用同一描述、采样、资源池和调度。默认只开启 slot 0，范围 `[-6,-1,-6]` 到 `[6,5,6]` 米、`8×4×8` 共 256 个探针，每帧更新 64 个。每次更新分开使用 **32 条固定几何射线**和默认 **128 条照明射线**：前者负责背面分类与受限位置修正，后者随机旋转并估计照明，不用随机照明结果驱动探针位移。初始化或没有有效历史的探针一次到达受单元约束的几何目标；已有有效历史的探针缓慢修正。
 
@@ -117,7 +129,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 World 页统一编辑光照与效果的作者配置，进入同一 World 值和 Session 历史，包括 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI、抗锯齿、曝光和直接光候选预算；不再提供 Shadow Budget / Shadow Samples。诊断仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
 
-**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v5 保存；`direct_reference`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
+**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v5 保存；`direct_reference`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
 
 `SceneLitSettings::antialiasing` 为 `Antialiasing::{none,taa,smaa,smaa_t2x}`，菜单显示 Off / TAA / SMAA / SMAA T2x，默认 SMAA。所有模式均使用原生分辨率：
 
@@ -160,7 +172,15 @@ SSSR 不以全局几何变化统一降低历史支持。它比较接收面及反
 
 ## 诊断与性能边界
 
+ReSTIR、直接光降噪、GTAO、Local GI、最终 TAA 以及 SSSR 接收面/来源见证的表面历史共同检查完整 64 位身份与当前 motion 有效位，再应用各自几何容差；低 32 位相同的不同对象不能共享历史。SMAA T2x 的覆盖样本合成保留自己的轮廓规则，不把这种表面照明身份门槛机械套在互补 AA 样本上。
+
 `FrameStats::scene_lit_gpu_ms` 为八个阶段的原始 GPU 完成样本：GBuffer、AS/上传、直接光/降噪、DDGI、GTAO/Local GI、HDR/SSSR、HDR resolve/表面历史、Bloom/色调映射/SMAA/显示合成。`scene_lit_ddgi_gpu_ms` 再分为 update/transfer 与 receiver gather，`scene_lit_ddgi_visibility_rays` 分为 probe-hit shading 与 receiver gather；两个数组均长 2，属于既有 DDGI 时间和 visibility 总计数的子集，不重复加总。只有主阶段、细分 timestamp 与射线读回都对应同一个完成的 RHI 录制序号时，`scene_lit_gpu_timing_valid` 才为 true；`scene_lit_gpu_sample_sequence` 与 `scene_lit_gpu_sample_frame_id` 标识样本。完成结果可能滞后或重复，统计分位数时必须去重；没有用平滑时长计算 p95。
+
+`scene_lit_direct_gpu_ms[4]` 细分直接光父阶段：初始/时间 reservoir、空间 reservoir、当前可见性与着色、辐射 resolve/filter。第三项包括显式方向光；第四项在参考模式仍有直通 resolve，因此“关闭降噪”不等于没有该 dispatch。`scene_lit_ddgi_update_gpu_ms[2]` 细分 update/transfer：主射线（含分类/重定位）与命中照明/反馈/卷积；copy/transfer 仍只计入父阶段。细分之和不能替代其父阶段，更不能重复加入八阶段合计。
+
+全部 16 个时间区间沿既有 timestamp 与异步计数读回共同发布，没有额外 GPU 等待。`scene_lit_gpu_pass_mask` 与完成样本一起保存：bit 0～7 对应主阶段，8～9 对应 DDGI update/gather，10～13 对应直接光细分，14～15 对应 DDGI update 细分。置位表示进入该工作区间，不保证内部每次都有非零工作；跳过的区间仍记录空 timestamp，可能测得微小查询开销，不能只靠浮点零判断启用状态。DDGI 关闭时其所有位不置位；DDGI 开启但没有启用体积时仍执行清零输出的 gather。非 Lit 帧没有有效样本。
+
+编辑器的 **World → Performance** 使用现有 Table 展示当前值、120 个唯一完成样本的均值和 p95，以及均值占八阶段合计的比例。总计先逐样本相加再计算分位数，不相加各行 p95；子项缩进且不重复计入总计。场景、实际渲染尺寸或配置换域后，用新域首个接受帧的 `ui_frame.id` 拒绝迟到旧样本；普通相机运动和选择变化保留窗口。该合计不含 UI、Guides、探针诊断绘制、Capture、CPU Present 或显示扫描，不等于完整 GPU 帧时或 FPS。逻辑资源显示属于当前 CPU 资源账目，与异步 GPU 样本的口径分开。
 
 阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联。`scene_lit_light_sources`、`scene_lit_shadow_sources`、`scene_lit_di_candidates` 与历史重置数描述当前编码帧，分别为统一源总数、启用 Shadows 时具备投影资格的源数、初始候选预算；投影资格数不是本帧实际射线数，也没有“未获阴影槽”的灯。`scene_lit_resource_bytes` 是资源逻辑字节加 AS 数据量，不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
 

@@ -2,6 +2,7 @@
 #include "shader_source.hpp"
 #include "math/math.hpp"
 #include "scene_lit.hpp"
+#include "raster_viewport.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -82,7 +83,7 @@ void validate(const Frame &frame) {
         }
         good &= finite(mesh.material.roughness) && mesh.material.roughness>=0 && mesh.material.roughness<=1 &&
             finite(mesh.material.metallic) && mesh.material.metallic>=0 && mesh.material.metallic<=1;
-        for(float e:mesh.material.emissive)good &= finite(e)&&e>=0&&e<=65504;
+        for(float e:mesh.material.emissive)good &= finite(e)&&e>=0&&e<=material::emission_limit;
         for (float v : mesh.world)
             good &= finite(v);
         good &= mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
@@ -274,6 +275,7 @@ struct Renderer::State {
     ui::PixelExtent cavity_extent{};
     std::optional<std::array<float,16>> cavity_projection;
     std::optional<GridCamera> grid_camera;
+    std::array<float,4> raster_transform{1,1,0,0};
     GfxTexture matcap;
     GfxSamplerState sampler;
     struct MaterialImage { material::ImageRef owner; GfxTexture texture; bool used{}; };
@@ -617,10 +619,7 @@ struct Renderer::State {
         ui_instances.reserve(frame.draws.size() + source.overlay.size());
         const auto &viewport = source.scene_viewport;
         if (viewport.width > 0 && viewport.height > 0 && !source.overlay.empty()) {
-            const ui::Clip clip{std::clamp(static_cast<int>(std::floor(viewport.x)), 0, int(frame.extent.width)),
-                std::clamp(static_cast<int>(std::floor(viewport.y)), 0, int(frame.extent.height)),
-                std::clamp(static_cast<int>(std::ceil(viewport.x + viewport.width)), 0, int(frame.extent.width)),
-                std::clamp(static_cast<int>(std::ceil(viewport.y + viewport.height)), 0, int(frame.extent.height))};
+            const auto clip=detail::raster_viewport(viewport).scissor;
             for (const auto &shape : source.overlay) {
                 UiInstance instance{};
                 instance.tint = shape.color;
@@ -677,6 +676,7 @@ struct Renderer::State {
                              with_depth?PipelineStyle::grid_depth:PipelineStyle::grid);
         require(gfxCommandBindDepthStencilTarget(gfx, with_depth?depth:GfxTexture{}), "Bind guide occlusion depth");
         const auto program=pipeline.program();
+        require(gfxProgramSetParameter(gfx,program,"raster_viewport_transform",raster_transform),"Set grid raster viewport");
         const std::array<std::uint32_t,2> guides{frame.view.reference_grid?1u:0u,frame.view.origin_axes?1u:0u};
         require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse), "Set grid inverse camera");
         require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection), "Set grid camera");
@@ -692,6 +692,7 @@ struct Renderer::State {
             prepare_pipeline(cavity_composite,"studio screen cavity",shaders::viewport_vs,shaders::cavity_ps,PipelineStyle::ui);
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind depth for cavity sampling");
         const auto program=cavity_composite.program();
+        require(gfxProgramSetParameter(gfx,program,"raster_viewport_transform",raster_transform),"Set cavity raster viewport");
         const auto& v=frame.scene_viewport;const auto& c=frame.view.cavity;
         const std::array<float,4> viewport{v.x,v.y,v.width,v.height},controls{c.ridge,c.valley,c.radius,0};
         require(gfxProgramSetParameter(gfx,program,"cavity_normals",cavity_normals),"Bind cavity normals");
@@ -715,14 +716,15 @@ struct Renderer::State {
         require(gfxCommandClearBackBuffer(gfx), "Clear window");
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for viewport background");
         if (has_viewport) {
-            require(gfxCommandSetViewport(gfx, viewport.x, viewport.y, viewport.width, viewport.height), "Set scene viewport");
-            require(gfxCommandSetScissorRect(gfx, static_cast<int>(std::floor(viewport.x)),
-                static_cast<int>(std::floor(viewport.y)),
-                static_cast<int>(std::ceil(viewport.x+viewport.width))-static_cast<int>(std::floor(viewport.x)),
-                static_cast<int>(std::ceil(viewport.y+viewport.height))-static_cast<int>(std::floor(viewport.y))), "Set scene scissor");
+            const auto raster=detail::raster_viewport(viewport);
+            raster_transform=raster.clip_transform;
+            require(gfxCommandSetViewport(gfx,raster.hardware.x,raster.hardware.y,raster.hardware.width,raster.hardware.height),"Set scene raster viewport");
+            require(gfxCommandSetScissorRect(gfx,raster.scissor.left,raster.scissor.top,
+                raster.scissor.right-raster.scissor.left,raster.scissor.bottom-raster.scissor.top),"Set scene pixel-center scissor");
             if (frame.view.shading != Shading::scene_lit && frame.view.background == Background::gradient) {
                 if (!background)
                     prepare_pipeline(background, "viewport background", shaders::viewport_vs, shaders::background_ps, PipelineStyle::background);
+                require(gfxProgramSetParameter(gfx,background.program(),"raster_viewport_transform",raster_transform),"Set background raster viewport");
                 require(gfxCommandBindKernel(gfx, background.kernel()), "Bind viewport background");
                 require(gfxCommandDraw(gfx, 3), "Draw viewport background");
                 ++stats.viewport_draw_calls;
@@ -734,9 +736,11 @@ struct Renderer::State {
             prepare_materials(frame);
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
+            const bool selected=std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;});
+            const bool editing_lines=frame.view.wireframe==Wireframe::overlay||selected;
             const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
             const bool editing_depth=jittered&&(capture||frame.view.reference_grid||frame.view.origin_axes||
-                frame.view.lit.probe_overlay()||frame.view.wireframe==Wireframe::overlay||std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;}));
+                frame.view.lit.probe_overlay()||editing_lines);
             if ((lines_only||editing_depth)&&!scene_depth)
                 prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
             if (!lighting && !lines_only && !cavity_projection && !scene)
@@ -758,7 +762,7 @@ struct Renderer::State {
                     prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
                                      frame.view.hidden_lines?PipelineStyle::visible_lines:PipelineStyle::all_lines);
             }
-            if((lighting||cavity_projection)&&!visible_lines)
+            if((lighting||cavity_projection)&&editing_lines&&!visible_lines)
                 prepare_pipeline(visible_lines,"Scene Lit editing lines",shaders::scene_vs,shaders::scene_ps,PipelineStyle::visible_lines);
             if(!lighting)prepare_matcap();
             if (depth_extent != extent) {
@@ -769,9 +773,7 @@ struct Renderer::State {
                 depth_extent = extent;
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
-            BufferOwner data{gfx, gfxCreateBuffer<Instance>(gfx, static_cast<std::uint32_t>(instances.size()),
-                                                            instances.data())};
-            allocation(bool(data.buffer));
+            BufferOwner data{gfx, {}};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
             for (const auto& batch : mesh_batches) {
                 auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
@@ -788,16 +790,24 @@ struct Renderer::State {
                 }
                 geometry.used = true;
             }
-            // Match SceneLit's CPU-composed view/projection before the shared
-            // precise world-to-clip shader path. Chained GPU matrices differ by
-            // ULPs and make coplanar editing ink fail the surface depth test.
-            math::Matrix4d camera_view,camera_projection;
-            for(std::size_t i=0;i<16;++i) {camera_view.elements[i]=frame.camera.view[i];camera_projection.elements[i]=frame.camera.projection[i];}
-            const auto combined=camera_view*camera_projection;
-            std::array<float,16> view_projection;
-            for(std::size_t i=0;i<16;++i)view_projection[i]=static_cast<float>(combined.elements[i]);
+            std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
+                const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
+                if(selected_only&&!selected)return;
+                if(!data.buffer) {
+                    // Instance transforms were validated before encoding. Upload
+                    // editing data only when an actual raster pass consumes it.
+                    data.buffer=gfxCreateBuffer<Instance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());
+                    allocation(bool(data.buffer));
+                    // Match SceneLit's CPU-composed view/projection before the
+                    // precise clip path; chained GPU matrices differ by ULPs.
+                    math::Matrix4d camera_view,camera_projection;
+                    for(std::size_t i=0;i<16;++i) {camera_view.elements[i]=frame.camera.view[i];camera_projection.elements[i]=frame.camera.projection[i];}
+                    const auto combined=camera_view*camera_projection;
+                    for(std::size_t i=0;i<16;++i)view_projection[i]=static_cast<float>(combined.elements[i]);
+                }
                 const auto program = pipeline.program();
+                require(gfxProgramSetParameter(gfx,program,"raster_viewport_transform",raster_transform),"Set scene raster viewport");
                 detail::bind_materials(gfx,program,materials);
                 const std::array<std::uint32_t, 4> display{
                     static_cast<std::uint32_t>(frame.view.shading), static_cast<std::uint32_t>(frame.view.wireframe),
@@ -813,16 +823,29 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
                 for (const auto& batch : mesh_batches) {
-                    if(pass==3&&frame.view.wireframe!=Wireframe::overlay&&
+                    if(selected_only&&
                        !std::ranges::any_of(frame.meshes.subspan(batch.first,batch.count),[](const MeshInstance& m){return m.selected;}))continue;
                     const auto& geometry = geometries.at(batch.geometry.get());
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
-                    require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set mesh instance offset");
                     for(const auto& part:geometry.source->parts()) {
                         require(gfxProgramSetParameter(gfx,program,"material_slot",part.material),"Set material slot");
                         require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
-                        require(gfxCommandDraw(gfx,part.vertex_count,batch.count),"Draw material part");
-                        ++stats.scene_draw_calls;
+                        const auto draw_instances=[&](std::uint32_t first,std::uint32_t count) {
+                            require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
+                            require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
+                            ++stats.scene_draw_calls;
+                        };
+                        if(!selected_only) {draw_instances(batch.first,batch.count);continue;}
+                        // Preserve snapshot indices and part/instance order;
+                        // hidden instances never reach the vertex shader.
+                        const auto end=batch.first+batch.count;
+                        for(auto first=batch.first;first<end;) {
+                            while(first<end&&!frame.meshes[first].selected)++first;
+                            if(first==end)break;
+                            auto last=first+1;
+                            while(last<end&&frame.meshes[last].selected)++last;
+                            draw_instances(first,last-first);first=last;
+                        }
                     }
                 }
             };
@@ -840,7 +863,7 @@ struct Renderer::State {
                 }
                 scene_lit->draw_debug(frame,extent,depth,stats);
                 draw_grid(frame,true);
-                draw_batches(visible_lines,1);
+                if(editing_lines)draw_batches(visible_lines,1);
             } else if (lines_only) {
                 draw_batches(scene_depth, 2);
                 draw_grid(frame, true);
@@ -856,7 +879,7 @@ struct Renderer::State {
                     require(gfxCommandBindDepthStencilTarget(gfx,depth),"Restore studio editing depth");
                 } else draw_batches(scene,0);
                 draw_grid(frame, true);
-                if(cavity_projection)draw_batches(visible_lines,3);
+                if(cavity_projection&&editing_lines)draw_batches(visible_lines,3);
             }
         } else {
             materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();
@@ -1032,6 +1055,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.image_upload_count = 0;
     s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
+    s.stats.scene_lit_direct_gpu_ms={};s.stats.scene_lit_ddgi_update_gpu_ms={};s.stats.scene_lit_gpu_pass_mask=0;
     s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
     s.stats.scene_lit_light_sources=0;s.stats.scene_lit_shadow_sources=0;s.stats.scene_lit_di_candidates=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;

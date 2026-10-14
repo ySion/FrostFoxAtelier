@@ -55,25 +55,41 @@ float3 lit_direct_specular_factor(float4 material) {
     // signal 25x before FP16 storage. This constant cancels during remodulation.
     return max(lerp(.04.xxx, max(material.rgb, 0), saturate(material.w)), .04) / .04;
 }
-bool lit_direct_neighbor(uint2 p, int2 q, bool specular, float3 position, float3 normal, float pixel_size) {
-    if (!lit_direct_surface(q)) return false;
-    float4 nr = lit_normal_roughness.Load(int3(p, 0));
+struct LitDirectGuide {
+    float3 position, normal, geometric_normal;
+    float4 material;
+    float roughness, pixel_size;
+};
+LitDirectGuide lit_direct_guide(uint2 p, float3 position, float3 normal, float pixel_size) {
+    LitDirectGuide guide;
+    guide.position = position; guide.normal = normal; guide.pixel_size = pixel_size;
+    guide.geometric_normal = lit_geometry_normal_at(p);
+    guide.material = lit_base_metallic.Load(int3(p, 0));
+    guide.roughness = lit_normal_roughness.Load(int3(p, 0)).w;
+    return guide;
+}
+// Diffuse/specular share geometric support; material and roughness gates remain
+// independent. A paired filter tap loads and reconstructs its guide only once.
+bool2 lit_direct_neighbor(LitDirectGuide center, int2 q) {
+    if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_inside(uint2(q))) return false;
     float4 q_nr = lit_normal_roughness.Load(int3(q, 0));
+    float depth = lit_depth.Load(int3(q, 0));
+    if (lit_is_background_depth(depth) || !(dot(q_nr.xyz, q_nr.xyz) > .25)) return false;
     float3 q_normal = lit_safe_normal(q_nr.xyz);
     // Strict normals and both tangent planes keep low-poly facets separate.
     // Plane error is in world units, independent of device-depth direction.
-    float3 delta = lit_direct_world(q) - position;
-    float tolerance = max(.0005, pixel_size * .25);
-    if (dot(normal, q_normal) < .9995 || abs(dot(delta,lit_geometry_normal_at(p))) > tolerance ||
-        abs(dot(delta,lit_geometry_normal_at(q))) > tolerance ||
-        abs(nr.w - q_nr.w) > (specular ? .05 : .15)) return false;
-    float4 material = lit_base_metallic.Load(int3(p, 0));
+    float3 delta = lit_world(lit_direct_uv(q), depth) - center.position;
+    float tolerance = max(.0005, center.pixel_size * .25);
+    if (dot(center.normal, q_normal) < .9995 || abs(dot(delta,center.geometric_normal)) > tolerance ||
+        abs(dot(delta,lit_geometry_normal_at(q))) > tolerance) return false;
     float4 q_material = lit_base_metallic.Load(int3(q, 0));
-    if (specular) return abs(material.w - q_material.w) <= .15;
     // A zero material channel contains no diffuse illumination estimate.
     // It must not darken a neighboring channel whose demodulator is nonzero.
-    return all((lit_direct_diffuse_factor(material) > 1e-8) ==
-               (lit_direct_diffuse_factor(q_material) > 1e-8));
+    bool diffuse = !(abs(center.roughness - q_nr.w) > .15) &&
+        all((lit_direct_diffuse_factor(center.material) > 1e-8) ==
+            (lit_direct_diffuse_factor(q_material) > 1e-8));
+    bool specular = !(abs(center.roughness - q_nr.w) > .05) && abs(center.material.w - q_material.w) <= .15;
+    return bool2(diffuse, specular);
 }
 
 void lit_direct_merge_moments(float mean, float variance, float weight,
@@ -90,9 +106,11 @@ void lit_direct_local_statistics(Texture2D<float4> source, uint2 p, bool specula
                                   out float3 average, out float2 moments) {
     average = 0;
     float weight_sum = 0, mean = 0, m2 = 0;
+    LitDirectGuide guide = lit_direct_guide(p, position, normal, pixel_size);
     [unroll] for (int y = -1; y <= 1; ++y) [unroll] for (int x = -1; x <= 1; ++x) {
         int2 q = int2(p) + int2(x, y);
-        if (!lit_direct_neighbor(p, q, specular, position, normal, pixel_size)) continue;
+        bool2 neighbor = lit_direct_neighbor(guide, q);
+        if (!(specular ? neighbor.y : neighbor.x)) continue;
         float4 signal = source.Load(int3(q, 0));
         if (signal.a <= 0 || !all(isfinite(signal))) continue;
         float weight = 1.0 / (1 + x * x + y * y);
@@ -126,7 +144,7 @@ void lit_direct_previous_plane(uint2 p, float3 position, float3 normal, float pi
 }
 
 bool lit_direct_history(Texture2D<float4> source, Texture2D<float2> moment_source,
-                          float2 previous_uv, float expected_depth, float3 normal, float roughness,
+                          uint2 p, float2 previous_uv, float expected_depth, float3 normal, float roughness,
                           bool specular, float tolerance, float2 gradient,
                           out float4 history, out float2 moments, out float support) {
     history = 0; moments = 0; support = 0;
@@ -138,6 +156,7 @@ bool lit_direct_history(Texture2D<float4> source, Texture2D<float2> moment_sourc
     [unroll] for (int y = 0; y < 2; ++y) [unroll] for (int x = 0; x < 2; ++x) {
         int2 q = base + int2(x, y);
         if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_inside(uint2(q))) continue;
+        if (!lit_history_surface_matches(p, uint2(q))) continue;
         float depth = lit_history_depth.Load(int3(q, 0));
         float4 nr = lit_history_normal.Load(int3(q, 0));
         float tap_depth = expected_depth + dot(lit_direct_uv(q) - previous_uv, gradient);
@@ -174,7 +193,7 @@ void lit_direct_resolve_signal(Texture2D<float4> raw, Texture2D<float4> previous
     float3 average; float2 local;
     lit_direct_local_statistics(raw, p, specular, position, normal, pixel_size, average, local);
     float4 history; float2 history_moments; float support;
-    bool valid = (lit_history_invalid & 1) == 0 && motion.w > .5 && lit_direct_history(previous, previous_moments, motion.xy + lit_direct_uv(int2(p)),
+    bool valid = (lit_history_invalid & 1) == 0 && motion.w > .5 && lit_direct_history(previous, previous_moments, p, motion.xy + lit_direct_uv(int2(p)),
         expected_depth, normal, roughness, specular, tolerance, gradient, history, history_moments, support);
     float count = 1;
     result_moments = float2(current_luma, local.y);
@@ -227,7 +246,7 @@ void lit_direct_resolve_signal(Texture2D<float4> raw, Texture2D<float4> previous
 
 [numthreads(8,8,1)]
 void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy; if (any(p >= lit_size_frame.xy)) return;
+    uint2 p; if (!lit_screen_pixel(id.xy, p)) return;
     lit_direct_diffuse_history_output[p] = 0; lit_direct_specular_history_output[p] = 0;
     lit_direct_diffuse_moments_output[p] = 0; lit_direct_specular_moments_output[p] = 0;
     if (!lit_direct_surface(int2(p))) return;
@@ -248,54 +267,78 @@ void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
     lit_direct_diffuse_moments_output[p] = diffuse_moments; lit_direct_specular_moments_output[p] = specular_moments;
 }
 
-float4 lit_direct_filter_signal(Texture2D<float4> source, Texture2D<float2> moment_source,
-                                  uint2 p, bool specular, float3 position, float3 normal,
-                                  float roughness, float pixel_size) {
-    float4 center = source.Load(int3(p, 0));
-    if (lit_di_settings.z != 0 || (lit_source_counts.x == 0 && lit_source_counts.y == 0)) return center;
+struct LitDirectFilter {
+    float4 center;
+    float3 sum;
+    float noise, radius, center_luma, weight_sum;
+    bool active;
+};
+LitDirectFilter lit_direct_filter_begin(Texture2D<float4> source, Texture2D<float2> moment_source,
+                                       uint2 p, bool specular, float roughness, uint step) {
+    LitDirectFilter filter = (LitDirectFilter)0;
+    filter.center = source.Load(int3(p, 0));
+    if (lit_di_settings.z != 0 || (lit_source_counts.x == 0 && lit_source_counts.y == 0)) return filter;
     float2 moments = moment_source.Load(int3(p, 0));
-    if (center.a <= 0 || !all(isfinite(center)) || !all(isfinite(moments))) return 0;
-    float noise = sqrt(max(moments.y, 0) / max(center.a, 1));
-    float relative_noise = saturate(noise / max(moments.x, .005));
-    float radius = specular ? clamp(roughness * roughness * 8, 1, 4) : 4;
-    radius *= lerp(.5, 1, relative_noise);
-    uint step = max(1u, lit_direct_filter_step);
-    if (step > radius || (specular && roughness < .04)) return center;
-    float3 sum = 0; float weight_sum = 0;
-    float center_luma = lit_direct_luminance(center.rgb);
-    // Three CPU-dispatched a-trous steps (1,2,4), with independent footprints
-    // for diffuse transport and the actual GGX roughness of the specular lobe.
-    [unroll] for (int y = -2; y <= 2; ++y) [unroll] for (int x = -2; x <= 2; ++x) {
-        if (length(float2(x, y)) * step > radius * 1.5 && (x != 0 || y != 0)) continue;
-        int2 q = int2(p) + int2(x, y) * int(step);
-        if (!lit_direct_neighbor(p, q, specular, position, normal, pixel_size)) continue;
-        float4 sample = source.Load(int3(q, 0));
-        if (sample.a <= 0 || !all(isfinite(sample))) continue;
-        float luma = lit_direct_luminance(sample.rgb);
-        // The receiver's uncertainty sets its reconstruction support. A noisy
-        // bright neighbor cannot make a converged occluded receiver uncertain
-        // and leak through an intervening wall absent from the pixel centers.
-        float range = max(.002, noise * 3 + .02 * max(center_luma, luma));
-        float kx = x == 0 ? 6 : (abs(x) == 1 ? 4 : 1);
-        float ky = y == 0 ? 6 : (abs(y) == 1 ? 4 : 1);
-        float weight = kx * ky * exp(-abs(luma - center_luma) / range);
-        sum += max(sample.rgb, 0) * weight; weight_sum += weight;
+    if (filter.center.a <= 0 || !all(isfinite(filter.center)) || !all(isfinite(moments))) {
+        filter.center = 0; return filter;
     }
-    return float4(lit_direct_finite(sum / max(weight_sum, 1e-8)), center.a);
+    filter.noise = sqrt(max(moments.y, 0) / max(filter.center.a, 1));
+    float relative_noise = saturate(filter.noise / max(moments.x, .005));
+    filter.radius = specular ? clamp(roughness * roughness * 8, 1, 4) : 4;
+    filter.radius *= lerp(.5, 1, relative_noise);
+    if (step > filter.radius || (specular && roughness < .04)) return filter;
+    filter.center_luma = lit_direct_luminance(filter.center.rgb);
+    filter.active = true;
+    return filter;
+}
+void lit_direct_filter_tap(Texture2D<float4> source, int2 q, float kernel, inout LitDirectFilter filter) {
+    float4 sample = source.Load(int3(q, 0));
+    if (sample.a <= 0 || !all(isfinite(sample))) return;
+    float luma = lit_direct_luminance(sample.rgb);
+    // The receiver's uncertainty sets its reconstruction support. A noisy
+    // bright neighbor cannot make a converged occluded receiver uncertain
+    // and leak through an intervening wall absent from the pixel centers.
+    float range = max(.002, filter.noise * 3 + .02 * max(filter.center_luma, luma));
+    float weight = kernel * exp(-abs(luma - filter.center_luma) / range);
+    filter.sum += max(sample.rgb, 0) * weight; filter.weight_sum += weight;
+}
+float4 lit_direct_filter_end(LitDirectFilter filter) {
+    if (!filter.active) return filter.center;
+    return float4(lit_direct_finite(filter.sum / max(filter.weight_sum, 1e-8)), filter.center.a);
 }
 
 [numthreads(8,8,1)]
 void lit_direct_filter_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy; if (any(p >= lit_size_frame.xy)) return;
+    uint2 p; if (!lit_screen_pixel(id.xy, p)) return;
     lit_direct_diffuse_filter_output[p] = 0; lit_direct_specular_filter_output[p] = 0;
     if (!lit_direct_surface(int2(p))) return;
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
-    float3 position = lit_direct_world(int2(p)), normal = lit_safe_normal(nr.xyz);
-    float pixel_size = lit_direct_pixel_size(p);
-    lit_direct_diffuse_filter_output[p] = lit_direct_filter_signal(lit_direct_diffuse_filter_input,
-        lit_direct_diffuse_moments, p, false, position, normal, nr.w, pixel_size);
-    lit_direct_specular_filter_output[p] = lit_direct_filter_signal(lit_direct_specular_filter_input,
-        lit_direct_specular_moments, p, true, position, normal, nr.w, pixel_size);
+    uint step = max(1u, lit_direct_filter_step);
+    LitDirectFilter diffuse = lit_direct_filter_begin(lit_direct_diffuse_filter_input,
+        lit_direct_diffuse_moments, p, false, nr.w, step);
+    LitDirectFilter specular = lit_direct_filter_begin(lit_direct_specular_filter_input,
+        lit_direct_specular_moments, p, true, nr.w, step);
+    if (diffuse.active || specular.active) {
+        LitDirectGuide guide = lit_direct_guide(p, lit_direct_world(int2(p)), lit_safe_normal(nr.xyz), lit_direct_pixel_size(p));
+        // Three CPU-dispatched a-trous steps (1,2,4), with independent footprints
+        // and weights. Each signal retains the original row-major accumulation order;
+        // only guide reads and world reconstruction are shared between its taps.
+        [unroll] for (int y = -2; y <= 2; ++y) [unroll] for (int x = -2; x <= 2; ++x) {
+            float distance = length(float2(x, y)) * step;
+            bool center = x == 0 && y == 0;
+            bool diffuse_tap = diffuse.active && (center || !(distance > diffuse.radius * 1.5));
+            bool specular_tap = specular.active && (center || !(distance > specular.radius * 1.5));
+            if (!diffuse_tap && !specular_tap) continue;
+            int2 q = int2(p) + int2(x, y) * int(step);
+            bool2 neighbor = lit_direct_neighbor(guide, q);
+            float kx = x == 0 ? 6 : (abs(x) == 1 ? 4 : 1);
+            float ky = y == 0 ? 6 : (abs(y) == 1 ? 4 : 1);
+            if (diffuse_tap && neighbor.x) lit_direct_filter_tap(lit_direct_diffuse_filter_input, q, kx * ky, diffuse);
+            if (specular_tap && neighbor.y) lit_direct_filter_tap(lit_direct_specular_filter_input, q, kx * ky, specular);
+        }
+    }
+    lit_direct_diffuse_filter_output[p] = lit_direct_filter_end(diffuse);
+    lit_direct_specular_filter_output[p] = lit_direct_filter_end(specular);
 }
 
 [numthreads(8,8,1)]

@@ -10,6 +10,7 @@
 static const float LIT_PI = 3.14159265359;
 uint4 lit_size_frame; // width,height,sequence,history valid
 float4 lit_viewport; // x,y,width,height
+uint4 lit_screen_dispatch; // Integer pixel origin and exclusive end, preserving window coordinates.
 row_major float4x4 lit_view_projection;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
@@ -39,6 +40,7 @@ RWStructuredBuffer<uint> lit_ray_counters; // Four low words followed by their f
 Texture2D<float> lit_depth;
 Texture2D<float> lit_previous_depth;
 Texture2D<uint2> lit_surface_id;
+Texture2D<uint2> lit_history_surface_id;
 Texture2D<float4> lit_normal_roughness;
 Texture2D<float2> lit_geometry_normal;
 Texture2D<float2> lit_history_geometry_normal;
@@ -58,9 +60,22 @@ Texture2D<float4> lit_emissive;
 Texture2D<float4> lit_motion;
 SamplerState lit_linear_sampler;
 
+// A valid motion belongs to the current object; it does not identify the
+// previous tap. All temporal consumers must validate both halves of its key.
+// Callers validate pixel bounds and then apply their signal's geometry gates.
+bool lit_history_surface_matches(uint2 current_pixel, uint2 previous_pixel) {
+    uint2 identity = lit_surface_id.Load(int3(current_pixel, 0));
+    return lit_motion.Load(int3(current_pixel, 0)).w > .5 && any(identity != 0) &&
+        all(identity == lit_history_surface_id.Load(int3(previous_pixel, 0)));
+}
+
 bool lit_inside(uint2 p) {
     return all(p < lit_size_frame.xy) && all(float2(p)+.5 >= lit_viewport.xy) &&
         all(float2(p)+.5 < lit_viewport.xy+lit_viewport.zw);
+}
+bool lit_screen_pixel(uint2 thread, out uint2 pixel) {
+    pixel = thread + lit_screen_dispatch.xy;
+    return all(pixel < lit_screen_dispatch.zw);
 }
 float lit_depth_near_value() { return 1; }
 float lit_depth_far_value() { return 0; }

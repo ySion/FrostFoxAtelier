@@ -9,7 +9,7 @@
 | base_color | (0.19, 0.42, 0.57) | 线性 RGB，有限且每通道在 [0,1] |
 | roughness | 0.65 | 有限，[0,1]；0 保留为作者输入，着色器数值处理由 Renderer 负责 |
 | metallic | 0 | 有限，[0,1] |
-| emissive | (0,0,0) | 线性 HDR RGB，有限、非负，无 1.0 上限 |
+| emissive | (0,0,0) | 线性 HDR RGB，每通道有限且在 [0,65504]，与不可变 Surface 的 GBuffer 表达范围一致 |
 
 `validate_material` 是公开的纯验证入口。`World::set_material` 按完整值验证后写入；`World::write` 对上述原生字段修改拥有式候选，再走同一验证和整值入口。两者使用停止状态、宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂及 render_items 也验证完整 Material。可信原生/Source 直接写入仍可能绕过 authoring setter，提取不会把无效数据交给 Renderer。
 
@@ -32,6 +32,8 @@
 
 单位按参考白色定义，color 再逐通道调制。这里保存作者数据，不在 World 引入曝光、色调映射、光通量换算或阴影资源管理。
 
+点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
+
 同一 World 最多有一个 Sky Light，停用的组件也占该位置。Actor 入场、向已入场 Actor 添加组件以及 Light Type 修改，在发布前检查唯一性；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段后，`light_items()` 仍会拒绝重复天光，不进行相加或静默选取。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
 
 首版 Sky Light 提供均匀天空入射辐射；位置、旋转、缩放、range、发光面尺寸和直接灯阴影开关不影响它。空间字段只保留统一组件组成能力。没有启用的天光组件时环境辐射为零；没有可见天空、HDRI 或方向性天空分布的隐式资源。
@@ -50,6 +52,6 @@ World 使用现有 presentation 目录共同登记网格与灯光。render_items
 
 ## 验收与接线边界
 
-`world_acceptance` 新增真实消费者：反射枚举/值/对象和派生灯、Source/JIT 修改 LightSettings、Material HDR、标量与整组拒绝原子性、混合 mesh/light 提取、父级非均匀缩放、停用/启用、反序 End、删除恢复、Detached 及快照 GC 寿命。开发和发布构建都运行该消费者。
+`world_acceptance` 包含真实消费者：反射枚举/值/对象和派生灯、Source/JIT 修改 LightSettings、Material HDR、标量与整组拒绝原子性、混合 mesh/light 提取、父级非均匀缩放、停用/启用、反序 End、删除恢复、Detached 及快照 GC 寿命。数值边界覆盖解析光乘积及矩形面积乘积的边界和相邻越界值、65504 自发光提取、原生绕过 setter 后的提取拒绝；开发和发布构建均使用同一消费者。
 
 World E2E 验证数据与生命周期合同。场景文件、编辑器控件和 SceneSnapshot 接入由应用端到端验收覆盖，GPU 灯、天光、材质、历史与阴影消费由 Renderer 及正式编辑器窗口验收覆盖，见 [Renderer 验收记录](../renderer/acceptance.md)。单独的 World E2E 不替代这些集成证据。

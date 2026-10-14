@@ -125,6 +125,11 @@ struct FrameStats {
     // gpu_sample_frame_id; may lag this return and repeat until a new completion.
     std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct/denoise, DDGI, GTAO/Local GI, HDR/SSSR, HDR resolve, bloom/tone/SMAA/display.
     std::array<float, 2> scene_lit_ddgi_gpu_ms{}; // Update/transfer, receiver gather; subsets of DDGI time.
+    std::array<float, 4> scene_lit_direct_gpu_ms{}; // Initial/temporal reservoir, spatial reservoir, visibility/shading, radiance resolve/filter; subsets of direct time.
+    std::array<float, 2> scene_lit_ddgi_update_gpu_ms{}; // Primary trace, hit lighting/convolution; subsets of update/transfer (copy excluded).
+    // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
+    // 10..13 direct, 14..15 DDGI update. A skipped scope still has timestamp overhead.
+    std::uint32_t scene_lit_gpu_pass_mask{};
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.

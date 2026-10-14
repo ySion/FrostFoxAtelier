@@ -16,6 +16,15 @@ void quality_work_elision(Fixture& f) {
                stats.scene_lit_gpu_sample_frame_id<first_frame) continue;
             check(stats.scene_lit_gpu_sample_frame_id<=f.drawing.id,
                   "work-elision completion belongs to an already submitted case frame");
+            const auto& options=f.frame.view.lit;
+            const auto active=[&](unsigned bit){return (stats.scene_lit_gpu_pass_mask&(1u<<bit))!=0;};
+            check(active(10)==!options.direct_reference && active(11)==!options.direct_reference && active(12)&&active(13),
+                  "completed direct scope mask distinguishes reference bypass from its visibility and resolve work");
+            const bool probes=options.ddgi&&std::ranges::any_of(options.probe_volumes,[](const auto& v){return v.enabled;});
+            check(active(3)==options.ddgi && active(8)==probes && active(9)==options.ddgi && active(14)==probes && active(15)==probes,
+                  "completed DDGI scope mask follows this case instead of delayed previous settings");
+            for(float value:stats.scene_lit_direct_gpu_ms)check(std::isfinite(value)&&value>=0,"direct subpass duration is finite");
+            for(float value:stats.scene_lit_ddgi_update_gpu_ms)check(std::isfinite(value)&&value>=0,"DDGI update subpass duration is finite");
             previous_sequence=stats.scene_lit_gpu_sample_sequence;samples[count++]=stats;
             evidence << name << ',' << f.drawing.id << ',' << first_frame << ',' << previous_sequence << ','
                      << stats.scene_lit_gpu_sample_frame_id << ',' << stats.scene_lit_resource_bytes << ','

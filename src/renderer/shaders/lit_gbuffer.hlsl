@@ -24,6 +24,7 @@ LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     o.geometric_normal=gn.x*i.normal_x.xyz+gn.y*i.normal_y.xyz+gn.z*i.normal_z.xyz;
     o.material_index=material_indices[material_offsets[lit_first_instance+instance]+lit_triangles[vertex/3].material_slot];
     o.valid=i.geometry.z;o.identity=i.geometry.yw;
+    o.position=raster_viewport_position(o.position);
     return o;
 }
 struct LitGBuffer {

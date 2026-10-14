@@ -94,6 +94,7 @@ DDGIDebugVertex ddgi_debug_vs(uint vertex : SV_VertexID, uint instance : SV_Inst
             result.position=mul(float4(base+offset.xyz+result.normal*radius,1),lit_view_projection);
         }
     }
+    result.position=raster_viewport_position(result.position);
     return result;
 }
 
