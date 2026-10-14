@@ -296,11 +296,26 @@ int main(int argc, char** argv) try {
     if (argc > 1&&!materials_only&&!cavity_only&&!selection_only) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes" || mode == "--scene-lit-restir" || mode == "--scene-lit-restir-suite"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes|--scene-lit-restir|--scene-lit-restir-suite [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes" || mode == "--scene-lit-restir" || mode == "--scene-lit-restir-suite" || mode == "--scene-lit-stability"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes|--scene-lit-restir|--scene-lit-restir-suite|--scene-lit-stability [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
+        if(mode=="--scene-lit-stability") {
+            scene_lit_e2e::Fixture fixture(false,output,atelier::rhi::Validation::debug_layer);
+            const auto initial_view=fixture.frame.view;
+            const auto initial_camera=fixture.frame.camera;
+            const auto initial_environment=fixture.frame.environment;
+            scene_lit_e2e::stability_cases(fixture);
+            scene_lit_e2e::quality_ddgi(fixture);
+            fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
+            fixture.frame.view=initial_view;fixture.frame.camera=initial_camera;
+            fixture.frame.environment=initial_environment;fixture.frame.lighting_focus={};
+            ++fixture.frame.scene_identity;fixture.frame.camera_cut=true;fixture.edited();
+            scene_lit_e2e::probe_volume_cases(fixture);
+            fixture.close();
+            return 0;
+        }
         if(mode=="--scene-lit-restir-suite") {
             scene_lit_e2e::Fixture fixture(false,output);
             const auto initial_view=fixture.frame.view;

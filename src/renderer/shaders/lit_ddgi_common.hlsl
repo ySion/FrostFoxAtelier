@@ -17,9 +17,29 @@ uint4 lit_probe_pool; // Atlas probe width, total resident, reserved, previous s
 uint4 lit_probe_work[1024]; // Bounded host schedule, physical slot IDs.
 float4 lit_probe_controls; // Bounce transport, feedback LOS, reserved.
 float4 lit_probe_scene_min,lit_probe_scene_max; // Actual shared scene transport domain.
-float4 lit_probe_history; // sampled irradiance/distance/display old weights xyz; w reserved
+float4 lit_probe_history; // Responding transport, distance, presentation, stationary transport old weights.
+uint lit_probe_response_epoch;
 uint lit_probe_sequence; // Advances only with this field's updates; resets with its lifetime.
 uint4 lit_probe_update; // reserved, bounded count, illumination rays, reset bit
+uint lit_probe_history_mode; // 0 live, 1 hold irradiance, 2 hold distance; diagnostics only.
+uint2 lit_probe_inspect_pixel;
+struct DDGIContribution {
+    uint4 identity;
+    float4 irradiance;
+    float4 weights;
+    float4 position;
+    float4 transport;
+    uint4 response;
+};
+RWStructuredBuffer<DDGIContribution> lit_probe_inspection;
+struct DDGIInspectedRay {
+    uint4 identity;
+    float4 direct;
+    float4 surface;
+    float4 sampling;
+};
+uint lit_probe_inspect_source;
+RWStructuredBuffer<DDGIInspectedRay> lit_probe_inspected_rays;
 
 // Transient trace-to-shade record: 64 bytes, indexed by work ordinal and ray.
 // Distances remain signed FP32 scene units until the moment convolution.
@@ -34,17 +54,20 @@ RWStructuredBuffer<DDGIRayHit> lit_probe_ray_hits_output;
 StructuredBuffer<DDGIRayHit> lit_probe_ray_hits;
 
 Texture2D<float4> lit_probe_irradiance_previous;
+Texture2D<float4> lit_probe_transport; // Inspection only; normal gathers compile it out.
 Texture2D<float2> lit_probe_distance_previous;
 Texture2D<float4> lit_probe_offsets_previous;
 Texture2D<float4> lit_probe_offsets_current;
 RWTexture2D<float4> lit_probe_irradiance_output;
-// Only Copy and the owning probe update access this sampled target. Feedback
-// reads the immutable display snapshot, so target history can stay in place.
-RWTexture2D<float4> lit_probe_target;
+// Frame-time presentation cache. Never read by transport feedback. Its w
+// mirrors transport support maturity; it is not a display observation count.
+RWTexture2D<float4> lit_probe_presentation;
 RWTexture2D<float2> lit_probe_distance_output;
 RWTexture2D<float4> lit_probe_offsets_output;
 RWTexture2D<float4> lit_indirect; // irradiance, before surface albedo / pi
 RWTexture2D<uint> lit_probe_age_output; // 0 = evaluated this update, ~0 = never evaluated
+RWTexture2D<uint2> lit_probe_sample_cursor; // Active illumination visits and wrap epoch, per physical identity.
+RWTexture2D<uint2> lit_probe_response; // Author change epoch and effective observations, per directional texel.
 Texture2D<uint> lit_probe_age;
 
 static const uint DDGI_TILE_SIZE = 8;
@@ -203,7 +226,8 @@ struct DDGIResult {
     float dominance, weight_sum;
 };
 DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_normal,
-                             DDGIVolume v,DDGISampleStencil irradiance_stencil,bool trace_support,bool record_queries) {
+                             DDGIVolume v,DDGISampleStencil irradiance_stencil,bool trace_support,bool record_queries,
+                             bool inspect,uint slot) {
     DDGIResult result=(DDGIResult)0;
     if(ddgi_volume_count(v)==0)return result;
     float minimum_spacing=ddgi_minimum_spacing(v);
@@ -234,11 +258,28 @@ DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_nor
         float spatial_weight=trilinear.x*trilinear.y*trilinear.z;
         if(spatial_weight<=0)continue;
         uint probe=ddgi_physical_probe(lower+step,v);
+        uint record=slot*8+corner;
+        if(inspect) {
+            DDGIContribution sample=(DDGIContribution)0;
+            sample.identity=uint4(slot,probe,1,lit_probe_age.Load(int3(ddgi_probe_texel(probe),0)));
+            sample.weights.x=spatial_weight;
+            uint2 tile=ddgi_probe_texel(probe)*DDGI_TILE_SIZE;
+            uint least=12,most=0;
+            [loop] for(uint t=0;t<64;++t) {
+                uint2 progress=lit_probe_response[tile+uint2(t%8,t/8)];
+                uint count=progress.x==lit_probe_response_epoch?progress.y:0;
+                least=min(least,count);most=max(most,count);
+            }
+            sample.response=uint4(lit_probe_response_epoch,least,most,lit_probe_sample_cursor[ddgi_probe_texel(probe)].x);
+            lit_probe_inspection[record]=sample;
+        }
         float4 offset=lit_probe_offsets_previous.Load(int3(ddgi_probe_texel(probe),0));
         if(!all(isfinite(offset)) || offset.w==0){pending=true;continue;}
-        if(offset.w<.5){inside=true;continue;}
+        if(offset.w<.5){if(inspect)lit_probe_inspection[record].identity.z=2;inside=true;continue;}
         usable=true;
         float4 irradiance=ddgi_sample_tile(lit_probe_irradiance_previous,probe,irradiance_stencil);
+        if(inspect){lit_probe_inspection[record].irradiance=irradiance;lit_probe_inspection[record].identity.z=3;
+            lit_probe_inspection[record].transport=ddgi_sample_tile(lit_probe_transport,probe,irradiance_stencil);}
         if(irradiance.w<=0 || !all(isfinite(irradiance)))continue;
         observed=true;
         float3 probe_position=ddgi_probe_position(probe,offset.xyz,v);
@@ -253,10 +294,19 @@ DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_nor
         float weight=facing*facing*visibility;
         if(weight<.2)weight*=weight*weight/.04;
         weight*=spatial_weight;
+        if(inspect) {
+            lit_probe_inspection[record].identity.z=4;
+            lit_probe_inspection[record].weights=float4(spatial_weight,facing*facing,visibility,weight);
+            lit_probe_inspection[record].position=float4(probe_position,support_distance/scale);
+        }
         // Exact zero work can be discarded before the expensive segment query.
         if(weight<=0 || !isfinite(weight))continue;
         weighted=true;
-        if(trace_support && !ddgi_segment_visible(probe_position,endpoint,record_queries))continue;
+        if(trace_support && !ddgi_segment_visible(probe_position,endpoint,record_queries)){
+            if(inspect){lit_probe_inspection[record].identity.z=5;lit_probe_inspection[record].weights.w=0;}
+            continue;
+        }
+        if(inspect)lit_probe_inspection[record].identity.z=6;
         accumulated+=max(irradiance.rgb,0)*weight;
         weight_sum+=weight;maximum_weight=max(maximum_weight,weight);
         readiness_sum+=saturate(irradiance.w/4)*weight;
@@ -272,7 +322,7 @@ DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_nor
     return result;
 }
 DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
-                       bool trace_support,bool record_queries) {
+                       bool trace_support,bool record_queries,bool inspect=false) {
     DDGIResult result=(DDGIResult)0;result.volume=0xffffffff;
     if(lit_probe_pool.y==0 || !all(isfinite(position)) || !all(isfinite(normal)))return result;
     DDGISampleStencil irradiance_stencil=ddgi_sample_stencil(normal);
@@ -280,7 +330,7 @@ DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
     float largest_share=0;
     [loop] for(uint slot=0;slot<4;++slot) {
         DDGIResult local=ddgi_gather_volume(position,normal,geometric_normal,
-            lit_probe_volumes[slot],irradiance_stencil,trace_support,record_queries);
+            lit_probe_volumes[slot],irradiance_stencil,trace_support,record_queries,inspect,slot);
         if(local.status==5 || local.status==6) {
             float share=(1-result.coverage)*local.coverage;
             result.irradiance+=local.irradiance*share;

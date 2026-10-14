@@ -74,7 +74,7 @@ void LightFrame::clear() {
     geometry_owners_.clear();previous_geometry_owners_.clear();previous_lookup_.clear();
     powers_.clear();scaled_.clear();actual_.clear();below_.clear();above_.clear();
     local_count=directional_count=emitter_count=0;scene_identity_=frame_id_=0;
-    valid_=advance_previous_=changed=false;
+    valid_=advance_previous_=changed=radiance_changed=false;
 }
 
 void LightFrame::update(const Frame& frame,const MaterialFrame& materials,std::uint64_t sequence) {
@@ -129,6 +129,7 @@ void LightFrame::update_impl(const Frame& frame,const MaterialFrame& materials,s
     // both its previous-frame data and its publication flag on repeated calls.
     if(!rebuild && sequence==frame_id_)return;
     changed=rebuild||advance_previous_;
+    radiance_changed=false;
     if(!rebuild) {
         frame_id_=sequence;
         if(advance_previous_) {
@@ -171,6 +172,18 @@ void LightFrame::update_impl(const Frame& frame,const MaterialFrame& materials,s
         append(analytic_[i],{analytic_keys_[i]},0);++directional_count;
     }
     build_proposals();map_previous();
+    // Remapping already checks the effective emitter material description and
+    // translates its previous GPU material index to the current index. Compare
+    // source content in that identity domain, not packed source/material slots.
+    // A publication-only previous-frame advance never reaches this branch.
+    radiance_changed=!valid_ || sources.size()!=previous_sources.size();
+    if(!radiance_changed)for(std::size_t i=0;i<sources.size();++i) {
+        const auto previous=current_to_previous[i];
+        if(previous==no_light_source || sources[i]!=previous_sources[previous]) {
+            radiance_changed=true;
+            break;
+        }
+    }
     scene_identity_=frame.scene_identity;frame_id_=sequence;valid_=true;advance_previous_=true;
 }
 

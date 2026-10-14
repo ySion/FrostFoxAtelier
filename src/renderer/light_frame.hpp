@@ -38,6 +38,11 @@ public:
     // Includes advancing previous_sources/maps on the first stationary frame
     // after a change. Subsequent unchanged frames publish nothing new.
     bool changed{};
+    // Current source content changed, independently of upload/remap publication.
+    // Stable identities and effective material descriptions distinguish edits
+    // from reordering or material-index renumbering. Unknown correspondence is
+    // conservative. Repeated requests for the same snapshot preserve this flag.
+    bool radiance_changed{};
 
 private:
     struct ObjectKey {

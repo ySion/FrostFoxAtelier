@@ -14,6 +14,7 @@ constexpr std::array<std::string_view, 4> aa{"off", "taa", "smaa", "smaa_t2x"};
 constexpr std::array<std::string_view, 5> probes{"off", "irradiance", "state", "update_age", "distance"};
 constexpr std::array<std::string_view, 2> placement{"fixed","follow_focus"};
 constexpr std::array<std::string_view, 4> coverage{"status","volume","contributors","dominance"};
+constexpr std::array<std::string_view, 3> probe_history{"live","hold_irradiance","hold_distance"};
 #define FIELD(id, kind, low, high) ViewOptionInfo{ViewOption::id, #id, K::kind, low, high}
 #define VFIELD(slot,id,kind,low,high) ViewOptionInfo{probe_volume_option(slot,ProbeVolumeField::id),"probe_volume_" #slot "_" #id,K::kind,low,high}
 #define VOLUME(slot) VFIELD(slot,enabled,boolean,0,1), \
@@ -39,6 +40,8 @@ constexpr std::array options{
     ViewOptionInfo{ViewOption::probe_visualization,"probe_visualization",K::enumeration,0,4,probes},
     FIELD(probe_volume,boolean,0,1),FIELD(probe_relocation,boolean,0,1),FIELD(probe_xray,boolean,0,1),FIELD(probe_radius,number,.01f,.45f),
     ViewOptionInfo{ViewOption::probe_coverage,"probe_coverage",K::enumeration,0,3,coverage},FIELD(probe_debug_volume,integer,-1,3),
+    ViewOptionInfo{ViewOption::probe_history,"probe_history",K::enumeration,0,2,probe_history},
+    FIELD(probe_inspect,boolean,0,1),FIELD(probe_inspect_x,integer,0,65535),FIELD(probe_inspect_y,integer,0,65535),
     FIELD(direct_reference,boolean,0,1),
     FIELD(cavity,boolean,0,1),FIELD(cavity_ridge,number,0,2),FIELD(cavity_valley,number,0,2),FIELD(cavity_radius,number,.5,4),
     VOLUME(0),VOLUME(1),VOLUME(2),VOLUME(3)
@@ -95,6 +98,8 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_visualization,lit.probe_visualization);VALUE(probe_volume,lit.probe_volume);VALUE(probe_relocation,lit.probe_relocation);
     VALUE(probe_xray,lit.probe_xray);VALUE(probe_radius,lit.probe_radius);
     VALUE(probe_coverage,lit.probe_coverage);VALUE(probe_debug_volume,lit.probe_debug_volume);
+    VALUE(probe_history,lit.probe_history);VALUE(probe_inspect,lit.probe_inspect);
+    VALUE(probe_inspect_x,lit.probe_inspect_pixel[0]);VALUE(probe_inspect_y,lit.probe_inspect_pixel[1]);
     VALUE(direct_reference,lit.direct_reference);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
@@ -131,6 +136,8 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_visualization,lit.probe_visualization);SET(probe_volume,lit.probe_volume);SET(probe_relocation,lit.probe_relocation);
     SET(probe_xray,lit.probe_xray);SET(probe_radius,lit.probe_radius);
     SET(probe_coverage,lit.probe_coverage);SET(probe_debug_volume,lit.probe_debug_volume);
+    SET(probe_history,lit.probe_history);SET(probe_inspect,lit.probe_inspect);
+    SET(probe_inspect_x,lit.probe_inspect_pixel[0]);SET(probe_inspect_y,lit.probe_inspect_pixel[1]);
     SET(direct_reference,lit.direct_reference);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET

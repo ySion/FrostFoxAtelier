@@ -6,6 +6,8 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| DDGI 访问采样与有效响应 | 2026-10-15 主目录第二批：Dev/Release响应阶段、hold进度、1～256射线与原质量/滚动验收通过，见[本批采样与响应](#ddgi-访问采样与有效响应2026-10-15) |
+| DDGI 运输/呈现分离 | 2026-10-15 主目录：Dev/Release 异步 E/w/transport 与时间生命周期通过；Release 隔墙、发光面、多体积及滚动回归通过，见[本批稳定性](#ddgi-运输与呈现分离2026-10-15) |
 | 多 Astra 审查与工作剔除 | 2026-10-13～14 主目录：历史身份、DDGI 响应、ROI、目标/深度副本、编辑绘制和数值域；双配置构建与 World 数据链、Dev GPU 合同、Release 光照组合及 Renderer 全套通过，空闲 GPU 对照已完成，见[本轮审计](#多-astra-审查与工作剔除2026-10-13) |
 | Scene Lit Pass 消耗统计 | 2026-10-13 主目录：16 个同帧计时区间、完成样本启用掩码、双配置构建、Dev GPU 合同与两次正常配置成本采样，见[分项统计](#scene-lit-pass-消耗统计2026-10-13) |
 | 原生 ReSTIR DI 与 DDGI 线性能量 | 2026-10-12～13 viewport-rendering 工作树：产品迁移、Dev/Release 完整 GPU 组合与 1440p 成本采样通过，见[本批合同与证据](#原生-restir-di-与-ddgi-线性能量2026-10-13) |
@@ -20,6 +22,27 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## DDGI 访问采样与有效响应（2026-10-15）
+
+主目录 `9263010` 上未提交的第二批，RX 6800 XT；Dev/Release正式编辑器与Renderer acceptance已构建。原实例本轮开始时已不在Control列表，未由本任务保存或关闭；验收均使用独立复现工程，保存Scene SHA256仍为 `B4CE5D42A074F843288F4A213B2C5F821C7B8058E675C78CE83FB29AB0D410B6`。
+
+- 同一 `--scene-lit-stability` 真实GPU、D3D12 debug layer通过：逐方向有效响应、未成熟hold计数冻结、source-frame关联、coverage保持、新场/空场/暂停、1/3/127/128/255/256 rays切换及原quality/多体积滚动验收。最终日志 `out/ddgi-sampling-20261015/delivery-{dev,release}.log`。
+- 175 probes /128 rays /固定1/60s的B16用例：feedback 0/.85，运输关灯t90从4.23/4.92s降至.95/1.13s，显示从4.42/5.12s降至1.15/1.35s；开灯运输t50从.75s降至.383s。没有增加射线预算。t90要求连续8个完成样本满足阈值，不能解读为任意反馈场景的永久收敛时限。
+- 最终Release静态整墙max mean=.1624 RGB8/P95=1；连续移动发光体max mean=2.4136/P95=7，停止后的原稳定门槛保留且通过；薄与亚像素隔板遮挡区红通道0。
+- 地牢固定后墙点各512样本：Y std .0037543→.00082994，P99 .0518553→.0356172，均值下降约4%；不同序列轨迹，不能外推全场或宣称严格能量等价。关诊断后B64/1024的DDGI median约3.35/4.16ms；实际viewport约1126×666，不是1440p帧率。证据 `delivery*.json` 与 `paired-reference*.json`，完整限制见第二批研究记录。
+- Astra分别审查变化身份/资源生命周期、R3整数相位与Trace/Update对应、实际GPU验收覆盖。修复纯对象重排导致全场epoch误升，退役全局4N响应计数；未保留失败Sobol候选或第二套光源/渲染入口。详细方法、对照数据及限制见[第二批记录](../../research/ddgi-stability-and-lighting-roadmap-20261015.md#11-第二批采样顺序与有效响应)。
+
+## DDGI 运输与呈现分离（2026-10-15）
+
+源码为主目录 `9263010` 上本批未提交增量；RX 6800 XT。受影响 Renderer、Application 和正式编辑器的 Dev/Release 对象/库已编译。原用户 Release 编辑器保持打开，因此 Release 候选沿 CMake/Ninja 生成的相同链接命令，仅改产物名为 `out/release/atelier_editor_ddgi_preview.exe`；未覆盖正在使用的正式 exe，非另一套源代码或构建配置。
+
+- `--scene-lit-stability`：Dev/Release 实际 GPU + D3D12 debug layer 通过。三路 E/w 归因各 32 个唯一完成样本；holdE 同时保持运输/显示 RGB，holdD 保持同接收点距离权重。零 delta 时 transport 继续变化而有效显示精确保留，恢复后响应；新黑场立即撤销旧亮度，空场/关闭返回 null，背景/越界无旧邻居数据。
+- Release 同一准备好的 Renderer 继续复用原 `quality_ddgi` 和 `probe_volume_cases`：发光面 NEE、无重复能量、移除/遮挡、接缝、动态发光体、薄墙和亚像素挡板、多体积有效黑色、共享预算、滚动/负坐标/跨轴/teleport、资源生命周期均通过。静态整墙 max mean=0.154 RGB8、P95=1；移动发光体 max mean=2.3724、P95=7；被挡区域红通道为 0。
+- 独立地牢副本打开 3599 entities / 96 sources，恢复原相机及布局。在后墙选点以 48 个完成样本分别测 live / holdE / holdD，支持 E 输入为此点主要波动来源。此轮无独占 GPU 性能对照，不作帧率或功耗结论。
+- 另一次原 `--scene-lit-volumes` 的 GPU-based validation 尝试在窗口被最小化后因不可接受帧中断，**不记为通过**；上述补跑使用 debug layer，不宣称该轮 GBV 通过。
+
+本机证据在 `out/ddgi-stability-20261015/`：`final-{dev,release}/ddgi-stability.csv`、`final-combined.log` 和对应 PNG、`dungeon-before.json`、Release暖机后的`dungeon-after-settled.json`及`final-editor-capture.json`。Release副本通过正式Control检查与第128/192帧截图，仍有可测照度输入波动，不宣称全场根治或跨配置改善倍率。完整归因、短采样统计边界及尚未解决的运输输入方差见[研究记录第 10 节](../../research/ddgi-stability-and-lighting-roadmap-20261015.md#10-第一批落地与证据)。Astra 最终代码复审通过；修复的两项时钟接线和 GPU 浮点端点问题均已并入，旧 budget/total 呈现说明已删除。没有保存原用户 Scene，没有提交推送。
 
 ## 多 Astra 审查与工作剔除（2026-10-13）
 

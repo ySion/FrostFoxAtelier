@@ -74,6 +74,8 @@ Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Applic
 
 `Frame::ui_frame` 是帧 id、extent、DPI 和 surface revision 的唯一来源；所有输入借用到同步 `render` 返回。renderer 的 `target()` 报告实际 backbuffer 尺寸，窗口 client 尺寸可能在 resize 时领先一帧。
 
+`Frame::render_delta_seconds` 为独立于模拟的活跃渲染间隔，有限 `[0,.1]` 秒，默认固定步进 `1/60`。零表示重建时间基线，不冻结几何失效。它只控制 DDGI 呈现低通，不改变射线预算或运输观测权重；动态宿主须按匹配 accepted 的相邻渲染开始时间产生，不能使用 Play delta 或帧内 CPU 耗时。编辑器与 Project Run 共用 `application::RenderClock`；连续慢帧限幅推进，已知停用/跳过后重建。
+
 - 隐藏、最小化、零 client 尺寸或输入 extent 与实际 target 不符：编码前返回 skipped，capture 不变。空 scissor 不会落入 gfx 的“零尺寸代表整个目标”惯例。
 - 完整 `Context::frame` 成功且 Present 未返回 `DXGI_STATUS_OCCLUDED`：accepted。`accepted_extent` 是编码前捕获的实际尺寸；gfx 在旧目标 Present 后 resize，`next_extent` 只适用于下一帧。accepted 不承诺已经完成扫描显示。
 - CPU 校验和编码前 CPU 分配失败：`Error::terminal=false`，可重新准备帧。开始 GPU 创建、上传或录制后失败：terminal，后续只可关闭，不宣称回滚或继续使用上一 GPU 帧。

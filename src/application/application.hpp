@@ -1,4 +1,5 @@
 #pragma once
+#include "render_clock.hpp"
 
 #include "application/window.hpp"
 #include "application/popup.hpp"
@@ -139,6 +140,7 @@ private:
     void look_camera_fly(float dx,float dy);
     FrameTiming frame_timing_;
     std::chrono::steady_clock::time_point fps_start_{};
+    RenderClock lighting_clock_;
     std::uint64_t fps_frames_{};
     void update_viewport_fps(bool accepted);
     renderer::FrameStats frame_statistics_;

@@ -1097,6 +1097,7 @@ void quality_ddgi(Fixture& f) {
 #include "scene_lit_contracts.inl"
 #include "scene_lit_audit.inl"
 #include "scene_lit_debug.inl"
+#include "scene_lit_stability.inl"
 
 void quality_smaa_t2x_coverage(Fixture& f) {
     const auto meshes=f.room.meshes;

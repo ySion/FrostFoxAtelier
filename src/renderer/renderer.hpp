@@ -89,6 +89,10 @@ struct Frame {
     // No Sky Light means zero; this is not a viewport ambient-light setting.
     std::array<float, 3> environment{};
     std::array<float, 3> lighting_focus{}; // Receiver/play focus for following DDGI volumes; not camera eye.
+    // Active rendering time since the last accepted frame, independent of Play.
+    // Zero restarts a paused/discontinuous clock; fixed-step producers use 1/60.
+    // Only presentation filtering consumes this [0, .1] interval, not sampling confidence.
+    float render_delta_seconds{1.f/60.f};
 };
 enum class FrameStatus { accepted, skipped };
 // Activity from this successful render return (accepted or skipped). Counts
@@ -100,8 +104,40 @@ struct ProbeVolumeStats {
     std::array<std::uint32_t,3> counts{};
     std::uint32_t resident{},updated{},reset_probes{}; // CPU schedule, not GPU-valid probe counts.
 };
+// One receiver's actual gather inputs. Linear irradiance, not display RGB.
+// Identity: volume, physical probe, support stage (0 unused, 1 pending,
+// 2 inside, 3 unobserved, 4 zero weight, 5 occluded, 6 contributor), update age.
+struct ProbeContribution {
+    std::array<std::uint32_t,4> identity{};
+    std::array<float,4> irradiance{}; // RGB and directional observation count.
+    std::array<float,4> weights{}; // Spatial, facing squared, moment visibility, unnormalized visible weight within volume.
+    std::array<float,4> position{}; // Probe world XYZ and normalized receiver distance.
+    std::array<float,4> transport{}; // Authoritative RGB / observations before presentation smoothing.
+    std::array<std::uint32_t,4> response{}; // Requested epoch, min/max effective observations over tile, active visit cursor.
+};
+struct ProbeInspection {
+    std::uint64_t sequence{},frame_id{},scene_identity{};
+    std::array<std::uint32_t,2> pixel{};
+    ProbeHistory history{ProbeHistory::live};
+    std::uint32_t rays{},updates{};
+    std::array<ProbeVolumeStats,probe_volume_limit> volumes{};
+    // Receiver identity: gather status, selected volume, contributors, reserved.
+    // Irradiance RGB / coverage; weights: sum, dominance; position: world XYZ.
+    ProbeContribution receiver{};
+    std::array<ProbeContribution,probe_volume_limit*8> probes{};
+    struct Ray {
+        std::array<std::uint32_t,4> identity{}; // Source, kind, ray ordinal, valid record.
+        std::array<float,4> direct{}; // Local diffuse/specular, directional diffuse/specular luminance.
+        std::array<float,4> surface{}; // World hit XYZ, roughness.
+        std::array<float,4> sampling{}; // Reservoir weight, source PMF, feedback luminance, primary hit distance.
+    };
+    std::uint32_t traced_probe{~0u};
+    std::array<Ray,256> ray_samples{};
+};
 struct FrameStats {
     std::array<ProbeVolumeStats,probe_volume_limit> scene_lit_probe_volumes{};
+    // Optional completed inspection; owns its exact sampled layout and frame.
+    std::shared_ptr<const ProbeInspection> scene_lit_probe_inspection;
     std::uint64_t ui_draw_calls{};
     std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
     std::uint64_t ui_instance_upload_bytes{};

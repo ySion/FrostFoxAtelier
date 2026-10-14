@@ -150,6 +150,14 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 接受帧与捕获元数据的 `lighting_focus` 是实际传入 Renderer 的观察目标。`frame_stats.probe_volumes` 按固定槽位返回启用/滚动状态、世界边界、间距、数量、resident、updated 和 reset_probes；`probe_volumes_source: cpu_layout_and_schedule` 明确其来源。resident 是分配的槽位数，updated 是本帧计划更新数，均不能当成 GPU 完成数或有效探针数。
 
+### DDGI 单接收点归因
+
+`view.set` / `render.compare` 共用视口选项 `probe_history: live | hold_irradiance | hold_distance`、`probe_inspect: bool`、`probe_inspect_x/y: 0..65535`。坐标是窗口物理像素；不改变 World 配置和 Undo。归因结束恢复 `live` 并关闭 inspection。
+
+`last_frame.frame_stats.probe_inspection` 为可空的异步完成样本，提供自己的 `sequence/frame_id/scene_identity/pixel/history/rays/updates/volumes`。`receiver` 返回实际 gather 状态、覆盖、权重和及贡献支配度；每个 probe 返回支持阶段、年龄、呈现/运输 RGB 与方向观测数、空间/朝向/距离可见性/最终权重和位置。`transport_observations` 对应权威运输场，`irradiance_observations` 对应显示场并镜像运输成熟度；不能把后者当成额外独立样本。空场、停用 DDGI 或关闭 inspection 返回 null，背景/越界产生 `position_valid.w=0` 且无邻居的样本。完成帧可能滞后或缺样，调用方按 sequence 去重并使用样本自己的布局，不能拼上当前截图冒充同步数据。
+
+`response_epoch_min_max_visits` 是请求代次、整个方向 tile 的最少/最多有效响应观测（0～12）及有效访问游标。`traced_probe` 按前一完成样本中最大的有效邻居权重选择，当前帧未更新它时 `ray_samples` 为空；这些记录只含实际可着色命中，不包含天空和未着色命中。每条提供 source/kind/ray ordinal、局部 diffuse/specular 和方向光 diffuse/specular 亮度、命中位置/roughness、RIS weight/源 PMF/反馈亮度/主射线距离。需要整批均值时除以 `rays`，不能除以有效记录数。诊断专用 Update 入口和读回按需创建，正常着色编译掉记录代码；仍共用完成序列、32 槽无等待发布与 Renderer 资源退休。
+
 ### 性能观测
 
 `editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、直接光/AA/DDGI 配置，以及 17 行层级统计（八个主阶段、八个子阶段、一个合计）。`current_ms`、`mean_ms`、`p95_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。

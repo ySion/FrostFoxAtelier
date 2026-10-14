@@ -1001,7 +1001,7 @@ bool Application::step(renderer::Capture* capture) try {
     if (!gc) throw std::runtime_error(gc.error().message);
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
-    if (!target.drawable) { update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    if (!target.drawable) { lighting_clock_.reset();update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
     update_camera_fly();
     if (!workspace_.show_fps || !workspace_.dock.visible(editor::control::scene_tab)) update_viewport_fps(false);
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
@@ -1036,6 +1036,7 @@ bool Application::step(renderer::Capture* capture) try {
     }
     const auto prepare_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - prepare_start).count() : 0;
     if (!prepared) {
+        lighting_clock_.reset();
         update_viewport_fps(false);
         if (!ui_.presented()) throw std::runtime_error("Initial editor frame preparation failed (UI code " + std::to_string(static_cast<int>(prepared.error().code)) + ").");
         workspace_.status = L"Frame preparation failed; previous frame retained";
@@ -1070,10 +1071,15 @@ bool Application::step(renderer::Capture* capture) try {
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
         viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
         scene_.environment,{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
+    const auto lighting_start=Clock::now();
+    const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&
+        effective_view.shading==renderer::Shading::scene_lit && effective_view.wireframe!=renderer::Wireframe::only && effective_view.lit.ddgi;
+    render_frame.render_delta_seconds=lighting_clock_.delta(lighting_start,lighting_active);
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, frame_capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
     if (!rendered) {
+        lighting_clock_.reset();
         update_viewport_fps(false);
         if(control_) control_->render_failed(rendered.error().cause.message);
         if (rendered.error().terminal) throw std::runtime_error("Renderer stopped: " + rendered.error().cause.message);
@@ -1085,6 +1091,7 @@ bool Application::step(renderer::Capture* capture) try {
         if (rendered->accepted_id != frame.drawing->id || rendered->accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
+        lighting_clock_.accept(lighting_start,lighting_active);
         accepted_view_=viewport?std::optional(viewport_view):std::nullopt;
         workspace_.lighting.observe(rendered->stats);
         if(viewport) camera_cut_=false;
@@ -1110,6 +1117,7 @@ bool Application::step(renderer::Capture* capture) try {
         } else update_menu();
         if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us};
     } else {
+        lighting_clock_.reset();
         update_viewport_fps(false);
         if(control_) control_->rendered(render_frame,*rendered,nullptr);
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);

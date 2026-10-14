@@ -16,6 +16,7 @@ using rendering::Antialiasing;
 enum class ProbeVisualization : std::uint32_t { off, irradiance, state, update_age, distance };
 using rendering::ProbePlacement;
 enum class ProbeCoverage : std::uint32_t { status, volume, contributors, dominance };
+enum class ProbeHistory : std::uint32_t { live, hold_irradiance, hold_distance };
 
 using rendering::ProbeVolumeSettings;
 using rendering::probe_volume_limit;
@@ -32,6 +33,9 @@ struct SceneLitSettings : rendering::SceneLightingSettings {
     bool operator==(const SceneLitSettings&) const = default;
     bool direct_reference{}; // Diagnostic: average 64 independent RIS estimates without reuse or denoising.
     bool probe_feedback_visibility{true}; // False is a diagnostic moment-only comparison.
+    ProbeHistory probe_history{ProbeHistory::live}; // Diagnostic isolation; never persisted in World.
+    bool probe_inspect{}; // Bounded asynchronous inspection of one physical client pixel.
+    std::array<std::uint32_t,2> probe_inspect_pixel{};
     bool probe_debug{}; // Actual receiver coverage, independent of the lighting histories.
     ProbeCoverage probe_coverage{ProbeCoverage::status};
     std::int32_t probe_debug_volume{-1}; // Geometry overlay selection; -1 draws all slots.
@@ -45,7 +49,7 @@ struct SceneLitSettings : rendering::SceneLightingSettings {
 
 inline const char* probe_settings_error(const SceneLitSettings& settings) noexcept {
     if(const auto* error=rendering::probe_layout_error(settings)) return error;
-    if(settings.probe_coverage>ProbeCoverage::dominance || settings.probe_debug_volume < -1 ||
+    if(settings.probe_coverage>ProbeCoverage::dominance || settings.probe_history>ProbeHistory::hold_distance || settings.probe_debug_volume < -1 ||
        settings.probe_debug_volume>=static_cast<std::int32_t>(probe_volume_limit)) return "Invalid DDGI diagnostic selection";
     return nullptr;
 }
