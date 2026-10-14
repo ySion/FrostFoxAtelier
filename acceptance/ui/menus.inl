@@ -9,12 +9,18 @@ void shared_menu_semantics() {
     const auto open=[&] {
         accepted(c.ui.set_controls({})); c.controls.clear(); c.controls=menu_controls(items,240); c.prepare();
     };
-    const auto marker=[&](ui::ControlKey key)->std::shared_ptr<const ui::Coverage> {
+    // A marker is every framed box and glyph in the indicator column: checkboxes draw a
+    // frame plus an optional check glyph, radios a single glyph.
+    const auto marker=[&](ui::ControlKey key) {
         const auto& box=*c.frame->find(key); const auto scale=c.frame->drawing->dpi_scale;
         const auto right=box.bounds.x+(box.style->padding.left+box.style->indicator_size+3)*scale;
-        for (const auto& draw:c.frame->drawing->draws) if (draw.coverage && draw.bounds.x<right &&
-            draw.bounds.y>=box.bounds.y && draw.bounds.y+draw.bounds.height<=box.bounds.y+box.bounds.height) return draw.coverage;
-        return {};
+        std::vector<std::uint8_t> pixels;
+        for (const auto& draw:c.frame->drawing->draws) if ((draw.coverage || draw.border_width>0) && draw.bounds.x<right &&
+            draw.bounds.y>=box.bounds.y && draw.bounds.y+draw.bounds.height<=box.bounds.y+box.bounds.height) {
+            if (draw.coverage) pixels.insert(pixels.end(),draw.coverage->pixels.begin(),draw.coverage->pixels.end());
+            else pixels.push_back(0xff);
+        }
+        return pixels;
     };
     const auto activation=[](const ui::Reply& reply) {
         const auto actions=actions_of(reply);
@@ -23,8 +29,8 @@ void shared_menu_semantics() {
     };
     open();
     const auto checked_box=marker(1),unchecked_box=marker(2),checked_radio=marker(3),unchecked_radio=marker(4);
-    require(checked_box && unchecked_box && checked_radio && unchecked_radio && checked_box->pixels!=unchecked_box->pixels &&
-        checked_radio->pixels!=unchecked_radio->pixels && checked_box->pixels!=checked_radio->pixels && unchecked_box->pixels!=unchecked_radio->pixels,
+    require(!checked_box.empty() && !unchecked_box.empty() && !checked_radio.empty() && !unchecked_radio.empty() && checked_box!=unchecked_box &&
+        checked_radio!=unchecked_radio && checked_box!=checked_radio && unchecked_box!=unchecked_radio,
         "menu checkbox/radio markers did not visibly distinguish kind and checked state");
     require(c.frame->find(3)->menu_behavior==ui::MenuBehavior::radio && c.frame->find(3)->radio_group==70,
         "menu semantics were not retained in the accepted frame");
@@ -33,16 +39,16 @@ void shared_menu_semantics() {
         "disabled icon menu item captured input");
     const auto hover=c.frame->find(2)->bounds;
     c.ui.input({.kind=ui::EventKind::pointer_move,.x=hover.x+4,.y=hover.y+4}); c.prepare();
-    require(c.frame->find(1)->selected && !c.frame->find(2)->selected && marker(1)->pixels==checked_box->pixels && marker(2)->pixels==unchecked_box->pixels,
+    require(c.frame->find(1)->selected && !c.frame->find(2)->selected && marker(1)==checked_box && marker(2)==unchecked_box,
         "menu hover changed checked state");
     const auto hovered=c.frame->find(2)->style->background;
     const auto checked=activation(c.click(1)); require(!std::get<bool>(checked.value),"checkbox menu did not request its unchecked value");
     c.prepare(); require(!c.frame->find(1),"dismissed menu retained an interactive row");
     items[0].selected=false; open();
-    require(marker(1)->pixels==unchecked_box->pixels && c.frame->find(2)->style->background!=hovered,"reopened menu retained its old check or hover state");
+    require(marker(1)==unchecked_box && c.frame->find(2)->style->background!=hovered,"reopened menu retained its old check or hover state");
     auto request=activation(c.click(4)); require(std::get<bool>(request.value),"radio item did not request selection");
     items[2].selected=false; items[3].selected=true; open();
-    require(marker(3)->pixels==unchecked_radio->pixels && marker(4)->pixels==checked_radio->pixels && marker(6)->pixels==checked_radio->pixels,
+    require(marker(3)==unchecked_radio && marker(4)==checked_radio && marker(6)==checked_radio,
         "radio selection changed another group or failed to move its marker");
     c.ui.focus(4); c.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter});
     request=activation(c.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::enter}));
