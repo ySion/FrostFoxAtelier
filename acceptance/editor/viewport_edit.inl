@@ -134,7 +134,36 @@ void verify_viewport_editing() {
     take(key(27,ui::Key::escape));
     take(tool.snap_selection(document,settings,false));
     require(transform(first).position.x==-2 && transform(second).position.x==2,"Selection to Grid did not align each root.");
-    changed(document.undo());settings.grid_snap=false;settings.grid_spacing=.2f;
+    changed(document.undo());
+    {
+        // Snapping panel: rotation increment and Affect gate R/S like G (Ctrl still inverts).
+        settings.rotation_step=45;settings.snap_rotate=true;
+        take(key('R'));take(key('Z'));
+        const auto centre=*view.project(transform(second).position);
+        take(pointer(ui::EventKind::pointer_move,{centre.x+80,centre.y-35}));
+        const auto snapped=euler_degrees(transform(second).rotation).z;
+        require(std::abs(std::remainder(snapped,45.f))<.01f,"Rotation did not snap to the panel's 45° increment.");
+        take(key(27,ui::Key::escape));
+        settings.snap_move=false;
+        take(key('G'));take(key('X'));
+        take(pointer(ui::EventKind::pointer_move,*view.project(before_second.position+math::Vector3{.31f,0,0})));
+        require(std::abs(transform(second).position.x-1.81f)<.001f,"Disabling Affect Move still snapped movement.");
+        take(key(27,ui::Key::escape));
+        settings.snap_move=true;settings.rotation_step=15;
+        // Local orientation: X constrains along the active Entity's own X axis.
+        const auto snapping=settings.grid_snap;settings.grid_snap=false;settings.orientation=Orientation::local;
+        auto turned=transform(second);turned.rotation=from_euler_degrees({0,90,0});
+        take(document.set_transform(second,turned));
+        const auto start=transform(second).position;
+        take(key('G'));take(key('X'));take(text(L"1"));take(key(13,ui::Key::enter));
+        const auto moved=transform(second).position-start;
+        const auto local_x=math::rotate(turned.rotation,math::Vector3{1,0,0});
+        require(math::length(moved-local_x)<.001f,"Local orientation did not constrain X to the Entity's own axis.");
+        changed(document.undo());changed(document.undo());
+        settings.orientation=Orientation::global;settings.grid_snap=snapping;
+        take(document.select_entities(std::array{first,second},second));
+    }
+    settings.grid_snap=false;settings.grid_spacing=.2f;
     take(key('G'));take(key('X'));
     take(text(L"-"));
     require(!key(13,ui::Key::enter) && tool.active(),"Incomplete typed transform was committed.");
@@ -280,6 +309,10 @@ void verify_viewport_editing() {
         "The authored mode label did not follow the current operation.");
     workspace.menu=ui::ContextMenuRequest{control::viewport_snap,0,0,0};publish();
     const auto step=std::ranges::find(workspace.menu_items,static_cast<ui::ControlKey>(Command::snap_grid_02),&ui::MenuItem::key);
+    const auto headings=std::ranges::count_if(workspace.menu_items,[](const auto& item){return !item.heading.empty();});
+    const auto rotation=std::ranges::find(workspace.menu_items,static_cast<ui::ControlKey>(Command::snap_rotation_15),&ui::MenuItem::key);
+    require(headings>=4 && rotation!=workspace.menu_items.end() && rotation->selected && rotation->behavior==ui::MenuBehavior::radio,
+        "The snapping popover lost its sections or rotation increment.");
     require(step!=workspace.menu_items.end() && step->selected && step->behavior==ui::MenuBehavior::radio &&
         std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::snap_toggle) && item.behavior==ui::MenuBehavior::checkbox;}),
         "The shared snap menu lost its active step or toggle semantics.");

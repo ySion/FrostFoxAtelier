@@ -107,6 +107,8 @@ struct EditorAcceptanceAccess {
     static void set_cursor(Application& app,math::Vector3 at) {app.viewport_tool_.cursor=at;}
     static Result<void> ui_action(Application& app,ui::ControlKey key,ui::ActionValue value={}) {return app.action({ui::ActionKind::activate,key,std::move(value)});}
     static void select_tab(Application& app,ui::ControlKey tab) {app.workspace_.dock.select(tab);}
+    static Result<void> open_menu(Application& app,ui::ControlKey source) {app.request_menu({source,0,0,0});return {};}
+    static void close_menu(Application& app) {app.close_menu(false);}
     static ui::ControlKey color_pick(const Application& app) {
         if(!app.presented()) return 0;
         for(const auto& box:app.presented()->controls) if(box.kind==ui::ControlKind::button && box.action_target) {
@@ -1037,6 +1039,13 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     model(Access::ui_action(app,atelier::editor::control::group_categories,true));shot("snapshot-parameters-category.png");
     model(Access::ui_action(app,atelier::editor::control::group_components,true));
     Access::select_tab(app,atelier::editor::control::structure_tab);shot("snapshot-structure.png");
+    Access::select_tab(app,atelier::editor::control::scene_tab);
+    model(Access::open_menu(app,atelier::editor::control::viewport_snap));settle();
+    {atelier::renderer::Capture menu;app.capture_menu(menu);if(!menu.rgba.empty()) png(menu,output/"snapshot-snap-menu.png");}
+    Access::close_menu(app);
+    model(Access::open_menu(app,atelier::editor::control::viewport_orientation));settle();
+    {atelier::renderer::Capture menu;app.capture_menu(menu);if(!menu.rgba.empty()) png(menu,output/"snapshot-orientation-menu.png");}
+    Access::close_menu(app);
     Access::performance_panel(app);shot("snapshot-world.png");
     Access::select_tab(app,atelier::editor::control::workbench);shot("snapshot-controls.png");
     Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);

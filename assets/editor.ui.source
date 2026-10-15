@@ -577,7 +577,8 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in bool cavity_open, in bool show_fps, in Text fps, in bool camera_flying,
                  in Items<HeaderChoice> shading, in Items<HeaderChoice> select_modes,
                  in bool view_menu_open, in bool select_menu_open, in bool add_menu_open, in bool object_menu_open,
-                 in bool actions_open, in bool compact, in Items<DisplayToggle> display_toggles) {
+                 in bool actions_open, in bool compact, in Items<DisplayToggle> display_toggles,
+                 in double basis_icon, in bool basis_open) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -617,7 +618,7 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                     Repeat select_modes { items: input.select_modes; }
                 }
                 Column divider { width: 1; height: 18; classes: "viewport-option-divider"; }
-                Text basis { text: input.basis; content_width: 0; single_line: true; classes: "viewport-option-label"; }
+                Combo basis { text: input.basis; icon: input.basis_icon; selected: input.basis_open; content_width: 0; height: 22; classes: "viewport-option-menu"; }
                 Text pivot_label { text: input.pivot_name; content_width: 0; single_line: true; classes: "viewport-option-label"; }
                 Column divider2 { width: 1; height: 18; classes: "viewport-option-divider"; }
                 Checkbox surface { text: "Surface Cursor"; action: input.surface_toggle; selected: input.surface; content_width: 0; height: 22; classes: "viewport-option-check"; }
@@ -744,12 +745,13 @@ ui DockPreview(in bool visible, in double x, in double y, in double width, in do
 }
 ui PopupEntry(in Text title, in Text shortcut, in bool enabled, in bool selected,
               in bool branch, in bool separator, in Text behavior, in Key group,
-              in double icon, in double arrow_icon, in Text shortcut_style) {
+              in double icon, in double arrow_icon, in Text shortcut_style, in Text heading, in bool has_heading) {
     Column entry {
         Overlay separator {
             height: 14; collapsed: !input.separator; enabled: false;
             Column line { height: 2.0d / 3.0d; out_of_flow: true; anchor_y: 0.5d; pivot_y: 0.5d; enabled: false; classes: "menu-separator"; }
         }
+        Text heading { text: input.heading; collapsed: !input.has_heading; enabled: false; single_line: true; caption: true; classes: "menu-heading"; }
         Column row {
             content_height: 25.0d + 1.0d / 3.0d;
             MenuItem item {

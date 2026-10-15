@@ -224,6 +224,8 @@ label.menu-shortcut:disabled { color: #a0a0a0; }
 .menu-shortcut { padding: 0dip; text-align: right; text-vertical-align: center; font-style: italic; }
 label.menu-shortcut.unavailable:disabled { color: #777777; }
 .menu-separator { background: #949494; }
+.menu-heading { padding: 4dip 9dip 2dip 9dip; }
+label.menu-heading:disabled { color: #9a9a9a; }
 popup.pie-menu { background: transparent; background-image: none; border-width: 0dip; padding: 0dip; scrollbar-gutter: overlay; }
 .pie-hub { background: #292929ed; color: #cccccc; text-align: center; text-vertical-align: center; border-radius: 11dip; }
 menu_item.pie-item { background: #333333f2; color: #cccccc; border-style: solid; border-width: 0.667dip; border-color: #171717; border-radius: 5dip; }
@@ -296,7 +298,7 @@ button.source-problem:disabled { color: #dfb38b; background: #3a2e29; }
 .viewport-options { background: #2e2e2e; border-color: #030303; border-inner-color: #424242; border-width: 0.667dip; border-edges: top; }
 .viewport-option-label { padding: 0dip 3dip; text-vertical-align: center; color: #cccccc; }
 .viewport-option-divider { background: #1f1f1f; }
-combo.viewport-option-menu { padding: 0dip 8dip 0dip 10dip; combo-indicator: down; text-vertical-align: center; }
+combo.viewport-option-menu { padding: 0dip 8dip 0dip 8dip; combo-indicator: down; text-vertical-align: center; indicator-size: 14dip; indicator-color: #c4ccd0; }
 combo.viewport-option-menu { border-width: 0.667dip; border-style: solid; }
 combo.viewport-option-menu, combo.viewport-option-menu:hover {
     background-image: linear-gradient(#555555, #424242); border-color: #1c1c1c;

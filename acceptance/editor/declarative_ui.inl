@@ -379,8 +379,8 @@ void verify_declarative_parameters() {
     workspace.reset_layout();publish();
     {
         auto rows=std::make_shared<std::vector<ui_language::Item>>();
-        rows->push_back({9100,{std::wstring{L"Grid"},std::wstring{},true,true,false,false,std::wstring{L"checkbox"},ui::ControlKey{},0.0,0.0,std::wstring{L"menu-shortcut"}},{{"item",9101}}});
-        rows->push_back({9200,{std::wstring{L"Flat"},std::wstring{L"Ctrl+F"},true,true,false,true,std::wstring{L"radio"},ui::ControlKey{9300},0.0,0.0,std::wstring{L"menu-shortcut"}},{{"item",9201}}});
+        rows->push_back({9100,{std::wstring{L"Grid"},std::wstring{},true,true,false,false,std::wstring{L"checkbox"},ui::ControlKey{},0.0,0.0,std::wstring{L"menu-shortcut"},std::wstring{},false},{{"item",9101}}});
+        rows->push_back({9200,{std::wstring{L"Flat"},std::wstring{L"Ctrl+F"},true,true,false,true,std::wstring{L"radio"},ui::ControlKey{9300},0.0,0.0,std::wstring{L"menu-shortcut"},std::wstring{L"Shading"},true},{{"item",9201}}});
         ui::ControlKey next=1ULL<<62;
         const std::array<ui_language::KeyBinding,1> keys{{{"menu",500}}};
         auto popup=take(ui_language::Instance::create(workspace.ui_component("PopupMenu"),0,next,keys,

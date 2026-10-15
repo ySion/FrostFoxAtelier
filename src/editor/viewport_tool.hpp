@@ -18,6 +18,8 @@ enum class PivotMode : std::uint8_t { median, cursor };
 enum class SelectMode : std::uint8_t { set, extend, subtract, invert, intersect };
 enum class SelectAll : std::uint8_t { select, deselect, toggle, invert };
 enum class TransformChannel : std::uint8_t { location, rotation, scale };
+// Blender transform orientation for move/rotate handles and X/Y/Z constraints. Scale always uses Local.
+enum class Orientation : std::uint8_t { global, local };
 
 // XYZ Euler angles in degrees, applied X then Y then Z (Houdini "Rx Ry Rz").
 math::Vector3 euler_degrees(math::Quaternion) noexcept;
@@ -50,6 +52,10 @@ public:
         TransformTool tool{TransformTool::transform}; PivotMode pivot{PivotMode::median};
         bool grid_snap{}, cursor_surface{true}; float grid_spacing{.2f};
         SelectMode select_mode{SelectMode::set};
+        Orientation orientation{Orientation::global};
+        // Blender snapping "Affect": which operations the snap toggle drives, and their increments.
+        bool snap_move{true}, snap_rotate{true}, snap_scale{false};
+        float rotation_step{15}, scale_step{.1f}; // Degrees; scale factor increment.
     };
     math::Vector3 cursor{}; // Blender-style 3D cursor: pivot option and creation point.
     // The cursor is a full 3D frame like Blender's: surface placement aligns its
@@ -130,7 +136,7 @@ private:
     struct Hit { ObjectId entity; math::Vector3 position, normal{0,1,0}; };
     static std::optional<Hit> trace(const Session&,const ViewportView&,float x,float y,bool locators);
     Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,Settings,bool control);
-    Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2) const;
+    Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2, Orientation) const;
     Result<void> begin(Session&, const ViewportView&, Settings, Operation, Handle, bool modal, math::Vector2, bool amend_creation = false);
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine=false);
     Result<void> finish(Session&);

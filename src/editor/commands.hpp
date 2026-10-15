@@ -30,7 +30,11 @@ enum class Command : std::uint64_t {
     select_all=961, select_none=962, select_invert=963, select_box=964,
     clear_location=965, clear_rotation=966, clear_scale=967, frame_all=968,
     select_mode_set=969, select_mode_extend=970, select_mode_subtract=971, select_mode_invert=972, select_mode_intersect=973,
-    rename_selected=986, unparent_selected=987
+    rename_selected=986, unparent_selected=987,
+    // Blender snapping panel: Affect toggles and rotation increment.
+    snap_affect_move=981, snap_affect_rotate=982, snap_affect_scale=983,
+    snap_rotation_1=957, snap_rotation_5=958, snap_rotation_15=959, snap_rotation_45=984,
+    orientation_global=985, orientation_local=997
 };
 inline constexpr std::array camera_commands{Command::view_perspective,Command::view_top,Command::view_front,
     Command::view_right,Command::view_bottom,Command::view_back,Command::view_left};
@@ -133,6 +137,15 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::snap_grid_02,CommandGroup::view,L"0.2 m",L""},
     CommandDefinition{Command::snap_grid_05,CommandGroup::view,L"0.5 m",L""},
     CommandDefinition{Command::snap_grid_1,CommandGroup::view,L"1 m",L""},
+    CommandDefinition{Command::orientation_global,CommandGroup::view,L"Global",L"",true},
+    CommandDefinition{Command::orientation_local,CommandGroup::view,L"Local",L""},
+    CommandDefinition{Command::snap_affect_move,CommandGroup::view,L"Snap Move",L"",true},
+    CommandDefinition{Command::snap_affect_rotate,CommandGroup::view,L"Snap Rotate",L""},
+    CommandDefinition{Command::snap_affect_scale,CommandGroup::view,L"Snap Scale",L""},
+    CommandDefinition{Command::snap_rotation_1,CommandGroup::view,L"Rotation 1°",L"",true},
+    CommandDefinition{Command::snap_rotation_5,CommandGroup::view,L"Rotation 5°",L""},
+    CommandDefinition{Command::snap_rotation_15,CommandGroup::view,L"Rotation 15°",L""},
+    CommandDefinition{Command::snap_rotation_45,CommandGroup::view,L"Rotation 45°",L""},
     CommandDefinition{Command::selection_grid,CommandGroup::view,L"Selection to Grid",L"",true},
     CommandDefinition{Command::selection_cursor,CommandGroup::view,L"Selection to Cursor (Keep Offset)",L""},
     CommandDefinition{Command::cursor_selected,CommandGroup::view,L"Cursor to Selection",L""},

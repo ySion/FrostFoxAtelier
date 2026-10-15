@@ -609,12 +609,12 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         }
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,47> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,49> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::down),double(ui::ControlIcon::overlays),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
             std::wstring(camera_flying?L"Fly":mode_names[std::size_t(viewport_mode)]),double(camera_flying?ui::ControlIcon::fly:icons[std::size_t(viewport_mode)]),
-            std::wstring(viewport_mode==TransformTool::scale?L"Local axes":L"World axes"),
+            std::wstring(viewport_mode==TransformTool::scale || viewport_settings.orientation==Orientation::local?L"Local":L"Global"),
             std::wstring(viewport_settings.pivot==PivotMode::median?L"Selection Center":L"3D Cursor"),
             ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::snap_toggle)},double(ui::ControlIcon::magnet),viewport_settings.grid_snap,
             step_name,menu && menu->source==control::viewport_snap,viewport_settings.cursor_surface,
@@ -627,8 +627,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             show_fps,viewport_fps.empty()?std::wstring(L"FPS —"):viewport_fps,camera_flying,
             ui_language::ItemList{std::move(shading_modes)},ui_language::ItemList{std::move(select_modes)},
             open(control::viewport_view_menu),open(control::viewport_select_menu),open(control::viewport_header_add),open(control::viewport_object_menu),
-            open(control::viewport_tools_menu),pane.bounds.width<660,ui_language::ItemList{std::move(display_toggles)}};
-        const std::array<ui_language::KeyBinding,26> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
+            open(control::viewport_tools_menu),pane.bounds.width<660,ui_language::ItemList{std::move(display_toggles)},
+            double(ui::ControlIcon::axes_origin),open(control::viewport_orientation)};
+        const std::array<ui_language::KeyBinding,27> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"fps",control::viewport_fps},{"fly_reticle",control::viewport_fly_reticle},{"tool_hint",control::viewport_hint},
             {"cavity",control::viewport_cavity},
             {"forward",control::scene_forward},{"display",control::scene_shading},{"guides",control::scene_guides},
@@ -636,7 +637,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             {"actions",control::viewport_tools_menu},{"step",control::viewport_snap},{"camera",control::viewport_camera},{"mode",control::viewport_hud},
             {"view_menu",control::viewport_view_menu},{"select_menu",control::viewport_select_menu},{"add_menu",control::viewport_header_add},
             {"object_menu",control::viewport_object_menu},{"shading_modes",control::viewport_shading_modes},{"selection_modes",control::viewport_select_modes},
-            {"snapping",control::viewport_snapping},{"display_bar",control::display_bar}}};
+            {"snapping",control::viewport_snapping},{"display_bar",control::display_bar},{"basis",control::viewport_orientation}}};
         static_cast<void>(ui_document_->append("SceneViewport",control::scene_content,keys,inputs,result));
         continue;
     }
@@ -1033,6 +1034,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 } else if(const auto preset=camera_view_command(command))
                     radio(Command::view_perspective,*preset==camera_view);
                 else if(command==Command::show_fps) {item.behavior=ui::MenuBehavior::checkbox;item.selected=show_fps;}
+                else if(command==Command::orientation_global || command==Command::orientation_local)
+                    radio(Command::orientation_global,(command==Command::orientation_local)==(viewport_settings.orientation==Orientation::local));
+                else if(command==Command::snap_affect_move || command==Command::snap_affect_rotate || command==Command::snap_affect_scale) {
+                    item.behavior=ui::MenuBehavior::checkbox;
+                    item.selected=command==Command::snap_affect_move?viewport_settings.snap_move:command==Command::snap_affect_rotate?viewport_settings.snap_rotate:viewport_settings.snap_scale;
+                } else if(command==Command::snap_rotation_1 || command==Command::snap_rotation_5 || command==Command::snap_rotation_15 || command==Command::snap_rotation_45)
+                    radio(Command::snap_rotation_1,viewport_settings.rotation_step==(command==Command::snap_rotation_1?1.f:command==Command::snap_rotation_5?5.f:command==Command::snap_rotation_15?15.f:45.f));
                 else if(command>=Command::select_mode_set && command<=Command::select_mode_intersect)
                     radio(Command::select_mode_set,key-static_cast<ui::ControlKey>(Command::select_mode_set)==std::size_t(viewport_settings.select_mode));
                 else if(command==Command::snap_toggle || command==Command::cursor_surface || command==Command::viewport_options) {
@@ -1049,9 +1057,14 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 switch(key) {
                 case control::viewport_tools_menu: return commands({tool_select,tool_transform,tool_move,tool_rotate,tool_scale});
                 case control::viewport_snap: return commands({snap_toggle,snap_grid_01,snap_grid_02,snap_grid_05,snap_grid_1,
+                    snap_affect_move,snap_affect_rotate,snap_affect_scale,snap_rotation_1,snap_rotation_5,snap_rotation_15,snap_rotation_45,
                     selection_grid,selection_cursor,cursor_selected,cursor_origin,cursor_grid,cursor_surface});
                 case control::viewport_camera: return commands({view_perspective,view_front,view_back,view_left,view_right,view_top,view_bottom,focus,reset_camera});
                 case control::viewport_pivot: return commands({pivot_median,pivot_cursor,cursor_selected,cursor_origin,cursor_grid});
+                case control::viewport_orientation: {
+                    auto items=commands({orientation_global,orientation_local});items.front().separator_before=false;
+                    items.front().heading=L"Transform Orientations";return items;
+                }
                 default: return std::vector<ui::MenuItem>{};
                 }
             };
@@ -1156,7 +1169,24 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     items.push_back({.key=control::viewport_snap,.text=L"Snap",.edit_command={},.children=viewport_commands(control::viewport_snap)});
                     for(auto item:commands({focus,create_static_mesh,duplicate_selected,erase_entities})) items.push_back(std::move(item));
                 }
-            } else if(source->key==control::viewport_snap || source->key==control::viewport_camera || source->key==control::viewport_pivot) {
+            } else if(source->key==control::viewport_snap) {
+                // Blender snapping popover: captioned sections over the shared command model.
+                items=viewport_commands(source->key);
+                for(auto& item:items) {
+                    const auto command=static_cast<Command>(item.key);
+                    item.separator_before=false;
+                    if(command==Command::snap_toggle) item.heading=L"Snapping";
+                    else if(command==Command::snap_grid_01) item.heading=L"Increment";
+                    else if(command==Command::snap_affect_move) item.heading=L"Affect";
+                    else if(command==Command::snap_rotation_1) item.heading=L"Rotation Increment";
+                    else if(command==Command::selection_grid) item.heading=L"Snap Selection / Cursor";
+                    item.separator_before=!item.heading.empty() && command!=Command::snap_toggle;
+                    // The section caption carries the context; rows show just the choice.
+                    if(command>=Command::snap_affect_move && command<=Command::snap_affect_scale) item.text=item.text.substr(5);
+                    else if(command==Command::snap_rotation_1 || command==Command::snap_rotation_5 || command==Command::snap_rotation_15 ||
+                            command==Command::snap_rotation_45) item.text=item.text.substr(9);
+                }
+            } else if(source->key==control::viewport_camera || source->key==control::viewport_pivot || source->key==control::viewport_orientation) {
                 items=viewport_commands(source->key);
             } else if (control::is_path(source->key)) {
                 items.push_back({control::world_context,L"World",true,selected==ObjectId{},{}});

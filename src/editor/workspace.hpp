@@ -36,7 +36,7 @@ inline constexpr ui::ControlKey viewport_fps=904, viewport_fly_reticle=860, view
 // Blender header menus and grouped header widgets.
 inline constexpr ui::ControlKey viewport_view_menu=974, viewport_select_menu=975, viewport_object_menu=976, viewport_header_add=977;
 inline constexpr ui::ControlKey viewport_shading_modes=948, viewport_select_modes=949, viewport_snapping=978;
-inline constexpr ui::ControlKey object_clear_menu=979, object_snap_menu=980, view_viewpoint_menu=995, select_mode_menu=996;
+inline constexpr ui::ControlKey object_clear_menu=979, object_snap_menu=980, view_viewpoint_menu=995, select_mode_menu=996, viewport_orientation=998;
 // Houdini's right-hand display bar: view toggles that never touch scene history.
 inline constexpr ui::ControlKey display_bar=1006, display_grid=1007, display_axes=1008, display_wire=1009,
     display_triangles=1010, display_cavity=1011, display_fps=1012, display_wire_only=1013, display_lit=1014;

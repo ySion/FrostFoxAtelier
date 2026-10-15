@@ -546,6 +546,13 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case cursor_selected:result=viewport_tool_.cursor_to_selection(*document_);break;
     case cursor_grid:viewport_tool_.cursor_to_grid(workspace_.viewport_settings);break;
     case cursor_surface:workspace_.viewport_settings.cursor_surface=!workspace_.viewport_settings.cursor_surface;break;
+    case orientation_global:case orientation_local:
+        workspace_.viewport_settings.orientation=command==orientation_local?editor::Orientation::local:editor::Orientation::global;break;
+    case snap_affect_move:workspace_.viewport_settings.snap_move=!workspace_.viewport_settings.snap_move;break;
+    case snap_affect_rotate:workspace_.viewport_settings.snap_rotate=!workspace_.viewport_settings.snap_rotate;break;
+    case snap_affect_scale:workspace_.viewport_settings.snap_scale=!workspace_.viewport_settings.snap_scale;break;
+    case snap_rotation_1:case snap_rotation_5:case snap_rotation_15:case snap_rotation_45:
+        workspace_.viewport_settings.rotation_step=command==snap_rotation_1?1.f:command==snap_rotation_5?5.f:command==snap_rotation_15?15.f:45.f;break;
     case select_all:case select_none:case select_invert:
         result=viewport_tool_.select_all(*document_,command==select_all?editor::SelectAll::select:command==select_none?editor::SelectAll::deselect:editor::SelectAll::invert);break;
     case select_box:viewport_tool_.arm_box_select(pointer_position_,false);window_.capture(true);break;

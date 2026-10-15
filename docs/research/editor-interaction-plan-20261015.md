@@ -56,5 +56,6 @@ UI 帧只在输入或数据变化时重建；后续对 Source/JIT 绑定求值�
 - ✅ 视口右侧显示栏（8 个视图开关）。
 - ✅ 场景树拖动换父（keep world、防环、一次历史、拖放高亮）、F2 / Delete / Ctrl+D / Alt+P 与右键行菜单。
 - ✅ 颜色编辑器：RGB + HSV + Hex，Session 组编辑一次历史；HSV 色盘方块与 H 条需要二维拾取控件，留到下一批。
-- ⏳ 吸附面板（旋转步长、Affect）与变换朝向富面板：下一批，与 `PopoverPanel` 组件一起实现。
+- ✅ 吸附面板：分节菜单（节标题 `MenuItem.heading`）、Affect 三项与旋转步长，接入 ViewportTool 的 G/R/S 与手柄。
+- ✅ 变换朝向：Global / Local，手柄、约束轴与读数（along local X）同步；Normal/View/Cursor/Parent 后续。
 - ⏳ 资源管理器的重命名/删除/新建文件夹：需要 Project 文件操作与引用检查，下一批。
