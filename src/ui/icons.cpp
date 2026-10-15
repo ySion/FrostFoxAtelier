@@ -40,6 +40,16 @@ std::span<const Run> data(Icon icon) {
     case Icon::select_subtract:return select_subtract_runs;
     case Icon::select_invert:return select_invert_runs;
     case Icon::select_intersect:return select_intersect_runs;
+    case Icon::grid:return grid_runs;
+    case Icon::axes_origin:return axes_origin_runs;
+    case Icon::wire_overlay:return wire_overlay_runs;
+    case Icon::lights_off:return lights_off_runs;
+    case Icon::fps:return fps_runs;
+    case Icon::color_picker:return color_picker_runs;
+    case Icon::rename:return rename_runs;
+    case Icon::duplicate:return duplicate_runs;
+    case Icon::trash:return trash_runs;
+    case Icon::unparent:return unparent_runs;
     }
     throw std::invalid_argument("Unknown UI icon");
 }

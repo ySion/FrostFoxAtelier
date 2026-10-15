@@ -60,11 +60,11 @@ ui QueryRow(in TextEditBinding edit, in double label_width, in double gap, in bo
     }
 }
 
-ui NumericProperty(in Text title, in EditBinding edit, in bool swatch, in double r, in double g, in double b) {
-    // Houdini colour tuples end with a live swatch of the current value.
+ui NumericProperty(in Text title, in EditBinding edit, in bool swatch, in double r, in double g, in double b, in ActionBinding pick) {
+    // Houdini colour tuples end with a live swatch of the current value; clicking it opens the colour editor.
     Row row { align_center: true; gap: 4;
         Column fields { expand_width: true; NumberRow number { text: input.title; edit: input.edit; } }
-        Column swatch { width: 23; height: 21; collapsed: !input.swatch; red: input.r; green: input.g; blue: input.b; classes: "color-swatch parameter-swatch"; }
+        Button swatch { text: ""; action: input.pick; width: 23; height: 21; collapsed: !input.swatch; red: input.r; green: input.g; blue: input.b; classes: "color-swatch parameter-swatch"; }
     }
 }
 
@@ -86,14 +86,14 @@ ui EnumProperty(in Text title, in Text choice, in bool enabled, in Key target) {
 ui PropertyRow(in Text title, in EditBinding edit, in bool boolean, in bool checked, in bool enabled,
                in ActionBinding change, in bool enumeration, in Text choice, in Key target,
                in bool swatch, in double r, in double g, in double b,
-               in bool override_available, in bool overridden, in ActionBinding inherit) {
+               in bool override_available, in bool overridden, in ActionBinding inherit, in ActionBinding pick) {
     Row row { gap: 3;
         Column override_area { collapsed: !input.override_available; width: 24;
             Checkbox override { text: ""; selected: input.overridden; action: input.inherit; width: 24; height: 23; }
         }
         Column value { expand_width: true;
         NumericProperty numeric { mounted: !input.boolean && !input.enumeration; title: input.title; edit: input.edit;
-            swatch: input.swatch; r: input.r; g: input.g; b: input.b; }
+            swatch: input.swatch; r: input.r; g: input.g; b: input.b; pick: input.pick; }
         BooleanProperty boolean { mounted: input.boolean; title: input.title; checked: input.checked; enabled: input.enabled; change: input.change; }
         EnumProperty enumeration { mounted: input.enumeration; title: input.title; choice: input.choice; enabled: input.enabled; target: input.target; }
         }
@@ -111,8 +111,10 @@ ui PropertyGroup(in Text title, in double icon, in Items<PropertyRow> properties
 }
 
 ui EntityRow(in Text title, in bool enabled, in bool selected, in double icon,
-            in Key parent, in bool expanded, in Text style) {
+            in Key parent, in bool expanded, in Text style, in bool draggable, in Key menu) {
     TreeItem row {
+        draggable: input.draggable;
+        context: input.menu;
         text: input.title;
         enabled: input.enabled;
         selected: input.selected;
@@ -125,7 +127,8 @@ ui EntityRow(in Text title, in bool enabled, in bool selected, in double icon,
 
 ui SceneTree(in Items<EntityRow> entities, in TextEditBinding filter,
              in bool world_selected, in bool world_expanded, in double world_icon,
-             in ActionBinding back, in ActionBinding forward, in double back_icon, in double forward_icon, in double path_icon) {
+             in ActionBinding back, in ActionBinding forward, in double back_icon, in double forward_icon, in double path_icon,
+             in Text world_style) {
     PanePath path { title: "World"; back: input.back; forward: input.forward; back_icon: input.back_icon; forward_icon: input.forward_icon; path_icon: input.path_icon; }
     Tree tree {
         expand_height: true;
@@ -135,6 +138,7 @@ ui SceneTree(in Items<EntityRow> entities, in TextEditBinding filter,
             icon: input.world_icon;
             selected: input.world_selected;
             initially_expanded: input.world_expanded;
+            classes: input.world_style;
         }
         Repeat rows { items: input.entities; }
     }
@@ -549,6 +553,10 @@ ui ViewportMode(in ActionBinding choose, in double icon, in bool selected, in Ke
     ChoiceButton mode { icon: input.icon; action: input.choose; selected: input.selected;
         selection_group: input.group; width: 32; height: 32; classes: input.style; }
 }
+// One toggle of Houdini's right-hand display bar.
+ui DisplayToggle(in ActionBinding toggle, in double icon, in bool selected, in Text style) {
+    ToggleButton toggle { icon: input.icon; action: input.toggle; selected: input.selected; width: 28; height: 28; classes: input.style; }
+}
 // One segment of a Blender header button group (shading, selection mode).
 ui HeaderChoice(in ActionBinding choose, in double icon, in bool selected, in Key group, in Text style) {
     ChoiceButton choice { icon: input.icon; action: input.choose; selected: input.selected;
@@ -569,7 +577,7 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                  in bool cavity_open, in bool show_fps, in Text fps, in bool camera_flying,
                  in Items<HeaderChoice> shading, in Items<HeaderChoice> select_modes,
                  in bool view_menu_open, in bool select_menu_open, in bool add_menu_open, in bool object_menu_open,
-                 in bool actions_open, in bool compact) {
+                 in bool actions_open, in bool compact, in Items<DisplayToggle> display_toggles) {
     Column pane {
         expand_height: true;
         Row navigation {
@@ -641,6 +649,10 @@ ui SceneViewport(in ActionBinding back, in ActionBinding forward,
                     offset_x: 12; offset_y: -8; width: 640; height: 20; classes: input.tool_hint_style; }
                 Combo camera { text: input.view_name; selected: input.view_open; content_width: 0; height: 22;
                     out_of_flow: true; anchor_x: 1; pivot_x: 1; offset_x: -10; offset_y: 12; classes: "viewport-view-menu"; }
+            }
+            // Houdini's display bar: view-only toggles mirrored by the header, Guides and the Z pie.
+            Column display_bar { width: 34; expand_height: true; gap: 2; padding_top: 6; padding_left: 3; classes: "viewport-rail viewport-display-bar";
+                Repeat display_toggles { items: input.display_toggles; }
             }
         }
     }
@@ -777,6 +789,31 @@ ui ViewportPie(in double x, in double y, in Text title, in Items<PieEntry> entri
             out_of_flow: true; anchor_x: 0.5d; anchor_y: 0.5d; pivot_x: 0.5d; pivot_y: 0.5d; classes: "pie-hub";
         }
         Repeat entries { items: input.entries; }
+    }
+}
+ui ColorEditor(in double x, in double y, in double r, in double g, in double b, in double r0, in double g0, in double b0,
+                in EditBinding rgb, in EditBinding hsv, in TextEditBinding hex, in ActionBinding revert, in ActionBinding done) {
+    // Houdini colour editor in this editor's vocabulary: new/original preview, RGB and
+    // HSV slider rows editing the same value, hex entry; one history entry per session.
+    Popup editor {
+        width: 420; out_of_flow: true; offset_x: input.x; offset_y: input.y; classes: "color-editor";
+        padding_left: 8; padding_top: 8; padding_right: 8; padding_bottom: 8;
+        Row preview { height: 40; gap: 1;
+            Column current { expand_width: true; expand_height: true; red: input.r; green: input.g; blue: input.b; classes: "color-swatch"; }
+            Button original { text: ""; action: input.revert; expand_width: true; expand_height: true; red: input.r0; green: input.g0; blue: input.b0; classes: "color-swatch color-original"; }
+        }
+        Column fields { gap: 5; padding_top: 8;
+            NumberRow rgb { text: "RGB"; edit: input.rgb; }
+            NumberRow hsv { text: "HSV"; edit: input.hsv; }
+            Row hex_row { gap: 4; align_center: true;
+                Text hex_label { text: "Hex"; width: 160; single_line: true; classes: "parameter-label"; }
+                TextField hex { edit: input.hex; shrink_width: 96; }
+            }
+        }
+        Row actions { height: 30; padding_top: 6; gap: 4;
+            Column spacer { expand_width: true; height: 1; }
+            Button done { text: "Done"; action: input.done; height: 24; content_width: 0; min_width: 72; }
+        }
     }
 }
 ui WorkbenchRgb(in EditBinding color) { NumberRow color { text: "Color"; edit: input.color; } }

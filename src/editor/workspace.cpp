@@ -176,6 +176,15 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::erase_entities: return scene_available && !project_running && !session.selected_entities().empty();
     case Command::select_all: case Command::select_invert: case Command::select_box: return scene_available && !project_running;
     case Command::select_none: return scene_available && !project_running && !session.selected_entities().empty();
+    case Command::rename_selected: return scene_available && !project_running && session.selection().entity!=ObjectId{};
+    case Command::unparent_selected: {
+        if(!scene_available || project_running) return false;
+        for(const auto entity:session.selected_entities()) {
+            const auto parent=world::parent_entity(session.world().runtime(),entity);
+            if(parent && *parent!=ObjectId{}) return true;
+        }
+        return false;
+    }
     case Command::clear_location: case Command::clear_rotation: case Command::clear_scale:
         return scene_available && !project_running && !session.selected_entities().empty();
     case Command::duplicate_selected: {
@@ -278,6 +287,15 @@ Result<bool> Workspace::apply_view(Session& session,const ui::Action& action,std
         set(ViewOption::wireframe,preset==0?double(renderer::Wireframe::only):double(renderer::Wireframe::off));
         if (preset) set(ViewOption::shading,preset==1?double(renderer::Shading::smooth):
             preset==2?double(renderer::Shading::matcap):double(renderer::Shading::scene_lit));
+    } else if(key>=control::display_grid && key<=control::display_lit && key!=control::display_fps) {
+        const auto* checked=std::get_if<bool>(&action.value);if(!checked) return false;
+        if(key==control::display_grid) set(ViewOption::reference_grid,*checked?1:0);
+        else if(key==control::display_axes) set(ViewOption::origin_axes,*checked?1:0);
+        else if(key==control::display_wire) set(ViewOption::wireframe,double(*checked?renderer::Wireframe::overlay:renderer::Wireframe::off));
+        else if(key==control::display_wire_only) set(ViewOption::wireframe,double(*checked?renderer::Wireframe::only:renderer::Wireframe::off));
+        else if(key==control::display_triangles) set(ViewOption::triangle_edges,*checked?1:0);
+        else if(key==control::display_cavity) set(ViewOption::cavity,*checked?1:0);
+        else set(ViewOption::shading,double(*checked?renderer::Shading::scene_lit:renderer::Shading::smooth));
     } else if(key==control::cavity_enabled) {
         const auto* checked=std::get_if<bool>(&action.value);if(!checked) return false;
         set(ViewOption::cavity,*checked?1:0);
@@ -307,6 +325,27 @@ Result<bool> Workspace::apply_view(Session& session,const ui::Action& action,std
     if(auto updated=set_view_settings(session,candidate,focus);!updated) return std::unexpected(updated.error());
     status=L"Viewport display updated";
     return true;
+}
+std::optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session,const ui::UiFrame& frame,ObjectId dragged,ui::DragPoint at) const {
+    const auto* tree=frame.find(control::entity_tree);
+    if(!tree || at.x<tree->bounds.x || at.x>=tree->bounds.x+tree->bounds.width || at.y<tree->bounds.y || at.y>=tree->bounds.y+tree->bounds.height) return {};
+    for(const auto& box:frame.controls) {
+        // Rows scrolled out of the tree are outside its bounds, so the tree test above already excludes them.
+        if(box.kind!=ui::ControlKind::tree_item || box.parent!=control::entity_tree || at.y<box.bounds.y || at.y>=box.bounds.y+box.bounds.height) continue;
+        if(box.key==control::tree_world) return TreeDrop{{},box.key};
+        const auto* target=binding(box.key);
+        if(!target || target->kind!=Binding::Kind::object || !target->path.empty()) return {};
+        // An Entity cannot become a child of itself or of its own descendant.
+        auto& runtime=session.world().runtime();
+        for(auto ancestor=target->object;ancestor!=ObjectId{};) {
+            if(ancestor==dragged) return {};
+            const auto parent=world::parent_entity(runtime,ancestor);if(!parent) return {};
+            ancestor=*parent;
+        }
+        return TreeDrop{target->object,box.key};
+    }
+    // Empty space below the rows is World, as in Houdini's tree view.
+    return TreeDrop{{},control::tree_world};
 }
 void Workspace::sync_world(const Session& session) {
     auto& author=static_cast<rendering::SceneLightingSettings&>(view.lit);
@@ -551,9 +590,26 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 std::size_t(viewport_settings.select_mode)==i,control::viewport_select_modes,
                 std::wstring(i==0?L"viewport-segment-item first":i+1==select_icons.size()?L"viewport-segment-item last":L"viewport-segment-item")}});
         }
+        // Houdini display bar: each toggle mirrors the one ViewSettings value it edits.
+        auto display_toggles=std::make_shared<std::vector<ui_language::Item>>();
+        const auto lit=this->view.shading==renderer::Shading::scene_lit;
+        const std::array<std::tuple<ui::ControlKey,ui::ControlIcon,bool,bool>,8> display{{
+            {control::display_grid,ui::ControlIcon::grid,this->view.reference_grid,false},
+            {control::display_axes,ui::ControlIcon::axes_origin,this->view.origin_axes,false},
+            {control::display_wire,ui::ControlIcon::wire_overlay,this->view.wireframe==renderer::Wireframe::overlay,true},
+            {control::display_wire_only,ui::ControlIcon::shade_wire,this->view.wireframe==renderer::Wireframe::only,false},
+            {control::display_triangles,ui::ControlIcon::mesh,this->view.triangle_edges,false},
+            {control::display_cavity,ui::ControlIcon::shade_matcap,this->view.cavity.enabled && !lit,true},
+            {control::display_lit,ui::ControlIcon::shade_lit,lit,false},
+            {control::display_fps,ui::ControlIcon::fps,show_fps,true}}};
+        for(std::size_t index=0;const auto& [key,icon,selected,grouped]:display) {
+            const auto target=key==control::display_fps?control::command_key(Command::show_fps):key;
+            display_toggles->push_back({control::display_toggle_first+index++,{ui_language::ActionBinding{target,true},double(icon),selected,
+                std::wstring(grouped?L"display-toggle grouped":L"display-toggle")}});
+        }
         const auto step=viewport_settings.grid_spacing;
         const std::wstring step_name=step==.1f?L"0.1 m":step==.2f?L"0.2 m":step==.5f?L"0.5 m":L"1 m";
-        const std::array<ui_language::InputValue,46> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
+        const std::array<ui_language::InputValue,47> inputs{ui_language::ActionBinding{control::scene_back,can_navigate(-1)},
             ui_language::ActionBinding{control::scene_forward,can_navigate(1)},double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             double(ui::ControlIcon::down),double(ui::ControlIcon::overlays),menu && menu->source==control::scene_shading,menu && menu->source==control::scene_guides,
             ui_language::ItemList{std::move(modes)},double(ui::ControlIcon::cursor3d),menu && menu->source==control::viewport_pivot,
@@ -571,8 +627,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             show_fps,viewport_fps.empty()?std::wstring(L"FPS —"):viewport_fps,camera_flying,
             ui_language::ItemList{std::move(shading_modes)},ui_language::ItemList{std::move(select_modes)},
             open(control::viewport_view_menu),open(control::viewport_select_menu),open(control::viewport_header_add),open(control::viewport_object_menu),
-            open(control::viewport_tools_menu),pane.bounds.width<660};
-        const std::array<ui_language::KeyBinding,25> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
+            open(control::viewport_tools_menu),pane.bounds.width<660,ui_language::ItemList{std::move(display_toggles)}};
+        const std::array<ui_language::KeyBinding,26> keys{{{"navigation",641},{"path",control::scene_path},{"back",control::scene_back},{"readout",control::viewport_readout},
             {"fps",control::viewport_fps},{"fly_reticle",control::viewport_fly_reticle},{"tool_hint",control::viewport_hint},
             {"cavity",control::viewport_cavity},
             {"forward",control::scene_forward},{"display",control::scene_shading},{"guides",control::scene_guides},
@@ -580,7 +636,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             {"actions",control::viewport_tools_menu},{"step",control::viewport_snap},{"camera",control::viewport_camera},{"mode",control::viewport_hud},
             {"view_menu",control::viewport_view_menu},{"select_menu",control::viewport_select_menu},{"add_menu",control::viewport_header_add},
             {"object_menu",control::viewport_object_menu},{"shading_modes",control::viewport_shading_modes},{"selection_modes",control::viewport_select_modes},
-            {"snapping",control::viewport_snapping}}};
+            {"snapping",control::viewport_snapping},{"display_bar",control::display_bar}}};
         static_cast<void>(ui_document_->append("SceneViewport",control::scene_content,keys,inputs,result));
         continue;
     }
@@ -612,14 +668,16 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             rows->push_back({entity_key,{std::move(title),
                 state.state==world::EntityState::attached_inactive || state.state==world::EntityState::active,
                 session.is_selected(member.id()),static_cast<double>(entity_icon(session,member.id())),
-                parent_key,expansion!=tree_expansion_.end() && expansion->second,std::wstring(mesh_entity?L"mesh-entity":L"entity")}});
+                parent_key,expansion!=tree_expansion_.end() && expansion->second,
+                std::wstring(mesh_entity?L"mesh-entity":L"entity")+(tree_drop_row==entity_key?L" drop-target":L""),state.can_edit,entity_key}});
         }
         const auto expansion=tree_expansion_.find(control::tree_world);
-        const std::array<ui_language::InputValue,10> inputs{ui_language::ItemList{std::move(rows)},
+        const std::array<ui_language::InputValue,11> inputs{ui_language::ItemList{std::move(rows)},
             ui_language::TextEditBinding{control::tree_filter,tree_query},selected==ObjectId{},
             expansion==tree_expansion_.end() || expansion->second,static_cast<double>(ui::ControlIcon::world),
             ui_language::ActionBinding{control::entity_back,can_navigate(-1)},ui_language::ActionBinding{control::entity_forward,can_navigate(1)},
-            double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world)};
+            double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
+            std::wstring(tree_drop_row==control::tree_world?L"drop-target":L"")};
         const std::array<ui_language::KeyBinding,6> keys{{{"tree",control::entity_tree},{"world",control::tree_world},
             {"path.bar",24},{"path.path",control::entity_path},{"path.back",control::entity_back},{"path.forward",control::entity_forward}}};
         static_cast<void>(ui_document_->append("SceneTree",21,keys,inputs,result));
@@ -641,11 +699,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 const auto expansion=tree_expansion_.find(entity_key);
                 const auto state=take(world::inspect_entity(runtime,entry.entity));
                 rows->push_back({entity_key,{std::wstring(session.name(entry.entity)),state.can_edit,inspected==entry.entity,double(entity_icon(session,entry.entity)),
-                    entry.parent,expansion==tree_expansion_.end() || expansion->second,std::wstring(L"entity")}});
+                    entry.parent,expansion==tree_expansion_.end() || expansion->second,std::wstring(L"entity"),false,ui::ControlKey{}}});
                 for(const auto& component:take(world::components(runtime,entry.entity))) {
                     const auto key=bind(component.id(),{},Binding::Kind::structure);
                     rows->push_back({key,{short_type(component.id()),state.can_edit,inspected==component.id(),double(ui::ControlIcon::component),
-                        entity_key,false,std::wstring(L"component")}});
+                        entity_key,false,std::wstring(L"component"),false,ui::ControlKey{}}});
                 }
                 const auto children=take(world::children(runtime,entry.entity));
                 for(auto child=children.rbegin();child!=children.rend();++child) pending.push_back({child->id(),entity_key});
@@ -791,7 +849,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     properties->push_back({property_key(prefix,Binding::Kind::property_row),
                         {spatial_rotation?std::wstring(L"Rotation (°)"):property_caption(name,property.label),ui_language::EditBinding{spatial_position?bind(object,{},Binding::Kind::position_default):spatial_rotation?bind(object,{},Binding::Kind::rotation_default):spatial_scale?bind(object,{},Binding::Kind::scale_default):ui::ControlKey{},editable,false,std::move(tuple)},
                         false,false,editable,ui_language::ActionBinding{field_key,editable},false,std::wstring{},field_key,
-                        color,r,g,b,override_available,overridden,ui_language::ActionBinding{instance?override_key:field_key,override_available && !session.world().running()}}});
+                        color,r,g,b,override_available,overridden,ui_language::ActionBinding{instance?override_key:field_key,override_available && !session.world().running()},
+                        ui_language::ActionBinding{color?bind(object,prefix,Binding::Kind::color_pick):field_key,color && editable}}});
                 }
                 continue;
             }
@@ -843,14 +902,14 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 if(member.second==enumeration->bits) {choice=parameter_label(member.first);break;}
             properties->push_back({property_key(property.path,Binding::Kind::property_row),
                 {caption,std::move(edit),boolean,boolean && std::get<bool>(property.value),editable,
-                 ui_language::ActionBinding{key,editable},enumeration!=nullptr,std::move(choice),key,false,0.0,0.0,0.0,override_available,overridden,ui_language::ActionBinding{instance?override_key:key,override_available && !session.world().running()}}});
+                 ui_language::ActionBinding{key,editable},enumeration!=nullptr,std::move(choice),key,false,0.0,0.0,0.0,override_available,overridden,ui_language::ActionBinding{instance?override_key:key,override_available && !session.world().running()},ui_language::ActionBinding{key,false}}});
         }
         properties=parameter_by_category_ && material_object==ObjectId{} && material_bindings?
             category_properties("Material"):component_properties;
         const auto selector=[&](ui::ControlKey key,std::wstring caption,std::wstring choice) {
             if(!group_matches && lowercase(caption+L" "+choice).find(folded)==std::wstring::npos)return;
             properties->push_back({key,{std::move(caption),ui_language::EditBinding{},false,false,!session.world().running(),
-                ui_language::ActionBinding{key,!session.world().running()},true,std::move(choice),key,false,0.0,0.0,0.0,false,false,ui_language::ActionBinding{key,false}}});
+                ui_language::ActionBinding{key,!session.world().running()},true,std::move(choice),key,false,0.0,0.0,0.0,false,false,ui_language::ActionBinding{key,false},ui_language::ActionBinding{key,false}}});
         };
         if(resource && !instance) {
             const auto asset=take(session.material_asset(object));
@@ -1040,6 +1099,15 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 items=std::move(lighting_items);
             } else if(auto header_items=header_menu(source->key);!header_items.empty()) {
                 items=std::move(header_items);
+            } else if(const auto* row=binding(source->key);row && row->kind==Binding::Kind::object && row->path.empty() &&
+                      source->kind==ui::ControlKind::tree_item) {
+                // Houdini tree / Blender outliner row menu over the shared command model.
+                using enum Command;
+                items=commands({rename_selected,duplicate_selected,erase_entities,unparent_selected,focus});
+                for(auto& item:items) item.separator_before=false;
+                items[3].separator_before=items[4].separator_before=true;
+                items[0].icon=ui::ControlIcon::rename;items[1].icon=ui::ControlIcon::duplicate;items[2].icon=ui::ControlIcon::trash;
+                items[3].icon=ui::ControlIcon::unparent;
             } else if (const auto* group=command_group(source->key)) {
                 if(group->id==CommandGroup::view) {
                     items.push_back(command_item(Command::focus));
@@ -1187,9 +1255,70 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const std::array<ui_language::KeyBinding,1> keys{{{"menu",control::viewport_pie}}};
         static_cast<void>(ui_document_->append("ViewportPie",0,keys,inputs,result));
     }
+    if (color_edit && !pie_menu()) {
+        // One popup per session; the colour editor is projected last, after every owner.
+        const auto& edit=*color_edit;
+        const auto hsv=rgb_to_hsv(edit.value);
+        const auto field=[](ui::ControlKey key,const wchar_t* label,double value,double maximum,double step,ui::VectorAxis axis) {
+            ui::NumberField result{key,label,value,value,0,maximum,step,step*.1,axis};
+            result.slider.reset();return result;
+        };
+        ui_language::EditBinding rgb{control::color_group,true,false,{
+            field(control::color_rgb,L"R",edit.value[0],1,.005,ui::VectorAxis::x),field(control::color_rgb+1,L"G",edit.value[1],1,.005,ui::VectorAxis::y),
+            field(control::color_rgb+2,L"B",edit.value[2],1,.005,ui::VectorAxis::z)}};
+        ui_language::EditBinding hsv_edit{control::color_group+1,true,false,{
+            field(control::color_hsv,L"H",hsv[0],360,1,ui::VectorAxis::none),field(control::color_hsv+1,L"S",hsv[1],1,.005,ui::VectorAxis::none),
+            field(control::color_hsv+2,L"V",hsv[2],1,.005,ui::VectorAxis::none)}};
+        const auto clamp01=[](double v){return std::clamp(v,0.0,1.0);};
+        const std::array<ui_language::InputValue,13> inputs{double(std::clamp(edit.x,0.f,std::max(0.f,size.width-420.f))),
+            double(std::clamp(edit.y,0.f,std::max(0.f,size.height-200.f))),
+            clamp01(edit.value[0]),clamp01(edit.value[1]),clamp01(edit.value[2]),
+            clamp01(edit.original[0]),clamp01(edit.original[1]),clamp01(edit.original[2]),
+            std::move(rgb),std::move(hsv_edit),ui_language::TextEditBinding{control::color_hex,edit.hex},
+            ui_language::ActionBinding{control::color_revert,true},ui_language::ActionBinding{control::color_done,true}};
+        const std::array<ui_language::KeyBinding,1> keys{{{"editor",control::color_editor}}};
+        static_cast<void>(ui_document_->append("ColorEditor",0,keys,inputs,result));
+    }
     if (ui_document_->candidate_failed()) {
         reject_ui_controls(std::string(ui_error()));
         return describe(session,size,frame,project);
+    }
+    return result;
+}
+std::array<double,3> rgb_to_hsv(std::array<double,3> c) noexcept {
+    const auto high=std::max({c[0],c[1],c[2]}),low=std::min({c[0],c[1],c[2]}),span=high-low;
+    double h=0;
+    if(span>0) {
+        if(high==c[0]) h=60*std::fmod((c[1]-c[2])/span,6.0);
+        else if(high==c[1]) h=60*((c[2]-c[0])/span+2);
+        else h=60*((c[0]-c[1])/span+4);
+        if(h<0) h+=360;
+    }
+    return {h,high>0?span/high:0,high};
+}
+std::array<double,3> hsv_to_rgb(std::array<double,3> hsv) noexcept {
+    const auto h=std::fmod(std::max(hsv[0],0.0),360.0)/60,s=std::clamp(hsv[1],0.0,1.0),v=std::max(hsv[2],0.0);
+    const auto chroma=v*s,x=chroma*(1-std::abs(std::fmod(h,2.0)-1)),m=v-chroma;
+    const int sector=int(h);
+    const std::array<std::array<double,3>,6> table{{{chroma,x,0},{x,chroma,0},{0,chroma,x},{0,x,chroma},{x,0,chroma},{chroma,0,x}}};
+    const auto& rgb=table[std::clamp(sector,0,5)];
+    return {rgb[0]+m,rgb[1]+m,rgb[2]+m};
+}
+std::wstring color_hex(std::array<double,3> c) {
+    const auto byte=[](double v){return int(std::lround(std::clamp(v,0.0,1.0)*255));};
+    return std::format(L"{:02X}{:02X}{:02X}",byte(c[0]),byte(c[1]),byte(c[2]));
+}
+std::optional<std::array<double,3>> parse_color_hex(std::wstring_view text) {
+    if(!text.empty() && text.front()==L'#') text.remove_prefix(1);
+    if(text.size()!=6) return {};
+    std::array<double,3> result{};
+    for(std::size_t i=0;i<3;++i) {
+        int value=0;
+        for(std::size_t j=0;j<2;++j) {
+            const auto c=text[i*2+j];const int digit=c>=L'0' && c<=L'9'?c-L'0':c>=L'a' && c<=L'f'?c-L'a'+10:c>=L'A' && c<=L'F'?c-L'A'+10:-1;
+            if(digit<0) return {};value=value*16+digit;
+        }
+        result[i]=value/255.0;
     }
     return result;
 }

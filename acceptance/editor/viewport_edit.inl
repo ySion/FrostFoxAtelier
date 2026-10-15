@@ -343,6 +343,84 @@ void verify_viewport_editing() {
         require(document.selected_entities().size()==1 && document.is_selected(first),"Invert Selection did not complement the selection.");
         take(tool.select_all(document,SelectAll::deselect));require(document.selected_entities().empty(),"Select None kept a selection.");
         take(tool.select_all(document,SelectAll::select));require(document.selected_entities().size()==2,"Select All missed an Entity.");
+        // Houdini display bar: every toggle edits exactly its ViewSettings value.
+        const auto toggle=[&](ui::ControlKey key,bool on){take(workspace.apply_view(document,{ui::ActionKind::activate,key,on}));};
+        toggle(control::display_grid,!workspace.view.reference_grid);toggle(control::display_axes,true);
+        require(workspace.view.origin_axes,"Display bar did not reach origin axes.");
+        toggle(control::display_wire,true);require(workspace.view.wireframe==renderer::Wireframe::overlay,"Wire overlay toggle failed.");
+        toggle(control::display_wire,false);require(workspace.view.wireframe==renderer::Wireframe::off,"Wire overlay did not clear.");
+        toggle(control::display_triangles,true);require(workspace.view.triangle_edges,"Triangle edge toggle failed.");
+        toggle(control::display_triangles,false);
+        {
+            const auto bar=publish(wide);
+            require(std::ranges::count_if(bar,[](const auto& c){return c.key>=control::display_toggle_first && c.key<control::display_toggle_first+8;})==8,
+                "Display bar did not project its eight toggles.");
+        }
+        // Scene Tree: drop resolution, keep-world reparent as one edit, cycle refusal and row menu.
+        {
+            publish(wide);
+            const auto& frame=*ui.presented();
+            const auto centre=[&](ui::ControlKey key){const auto* box=frame.find(key);require(box,"Tree row missing.");
+                return ui::DragPoint{box->bounds.x+box->bounds.width*.5f,box->bounds.y+box->bounds.height*.5f};};
+            const auto first_row=workspace.object_control(first);
+            const auto onto_first=workspace.tree_drop(document,frame,second,centre(first_row));
+            require(onto_first && onto_first->parent==first && onto_first->row==first_row,"Dropping on a row did not target that Entity.");
+            const auto onto_world=workspace.tree_drop(document,frame,second,centre(control::tree_world));
+            require(onto_world && onto_world->parent==ObjectId{},"Dropping on World did not unparent.");
+            const auto world_before=take(world::world_matrix(document.world().runtime(),second));
+            const auto history=document.undo_count();
+            take(document.select_entities(std::array{first},first));publish(wide);
+            take(document.reparent(second,first));take(document.select_entities(std::array{second},second));
+            require(take(world::parent_entity(document.world().runtime(),second))==first && document.undo_count()==history+1,
+                "Tree reparent was not one history entry.");
+            require(take(world::world_matrix(document.world().runtime(),second))==world_before,"Keep-world reparent moved the Entity.");
+            publish(wide);
+            const auto& nested=*ui.presented();
+            const auto* child=nested.find(workspace.object_control(second));
+            require(child!=nullptr,"Dropping did not reveal the moved row under its new parent.");
+            const auto cycle=workspace.tree_drop(document,nested,first,ui::DragPoint{child->bounds.x+4,child->bounds.y+child->bounds.height*.5f});
+            require(!cycle,"An Entity could be dropped onto its own descendant.");
+            take(document.select_entities(std::array{second},second));
+            workspace.menu=ui::ContextMenuRequest{workspace.object_control(second),0,0,0};publish(wide);
+            const auto has=[&](Command command){return std::ranges::any_of(workspace.menu_items,[&](const auto& item){return item.key==static_cast<ui::ControlKey>(command);});};
+            require(has(Command::rename_selected) && has(Command::duplicate_selected) && has(Command::erase_entities) && has(Command::unparent_selected),
+                "Scene Tree row menu lost Rename, Duplicate, Delete or Clear Parent.");
+            const auto unparent=std::ranges::find(workspace.menu_items,static_cast<ui::ControlKey>(Command::unparent_selected),&ui::MenuItem::key);
+            require(unparent->enabled,"Clear Parent was disabled for a parented Entity.");
+            workspace.menu.reset();
+            take(document.undo());
+            require(take(world::parent_entity(document.world().runtime(),second))==ObjectId{},"Undo did not restore the original parent.");
+            take(document.select_entities(std::array{first,second},second));publish();
+        }
+        // Colour editor model: conversions round-trip, and a three-lane group edit is one history entry.
+        {
+            const auto close=[](std::array<double,3> a,std::array<double,3> b){return std::abs(a[0]-b[0])<1e-6 && std::abs(a[1]-b[1])<1e-6 && std::abs(a[2]-b[2])<1e-6;};
+            require(close(hsv_to_rgb(rgb_to_hsv({.25,.5,.75})),{.25,.5,.75}) && close(rgb_to_hsv({1,0,0}),{0,1,1}),
+                "HSV conversion did not round-trip.");
+            require(color_hex({1,.5,0})==L"FF8000" && parse_color_hex(L"#ff8000") && !parse_color_hex(L"12345") && !parse_color_hex(L"GG0000"),
+                "Hex colour formatting or parsing was wrong.");
+            changed(document.create_light(world::LightKind::point,{0,2,0}));
+            const auto light=document.selection().entity;
+            const auto component=take(world::components(document.world().runtime(),light)).front().id();
+            std::vector<world::FieldPath> lanes;
+            for(const auto& property:take(document.properties(component))) if(property.name.starts_with("settings.color.")) lanes.push_back(property.path);
+            require(lanes.size()==3,"Light colour did not expose three channel fields.");
+            const auto history=document.undo_count();
+            take(document.begin_group_edit(component,lanes,4242));
+            const auto typed=[&](float v){return Scalar{v};};
+            const std::array first_preview{typed(.2f),typed(.4f),typed(.6f)},second_preview{typed(.9f),typed(.1f),typed(.3f)};
+            take(document.preview_group_edit(4242,first_preview));take(document.preview_group_edit(4242,second_preview));
+            take(document.commit_edit(4242));
+            require(document.undo_count()==history+1 && std::get<float>(take(document.read_property(component,lanes[0])))==.9f,
+                "A colour edit was not exactly one history entry with its final value.");
+            take(document.undo());
+            require(std::get<float>(take(document.read_property(component,lanes[0])))==1.f && std::get<float>(take(document.read_property(component,lanes[2])))==1.f,
+                "Undo did not restore all three colour channels together.");
+            take(document.begin_group_edit(component,lanes,4243));take(document.preview_group_edit(4243,first_preview));take(document.cancel_edit());
+            require(document.undo_count()==history && std::get<float>(take(document.read_property(component,lanes[1])))==1.f,"Cancel left a colour preview behind.");
+            take(document.undo());
+            take(document.select_entities(std::array{first,second},second));publish();
+        }
         // Shading header segment reflects and drives the same presets as the Z pie.
         take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first+1,true}));publish();
         require(workspace.view.shading==renderer::Shading::smooth && workspace.view.wireframe==renderer::Wireframe::off,

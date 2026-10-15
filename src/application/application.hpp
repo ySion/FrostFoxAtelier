@@ -113,6 +113,7 @@ private:
     ui::ControlKey pie_hot_{};
     bool pending_source_focus_{};
     bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
+    bool pending_name_focus_{}; // F2 focuses the Entity name once Parameters is presented.
     renderer::Renderer renderer_;
     SceneSnapshot scene_;
     bool camera_cut_{true}; // Retained until the renderer accepts the new view.
@@ -165,6 +166,11 @@ private:
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> focus_selected();
     Result<void> frame_entities(bool selected_only);
+    Result<void> open_color_edit(ObjectId,std::span<const FieldId> prefix,ui::ControlKey swatch);
+    Result<bool> color_edit_action(const ui::Action&);
+    Result<void> apply_color(std::array<double,3> rgb);
+    Result<void> finish_color_edit(bool keep);
+    TypeId take_type(ObjectId,std::span<const FieldId>) const;
     Result<void> set_camera(const editor::Camera&,bool cut);
     void sync_world_view();
     std::array<float,3> lighting_focus() const;

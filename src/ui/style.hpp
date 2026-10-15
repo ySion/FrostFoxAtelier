@@ -8,8 +8,9 @@ namespace atelier::ui {
 
 enum class ControlIcon { none, close, maximize, restore, left, right, up, down, grip_horizontal, grip_vertical, plus, back, forward, world, object, axes, component, mesh, folder, search, view_list, view_details, view_tiles, filter, more, pointer, translate, rotate, scale, cursor3d, magnet, fly,
     point_light, area_light, sun_light, sky_light,
-    shade_wire, shade_solid, shade_matcap, shade_lit, overlays, select_new, select_extend, select_subtract, select_invert, select_intersect };
-inline constexpr ControlIcon last_control_icon=ControlIcon::select_intersect;
+    shade_wire, shade_solid, shade_matcap, shade_lit, overlays, select_new, select_extend, select_subtract, select_invert, select_intersect,
+    grid, axes_origin, wire_overlay, lights_off, fps, color_picker, rename, duplicate, trash, unparent };
+inline constexpr ControlIcon last_control_icon=ControlIcon::unparent;
 enum class Role { normal, panel, title, caption };
 enum class IconPlacement { leading, above };
 enum class TextAlign { left, center, right };

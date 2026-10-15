@@ -273,7 +273,7 @@ private:
                     "view","row_height","header_height","tile_width","tile_height","item_gap","empty_text",
                     "modified","out_of_flow","offset_x","offset_y","anchor_x","anchor_y","pivot_x","pivot_y",
                     "flex_width","grow_width","red","green","blue","value","minimum","maximum","step","vertical","click_action",
-                    "menu_branch","menu_behavior","radio_group","document"};
+                    "menu_branch","menu_behavior","radio_group","document","draggable"};
                 const auto at=std::ranges::find(names,property.text);
                 if (at==std::end(names)) reject(property.position,"Unknown UI property.");
                 value=static_cast<Property>(at-std::begin(names));
@@ -308,7 +308,7 @@ private:
                 if (kind==NodeKind::parameter_row && value!=Property::text && value!=Property::classes &&
                     value!=Property::enabled && value!=Property::collapsed && value!=Property::modified)
                     reject(property.position,"ParameterRow owns its shared layout; put outer layout on its parent.");
-                if ((value==Property::tree_parent || value==Property::expanded) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
+                if ((value==Property::tree_parent || value==Property::expanded || value==Property::draggable) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
                 if (value==Property::filter && kind!=NodeKind::tree) reject(property.position,"filter requires Tree.");
                 if (value==Property::mounted && kind!=NodeKind::component && kind!=NodeKind::repeat) reject(property.position,"mounted requires a component or Repeat scope.");
                 if (value==Property::items && kind!=NodeKind::repeat) reject(property.position,"items requires Repeat.");

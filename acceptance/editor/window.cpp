@@ -107,6 +107,14 @@ struct EditorAcceptanceAccess {
     static void set_cursor(Application& app,math::Vector3 at) {app.viewport_tool_.cursor=at;}
     static Result<void> ui_action(Application& app,ui::ControlKey key,ui::ActionValue value={}) {return app.action({ui::ActionKind::activate,key,std::move(value)});}
     static void select_tab(Application& app,ui::ControlKey tab) {app.workspace_.dock.select(tab);}
+    static ui::ControlKey color_pick(const Application& app) {
+        if(!app.presented()) return 0;
+        for(const auto& box:app.presented()->controls) if(box.kind==ui::ControlKind::button && box.action_target) {
+            const auto* binding=app.workspace_.binding(box.action_target);
+            if(binding && binding->kind==editor::Workspace::Binding::Kind::color_pick) return box.action_target;
+        }
+        return 0;
+    }
     static ui::ControlKey viewport_readout_key(const Application&) {return editor::control::viewport_readout;}
     // Drive the real tool entry points without OS input (snapshot only).
     static void tool_key(Application& app,std::uint32_t vk,math::Vector2 pointer) {
@@ -1023,6 +1031,8 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     Access::tool_cancel(app);
     // An enum menu and colour swatch row, through the real light creation command.
     model(Access::command(app,Command::create_rectangle_light));shot("snapshot-light-parameters.png");
+    if(const auto pick=Access::color_pick(app)) {model(Access::ui_action(app,pick));shot("snapshot-color-editor.png");
+        model(Access::ui_action(app,atelier::editor::control::color_done));}
     // Layout review: category grouping and the Entity Structure page.
     model(Access::ui_action(app,atelier::editor::control::group_categories,true));shot("snapshot-parameters-category.png");
     model(Access::ui_action(app,atelier::editor::control::group_components,true));

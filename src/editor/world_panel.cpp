@@ -135,7 +135,7 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
         }
         rows.push_back({key::root+8192+static_cast<unsigned>(option->option),
             {std::move(label),edit,boolean,view_value(view,option->option)!=0,enabled,ActionBinding{id,enabled},enumeration,
-             enumeration?choice_title(*option,view_value(view,option->option)):std::wstring{},id,false,0.,0.,0.,false,false,ActionBinding{id,false}}});
+             enumeration?choice_title(*option,view_value(view,option->option)):std::wstring{},id,false,0.,0.,0.,false,false,ActionBinding{id,false},ActionBinding{id,false}}});
     };
     const auto scalar=[&](std::vector<Item>& rows,std::wstring label,ViewOption option) {row(rows,std::move(label),{&option,1});};
     auto volume=std::make_shared<std::vector<Item>>();

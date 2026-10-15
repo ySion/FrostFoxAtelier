@@ -29,7 +29,8 @@ enum class Command : std::uint64_t {
     // Blender viewport header semantics: Select menu, Object > Clear, View > Frame All, select modes.
     select_all=961, select_none=962, select_invert=963, select_box=964,
     clear_location=965, clear_rotation=966, clear_scale=967, frame_all=968,
-    select_mode_set=969, select_mode_extend=970, select_mode_subtract=971, select_mode_invert=972, select_mode_intersect=973
+    select_mode_set=969, select_mode_extend=970, select_mode_subtract=971, select_mode_invert=972, select_mode_intersect=973,
+    rename_selected=986, unparent_selected=987
 };
 inline constexpr std::array camera_commands{Command::view_perspective,Command::view_top,Command::view_front,
     Command::view_right,Command::view_bottom,Command::view_back,Command::view_left};
@@ -97,6 +98,8 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::remove_transform,CommandGroup::edit,L"Remove Transform",L""},
     CommandDefinition{Command::erase_selected,CommandGroup::edit,L"Delete Selected Object",L"Delete",true},
     CommandDefinition{Command::erase_entities,CommandGroup::edit,L"Delete Entities",L"X"},
+    CommandDefinition{Command::rename_selected,CommandGroup::edit,L"Rename",L"F2"},
+    CommandDefinition{Command::unparent_selected,CommandGroup::edit,L"Clear Parent",L"Alt+P"},
     CommandDefinition{Command::select_all,CommandGroup::edit,L"Select All",L"A",true},
     CommandDefinition{Command::select_none,CommandGroup::edit,L"Select None",L"Alt+A"},
     CommandDefinition{Command::select_invert,CommandGroup::edit,L"Invert Selection",L"Ctrl+I"},

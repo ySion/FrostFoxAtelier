@@ -14,6 +14,11 @@
 #include "ui_language/live_document.hpp"
 
 namespace atelier::editor {
+// Colour editor conversions (sRGB-agnostic: the edited field values are used as-is).
+std::array<double,3> rgb_to_hsv(std::array<double,3>) noexcept;
+std::array<double,3> hsv_to_rgb(std::array<double,3>) noexcept;
+std::wstring color_hex(std::array<double,3>);
+std::optional<std::array<double,3>> parse_color_hex(std::wstring_view);
 namespace control {
 constexpr ui::ControlKey command_key(Command command) { return static_cast<ui::ControlKey>(command); }
 inline constexpr auto add_entity=command_key(Command::create_entity), remove_selected=command_key(Command::erase_selected),
@@ -32,6 +37,12 @@ inline constexpr ui::ControlKey viewport_fps=904, viewport_fly_reticle=860, view
 inline constexpr ui::ControlKey viewport_view_menu=974, viewport_select_menu=975, viewport_object_menu=976, viewport_header_add=977;
 inline constexpr ui::ControlKey viewport_shading_modes=948, viewport_select_modes=949, viewport_snapping=978;
 inline constexpr ui::ControlKey object_clear_menu=979, object_snap_menu=980, view_viewpoint_menu=995, select_mode_menu=996;
+// Houdini's right-hand display bar: view toggles that never touch scene history.
+inline constexpr ui::ControlKey display_bar=1006, display_grid=1007, display_axes=1008, display_wire=1009,
+    display_triangles=1010, display_cavity=1011, display_fps=1012, display_wire_only=1013, display_lit=1014;
+inline constexpr ui::ControlKey display_toggle_first=1015; // Eight bar buttons: 1015..1022, below dynamic bindings.
+// Colour editor popup and its fields (fixed keys; one editor at a time).
+inline constexpr ui::ControlKey color_editor=940, color_rgb=941, color_hsv=944, color_hex=953, color_revert=954, color_done=955, color_group=956; // rgb 941..943, hsv 944..946
 inline constexpr ui::ControlKey scene_tab=600, entities_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
 inline constexpr ui::ControlKey assets_tab=604, assets_content=650;
 inline constexpr ui::ControlKey output_tab=607,output_content=690,output_table=691;
@@ -71,7 +82,7 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 struct Workspace {
     struct Binding {
         enum class Kind { object, structure, property_group, field, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
-            material_slot, material_texture, material_override };
+            material_slot, material_texture, material_override, color_pick };
         ui::ControlKey key{};
         ObjectId object;
         std::vector<FieldId> path; // Empty for object rows; fields address the actual inspected object.
@@ -97,6 +108,14 @@ struct Workspace {
     bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Entity instance.
     std::string material_inspection;
     void reset_layout();
+    // Scene Tree drag: the row under the pointer, or World, receives the dragged Entities.
+    struct TreeDrop { ObjectId parent; ui::ControlKey row{}; };
+    std::optional<TreeDrop> tree_drop(const Session&,const ui::UiFrame&,ObjectId dragged,ui::DragPoint) const;
+    ui::ControlKey tree_drop_row{}; // Highlighted drop target while a Scene Tree drag is live.
+    // Open colour editor: the edited object/fields, the value at open (for revert and the
+    // original chip) and where the popup sits. Edits run as one Session group transaction.
+    struct ColorEdit { ObjectId object; std::vector<world::FieldPath> paths; std::array<double,3> original{}, value{}; float x{}, y{}; std::wstring hex; };
+    std::optional<ColorEdit> color_edit;
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }
     bool can_navigate(int direction) const noexcept;

@@ -99,7 +99,7 @@ const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::direc
         ui::ControlIcon icon,bool initially_expanded=true) {
         const auto expansion=tree_expansion_.find(key);
         rows->push_back({key,{std::move(text),enabled,selected,static_cast<double>(icon),parent,
-            expansion==tree_expansion_.end()?initially_expanded:expansion->second,std::wstring{}}});
+            expansion==tree_expansion_.end()?initially_expanded:expansion->second,std::wstring{},false,ui::ControlKey{}}});
     };
     row(browser_control::project,0,L"Project",has_project_,!engine_ && directory_.empty(),ui::ControlIcon::folder);
     for (const auto& entry:directories_) {

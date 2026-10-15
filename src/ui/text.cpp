@@ -272,6 +272,16 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         case Symbol::select_subtract:return Icon::select_subtract;
         case Symbol::select_invert:return Icon::select_invert;
         case Symbol::select_intersect:return Icon::select_intersect;
+        case Symbol::grid:return Icon::grid;
+        case Symbol::axes_origin:return Icon::axes_origin;
+        case Symbol::wire_overlay:return Icon::wire_overlay;
+        case Symbol::lights_off:return Icon::lights_off;
+        case Symbol::fps:return Icon::fps;
+        case Symbol::color_picker:return Icon::color_picker;
+        case Symbol::rename:return Icon::rename;
+        case Symbol::duplicate:return Icon::duplicate;
+        case Symbol::trash:return Icon::trash;
+        case Symbol::unparent:return Icon::unparent;
         case Symbol::mesh:return Icon::mesh;
         case Symbol::object:return Icon::object;
         case Symbol::component:return Icon::component;

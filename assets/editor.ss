@@ -99,7 +99,7 @@ tree_item {
 tree_item:hover { background: #414141; }
 tree_item:focus { border-width: 0dip; color: #eeeeee; }
 tree_item:selected { background: #56564e; color: #ffffff; }
-tree_item.actor { indicator-color: #c0c7b2; }
+tree_item.entity { indicator-color: #c0c7b2; }
 tree_item.transform { indicator-color: #91b6cb; }
 tree_item.component { indicator-color: #b7bec3; }
 popup { background: #393939; border-color: #949494; border-style: outset; }
@@ -191,6 +191,10 @@ button.section-tab:selected, button.section-tab:selected:hover {
 button.section-tab.joined:selected { border-edges: top right; }
 .parameter-section { background: #4a4a4a; padding: 2dip 7dip; }
 .color-swatch { border-color: #777777; border-width: 1dip; border-style: inset; }
+button.color-swatch { padding: 0dip; }
+button.color-swatch, button.color-swatch:hover, button.color-swatch:pressed { background-image: none; }
+button.color-swatch:hover { border-color: #cccccc; }
+popup.color-editor { background: #3a3a3a; border-width: 0.667dip; border-color: #949494; border-shadow-color: #262626; border-style: outset; }
 
 .dock-close { indicator-size: 8dip; }
 .dock-tool { indicator-size: 17dip; color: #cccccc; indicator-background: #9eafb4; }
@@ -250,7 +254,8 @@ number:disabled { accent-color: #616161; }
 }
 button.shelf-tool:hover { background: #484848; }
 button.shelf-tool:pressed { background: #555555; }
-tree_item.mesh-actor { indicator-color: #a7c0cb; }
+tree_item.mesh-entity { indicator-color: #a7c0cb; }
+tree_item.drop-target { background: #4f6a80; color: #ffffff; }
 
 /* File browser: shared selection and geometry across list/details/tiles. */
 .browser-tool { padding: 1dip 5dip; font-size: 11dip; }
@@ -391,3 +396,12 @@ button.viewport-segment-item:selected, button.viewport-segment-item:selected:hov
     background: #5d7289; background-image: none; indicator-color: #ffffff; border-color: #374552;
 }
 button.section-tab.header-tab { padding: 0dip 8dip; font-size: 12dip; }
+.viewport-display-bar { border-edges: left; }
+button.display-toggle {
+    background: transparent; background-image: none; border-width: 0dip; padding: 0dip;
+    indicator-size: 17dip; indicator-color: #c4ccd0;
+}
+button.display-toggle:hover { background: #4b4b4b; background-image: none; }
+button.display-toggle:selected, button.display-toggle:selected:hover { background: #5d7289; background-image: none; indicator-color: #ffffff; }
+button.display-toggle.grouped { border-edges: top; border-width: 0.667dip; border-color: #4d4d4d; }
+button.display-toggle.grouped:selected { border-edges: all; border-color: #374552; }
