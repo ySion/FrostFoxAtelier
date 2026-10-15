@@ -35,7 +35,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 ## 能力和业务边界
 
-实时参数 schema、枚举和范围由 capabilities 返回，职责如下：
+实时参数 schema、枚举和范围由 capabilities 返回。`display_options` 的每项同时包含 `label`、`category`、`description` 与 `scope`；它们直接来自 UI 使用的同一 `ViewOptionInfo` 定义，描述支持 UTF-8 中英文与换行。职责如下：
 
 | 操作 | 权威入口与行为 |
 | --- | --- |
@@ -69,6 +69,8 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 `scene.transform / scene.remove_transform / scene.reparent / scene.set_space_reference` 的 `object` 必须是 Entity 句柄，组件不接受 TRS。reparent 的 parent 为 Entity 句柄，null 或省略表示顶层；keep_world 默认 true，index 可省略。set_space_reference 的 origin 为 null 时继承组合祖先，空字符串表示世界，Entity 句柄表示显式空间参考；keep_world 默认 true。
 
 完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。组件目录保留反射参数与材质，组件记录不含 TRS。创建子实体复用 scene.create 和 scene.reparent；没有第二套 create_child 工厂或对象身份。
+
+`editor.inspect` 的对象记录与 `material.inspect` 共享 `type_description` 和 `properties` 输出。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；说明不包含可执行入口，查询不改变场景状态或历史。
 
 材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存实际材质草稿并核对已载入贴图内容，原工程不变。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
 
@@ -119,7 +121,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 当前 Renderer 首次 Scene Lit 绘制同步准备相关管线，同实例可复用；目前没有公开的异步准备入口。同步调用期间主线程无法及时处理状态查询和取消，取消在下一个宿主边界执行。准备阶段与正式采样分开，避免把冷启动混进等待帧；渐进准备和跨进程 shader 缓存由 Renderer/RHI 后续演进。准备进程的 CPU 时长或工作集不能作为 GPU 帧时。
 
-准备耗时应同时记录构建配置、显卡/驱动、是否启用 GPU validation 及管线是否已准备。Control 端到端验收开启了 --gpu-validation，其耗时不能直接代表普通编辑器启动体验，也不能与未开启验证的样本直接比较。当前协议未返回显卡及验证模式，调用方需随测量记录这些条件；单次工作流观察不等同于性能基准。
+准备耗时应同时记录构建配置、显卡/驱动、是否启用 GPU validation 及管线是否已准备。Control 默认完整端到端验收开启了 --gpu-validation，其耗时不能直接代表普通编辑器启动体验，也不能与未开启验证的样本直接比较。当前协议未返回显卡及验证模式，调用方需随测量记录这些条件；单次工作流观察不等同于性能基准。
 
     {
       "request_id": "shadows-ab-01",
@@ -215,6 +217,11 @@ repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、
 
 独立工程和真实编辑器进程通过命名管道验收：发现与 CLI、创建/选择/组件/属性/TRS、Undo/Redo、相机、显示约束、重复请求、请求/任务淘汰、过期 token、未保存场景导出/重开、游戏和 UI 发布快照、额外文件拒绝、重开失败保留原文档、嵌套输出拒绝、多接受帧捕获、Scene Lit、失败与无效修改保留任务、取消、上下文变化、超时、断线和关闭。需要可绘制的独立窗口，不要求键盘焦点或人工输入；报告和图像保存在构建目录 control-acceptance/。
 
+描述元数据专项复用同一驱动与真实命名管道，只检查选项 schema、UTF-8／换行和 Vector 聚合字段说明；创建 Mesh 后撤销到干净状态，正常关闭独立编辑器并核对原场景文件的 SHA-256。该模式使用 `--no-activate`，不置顶、不启用 GPU validation，不进入渲染对照或复现导出：
+
+    ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/control-descriptions-dev --descriptions
+    ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/control-descriptions-release --descriptions
+
 DDGI 接线专项沿同一驱动运行：
 
     ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/ddgi-control-dev --ddgi-debug
@@ -224,4 +231,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v6 保存；`direct_reference` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`scene.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label` 和 `category`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v6 保存；`direct_reference` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`scene.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

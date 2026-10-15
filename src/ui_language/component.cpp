@@ -35,6 +35,7 @@ struct ItemsReference { std::uint32_t slot; };
 struct ActionReference { std::uint32_t slot; };
 struct TableReference { std::uint32_t slot; };
 struct CodeReference { std::uint32_t slot; };
+struct TooltipReference { std::uint32_t slot; };
 InputValue initial(InputKind kind) {
     switch (kind) {
     case InputKind::boolean:return false;
@@ -47,6 +48,7 @@ InputValue initial(InputKind kind) {
     case InputKind::action:return ActionBinding{};
     case InputKind::table:return TableBinding{};
     case InputKind::code:return CodeBinding{};
+    case InputKind::tooltip:return TooltipBinding{};
     }
     throw std::logic_error("Unknown UI input kind.");
 }
@@ -146,6 +148,7 @@ struct Context {
     ActionReference read_action(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<ActionBinding>(d.inputs.at(index)));return {index}; }
     TableReference read_table(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<TableBinding>(d.inputs.at(index)));return {index}; }
     CodeReference read_code(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<CodeBinding>(d.inputs.at(index)));return {index}; }
+    TooltipReference read_tooltip(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<TooltipBinding>(d.inputs.at(index)));return {index}; }
     KeyReference node_key(std::uint32_t slot) const {
         auto& d=data();static_cast<void>(d.nodes.at(slot));return {static_cast<std::uint32_t>(d.inputs.size()+slot)};
     }
@@ -199,6 +202,15 @@ struct Context {
     static void text(ui::Control& node,std::uint32_t property,std::wstring value) {
         if (static_cast<Property>(property)==Property::text || static_cast<Property>(property)==Property::empty_text) node.text=std::move(value);
         else if (static_cast<Property>(property)==Property::filter) node.tree_filter=std::move(value);
+        else if (const auto kind=static_cast<Property>(property);kind==Property::tooltip || kind==Property::tooltip_title || kind==Property::tooltip_identity) {
+            const auto member=kind==Property::tooltip?&ui::Tooltip::description:
+                kind==Property::tooltip_title?&ui::Tooltip::title:&ui::Tooltip::identity;
+            if (node.tooltip && node.tooltip.get()->*member==value) return;
+            auto tooltip=node.tooltip?*node.tooltip:ui::Tooltip{};
+            tooltip.*member=std::move(value);
+            node.tooltip=tooltip.title.empty() && tooltip.identity.empty() && tooltip.description.empty()?nullptr:
+                std::make_shared<const ui::Tooltip>(std::move(tooltip));
+        }
         else if (static_cast<Property>(property)==Property::menu_behavior) {
             if (value==L"command") node.menu_behavior=ui::MenuBehavior::command;
             else if (value==L"checkbox") node.menu_behavior=ui::MenuBehavior::checkbox;
@@ -341,7 +353,13 @@ struct Context {
     void set_document(std::uint32_t slot,std::uint32_t,CodeReference reference) {
         target(slot).code=std::get<CodeBinding>(data().inputs.at(reference.slot));
     }
+    void set_tooltip(std::uint32_t slot,std::uint32_t,TooltipReference reference) {
+        auto& current=target(slot).control.tooltip;
+        const auto& next=std::get<TooltipBinding>(data().inputs.at(reference.slot));
+        if (current!=next && (!current || !next || *current!=*next)) current=next;
+    }
     void set_argument_code(std::uint32_t slot,std::uint32_t index,CodeReference value) { argument(slot,index,std::get<CodeBinding>(data().inputs.at(value.slot))); }
+    void set_argument_tooltip(std::uint32_t slot,std::uint32_t index,TooltipReference value) { argument(slot,index,std::get<TooltipBinding>(data().inputs.at(value.slot))); }
     void argument(std::uint32_t slot,std::uint32_t index,InputValue value) {
         target(slot).arguments.at(index)=std::move(value);
     }
@@ -391,6 +409,8 @@ Result<TypeId> register_types(Runtime& runtime) {
         .field<&TableReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(TableReference,slot)).build());
     definitions.push_back(NativeRegistration<CodeReference>(runtime,"ui.CodeReference",TypeKind::record)
         .field<&CodeReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(CodeReference,slot)).build());
+    definitions.push_back(NativeRegistration<TooltipReference>(runtime,"ui.TooltipReference",TypeKind::record)
+        .field<&TooltipReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(TooltipReference,slot)).build());
     using C=detail::Context;
     definitions.push_back(NativeRegistration<C>(runtime,"ui.ComponentContext",TypeKind::object)
         .method<&C::read_bool>("read_bool",true).method<&C::read_number>("read_number",true).method<&C::read_edit>("read_edit",true)
@@ -408,6 +428,9 @@ Result<TypeId> register_types(Runtime& runtime) {
         .method<&C::read_code>("read_code",true)
         .method<&C::set_document>("set_document",true)
         .method<&C::set_argument_code>("set_argument_code",true)
+        .method<&C::read_tooltip>("read_tooltip",true)
+        .method<&C::set_tooltip>("set_tooltip",true)
+        .method<&C::set_argument_tooltip>("set_argument_tooltip",true)
         .method<&C::node_key>("node_key",true)
         .method<&C::set_text_reference>("set_text_reference",true)
         .method<&C::set_text_from_edit>("set_text_from_edit",true)
@@ -759,6 +782,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             ui::append_parameter_row(output,{node.control.key,node.label,node.body,0,node.control.parent,
                 node.control.text,node.control.enabled,node.control.modified});
             output.front().layout.collapsed=node.control.layout.collapsed;
+            output.front().tooltip=node.control.tooltip;
             output.front().classes.insert(output.front().classes.end(),node.control.classes.begin(),node.control.classes.end());
         } else if (kind!=NodeKind::number_row) output.push_back(node.control);
         else if (!node.edit.fields.empty()) {
@@ -766,6 +790,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 node.control.text,node.control.enabled && node.edit.enabled,node.edit.modified},node.edit.fields);}
             catch (const std::invalid_argument& error) {return failure(declaration.source_name+": "+declaration.nodes[i].name+": "+error.what());}
             output.front().layout.collapsed=node.control.layout.collapsed;
+            output.front().tooltip=node.control.tooltip;
             output.front().classes.insert(output.front().classes.end(),node.control.classes.begin(),node.control.classes.end());
         }
         for (const auto& control:output) if (auto valid=ui::validate_control_properties(control);!valid)

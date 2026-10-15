@@ -1027,6 +1027,7 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
 }
 #include "performance.inl"
 #include "surfaces.inl"
+#include "tooltips_window.inl"
 #include "native_dialogs.inl"
 #include "dock_resize.inl"
 #include "viewport_navigation.inl"

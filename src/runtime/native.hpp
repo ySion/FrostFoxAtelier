@@ -61,10 +61,11 @@ template<class T>
 class NativeRegistration {
     static_assert(std::default_initializable<T> && std::is_nothrow_destructible_v<T>);
 public:
-    NativeRegistration(Runtime& runtime, std::string name, TypeKind kind)
+    NativeRegistration(Runtime& runtime, std::string name, TypeKind kind, std::string description = {})
         : runtime_(runtime) {
         definition_.name = std::move(name);
         definition_.kind = kind;
+        definition_.description = std::move(description);
         definition_.native = {
             sizeof(T), alignof(T), detail::representation<T>(),
             [](void* address) { std::construct_at(static_cast<T*>(address)); },
@@ -113,41 +114,41 @@ public:
     }
 
     template<auto Pointer>
-    NativeRegistration& field(std::string name) {
+    NativeRegistration& field(std::string name, std::string description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
-        return field<Pointer>(std::move(name), {TypeReference::native<Value>()});
+        return field<Pointer>(std::move(name), {TypeReference::native<Value>()}, std::nullopt, {}, {}, std::move(description));
     }
 
     // Explicit descriptions allow references to definitions in the same batch.
     template<auto Pointer>
     NativeRegistration& field(std::string name, ValueDefinition value, std::optional<std::size_t> offset = std::nullopt,
-        std::string label = {}, std::string category = {}) {
+        std::string label = {}, std::string category = {}, std::string description = {}) {
         using Traits = detail::Member<decltype(Pointer)>;
         using Value = typename Traits::Value;
         static_assert(std::same_as<typename Traits::Owner, T>);
         static_assert(!std::is_const_v<Value> && !std::is_volatile_v<Value>);
         definition_.fields.push_back({std::move(name), std::move(value),
             [](void* object) noexcept -> void* { return std::addressof(static_cast<T*>(object)->*Pointer); },
-            detail::representation<Value>(), true, offset, {}, std::move(label), std::move(category)});
+            detail::representation<Value>(), true, offset, {}, std::move(label), std::move(category), std::move(description)});
         return *this;
     }
 
     template<auto Pointer>
     NativeRegistration& hidden_field(std::string name, ValueDefinition value,
-        std::string label = {}, std::string category = {}) {
-        field<Pointer>(std::move(name), std::move(value), std::nullopt, std::move(label), std::move(category));
+        std::string label = {}, std::string category = {}, std::string description = {}) {
+        field<Pointer>(std::move(name), std::move(value), std::nullopt, std::move(label), std::move(category), std::move(description));
         definition_.fields.back().exposed = false;
         return *this;
     }
 
     template<auto Pointer>
-    NativeRegistration& hidden_field(std::string name) {
+    NativeRegistration& hidden_field(std::string name, std::string description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
-        return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()});
+        return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, std::move(description));
     }
 
     template<auto Pointer>
-    NativeRegistration& method(std::string name, bool preserves_borrows = false) {
+    NativeRegistration& method(std::string name, bool preserves_borrows = false, std::string description = {}) {
         using Traits = detail::Method<decltype(Pointer)>;
         static_assert(std::same_as<typename Traits::Owner, T>);
         using Args = typename Traits::Arguments;
@@ -156,6 +157,7 @@ public:
         MethodDefinition method;
         method.name = std::move(name);
         method.preserves_borrows = preserves_borrows;
+        method.description = std::move(description);
         method.signature.receiver = ReceiverDefinition{TypeReference::native<T>(), Traits::receiver_read_only};
         if constexpr (!std::same_as<Return, void>)
             method.signature.result = ValueDefinition{TypeReference::native<Return>()};

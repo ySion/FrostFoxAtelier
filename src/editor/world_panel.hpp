@@ -1,6 +1,7 @@
 #pragma once
 #include "editor/view_options.hpp"
 #include "editor/performance.hpp"
+#include "editor/property_row.hpp"
 #include "renderer/renderer.hpp"
 #include "ui_language/live_document.hpp"
 
@@ -31,6 +32,7 @@ private:
     unsigned slot_{};
     std::optional<Edit> edit_;
     RenderPerformance performance_;
+    mutable PropertyHelpCache help_;
     std::array<renderer::ProbeVolumeStats,renderer::probe_volume_limit> observed_{};
     std::array<std::array<std::wstring,6>,renderer::probe_volume_limit> readouts_{};
     double displayed(const renderer::ViewSettings&,ViewOption) const;

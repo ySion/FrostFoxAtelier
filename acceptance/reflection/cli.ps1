@@ -63,6 +63,15 @@ Run-Generator 'presentation' $valid.Replace('AFIELD()', 'AFIELD(Name="value", La
 if (-not (Get-Content -Raw $generatedSource).Contains('"Position", "Transform"')) {
     throw 'Generated registration lost field presentation metadata.'
 }
+Run-Generator 'empty-description' $valid.Replace('AFIELD()', 'AFIELD(DESC="")')
+$described = $valid.Replace('Name="probe.Widget"', 'Name="probe.Widget", DESC="Widget 类型\r\n说明"').Replace(
+    'AFIELD() ProbeScalar value{};',
+    'AFIELD(DESC="Value 字段\n说明") ProbeScalar value{}; AFUNCTION(DESC="Read 方法\t说明") float read() const { return value; }')
+Run-Generator 'description' $described
+$descriptionOutput = Get-Content -Raw -Encoding utf8 $generatedSource
+foreach ($text in @('"Widget 类型\r\n说明"', '"Value 字段\n说明"', '"Read 方法\t说明"')) {
+    if (-not $descriptionOutput.Contains($text)) { throw 'Generated registration lost UTF-8 description text or escapes.' }
+}
 $originalHeader = Get-FileHash $generatedHeader -Algorithm SHA256
 $originalSource = Get-FileHash $generatedSource -Algorithm SHA256
 $headerTime = (Get-Item $generatedHeader).LastWriteTimeUtc.Ticks
@@ -74,6 +83,14 @@ if ($LASTEXITCODE -ne 0 -or (Get-FileHash $generatedSource -Algorithm SHA256).Ha
 }
 if ((Get-Content -Raw "$OutputDirectory/probe.d") -notmatch 'dependency\.hpp') { throw 'Included header is missing from the depfile.' }
 $cases = @(
+    @{name='description-spelling'; text=$valid.Replace('AFIELD()', 'AFIELD(Desc="help")'); error='Unknown or duplicate reflection option: Desc'},
+    @{name='duplicate-description'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC="A", DESC="B")'); error='Unknown or duplicate reflection option: DESC'},
+    @{name='description-value'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC)'); error='requires a value'},
+    @{name='description-zero'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC="bad\0text")'); error='DESC requires valid UTF-8'},
+    @{name='description-control'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC="bad\x01")'); error='DESC requires valid UTF-8'},
+    @{name='description-del'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC="bad\x7f")'); error='DESC requires valid UTF-8'},
+    @{name='description-c1'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC="bad\xc2\x85")'); error='DESC requires valid UTF-8'},
+    @{name='description-utf8'; text=$valid.Replace('AFIELD()', 'AFIELD(DESC="bad\xff")'); error='DESC requires valid UTF-8'},
     @{name='category-spelling'; text=$valid.Replace('AFIELD()', 'AFIELD(Catagory="Transform")'); error='Unknown or duplicate reflection option: Catagory'},
     @{name='duplicate-label'; text=$valid.Replace('AFIELD()', 'AFIELD(Label="A", Label="B")'); error='Unknown or duplicate reflection option: Label'},
     @{name='duplicate-category'; text=$valid.Replace('AFIELD()', 'AFIELD(Category="A", Category="B")'); error='Unknown or duplicate reflection option: Category'},
@@ -104,4 +121,4 @@ foreach ($case in $cases) {
         throw "Rejected input replaced a prior output: $($case.name)"
     }
 }
-"Reflection CLI: PASS (field presentation, stale output isolation, deterministic writes, include dependencies, $($cases.Count) located failures preserving output)"
+"Reflection CLI: PASS (UTF-8 descriptions, field presentation, stale output isolation, deterministic writes, include dependencies, $($cases.Count) located failures preserving output)"

@@ -22,11 +22,11 @@ public:
 
 | 宏 | 合同 |
 | --- | --- |
-| `ACLASS(Name = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
-| `ASTRUCT(Name = "...")` | 声明 Runtime 记录值，允许内联使用 |
-| `AENUM(Name = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t，不需要 AGENERATED_BODY |
-| `AFIELD(Name = "...", Label = "...", Category = "...", Hidden, Strong = "...")` | 声明字段；展示名称与分组可省略，引用形式见下文 |
-| `AFUNCTION(Name = "...")` | 声明成员方法；名称可省略，重载须使用不同的反射名称 |
+| `ACLASS(Name = "...", DESC = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
+| `ASTRUCT(Name = "...", DESC = "...")` | 声明 Runtime 记录值，允许内联使用 |
+| `AENUM(Name = "...", DESC = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t，不需要 AGENERATED_BODY |
+| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Strong = "...")` | 声明字段；展示名称、分组与说明均可省略，引用形式见下文 |
+| `AFUNCTION(Name = "...", DESC = "...")` | 声明成员方法；名称与说明可省略，重载须使用不同的反射名称 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
 `ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden` 是无值标记。未知或重复参数直接报错。
@@ -42,6 +42,27 @@ AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
 生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。`.source` 生产者本轮保持空值，不增加语法。
 
 标记紧邻一个声明，可隔空白和注释；每个字段独立标记、独立声明。标记必须直接写在源码中，不再包在另一层宏内。模板、局部类、匿名命名空间和嵌套类型不在首片支持范围。前向声明可以存在，最终必须在本生成组中找到完整定义；重复标注必须一致。
+
+### 类型与成员说明
+
+`ACLASS / ASTRUCT / AENUM / AFIELD / AFUNCTION` 都接受可选的 `DESC`，例如：
+
+```cpp
+AFIELD(Label = "Position", Category = "Transform",
+    DESC = "相对于当前 Space Reference 的位置，单位 m。\n改变它会移动 Entity。")
+math::Vector3 position;
+
+AFUNCTION(DESC = "读取当前 Position，不改变 Entity。")
+math::Vector3 read_position() const;
+```
+
+说明是 UTF-8 纯文本，可中英文混排，支持 `\n`、`\t`、引号和反斜杠等普通 C++ 转义。省略或显式空字符串表示没有说明，不自动填充字段名。发布时将 CRLF 和 CR 统一为 LF；NUL、其他 C0 控制字符、DEL、C1 控制字符及无效 UTF-8 会拒绝。只接受 `DESC`，不提供其他大小写或缩写。`Name / Label / Category` 原有的单行校验保持不变。说明不是 Markdown，也不解释链接或执行指令。
+
+生成器将文字写入现有 `TypeDefinition / FieldDefinition / MethodDefinition::description`；Runtime 的同一批次发布入口完成校验和换行归一，然后由 `TypeInfo / FieldInfo / MethodInfo::description` 拥有。手写原生注册和描述型生产者遵守同一规则，失败不会发布部分类型。未来 Source 声明说明时只需填充这些字段；当前没有新增 Source 语法或编辑器专用说明注册表。
+
+手写 `NativeRegistration<T>` 的构造器在 `kind` 后接受说明；自动推导类型的 `field(name, description)` 与 `hidden_field(name, description)` 直接传入说明，完整字段重载则在 `label, category` 后接受说明。`method` 在 `preserves_borrows` 后接受说明。也可以直接填写 `TypeDefinition` 及其成员的 `description`。
+
+类型说明解释类型本身，字段说明解释该字段在声明处的具体含义，两者不互相覆盖。继承字段和方法保留原声明 ID、签名及说明；派生类型的空说明不会自动变成基类说明。文本按类型保存，不复制到每个对象，不进入 Scene 数据，也不参与类型/成员身份、对象存储布局或调用 ABI。拷贝的 `TypeInfo` 自行拥有文本；借用 `Info` 的消费者仍须遵守原 Runtime 生命周期。
 
 ### 字段与方法
 
@@ -119,6 +140,8 @@ Clang/LLVM 包在独立变量作用域中加载，SDK 的静态 CRT 默认值不
 编译参数、配置、工具或 include 依赖变化会触发生成；内容不变时保留输出时间戳。输出不含时间戳、绝对路径或 AST 地址。源码/标注验证失败返回非零并保留先前输出，构建仍然失败，不继续使用旧输出完成本次构建。
 
 ## 验收与边界
+
+既有 `reflection_acceptance` 同时覆盖真实生成器到 Runtime 的中英文、多行、转义、类型/字段/方法、隐藏字段、BorrowSafe、继承与手写注册；复制元数据在 Runtime 结束后仍保有说明。CLI 检查非法描述的定位诊断、失败保留旧生成物及重复生成不改时间戳；Runtime 入口检查无效文本拒绝后的再次合法发布。
 
 ```powershell
 . ./tools/enter-dev.ps1

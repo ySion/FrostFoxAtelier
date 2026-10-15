@@ -463,6 +463,9 @@ struct FieldDefinition {
     // Optional presentation text; never part of field identity or value layout.
     // Empty text leaves display-name/group fallback to the consumer.
     std::string label{}, category{};
+    // Owned UTF-8 help text; publication normalizes CRLF/CR to LF.
+    // Empty means no description. Only LF and tab are permitted controls.
+    std::string description{};
 };
 
 struct MethodDefinition {
@@ -472,6 +475,7 @@ struct MethodDefinition {
     // Includes transitive calls: no borrowed-address escape or invalidation.
     // Runtime's existing callback scope also rejects GC/lifecycle reentry.
     bool preserves_borrows{};
+    std::string description{};
 };
 
 struct TypeDefinition {
@@ -488,6 +492,7 @@ struct TypeDefinition {
     };
     std::optional<Enumeration> enumeration{};
     std::optional<TypeReference> element{};
+    std::string description{};
 };
 
 struct FieldInfo {
@@ -497,7 +502,7 @@ struct FieldInfo {
     std::optional<std::size_t> offset{};
     std::optional<Scalar> default_value{};
     // Owned by the type descriptor, including inherited field copies.
-    std::string label{}, category{};
+    std::string label{}, category{}, description{};
 };
 
 struct MethodInfo {
@@ -505,6 +510,7 @@ struct MethodInfo {
     std::string name;
     FunctionSignature signature;
     bool preserves_borrows{};
+    std::string description{};
 };
 
 struct TypeInfo {
@@ -536,6 +542,8 @@ struct TypeInfo {
     // User definitions cannot acquire compiler intrinsic semantics by naming.
     math::Type math{};
     bool plain_value{};
+    // Help text is presentation metadata, not type identity, layout or call ABI.
+    std::string description{};
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };

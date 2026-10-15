@@ -6,7 +6,7 @@
 
 namespace atelier::ui_language {
 
-enum class InputKind { boolean, number, edit, text, text_edit, key, items, action, table, code };
+enum class InputKind { boolean, number, edit, text, text_edit, key, items, action, table, code, tooltip };
 struct Input { std::string name; InputKind kind; std::string item_type; bool operator==(const Input&) const = default; };
 struct State { std::string name; InputKind kind; bool operator==(const State&) const = default; };
 enum class NodeKind { column, row, text, foldout, number_row, text_field, tree, tree_item, component, repeat, button,
@@ -18,7 +18,7 @@ enum class Property { text, classes, gap, height, width, padding_left, enabled, 
     view, row_height, header_height, tile_width, tile_height, item_gap, empty_text,
     modified, out_of_flow, offset_x, offset_y, anchor_x, anchor_y, pivot_x, pivot_y,
     flex_width, grow_width, red, green, blue, value, minimum, maximum, step, vertical, click_action,
-    menu_branch, menu_behavior, radio_group, document, argument };
+    menu_branch, menu_behavior, radio_group, document, tooltip, tooltip_title, tooltip_identity, argument };
 struct Node {
     std::string name;
     NodeKind kind;

@@ -1,6 +1,7 @@
 #include "control/control.hpp"
 #include "platform/windows_path.hpp"
 #include <Windows.h>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <thread>
@@ -73,6 +74,37 @@ Json discover_editor(const Process& editor,const std::filesystem::path& director
     throw std::runtime_error("Editor did not publish its endpoint");
 }
 void error(const Json& result,std::string_view expected) {require(result.value("status","")=="error" && result.at("error").at("code").get<std::string>()==expected,result.dump());}
+void verify_option_descriptions(const Json& capabilities) {
+    const auto& options=capabilities.at("display_options");
+    for(const auto& [name,option]:options.items()) {
+        static_cast<void>(name);
+        for(const char* field:{"label","category","description"})
+            require(option.at(field).is_string() && !option.at(field).get<std::string>().empty(),"Control option metadata is missing");
+    }
+    const auto& count=options.at("probe_volume_0_count_x");
+    const auto description=count.at("description").get<std::string>();
+    require(description.find('\n')!=std::string::npos && std::any_of(description.begin(),description.end(),[](unsigned char c){return c>=0x80;}),
+        "Control metadata lost Unicode or decoded line breaks");
+    require(count.at("type")=="integer" && count.at("minimum")==2 && count.at("maximum")==32 && count.at("scope")=="scene" &&
+        options.at("probe_visualization").at("scope")=="view","Metadata changed option types, bounds or ownership");
+    for(unsigned slot=0;slot<4;++slot) for(const char* axis:{"x","y","z"})
+        require(options.at("probe_volume_"+std::to_string(slot)+"_count_"+axis).at("description")==description,
+            "Volume slots or vector lanes diverged from their shared description");
+}
+void verify_property_descriptions(const Json& object) {
+    require(object.at("type_description").is_string(),"Object type description is missing");
+    std::string position;unsigned lanes{};
+    for(const auto& field:object.at("properties")) {
+        require(field.at("description").is_string(),"Reflected property description is missing");
+        if(field.at("name").get<std::string>().starts_with("position.")) {
+            const auto description=field.at("description").get<std::string>();
+            require(!description.empty(),"Position aggregate description did not reach Control");
+            if(lanes++) require(description==position,"Vector lanes did not inherit their aggregate description");
+            else position=description;
+        }
+    }
+    require(lanes==3,"Position descriptor did not expose its three scalar lanes");
+}
 void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
@@ -287,6 +319,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     require(stable==5,"DDGI diagnostic editor did not settle");
     const auto default_view=state.at("view");
     const auto capabilities=d.ok("capabilities");
+    verify_option_descriptions(capabilities);
     for(const char* name:{"probe_visualization","probe_volume","probe_relocation","probe_xray","probe_radius","probe_debug",
         "probe_bounce","indirect_gain","probe_feedback_visibility","probe_coverage","probe_debug_volume"})
         require(capabilities.at("display_options").contains(name),"DDGI debug option absent from shared Control schema");
@@ -411,11 +444,12 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting]");
+        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting" || std::wstring_view(argv[3])==L"--descriptions")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions]");
+        const bool descriptions=argc==4 && std::wstring_view(argv[3])==L"--descriptions";
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
         if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--repro-lighting") {repro_lighting(argv[1],root);return 0;}
-        if(argc==4) {
+        if(argc==4 && !descriptions) {
             repro_paths(argv[1],root/"exports",false);repro_paths(argv[1],root/"deep-control",true);
             reject_nested_destination(argv[1],root);
             write(root/"result.json",Json{{"status","passed"},{"cases",{"nested-exports","deep-control","nested-destination-rejected"}}}.dump(2));
@@ -423,11 +457,17 @@ int wmain(int argc,wchar_t** argv) {
         }
         const auto directory=root/"Control";const auto project=root/"Project";
         project_fixture(project);
-        Process editor(argv[1],L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate --gpu-validation",root/"editor.log");
+        auto arguments=L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate";
+        if(!descriptions) arguments+=L" --gpu-validation";
+        Process editor(argv[1],std::move(arguments),root/"editor.log");
         const auto descriptor=discover_editor(editor,directory);
         // A small, visible owned test window can render without taking keyboard focus.
-        if(auto window=editor.window()) SetWindowPos(window,HWND_TOPMOST,12,80,960,640,SWP_NOACTIVATE);
+        if(auto window=editor.window()) {
+            if(descriptions) SetWindowPos(window,nullptr,0,0,960,640,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+            else SetWindowPos(window,HWND_TOPMOST,12,80,960,640,SWP_NOACTIVATE);
+        }
         Driver d(descriptor);const auto caps=d.ok("capabilities");require(caps.at("operations").size()>=20,"Capabilities are incomplete");
+        verify_option_descriptions(caps);
         auto initial=d.inspect();unsigned stable{};
         for(unsigned i=0;i<200 && stable<5;++i) {
             const auto token=d.token;std::this_thread::sleep_for(30ms);initial=d.inspect();
@@ -436,11 +476,29 @@ int wmain(int argc,wchar_t** argv) {
         require(stable==5,"Initial surface mapping did not stabilize");
         require(initial.at("entities").empty() && !initial.at("last_frame").empty(),"Initial editor state is not ready");
         const auto original_scene=read(project/"Content/Scenes/Main.scene");
+        const auto original_scene_hash=descriptions?sha256_file(project/"Content/Scenes/Main.scene"):std::string{};
         Json request{{"op","scene.create"},{"args",{{"kind","mesh"}}},{"state_token",d.token},{"request_id",unique_id()}};
         const auto first=d.client->call(request);require(first.at("status")=="ok",first.dump());
         const auto replay=d.client->call(request);require(first==replay,"Duplicate mutation did not replay its response");
         request["args"]["kind"]="entity";error(d.client->call(request),"request_id_conflict");
         auto current=d.inspect();require(current.at("entities").size()==1 && current.at("undo")==1,"Duplicate request repeated creation");
+        verify_property_descriptions(current.at("entities")[0]);
+        if(descriptions) {
+            write(root/"capabilities.json",caps.dump(2));
+            write(root/"properties.json",current.at("entities")[0].dump(2));
+            d.ok("scene.undo");const auto restored=d.inspect();
+            require(restored.at("entities").empty() && !restored.at("dirty").get<bool>() &&
+                restored.at("undo")==initial.at("undo") && restored.at("view")==initial.at("view"),
+                "Description inspection or cleanup changed saved document state.");
+            d.client.reset();editor.close();
+            require(discover(directory).empty(),"Description editor descriptor remained live after close.");
+            require(read(project/"Content/Scenes/Main.scene")==original_scene &&
+                sha256_file(project/"Content/Scenes/Main.scene")==original_scene_hash,
+                "Description inspection changed the original saved scene.");
+            write(root/"result.json",Json{{"status","passed"},{"cases",{"discovery","shared-option-descriptions","utf8-newlines",
+                "aggregate-field-descriptions","undo-to-clean","saved-scene-preserved","clean-close"}}}.dump(2));
+            std::cout<<"Editor Control descriptions E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
+        }
         auto entity=current.at("entities")[0].at("handle").get<std::string>();auto component=current.at("entities")[0].at("components")[0].at("handle").get<std::string>();
         const auto stale=d.token;
         d.ok("scene.rename",{{"object",entity},{"name","Control cube"}});

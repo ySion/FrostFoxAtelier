@@ -23,6 +23,27 @@ auto failure(ErrorCode code, std::string message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
+bool normalize_description(std::string& text) {
+    if (!StringView{std::string_view{text}}.is_valid_utf8()) return false;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        if ((c < 32 && c != '\n' && c != '\r' && c != '\t') || c == 127 ||
+            (c == 0xc2 && i + 1 < text.size() &&
+                static_cast<unsigned char>(text[i + 1]) >= 0x80 && static_cast<unsigned char>(text[i + 1]) <= 0x9f))
+            return false;
+    }
+    // Normalize in place only when needed, without allocating another copy.
+    auto output = text.find('\r');
+    if (output == std::string::npos) return true;
+    for (auto input = output; input < text.size(); ++input) {
+        const char c = text[input];
+        text[output++] = c == '\r' ? '\n' : c;
+        if (c == '\r' && input + 1 < text.size() && text[input + 1] == '\n') ++input;
+    }
+    text.resize(output);
+    return true;
+}
+
 struct CallbackScope {
     std::size_t& depth;
     explicit CallbackScope(std::size_t& count) : depth(count) { ++depth; }
@@ -1118,6 +1139,15 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
              definition.kind != TypeKind::string && definition.kind != TypeKind::array)) {
             return failure(ErrorCode::invalid_definition, "A named record, object, enum, string or array type is required.");
         }
+        const auto invalid_description = [](const std::string& owner) {
+            return failure(ErrorCode::invalid_definition,
+                "Description requires valid UTF-8 without controls other than line breaks and tabs: " + owner);
+        };
+        if (!normalize_description(definition.description)) return invalid_description(definition.name);
+        for (auto& field : definition.fields)
+            if (!normalize_description(field.description)) return invalid_description(definition.name + "." + field.name);
+        for (auto& method : definition.methods)
+            if (!normalize_description(method.description)) return invalid_description(definition.name + "." + method.name);
         const auto same_name = [&](const auto& type) { return type->info.name == definition.name; };
         if (std::ranges::any_of(impl_->types, same_name) || std::ranges::any_of(staged, same_name)) {
             return failure(ErrorCode::duplicate_name, "Type already defined: " + definition.name);
@@ -1166,6 +1196,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         const TypeId id{impl_->context, static_cast<std::uint32_t>(first_index + staged.size())};
         auto type = std::make_unique<Impl::Type>();
         type->info = {id, std::move(definition.name), definition.kind, native.size, is_native ? native.alignment : 1, {}, {}};
+        type->info.description = std::move(definition.description);
         if (definition.kind != TypeKind::object) {
             type->info.copy_constructible = !is_native || native.copy_construct;
             type->info.copy_assignable = !is_native || native.copy_assign;
@@ -1288,7 +1319,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 return failure(ErrorCode::invalid_definition, "Default value requires a described object's exact scalar field type.");
             type.fields.push_back({0, field.native_address, value, nullptr, field.default_value});
             if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value,
-                field.native_offset, field.default_value, std::move(field.label), std::move(field.category)});
+                field.native_offset, field.default_value, std::move(field.label), std::move(field.category), std::move(field.description)});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());
@@ -1300,7 +1331,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             auto signature = impl_->resolve_signature(method.signature, id, staged);
             if (!signature) return std::unexpected(std::move(signature.error()));
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
-                std::move(method.name), std::move(*signature), method.preserves_borrows});
+                std::move(method.name), std::move(*signature), method.preserves_borrows, std::move(method.description)});
             type.methods.push_back(method.invoke);
         }
     }

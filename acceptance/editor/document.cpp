@@ -50,6 +50,8 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "dungeons.inl"
 #include "project_profile.inl"
 #include "declarative_ui.inl"
+#include "tooltip_dsl.inl"
+#include "property_tooltips.inl"
 #include "object_inspection.inl"
 #include "ui_actions.inl"
 #include "table_dsl.inl"
@@ -67,6 +69,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 int main(int argc, char** argv) {
     std::string_view stage=argc>1?argv[1]:"document history";
     try {
+        if(argc==2 && std::string_view(argv[1])=="--tooltips") {verify_tooltip_dsl();verify_property_tooltips();verify_declarative_parameters();verify_object_inspection();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--recovery") {verify_scene_recovery();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
@@ -97,6 +100,8 @@ int main(int argc, char** argv) {
         stage="scene recovery";verify_scene_recovery();
         stage="textured OBJ";verify_textured_obj();
         stage="declarative parameters";verify_declarative_parameters();
+        stage="tooltip DSL";verify_tooltip_dsl();
+        stage="property tooltips";verify_property_tooltips();
         stage="object inspection";verify_object_inspection();
         stage="viewport editing";verify_viewport_editing();
         stage="scene lighting";verify_scene_lit_application();

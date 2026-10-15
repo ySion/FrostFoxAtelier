@@ -4,6 +4,7 @@
 #include "editor/commands.hpp"
 #include "editor/control_workbench.hpp"
 #include "editor/world_panel.hpp"
+#include "editor/property_row.hpp"
 #include "editor/asset_browser.hpp"
 #include "editor/source_editor.hpp"
 #include "editor/project_code.hpp"
@@ -157,6 +158,7 @@ struct Workspace {
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
     std::unordered_map<std::string,ui::ControlKey> category_keys_;
+    PropertyHelpCache property_help_;
     bool parameter_by_category_{};
     std::uint64_t view_revision_{};
     Runtime ui_runtime_; // Editor authoring scopes outlive individual scene documents.

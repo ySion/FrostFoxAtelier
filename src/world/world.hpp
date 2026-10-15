@@ -18,18 +18,18 @@ namespace detail { struct Access; struct WorldLifetime; }
 
 // Native payloads participate in the same Runtime type hierarchy and GC graph.
 // Their relation fields are private and registered as hidden reference fields.
-ACLASS(Name="world.Entity")
+ACLASS(Name="world.Entity", DESC="Scene 中的组成对象，可拥有 Component 和子 Entity。空间能力是可选的，组件从所属 Entity 取得空间信息。")
 class Entity {
     AGENERATED_BODY(Entity)
 public:
     Entity() = default;
     Entity(const Entity&) = delete;
     Entity& operator=(const Entity&) = delete;
-    AFIELD(Label="Position (m)", Category="Transform")
+    AFIELD(Label="Position (m)", Category="Transform", DESC="相对于当前 Space Reference 的位置，单位 m。改变它会移动 Entity 及依赖此空间参考的内容。")
     math::Vector3 position;
-    AFIELD(Label="Rotation", Category="Transform")
+    AFIELD(Label="Rotation", Category="Transform", DESC="相对于当前 Space Reference 的姿态，以单位 Quaternion 保存。改变它会旋转 Entity 的局部坐标轴。")
     math::Quaternion rotation;
-    AFIELD(Label="Scale", Category="Transform")
+    AFIELD(Label="Scale", Category="Transform", DESC="沿局部 X、Y、Z 轴的缩放比例，无单位。它会影响网格及依赖此空间参考的子实体；灯光的世界尺寸另由灯参数控制。")
     math::Vector3 scale{1.f, 1.f, 1.f};
 private:
     friend struct detail::Access;
@@ -52,12 +52,12 @@ private:
 
 // A real reflected Entity type. Its complete default composition is built by
 // create_static_mesh_entity, while Runtime construction establishes storage only.
-ACLASS(Name="world.StaticMeshEntity")
+ACLASS(Name="world.StaticMeshEntity", DESC="用于静态网格的 Entity 类型。编辑器创建时会同时配置空间能力和 StaticMeshComponent；网格与材质保存在组件中。")
 class StaticMeshEntity : public Entity {
     AGENERATED_BODY(StaticMeshEntity)
 };
 
-ACLASS(Name="world.Component")
+ACLASS(Name="world.Component", DESC="附着在 Entity 上的一项能力，拥有独立对象身份。组件不建立另一套空间节点，空间来自所属 Entity。")
 class Component {
     AGENERATED_BODY(Component)
 public:
@@ -72,51 +72,51 @@ private:
     bool begun_{};
 };
 
-AENUM(Name="world.CollisionShape")
+AENUM(Name="world.CollisionShape", DESC="碰撞几何的种类：Box、Sphere、Capsule 或 Triangle Mesh。Triangle Mesh 使用网格资源，只支持 Stationary body。")
 enum class ShapeKind : std::uint32_t { box, sphere, triangle_mesh, capsule };
-AENUM(Name="world.BodyMotion")
+AENUM(Name="world.BodyMotion", DESC="Stationary 固定不动；Kinematic 由程序指定运动；Dynamic 由物理模拟计算运动。")
 enum class MotionKind : std::uint32_t { stationary, kinematic, dynamic };
-AENUM(Name="world.CollisionResponse")
+AENUM(Name="world.CollisionResponse", DESC="Ignore 跳过碰撞；Overlap 产生接触信息但不阻挡；双方都选择 Block 时才求解阻挡。")
 enum class Response : std::uint32_t { ignore, overlap, block };
 
-ASTRUCT(Name="world.PhysicsMaterial")
+ASTRUCT(Name="world.PhysicsMaterial", DESC="控制接触面的摩擦和回弹。它影响物理碰撞，不改变渲染材质。")
 struct PhysicsMaterial {
     AGENERATED_BODY(PhysicsMaterial)
 public:
-    AFIELD()
+    AFIELD(DESC="接触面的 Friction 系数，无单位。较大值使物体更难沿接触面滑动，必须非负。")
     float friction{.2f};
-    AFIELD()
+    AFIELD(DESC="接触后的回弹系数，范围 0–1。0 不产生恢复性反弹，较大值保留更多回弹速度。")
     float restitution{};
     bool operator==(const PhysicsMaterial&) const = default;
 };
 
 // Authoring values belong to the World type system. Backend state is scene-owned.
-ASTRUCT(Name="world.BodySettings")
+ASTRUCT(Name="world.BodySettings", DESC="Primitive 的碰撞形状、运动方式和接触规则。配置随 Scene 保存，实际物理 body 由运行中的物理场景管理。")
 struct BodySettings {
     AGENERATED_BODY(BodySettings)
 public:
-    AFIELD()
+    AFIELD(DESC="是否为此 Component 启用物理 body。关闭它不会删除网格或改变 Entity 的显示开关。")
     bool enabled{true};
-    AFIELD()
+    AFIELD(DESC="选择碰撞几何。Box 使用 Half Extents；Sphere 和 Capsule 使用 Radius；Triangle Mesh 使用组件的网格资源。")
     ShapeKind shape{ShapeKind::box};
-    AFIELD()
+    AFIELD(DESC="Stationary 固定不动；Kinematic 由程序移动；Dynamic 受物理模拟驱动。Triangle Mesh 只能使用 Stationary。")
     MotionKind motion{MotionKind::stationary};
-    AFIELD()
+    AFIELD(DESC="Box 从中心到各面的局部半尺寸，单位 m。最终碰撞尺寸还会应用 Entity 的世界缩放；每个分量必须大于 0。")
     math::Vector3 half_extents{.5f, .5f, .5f};
-    AFIELD()
+    AFIELD(DESC="Sphere 或 Capsule 的局部半径，单位 m，必须大于 0。这两种形状要求 Entity 的世界缩放均匀。")
     float radius{.5f};
-    AFIELD()
+    AFIELD(DESC="Capsule 中段沿局部 Y 轴的一半长度，不含两端半球，单位 m。最终尺寸会应用均匀世界缩放。")
     float capsule_half_height{.5f};
-    AFIELD()
+    AFIELD(DESC="此 body 的 Collision Category 编号，范围 0–15。其他 body 用此编号决定 Ignore、Overlap 或 Block。")
     std::uint32_t category{};
     // Sixteen categories; disjoint masks encode Ignore/Overlap, otherwise Block.
-    AFIELD()
+    AFIELD(DESC="按 bit 指定要忽略的 Collision Category；bit 0 对应类别 0。与 Overlap Categories 不能有共同位。")
     std::uint32_t ignore_categories{};
-    AFIELD()
+    AFIELD(DESC="按 bit 指定只产生接触、不求解阻挡的 Collision Category。未出现在 Ignore 或 Overlap 中的类别按 Block 处理。")
     std::uint32_t overlap_categories{};
-    AFIELD()
+    AFIELD(DESC="启用 Sensor 后只报告接触或重叠，不参与阻挡求解。它仍遵守 Collision Response 过滤。")
     bool sensor{};
-    AFIELD()
+    AFIELD(DESC="此 body 接触面的 Friction 和 Restitution。与用于显示的 Material 相互独立。")
     PhysicsMaterial material{};
     // Derived cache, rebuilt from the mesh resource; never archived as object state.
     std::shared_ptr<const std::string> cooked_shape{};
@@ -126,42 +126,42 @@ public:
 };
 [[nodiscard]] Result<void> validate_body_settings(const BodySettings&);
 
-ACLASS(Name="world.PrimitiveComponent")
+ACLASS(Name="world.PrimitiveComponent", DESC="具有碰撞和刚体配置的基础组件。空间由所属 Entity 提供，具体形状和运动方式在 Body 中设置。")
 class PrimitiveComponent : public Component {
     AGENERATED_BODY(PrimitiveComponent)
 public:
-    AFIELD(Category="Physics")
+    AFIELD(Category="Physics", DESC="此组件的碰撞形状、运动方式和接触规则。关闭 Body Enabled 可保留组件而停用其物理能力。")
     BodySettings body{.enabled=false};
 };
 
 // A spatial collision primitive without presentation. Choose box/sphere/capsule
 // through the same reflected body settings used by StaticMeshComponent.
-ACLASS(Name="world.CollisionComponent")
+ACLASS(Name="world.CollisionComponent", DESC="提供 Box、Sphere 或 Capsule 碰撞的组件，不显示网格。使用与 StaticMeshComponent 相同的 Body 设置。")
 class CollisionComponent : public PrimitiveComponent {
     AGENERATED_BODY(CollisionComponent)
 public:
     CollisionComponent() { body.enabled=true; }
 };
 
-ASTRUCT(Name="world.Material")
+ASTRUCT(Name="world.Material", DESC="网格组件的基础表面参数。已绑定材质槽的参数沿 Material 资源及实例覆盖编辑。")
 struct Material {
     AGENERATED_BODY(Material)
 public:
-    AFIELD()
+    AFIELD(DESC="表面的线性 RGB 基础色，每个分量在 0–1 之间。它是材质颜色，不是曝光后的屏幕颜色。")
     math::Vector3 base_color{.19f, .42f, .57f};
-    AFIELD()
+    AFIELD(DESC="表面 Roughness，范围 0–1。较小值使反射更集中，较大值使高光更宽、更柔。")
     float roughness{.65f};
-    AFIELD()
+    AFIELD(DESC="表面 Metallic，范围 0–1。0 表示非金属，1 表示金属，影响基础色参与漫反射和镜面反射的方式。")
     float metallic{};
-    AFIELD()
+    AFIELD(DESC="表面自身发出的线性 HDR RGB 辐射。它可以大于 1，不是显示亮度；当前每通道上限为 65504。")
     math::Vector3 emissive{};
     bool operator==(const Material&) const = default;
 };
-ACLASS(Name="world.StaticMeshComponent")
+ACLASS(Name="world.StaticMeshComponent", DESC="显示网格资源，并按材质槽绑定 Material。可同时启用 Body 碰撞，空间变换来自所属 Entity。")
 class StaticMeshComponent : public PrimitiveComponent {
     AGENERATED_BODY(StaticMeshComponent)
 public:
-    AFIELD(Category="Material")
+    AFIELD(Category="Material", DESC="组件的基础表面参数。若使用材质槽资源，请编辑对应的共享 Material 或实例覆盖。")
     Material material;
 private:
     friend struct detail::Access;
@@ -177,43 +177,43 @@ private:
     Material surface_parameters_;
 };
 
-AENUM(Name="world.LightKind")
+AENUM(Name="world.LightKind", DESC="Point 点光、Rectangle 矩形面光、Directional 平行光或 Sky 均匀天光。不同种类使用不同的强度单位和形状参数。")
 enum class LightKind : std::uint32_t { point, rectangle, directional, sky };
 
-ASTRUCT(Name="world.LightSettings")
+ASTRUCT(Name="world.LightSettings", DESC="灯光的 Scene 作者参数。Color 与 Intensity 一起决定发光量，局部灯的位置和朝向来自所属 Entity。")
 struct LightSettings {
     AGENERATED_BODY(LightSettings)
 public:
-    AFIELD()
+    AFIELD(DESC="灯光种类，决定 Intensity 单位及哪些尺寸参数生效。一个 World 只能拥有一个 Sky Light，包括已停用的 Sky Light。")
     LightKind kind{LightKind::point};
-    AFIELD()
+    AFIELD(DESC="非负线性 RGB，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 color{1.f,1.f,1.f};
     // Reference-white intensity: point cd, rectangle/sky cd/m^2, directional lux.
     // Sky is uniform incident radiance; spatial transform and emitter shape do not affect it.
-    AFIELD()
+    AFIELD(DESC="参考白色的发光强度，再由 Color 调制。Point 使用 cd；Rectangle 和 Sky 使用 cd/m²；Directional 使用 lux。")
     float intensity{1.f};
-    AFIELD()
+    AFIELD(DESC="Point 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 和 Sky 忽略此值；Entity 缩放不会改变它。")
     float range{10.f};
     // Point: metres. Directional: angular radius in radians, below pi/2.
     // Rectangle emission size uses width/height instead.
-    AFIELD()
+    AFIELD(DESC="Point 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 和 Sky 忽略此值。")
     float source_radius{};
-    AFIELD()
+    AFIELD(DESC="Rectangle 沿局部 X 方向的发光宽度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
     float width{1.f};
-    AFIELD()
+    AFIELD(DESC="Rectangle 沿局部 Y 方向的发光高度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
     float height{1.f};
-    AFIELD()
+    AFIELD(DESC="让 Rectangle 的两面都按同样的 Intensity 发光，不把每面的强度减半。其他灯光种类不使用此项。")
     bool two_sided{};
-    AFIELD()
+    AFIELD(DESC="此直接灯是否参与阴影投射，实际效果还受 World 阴影设置控制。Sky 不使用此项。")
     bool casts_shadow{true};
     bool operator==(const LightSettings&) const = default;
 };
 
-ACLASS(Name="world.LightComponent")
+ACLASS(Name="world.LightComponent", DESC="让 Entity 提供 Point、Rectangle、Directional 或 Sky 光照。Sky 不受 Entity 的位置、旋转和缩放影响。")
 class LightComponent : public Component {
     AGENERATED_BODY(LightComponent)
 public:
-    AFIELD(Category="Lighting")
+    AFIELD(Category="Lighting", DESC="此灯的种类、颜色、强度和形状。参数随 Scene 保存；全局曝光与效果在 World Settings 中调整。")
     LightSettings settings;
 };
 

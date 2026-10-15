@@ -25,6 +25,7 @@ std::optional<ui::Event> input_event(NativeEvent message,HWND window) {
     event.x=static_cast<float>(GET_X_LPARAM(message.lparam));event.y=static_cast<float>(GET_Y_LPARAM(message.lparam));
     switch (message.message) {
     case WM_MOUSEMOVE:event.kind=ui::EventKind::pointer_move;break;
+    case WM_MOUSELEAVE:event.kind=ui::EventKind::pointer_leave;break;
     case WM_LBUTTONDOWN:event.kind=ui::EventKind::pointer_down;break;
     case WM_LBUTTONDBLCLK:event.kind=ui::EventKind::pointer_down;event.clicks=2;break;
     case WM_LBUTTONUP:event.kind=ui::EventKind::pointer_up;break;

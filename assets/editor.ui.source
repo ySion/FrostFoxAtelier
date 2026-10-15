@@ -20,7 +20,8 @@ double rail_button_height(bool vertical, double width, double height) {
 }
 
 ui Position(in bool matches, in EditBinding position, in EditBinding rotation, in EditBinding scale,
-            in bool show_position, in bool show_rotation, in bool show_scale) {
+            in bool show_position, in bool show_rotation, in bool show_scale,
+            in TooltipBinding position_help, in TooltipBinding rotation_help, in TooltipBinding scale_help) {
     state bool expanded = true;
     Foldout section {
         text: "Scene root content";
@@ -35,11 +36,12 @@ ui Position(in bool matches, in EditBinding position, in EditBinding rotation, i
         collapsed: !state.expanded || !input.matches;
         NumberRow position {
             text: "Position (m)";
+            tooltip: input.position_help;
             edit: input.position;
             collapsed: !input.show_position;
         }
-        NumberRow rotation { text: "Rotation (°)"; edit: input.rotation; collapsed: !input.show_rotation; }
-        NumberRow scale { text: "Scale"; edit: input.scale; collapsed: !input.show_scale; }
+        NumberRow rotation { text: "Rotation (°)"; edit: input.rotation; tooltip: input.rotation_help; collapsed: !input.show_rotation; }
+        NumberRow scale { text: "Scale"; edit: input.scale; tooltip: input.scale_help; collapsed: !input.show_scale; }
     }
 }
 
@@ -85,8 +87,8 @@ ui EnumProperty(in Text title, in Text choice, in bool enabled, in Key target) {
 ui PropertyRow(in Text title, in EditBinding edit, in bool boolean, in bool checked, in bool enabled,
                in ActionBinding change, in bool enumeration, in Text choice, in Key target,
                in bool swatch, in double r, in double g, in double b,
-               in bool override_available, in bool overridden, in ActionBinding inherit) {
-    Row row { gap: 3;
+               in bool override_available, in bool overridden, in ActionBinding inherit, in TooltipBinding help) {
+    Row row { gap: 3; tooltip: input.help;
         Column override_area { collapsed: !input.override_available; width: 24;
             Checkbox override { text: ""; selected: input.overridden; action: input.inherit; width: 24; height: 23; }
         }
@@ -239,7 +241,7 @@ ui PanePath(in Text title, in ActionBinding back, in ActionBinding forward,
 }
 
 ui ObjectHeader(in Text type_name, in TextEditBinding name, in double type_icon,
-                in double search_icon, in bool search_visible, in ActionBinding search) {
+                in double search_icon, in bool search_visible, in ActionBinding search, in TooltipBinding help) {
     Row row {
         classes: "object-header";
         gap: 4;
@@ -248,7 +250,7 @@ ui ObjectHeader(in Text type_name, in TextEditBinding name, in double type_icon,
         padding_top: 3;
         padding_right: 4;
         padding_bottom: 3;
-        Text type { text: input.type_name; icon: input.type_icon; content_width: 0; single_line: true; classes: "object-type"; }
+        Text type { text: input.type_name; icon: input.type_icon; content_width: 0; single_line: true; classes: "object-type"; tooltip: input.help; }
         TextField name { edit: input.name; context: input.name; min_width: 32; classes: "object-name"; }
         ToggleButton search {
             icon: input.search_icon;
@@ -292,14 +294,16 @@ ui Parameters(in Text type_name, in TextEditBinding name,
               in EditBinding position, in TextEditBinding filter, in bool empty,
               in double type_icon, in double search_icon, in bool search_visible, in ActionBinding search,
               in EditBinding rotation, in EditBinding scale, in bool show_position, in bool show_rotation, in bool show_scale,
-              in bool by_category, in ActionBinding components, in ActionBinding categories) {
+              in bool by_category, in ActionBinding components, in ActionBinding categories,
+              in TooltipBinding position_help, in TooltipBinding rotation_help, in TooltipBinding scale_help,
+              in TooltipBinding type_help) {
     Column pane {
         classes: "parameter-pane"; panel: true; expand_height: true;
         PanePath path { title: "World"; back: input.back; forward: input.forward;
             back_icon: input.back_icon; forward_icon: input.forward_icon; path_icon: input.path_icon;
         }
         ObjectHeader header { type_name: input.type_name; name: input.name; type_icon: input.type_icon;
-            search_icon: input.search_icon; search_visible: input.search_visible; search: input.search;
+            search_icon: input.search_icon; search_visible: input.search_visible; search: input.search; help: input.type_help;
         }
         Column search { classes: "parameter-search"; collapsed: !input.has_selection || !input.search_visible;
             QueryRow query { edit: input.filter; label_width: 48; gap: 4; caption: true; }
@@ -317,7 +321,8 @@ ui Parameters(in Text type_name, in TextEditBinding name,
             Column transform { collapsed: !input.matches; gap: 7;
                 Position position { mounted: input.matches; matches: input.matches; position: input.position;
                     rotation: input.rotation; scale: input.scale; show_position: input.show_position;
-                    show_rotation: input.show_rotation; show_scale: input.show_scale; }
+                    show_rotation: input.show_rotation; show_scale: input.show_scale;
+                    position_help: input.position_help; rotation_help: input.rotation_help; scale_help: input.scale_help; }
             }
             Column properties { classes: "parameter-inset"; gap: 5; Repeat groups { items: input.groups; } }
             Text empty { text: "No matching parameters"; classes: "empty-state"; single_line: true; caption: true; collapsed: !input.empty; }

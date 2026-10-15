@@ -361,6 +361,15 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         input_anchor_.reset();
         high_surrogate_ = 0; key_owner_.fill(0);
         events_.push_back(event(message, wparam, lparam)); return 0;
+    case WM_MOUSEMOVE:
+        if (!tracking_pointer_) {
+            TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT),TME_LEAVE,handle_,0};
+            tracking_pointer_=TrackMouseEvent(&track)!=FALSE;
+        }
+        events_.push_back(event(message,wparam,lparam));return 0;
+    case WM_MOUSELEAVE:
+        tracking_pointer_=false;
+        events_.push_back(event(message,wparam,lparam));return 0;
     case WM_SYSCHAR: return 0; // Menu mnemonics are handled by their key event.
     case WM_CAPTURECHANGED:
         if (releasing_capture_) return 0;
@@ -370,7 +379,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         input_anchor_.reset(); events_.push_back(event(message, wparam, lparam)); return 0;
     case WM_SETFOCUS:
     case WM_MOVE: case WM_ACTIVATEAPP:
-    case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_MOUSEWHEEL:
         events_.push_back(event(message, wparam, lparam));

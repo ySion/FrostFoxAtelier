@@ -50,6 +50,7 @@
     }
     Reply cancel() {
         Reply reply;
+        reply.redraw=dismiss_tooltip();
         reply.cursor=Cursor::arrow;
         if (press) {
             const auto old=*press;

@@ -20,57 +20,110 @@ template<class T,class F> auto read(Runtime& runtime,ObjectId id,F callback) {
 }
 Result<Types> register_types(Runtime& runtime) try {
     Types types;
-    take(NativeRegistration<CharacterSettings>{runtime,"physics.CharacterSettings",TypeKind::record}
-        .field<&CharacterSettings::radius>("radius").field<&CharacterSettings::capsule_half_height>("capsule_half_height")
-        .field<&CharacterSettings::max_slope_radians>("max_slope_radians").field<&CharacterSettings::jump_speed>("jump_speed")
-        .field<&CharacterSettings::step_height>("step_height").publish());
-    types.character_component=take(NativeRegistration<CharacterComponent>{runtime,"physics.CharacterComponent",TypeKind::object}
-        .base<world::Component>().field<&CharacterComponent::settings>("settings")
-        .field<&CharacterComponent::velocity>("velocity").field<&CharacterComponent::jump>("jump").publish());
-    types.ragdoll_component=take(NativeRegistration<RagdollComponent>{runtime,"physics.RagdollComponent",TypeKind::object}
-        .base<world::Component>().field<&RagdollComponent::parts>("parts",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence}).publish());
-    types.ragdoll_part_component=take(NativeRegistration<RagdollPartComponent>{runtime,"physics.RagdollPartComponent",TypeKind::object}
-        .base<world::Component>().field<&RagdollPartComponent::parent_index>("parent_index")
-        .field<&RagdollPartComponent::rest_position>("rest_position").field<&RagdollPartComponent::radius>("radius")
-        .field<&RagdollPartComponent::capsule_half_height>("capsule_half_height").publish());
-    take(NativeRegistration<VehicleSettings>{runtime,"physics.VehicleSettings",TypeKind::record}
-        .field<&VehicleSettings::half_width>("half_width").field<&VehicleSettings::half_length>("half_length")
-        .field<&VehicleSettings::wheel_radius>("wheel_radius").field<&VehicleSettings::suspension_length>("suspension_length").publish());
-    types.vehicle_component=take(NativeRegistration<VehicleComponent>{runtime,"physics.VehicleComponent",TypeKind::object}
-        .base<world::Component>().field<&VehicleComponent::wheels>("wheels",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence}).field<&VehicleComponent::settings>("settings").field<&VehicleComponent::throttle>("throttle")
-        .field<&VehicleComponent::steering>("steering").field<&VehicleComponent::brake>("brake").publish());
-    types.vehicle_wheel_component=take(NativeRegistration<VehicleWheelComponent>{runtime,"physics.VehicleWheelComponent",TypeKind::object}
-        .base<world::Component>().field<&VehicleWheelComponent::wheel_index>("wheel_index").publish());
-    types.distance_constraint_component=take(NativeRegistration<DistanceConstraintComponent>{runtime,"physics.DistanceConstraintComponent",TypeKind::object}
-        .base<world::Component>().field<&DistanceConstraintComponent::target>("target",{TypeReference::native<world::Entity>(),ValueForm::weak_reference})
-        .field<&DistanceConstraintComponent::minimum>("minimum").field<&DistanceConstraintComponent::maximum>("maximum").publish());
-    types.force_component=take(NativeRegistration<ForceComponent>{runtime,"physics.ForceComponent",TypeKind::object}
-        .base<world::Component>().field<&ForceComponent::force>("force").field<&ForceComponent::initial_impulse>("initial_impulse").publish());
-    types.kinematic_motion_component=take(NativeRegistration<KinematicMotionComponent>{runtime,"physics.KinematicMotionComponent",TypeKind::object}
-        .base<world::Component>().field<&KinematicMotionComponent::velocity>("velocity")
-        .field<&KinematicMotionComponent::amplitude>("amplitude").field<&KinematicMotionComponent::period>("period").publish());
-    take(NativeRegistration<TraceShape>{runtime,"physics.TraceShape",TypeKind::enumeration}
+    take(NativeRegistration<CharacterSettings>{runtime,"physics.CharacterSettings",TypeKind::record,
+        "胶囊角色的形状、坡度、跳跃和台阶设置。配置在激活时建立，修改后需停用并重新启用组件。"}
+        .field<&CharacterSettings::radius>("radius","角色胶囊的半径，单位 m，必须大于 0。角色 Entity 要求单位世界缩放。")
+        .field<&CharacterSettings::capsule_half_height>("capsule_half_height","胶囊中段沿 Y 轴的一半长度，不含两端半球，单位 m。")
+        .field<&CharacterSettings::max_slope_radians>("max_slope_radians","可站立坡面的最大坡度角，单位 rad，范围为 0 到 π/2（不含 π/2）。")
+        .field<&CharacterSettings::jump_speed>("jump_speed","在地面上消费 Jump 请求时施加的向上速度，单位 m/s，必须非负。")
+        .field<&CharacterSettings::step_height>("step_height","向上跨越台阶和向下贴地时使用的垂直距离，单位 m，必须非负。")
+        .publish());
+    types.character_component=take(NativeRegistration<CharacterComponent>{runtime,"physics.CharacterComponent",TypeKind::object,
+        "用胶囊 Character 控制 Entity 的运动、台阶和跳跃。每个固定步读取输入，不与同一 Entity 的普通物理 body 同时写入姿态。"}
+        .base<world::Component>().field<&CharacterComponent::settings>("settings","角色的形状和移动限制；激活后修改这些设置需停用并重新启用。")
+        .field<&CharacterComponent::velocity>("velocity","世界空间的水平目标速度，单位 m/s。Y 必须为 0；重力、跳跃和平台垂直速度由角色控制器处理。")
+        .field<&CharacterComponent::jump>("jump","一次跳跃请求，在下一个固定步被消费并清除。只有角色当前站在地面上时才起跳。")
+        .publish());
+    types.ragdoll_component=take(NativeRegistration<RagdollComponent>{runtime,"physics.RagdollComponent",TypeKind::object,
+        "由显式绑定的胶囊部件组成 Ragdoll，模拟后将姿态写回部件 Entity。所属 Entity 要求单位世界缩放。"}
+        .base<world::Component>().field<&RagdollComponent::parts>("parts",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence},
+            std::nullopt,{},{},"按顺序绑定 Ragdoll 部件 Entity，顺序就是 Parent Index 使用的部件编号。修改绑定前必须停用控制组件。")
+        .publish());
+    types.ragdoll_part_component=take(NativeRegistration<RagdollPartComponent>{runtime,"physics.RagdollPartComponent",TypeKind::object,
+        "Ragdoll 一个胶囊部件的作者信息，附着在要接收模拟姿态的 Entity 上。"}
+        .base<world::Component>().field<&RagdollPartComponent::parent_index>("parent_index","在 Ragdoll 绑定列表中的父部件编号。-1 表示根部件，其他父编号必须位于当前部件之前。")
+        .field<&RagdollPartComponent::rest_position>("rest_position","相对于 Ragdoll 控制 Entity 的初始局部位置，单位 m；不是相对于父部件，也不是当前模拟位置。")
+        .field<&RagdollPartComponent::radius>("radius","此部件胶囊的半径，单位 m，必须大于 0。")
+        .field<&RagdollPartComponent::capsule_half_height>("capsule_half_height","此部件胶囊中段沿 Y 轴的一半长度，不含两端半球，单位 m。")
+        .publish());
+    take(NativeRegistration<VehicleSettings>{runtime,"physics.VehicleSettings",TypeKind::record,
+        "四轮车辆的轮位、轮径和悬挂尺寸。激活时建立车辆约束，修改后需停用并重新启用组件。"}
+        .field<&VehicleSettings::half_width>("half_width","左右轮心到车身中心线的横向距离，单位 m；不会改变底盘碰撞尺寸。")
+        .field<&VehicleSettings::half_length>("half_length","前后轮轴到车身中心的纵向距离，单位 m，必须大于 Wheel Radius。")
+        .field<&VehicleSettings::wheel_radius>("wheel_radius","四个车轮的半径，单位 m，必须大于 0。")
+        .field<&VehicleSettings::suspension_length>("suspension_length","车轮悬挂允许伸展的最大长度，单位 m，必须大于 0。")
+        .publish());
+    types.vehicle_component=take(NativeRegistration<VehicleComponent>{runtime,"physics.VehicleComponent",TypeKind::object,
+        "给 Dynamic 底盘添加四轮车辆约束。每个固定步读取油门、转向和刹车，并更新显式绑定的车轮 Entity。"}
+        .base<world::Component>().field<&VehicleComponent::wheels>("wheels",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence},
+            std::nullopt,{},{},"接收轮位和轮转姿态的 Entity。各 Entity 上的 VehicleWheelComponent 指定 Wheel Index；修改绑定前须停用车辆。")
+        .field<&VehicleComponent::settings>("settings","车轮位置、半径和悬挂尺寸；激活后修改这些设置需停用并重新启用。")
+        .field<&VehicleComponent::throttle>("throttle","油门输入，范围 -1–1。0 不加油门，正负值指定相反的驱动方向。")
+        .field<&VehicleComponent::steering>("steering","转向输入，范围 -1–1。0 回到正向，正负值指定相反的转向方向。")
+        .field<&VehicleComponent::brake>("brake","刹车输入，范围 0–1。0 不刹车，1 使用完整刹车输入。")
+        .publish());
+    types.vehicle_wheel_component=take(NativeRegistration<VehicleWheelComponent>{runtime,"physics.VehicleWheelComponent",TypeKind::object,
+        "将一个车轮 Entity 对应到车辆控制器的轮位，用于接收模拟后的姿态。"}
+        .base<world::Component>().field<&VehicleWheelComponent::wheel_index>("wheel_index","车辆轮位编号，范围 0–3。0/1 位于前轴，2/3 位于后轴；偶数位于局部 +X，奇数位于 -X。")
+        .publish());
+    types.distance_constraint_component=take(NativeRegistration<DistanceConstraintComponent>{runtime,"physics.DistanceConstraintComponent",TypeKind::object,
+        "限制所属 Entity 与目标 Entity 的物理 body 锚点距离。修改目标或距离范围后需重新建立约束。"}
+        .base<world::Component>().field<&DistanceConstraintComponent::target>("target",{TypeReference::native<world::Entity>(),ValueForm::weak_reference},
+            std::nullopt,{},{},"约束另一端的 Entity，必须具有可用的物理 body。此弱引用不让目标保活，修改绑定前须停用约束。")
+        .field<&DistanceConstraintComponent::minimum>("minimum","两端约束锚点的最小距离，单位 m，必须非负且不大于 Maximum。")
+        .field<&DistanceConstraintComponent::maximum>("maximum","两端约束锚点的最大距离，单位 m。与 Minimum 相等时保持固定距离。")
+        .publish());
+    types.force_component=take(NativeRegistration<ForceComponent>{runtime,"physics.ForceComponent",TypeKind::object,
+        "向所属 Entity 的 Dynamic body 施加持续 Force 和一次 Initial Impulse。"}
+        .base<world::Component>().field<&ForceComponent::force>("force","每个固定步施加的世界空间力，单位 N。零向量不增加作用力，不会清除已有速度。")
+        .field<&ForceComponent::initial_impulse>("initial_impulse","世界空间冲量，单位 N·s。每次建立物理绑定后的首次固定步只施加一次。")
+        .publish());
+    types.kinematic_motion_component=take(NativeRegistration<KinematicMotionComponent>{runtime,"physics.KinematicMotionComponent",TypeKind::object,
+        "在激活位置上叠加匀速位移和正弦位移，逐固定步驱动 Kinematic body。"}
+        .base<world::Component>().field<&KinematicMotionComponent::velocity>("velocity","沿世界 X、Y、Z 的匀速移动速度，单位 m/s。位移从激活时的位置开始累计。")
+        .field<&KinematicMotionComponent::amplitude>("amplitude","沿世界 X、Y、Z 的正弦往返幅度，单位 m，叠加在 Velocity 的位移上。")
+        .field<&KinematicMotionComponent::period>("period","正弦往返运动的周期，单位 s，必须大于 0。")
+        .publish());
+    take(NativeRegistration<TraceShape>{runtime,"physics.TraceShape",TypeKind::enumeration,
+        "Line 查询线段；Sphere Sweep 沿线段移动一个球；Sphere Overlap 只检查起点处的球。"}
         .enumerator("line",TraceShape::line).enumerator("sphere_sweep",TraceShape::sphere_sweep)
         .enumerator("sphere_overlap",TraceShape::sphere_overlap).publish());
-    take(NativeRegistration<TraceSelection>{runtime,"physics.TraceSelection",TypeKind::enumeration}
+    take(NativeRegistration<TraceSelection>{runtime,"physics.TraceSelection",TypeKind::enumeration,
+        "Channel 按目标 body 的响应表筛选；Object Type 按类别位掩码筛选，不读取响应表。"}
         .enumerator("channel",TraceSelection::channel).enumerator("object_type",TraceSelection::object_type).publish());
-    take(NativeRegistration<TraceMode>{runtime,"physics.TraceMode",TypeKind::enumeration}
+    take(NativeRegistration<TraceMode>{runtime,"physics.TraceMode",TypeKind::enumeration,
+        "Test 只保留命中摘要；Single 保留一个命中；Multi 保留命中列表，数量受 Capacity 限制。"}
         .enumerator("test",TraceMode::test).enumerator("single",TraceMode::single).enumerator("multi",TraceMode::multi).publish());
-    take(NativeRegistration<TraceSettings>{runtime,"physics.TraceSettings",TypeKind::record}
-        .field<&TraceSettings::shape>("shape").field<&TraceSettings::selection>("selection").field<&TraceSettings::mode>("mode")
-        .field<&TraceSettings::channel>("channel").field<&TraceSettings::object_types>("object_types")
-        .field<&TraceSettings::capacity>("capacity").field<&TraceSettings::radius>("radius")
-        .field<&TraceSettings::include_sensors>("include_sensors").publish());
-    types.scene_query_component=take(NativeRegistration<SceneQueryComponent>{runtime,"physics.SceneQueryComponent",TypeKind::object}
-        .base<world::Component>().field<&SceneQueryComponent::ignored_entities>("ignored_entities",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence})
-        .field<&SceneQueryComponent::settings>("settings")
-        .field<&SceneQueryComponent::start>("start").field<&SceneQueryComponent::end>("end")
-        .field<&SceneQueryComponent::automatic>("automatic").field<&SceneQueryComponent::ignore_self>("ignore_self")
-        .method<&SceneQueryComponent::request_query>("request_query",true).method<&SceneQueryComponent::query_ready>("query_ready",true)
-        .method<&SceneQueryComponent::has_hit>("has_hit",true).method<&SceneQueryComponent::has_blocking_hit>("has_blocking_hit",true)
-        .method<&SceneQueryComponent::result_overflow>("result_overflow",true).method<&SceneQueryComponent::hit_count>("hit_count",true)
-        .method<&SceneQueryComponent::hit_distance>("hit_distance",true).method<&SceneQueryComponent::hit_point>("hit_point",true)
-        .method<&SceneQueryComponent::hit_normal>("hit_normal",true).publish());
+    take(NativeRegistration<TraceSettings>{runtime,"physics.TraceSettings",TypeKind::record,
+        "物理场景查询的形状、筛选和结果模式，每次采样读取。查询使用已登记的物理体，不查询全部显示网格。"}
+        .field<&TraceSettings::shape>("shape","Line 查询 Start 到 End 的线段；Sphere Sweep 扫过一个球；Sphere Overlap 只使用 Start。")
+        .field<&TraceSettings::selection>("selection","Channel 使用目标的响应表；Object Type 使用 Object Types 位掩码。两者不是同时叠加的筛选条件。")
+        .field<&TraceSettings::mode>("mode","Test 只保留摘要，Single 保留一个符合规则的命中，Multi 保留命中列表。球 Overlap 没有沿线段的最近距离顺序。")
+        .field<&TraceSettings::channel>("channel","Channel 查询使用的响应槽编号，范围 0–15。目标的 Ignore、Overlap、Block 决定能否命中或继续查询。")
+        .field<&TraceSettings::object_types>("object_types","Object Type 查询选择的 16 位类别掩码，bit 0 对应类别 0。值为 0 时不选择任何类别。")
+        .field<&TraceSettings::capacity>("capacity","最多保留的命中条目数，范围 1–4096。这是输出上限，不是查询耗时或后端内存预算。")
+        .field<&TraceSettings::radius>("radius","Sphere Sweep 和 Sphere Overlap 的世界空间半径，单位 m，必须大于 0。不随 Entity 缩放变化；Line 不使用它。")
+        .field<&TraceSettings::include_sensors>("include_sensors","是否允许 Sensor 进入查询结果。Sensor 只产生非阻挡命中，因此 Channel 的 Test/Single 仍不会选中它。")
+        .publish());
+    types.scene_query_component=take(NativeRegistration<SceneQueryComponent>{runtime,"physics.SceneQueryComponent",TypeKind::object,
+        "通过物理场景执行线段、球扫掠或球重叠查询。配置随 Scene 保存，请求与结果只属于当前运行状态。"}
+        .base<world::Component>().field<&SceneQueryComponent::ignored_entities>("ignored_entities",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence},
+            std::nullopt,{},{},"显式排除这些 Entity 的物理体，并与 Ignore Self 和调用时的排除集合一起生效。运行时修改会在下次采样使用。")
+        .field<&SceneQueryComponent::settings>("settings","查询形状、筛选方式和结果上限，每次采样读取当前值。")
+        .field<&SceneQueryComponent::start>("start","所属 Entity 局部空间中的查询起点，单位 m。Sphere Overlap 使用它作为球心。")
+        .field<&SceneQueryComponent::end>("end","所属 Entity 局部空间中的查询终点，单位 m。Line 和 Sphere Sweep 使用它；Sphere Overlap 忽略它。")
+        .field<&SceneQueryComponent::automatic>("automatic","每个实际完成的物理固定步后自动查询。关闭后由 Request Query 请求下一次采样；暂停时不会自动刷新。")
+        .field<&SceneQueryComponent::ignore_self>("ignore_self","忽略所属 Entity 的物理体，不自动忽略组合父实体、子实体或兄弟实体。")
+        .method<&SceneQueryComponent::request_query>("request_query",true,"请求下一个实际固定步完成后查询。重复请求合并为一次，不立即执行查询。")
+        .method<&SceneQueryComponent::query_ready>("query_ready",true,"是否已有一次成功完成的查询。成功但没有命中时也为 true。")
+        .method<&SceneQueryComponent::has_hit>("has_hit",true,"上次查询是否存在命中，按 Capacity 截断之前计算；Test 模式也提供此摘要。")
+        .method<&SceneQueryComponent::has_blocking_hit>("has_blocking_hit",true,"上次查询是否存在 Block 命中，按 Capacity 截断之前计算。")
+        .method<&SceneQueryComponent::result_overflow>("result_overflow",true,"上次查询是否因 Capacity 限制丢弃了部分命中条目。")
+        .method<&SceneQueryComponent::hit_count>("hit_count",true,"上次查询保留的命中条目数。Test 模式不保留列表，因此为 0。")
+        .method<&SceneQueryComponent::hit_distance>("hit_distance",true,"首个保留命中的世界距离，单位 m。空列表或 Test 模式返回 0；Overlap 不表达最近物体距离。")
+        .method<&SceneQueryComponent::hit_point>("hit_point",true,"首个保留命中在目标表面的世界接触点。球 Sweep 时它不等于球心；空列表返回零向量。")
+        .method<&SceneQueryComponent::hit_normal>("hit_normal",true,"首个保留命中的世界表面法线或分离方向。空列表返回零向量，射线从内部开始时法线也可能为零。")
+        .publish());
     return types;
 } catch(const std::exception& e) {return failed(e);}
 Result<void> set_constraint_target(Runtime& runtime,ObjectId component,ObjectId entity) try {

@@ -27,8 +27,12 @@ struct ViewOptionInfo {
     ViewValueKind kind;
     double minimum{}, maximum{};
     std::span<const std::string_view> choices{};
+    // Presentation and Control documentation share this table. These strings
+    // describe the option; they are not part of its persisted name or value.
+    std::string_view label, category, description;
 };
 std::span<const ViewOptionInfo> view_options() noexcept;
+const ViewOptionInfo* view_option(ViewOption) noexcept;
 const ViewOptionInfo* view_option(std::string_view) noexcept;
 struct ViewOptionAlias {std::string_view name;ViewOption option;};
 std::span<const ViewOptionAlias> view_option_aliases() noexcept;

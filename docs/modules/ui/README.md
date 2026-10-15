@@ -2,6 +2,14 @@
 
 `atelier_ui`提供正式文字服务和基础控件，使用现有`atelier_ui_layout`；不依赖Runtime、editor或RHI。`atelier_ui_protocol`只导出纯CPU绘制协议，renderer可以单独依赖它，不链接控件或DirectWrite。两个目标均由`cmake/ui.cmake`提供，应用在根构建include该文件后调用`atelier_add_ui()`。
 
+## 悬浮说明
+
+`Control::tooltip` 持有不可变 `Tooltip`（title、identity、description）。同一参数行的 label、数值输入、滑条等子控件继承最近祖先的说明；禁用控件仍可阅读。说明不持有 Runtime 对象、字段借用或回调。标题与身份为单行，正文允许换行；编码和字符沿用 UI 文字校验，不给合法反射描述另设长度上限。
+
+指针停留 500ms 后，Session 使用已接受的几何与说明快照，在同一 `UiFrame` 绘制提示。提示使用现有字体、主题与 TextStore 缓存，按 client 边界换行、避让和裁剪；不参与布局、输入命中或 viewport RT 尺寸。`UiFrame::tooltip` 可供验收观察。
+
+离开窗口、滚动、输入、拖动、菜单、失焦、控件退休或成功的 DSL 热更新都会取消提示。宿主提前消费输入时调用 `dismiss_tooltip()`；这不会取消业务编辑。候选提示绑定悬浮 generation，取消前准备的候选不能再次被接受。祖先身份、父链或说明尚未接受时，也不能利用旧几何显示新说明。
+
 ## 唯一入口
 
 [session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
@@ -222,13 +230,15 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 ## 限额与验收
 
-正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。当前源码包含 24 组场景，数量以[消费者的 cases 列表](../../../acceptance/ui/main.cpp)为准。
+正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。当前源码包含 25 组场景，数量以[消费者的 cases 列表](../../../acceptance/ui/main.cpp)为准。
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
 正式消费者使用真实 Session、LayoutDocument 和 DirectWrite，覆盖文字/样式/接受帧寿命、DPI 与失败恢复、稀疏更新、编辑历史及 Unicode、剪贴板/组合协议、树/表格、按钮与菜单行为，以及单行标签省略。交互状态查询回归位于同目标的[文字编辑场景](../../../acceptance/ui/text_edit.inl)。检查在 Dev/Release 中均有效；组合协议注入不算真实系统输入法通过。
 
-验收记录按其代码基线保留：2026-10-05 的稀疏更新为双配置 20/20，见[更新证据](updates.md#历史验收)；2026-10-09 阶段合并为双配置 23/23，见[集成记录](../../research/stage-merge-20261009.md#本候选验收)。随后加入的场景以当前源码为准，历史通过数量不代表新版本已重跑。本次文档整理没有新增运行验收。
+2026-10-15 的 Dev／Release 为 24/25：新增 Tooltip 场景通过，覆盖延迟、禁用行继承、接受帧父链、取消后的候选、长说明裁剪、DPI、缓存和输入清理。既有 `shared_menu_semantics` 仍在菜单 checkbox/radio 标记的视觉采样断言失败；本轮未修改该场景或其生产样式。原生编辑器的说明截图与 Control 元数据另有双配置通过证据，见[参数面板说明](../editor/README.md#参数面板组合)。
+
+历史结果按其代码基线保留：2026-10-05 的稀疏更新为双配置 20/20，见[更新证据](updates.md#历史验收)；2026-10-09 阶段合并为双配置 23/23，见[集成记录](../../research/stage-merge-20261009.md#本候选验收)。历史通过数量不代表当前版本已全部通过。
 
 历史 S1 的 256 行/96 DIP 窗口首屏栅格化 4 行、裁剪 252 行，滚尾再返回累计栅格化 8 行；S2 的 4096 宽字符/100 DIP 字段保持完整编辑，覆盖率宽度不超过 100 像素。这些是固定场景证据。正式窗口、搜索业务及本机搜狗真实输入的范围见[编辑器端到端验收](../editor/README.md)，不从 UI 协议场景推断其他系统输入法已通过。
 

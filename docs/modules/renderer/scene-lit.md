@@ -100,6 +100,8 @@ Local GI 关闭时，若接收材质的 `base_color × (1 − metallic)` 严格�
 
 World Settings → Diagnostics 中的 DDGI 显示与 Control 的 `view.set` / `render.compare` 共用 `ViewOption`。显示诊断默认关闭；设置属于视口，不创建 Entity、TLAS 实例或发光体，不写场景撤销与保存数据。
 
+参数名称、范围和中英文说明来自编辑器的同一 `ViewOptionInfo` 定义，World 属性行与 Control 查询共同使用。悬浮说明解释字段的实际作用；它不参与渲染设置求值、场景序列化或 GPU 诊断数据采样。Scene 作者值与视口诊断的区别继续由 `world_option` 和既有提交链决定。
+
 - `probe_visualization`：`off`、`irradiance`、`state`、`update_age`、`distance`。球心读取本帧完成更新的真实 offset；辐照度读取对应八面体方向，显示 `E / π × exposure` 经 `c / (1 + c)` 映射；它是探针数据预览，不是最终表面光照。距离读取 FP32 距离矩中的方向均值，黑到白对应 0～4 倍最小探针间距。
 - `probe_volume` 显示实际滚动后的边界，`probe_relocation` 连接原格点与实际位置；四个槽位用青/黄/紫/绿区分。`probe_debug_volume=-1` 显示全部，0～3 只显示对应槽位。`probe_radius` 为最小格间距的 0.01～0.45 倍，默认 0.12；半径只影响显示，不改变采样。
 - `probe_xray` 忽略场景遮挡；探针之间仍有深度遮挡。空间诊断在 AA 完成和无抖动编辑深度重建后执行，使用私有 D32_FLOAT 深度，保留正式 scene depth 给拾取、Capture 和编辑辅助线。未启用时没有诊断绘制或深度副本。

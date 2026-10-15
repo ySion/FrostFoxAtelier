@@ -3,6 +3,11 @@ Reply Session::input(const Event& event) {
     Reply reply;
     try {
         self.sync_code_edit();
+        if (std::isfinite(event.x) && std::isfinite(event.y)) reply.redraw=self.tooltip_input(event);
+        if (event.kind==EventKind::pointer_leave) {
+            reply.redraw|=self.hover!=0;self.hover=0;
+            return reply;
+        }
         if (event.kind==EventKind::capture_lost && !self.press) return reply;
         if (event.kind==EventKind::focus_lost || event.kind==EventKind::capture_lost) {
             reply=self.cancel();
@@ -78,7 +83,7 @@ Reply Session::input(const Event& event) {
             const auto* owner=self.published->find(bar.key);
             if (!owner || !self.current(*owner) || !contains(bar.bounds,event.x,event.y) || !contains(bar.clip,event.x,event.y)) continue;
             if (event.kind==EventKind::pointer_move) {
-                reply.redraw=self.hover!=bar.key; self.hover=bar.key; reply.cursor=Cursor::arrow; reply.consumed=true; return reply;
+                reply.redraw|=self.hover!=bar.key; self.hover=bar.key; reply.cursor=Cursor::arrow; reply.consumed=true; return reply;
             }
             if (event.kind==EventKind::pointer_down && event.button==PointerButton::primary && !self.press) {
                 self.finish_edit(reply,true);
@@ -102,7 +107,7 @@ Reply Session::input(const Event& event) {
         if (self.table_input(reply,event,hit)) return reply;
         if (event.kind==EventKind::pointer_move) {
             const auto key=hit?hit->key:0;
-            reply.redraw=self.hover!=key; self.hover=key;
+            reply.redraw|=self.hover!=key; self.hover=key;
             if (self.press) {
                 auto& press=*self.press;
                 const auto* state=self.live(press.key);

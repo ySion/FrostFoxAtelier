@@ -64,6 +64,7 @@ void Workspace::reset_layout() {
 void Workspace::reset_document() {
     camera_flying=false;
     category_keys_.clear();
+    property_help_.clear();
     lighting.cancel();
     lighting.observe(renderer::FrameStats{});
     lighting.performance().reset();
@@ -353,6 +354,7 @@ std::wstring parameter_label(std::string_view path) {
 }
 }
 std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project) {
+    property_help_.begin();
     sync_world(session);
     const auto take = []<class T>(Result<T> value) -> T {
         if (!value) throw std::runtime_error(value.error().message);
@@ -757,10 +759,16 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     // Swatch shows the display colour; HDR emission is clamped for the chip only.
                     const auto channel=[&](std::size_t lane){return tuple.size()>lane?std::clamp(tuple[lane].value,0.0,1.0):0.0;};
                     const double r=channel(0),g=channel(1),b=channel(2);
-                    properties->push_back({property_key(prefix,Binding::Kind::property_row),
-                        {spatial_rotation?std::wstring(L"Rotation (°)"):property_caption(name,property.label),ui_language::EditBinding{spatial_position?bind(object,{},Binding::Kind::position_default):spatial_rotation?bind(object,{},Binding::Kind::rotation_default):spatial_scale?bind(object,{},Binding::Kind::scale_default):ui::ControlKey{},editable,false,std::move(tuple)},
-                        false,false,editable,ui_language::ActionBinding{field_key,editable},false,std::wstring{},field_key,
-                        color,r,g,b,override_available,overridden,ui_language::ActionBinding{instance?override_key:field_key,override_available && !session.world().running()}}});
+                    PropertyRow row;
+                    row.key=property_key(prefix,Binding::Kind::property_row);
+                    row.title=spatial_rotation?std::wstring(L"Rotation (°)"):property_caption(name,property.label);
+                    row.edit={spatial_position?bind(object,{},Binding::Kind::position_default):spatial_rotation?bind(object,{},Binding::Kind::rotation_default):spatial_scale?bind(object,{},Binding::Kind::scale_default):ui::ControlKey{},editable,false,std::move(tuple)};
+                    row.enabled=editable; row.change={field_key,editable}; row.target=field_key;
+                    if(color) row.swatch=std::array{r,g,b};
+                    row.override_available=override_available; row.overridden=overridden;
+                    row.inherit={instance?override_key:field_key,override_available && !session.world().running()};
+                    row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(name)+L" : "+wide(parent->name)+(spatial_rotation?L" · Euler (°)":L""),property.description);
+                    properties->push_back(std::move(row).item());
                 }
                 continue;
             }
@@ -810,16 +818,24 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             std::wstring choice;
             if(enumeration) for(const auto& member:take(runtime.describe(enumeration->type))->enumeration->values)
                 if(member.second==enumeration->bits) {choice=parameter_label(member.first);break;}
-            properties->push_back({property_key(property.path,Binding::Kind::property_row),
-                {caption,std::move(edit),boolean,boolean && std::get<bool>(property.value),editable,
-                 ui_language::ActionBinding{key,editable},enumeration!=nullptr,std::move(choice),key,false,0.0,0.0,0.0,override_available,overridden,ui_language::ActionBinding{instance?override_key:key,override_available && !session.world().running()}}});
+            PropertyRow row;
+            row.key=property_key(property.path,Binding::Kind::property_row);row.title=std::move(caption);row.edit=std::move(edit);
+            row.kind=boolean?PropertyRow::Kind::boolean:enumeration?PropertyRow::Kind::enumeration:PropertyRow::Kind::number;
+            row.checked=boolean && std::get<bool>(property.value);row.enabled=editable;row.change={key,editable};
+            row.choice=std::move(choice);row.target=key;row.override_available=override_available;row.overridden=overridden;
+            row.inherit={instance?override_key:key,override_available && !session.world().running()};
+            row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(property.name)+L" : "+wide(take(runtime.describe(property.type))->name),property.description);
+            properties->push_back(std::move(row).item());
         }
         properties=parameter_by_category_ && material_object==ObjectId{} && material_bindings?
             category_properties("Material"):component_properties;
-        const auto selector=[&](ui::ControlKey key,std::wstring caption,std::wstring choice) {
+        const auto selector=[&](ui::ControlKey key,std::wstring caption,std::wstring choice,std::string_view description) {
             if(!group_matches && lowercase(caption+L" "+choice).find(folded)==std::wstring::npos)return;
-            properties->push_back({key,{std::move(caption),ui_language::EditBinding{},false,false,!session.world().running(),
-                ui_language::ActionBinding{key,!session.world().running()},true,std::move(choice),key,false,0.0,0.0,0.0,false,false,ui_language::ActionBinding{key,false}}});
+            PropertyRow row;
+            row.key=key;row.title=std::move(caption);row.kind=PropertyRow::Kind::enumeration;
+            row.enabled=!session.world().running();row.change={key,row.enabled};row.choice=std::move(choice);row.target=key;
+            row.help=property_help_.get(key,row.title,L"Resource binding",description);
+            properties->push_back(std::move(row).item());
         };
         if(resource && !instance) {
             const auto asset=take(session.material_asset(object));
@@ -827,7 +843,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             for(std::size_t i=0;i<names.size();++i) {
                 auto name=asset.textures[i].empty()?std::wstring(L"None"):wide(asset.textures[i]);
                 if(project) for(const auto& entry:project->entries()) if(entry.key==asset.textures[i]) {name=entry.path.stem().wstring();break;}
-                selector(bind_material(object,{},Binding::Kind::material_texture,{}, {},i),names[i],std::move(name));
+                selector(bind_material(object,{},Binding::Kind::material_texture,{}, {},i),names[i],std::move(name),"选择材质输入使用的 Texture 资源。None 清除该输入的贴图；修改参与材质撤销与保存。");
             }
         } else if(!resource && material_bindings) {
             if(mesh->mesh.resolved) for(std::size_t i=0;i<mesh->mesh.resolved->materials().size();++i) {
@@ -839,7 +855,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     choice=wide(state.source);
                     if(project) for(const auto& entry:project->entries()) if(entry.key==state.source) {choice=entry.path.stem().wstring();break;}
                 }
-                selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+wide(slot_name),std::move(choice));
+                selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+wide(slot_name),std::move(choice),"为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
             }
         }
         if(!component_properties->empty()) groups->push_back({property_key({},Binding::Kind::property_group),
@@ -897,7 +913,26 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     ui_language::EditBinding position{show_position?bind(*transform,{},Binding::Kind::position_default):ui::ControlKey{74},
         entity_status.can_edit && show_position,group_modified,std::move(fields)};
     const bool entity_selected=inspected!=ObjectId{} && inspected==selected;
-    const std::array<ui_language::InputValue,25> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
+    const auto transform_help=[&](std::span<const FieldId> lane,ui::ControlKey key,std::wstring_view title,bool rotation=false)->ui_language::TooltipBinding {
+        if(!show_position) return {};
+        const auto type=take(runtime.describe(take(runtime.type_of(*transform))));
+        auto owner=type;const FieldInfo* field{};
+        for(std::size_t depth=0;depth+1<lane.size();++depth) {
+            field=&*std::ranges::find(owner->fields,lane[depth],&FieldInfo::id);
+            owner=take(runtime.describe(field->value.type));
+        }
+        return property_help_.get(key,title,wide(type->name)+L"."+wide(field->name)+L" : "+wide(owner->name)+(rotation?L" · Euler (°)":L""),field->description);
+    };
+    ui_language::TooltipBinding type_help;
+    if(inspected!=ObjectId{}) {
+        const auto type=take(runtime.describe(take(runtime.type_of(inspected))));
+        type_help=property_help_.get(52,short_type(inspected),wide(type->name),type->description);
+    }
+    const std::array transform_descriptions{
+        transform_help(session.types().position_fields[0],70,L"Position (m)"),
+        transform_help(session.types().rotation_fields[0],rotation_edit.group,L"Rotation (°)",true),
+        transform_help(session.types().scale_fields[0],scale_edit.group,L"Scale")};
+    const std::array<ui_language::InputValue,29> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
         ui_language::TextEditBinding{entity_selected?bind(selected,{},Binding::Kind::name):ui::ControlKey{77},
             inspected==ObjectId{}?L"No selection":entity_selected?std::wstring(session.name(selected)):short_type(inspected),entity_selected && entity_status.can_edit},
         ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
@@ -906,7 +941,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         double(entity_selected?entity_icon(session,selected):ui::ControlIcon::component),double(ui::ControlIcon::search),
         parameter_search_visible && inspected!=ObjectId{},ui_language::ActionBinding{control::parameter_search_toggle,inspected!=ObjectId{}},
         std::move(rotation_edit),std::move(scale_edit),position_matches,rotation_matches,scale_matches,parameter_by_category_,
-        ui_language::ActionBinding{control::group_components,true},ui_language::ActionBinding{control::group_categories,true}};
+        ui_language::ActionBinding{control::group_components,true},ui_language::ActionBinding{control::group_categories,true},
+        transform_descriptions[0],transform_descriptions[1],transform_descriptions[2],std::move(type_help)};
     const std::array<ui_language::KeyBinding,14> keys{{{"components",control::group_components},{"categories",control::group_categories},{"path.bar",75},
         {"path.path",control::parameter_path},{"path.back",control::parameter_back},{"path.forward",control::parameter_forward},
         {"header.row",51},{"header.type",52},{"header.search",control::parameter_search_toggle},
@@ -1117,6 +1153,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         reject_ui_controls(std::string(ui_error()));
         return describe(session,size,frame,project);
     }
+    property_help_.end();
     return result;
 }
 }

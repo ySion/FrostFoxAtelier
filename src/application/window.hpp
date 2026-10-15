@@ -60,6 +60,7 @@ private:
     bool closing_{}, releasing_capture_{};
     bool popup_{};
     bool relative_pointer_{};
+    bool tracking_pointer_{};
     POINT pointer_before_{};
     RECT clip_before_{};
     std::vector<NativeEvent> events_;

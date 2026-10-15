@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cwctype>
 #include <map>
@@ -17,6 +18,8 @@ namespace {
 constexpr std::array ladder_steps{100.,10.,1.,.1,.01,.001,.0001};
 constexpr std::array ladder_labels{L"100",L"10",L"1",L".1",L".01",L".001",L".0001"};
 constexpr float ladder_tick_distance=4;
+const detail::TextKey tooltip_title_key{0,0,true};
+const detail::TextKey tooltip_body_key{0,0,false}; // Transient slot; value ladder and help are mutually exclusive.
 detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
     using Icon=ControlIcon; using Symbol=detail::TextStore::Symbol;
     return icon==Icon::close?Symbol::close:icon==Icon::maximize?Symbol::maximize:icon==Icon::restore?Symbol::restore:icon==Icon::plus?Symbol::plus:
@@ -117,6 +120,15 @@ Result<void> validate_control_properties(const Control& control) {
     if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 ||
         !detail::valid_text(control.tree_filter,false) || !detail::valid_text(control.text,control.kind==ControlKind::text_edit))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    if (control.tooltip) {
+        const auto& help=*control.tooltip;
+        const auto multiline=[](std::wstring_view value) {
+            return detail::valid_text(value,false) &&
+                std::ranges::all_of(value,[](wchar_t c){return c>=32 || c==L'\n' || c==L'\r' || c==L'\t';});
+        };
+        if (!detail::valid_text(help.title) || !detail::valid_text(help.identity) || !multiline(help.description))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    }
     if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value<control.minimum ||
         *control.default_value>control.maximum)) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
     if (!StyleSheet::valid_properties(control.style) || control.classes.size()>16 ||
@@ -252,6 +264,25 @@ struct Session::Impl {
     Key terminal_key{Key::none};
     ControlKey popup{}, popup_return_focus{};
     bool popup_dismissed{};
+    struct TooltipHover {
+        ControlKey owner{};
+        std::uint64_t incarnation{};
+        Rect anchor;
+        Clip clip;
+        std::shared_ptr<const Tooltip> content;
+        float x{},y{};
+        std::chrono::steady_clock::time_point since;
+        std::uint64_t generation{};
+    };
+    struct TooltipCache {
+        std::shared_ptr<const Tooltip> content;
+        std::uint64_t style_revision{};
+        float width{},height{},scale{};
+        ui_layout::MeasuredSize title_size{},body_size{};
+        detail::RasterText title,body;
+    };
+    std::optional<TooltipHover> tooltip_hover;
+    std::optional<TooltipCache> tooltip_cache;
 
     explicit Impl(std::span<const std::wstring> fonts) : text(fonts) { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
     bool active() const {
@@ -286,6 +317,7 @@ struct Session::Impl {
             if (contains(it->bounds,x,y) && contains(it->clip,x,y) && current(*it)) return &*it;
         return nullptr;
     }
+#include "ui/session_tooltip.inl"
 #include "ui/session_edit.inl"
 #include "ui/session_code.inl"
 #include "ui/session_popup.inl"
@@ -419,6 +451,7 @@ Result<void> Session::set_style(const Style& style) {
     static_assert(std::is_nothrow_move_assignable_v<Style>);
     self.style = std::move(candidate);
     self.style_revision = revision;
+    self.dismiss_tooltip();
     if (font_changed) self.text.set_provider_revision(provider);
     return {};
 }
@@ -427,6 +460,7 @@ Result<void> Session::set_style_sheet(std::shared_ptr<const StyleSheet> sheet) {
     if (impl_->style_sheet!=sheet) {
         const auto revision=detail::new_identity();
         impl_->style_sheet=std::move(sheet); impl_->style_revision=revision;
+        impl_->dismiss_tooltip();
     }
     return {};
 }
@@ -635,7 +669,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code,state.control.tooltip});
             const auto kind = state.control.kind;
             if (kind==ControlKind::tree_item) {
                 const auto indent=self.states.at(state.control.parent).resolved->tree_indent*scale;
@@ -917,6 +951,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             scrollbar(self.states.at(output->popup));
         }
 #include "ui/session_ladder.inl"
+#include "ui/session_tooltip_draw.inl"
         output->drawing = std::move(draws);
         attempt.completed=true;
         return std::shared_ptr<const UiFrame>(std::move(output));
@@ -929,6 +964,8 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
         frame->drawing->dpi_scale != self.surface.dpi_scale || frame->drawing->surface_revision != self.surface.revision ||
         frame->drawing->id<=self.failed_frame_id ||
         (self.published && frame->drawing->id < self.published->drawing->id)) return false;
+    if (frame->tooltip && (!self.tooltip_hover || self.tooltip_blocked() ||
+        frame->tooltip->generation!=self.tooltip_hover->generation)) return false;
     for (const auto& geometry:frame->code_editors) {
         const auto* state=self.live(geometry.key);
         if (!state || !state->control.code || state->control.code->revision()!=geometry.revision ||
@@ -936,10 +973,13 @@ bool Session::accept(std::shared_ptr<const UiFrame> frame) {
     }
     if (self.edit) if (const auto* geometry=frame->find_text(self.edit->key); geometry && geometry->token==self.edit->token)
         self.edit->scroll=geometry->scroll;
-    self.published = std::move(frame); self.failed_frame_id=0; return true;
+    self.published = std::move(frame); self.failed_frame_id=0;
+    self.validate_tooltip(*self.published);
+    return true;
 }
 const std::shared_ptr<const UiFrame>& Session::presented() const noexcept { return impl_->published; }
 Reply Session::cancel_interaction() { return impl_->cancel(); }
+void Session::dismiss_tooltip() noexcept { impl_->dismiss_tooltip(); }
 Result<Reply> Session::commit_edit() {
     Reply reply;
     if (!impl_->finish_edit(reply,true,false,true)) return std::unexpected(Error{ErrorCode::invalid_text,impl_->focus});

@@ -6,33 +6,38 @@
 #include <stdexcept>
 
 namespace atelier::acceptance::reflection {
-ASTRUCT(Name = "reflection.Sample")
+ASTRUCT(Name = "reflection.Sample", DESC = "Sample 记录。\r\n包含测量值和次数。\r普通 UTF-8。")
 struct Sample {
     AGENERATED_BODY(Sample)
-    AFIELD(Label = "数值 \"value\" \\ preview", Category = "Transform") float value{3};
-    AFIELD() std::uint32_t count{};
+    AFIELD(Label = "数值 \"value\" \\ preview", Category = "Transform", DESC = "Value 测量值。\n允许 \"引号\"、\\ 路径和\t缩进。") float value{3};
+    AFIELD(DESC = "Count 累计次数。") std::uint32_t count{};
 };
 
-ACLASS(Name = "reflection.Counter")
+ACLASS(Name = "reflection.Counter", DESC = "Counter 累计测量次数。")
 class Counter {
     AGENERATED_BODY(Counter)
 public:
     inline static int live{};
     Counter() { ++live; }
     ~Counter() noexcept { --live; }
-    AFUNCTION() float read() const noexcept { return sample_.value; }
+    AFUNCTION(DESC = "读取当前 Value。\r\n不会改变计数。") float read() const noexcept { return sample_.value; }
     AFUNCTION(Name = "count") std::uint32_t advance(const std::uint32_t amount) noexcept { return sample_.count += amount; }
-    AFUNCTION(Name = "scale") float advance(float scale) { return sample_.value *= scale; }
+    AFUNCTION(Name = "scale", DESC = "") float advance(float scale) { return sample_.value *= scale; }
 #if defined(_DEBUG)
-    AFIELD(Label = "Debug value") float debug_only{};
+    AFIELD(Label = "Debug value", DESC = "Debug 字段。") float debug_only{};
 #else
-    AFIELD(Label = "Release value") std::uint32_t release_only{};
+    AFIELD(Label = "Release value", DESC = "Release 字段。") std::uint32_t release_only{};
 #endif
 private:
-    AFIELD(Hidden, Label = "Internal sample", Category = "Internal") Sample sample_;
+    AFIELD(Hidden, Label = "Internal sample", Category = "Internal", DESC = "仅供内部使用。") Sample sample_;
 };
 
-AENUM(Name = "reflection.Mode")
+ACLASS(Name = "reflection.CounterChild")
+class CounterChild : public Counter {
+    AGENERATED_BODY(CounterChild)
+};
+
+AENUM(Name = "reflection.Mode", DESC = "Mode 工作状态。\nidle 表示空闲。")
 enum class Mode : std::int32_t { idle = -1, active = 2, alias = active };
 AENUM(Name = "reflection.OtherMode")
 enum class OtherMode : std::int32_t { active = 2 };
@@ -50,7 +55,7 @@ struct alignas(64) PlainRecord {
 ACLASS(Name = "reflection.CallProbe")
 struct CallProbe {
     AGENERATED_BODY(CallProbe)
-    AFUNCTION(BorrowSafe) PlainRecord record_alias(PlainRecord copy, PlainRecord& target) const {
+    AFUNCTION(BorrowSafe, DESC = "更新 Record 的次数，并返回副本。") PlainRecord record_alias(PlainRecord copy, PlainRecord& target) const {
         target.count += 10; copy.enabled = !copy.enabled; return copy;
     }
     AFIELD() int value{};
@@ -61,7 +66,7 @@ struct CallProbe {
     AFIELD(Label = "Position", Category = "Transform") math::Vector3d direction;
     AFIELD() Array<double> samples;
     AFIELD(Category = "Flags") bool enabled{};
-    AFIELD(Label = "", Category = "") bool before{true};
+    AFIELD(Label = "", Category = "", DESC = "") bool before{true};
     AFIELD() bool after{true};
     AFIELD() Array<bool> flags;
     AFUNCTION() bool bool_alias(bool copy, const bool& read, bool& write) { write = copy; return read; }

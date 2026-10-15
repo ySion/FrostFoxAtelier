@@ -11,6 +11,7 @@
     }
     void update_popup(ControlKey next, Reply& reply) {
         if (next==popup) return;
+        reply.redraw|=dismiss_tooltip();
         if (next && press) {
             auto cancelled=cancel(); reply.capture=cancelled.capture;
             for (auto& effect:cancelled.effects) reply.effects.push_back(std::move(effect));

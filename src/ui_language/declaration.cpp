@@ -54,6 +54,7 @@ Input parse_input(Tokens& tokens) {
         else if (type.text=="ActionBinding") value.kind=InputKind::action;
         else if (type.text=="TableBinding") value.kind=InputKind::table;
         else if (type.text=="CodeBinding") value.kind=InputKind::code;
+        else if (type.text=="TooltipBinding") value.kind=InputKind::tooltip;
         else if (type.text=="Key") value.kind=InputKind::key;
         else if (type.text=="Items") {
             value.kind=InputKind::items;tokens.expect("<");value.item_type=tokens.identifier().text;tokens.expect(">");
@@ -135,6 +136,8 @@ public:
                 const auto reference=reference_kind(evaluation.source);
                 const bool text=property==Property::text || property==Property::filter || property==Property::classes ||
                     property==Property::view || property==Property::empty_text || property==Property::menu_behavior ||
+                    property==Property::tooltip_title || property==Property::tooltip_identity ||
+                    (property==Property::tooltip && reference!=InputKind::tooltip) ||
                     (property==Property::argument && evaluation.kind==InputKind::text);
                 const bool numeric=property==Property::gap || property==Property::height || property==Property::width ||
                     property==Property::padding_left || property==Property::icon ||
@@ -150,6 +153,7 @@ public:
                 else if (property==Property::action) sink="set_action";
                 else if (property==Property::model) sink="set_model";
                 else if (property==Property::document) sink="set_document";
+                else if (property==Property::tooltip) sink="set_tooltip";
                 else if (property==Property::context) sink=reference==InputKind::text_edit?"set_context_from_edit":"set_context";
                 else if (property==Property::items) sink="set_items";
                 else if (property==Property::tree_parent) sink="set_tree_parent";
@@ -197,7 +201,7 @@ private:
         reject(token.position,"Component state requires bool or double.");
     }
     static std::string suffix(InputKind kind) {
-        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action","table","code"};
+        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action","table","code","tooltip"};
         return std::string(names[static_cast<std::size_t>(kind)]);
     }
     Fragment fragment(std::string_view terminator) {
@@ -234,7 +238,7 @@ private:
         const auto name=identifier();unique(name,result_.nodes);
         const auto slot=static_cast<std::uint32_t>(result_.nodes.size());
         result_.nodes.push_back({std::string(name.text),kind,parent,kind==NodeKind::component?std::string(type.text):std::string{}});expect("{");
-        std::vector<std::string_view> properties;bool has_event{};
+        std::vector<std::string_view> properties;bool has_event{},tooltip_binding{};
         while (!accept("}")) {
             if (accept("on")) {
                 const auto event=identifier();
@@ -273,7 +277,7 @@ private:
                     "view","row_height","header_height","tile_width","tile_height","item_gap","empty_text",
                     "modified","out_of_flow","offset_x","offset_y","anchor_x","anchor_y","pivot_x","pivot_y",
                     "flex_width","grow_width","red","green","blue","value","minimum","maximum","step","vertical","click_action",
-                    "menu_branch","menu_behavior","radio_group","document"};
+                    "menu_branch","menu_behavior","radio_group","document","tooltip","tooltip_title","tooltip_identity"};
                 const auto at=std::ranges::find(names,property.text);
                 if (at==std::end(names)) reject(property.position,"Unknown UI property.");
                 value=static_cast<Property>(at-std::begin(names));
@@ -303,10 +307,12 @@ private:
                 if (value==Property::text && ((container_node(kind) && kind!=NodeKind::parameter_row) || kind==NodeKind::text_field || kind==NodeKind::table || kind==NodeKind::code_editor))
                     reject(property.position,"Use Text or a typed text edit binding.");
                 if (kind==NodeKind::number_row && value!=Property::text && value!=Property::classes &&
-                    value!=Property::enabled && value!=Property::collapsed && value!=Property::edit)
+                    value!=Property::enabled && value!=Property::collapsed && value!=Property::edit &&
+                    value!=Property::tooltip && value!=Property::tooltip_title && value!=Property::tooltip_identity)
                     reject(property.position,"NumberRow layout and field state are owned by the shared parameter row and EditBinding.");
                 if (kind==NodeKind::parameter_row && value!=Property::text && value!=Property::classes &&
-                    value!=Property::enabled && value!=Property::collapsed && value!=Property::modified)
+                    value!=Property::enabled && value!=Property::collapsed && value!=Property::modified &&
+                    value!=Property::tooltip && value!=Property::tooltip_title && value!=Property::tooltip_identity)
                     reject(property.position,"ParameterRow owns its shared layout; put outer layout on its parent.");
                 if ((value==Property::tree_parent || value==Property::expanded) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
                 if (value==Property::filter && kind!=NodeKind::tree) reject(property.position,"filter requires Tree.");
@@ -314,6 +320,12 @@ private:
                 if (value==Property::items && kind!=NodeKind::repeat) reject(property.position,"items requires Repeat.");
             }
             const auto expression=fragment(";");expect(";");
+            if (value==Property::tooltip && reference_kind(expression)==InputKind::tooltip) tooltip_binding=true;
+            if (tooltip_binding && (std::ranges::find(properties,"tooltip_title")!=properties.end() ||
+                std::ranges::find(properties,"tooltip_identity")!=properties.end()))
+                reject(property.position,"TooltipBinding owns its title, identity and description; do not combine it with tooltip text properties.");
+            if (value==Property::argument && value_kind==InputKind::tooltip && reference_kind(expression)!=InputKind::tooltip)
+                reject(expression.position,"Tooltip arguments require a direct TooltipBinding input.");
             if ((value==Property::selection_group || value==Property::context || value==Property::radio_group) && reference_kind(expression)!=InputKind::key &&
                 !(value==Property::context && reference_kind(expression)==InputKind::text_edit)) {
                 Tokens tokens(source_.substr(expression.begin,expression.end-expression.begin));

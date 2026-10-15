@@ -202,6 +202,7 @@ Json capabilities() {
         else schema={{"type",option.kind==editor::ViewValueKind::integer?"integer":"number"},{"minimum",option.minimum},{"maximum",option.maximum}};
         if(option.option==editor::ViewOption::grid_plane) schema["availability"]="render.compare only; persistent value follows camera";
         schema["scope"]=editor::world_option(option.option)?"scene":"view";
+        schema["label"]=option.label;schema["category"]=option.category;schema["description"]=option.description;
         result["display_options"][option.name]=std::move(schema);
     }
     result["display_aliases"]=Json::object();
@@ -375,10 +376,12 @@ struct EditorControl::Impl {
     }
     Json object_json(ObjectId id) {
         auto& runtime=app.document_->world().runtime();const auto* type=take(runtime.describe(take(runtime.type_of(id))));
-        Json result{{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type->name},{"properties",Json::array()}};
+        Json result{{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type->name},
+            {"type_description",type->description},{"properties",Json::array()}};
         for(const auto& property:take(app.document_->properties(id))) {
             const auto* prop_type=take(runtime.describe(property.type));
-            Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
+            Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"description",property.description},
+                {"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
             if(prop_type->enumeration) {field["choices"]=Json::array();for(const auto& [name,bits]:prop_type->enumeration->values) {static_cast<void>(bits);field["choices"].push_back(name);}}
             result["properties"].push_back(std::move(field));
         }

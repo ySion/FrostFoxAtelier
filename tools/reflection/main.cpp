@@ -90,9 +90,9 @@ struct Field {
     bool hidden{};
     unsigned line{};
     bool direct_layout{};
-    std::string label{}, category{};
+    std::string label{}, category{}, description{};
 };
-struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; };
+struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; std::string description{}; };
 struct Type {
     const CXXRecordDecl* declaration{};
     std::size_t header{};
@@ -104,6 +104,7 @@ struct Type {
     const EnumDecl* enumeration{};
     std::string underlying{};
     std::vector<std::string> enumerators{};
+    std::string description{};
 };
 struct State {
     Config& config;
@@ -165,10 +166,22 @@ struct State {
                 if (literal.hadError) { failed = true; return {}; }
                 value = literal.GetString().str();
                 const bool presentation = name == "Label" || name == "Category";
-                if (!presentation && value.empty()) {
+                const bool description = name == "DESC";
+                if (!presentation && !description && value.empty()) {
                     error(marker.location, "Reflection option " + name + " requires a nonempty string."); return {};
                 }
-                if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
+                if (description) {
+                    bool valid = llvm::json::isUTF8(value);
+                    for (std::size_t at = 0; valid && at < value.size(); ++at) {
+                        const auto c = static_cast<unsigned char>(value[at]);
+                        valid = !((c < 32 && c != '\n' && c != '\r' && c != '\t') || c == 127 ||
+                            (c == 0xc2 && at + 1 < value.size() &&
+                                static_cast<unsigned char>(value[at + 1]) >= 0x80 && static_cast<unsigned char>(value[at + 1]) <= 0x9f));
+                    }
+                    if (!valid) {
+                        error(marker.location, "DESC requires valid UTF-8 without controls other than line breaks and tabs."); return {};
+                    }
+                } else if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
                     error(marker.location, "Reflection option strings must contain no control characters."); return {};
                 }
             } else if (name != "Hidden" && name != "BorrowSafe") {
@@ -258,7 +271,7 @@ public:
     bool VisitEnumDecl(EnumDecl* declaration) {
         auto* marker = state_.prefix(*declaration, MarkerKind::enumeration);
         if (!marker) return true;
-        const auto options = state_.options(*marker, {"Name"});
+        const auto options = state_.options(*marker, {"Name", "DESC"});
         if (!options) return true;
         const auto* definition = declaration->getDefinition();
         if (!definition || !definition->isScoped() || definition->getName().empty() ||
@@ -278,9 +291,11 @@ public:
         std::string runtime_name = qualified;
         for (auto at = runtime_name.find("::"); at != std::string::npos; at = runtime_name.find("::")) runtime_name.replace(at, 2, ".");
         if (options->contains("Name")) runtime_name = options->at("Name");
+        const auto description = options->contains("DESC") ? options->at("DESC") : std::string{};
         for (const auto& type : state_.types) {
             if (type.enumeration == definition) {
-                if (type.runtime_name != runtime_name) state_.error(marker->location, "Conflicting enum names.");
+                if (type.runtime_name != runtime_name || type.description != description)
+                    state_.error(marker->location, "Conflicting reflection markers on enum redeclarations.");
                 return true;
             }
             if (type.runtime_name == runtime_name) { state_.error(marker->location, "Duplicate reflected type name: " + runtime_name); return true; }
@@ -296,6 +311,7 @@ public:
         type.scope = scope == std::string::npos ? "" : qualified.substr(0, scope);
         type.name = definition->getNameAsString();
         type.runtime_name = std::move(runtime_name);
+        type.description = description;
         type.underlying = underlying->isSignedIntegerType() ? "::std::int32_t" : "::std::uint32_t";
         for (const auto* item : definition->enumerators()) type.enumerators.push_back(item->getNameAsString());
         state_.types.push_back(std::move(type));
@@ -307,7 +323,7 @@ public:
         const bool object = marker != nullptr;
         if (!marker) marker = state_.prefix(*declaration, MarkerKind::record);
         if (!marker) return true;
-        const auto options = state_.options(*marker, {"Name"});
+        const auto options = state_.options(*marker, {"Name", "DESC"});
         if (!options) return true;
         auto* definition = declaration->getDefinition();
         if (!definition || definition->isDependentType() || definition->isUnion() || definition->isLocalClass() ||
@@ -324,9 +340,10 @@ public:
         std::string runtime_name = qualified;
         for (auto pos = runtime_name.find("::"); pos != std::string::npos; pos = runtime_name.find("::")) runtime_name.replace(pos, 2, ".");
         if (const auto name = options->find("Name"); name != options->end()) runtime_name = name->second;
+        const auto description = options->contains("DESC") ? options->at("DESC") : std::string{};
         for (const auto& type : state_.types) {
             if (type.declaration == definition) {
-                if (type.object != object || type.runtime_name != runtime_name)
+                if (type.object != object || type.runtime_name != runtime_name || type.description != description)
                     state_.error(marker->location, "Conflicting reflection markers on redeclarations.");
                 return true;
             }
@@ -337,6 +354,7 @@ public:
             state_.compiler->getSourceManager().getExpansionLineNumber(definition->getLocation()), object, definition->isClass(),
             "::" + qualified, scope_end == std::string::npos ? "" : qualified.substr(0, scope_end), definition->getNameAsString(),
             std::move(runtime_name), {}, {}, {}});
+        state_.types.back().description = description;
         return true;
     }
 };
@@ -467,7 +485,7 @@ void members(State& state, Type& type, ASTContext& context) {
                 state.error(field->getLocation(), "Runtime reference storage, including inline records and arrays, requires an explicit AFIELD marker.");
             continue;
         }
-        const auto options = state.options(*marker, {"Name", "Label", "Category", "Hidden", "Strong", "Weak", "Sequence"});
+        const auto options = state.options(*marker, {"Name", "Label", "Category", "DESC", "Hidden", "Strong", "Weak", "Sequence"});
         if (!options) continue;
         if (field->isBitField() || field->isAnonymousStructOrUnion() || field->getType().isConstQualified() || field->getType().isVolatileQualified()) {
             state.error(field->getLocation(), "AFIELD requires a named, mutable, addressable data member."); continue;
@@ -481,6 +499,7 @@ void members(State& state, Type& type, ASTContext& context) {
         if (options->contains("Name")) result.name = options->at("Name");
         if (options->contains("Label")) result.label = options->at("Label");
         if (options->contains("Category")) result.category = options->at("Category");
+        if (options->contains("DESC")) result.description = options->at("DESC");
         unsigned forms = 0;
         for (const auto* form : {"Strong", "Weak", "Sequence"}) if (options->contains(form)) {
             ++forms; result.target = options->at(form);
@@ -506,7 +525,7 @@ void members(State& state, Type& type, ASTContext& context) {
     for (const auto* method : record->methods()) {
         auto* marker = state.prefix(*method, MarkerKind::method);
         if (!marker) continue;
-        const auto options = state.options(*marker, {"Name", "BorrowSafe"});
+        const auto options = state.options(*marker, {"Name", "BorrowSafe", "DESC"});
         if (!options) continue;
         auto result = scalar(method->getReturnType(), state, context, true);
         if (!result) result = math_value(method->getReturnType(), context);
@@ -519,6 +538,7 @@ void members(State& state, Type& type, ASTContext& context) {
         Method value{method->getNameAsString(), method->getNameAsString(), *result + " (Self::*)(", sources.getExpansionLineNumber(method->getLocation())};
         if (options->contains("Name")) value.name = options->at("Name");
         value.preserves_borrows = options->contains("BorrowSafe");
+        if (options->contains("DESC")) value.description = options->at("DESC");
         bool valid = true;
         for (unsigned i = 0; i < method->getNumParams(); ++i) {
             auto parameter_type = method->getParamDecl(i)->getType();
@@ -629,12 +649,14 @@ void emit(const State& state) {
         header += "\nnamespace atelier::reflection {\ntemplate<> TypeDefinition Definition<" + type.qualified + ">::build(Runtime&);\n}\n";
         const auto location = [&](unsigned line) { return "\n#line " + std::to_string(line) + " " + quote(state.config.headers[type.header].include) + "\n"; };
         cpp += location(type.line) + "template<> TypeDefinition Definition<" + type.qualified + ">::build(Runtime& runtime) {\n    using Self = " + type.qualified + ";\n";
-        cpp += "    return NativeRegistration<Self>{runtime, " + quote(type.runtime_name) + ", TypeKind::" + (type.enumeration ? "enumeration" : type.object ? "object" : "record") + "}";
+        cpp += "    return NativeRegistration<Self>{runtime, " + quote(type.runtime_name) + ", TypeKind::" + (type.enumeration ? "enumeration" : type.object ? "object" : "record");
+        if (!type.description.empty()) cpp += ", " + quote(type.description);
+        cpp += "}";
         for (const auto& name : type.enumerators)
             cpp += "\n        .enumerator(" + quote(name) + ", Self::" + name + ")";
         if (!type.base.empty()) cpp += "\n        .base<" + type.base + ">()";
         for (const auto& field : type.fields) {
-            const bool presentation = !field.label.empty() || !field.category.empty();
+            const bool presentation = !field.label.empty() || !field.category.empty() || !field.description.empty();
             cpp += location(field.line) + "        ." + (field.hidden ? "hidden_field" : "field") + "<&Self::" + field.cpp_name + ">(" + quote(field.name);
             if (!field.form.empty()) cpp += ", {TypeReference{" + quote(field.target) + "}, ValueForm::" + field.form + "}";
             else if ((!field.hidden && field.direct_layout) || presentation)
@@ -643,10 +665,15 @@ void emit(const State& state) {
                 cpp += ", offsetof(Self, " + field.cpp_name + ")";
             else if (!field.hidden && presentation) cpp += ", std::nullopt";
             if (presentation) cpp += ", " + quote(field.label) + ", " + quote(field.category);
+            if (!field.description.empty()) cpp += ", " + quote(field.description);
             cpp += ")";
         }
-        for (const auto& method : type.methods)
-            cpp += location(method.line) + "        .method<static_cast<" + method.pointer + ">(&Self::" + method.cpp_name + ")>(" + quote(method.name) + (method.preserves_borrows ? ", true)" : ")");
+        for (const auto& method : type.methods) {
+            cpp += location(method.line) + "        .method<static_cast<" + method.pointer + ">(&Self::" + method.cpp_name + ")>(" + quote(method.name);
+            if (method.preserves_borrows || !method.description.empty()) cpp += method.preserves_borrows ? ", true" : ", false";
+            if (!method.description.empty()) cpp += ", " + quote(method.description);
+            cpp += ")";
+        }
         cpp += "\n        .build();\n}\n";
     }
     cpp += "}\n";

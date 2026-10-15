@@ -41,13 +41,16 @@ struct CodeBinding {
     bool enabled{true};
     bool operator==(const CodeBinding&) const = default;
 };
+// Optional immutable help shared with native controls. It owns text only, never
+// an Entity or borrowed reflection metadata. Null means no local help.
+using TooltipBinding=std::shared_ptr<const ui::Tooltip>;
 struct Item;
 struct ItemList {
     // An immutable snapshot: relinquish all mutable aliases before update().
     std::shared_ptr<const std::vector<Item>> values;
     bool operator==(const ItemList&) const;
 };
-using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding,CodeBinding>;
+using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding,CodeBinding,TooltipBinding>;
 struct KeyBinding {
     // A node in this component, or a dotted path through named static component
     // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.

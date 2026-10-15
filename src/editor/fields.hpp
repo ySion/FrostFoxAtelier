@@ -8,7 +8,7 @@ struct ScalarField {
     std::vector<std::string> names;
     world::FieldPath path;
     TypeId type;
-    std::string label,category;
+    std::string label,category,description;
     ValueForm form{ValueForm::inline_value};
 };
 inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
@@ -26,8 +26,12 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
             auto child = prefix; child.names.push_back(field.name); child.path.push_back(field.id);
             // A vector's lanes share the aggregate caption. Other record children
             // use their own caption, while categories inherit through records.
-            if(!(*info)->math.vector() && (*info)->math.shape!=math::Shape::quaternion) child.label=field.label;
-            else if(!field.label.empty()) child.label=field.label;
+            if(!(*info)->math.vector() && (*info)->math.shape!=math::Shape::quaternion) {
+                child.label=field.label; child.description=field.description;
+            } else {
+                if(!field.label.empty()) child.label=field.label;
+                if(!field.description.empty()) child.description=field.description;
+            }
             if(!field.category.empty()) child.category=field.category;
             if(field.value.form != ValueForm::inline_value) {
                 child.type=field.value.type;child.form=field.value.form;

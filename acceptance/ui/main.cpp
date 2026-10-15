@@ -311,6 +311,7 @@ void visible_range_and_accounting() {
 #include "tree.inl"
 #include "menus.inl"
 #include "table.inl"
+#include "tooltip.inl"
 void styled_baseline_placement() {
     for (unsigned mode=0;mode<3;++mode) {
         Consumer consumer;
@@ -599,7 +600,7 @@ int main() {
         {"persistent_control_updates",persistent_control_updates},{"control_batch_validation",control_batch_validation},
         {"control_update_cleanup",control_update_cleanup},{"control_candidate_revision",control_candidate_revision},
         {"button_activation_semantics",button_activation_semantics},{"shared_menu_semantics",shared_menu_semantics},
-        {"shared_table_view",shared_table_view}};
+        {"shared_table_view",shared_table_view},{"tooltip_contracts",tooltip_contracts}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;

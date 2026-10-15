@@ -86,12 +86,13 @@ ui Inspector(in TextEditBinding query, in bool visible) {
 | `TextEditBinding` | 稳定编辑 key、权威文字和 enabled；走共享单行编辑器 |
 | `ActionBinding` | 非零宿主动作 target 和 enabled；控件实例 key 独立，业务执行仍走现有命令入口 |
 | `TableBinding` | 共享不可变 TableData、当前行/列和 enabled；表格几何、输入及可见绘制复用原生 Table |
+| `TooltipBinding` | 可为空的共享不可变 Tooltip，包含 title、identity、description；只拥有文字，不保留对象或借用元数据 |
 | `Key` | 宿主分配的 UI 身份；例如树的逻辑父行 |
 | `Items<RowType>` | 不可变项列表，每项有稳定宿主 key 和 RowType 的完整输入 |
 
 `Text` 经 plain `TextReference` 与 typed sink 复制到控件；不是 Source String 返回值的新规则。文字属性接受字符串字面量、直接 `input.text` 或直接文字编辑输入；类名仍经过 SS 的公共校验。列表转发必须保持声明的元素类型。
 
-`TextEditBinding` 用在文字属性上时取其权威 `text`，不是 Session 中尚未提交的编辑草稿。文字引用目前不能直接参与字符串拼接、任意函数返回或条件表达式；数值/布尔绑定的表达式能力不能直接套用到 Text 引用上。`Key`、EditBinding、TableBinding 和 Items 是有类型的宿主引用值，不是可填写任意整数或对象地址的字段。
+`TextEditBinding` 用在文字属性上时取其权威 `text`，不是 Session 中尚未提交的编辑草稿。文字引用目前不能直接参与字符串拼接、任意函数返回或条件表达式；数值/布尔绑定的表达式能力不能直接套用到 Text 引用上。`Key`、EditBinding、TableBinding、TooltipBinding 和 Items 是有类型的宿主引用值，不是可填写任意整数或对象地址的字段。
 
 宿主 `InputValue` 按声明顺序传入，数量与类型必须匹配。只读文字可以在 DSL 中新增；新增业务编辑字段需要宿主提供稳定字段 key、当前值和原有命令/撤销路由。
 
@@ -169,6 +170,8 @@ ui Tool(in Text title, in ActionBinding command) {
 | --- | --- | --- |
 | `text` | 字符串字面量、直接 Text/TextEditBinding 输入；文字叶及 NumberRow/ParameterRow | 文字或参数行标题；TextField 的文字使用 edit 输入 |
 | `classes` | 同上，内容为空格分隔的 SS 类名 | 使用同一 SS 解析和样式链；NumberRow 应用到其参数行根 |
+| `tooltip` | 直接 TooltipBinding 输入，或字符串字面量／直接 Text/TextEditBinding 输入；全部具体节点 | 前者提供完整说明快照，后者提供纯文本说明正文；ParameterRow/NumberRow 设置在参数行根，由子控件继承 |
+| `tooltip_title` / `tooltip_identity` | 字符串字面量／直接 Text/TextEditBinding 输入；全部具体节点 | 纯文本说明的可选标题和类型身份；不能与完整 TooltipBinding 同时声明 |
 | `enabled` | bool；具体控件 | 控件启用状态；编辑控件与宿主 edit.enabled、动作按钮与 action.enabled 共同约束 |
 | `action` | 直接 ActionBinding 输入；Button/ChoiceButton/ToggleButton/Table | 宿主激活动作，target 必须非零；按钮与本地 on activate 互斥，Table 不支持本地 handler |
 | `model` | 直接 TableBinding 输入；Table | 必填，快照指针有效，允许空行集；宿主保存行列数据、选择和已提交列宽，绑定本身只复制共享引用与小值 |
@@ -203,6 +206,29 @@ ui Tool(in Text title, in ActionBinding command) {
 | `items` | 直接 Items 输入；Repeat | 条目顺序、稳定身份和各实例参数 |
 
 布局数值须有限且在 0–32768 范围内；坐标和长度按 DIP。NumberRow 的外部布局放在父容器；内部文字与边框走 SS。常用图标建议由宿主从 [ControlIcon](../../../src/ui/style.hpp) 转成数值输入，避免在声明里散布易变编号。
+
+### 参数说明与悬浮提示
+
+说明通过同一个原生 `Control.tooltip` 进入 Session，不另建 DSL 专用浮窗。反射参数和 World 设置传入宿主缓存的不可变 `TooltipBinding`；`nullptr` 表示当前节点没有独立说明。宿主仅在说明变化时替换快照，控件也保留内容相同的已有快照，避免数值刷新导致悬浮计时或控件描述反复变化。
+
+```text
+ui PropertyHelp(in Text label, in EditBinding edit, in TooltipBinding help) {
+    NumberRow value { text: input.label; edit: input.edit; tooltip: input.help; }
+}
+
+ui HelpExample() {
+    Text label {
+        text: "Position";
+        tooltip_title: "Position (m)";
+        tooltip_identity: "Entity.position · Vector3";
+        tooltip: "相对于当前 Space Reference 的位置，单位 m。\n改变它会移动 Entity。";
+    }
+}
+```
+
+文字使用 UTF-8，支持中英文与 `\n` 换行，沿用原生 Tooltip 的文字长度与字符校验；说明不是富文本，也不会执行其中的表达式。普通文本属性只在对应绑定需要重新求值时生成说明快照，不在每帧绘制时分配。参数行的 label、分量编辑器和滑条从父行获得相同说明，子节点可以声明自己的说明。组合组件通过显式 `TooltipBinding` 输入转发；Repeat 的说明随稳定项身份更新。说明不改变 edit/action、撤销、Scene 保存或对象生命周期。
+
+热更继续走既有可拒绝的控件发布事务：成功替换后，删除的说明随旧定义退出；拒绝候选时仍使用已接受的说明。Tooltip 只保留拥有式文字，因此类型重载、对象删除和组件退役不会留下元数据悬空引用。
 
 支持事件的节点均只允许一个 `on activate { ... }`；Foldout 和 ToggleButton 提供本次请求的 bool `event.checked`，可写 `state.expanded = event.checked;`。文字、数值提交和树选择继续走宿主的原 Action/命令路由，目前没有 `on change`、`on click` 或任意宿主函数调用语法。
 

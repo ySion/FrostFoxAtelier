@@ -1,5 +1,6 @@
 #include "reflection/fixture.hpp"
 #include "runtime/foundation.hpp"
+#include "runtime/native.hpp"
 #include <array>
 #include <bit>
 #include <cstdio>
@@ -24,6 +25,12 @@ const FieldInfo& field_info(Runtime& runtime, TypeId type, std::string_view name
     for (const auto& field : take(runtime.describe(type))->fields)
         if (field.id == id) return field;
     throw std::runtime_error("Published field is missing from its type description.");
+}
+const MethodInfo& method_info(Runtime& runtime, TypeId type, std::string_view name) {
+    const auto id = take(runtime.find_method(type, name));
+    for (const auto& method : take(runtime.describe(type))->methods)
+        if (method.id == id) return method;
+    throw std::runtime_error("Published method is missing from its type description.");
 }
 void verify_field_presentation(Runtime& runtime) {
     const auto sample_type = take(runtime.native_type<Sample>());
@@ -61,11 +68,12 @@ void verify_field_presentation(Runtime& runtime) {
         definition.fields = {{"value", {TypeReference::native<float>()}}, {"count", {TypeReference::native<std::uint32_t>()}}};
         definition.fields[0].label = value.label;
         definition.fields[0].category = value.category;
+        definition.fields[0].description = "描述型 Field\r\n说明";
         // Labels may repeat; only actual member names identify fields.
         definition.fields[1].label = value.label;
         auto plain = definition;
         plain.name = "reflection.UnlabelledPresentation";
-        for (auto& field : plain.fields) { field.label.clear(); field.category.clear(); }
+        for (auto& field : plain.fields) { field.label.clear(); field.category.clear(); field.description.clear(); }
         TypeDefinition derived;
         derived.name = "reflection.InheritedPresentation";
         derived.base = TypeReference{definition.name};
@@ -82,16 +90,89 @@ void verify_field_presentation(Runtime& runtime) {
                 retained.fields[i].offset == plain_info->fields[i].offset &&
                 retained.fields[i].default_value == plain_info->fields[i].default_value,
                 "Presentation changed a field's storage contract.");
-        require(inherited.id == retained.fields[0].id && inherited.label == value.label && inherited.category == value.category,
+        require(inherited.id == retained.fields[0].id && inherited.label == value.label && inherited.category == value.category &&
+            inherited.description == "描述型 Field\n说明",
             "Inherited metadata lost declaration identity or owning presentation text.");
         auto object = take(described.create(types[2]));
         take(described.write(object.id(), inherited.id, Scalar{9.f}));
         require(std::get<float>(take(described.read(object.id(), inherited.id))) == 9.f &&
             !described.find_field(types[2], value.label), "Label changed described field lookup or access.");
     }
-    require(retained.fields[0].label == value.label && retained.fields[0].category == value.category,
+    require(retained.fields[0].label == value.label && retained.fields[0].category == value.category &&
+        retained.fields[0].description == "描述型 Field\n说明",
         "Copied presentation metadata did not own its text after Runtime shutdown.");
     std::puts("[pass] Generated and described field presentation, empty defaults, identity, layout, inheritance and ownership");
+}
+void verify_descriptions(Runtime& runtime) {
+    const auto sample = take(runtime.native_type<Sample>());
+    const auto counter = take(runtime.native_type<Counter>());
+    const auto child = take(runtime.native_type<CounterChild>());
+    const auto mode = take(runtime.native_type<Mode>());
+    const auto probe = take(runtime.native_type<CallProbe>());
+    const auto& value = field_info(runtime, sample, "value");
+    const auto& read = method_info(runtime, counter, "read");
+    const auto& inherited = method_info(runtime, child, "read");
+    require(take(runtime.describe(sample))->description == "Sample 记录。\n包含测量值和次数。\n普通 UTF-8。" &&
+        take(runtime.describe(counter))->description == "Counter 累计测量次数。" &&
+        take(runtime.describe(mode))->description == "Mode 工作状态。\nidle 表示空闲。",
+        "Generated record/class/enum descriptions lost UTF-8 or line normalization.");
+    require(value.description == "Value 测量值。\n允许 \"引号\"、\\ 路径和\t缩进。" &&
+        field_info(runtime, sample, "count").description == "Count 累计次数。" &&
+        value.offset == offsetof(Sample, value), "Generated field description changed text or native layout.");
+    require(read.description == "读取当前 Value。\n不会改变计数。" &&
+        inherited.id == read.id && inherited.signature == read.signature && inherited.description == read.description &&
+        take(runtime.describe(child))->description.empty(),
+        "Inherited method description changed declaration identity or synthesized a derived type description.");
+    const auto& safe = method_info(runtime, probe, "record_alias");
+    require(safe.preserves_borrows && safe.description == "更新 Record 的次数，并返回副本。" &&
+        method_info(runtime, counter, "scale").description.empty() &&
+        field_info(runtime, probe, "before").description.empty() && field_info(runtime, probe, "after").description.empty(),
+        "Description changed BorrowSafe or empty/omitted metadata defaults.");
+
+    struct Manual {
+        float value{};
+        float read() const noexcept { return value; }
+    };
+    TypeInfo retained{};
+    {
+        Runtime native;
+        auto definition = NativeRegistration<Manual>{native, "reflection.ManualDescription", TypeKind::object, "手工 Type\r\n说明"}
+            .field<&Manual::value>("value", {TypeReference::native<float>()}, offsetof(Manual, value), {}, {}, "手工 Field\r说明")
+            .method<&Manual::read>("read", true, "手工 Method\n说明").build();
+        const auto id = take(native.register_type(definition));
+        definition = {};
+        retained = *take(native.describe(id));
+        auto object = take(native.create(id));
+        take(native.write(object.id(), retained.fields[0].id, Scalar{7.f}));
+        Scalar result;
+        take(native.call(object.id(), retained.methods[0].id, std::span<const Scalar>{}, &result));
+        require(std::get<float>(result) == 7.f, "Description changed direct native invocation.");
+    }
+    require(retained.description == "手工 Type\n说明" && retained.fields[0].description == "手工 Field\n说明" &&
+        retained.methods[0].description == "手工 Method\n说明",
+        "Manual producer or copied metadata failed to own normalized descriptions after Runtime shutdown.");
+
+    for (const auto& invalid : {std::string{"embedded\0zero", 13}, std::string{"bad\x7f"},
+        std::string{"bad\x01"}, std::string{"bad\xc2\x85"}, std::string{"bad\xff"}}) {
+        for (int location = 0; location != 3; ++location) {
+            Runtime isolated;
+            auto invalid_definition = NativeRegistration<Manual>{isolated, "reflection.RejectedDescription", TypeKind::object}
+                .field<&Manual::value>("value").method<&Manual::read>("read").build();
+            if (location == 0) invalid_definition.description = invalid;
+            else if (location == 1) invalid_definition.fields[0].description = invalid;
+            else invalid_definition.methods[0].description = invalid;
+            const auto rejected = isolated.register_type(std::move(invalid_definition));
+            require(!rejected && rejected.error().code == ErrorCode::invalid_definition &&
+                !isolated.find_type("reflection.RejectedDescription"),
+                "Invalid description was accepted or partially published a type.");
+            const auto recovered = take(NativeRegistration<Manual>{isolated, "reflection.RejectedDescription", TypeKind::object,
+                "合法说明"}.field<&Manual::value>("value", "恢复 Field").method<&Manual::read>("read").publish());
+            require(take(isolated.describe(recovered))->description == "合法说明" &&
+                field_info(isolated, recovered, "value").description == "恢复 Field",
+                "Rejected description poisoned subsequent valid registration.");
+        }
+    }
+    std::puts("[pass] Generated/manual UTF-8 descriptions, normalized lines, inherited identity, ownership and atomic rejection");
 }
 void invoke(Runtime& runtime, ObjectId object, TypeId type, const char* name,
     std::span<const Scalar> args, Scalar expected) {
@@ -215,9 +296,11 @@ int main() {
             atelier::reflection::Definition<OtherMode>::build(runtime),
             atelier::reflection::Definition<UnsignedMode>::build(runtime),
             atelier::reflection::Definition<PlainRecord>::build(runtime),
+            atelier::reflection::Definition<CounterChild>::build(runtime),
             array_definition<double>(runtime, "reflection.DoubleArray"),
             array_definition<bool>(runtime, "reflection.BoolArray")}));
         verify_field_presentation(runtime);
+        verify_descriptions(runtime);
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);

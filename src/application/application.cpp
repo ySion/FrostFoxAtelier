@@ -856,9 +856,9 @@ bool Application::pie_input(const ui::Event& input,WPARAM native_key) {
 }
 void Application::native(NativeEvent message) {
     if(control_) control_->input(message.message,message.wparam);
-    if(message.relative_motion) {look_camera_fly(message.relative_motion->x,message.relative_motion->y);return;}
+    if(message.relative_motion) {ui_.dismiss_tooltip();look_camera_fly(message.relative_motion->x,message.relative_motion->y);return;}
     if (message.message == WM_SIZE || message.message == WM_DPICHANGED) { invalidate_surface(); return; }
-    if (message.message==WM_MOVE) { finish_camera_fly(false);close_menu(false); return; }
+    if (message.message==WM_MOVE) { ui_.dismiss_tooltip();finish_camera_fly(false);close_menu(false); return; }
     if (message.message==WM_CANCELMODE || (message.message==WM_ACTIVATEAPP && !message.wparam)) {
         cancel_interaction(ui_.cancel_interaction()); return;
     }
@@ -878,6 +878,8 @@ void Application::native(NativeEvent message) {
     input(*mapped,native_key);
 }
 void Application::input(const ui::Event& event,WPARAM native_key) {
+    if (event.kind!=ui::EventKind::pointer_move) ui_.dismiss_tooltip();
+    if (event.kind==ui::EventKind::pointer_leave) {effects(ui_.input(event));return;}
     const bool pointer=event.kind==ui::EventKind::pointer_move || event.kind==ui::EventKind::pointer_down ||
         event.kind==ui::EventKind::pointer_up || event.kind==ui::EventKind::wheel;
     if (event.kind==ui::EventKind::focus_lost || event.kind==ui::EventKind::capture_lost) {
@@ -892,9 +894,9 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
     if(camera_fly_ && event.kind==ui::EventKind::key_down &&
         (event.key==ui::Key::f10 || event.alt || (event.control && (native_key==VK_TAB || native_key=='W'))))
         finish_camera_fly(false);
-    if (menu_input(event,native_key)) return;
+    if (menu_input(event,native_key)) {ui_.dismiss_tooltip();return;}
     if(pointer) pointer_position_={event.x,event.y};
-    if((camera_fly_ || viewport_tool_.active()) && viewport_input(event,static_cast<std::uint32_t>(native_key))) return;
+    if((camera_fly_ || viewport_tool_.active()) && viewport_input(event,static_cast<std::uint32_t>(native_key))) {ui_.dismiss_tooltip();return;}
     ui::ControlKey requested_menu{};
     if (event.kind==ui::EventKind::key_down) {
         if (event.key==ui::Key::f10 && !event.shift) requested_menu=editor::control::file_menu;
@@ -913,7 +915,7 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
             event.x>=box.bounds.x && event.x<box.bounds.x+box.bounds.width && event.y>=box.bounds.y && event.y<box.bounds.y+box.bounds.height)
             menu_return_focus_=ui_.focused_control();
     const bool release = event.kind == ui::EventKind::pointer_up;
-    if (pointer && !release && !pointer_ready()) return;
+    if (pointer && !release && !pointer_ready()) {ui_.dismiss_tooltip();return;}
     if (event.kind==ui::EventKind::pointer_down && event.button==ui::PointerButton::primary) {
         const auto menu=ui_.pointer_target(event.x,event.y);
         if (editor::control::is_menu(menu)) {
@@ -939,7 +941,7 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
         if (auto result=execute(command);!result) status(result,L"");
         return;
     }
-    if(viewport_input(event,static_cast<std::uint32_t>(native_key))) return;
+    if(viewport_input(event,static_cast<std::uint32_t>(native_key))) {ui_.dismiss_tooltip();return;}
     auto reply = ui_.input(event);
     if (ui_.presented()) workspace_.dock.focus_control(ui_.focused_control(),*ui_.presented());
     effects(reply);
@@ -1033,7 +1035,20 @@ bool Application::step(renderer::Capture* capture) try {
         MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         return true;
     }
+    const auto previous_ui_revision=workspace_.ui_revision();
     workspace_.commit_ui_controls();
+    if (workspace_.ui_revision()!=previous_ui_revision) {
+        ui_.dismiss_tooltip();
+        if ((*prepared)->tooltip) {
+            prepared=ui_.prepare();
+            if (!prepared) {
+                update_viewport_fps(false);
+                workspace_.status=L"Frame preparation failed; previous frame retained";
+                MsgWaitForMultipleObjectsEx(0,nullptr,20,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+                return true;
+            }
+        }
+    }
     // Native popups render on their retained surface before scene submission /
     // Present can block. Their anchor still comes from accepted owner geometry.
     if (!workspace_.pie_menu()) update_menu();

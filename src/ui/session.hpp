@@ -27,6 +27,11 @@ struct EditCommand {
     bool operator==(const EditCommand&) const = default;
 };
 
+struct Tooltip {
+    std::wstring title, identity, description;
+    bool operator==(const Tooltip&) const = default;
+};
+
 struct Control {
     ControlKey key{}, parent{}; // Unique live keys; parent precedes child in the input.
     ControlKind kind{ControlKind::container};
@@ -67,6 +72,7 @@ struct Control {
     TableSelection table_selection; // Lightweight host selection, independent of immutable row storage.
     TableLayout table_layout;
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
+    std::shared_ptr<const Tooltip> tooltip; // Owned documentation, shared across a parameter row and its fields.
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -95,6 +101,7 @@ struct ControlBox {
     ControlKey context_target{}, context_group{}; // Accepted menu route, including group actions.
     TableLayout table_layout;
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
+    std::shared_ptr<const Tooltip> tooltip; // Exact documentation accepted with this geometry.
 };
 struct EditToken {
     ControlKey key{};
@@ -185,6 +192,13 @@ struct CodeGeometry {
     float line_height{}, scale{1};
     std::vector<CodeLineGeometry> lines; // Accepted visible lines only.
 };
+struct TooltipGeometry {
+    ControlKey owner{};
+    std::uint64_t incarnation{};
+    Rect anchor, bounds; // Client physical pixels; overlay never participates in hit testing.
+    std::shared_ptr<const Tooltip> content;
+    std::uint64_t generation{}; // The hover episode which produced this drawing; cancellation retires it.
+};
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
@@ -199,6 +213,7 @@ struct UiFrame {
     std::vector<CodeGeometry> code_editors;
     std::vector<TableGeometry> tables;
     std::optional<ValueLadderGeometry> value_ladder;
+    std::optional<TooltipGeometry> tooltip;
     ControlKey popup{};
     const ControlBox* find(ControlKey) const noexcept;
     const TextGeometry* find_text(ControlKey) const noexcept;
@@ -284,7 +299,7 @@ struct Reply {
     std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
     std::optional<Error> error; // Input/platform failure; the edit and its history remain intact.
 };
-enum class EventKind { pointer_move, pointer_down, pointer_up, wheel, key_down, key_up,
+enum class EventKind { pointer_move, pointer_leave, pointer_down, pointer_up, wheel, key_down, key_up,
                        text, focus_lost, capture_lost, clipboard_result, ime_result, composition };
 enum class PointerButton { primary, secondary, middle };
 enum class Key { none, backspace, delete_key, enter, escape, tab, left, right, home, end,
@@ -350,6 +365,8 @@ public:
     // Topmost enabled target in the accepted frame; zero while input is suspended.
     ControlKey pointer_target(float x,float y) const;
     Reply input(const Event&);
+    // Clear only passive help, including when an outer host consumes the input.
+    void dismiss_tooltip() noexcept;
     Reply cancel_interaction();
     // Finish a valid text draft before a document save. Invalid input stays
     // editable; callers must apply the returned effects before serialization.

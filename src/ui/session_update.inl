@@ -185,6 +185,7 @@
         auto old_press=interaction_changes?press:std::optional<Press>{};
         auto old_edit=interaction_changes?edit:std::optional<Edit>{};
         const auto old_focus=focus,old_hover=hover,old_keyboard=keyboard_pressed;
+        const auto old_tooltip=tooltip_hover;
         const auto old_keyboard_key=keyboard_key,old_terminal=terminal_key;
         const auto old_popup=popup,old_popup_focus=popup_return_focus;
         const bool old_dismissed=popup_dismissed,old_trees_dirty=trees_dirty;
@@ -247,6 +248,7 @@
             states.merge(removed);
             for (const auto& saved:tree_backup) static_cast<TreeState&>(*saved.state)=saved.value;
             trees_dirty=old_trees_dirty;
+            tooltip_hover=old_tooltip;
             if (interaction_changes) {
                 press=std::move(old_press); edit=std::move(old_edit);
                 focus=old_focus; hover=old_hover; keyboard_pressed=old_keyboard;
@@ -288,6 +290,7 @@
         }
         structure_dirty|=structural;
         controls_revision=revision; ++control_batches;
+        if (published) validate_tooltip(*published);
         controls_updated+=changes.size(); controls_created+=added_keys.size(); controls_removed+=removed_keys.size();
         reply.redraw=true;
         return reply;
