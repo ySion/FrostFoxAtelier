@@ -63,6 +63,26 @@ DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-
 - backbuffer 可与独立深度目标一起绑定：Pipeline 显式声明颜色格式等于 backbuffer 格式，并声明 depth 格式；不提供颜色声明的 depth-only 路径保留原义。
 - `gfxCommandCopyBackBufferToBuffer` 与 `gfxCommandCopyTextureToBufferPitched` 用于显式诊断读回；单采样、单平面 2D subresource 0，目标为 CPU-read buffer，行距须为 256 的倍数且不小于原生行字节数，buffer offset 为 512 的倍数，存储覆盖所有行。普通紧密 copy 入口保持不变。
 
+## 阴影 atlas 原语
+
+资源与命令继续经 `Context::borrow()` 使用 gfx，管线经 `Context::prepare()` 创建。
+
+- `gfxCommandClearImageRects(gfx, texture, rects, rect_count, mip_level=0, slice=0)` 清除指定 image 内的矩形列表。`D3D12_RECT` 仅作为坐标值传入；使用纹理创建时的 clear value，不依赖当前 viewport/scissor。颜色和深度 image 共用原有 clear 路径，深度带 stencil 时保留既有的同时清除语义。
+- 每个矩形是该 mip/slice 像素空间中的非空半开范围 `[left,right) × [top,bottom)`。坐标必须非负且完全位于 mip 尺寸内，允许矩形重叠。Context、texture、mip/slice 与整个列表在编码前检查；任一矩形非法，整批不创建 view、不转换状态、不编码 clear。
+- 在 Context/image 有效的前提下，`rect_count == 0` 是无操作，`rects` 可为空；非空列表不能传空指针。列表仅在调用期间借用。矩形外内容以及其他 mip/slice 保留；`gfxCommandClearImage` 和 `gfxCommandClearTexture` 仍分别清整个 image 和整个 texture。
+- `gfxDrawStateSetDepthBias(draw_state, constant, slope_scaled=0, clamp=0)` 设置固定光栅 depth bias。constant 使用 D3D12 的整数 bias 单位；slope/clamp 必须有限，可为负，非法输入不改变旧状态。默认三项均为零。它不等于接收端世界空间偏移。
+- bias 随 DrawState 快照进入 Vertex 与 Mesh 的 PSO，后续修改 DrawState 不改变已经准备好的管线。当前 gfx 没有引擎侧独立 PSO 缓存键；现有磁盘缓存保存 shader 字节码，光栅状态进入实际 PSO 描述，不新增缓存机制。
+- atlas 仍按整纹理跟踪资源状态：先完成所有脏 tile 的 DSV 写入，再解除深度附件绑定并作为 SRV 采样。不同 tile/mip/slice 不能成为同一次绘制中同时写入与采样同一纹理的依据。页表版本、tile 淘汰及过滤保护边属于 Renderer；物理资源释放沿既有 gfx 退休机制。
+
+最小调用示例（bias 数值需由具体阴影投影确定）：
+
+```cpp
+const D3D12_RECT dirty_tiles[] = {{0, 0, 256, 256}, {256, 0, 512, 256}};
+gfxCommandClearImageRects(gfx, atlas, dirty_tiles, 2);
+gfxDrawStateSetDepthBias(shadow_desc.draw_state, 256, 1.0f, 0.01f);
+// shadow_desc is prepared through Context::prepare before encoding draws.
+```
+
 ## 失败与有界关停
 
 - gfx 保留 Recording/Closed/Submitted 状态与独立错误原因。Execute 已发生即记录 Submitted，后续 Signal 失败不撤销这个事实。

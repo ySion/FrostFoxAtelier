@@ -8,6 +8,8 @@ Scene Lit 的 RHI 接入已验证 compute inline RayQuery、BLAS/TLAS build/upda
 
 窗口尺寸可通过 `sync_window_target()` 在绘制前同步，隐藏但尺寸有效的窗口也可准备新目标；实际变化复用同一 swapchain 的排空和 resize，不产生额外 Present。调用时机、无操作条件及失败语义见[窗口合同](contract.md#窗口与读回)。
 
+阴影 atlas 可通过 `gfxCommandClearImageRects` 局部清除 mip/slice 内的矩形，并通过 `gfxDrawStateSetDepthBias` 设置 Vertex/Mesh 管线的固定光栅 bias。空列表、整批拒绝、状态切换与管线快照语义见[阴影 atlas 契约](contract.md#阴影-atlas-原语)。
+
 ## 入口
 
 - [公开头文件](../../../src/rhi/rhi.hpp)：`Context::open / prepare / target / sync_window_target / frame / finish / close`，不可复制、可移动的 `Pipeline`。
@@ -15,6 +17,7 @@ Scene Lit 的 RHI 接入已验证 compute inline RayQuery、BLAS/TLAS build/upda
 - [正式消费者](../../../acceptance/rhi/main.cpp)：同一 Interface 上的六帧 Compute → Mesh → Vertex、间接参数、颜色/深度回读、提前释放与管线替换。
 - [资源与窗口验收](../../../acceptance/rhi/resource_cases.cpp)、[RayQuery 验收](../../../acceptance/rhi/ray_query_cases.cpp)、[Scene Lit 资源验收](../../../acceptance/rhi/scene_lit_cases.cpp)：根参数预算、间接命令、range 复制、首帧窗口尺寸、AS 与时间戳。
 - [后端回归](../../../acceptance/rhi/upstream_regression.cpp)：无 list 的 interop 清理、Mesh PS 资源状态、真实 fence gate 超时与严格一次执行。
+- [阴影 atlas 验收](../../../acceptance/rhi/shadow_cases.cpp)：颜色/深度矩形清除、mip/slice 隔离、比较采样、编码后退休，以及 Vertex/Mesh 的 constant/slope/clamp bias。
 - [决策与理由](decisions.md)、[固定来源记录](../../research/rhi-reassessment/README.md)。
 
 ## 构建与运行
