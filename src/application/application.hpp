@@ -20,7 +20,8 @@ struct FrameTiming {
 };
 class Application final {
 public:
-    explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {});
+    explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {},
+        std::optional<ui::PixelExtent> initial_client = {});
     ~Application();
     bool step(renderer::Capture* = nullptr);
     void enable_control(const std::filesystem::path& directory);

@@ -30,7 +30,8 @@ std::optional<ui::Event> input_event(NativeEvent,HWND);
 // close the renderer before this owner destroys the HWND.
 class Window final {
 public:
-    explicit Window(HWND popup_owner = nullptr);
+    // Optional initial main-window client extent is in physical pixels, independent of DPI.
+    explicit Window(HWND popup_owner = nullptr, std::optional<ui::PixelExtent> initial_client = {});
     ~Window();
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;

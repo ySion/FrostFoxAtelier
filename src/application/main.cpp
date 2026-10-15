@@ -31,12 +31,28 @@ int wmain(int argc, wchar_t** argv) {
         if (argc>=3 && std::wstring_view(argv[1])==L"--run-project")
             return atelier::application::run_project_command({argv+2,static_cast<std::size_t>(argc-2)});
         auto control_directory=atelier::control::default_directory();bool no_control{},no_activate{},gpu_validation{};
+        std::optional<atelier::ui::PixelExtent> initial_client;
+        const auto dimension=[](std::wstring_view value) {
+            std::uint32_t pixels{};
+            for(const auto c:value) {
+                if(c<L'0' || c>L'9' || pixels>(32768u-static_cast<unsigned>(c-L'0'))/10u)
+                    throw std::runtime_error("--client-size requires two integers in 1..32768 physical pixels.");
+                pixels=pixels*10+static_cast<unsigned>(c-L'0');
+            }
+            if(!pixels) throw std::runtime_error("--client-size requires two integers in 1..32768 physical pixels.");
+            return pixels;
+        };
         std::vector<wchar_t*> arguments{argv[0]};
         for(int i=1;i<argc;++i) {
             const std::wstring_view option(argv[i]);
             if(option==L"--no-control") no_control=true;
             else if(option==L"--no-activate") no_activate=true;
             else if(option==L"--gpu-validation") gpu_validation=true;
+            else if(option==L"--client-size") {
+                if(initial_client) throw std::runtime_error("--client-size can only be specified once.");
+                if(i+2>=argc) throw std::runtime_error("--client-size requires width and height in physical pixels.");
+                initial_client=atelier::ui::PixelExtent{dimension(argv[i+1]),dimension(argv[i+2])};i+=2;
+            }
             else if(option==L"--control-directory") {if(++i==argc) throw std::runtime_error("Missing control directory");control_directory=argv[i];}
             else arguments.push_back(argv[i]);
         }
@@ -71,14 +87,14 @@ int wmain(int argc, wchar_t** argv) {
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
         if (argc != 1 && !dungeons && !dungeons_acceptance && !physic && !physics_examples && !examples && !sponza && !preview && !((acceptance || source || edit || shortcuts || surfaces || dialogs || snapshot || ime || viewport || project || create) && argc == 3) &&
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
-            std::fprintf(stderr, "Usage: atelier_editor [--version|--physic|--dungeons] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
+            std::fprintf(stderr, "Usage: atelier_editor [--no-activate] [--client-size width height (physical pixels)] [--version|--physic|--dungeons] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
         auto example_workspace=examples||physics_examples||dungeons_acceptance?std::filesystem::absolute(argv[2])/"Workspace":std::filesystem::path{};
         // Each dedicated example run must consume current templates. Product workspaces
         // intentionally preserve existing folders and must not be refreshed here.
         if(physics_examples||dungeons_acceptance) example_workspace/=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         atelier::application::Application app(gpu_validation || acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza || physics_examples || (examples && !examples_snapshot),!snapshot && !shortcuts && !surfaces && !dialogs && !no_activate && !examples_snapshot,
-            example_workspace);
+            example_workspace,initial_client);
         if(argc==1 || examples || physic || dungeons) {
             const auto opened=app.open_example(dungeons?atelier::editor::Command::example_dungeons:physic?atelier::editor::Command::example_physic:atelier::editor::Command::example_sponza);
             if(!opened) throw std::runtime_error(opened.error().message);
