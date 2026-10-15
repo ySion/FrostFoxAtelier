@@ -14,6 +14,7 @@ constexpr std::array<std::string_view, 4> aa{"off", "taa", "smaa", "smaa_t2x"};
 constexpr std::array<std::string_view, 5> probes{"off", "irradiance", "state", "update_age", "distance"};
 constexpr std::array<std::string_view, 2> placement{"fixed","follow_focus"};
 constexpr std::array<std::string_view, 4> coverage{"status","volume","contributors","dominance"};
+constexpr std::array<std::string_view, 3> probe_history{"live","hold_irradiance","hold_distance"};
 #define FIELD(id, kind, low, high, label, category, description) \
     ViewOptionInfo{ViewOption::id, #id, K::kind, low, high, {}, label, category, description}
 #define ENUM(id, values, label, category, description) \
@@ -70,6 +71,12 @@ constexpr std::array options{
     ENUM(probe_coverage,coverage,"Coverage metric","Diagnostics","选择 Receiver Coverage 的着色依据：状态、主导 Volume、实际贡献邻居数或最大归一化贡献占比。需打开 Receiver Coverage 才显示。"),
     FIELD(probe_debug_volume,integer,-1,3,"Debug volume","Diagnostics","选择显示诊断几何的 Volume 槽位。All volumes（-1）显示所有槽位；不会关闭其他 Volume 的光照贡献。"),
     FIELD(direct_reference,boolean,0,1,"Direct reference","Diagnostics","直接光诊断参考：平均 64 次独立 RIS 估计，不使用跨帧复用或降噪。GPU 开销明显增加，适合对照采样偏差。"),
+    FIELD(spatial_light_sampling,boolean,0,1,"Spatial light sampling","Diagnostics","DI 与 DDGI 共同使用附近光源提议，并保留全局光源采样支持。关闭后只使用全局提议，已有采样表仍保留，便于同场景对照。"),
+    ENUM(probe_history,probe_history,"Probe history","Diagnostics","Live 正常更新；Hold Irradiance 冻结辐照度历史；Hold Distance 冻结距离历史。用于定位 DDGI 波动来源，不修改 Scene。"),
+    FIELD(probe_inspect,boolean,0,1,"Inspect receiver","Diagnostics","读取指定屏幕像素的 DDGI 接收面与探针贡献，供 Control 诊断使用。启用会增加少量诊断工作。"),
+    FIELD(probe_inspect_x,integer,0,65535,"Receiver X (px)","Diagnostics","待检查接收面的屏幕 X 坐标，单位为物理像素。配合 Inspect Receiver 使用。"),
+    FIELD(probe_inspect_y,integer,0,65535,"Receiver Y (px)","Diagnostics","待检查接收面的屏幕 Y 坐标，单位为物理像素。配合 Inspect Receiver 使用。"),
+    FIELD(probe_inspect_source,integer,-1,renderer::probe_resident_limit-1,"Source probe","Diagnostics","指定要检查的源探针索引，-1 自动选择。有效范围为 0–4095；探针尚不存在时不会伪造采样数据。"),
     FIELD(cavity,boolean,0,1,"Cavity","Cavity","在 Studio 预览中增强凸边和凹处的明暗对比，帮助辨认形体。它不修改材质、灯光或 Scene Lit 的结果。"),
     FIELD(cavity_ridge,number,0,2,"Ridge","Cavity","凸边的对比强度。0 关闭凸边增强，不影响 Valley 的凹处增强。"),
     FIELD(cavity_valley,number,0,2,"Valley","Cavity","凹处的对比强度。0 关闭凹处增强，不影响 Ridge 的凸边增强。"),
@@ -130,7 +137,10 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_visualization,lit.probe_visualization);VALUE(probe_volume,lit.probe_volume);VALUE(probe_relocation,lit.probe_relocation);
     VALUE(probe_xray,lit.probe_xray);VALUE(probe_radius,lit.probe_radius);
     VALUE(probe_coverage,lit.probe_coverage);VALUE(probe_debug_volume,lit.probe_debug_volume);
-    VALUE(direct_reference,lit.direct_reference);
+    VALUE(probe_history,lit.probe_history);VALUE(probe_inspect,lit.probe_inspect);
+    VALUE(probe_inspect_x,lit.probe_inspect_pixel[0]);VALUE(probe_inspect_y,lit.probe_inspect_pixel[1]);
+    VALUE(probe_inspect_source,lit.probe_inspect_source);
+    VALUE(direct_reference,lit.direct_reference);VALUE(spatial_light_sampling,lit.spatial_light_sampling);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
     case ViewOption::volume_first:case ViewOption::volume_last:break;
@@ -166,7 +176,10 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_visualization,lit.probe_visualization);SET(probe_volume,lit.probe_volume);SET(probe_relocation,lit.probe_relocation);
     SET(probe_xray,lit.probe_xray);SET(probe_radius,lit.probe_radius);
     SET(probe_coverage,lit.probe_coverage);SET(probe_debug_volume,lit.probe_debug_volume);
-    SET(direct_reference,lit.direct_reference);
+    SET(probe_history,lit.probe_history);SET(probe_inspect,lit.probe_inspect);
+    SET(probe_inspect_x,lit.probe_inspect_pixel[0]);SET(probe_inspect_y,lit.probe_inspect_pixel[1]);
+    SET(probe_inspect_source,lit.probe_inspect_source);
+    SET(direct_reference,lit.direct_reference);SET(spatial_light_sampling,lit.spatial_light_sampling);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET
     case ViewOption::volume_first:case ViewOption::volume_last:break;

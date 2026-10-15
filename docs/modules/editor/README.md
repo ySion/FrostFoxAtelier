@@ -70,7 +70,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 视口编辑
 
-Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采样，2026-10-08）。左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔；手柄工具使用中性立方体加 `#e04a1c` 手柄的双色图标，选中态 `#5d7289`。路径栏下方是可折叠的 32 DIP 操作控制栏（`#2e2e2e`，黑色上边与 `#424242` 内沿），包含当前操作图标、轴空间、枢轴、吸附开关/步长和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。图标沿原生符号栅格化和缓存链绘制，不复制 Houdini 专有图标素材。
+Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采样，2026-10-08）。左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔；手柄工具使用中性立方体加 `#e04a1c` 手柄的双色图标，选中态 `#5d7289`。视口右侧是 Houdini 式显示栏（34 DIP）：参考网格、原点轴、线框叠加、纯线框、三角边、Cavity、Scene Lit、FPS，每个按钮只改其对应的一项视图设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。视口头部（32 DIP 一行）融合 Blender 的语义分组：路径之后依次为交互模式图标菜单、**View / Select / Add / Object** 平铺文字菜单、枢轴下拉、吸附开关+步长、叠加层（Guides）下拉、Cavity、四段着色按钮（Wireframe / Solid / MatCap / Scene Lit，与 Z 饼菜单同一组预设）及完整显示菜单箭头。View 菜单含 Focus Selection、Frame All、Viewpoint 子菜单、工具选项栏与 FPS 开关；Select 菜单含 Select All / None / Invert、Box Select 和选择模式子菜单；Add 列出全部创建命令（同 Shift+A）；Object 菜单含 Duplicate、Delete、Clear（Location/Rotation/Scale，同 Alt+G/R/S）、Snap 子菜单与 Transform 增删。面板宽度不足 660 DIP 时文字菜单与 Cavity 折叠，W 菜单和主菜单 View 仍可达。吸附菜单按 Blender 吸附面板分节（带灰色节标题）：总开关、步长（0.1/0.2/0.5/1 m）、Affect（Move/Rotate/Scale 各自是否随吸附开关吸附）、旋转步长（1°/5°/15°/45°）、选择/游标对齐；G/R/S 的 Ctrl 仍临时反转吸附，缩放步长 0.1。操作栏的 Global/Local 下拉即 Blender 变换朝向：Local 时移动/旋转手柄与 X/Y/Z 约束沿活动 Entity 的自身轴，网格吸附只在 Global 下生效（网格是世界格）；缩放始终沿局部轴。Normal/View/Cursor/Parent 朝向尚未实现，不在菜单中显示。头部下方是可折叠的 28 DIP 操作控制栏（`#2e2e2e`，黑色上边与 `#424242` 内沿），左侧为 Blender 五段选择模式（Set / Extend / Subtract / Invert / Intersect，决定右键点选和框选如何与当前选择合并；Shift 仍为切换、Ctrl 仍为减选），随后是轴空间、枢轴名称和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。图标沿原生符号栅格化和缓存链绘制，不复制 Houdini 专有图标素材。
 
 | 操作 | 行为 |
 | --- | --- |
@@ -149,6 +149,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 - 场景身份、RT/视口范围或显示配置变化后清空窗口，并用当前域第一接受帧 ID 拒绝迟到的旧域样本。普通相机运动和选择变化继续统计；文档替换清空历史。此边界依赖正式 Application 单调分配的 UI 帧身份，不扩展成对任意低层 Frame 调用方的承诺。
 - 非 Scene Lit、视口无有效几何或尚无有效样本时显示 Unavailable / Waiting 和空值。mask 未启用的 scope 显示 Skipped；mask 表示进入计时范围，不保证内部存在非零工作。整个窗口均未启用的项不显示伪造的零成本。
 - Mean / P95 使用该窗口中同源的完成帧区间；p95 取最近秩。Measured total 对每个样本先累加八个主阶段，再计算统计量，不重复累加子阶段，也不累加各行 p95。子阶段比重也以主阶段合计为分母。
+- 表格共 21 行；Radiance resolve / filter 下展开 temporal resolve 与空间 filter step 1/2/4 四项。参考模式或无光源时三个 filter 显示 Skipped，resolve 仍有真实区间。原始 GPU 掩码使用 bit 0～19，表格另以 bit 20 表示计算出的合计。
 - 合计不含 UI、参考辅助线、探针显示叠层、Capture 或 CPU Present；父阶段可能包含传输、调度及计时边界开销，子阶段之和不保证等于父阶段。分组与原始计时范围见 [Scene Lit](../renderer/scene-lit.md)。
 
 统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。现有 `--acceptance-surfaces` 端到端入口同时验证真实 GPU 数据、Table 显示与列宽、禁用项、合计、概要读取和换域清理，并生成 `world-performance.png` 与 `performance.json`。
@@ -244,13 +245,15 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 控件宽度按 Houdini 取内容而非整行：枚举菜单按标签收缩（最小 96 DIP，选项显示首字母大写的名称），单个数值字段宽度为一个元组列（140 DIP，可在窄面板中缩小），勾选框只占其文字宽度；向量元组和带滑条的数值仍填满数值列。
 
-类型图标来自与工具图标相同的 Tabler 线框集（[assets/icons](../../../assets/icons/README.md)）：点光 `bulb`、矩形光 `rectangle`、方向光 `sun`、天空光 `cloud`、网格 `box`、普通 Entity `cube-3d-sphere`、组件 `packages`，以及 World、文件夹、搜索。工具架、Scene Tree、Entity Structure 和参数标题使用同一判定：StaticMeshEntity 为网格，含灯光组件的 Entity 按灯光类型，其余为普通 Entity。Scene Tree 行只显示名称，类型由图标表达。状态栏左侧为当前消息，右侧以灰色显示场景计数，二者以间距而非竖线分隔，文字在 23 DIP 栏内垂直居中。
+类型图标来自与工具图标相同的 Tabler 线框集（[assets/icons](../../../assets/icons/README.md)），以 1.5 笔宽栅格化，尺寸按 Houdini 同屏比例收小（路径导航 20、路径图标 18、标签栏工具 11～13、树行 13、头部 16 DIP；组合框下拉箭头统一不超过 9 DIP）：点光 `bulb`、矩形光 `rectangle`、方向光 `sun`、天空光 `cloud`、网格 `box`、普通 Entity `cube-3d-sphere`、组件 `packages`，以及 World、文件夹、搜索。工具架、Scene Tree、Entity Structure 和参数标题使用同一判定：StaticMeshEntity 为网格，含灯光组件的 Entity 按灯光类型，其余为普通 Entity。Scene Tree 行只显示名称，类型由图标表达。状态栏左侧为当前消息，右侧以灰色显示场景计数，二者以间距而非竖线分隔，文字在 23 DIP 栏内垂直居中。
 
 路径栏显示 World 上下文；固定对象标题用类型图标、类型和名称输入框表达当前 Entity，右侧放大镜控制参数搜索。名称是 editor::Session 的文档标签，通过对象身份索引，重命名、删除恢复和撤销重做共用场景历史；标签本身不持有运行时对象，GC 完成后清理失效索引。名称随场景 JSON 持久化，不是新增的 World 反射字段。
 
 路径栏的下拉通过同一原生菜单选择 World 或 Entity；前后箭头浏览最近的选择。导航历史属于 Workspace，最多保存 64 个不保活的身份，保留 World 入口并清理失效对象；导航调用现有 Session::select，不增加场景撤销条目。路径框、普通输入框、内容页签和滚动条的像素色值与共享样式扩展见[细节校准](../../research/houdini-chrome-pixels-20261002.md)。
 
-Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。选择 Entity 时展示 Entity 自身字段和所拥有组件的属性分组；选择组件时只展示该组件，标题中的组件类型只读。Entity 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。结构增删只在 Entity Structure 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。图标来源见[参数面板与图标研究](../../research/parameter-header-icons-20261006.md)。
+Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。类型、名称、Object/Category 分组页签与搜索按钮同在一行标题内（Houdini 单行参数头），不再单独占一行。颜色元组末尾的色块可点击，打开颜色编辑器：新色/原色对比（点原色恢复）、RGB 与 HSV 两行数值编辑同一颜色、六位十六进制输入；从打开到 Done 或点外部关闭为一次 Session 组编辑（`begin_group_edit`），只记一条历史，Esc 同样保留当前值，撤销一次恢复三个通道。选择 Entity 时展示 Entity 自身字段和所拥有组件的属性分组；选择组件时只展示该组件，标题中的组件类型只读。Entity 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。结构增删只在 Entity Structure 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。图标来源见[参数面板与图标研究](../../research/parameter-header-icons-20261006.md)。
+
+Scene Tree 行可拖动：拖到另一行使其成为该 Entity 的子级，拖到 World 行或下方空白解除父级；目标行高亮，不能拖到自身或其后代。换父保持世界变换（keep world），一次拖放一条历史，完成后选中被移动的 Entity 并展开到它。右键行先选中该行，再弹出 Rename（F2，聚焦参数头名称）、Duplicate、Delete、Clear Parent（Alt+P）与 Focus；树获得焦点时 Delete、F2、Ctrl+D/Shift+D、Alt+P 生效。
 
 Entity Structure 是可移动、关闭、重开的独立子页：Entity 递归显示组合子实体和有序组件。它表达真实组成归属；空间参考是独立关系，组件不再标记 Root。选择组件保留 Entity 上下文，视口和 Scene Tree 仍指向其拥有者；Delete 删除检查目标，删除组件后回到 Entity，Undo 恢复组件身份与选择。树行、属性分组和字段分别持有稳定 UI key，避免两个可见页对同一对象复用控件身份。Control 已提供组合换父与空间参考设置；当前没有对应的跨面板拖放手势。
 

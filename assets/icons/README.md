@@ -1,8 +1,11 @@
 # Editor tool icons
 
 Selected Tabler Outline icons, under the adjacent MIT `LICENSE`. `manifest.json`
-records the exact upstream commit, icon mapping and renderer version. The SVGs
-are unmodified upstream files; no Houdini artwork is included.
+records the exact upstream commit, icon mapping, renderer version and the
+stroke width applied at generation (`stroke`, default 2; 1.5 matches the
+lighter weight of the Houdini UI at editor sizes). The SVGs are unmodified
+upstream files (outline set, plus `circle-filled` from the filled set); no
+Houdini artwork is included.
 
 Regenerate from the repository root:
 
@@ -14,7 +17,7 @@ npm run generate --prefix tools/icons
 The generator writes 128×128 transparent PNGs for inspection and the same alpha
 data, run-length encoded, into `src/ui/icon_data.inl`. This checked-in output
 keeps ordinary C++ builds offline and avoids adding a PNG decoder or runtime
-asset lookup for these ten small masks. Node and resvg are generation tools only.
+asset lookup for these small masks. Node and resvg are generation tools only.
 The source SVGs are authoritative; do not edit the PNGs or generated C++ data.
 
 `ui::raster_icon` area-samples the embedded masks to the requested physical pixel

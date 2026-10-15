@@ -50,6 +50,7 @@ struct MenuItem {
     MenuBehavior behavior{MenuBehavior::command};
     ControlKey radio_group{};
     ControlIcon icon{ControlIcon::none};
+    std::wstring heading{}; // Optional group caption drawn above this item (Blender popover sections).
     bool operator==(const MenuItem&) const = default;
 };
 } // namespace atelier::ui

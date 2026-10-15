@@ -1,4 +1,5 @@
 #include "application/project_runner.hpp"
+#include "application/render_clock.hpp"
 #include "application/window.hpp"
 #include "application/presentation.hpp"
 #include "application/scene_snapshot.hpp"
@@ -118,6 +119,7 @@ int run_project(const RunOptions& options) {
             static_cast<void>(camera.look_at(target+math::Vector3{size*1.3f,size,size*-1.6f},target));
         }
         auto previous=std::chrono::steady_clock::now();auto last_report=loaded.build;std::string ui_error;
+        RenderClock lighting_clock;
         while(!options.frames || frame<options.frames) {
             if(options.stop_event && WaitForSingleObject(options.stop_event,0)==WAIT_OBJECT_0) break;
             if(window) {
@@ -168,10 +170,18 @@ int run_project(const RunOptions& options) {
                     renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
                         options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},scene.meshes,
                         view,{},scene.lights,scene.identity,scene.revision,false,scene.environment,{focus.x,focus.y,focus.z}};
+                    const auto lighting_start=RenderClock::Clock::now();
+                    const bool lighting_active=target.drawable && !options.preview_ui && !scene.meshes.empty() && view.lit.ddgi;
+                    rendered.render_delta_seconds=lighting_clock.delta(lighting_start,lighting_active);
                     const auto result=graphics(renderer->render(rendered));
-                    if(result.status==renderer::FrameStatus::accepted && !ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
+                    if(result.status==renderer::FrameStatus::accepted) {
+                        if(result.accepted_id!=rendered.ui_frame.id || result.accepted_extent!=rendered.ui_frame.extent)
+                            throw std::runtime_error("Project renderer accepted a mismatched frame.");
+                        if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
+                        lighting_clock.accept(lighting_start,lighting_active);
+                    } else lighting_clock.reset();
                 } else if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the headless frame.");
-            }
+            } else lighting_clock.reset();
             if(window) static_cast<void>(window->text_input(ui.text_input()));
             ++frame;
             if(!renderer && !options.frames) Sleep(4);

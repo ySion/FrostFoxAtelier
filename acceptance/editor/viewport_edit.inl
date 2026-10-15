@@ -134,7 +134,36 @@ void verify_viewport_editing() {
     take(key(27,ui::Key::escape));
     take(tool.snap_selection(document,settings,false));
     require(transform(first).position.x==-2 && transform(second).position.x==2,"Selection to Grid did not align each root.");
-    changed(document.undo());settings.grid_snap=false;settings.grid_spacing=.2f;
+    changed(document.undo());
+    {
+        // Snapping panel: rotation increment and Affect gate R/S like G (Ctrl still inverts).
+        settings.rotation_step=45;settings.snap_rotate=true;
+        take(key('R'));take(key('Z'));
+        const auto centre=*view.project(transform(second).position);
+        take(pointer(ui::EventKind::pointer_move,{centre.x+80,centre.y-35}));
+        const auto snapped=euler_degrees(transform(second).rotation).z;
+        require(std::abs(std::remainder(snapped,45.f))<.01f,"Rotation did not snap to the panel's 45° increment.");
+        take(key(27,ui::Key::escape));
+        settings.snap_move=false;
+        take(key('G'));take(key('X'));
+        take(pointer(ui::EventKind::pointer_move,*view.project(before_second.position+math::Vector3{.31f,0,0})));
+        require(std::abs(transform(second).position.x-1.81f)<.001f,"Disabling Affect Move still snapped movement.");
+        take(key(27,ui::Key::escape));
+        settings.snap_move=true;settings.rotation_step=15;
+        // Local orientation: X constrains along the active Entity's own X axis.
+        const auto snapping=settings.grid_snap;settings.grid_snap=false;settings.orientation=Orientation::local;
+        auto turned=transform(second);turned.rotation=from_euler_degrees({0,90,0});
+        take(document.set_transform(second,turned));
+        const auto start=transform(second).position;
+        take(key('G'));take(key('X'));take(text(L"1"));take(key(13,ui::Key::enter));
+        const auto moved=transform(second).position-start;
+        const auto local_x=math::rotate(turned.rotation,math::Vector3{1,0,0});
+        require(math::length(moved-local_x)<.001f,"Local orientation did not constrain X to the Entity's own axis.");
+        changed(document.undo());changed(document.undo());
+        settings.orientation=Orientation::global;settings.grid_snap=snapping;
+        take(document.select_entities(std::array{first,second},second));
+    }
+    settings.grid_snap=false;settings.grid_spacing=.2f;
     take(key('G'));take(key('X'));
     take(text(L"-"));
     require(!key(13,ui::Key::enter) && tool.active(),"Incomplete typed transform was committed.");
@@ -265,14 +294,14 @@ void verify_viewport_editing() {
         ui.pointer_target(camera_menu.x+camera_menu.width*.5f,camera_menu.y+camera_menu.height*.5f)==control::viewport_camera,
         "Viewport chrome did not distinguish passive mode text from the interactive camera menu.");
     const auto expanded_height=ui.presented()->find(control::viewport)->bounds.height;
-    const auto publish=[&] {
-        auto controls=workspace.describe(document,{1200,800},ui.presented().get());
+    const auto publish=[&](ui_layout::Size size={1200,800}) {
+        auto controls=workspace.describe(document,size,ui.presented().get());
         require(bool(ui.set_controls(controls)),"Updated viewport chrome was refused.");
         const auto frame=ui.prepare();require(frame && ui.accept(*frame),"Updated viewport chrome did not lay out.");
         workspace.commit_ui_controls();return controls;
     };
     workspace.viewport_options_collapsed=true;publish();
-    require(std::abs(ui.presented()->find(control::viewport)->bounds.height-expanded_height-20)<.1f,
+    require(std::abs(ui.presented()->find(control::viewport)->bounds.height-expanded_height-16)<.1f,
         "Collapsed viewport options did not return their height to the scene.");
     workspace.viewport_options_collapsed=false;workspace.viewport_mode=TransformTool::rotate;
     const auto rotated_controls=publish();
@@ -280,6 +309,10 @@ void verify_viewport_editing() {
         "The authored mode label did not follow the current operation.");
     workspace.menu=ui::ContextMenuRequest{control::viewport_snap,0,0,0};publish();
     const auto step=std::ranges::find(workspace.menu_items,static_cast<ui::ControlKey>(Command::snap_grid_02),&ui::MenuItem::key);
+    const auto headings=std::ranges::count_if(workspace.menu_items,[](const auto& item){return !item.heading.empty();});
+    const auto rotation=std::ranges::find(workspace.menu_items,static_cast<ui::ControlKey>(Command::snap_rotation_15),&ui::MenuItem::key);
+    require(headings>=4 && rotation!=workspace.menu_items.end() && rotation->selected && rotation->behavior==ui::MenuBehavior::radio,
+        "The snapping popover lost its sections or rotation increment.");
     require(step!=workspace.menu_items.end() && step->selected && step->behavior==ui::MenuBehavior::radio &&
         std::ranges::any_of(workspace.menu_items,[](const auto& item){return item.key==static_cast<ui::ControlKey>(Command::snap_toggle) && item.behavior==ui::MenuBehavior::checkbox;}),
         "The shared snap menu lost its active step or toggle semantics.");
@@ -304,6 +337,128 @@ void verify_viewport_editing() {
     require(take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first+2,true})) &&
         workspace.view.wireframe==renderer::Wireframe::off && workspace.view.shading==renderer::Shading::matcap,
         "Shading preset retained stale wireframe state.");
+    {
+        constexpr ui_layout::Size wide{1900,1000};
+        // Blender header: semantic menus project as real controls and their menus
+        // reuse the shared command model; header segments mirror the view and tool state.
+        workspace.menu.reset();const auto header=publish(wide);
+        // Narrow panes fold the text menus (W and the main View menu keep them reachable).
+        for(const auto key:{control::viewport_view_menu,control::viewport_select_menu,control::viewport_header_add,control::viewport_object_menu})
+            require(std::ranges::any_of(header,[&](const auto& item){return item.key==key;}),"A Blender header menu is missing from the viewport header.");
+        const auto has=[&](Command command){return std::ranges::any_of(workspace.menu_items,[&](const auto& item){return item.key==static_cast<ui::ControlKey>(command);});};
+        const auto branch=[&](ui::ControlKey key)->const ui::MenuItem* {
+            const auto at=std::ranges::find(workspace.menu_items,key,&ui::MenuItem::key);return at==workspace.menu_items.end()?nullptr:&*at;};
+        workspace.menu=ui::ContextMenuRequest{control::viewport_select_menu,0,0,0};publish(wide);
+        const auto* modes=branch(control::select_mode_menu);
+        require(has(Command::select_all) && has(Command::select_none) && has(Command::select_invert) && has(Command::select_box) &&
+            modes && modes->children.size()==5 && modes->children.front().selected && modes->children.front().behavior==ui::MenuBehavior::radio,
+            "Select menu lost its Blender operations or the active selection mode.");
+        workspace.menu=ui::ContextMenuRequest{control::viewport_object_menu,0,0,0};publish(wide);
+        const auto* clear=branch(control::object_clear_menu);
+        require(clear && clear->children.size()==3 && branch(control::object_snap_menu) && has(Command::duplicate_selected),
+            "Object menu lost Clear, Snap or Duplicate.");
+        workspace.menu=ui::ContextMenuRequest{control::viewport_view_menu,0,0,0};publish(wide);
+        require(has(Command::frame_all) && has(Command::focus) && branch(control::view_viewpoint_menu),"View menu lost framing or viewpoints.");
+        workspace.menu.reset();publish(wide);
+        // Select-mode routing: Extend keeps, Subtract removes, Intersect keeps only the overlap.
+        const std::array both{first,second};take(document.select_entities(both,second));
+        settings.select_mode=SelectMode::subtract;
+        take(pointer(ui::EventKind::pointer_down,point(first)));take(pointer(ui::EventKind::pointer_up,point(first)));
+        require(document.selected_entities().size()==1 && document.is_selected(second),"Subtract mode did not remove the clicked Entity.");
+        settings.select_mode=SelectMode::extend;
+        take(pointer(ui::EventKind::pointer_down,point(first)));take(pointer(ui::EventKind::pointer_up,point(first)));
+        require(document.selected_entities().size()==2,"Extend mode did not add the clicked Entity.");
+        settings.select_mode=SelectMode::intersect;
+        take(pointer(ui::EventKind::pointer_down,point(second)));take(pointer(ui::EventKind::pointer_up,point(second)));
+        require(document.selected_entities().size()==1 && document.is_selected(second),"Intersect mode did not keep only the clicked overlap.");
+        settings.select_mode=SelectMode::set;
+        take(tool.select_all(document,SelectAll::invert));
+        require(document.selected_entities().size()==1 && document.is_selected(first),"Invert Selection did not complement the selection.");
+        take(tool.select_all(document,SelectAll::deselect));require(document.selected_entities().empty(),"Select None kept a selection.");
+        take(tool.select_all(document,SelectAll::select));require(document.selected_entities().size()==2,"Select All missed an Entity.");
+        // Houdini display bar: every toggle edits exactly its ViewSettings value.
+        const auto toggle=[&](ui::ControlKey key,bool on){take(workspace.apply_view(document,{ui::ActionKind::activate,key,on}));};
+        toggle(control::display_grid,!workspace.view.reference_grid);toggle(control::display_axes,true);
+        require(workspace.view.origin_axes,"Display bar did not reach origin axes.");
+        toggle(control::display_wire,true);require(workspace.view.wireframe==renderer::Wireframe::overlay,"Wire overlay toggle failed.");
+        toggle(control::display_wire,false);require(workspace.view.wireframe==renderer::Wireframe::off,"Wire overlay did not clear.");
+        toggle(control::display_triangles,true);require(workspace.view.triangle_edges,"Triangle edge toggle failed.");
+        toggle(control::display_triangles,false);
+        {
+            const auto bar=publish(wide);
+            require(std::ranges::count_if(bar,[](const auto& c){return c.key>=control::display_toggle_first && c.key<control::display_toggle_first+8;})==8,
+                "Display bar did not project its eight toggles.");
+        }
+        // Scene Tree: drop resolution, keep-world reparent as one edit, cycle refusal and row menu.
+        {
+            publish(wide);
+            const auto& frame=*ui.presented();
+            const auto centre=[&](ui::ControlKey key){const auto* box=frame.find(key);require(box,"Tree row missing.");
+                return ui::DragPoint{box->bounds.x+box->bounds.width*.5f,box->bounds.y+box->bounds.height*.5f};};
+            const auto first_row=workspace.object_control(first);
+            const auto onto_first=workspace.tree_drop(document,frame,second,centre(first_row));
+            require(onto_first && onto_first->parent==first && onto_first->row==first_row,"Dropping on a row did not target that Entity.");
+            const auto onto_world=workspace.tree_drop(document,frame,second,centre(control::tree_world));
+            require(onto_world && onto_world->parent==ObjectId{},"Dropping on World did not unparent.");
+            const auto world_before=take(world::world_matrix(document.world().runtime(),second));
+            const auto history=document.undo_count();
+            take(document.select_entities(std::array{first},first));publish(wide);
+            take(document.reparent(second,first));take(document.select_entities(std::array{second},second));
+            require(take(world::parent_entity(document.world().runtime(),second))==first && document.undo_count()==history+1,
+                "Tree reparent was not one history entry.");
+            require(take(world::world_matrix(document.world().runtime(),second))==world_before,"Keep-world reparent moved the Entity.");
+            publish(wide);
+            const auto& nested=*ui.presented();
+            const auto* child=nested.find(workspace.object_control(second));
+            require(child!=nullptr,"Dropping did not reveal the moved row under its new parent.");
+            const auto cycle=workspace.tree_drop(document,nested,first,ui::DragPoint{child->bounds.x+4,child->bounds.y+child->bounds.height*.5f});
+            require(!cycle,"An Entity could be dropped onto its own descendant.");
+            take(document.select_entities(std::array{second},second));
+            workspace.menu=ui::ContextMenuRequest{workspace.object_control(second),0,0,0};publish(wide);
+            const auto has=[&](Command command){return std::ranges::any_of(workspace.menu_items,[&](const auto& item){return item.key==static_cast<ui::ControlKey>(command);});};
+            require(has(Command::rename_selected) && has(Command::duplicate_selected) && has(Command::erase_entities) && has(Command::unparent_selected),
+                "Scene Tree row menu lost Rename, Duplicate, Delete or Clear Parent.");
+            const auto unparent=std::ranges::find(workspace.menu_items,static_cast<ui::ControlKey>(Command::unparent_selected),&ui::MenuItem::key);
+            require(unparent->enabled,"Clear Parent was disabled for a parented Entity.");
+            workspace.menu.reset();
+            take(document.undo());
+            require(take(world::parent_entity(document.world().runtime(),second))==ObjectId{},"Undo did not restore the original parent.");
+            take(document.select_entities(std::array{first,second},second));publish();
+        }
+        // Colour editor model: conversions round-trip, and a three-lane group edit is one history entry.
+        {
+            const auto close=[](std::array<double,3> a,std::array<double,3> b){return std::abs(a[0]-b[0])<1e-6 && std::abs(a[1]-b[1])<1e-6 && std::abs(a[2]-b[2])<1e-6;};
+            require(close(hsv_to_rgb(rgb_to_hsv({.25,.5,.75})),{.25,.5,.75}) && close(rgb_to_hsv({1,0,0}),{0,1,1}),
+                "HSV conversion did not round-trip.");
+            require(color_hex({1,.5,0})==L"FF8000" && parse_color_hex(L"#ff8000") && !parse_color_hex(L"12345") && !parse_color_hex(L"GG0000"),
+                "Hex colour formatting or parsing was wrong.");
+            changed(document.create_light(world::LightKind::point,{0,2,0}));
+            const auto light=document.selection().entity;
+            const auto component=take(world::components(document.world().runtime(),light)).front().id();
+            std::vector<world::FieldPath> lanes;
+            for(const auto& property:take(document.properties(component))) if(property.name.starts_with("settings.color.")) lanes.push_back(property.path);
+            require(lanes.size()==3,"Light colour did not expose three channel fields.");
+            const auto history=document.undo_count();
+            take(document.begin_group_edit(component,lanes,4242));
+            const auto typed=[&](float v){return Scalar{v};};
+            const std::array first_preview{typed(.2f),typed(.4f),typed(.6f)},second_preview{typed(.9f),typed(.1f),typed(.3f)};
+            take(document.preview_group_edit(4242,first_preview));take(document.preview_group_edit(4242,second_preview));
+            take(document.commit_edit(4242));
+            require(document.undo_count()==history+1 && std::get<float>(take(document.read_property(component,lanes[0])))==.9f,
+                "A colour edit was not exactly one history entry with its final value.");
+            take(document.undo());
+            require(std::get<float>(take(document.read_property(component,lanes[0])))==1.f && std::get<float>(take(document.read_property(component,lanes[2])))==1.f,
+                "Undo did not restore all three colour channels together.");
+            take(document.begin_group_edit(component,lanes,4243));take(document.preview_group_edit(4243,first_preview));take(document.cancel_edit());
+            require(document.undo_count()==history && std::get<float>(take(document.read_property(component,lanes[1])))==1.f,"Cancel left a colour preview behind.");
+            take(document.undo());
+            take(document.select_entities(std::array{first,second},second));publish();
+        }
+        // Shading header segment reflects and drives the same presets as the Z pie.
+        take(workspace.apply_view(document,{ui::ActionKind::activate,control::shading_preset_first+1,true}));publish();
+        require(workspace.view.shading==renderer::Shading::smooth && workspace.view.wireframe==renderer::Wireframe::off,
+            "Solid header segment did not reach the view model.");
+    }
     {
         // View Selected frames the actual geometry bounds.
         Camera framing;framing.frame({1,2,3},.5f);

@@ -14,7 +14,7 @@ namespace atelier::editor {
 class RenderPerformance {
 public:
     using Clock=std::chrono::steady_clock;
-    static constexpr std::size_t window_size=120,pass_count=17;
+    static constexpr std::size_t window_size=120,pass_count=21,total_pass=20;
     enum class State { unavailable,waiting,ready };
     struct Pass {
         std::string_view key,title;

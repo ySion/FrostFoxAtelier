@@ -13,7 +13,8 @@ enum class ViewOption {
     shadow_bias, direct_candidates, ao_radius, reflection_distance, reflection_roughness,
     probe_update_budget, probe_rays, probe_debug, probe_bounce, indirect_gain, probe_feedback_visibility,
     probe_visualization, probe_volume, probe_relocation, probe_xray, probe_radius,
-    probe_coverage, probe_debug_volume, direct_reference,
+    probe_coverage, probe_debug_volume, direct_reference, spatial_light_sampling,
+    probe_history, probe_inspect, probe_inspect_x, probe_inspect_y, probe_inspect_source,
     cavity, cavity_ridge, cavity_valley, cavity_radius,
     volume_first, volume_last=volume_first+4*static_cast<int>(ProbeVolumeField::count)-1
 };

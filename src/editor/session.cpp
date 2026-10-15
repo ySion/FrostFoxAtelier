@@ -425,8 +425,40 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
     active_.emplace(FieldChange{std::move(*root),*entity,{path.begin(),path.end()},control_session,value,value});
     return {};
 }
+Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::FieldPath> paths,std::uint64_t control_session) {
+    if (editing()) return invalid("A field edit is already active.");
+    if (!control_session || paths.empty()) return invalid("A group edit requires a control session and fields.");
+    auto entity=admit_property_edit(object); if (!entity) return std::unexpected(entity.error());
+    auto root=runtime_.hold(object); if (!root) return std::unexpected(root.error());
+    FieldGroupChange change{std::move(*root),*entity,{paths.begin(),paths.end()},control_session,{},{}};
+    for (const auto& path:paths) {
+        if (detail::transform_path(types_,path)) return invalid("Transform fields use the transform edit.");
+        auto value=world_.read(object,path); if (!value) return std::unexpected(value.error());
+        change.before.push_back(*value);
+    }
+    change.after=change.before;group_.emplace(std::move(change));return {};
+}
+Result<void> Session::preview_group_edit(std::uint64_t control_session,std::span<const Scalar> values) {
+    if (!group_ || group_->control_session!=control_session) return invalid("No matching group edit.");
+    if (values.size()!=group_->paths.size()) return invalid("A group edit needs one value per field.");
+    auto entity=admit_property_edit(group_->root.id()); if (!entity) return std::unexpected(entity.error());
+    if (*entity!=group_->entity) return invalid("The property's owning Entity changed.");
+    for (const auto& value:values) if (!detail::finite_scalar(value)) return invalid("Property values must be finite.");
+    for (std::size_t i=0;i<values.size();++i) {
+        if (values[i].index()!=group_->before[i].index()) return invalid("A group edit value changed its field type.");
+        if (auto written=world_.write(group_->root.id(),group_->paths[i],values[i]);!written) return written;
+    }
+    ++revision_;return {};
+}
+Result<void> Session::apply_group(const FieldGroupChange& change,bool forward) {
+    auto entity=admit_property_edit(change.root.id()); if (!entity) return std::unexpected(entity.error());
+    if (*entity!=change.entity) return invalid("The property's owning Entity changed.");
+    const auto& values=forward?change.after:change.before;
+    for (std::size_t i=0;i<values.size();++i) if (auto written=world_.write(change.root.id(),change.paths[i],values[i]);!written) return written;
+    return {};
+}
 bool Session::owns_edit(std::uint64_t control_session) const noexcept {
-    return (active_ && active_->control_session == control_session) ||
+    return (group_ && group_->control_session == control_session) || (active_ && active_->control_session == control_session) ||
         (transform_ && transform_->control_session == control_session) || material_editing(control_session);
 }
 Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session, bool amend_creation) {
@@ -544,6 +576,14 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
 Result<void> Session::commit_edit(std::uint64_t control_session) {
     if(material_editing(control_session)) return commit_material_edit(control_session);
     if (!owns_edit(control_session)) return invalid("No matching field edit.");
+    if (group_) {
+        for (std::size_t i=0;i<group_->paths.size();++i) {
+            auto value=world_.read(group_->root.id(),group_->paths[i]); if (!value) return std::unexpected(value.error());
+            group_->after[i]=*value;
+        }
+        if (group_->before!=group_->after) remember(std::move(*group_));
+        group_.reset(); return {};
+    }
     if (transform_) {
         bool changed{};
         for (auto& entry:transform_->entries) {
@@ -579,6 +619,10 @@ Result<void> Session::apply_field(const FieldChange& change,bool forward) {
 }
 Result<void> Session::cancel_edit() {
     if(auto cancelled=cancel_material_edit();!cancelled) return cancelled;
+    if (group_) {
+        auto restored=apply_group(*group_,false); if (!restored) return restored;
+        ++revision_; group_.reset();
+    }
     if (transform_) {
         // Restore every target even if one fails; report the first failure.
         Result<void> first;
@@ -663,6 +707,11 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
                 if(!restored) return std::unexpected(restored.error());
             }
             set_selection({item.root.id(),item.root.id()});return world::Commit{true,changed->notification_error};
+        } else if constexpr (std::is_same_v<T, FieldGroupChange>) {
+            auto written=apply_group(item,forward);
+            if (!written) return std::unexpected(written.error());
+            set_selection({item.entity,item.root.id()});
+            return world::Commit{true, {}};
         } else if constexpr (std::is_same_v<T, FieldChange>) {
             auto written=apply_field(item,forward);
             if (!written) return std::unexpected(written.error());

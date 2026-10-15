@@ -20,10 +20,20 @@ void quality_work_elision(Fixture& f) {
             const auto active=[&](unsigned bit){return (stats.scene_lit_gpu_pass_mask&(1u<<bit))!=0;};
             check(active(10)==!options.direct_reference && active(11)==!options.direct_reference && active(12)&&active(13),
                   "completed direct scope mask distinguishes reference bypass from its visibility and resolve work");
+            const bool filtered=!options.direct_reference&&stats.scene_lit_light_sources>0;
+            check(active(16)&&active(17)==filtered&&active(18)==filtered&&active(19)==filtered,
+                  "completed reconstruction scopes retain resolve and skip all filters for reference or no sources");
             const bool probes=options.ddgi&&std::ranges::any_of(options.probe_volumes,[](const auto& v){return v.enabled;});
             check(active(3)==options.ddgi && active(8)==probes && active(9)==options.ddgi && active(14)==probes && active(15)==probes,
                   "completed DDGI scope mask follows this case instead of delayed previous settings");
             for(float value:stats.scene_lit_direct_gpu_ms)check(std::isfinite(value)&&value>=0,"direct subpass duration is finite");
+            double reconstruction_sum=0;
+            for(float value:stats.scene_lit_direct_reconstruction_gpu_ms) {
+                check(std::isfinite(value)&&value>=0,"direct reconstruction subpass duration is finite");
+                reconstruction_sum+=value;
+            }
+            check(reconstruction_sum<=stats.scene_lit_direct_gpu_ms[3]+.01,
+                  "reconstruction scopes belong to the completed resolve/filter parent");
             for(float value:stats.scene_lit_ddgi_update_gpu_ms)check(std::isfinite(value)&&value>=0,"DDGI update subpass duration is finite");
             previous_sequence=stats.scene_lit_gpu_sample_sequence;samples[count++]=stats;
             evidence << name << ',' << f.drawing.id << ',' << first_frame << ',' << previous_sequence << ','
@@ -198,7 +208,24 @@ void quality_work_elision(Fixture& f) {
               "inactive probes retain fixed classification rays but skip illumination tracing and scratch-hit shading");
     const auto enclosed=f.capture("work-ddgi-inactive-dark",32);
     const auto enclosed_color=mean_rgb(enclosed,region);
-    check(*std::max_element(enclosed_color.begin(),enclosed_color.end())<=1,
+    // This assertion isolates DDGI scratch/transport, not the independent DI
+    // denoiser's low-luminance tail after a one-frame visibility edit. Keep the
+    // warmed probe field intact while bypassing only direct reconstruction.
+    options.direct_reference=true;render::Capture isolated;
+    const auto isolated_stats=f.step(&isolated).stats;
+    png(isolated,f.output/"work-ddgi-inactive-isolated.png");
+    check(isolated_stats.scene_lit_history_resets==0 &&
+          std::ranges::all_of(isolated_stats.scene_lit_probe_volumes,[](const auto& volume){return volume.reset_probes==0;}),
+          "direct reference isolates DDGI without resetting its warmed probe field");
+    options.ddgi=false;
+    const auto without_gi=f.capture("work-ddgi-inactive-reference-without-gi",1);
+    const auto no_gi_color=mean_rgb(without_gi,region),isolated_color=mean_rgb(isolated,region);
+    std::printf("Inactive receiver after %llu frames: realtime=(%.6f,%.6f,%.6f), direct reference DDGI on=(%.6f,%.6f,%.6f), DDGI off=(%.6f,%.6f,%.6f)\n",
+        static_cast<unsigned long long>(enclosed.frame_id-first_frame+1),enclosed_color[0],enclosed_color[1],enclosed_color[2],
+        isolated_color[0],isolated_color[1],isolated_color[2],no_gi_color[0],no_gi_color[1],no_gi_color[2]);
+    check(*std::max_element(no_gi_color.begin(),no_gi_color.end())<=1,
+          "enclosure blocks the outside light in independent direct reference");
+    check(*std::max_element(isolated_color.begin(),isolated_color.end())<=1,
           "inactive probes do not leak prior surface radiance into the enclosed receiver");
     std::puts("Renderer SceneLit work elision: PASS (candidate-independent selected visibility, independent reference64 rays, zero/tiny diffuse support, SSIL/debug consumers, DDGI span resize and inactive scratch lifecycle)");
 }

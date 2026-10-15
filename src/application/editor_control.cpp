@@ -50,14 +50,36 @@ Json view_json(const renderer::ViewSettings& view) {
     }
     return result;
 }
-Json probe_volumes_json(const renderer::FrameStats& stats) {
+Json probe_volumes_json(const std::array<renderer::ProbeVolumeStats,renderer::probe_volume_limit>& volumes) {
     auto result=Json::array();
-    for(std::size_t i=0;i<stats.scene_lit_probe_volumes.size();++i) {
-        const auto& volume=stats.scene_lit_probe_volumes[i];
+    for(std::size_t i=0;i<volumes.size();++i) {
+        const auto& volume=volumes[i];
         result.push_back({{"slot",i},{"enabled",volume.enabled},{"rolling",volume.rolling},
             {"minimum",volume.minimum},{"maximum",volume.maximum},{"spacing",volume.spacing},{"counts",volume.counts},
             {"resident",volume.resident},{"updated",volume.updated},{"reset_probes",volume.reset_probes}});
     }
+    return result;
+}
+Json probe_inspection_json(const std::shared_ptr<const renderer::ProbeInspection>& value) {
+    if(!value)return nullptr;
+    const auto& v=*value;const auto& r=v.receiver;
+    constexpr std::array modes{"live","hold_irradiance","hold_distance"};
+    const auto selection=v.requested_probe>=0?(v.traced_probe==~0u?"explicit_out_of_range":"explicit"):
+        (v.traced_probe==~0u?"automatic_pending":"automatic");
+    Json result{{"sequence",v.sequence},{"frame_id",v.frame_id},{"scene_identity",v.scene_identity},{"pixel",v.pixel},
+        {"history",modes[static_cast<unsigned>(v.history)]},{"rays",v.rays},{"updates",v.updates},
+        {"volumes",probe_volumes_json(v.volumes)},
+        {"receiver",{{"status",r.identity[0]},{"volume",r.identity[1]},{"contributors",r.identity[2]},
+            {"irradiance_coverage",r.irradiance},{"weight_sum",r.weights[0]},{"dominance",r.weights[1]},{"position_valid",r.position}}},
+        {"probes",Json::array()},{"requested_probe",v.requested_probe},{"probe_selection",selection},
+        {"traced_probe",v.traced_probe},{"ray_samples",Json::array()}};
+    for(const auto& p:v.probes)if(p.identity[2])result["probes"].push_back({
+        {"volume",p.identity[0]},{"probe",p.identity[1]},{"support_stage",p.identity[2]},{"age_frames",p.identity[3]},
+        {"irradiance_observations",p.irradiance},{"spatial_facing_visibility_weight",p.weights},{"position_distance",p.position},
+        {"transport_observations",p.transport},{"response_epoch_min_max_visits",p.response}});
+    for(const auto& ray:v.ray_samples)if(ray.identity[3])result["ray_samples"].push_back({
+        {"identity",ray.identity},{"direct_luminance",ray.direct},{"surface_roughness",ray.surface},{"sampling",ray.sampling},
+        {"light_endpoint_distance",ray.endpoint_distance},{"source_radius_range_area_min_distance_squared",ray.source_parameters}});
     return result;
 }
 Json performance_json(const editor::RenderPerformance& performance) {
@@ -255,9 +277,12 @@ struct EditorControl::Impl {
             {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
             {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
-                {"probe_volumes",probe_volumes_json(s)},{"probe_volumes_source","cpu_layout_and_schedule"}}},
+                {"spatial_light_sampling",{{"retained_sources",s.scene_lit_spatial_sources},{"nonempty_cells",s.scene_lit_spatial_cells},{"resource_bytes",s.scene_lit_spatial_bytes},{"uploaded",s.scene_lit_spatial_changed}}},
+                {"probe_volumes",probe_volumes_json(s.scene_lit_probe_volumes)},{"probe_volumes_source","cpu_layout_and_schedule"},
+                {"probe_inspection",probe_inspection_json(s.scene_lit_probe_inspection)}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
             {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"direct_pass_ms",s.scene_lit_direct_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
+            {"direct_reconstruction_pass_ms",s.scene_lit_direct_reconstruction_gpu_ms},
             {"pass_mask",s.scene_lit_gpu_pass_mask},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
             {"resource_bytes",s.scene_lit_resource_bytes},{"resource_bytes_source","current_cpu_logical"},
             {"shadow_rays",s.scene_lit_shadow_rays},{"probe_rays",s.scene_lit_probe_rays}}}};

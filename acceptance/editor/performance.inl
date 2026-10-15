@@ -49,8 +49,15 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
             "Performance statistics contain unavailable or invalid timings.");
         if(passes[i].in_total) sum+=full.timings[i]->mean;
     }
-    require(std::abs(sum-full.timings[16]->mean)<.00001 && full.timings[16]->mean>0,
+    require(std::abs(sum-full.timings[Performance::total_pass]->mean)<.00001 && full.timings[Performance::total_pass]->mean>0,
         "Performance total double-counted child intervals.");
+    double reconstruction_sum=0;
+    for(std::size_t i=16;i<20;++i) {
+        require(passes[i].parent==13 && !passes[i].in_total,"Reconstruction row lost its parent or entered the total.");
+        reconstruction_sum+=full.timings[i]->mean;
+    }
+    require(full.timings[16]->current_active && reconstruction_sum<=full.timings[13]->mean+.01,
+        "Completed reconstruction children do not belong to their resolve/filter parent.");
     require(!full.timings[3]->current_active && !full.timings[8]->current_active && !full.timings[9]->current_active &&
         !full.timings[14]->current_active && !full.timings[15]->current_active,"Disabled DDGI was shown as an active pass.");
     require(table().data->columns[0].width==saved_width,"Timing publication discarded the user's column width.");
@@ -67,6 +74,8 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
         require(app.step(),"Editor closed during performance inspection.");
     const auto response=pending.get();require(response.at("status")=="ok","Performance summary inspection failed.");
     const auto& report=response.at("result").at("performance");
+    require(response.at("result").at("last_frame").at("gpu_sample").at("direct_reconstruction_pass_ms").size()==4,
+        "Control omitted the four completed direct reconstruction durations.");
     require(report.at("state")=="ready" && report.at("samples")==Performance::window_size &&
         report.at("passes").size()==Performance::pass_count && report.at("passes")[3].at("current_ms").is_null() &&
         !response.at("result").contains("entities"),"Summary inspection did not expose bounded performance with skipped/null semantics.");

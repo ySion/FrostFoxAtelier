@@ -5,6 +5,8 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <cmath>
+#include <array>
 
 namespace {
 using namespace atelier::control;
@@ -441,12 +443,14 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
         "coverage-presets","rolling-focus-capture","focus-precision-atomicity","four-volume-repro","legacy-aliases","legacy-repro-defaults","history-and-scene-isolation","clean-close"}}}.dump(2));
     std::cout<<"Editor DDGI Control E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
+#include "client_size.inl"
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting" || std::wstring_view(argv[3])==L"--descriptions")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions]");
+        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting" || std::wstring_view(argv[3])==L"--descriptions" || std::wstring_view(argv[3])==L"--client-size")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions|--client-size]");
         const bool descriptions=argc==4 && std::wstring_view(argv[3])==L"--descriptions";
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
+        if(argc==4 && std::wstring_view(argv[3])==L"--client-size") {client_size(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--repro-lighting") {repro_lighting(argv[1],root);return 0;}
         if(argc==4 && !descriptions) {

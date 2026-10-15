@@ -212,7 +212,8 @@ class Parser {
             if (value=="down") p.combo_indicator=ComboIndicator::down;
             else if (value=="arrows") p.combo_indicator=ComboIndicator::arrows;
             else if (value=="caret") p.combo_indicator=ComboIndicator::caret;
-            else fail("Expected down, arrows or caret",v.position);
+            else if (value=="none") p.combo_indicator=ComboIndicator::none;
+            else fail("Expected down, arrows, caret or none",v.position);
         }
         else if (name=="icon-placement") {
             const auto value=resolve(v).text;
@@ -365,7 +366,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.border_style && static_cast<unsigned>(*p.border_style)>static_cast<unsigned>(BorderStyle::outset)) return false;
     if (p.border_edges && static_cast<unsigned>(*p.border_edges)>15) return false;
     if (p.scrollbar_gutter && static_cast<unsigned>(*p.scrollbar_gutter)>static_cast<unsigned>(ScrollbarGutter::overlay)) return false;
-    if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::caret)) return false;
+    if (p.combo_indicator && static_cast<unsigned>(*p.combo_indicator)>static_cast<unsigned>(ComboIndicator::none)) return false;
     if (p.tree_row_height && !bounded(*p.tree_row_height,12,128)) return false;
     if (p.tree_indent && !bounded(*p.tree_indent,8,64)) return false;
     if (p.icon_placement && static_cast<unsigned>(*p.icon_placement)>static_cast<unsigned>(IconPlacement::above)) return false;

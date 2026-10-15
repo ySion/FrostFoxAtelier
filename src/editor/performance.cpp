@@ -7,7 +7,7 @@
 namespace atelier::editor {
 namespace {
 using Pass=RenderPerformance::Pass;
-// Indices 0..15 match the completed sample's mask; total is computed per sample.
+// Indices 0..19 match the completed sample's mask; total is computed per sample.
 constexpr std::array<Pass,RenderPerformance::pass_count> definitions{{
     {"gbuffer","GBuffer",-1,0,true},
     {"acceleration","AS / uploads",-1,0,true},
@@ -25,9 +25,13 @@ constexpr std::array<Pass,RenderPerformance::pass_count> definitions{{
     {"direct_resolve","Radiance resolve / filter",2,1,false},
     {"ddgi_trace","Primary trace / relocation",8,2,false},
     {"ddgi_lighting","Hit lighting / convolution",8,2,false},
+    {"direct_temporal_resolve","Temporal radiance resolve",13,2,false},
+    {"direct_filter_1","Spatial filter step 1",13,2,false},
+    {"direct_filter_2","Spatial filter step 2",13,2,false},
+    {"direct_filter_4","Spatial filter step 4",13,2,false},
     {"total","Measured total",-1,0,false}
 }};
-constexpr std::array<std::size_t,RenderPerformance::pass_count> row_order{16,0,1,2,10,11,12,13,3,8,14,15,9,4,5,6,7};
+constexpr std::array<std::size_t,RenderPerformance::pass_count> row_order{RenderPerformance::total_pass,0,1,2,10,11,12,13,16,17,18,19,3,8,14,15,9,4,5,6,7};
 constexpr std::array<float,5> minima{120,60,60,60,55};
 constexpr std::array<std::wstring_view,4> aa_names{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
 std::wstring wide(std::string_view value) {return {value.begin(),value.end()};}
@@ -60,10 +64,11 @@ void RenderPerformance::observe(const renderer::Frame& frame,const renderer::Fra
         std::copy(stats.scene_lit_ddgi_gpu_ms.begin(),stats.scene_lit_ddgi_gpu_ms.end(),sample.begin()+8);
         std::copy(stats.scene_lit_direct_gpu_ms.begin(),stats.scene_lit_direct_gpu_ms.end(),sample.begin()+10);
         std::copy(stats.scene_lit_ddgi_update_gpu_ms.begin(),stats.scene_lit_ddgi_update_gpu_ms.end(),sample.begin()+14);
-        sample[16]=std::accumulate(sample.begin(),sample.begin()+8,0.);
+        std::copy(stats.scene_lit_direct_reconstruction_gpu_ms.begin(),stats.scene_lit_direct_reconstruction_gpu_ms.end(),sample.begin()+16);
+        sample[total_pass]=std::accumulate(sample.begin(),sample.begin()+8,0.);
         if(std::ranges::all_of(sample,[](double value){return std::isfinite(value) && value>=0;})) {
             force|=count_==0;
-            samples_[next_]=sample;masks_[next_]=(stats.scene_lit_gpu_pass_mask&0xffffu)|(1u<<16);
+            samples_[next_]=sample;masks_[next_]=(stats.scene_lit_gpu_pass_mask&((1u<<total_pass)-1))|(1u<<total_pass);
             next_=(next_+1)%window_size;count_=std::min(count_+1,window_size);
             sequence_=stats.scene_lit_gpu_sample_sequence;frame_id_=stats.scene_lit_gpu_sample_frame_id;dirty_=true;
         }
@@ -94,7 +99,7 @@ void RenderPerformance::publish(Clock::time_point now) {
             timing.mean/=double(count_);std::sort(sorted.begin(),sorted.begin()+count_);timing.p95=sorted[percentile];
             published_.timings[pass]=timing;
         }
-        const double total=published_.timings[16]->mean;
+        const double total=published_.timings[total_pass]->mean;
         if(total>0) for(auto& timing:published_.timings) timing->share=timing->mean/total*100.;
     }
     if(published_.state==State::unavailable) status_=L"Unavailable · choose Scene Lit with visible geometry";

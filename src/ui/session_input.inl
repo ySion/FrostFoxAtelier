@@ -114,7 +114,7 @@ Reply Session::input(const Event& event) {
                 if (!state) return self.cancel();
                 const auto& control=state->control;
                 if (press.selecting && self.edit && self.edit->key==press.key) self.select_at(reply,event.x,event.y,true);
-                else if (control.kind==ControlKind::tab) {
+                else if (control.kind==ControlKind::tab || (control.kind==ControlKind::tree_item && control.tree_draggable && !press.tree_disclosure)) {
                     if (!press.dragging && (std::abs(event.x-press.x)>4*self.surface.dpi_scale || std::abs(event.y-press.y)>4*self.surface.dpi_scale)) {
                         self.finish_edit(reply,true); press.dragging=true;
                         Impl::action(reply,ActionKind::drag_begin,press.key,DragPoint{press.x,press.y});
@@ -250,7 +250,7 @@ Reply Session::input(const Event& event) {
             if (!self.press || event.button!=self.press->button) return reply;
             const auto press=*self.press; self.press.reset();
             reply.consumed=reply.redraw=true; reply.capture=Capture::release;
-            if (press.dragging && self.states.at(press.key).control.kind==ControlKind::tab) {
+            if (press.dragging && (self.states.at(press.key).control.kind==ControlKind::tab || self.states.at(press.key).control.kind==ControlKind::tree_item)) {
                 Impl::action(reply,ActionKind::drag_commit,press.key,DragPoint{event.x,event.y});
             } else if (press.dragging) {
                 Impl::action(reply,ActionKind::edit_commit,press.key,press.value);

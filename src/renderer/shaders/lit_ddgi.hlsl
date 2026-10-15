@@ -8,26 +8,20 @@ void DDGICopy(uint3 dispatch_id : SV_DispatchThreadID) {
         uint2 texel=ddgi_probe_texel(probe)*8+uint2(index%8,index%64/8);
         if (ddgi_probe_fresh(probe,volume)) {
             lit_probe_irradiance_output[texel] = 0;
-            lit_probe_target[texel] = 0;
+            lit_probe_presentation[texel] = 0;
             lit_probe_distance_output[texel] = float2(1, 1);
+            lit_probe_response[texel]=uint2(lit_probe_response_epoch,0);
         } else {
-            float4 target = lit_probe_target[texel];
-            float4 previous = lit_probe_irradiance_previous.Load(int3(texel, 0));
-            // Sampling remains budgeted, while every valid probe approaches
-            // its sampled target every frame. This removes the visible stop /
-            // jump cadence without extra rays or a screen-space color history.
-            float history = target.w > 0 && previous.w > 0 ? lit_probe_history.z : 0;
-            // This field is also the next update's transport input. Preserve
-            // the scene-linear mean rather than feeding a perceptual mean back.
-            float3 irradiance = lerp(max(target.rgb, 0), max(previous.rgb, 0), history);
-            lit_probe_irradiance_output[texel] = float4(ddgi_finite_radiance(irradiance), target.w);
+            // Unscheduled probes retain the authoritative transport estimate.
+            // All scheduled feedback reads this immutable previous snapshot.
+            lit_probe_irradiance_output[texel] = lit_probe_irradiance_previous.Load(int3(texel, 0));
             lit_probe_distance_output[texel] = lit_probe_distance_previous.Load(int3(texel, 0));
         }
     }
     if (index < lit_probe_pool.y) {
         uint2 texel = ddgi_probe_texel(index);
         bool fresh=ddgi_probe_fresh(index,lit_probe_current_volumes[ddgi_volume_for_probe(index)]);
-        if (fresh) lit_probe_age_output[texel] = 0xffffffff;
+        if (fresh) {lit_probe_age_output[texel] = 0xffffffff;lit_probe_sample_cursor[texel]=0;}
         else {
             uint age = lit_probe_age_output[texel];
             if (age != 0xffffffff) lit_probe_age_output[texel] = min(age, 0xfffffffd) + 1;
@@ -44,22 +38,23 @@ float3 ddgi_spherical_direction(uint ray_index, uint ray_count) {
     return float3(radius * cos(phi), radius * sin(phi), z);
 }
 
-float4 ddgi_illumination_rotation(uint probe) {
-    uint seed = lit_hash(probe ^ lit_hash(lit_probe_sequence + 0x9e3779b9));
-    float u = lit_random(seed), a = 2 * LIT_PI * lit_random(seed), b = 2 * LIT_PI * lit_random(seed);
-    // Both entries reconstruct the same ray, including its FP32 operation order.
-    precise float4 rotation = float4(sqrt(1 - u) * sin(a), sqrt(1 - u) * cos(a),
-                                    sqrt(u) * sin(b), sqrt(u) * cos(b));
+float4 ddgi_illumination_rotation(uint2 visit,uint probe) {
+    // A per-probe additive R3 sequence replaces independent whole-set rotations.
+    // Integer Weyl steps retain phase precision during long-running sessions.
+    uint seed=lit_hash(probe^lit_hash(visit.y));
+    uint3 shift=uint3(lit_hash(seed^0x68bc21ebu),lit_hash(seed^0x02e5be93u),lit_hash(seed^0x967a889bu));
+    float3 u=float3((visit.x*uint3(0xd1b54a33u,0xabc98389u,0x8cb92ba7u)+shift)>>8)*(1.0/16777216.0);
+    precise float a=2*LIT_PI*u.y,b=2*LIT_PI*u.z;
+    precise float4 rotation=float4(sqrt(1-u.x)*sin(a),sqrt(1-u.x)*cos(a),sqrt(u.x)*sin(b),sqrt(u.x)*cos(b));
     return rotation;
 }
-
-float3 ddgi_illumination_direction(uint ray_index, uint ray_count, float4 rotation) {
-    precise float3 direction = ddgi_spherical_direction(ray_index, ray_count);
-    direction += 2 * cross(rotation.xyz, cross(rotation.xyz, direction) + rotation.w * direction);
+float3 ddgi_illumination_direction(uint ray_index,uint ray_count,float4 rotation) {
+    precise float3 direction=ddgi_spherical_direction(ray_index,ray_count);
+    direction+=2*cross(rotation.xyz,cross(rotation.xyz,direction)+rotation.w*direction);
     return direction;
 }
 
-float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint seed) {
+float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,bool inspect,uint ray_index,float hit_distance) {
     // Camera-surface NEE owns direct mesh emission. This field stores the
     // environment and light that has scattered at least once before the probe.
     LitLightingSurface receiver;
@@ -69,20 +64,47 @@ float3 ddgi_hit_radiance(LitSurface surface, float3 toward_probe, inout uint see
     // probe owns fresh RIS samples, never screen-space temporal reservoirs.
     // Explicit directionals cannot disappear in a large local-light lottery.
     float3 diffuse,specular,sun_diffuse,sun_specular;
-    LitReservoir local=lit_local_initial(receiver,true,lit_di_settings.x,seed);
+    uint sun_seed=lit_hash(seed^0xb5297a4du);
+    float proposal_probability;
+    LitReservoir local=lit_local_initial(receiver,true,lit_di_settings.x,true,seed,proposal_probability);
     lit_reservoir_lighting(receiver,local,true,true,diffuse,specular);
-    lit_directional_lighting(receiver,1,true,seed,sun_diffuse,sun_specular);
+    // Independent random domains keep sun samples unchanged when the local
+    // candidate count or proposal changes.
+    lit_directional_lighting(receiver,1,true,sun_seed,sun_diffuse,sun_specular);
     float3 radiance=diffuse+specular+sun_diffuse+sun_specular;
+    float3 feedback=0;
     if (lit_probe_pool.w != 0 && lit_probe_controls.x > 0) {
         // Only diffuse history feeds back. Bounded reflectance and the authored
         // transport factor make this iteration a contraction even in a closed
         // white room. Analytic and mesh NEE above inject reflected direct
         // light once at the actual hit, without the feedback attenuation.
         float3 reflectance = saturate(surface.base) * (1 - saturate(surface.metallic));
-        if(any(reflectance>0))radiance += ddgi_irradiance(surface.position, surface.normal,
+        if(any(reflectance>0))feedback = ddgi_irradiance(surface.position, surface.normal,
             surface.geometric_normal, lit_probe_controls.y!=0) * reflectance * (lit_probe_controls.x / LIT_PI);
     }
-    return ddgi_finite_radiance(radiance);
+    if(inspect) {
+        const float3 y=float3(.2126,.7152,.0722);
+        DDGIInspectedRay record=(DDGIInspectedRay)0;
+        bool selected=local.source<lit_source_counts.x;
+        record.identity=uint4(local.source,selected?lit_sources[local.source].meta.x:~0u,ray_index,1);
+        record.direct=float4(dot(diffuse,y),dot(specular,y),dot(sun_diffuse,y),dot(sun_specular,y));
+        record.surface=float4(surface.position,surface.roughness);
+        record.sampling=float4(local.weight,proposal_probability,dot(feedback,y),hit_distance);
+        record.endpoint_distance.w=-1;
+        if(selected) {
+            // Inspection alone reconstructs the selected sample; no new random
+            // draw or visibility query may change the production estimator.
+            LitLightSource source=lit_sources[local.source];
+            LitLightSample prepared=lit_prepare_light_sample(source,local.uv);
+            if(prepared.kind!=~0u) {
+                record.endpoint_distance=float4(prepared.position,length(prepared.position-surface.position));
+                record.source_parameters=float4(source.direction_radius.w,source.origin_range.w,prepared.area,
+                    prepared.kind==3?0:prepared.minimum_distance_squared);
+            }
+        }
+        lit_probe_inspected_rays[ray_index]=record;
+    }
+    return ddgi_finite_radiance(radiance+feedback);
 }
 
 DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, bool record_surface) {
@@ -136,6 +158,7 @@ groupshared float ddgi_fixed_distances[32];
 groupshared float3 ddgi_ray_directions[256];
 groupshared float3 ddgi_ray_radiance[256];
 groupshared float ddgi_ray_distances[256]; // negative means back-facing hit
+groupshared uint2 ddgi_sample_start;
 groupshared float4 ddgi_ray_rotation;
 groupshared uint ddgi_current_probe;
 groupshared float ddgi_probe_state;
@@ -207,7 +230,8 @@ void DDGITrace(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         ddgi_discard_history = (fresh || old_offset.w < .5 || relocated || inside) ? 1 : 0;
         lit_probe_offsets_output[probe_texel] = float4(target_offset, ddgi_probe_state);
         lit_probe_age_output[probe_texel] = 0;
-        ddgi_ray_rotation = ddgi_illumination_rotation(probe);
+        ddgi_sample_start=lit_probe_sample_cursor[probe_texel];
+        ddgi_ray_rotation=ddgi_illumination_rotation(ddgi_sample_start,probe);
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -215,19 +239,19 @@ void DDGITrace(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     // DDGIUpdate clears their atlas before attempting any scratch reads.
     if (ddgi_probe_state < .5) return;
     [loop] for (uint i = lane; i < ray_count; i += 64) {
-        float3 direction = ddgi_illumination_direction(i, ray_count, ddgi_ray_rotation);
+        float3 direction = ddgi_illumination_direction(i,ray_count,ddgi_ray_rotation);
         DDGIRayHit hit = ddgi_trace_ray(position, direction, volume, true);
         if (ddgi_discard_history != 0) hit.flags |= DDGI_RAY_DISCARD_HISTORY;
         lit_probe_ray_hits_output[group_id.x * ray_count + i] = hit;
     }
 }
 
-[numthreads(64, 1, 1)]
-void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
+void ddgi_update(uint3 group_id,uint lane,bool inspect) {
     if (group_id.x >= lit_probe_update.y || lit_probe_pool.y == 0) return;
     if (lane == 0) {
         ddgi_current_probe = lit_probe_work[group_id.x/4][group_id.x%4];
-        ddgi_ray_rotation = ddgi_illumination_rotation(ddgi_current_probe);
+        ddgi_sample_start=lit_probe_sample_cursor[ddgi_probe_texel(ddgi_current_probe)];
+        ddgi_ray_rotation=ddgi_illumination_rotation(ddgi_sample_start,ddgi_current_probe);
     }
     GroupMemoryBarrierWithGroupSync();
     uint probe = ddgi_current_probe;
@@ -240,8 +264,10 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
         // Rays were cast at the old position; never associate their radiance
         // or moments with a relocated origin. The next bounded visit retraces.
         lit_probe_irradiance_output[atlas_texel] = 0;
-        lit_probe_target[atlas_texel] = 0;
+        lit_probe_presentation[atlas_texel] = 0;
         lit_probe_distance_output[atlas_texel] = float2(1, 1);
+        lit_probe_response[atlas_texel]=uint2(lit_probe_response_epoch,0);
+        if(lane==0)lit_probe_sample_cursor[probe_texel]=0;
         return;
     }
     // Active origins are unchanged by the trace pass. Scratch only holds this
@@ -254,7 +280,7 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     [loop] for (uint i = lane; i < ray_count; i += 64) {
         DDGIRayHit hit = lit_probe_ray_hits[group_id.x * ray_count + i];
         if (i == 0) ddgi_discard_history = (hit.flags & DDGI_RAY_DISCARD_HISTORY) != 0;
-        float3 direction = ddgi_illumination_direction(i, ray_count, ddgi_ray_rotation);
+        float3 direction = ddgi_illumination_direction(i,ray_count,ddgi_ray_rotation);
         float3 radiance = hit.radiance_distance.rgb;
         if ((hit.flags & DDGI_RAY_SHADEABLE) != 0) {
             LitSurface surface = (LitSurface)0;
@@ -265,13 +291,19 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
             surface.metallic = hit.normal_metallic.w;
             surface.geometric_normal = hit.geometric_normal;
             uint seed = lit_hash(probe ^ lit_hash(i + DDGI_MAX_RAYS * lit_probe_sequence));
-            radiance = ddgi_hit_radiance(surface, -direction, seed);
+            radiance = ddgi_hit_radiance(surface,-direction,seed,inspect && probe==lit_probe_inspect_source,i,hit.radiance_distance.w);
         }
         ddgi_ray_distances[i] = hit.radiance_distance.w;
         ddgi_ray_directions[i] = direction;
         ddgi_ray_radiance[i] = radiance;
     }
     GroupMemoryBarrierWithGroupSync();
+    // Trace and every Update lane used the same start. Advance only after an
+    // active batch; budget changes cannot skip or repeat its rotation.
+    if(lane==0) {
+        uint next=ddgi_sample_start.x+1;
+        lit_probe_sample_cursor[probe_texel]=uint2(next,ddgi_sample_start.y+uint(next<ddgi_sample_start.x));
+    }
     float3 texel_direction = ddgi_octahedral_decode((float2(local_texel) + .5) / DDGI_TILE_SIZE);
     float3 irradiance = 0;
     float irradiance_weight = 0;
@@ -297,21 +329,31 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     float4 previous_irradiance = 0;
     float2 previous_distance = float2(1, 1);
     if (ddgi_discard_history == 0) {
-        previous_irradiance = lit_probe_target[atlas_texel];
+        previous_irradiance = lit_probe_irradiance_previous.Load(int3(atlas_texel, 0));
         previous_distance = lit_probe_distance_previous.Load(int3(atlas_texel, 0));
     }
     if (!all(isfinite(previous_irradiance))) previous_irradiance = 0;
+    // Any new origin/identity must discard the display prior in this same
+    // frame, even if its first valid transport observation is already ready.
+    if (ddgi_discard_history != 0) lit_probe_presentation[atlas_texel] = 0;
     if (!all(isfinite(previous_distance))) previous_distance = float2(1, 1);
     // With fewer rays than directional texels, a hemisphere may have no
     // observation this visit. That is missing support, not measured darkness.
     // Preserve both the target and its observation count (or invalid initial
     // support), so a constant sky cannot be driven toward black by empty visits.
     if (irradiance_weight <= 1e-5) {
-        lit_probe_target[atlas_texel] = previous_irradiance;
+        lit_probe_irradiance_output[atlas_texel] = previous_irradiance;
         lit_probe_distance_output[atlas_texel] = previous_distance;
         return;
     }
-    float irradiance_history = previous_irradiance.w > 0 ? clamp(lit_probe_history.x, 0, .98) : 0;
+    uint2 response=lit_probe_response[atlas_texel];
+    if(response.x!=lit_probe_response_epoch || ddgi_discard_history!=0 || previous_irradiance.w<=0)
+        response=uint2(lit_probe_response_epoch,0);
+    // Each direction consumes its own valid observations. A small frame budget,
+    // an empty hemisphere or a diagnostic hold cannot exhaust another probe's
+    // response window. Authored changes retain light, coverage and geometry.
+    float irradiance_history = previous_irradiance.w > 0 ?
+        clamp(response.y<4?lit_probe_history.x:(response.y<12?.8:lit_probe_history.w),0,.98) : 0;
     float distance_history = previous_irradiance.w > 0 ? clamp(lit_probe_history.y, 0, .98) : 0;
     // Running-average warmup uses the actual number of visits, not render
     // frames. The application selects response weights from scene changes;
@@ -325,10 +367,57 @@ void DDGIUpdate(uint3 group_id : SV_GroupID, uint lane : SV_GroupIndex) {
     // blending or clipping their rare positive contributions loses energy;
     // keep the authoritative irradiance history scene linear.
     float updates = min(previous_irradiance.w + 1, 32);
-    lit_probe_target[atlas_texel] = float4(
-        ddgi_finite_radiance(lerp(irradiance, max(previous_irradiance.rgb, 0), irradiance_history)), updates);
-    lit_probe_distance_output[atlas_texel] = distance_weight > 1e-8 ?
-        lerp(moments, previous_distance, distance_history) : previous_distance;
+    if(lit_probe_history_mode!=1 || ddgi_discard_history!=0 || previous_irradiance.w==0) {
+        lit_probe_irradiance_output[atlas_texel] = float4(
+            ddgi_finite_radiance(lerp(irradiance, max(previous_irradiance.rgb, 0), irradiance_history)), updates);
+        lit_probe_response[atlas_texel]=uint2(response.x,min(response.y+1,12u));
+    }
+    if(lit_probe_history_mode!=2 || ddgi_discard_history!=0 || previous_irradiance.w==0)
+        lit_probe_distance_output[atlas_texel] = distance_weight > 1e-8 ?
+            lerp(moments, previous_distance, distance_history) : previous_distance;
+}
+
+[numthreads(64,1,1)]
+void DDGIUpdate(uint3 group_id:SV_GroupID,uint lane:SV_GroupIndex) {ddgi_update(group_id,lane,false);}
+[numthreads(64,1,1)]
+void DDGIUpdateInspect(uint3 group_id:SV_GroupID,uint lane:SV_GroupIndex) {ddgi_update(group_id,lane,true);}
+
+// Every frame presents the completed next transport snapshot. This low-pass
+// never feeds another bounce: ray budget changes sampling, not this time scale.
+[numthreads(64,1,1)]
+void DDGIPresent(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint index=dispatch_id.x;
+    if(index>=lit_probe_pool.y*64)return;
+    uint2 texel=ddgi_probe_texel(index/64)*8+uint2(index%8,index%64/8);
+    float4 transport=lit_probe_irradiance_previous.Load(int3(texel,0));
+    float4 previous=lit_probe_presentation[texel];
+    if(transport.w<=0) {lit_probe_presentation[texel]=0;return;}
+    float history=previous.w>0?lit_probe_history.z:0;
+    if(lit_probe_history_mode==1 && previous.w>0)history=1;
+    // Explicit endpoint preserves a paused cache bit-for-bit; lerp(a,b,1)
+    // can still round differently as the live transport value a changes.
+    float3 displayed=history>=1?previous.rgb:lerp(max(transport.rgb,0),max(previous.rgb,0),history);
+    lit_probe_presentation[texel]=float4(ddgi_finite_radiance(displayed),transport.w);
+}
+
+// One independent gather records the same inputs as receiver shading. Normal
+// entries pass inspect=false, so the record writes compile out of their loops.
+[numthreads(1,1,1)]
+void DDGIInspect() {
+    [unroll] for(uint i=0;i<33;++i)lit_probe_inspection[i]=(DDGIContribution)0;
+    uint2 pixel=lit_probe_inspect_pixel;
+    if(any(pixel>=lit_size_frame.xy) || !lit_inside(pixel))return;
+    float depth=lit_depth.Load(int3(pixel,0));
+    if(lit_is_background_depth(depth))return;
+    float3 position=lit_world((float2(pixel)+.5)/lit_size_frame.xy,depth);
+    float3 normal=lit_safe_normal(lit_normal_roughness.Load(int3(pixel,0)).xyz);
+    DDGIResult result=ddgi_gather(position,normal,lit_geometry_normal_at(pixel),true,false,true);
+    DDGIContribution receiver=(DDGIContribution)0;
+    receiver.identity=uint4(result.status,result.volume,result.contributors,0);
+    receiver.irradiance=float4(result.irradiance,result.coverage);
+    receiver.weights=float4(result.weight_sum,result.dominance,0,0);
+    receiver.position=float4(position,1);
+    lit_probe_inspection[32]=receiver;
 }
 
 [numthreads(8, 8, 1)]

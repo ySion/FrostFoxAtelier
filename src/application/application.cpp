@@ -68,8 +68,8 @@ ui::PixelExtent client_extent(HWND window) {
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
 }
-Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace)
-    : examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation) {
+Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace,std::optional<ui::PixelExtent> initial_client)
+    : window_(nullptr,initial_client),examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation) {
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
@@ -221,9 +221,15 @@ Result<void> Application::action(const ui::Action& source) {
     if (event.kind==ui::ActionKind::context_menu) {
         const auto* request=std::get_if<ui::ContextMenuRequest>(&event.value);
         if (!request) return invalid();
+        // A row menu acts on the selection: right-clicking outside it selects that row first.
+        if(const auto* row=workspace_.binding(request->source);row && row->kind==editor::Workspace::Binding::Kind::object &&
+           row->path.empty() && row->object!=ObjectId{} && !document_->is_selected(row->object))
+            if(auto selected=workspace_.select_tree(*document_,request->source,{},ui_.presented().get());!selected) return selected;
         request_menu(*request); return {};
     }
+    if (event.kind==ui::ActionKind::dismiss && event.key==editor::control::color_editor) return finish_color_edit(true);
     if (event.kind==ui::ActionKind::dismiss) { close_menu(); return {}; }
+    if (workspace_.color_edit) if (auto handled=color_edit_action(event);!handled || *handled) return handled?Result<void>{}:Result<void>{std::unexpected(handled.error())};
     if (event.kind==ui::ActionKind::activate && event.key==command_key(editor::Command::show_fps)) {
         const auto* checked=std::get_if<bool>(&event.value);
         if (!checked) return invalid();
@@ -345,6 +351,25 @@ Result<void> Application::action(const ui::Action& source) {
     // A retired control's cleanup must not cancel a different live edit.
     if (event.kind == ui::ActionKind::edit_cancel)
         return document_->owns_edit(event.key) ? done(document_->cancel_edit(), L"Edit cancelled") : Result<void>{};
+    if (const auto* binding=workspace_.binding(event.key);binding && binding->kind==editor::Workspace::Binding::Kind::color_pick &&
+        event.kind==ui::ActionKind::activate) return open_color_edit(binding->object,binding->path,event.key);
+    if (const auto* binding = workspace_.binding(event.key);binding && binding->kind==editor::Workspace::Binding::Kind::object &&
+        binding->path.empty() && (event.kind==ui::ActionKind::drag_begin || event.kind==ui::ActionKind::drag_preview ||
+        event.kind==ui::ActionKind::drag_commit || event.kind==ui::ActionKind::drag_cancel)) {
+        // Scene Tree drag: drop on a row parents under it, on World or empty space unparents.
+        // Keep-world reparenting leaves the Entity where it is in the viewport; one history entry.
+        const auto* point=std::get_if<ui::DragPoint>(&event.value);
+        const auto drop=point && ui_.presented()?workspace_.tree_drop(*document_,*ui_.presented(),binding->object,*point):std::nullopt;
+        workspace_.tree_drop_row=event.kind==ui::ActionKind::drag_preview && drop?drop->row:0;
+        if(event.kind==ui::ActionKind::drag_preview) workspace_.status=drop?L"Drop to parent · World or empty space unparents":L"Cannot parent here";
+        if(event.kind!=ui::ActionKind::drag_commit || !drop) return {};
+        const auto current=world::parent_entity(document_->world().runtime(),binding->object);
+        if(!current) return std::unexpected(current.error());
+        if(*current==drop->parent) return {};
+        // The moved Entity ends selected: the tree reveals a newly selected row under its new parent.
+        if(auto moved=completion(document_->reparent(binding->object,drop->parent));!moved) return moved;
+        return done(document_->select_entities(std::array{binding->object},binding->object),drop->parent==ObjectId{}?L"Entity unparented":L"Entity parented");
+    }
     if (const auto* binding = workspace_.binding(event.key)) {
         if(binding->kind==editor::Workspace::Binding::Kind::material_override) {
             if(event.kind!=ui::ActionKind::activate) return {};
@@ -418,6 +443,86 @@ Result<void> Application::action(const ui::Action& source) {
     if (const auto* command=editor::command_definition(event.key)) return execute(command->id);
     return {};
 }
+// Colour editor: one Session group transaction from open to Done/dismiss; Esc and
+// outside clicks keep the edit (Houdini applies live), Revert restores the original.
+Result<void> Application::open_color_edit(ObjectId object,std::span<const FieldId> prefix,ui::ControlKey swatch) {
+    if(workspace_.color_edit) if(auto closed=finish_color_edit(true);!closed) return closed;
+    close_menu(false);
+    editor::Workspace::ColorEdit edit;edit.object=object;
+    for(std::uint32_t lane=0;lane<3;++lane) {
+        auto path=world::FieldPath(prefix.begin(),prefix.end());
+        auto info=document_->world().runtime().describe(take_type(object,prefix));if(!info) return std::unexpected(info.error());
+        if(lane>=(*info)->fields.size()) return std::unexpected(Error{ErrorCode::invalid_definition,"A colour needs three channels."});
+        path.push_back((*info)->fields[lane].id);
+        auto value=document_->read_property(object,path);if(!value) return std::unexpected(value.error());
+        edit.original[lane]=edit.value[lane]=std::visit([](const auto& v)->double {
+            if constexpr(std::same_as<std::decay_t<decltype(v)>,EnumValue>) return v.bits; else return double(v);},*value);
+        edit.paths.push_back(std::move(path));
+    }
+    if(auto begun=document_->begin_group_edit(object,edit.paths,editor::control::color_group);!begun) return begun;
+    // The swatch button routes to this pick key as its action target; anchor the editor under it.
+    const ui::ControlBox* box=nullptr;
+    if(ui_.presented()) for(const auto& control:ui_.presented()->controls)
+        if(control.kind==ui::ControlKind::button && control.action_target==swatch) {box=&control;break;}
+    const auto dpi=window_.dpi_scale();
+    edit.x=box?(box->bounds.x+box->bounds.width)/dpi-420:0;edit.y=box?(box->bounds.y+box->bounds.height)/dpi+2:0;
+    edit.hex=editor::color_hex(edit.value);
+    workspace_.color_edit=std::move(edit);workspace_.status=L"Colour editor · Done or click outside to keep · Revert restores";
+    return {};
+}
+TypeId Application::take_type(ObjectId object,std::span<const FieldId> path) const {
+    auto& runtime=document_->world().runtime();
+    auto type=runtime.type_of(object).value_or(TypeId{});
+    for(const auto id:path) {
+        const auto info=runtime.describe(type);if(!info) return {};
+        const auto at=std::ranges::find((*info)->fields,id,&FieldInfo::id);if(at==(*info)->fields.end()) return {};
+        type=at->value.type;
+    }
+    return type;
+}
+Result<void> Application::apply_color(std::array<double,3> rgb) {
+    auto& edit=*workspace_.color_edit;
+    std::vector<Scalar> values;
+    for(std::size_t lane=0;lane<3;++lane) {
+        const auto value=std::max(0.0,rgb[lane]);
+        auto prototype=document_->read_property(edit.object,edit.paths[lane]);if(!prototype) return std::unexpected(prototype.error());
+        auto typed=scalar_value(*prototype,value);if(!typed) return std::unexpected(typed.error());
+        values.push_back(*typed);edit.value[lane]=value;
+    }
+    edit.hex=editor::color_hex(edit.value);
+    return document_->preview_group_edit(editor::control::color_group,values);
+}
+Result<bool> Application::color_edit_action(const ui::Action& event) {
+    using namespace editor::control;
+    auto& edit=*workspace_.color_edit;
+    if(event.key==color_done && event.kind==ui::ActionKind::activate) {if(auto done=finish_color_edit(true);!done) return std::unexpected(done.error());return true;}
+    if(event.key==color_revert && event.kind==ui::ActionKind::activate) {
+        if(auto applied=apply_color(edit.original);!applied) return std::unexpected(applied.error());return true;
+    }
+    if(event.key==color_hex) {
+        const auto* text=std::get_if<std::wstring>(&event.value);
+        if(!text || event.kind!=ui::ActionKind::edit_commit) return true;
+        const auto parsed=editor::parse_color_hex(*text);
+        if(!parsed) {workspace_.status=L"Hex colour needs six digits, e.g. FF8800";return true;}
+        if(auto applied=apply_color(*parsed);!applied) return std::unexpected(applied.error());return true;
+    }
+    const bool rgb=event.key>=color_rgb && event.key<color_rgb+3,hsv=event.key>=color_hsv && event.key<color_hsv+3;
+    if(!rgb && !hsv) return false;
+    if(event.kind!=ui::ActionKind::edit_preview && event.kind!=ui::ActionKind::edit_commit && event.kind!=ui::ActionKind::edit_cancel) return true;
+    const auto* value=std::get_if<double>(&event.value);if(!value || !std::isfinite(*value)) return true;
+    auto next=edit.value;
+    if(rgb) next[event.key-color_rgb]=*value;
+    else {auto h=editor::rgb_to_hsv(edit.value);h[event.key-color_hsv]=*value;next=editor::hsv_to_rgb(h);}
+    if(auto applied=apply_color(next);!applied) return std::unexpected(applied.error());
+    return true;
+}
+Result<void> Application::finish_color_edit(bool keep) {
+    if(!workspace_.color_edit) return {};
+    workspace_.color_edit.reset();
+    auto finished=keep?document_->commit_edit(editor::control::color_group):document_->cancel_edit();
+    if(finished) workspace_.status=keep?L"Colour applied":L"Colour edit cancelled";
+    return finished;
+}
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
     using enum editor::Command;
     if (!workspace_.command_enabled(command,*document_)) return {};
@@ -441,6 +546,35 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case cursor_selected:result=viewport_tool_.cursor_to_selection(*document_);break;
     case cursor_grid:viewport_tool_.cursor_to_grid(workspace_.viewport_settings);break;
     case cursor_surface:workspace_.viewport_settings.cursor_surface=!workspace_.viewport_settings.cursor_surface;break;
+    case orientation_global:case orientation_local:
+        workspace_.viewport_settings.orientation=command==orientation_local?editor::Orientation::local:editor::Orientation::global;break;
+    case snap_affect_move:workspace_.viewport_settings.snap_move=!workspace_.viewport_settings.snap_move;break;
+    case snap_affect_rotate:workspace_.viewport_settings.snap_rotate=!workspace_.viewport_settings.snap_rotate;break;
+    case snap_affect_scale:workspace_.viewport_settings.snap_scale=!workspace_.viewport_settings.snap_scale;break;
+    case snap_rotation_1:case snap_rotation_5:case snap_rotation_15:case snap_rotation_45:
+        workspace_.viewport_settings.rotation_step=command==snap_rotation_1?1.f:command==snap_rotation_5?5.f:command==snap_rotation_15?15.f:45.f;break;
+    case select_all:case select_none:case select_invert:
+        result=viewport_tool_.select_all(*document_,command==select_all?editor::SelectAll::select:command==select_none?editor::SelectAll::deselect:editor::SelectAll::invert);break;
+    case select_box:viewport_tool_.arm_box_select(pointer_position_,false);window_.capture(true);break;
+    case clear_location:case clear_rotation:case clear_scale:
+        result=viewport_tool_.clear(*document_,command==clear_location?editor::TransformChannel::location:
+            command==clear_rotation?editor::TransformChannel::rotation:editor::TransformChannel::scale);break;
+    case frame_all:result=frame_entities(false);if(result) camera_cut_=true;break;
+    case rename_selected:
+        // Houdini/Blender F2: edit the selected Entity's name in the Parameters header.
+        workspace_.inspecting_asset=false;workspace_.dock.select(editor::control::parameters_tab);pending_name_focus_=true;break;
+    case unparent_selected: {
+        const std::vector selected(document_->selected_entities().begin(),document_->selected_entities().end());
+        for(const auto entity:selected) {
+            const auto parent=world::parent_entity(document_->world().runtime(),entity);
+            if(!parent) {result=std::unexpected(parent.error());break;}
+            if(*parent==ObjectId{}) continue;
+            if(auto changed=completion(document_->reparent(entity,ObjectId{}));!changed) {result=changed;break;}
+        }
+        break;
+    }
+    case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
+        workspace_.viewport_settings.select_mode=static_cast<editor::SelectMode>(static_cast<unsigned>(command)-static_cast<unsigned>(select_mode_set));break;
     case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
         camera_.set_view(*editor::camera_view_command(command));camera_cut_=true;break;
     case viewport_options:workspace_.viewport_options_collapsed=!workspace_.viewport_options_collapsed;break;
@@ -951,6 +1085,9 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
             command=(event.key==ui::Key::y || event.shift)?editor::Command::redo:editor::Command::undo;
         else if (!workspace_.sample_history()) {
             if (event.key==ui::Key::delete_key) command=editor::Command::erase_selected;
+            else if (native_key==VK_F2 && !event.control && !event.alt) command=editor::Command::rename_selected;
+            else if (native_key=='D' && (event.control || event.shift) && !event.alt && !ui_.wants_keyboard()) command=editor::Command::duplicate_selected;
+            else if (native_key=='P' && event.alt && !event.control && !ui_.wants_keyboard()) command=editor::Command::unparent_selected;
             else if (native_key=='F' && !ui_.wants_keyboard()) command=editor::Command::focus;
             else if (event.key==ui::Key::escape) status(document_->cancel_edit(),L"Edit cancelled");
         }
@@ -994,7 +1131,7 @@ bool Application::step(renderer::Capture* capture) try {
     if (!gc) throw std::runtime_error(gc.error().message);
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
-    if (!target.drawable) { update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    if (!target.drawable) { lighting_clock_.reset();update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
     update_camera_fly();
     if (!workspace_.show_fps || !workspace_.dock.visible(editor::control::scene_tab)) update_viewport_fps(false);
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
@@ -1029,6 +1166,7 @@ bool Application::step(renderer::Capture* capture) try {
     }
     const auto prepare_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - prepare_start).count() : 0;
     if (!prepared) {
+        lighting_clock_.reset();
         update_viewport_fps(false);
         if (!ui_.presented()) throw std::runtime_error("Initial editor frame preparation failed (UI code " + std::to_string(static_cast<int>(prepared.error().code)) + ").");
         workspace_.status = L"Frame preparation failed; previous frame retained";
@@ -1076,10 +1214,15 @@ bool Application::step(renderer::Capture* capture) try {
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
         viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
         scene_.environment,{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
+    const auto lighting_start=Clock::now();
+    const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&
+        effective_view.shading==renderer::Shading::scene_lit && effective_view.wireframe!=renderer::Wireframe::only && effective_view.lit.ddgi;
+    render_frame.render_delta_seconds=lighting_clock_.delta(lighting_start,lighting_active);
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto rendered = renderer_.render(render_frame, frame_capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
     if (!rendered) {
+        lighting_clock_.reset();
         update_viewport_fps(false);
         if(control_) control_->render_failed(rendered.error().cause.message);
         if (rendered.error().terminal) throw std::runtime_error("Renderer stopped: " + rendered.error().cause.message);
@@ -1091,6 +1234,7 @@ bool Application::step(renderer::Capture* capture) try {
         if (rendered->accepted_id != frame.drawing->id || rendered->accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
+        lighting_clock_.accept(lighting_start,lighting_active);
         accepted_view_=viewport?std::optional(viewport_view):std::nullopt;
         workspace_.lighting.observe(rendered->stats);
         if(viewport) camera_cut_=false;
@@ -1105,6 +1249,11 @@ bool Application::step(renderer::Capture* capture) try {
             pending_source_focus_=false;
             if (workspace_.source_editor.active()) effects(ui_.focus(editor::source_control::buffer));
         }
+        if (pending_name_focus_) {
+            pending_name_focus_=false;
+            if (const auto key=workspace_.name_control(document_->selection().entity);key && ui_.presented() && ui_.presented()->find(key))
+                effects(ui_.focus(key));
+        }
         if (pending_parameter_search_focus_) {
             pending_parameter_search_focus_=false;
             if (workspace_.parameter_search_visible) effects(ui_.focus(editor::control::parameter_search));
@@ -1116,6 +1265,7 @@ bool Application::step(renderer::Capture* capture) try {
         } else update_menu();
         if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us};
     } else {
+        lighting_clock_.reset();
         update_viewport_fps(false);
         if(control_) control_->rendered(render_frame,*rendered,nullptr);
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);

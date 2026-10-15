@@ -1056,15 +1056,20 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
     s.stats.scene_lit_direct_gpu_ms={};s.stats.scene_lit_ddgi_update_gpu_ms={};s.stats.scene_lit_gpu_pass_mask=0;
+    s.stats.scene_lit_direct_reconstruction_gpu_ms={};
     s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
     s.stats.scene_lit_light_sources=0;s.stats.scene_lit_shadow_sources=0;s.stats.scene_lit_di_candidates=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
+    s.stats.scene_lit_spatial_sources=0;s.stats.scene_lit_spatial_cells=0;s.stats.scene_lit_spatial_bytes=0;s.stats.scene_lit_spatial_changed=false;
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
+    s.stats.scene_lit_probe_inspection.reset();
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)
         return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     try {
         validate(frame);
+        if(!std::isfinite(frame.render_delta_seconds) || frame.render_delta_seconds<0 || frame.render_delta_seconds>.1f)
+            throw error(rhi::ErrorCode::invalid_argument,"Render delta must be finite and in [0, .1] seconds");
         if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&(!frame.meshes.empty()||frame.view.lit.probe_overlay())&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
             if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
             s.scene_lit->validate(frame);

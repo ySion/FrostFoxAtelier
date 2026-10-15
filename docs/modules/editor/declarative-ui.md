@@ -57,7 +57,7 @@ ui Query(in TextEditBinding edit) {
 }
 ui Inspector(in TextEditBinding query, in bool visible) {
     Column inset {
-        classes: "parameter-inset";
+        classes: "section-body";
         Query query { edit: input.query; mounted: input.visible; }
     }
 }

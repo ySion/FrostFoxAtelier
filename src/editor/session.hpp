@@ -80,6 +80,10 @@ public:
     Result<void> commit_edit(std::uint64_t control_session);
     Result<void> cancel_edit();
     Result<void> reset_position(ObjectId component); // One group change and one history entry.
+    // Several scalar lanes of one object (a colour's R/G/B) as one value: preview writes
+    // without history; commit records one entry against the values seen at begin.
+    Result<void> begin_group_edit(ObjectId, std::span<const world::FieldPath>, std::uint64_t control_session);
+    Result<void> preview_group_edit(std::uint64_t control_session, std::span<const Scalar>);
     Result<ObjectRoot> material_resource(Project&,std::string_view key);
     Result<ObjectRoot> material_resource(Project&,const MaterialAsset&);
     Result<MaterialAsset> material_asset(ObjectId) const;
@@ -125,7 +129,7 @@ public:
     void mark_modified() noexcept { if(saved_cursor_) {saved_cursor_.reset();++revision_;} }
     // Monotonic authoring observation token, independent of undo cursor reuse.
     std::uint64_t revision() const noexcept { return revision_; }
-    bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value(); }
+    bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value() || group_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
     static constexpr std::size_t maximum_entities = 8192;
@@ -155,6 +159,13 @@ private:
         // TRS is one invariant group; ordinary business properties keep exact scalar types.
         std::variant<world::Trs,Scalar> before, after;
     };
+    struct FieldGroupChange {
+        ObjectRoot root;
+        ObjectId entity;
+        std::vector<world::FieldPath> paths;
+        std::uint64_t control_session{};
+        std::vector<Scalar> before, after;
+    };
     struct TransformChange {
         struct Entry { ObjectRoot root; ObjectId entity; world::Trs before, after; };
         std::vector<Entry> entries;
@@ -167,7 +178,7 @@ private:
     struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
     struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<world::MaterialBinding> before,after;};
     struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
-    using Change = std::variant<LightingChange, EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange>;
+    using Change = std::variant<LightingChange, EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange>;
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -183,6 +194,7 @@ private:
     Selection selection_;
     std::vector<ObjectId> selected_entities_; // Non-owning; validated on write, pruned with membership.
     std::optional<FieldChange> active_;
+    std::optional<FieldGroupChange> group_;
     std::optional<TransformChange> transform_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
     // Document-local identities never confer Runtime validity or World membership.
@@ -202,6 +214,7 @@ private:
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     Result<ObjectId> admit_property_edit(ObjectId) const;
     Result<void> apply_field(const FieldChange&, bool forward);
+    Result<void> apply_group(const FieldGroupChange&, bool forward);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);

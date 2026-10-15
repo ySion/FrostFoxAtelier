@@ -171,6 +171,7 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     auto propagation=groups;groups=std::make_shared<std::vector<Item>>();
     auto debug=std::make_shared<std::vector<Item>>();
     scalar(*debug,ViewOption::direct_reference);
+    scalar(*debug,ViewOption::spatial_light_sampling);
     scalar(*debug,ViewOption::probe_feedback_visibility);
     scalar(*debug,ViewOption::probe_visualization);scalar(*debug,ViewOption::probe_debug_volume);
     scalar(*debug,ViewOption::probe_debug);scalar(*debug,ViewOption::probe_coverage);

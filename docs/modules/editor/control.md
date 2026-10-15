@@ -10,6 +10,10 @@ UI 和快捷键直接调用负责业务不变量的执行层；外部调用经�
 
 正常编辑器默认启用本机接口，--no-control 可关闭。发现目录默认为 %LOCALAPPDATA%/FrostFoxAtelier/Control/instances；--control-directory folder 可隔离目录。--no-activate 打开窗口但不抢键盘焦点。窗口验收模式及独立项目运行器不自动开放接口。
 
+需要复现固定画布时，可以组合 `--client-size 3840 2054 --no-activate`。宽、高明确是初始 **client 物理像素**，非 DIP 或含边框的窗口尺寸；应用在创建 Renderer 和显示窗口前，按实际 HWND DPI 补上非客户区。省略后仍使用原 1280×840 DIP 默认值。参数只接受 1–32768 的十进制正整数，禁止重复；低于当前 DPI 下编辑器最小窗口尺寸、或系统无法精确兑现的尺寸会在创建图形设备前拒绝，不静默改成其他尺寸。后续手动 resize 与 DPI 变化沿现有窗口规则。
+
+客户区相同不保证 viewport 相同：渲染对照还须核对同一 DPI、停靠布局、工具架状态，以及 `editor.inspect.last_frame.extent` 和 `viewport`。尺寸为启动参数，没有新增 Control 窗口写操作。真实进程验收：`atelier_editor_control_acceptance editor.exe <输出目录> --client-size`，记录默认、奇数像素与 3840×2054 的原生客户区/DPI/接受帧 viewport，并验证非法参数、焦点与 Scene 保存隔离。
+
     . ./tools/enter-dev.ps1
     cmake --build --preset dev --target atelier_editor atelier_control
     ./out/dev/atelier_editor.exe --project E:/ffa_testproj
@@ -78,7 +82,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 启用 GTAO 或 Local GI/SSIL 会关闭另一项；同一个 patch 同时请求两者为 true 会失败。持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自场景的唯一 Sky Light；background 仍保存工作室模式偏好。
 
-直接光作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制统一局部光源池的初始候选数，方向光独立评估。视口诊断 `direct_reference` 固定平均 64 次独立估计，每次保留当前候选预算，关闭 reservoir 复用和直接光颜色降噪。当前接口不接受旧阴影槽预算与单灯样本参数；它们只在 Scene v4 文件读取边界严格校验后丢弃。
+直接光作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制统一局部光源池的初始候选数，方向光独立评估。视口诊断 `direct_reference` 固定平均 64 次独立估计，每次保留当前候选预算，关闭 reservoir 复用和直接光颜色降噪，并强制屏幕直接光使用全局光源提议作独立参考，不改写 DDGI 的提议设置。视口诊断 `spatial_light_sampling` 默认 true，控制 DI 与 DDGI hit 是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。当前接口不接受旧阴影槽预算与单灯样本参数；它们只在 Scene v4 文件读取边界严格校验后丢弃。
 
 DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/state/update_age/distance）、`probe_volume`、`probe_relocation`、`probe_xray`、`probe_radius`（最小间距的 0.01～0.45 倍）。既有 `probe_debug` 改为真实八邻 Receiver Coverage，默认为 false。具体显示、年龄、资源和精度合同见 [Scene Lit](../renderer/scene-lit.md#ddgi-空间与接收面诊断)；关闭 DDGI 不会自动开启光照，灰色表示当前无数据。
 
@@ -145,20 +149,28 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 - PNG：完整客户区的 sRGB RGBA8，左上角原点。
 - .depth.f32：紧密排列的小端 float32，左上角原点、Reversed-Z near=1、far/background=0。现有 Renderer 提供不带 TAA 抖动的编辑器深度，使用 metadata 的 viewport 定位场景区。
-- 每次采样 JSON：接受帧号、全局计数、case 内序号、viewport、相机矩阵、有效设置、Sky radiance、等待/跳过帧和 GPU 统计。`frame_stats` 提供当前帧的 `history_resets`、`light_sources`、`shadow_sources`、`di_candidates`；后两者是启用 Shadows 时具备投影资格的源数和初始候选预算，不是实际射线数。`case_reported_history_resets` 累计本 case 所有已报告帧的重置次数。旧阴影槽统计不再属于当前输出。
+- 每次采样 JSON：接受帧号、全局计数、case 内序号、viewport、相机矩阵、有效设置、Sky radiance、等待/跳过帧和 GPU 统计。`frame_stats` 提供当前帧的 `history_resets`、`light_sources`、`shadow_sources`、`di_candidates`；后两者是启用 Shadows 时具备投影资格的源数和初始候选预算，不是实际射线数。`spatial_light_sampling` 子对象返回当前编码帧的 `retained_sources`（局部表保留源数）、`nonempty_cells`、`resource_bytes`（三张表的逻辑容量，含空表 sentinel）和 `uploaded`；它们不是完成帧 GPU 计数，也不是可见光源或剔除结果。未编码 Scene Lit（例如无几何且不绘制探针诊断）时这四项为零，其他保留的 Scene Lit 缓存仍计入总 `resource_bytes`。`case_reported_history_resets` 累计本 case 所有已报告帧的重置次数。旧阴影槽统计不再属于当前输出。
 - manifest.json：文件大小及 SHA-256，最后发布的完整产物标记。
 
 GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sample.ddgi_pass_ms` 的两项分别为探针更新/传输与接收点 gather 耗时；`ddgi_visibility_rays` 的两项分别为探针命中着色与接收点 gather 的可见性查询数。它们共用 `valid`、`sequence`、`frame_id`，分别是 `pass_ms[3]` 和 `shadow_rays` 的细分，不能再次相加。相机矩阵与深度使用不抖动的编辑器投影；TAA/SMAA T2x 内部栅格投影有抖动，本接口不提供该内部矩阵。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护历史；接口不承诺完整清空 DDGI 探针、逐位确定性或恢复原 GPU 历史。
 
 接受帧与捕获元数据的 `lighting_focus` 是实际传入 Renderer 的观察目标。`frame_stats.probe_volumes` 按固定槽位返回启用/滚动状态、世界边界、间距、数量、resident、updated 和 reset_probes；`probe_volumes_source: cpu_layout_and_schedule` 明确其来源。resident 是分配的槽位数，updated 是本帧计划更新数，均不能当成 GPU 完成数或有效探针数。
 
+### DDGI 单接收点归因
+
+`view.set` / `render.compare` 共用视口选项 `probe_history: live | hold_irradiance | hold_distance`、`probe_inspect: bool`、`probe_inspect_x/y: 0..65535`。坐标是窗口物理像素；不改变 World 配置和 Undo。归因结束恢复 `live` 并关闭 inspection。
+
+`last_frame.frame_stats.probe_inspection` 为可空的异步完成样本，提供自己的 `sequence/frame_id/scene_identity/pixel/history/rays/updates/volumes`。`receiver` 返回实际 gather 状态、覆盖、权重和及贡献支配度；每个 probe 返回支持阶段、年龄、呈现/运输 RGB 与方向观测数、空间/朝向/距离可见性/最终权重和位置。`transport_observations` 对应权威运输场，`irradiance_observations` 对应显示场并镜像运输成熟度；不能把后者当成额外独立样本。空场、停用 DDGI 或关闭 inspection 返回 null，背景/越界产生 `position_valid.w=0` 且无邻居的样本。完成帧可能滞后或缺样，调用方按 sequence 去重并使用样本自己的布局，不能拼上当前截图冒充同步数据。
+
+`response_epoch_min_max_visits` 是请求代次、整个方向 tile 的最少/最多有效响应观测（0～12）及有效访问游标。`traced_probe` 按前一完成样本中最大的有效邻居权重选择，当前帧未更新它时 `ray_samples` 为空；这些记录只含实际可着色命中，不包含天空和未着色命中。每条提供 source/kind/ray ordinal、局部 diffuse/specular 和方向光 diffuse/specular 亮度、命中位置/roughness、RIS weight/接收点完整混合提议 PMF/反馈亮度/主射线距离。需要整批均值时除以 `rays`，不能除以有效记录数。诊断专用 Update 入口和读回按需创建，正常着色编译掉记录代码；仍共用完成序列、32 槽无等待发布与 Renderer 资源退休。
+
 ### 性能观测
 
-`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、直接光/AA/DDGI 配置，以及 17 行层级统计（八个主阶段、八个子阶段、一个合计）。`current_ms`、`mean_ms`、`p95_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
+`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、直接光/AA/DDGI 配置，以及 21 行层级统计（八个主阶段、十二个子阶段、一个合计）。新增直接光 temporal resolve 与 filter step 1/2/4 四行位于 Radiance resolve / filter 父行之下；原有 0～15 项索引不变，新项为 16～19，合计移到 20，消费者应按稳定 `id` 识别行。`current_ms`、`mean_ms`、`p95_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
 
 `logical_resource_bytes` 是当前 CPU 所知的 Scene Lit 逻辑资源分配，和异步计时样本不是同一时刻的物理显存统计。`total_semantics` 明确只合计八个主区间；子项通过 `parent` 关联，`included_in_total` 防止重复累加。生命周期与统计范围以[性能表](README.md#gpu-pass-耗时)为准。
 
-原始 `last_frame.gpu_sample` 继续保留八项 `pass_ms` 与两项 `ddgi_pass_ms`，新增 `direct_pass_ms` 四项、`ddgi_update_pass_ms` 两项及 `pass_mask`。mask 位 0～7 为主阶段、8～9 为 DDGI update/gather、10～13 为 direct 子阶段、14～15 为 DDGI update 子阶段；这些数组和 mask 共用完成 sequence。`resource_bytes_source: current_cpu_logical` 说明旧 `resource_bytes` 字段的来源，不能把它当作采样帧物理驻留量。
+原始 `last_frame.gpu_sample` 保留八项 `pass_ms`、两项 `ddgi_pass_ms`、四项 `direct_pass_ms`、两项 `ddgi_update_pass_ms` 及 `pass_mask`。新增 `direct_reconstruction_pass_ms` 四项，依次为 temporal resolve、filter step 1/2/4，属于 `direct_pass_ms[3]` 的子区间。mask 位 0～7 为主阶段、8～9 为 DDGI update/gather、10～13 为 direct 子阶段、14～15 为 DDGI update 子阶段、16～19 为新增重建子阶段；这些数组和 mask 共用完成 sequence。参考模式或无光源时 resolve 仍有效、三个 filter 位不置位；GPU mask 不包含性能表内部的合计位 20。`resource_bytes_source: current_cpu_logical` 说明旧 `resource_bytes` 字段的来源，不能把它当作采样帧物理驻留量。
 
 ## 复现工程
 

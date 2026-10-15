@@ -268,7 +268,7 @@ struct Context {
         if (!std::isfinite(value) || value<(signed_value?-32768:0) || value>32768) throw std::runtime_error("UI layout value is outside its supported range.");
         auto& state=target(slot);auto& node=state.control;
         if (static_cast<Property>(property)==Property::icon) {
-            if (std::floor(value)!=value || value>static_cast<double>(ui::ControlIcon::sky_light)) throw std::runtime_error("Invalid UI icon.");
+            if (std::floor(value)!=value || value>static_cast<double>(ui::last_control_icon)) throw std::runtime_error("Invalid UI icon.");
             node.icon=static_cast<ui::ControlIcon>(static_cast<unsigned>(value));return;
         }
         auto& layout=node.layout;
@@ -327,6 +327,7 @@ struct Context {
         case Property::expand_height:node.layout.height=value?ui_layout::Axis::expand():ui_layout::Axis::content();break;
         case Property::expand_width:node.layout.width=value?ui_layout::Axis::expand():ui_layout::Axis::content();break;
         case Property::expanded:node.tree_initially_expanded=value;break;
+        case Property::draggable:node.tree_draggable=value;break;
         case Property::mounted:state.mounted=value;break;
         case Property::align_center:
             if (!node.layout.flow) node.layout.flow=ui_layout::FlexSpec{};

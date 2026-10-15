@@ -4,6 +4,7 @@
   "license": "MIT",
   "renderer": "@resvg/resvg-js 2.6.2",
   "pixels": 128,
+  "stroke": 1.5,
   "icons": {
     "pointer": "pointer",
     "translate": "arrows-move",
@@ -24,6 +25,26 @@
     "component": "packages",
     "world": "world",
     "folder": "folder",
-    "search": "search"
+    "search": "search",
+    "shade_wire": "sphere",
+    "shade_solid": "circle-filled",
+    "shade_matcap": "circle-half-2",
+    "shade_lit": "sun-high",
+    "overlays": "layers-intersect",
+    "select_new": "marquee-2",
+    "select_extend": "square-plus",
+    "select_subtract": "square-minus",
+    "select_invert": "square-toggle",
+    "select_intersect": "squares-selected",
+    "grid": "grid-4x4",
+    "axes_origin": "axis-x",
+    "wire_overlay": "triangles",
+    "lights_off": "bulb-off",
+    "fps": "gauge",
+    "color_picker": "color-picker",
+    "rename": "pencil",
+    "duplicate": "copy",
+    "trash": "trash",
+    "unparent": "corner-down-right"
   }
 }

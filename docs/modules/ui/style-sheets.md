@@ -49,7 +49,7 @@ text_edit:focus { border-color: token(accent); }
 | `font-size / font-weight` | 4–256 DIP / 整数 1–999 |
 | `font-style` | `normal / italic`；进入同一 DirectWrite 字体身份、测量和字形缓存；缺少斜体字面时由 DirectWrite 合成 |
 | `text-align` | `left / center / right`；不继承，在同一 DirectWrite 段落内处理测量、绘制和命中 |
-| `text-vertical-align` | `top / center / bottom`；不继承，不能用于状态选择器；文字、选区、caret 和输入法锚点共用偏移；显式首基线布局优先 |
+| `text-vertical-align` | `top / center / bottom`；不继承，不能用于状态选择器；文字、选区、caret 和输入法锚点共用偏移；显式首基线布局优先。按钮、条目、字段、勾选/折叠以及 `single_line` 标签默认 center，多行标签默认 top |
 | `border-style` | `solid / inset / outset`；后两者为方角的明暗边缘，沿现有四边实色实例绘制 |
 | `border-edges` | `all`（默认）、`none`，或不重复的 `top right bottom left` 子集；可表达共边页签及选中页签的开口底边 |
 | `border-inner-color` | 方角框上侧、左侧的内沿颜色；厚度同 border-width，透明值关闭，不影响文字测量 |

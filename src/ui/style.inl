@@ -69,7 +69,7 @@ ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle&
     const float above=captioned && style.icon_placement==IconPlacement::above?style.indicator_size+2:0.f;
     return {padding.left+style.padding.left+marker+leading,padding.top+style.padding.top+above,
             padding.right+style.padding.right+(control.kind==ControlKind::combo && (control.icon==ControlIcon::none || !control.text.empty())?
-                (style.combo_indicator==ComboIndicator::caret?style.indicator_size+1:18.f):0.f),padding.bottom+style.padding.bottom};
+                (style.combo_indicator==ComboIndicator::caret?style.indicator_size+1:style.combo_indicator==ComboIndicator::none?0.f:18.f):0.f),padding.bottom+style.padding.bottom};
 }
 void apply_properties(ResolvedStyle& value,const StyleProperties& p) {
     if (p.tree_row_height) value.tree_row_height=*p.tree_row_height;

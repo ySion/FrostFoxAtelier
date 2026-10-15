@@ -61,7 +61,7 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
         rows->push_back({at->second,{item.text,branch?std::wstring{}:item.shortcut,item.enabled,item.selected,branch,!rows->empty() && item.separator_before,
             std::wstring(item.behavior==ui::MenuBehavior::radio?L"radio":item.behavior==ui::MenuBehavior::checkbox?L"checkbox":L"command"),item.radio_group,
             double(item.icon),double(branch?ui::ControlIcon::right:ui::ControlIcon::none),
-            std::wstring(item.enabled?L"menu-shortcut":L"menu-shortcut unavailable")},{{"item",item.key}}});
+            std::wstring(item.enabled?L"menu-shortcut":L"menu-shortcut unavailable"),item.heading,!item.heading.empty()},{{"item",item.key}}});
     }
     const std::array<ui_language::InputValue,1> inputs{ui_language::ItemList{std::move(rows)}};
     if (!instance_) {

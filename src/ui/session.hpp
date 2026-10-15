@@ -61,6 +61,7 @@ struct Control {
     // reveals the row once; stable selected input preserves manual collapse.
     ControlKey tree_parent{};
     bool tree_initially_expanded{true};
+    bool tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
     std::wstring tree_filter; // tree only: substring with ASCII case folding; retains matching ancestry.
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.

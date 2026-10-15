@@ -30,6 +30,7 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
         icon==Icon::pointer?Symbol::pointer:icon==Icon::translate?Symbol::translate:icon==Icon::rotate?Symbol::rotate:
         icon==Icon::scale?Symbol::scale:icon==Icon::cursor3d?Symbol::cursor3d:icon==Icon::magnet?Symbol::magnet:icon==Icon::fly?Symbol::fly:icon==Icon::point_light?Symbol::point_light:icon==Icon::area_light?Symbol::area_light:
         icon==Icon::sun_light?Symbol::sun_light:icon==Icon::sky_light?Symbol::sky_light:
+        icon==Icon::shade_wire?Symbol::shade_wire:icon==Icon::shade_solid?Symbol::shade_solid:icon==Icon::shade_matcap?Symbol::shade_matcap:icon==Icon::shade_lit?Symbol::shade_lit:icon==Icon::overlays?Symbol::overlays:icon==Icon::select_new?Symbol::select_new:icon==Icon::select_extend?Symbol::select_extend:icon==Icon::select_subtract?Symbol::select_subtract:icon==Icon::select_invert?Symbol::select_invert:icon==Icon::select_intersect?Symbol::select_intersect:icon==Icon::grid?Symbol::grid:icon==Icon::axes_origin?Symbol::axes_origin:icon==Icon::wire_overlay?Symbol::wire_overlay:icon==Icon::lights_off?Symbol::lights_off:icon==Icon::fps?Symbol::fps:icon==Icon::color_picker?Symbol::color_picker:icon==Icon::rename?Symbol::rename:icon==Icon::duplicate?Symbol::duplicate:icon==Icon::trash?Symbol::trash:icon==Icon::unparent?Symbol::unparent:
         icon==Icon::left?Symbol::left:icon==Icon::right?Symbol::right:icon==Icon::up?Symbol::up:Symbol::down;
 }
 bool text_kind(ControlKind kind) {
@@ -98,7 +99,7 @@ Result<void> validate_control_properties(const Control& control) {
         static_cast<unsigned>(control.button_behavior)>static_cast<unsigned>(ButtonBehavior::toggle) ||
         static_cast<unsigned>(control.menu_behavior)>static_cast<unsigned>(MenuBehavior::radio))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(ControlIcon::sky_light) ||
+    if (static_cast<unsigned>(control.icon)>static_cast<unsigned>(last_control_icon) ||
         (control.icon!=ControlIcon::none && control.kind!=ControlKind::button && control.kind!=ControlKind::label &&
          control.kind!=ControlKind::splitter && control.kind!=ControlKind::combo && control.kind!=ControlKind::tree_item && control.kind!=ControlKind::menu_item) ||
         (control.click_action && control.kind!=ControlKind::splitter) ||
@@ -340,6 +341,9 @@ struct Session::Impl {
         if (control.style_scope) sheets.push_back(control.style_scope);
         auto inherited=parent?parent->inherited:StyleProperties{};
         auto value=resolve_style(style,control.role,control.kind,visual);
+        // A one-line label sits on its box's centre line like every control beside it;
+        // paragraphs stay top-aligned. Sheets may still override either.
+        if (control.kind==ControlKind::label && control.single_line) value.text_vertical_align=TextVerticalAlign::center;
         apply_properties(value,inherited);
         for (const auto& sheet:sheets) for (const auto& rule:sheet->rules()) if (matches(rule.selector,control,visual)) {
             apply_properties(value,rule.properties); inherit_properties(inherited,rule.properties);
@@ -821,8 +825,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 if (size>0) quad({bounds.x+bounds.width-size-2*scale,bounds.y+bounds.height-size-2*scale,size,size},intersect(clip,clip_rect(bounds)),
                     appearance.indicator_foreground.value_or(appearance.foreground),self.text.symbol(detail::TextStore::Symbol::down,static_cast<std::uint32_t>(std::ceil(size))));
             }
-            if (kind==ControlKind::combo && (state.control.icon==ControlIcon::none || !state.control.text.empty())) {
-                const float size=std::min(appearance.indicator_size,14.f)*scale;
+            if (kind==ControlKind::combo && appearance.combo_indicator!=ComboIndicator::none &&
+                (state.control.icon==ControlIcon::none || !state.control.text.empty())) {
+                // Houdini's dropdown arrow stays ~9 px whatever the combo's icon size.
+                const float size=std::min(appearance.indicator_size,appearance.combo_indicator==ComboIndicator::caret?14.f:9.f)*scale;
                 const auto arrow_clip=intersect(clip,clip_rect(bounds));
                 if (appearance.combo_indicator==ComboIndicator::caret) {
                     // Inline caret immediately after the label; no separate arrow well.

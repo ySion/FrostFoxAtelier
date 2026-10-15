@@ -74,9 +74,6 @@ bool lit_di_temporal_surface(uint2 p,LitLightingSurface current,out uint2 previo
     previous_pixel=uint2(q);return true;
 }
 struct LitReuseInput {LitLightingSurface surface;LitReservoir reservoir;};
-float lit_di_input_target(LitReuseInput input,uint source,float2 uv,bool previous) {
-    return lit_local_target(input.surface,source,uv,previous,false);
-}
 // Realized sources are current-local indices or null. Only temporal slot one
 // evaluates its target in the previous domain; spatial inputs are all current.
 LitReservoir lit_di_reuse(LitReuseInput inputs[3],uint count,bool temporal,inout uint seed) {
@@ -88,13 +85,24 @@ LitReservoir lit_di_reuse(LitReuseInput inputs[3],uint count,bool temporal,inout
         if(source>=lit_source_counts.x||candidate.weight<=0)continue;
         // Input zero is the current surface. Evaluate each source target once
         // for this candidate and reuse it in both MIS numerator and denominator.
-        float target=lit_di_input_target(inputs[0],source,candidate.uv,false);
+        LitLightSample prepared=lit_local_sample(source,candidate.uv,false);
+        float target;
+        if(i==0)target=candidate.target;
+        else target=lit_light_target(lit_evaluate_light_sample(prepared,inputs[0].surface,false));
         if(target<=0)continue;
         float3 targets=float3(target,0,0);
         [loop] for(uint j=1;j<count;++j) {
             // A null realized sample still represents a valid source distribution.
             // Its target/confidence belongs in every other candidate's denominator.
-            targets[j]=lit_di_input_target(inputs[j],source,candidate.uv,temporal&&j==1);
+            // Previous geometry/emission remains a separate snapshot. Spatial
+            // inputs share the same endpoint but keep all receiver-dependent MIS terms.
+            // Spatial inputs were produced at these exact receivers earlier in
+            // this frame. Previous-frame receivers use a separate reconstruction
+            // path, so temporal MIS still evaluates every previous-domain target.
+            if(!temporal&&j==i){targets[j]=candidate.target;continue;}
+            LitLightSample other=prepared;
+            if(temporal&&j==1)other=lit_local_sample(source,candidate.uv,true);
+            targets[j]=lit_light_target(lit_evaluate_light_sample(other,inputs[j].surface,false));
         }
         // Common scaling cancels from the MIS ratio. Keep ordinary targets
         // unchanged; only extreme finite targets need the extra division.
@@ -121,7 +129,7 @@ LitReservoir lit_di_reuse(LitReuseInput inputs[3],uint count,bool temporal,inout
         if(lit_reservoir_stream(output,sum,source,candidate.uv,weight,seed))selected_target=target;
     }
     output.confidence=min(confidence,lit_di_confidence_cap());
-    if(output.source!=~0u)output.weight=sum/selected_target;
+    if(output.source!=~0u){output.weight=sum/selected_target;output.target=selected_target;}
     return output;
 }
 
@@ -136,7 +144,8 @@ void lit_restir_initial_cs(uint3 dispatch:SV_DispatchThreadID) {
     uint seed=lit_di_seed(p,0x63d83595u);
     LitReuseInput inputs[3];
     inputs[0].surface=surface;
-    inputs[0].reservoir=lit_local_initial(surface,false,max(lit_di_settings.x,1u),seed);
+    float proposal_probability;
+    inputs[0].reservoir=lit_local_initial(surface,false,max(lit_di_settings.x,1u),true,seed,proposal_probability);
     uint count=1;uint2 previous_pixel;LitLightingSurface previous;
     if(lit_di_temporal_surface(p,surface,previous_pixel,previous)) {
         inputs[1].surface=previous;
@@ -155,7 +164,9 @@ void lit_restir_initial_cs(uint3 dispatch:SV_DispatchThreadID) {
         }
     }
     if(count==1)lit_di_output[index]=inputs[0].reservoir;
-    else lit_di_output[index]=lit_di_reuse(inputs,count,true,seed);
+    // The temporal path has exactly current and previous inputs. Keep that
+    // bound visible to the compiler rather than carrying a general 1..3 loop.
+    else lit_di_output[index]=lit_di_reuse(inputs,2,true,seed);
 }
 bool lit_di_spatial_surface(uint2 p,int2 q,LitLightingSurface current,float pixel_size,
                             out LitLightingSurface neighbor) {
@@ -211,7 +222,8 @@ void lit_restir_shade_cs(uint3 dispatch:SV_DispatchThreadID) {
     if(lit_di_settings.z!=0) {
         uint estimates=max(lit_di_settings.w,1u);
         [loop] for(uint i=0;i<estimates;++i) {
-            LitReservoir estimate=lit_local_initial(surface,false,max(lit_di_settings.x,1u),seed);
+            float proposal_probability;
+            LitReservoir estimate=lit_local_initial(surface,false,max(lit_di_settings.x,1u),false,seed,proposal_probability);
             float3 sample_diffuse,sample_specular;
             lit_reservoir_lighting(surface,estimate,false,shadows,sample_diffuse,sample_specular);
             diffuse+=sample_diffuse;specular+=sample_specular;

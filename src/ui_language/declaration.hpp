@@ -18,7 +18,7 @@ enum class Property { text, classes, gap, height, width, padding_left, enabled, 
     view, row_height, header_height, tile_width, tile_height, item_gap, empty_text,
     modified, out_of_flow, offset_x, offset_y, anchor_x, anchor_y, pivot_x, pivot_y,
     flex_width, grow_width, red, green, blue, value, minimum, maximum, step, vertical, click_action,
-    menu_branch, menu_behavior, radio_group, document, tooltip, tooltip_title, tooltip_identity, argument };
+    menu_branch, menu_behavior, radio_group, document, tooltip, tooltip_title, tooltip_identity, draggable, argument };
 struct Node {
     std::string name;
     NodeKind kind;

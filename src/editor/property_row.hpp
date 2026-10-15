@@ -25,6 +25,7 @@ struct PropertyRow {
     bool override_available{}, overridden{};
     ui_language::ActionBinding inherit;
     ui_language::TooltipBinding help;
+    ui_language::ActionBinding pick;
 
     ui_language::Item item() && {
         const auto color=swatch.value_or(std::array<double,3>{});
@@ -33,7 +34,7 @@ struct PropertyRow {
         const auto inherited=override_available?inherit:ui_language::ActionBinding{key,false};
         return {key,{std::move(title),std::move(edit),kind==Kind::boolean,checked,enabled,
             change,kind==Kind::enumeration,std::move(choice),target,swatch.has_value(),
-            color[0],color[1],color[2],override_available,overridden,inherited,std::move(help)}};
+            color[0],color[1],color[2],override_available,overridden,inherited,std::move(help),pick.target?pick:ui_language::ActionBinding{key,false}}};
     }
 };
 
@@ -55,7 +56,8 @@ public:
         return entry.help;
     }
 private:
-    struct Entry { ui_language::TooltipBinding help;std::string description;bool used{}; };
+    struct Entry { ui_language::TooltipBinding help;
+    ui_language::ActionBinding pick;std::string description;bool used{}; };
     std::unordered_map<ui::ControlKey,Entry> entries_;
 };
 
