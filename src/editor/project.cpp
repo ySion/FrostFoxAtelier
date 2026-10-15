@@ -161,6 +161,36 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
         ui_source_=relative;return {};
     } catch (const std::exception& error) {return failure(error.what());}
 }
+Result<std::filesystem::path> Project::rename(const std::filesystem::path& relative,std::wstring_view name) {
+    if(relative.empty() || std::distance(relative.begin(),relative.end())<2) return failure("Top-level project folders cannot be renamed.");
+    if(name.empty() || name.size()>128 || name.find_first_of(L"\\/:*?\"<>|")!=std::wstring_view::npos || name.back()==L'.' || name.back()==L' ' ||
+       name==L"." || name==L"..")
+        return failure("Enter a file name without \\ / : * ? \" < > | and not ending in a dot or space.");
+    if(relative==startup_ || relative==ui_source_) return failure("The startup scene and UI source are configured by path; change Config first.");
+    const auto source=resolve(relative);if(!source) return std::unexpected(source.error());
+    const auto target_relative=relative.parent_path()/std::filesystem::path(name);
+    if(target_relative==relative) return relative;
+    const auto target=resolve(target_relative);if(!target) return std::unexpected(target.error());
+    const auto native_source=platform::windows_file_path(*source),native_target=platform::windows_file_path(*target);
+    std::error_code error;
+    if(!std::filesystem::exists(native_source,error)) return failure("The asset no longer exists on disk.");
+    // Case-only renames are the same file on Windows; anything else must not overwrite.
+    if(std::filesystem::exists(native_target,error) && !std::filesystem::equivalent(native_source,native_target,error))
+        return failure("Another file or folder already has that name.");
+    const auto sidecar=[&](const std::filesystem::path& path){auto result=path;result+=L".asset.json";return result;};
+    const bool has_sidecar=!std::filesystem::is_directory(native_source,error) && std::filesystem::exists(sidecar(native_source),error);
+    std::filesystem::rename(native_source,native_target,error);
+    if(error) return failure("The file could not be renamed; it may be open in another program.");
+    if(has_sidecar) {
+        std::filesystem::rename(sidecar(native_source),sidecar(native_target),error);
+        if(error) {
+            std::error_code undo;std::filesystem::rename(native_target,native_source,undo);
+            return failure("The asset identity file could not be moved; the rename was undone.");
+        }
+    }
+    if(auto refreshed=refresh();!refreshed) return std::unexpected(refreshed.error());
+    return target_relative;
+}
 Result<void> Project::refresh() {
     try {
         std::vector<ProjectEntry> entries;

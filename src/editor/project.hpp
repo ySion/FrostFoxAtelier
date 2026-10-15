@@ -54,6 +54,10 @@ public:
     Result<std::vector<std::filesystem::path>> source_paths() const;
     Result<void> create_source(const std::filesystem::path& relative,std::string_view);
     Result<void> set_ui_source(const std::filesystem::path& relative);
+    // Rename a project file or folder in place. Mesh/material/texture keys come from
+    // their sidecar identity, which moves with them, so scene references survive.
+    // The startup scene, UI source and top-level folders are not renamed here.
+    Result<std::filesystem::path> rename(const std::filesystem::path& relative, std::wstring_view name);
     Result<std::filesystem::path> cook_collision(std::string_view mesh_key, math::Vector3 scale);
     Result<std::shared_ptr<const std::string>> collision(std::string_view mesh_key, math::Vector3 scale);
 private:

@@ -65,6 +65,8 @@ DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label
 - 只有折叠标题下的行容器（`section-body`）缩进：左 8、上 5、下 7 DIP，行距 5 DIP。
 - 页签行（`section-tabs`）固定 26.667 DIP，含底部 0.667 DIP 分隔线；页签本身没有左、右或顶部缩进。
 - 页头行（`object-header`：参数头、Entity Structure 工具栏、Material/Resource 头、Controls 头）固定 32 DIP，左 6、右 4 DIP，24 DIP 控件垂直居中。
+- 路径栏（`PanePath`、视口头、Asset Browser 工具栏）同为 32 DIP、左右 4 DIP，导航按钮 22×24、路径框与工具按钮 24 DIP 高，使相邻面板的路径与图标在同一水平线上。
+- 底部过滤行与状态行左缩进 6 DIP（与页头一致），状态文字行高 20 DIP。
 - 占位文字（`empty-state`）与页头使用相同的 6 DIP 起始缩进。
 
 新增页面复用这些类，不在 DSL 节点上另写 padding_top/padding_left 来调整同类区域，避免同一角色出现不同边距。

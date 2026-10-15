@@ -138,6 +138,11 @@ void AssetBrowser::update_items(const Project* project) {
         if (found==items_.end()) selected_.reset();else selected_=*found;
     }
     sort_items();items_dirty_=false;catalog_revision_=project?project->revision():0;
+    if (selected_path_) {
+        const auto at=std::ranges::find(items_,*selected_path_,&Item::path);
+        if (at!=items_.end()) selected_=*at;
+        selected_path_.reset();
+    }
 }
 bool AssetBrowser::select_item(ui::TableKey key) {
     const auto found=row_indices_.find(key);
@@ -195,6 +200,8 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         items.back().icon=ui::ControlIcon::folder;
         items.push_back({id::add,L"Add to Scene",can_create_ && selected_ && selected_->kind==AssetKind::mesh,false,{}});
         items.back().icon=ui::ControlIcon::plus;
+        items.push_back({id::rename,L"Rename",can_rename(),false,{},L"F2"});
+        items.back().icon=ui::ControlIcon::rename;
         for (const auto command:{Command::import_mesh,Command::import_texture,Command::create_material,Command::refresh_assets}) {
             const auto* definition=command_definition(static_cast<ui::ControlKey>(command));
             items.push_back({static_cast<ui::ControlKey>(command),std::wstring(definition->title),has_project_,false,{},std::wstring(definition->shortcut),command==Command::import_mesh});

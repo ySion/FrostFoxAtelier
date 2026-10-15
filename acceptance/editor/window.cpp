@@ -109,6 +109,7 @@ struct EditorAcceptanceAccess {
     static void select_tab(Application& app,ui::ControlKey tab) {app.workspace_.dock.select(tab);}
     static Result<void> open_menu(Application& app,ui::ControlKey source) {app.request_menu({source,0,0,0});return {};}
     static void close_menu(Application& app) {app.close_menu(false);}
+    static void cancel_rename(Application& app) {app.workspace_.row_rename.reset();}
     static ui::ControlKey color_pick(const Application& app) {
         if(!app.presented()) return 0;
         for(const auto& box:app.presented()->controls) if(box.kind==ui::ControlKind::button && box.action_target) {
@@ -1038,6 +1039,9 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     // Layout review: category grouping and the Entity Structure page.
     model(Access::ui_action(app,atelier::editor::control::group_categories,true));shot("snapshot-parameters-category.png");
     model(Access::ui_action(app,atelier::editor::control::group_components,true));
+    Access::select_tab(app,atelier::editor::control::entities_tab);
+    model(Access::command(app,Command::rename_selected));shot("snapshot-inline-rename.png");
+    Access::cancel_rename(app);
     Access::select_tab(app,atelier::editor::control::structure_tab);shot("snapshot-structure.png");
     Access::select_tab(app,atelier::editor::control::scene_tab);
     model(Access::open_menu(app,atelier::editor::control::viewport_snap));settle();

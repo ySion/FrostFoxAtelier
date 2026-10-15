@@ -389,6 +389,19 @@ void verify_viewport_editing() {
             require(std::ranges::count_if(bar,[](const auto& c){return c.key>=control::display_toggle_first && c.key<control::display_toggle_first+8;})==8,
                 "Display bar did not project its eight toggles.");
         }
+        // Inline rename: the field covers the row's text, never its icon, and owns a fixed key.
+        {
+            publish(wide);
+            const auto row_key=workspace.object_control(first);
+            workspace.row_rename=Workspace::RowRename{first,row_key,std::wstring(document.name(first))};publish(wide);
+            const auto& frame=*ui.presented();
+            const auto* field=frame.find(control::inline_rename);const auto* row=frame.find(row_key);
+            require(field && row && field->kind==ui::ControlKind::text_edit && std::abs(field->bounds.y-row->bounds.y)<1 &&
+                field->bounds.x>row->bounds.x+row->style->indicator_size && field->bounds.x+field->bounds.width<=row->bounds.x+row->bounds.width+1,
+                "Inline rename did not sit over the row's name.");
+            workspace.row_rename.reset();publish(wide);
+            require(!ui.presented()->find(control::inline_rename),"Inline rename field outlived its session.");
+        }
         // Scene Tree: drop resolution, keep-world reparent as one edit, cycle refusal and row menu.
         {
             publish(wide);

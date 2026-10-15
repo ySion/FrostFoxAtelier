@@ -1324,6 +1324,34 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const std::array<ui_language::KeyBinding,1> keys{{{"menu",control::viewport_pie}}};
         static_cast<void>(ui_document_->append("ViewportPie",0,keys,inputs,result));
     }
+    if (row_rename && frame) {
+        // Drawn over the accepted row geometry; a row that left the frame ends the rename.
+        const auto* table=row_rename->cell?frame->find_table(browser_control::results):nullptr;
+        const auto cell=table?std::ranges::find(table->cells,row_rename->cell,&ui::TableCellGeometry::cell):std::vector<ui::TableCellGeometry>::const_iterator{};
+        const auto* row=row_rename->cell?nullptr:frame->find(row_rename->row);
+        if (row_rename->cell && (!table || cell==table->cells.end())) row_rename.reset();
+        else if (row_rename->cell) {
+            // Name cell: the icon leads by one row height; the field starts where the name text does.
+            const auto dpi=frame->drawing->dpi_scale;const auto& bounds=cell->bounds;
+            const auto icon=bounds.height/dpi;
+            const std::array<ui_language::InputValue,5> inputs{ui_language::TextEditBinding{control::inline_rename,row_rename->text},
+                double(bounds.x/dpi+icon),double(bounds.y/dpi),double(std::max(48.f,bounds.width/dpi-icon-2)),double(bounds.height/dpi)};
+            static_cast<void>(ui_document_->append("InlineRename",0,{},inputs,result));
+        } else if (!row || row->bounds.height<=0) row_rename.reset();
+        else {
+            const auto dpi=frame->drawing->dpi_scale;
+            // Text origin as Session lays it out: depth indents plus the row icon's leading space.
+            std::size_t depth=0;
+            for(const auto* at=row;at && at->tree_parent;at=frame->find(at->tree_parent)) ++depth;
+            const auto* tree=frame->find(row->parent);
+            const auto step=tree && tree->style?tree->style->tree_indent:17.f;
+            const auto indent=row->style?row->style->padding.left+float(depth+1)*step+row->style->indicator_size+6-3:24.f;
+            const auto padding=float(row->bounds.x)/dpi+indent;
+            const std::array<ui_language::InputValue,5> inputs{ui_language::TextEditBinding{control::inline_rename,row_rename->text},
+                double(padding),double(row->bounds.y/dpi),double(std::max(48.f,row->bounds.width/dpi-indent-2)),double(row->bounds.height/dpi)};
+            static_cast<void>(ui_document_->append("InlineRename",0,{},inputs,result));
+        }
+    }
     if (color_edit && !pie_menu()) {
         // One popup per session; the colour editor is projected last, after every owner.
         const auto& edit=*color_edit;

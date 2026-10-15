@@ -14,7 +14,7 @@ namespace browser_control {
 inline constexpr ui::ControlKey root=1ULL<<44, project=root+1, engine=root+2, up=root+3,
     path=root+4, search=root+5, clear=root+6, filter=root+7, list=root+8, details=root+9, tiles=root+10,
     open=root+11, add=root+12, view_menu=root+13, actions=root+14, back=root+15, directories=root+16,
-    results=root+17, content=root+18, divider=root+19, filter_first=root+20;
+    results=root+17, content=root+18, divider=root+19, filter_first=root+20, rename=root+40;
 inline constexpr ui::TableKey name_column=1, type_column=2, size_column=3;
 }
 class AssetBrowser {
@@ -26,6 +26,9 @@ public:
     bool apply(const ui::Action&);
     std::vector<ui::MenuItem> menu_items(ui::ControlKey source) const;
     const std::optional<Item>& selected() const noexcept { return selected_; }
+    // Project files and folders below the top-level roots; Engine resources are read-only.
+    bool can_rename() const noexcept { return !engine_ && selected_ && !selected_->path.empty() && std::distance(selected_->path.begin(),selected_->path.end())>=2; }
+    void reselect(const std::filesystem::path& path) { selected_.reset(); selected_path_=path; invalidate_items(); }
     const std::filesystem::path& directory() const noexcept { return directory_; }
     void navigate(std::filesystem::path path);
     bool engine() const noexcept { return engine_; }
@@ -44,6 +47,7 @@ private:
     std::vector<Location> navigation_;
     std::size_t navigation_cursor_{};
     std::optional<Item> selected_;
+    std::optional<std::filesystem::path> selected_path_; // Restored once the catalog reflects a rename.
     struct Target { ui::ControlKey key; Item item; };
     std::vector<Target> targets_;
     Map<String,ui::ControlKey> keys_;

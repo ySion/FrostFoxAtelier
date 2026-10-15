@@ -115,6 +115,7 @@ private:
     bool pending_source_focus_{};
     bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
     bool pending_name_focus_{}; // F2 focuses the Entity name once Parameters is presented.
+    bool pending_rename_focus_{}; // Inline tree rename focuses its field once presented.
     renderer::Renderer renderer_;
     SceneSnapshot scene_;
     bool camera_cut_{true}; // Retained until the renderer accepts the new view.
@@ -171,6 +172,7 @@ private:
     Result<bool> color_edit_action(const ui::Action&);
     Result<void> apply_color(std::array<double,3> rgb);
     Result<void> finish_color_edit(bool keep);
+    Result<void> begin_asset_rename();
     TypeId take_type(ObjectId,std::span<const FieldId>) const;
     Result<void> set_camera(const editor::Camera&,bool cut);
     void sync_world_view();

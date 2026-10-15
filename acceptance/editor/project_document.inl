@@ -146,6 +146,27 @@ void verify_project_document() {
     require(*take(project.collision(resource,collision_scale))==*collision_bytes,
         "Re-cooking did not restore the project collision asset.");
     require(!project.collision(resource,{1,1,1}),"Collision cache accepted a different scale.");
+    {
+        // Asset rename keeps the stable resource key (its sidecar moves with it), refuses
+        // collisions, bad names and configured paths, and leaves the original on failure.
+        const auto entry=std::ranges::find(project.entries(),resource,&editor::ProjectEntry::key);
+        require(entry!=project.entries().end(),"Imported mesh is missing from the catalog.");
+        const auto before=entry->path;
+        const auto renamed=take(project.rename(before,L"Renamed Triangle.obj"));
+        const auto after=std::ranges::find(project.entries(),resource,&editor::ProjectEntry::key);
+        require(after!=project.entries().end() && after->path==renamed && renamed.filename()==L"Renamed Triangle.obj" &&
+            !fs::exists(folder/before) && fs::exists(folder/renamed) && fs::exists(fs::path(folder/renamed)+=L".asset.json"),
+            "Rename lost the resource identity or its sidecar.");
+        require(take(project.mesh(resource)).mesh!=nullptr,"A renamed mesh no longer resolves by its key.");
+        require(!project.rename(renamed,L"bad/name.obj") && !project.rename(renamed,L"trailing.") && !project.rename("Content",L"Other"),
+            "Rename accepted an invalid name or a top-level folder.");
+        const auto taken=folder/renamed.parent_path()/"Taken.obj";
+        take(editor::write_file(taken,"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));take(project.refresh());
+        require(!project.rename(renamed,L"Taken.obj") && fs::exists(folder/renamed),"Rename overwrote another asset.");
+        require(!project.rename(project.startup_scene(),L"Other.scene"),"Rename moved the configured startup scene.");
+        take(project.rename(renamed,before.filename().wstring()));
+        fs::remove(taken);fs::remove(fs::path(taken)+=L".asset.json");take(project.refresh());
+    }
     const auto revision=project.revision();
     take(project.refresh());take(project.refresh());
     require(project.revision()==revision && take(project.mesh(resource)).mesh==original_mesh,

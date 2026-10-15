@@ -175,9 +175,9 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     require(width!=changed.npos,"Authoring fixture could not locate the declarative tool size.");
     changed.replace(width,std::string_view("width: 64;").size(),"width: 68;");
     const auto shell=changed.find("ui PanePath(");
-    const auto height=shell==changed.npos?changed.npos:changed.find("height: 40;",shell);
+    const auto height=shell==changed.npos?changed.npos:changed.find("height: 32;",shell);
     require(height!=changed.npos,"Authoring fixture could not locate the Parameters path-bar height.");
-    changed.replace(height,std::string_view("height: 40;").size(),"height: 44;");
+    changed.replace(height,std::string_view("height: 32;").size(),"height: 36;");
     std::ofstream timings(output/"ui-authoring.csv");timings<<"save,compile_ms,save_to_accepted_ms,revision\n";
     const auto save=[&](const char* label,const std::string& text,bool valid,float expected_height,const auto& verify_edit) {
         require_input_focus(app);
@@ -211,7 +211,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     save("recovered",changed+"\n// recovered\n",true,path_height+4,verify_query);
     // Both values are legal DSL properties, but this height cannot contain the
     // path bar's existing padding. Only the real layout preparation rejects it.
-    auto invalid_layout=changed;invalid_layout.replace(height,std::string_view("height: 44;").size(),"height: 1;");
+    auto invalid_layout=changed;invalid_layout.replace(height,std::string_view("height: 36;").size(),"height: 1;");
     save("layout_error",invalid_layout,false,path_height+4,verify_query);
     require(Access::ui_error(app).find("layout candidate rejected")!=std::string_view::npos,
         "Saved layout fixture failed before reaching the real frame preparation boundary.");
@@ -221,7 +221,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     const auto field_history=app.document().undo_count();type(app,L"4.25");
     require(app.text_input() && app.document().editing(),"Authoring fixture did not start a real numeric draft.");
     const auto field_token=app.text_input()->token;
-    auto draft_source=changed;draft_source.replace(height,std::string_view("height: 44;").size(),"height: 48;");
+    auto draft_source=changed;draft_source.replace(height,std::string_view("height: 36;").size(),"height: 40;");
     save("field_draft",draft_source,true,path_height+8,[&] {
         require(app.text_input() && app.text_input()->token==field_token && app.document().editing() &&
             property_control(app,entity,0)==field && app.presented()->find(field)->incarnation==field_incarnation &&
@@ -231,7 +231,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     key(app,VK_RETURN);
     require(x(app,entity)==4.25f && !app.document().editing() && app.document().undo_count()==field_history+1,
         "World field editing after live Source replacement did not commit exactly once.");
-    auto minimized_source=draft_source;minimized_source.replace(height,std::string_view("height: 48;").size(),"height: 52;");
+    auto minimized_source=draft_source;minimized_source.replace(height,std::string_view("height: 40;").size(),"height: 44;");
     require_input_focus(app);
     const auto minimized_revision=Access::ui_revision(app);
     ShowWindow(app.window(),SW_MINIMIZE);require(app.step() && IsIconic(app.window()),"Could not minimize the live authoring window.");

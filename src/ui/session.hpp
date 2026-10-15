@@ -225,7 +225,7 @@ struct UiFrame {
 enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize };
 struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; std::optional<TableSelection> table{}; }; // Accepted client pixels.
 struct DragPoint { float x{}, y{}; }; // Accepted-frame client pixels.
-struct SelectionModifiers { bool shift{}, control{}; };
+struct SelectionModifiers { bool shift{}, control{}, double_click{}; }; // double_click: second click of a native double click.
 using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint,TableSelection,TableSort,TableColumnResize,SelectionModifiers>;
 struct Action {
     ActionKind kind{};

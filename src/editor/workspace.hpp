@@ -42,6 +42,7 @@ inline constexpr ui::ControlKey object_clear_menu=979, object_snap_menu=980, vie
 inline constexpr ui::ControlKey display_bar=1006, display_grid=1007, display_axes=1008, display_wire=1009,
     display_triangles=1010, display_cavity=1011, display_fps=1012, display_wire_only=1013, display_lit=1014;
 inline constexpr ui::ControlKey display_toggle_first=1015; // Eight bar buttons: 1015..1022, below dynamic bindings.
+inline constexpr ui::ControlKey inline_rename=1023;
 // Colour editor popup and its fields (fixed keys; one editor at a time).
 inline constexpr ui::ControlKey color_editor=940, color_rgb=941, color_hsv=944, color_hex=953, color_revert=954, color_done=955, color_group=956; // rgb 941..943, hsv 944..946
 inline constexpr ui::ControlKey scene_tab=600, entities_tab=601, parameters_tab=602, reset_layout=command_key(Command::reset_layout);
@@ -126,6 +127,10 @@ struct Workspace {
         bool composition_failed{};
     };
     std::optional<ColorEdit> color_edit;
+    // Inline rename over a tree row: the renamed Entity and the row it covers.
+    // An Entity row (object set) or an Asset Browser cell (asset set); asset paths are project-relative.
+    struct RowRename { ObjectId object; ui::ControlKey row{}; std::wstring text; std::filesystem::path asset{}; ui::TableKey cell{}; };
+    std::optional<RowRename> row_rename;
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }
     bool can_navigate(int direction) const noexcept;

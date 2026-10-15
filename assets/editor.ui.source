@@ -145,10 +145,10 @@ ui SceneTree(in Items<EntityRow> entities, in TextEditBinding filter,
         Repeat rows { items: input.entities; }
     }
     Column filter_area {
-        padding_left: 4;
-        padding_top: 2;
-        padding_right: 3;
-        padding_bottom: 2;
+        padding_left: 6;
+        padding_top: 3;
+        padding_right: 4;
+        padding_bottom: 3;
         QueryRow query { edit: input.filter; label_width: 36; gap: 6; caption: false; }
     }
 }
@@ -234,14 +234,14 @@ ui PanePath(in Text title, in ActionBinding back, in ActionBinding forward,
         classes: "path-bar";
         align_center: true;
         gap: 2;
-        height: 40;
+        height: 32;
         padding_left: 4;
         padding_top: 4;
-        padding_right: 6;
+        padding_right: 4;
         padding_bottom: 4;
-        Button back { icon: input.back_icon; action: input.back; width: 26; height: 28; classes: "path-navigation"; }
-        Button forward { icon: input.forward_icon; action: input.forward; width: 26; height: 28; classes: "path-navigation"; }
-        Combo path { text: input.title; icon: input.path_icon; expand_width: true; min_width: 32; height: 28; classes: "pane-path"; }
+        Button back { icon: input.back_icon; action: input.back; width: 22; height: 24; classes: "path-navigation"; }
+        Button forward { icon: input.forward_icon; action: input.forward; width: 22; height: 24; classes: "path-navigation"; }
+        Combo path { text: input.title; icon: input.path_icon; expand_width: true; min_width: 32; height: 24; classes: "pane-path"; }
     }
 }
 
@@ -255,7 +255,7 @@ ui EntityStructure(in Text title, in Items<EntityRow> objects, in TextEditBindin
     }
     Tree tree { expand_height: true; filter: input.filter; Repeat rows { items: input.objects; } }
     Text empty { text: "Select an Entity in Scene Tree."; collapsed: input.has_entity; single_line: true; caption: true; classes: "empty-state"; }
-    Column filter_area { padding_left: 4; padding_right: 3; padding_top: 2; padding_bottom: 2;
+    Column filter_area { padding_left: 6; padding_right: 4; padding_top: 3; padding_bottom: 3;
         QueryRow query { edit: input.filter; label_width: 36; gap: 6; caption: false; }
     }
 }
@@ -401,12 +401,12 @@ ui AssetBrowserShell(in Items<EntityRow> directories, in TextEditBinding query,
                      in double directory_width, in double directory_limit) {
     Row toolbar {
         classes: "browser-toolbar";
+        height: 32;
         gap: 2;
         wrap: false;
+        align_center: true;
         padding_left: 4;
-        padding_top: 3;
         padding_right: 4;
-        padding_bottom: 3;
         Button back {
             icon: input.back_icon;
             action: input.back;
@@ -491,9 +491,9 @@ ui AssetBrowserShell(in Items<EntityRow> directories, in TextEditBinding query,
     }
     Text status {
         text: input.status;
-        height: 18;
-        padding_left: 5;
-        padding_right: 5;
+        height: 20;
+        padding_left: 6;
+        padding_right: 6;
         caption: true;
         classes: "browser-status";
     }
@@ -745,6 +745,10 @@ ui DockPane(in double width, in double height, in double x, in double y, in bool
     }
 }
 ui DockWorkspace(in Items<DockPane> panes) { Repeat panes { items: input.panes; } }
+// Inline rename (Houdini Tree View / Blender Outliner): a field laid over the row being renamed.
+ui InlineRename(in TextEditBinding name, in double x, in double y, in double width, in double height) {
+    TextField field { edit: input.name; out_of_flow: true; offset_x: input.x; offset_y: input.y; width: input.width; height: input.height; classes: "inline-rename"; }
+}
 ui DockPreview(in bool visible, in double x, in double y, in double width, in double height) {
     Column preview { collapsed: !input.visible; enabled: false; out_of_flow: true; offset_x: input.x; offset_y: input.y; width: input.width; height: input.height; classes: "dock-preview"; }
 }

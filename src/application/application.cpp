@@ -228,6 +228,24 @@ Result<void> Application::action(const ui::Action& source) {
         request_menu(*request); return {};
     }
     if (event.kind==ui::ActionKind::dismiss && event.key==editor::control::color_editor) return finish_color_edit(true);
+    if (event.key==editor::control::inline_rename && workspace_.row_rename) {
+        if (event.kind==ui::ActionKind::edit_preview) {
+            if (const auto* text=std::get_if<std::wstring>(&event.value)) workspace_.row_rename->text=*text;
+            return {};
+        }
+        if (event.kind!=ui::ActionKind::edit_commit && event.kind!=ui::ActionKind::edit_cancel) return {};
+        const auto rename=std::exchange(workspace_.row_rename,std::nullopt);
+        if (!rename->asset.empty()) {
+            const auto* text=std::get_if<std::wstring>(&event.value);
+            if (event.kind==ui::ActionKind::edit_cancel || !text || *text==rename->asset.filename().wstring() || !project_) return {};
+            auto renamed=project_->rename(rename->asset,*text);if(!renamed) return std::unexpected(renamed.error());
+            workspace_.assets.reselect(*renamed);workspace_.status=L"Renamed to "+renamed->filename().wstring();return {};
+        }
+        effects(ui_.focus(rename->row));
+        const auto* text=std::get_if<std::wstring>(&event.value);
+        if (event.kind==ui::ActionKind::edit_cancel || !text || *text==document_->name(rename->object)) return {};
+        return done(document_->rename(rename->object,*text),L"Entity renamed / Undo restores its name");
+    }
     if (event.kind==ui::ActionKind::dismiss) { close_menu(); return {}; }
     if (workspace_.color_edit) if (auto handled=color_edit_action(event);!handled || *handled) return handled?Result<void>{}:Result<void>{std::unexpected(handled.error())};
     if (event.kind==ui::ActionKind::activate && event.key==command_key(editor::Command::show_fps)) {
@@ -300,6 +318,7 @@ Result<void> Application::action(const ui::Action& source) {
         if (!local_event) return std::unexpected(local_event.error());
         if (*local_event) return {};
     }
+    if (event.kind==ui::ActionKind::activate && event.key==editor::browser_control::rename) return begin_asset_rename();
     if (event.kind==ui::ActionKind::activate && (event.key==editor::browser_control::open || event.key==editor::browser_control::add)) {
         const auto selected=workspace_.assets.selected();
         if (!selected) return {};
@@ -375,6 +394,14 @@ Result<void> Application::action(const ui::Action& source) {
             if(event.kind!=ui::ActionKind::activate) return {};
             const auto* enabled=std::get_if<bool>(&event.value);if(!enabled) return invalid();
             return document_->set_material_override(binding->component,binding->slot,binding->path,*enabled);
+        }
+        if (const auto* modifiers=std::get_if<ui::SelectionModifiers>(&event.value);event.kind==ui::ActionKind::select && modifiers &&
+            modifiers->double_click && !modifiers->shift && !modifiers->control && binding->kind==editor::Workspace::Binding::Kind::object &&
+            binding->path.empty() && document_->is_selected(binding->object)) {
+            // Double-clicking a selected row renames it in place (Blender Outliner / Houdini Tree View).
+            workspace_.dock.select(editor::control::entities_tab);
+            workspace_.row_rename=editor::Workspace::RowRename{binding->object,event.key,std::wstring(document_->name(binding->object))};
+            pending_rename_focus_=true;return {};
         }
         if (event.kind==ui::ActionKind::select && (binding->kind==editor::Workspace::Binding::Kind::object || binding->kind==editor::Workspace::Binding::Kind::structure) && binding->path.empty())
             return done(workspace_.select_tree(*document_,event.key,std::get_if<ui::SelectionModifiers>(&event.value)?std::get<ui::SelectionModifiers>(event.value):ui::SelectionModifiers{},ui_.presented().get()),L"Tree selection updated");
@@ -542,6 +569,14 @@ Result<void> Application::finish_color_edit(bool keep) {
     }
     return finished;
 }
+Result<void> Application::begin_asset_rename() {
+    if(!project_ || !workspace_.assets.can_rename()) return {};
+    const auto& item=*workspace_.assets.selected();
+    const auto row=workspace_.assets.row_key(item.key);
+    if(!row) return {};
+    workspace_.row_rename=editor::Workspace::RowRename{{},0,item.path.filename().wstring(),item.path,(row<<2)|editor::browser_control::name_column};
+    pending_rename_focus_=true;return {};
+}
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
     using enum editor::Command;
     if (!workspace_.command_enabled(command,*document_)) return {};
@@ -579,9 +614,18 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         result=viewport_tool_.clear(*document_,command==clear_location?editor::TransformChannel::location:
             command==clear_rotation?editor::TransformChannel::rotation:editor::TransformChannel::scale);break;
     case frame_all:result=frame_entities(false);if(result) camera_cut_=true;break;
-    case rename_selected:
-        // Houdini/Blender F2: edit the selected Entity's name in the Parameters header.
-        workspace_.inspecting_asset=false;workspace_.dock.select(editor::control::parameters_tab);pending_name_focus_=true;break;
+    case rename_selected: {
+        if(workspace_.dock.focused_tab()==editor::control::assets_tab) return begin_asset_rename();
+        // Houdini/Blender F2: rename in place when the Scene Tree shows the Entity's row,
+        // otherwise edit the name in the Parameters header.
+        const auto entity=document_->selection().entity;
+        const auto row=workspace_.object_control(entity);
+        if(workspace_.dock.focused_tab()==editor::control::entities_tab && row && ui_.presented() && ui_.presented()->find(row)) {
+            workspace_.row_rename=editor::Workspace::RowRename{entity,row,std::wstring(document_->name(entity))};
+            pending_rename_focus_=true;
+        } else {workspace_.inspecting_asset=false;workspace_.dock.select(editor::control::parameters_tab);pending_name_focus_=true;}
+        break;
+    }
     case unparent_selected: {
         const std::vector selected(document_->selected_entities().begin(),document_->selected_entities().end());
         for(const auto entity:selected) {
@@ -1279,6 +1323,11 @@ bool Application::step(renderer::Capture* capture) try {
         if (pending_source_focus_) {
             pending_source_focus_=false;
             if (workspace_.source_editor.active()) effects(ui_.focus(editor::source_control::buffer));
+        }
+        if (pending_rename_focus_) {
+            pending_rename_focus_=false;
+            if (workspace_.row_rename && ui_.presented() && ui_.presented()->find(editor::control::inline_rename))
+                effects(ui_.focus(editor::control::inline_rename));
         }
         if (pending_name_focus_) {
             pending_name_focus_=false;
