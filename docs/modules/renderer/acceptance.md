@@ -6,6 +6,8 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| DI 重建缓存与目标复用 | 2026-10-15 后续：分项计时、step 1 协作缓存、同帧 target 复用、显式探针端点归因，见[本批记录](#di-重建缓存与目标复用2026-10-15) |
+| DI 精确优化与共享空间提议 | 2026-10-15 主目录：双配置构建、地牢 Control A/B、Dev 稳定性、Release ReSTIR／质量／合同通过，见[本批记录](#di-精确优化与共享空间提议2026-10-15) |
 | DDGI 访问采样与有效响应 | 2026-10-15 主目录第二批：Dev/Release响应阶段、hold进度、1～256射线与原质量/滚动验收通过，见[本批采样与响应](#ddgi-访问采样与有效响应2026-10-15) |
 | DDGI 运输/呈现分离 | 2026-10-15 主目录：Dev/Release 异步 E/w/transport 与时间生命周期通过；Release 隔墙、发光面、多体积及滚动回归通过，见[本批稳定性](#ddgi-运输与呈现分离2026-10-15) |
 | 多 Astra 审查与工作剔除 | 2026-10-13～14 主目录：历史身份、DDGI 响应、ROI、目标/深度副本、编辑绘制和数值域；双配置构建与 World 数据链、Dev GPU 合同、Release 光照组合及 Renderer 全套通过，空闲 GPU 对照已完成，见[本轮审计](#多-astra-审查与工作剔除2026-10-13) |
@@ -22,6 +24,42 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## DI 重建缓存与目标复用（2026-10-15）
+
+基于主目录 `94d92f0e` 与上一批未提交增量。新增20个同帧计时区间中的16～19项及性能表四个重建子行；step 1 使用6912 B FP32组共享几何引导；reservoir 原预留DWORD保存同帧target，仍为24 B，时间复用显式固定两输入上界。第二轮滤波缓存实测退化，已撤回。具体算法与合同见 [Scene Lit](scene-lit.md)，逐候选性能、真实视口大小和运行态边界见[研究记录](../../research/di-dungeon-diagnosis-20261015.md#重建与-reservoir-热点实施2026-10-15-后续)。
+
+Dev/Release Editor、Renderer acceptance、Control acceptance构建通过。缓存阶段 Dev `--scene-lit-stability` 退出0，覆盖新增指定probe、active范围外请求、auto恢复、关闭后的迟到读回、96 B ray端点距离/有效性，以及原运输、响应、隔墙、多体积和滚动生命周期。Release `--scene-lit-quality` 退出0、stderr为空，覆盖四种AA、反射/半影、动态编辑、FP32深度、薄墙/零通道、work elision与contracts；这两次发生在随后target缓存加入之前，不能冒充最终target版验收。
+
+最终target版 Release `--scene-lit-restir-suite` 开启GPU validation，退出0、stderr为空。覆盖材质/输运、272个投影光源、空间top32溢出与全局兜底、独立参考能量、源重排/增删/移动、DDGI质量/调试/多体积、64位历史身份、小数/单像素视口、关闭重入与重复close。最终Dev `--scene-lit-restir` 同样开启GPU validation，退出0、stderr为空，独立通过272光源、提议溢出/兜底/滚动/生命周期、参考能量与源变化。
+
+正常 Release 地牢副本（client3840×2054、viewport2265.36×1246.12）360个唯一完成样本的起始DI均值16.247 ms；最终两次为11.514/11.774 ms，P95为16.976/17.314 ms。step 1约2.61→1.62 ms的收益在快慢档均可见。共同慢档仍在，整段差异不能全部归因单项优化；八主阶段合计不含完整编辑器CPU/UI/Present，不报告为60 fps或功耗改善。
+
+最终标准Release Editor副本的正式Control验收已通过：21行层级/八父项总计，四个重建子项不重复累加；`probe_inspect_source`重复patch幂等、4096原子拒绝、300实际端点、4095有效但不在驻留池时无旧rays；关闭inspection并切MatCap后新计时数组归零。相机、view、Undo、redo、dirty全部恢复。两位Astra独立只读复审未发现阻断项；GPU结论仍以真实运行结果为准。
+
+指定probe 372/300/310各768个地牢样本抓到probe300接收方向运输照度+53.25%、receiver+6.70%的事件；相关点光距离.192 m、q .394、W1.186。未触及.05m衰减下限，既不能判为低q爆炸，也不足以证明所有闪光已归因。研究已记录近场方向与secondary GGX的方差边界，本批没有改运输模型、增加亮度clamp或以变暗作为修复。
+
+证据根目录 `out/di-reconstruction-20261015/`：`dev-stability`、`release-quality`、`release-final-suite`、`dev-final-restir`及日志/状态，`final-control-*.json`，各候选`*-samples.json`/`*-summary.json`、`dxil/summary.json`、`rhi/`与端点归因；源码和二进制身份在`manifest.json`。`cache2-editor.log`保留第一次实验的HLSL结构体条件表达式编译失败；修正后第二轮缓存虽能运行但性能更差，最终产品移除了该候选。基线ADLX与GPU记录不重叠的那组明确排除，未用其推断频率原因。
+
+## DI 精确优化与共享空间提议（2026-10-15）
+
+基于主目录 `99111cab` 的本批工作区；期间主线前进到编辑器 UI 提交 `1bbf6cef`，最终源码与二进制清单记录当前 HEAD 和未提交增量。新增成对直接光时间重建、MIS 候选准备复用与便宜邻域拒绝；同一 LightFrame 的有界空间提议供 DI / DDGI hit 消费，使用实际整数技术配额与完整混合 q。当前行为见 [Scene Lit](scene-lit.md)，研究、性能中间候选与测量边界见[地牢 DI 诊断](../../research/di-dungeon-diagnosis-20261015.md#本批实施与实测2026-10-15)。没有改变 FP32 深度、内部像素数或最终 AA 策略。
+
+Dev / Release Renderer acceptance 与正式 Release Editor 构建通过。Dev `--scene-lit-stability` 已通过异步 E/w/transport、有效响应、hold、合法射线预算、源时间曲线、材质发光传输、整墙／薄隔墙和多体积／滚动生命周期。800 三角形发光面接收红通道 50.0450，遮挡/移除后 0；整墙静态 max mean .1446、p95 1，慢速发光体 max mean 2.3615、p95 7，薄隔墙被遮挡区域红通道为 0。Release 组合入口中的材质、材质光输运、新增 ReSTIR 空间提议、DDGI 质量／多体积／调试及 audit 均已 PASS；随后在既有 work-elision 用例处退出 1。修正其信号隔离后，独立 Release `--scene-lit-contracts` 开启 GPU validation，于 05:22:46–05:29:11 完成，退出 0，audit / work elision / contracts 均 PASS。两次运行共同覆盖本批相关范围，不把原组合进程的退出 1 改写为成功。
+
+首次新增 lifecycle 验收在空场景统计断言处失败：GPU 表已退休，但 Renderer 手动清零链未包含四个新增统计字段，继续报告上一帧的 36 B sentinel。已补齐每帧清零，保留原空场景 0 B 断言；这不是通过放宽阈值隐藏失败。新增用例还覆盖 top32 溢出、全局独立参考、近灯无贡献而远灯主照明、M=1、焦点离开／返回、跨格移灯和源删除／重建。
+
+既有 inactive-probe 用例把“插入封闭遮挡后总颜色 ≤1 RGB8”当成 DDGI scratch 退休断言。保留的原版二进制与新版都得到均匀 RGB 3；新版实测关闭 DDGI 仍为 3，直接光独立参考为 0，定位为原有 DI 降噪历史的低亮度尾巴。该用例现保留暖探针场，只切换直接光参考，并断言没有 DDGI history/reset-probe 重置，再检查原有 ≤1 阈值和 DDGI 关闭对照；最终 GPU 实测这两张参考图均为 RGB 0，所有断言通过。不改生产历史策略或阈值；原版与诊断失败日志保留，低亮度 DI 残留仍是已知限制，不能把隔离后的 DDGI 通过解释为它已修复。
+
+普通 Release 固定 1440p、96 帧预热、240 唯一完成样本的首次最终 GPU 路径测得 DI p50 **4.328 ms**，原版两次 **4.999 / 4.964 ms**；八主阶段合计 p50 **8.976 ms**。地牢保存副本恢复用户相机和参数，实际 viewport 约 1126×666；原版／新版空间提议各 240 样本的 DI 均值 **12.214 / 11.046 ms**，八主阶段合计均值 **21.544 / 21.483 ms**。这支持 DI 优化，不足以证明地牢整帧提速、1440p 地牢帧率或功耗下降。新版同二进制 global-only DI 均值 10.598 ms，说明空间提议也有额外成本。
+
+同一地牢、同一二进制两个提议模式各预热128帧后捕获12张静止图，间隔8 accepted frames。后墙／右墙 sRGB 亮度时间标准差均值从 .598 / 1.081 降为 .485 / .546，地面亮度均值 146.155 / 146.124；全取样视口标准差均值 .660 / .481。短窗与非线性显示统计不是无偏能量证明，仍存在局部高亮突变，不能宣布 DDGI 根治。测试运行在独立保存副本，没有保存、替换或关闭用户原窗口；用户随后说明误关了原实例，并允许自行重开验收窗口，因此无需恢复已退出实例的显示模式。
+
+三位 Astra 最终复审通过，分别核对估计器/历史、生命周期/幂等/边界和 view/World/Control 接线。新开关不污染 World 保存，关闭诊断只禁用提议，表构建和资源仍保留。应用与编辑器负责人已接收统一 metadata 表的合并说明。RHI 提供只读 PresentMon 旁证，本批无需新增低层能力。
+
+最终标准 `out/release/atelier_editor.exe` 打开独立地牢副本，经正式 Control 验证空间提议开关、重复 patch 的 state token 幂等、World Undo/dirty 隔离及真实捕获，通过并退出验收副本。Lit 静态帧报告 60 retained entries / 54 非空格 / 34108 B / uploaded=false，切回 MatCap 后四项当前帧统计归零。没有向原用户工程写回相机、Scene 或作者参数。
+
+证据目录：`out/di-evolution-20261015/`，包含 `manifest.json`、`performance-summary.json`、固定场景各候选 CSV、地牢原始唯一样本和质量捕获 manifest、`dungeon-quality-analysis.json`、`rhi-runtime/` 及各验收日志。`release-restir.log` 保留首次统计失败，`release-suite.log`、`baseline-contracts.log`、`current-contracts-diagnosis.log` 保留信号隔离前的失败；最终合同结果为 `release-contracts-final.log` / `.status.json`，正式编辑器结果为 `standard-editor-verification.json`、`standard-editor-capture.json` 和 `standard-editor.status.json`。不能只查看文件存在就视为通过。
 
 ## DDGI 访问采样与有效响应（2026-10-15）
 

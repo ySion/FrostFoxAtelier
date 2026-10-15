@@ -119,6 +119,7 @@ struct ProbeInspection {
     std::uint64_t sequence{},frame_id{},scene_identity{};
     std::array<std::uint32_t,2> pixel{};
     ProbeHistory history{ProbeHistory::live};
+    std::int32_t requested_probe{-1}; // -1 automatic; explicit requests never fall back to another probe.
     std::uint32_t rays{},updates{};
     std::array<ProbeVolumeStats,probe_volume_limit> volumes{};
     // Receiver identity: gather status, selected volume, contributors, reserved.
@@ -129,7 +130,9 @@ struct ProbeInspection {
         std::array<std::uint32_t,4> identity{}; // Source, kind, ray ordinal, valid record.
         std::array<float,4> direct{}; // Local diffuse/specular, directional diffuse/specular luminance.
         std::array<float,4> surface{}; // World hit XYZ, roughness.
-        std::array<float,4> sampling{}; // Reservoir weight, source PMF, feedback luminance, primary hit distance.
+        std::array<float,4> sampling{}; // Reservoir weight, full receiver proposal PMF, feedback luminance, primary hit distance.
+        std::array<float,4> endpoint_distance{}; // Selected local endpoint XYZ, hit-to-endpoint distance; w=-1 if none.
+        std::array<float,4> source_parameters{}; // Radius, range, area, attenuation minimum distance squared (zero for mesh sources).
     };
     std::uint32_t traced_probe{~0u};
     std::array<Ray,256> ray_samples{};
@@ -163,13 +166,17 @@ struct FrameStats {
     std::array<float, 2> scene_lit_ddgi_gpu_ms{}; // Update/transfer, receiver gather; subsets of DDGI time.
     std::array<float, 4> scene_lit_direct_gpu_ms{}; // Initial/temporal reservoir, spatial reservoir, visibility/shading, radiance resolve/filter; subsets of direct time.
     std::array<float, 2> scene_lit_ddgi_update_gpu_ms{}; // Primary trace, hit lighting/convolution; subsets of update/transfer (copy excluded).
+    std::array<float, 4> scene_lit_direct_reconstruction_gpu_ms{}; // Temporal resolve, spatial filter steps 1/2/4; subsets of direct resolve/filter.
     // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
-    // 10..13 direct, 14..15 DDGI update. A skipped scope still has timestamp overhead.
+    // 10..13 direct, 14..15 DDGI update, 16..19 direct reconstruction. A skipped scope still has timestamp overhead.
     std::uint32_t scene_lit_gpu_pass_mask{};
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
     std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{},scene_lit_di_candidates{}; // Analytic lights + emissive faces; shadows eligible for every selected source.
+    std::uint32_t scene_lit_spatial_sources{},scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
+    std::uint64_t scene_lit_spatial_bytes{}; // Three current logical GPU buffers, including empty sentinels.
+    bool scene_lit_spatial_changed{}; // Proposal buffers uploaded in this encoded render.
     std::uint64_t scene_lit_history_resets{}; // Reset events in this encoded render; ordinary next frame is zero.
     bool scene_lit_gpu_timing_valid{};
     std::uint64_t scene_lit_gpu_sample_sequence{}, scene_lit_gpu_sample_frame_id{};

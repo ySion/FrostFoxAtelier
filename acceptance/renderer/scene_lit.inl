@@ -281,12 +281,13 @@ std::array<double,3> lighting_mean(Fixture& f,const char* name,Region region,uns
 void benchmark(Fixture& f) {
     for (unsigned frame = 0; frame < warmup_frames; ++frame) f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
-    samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,di_initial_temporal_ms,di_spatial_ms,di_visibility_shading_ms,direct_resolve_filter_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,completed_pass_mask\n";
+    samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,di_initial_temporal_ms,di_spatial_ms,di_visibility_shading_ms,direct_resolve_filter_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,direct_temporal_resolve_ms,direct_filter_1_ms,direct_filter_2_ms,direct_filter_4_ms,completed_pass_mask\n";
     std::vector<double> totals;
     std::array<std::vector<double>, 8> passes;
     std::array<std::vector<double>, 2> ddgi_passes;
     std::array<std::vector<double>, 4> direct_passes;
     std::array<std::vector<double>, 2> ddgi_update_passes;
+    std::array<std::vector<double>, 4> direct_reconstruction_passes;
     std::uint64_t resource_peak = 0;
     std::uint64_t previous_sequence = 0;
     const auto first_measured_frame = f.drawing.id;
@@ -328,7 +329,8 @@ void benchmark(Fixture& f) {
         };
         subpasses(direct_passes,stats.scene_lit_direct_gpu_ms,stats.scene_lit_gpu_ms[2]);
         subpasses(ddgi_update_passes,stats.scene_lit_ddgi_update_gpu_ms,stats.scene_lit_ddgi_gpu_ms[0]);
-        check(stats.scene_lit_gpu_pass_mask==0xffffu,"fixed room executes every measured GPU scope in the same completed sample");
+        subpasses(direct_reconstruction_passes,stats.scene_lit_direct_reconstruction_gpu_ms,stats.scene_lit_direct_gpu_ms[3]);
+        check(stats.scene_lit_gpu_pass_mask==0xfffffu,"fixed room executes every measured GPU scope in the same completed sample");
         samples<<','<<stats.scene_lit_gpu_pass_mask<<'\n';
     }
     check(totals.size() >= 120 && percentile(totals, 95) > 0, "SceneLit benchmark obtains completed GPU timestamp samples");
@@ -354,6 +356,10 @@ void benchmark(Fixture& f) {
     for(std::size_t pass=0;pass<ddgi_update_passes.size();++pass)
         f.metrics<<update_names[pass]<<"_ms p50="<<percentile(ddgi_update_passes[pass],50)<<" p95="<<percentile(ddgi_update_passes[pass],95)
                  <<" p99="<<percentile(ddgi_update_passes[pass],99)<<'\n';
+    constexpr const char* reconstruction_names[]{"direct_temporal_resolve","direct_filter_1","direct_filter_2","direct_filter_4"};
+    for(std::size_t pass=0;pass<direct_reconstruction_passes.size();++pass)
+        f.metrics<<reconstruction_names[pass]<<"_ms p50="<<percentile(direct_reconstruction_passes[pass],50)<<" p95="<<percentile(direct_reconstruction_passes[pass],95)
+                 <<" p99="<<percentile(direct_reconstruction_passes[pass],99)<<'\n';
     check(samples.good() && f.metrics.good(), "SceneLit GPU benchmark evidence written");
     // Evidence capture happens only after the timestamp sample loop.
     f.capture("benchmark-1440p");

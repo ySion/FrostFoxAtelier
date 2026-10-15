@@ -58,19 +58,20 @@ static_assert(sizeof(geometry::Vertex)==48 && sizeof(SceneTriangle)==176);
 static_assert(sizeof(GpuRayTriangle)==176);
 static_assert(sizeof(ProbeRayHitStorage)==64);
 static_assert(sizeof(ProbeContribution)==96);
-static_assert(sizeof(ProbeInspection::Ray)==64);
+static_assert(sizeof(ProbeInspection::Ray)==96);
 }
 
 struct SceneLit::State {
     rhi::Context& context;
     GfxContext gfx;
-    rhi::Pipeline gbuffer,di_initial,di_spatial,direct,direct_resolve,direct_filter,compose;
+    rhi::Pipeline gbuffer,di_initial,di_spatial,direct,direct_resolve,compose;
+    std::array<rhi::Pipeline,3> direct_filter;
     rhi::Pipeline probe_copy,probe_trace,probe_update,probe_present,probe_resolve,ao,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
     rhi::Pipeline reflection_resolve,reflection_filter,brdf,taa,bloom_downsample,bloom_blur,tone_map,tone;
     rhi::Pipeline smaa_edges_pass,smaa_weights_pass,smaa_neighborhood,smaa_resolve;
     rhi::Pipeline ssil_trace,ssil_resolve,probe_debug_surface,probe_debug_geometry;
     GfxTexture probe_age,probe_sample_cursor,probe_debug_depth;
-    std::array<GfxTimestampQuery,16> queries{}; // Eight stages, two DDGI, four direct and two DDGI-update subscopes.
+    std::array<GfxTimestampQuery,20> queries{}; // Existing 16 scopes, then direct resolve and filter steps 1/2/4.
     std::uint32_t encoded_pass_mask{};
     GfxSamplerState sampler;
     ui::PixelExtent extent{};
@@ -94,6 +95,7 @@ struct SceneLit::State {
     ProbeField probe_field;
     std::array<ProbeVolumeSettings,probe_volume_limit> previous_probe_settings{};
     GfxBuffer gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current;
+    GfxBuffer gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots;
     GfxBuffer rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments;
     LightFrame light_frame;
     GfxBuffer ray_counters;
@@ -152,6 +154,8 @@ struct SceneLit::State {
     std::array<float,4> viewport{},environment{},controls{},temporal{},jitter{},probe_history{},probe_controls{};
     std::array<float,4> probe_scene_min{},probe_scene_max{};
     std::array<std::uint32_t,4> size_frame{},source_counts{},di_settings{},probe_update_settings{};
+    std::array<std::uint32_t,4> light_grid_counts_gpu{};
+    bool spatial_uploaded{};
     std::array<std::uint32_t,4> screen_dispatch{};
     std::array<float,4> raster_transform{1,1,0,0};
     std::uint32_t effect_flags{},di_history_valid{};
@@ -203,7 +207,9 @@ struct SceneLit::State {
         prepare(di_spatial,shaders::lit_restir,"lit_restir_spatial_cs","ReSTIR DI spatial reuse");
         prepare(direct,shaders::lit_restir,"lit_restir_shade_cs","ReSTIR DI current-frame visibility");
         prepare(direct_resolve,shaders::lit_direct,"lit_direct_resolve_cs","Direct radiance temporal reconstruction");
-        prepare(direct_filter,shaders::lit_direct,"lit_direct_filter_cs","Direct radiance spatial reconstruction");
+        constexpr std::array filter_entries{"lit_direct_filter1_cs","lit_direct_filter2_cs","lit_direct_filter4_cs"};
+        for(std::size_t i=0;i<direct_filter.size();++i)
+            prepare(direct_filter[i],shaders::lit_direct,filter_entries[i],"Direct radiance spatial reconstruction");
         prepare(compose,shaders::lit_direct,"lit_compose_cs","Scene Lit HDR composition");
         prepare(probe_copy,shaders::lit_ddgi,"DDGICopy","DDGI history transfer");
         prepare(probe_trace,shaders::lit_ddgi,"DDGITrace","DDGI RT primary trace");
@@ -349,6 +355,9 @@ struct SceneLit::State {
         bind(p,"lit_history_invalid",history_invalid);
         bind(p,"lit_instances",gpu_instances);bind(p,"lit_rt_triangles",rt_triangles);bind(p,"lit_closed_slots",rt_closed_slots);
         bind(p,"lit_sources",gpu_sources);bind(p,"lit_previous_sources",gpu_previous_sources);bind(p,"lit_light_proposals",gpu_proposals);
+        bind(p,"lit_light_cells",gpu_light_cells);bind(p,"lit_spatial_light_proposals",gpu_spatial_proposals);
+        bind(p,"lit_spatial_source_slots",gpu_spatial_source_slots);bind(p,"lit_light_grid_origin",light_frame.spatial_origin);
+        bind(p,"lit_light_grid_counts",light_grid_counts_gpu);
         bind(p,"lit_current_to_previous",gpu_current_to_previous);bind(p,"lit_previous_to_current",gpu_previous_to_current);
         bind(p,"lit_scene",tlas);bind(p,"lit_depth",depth);bind(p,"lit_normal_roughness",gbuffer_textures[0]);
         bind(p,"lit_ray_counters",ray_counters);
@@ -385,13 +394,15 @@ struct SceneLit::State {
         std::array<float,2> ddgi_timings{};
         std::array<float,4> direct_timings{};
         std::array<float,2> ddgi_update_timings{};
+        std::array<float,4> direct_reconstruction_timings{};
         for(std::size_t i=0;i<queries.size();i++) {
             const auto pass=gfxTimestampQueryGetSample(gfx,queries[i]);
             if(pass.frame_sequence!=sample.frame_sequence)return;
             if(i<timings.size())timings[i]=static_cast<float>(pass.duration_ms);
             else if(i<10)ddgi_timings[i-8]=static_cast<float>(pass.duration_ms);
             else if(i<14)direct_timings[i-10]=static_cast<float>(pass.duration_ms);
-            else ddgi_update_timings[i-14]=static_cast<float>(pass.duration_ms);
+            else if(i<16)ddgi_update_timings[i-14]=static_cast<float>(pass.duration_ms);
+            else direct_reconstruction_timings[i-16]=static_cast<float>(pass.duration_ms);
         }
         for(std::size_t slot=0;slot<readback_count;slot++) {
             if(readback_sequences[slot]!=sample.frame_sequence)continue;
@@ -399,6 +410,7 @@ struct SceneLit::State {
             if(!counter)return;
             stats.scene_lit_gpu_ms=timings;stats.scene_lit_ddgi_gpu_ms=ddgi_timings;stats.scene_lit_gpu_sample_sequence=sample.frame_sequence;
             stats.scene_lit_direct_gpu_ms=direct_timings;stats.scene_lit_ddgi_update_gpu_ms=ddgi_update_timings;
+            stats.scene_lit_direct_reconstruction_gpu_ms=direct_reconstruction_timings;
             stats.scene_lit_gpu_pass_mask=readback_pass_masks[slot];
             stats.scene_lit_gpu_sample_frame_id=readback_frame_ids[slot];
             const auto ray_count=[&](std::size_t i){return counter[i]|(std::uint64_t(counter[i+4])<<32);};
@@ -443,7 +455,10 @@ struct SceneLit::State {
         inspection->traced_probe=~0u;
         const auto& previous=inspection->published;
         float largest_weight=0;
-        if(previous && previous->scene_identity==frame.scene_identity && previous->pixel==settings.probe_inspect_pixel)
+        if(settings.probe_inspect_source>=0) {
+            const auto requested=static_cast<std::uint32_t>(settings.probe_inspect_source);
+            if(requested<probe_field.total)inspection->traced_probe=requested;
+        } else if(previous && previous->scene_identity==frame.scene_identity && previous->pixel==settings.probe_inspect_pixel)
             for(const auto& probe:previous->probes)if(probe.identity[2]==6 && probe.identity[1]<probe_field.total && probe.weights[3]>largest_weight) {
                 inspection->traced_probe=probe.identity[1];largest_weight=probe.weights[3];
             }
@@ -467,6 +482,7 @@ struct SceneLit::State {
         metadata.sequence=gfxGetRecordingFrameSequence(gfx);metadata.frame_id=frame.ui_frame.id;
         metadata.scene_identity=frame.scene_identity;metadata.pixel=settings.probe_inspect_pixel;
         metadata.history=settings.probe_history;metadata.rays=settings.probe_rays;metadata.updates=probe_field.scheduled;
+        metadata.requested_probe=settings.probe_inspect_source;
         metadata.volumes=stats.scene_lit_probe_volumes;
         metadata.traced_probe=state.traced_probe;
     }
@@ -484,7 +500,7 @@ struct SceneLit::State {
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&ssil_history,&bloom,&history_base_metallic,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(const auto& signal:direct_signals){add_texture(signal.raw);for(const auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto t:*pair)add_texture(t);}
         for(auto t:pyramid)add_texture(t);
-        for(auto b:{gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current,di_scratch,di_reservoirs[0],di_reservoirs[1],rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,ray_counters})result+=b.getSize();
+        for(auto b:{gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots,gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current,di_scratch,di_reservoirs[0],di_reservoirs[1],rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,ray_counters})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
         if(inspection) {result+=inspection->output.getSize()+inspection->rays.getSize();for(auto b:inspection->readback)result+=b.getSize();for(auto b:inspection->ray_readback)result+=b.getSize();}
         for(const auto& [key,g]:geometries){(void)key;result+=g.positions.getSize()+gfxBottomLevelAccelerationStructureGetDataSize(gfx,g.blas);}
@@ -664,16 +680,23 @@ struct SceneLit::State {
     void lighting(const Frame& frame) {
         light_frame.update(frame,*material_frame,sequence);
         light_changed=light_frame.radiance_changed;
+        const auto upload=[&]<class T>(GfxBuffer& buffer,const std::vector<T>& data) {
+            retire(buffer);
+            buffer=gfxCreateBuffer<T>(gfx,std::max(std::size_t{1},data.size()),data.empty()?nullptr:data.data());
+            allocation(bool(buffer));
+        };
         if(light_frame.changed||!gpu_sources) {
-            const auto upload=[&]<class T>(GfxBuffer& buffer,const std::vector<T>& data) {
-                retire(buffer);
-                buffer=gfxCreateBuffer<T>(gfx,std::max(std::size_t{1},data.size()),data.empty()?nullptr:data.data());
-                allocation(bool(buffer));
-            };
             upload(gpu_sources,light_frame.sources);upload(gpu_previous_sources,light_frame.previous_sources);
             upload(gpu_proposals,light_frame.proposals);
             upload(gpu_current_to_previous,light_frame.current_to_previous);upload(gpu_previous_to_current,light_frame.previous_to_current);
         }
+        spatial_uploaded=light_frame.spatial_changed||!gpu_light_cells;
+        if(spatial_uploaded) {
+            upload(gpu_light_cells,light_frame.spatial_cells);upload(gpu_spatial_proposals,light_frame.spatial_proposals);
+            upload(gpu_spatial_source_slots,light_frame.spatial_source_slots);
+        }
+        light_grid_counts_gpu={light_grid_counts[0],light_grid_counts[1],light_grid_counts[2],
+            frame.view.lit.spatial_light_sampling&&!light_frame.spatial_cells.empty()?1u:0u};
         source_counts={light_frame.local_count,light_frame.directional_count,light_frame.emitter_count,
             static_cast<std::uint32_t>(light_frame.previous_sources.size())};
     }
@@ -682,7 +705,8 @@ struct SceneLit::State {
         pipelines();publish_gpu_sample(stats);encoded_pass_mask=0;begin(1);const auto& settings=frame.view.lit;targets(next);
         if(!settings.probe_inspect || !settings.ddgi || (stats.scene_lit_probe_inspection &&
             (stats.scene_lit_probe_inspection->scene_identity!=frame.scene_identity ||
-             stats.scene_lit_probe_inspection->pixel!=settings.probe_inspect_pixel)))stats.scene_lit_probe_inspection.reset();
+             stats.scene_lit_probe_inspection->pixel!=settings.probe_inspect_pixel ||
+             stats.scene_lit_probe_inspection->requested_probe!=settings.probe_inspect_source)))stats.scene_lit_probe_inspection.reset();
         if(!enabled||scene_identity!=frame.scene_identity)reset();
         else if(frame.camera_cut)reset(false);
         const std::array<float,4> next_viewport{frame.scene_viewport.x,frame.scene_viewport.y,frame.scene_viewport.width,frame.scene_viewport.height};
@@ -785,17 +809,23 @@ struct SceneLit::State {
         } else {
             dispatch_screen(direct,depth);
         }
-        end(12);begin(13);
+        end(12);begin(13);begin(16);
         for(std::size_t i=0;i<2;++i){const auto& signal=direct_signals[i];const auto p=direct_resolve.program();
             bind(p,raw_inputs[i],signal.raw);bind(p,previous_inputs[i],signal.history[1-parity]);bind(p,moments_previous[i],signal.moments[1-parity]);
             bind(p,history_outputs[i],signal.history[parity]);bind(p,moments_outputs[i],signal.moments[parity]);}
-        dispatch_screen(direct_resolve,depth);
+        dispatch_screen(direct_resolve,depth);end(16);
         const bool filter_direct=!settings.direct_reference&&!light_frame.sources.empty();
-        if(filter_direct)for(std::uint32_t step=0;step<3;++step){const auto p=direct_filter.program();
-            for(std::size_t i=0;i<2;++i){const auto& signal=direct_signals[i];
-                bind(p,filter_inputs[i],step==0?signal.history[parity]:signal.scratch[(step-1)%2]);
-                bind(p,filter_outputs[i],signal.scratch[step%2]);bind(p,filter_moments[i],signal.moments[parity]);}
-            bind(p,"lit_direct_filter_step",1u<<step);dispatch_screen(direct_filter,depth);}
+        for(std::uint32_t step=0;step<3;++step) {
+            begin(17+step,filter_direct);
+            if(filter_direct) {
+                const auto p=direct_filter[step].program();
+                for(std::size_t i=0;i<2;++i){const auto& signal=direct_signals[i];
+                    bind(p,filter_inputs[i],step==0?signal.history[parity]:signal.scratch[(step-1)%2]);
+                    bind(p,filter_outputs[i],signal.scratch[step%2]);bind(p,filter_moments[i],signal.moments[parity]);}
+                dispatch_screen(direct_filter[step],depth);
+            }
+            end(17+step);
+        }
         const std::array<GfxTexture,2> direct_result{
             filter_direct?direct_signals[0].scratch[0]:direct_signals[0].history[parity],
             filter_direct?direct_signals[1].scratch[0]:direct_signals[1].history[parity]};
@@ -915,6 +945,10 @@ struct SceneLit::State {
         require(gfxCommandBindKernel(gfx,tone.kernel()),"Bind Scene Lit tone map");require(gfxCommandDraw(gfx,3),"Compose Scene Lit display");stats.viewport_draw_calls++;end(7);
         if(settings.probe_debug) draw_coverage(depth,settings,stats);
         stats.scene_lit_light_sources=static_cast<std::uint32_t>(light_frame.sources.size());
+        stats.scene_lit_spatial_sources=static_cast<std::uint32_t>(light_frame.spatial_proposals.size());
+        stats.scene_lit_spatial_cells=light_frame.spatial_nonempty_cells;
+        stats.scene_lit_spatial_bytes=gpu_light_cells.getSize()+gpu_spatial_proposals.getSize()+gpu_spatial_source_slots.getSize();
+        stats.scene_lit_spatial_changed=spatial_uploaded;
         stats.scene_lit_shadow_sources=settings.shadows?static_cast<std::uint32_t>(std::count_if(light_frame.sources.begin(),light_frame.sources.end(),[](const GpuLightSource& l){return (l.meta[1]&2u)!=0;})):0;
         stats.scene_lit_di_candidates=settings.direct_candidates;
         const auto readback_slot=sequence%readback_count;
@@ -998,7 +1032,7 @@ struct SceneLit::State {
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,o.instance),"Retire Scene Lit instance");}objects.clear();
         if(tlas)require(gfxDestroyTopLevelAccelerationStructure(gfx,std::exchange(tlas,{})),"Retire Scene Lit TLAS");
         for(auto& [key,g]:geometries){(void)key;require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire Scene Lit BLAS");require(gfxDestroyGeometry(gfx,g.geometry),"Retire Scene Lit geometry");retire(g.positions);}geometries.clear();
-        for(auto* b:{&gpu_instances,&gpu_sources,&gpu_previous_sources,&gpu_proposals,&gpu_current_to_previous,&gpu_previous_to_current,&rt_triangles,&rt_closed_slots,&probe_ray_hits})retire(*b);
+        for(auto* b:{&gpu_light_cells,&gpu_spatial_proposals,&gpu_spatial_source_slots,&gpu_instances,&gpu_sources,&gpu_previous_sources,&gpu_proposals,&gpu_current_to_previous,&gpu_previous_to_current,&rt_triangles,&rt_closed_slots,&probe_ray_hits})retire(*b);
         std::vector<GpuInstance>{}.swap(instances);light_frame.clear();
         std::vector<GpuRayTriangle>{}.swap(packed_triangles);std::vector<std::uint32_t>{}.swap(packed_closed_slots);
         object_keys.clear();previous_object_keys.clear();
@@ -1011,7 +1045,8 @@ struct SceneLit::State {
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
         if(sampler)require(gfxDestroySamplerState(gfx,std::exchange(sampler,{})),"Retire Scene Lit sampler");
-        for(auto* p:{&gbuffer,&di_initial,&di_spatial,&direct,&direct_resolve,&direct_filter,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,
+        for(auto& pipeline:direct_filter)pipeline={};
+        for(auto* p:{&gbuffer,&di_initial,&di_spatial,&direct,&direct_resolve,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,
                     &ao,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
                     &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&ssil_trace,&ssil_resolve,&probe_debug_surface,&probe_debug_geometry})*p={};
     }

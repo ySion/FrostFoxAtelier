@@ -206,6 +206,87 @@ void stability_cases(Fixture& f) {
     }
     collect("stability-resumed",render::ProbeHistory::live,wall_pixel,true,4);
 
+    // Source selection changes only the optional ray capture. The receiver
+    // still exposes its full gather, including when a different probe is named.
+    {
+        const auto inspect_selection=[&](std::int32_t requested,bool require_rays) {
+            options.probe_inspect=true;options.probe_inspect_source=requested;
+            const auto first_frame=f.drawing.id+1;
+            std::uint64_t last_sequence=0;
+            unsigned samples=0,selected_endpoints=0,primary_distances=0;
+            std::shared_ptr<const render::ProbeInspection> last;
+            for(unsigned frame=0;frame<128 && samples<8;++frame) {
+                const auto result=f.step();
+                check(result.stats.scene_lit_history_resets==0,"DDGI capture selection does not reset transport history");
+                const auto sample=result.stats.scene_lit_probe_inspection;
+                if(!sample)continue;
+                check(sample->requested_probe==requested && sample->scene_identity==f.frame.scene_identity && sample->pixel==wall_pixel,
+                      "DDGI changed selection filters late samples from the previous request");
+                if(sample->frame_id<first_frame || sample->sequence<=last_sequence)continue;
+                if(requested>=static_cast<std::int32_t>(probe_count)) {
+                    check(sample->traced_probe==~0u && std::ranges::none_of(sample->ray_samples,[](const auto& ray){return ray.identity[3]!=0;}),
+                          "DDGI out-of-resident-range explicit selection publishes no old or fallback ray records");
+                } else {
+                    if(requested>=0)check(sample->traced_probe==static_cast<std::uint32_t>(requested),
+                                         "DDGI explicit selection captures the requested physical probe");
+                    const auto origin=std::ranges::find_if(sample->probes,[&](const auto& probe) {
+                        return probe.identity[2]!=0 && probe.identity[1]==sample->traced_probe;
+                    });
+                    for(const auto& ray:sample->ray_samples) {
+                        const auto finite=[](float value){return std::isfinite(value);};
+                        check(std::ranges::all_of(ray.endpoint_distance,finite) && std::ranges::all_of(ray.source_parameters,finite),
+                              "DDGI selected-source geometry records remain finite, including cleared slots");
+                        if(!ray.identity[3])continue;
+                        check(sample->traced_probe<probe_count && ray.identity[2]<sample->rays,
+                              "DDGI selected ray belongs to the current resident field and ray budget");
+                        if(origin!=sample->probes.end()) {
+                            double distance_squared=0;
+                            for(unsigned axis=0;axis<3;++axis) {
+                                const double delta=double(ray.surface[axis])-origin->position[axis];
+                                distance_squared+=delta*delta;
+                            }
+                            const double distance=std::sqrt(distance_squared);
+                            check(std::isfinite(ray.sampling[3]) && std::abs(distance-ray.sampling[3])<=1e-4+3e-5*distance,
+                                  "DDGI sampling.w remains probe-to-hit distance rather than source distance");
+                            ++primary_distances;
+                        }
+                        if(ray.identity[0]==~0u) {
+                            check(ray.endpoint_distance[3]==-1,"DDGI absent selected source has an explicit invalid endpoint distance");
+                            continue;
+                        }
+                        double distance_squared=0;
+                        for(unsigned axis=0;axis<3;++axis) {
+                            const double delta=double(ray.endpoint_distance[axis])-ray.surface[axis];
+                            distance_squared+=delta*delta;
+                        }
+                        const double distance=std::sqrt(distance_squared);
+                        check(ray.endpoint_distance[3]>=0 && std::abs(distance-ray.endpoint_distance[3])<=1e-4+3e-5*distance,
+                              "DDGI selected-light endpoint distance matches its world endpoint and hit position");
+                        ++selected_endpoints;
+                    }
+                }
+                last_sequence=sample->sequence;last=sample;++samples;
+            }
+            check(samples==8,"DDGI capture selection receives bounded unique completed samples");
+            if(require_rays)check(selected_endpoints>0 && primary_distances>0,
+                                  "DDGI capture selection exercises both source-endpoint and primary-hit distance records");
+            return last;
+        };
+        const auto automatic=inspect_selection(-1,true);
+        auto selected=automatic->probes.end();
+        for(auto probe=automatic->probes.begin();probe!=automatic->probes.end();++probe)
+            if(probe->identity[2]==6 && (selected==automatic->probes.end() || probe->weights[3]<selected->weights[3]))selected=probe;
+        check(selected!=automatic->probes.end(),"DDGI explicit capture can select a real receiver contributor");
+        // Prefer a lesser contributor so explicit capture does not merely test
+        // the same maximum-weight choice made by automatic selection.
+        inspect_selection(static_cast<std::int32_t>(selected->identity[1]),true);
+        inspect_selection(static_cast<std::int32_t>(render::probe_resident_limit-1),false);
+        inspect_selection(-1,true);
+        options.probe_inspect=false;
+        for(unsigned frame=0;frame<40;++frame)
+            check(!f.step().stats.scene_lit_probe_inspection,"DDGI disabled capture suppresses late explicit and automatic readbacks");
+    }
+
     // Explicit accepted render time, independent of fixture wall-clock speed.
     // Only source radiance changes: geometry, world cells and receiver stay put.
     // Record the darkening tail; this short lifecycle check does not impose an
@@ -233,7 +314,7 @@ void stability_cases(Fixture& f) {
         const auto bright_meshes=f.room.meshes;
         constexpr unsigned response_frames=384,baseline_frames=64,drain_frames=32;
         constexpr float response_delta=1.f/60.f;
-        static_assert(sizeof(render::ProbeInspection::Ray)==64);
+        static_assert(sizeof(render::ProbeInspection::Ray)==96);
         std::ofstream response(f.output/"ddgi-response.csv");
         check(response.good(),"DDGI source-frame response evidence file opened");
         response.precision(std::numeric_limits<double>::max_digits10);
@@ -328,8 +409,9 @@ void stability_cases(Fixture& f) {
                 for(const auto& ray:sample->ray_samples) {
                     const auto finite=[](float value){return std::isfinite(value);};
                     check(std::ranges::all_of(ray.direct,finite) && std::ranges::all_of(ray.surface,finite) &&
-                              std::ranges::all_of(ray.sampling,finite),
-                          "DDGI response raw 64-byte ray records are finite, including unused entries");
+                              std::ranges::all_of(ray.sampling,finite) && std::ranges::all_of(ray.endpoint_distance,finite) &&
+                              std::ranges::all_of(ray.source_parameters,finite),
+                          "DDGI response raw 96-byte ray records are finite, including unused entries");
                     if(!ray.identity[3])continue;
                     check(sample->traced_probe<probe_count && ray.identity[2]<sample->rays,
                           "DDGI response raw ray belongs to a resident probe and actual ray ordinal");
@@ -474,7 +556,8 @@ void stability_cases(Fixture& f) {
                 for(const auto& ray:sample->ray_samples) {
                     const auto finite=[](float value){return std::isfinite(value);};
                     check(std::ranges::all_of(ray.direct,finite) && std::ranges::all_of(ray.surface,finite) &&
-                              std::ranges::all_of(ray.sampling,finite),"DDGI sky ray diagnostics are finite across scratch strides");
+                              std::ranges::all_of(ray.sampling,finite) && std::ranges::all_of(ray.endpoint_distance,finite) &&
+                              std::ranges::all_of(ray.source_parameters,finite),"DDGI sky ray diagnostics are finite across scratch strides");
                     if(ray.identity[3])check(ray.identity[2]<rays,"DDGI sky valid ray ordinal respects the current budget");
                 }
                 last_sequence=sample->sequence;++samples;

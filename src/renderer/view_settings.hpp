@@ -32,10 +32,12 @@ struct CavitySettings {
 struct SceneLitSettings : rendering::SceneLightingSettings {
     bool operator==(const SceneLitSettings&) const = default;
     bool direct_reference{}; // Diagnostic: average 64 independent RIS estimates without reuse or denoising.
+    bool spatial_light_sampling{true}; // DI/DDGI proposal diagnostic; never persisted in World.
     bool probe_feedback_visibility{true}; // False is a diagnostic moment-only comparison.
     ProbeHistory probe_history{ProbeHistory::live}; // Diagnostic isolation; never persisted in World.
     bool probe_inspect{}; // Bounded asynchronous inspection of one physical client pixel.
     std::array<std::uint32_t,2> probe_inspect_pixel{};
+    std::int32_t probe_inspect_source{-1}; // Physical probe slot; -1 selects a receiver contributor automatically.
     bool probe_debug{}; // Actual receiver coverage, independent of the lighting histories.
     ProbeCoverage probe_coverage{ProbeCoverage::status};
     std::int32_t probe_debug_volume{-1}; // Geometry overlay selection; -1 draws all slots.
@@ -50,7 +52,8 @@ struct SceneLitSettings : rendering::SceneLightingSettings {
 inline const char* probe_settings_error(const SceneLitSettings& settings) noexcept {
     if(const auto* error=rendering::probe_layout_error(settings)) return error;
     if(settings.probe_coverage>ProbeCoverage::dominance || settings.probe_history>ProbeHistory::hold_distance || settings.probe_debug_volume < -1 ||
-       settings.probe_debug_volume>=static_cast<std::int32_t>(probe_volume_limit)) return "Invalid DDGI diagnostic selection";
+       settings.probe_debug_volume>=static_cast<std::int32_t>(probe_volume_limit) || settings.probe_inspect_source < -1 ||
+       settings.probe_inspect_source>=static_cast<std::int32_t>(probe_resident_limit)) return "Invalid DDGI diagnostic selection";
     return nullptr;
 }
 inline const char* probe_focus_error(const SceneLitSettings& settings,const std::array<float,3>& focus) noexcept {

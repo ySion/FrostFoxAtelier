@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <numbers>
 
 namespace atelier::renderer::detail {
@@ -54,6 +55,28 @@ double analytic_power(const GpuLightSource& source) {
 std::size_t mix_hash(std::size_t hash,std::size_t value) noexcept {
     return hash^(value+std::size_t{0x9e3779b9u}+(hash<<6)+(hash>>2));
 }
+bool light_grid_origin(const std::array<float,3>& focus,std::array<float,4>& origin) {
+    origin={0,0,0,light_grid_spacing};
+    for(std::size_t axis=0;axis<3;++axis) {
+        if(!std::isfinite(focus[axis]))return false;
+        const double minimum=(std::floor(double(focus[axis])/light_grid_spacing)-
+            double(light_grid_counts[axis]/2))*light_grid_spacing;
+        if(!std::isfinite(minimum)||std::abs(minimum)>std::numeric_limits<float>::max())return false;
+        origin[axis]=static_cast<float>(minimum);
+        if(double(origin[axis])!=minimum)return false;
+        // Validate every edge before any integer conversion. Large finite
+        // worlds may still render globally while eight-metre cells collapse.
+        float previous=origin[axis];
+        for(std::uint32_t edge=1;edge<=light_grid_counts[axis];++edge) {
+            const double position=minimum+double(edge)*light_grid_spacing;
+            if(std::abs(position)>std::numeric_limits<float>::max())return false;
+            const float current=static_cast<float>(position);
+            if(!std::isfinite(current)||double(current)!=position||current-previous!=light_grid_spacing)return false;
+            previous=current;
+        }
+    }
+    return true;
+}
 }
 
 std::size_t LightFrame::KeyHash::operator()(const ObjectKey& key) const noexcept {
@@ -73,12 +96,15 @@ void LightFrame::clear() {
     identities_.clear();previous_identities_.clear();descriptions_.clear();previous_descriptions_.clear();
     geometry_owners_.clear();previous_geometry_owners_.clear();previous_lookup_.clear();
     powers_.clear();scaled_.clear();actual_.clear();below_.clear();above_.clear();
+    spatial_origin={};spatial_cells.clear();spatial_proposals.clear();spatial_source_slots.clear();spatial_bins_.clear();
     local_count=directional_count=emitter_count=0;scene_identity_=frame_id_=0;
+    source_revision_=spatial_source_revision_=spatial_frame_id_=0;spatial_nonempty_cells=0;
+    spatial_initialized_=spatial_changed=false;
     valid_=advance_previous_=changed=radiance_changed=false;
 }
 
 void LightFrame::update(const Frame& frame,const MaterialFrame& materials,std::uint64_t sequence) {
-    try {update_impl(frame,materials,sequence);}
+    try {update_impl(frame,materials,sequence);update_spatial(frame.lighting_focus,sequence);}
     catch(...) {clear();throw;}
 }
 
@@ -171,7 +197,7 @@ void LightFrame::update_impl(const Frame& frame,const MaterialFrame& materials,s
     for(std::size_t i=0;i<analytic_.size();++i)if(analytic_[i].meta[0]==2) {
         append(analytic_[i],{analytic_keys_[i]},0);++directional_count;
     }
-    build_proposals();map_previous();
+    build_proposals();map_previous();++source_revision_;
     // Remapping already checks the effective emitter material description and
     // translates its previous GPU material index to the current index. Compare
     // source content in that identity domain, not packed source/material slots.
@@ -254,6 +280,101 @@ void LightFrame::build_proposals() {
         actual_[proposals[i].alias]+=(1-accept)/local_count;
     }
     for(std::uint32_t i=0;i<local_count;++i)proposals[i].probability=static_cast<float>(actual_[i]);
+}
+
+void LightFrame::update_spatial(const std::array<float,3>& focus,std::uint64_t sequence) {
+    if(!spatial_initialized_||sequence!=spatial_frame_id_)spatial_changed=false;
+    std::array<float,4> origin{};
+    if(local_count==0||!light_grid_origin(focus,origin))origin={};
+    if(spatial_initialized_&&spatial_source_revision_==source_revision_&&origin==spatial_origin) {
+        spatial_frame_id_=sequence;
+        return;
+    }
+    spatial_nonempty_cells=0;spatial_origin=origin;spatial_cells.clear();spatial_proposals.clear();spatial_source_slots.clear();
+    spatial_source_revision_=source_revision_;spatial_frame_id_=sequence;
+    spatial_initialized_=spatial_changed=true;
+    if(origin[3]==0)return;
+
+    spatial_cells.resize(light_grid_cell_count);
+    spatial_bins_.resize(light_grid_cell_count);
+    // A min heap under this ordering keeps the worst retained source at its
+    // root. Stable source identity resolves equal weights independently of
+    // packing order; ambiguous legacy identities use the packed index last.
+    const auto better=[&](std::uint32_t a,std::uint32_t b) {
+        const float pa=proposals[a].probability,pb=proposals[b].probability;
+        if(pa!=pb)return pa>pb;
+        const auto& ka=identities_[a].key;const auto& kb=identities_[b].key;
+        if(ka.owner!=kb.owner)return ka.owner<kb.owner;
+        if(ka.kind!=kb.kind)return ka.kind<kb.kind;
+        if(ka.geometry!=kb.geometry)return std::less<const geometry::Mesh*>{}(ka.geometry,kb.geometry);
+        if(ka.primitive!=kb.primitive)return ka.primitive<kb.primitive;
+        return a<b;
+    };
+    for(std::uint32_t source=0;source<local_count;++source) {
+        const auto& light=sources[source];
+        std::array<std::uint32_t,3> cell{};
+        bool inside=true;
+        for(std::size_t axis=0;axis<3;++axis) {
+            double anchor=light.origin_range[axis];
+            if(light.meta[0]==3)anchor+=(double(light.edge1_area[axis])+double(light.edge2[axis]))/3.;
+            const double coordinate=(anchor-double(origin[axis]))/light_grid_spacing;
+            if(!std::isfinite(coordinate)||coordinate<0||coordinate>=light_grid_counts[axis]) {inside=false;break;}
+            cell[axis]=static_cast<std::uint32_t>(std::floor(coordinate));
+        }
+        if(!inside)continue;
+        const auto index=cell[0]+light_grid_counts[0]*(cell[1]+light_grid_counts[1]*cell[2]);
+        auto& count=spatial_cells[index].count;auto& heap=spatial_bins_[index];
+        if(count<light_grid_cell_capacity) {
+            heap[count++]=source;
+            std::push_heap(heap.begin(),heap.begin()+count,better);
+        } else if(better(source,heap[0])) {
+            std::pop_heap(heap.begin(),heap.begin()+count,better);
+            heap[count-1]=source;
+            std::push_heap(heap.begin(),heap.begin()+count,better);
+        }
+    }
+
+    std::size_t retained=0;for(const auto& cell:spatial_cells)retained+=cell.count;
+    if(retained==0) {spatial_cells.clear();return;}
+    spatial_proposals.reserve(retained);
+    spatial_source_slots.assign(local_count,no_light_source);
+    for(std::uint32_t cell=0;cell<light_grid_cell_count;++cell) {
+        auto& header=spatial_cells[cell];const auto count=header.count;
+        if(count==0)continue;
+        ++spatial_nonempty_cells;
+        auto& selected=spatial_bins_[cell];
+        std::sort(selected.begin(),selected.begin()+count,better);
+        header.offset=static_cast<std::uint32_t>(spatial_proposals.size());
+        double mass=0;for(std::uint32_t slot=0;slot<count;++slot)mass+=proposals[selected[slot]].probability;
+        check(std::isfinite(mass)&&mass>0,"Spatial light proposal mass is invalid");
+        header.mass=static_cast<float>(mass);
+        std::array<double,light_grid_cell_capacity> scaled{},actual{};
+        std::array<std::uint32_t,light_grid_cell_capacity> below{},above{};
+        std::uint32_t below_count=0,above_count=0;
+        for(std::uint32_t slot=0;slot<count;++slot) {
+            const auto source=selected[slot];
+            spatial_proposals.push_back({source,1,slot,0});
+            spatial_source_slots[source]=(cell<<5)|slot;
+            scaled[slot]=(double(proposals[source].probability)/mass)*count;
+            if(scaled[slot]<1)below[below_count++]=slot;else above[above_count++]=slot;
+        }
+        while(below_count&&above_count) {
+            const auto under=below[--below_count],over=above[--above_count];
+            auto& proposal=spatial_proposals[header.offset+under];
+            proposal.accept=static_cast<float>(std::clamp(scaled[under],0.,1.));proposal.alias=over;
+            scaled[over]+=scaled[under]-1;
+            if(scaled[over]<1)below[below_count++]=over;else above[above_count++]=over;
+        }
+        // As with the global alias table, publish probabilities derived from
+        // the actual float thresholds, rather than the intended CPU weights.
+        for(std::uint32_t slot=0;slot<count;++slot) {
+            const auto& proposal=spatial_proposals[header.offset+slot];
+            const double accept=proposal.accept;
+            actual[slot]+=accept/count;actual[proposal.alias]+=(1-accept)/count;
+        }
+        for(std::uint32_t slot=0;slot<count;++slot)
+            spatial_proposals[header.offset+slot].probability=static_cast<float>(actual[slot]);
+    }
 }
 
 void LightFrame::map_previous() {

@@ -42,7 +42,8 @@ constexpr std::array options{
     ViewOptionInfo{ViewOption::probe_coverage,"probe_coverage",K::enumeration,0,3,coverage},FIELD(probe_debug_volume,integer,-1,3),
     ViewOptionInfo{ViewOption::probe_history,"probe_history",K::enumeration,0,2,probe_history},
     FIELD(probe_inspect,boolean,0,1),FIELD(probe_inspect_x,integer,0,65535),FIELD(probe_inspect_y,integer,0,65535),
-    FIELD(direct_reference,boolean,0,1),
+    FIELD(probe_inspect_source,integer,-1,renderer::probe_resident_limit-1),
+    FIELD(direct_reference,boolean,0,1),FIELD(spatial_light_sampling,boolean,0,1),
     FIELD(cavity,boolean,0,1),FIELD(cavity_ridge,number,0,2),FIELD(cavity_valley,number,0,2),FIELD(cavity_radius,number,.5,4),
     VOLUME(0),VOLUME(1),VOLUME(2),VOLUME(3)
 };
@@ -100,7 +101,8 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_coverage,lit.probe_coverage);VALUE(probe_debug_volume,lit.probe_debug_volume);
     VALUE(probe_history,lit.probe_history);VALUE(probe_inspect,lit.probe_inspect);
     VALUE(probe_inspect_x,lit.probe_inspect_pixel[0]);VALUE(probe_inspect_y,lit.probe_inspect_pixel[1]);
-    VALUE(direct_reference,lit.direct_reference);
+    VALUE(probe_inspect_source,lit.probe_inspect_source);
+    VALUE(direct_reference,lit.direct_reference);VALUE(spatial_light_sampling,lit.spatial_light_sampling);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
     case ViewOption::volume_first:case ViewOption::volume_last:break;
@@ -138,7 +140,8 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_coverage,lit.probe_coverage);SET(probe_debug_volume,lit.probe_debug_volume);
     SET(probe_history,lit.probe_history);SET(probe_inspect,lit.probe_inspect);
     SET(probe_inspect_x,lit.probe_inspect_pixel[0]);SET(probe_inspect_y,lit.probe_inspect_pixel[1]);
-    SET(direct_reference,lit.direct_reference);
+    SET(probe_inspect_source,lit.probe_inspect_source);
+    SET(direct_reference,lit.direct_reference);SET(spatial_light_sampling,lit.spatial_light_sampling);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET
     case ViewOption::volume_first:case ViewOption::volume_last:break;

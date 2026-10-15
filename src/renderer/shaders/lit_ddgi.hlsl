@@ -65,7 +65,8 @@ float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,
     // Explicit directionals cannot disappear in a large local-light lottery.
     float3 diffuse,specular,sun_diffuse,sun_specular;
     uint sun_seed=lit_hash(seed^0xb5297a4du);
-    LitReservoir local=lit_local_initial(receiver,true,lit_di_settings.x,seed);
+    float proposal_probability;
+    LitReservoir local=lit_local_initial(receiver,true,lit_di_settings.x,true,seed,proposal_probability);
     lit_reservoir_lighting(receiver,local,true,true,diffuse,specular);
     // Independent random domains keep sun samples unchanged when the local
     // candidate count or proposal changes.
@@ -88,7 +89,19 @@ float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,
         record.identity=uint4(local.source,selected?lit_sources[local.source].meta.x:~0u,ray_index,1);
         record.direct=float4(dot(diffuse,y),dot(specular,y),dot(sun_diffuse,y),dot(sun_specular,y));
         record.surface=float4(surface.position,surface.roughness);
-        record.sampling=float4(local.weight,selected?lit_light_proposals[local.source].probability:0,dot(feedback,y),hit_distance);
+        record.sampling=float4(local.weight,proposal_probability,dot(feedback,y),hit_distance);
+        record.endpoint_distance.w=-1;
+        if(selected) {
+            // Inspection alone reconstructs the selected sample; no new random
+            // draw or visibility query may change the production estimator.
+            LitLightSource source=lit_sources[local.source];
+            LitLightSample prepared=lit_prepare_light_sample(source,local.uv);
+            if(prepared.kind!=~0u) {
+                record.endpoint_distance=float4(prepared.position,length(prepared.position-surface.position));
+                record.source_parameters=float4(source.direction_radius.w,source.origin_range.w,prepared.area,
+                    prepared.kind==3?0:prepared.minimum_distance_squared);
+            }
+        }
         lit_probe_inspected_rays[ray_index]=record;
     }
     return ddgi_finite_radiance(radiance+feedback);

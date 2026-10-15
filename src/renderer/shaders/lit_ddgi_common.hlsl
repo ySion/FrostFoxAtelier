@@ -37,6 +37,8 @@ struct DDGIInspectedRay {
     float4 direct;
     float4 surface;
     float4 sampling;
+    float4 endpoint_distance;
+    float4 source_parameters;
 };
 uint lit_probe_inspect_source;
 RWStructuredBuffer<DDGIInspectedRay> lit_probe_inspected_rays;
