@@ -64,6 +64,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "entity_composition.inl"
 #include "scene_lit.inl"
 #include "material_resources.inl"
+#include "color_edits.inl"
 #include "recovery.inl"
 }
 int main(int argc, char** argv) {
@@ -71,7 +72,8 @@ int main(int argc, char** argv) {
     try {
         if(argc==2 && std::string_view(argv[1])=="--tooltips") {verify_tooltip_dsl();verify_property_tooltips();verify_declarative_parameters();verify_object_inspection();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--recovery") {verify_scene_recovery();return 0;}
-        if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();verify_color_edits();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--color-edits") {verify_color_edits();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
@@ -94,7 +96,7 @@ int main(int argc, char** argv) {
             std::puts("Editor physics project acceptance: PASS");
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --color-edits | --examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
         stage="physics project";verify_physics_test_project();
         stage="project document";verify_project_document();
         stage="scene recovery";verify_scene_recovery();

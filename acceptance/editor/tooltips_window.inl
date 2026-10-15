@@ -58,13 +58,82 @@ int verify_editor_tooltips(Application& app,const char* output_directory) {
     Access::input(app,{.kind=ui::EventKind::key_up,.key=ui::Key::escape},VK_ESCAPE);tick(app,1);
     require(!Access::menu_open(app) && !app.presented()->tooltip && app.document().undo_count()==history,
         "Menu dismissal resurrected help or changed scene history.");
+
+    // Exercise the colour form through Application input and its real DSL controls.
+    require(bool(Access::command(app,editor::Command::create_point_light)),"Colour fixture could not create a light.");
+    auto& document=Access::physics_document(app);
+    const auto light=component(app,document.selection().entity,document.types().light_component);
+    std::array<world::FieldPath,3> channels;
+    for(const auto& property:model(document.properties(light))) {
+        if(property.name=="settings.color.x") channels[0]=property.path;
+        if(property.name=="settings.color.y") channels[1]=property.path;
+        if(property.name=="settings.color.z") channels[2]=property.path;
+    }
+    for(const auto& path:channels) require(!path.empty(),"Colour fixture lost a reflected RGB channel.");
+    model(document.set_property(light,channels[0],Scalar{2.f},0x484452));
+    model(Access::select_entity(app,light));
+    Access::select_tab(app,editor::control::parameters_tab);tick(app);
+    Access::mark_saved(app);
+    const auto colour_history=document.undo_count();
+    const auto channel=[&](std::size_t lane) {return std::get<float>(model(document.read_property(light,channels[lane])));};
+    const auto press_key=[&](ui::Key key,WPARAM native,bool control=false) {
+        Access::input(app,{.kind=ui::EventKind::key_down,.key=key,.control=control},native);
+        Access::input(app,{.kind=ui::EventKind::key_up,.key=key,.control=control},native);
+        tick(app,1);
+    };
+    const auto click_control=[&](ui::ControlKey key) {
+        const auto* box=app.presented()->find(key);
+        if(!box) for(const auto& control:app.presented()->controls)
+            if(control.kind==ui::ControlKind::button && control.action_target==key) {box=&control;break;}
+        require(box!=nullptr,"Colour fixture cannot find its input control.");
+        const auto at=point(*box);
+        pointer(ui::EventKind::pointer_down,at);pointer(ui::EventKind::pointer_up,at);tick(app,1);
+    };
+    const auto replace_text=[&](std::wstring text) {
+        press_key(ui::Key::a,'A',true);
+        Access::input(app,{.kind=ui::EventKind::text,.data=std::move(text)});tick(app,1);
+    };
+    const auto open_colour=[&] {
+        const auto pick=Access::color_pick(app);require(pick!=0,"Light colour has no swatch action.");
+        click_control(pick);
+        require(app.presented()->find(editor::control::color_editor) && document.editing(),
+            "HDR colour did not mount the real colour editor and its transaction.");
+    };
+    open_colour();
+    require(document.dirty(),"An open scene colour transaction was reported clean.");
+    click_control(editor::control::color_rgb);replace_text(L"3");
+    press_key(ui::Key::tab,VK_TAB);
+    require(Access::focused(app)==editor::control::color_rgb+1 && channel(0)==3.f,
+        "RGB typing or Tab navigation was swallowed by the colour popup.");
+    replace_text(L"0.5");press_key(ui::Key::tab,VK_TAB);
+    require(Access::focused(app)==editor::control::color_rgb+2 && channel(1)==.5f,
+        "Tab did not commit the green channel and focus the blue channel.");
+    click_control(editor::control::color_hex);replace_text(L"804020");press_key(ui::Key::tab,VK_TAB);
+    require(std::abs(channel(0)-128.f/255)<.00001f && std::abs(channel(1)-64.f/255)<.00001f &&
+        std::abs(channel(2)-32.f/255)<.00001f,"Hex input did not reach the live colour transaction.");
+    click_control(editor::control::color_rgb);replace_text(L"2.5");press_key(ui::Key::enter,VK_RETURN);
+    require(channel(0)==2.5f && document.undo_count()==colour_history && document.dirty(),
+        "HDR preview was clipped or created a premature history entry.");
+    capture(app,output/"parameters-hdr-color-editor.png");
+    click_control(editor::control::color_done);
+    require(!document.editing() && !app.presented()->find(editor::control::color_editor) &&
+        document.undo_count()==colour_history+1 && document.dirty(),"Done did not commit exactly one colour edit.");
+    model(Access::command(app,editor::Command::undo));tick(app);
+    require(channel(0)==2.f && channel(1)==1.f && channel(2)==1.f && !document.dirty(),
+        "One undo did not restore all colour channels and the saved state.");
+    open_colour();click_control(editor::control::color_rgb);replace_text(L"4");
+    require(channel(0)==4.f,"Colour cancellation fixture did not preview its numeric draft.");
+    Access::input(app,{.kind=ui::EventKind::focus_lost});tick(app);
+    require(channel(0)==2.f && !document.editing() && !document.dirty() && document.undo_count()==colour_history &&
+        !app.presented()->find(editor::control::color_editor),"Focus cancellation retained a colour draft, transaction or popup.");
     Access::mark_saved(app);app.close();
     require(!app.step(),"Tooltip acceptance did not close its owned editor normally.");
     std::ofstream report(output/"tooltips-acceptance.txt");
     report<<"Editor tooltip acceptance: PASS\nBuild: "<<build_info::revision<<" ("<<build_info::configuration<<")\n"
         <<"Real native window, Application input, DSL parameter labels, same-frame GPU drawing and capture.\n"
         <<"Position and World Exposure descriptions; pointer leave and menu cancellation; viewport extent and undo unchanged.\n"
-        <<"No global keyboard/mouse input or foreground activation; one owned mesh fixture.\n";
+        <<"HDR colour popup: real RGB/Hex/Tab input, dirty state, Done, single undo and focus cancellation.\n"
+        <<"No global keyboard/mouse input or foreground activation; owned mesh/light fixtures.\n";
     require(report.good(),"Cannot write tooltip window evidence.");
     std::puts("Editor tooltip acceptance: PASS (Parameters/World native GPU capture, cancellation, stable viewport/undo)");
     return 0;

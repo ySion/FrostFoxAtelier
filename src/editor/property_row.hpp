@@ -56,8 +56,7 @@ public:
         return entry.help;
     }
 private:
-    struct Entry { ui_language::TooltipBinding help;
-    ui_language::ActionBinding pick;std::string description;bool used{}; };
+    struct Entry { ui_language::TooltipBinding help;std::string description;bool used{}; };
     std::unordered_map<ui::ControlKey,Entry> entries_;
 };
 

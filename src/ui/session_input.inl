@@ -298,7 +298,8 @@ Reply Session::input(const Event& event) {
                 auto& stop=tree_stops[box.parent];
                 if (!stop || box.key==self.focus || (box.selected && stop!=self.focus)) stop=box.key;
             }
-            for (const auto& box:self.published->controls) if (focusable(box.kind) && visible(box.bounds,box.clip) && self.current(box)) {
+            for (const auto& box:self.published->controls) if (focusable(box.kind) && visible(box.bounds,box.clip) && self.current(box) &&
+                (!self.popup || self.popup_member(box.key))) {
                 const auto& control=self.states.at(box.key).control;
                 if ((!control.selection_group || box.selected) && (box.kind!=ControlKind::tree_item || tree_stops[box.parent]==box.key)) keys.push_back(box.key);
             }

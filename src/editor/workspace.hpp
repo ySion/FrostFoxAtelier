@@ -91,6 +91,7 @@ struct Workspace {
         ObjectId component{};
         std::string slot{};
         std::size_t index{};
+        double color_maximum{}; // color_pick reuses the owning numeric property's range.
     };
     Workspace();
     Workspace(const Workspace&)=delete;
@@ -115,7 +116,15 @@ struct Workspace {
     ui::ControlKey tree_drop_row{}; // Highlighted drop target while a Scene Tree drag is live.
     // Open colour editor: the edited object/fields, the value at open (for revert and the
     // original chip) and where the popup sits. Edits run as one Session group transaction.
-    struct ColorEdit { ObjectId object; std::vector<world::FieldPath> paths; std::array<double,3> original{}, value{}; float x{}, y{}; std::wstring hex; };
+    struct ColorEdit {
+        ObjectId object;
+        std::vector<world::FieldPath> paths;
+        std::array<double,3> original{}, value{};
+        double maximum{1};
+        float x{}, y{};
+        std::wstring hex;
+        bool composition_failed{};
+    };
     std::optional<ColorEdit> color_edit;
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }

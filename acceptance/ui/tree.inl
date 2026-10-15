@@ -75,4 +75,19 @@ void shared_tree_view() {
         c.controls[0].tree_filter=L"nothing matches"; c.prepare();
         require(c.frame->tree_rows.empty() && c.frame->scrollbars.empty(),"empty filter result kept interactive rows");
     }
+    Consumer drag;
+    auto tree=leaf(80,ui::ControlKind::tree,0);tree.layout=ui_layout::NodeInput::column();tree.layout.width=ui_layout::Axis::fixed(240);
+    auto row=leaf(81,ui::ControlKind::tree_item,0,L"Drag Entity");row.parent=80;row.tree_draggable=true;
+    drag.controls={tree,row};drag.prepare();
+    for(const auto ending:{ui::EventKind::key_down,ui::EventKind::focus_lost,ui::EventKind::capture_lost}) {
+        const auto b=drag.frame->find(81)->bounds;const auto x=b.x+b.width*.5f,y=b.y+b.height*.5f;
+        drag.ui.input({.kind=ui::EventKind::pointer_down,.x=x,.y=y});
+        const auto begun=actions_of(drag.ui.input({.kind=ui::EventKind::pointer_move,.x=x+25,.y=y}));
+        require(std::ranges::any_of(begun,[](const auto& a){return a.kind==ui::ActionKind::drag_begin && a.key==81;}),"Tree drag did not begin.");
+        const auto cancelled=drag.ui.input({.kind=ending,.key=ending==ui::EventKind::key_down?ui::Key::escape:ui::Key::none});
+        const auto actions=actions_of(cancelled);
+        require(cancelled.capture==ui::Capture::release && std::ranges::any_of(actions,[](const auto& a){return a.kind==ui::ActionKind::drag_cancel && a.key==81;}) &&
+            std::ranges::none_of(actions,[](const auto& a){return a.kind==ui::ActionKind::edit_cancel;}),"Tree drag cancellation did not use its drag protocol.");
+        drag.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::escape});drag.prepare();
+    }
 }

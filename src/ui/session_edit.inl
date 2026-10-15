@@ -56,7 +56,7 @@
             const auto old=*press;
             press.reset(); reply.capture=Capture::release; reply.redraw=true;
             if (old.dragging && !old.scrollbar) {
-                if (states.at(old.key).control.kind==ControlKind::tab)
+                if (states.at(old.key).control.kind==ControlKind::tab || states.at(old.key).control.kind==ControlKind::tree_item)
                     action(reply,ActionKind::drag_cancel,old.key,DragPoint{old.last_x,old.last_y});
                 else action(reply,ActionKind::edit_cancel,old.key,old.original);
                 if (focus==old.key && states.at(old.key).control.kind==ControlKind::number)

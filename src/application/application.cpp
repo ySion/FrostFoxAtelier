@@ -449,6 +449,11 @@ Result<void> Application::open_color_edit(ObjectId object,std::span<const FieldI
     if(workspace_.color_edit) if(auto closed=finish_color_edit(true);!closed) return closed;
     close_menu(false);
     editor::Workspace::ColorEdit edit;edit.object=object;
+    const auto* binding=workspace_.binding(swatch);
+    if(!binding || binding->kind!=editor::Workspace::Binding::Kind::color_pick ||
+        !std::isfinite(binding->color_maximum) || binding->color_maximum<=0)
+        return std::unexpected(Error{ErrorCode::invalid_definition,"Colour editing requires the owning property's numeric range."});
+    edit.maximum=binding->color_maximum;
     for(std::uint32_t lane=0;lane<3;++lane) {
         auto path=world::FieldPath(prefix.begin(),prefix.end());
         auto info=document_->world().runtime().describe(take_type(object,prefix));if(!info) return std::unexpected(info.error());
@@ -484,13 +489,19 @@ Result<void> Application::apply_color(std::array<double,3> rgb) {
     auto& edit=*workspace_.color_edit;
     std::vector<Scalar> values;
     for(std::size_t lane=0;lane<3;++lane) {
-        const auto value=std::max(0.0,rgb[lane]);
+        const auto value=rgb[lane];
+        if(!std::isfinite(value) || value<0 || value>edit.maximum)
+            return std::unexpected(Error{ErrorCode::argument_mismatch,"Colour channels must stay within the property's numeric range."});
         auto prototype=document_->read_property(edit.object,edit.paths[lane]);if(!prototype) return std::unexpected(prototype.error());
         auto typed=scalar_value(*prototype,value);if(!typed) return std::unexpected(typed.error());
-        values.push_back(*typed);edit.value[lane]=value;
+        values.push_back(*typed);
     }
+    if(auto applied=document_->preview_group_edit(editor::control::color_group,values);!applied) return applied;
+    for(std::size_t lane=0;lane<3;++lane)
+        edit.value[lane]=std::visit([](const auto& value)->double {
+            if constexpr(std::same_as<std::decay_t<decltype(value)>,EnumValue>) return value.bits; else return double(value);},values[lane]);
     edit.hex=editor::color_hex(edit.value);
-    return document_->preview_group_edit(editor::control::color_group,values);
+    return {};
 }
 Result<bool> Application::color_edit_action(const ui::Action& event) {
     using namespace editor::control;
@@ -518,9 +529,17 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
 }
 Result<void> Application::finish_color_edit(bool keep) {
     if(!workspace_.color_edit) return {};
-    workspace_.color_edit.reset();
     auto finished=keep?document_->commit_edit(editor::control::color_group):document_->cancel_edit();
-    if(finished) workspace_.status=keep?L"Colour applied":L"Colour edit cancelled";
+    if(!finished && keep) {
+        const auto cancelled=document_->cancel_edit();
+        if(!cancelled) return std::unexpected(Error{finished.error().code,
+            finished.error().message+"; rollback failed: "+cancelled.error().message});
+        workspace_.color_edit.reset();
+    }
+    if(finished) {
+        workspace_.color_edit.reset();
+        workspace_.status=keep?L"Colour applied":L"Colour edit cancelled";
+    }
     return finished;
 }
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
@@ -1143,7 +1162,19 @@ bool Application::step(renderer::Capture* capture) try {
     const auto plane_normal=camera_.construction_normal();
     workspace_.view.grid_plane=plane_normal.z!=0?renderer::GridPlane::xy:
         plane_normal.x!=0?renderer::GridPlane::yz:renderer::GridPlane::xz;
-    const auto describe=[&] {return workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr);};
+    const auto describe=[&] {
+        // Selection/document commands can cancel the business edit before the next UI frame.
+        if(workspace_.color_edit && !document_->owns_edit(editor::control::color_group)) workspace_.color_edit.reset();
+        auto controls=workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr);
+        if(workspace_.color_edit && (workspace_.color_edit->composition_failed ||
+            std::ranges::none_of(controls,[](const auto& control){return control.key==editor::control::color_editor;}))) {
+            const auto diagnostic=std::string(workspace_.ui_error());
+            if(auto cancelled=finish_color_edit(false);!cancelled) throw std::runtime_error(cancelled.error().message);
+            controls=workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr);
+            workspace_.status=L"Colour editor could not open"+(diagnostic.empty()?std::wstring{}:L": "+widen(diagnostic));
+        }
+        return controls;
+    };
     auto controls = describe();
     auto described = ui_.set_controls(controls);
     if (!described && workspace_.reject_ui_controls("UI candidate rejected at control "+std::to_string(described.error().key))) {

@@ -72,4 +72,32 @@ void shared_menu_semantics() {
         require(plain==1 && coverages(*icons.frame)==plain+1 && icons.frame->find(10)->bounds.width==30,
             "compact icon menu lost its icon/corner indicator or reserved a full dropdown column");
     }
+    Consumer form;
+    auto outside=leaf(600,ui::ControlKind::button,10,L"Outside");
+    auto popup=leaf(700,ui::ControlKind::popup,60);popup.popup_owner=600;
+    popup.layout=ui_layout::NodeInput::column();popup.layout.width=ui_layout::Axis::fixed(240);popup.layout.offset_y=60;
+    auto hex=leaf(701,ui::ControlKind::text_edit,0,L"#FFFFFF");hex.parent=700;
+    auto channel=leaf(702,ui::ControlKind::number,0);channel.parent=700;channel.minimum=0;channel.maximum=8;channel.value=2;
+    auto slider=leaf(703,ui::ControlKind::slider,0);slider.parent=700;slider.minimum=0;slider.maximum=8;slider.value=2;slider.drag_step=.5;
+    auto done=leaf(704,ui::ControlKind::button,0,L"Done");done.parent=700;
+    form.controls={outside,popup,hex,channel,slider,done};form.prepare();
+    form.ui.focus(701);key(form.ui,ui::Key::a,true);
+    form.ui.input({.kind=ui::EventKind::text,.data=std::wstring(L"#804020")});
+    auto committed=actions_of(key(form.ui,ui::Key::enter));
+    require(std::ranges::any_of(committed,[](const auto& a) {return a.kind==ui::ActionKind::edit_commit && a.key==701 &&
+        std::get<std::wstring>(a.value)==L"#804020";}) && form.ui.has_popup(),"Popup form swallowed text input or dismissed on Enter.");
+    key(form.ui,ui::Key::tab);require(form.ui.focused_control()==702 && form.ui.has_popup(),"Popup form Tab did not focus its next field.");
+    key(form.ui,ui::Key::a,true);form.ui.input({.kind=ui::EventKind::text,.data=std::wstring(L"3.5")});
+    committed=actions_of(key(form.ui,ui::Key::enter));
+    require(std::ranges::any_of(committed,[](const auto& a) {return a.kind==ui::ActionKind::edit_commit && a.key==702 &&
+        std::get<double>(a.value)==3.5;}),"Popup form swallowed numeric input.");
+    key(form.ui,ui::Key::tab);committed=actions_of(key(form.ui,ui::Key::right));
+    require(std::ranges::any_of(committed,[](const auto& a) {return a.kind==ui::ActionKind::edit_commit && a.key==703 &&
+        std::get<double>(a.value)==2.5;}),"Popup form swallowed slider navigation.");
+    key(form.ui,ui::Key::tab);key(form.ui,ui::Key::tab);
+    require(form.ui.focused_control()==701,"Popup form Tab escaped to the background controls.");
+    const auto dismissed=actions_of(key(form.ui,ui::Key::escape));
+    require(std::ranges::any_of(dismissed,[](const auto& a){return a.kind==ui::ActionKind::dismiss && a.key==700;}),
+        "Popup form Escape did not request dismissal.");
+    form.controls={outside};form.prepare();require(!form.ui.has_popup(),"Removed form retained a modal barrier.");
 }

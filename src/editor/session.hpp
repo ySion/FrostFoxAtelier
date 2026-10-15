@@ -124,7 +124,7 @@ public:
     static Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> legacy_selection(std::string_view,
         std::span<const std::pair<std::size_t,std::optional<std::size_t>>>);
     Result<ObjectId> local_object(std::uint64_t) const;
-    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
+    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || group_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
     void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
     void mark_modified() noexcept { if(saved_cursor_) {saved_cursor_.reset();++revision_;} }
     // Monotonic authoring observation token, independent of undo cursor reuse.
@@ -206,7 +206,7 @@ private:
     struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};
     std::unordered_map<std::string,MaterialDocument> materials_;
     std::unordered_map<std::string,ObjectRoot> textures_;
-    struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};world::FieldPath path;ObjectId entity,component;};
+    struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};std::vector<world::FieldPath> paths;ObjectId entity,component;};
     std::optional<MaterialEdit> material_edit_;
     Result<ObjectRoot> texture_resource(Project&,std::string_view);
     Result<void> replace_material_bindings(ObjectId,std::vector<world::MaterialBinding>);
@@ -215,6 +215,7 @@ private:
     Result<ObjectId> admit_property_edit(ObjectId) const;
     Result<void> apply_field(const FieldChange&, bool forward);
     Result<void> apply_group(const FieldGroupChange&, bool forward);
+    Result<void> write_group(ObjectId,std::span<const world::FieldPath>,std::span<const Scalar>);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);

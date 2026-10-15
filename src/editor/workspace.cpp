@@ -63,6 +63,7 @@ void Workspace::reset_layout() {
 }
 void Workspace::reset_document() {
     camera_flying=false;
+    color_edit.reset();
     category_keys_.clear();
     property_help_.clear();
     lighting.cancel();
@@ -854,7 +855,10 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     row.title=spatial_rotation?std::wstring(L"Rotation (°)"):property_caption(name,property.label);
                     row.edit={spatial_position?bind(object,{},Binding::Kind::position_default):spatial_rotation?bind(object,{},Binding::Kind::rotation_default):spatial_scale?bind(object,{},Binding::Kind::scale_default):ui::ControlKey{},editable,false,std::move(tuple)};
                     row.enabled=editable; row.change={field_key,editable}; row.target=field_key;
-                    if(color) {row.swatch=std::array{r,g,b};row.pick={bind(object,prefix,Binding::Kind::color_pick),editable};}
+                    if(color) {
+                        row.swatch=std::array{r,g,b};row.pick={property_key(prefix,Binding::Kind::color_pick),editable};
+                        std::ranges::find(bindings_,row.pick.target,&Binding::key)->color_maximum=row.edit.fields.front().maximum;
+                    }
                     row.override_available=override_available; row.overridden=overridden;
                     row.inherit={instance?override_key:field_key,override_available && !session.world().running()};
                     row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(name)+L" : "+wide(parent->name)+(spatial_rotation?L" · Euler (°)":L""),property.description);
@@ -1329,11 +1333,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             result.slider.reset();return result;
         };
         ui_language::EditBinding rgb{control::color_group,true,false,{
-            field(control::color_rgb,L"R",edit.value[0],1,.005,ui::VectorAxis::x),field(control::color_rgb+1,L"G",edit.value[1],1,.005,ui::VectorAxis::y),
-            field(control::color_rgb+2,L"B",edit.value[2],1,.005,ui::VectorAxis::z)}};
+            field(control::color_rgb,L"R",edit.value[0],edit.maximum,.005,ui::VectorAxis::x),field(control::color_rgb+1,L"G",edit.value[1],edit.maximum,.005,ui::VectorAxis::y),
+            field(control::color_rgb+2,L"B",edit.value[2],edit.maximum,.005,ui::VectorAxis::z)}};
         ui_language::EditBinding hsv_edit{control::color_group+1,true,false,{
             field(control::color_hsv,L"H",hsv[0],360,1,ui::VectorAxis::none),field(control::color_hsv+1,L"S",hsv[1],1,.005,ui::VectorAxis::none),
-            field(control::color_hsv+2,L"V",hsv[2],1,.005,ui::VectorAxis::none)}};
+            field(control::color_hsv+2,L"V",hsv[2],edit.maximum,.005,ui::VectorAxis::none)}};
         const auto clamp01=[](double v){return std::clamp(v,0.0,1.0);};
         const std::array<ui_language::InputValue,13> inputs{double(std::clamp(edit.x,0.f,std::max(0.f,size.width-420.f))),
             double(std::clamp(edit.y,0.f,std::max(0.f,size.height-200.f))),
@@ -1342,7 +1346,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             std::move(rgb),std::move(hsv_edit),ui_language::TextEditBinding{control::color_hex,edit.hex},
             ui_language::ActionBinding{control::color_revert,true},ui_language::ActionBinding{control::color_done,true}};
         const std::array<ui_language::KeyBinding,1> keys{{{"editor",control::color_editor}}};
-        static_cast<void>(ui_document_->append("ColorEditor",0,keys,inputs,result));
+        color_edit->composition_failed=!ui_document_->append("ColorEditor",0,keys,inputs,result);
     }
     if (ui_document_->candidate_failed()) {
         reject_ui_controls(std::string(ui_error()));

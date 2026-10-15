@@ -411,7 +411,7 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
     if(is_material(object)) {
         auto value=runtime_.read(object,path);if(!value) return std::unexpected(value.error());
         auto begun=begin_material_edit(object,control_session);if(!begun) return begun;
-        material_edit_->path.assign(path.begin(),path.end());return {};
+        material_edit_->paths={{path.begin(),path.end()}};return {};
     }
     auto entity=admit_property_edit(object); if (!entity) return std::unexpected(entity.error());
     auto before=world_.read(object,path); if (!before) return std::unexpected(before.error());
@@ -428,6 +428,13 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
 Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::FieldPath> paths,std::uint64_t control_session) {
     if (editing()) return invalid("A field edit is already active.");
     if (!control_session || paths.empty()) return invalid("A group edit requires a control session and fields.");
+    if(is_material(object)) {
+        for(const auto& path:paths) {
+            auto value=read_property(object,path);if(!value) return std::unexpected(value.error());
+        }
+        if(auto begun=begin_material_edit(object,control_session);!begun) return begun;
+        material_edit_->paths.assign(paths.begin(),paths.end());return {};
+    }
     auto entity=admit_property_edit(object); if (!entity) return std::unexpected(entity.error());
     auto root=runtime_.hold(object); if (!root) return std::unexpected(root.error());
     FieldGroupChange change{std::move(*root),*entity,{paths.begin(),paths.end()},control_session,{},{}};
@@ -439,23 +446,49 @@ Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::Fi
     change.after=change.before;group_.emplace(std::move(change));return {};
 }
 Result<void> Session::preview_group_edit(std::uint64_t control_session,std::span<const Scalar> values) {
+    if(material_editing(control_session)) {
+        auto written=write_group(material_edit_->root.id(),material_edit_->paths,values);
+        if(written) ++revision_;return written;
+    }
     if (!group_ || group_->control_session!=control_session) return invalid("No matching group edit.");
     if (values.size()!=group_->paths.size()) return invalid("A group edit needs one value per field.");
     auto entity=admit_property_edit(group_->root.id()); if (!entity) return std::unexpected(entity.error());
     if (*entity!=group_->entity) return invalid("The property's owning Entity changed.");
-    for (const auto& value:values) if (!detail::finite_scalar(value)) return invalid("Property values must be finite.");
-    for (std::size_t i=0;i<values.size();++i) {
-        if (values[i].index()!=group_->before[i].index()) return invalid("A group edit value changed its field type.");
-        if (auto written=world_.write(group_->root.id(),group_->paths[i],values[i]);!written) return written;
-    }
+    if(auto written=write_group(group_->root.id(),group_->paths,values);!written) return written;
     ++revision_;return {};
+}
+Result<void> Session::write_group(ObjectId object,std::span<const world::FieldPath> paths,std::span<const Scalar> values) {
+    if(paths.empty() || values.size()!=paths.size()) return invalid("A group edit needs one value per field.");
+    std::vector<Scalar> previous;previous.reserve(paths.size());
+    for(std::size_t i=0;i<paths.size();++i) {
+        if(!detail::finite_scalar(values[i])) return invalid("Property values must be finite.");
+        auto value=read_property(object,paths[i]);if(!value) return std::unexpected(value.error());
+        if(value->index()!=values[i].index()) return invalid("A group edit value changed its field type.");
+        previous.push_back(*value);
+    }
+    // Material rollback also restores override bits and the inherited surface.
+    if(is_material(object)) {
+        auto before=material::read_material(runtime_,object);if(!before) return std::unexpected(before.error());
+        for(std::size_t i=0;i<paths.size();++i) if(auto written=material::write_property(runtime_,object,paths[i],values[i]);!written) {
+            auto restored=material::update_material(runtime_,object,*before);return restored?written:restored;
+        }
+        return {};
+    }
+    for(std::size_t i=0;i<paths.size();++i) if(auto written=world_.write(object,paths[i],values[i]);!written) {
+        // Each World write rejects its own value without changing it. Restore
+        // earlier lanes in reverse order, including repeated paths.
+        for(auto lane=i;lane>0;) {
+            --lane;if(auto restored=world_.write(object,paths[lane],previous[lane]);!restored) return restored;
+        }
+        return written;
+    }
+    return {};
 }
 Result<void> Session::apply_group(const FieldGroupChange& change,bool forward) {
     auto entity=admit_property_edit(change.root.id()); if (!entity) return std::unexpected(entity.error());
     if (*entity!=change.entity) return invalid("The property's owning Entity changed.");
     const auto& values=forward?change.after:change.before;
-    for (std::size_t i=0;i<values.size();++i) if (auto written=world_.write(change.root.id(),change.paths[i],values[i]);!written) return written;
-    return {};
+    return write_group(change.root.id(),change.paths,values);
 }
 bool Session::owns_edit(std::uint64_t control_session) const noexcept {
     return (group_ && group_->control_session == control_session) || (active_ && active_->control_session == control_session) ||
@@ -539,9 +572,9 @@ Result<void> Session::preview_edit(std::uint64_t control_session,float value) {
 }
 Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
     if(material_editing(control_session)) {
-        if(material_edit_->path.empty()) return invalid("No material field is being edited.");
+        if(material_edit_->paths.size()!=1) return invalid("No single material field is being edited.");
         if(!detail::finite_scalar(value)) return invalid("Material fields must be finite.");
-        auto changed=material::write_property(runtime_,material_edit_->root.id(),material_edit_->path,std::move(value));
+        auto changed=material::write_property(runtime_,material_edit_->root.id(),material_edit_->paths.front(),std::move(value));
         if(changed) ++revision_;return changed;
     }
     if (!active_ || active_->control_session!=control_session) return invalid("No matching field edit.");

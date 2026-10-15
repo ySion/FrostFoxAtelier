@@ -83,29 +83,39 @@
             if (box.kind==ControlKind::menu_item && !states.at(box.key).control.menu_branch && !keep_menu_open) dismiss_popup(reply);
         }
     }
+    bool popup_member(ControlKey key) const {
+        while (key && published) {
+            if (key==popup) return true;
+            const auto* box=published->find(key);key=box?box->parent:0;
+        }
+        return false;
+    }
     bool popup_input(Reply& reply, const Event& event, const ControlBox* hit) {
         if (!popup && (!published || !published->popup)) return false;
         reply.consumed=true;
-        if (event.kind==EventKind::key_down && (event.key==Key::escape || event.key==Key::tab)) {
+        const bool keyboard=event.kind==EventKind::key_down || event.kind==EventKind::key_up || event.kind==EventKind::text;
+        const bool menu=keyboard && published && std::ranges::any_of(published->controls,[&](const auto& box) {
+            return box.kind==ControlKind::menu_item && popup_member(box.key);
+        });
+        if (event.kind==EventKind::key_down && (event.key==Key::escape || (menu && event.key==Key::tab))) {
             dismiss_popup(reply); terminal_key=event.key; return true;
         }
         if (!popup || popup_dismissed || published->popup!=popup) return true;
         const auto* owner=published->find(states.at(popup).control.popup_owner);
         if (states.at(popup).control.popup_owner && (!owner || !current(*owner) || !visible(owner->bounds,owner->clip))) { dismiss_popup(reply); return true; }
-        bool inside=false;
-        for (auto key=hit?hit->key:0;key;) {
-            if (key==popup) { inside=true; break; }
-            const auto* box=published->find(key); key=box?box->parent:0;
-        }
+        const bool inside=hit && popup_member(hit->key);
         if (event.kind==EventKind::pointer_down && !inside) { dismiss_popup(reply); return true; }
         if (event.kind==EventKind::wheel && !inside) return true;
         if (event.kind==EventKind::pointer_move && hit && hit->kind==ControlKind::menu_item) {
             reply.redraw|=focus!=hit->key; focus=hit->key;
         }
+        // Popup is also a form container. Only menus own navigation keys;
+        // fields and sliders keep their normal editing and focus behaviour.
+        if (!menu) return false;
         if (event.kind==EventKind::key_down && (event.key==Key::up || event.key==Key::down || event.key==Key::home || event.key==Key::end)) {
             std::vector<ControlKey> keys;
             for (const auto& box:published->controls)
-                if (box.kind==ControlKind::menu_item && current(box)) keys.push_back(box.key);
+                if (box.kind==ControlKind::menu_item && current(box) && popup_member(box.key)) keys.push_back(box.key);
             if (!keys.empty()) {
                 const auto at=std::find(keys.begin(),keys.end(),focus);
                 auto index=at==keys.end()?std::size_t{}:static_cast<std::size_t>(at-keys.begin());

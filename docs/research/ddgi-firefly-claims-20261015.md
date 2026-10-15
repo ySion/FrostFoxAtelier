@@ -120,4 +120,3 @@ floor记录中最大W约302.7的局部贡献为0，最小q对应的局部贡献�
 固定RTXGI提交的 [ProbeTraceRGS](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/f33e496ca31b3f0eec1c4e2cbaa8bb620e337fa6/samples/test-harness/shaders/ddgi/ProbeTraceRGS.hlsl) 调用 [DirectDiffuseLighting](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/f33e496ca31b3f0eec1c4e2cbaa8bb620e337fa6/samples/test-harness/shaders/include/Lighting.hlsl)，使用albedo/π；本实现对secondary hit还保留解析灯GGX，因此包含漫反射接收面经光泽表面到光源的间接路径。低样本球面追踪可能偶然采中其窄峰，但本次主ray的diffuse仍大于specular，不能声称删除GGX即可根治。屏幕SSSR也不能自动补回漫反射墙面接收的这类间接光。diffuse-only、扩大软化半径或钳制均涉及物理模型/质量取舍，本批没有更改这些语义。
 
 下一步可先对照128 rays×256 updates与256 rays×128 updates，保持32768条主射线预算，测方向采样方差与灯变响应；更多每probe射线会降低访问频率，不承诺免费改善。若保持现有光泽运输，应针对外层方向采样建立有完整PDF与全域支持的引导，而不是继续盲增内层选灯候选。具体诊断合同见 [Scene Lit](../modules/renderer/scene-lit.md)，原始数据与分析在 `out/di-reconstruction-20261015/probe-*-endpoint-inspection.json`、`endpoint-attribution.json`、`ddgi-secondary-specular-review.md`。
-

@@ -46,6 +46,7 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner,Pick kind,const std
 bool Application::confirm_discard(bool sources) {
     if (const auto edit=ui_.commit_edit();edit) {if (!effects(*edit)) return false;}
     else return false;
+    if(auto committed=finish_color_edit(true);!committed) {status(committed,L"");return false;}
     if (sources) for (const auto& file:workspace_.source_editor.files()) if (!confirm_source(*file)) return false;
     for(const auto& key:document_->dirty_materials()) {
         const auto response=MessageBoxW(window(),(L"Save changes to material "+editor::wide(key)+L"?").c_str(),L"Unsaved material",MB_YESNOCANCEL|MB_ICONQUESTION);
@@ -145,6 +146,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     if (!workspace_.scene_available) return failed("Repair the project build and reload its scene before saving. The original scene has been preserved.");
     const auto edit=ui_.commit_edit();if (!edit) return failed("Correct the active field before saving.");
     if (!effects(*edit)) return failed("The active field could not be committed; the scene was not saved.");
+    if(auto committed=finish_color_edit(true);!committed) return committed;
     const auto destination=relative.empty()?scene_path_:relative;
     if (!editor::Project::is_scene_path(destination)) return failed("Save scenes inside the project's Content or Examples folder with a .scene extension.");
     const auto path=project_->resolve(destination);if (!path) return std::unexpected(path.error());
@@ -248,6 +250,7 @@ Result<void> Application::source_command(editor::Command command,std::string_vie
     }
     if(command==save_document && !workspace_.source_history() && workspace_.inspecting_asset && !workspace_.material_inspection.empty()) {
         auto edit=ui_.commit_edit();if(!edit || !effects(*edit)) return failed("Finish the material field before saving.");
+        if(auto committed=finish_color_edit(true);!committed) return committed;
         if(!project_) return failed("No project is open.");
         auto saved=document_->save_material(*project_,workspace_.material_inspection);if(!saved) return saved;
         const auto refreshed=project_->refresh();workspace_.status=refreshed?L"Material saved":L"Material saved; catalog refresh failed";return {};
@@ -255,6 +258,7 @@ Result<void> Application::source_command(editor::Command command,std::string_vie
     if (command==save_document) return workspace_.source_history() && file?save_source(*file):this->save_scene();
     if (command==save_all) {
         auto edit=ui_.commit_edit();if(!edit || !effects(*edit)) return failed("Finish the current field before saving.");
+        if(auto committed=finish_color_edit(true);!committed) return committed;
         if(project_) for(const auto& key:document_->dirty_materials()) {auto saved=document_->save_material(*project_,key);if(!saved) return saved;}
         for (const auto& item:workspace_.source_editor.files()) if (item->dirty()) if (auto result=save_source(*item);!result) return result;
         return project_ && workspace_.scene_available?this->save_scene():Result<void>{};
