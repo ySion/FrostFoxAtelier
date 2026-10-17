@@ -1,5 +1,6 @@
 #include "physics/components.hpp"
 #include "runtime/native.hpp"
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <unordered_set>
@@ -282,9 +283,12 @@ Result<void> ComponentSimulation::reconcile() try {
     const auto members=owners.empty()?std::span<const world::Member>{}:take(world_.members());
     for(const auto& member:members) {
         if(!owners.contains(member.id())) continue;
-        // An isolated member contributes no entries or pose claims to this pass.
+        // An isolated member contributes no entries or pose claims to this pass,
+        // except that a controller conflict keeps its scene queries.
         const auto claimed=writers;const auto planned=desired_entries.size();
+        bool keep_queries=false;
         try {
+        std::optional<Error> duplicate;
         if(take(world::inspect_entity(runtime,member.id())).state!=world::EntityState::active) continue;
         if(!take(world::has_transform(runtime,member.id()))) continue;
         const auto group=take(world::components(runtime,member.id()));std::set<Kind> unique;
@@ -299,9 +303,11 @@ Result<void> ComponentSimulation::reconcile() try {
             else if(is.template operator()<KinematicMotionComponent>(item.id())) kind=Kind::kinematic;
             else if(is.template operator()<SceneQueryComponent>(item.id())) kind=Kind::query;
             else continue;
-            // Character and Ragdoll share one pose-writer slot; a second rejects the whole Entity.
+            // Character and Ragdoll share one pose-writer slot.
             const auto slot=kind==Kind::ragdoll?Kind::character:kind;
-            if(kind!=Kind::distance && kind!=Kind::force && kind!=Kind::query) require(unique.insert(slot).second,"Duplicate physics controller on one Entity.");
+            if(kind!=Kind::distance && kind!=Kind::force && kind!=Kind::query && !unique.insert(slot).second) {
+                duplicate=Error{ErrorCode::invalid_member,"Duplicate physics controller on one Entity."};continue;
+            }
             Entry desired{kind,member.id(),item.id()};bool available=true;
             for(auto node=member.id();node!=ObjectId{};) {
                 require(membership(node),"Physics spatial origin belongs to another World or is detached.");
@@ -355,9 +361,12 @@ Result<void> ComponentSimulation::reconcile() try {
             }
             desired_entries.emplace_back(std::move(desired),available);
         }
+        if(duplicate) {keep_queries=true;throw Failure(std::move(*duplicate));}
         } catch(const std::exception& e) {
             if(!contain(world_,failure_of(e),member.id(),member.id())) throw;
-            writers=claimed;desired_entries.erase(desired_entries.begin()+std::ptrdiff_t(planned),desired_entries.end());
+            writers=claimed;
+            desired_entries.erase(std::remove_if(desired_entries.begin()+std::ptrdiff_t(planned),desired_entries.end(),
+                [&](const auto& entry){return !keep_queries || entry.first.kind!=Kind::query;}),desired_entries.end());
         }
     }
     // Validate every pose claim before constructing or replacing any controller.
