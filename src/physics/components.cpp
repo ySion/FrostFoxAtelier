@@ -299,7 +299,9 @@ Result<void> ComponentSimulation::reconcile() try {
             else if(is.template operator()<KinematicMotionComponent>(item.id())) kind=Kind::kinematic;
             else if(is.template operator()<SceneQueryComponent>(item.id())) kind=Kind::query;
             else continue;
-            if(kind!=Kind::distance && kind!=Kind::force && kind!=Kind::query) require(unique.insert(kind).second,"Duplicate physics controller on one Entity.");
+            // Character and Ragdoll share one pose-writer slot; a second rejects the whole Entity.
+            const auto slot=kind==Kind::ragdoll?Kind::character:kind;
+            if(kind!=Kind::distance && kind!=Kind::force && kind!=Kind::query) require(unique.insert(slot).second,"Duplicate physics controller on one Entity.");
             Entry desired{kind,member.id(),item.id()};bool available=true;
             for(auto node=member.id();node!=ObjectId{};) {
                 require(membership(node),"Physics spatial origin belongs to another World or is detached.");

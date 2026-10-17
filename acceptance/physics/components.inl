@@ -154,6 +154,16 @@ void component_lifecycle() {
     const auto rebuilt=take(f.scene->ragdoll_handle(doll.id()));require(rebuilt!=ragdoll,"Restoring a ragdoll part reused its generation.");
     committed(f.world.set_enabled(controller.id(),false));require(!f.scene->read_ragdoll_pose(rebuilt),"Disabling the ragdoll controller retained its bodies.");
     committed(f.world.stop());
+    // Two pose controllers on one Entity are both rejected, whichever was created first.
+    take(f.world.set_failure_policy(w::FailurePolicy::isolate));
+    auto rival=take(w::create_component(f.runtime,f.physics_types.character_component));
+    committed(f.world.attach_components(doll.id(),std::array{w::Attachment{rival.id()}}));
+    committed(f.world.set_enabled(controller.id(),true));f.start();take(f.scene->update(0));take(f.scene->update(0));
+    require(f.world.running() && !f.scene->ragdoll_handle(doll.id()) && !f.scene->character_handle(doll.id()) &&
+        std::ranges::any_of(f.world.take_diagnostics(),[&](const auto& d){return d.entity==doll.id();}),
+        "Two pose controllers on one Entity were not both rejected.");
+    committed(f.world.stop());committed(f.world.set_enabled(rival.id(),false));committed(f.world.set_enabled(controller.id(),false));
+    take(f.world.set_failure_policy(w::FailurePolicy::halt));
 
     auto anchor=f.make({-12,6,0});auto bob=f.make({-12,4,0},dynamic_body());
     auto joint=take(w::create_component(f.runtime,f.physics_types.distance_constraint_component));
