@@ -257,6 +257,7 @@ number:disabled { accent-color: #616161; }
 button.shelf-tool:hover { background: #484848; }
 button.shelf-tool:pressed { background: #555555; }
 tree_item.mesh-entity { indicator-color: #a7c0cb; }
+tree_item.retained { color: #e8b04a; }
 tree_item.drop-target { background: #4f6a80; color: #ffffff; }
 text_edit.inline-rename { padding: 0dip 3dip; border-color: token(field-focus); }
 

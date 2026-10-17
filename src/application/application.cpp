@@ -638,6 +638,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         }
         break;
     }
+    case discard_saved_data: result=document_->discard_retained(document_->selection().object);break;
     case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
         workspace_.viewport_settings.select_mode=static_cast<editor::SelectMode>(static_cast<unsigned>(command)-static_cast<unsigned>(select_mode_set));break;
     case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:

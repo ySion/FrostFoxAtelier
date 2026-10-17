@@ -35,7 +35,8 @@ void Session::remember(Change change) {
     ++revision_;
     if (saved_cursor_ && *saved_cursor_>cursor_) saved_cursor_.reset();
     history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_), history_.end());
-    history_.push_back(std::move(change));
+    auto released=release(change);
+    history_.push_back(Entry{std::move(change),std::move(released)});
     if (history_.size() > history_limit) {
         history_.erase(history_.begin());
         if (saved_cursor_) { if (*saved_cursor_) --*saved_cursor_; else saved_cursor_.reset(); }
@@ -512,7 +513,7 @@ Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::u
         change.entries.push_back({std::move(*root),entity,*value,*value});
     }
     if (amend_creation) {
-        const auto* creation=cursor_ && cursor_==history_.size()?std::get_if<EntityChange>(&history_.back()):nullptr;
+        const auto* creation=cursor_ && cursor_==history_.size()?std::get_if<EntityChange>(&history_.back().change):nullptr;
         if (!creation || !creation->added || saved_cursor_==cursor_ ||
             std::ranges::any_of(change.entries,[&](const auto& entry) {
                 return std::ranges::none_of(creation->removals,[&](const auto& item){return item.id()==entry.entity;});
@@ -786,6 +787,8 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             if (!changed) return std::unexpected(changed.error());
             set_selection({item.entity,item.root.id()});
             return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, RetainedChange>) {
+            return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, EntityChange>) {
             world::Commit result;
             const auto merge=[&](world::Commit& commit) {
@@ -841,8 +844,8 @@ Result<world::Commit> Session::undo() {
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (!cursor_) return world::Commit{};
-    auto result = replay(history_[cursor_ - 1], false);
-    if (result) --cursor_;
+    auto result = replay(history_[cursor_ - 1].change, false);
+    if (result) {restore(history_[cursor_ - 1].retained,false);--cursor_;}
     return result;
 }
 Result<world::Commit> Session::redo() {
@@ -850,8 +853,8 @@ Result<world::Commit> Session::redo() {
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (cursor_ == history_.size()) return world::Commit{};
-    auto result = replay(history_[cursor_], true);
-    if (result) ++cursor_;
+    auto result = replay(history_[cursor_].change, true);
+    if (result) {restore(history_[cursor_].retained,true);++cursor_;}
     return result;
 }
 Result<world::Commit> Session::close() {
@@ -860,7 +863,7 @@ Result<world::Commit> Session::close() {
     auto closed = world_.close();
     if (!closed) return closed;
     physics_.reset();
-    history_.clear(); names_.clear(); cursor_ = 0; set_selection({});
+    history_.clear(); names_.clear(); retained_.clear(); retained_document_={}; cursor_ = 0; set_selection({});
     materials_.clear();textures_.clear();
     prepared_.reset();
     return closed;
@@ -898,8 +901,10 @@ Result<void> Session::collect_step() {
     }
     auto progress = runtime_.collect_step({32});
     if (!progress) return std::unexpected(progress.error());
-    if (runtime_.collection_phase()==CollectionPhase::idle)
+    if (runtime_.collection_phase()==CollectionPhase::idle) {
         std::erase_if(names_,[&](const auto& item){return !runtime_.type_of(item.first);});
+        std::erase_if(retained_,[&](const auto& item){return !runtime_.type_of(item.first);});
+    }
     return {};
 }
 }

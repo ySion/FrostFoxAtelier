@@ -297,7 +297,8 @@ void verify_codec_graph(editor::Project& project) {
         const auto retained=take(project.create_material("Content/Materials/Codec-retained.material"));
         editor::Session source;changed(source.create_static_mesh(take(project.mesh("builtin/cube"))));
         take(source.assign_material(project,member(source,source.types().static_mesh_component),"slot/0",incoming));
-        changed(source.add_entity());auto invalid=Json::parse(take(source.serialize()));invalid["entities"][1]["properties"]["unknown_business_field"]=true;
+        changed(source.add_entity());auto invalid=Json::parse(take(source.serialize()));
+        invalid["entities"][1]["properties"]["unknown_business_field"]={{"$ref","999999"}};
         editor::Session target;changed(target.add_entity());const auto original=target.selection().entity;
         const auto resource=take(target.material_resource(project,retained));const auto properties=take(target.properties(resource.id()));
         const auto roughness=std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name);
@@ -319,6 +320,138 @@ void verify_codec_graph(editor::Project& project) {
         require(created==2 && target.loaded_material(incoming)!=ObjectId{},"Composition import could not retry after resource rollback.");
         changed(target.undo());changed(target.redo());require(target.selected_entities().size()==created,"Imported forest history did not restore the entire graph.");
     }
+}
+// Every value in expected exists in actual at the same path; actual may add defaults.
+bool subset(const Json& actual,const Json& expected) {
+    if(expected.is_object()) {
+        if(!actual.is_object()) return false;
+        for(const auto& [key,value]:expected.items()) if(!actual.contains(key) || !subset(actual.at(key),value)) return false;
+        return true;
+    }
+    if(expected.is_array()) {
+        if(!actual.is_array() || actual.size()!=expected.size()) return false;
+        for(std::size_t i=0;i<expected.size();++i) if(!subset(actual[i],expected[i])) return false;
+        return true;
+    }
+    return actual==expected;
+}
+std::size_t count(std::span<const world::Diagnostic> issues,world::DiagnosticKind kind) {
+    return static_cast<std::size_t>(std::ranges::count(issues,kind,&world::Diagnostic::kind));
+}
+const Json* find_entity(const Json& scene,const std::string& id) {
+    for(const auto& entity:scene["entities"]) if(entity["id"]==id) return &entity;
+    return nullptr;
+}
+void verify_retained_data(editor::Project& project,const Json& baseline,const std::shared_ptr<Evidence>& evidence) {
+    acceptance_phase="retained scene data";
+    using enum world::DiagnosticKind;
+    auto scene=baseline;auto next=std::stoull(scene["next_id"].get<std::string>());
+    const auto fresh=[&]{return std::to_string(next++);};
+    auto& entity=scene["entities"][0];auto& move=entity["components"][1];
+    const auto entity_id=entity["id"].get<std::string>(),move_id=move["id"].get<std::string>();
+    move["properties"]["legacy_speed"]=9.5;
+    move["properties"]["count"]=-1;
+    move["properties"]["allowed"]="yes";
+    entity["properties"]["health"]=75.0;
+    entity["tags"]=Json::array({"a","b"});
+    entity["space"]["pivot"]=Json::array({0,0,0});
+    const auto missing_id=fresh(),mesh_id=fresh(),constraint_id=fresh(),gone_id=fresh();
+    entity["components"].push_back({{"id",missing_id},{"type","game.Missing"},{"name",""},{"enabled",true},
+        {"properties",{{"power",3},{"owner_ref",{{"$ref",entity_id}}}}}});
+    entity["components"].push_back({{"id",mesh_id},{"type","game.MissingMesh"},{"name",""},{"enabled",true},{"properties",{{"glow",1.5}}},
+        {"mesh","builtin/cube"},{"base_color",{1,0,0}},{"roughness",.5},{"metallic",0},{"emissive",{0,0,0}},{"materials",Json::array()}});
+    entity["components"].push_back({{"id",constraint_id},{"type","physics.DistanceConstraintComponent"},{"name",""},{"enabled",true},
+        {"properties",{{"target",{{"$ref",move_id}}}}}});
+    scene["entities"].push_back({{"id",gone_id},{"type","game.Gone"},{"name","Gone"},{"enabled",true},{"space",nullptr},
+        {"children",Json::array()},{"components",Json::array()},{"properties",{{"peer",{{"$ref",entity_id}}}}}});
+    scene["roots"].push_back(gone_id);scene["next_id"]=std::to_string(next);
+    scene["editor_meta"]={{"layout",1}};scene["world"]["future_option"]=3;
+    const auto text=scene.dump();
+    require(!editor::Session::deserialize(text,project,prepare(evidence),editor::LoadPolicy::strict),"Strict load accepted unresolved scene data.");
+
+    auto document=take(editor::Session::deserialize(text,project,prepare(evidence)));
+    auto& runtime=document->world().runtime();
+    const auto issues=document->load_issues();
+    require(issues.size()==16 && count(issues,converted)==1 && count(issues,unknown_field)==5 && count(issues,mismatch)==3 &&
+        count(issues,unknown_key)==4 && count(issues,unknown_type)==3 && !document->dirty(),
+        "Tolerant load did not report exactly the unresolved data, or marked the document dirty.");
+    const auto move_type=take(runtime.find_type("game.Move")),entity_type=take(runtime.find_type("game.Entity"));
+    const auto entity_object=take(document->local_object(std::stoull(entity_id))),move_object=take(document->local_object(std::stoull(move_id)));
+    const auto mesh_object=take(document->local_object(std::stoull(mesh_id))),constraint=take(document->local_object(std::stoull(constraint_id)));
+    require(std::get<std::uint32_t>(take(runtime.read(move_object,field(*document,move_type,"count"))))==7 &&
+        std::get<bool>(take(runtime.read(move_object,field(*document,move_type,"allowed")))) &&
+        std::get<float>(take(runtime.read(move_object,field(*document,move_type,"speed"))))==4 &&
+        std::get<std::int32_t>(take(runtime.read(entity_object,field(*document,entity_type,"health"))))==75,
+        "Mismatched values did not fall back to defaults, or applicable values were lost.");
+    require(document->placeholder_count()==3 && take(world::read_static_mesh(runtime,mesh_object)).mesh.source=="builtin/cube" &&
+        take(physics::constraint_target(runtime,constraint))==ObjectId{},
+        "Placeholders did not keep their native base, or a mistyped reference was applied.");
+    const auto view=take(document->retained(move_object));
+    require(view.type.empty() && view.entries.size()==3 && std::ranges::count(view.entries,unknown_field,&editor::RetainedEntry::kind)==1 &&
+        std::ranges::count(view.entries,mismatch,&editor::RetainedEntry::kind)==2,"Retained view misclassified saved data.");
+
+    auto expected=scene;expected["entities"][0]["properties"]["health"]=75;
+    const auto first=Json::parse(take(document->serialize()));
+    require(subset(first,expected),"Saving dropped or altered retained scene data.");
+    auto reopened=take(editor::Session::deserialize(first.dump(),project,prepare(evidence)));
+    require(reopened->load_issues().size()==15 && Json::parse(take(reopened->serialize()))==first,"Retained data did not round-trip stably.");
+
+    acceptance_phase="retained data released by edits";
+    take(document->select(entity_object));
+    edit(*document,move_object,field(*document,move_type,"count"),Scalar{std::uint32_t{9}},901);
+    const auto count_of=[&]{return Json::parse(take(document->serialize()))["entities"][0]["components"][1]["properties"]["count"];};
+    require(count_of()==9,"An edit did not replace the retained value.");
+    changed(document->undo());require(count_of()==-1,"Undo did not restore the retained value.");
+    changed(document->redo());require(count_of()==9,"Redo did not release the retained value again.");
+    take(document->discard_retained(move_object));
+    auto discarded=Json::parse(take(document->serialize()))["entities"][0]["components"][1]["properties"];
+    require(!discarded.contains("legacy_speed") && discarded["allowed"]==true && discarded["count"]==9,"Discard did not drop the object's retained data.");
+    changed(document->undo());discarded=Json::parse(take(document->serialize()))["entities"][0]["components"][1]["properties"];
+    require(discarded["legacy_speed"]==9.5 && discarded["allowed"]=="yes","Undo did not restore discarded data.");
+
+    acceptance_phase="retained data in duplicates";
+    {
+        auto copy=take(editor::Session::deserialize(text,project,prepare(evidence)));
+        const auto source=take(copy->local_object(std::stoull(entity_id)));
+        take(copy->select(source));changed(copy->duplicate_selected());
+        const auto duplicate=copy->selected_entities().back();const auto duplicate_id=std::to_string(*copy->document_identity(duplicate));
+        const auto saved=Json::parse(take(copy->serialize()));const auto* record=find_entity(saved,duplicate_id);
+        require(record && (*record)["components"].size()==5 && (*record)["components"][2]["type"]=="game.Missing" &&
+            (*record)["components"][2]["properties"]["owner_ref"]["$ref"]==duplicate_id && (*record)["components"][3]["type"]=="game.MissingMesh" &&
+            (*record)["tags"]==Json::array({"a","b"}),"Duplicate lost retained data or did not remap a reference inside the copy.");
+        require(copy->load_issues().size()==16,"Duplicating reported its retained data as a new load.");
+    }
+
+    acceptance_phase="retained references to deleted objects";
+    {
+        auto deleted=take(editor::Session::deserialize(text,project,prepare(evidence)));
+        const auto target=take(deleted->local_object(std::stoull(entity_id)));
+        const std::array targets{target};take(deleted->select_entities(targets,target));changed(deleted->erase_entities());
+        const auto saved=take(deleted->serialize());
+        require((*find_entity(Json::parse(saved),gone_id))["properties"]["peer"].is_null() && count(deleted->issues(),reference_dropped)==1,
+            "A retained reference to a deleted object was not written as null and reported.");
+        require(editor::Session::deserialize(saved,project,prepare(evidence)).has_value(),"Saving after a deletion produced an unloadable scene.");
+        changed(deleted->undo());
+        require((*find_entity(Json::parse(take(deleted->serialize())),gone_id))["properties"]["peer"]["$ref"]==entity_id,
+            "Undoing the deletion did not restore the retained reference.");
+    }
+
+    acceptance_phase="structural damage still rejects";
+    const auto rejects=[&](Json damaged,const char* message) {
+        require(!editor::Session::deserialize(damaged.dump(),project,prepare(evidence)),message);
+    };
+    auto damaged=scene;damaged["entities"][0]["components"][4]["properties"]["target"]={{"$ref","999999"}};
+    rejects(damaged,"A dangling reference in a known field was accepted.");
+    damaged=scene;damaged["entities"][0]["components"][1]["properties"]["legacy_speed"]={{"$ref","999999"}};
+    rejects(damaged,"A dangling reference in retained data was accepted.");
+    damaged=scene;damaged["entities"][0]["components"][1]["properties"]["legacy_speed"]={{"$ref",5}};
+    rejects(damaged,"A malformed reference identity was accepted.");
+    damaged=scene;damaged["entities"][1]["id"]=entity_id;
+    rejects(damaged,"A duplicate document identity was accepted.");
+    damaged=scene;damaged["entities"][1]["children"]=Json::array({gone_id});
+    rejects(damaged,"A composition cycle was accepted.");
+    damaged=scene;damaged["version"]=7;
+    rejects(damaged,"A newer scene version was accepted.");
 }
 void run() {
     verify_stop_reentry();
@@ -354,13 +487,14 @@ void run() {
     require(std::get<float>(take(defaulted->read_property(member(*defaulted,default_type),field(*defaulted,default_type,"speed"))))==2,"Absent field did not preserve the constructor default.");
     auto bad=saved_json; bad["entities"][0]["components"][1]["properties"]["deleted_field"]=1;
     const auto releases=evidence->destroyed;
-    require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence)),"Unknown saved property was silently discarded.");
+    require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence),editor::LoadPolicy::strict),"Strict load accepted an unknown saved property.");
     require(evidence->destroyed==releases+1 && evidence->live_runtime_on_release,"Failed load released Runtime before its prepared code.");
     bad=saved_json; bad["entities"][0]["type"]="game.Missing";
-    require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence)),"Missing project type was accepted.");
+    require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence),editor::LoadPolicy::strict),"Strict load accepted a missing project type.");
     bad=saved_json; bad["entities"][0]["components"][1]["properties"]["count"]=-1;
-    require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence)),"Unsigned field silently wrapped a negative value.");
+    require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence),editor::LoadPolicy::strict),"Unsigned field silently wrapped a negative value.");
     require(take(document.serialize())==saved,"Failed candidate load changed the edit document.");
+    verify_retained_data(project,saved_json,evidence);
     acceptance_phase="Source play and stop lifecycle";
     const auto history=document.undo_count();
     for (int pass=0;pass<3;++pass) {
@@ -435,7 +569,7 @@ void run() {
     verify_query_source(project);
     verify_primitive_source(project);
     require(evidence->prepared==evidence->destroyed && evidence->live_runtime_on_release,"Prepared code leaked or outlived its Runtime.");
-    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, load cleanup, Source actions, repeated play/stop, Jolt ownership)");
+    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, retained data, load cleanup, Source actions, repeated play/stop, Jolt ownership)");
 }
 }
 int main() { try { run(); return 0; } catch (const std::exception& error) { std::fprintf(stderr,"Project Scene acceptance: FAIL [%s]: %s\n",acceptance_phase,error.what()); return 1; } }

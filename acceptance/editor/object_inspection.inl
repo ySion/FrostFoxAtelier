@@ -118,7 +118,43 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         take(document.serialize())==saved,"An invalid enum choice poisoned the document or left a dangling edit.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare));
     require(take(reopened->serialize())==saved,"Object inspection edits did not preserve Source classes and enum values through a scene roundtrip.");
+    {
+        // Saved data the types cannot apply stays visible: placeholder titles, a Saved Data group,
+        // a marked Scene Tree row and an undoable discard.
+        auto altered=nlohmann::json::parse(saved);bool renamed{},extended{};
+        for(auto& item:altered["entities"]) for(auto& component:item["components"]) {
+            if(component["type"]=="inspection.Stats") {component["type"]="inspection.Gone";renamed=true;}
+            if(component["type"]=="inspection.Settings") {component["properties"]["legacy"]=3;extended=true;}
+        }
+        require(renamed && extended,"Saved data inspection did not alter real components.");
+        auto kept=take(editor::Session::deserialize(altered.dump(),project,prepare));auto& kept_runtime=kept->world().runtime();
+        const auto kept_settings=take(kept_runtime.find_type("inspection.Settings"));
+        ObjectId owner,extra;
+        for(const auto& member:take(kept->world().members())) for(const auto& component:take(world::components(kept_runtime,member.id())))
+            if(take(kept_runtime.type_of(component.id()))==kept_settings) {owner=member.id();extra=component.id();}
+        take(kept->select(owner));
+        editor::Workspace inspector;inspector.project_open=true;inspector.scene_available=true;
+        const auto has_text=[](const std::vector<ui::Control>& items,std::wstring_view text) {
+            return std::ranges::any_of(items,[&](const auto& item){return item.text==text;});
+        };
+        require(inspector.dock.select(editor::control::parameters_tab),"Parameters is not a dockable tab.");
+        auto items=inspector.describe(*kept,{1600,1000},nullptr,&project);
+        require(inspector.ui_error().empty() && has_text(items,L"Saved Data · Gone (missing type)") && has_text(items,L"properties.energy") &&
+            has_text(items,L"Saved Data · Settings") && has_text(items,L"properties.legacy") && has_text(items,L"3"),
+            "Parameters did not show placeholders and their saved data.");
+        require(!inspector.command_enabled(editor::Command::discard_saved_data,*kept),"Discard Saved Data targeted an Entity without saved data.");
+        require(inspector.dock.select(editor::control::entities_tab),"Scene Tree is not a dockable tab.");
+        items=inspector.describe(*kept,{1600,1000},nullptr,&project);
+        require(std::ranges::any_of(items,[&](const auto& item){return item.kind==ui::ControlKind::tree_item && item.text==kept->name(owner) &&
+            std::ranges::find(item.classes,"retained")!=item.classes.end();}),"Scene Tree did not mark an Entity with saved data.");
+        take(kept->select(extra));
+        require(inspector.command_enabled(editor::Command::discard_saved_data,*kept),"Discard Saved Data was unavailable for a component with saved data.");
+        const auto before=kept->issues().size();take(kept->discard_retained(extra));
+        require(!kept->has_retained(extra) && kept->issues().size()==before-1 &&
+            !inspector.command_enabled(editor::Command::discard_saved_data,*kept),"Discarding saved data left it reported or available.");
+        changed(kept->undo());require(kept->has_retained(extra) && kept->issues().size()==before,"Undo did not restore discarded saved data.");
+    }
     changed(document.close());changed(document.close());
     require(document.selection()==editor::Selection{} && !document.select(settings),"Closing the document retained a usable component selection.");
-    std::puts("Object inspection: PASS (Source Entity fields, flat properties, ownership, selection lifetime, idempotence, enum menus, persistence)");
+    std::puts("Object inspection: PASS (Source Entity fields, flat properties, ownership, selection lifetime, idempotence, enum menus, persistence, saved data and placeholders)");
 }

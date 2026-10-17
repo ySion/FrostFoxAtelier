@@ -169,16 +169,32 @@ Result<void> ProjectCode::poll(const Project& project,bool force) {
     if (!force && stamps==stamps_) return {};
     stamps_=std::move(stamps);return build(project);
 }
-ProjectDocument load_project_scene(Project& project,std::string_view source) {
+ProjectDocument load_project_scene(Project& project,std::string_view source,LoadPolicy policy,bool allow_failed_build) {
     ProjectDocument result;
     auto document=Session::deserialize(source,project,[&](world::World& world)->Result<std::shared_ptr<void>> {
         auto code=std::make_shared<ProjectCode>(world);const auto built=code->build(project);result.build=code->report();
-        if (!built) return std::unexpected(built.error());
+        if (!built) {
+            if (!allow_failed_build) return std::unexpected(built.error());
+            // Type registration closes once the scene exists, so this document never gains
+            // project types; a successful build replaces it through a fresh load.
+            return std::shared_ptr<void>{};
+        }
         result.code=code.get();return std::static_pointer_cast<void>(std::move(code));
-    });
-    if (document) result.session=std::move(*document);
-    else {result.error=result.build && result.build->error?*result.build->error:document.error();result.code=nullptr;}
+    },policy);
+    if (document) {
+        result.session=std::move(*document);
+        if(result.build && result.build->error) result.error=*result.build->error;
+    } else {result.error=result.build && result.build->error?*result.build->error:document.error();result.code=nullptr;}
     return result;
+}
+std::vector<std::wstring> describe_issues(const Session& session,std::span<const world::Diagnostic> issues,std::wstring_view source) {
+    std::vector<std::wstring> lines;
+    if(issues.empty()) return lines;
+    lines.push_back(std::wstring(source)+L": "+std::to_wstring(issues.size())+L" scene diagnostic(s), "+std::to_wstring(session.placeholder_count())+
+        L" placeholder object(s). Saved data that could not be applied is kept and written back on save.");
+    for(const auto& item:issues)
+        lines.push_back(L"  ["+wide(world::name(item.severity))+L"] "+wide(item.message)+(item.value.empty()?std::wstring{}:L" Saved: "+wide(item.value)));
+    return lines;
 }
 std::string ProjectCode::component_source(std::string_view name) {
     return "class project."+std::string(name)+" : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n";

@@ -273,14 +273,22 @@ void verify_project_document() {
         invalid=serialized;invalid["entities"][0]["children"].push_back(value);
         require(!editor::Session::deserialize(invalid.dump(),project),"Scene coerced a non-string child identity.");
     }
+    // Value-level damage is exact-load failure; interactive loading keeps the saved value instead.
+    const auto kept_on_save=[&](const nlohmann::json& invalid,const nlohmann::json::json_pointer& at,const char* message) {
+        require(!editor::Session::deserialize(invalid.dump(),project,{},editor::LoadPolicy::strict),message);
+        auto kept=take(editor::Session::deserialize(invalid.dump(),project));
+        require(kept->load_issues().size()==1 && kept->load_issues().front().kind==world::DiagnosticKind::mismatch &&
+            nlohmann::json::parse(take(kept->serialize()))[at]==invalid[at],"Tolerant scene loading did not keep a mismatched saved value.");
+    };
     for (const auto field:{"position","scale","rotation","base_color"}) {
         auto invalid=serialized;
-        if(std::string_view(field)=="base_color") invalid["entities"][0]["components"][0][field].push_back(999);
-        else invalid["entities"][0]["space"][field].push_back(999);
-        require(!editor::Session::deserialize(invalid.dump(),project),"Scene silently truncated a vector.");
+        const bool color=std::string_view(field)=="base_color";
+        const auto at=nlohmann::json::json_pointer(color?"/entities/0/components/0/base_color":"/entities/0/space/"+std::string(field));
+        invalid[at].push_back(999);
+        kept_on_save(invalid,at,"Strict scene loading silently truncated a vector.");
     }
     auto invalid=serialized;invalid["entities"][0]["name"]="   ";
-    require(!editor::Session::deserialize(invalid.dump(),project),"Scene accepted a name rejected by editing.");
+    kept_on_save(invalid,nlohmann::json::json_pointer("/entities/0/name"),"Strict scene loading accepted a name rejected by editing.");
     require(!editor::Session::deserialize("{\"version\":999,\"version\":1,\"entities\":[]}",project),"Scene accepted duplicate JSON fields.");
     require(!editor::Session::deserialize(std::string(64,'[')+std::string(64,']'),project),"Scene accepted excessive JSON nesting.");
     require(!editor::Session::deserialize(std::string(16*1024*1024+1,' '),project),"Scene direct input bypassed the file size bound.");

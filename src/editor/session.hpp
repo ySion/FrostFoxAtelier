@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/world.hpp"
+#include "world/diagnostic.hpp"
 #include "editor/assets.hpp"
 #include "physics/physics.hpp"
 #include <unordered_map>
@@ -20,6 +21,15 @@ struct Property { std::string name; world::FieldPath path; TypeId type; Scalar v
 struct Selection {
     ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;
+};
+// Tolerant loading keeps data it cannot apply and reports it; strict stops at the first warning.
+enum class LoadPolicy { tolerant, strict };
+// Saved scene data the loader could not apply, addressed by its scene record path
+// (for example properties.speed, space or name). It is written back on save.
+struct RetainedEntry { std::vector<std::string> path; std::string value; world::DiagnosticKind kind{}; };
+struct RetainedView {
+    std::string type; // Original type of a placeholder object; empty when the type resolved.
+    std::vector<RetainedEntry> entries;
 };
 
 // One document writer. History retains ordinary roots and removal records;
@@ -118,7 +128,19 @@ public:
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
     Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
-    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {});
+    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {},LoadPolicy = LoadPolicy::tolerant);
+    // Diagnostics recorded by the load that created this document.
+    std::span<const world::Diagnostic> load_issues() const noexcept { return load_issues_; }
+    // Current unresolved data of the document; entries disappear when edited or discarded.
+    std::vector<world::Diagnostic> issues() const;
+    // ObjectId{} addresses document-level data (top-level keys and World settings).
+    bool has_retained(ObjectId) const noexcept;
+    Result<RetainedView> retained(ObjectId) const;
+    // Drops the retained data of one object (or the document) as one undoable entry.
+    // A placeholder keeps its original type.
+    Result<void> discard_retained(ObjectId);
+    std::size_t placeholder_count() const noexcept;
+    std::optional<std::uint64_t> document_identity(ObjectId) const;
     // Legacy control bundles refer to pre-migration Actor/Component indices.
     // Resolve them through the scene importer, then select live document IDs.
     static Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> legacy_selection(std::string_view,
@@ -178,7 +200,17 @@ private:
     struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
     struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<world::MaterialBinding> before,after;};
     struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
-    using Change = std::variant<LightingChange, EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange>;
+    struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
+    using Change = std::variant<LightingChange, EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,RetainedChange>;
+    // Sparse scene-record JSON text the loader could not apply. Materials only
+    // appear on the document entry: unreferenced definitions kept for write-back.
+    struct Retained {
+        std::string type, record, slots;
+        std::vector<ObjectRoot> materials;
+        bool empty() const noexcept { return type.empty() && record.empty() && slots.empty() && materials.empty(); }
+    };
+    struct RetainedSwap { ObjectId object; Retained before, after; };
+    struct Entry { Change change; std::vector<RetainedSwap> retained; };
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -187,7 +219,7 @@ private:
     world::World world_;
     std::unique_ptr<physics::PhysicsScene> physics_;
     std::array<Parameter, 3> parameters_;
-    std::vector<Change> history_;
+    std::vector<Entry> history_;
     std::size_t cursor_{};
     std::uint64_t revision_{1};
     std::optional<std::size_t> saved_cursor_{0};
@@ -197,6 +229,10 @@ private:
     std::optional<FieldGroupChange> group_;
     std::optional<TransformChange> transform_;
     std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
+    // Non-owning IDs like names_; entries travel with their object through history.
+    std::unordered_map<ObjectId,Retained> retained_;
+    Retained retained_document_;
+    std::vector<world::Diagnostic> load_issues_;
     // Document-local identities never confer Runtime validity or World membership.
     // Detached history objects retain their ID; IDs are never reused.
     mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
@@ -221,6 +257,9 @@ private:
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
     void forget_entity(ObjectId) noexcept;
     void remember(Change);
+    // Releases retained data at the paths a committed change wrote.
+    std::vector<RetainedSwap> release(const Change&);
+    void restore(std::span<const RetainedSwap>, bool forward);
     static Result<void> validate_name(std::wstring_view);
     Result<world::Commit> replay(Change&, bool forward);
 };
