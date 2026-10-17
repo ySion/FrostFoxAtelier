@@ -564,7 +564,7 @@ struct CollectionProgress {
 };
 
 // Single-threaded, explicitly owned context. Definitions are immutable after publication.
-// Registration closes on first successful object creation. Callbacks cannot create/destroy objects.
+// Callbacks cannot create/destroy objects or publish types.
 class Runtime final {
 public:
     Runtime();
@@ -577,8 +577,14 @@ public:
     [[nodiscard]] Result<TypeId> register_type(TypeDefinition definition);
     // Resolve the entire batch, including forward references, before publishing anything.
     // Results follow input order. Empty batches are invalid. No provisional IDs escape.
+    // Publication needs a type safe point: check_code_publication() plus an idle
+    // collector, otherwise busy. Published types never change or unregister, so
+    // their TypeInfo addresses stay valid for the Runtime's lifetime.
     [[nodiscard]] Result<std::vector<TypeId>> register_types(std::vector<TypeDefinition> definitions);
-    [[nodiscard]] std::vector<TypeId> types() const;
+    // The catalog only grows, in publication order. Cache type_count() and pass it
+    // as first to scan only types published since.
+    [[nodiscard]] std::vector<TypeId> types(std::size_t first = 0) const;
+    [[nodiscard]] std::size_t type_count() const noexcept;
     [[nodiscard]] TypeId object_type() const noexcept;
     [[nodiscard]] Result<bool> is_a(TypeId actual, TypeId expected) const;
     // Preserves identity and strength. Upcasts preserve stale identities; a

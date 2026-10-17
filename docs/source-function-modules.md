@@ -53,7 +53,7 @@ async 公开入口可调用同步助手，助手退出后才允许 yield。Strin
 ## 项目快照与多个公开入口
 
 ```cpp
-source::Program program(runtime); // 首次 Runtime 对象创建之前
+source::Program program(runtime);
 source::SourceSnapshot snapshot{"game", 1, {
     {"Source/Math.source", 3, math_text},
     {"Source/Move.source", 8, move_text}
@@ -69,11 +69,11 @@ auto tick = program.entry("game.Move.tick");
 
 `classes()` 返回 `{name,type,base}`，`entries()` 返回 `{name,signature}`；视图在下一次成功发布或 close 后失效。`Candidate` 提供同名只读视图，供宿主在提交前检查业务约束；其预览类身份不可用于正式 Runtime 查询，base 已是注册的原生类型，视图在候选移动、销毁或成功发布后失效。请求拥有不可变快照，`Request::snapshot()` 可用于把诊断关联回原文件版本。`Error::source` 保存 UTF-8 字节定位。运行时错误继续由原执行协议返回。
 
-类型布局、默认值和所有入口共同准备，实际 TypeId 与代码只在无回调提交时一起可见。某个编译单元失败会释放整组候选，旧代码继续使用。`busy` 不消费候选；旧请求、重复提交和关闭后的提交被拒绝。新类型要求注册开放，纯代码热更新允许已经创建对象。公开签名、字段默认值或类型变化返回 `ErrorCode::rebuild_required`，不会改写存量对象。
+类型布局、默认值和所有入口共同准备，实际 TypeId 与代码只在无回调提交时一起可见。某个编译单元失败会释放整组候选，旧代码继续使用。`busy` 不消费候选；旧请求、重复提交和关闭后的提交被拒绝。已发布模块只增长：新增 struct/enum、派生原生对象的 class、全局函数，以及已有或新增 class 上的方法（包括 begin/tick/end）都可兼容发布，新类型在类型安全点（代码发布条件加 GC 空闲）与代码一起提交，已经创建的对象保留。删除或改名已发布的类型、字段、函数或方法，已有类型的字段、基类、默认值或定义变化，以及已有入口的签名、执行种类或接收者变化，返回 `ErrorCode::rebuild_required`，不会改写存量对象。
 
 全局助手和每个类的接收者环境分别形成 LLVM 模块；同一环境的多个入口拥有共享 LLJIT 和展开表。所有入口复用既有 `Version → Invocation → Runtime` 执行与清理链。借用保护通过内部调用参数传播，同一个助手既可在值区间内运行，也可在普通入口中推进 GC。
 
-具名 `Entry` 只在绑定时解析名称，调用时直接按稳定槽位取得当前 Version；候选在提交前对齐首发顺序。代码租约保留实际使用的旧模块，关闭 Program 后仍可完成调用。Runtime、原生服务和后端 DLL 必须存活到所有租约/任务释放。
+具名 `Entry` 只在绑定时解析名称，调用时直接按稳定槽位取得当前 Version；候选在提交前对齐已发布槽位，新入口追加在其后。代码租约保留实际使用的旧模块，关闭 Program 后仍可完成调用。Runtime、原生服务和后端 DLL 必须存活到所有租约/任务释放。
 
 语法与限制以 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类) 为准。项目文件、World 生命周期调度和上下文重建由宿主组织；当前没有后台编译或对象布局迁移。
 

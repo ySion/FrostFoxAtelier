@@ -225,9 +225,9 @@ cmake --build --preset release --target ui_layout_acceptance
 
 [模块函数消费者](acceptance/source/modules.cpp)覆盖前向/嵌套调用、直接定型参数、跨函数引用别名、逐层资源清理、对象根与 GC，以及 async 入口调用同步助手。宿主通过 `Program::request(name, source, entry_name)` 选择公开入口；整模块随代码版本一起发布和退休。当前内部调用图无环，不支持递归或调用 async 函数。详见[同模块多函数](docs/source-function-modules.md)。
 
-[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量默认值和具名多入口。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量默认值和具名多入口。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态并可追加类、方法、函数和类型，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
 
-[类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型在注册封闭前发布，代码更新保持类型定义与身份；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
+[类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型可在创建对象后随代码更新追加，已发布类型的定义与身份保持不变；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
 同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
 
@@ -270,7 +270,7 @@ cmake --build --preset release --target atelier_source_measure
 
 ### 单入口兼容方法体热更新
 
-正式 [source::Program](src/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，并准备源码类型布局；`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。首次发布可一并提交源码类型；后续更新固定类型定义、函数名、参数/结果、接收者要求、成员目录及实际服务地址。共享发布与类型生命周期合同见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
+正式 [source::Program](src/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，并准备源码类型布局；`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。每次发布都可一并提交新的源码类型；后续更新固定已发布的类型定义、函数名、参数/结果、接收者要求、成员目录及实际服务地址。共享发布与类型生命周期合同见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
 
 - 同一 Runtime 任一语言调用仍活动，或正处于原生借用、遍历/GC 回调时，发布返回 `busy`，候选保留供外层返回后重试。暂停的 GC 周期本身允许兼容发布；安全点不暗中切换版本。
 - 最新请求一经接受，旧候选不能再提交；最新源码的解析、类型检查或真实链接失败，均保留上次已发布版本，不回退发布过期候选。重复提交及不兼容入口/签名/接收者/服务表明确拒绝。
@@ -326,7 +326,7 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 ## 当前契约与范围
 
 - 每个 `Runtime` 显式拥有自己的类型和对象实例，单线程使用，不可复制或移动。值操作使用的外部存储及其生命周期由调用方管理。
-- 类型先注册后使用，实例首次创建成功后关闭注册。支持原生与描述型定义成组发布，前向依赖和引用环不要求按依赖顺序提交；整组验证与布局计算成功后才公开，失败不会留下半注册类型。单条注册复用同一路径。
+- 类型先注册后使用；创建对象后仍可在类型安全点（无回调、借用、遍历或活动生成代码调用，且 GC 空闲）追加类型，已发布定义不可变。支持原生与描述型定义成组发布，前向依赖和引用环不要求按依赖顺序提交；整组验证与布局计算成功后才公开，失败不会留下半注册类型。单条注册复用同一路径。
 - `TypeId`、`FieldId`、`MethodId` 和 `ObjectId` 都限于所属运行时；限定类型名是声明名称，进程内标识不是存档 ID。
 - `create` 交付已登记的 `ObjectRoot`，`ObjectId` 仍只标识身份。根复制增加独立登记，移动转移登记；释放根不立即销毁目标，也不延长 `Runtime` 自身的生命。显式销毁及运行时退出仍释放对象；不可达对象由宿主显式推进 GC 回收。
 - 当前支持 bool/float/double/u32/i32、i32/u32 底层枚举、含引用内联记录与单继承对象；原生成员方法支持标量/枚举的值、只读引用及可写引用参数；原生方法与源码入口还支持无 GC 引用的原生记录/Array/String 借用，源码入口的 String 参数限于只读。对象强引用序列见上方合同；资源记录按值调用、对象引用参数与结果、借用返回、通用值容器及记录方法尚未实现；内建数学记录与 plain struct 支持同步按值调用。

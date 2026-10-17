@@ -759,16 +759,22 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
     };
     auto declarations = language::collect_declarations(source);
     if (!declarations) { report(declarations.error().message, declarations.error().position); return result; }
-    if (state_->declaration) {
-        const auto& previous = state_->contract->declarations;
-        if (declarations->size() != previous.size() || !std::equal(declarations->begin(), declarations->end(), previous.begin(),
-            [](const auto& a, const auto& b) { return a.same_definition(b); }))
+    // Published declarations are immutable; new ones publish with the next version.
+    const auto& previous = state_->contract->declarations;
+    const auto published = [&](std::string_view name) {
+        return std::ranges::find(previous, name, &language::TypeDeclaration::name) != previous.end();
+    };
+    for (const auto& type : previous) {
+        const auto found = std::ranges::find(*declarations, type.name, &language::TypeDeclaration::name);
+        if (found == declarations->end() || !found->same_definition(type)) {
             report("Published source type definitions are immutable; restart the Runtime to change them.");
-        return result;
+            return result;
+        }
     }
-    if (declarations->empty()) return result;
+    if (declarations->size() == previous.size()) return result;
     auto definitions = type_definitions(*declarations, state_->contract->binding);
     if (!definitions) { report(definitions.error().message); return result; }
+    std::erase_if(*definitions, [&](const auto& definition) { return published(definition.name); });
     auto& runtime = *state_->contract->binding.runtime;
     auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
     if (!publication) { report(publication.error().message); return result; }

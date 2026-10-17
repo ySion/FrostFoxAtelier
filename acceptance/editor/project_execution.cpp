@@ -52,8 +52,8 @@ void run(const std::filesystem::path& root) {
         if(!empty.session) throw std::runtime_error("Empty project: "+empty.error->message);
         complete(empty.session->add_entity());
         take(editor::write_file(helper,helpers));take(editor::write_file(component,declaration));
-        const auto first=empty.code->poll(project,true);
-        require(!first && first.error().code==ErrorCode::rebuild_required,"Adding the first Source type did not request a scene rebuild.");
+        take(empty.code->poll(project,true));
+        require(empty.session->world().runtime().find_type("project.Move").has_value(),"Adding the first Source class did not publish it into the open scene.");
     }
     auto loaded=editor::load_project_scene(project,take(editor::read_file(root/"Content/Scenes/Main.scene")));
     if(!loaded.session) throw std::runtime_error("Initial project: "+loaded.error->message);
@@ -85,6 +85,10 @@ void run(const std::filesystem::path& root) {
     require(!document.dirty(),"Playing modified the authoring document.");
     take(editor::write_file(helper,"float travel(float speed,float dt) { return speed * dt * 2.0f; }\n"));
     take(playing.code->poll(project,true));take(play.update(.5f));check_position(position(play,moving_entity),3);
+    auto with_begin=declaration;with_begin.insert(with_begin.find("    void tick"),"    void begin() {}\n");take(editor::write_file(component,with_begin));
+    const auto added=playing.code->poll(project,true);
+    require(!added && added.error().code==ErrorCode::rebuild_required,"A lifecycle method added during Play was published without its binding.");
+    take(editor::write_file(component,declaration));
     take(editor::write_file(helper,"float travel(float speed,float dt) { return missing; }\n"));
     require(!playing.code->poll(project,true),"Invalid project source was published.");
     require(playing.code->report()->error && playing.code->report()->error->source && playing.code->report()->error->source->path=="Source/Math.source","Compiler lost the failing file identity.");

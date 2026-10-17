@@ -43,15 +43,21 @@ Result<Scalar> field_default(const SourceSnapshot& snapshot, const language::Cla
     if (field.type == "int") return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits))};
     return Scalar{static_cast<std::uint32_t>(value.bits)};
 }
-bool same_class_layout(const language::ClassDeclaration& a, const language::ClassDeclaration& b) {
-    if (a.name != b.name || a.base != b.base || a.fields.size() != b.fields.size() || a.methods.size() != b.methods.size()) return false;
-    for (std::size_t i = 0; i < a.fields.size(); ++i)
-        if (a.fields[i].name != b.fields[i].name || a.fields[i].type != b.fields[i].type) return false;
-    for (const auto& method : a.methods) {
-        const auto found = std::ranges::find(b.methods, method.name, &language::ClassMethod::name);
-        if (found == b.methods.end() || found->signature != method.signature) return false;
+// Published classes keep their layout, defaults and methods; new methods may follow.
+bool keeps_class(const language::ClassDeclaration& published, const language::ClassDeclaration& updated) {
+    if (published.base != updated.base || published.fields.size() != updated.fields.size()) return false;
+    for (std::size_t i = 0; i < published.fields.size(); ++i)
+        if (published.fields[i].name != updated.fields[i].name || published.fields[i].type != updated.fields[i].type) return false;
+    for (const auto& method : published.methods) {
+        const auto found = std::ranges::find(updated.methods, method.name, &language::ClassMethod::name);
+        if (found == updated.methods.end() || found->signature != method.signature) return false;
     }
     return true;
+}
+template<class T>
+const T* find_named(const std::vector<T>& values, std::string_view name) {
+    const auto found = std::ranges::find(values, name, &T::name);
+    return found == values.end() ? nullptr : &*found;
 }
 }
 
@@ -107,23 +113,30 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     auto values = language::collect_declarations(module.source.common.text);
     if (!values) return fail(mapped_error(input, module.source.common, values.error().position, values.error().message));
     module.value_types = std::move(*values);
-    if (state_->module) {
-        const auto& old = *state_->module->request;
-        if (old.source.functions.size() != module.source.functions.size())
-            return fail({ErrorCode::rebuild_required, "Source export set changed; rebuild the Runtime context."});
-        for (const auto& function : module.source.functions) {
-            const auto previous = std::ranges::find(old.source.functions, function.name, &language::FunctionDeclaration::name);
-            if (previous == old.source.functions.end() || previous->signature != function.signature)
-                return fail({ErrorCode::rebuild_required, "Source export signature changed; rebuild the Runtime context: " + function.name});
+    // A published module only grows: deleting, renaming or changing a published
+    // export, type or class needs a rebuild; new ones publish compatibly.
+    const ModuleRequest* published = state_->module ? state_->module->request.get() : nullptr;
+    if (published) {
+        for (const auto& function : published->source.functions) {
+            const auto* found = find_named(module.source.functions, function.name);
+            if (!found || found->signature != function.signature)
+                return fail({ErrorCode::rebuild_required, "Published source export was removed or changed; rebuild the Runtime context: " + function.name});
         }
-        if (old.source.classes.size() != module.source.classes.size() || old.value_types.size() != module.value_types.size() ||
-            !std::equal(old.value_types.begin(), old.value_types.end(), module.value_types.begin(),
-                [](const auto& a, const auto& b) { return a.same_definition(b); }) ||
-            !std::equal(old.source.classes.begin(), old.source.classes.end(), module.source.classes.begin(), same_class_layout))
-            return fail({ErrorCode::rebuild_required, "Source type layout or method signature changed; rebuild the Runtime context."});
+        for (const auto& type : published->value_types) {
+            const auto* found = find_named(module.value_types, type.name);
+            if (!found || !found->same_definition(type))
+                return fail({ErrorCode::rebuild_required, "Published source type was removed or changed; rebuild the Runtime context: " + type.name});
+        }
+        for (const auto& cls : published->source.classes) {
+            const auto* found = find_named(module.source.classes, cls.name);
+            if (!found || !keeps_class(cls, *found))
+                return fail({ErrorCode::rebuild_required, "Published source class layout or method signature changed; rebuild the Runtime context: " + cls.name});
+        }
     }
     auto definitions = type_definitions(module.value_types, state_->contract->binding);
     if (!definitions) return fail(definitions.error());
+    // Existing source types stay published; new ones still reference them by name.
+    if (published) std::erase_if(*definitions, [&](const auto& definition) { return find_named(published->value_types, definition.name); });
     auto& runtime = *state_->contract->binding.runtime;
     for (const auto& cls : module.source.classes) {
         if (std::ranges::any_of(state_->contract->binding.values, [&](const auto& value) {
@@ -148,15 +161,15 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
             FieldDefinition declared; declared.name = field.name; declared.value = {type}; declared.default_value = *value;
             definition.fields.push_back(std::move(declared)); defaults.emplace_back(std::move(*value));
         }
-        module.defaults.push_back(std::move(defaults)); definitions->push_back(std::move(definition));
+        const auto* kept = published ? find_named(published->source.classes, cls.name) : nullptr;
+        if (kept) {
+            const auto& before = published->defaults[static_cast<std::size_t>(kept - published->source.classes.data())];
+            if (!std::equal(before.begin(), before.end(), defaults.begin(), defaults.end(), same_default))
+                return fail({ErrorCode::rebuild_required, "Published source class defaults changed; rebuild the Runtime context: " + cls.name});
+        } else definitions->push_back(std::move(definition));
+        module.defaults.push_back(std::move(defaults));
     }
-    if (state_->module) {
-        const auto& old = *state_->module->request;
-        if (!std::equal(old.defaults.begin(), old.defaults.end(), module.defaults.begin(), [](const auto& a, const auto& b) {
-            return std::equal(a.begin(), a.end(), b.begin(), same_default);
-        }))
-            return fail({ErrorCode::rebuild_required, "Source type layout or defaults changed; rebuild the Runtime context."});
-    } else if (!definitions->empty()) {
+    if (!definitions->empty()) {
         auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
         if (!publication) return fail(publication.error());
         request->type_publication_ = *publication;
@@ -238,7 +251,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                     (signature->result || signature->parameters.size() != (tick ? 1u : 0u) ||
                         (tick && (signature->parameters[0].type != unit.contract->binding.f32 ||
                             signature->parameters[0].passing != ParameterPassing::value))))
-                    return std::unexpected(Error{owner->module ? ErrorCode::rebuild_required : ErrorCode::invalid_definition,
+                    return std::unexpected(Error{ErrorCode::invalid_definition,
                         "Lifecycle methods require void begin(), void tick(float), or void end()."});
             }
             const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
@@ -253,10 +266,8 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
     }
     if (owner->module) {
         const auto& old = owner->module->entries;
-        if (old.size() != module->entries.size())
-            return std::unexpected(Error{ErrorCode::rebuild_required, "Source export set changed; rebuild the Runtime context."});
-        // Preserve the first publication's slots, even when declarations move.
-        // Bound Entry calls can then select their version without name lookup.
+        // Preserve published slots, even when declarations move, and append new
+        // entries after them. Bound Entry calls select versions without name lookup.
         for (std::size_t i = 0; i < old.size(); ++i) {
             const auto found = std::ranges::find(module->entries, old[i].name, &EntryInfo::name);
             if (found == module->entries.end() || found->signature != old[i].signature)
