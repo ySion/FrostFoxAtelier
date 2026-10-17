@@ -1,4 +1,5 @@
 #include "physics/physics.hpp"
+#include "physics/timing.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -61,6 +62,7 @@ const Scenario scenarios[]{
     {"queries", queries},
     {"cooked_assets", simulate_cooked_assets},
     {"fixed_step", fixed_step},
+    {"frame_timing", frame_timing},
     {"lifecycle", lifecycle},
     {"world_ownership", world_ownership},
     {"character", character},

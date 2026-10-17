@@ -8,7 +8,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
                        const std::filesystem::path& camera_report) {
     using Json=nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute CPU profile file.");
-    timing::install({profile_markers});
+    timing::install({world::phases::markers,physics::phases::markers,profile_markers});
     timing::Recorder recorder;
     const auto milliseconds=[](std::chrono::nanoseconds value){return std::chrono::duration<double,std::milli>(value).count();};
     // Temporaries destroyed by the operation are part of its sample.
@@ -81,10 +81,12 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
 #else
     report["configuration"]="dev";
 #endif
-    const auto measure=[&](std::string_view name,auto&& operation) {
+    // An optional inspector receives each sample's frame record, warmup included.
+    const auto measure=[&](std::string_view name,auto&& operation,auto&&... inspect) {
         std::vector<double> samples;samples.reserve(121);
         for(unsigned i=0;i<141;++i) {
             const auto elapsed=sample(operation);
+            (inspect(recorder.last()),...);
             if(i>=20) samples.push_back(elapsed);
         }
         const auto total=std::accumulate(samples.begin(),samples.end(),0.);
@@ -120,7 +122,26 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             std::printf("Scene CPU %.*s: %.3f ms single\n",static_cast<int>(name.size()),name.data(),elapsed);
         };
         once("play_start",[&]{changed(document->start());});
-        measure("play_update",[&]{take(document->update(1.f/60));});
+        // Structure is checked on every sample; phase durations are diagnostics only.
+        const std::array per_update{&world::phases::update,&world::phases::pre_physics,&world::phases::pre_physics_tick,&world::phases::pre_physics_tasks,
+            &world::phases::pre_physics_commands,&world::phases::pre_physics_flush,&world::phases::simulation,&world::phases::post_physics,
+            &world::phases::post_physics_tick,&world::phases::post_physics_commands,&world::phases::post_physics_flush,&world::phases::late,
+            &world::phases::late_tick,&world::phases::late_commands,&world::phases::late_flush,&physics::phases::step,
+            &physics::phases::reconcile,&physics::phases::events};
+        std::vector<std::vector<double>> phases(timing::catalog().size());
+        measure("play_update",[&]{take(document->update(1.f/60));},[&](const timing::FrameRecord& record) {
+            const auto steps=document->physics_scene()->last_step().steps;
+            require(std::ranges::all_of(per_update,[&](const auto* marker){return record.count(*marker)==1;}) &&
+                record.count(world::phases::schedule)<=1 && record.count(physics::phases::substep)==steps &&
+                record.count(physics::phases::solve)==steps && record.count(physics::phases::write_back)==steps,
+                "play_update did not record each World and physics phase once per frame.");
+            for(const auto* marker:timing::catalog()) phases[marker->index()].push_back(milliseconds(record.time(*marker)));
+        });
+        for(const auto* marker:timing::catalog()) {
+            if(marker==&timing::frame || marker==&profile_calibration) continue;
+            auto& values=phases[marker->index()];values.erase(values.begin(),values.begin()+20);std::ranges::sort(values);
+            report["stages"]["play_update"]["phases"][std::string(marker->key())]={{"median_ms",values[60]},{"p95_ms",values[114]}};
+        }
         once("play_stop",[&]{changed(document->stop());});
     }
     editor::Workspace workspace;

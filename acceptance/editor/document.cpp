@@ -1,6 +1,7 @@
 #include "editor/session.hpp"
 #include "editor/project.hpp"
 #include "foundation/frame_timing.hpp"
+#include "physics/timing.hpp"
 #include "editor/examples.hpp"
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
