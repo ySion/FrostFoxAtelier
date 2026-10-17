@@ -263,6 +263,8 @@ public:
         ir_.SetInsertPoint(failure_);
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
         failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
+        // Without weights, block placement makes each per-site failure stub the
+        // fall-through and moves the success path behind a taken branch.
         failure_weights_ = llvm::MDBuilder(*context_).createLikelyBranchWeights();
         ir_.SetInsertPoint(start);
         if (function_.is_coroutine) setup_coroutine();
