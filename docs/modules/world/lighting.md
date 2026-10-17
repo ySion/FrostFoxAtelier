@@ -46,7 +46,7 @@
 
 World 使用现有 presentation 目录共同登记网格与灯光。render_items 只返回网格，light_items 只返回 Entity 和 Component 均启用的灯，顺序仍为 Entity 成员顺序及组件组成顺序。停止的编辑 World 可以提取；零 intensity 仍保留条目和身份；Detached/已移除对象不会出现；关闭后的提取返回错误。`can_present` 和 presentation_registrations 表示登记，不等于该帧产生可见能量。
 
-对 point / rectangle / directional，position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子节点的位置偏移。方向基由局部 quaternion 沿 Entity 空间参考链组合并归一化，忽略各级 scale/shear，得到正交单位 right(+X)、up(+Y)、direction(+Z)。direction 是光传播方向，矩形位于局部 XY 平面。range、source_radius 的物理长度、width/height 是世界米，不再乘任何 scale；方向光的 source_radius 为角度量。方向基不读取 scale 的符号：自身或祖先的镜像不改变 right/up/direction，三者始终构成右手正交基，Rectangle 的宽沿 right、高沿 up，发光侧仍为 direction；position 仍经完整矩阵，因此镜像祖先下的子灯位置被镜像而朝向保持作者旋转。零缩放祖先只使位置偏移塌缩，灯光不按退化处理。Sky Light 提取为中性位置/方向基，Application 单独发布它的均匀天光辐射。
+对 point / rectangle / directional，position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子节点的位置偏移。方向基沿 Entity 空间参考链组合每一级的正交部分 R·D，其中 D = diag(sign(scale))，忽略 scale 幅值与 shear，零分量按正号处理；得到正交矩阵 O 后取 right = O(+X)、up = O(+Y)、direction = O(+Z)，det(O) < 0 时 right 取反，使三者仍为右手正交单位基。全为正缩放时即各级 quaternion 的组合；幅值均匀时与网格同一局部轴的镜像方向一致，因此镜像祖先下的矩形光与方向光随几何一起镜像。direction 是光传播方向，矩形位于局部 XY 平面，以 position 为中心、宽沿 right、高沿 up，关于 right 轴对称，所以 right 取反不改变发光面。range、source_radius 的物理长度、width/height 是世界米，不再乘任何 scale；方向光的 source_radius 为角度量。零缩放祖先只使位置偏移塌缩，朝向保持作者值，灯光不按退化处理。Sky Light 提取为中性位置/方向基，Application 单独发布它的均匀天光辐射。
 
 参数值和坐标都在提取时验证。快照包含自有值，可在对象离场后继续读取；它不保存对象地址、ObjectRoot 或可重入回调。真实删除、撤销恢复与重新启用都沿原 Component 身份，不另建灯管理器或对象索引权威。
 
