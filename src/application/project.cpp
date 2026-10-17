@@ -8,6 +8,7 @@
 namespace atelier::application {
 namespace {
 auto failed(std::string message) { return std::unexpected(Error{ErrorCode::invalid_storage,std::move(message)}); }
+constexpr const wchar_t* placeholder_notice=L"Project types are unavailable until the Source build succeeds. Project objects load as placeholders and keep their saved values; fix the build, then Rebuild Types.";
 enum class Pick { folder, scene_open, scene_save, mesh, source, source_save, texture, material_save };
 Result<std::optional<std::filesystem::path>> pick(HWND owner,Pick kind,const std::filesystem::path& initial={},const wchar_t* filename=L"Move.source") {
     const auto initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED|COINIT_DISABLE_OLE1DDE);
@@ -106,10 +107,12 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     const auto initial_scene=scene.empty()?project->startup_scene():scene;
     const auto path=project->resolve(initial_scene);if (!path) return std::unexpected(path.error());
     const auto content=editor::read_file(*path);if (!content) return std::unexpected(content.error());
-    auto candidate=editor::load_project_scene(*project,*content);
-    // Reproducible workflows admit the complete candidate before retiring the
-    // current document. Interactive opening can still opt into source repair.
-    if(policy==ProjectOpenPolicy::require_scene && (!candidate.session || candidate.error))
+    // Reproducible workflows admit only a complete, exactly applied candidate
+    // before retiring the current document. Interactive opening keeps unresolved
+    // saved data and loads placeholders while the Source build is broken.
+    const bool reproducible=policy==ProjectOpenPolicy::require_scene;
+    auto candidate=editor::load_project_scene(*project,*content,reproducible?editor::LoadPolicy::strict:editor::LoadPolicy::tolerant,!reproducible);
+    if(reproducible && (!candidate.session || candidate.error))
         return candidate.error?std::unexpected(*candidate.error):failed("Project did not produce a complete scene.");
     play_.close();
     workspace_.source_editor.clear();
@@ -122,6 +125,8 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
         report->error=candidate.error;report->state=editor::BuildState::failed;candidate.build=std::move(report);
     }
     publish_build(candidate.build);workspace_.project_ui_configured=!project_->ui_source().empty();
+    if(candidate.session && candidate.error) workspace_.log(placeholder_notice);
+    for(auto& line:editor::describe_issues(*document_,document_->load_issues(),L"Scene "+initial_scene.generic_wstring())) workspace_.log(std::move(line));
     if(candidate.error) {
         workspace_.dock.select(editor::source_control::tab);
         if(candidate.build && candidate.build->sources && !candidate.build->sources->files.empty()) {
@@ -137,10 +142,13 @@ Result<void> Application::open_scene(const std::filesystem::path& relative) {
     if (!confirm_discard(false)) return {};
     auto path=project_->resolve(relative);if (!path) return std::unexpected(path.error());
     auto text=editor::read_file(*path);if (!text) return std::unexpected(text.error());
-    auto next=editor::load_project_scene(*project_,*text);
+    auto next=editor::load_project_scene(*project_,*text,editor::LoadPolicy::tolerant,true);
     if(!next.session) {publish_build(next.build);return std::unexpected(*next.error);}
     play_.close();scene_path_=relative;pending_scene_=*text;workspace_.scene_available=true;
-    publish_document(std::move(next.session),next.code);publish_build(next.build);return {};
+    publish_document(std::move(next.session),next.code);publish_build(next.build);
+    if(next.error) workspace_.log(placeholder_notice);
+    for(auto& line:editor::describe_issues(*document_,document_->load_issues(),L"Scene "+relative.generic_wstring())) workspace_.log(std::move(line));
+    return {};
 }
 Result<void> Application::save_scene(const std::filesystem::path& relative) {
     if (!project_) return failed("Create or open a project folder before saving a scene.");
@@ -156,6 +164,11 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     scene_path_=destination;document_->mark_saved();
     const auto refreshed=project_->refresh();
     workspace_.status=refreshed?L"Scene saved":L"Scene saved; asset refresh failed: "+editor::wide(refreshed.error().message);
+    auto pending=document_->issues();
+    const auto kept=pending.size();
+    std::erase_if(pending,[](const auto& item){return item.kind!=world::DiagnosticKind::reference_dropped;});
+    for(auto& line:editor::describe_issues(*document_,pending,L"Saved "+destination.generic_wstring())) workspace_.log(std::move(line));
+    if(kept) workspace_.status+=L" ("+std::to_wstring(kept)+L" unresolved saved item(s) kept)";
     return {};
 }
 Result<void> Application::project_command(editor::Command command,std::string_view argument) {

@@ -215,10 +215,16 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(loaded.meshes.size()==1 && loaded.lights.size()==3 && loaded.meshes[0].material.emissive[0]==4 &&
         loaded.meshes[0].material.metallic==.6f && loaded.lights[0].intensity==80 && loaded.lights[2].source_radius==.0046f,
         "Project scene reopen lost material or light settings.");
+    const auto kept_invalid=[&](const nlohmann::json& data,const nlohmann::json::json_pointer& at,const char* message) {
+        require(!Session::deserialize(data.dump(),project,{},LoadPolicy::strict),message);
+        auto kept=take(Session::deserialize(data.dump(),project));
+        require(!kept->load_issues().empty() && nlohmann::json::parse(take(kept->serialize()))[at]==data[at],
+            "Tolerant loading did not keep a saved value rejected by World validation.");
+    };
     auto data=nlohmann::json::parse(text);data["entities"][0]["components"][0]["roughness"]=2;
-    require(!Session::deserialize(data.dump(),project),"Invalid saved roughness bypassed World validation.");
+    kept_invalid(data,nlohmann::json::json_pointer("/entities/0/components/0/roughness"),"Invalid saved roughness bypassed World validation.");
     data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["intensity"]=-1;
-    require(!Session::deserialize(data.dump(),project),"Invalid saved light intensity bypassed World validation.");
+    kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/intensity"),"Invalid saved light intensity bypassed World validation.");
     data=nlohmann::json::parse(text);auto& old_material=data["entities"][0]["components"][0];
     old_material.erase("roughness");old_material.erase("metallic");old_material.erase("emissive");
     auto old=take(Session::deserialize(data.dump(),project));const auto old_items=take(old->world().render_items());
@@ -382,31 +388,37 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     for(const auto key:{"shadow_light_budget","shadow_samples"}) {
         for(const auto& bad:std::array<nlohmann::json,5>{-1,65,1.5,"8",true}) {
             auto invalid_legacy=v4;invalid_legacy["world"][key]=bad;
-            require(!Session::deserialize(invalid_legacy.dump(),project),
+            require(!Session::deserialize(invalid_legacy.dump(),project,{},LoadPolicy::strict),
                 "Malformed legacy shadow value was accepted during v4 migration.");
         }
         auto retired=saved_json;retired["world"][key]=1;
-        require(!Session::deserialize(retired.dump(),project),"Scene v6 accepted a retired shadow key.");
+        require(!Session::deserialize(retired.dump(),project,{},LoadPolicy::strict),"Scene v6 accepted a retired shadow key.");
         auto mixed=v4;mixed["world"]["direct_candidates"]=8;
-        require(!Session::deserialize(mixed.dump(),project),"Scene v4 accepted mixed new and retired direct-light options.");
+        require(!Session::deserialize(mixed.dump(),project,{},LoadPolicy::strict),"Scene v4 accepted mixed new and retired direct-light options.");
     }
     for(const auto key:{"probe_debug","direct_reference"}) {
         auto diagnostic_json=saved_json;diagnostic_json["world"][key]=true;
-        require(!Session::deserialize(diagnostic_json.dump(),project),"Viewport diagnostic was accepted as a World author option.");
+        require(!Session::deserialize(diagnostic_json.dump(),project,{},LoadPolicy::strict),"Viewport diagnostic was accepted as a World author option.");
     }
     auto bad_budget=v4;bad_budget["world"]["shadow_light_budget"]=17;
     auto bad_samples=v4;bad_samples["world"]["shadow_samples"]=0;
-    require(!Session::deserialize(bad_budget.dump(),project) && !Session::deserialize(bad_samples.dump(),project),
+    require(!Session::deserialize(bad_budget.dump(),project,{},LoadPolicy::strict) && !Session::deserialize(bad_samples.dump(),project,{},LoadPolicy::strict),
         "Scene v4 migration ignored the legacy budget or sample-count boundary.");
     for(const auto bad:{0.,33.,1.5}) {
         auto bad_candidates=saved_json;bad_candidates["world"]["direct_candidates"]=bad;
-        require(!Session::deserialize(bad_candidates.dump(),project),"Scene v6 accepted invalid direct candidates.");
+        require(!Session::deserialize(bad_candidates.dump(),project,{},LoadPolicy::strict),"Scene v6 accepted invalid direct candidates.");
     }
     auto invalid=candidate;invalid.probe_volumes[0].maximum=invalid.probe_volumes[0].minimum;
     require(!document.set_world_lighting(invalid) && document.world().lighting_settings()==candidate && document.undo_count()==stable_history,
         "Invalid World configuration partially published.");
     auto json=nlohmann::json::parse(saved);json["world"]["probe_debug"]=true;
-    require(!Session::deserialize(json.dump(),project),"A diagnostic setting was accepted in persisted World configuration.");
+    require(!Session::deserialize(json.dump(),project,{},LoadPolicy::strict),"A diagnostic setting was accepted in persisted World configuration.");
+    {
+        auto tolerated=take(Session::deserialize(json.dump(),project));
+        require(tolerated->load_issues().size()==1 && tolerated->load_issues().front().kind==world::DiagnosticKind::unknown_key &&
+            nlohmann::json::parse(take(tolerated->serialize()))["world"]["probe_debug"]==true,
+            "Tolerant loading did not keep an unknown World setting as saved data.");
+    }
     json=nlohmann::json{{"version",3},{"actors",nlohmann::json::array()}};
     auto legacy=take(Session::deserialize(json.dump(),project));
     require(legacy->world().lighting_settings()==rendering::SceneLightingSettings{},"An old scene inherited another document's World settings.");

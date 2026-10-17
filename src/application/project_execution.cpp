@@ -38,11 +38,20 @@ Result<void> Application::build_project(bool rebuild) {
         report->state=editor::BuildState::failed;report->error=next.error;publish_build(std::move(report));
         return std::unexpected(*next.error);
     }
+    // Without a code owner the document holds placeholders from a broken build.
+    // Replacing it drops scene history, which only an explicit Rebuild Types may do.
+    if(!rebuild && (document_->undo_count() || document_->redo_count())) {
+        publish_build(next.build);
+        workspace_.status=L"Project build ready. Rebuild Types to restore placeholder objects; scene Undo/Redo history will be cleared.";
+        workspace_.log(workspace_.status);return {};
+    }
     // A rebuild retains authored values, but its Runtime identities are new.
     // Preserve the unsaved marker independently of the retired history roots.
     if(dirty) next.session->mark_modified();
     workspace_.scene_available=true;pending_scene_=*text;
-    publish_document(std::move(next.session),next.code);publish_build(next.build);return {};
+    publish_document(std::move(next.session),next.code);publish_build(next.build);
+    for(auto& line:editor::describe_issues(*document_,document_->load_issues(),L"Scene "+scene_path_.generic_wstring())) workspace_.log(std::move(line));
+    return {};
 }
 Result<void> Application::create_source(const std::filesystem::path& relative,bool is_ui) {
     if(!project_) return failure("Open a project folder first.");

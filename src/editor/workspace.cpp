@@ -41,7 +41,7 @@ void Workspace::log(std::wstring text) {
         const auto end=text.find(L'\n',start);auto line=text.substr(start,end==text.npos?text.size()-start:end-start);
         if(!line.empty() && line.back()==L'\r') line.pop_back();
         if(line.size()>2048) {line.resize(2048);if(line.back()>=0xd800 && line.back()<=0xdbff) line.pop_back();line+=L"…";}
-        if(!line.empty()) messages->rows.push_back({next_output_++,{{1,std::move(line)}}});
+        if(!line.empty()) {messages->rows.push_back({next_output_,{{next_output_,std::move(line)}}});++next_output_;}
         if(end==text.npos) break;start=end+1;
     }
     if(messages->rows.size()>256) messages->rows.erase(messages->rows.begin(),messages->rows.end()-256);
@@ -180,6 +180,7 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::select_all: case Command::select_invert: case Command::select_box: return scene_available && !project_running;
     case Command::select_none: return scene_available && !project_running && !session.selected_entities().empty();
     case Command::rename_selected: return scene_available && !project_running && session.selection().entity!=ObjectId{};
+    case Command::discard_saved_data: return scene_available && !project_running && session.selection().object!=ObjectId{} && session.has_retained(session.selection().object);
     case Command::unparent_selected: {
         if(!scene_available || project_running) return false;
         for(const auto entity:session.selected_entities()) {
@@ -685,11 +686,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             auto title=std::wstring(session.name(member.id()));
             const bool mesh_entity=take(runtime.is_a(state.type,session.types().static_mesh_entity));
             const auto expansion=tree_expansion_.find(entity_key);
+            const bool retained=session.has_retained(member.id()) || std::ranges::any_of(take(world::components(runtime,member.id())),
+                [&](const auto& component){return session.has_retained(component.id());});
             rows->push_back({entity_key,{std::move(title),
                 state.state==world::EntityState::attached_inactive || state.state==world::EntityState::active,
                 selected_entities.contains(member.id()),static_cast<double>(entity_icon(session,member.id())),
                 parent_key,expansion!=tree_expansion_.end() && expansion->second,
-                std::wstring(mesh_entity?L"mesh-entity":L"entity")+(tree_drop_row==entity_key?L" drop-target":L""),state.can_edit,entity_key}});
+                std::wstring(mesh_entity?L"mesh-entity":L"entity")+(retained?L" retained":L"")+(tree_drop_row==entity_key?L" drop-target":L""),state.can_edit,entity_key}});
         }
         const auto expansion=tree_expansion_.find(control::tree_world);
         const std::array<ui_language::InputValue,11> inputs{ui_language::ItemList{std::move(rows)},
@@ -708,6 +711,14 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         if(const auto dot=name.find_last_of('.');dot!=name.npos) name=name.substr(dot+1);
         return wide(name);
     };
+    // Placeholders show the saved type they stand in for.
+    const auto object_title=[&](ObjectId object) {
+        if(session.has_retained(object)) if(const auto saved=session.retained(object);saved && !saved->type.empty()) {
+            auto name=saved->type;if(const auto dot=name.find_last_of('.');dot!=name.npos) name=name.substr(dot+1);
+            return wide(name)+L" (missing type)";
+        }
+        return short_type(object);
+    };
     if(view.key==control::structure_tab) {
         auto rows=std::make_shared<std::vector<ui_language::Item>>();
         if(selected!=ObjectId{}) {
@@ -719,11 +730,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                 const auto expansion=tree_expansion_.find(entity_key);
                 const auto state=take(world::inspect_entity(runtime,entry.entity));
                 rows->push_back({entity_key,{std::wstring(session.name(entry.entity)),state.can_edit,inspected==entry.entity,double(entity_icon(session,entry.entity)),
-                    entry.parent,expansion==tree_expansion_.end() || expansion->second,std::wstring(L"entity"),false,ui::ControlKey{}}});
+                    entry.parent,expansion==tree_expansion_.end() || expansion->second,std::wstring(session.has_retained(entry.entity)?L"entity retained":L"entity"),false,ui::ControlKey{}}});
                 for(const auto& component:take(world::components(runtime,entry.entity))) {
                     const auto key=bind(component.id(),{},Binding::Kind::structure);
-                    rows->push_back({key,{short_type(component.id()),state.can_edit,inspected==component.id(),double(ui::ControlIcon::component),
-                        entity_key,false,std::wstring(L"component"),false,ui::ControlKey{}}});
+                    rows->push_back({key,{object_title(component.id()),state.can_edit,inspected==component.id(),double(ui::ControlIcon::component),
+                        entity_key,false,std::wstring(session.has_retained(component.id())?L"component retained":L"component"),false,ui::ControlKey{}}});
                 }
                 const auto children=take(world::children(runtime,entry.entity));
                 for(auto child=children.rbegin();child!=children.rend();++child) pending.push_back({child->id(),entity_key});
@@ -791,7 +802,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             return instance?bind_material(object,path,kind,material_component,slot):bind(object,path,kind);
         };
         const auto type=take(runtime.type_of(object));
-        const auto title=instance?L"Material Overrides · "+wide(slot):short_type(object);
+        const auto title=instance?L"Material Overrides · "+wide(slot):object_title(object);
         const bool group_matches=lowercase(title).find(folded)!=std::wstring::npos;
         auto component_properties=std::make_shared<std::vector<ui_language::Item>>();
         auto properties=component_properties;
@@ -970,6 +981,23 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         }
         if(!component_properties->empty()) groups->push_back({property_key({},Binding::Kind::property_group),
             {title,double(object==selected?ui::ControlIcon::object:ui::ControlIcon::component),ui_language::ItemList{std::move(component_properties)}}});
+        if(instance || !session.has_retained(object)) return;
+        const auto saved=session.retained(object);if(!saved || saved->entries.empty()) return;
+        const bool categorized=parameter_by_category_ && material_object==ObjectId{};
+        auto saved_rows=categorized?category_properties("Saved Data"):std::make_shared<std::vector<ui_language::Item>>();
+        for(const auto& entry:saved->entries) {
+            std::string path;for(const auto& part:entry.path) path+=(path.empty()?"":".")+part;
+            const auto caption=wide(path);
+            if(!group_matches && lowercase(caption).find(folded)==std::wstring::npos) continue;
+            PropertyRow row;
+            row.key=bind_material(object,{},Binding::Kind::saved_data,{},path);row.title=caption;row.kind=PropertyRow::Kind::enumeration;
+            row.enabled=false;row.change={row.key,false};row.choice=wide(entry.value);row.target=row.key;
+            row.help=property_help_.get(row.key,row.title,L"Saved data · "+wide(world::name(entry.kind)),
+                "保存的场景数据无法应用到当前类型。它会原样写回文件；编辑对应字段或使用 Edit > Discard Saved Data 可丢弃。");
+            saved_rows->push_back(std::move(row).item());
+        }
+        if(!categorized && !saved_rows->empty()) groups->push_back({bind(object,{},Binding::Kind::saved_data),
+            {L"Saved Data · "+title,double(ui::ControlIcon::component),ui_language::ItemList{std::move(saved_rows)}}});
     };
     if(material_object!=ObjectId{}) {
         append_properties(material_object);
@@ -1042,9 +1070,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         transform_help(session.types().position_fields[0],70,L"Position (m)"),
         transform_help(session.types().rotation_fields[0],rotation_edit.group,L"Rotation (°)",true),
         transform_help(session.types().scale_fields[0],scale_edit.group,L"Scale")};
-    const std::array<ui_language::InputValue,29> inputs{inspected==ObjectId{}?std::wstring(L"Object"):short_type(inspected),
+    const std::array<ui_language::InputValue,29> inputs{inspected==ObjectId{}?std::wstring(L"Object"):object_title(inspected),
         ui_language::TextEditBinding{entity_selected?bind(selected,{},Binding::Kind::name):ui::ControlKey{77},
-            inspected==ObjectId{}?L"No selection":entity_selected?std::wstring(session.name(selected)):short_type(inspected),entity_selected && entity_status.can_edit},
+            inspected==ObjectId{}?L"No selection":entity_selected?std::wstring(session.name(selected)):object_title(inspected),entity_selected && entity_status.can_edit},
         ui_language::ActionBinding{control::parameter_back,can_navigate(-1)},ui_language::ActionBinding{control::parameter_forward,can_navigate(1)},
         double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
         inspected!=ObjectId{},ui_language::ItemList{std::move(groups)},matches,std::move(position),ui_language::TextEditBinding{control::parameter_search,query},empty,

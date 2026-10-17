@@ -23,7 +23,17 @@ Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 
 
 Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字符串编码避免 JSON 数值精度丢失。引用字段用 null 或 `{"$ref":"ID"}`，引用序列用这些值的数组；持有/观察属性由 Runtime 字段定义决定，不在 JSON 创造另一套引用类型。保存不记录 Runtime TypeId、ObjectId、FieldId 或后端句柄。
 
-加载先创建全部真实对象，恢复标量、资源与引用，再按最终组合与空间关系统一校验和注册。空间参考作为整批计划提交，不依赖文件目录的先后顺序。文档加载与可移植子树导出拒绝场景外业务引用；同一 Session 内复制可以保留图外引用，发布时仍校验其目标存活和 World 归属。无效 ID、重复身份、多重归属、引用类型不匹配、组合/空间环、非法 TRS 或未知属性均拒绝整个候选。新增未保存字段保留类型默认值，未知已保存字段不静默丢弃。
+加载先创建全部真实对象，恢复标量、资源与引用，再按最终组合与空间关系统一校验和注册。空间参考作为整批计划提交，不依赖文件目录的先后顺序。文档加载与可移植子树导出拒绝场景外业务引用；同一 Session 内复制可以保留图外引用，发布时仍校验其目标存活和 World 归属。新增未保存字段保留类型默认值。
+
+结构损坏总是拒绝整个候选：JSON 语法、重复字段、嵌套与容量上限、未知版本、无效或悬空 ID（含保留数据中的 `$ref`）、重复身份、多重归属、组合/空间环和非法空间参考。值层面的不符按加载策略处理：严格加载（`LoadPolicy::strict`）遇到首个诊断即拒绝；宽容加载（`LoadPolicy::tolerant`，默认）按对象保留无法应用的原始 JSON，报告诊断并继续：
+
+- 未注册类型（`unknown_type`）：按原生基类创建占位对象——Entity 用 `world.Entity`，带 `mesh` 的组件用 `world.StaticMeshComponent`，其余用 `world.Component`。占位对象记录原类型名和全部数据，没有行为绑定，原生部分照常参与；保存按原类型写回。
+- 未知已保存字段或键（`unknown_field` / `unknown_key`）：原值保留并写回。
+- 类型不符（`mismatch`）：引用目标存在但类型不符、未通过共享 canonical TRS 检查的空间值、World 或组件校验拒绝的设置等，字段使用类型默认值，原值保留并写回。整数字段中可无损转换的浮点值（如 `3.0`）直接应用并报告 `converted`。
+- 保留数据中的引用与活引用规则相同：子树导出拒绝图外目标，同一 Session 内复制继续指向原目标；目标在文档中被删除时写为 null 并报告 `reference_dropped`，撤销删除后恢复。
+- 编辑某字段会释放它的保留值；`Session::discard_retained` 丢弃一个对象的全部保留值，占位对象仍保留原类型。两者都进入 Undo/Redo。
+
+诊断记录使用 `world::Diagnostic`（[src/world/diagnostic.hpp](../../../src/world/diagnostic.hpp)），`phase` 为 `load`，`Session::load_issues()` 返回本次加载的诊断，`Session::issues()` 返回当前仍未解决的数据。没有改名重定向表；字段改名前后的值以 `unknown_field` 保留，改回原名后恢复。
 
 StaticMeshComponent 的 mesh、base_color、roughness、metallic、emissive 和 materials 使用专有资源验证；命名材质槽保存资源身份与显式覆盖意图。相同匿名材质被多个槽或对象引用时，往返仍恢复为同一个实例。场景内联实例随 Entity 子树复制，共享资产、父材质与 Texture 保持共享。早期 v6 的逐槽内联 payload 仍可读取，重新保存使用统一资源目录。导入失败撤销本次新增的 Session 资源缓存与文档身份，保留既有资源及其编辑状态。
 

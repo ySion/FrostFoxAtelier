@@ -122,6 +122,46 @@ void run(const std::filesystem::path& root) {
     auto executed=editor::load_project_scene(project,take(editor::read_file(report)));require(executed.session!=nullptr,"Run output did not restore through the shared scene loader.");
     check_position(position(*executed.session,entity(*executed.session)),2.f/3);
     require(take(editor::read_file(root/"Content/Scenes/Main.scene"))==original,"The runner overwrote the authored scene.");
+    {
+        auto& source=*rebuilt.session;auto& runtime=source.world().runtime();
+        const auto move=behavior(source);const std::array speed{take(runtime.find_field(take(runtime.type_of(move)),"speed"))};
+        take(source.set_property(move,speed,Scalar{5.f},990001));
+        const auto authored=take(source.serialize());
+        // A removed field keeps its saved value until the field returns.
+        constexpr std::string_view speed_field="    float speed = 2.0f;\n";
+        auto narrowed_source=extended;narrowed_source.erase(narrowed_source.find(speed_field),speed_field.size());
+        narrowed_source.replace(narrowed_source.find("self.speed"),10,"2.0f");
+        take(editor::write_file(component,narrowed_source));
+        auto narrowed=editor::load_project_scene(project,authored);
+        require(narrowed.session && !narrowed.error && narrowed.session->load_issues().size()==1 &&
+            narrowed.session->load_issues().front().kind==world::DiagnosticKind::unknown_field &&
+            take(narrowed.session->serialize())==authored,"A removed Source field lost its saved value.");
+        require(!editor::load_project_scene(project,authored,editor::LoadPolicy::strict).session,"Strict loading accepted a removed Source field.");
+        take(editor::write_file(component,extended));
+        auto widened=editor::load_project_scene(project,take(narrowed.session->serialize()));
+        require(widened.session && widened.session->load_issues().empty() && std::get<float>(field(*widened.session,"speed"))==5,
+            "A restored Source field did not recover its saved value.");
+        // A broken build opens interactively with placeholders; once it builds, a fresh load restores them.
+        take(editor::write_file(helper,"float travel(float speed,float dt) { return missing; }\n"));
+        require(!editor::load_project_scene(project,authored).session,"Exact loading accepted a broken Source build.");
+        auto broken=editor::load_project_scene(project,authored,editor::LoadPolicy::tolerant,true);
+        require(broken.session && broken.error && !broken.code && broken.session->placeholder_count()==1 &&
+            take(broken.session->serialize())==authored,
+            "A broken build did not load placeholders that save their original type and values.");
+        take(process.start(root,snapshot,true,1));wait(process,std::chrono::seconds(45));
+        require(process.exit_code()!=0,"Play ran while the Source build was broken.");static_cast<void>(process.take_output());
+        take(editor::write_file(helper,helpers));
+        auto repaired=editor::load_project_scene(project,take(broken.session->serialize()));
+        require(repaired.session && repaired.session->load_issues().empty() && std::get<float>(field(*repaired.session,"speed"))==5,
+            "Rebuilding types did not restore placeholder values.");
+        // Play runs with inert placeholders for types the successful build no longer declares.
+        auto missing=authored;missing.replace(missing.find("\"project.Move\""),14,"\"project.Gone\"");
+        take(editor::write_file(snapshot,missing));take(process.start(root,snapshot,true,2));wait(process,std::chrono::seconds(45));
+        const auto run_output=process.take_output();
+        require(process.exit_code()==0 && run_output.find("1 placeholder object(s)")!=std::string::npos,
+            "Play did not run with a missing type or did not report its placeholder summary.");
+        take(editor::write_file(snapshot,original));
+    }
 
     const std::string infinite="class project.Move : world.Component { float speed=2.0f; bool moving=true; uint ticks=0; float extra=7.0f; void tick(float dt) { while (true) {} } }";
     take(editor::write_file(component,infinite));take(process.start(root,snapshot,true));
@@ -150,7 +190,7 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
     auto reopened=take(editor::Project::open(moved));
     auto relocated=editor::load_project_scene(reopened,take(editor::read_file(moved/"Content/Scenes/Main.scene")));
     require(relocated.session!=nullptr && std::get<float>(field(*relocated.session,"speed"))==2,"Moving the project broke source or scene association.");
-    std::printf("Project integration: PASS (Source classes, files, properties, scene, hot update, diagnostics, UI, process, stop, relocation)\nEvidence: %s\n",editor::utf8(moved.wstring()).c_str());
+    std::printf("Project integration: PASS (Source classes, files, properties, scene, hot update, diagnostics, saved data across Source changes, placeholders, UI, process, stop, relocation)\nEvidence: %s\n",editor::utf8(moved.wstring()).c_str());
 }
 }
 int main() {

@@ -74,6 +74,8 @@ int run_project(const RunOptions& options) {
         }
         if(!loaded.session) throw std::runtime_error(loaded.error?loaded.error->message:"Project scene was not loaded.");
         auto& document=*loaded.session;
+        if(const auto summary=editor::describe_issues(document,document.load_issues(),L"Scene");!summary.empty())
+            {std::printf("%s\n",editor::utf8(summary.front()).c_str());std::fflush(stdout);}
         struct StopWorld {
             editor::Session& session;
             ~StopWorld(){auto stopped=session.stop();if(!stopped) std::fprintf(stderr,"Project stop: %s\n",stopped.error().message.c_str());}
