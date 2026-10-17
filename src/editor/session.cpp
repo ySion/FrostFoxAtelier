@@ -532,7 +532,7 @@ Result<void> Session::preview_transform(std::uint64_t control_session, std::span
     if (!transform_ || transform_->control_session!=control_session) return invalid("No matching transform edit.");
     for(const auto& value:values) for(std::size_t axis=0;axis<3;++axis)
         if(value.position[axis]<parameters_[axis].minimum || value.position[axis]>parameters_[axis].maximum ||
-            value.scale[axis]<minimum_scale || value.scale[axis]>maximum_scale)
+            std::abs(value.scale[axis])>maximum_scale)
             return invalid("Transform value is outside the editor range.");
     return write_transforms(*transform_,values);
 }
@@ -599,7 +599,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
     }
     for(const auto& path:types_.scale_fields) if(std::ranges::equal(path,active_->path)) {
         const auto* number=std::get_if<float>(&value);
-        if(!number || *number<minimum_scale || *number>maximum_scale) return invalid("Scale is outside the editor range.");
+        if(!number || std::abs(*number)>maximum_scale) return invalid("Scale is outside the editor range.");
     }
     const auto before=world_.read(active_->root.id(),active_->path);
     if(!before) return std::unexpected(before.error());
