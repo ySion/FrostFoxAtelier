@@ -84,6 +84,34 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("light_items",[&]{take(document->world().light_items());});
     measure("material_surfaces",[&]{for(const auto& item:geometry) take(world::material_surfaces(document->world().runtime(),item.component));});
     measure("scene_snapshot",[&]{take(snapshot.refresh(*document));});
+    {
+        // Paired World edits restore the same graph; the document history is not involved.
+        auto& world=const_cast<world::World&>(document->world());
+        auto& runtime=world.runtime();
+        ObjectId leaf;std::size_t spatial{};
+        for(const auto& member:take(world.members())) {
+            if(take(world::children(runtime,member.id())).empty()) leaf=member.id();
+            spatial+=take(world::has_transform(runtime,member.id()));
+        }
+        require(leaf!=ObjectId{},"CPU profile requires a leaf Entity.");
+        report["spatial_entities"]=spatial;
+        const bool enabled=take(world::inspect_entity(runtime,leaf)).enabled;
+        measure("enabled_toggle_pair",[&]{changed(world.set_enabled(leaf,!enabled));changed(world.set_enabled(leaf,enabled));});
+        measure("detach_restore_leaf",[&]{auto removal=take(world.detach(leaf));changed(world.restore(removal));});
+        measure("world_matrix_each_entity",[&]{
+            for(const auto& member:take(world.members()))
+                if(take(world::has_transform(runtime,member.id()))) take(world::world_matrix(runtime,member.id()));
+        });
+        const auto once=[&](std::string_view name,auto&& operation) {
+            const auto start=Clock::now();operation();
+            const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+            report["stages"][name]={{"single_ms",elapsed}};
+            std::printf("Scene CPU %.*s: %.3f ms single\n",static_cast<int>(name.size()),name.data(),elapsed);
+        };
+        once("play_start",[&]{changed(document->start());});
+        measure("play_update",[&]{take(document->update(1.f/60));});
+        once("play_stop",[&]{changed(document->stop());});
+    }
     editor::Workspace workspace;
     workspace.project_open=true;
     workspace.dock.maximize(editor::control::scene_tab);
