@@ -305,6 +305,70 @@ void verify_detached_reports_and_artifacts() {
             "A terminal handle reused across Runtime lifetimes retained stale identity or failure.");
     }
 }
+
+bool same_site(const SourceLocation& a, const SourceLocation& b) {
+    return a.path == b.path && a.version == b.version && a.offset == b.offset && a.line == b.line && a.column == b.column;
+}
+bool located(const Error& error, std::string_view path, std::size_t line) {
+    return error.source && error.source->path == path && error.source->line == line && error.source->column > 1;
+}
+// Play compiles without diagnostics or a debugger; failures still carry their
+// innermost source site, identical to what a diagnostic capture reports.
+void verify_failure_locations() {
+    Runtime runtime;
+    const auto type = register_host(runtime);
+    auto host = take(runtime.create(type));
+    const std::array zero{Scalar{std::uint32_t{0}}};
+
+    Program entry(runtime);
+    publish(entry, "located-entry.source", "uint run(uint d) {\n    return 10 / d;\n}", {});
+    const auto divided = entry.entry().invoke({}, zero);
+    require(!divided && located(divided.error(), "located-entry.source", 2),
+        "An entry failure lost its source site without diagnostics.");
+
+    constexpr auto helper = "uint leaf(uint d) {\n    return 10 / d;\n}\nuint run(uint d) {\n    return 1 + leaf(d);\n}";
+    Program plain(runtime), traced(runtime);
+    publish(plain, "located-helper.source", helper, {}, "run");
+    publish(traced, "located-helper.source", helper, {.diagnostics = true}, "run");
+    Diagnostics capture;
+    const auto inner = plain.entry().invoke({}, zero);
+    const auto observed = traced.entry().invoke({}, zero, {1}, &capture);
+    const auto report = capture.snapshot();
+    require(!inner && !observed && located(inner.error(), "located-helper.source", 2) && report.location &&
+        same_site(*inner.error().source, report.location->source) && observed.error().source &&
+        same_site(*inner.error().source, *observed.error().source),
+        "A helper failure was attributed to its caller or differed from the diagnostic site.");
+
+    Program native(runtime, type);
+    publish(native, "located-native.source", "void run() {\n    self.value = 1;\n    self.fail();\n}", {});
+    const auto thrown = native.entry().invoke(host.id(), {});
+    require(!thrown && thrown.error().message == "Diagnostic native failure." &&
+        located(thrown.error(), "located-native.source", 3),
+        "A native method failure lost its source call site.");
+
+    const source::SourceSnapshot snapshot{"located-project", 3, {
+        {"Source/Math.source", 17, "\nuint leaf(uint divisor) {\n    return 10 / divisor;\n}\n"},
+        {"Source/Entry.source", 29, "uint run(uint divisor) { return leaf(divisor); }"}}};
+    Program project(runtime), indexed(runtime);
+    auto candidate = take(Program::prepare(take(project.request(snapshot))));
+    take(project.try_publish(candidate));
+    publish(indexed, snapshot);
+    const auto mapped = take(project.entry("run")).invoke({}, zero);
+    const auto eager = take(indexed.entry("run")).invoke({}, zero);
+    require(!mapped && !eager && located(mapped.error(), "Source/Math.source", 3) &&
+        mapped.error().source->version == 17 && eager.error().source && same_site(*mapped.error().source, *eager.error().source),
+        "A project failure lost its original file or differed from the indexed diagnostic mapping.");
+
+    Program tasks(runtime, type);
+    publish(tasks, "located-task.source", "async uint run() {\n    yield;\n    self.value = 2;\n    return 1;\n}", {});
+    auto doomed = take(runtime.create(type));
+    auto task = take(tasks.entry().start(doomed.id(), {}));
+    require(take(task.resume()) == CoroutineState::suspended, "Located coroutine did not yield.");
+    take(runtime.destroy(doomed.id()));
+    const auto stale = task.resume();
+    require(!stale && located(stale.error(), "located-task.source", 3),
+        "A coroutine failure after resumption lost its source site.");
+}
 }
 
 void verify_source_diagnostics() {
@@ -313,5 +377,7 @@ void verify_source_diagnostics() {
     verify_source_mapping();
     verify_coroutine_lifetime();
     verify_detached_reports_and_artifacts();
-    std::puts("Source diagnostics: PASS (boundary counts, borrowed/owned values, GC, source versions, coroutine lifetime, detached artifacts)");
+    verify_failure_locations();
+    std::puts("Source diagnostics: PASS (boundary counts, borrowed/owned values, GC, source versions, coroutine lifetime, detached artifacts, "
+        "always-available failure sites)");
 }

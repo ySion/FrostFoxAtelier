@@ -27,14 +27,44 @@ std::uint64_t next_program_id() {
         if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) return value;
     }
 }
+// Project units map combined-text offsets back to snapshot files on demand.
+struct SourceMap {
+    std::shared_ptr<const SourceSnapshot> snapshot;
+    std::vector<language::SourcePiece> pieces;
+};
+// Line indexes are optional: eager diagnostic tables pass them, while a single
+// failure scans its file instead of retaining an index.
+SourceLocation resolve_location(const SourceMap* map, std::string_view path, std::uint64_t version,
+    const BusinessLocation& position, const std::vector<std::vector<std::size_t>>* line_starts = nullptr) {
+    const auto offset = static_cast<std::size_t>(position.offset);
+    if (map) for (const auto& piece : map->pieces) {
+        if (offset < piece.begin || offset >= piece.end) continue;
+        const auto& file = map->snapshot->files[piece.file];
+        const auto mapped = std::min(file.source.size(), piece.offset + offset - piece.begin);
+        std::size_t line = 1, column = 1;
+        if (line_starts) {
+            const auto& lines = (*line_starts)[piece.file];
+            const auto index = static_cast<std::size_t>(std::upper_bound(lines.begin(), lines.end(), mapped) - lines.begin() - 1);
+            line = index + 1;
+            column = mapped - lines[index] + 1;
+        } else {
+            for (std::size_t i = 0; i < mapped; ++i)
+                if (file.source[i] == '\n') { ++line; column = 1; } else ++column;
+        }
+        return {file.path, file.version, mapped, line, column};
+    }
+    return {std::string(path), version, offset, static_cast<std::size_t>(position.line), static_cast<std::size_t>(position.column)};
+}
+// Only diagnostic and debug captures need every site resolved up front.
 std::shared_ptr<const std::vector<DiagnosticLocation>> diagnostic_locations(const BusinessCodeInfo& info,
-    std::string_view path, std::uint64_t version) {
+    const SourceMap* map, std::string_view path, std::uint64_t version,
+    const std::vector<std::vector<std::size_t>>* line_starts = nullptr) {
+    if (!info.diagnostics && !info.debugging) return nullptr;
     auto locations = std::make_shared<std::vector<DiagnosticLocation>>();
     locations->reserve(info.location_count);
     for (std::uint32_t i = 0; i < info.location_count; ++i) {
         const auto& value = info.locations[i];
-        locations->push_back({value.function ? value.function : "", {std::string(path), version,
-            static_cast<std::size_t>(value.offset), static_cast<std::size_t>(value.line), static_cast<std::size_t>(value.column)}});
+        locations->push_back({value.function ? value.function : "", resolve_location(map, path, version, value, line_starts)});
     }
     return locations;
 }
@@ -250,10 +280,21 @@ struct Program::Version {
     BusinessFrameLayout layout;
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
     std::shared_ptr<const DebugMetadata> debug;
+    std::shared_ptr<const SourceMap> map;
     Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared,
-        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, CodeOwner owner) noexcept
+        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, CodeOwner owner,
+        std::shared_ptr<const SourceMap> source_map = {}) noexcept
         : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
-          info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())), diagnostic(std::move(capture)), debug(std::move(session)) {}
+          info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())), diagnostic(std::move(capture)),
+          debug(std::move(session)), map(std::move(source_map)) {}
+    // Generated failure exits report a site index; resolving it allocates, so it
+    // happens only after a failure.
+    void locate(Error& error, std::uint32_t site) const noexcept {
+        if (site >= info.location_count) return;
+        try {
+            error.source = resolve_location(map.get(), diagnostic->source_name, diagnostic->code_version, info.locations[site]);
+        } catch (...) {}
+    }
     template<class T>
     Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
         auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
@@ -318,8 +359,11 @@ struct Program::Version {
         if (!activation) return std::unexpected(std::move(activation.error()));
         auto checked = check_source_arguments(binding, info.signature, arguments);
         if (!checked) return std::unexpected(std::move(checked.error()));
-        return execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
-            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data, trace, std::move(debugger));
+        std::uint32_t site = no_diagnostic_location;
+        auto result = execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
+            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data, trace, std::move(debugger), &site);
+        if (!result) locate(result.error(), site);
+        return result;
     }
 };
 #include "source/detail/module_state.inl"
@@ -392,11 +436,7 @@ struct Program::Frame final : CoroutineFrame {
         if (observer.complete) observer.complete(observer.context, invocation, success);
     }
     Result<CoroutineStep> failure(Error error) {
-        if (invocation.debugger) DebugAccess::locate_error(*invocation.debugger, error);
-        if (diagnostic) {
-            DiagnosticAccess::fail(*diagnostic, error);
-            DiagnosticAccess::locate_error(*diagnostic, error);
-        }
+        if (diagnostic) DiagnosticAccess::fail(*diagnostic, error);
         return std::unexpected(std::move(error));
     }
     Result<CoroutineStep> resume() override {
@@ -405,8 +445,9 @@ struct Program::Frame final : CoroutineFrame {
         char message[512];
         bool suspended{};
         BusinessValue output{};
+        std::uint32_t site = no_diagnostic_location;
         const auto status = atelier_resume_business_coroutine(code_frame.get(), &suspended, &output,
-            message, sizeof(message));
+            message, sizeof(message), &site);
         const auto decoded = status == 0 && !suspended && !invocation.failed ?
             scalar_value(output, &version->contract->binding) : std::optional<Scalar>{};
         const bool invalid_result = status == 0 && !suspended && !invocation.failed &&
@@ -422,9 +463,12 @@ struct Program::Frame final : CoroutineFrame {
             request_cancel();
             return CoroutineStep{CoroutineState::completed};
         }
-        if (status != 0 || invocation.failed)
-            return failure({invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-                invocation.failed ? invocation.error : message});
+        if (status != 0 || invocation.failed) {
+            Error error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
+                invocation.failed ? invocation.error : message};
+            version->locate(error, site);
+            return failure(std::move(error));
+        }
         if (terminal_step && !cleared)
             return failure({ErrorCode::invocation_failed, "Coroutine left execution resources alive."});
         if (suspended) {
@@ -760,7 +804,7 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
     if (!compatible)
         return std::unexpected(Error{compatible.error().code, request->source_name + ": " + compatible.error().message});
     auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,
-        info.function_name, request->source_path_, diagnostic_locations(info, request->source_path_, request->sequence)});
+        info.function_name, request->source_path_, diagnostic_locations(info, nullptr, request->source_path_, request->sequence)});
     auto debug = make_debug_metadata(*metadata, info);
     return Program::Candidate{std::make_unique<Program::Prepared>(request->owner_, request->contract_, request->compilation_contract_, request->type_publication_, request->sequence,
         std::move(code), request->source_name, nullptr, std::move(metadata), std::move(debug))};

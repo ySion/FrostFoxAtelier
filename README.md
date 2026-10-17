@@ -240,6 +240,8 @@ cmake --build --preset release --target ui_layout_acceptance
 ```powershell
 cmake --build --preset release --target atelier_source_measure
 ./out/release/atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
+# 代码生成证据：每个用例的 .s / 优化后 .ll、对象字节数，以及失败点密集模块的编译时间与内存
+./out/release/atelier_source_measure.exe --artifacts out/codegen
 ```
 
 [机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定，不再由固定手写业务 IR 决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。

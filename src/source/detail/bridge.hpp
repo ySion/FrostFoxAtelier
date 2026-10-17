@@ -174,7 +174,8 @@ Result<void> check_source_arguments(const Binding&, const BusinessSignature&, st
 Result<void> check_source_receiver(const Binding&, ObjectId);
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
     BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessValue>,
-    bool request_collection, InvocationObserver = {}, CollectionBudget = {1}, void* result_data = nullptr, BusinessTrace* = nullptr, std::shared_ptr<DebugSessionState> = {});
+    bool request_collection, InvocationObserver = {}, CollectionBudget = {1}, void* result_data = nullptr, BusinessTrace* = nullptr, std::shared_ptr<DebugSessionState> = {},
+    std::uint32_t* failure_site = nullptr);
 Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId,
     std::span<const BusinessValue>, bool request_collection = false,
     InvocationObserver = {}, CollectionBudget = {1});

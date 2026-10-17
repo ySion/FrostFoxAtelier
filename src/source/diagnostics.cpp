@@ -123,10 +123,5 @@ void DiagnosticAccess::finish(DiagnosticState& state, const Runtime& runtime, Di
     pause(state, runtime, status);
     state.active = false;
 }
-void DiagnosticAccess::locate_error(const DiagnosticState& state, Error& error) {
-    const auto index = state.trace.failure_location;
-    if (!error.source && state.metadata && state.metadata->locations && index < state.metadata->locations->size())
-        error.source = (*state.metadata->locations)[index].source;
-}
 }
 }

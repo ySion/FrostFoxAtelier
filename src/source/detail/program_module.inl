@@ -188,8 +188,9 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
     const auto owner = request->owner_.lock();
     if (!owner || !owner->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Project program is closed."});
     auto module = std::make_shared<ModuleVersion>(); module->request = request->module_; module->classes = request->module_->classes;
-    // One line index per original file and one location table per compiled unit.
-    // Export views share it, while completed captures own no project snapshot.
+    // Diagnostic and debug builds resolve every site once, with one line index per
+    // file; otherwise a Version maps only its failing site. Export views share the
+    // unit tables, while completed captures own no project snapshot.
     const auto& snapshot = *request->module_->snapshot;
     std::vector<std::vector<std::size_t>> line_starts(snapshot.files.size());
     if (request->options.diagnostics || request->options.debugging) {
@@ -216,28 +217,13 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
         for (auto* code : output) codes.emplace_back(code, &atelier_destroy_business);
         if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
             {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
-        auto locations = std::make_shared<std::vector<DiagnosticLocation>>();
+        auto map = std::make_shared<const SourceMap>(SourceMap{request->module_->snapshot, text.pieces});
+        std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
         std::shared_ptr<const DebugTables> debug_tables;
         if (!codes.empty()) {
             const auto info = atelier_business_info(codes.front().get());
             debug_tables = copy_debug_tables(info);
-            locations->reserve(info.location_count);
-            for (std::uint32_t index = 0; index < info.location_count; ++index) {
-                const auto& position = info.locations[index];
-                SourceLocation mapped{request->source_name, request->sequence,
-                    static_cast<std::size_t>(position.offset), static_cast<std::size_t>(position.line), static_cast<std::size_t>(position.column)};
-                for (const auto& piece : text.pieces) {
-                    if (position.offset < piece.begin || position.offset >= piece.end) continue;
-                    const auto& file = snapshot.files[piece.file];
-                    const auto offset = std::min(file.source.size(), piece.offset + static_cast<std::size_t>(position.offset) - piece.begin);
-                    const auto& lines = line_starts[piece.file];
-                    const auto line = std::upper_bound(lines.begin(), lines.end(), offset);
-                    const auto line_index = static_cast<std::size_t>(line - lines.begin() - 1);
-                    mapped = {file.path, file.version, offset, line_index + 1, offset - lines[line_index] + 1};
-                    break;
-                }
-                locations->push_back({position.function ? position.function : "", std::move(mapped)});
-            }
+            locations = diagnostic_locations(info, map.get(), request->source_name, request->sequence, &line_starts);
         }
         for (std::size_t i = 0; i < codes.size(); ++i) {
             auto compatible = unit.contract->compatible(codes[i].get(), request->source_name);
@@ -262,7 +248,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                 name, request->source_name, locations});
             auto debug = make_debug_metadata(*metadata, info, debug_tables);
             module->versions.push_back(std::make_shared<const Version>(unit.contract, std::move(declaration), request->sequence,
-                std::move(metadata), std::move(debug), std::move(codes[i])));
+                std::move(metadata), std::move(debug), std::move(codes[i]), map));
         }
     }
     if (owner->module) {

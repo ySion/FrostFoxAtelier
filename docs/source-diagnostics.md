@@ -25,7 +25,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 `SourceSnapshot` 同样通过 `request(snapshot, options)` 选择编译能力。参数、输出存储、准入、发布和版本保活继续使用原有入口和契约。
 
-- `CompileOptions::diagnostics` 默认为 false，普通生成代码不包含诊断计数、位置写入或空指针检查。启用后，调用方仍可省略 `Diagnostics*`。
+- `CompileOptions::diagnostics` 默认为 false，普通生成代码不包含诊断计数、追踪位置写入或空指针检查；失败位置只在失败出口记录，见下文。启用后，调用方仍可省略 `Diagnostics*`。
 - 未插桩版本收到采集请求返回 `unsupported_operation`，在参数构造、协程帧分配与源码副作用之前拒绝。通过普通编译与兼容发布切换诊断能力，业务签名不变。
 - `DiagnosticOptions::timing` 独立控制时钟采样。关闭时只计数，`active_time` 为零。
 - 所有操作遵循现有 Runtime 单线程约定。一个 capture 同时归一个调用所有；活动期间再次使用返回 `busy`，原记录不被覆盖。终态后可以复用，下一次调用重置记录。
@@ -64,7 +64,15 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 协程帧拥有采集状态，所以调用方释放 `Diagnostics` 外壳不影响执行或清理；复制的句柄观察同一记录。报告与位置元数据不保活 Runtime、帧或机器码。热更新、Program.close 和旧 Lease 的调用分别记录实际使用的版本；Runtime 的原有外部寿命要求仍适用。
 
-嵌套函数先记录失败位置，外层传播与清理保留该位置。有采集时，同步调用结果和协程结果中的 `Error.source` 也补充原始源码位置。需要断点、单步、只读变量和调用栈时，使用同一执行链的[源码调试接口](source-debugger.md)。
+嵌套函数先记录失败位置，外层传播与清理保留该位置。需要断点、单步、只读变量和调用栈时，使用同一执行链的[源码调试接口](source-debugger.md)。
+
+### 始终可用的失败位置
+
+不启用诊断或调试时，同步调用和协程恢复失败的 `Error.source` 同样给出最内层失败点：函数内检查、原生服务或方法调用、字段访问与内部函数传播都适用。宿主检查在进入生成代码前失败（参数、接收者、准入）时没有源码位置。
+
+- **生成代码。** 每个失败点有独立的冷出口块，只在失败时把位置序号写入入口失败输出；失败分支标记为不太可能执行。成功路径不携带位置，也不增加指令。内部函数失败由调用点转发被调方写入的序号。
+- **位置表。** 编译单元始终保留位置表，每个失败点一条 32 字节记录（函数名、合并文本偏移、行、列），由代码版本拥有。宿主只在失败返回后解析序号；单文本请求直接使用请求路径与序号，项目单元按需扫描快照中的原文件换算行列，不额外常驻行索引。
+- **诊断与调试。** 启用诊断或调试的版本预先解析全部位置，用于采集报告与停点；`Error.source` 与无插桩版本使用同一位置序号，结果一致。
 
 ## IR、对象代码与反汇编
 
@@ -80,7 +88,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 ## 验收入口
 
-[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖调用计数、借用/拥有值、GC、跨文件故障位置、协程终态与旧版本、报告及产物寿命。它纳入现有 `source_acceptance`，也可聚焦执行：
+[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖调用计数、借用/拥有值、GC、跨文件故障位置、无插桩版本的失败位置、协程终态与旧版本、报告及产物寿命。它纳入现有 `source_acceptance`，也可聚焦执行：
 
 ```powershell
 . ./tools/enter-dev.ps1

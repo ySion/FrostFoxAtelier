@@ -63,7 +63,6 @@ void reset_capture(DebugSessionState& state) noexcept {
     state.last_stop.reset();
     state.action = DebugAction::continue_execution;
     state.step_activation = 0;
-    state.failure_location = no_diagnostic_location;
     state.active = state.entry_stopped = state.error_stopped = state.handler_failed = false;
     state.status = DebugStatus::rejected;
     // Stop identities remain monotonic across reuse, so an old command never
@@ -122,11 +121,6 @@ void DebugAccess::finish(DebugSessionState& state, DebugStatus status) noexcept 
     state.step_activation = 0;
     state.bound_sites.clear();
     state.metadata.reset();
-}
-void DebugAccess::locate_error(const DebugSessionState& state, Error& error) {
-    if (!error.source && state.metadata && state.metadata->locations &&
-        state.failure_location < state.metadata->locations->size())
-        error.source = (*state.metadata->locations)[state.failure_location].source;
 }
 }
 }
