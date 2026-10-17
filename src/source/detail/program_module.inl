@@ -246,13 +246,14 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             if (!signature) return std::unexpected(signature.error());
             const auto& method = unit.names[i];
             if (!unit.owner.empty()) {
-                const bool tick = method == "tick";
+                const bool tick = method == "tick" || method == "post_physics_tick" || method == "late_tick";
                 if ((tick || method == "begin" || method == "end") &&
                     (signature->result || signature->parameters.size() != (tick ? 1u : 0u) ||
                         (tick && (signature->parameters[0].type != unit.contract->binding.f32 ||
                             signature->parameters[0].passing != ParameterPassing::value))))
                     return std::unexpected(Error{ErrorCode::invalid_definition,
-                        "Lifecycle methods require void begin(), void tick(float), or void end()."});
+                        "Lifecycle methods require void begin(), void tick(float), void post_physics_tick(float), "
+                        "void late_tick(float), or void end()."});
             }
             const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
             module->entries.push_back({name, *signature});

@@ -24,7 +24,8 @@ Result<void> completed(Result<std::optional<Scalar>> result) {
 }
 bool lifecycle(std::string_view entry,std::string_view type) {
     if (entry.size()<=type.size()+1 || !entry.starts_with(type) || entry[type.size()]!='.') return false;
-    const auto name=entry.substr(type.size()+1);return name=="begin" || name=="tick" || name=="end";
+    const auto name=entry.substr(type.size()+1);
+    return name=="begin" || name=="tick" || name=="post_physics_tick" || name=="late_tick" || name=="end";
 }
 Result<void> validate_ui(const source::SourceFile& file) {
     // Compilation only. Project expressions and event handlers are evaluated
