@@ -29690,7 +29690,7 @@
           0.7071066498756409
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -29702,7 +29702,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{7F69FB1D-8EC2-5C03-9ED7-654181E06658}",
+          "mesh": "project/{11B4B7FA-7764-575B-BBAC-93904EC650AB}",
           "base_color": [
             1,
             1,
@@ -34642,7 +34642,7 @@
         "scale": [
           1.0,
           1.0,
-          1.0
+          -1.0
         ],
         "origin": null
       },
@@ -34652,7 +34652,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{D3A47961-4326-5C8C-B1DF-3228B8988DB2}",
+          "mesh": "project/{D7A0EF37-B208-566C-9FB9-33B0B97A8091}",
           "base_color": [
             1,
             1,
@@ -34690,7 +34690,7 @@
           -0.7071038484573364
         ],
         "scale": [
-          1.000000238418579,
+          -1.000000238418579,
           1.0,
           1.000000238418579
         ],
@@ -34702,7 +34702,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{81434CCF-93D2-5045-A126-ED275A460BB2}",
+          "mesh": "project/{D7A0EF37-B208-566C-9FB9-33B0B97A8091}",
           "base_color": [
             1,
             1,
@@ -34740,7 +34740,7 @@
           -0.7071038484573364
         ],
         "scale": [
-          1.000000238418579,
+          -1.000000238418579,
           1.0,
           1.000000238418579
         ],
@@ -34752,7 +34752,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{81434CCF-93D2-5045-A126-ED275A460BB2}",
+          "mesh": "project/{D7A0EF37-B208-566C-9FB9-33B0B97A8091}",
           "base_color": [
             1,
             1,
@@ -37190,7 +37190,7 @@
           -0.7071093320846558
         ],
         "scale": [
-          1.000000238418579,
+          -1.000000238418579,
           1.0,
           1.000000238418579
         ],
@@ -37202,7 +37202,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{7F69FB1D-8EC2-5C03-9ED7-654181E06658}",
+          "mesh": "project/{11B4B7FA-7764-575B-BBAC-93904EC650AB}",
           "base_color": [
             1,
             1,
@@ -37240,7 +37240,7 @@
           -3.1888484954833984e-06
         ],
         "scale": [
-          1.0000007152557373,
+          -1.0000007152557373,
           1.0,
           1.0000007152557373
         ],
@@ -37252,7 +37252,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{81434CCF-93D2-5045-A126-ED275A460BB2}",
+          "mesh": "project/{D7A0EF37-B208-566C-9FB9-33B0B97A8091}",
           "base_color": [
             1,
             1,
@@ -37290,7 +37290,7 @@
           -0.7071089744567871
         ],
         "scale": [
-          1.000000238418579,
+          -1.000000238418579,
           1.0,
           1.000000238418579
         ],
@@ -37302,7 +37302,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{81434CCF-93D2-5045-A126-ED275A460BB2}",
+          "mesh": "project/{D7A0EF37-B208-566C-9FB9-33B0B97A8091}",
           "base_color": [
             1,
             1,
@@ -37340,7 +37340,7 @@
           -0.7071089744567871
         ],
         "scale": [
-          1.000000238418579,
+          -1.000000238418579,
           1.0,
           1.000000238418579
         ],
@@ -37352,7 +37352,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{81434CCF-93D2-5045-A126-ED275A460BB2}",
+          "mesh": "project/{D7A0EF37-B208-566C-9FB9-33B0B97A8091}",
           "base_color": [
             1,
             1,
@@ -38590,7 +38590,7 @@
           -4.6193595153454226e-06
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -38602,7 +38602,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{7F69FB1D-8EC2-5C03-9ED7-654181E06658}",
+          "mesh": "project/{11B4B7FA-7764-575B-BBAC-93904EC650AB}",
           "base_color": [
             1,
             1,
@@ -39190,7 +39190,7 @@
           -1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -39202,7 +39202,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{7F69FB1D-8EC2-5C03-9ED7-654181E06658}",
+          "mesh": "project/{11B4B7FA-7764-575B-BBAC-93904EC650AB}",
           "base_color": [
             1,
             1,
@@ -39740,7 +39740,7 @@
           -0.7071053385734558
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -39752,7 +39752,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{7F69FB1D-8EC2-5C03-9ED7-654181E06658}",
+          "mesh": "project/{11B4B7FA-7764-575B-BBAC-93904EC650AB}",
           "base_color": [
             1,
             1,
@@ -45790,7 +45790,7 @@
           0.7328125238418579
         ],
         "scale": [
-          1.0000001192092896,
+          -1.0000001192092896,
           1.0,
           1.0000001192092896
         ],
@@ -45802,7 +45802,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{82621DD3-CEAF-54E0-B3D3-C509E7B3BBF9}",
+          "mesh": "project/{9BB588E5-1B85-5466-AEEA-2F251600ED75}",
           "base_color": [
             1,
             1,
@@ -48642,7 +48642,7 @@
         "scale": [
           8.14077377319336,
           4.825370788574219,
-          6.616939067840576
+          -6.616939067840576
         ],
         "origin": null
       },
@@ -48652,7 +48652,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{35BB68C0-1D49-5E04-AF05-4D3C78594CEA}",
+          "mesh": "project/{B7AB9DCB-EA22-5E98-8C2B-96A2E430BDFA}",
           "base_color": [
             1,
             1,
@@ -49592,7 +49592,7 @@
         "scale": [
           8.140772819519043,
           4.825370788574219,
-          6.616937637329102
+          -6.616937637329102
         ],
         "origin": null
       },
@@ -49602,7 +49602,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{35BB68C0-1D49-5E04-AF05-4D3C78594CEA}",
+          "mesh": "project/{B7AB9DCB-EA22-5E98-8C2B-96A2E430BDFA}",
           "base_color": [
             1,
             1,
@@ -57140,7 +57140,7 @@
           0.7908793687820435
         ],
         "scale": [
-          1.0000001192092896,
+          -1.0000001192092896,
           1.0,
           1.0
         ],
@@ -57152,7 +57152,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{924012F3-1CFD-5551-B77F-FF95ADF4F613}",
+          "mesh": "project/{C41BD8B7-6CC3-5830-96BB-9805F28168DF}",
           "base_color": [
             1,
             1,
@@ -70990,7 +70990,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -71002,7 +71002,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{293E9BB5-8F15-55E0-AB0B-54759D9336F4}",
+          "mesh": "project/{5267C5B8-9425-5858-82AC-A38FE7105474}",
           "base_color": [
             1,
             1,
@@ -78790,7 +78790,7 @@
           0.7071069478988647
         ],
         "scale": [
-          0.25659188628196716,
+          -0.25659188628196716,
           1.0,
           1.0
         ],
@@ -78802,7 +78802,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{45B3A4E0-A3FD-52A7-A117-A4A3A53C60C3}",
+          "mesh": "project/{D3233698-70E3-56FB-9733-B1F0499B104C}",
           "base_color": [
             1,
             1,
@@ -80042,7 +80042,7 @@
         "scale": [
           1.0,
           1.0,
-          1.0
+          -1.0
         ],
         "origin": null
       },
@@ -80052,7 +80052,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{2749988D-8A99-5448-B96A-074D9CDBCB67}",
+          "mesh": "project/{CB96E0AE-2A0A-5F93-8F24-C4E85E1FE58C}",
           "base_color": [
             1,
             1,
@@ -81142,7 +81142,7 @@
         "scale": [
           1.000000238418579,
           1.0,
-          1.000000238418579
+          -1.000000238418579
         ],
         "origin": null
       },
@@ -81152,7 +81152,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{2749988D-8A99-5448-B96A-074D9CDBCB67}",
+          "mesh": "project/{CB96E0AE-2A0A-5F93-8F24-C4E85E1FE58C}",
           "base_color": [
             1,
             1,
@@ -82542,7 +82542,7 @@
         "scale": [
           1.000000238418579,
           1.0,
-          1.000000238418579
+          -1.000000238418579
         ],
         "origin": null
       },
@@ -82552,7 +82552,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{2749988D-8A99-5448-B96A-074D9CDBCB67}",
+          "mesh": "project/{CB96E0AE-2A0A-5F93-8F24-C4E85E1FE58C}",
           "base_color": [
             1,
             1,
@@ -83240,7 +83240,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -83252,7 +83252,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{697CEFB9-C04D-5708-98EF-7EDC6AE51BF5}",
+          "mesh": "project/{D0465B69-8294-5932-B39B-E0223C6A9B2E}",
           "base_color": [
             1,
             1,
@@ -83340,7 +83340,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -83352,7 +83352,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -83640,7 +83640,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -83652,7 +83652,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{697CEFB9-C04D-5708-98EF-7EDC6AE51BF5}",
+          "mesh": "project/{D0465B69-8294-5932-B39B-E0223C6A9B2E}",
           "base_color": [
             1,
             1,
@@ -83790,7 +83790,7 @@
           -0.7071044445037842
         ],
         "scale": [
-          0.9999998807907104,
+          -0.9999998807907104,
           1.0,
           0.9999998807907104
         ],
@@ -83802,7 +83802,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -84290,7 +84290,7 @@
           0.7071075439453125
         ],
         "scale": [
-          0.9999998807907104,
+          -0.9999998807907104,
           1.0,
           0.9999998807907104
         ],
@@ -84302,7 +84302,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -84390,7 +84390,7 @@
           -0.7071044445037842
         ],
         "scale": [
-          0.9999998807907104,
+          -0.9999998807907104,
           1.0,
           0.9999998807907104
         ],
@@ -84402,7 +84402,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -84440,7 +84440,7 @@
           0.7071075439453125
         ],
         "scale": [
-          0.9999998807907104,
+          -0.9999998807907104,
           1.0,
           0.9999998807907104
         ],
@@ -84452,7 +84452,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -84490,7 +84490,7 @@
           0.7071075439453125
         ],
         "scale": [
-          0.9999998807907104,
+          -0.9999998807907104,
           1.0,
           0.9999998807907104
         ],
@@ -84502,7 +84502,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -84790,7 +84790,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -84802,7 +84802,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -85040,7 +85040,7 @@
           1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -85052,7 +85052,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -85990,7 +85990,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -86002,7 +86002,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{73D0587B-6AFF-5662-B636-92E04017D646}",
+          "mesh": "project/{6FDE41C3-3D5E-570F-AE0B-3CB24EA60FB0}",
           "base_color": [
             1,
             1,
@@ -104540,7 +104540,7 @@
           -1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -104552,7 +104552,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{D0B22BB4-4DC3-5790-8AA3-2CCBA104FD39}",
+          "mesh": "project/{D9975820-8431-59D8-AD7E-28BB18DBB267}",
           "base_color": [
             1,
             1,
@@ -107390,7 +107390,7 @@
           -1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -107402,7 +107402,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{D0B22BB4-4DC3-5790-8AA3-2CCBA104FD39}",
+          "mesh": "project/{D9975820-8431-59D8-AD7E-28BB18DBB267}",
           "base_color": [
             1,
             1,
@@ -111892,7 +111892,7 @@
         "scale": [
           1.0,
           1.0,
-          0.5
+          -0.5
         ],
         "origin": null
       },
@@ -111902,7 +111902,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{49237483-BC48-5164-BE4C-95832EE1370C}",
+          "mesh": "project/{A1F7D10C-E269-5502-9D52-2B419465646E}",
           "base_color": [
             1,
             1,
@@ -113042,7 +113042,7 @@
         "scale": [
           1.0,
           1.0,
-          0.5
+          -0.5
         ],
         "origin": null
       },
@@ -113052,7 +113052,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{49237483-BC48-5164-BE4C-95832EE1370C}",
+          "mesh": "project/{A1F7D10C-E269-5502-9D52-2B419465646E}",
           "base_color": [
             1,
             1,
@@ -113192,7 +113192,7 @@
         "scale": [
           1.0,
           1.0,
-          0.5
+          -0.5
         ],
         "origin": null
       },
@@ -113202,7 +113202,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{49237483-BC48-5164-BE4C-95832EE1370C}",
+          "mesh": "project/{A1F7D10C-E269-5502-9D52-2B419465646E}",
           "base_color": [
             1,
             1,
@@ -114592,7 +114592,7 @@
         "scale": [
           1.0,
           1.0,
-          0.5
+          -0.5
         ],
         "origin": null
       },
@@ -114602,7 +114602,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{49237483-BC48-5164-BE4C-95832EE1370C}",
+          "mesh": "project/{A1F7D10C-E269-5502-9D52-2B419465646E}",
           "base_color": [
             1,
             1,
@@ -114992,7 +114992,7 @@
         "scale": [
           1.0,
           1.0,
-          0.5
+          -0.5
         ],
         "origin": null
       },
@@ -115002,7 +115002,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{49237483-BC48-5164-BE4C-95832EE1370C}",
+          "mesh": "project/{A1F7D10C-E269-5502-9D52-2B419465646E}",
           "base_color": [
             1,
             1,
@@ -115092,7 +115092,7 @@
         "scale": [
           1.0,
           1.0,
-          0.5
+          -0.5
         ],
         "origin": null
       },
@@ -115102,7 +115102,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{49237483-BC48-5164-BE4C-95832EE1370C}",
+          "mesh": "project/{A1F7D10C-E269-5502-9D52-2B419465646E}",
           "base_color": [
             1,
             1,
@@ -121690,7 +121690,7 @@
           1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -121702,7 +121702,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{4B10DE70-0EF6-5CA3-8E80-3EAAB933DA5C}",
+          "mesh": "project/{02460182-65C6-5464-AAD4-0B1FAA6F147E}",
           "base_color": [
             1,
             1,
@@ -123190,7 +123190,7 @@
           1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -123202,7 +123202,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{952B72D0-4940-55D9-97E4-6F45B50FA5FF}",
+          "mesh": "project/{07B62B28-CE10-5709-A5F4-7191488A5AC7}",
           "base_color": [
             1,
             1,
@@ -123242,7 +123242,7 @@
         "scale": [
           1.0,
           1.0,
-          1.0
+          -1.0
         ],
         "origin": null
       },
@@ -123252,7 +123252,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{F7849FF7-17CB-56A8-9A2F-85E01AB5A2A4}",
+          "mesh": "project/{07B62B28-CE10-5709-A5F4-7191488A5AC7}",
           "base_color": [
             1,
             1,
@@ -124990,7 +124990,7 @@
           0.7071076035499573
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -125002,7 +125002,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -125590,7 +125590,7 @@
           1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -125602,7 +125602,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{697CEFB9-C04D-5708-98EF-7EDC6AE51BF5}",
+          "mesh": "project/{D0465B69-8294-5932-B39B-E0223C6A9B2E}",
           "base_color": [
             1,
             1,
@@ -126590,7 +126590,7 @@
           2.324580918866559e-06
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -126602,7 +126602,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -126690,7 +126690,7 @@
           2.324580918866559e-06
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -126702,7 +126702,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -126990,7 +126990,7 @@
           0.7071075439453125
         ],
         "scale": [
-          0.9999998807907104,
+          -0.9999998807907104,
           1.0,
           0.9999998807907104
         ],
@@ -127002,7 +127002,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -127090,7 +127090,7 @@
           1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -127102,7 +127102,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -127140,7 +127140,7 @@
           1.0
         ],
         "scale": [
-          1.0,
+          -1.0,
           1.0,
           1.0
         ],
@@ -127152,7 +127152,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{BB65063D-7541-50A9-86E4-AA63148CCE0D}",
+          "mesh": "project/{DDE8D6E5-35E4-5F93-A164-04EABCC489B0}",
           "base_color": [
             1,
             1,
@@ -143041,7 +143041,7 @@
         ],
         "scale": [
           1.0,
-          0.5,
+          -0.5,
           1.0
         ],
         "origin": null
@@ -143052,7 +143052,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{0B158213-D011-51A7-80A8-4D362D8AE72E}",
+          "mesh": "project/{07B9C8BB-9619-5B58-B9C8-FE3F04A19713}",
           "base_color": [
             1,
             1,
@@ -144940,7 +144940,7 @@
           1.0
         ],
         "scale": [
-          0.25659188628196716,
+          -0.25659188628196716,
           1.0,
           1.0
         ],
@@ -144952,7 +144952,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{45B3A4E0-A3FD-52A7-A117-A4A3A53C60C3}",
+          "mesh": "project/{D3233698-70E3-56FB-9733-B1F0499B104C}",
           "base_color": [
             1,
             1,
@@ -145141,7 +145141,7 @@
         ],
         "scale": [
           1.0,
-          0.5,
+          -0.5,
           1.0
         ],
         "origin": null
@@ -145152,7 +145152,7 @@
           "type": "world.StaticMeshComponent",
           "enabled": true,
           "properties": {},
-          "mesh": "project/{0B158213-D011-51A7-80A8-4D362D8AE72E}",
+          "mesh": "project/{07B9C8BB-9619-5B58-B9C8-FE3F04A19713}",
           "base_color": [
             1,
             1,
