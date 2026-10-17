@@ -2112,6 +2112,7 @@ void verify_runtime_math_precision();
 void verify_runtime_inheritance();
 void verify_reference_sequences();
 void verify_field_ranges();
+void verify_type_validation();
 
 int main() {
     try {
@@ -2139,6 +2140,7 @@ int main() {
         verify_runtime_inheritance();
         verify_reference_sequences();
         verify_field_ranges();
+        verify_type_validation();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

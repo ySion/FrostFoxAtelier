@@ -505,6 +505,9 @@ struct TypeDefinition {
     std::optional<Enumeration> enumeration{};
     std::optional<TypeReference> element{};
     std::string description{};
+    // Records and objects only. A pure check of one value's bytes, run by Runtime::validate
+    // and never on writes; it must not call the Runtime. Exceptions become failures.
+    Result<void> (*validate)(const void* storage){};
 };
 
 struct FieldInfo {
@@ -557,6 +560,17 @@ struct TypeInfo {
     bool plain_value{};
     // Help text is presentation metadata, not type identity, layout or call ABI.
     std::string description{};
+};
+
+// A value that breaks its type's rules. `field` is the failing leaf for a hard bound,
+// the record for a type validator, and empty for the validated type's own validator;
+// `names` spells the same path. `value` holds the offending leaf of a hard-bound failure.
+struct ValidationFailure {
+    std::vector<FieldId> field;
+    std::vector<std::string> names;
+    std::optional<Scalar> value{};
+    // argument_mismatch, or invocation_failed when a validator threw; readable message.
+    Error error;
 };
 
 enum class CollectionPhase { idle, roots, mark, sweep };
@@ -705,6 +719,11 @@ public:
     // The value a scalar write to this path of `type` would store, without an object:
     // clamped to hard bounds, argument_mismatch for NaN/Inf under a hard bound.
     [[nodiscard]] Result<Scalar> constrain(TypeId type, std::span<const FieldId> path, Scalar value) const;
+    // Checks, without changing anything: every hard bound, then type validators of inline
+    // records innermost first, then the inheritance chain base first. Reports the first
+    // failure; the outer error only means the object, type or storage is invalid.
+    [[nodiscard]] Result<std::optional<ValidationFailure>> validate(ObjectId object) const;
+    [[nodiscard]] Result<std::optional<ValidationFailure>> validate_value(TypeId type, std::span<const std::byte> storage) const;
     [[nodiscard]] Result<Scalar> read(ObjectId object, FieldId field) const {
         return read(object, {&field, 1});
     }
