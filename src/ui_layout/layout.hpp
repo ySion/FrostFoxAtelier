@@ -44,6 +44,8 @@ struct Error {
     LayoutNodeId node{};
     std::uint32_t provider_code{};
     InputField field{};
+    // set_tree entry responsible for a validation error, when available.
+    std::optional<std::size_t> tree_index{};
 };
 std::string_view describe(ErrorCode) noexcept;
 std::string_view describe(InputField) noexcept;
@@ -225,11 +227,19 @@ struct Stats {
     std::uint64_t computes{}, publications{}, measure_calls{}, intrinsic_queries{},
         width_queries{}, cache_hits{}, node_visits{};
     // Internal node/work buffers; excludes public track descriptors, provider,
-    // owned snapshots and the owner allocation itself.
+    // owned snapshots, returned identity arrays and the owner allocation itself.
     std::uint64_t buffer_allocations{}, buffer_bytes_allocated{}, buffer_bytes{}, peak_buffer_bytes{};
     std::uint64_t geometry_reuses{};
+    // Changed complete-tree commits and child links written in final sequences.
+    std::uint64_t topology_commits{}, topology_links_written{};
 };
 inline constexpr std::size_t append_position = std::numeric_limits<std::size_t>::max();
+
+struct TreeNodeInput {
+    LayoutNodeId node{}; // Empty creates; a live identity retains its node.
+    std::optional<std::size_t> parent{}; // Earlier entry; absent means implicit root.
+    NodeInput input{};
+};
 
 // Synchronous single writer. The caller keeps the document, provider and content
 // alive and stable throughout compute; destruction from a callback is forbidden.
@@ -255,6 +265,11 @@ public:
     Result<void> move(LayoutNodeId, LayoutNodeId parent,
                       std::size_t position = append_position);
     Result<void> remove(LayoutNodeId); // Removes the entire subtree, never root.
+    // Replace the complete tree below root in one input transaction. Entry order
+    // defines sibling order; omitted identities retire, retained identities survive.
+    // Validate final relationships and reserve before commit, including replacement
+    // at capacity. Returns identities in entry order. The old publication survives.
+    Result<std::vector<LayoutNodeId>> set_tree(std::span<const TreeNodeInput>);
 
     Result<LayoutView> compute(Size viewport, std::uint64_t provider_revision);
     // Edits and failed computes preserve this borrow. A successful publication

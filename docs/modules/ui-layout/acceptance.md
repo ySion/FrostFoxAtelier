@@ -5,7 +5,7 @@
 ## 正式入口与历史证据范围
 
 - 生产：`src/ui_layout/layout.hpp`、`layout.cpp`及其私有`flex.inl`、`grid.inl`。
-- 正式消费者：`acceptance/ui_layout/main.cpp`、`practical.inl`、`scaling.inl`、`editor.inl`、`flex_grid.inl`、`audit.inl`和`minimal.cpp`；inl仅由现有正式消费者包含，没有第二个目标。
+- 正式消费者：`acceptance/ui_layout/main.cpp`、`practical.inl`、`scaling.inl`、`editor.inl`、`flex_grid.inl`、`audit.inl`、`topology.inl`和`minimal.cpp`；inl仅由现有正式消费者包含，没有第二个目标。
 - 构建与运行仍使用README中的`cmake --build --preset dev --target ui_layout_acceptance`及release对应命令，先按正式工具脚本准备环境和配置。
 - 该次修改以`f42d071b937ad0c9c81e2315c9a8b0ff49ddc00d`为基线，交付提交为`5d5336b430b20af88724c89cf949061bb653e280`；源码、工具链输入和两配置程序SHA-256记录于`out/review/ui-layout-followup/environment.json`。修改前程序先在新增复现下得到39 PASS / 2 FAIL，再保留作同输入性能对照。
 - 该次日志：`out/review/ui-layout-followup/dev-acceptance.log`、`out/review/ui-layout-followup/release-acceptance.log`；每份包含布局41/41、minimal和当时的生产UI 15/15。检查使用运行时require，Release仍有效；核心和消费者沿用/W4 /WX。
@@ -14,6 +14,22 @@
 - retained_text_frames和editor_session_end_to_end覆盖同内容不同宽度、固定文字的几何复用、旧资源保有/回收、批量编辑、稳定业务key、ghost取消/提交、字体失效及多面板失败保旧。消费链见[composition](composition.md)，最新成本分项见[审计](audit.md)。
 
 ## 容器与消费覆盖
+
+### 完整树批次增量
+
+2026-10-17，`set_tree` 和生产 Session 接线在 Dev/Release 均完成构建与真实 CPU 端到端验收：布局 **46/46**、生产 UI **27/27**、最小消费者通过，退出码均为 0。日志保存在 `out/foundation-review-20261017/{dev,release}-{layout,ui,layout-minimal}.log`。新增以下 5 组布局场景；结果不包含原生窗口/GPU 验收，也不替代历史版本的性能对照。
+
+| 场景 | 可观察行为 |
+|---|---|
+| final_tree_transactions | 非深度优先的父项在前输入、祖先反转、逃逸子树、容器转叶、兄弟顺序、同值批次及旧快照 |
+| final_tree_validation_atomicity | 重复/外来/失效/root 身份、非法父项、最终叶父、深度、容量和描述拒绝；错误下标与失败保旧 |
+| final_tree_capacity_reuse | 满容量替换、槽位换代、保留后代及批量/逐项编辑共用空闲槽链 |
+| final_tree_measurement_recovery | 真实 DirectWrite 后续测量失败、编辑重入拒绝、旧发布保持与重试匹配新文档 |
+| final_tree_linear_siblings | 2048 个兄弟节点插入和反转，最终孩子序列写入量受节点数量约束 |
+
+生产 UI 另增 `control_topology_identity` 和 `control_topology_failure_and_scaling`，覆盖草稿与 incarnation 保持、失败后的接受帧/输入边界、新节点错误归属及 512 个兄弟节点。计数只核验拓扑写入工作量，不提供耗时或 FPS 结论；未增加逐分配点失败注入。
+
+### 既有容器覆盖
 
 | 场景 | 可观察行为 |
 |---|---|
@@ -44,7 +60,7 @@
 | grid_collision_boundaries | 大跨度、64位边界、固定主轴放置、精确容量边界、失败保旧及恢复 |
 | collapsed_publication_indices | 连续折叠/展开、失败和重试、删除/槽复用、旧快照查询均保持完整身份 |
 
-基础17项继续纳入当前41项，矩阵如下。
+基础17项继续纳入当前46项，矩阵如下；运行证据仍按上述版本区分。
 
 ## 性能与未覆盖项
 

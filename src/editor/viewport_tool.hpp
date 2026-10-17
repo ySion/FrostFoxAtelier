@@ -6,6 +6,7 @@
 #include "ui/session.hpp"
 
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -89,7 +90,9 @@ public:
     Result<void> cancel(Session&);
     // Drop tool state after Session already ended the transaction (undo, selection change...).
     void forget(const Session&) noexcept;
-    void overlay(const Session&, const ViewportView&, Settings, std::vector<renderer::OverlayShape>&) const;
+    // Geometry membership comes from the same frame snapshot as scene rendering.
+    void overlay(const Session&, const ViewportView&, Settings, std::span<const ObjectId> mesh_entities,
+        std::vector<renderer::OverlayShape>&) const;
     // Topmost Entity under a physical-pixel point.
     std::optional<ObjectId> pick(const Session&, const ViewportView&, float x, float y) const;
     std::vector<ObjectId> pick_box(const Session&, const ViewportView&, ui::Rect) const;
@@ -104,6 +107,7 @@ private:
     struct Targets {
         std::vector<ObjectId> entities;
         std::vector<world::Trs> transforms;
+        world::Trs active_frame;
         math::Vector3 pivot;
     };
     struct Gesture {
@@ -116,10 +120,13 @@ private:
         std::uint64_t session{};
         std::vector<ObjectId> entities;
         std::vector<world::Trs> before;
+        world::Trs active_frame;
         math::Vector3 pivot;
         math::Vector2 start, last;
         float angle{};      // Unwrapped screen angle for rotation.
         std::wstring typed; // Numeric input.
+        Orientation orientation() const noexcept { return operation==Operation::scale?Orientation::local:settings.orientation; }
+        math::Quaternion basis() const noexcept;
     };
     struct Marquee {
         math::Vector2 start, current; bool dragging{}; bool shift{}, control{}, await_press{};

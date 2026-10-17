@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/world.hpp"
+#include "foundation/set.hpp"
 #include <unordered_map>
 
 namespace atelier::world::detail {
@@ -76,6 +77,9 @@ struct SpaceGraph {
     Runtime& runtime;
     std::unordered_map<ObjectId, SpaceNode> nodes;
     std::unordered_map<ObjectId, math::Matrix4> matrices;
+    // Reused only inside this evaluation phase; no author data survives it.
+    std::vector<ObjectId> matrix_path;
+    Set<ObjectId> matrix_seen, parent_seen;
     explicit SpaceGraph(Runtime& r) : runtime(r) {}
     Result<SpaceNode*> node(ObjectId);
     Result<ObjectId> parent(ObjectId);

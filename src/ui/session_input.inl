@@ -11,7 +11,7 @@ Reply Session::input(const Event& event) {
         if (event.kind==EventKind::capture_lost && !self.press) return reply;
         if (event.kind==EventKind::focus_lost || event.kind==EventKind::capture_lost) {
             reply=self.cancel();
-            if (event.kind==EventKind::focus_lost) { self.edit.reset(); self.focus=0; }
+            if (event.kind==EventKind::focus_lost) { self.edit.reset(); self.set_focus(reply,0); }
             return reply;
         }
         if (event.kind==EventKind::clipboard_result) {
@@ -22,14 +22,18 @@ Reply Session::input(const Event& event) {
             if (const auto* value=std::get_if<ImeResult>(&event.data)) self.ime_result(reply,*value);
             return reply;
         }
-        if (!self.active()) return reply;
-        if (!std::isfinite(event.x) || !std::isfinite(event.y) || !std::isfinite(event.wheel)) return reply;
         if (event.kind==EventKind::key_up && event.key==self.terminal_key && event.key!=Key::none) {
             self.terminal_key=Key::none; reply.consumed=true; return reply;
         }
         if (event.kind==EventKind::key_down && event.key==self.terminal_key && event.key!=Key::none) {
             reply.consumed=true; return reply;
         }
+        // Retire the physical release before frame/focus-specific dispatch can consume it.
+        const auto released_keyboard=event.kind==EventKind::key_up && event.key==self.keyboard_key?
+            std::exchange(self.keyboard_pressed,ControlKey{}):ControlKey{};
+        if (released_keyboard) { self.keyboard_key=Key::none; reply.consumed=reply.redraw=true; }
+        if (!self.active()) return reply;
+        if (!std::isfinite(event.x) || !std::isfinite(event.y) || !std::isfinite(event.wheel)) return reply;
         if (event.kind==EventKind::composition) {
             if (const auto* value=std::get_if<CompositionEvent>(&event.data)) self.composition_event(reply,*value);
             return reply;
@@ -104,7 +108,7 @@ Reply Session::input(const Event& event) {
             break;
         }
         if (self.code_input(reply,event,hit)) return reply;
-        if (self.table_input(reply,event,hit)) return reply;
+        if (self.table_input(reply,event,hit,released_keyboard)) return reply;
         if (event.kind==EventKind::pointer_move) {
             const auto key=hit?hit->key:0;
             reply.redraw|=self.hover!=key; self.hover=key;
@@ -200,9 +204,9 @@ Reply Session::input(const Event& event) {
                 }
             }
             if (event.button!=PointerButton::primary && !(hit && event.button==PointerButton::middle && hit->kind==ControlKind::number)) return reply;
-            self.keyboard_pressed=0;
+            self.retire_keyboard(reply);
             const auto next=hit && focusable(hit->kind)?hit->key:0;
-            if (next!=self.focus) { self.finish_edit(reply,true); self.focus=next; }
+            if (next!=self.focus) { self.finish_edit(reply,true); self.set_focus(reply,next); }
             if (event.button==PointerButton::middle) self.finish_edit(reply,true);
             if (!hit || (!focusable(hit->kind) && hit->kind!=ControlKind::splitter)) return reply;
             const auto& control=self.states.at(hit->key).control;
@@ -307,7 +311,7 @@ Reply Session::input(const Event& event) {
                 const auto at=std::find(keys.begin(),keys.end(),self.focus);
                 const auto index=at==keys.end()?(event.shift?keys.size()-1:0):
                     (static_cast<std::size_t>(at-keys.begin())+keys.size()+(event.shift?-1:1))%keys.size();
-                self.focus=keys[index];
+                self.set_focus(reply,keys[index]);
                 if (text_field(self.states.at(self.focus).control.kind)) self.begin_edit(self.focus,true,true);
             }
             reply.consumed=reply.redraw=true; return reply;
@@ -325,7 +329,7 @@ Reply Session::input(const Event& event) {
             if (!keys.empty() && found!=keys.end()) {
                 const auto at=static_cast<std::size_t>(found-keys.begin());
                 const auto next=event.key==Key::home?0:event.key==Key::end?keys.size()-1:(at+keys.size()+(event.key==Key::left?-1:1))%keys.size();
-                self.focus=keys[next]->key; self.activate(reply,*keys[next]);
+                self.set_focus(reply,keys[next]->key); self.activate(reply,*keys[next]);
             }
             reply.consumed=reply.redraw=true; return reply;
         }
@@ -402,11 +406,8 @@ Reply Session::input(const Event& event) {
             reply.consumed=true;
             if (event.kind==EventKind::key_down && !self.keyboard_pressed) {
                 self.keyboard_pressed=self.focus; self.keyboard_key=event.key; reply.redraw=true;
-            } else if (event.kind==EventKind::key_up) {
-                const auto pressed=std::exchange(self.keyboard_pressed,ControlKey{}); reply.redraw=pressed!=0;
-                if (pressed==self.focus && self.keyboard_key==event.key)
-                    self.activate(reply,*focused_box);
-            }
+            } else if (event.kind==EventKind::key_up && released_keyboard==self.focus)
+                self.activate(reply,*focused_box);
         }
         return reply;
     } catch (const detail::TextFailure& failure) {

@@ -1,33 +1,34 @@
-    void restore_popup_focus() {
+    void restore_popup_focus(Reply& reply) {
         const auto* box=published?published->find(popup_return_focus):nullptr;
-        focus=box && current(*box) && focusable(box->kind) && visible(box->bounds,box->clip)?box->key:0;
+        set_focus(reply,box && current(*box) && focusable(box->kind) && visible(box->bounds,box->clip)?box->key:0);
     }
     void dismiss_popup(Reply& reply) {
         if (!popup || popup_dismissed) return;
-        popup_dismissed=true; keyboard_pressed=0; keyboard_key=Key::none; hover=0;
+        popup_dismissed=true; retire_keyboard(reply); hover=0;
         if (press) { press.reset(); reply.capture=Capture::release; }
-        restore_popup_focus();
+        restore_popup_focus(reply);
         action(reply,ActionKind::dismiss,popup); reply.redraw=reply.consumed=true;
     }
     void update_popup(ControlKey next, Reply& reply) {
         if (next==popup) return;
         reply.redraw|=dismiss_tooltip();
+        retire_keyboard(reply);
         if (next && press) {
             auto cancelled=cancel(); reply.capture=cancelled.capture;
             for (auto& effect:cancelled.effects) reply.effects.push_back(std::move(effect));
         }
-        if (popup && !popup_dismissed) restore_popup_focus();
+        if (popup && !popup_dismissed) restore_popup_focus(reply);
         popup=next; popup_dismissed=false;
         if (!popup) { popup_return_focus=0; return; }
         finish_edit(reply,true);
-        popup_return_focus=focus; focus=0; keyboard_pressed=0; hover=0;
+        popup_return_focus=focus; set_focus(reply,0); hover=0;
         bool selected_radio=false;
         for (auto key:order) {
             const auto& control=states.at(key).control;
             if (control.kind==ControlKind::menu_item && control.enabled) {
-                if (!focus) focus=key;
+                if (!focus) set_focus(reply,key);
                 if (!selected_radio && control.menu_behavior==MenuBehavior::radio && control.selected) {
-                    focus=key; selected_radio=true;
+                    set_focus(reply,key); selected_radio=true;
                 }
             }
         }
@@ -35,7 +36,7 @@
     }
     void context_request(Reply& reply, const ControlBox& box, float x, float y, std::optional<TableSelection> table={}) {
         finish_edit(reply,true);
-        if (focusable(box.kind)) focus=box.key;
+        if (focusable(box.kind)) set_focus(reply,box.key);
         action(reply,ActionKind::context_menu,box.context_target?box.context_target:box.key,
             ContextMenuRequest{box.key,box.context_group,x,y,table});
         reply.consumed=reply.redraw=true;
@@ -45,7 +46,7 @@
         const auto* box=published?published->find(command.target):nullptr;
         if (!state || !box || !current(*box) || !text_field(state->control.kind)) return;
         finish_edit(reply,true);
-        focus=command.target;
+        set_focus(reply,command.target);
         begin_edit(command.target,true,true);
         if (command.kind==EditCommandKind::reset) {
             if (!state->control.default_value) return;
@@ -107,7 +108,7 @@
         if (event.kind==EventKind::pointer_down && !inside) { dismiss_popup(reply); return true; }
         if (event.kind==EventKind::wheel && !inside) return true;
         if (event.kind==EventKind::pointer_move && hit && hit->kind==ControlKind::menu_item) {
-            reply.redraw|=focus!=hit->key; focus=hit->key;
+            set_focus(reply,hit->key);
         }
         // Popup is also a form container. Only menus own navigation keys;
         // fields and sliders keep their normal editing and focus behaviour.
@@ -122,7 +123,7 @@
                 if (event.key==Key::home) index=0;
                 else if (event.key==Key::end) index=keys.size()-1;
                 else index=(index+keys.size()+(event.key==Key::up?-1:1))%keys.size();
-                focus=keys[index]; keyboard_pressed=0;
+                retire_keyboard(reply); set_focus(reply,keys[index]);
                 const auto& box=*published->find(focus);
                 auto& menu=states.at(popup);
                 if (box.bounds.y<box.clip.top) menu.scroll-=(box.clip.top-box.bounds.y)/surface.dpi_scale;

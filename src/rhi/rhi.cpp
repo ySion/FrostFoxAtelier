@@ -262,9 +262,10 @@ Result<void> Context::frame(bool vsync, FrameInfo* details) {
     if (state_->failure != kGfxResult_NoError) return std::unexpected(execution_error(state_->failure));
     const auto rendered = target();
     if (!rendered) return std::unexpected(rendered.error());
-    const GfxResult result = gfxFrame(state_->context, vsync);
+    FrameCpuTimings cpu;
+    const GfxResult result = gfxFrame(state_->context, vsync, details ? &cpu : nullptr);
     if (result == kGfxResult_NoError) {
-        if (details) *details = {*rendered, *target(), gfxGetLastPresentResult(state_->context) == DXGI_STATUS_OCCLUDED};
+        if (details) *details = {*rendered, *target(), gfxGetLastPresentResult(state_->context) == DXGI_STATUS_OCCLUDED, cpu};
         return {};
     }
     state_->failure = result;

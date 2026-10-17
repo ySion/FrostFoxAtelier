@@ -77,7 +77,13 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     // Intrinsic measurement has its own retained CPU session. A checked/enabled
     // update must not resize the live input surface to the monitor and back.
     take(measurement_.set_style(style));take(measurement_.set_style_sheet(sheet));
-    if(!measurement_revision_ || measured_dpi_!=dpi || measured_area_!=work_area) ++measurement_revision_;
+    if(!measurement_revision_ || measured_dpi_!=dpi || measured_area_!=work_area) {
+        // Surface changes dismiss modal input. Retire the measurement-only tree
+        // first so the new projection opens its root in the new DPI/work area.
+        // The live popup Session and its accepted input identities stay intact.
+        take(measurement_.set_controls({}));
+        ++measurement_revision_;
+    }
     take(measurement_.set_surface({work_area,dpi,measurement_revision_}));
     // Measure both text columns with the same SS/font/layout path used to draw.
     for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item)

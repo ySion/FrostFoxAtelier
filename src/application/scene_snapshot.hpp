@@ -12,12 +12,14 @@ namespace atelier::application {
 class SceneSnapshot final {
 public:
     std::vector<renderer::MeshInstance> meshes;
+    // Same-frame geometry membership, shared with viewport locator overlays.
+    std::vector<ObjectId> mesh_entities;
     std::vector<renderer::Light> lights;
     std::array<float,3> environment{};
     std::uint64_t identity{1}, revision{1};
 
     void reset() {
-        ++identity;revision=1;next_key_=1;keys_.clear();meshes.clear();lights.clear();environment={};
+        ++identity;revision=1;next_key_=1;keys_.clear();meshes.clear();mesh_entities.clear();lights.clear();environment={};
     }
     Result<void> refresh(const editor::Session& document) {
         auto geometry=document.world().render_items();if(!geometry) return std::unexpected(geometry.error());
@@ -25,6 +27,7 @@ public:
         for(auto& [object,key]:keys_) { (void)object;key.seen=false; }
         bool changed=meshes.size()!=geometry->size();
         meshes.reserve(geometry->size());lights.reserve(illumination->size());
+        mesh_entities.clear();mesh_entities.reserve(geometry->size());
         const auto selection=document.selected_entities();
         std::unordered_map<ObjectId,bool> inherited_selection;
         if(!selection.empty()) {
@@ -42,6 +45,7 @@ public:
         const auto rgb=[](math::Vector3 value){return std::array{value.x,value.y,value.z};};
         for(std::size_t i=0;i<geometry->size();++i) {
             const auto& item=(*geometry)[i];
+            mesh_entities.push_back(item.entity);
             renderer::MeshInstance value{item.world.elements,
                 {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1},
                 !selection.empty() && inherited_selection.at(item.entity),item.geometry,

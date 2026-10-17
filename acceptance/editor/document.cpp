@@ -4,6 +4,7 @@
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
 #include "application/scene_snapshot.hpp"
+#include "renderer/scene_visibility.hpp"
 #include "application/recovery.hpp"
 #include "ui/text.hpp"
 #include "dungeons_roundtrip.hpp"
@@ -11,11 +12,18 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <numeric>
 #include <cstdio>
 #include <stdexcept>
 #include <unordered_set>
 #include <windows.h>
 #include <psapi.h>
+
+namespace atelier::editor {
+struct WorkspaceAcceptanceAccess {
+    static const auto& tree_expansion(const Workspace& workspace) {return workspace.tree_expansion_;}
+};
+}
 
 namespace {
 using namespace atelier;
@@ -87,6 +95,9 @@ int main(int argc, char** argv) {
             profile_project_json(argv[2]);
             return 0;
         }
+        if ((argc == 5 || argc == 6) && std::string_view(argv[1]) == "--profile-scene-cpu") {
+            profile_scene_cpu(argv[2],argv[3],argv[4],argc==6?std::filesystem::path(argv[5]):std::filesystem::path{});return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "--profile-ui-reload") {
             profile_ui_reload(argv[2]);
             return 0;
@@ -96,7 +107,7 @@ int main(int argc, char** argv) {
             std::puts("Editor physics project acceptance: PASS");
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --color-edits | --examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --color-edits | --examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
         stage="physics project";verify_physics_test_project();
         stage="project document";verify_project_document();
         stage="scene recovery";verify_scene_recovery();

@@ -35,6 +35,18 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         report<<menu<<','<<run<<','<<presents<<','<<app.menu_open_cpu_us()<<','<<wall<<'\n';report.flush();
         escape();tick(app,1);
     }
+    // A monitor/DPI change must remeasure a retained popup without leaving its
+    // measurement Session in the dismissed modal state.
+    Access::invalidate_menu_measurement(app);
+    {
+        const auto p=point(control::file_menu);
+        pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);tick(app,1);
+        require(app.menu_frame() && app.menu_frame()->find(control::exit),
+            "Retained File menu lost its visible root after measurement surface invalidation.");
+        require(retained==app.menu_window(),"Menu remeasurement replaced the native popup.");
+        escape();tick(app,1);
+        report<<"menu-measurement,surface-invalidation-reopen,passed\n";report.flush();
+    }
     // A retained checkbox updates its accepted row without reopening the surface.
     {
         const auto p=point(control::scene_guides);
@@ -296,7 +308,42 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     press_tab(control::group_components);capture(app,output/"parameters-component.png");
     require(property_control(app,entity,0)==position_key,"Component grouping changed field identity.");
     verify_render_performance(app,output);
-    Access::mark_saved(app);app.close();
+    // A real pre-encoding Renderer validation failure must leave host services
+    // available without preparing/retrying another frame on each pipe wakeup.
+    const auto radius=Access::scene_lit_view(app).cavity.radius;
+    const auto accepted=app.accepted_frames();
+    Access::unchecked_cavity_radius(app,.25f);
+    for(unsigned attempt=0;attempt<7;++attempt) {
+        Access::render_retry_deadline(app,{});
+        require(app.step() && app.accepted_frames()==accepted,"Recoverable render validation failure closed or accepted a frame.");
+        require(Access::render_retry_delay(app)>std::chrono::milliseconds(0) &&
+            Access::render_retry_delay(app)<=std::chrono::milliseconds(250),"Render retry delay escaped its bound.");
+    }
+    const auto held_delay=Access::render_retry_delay(app);
+    Access::render_retry_deadline(app,std::chrono::steady_clock::now()+std::chrono::seconds(20));
+    auto inspection=std::async(std::launch::async,[descriptor=*instance] {
+        api::Client client(descriptor,std::chrono::seconds(5));
+        return client.call({{"op","editor.inspect"},{"args",{{"detail","summary"}}}});
+    });
+    while(inspection.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready)
+        require(app.step(),"Render retry blocked the Control inspection service.");
+    require(inspection.get().at("status")=="ok" && app.accepted_frames()==accepted &&
+        Access::render_retry_delay(app)==held_delay,"Host service processing bypassed the render retry gate.");
+    // Schedule one genuine failure deadline after the forced service hold, then
+    // leave that deadline untouched while the repaired input recovers naturally.
+    Access::render_retry_deadline(app,{});
+    require(app.step() && app.accepted_frames()==accepted,"Render validation did not schedule a fresh retry.");
+    const auto recovery_deadline=Access::render_retry_deadline(app);
+    Access::unchecked_cavity_radius(app,radius);
+    while(app.accepted_frames()==accepted && std::chrono::steady_clock::now()<recovery_deadline+std::chrono::seconds(10))
+        require(app.step(),"Editor closed while waiting for natural render retry recovery.");
+    require(app.accepted_frames()>accepted,"Rendering did not recover after its natural retry deadline.");
+    require(std::chrono::steady_clock::now()>=recovery_deadline,"Rendering recovered before its retry deadline.");
+    require(Access::render_retry_delay(app)==std::chrono::milliseconds(0),"Successful rendering retained failure backoff.");
+    Access::unchecked_cavity_radius(app,.25f);require(app.step(),"Second recoverable render error became terminal.");
+    Access::mark_saved(app);PostMessageW(app.window(),WM_CLOSE,0,0);
+    require(!app.step(),"A native close request could not pass the render retry gate.");
+    report<<"render-retry,validation-control-recovery-close,passed\n";report.flush();
     std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens\n",resized_during_drag,redundant_presents);
     require(resized_during_drag==0,"Dock dragging resized the live viewport before release.");
     require(redundant_presents==0,"Popup resize presented an obsolete canvas before its accepted frame.");

@@ -7,7 +7,7 @@
 namespace atelier::editor {
 namespace {
 using Pass=RenderPerformance::Pass;
-// Indices 0..19 match the completed sample's mask; total is computed per sample.
+// Indices 0..21 match the completed sample's mask; total is computed per sample.
 constexpr std::array<Pass,RenderPerformance::pass_count> definitions{{
     {"gbuffer","GBuffer",-1,0,true},
     {"acceleration","AS / uploads",-1,0,true},
@@ -29,9 +29,11 @@ constexpr std::array<Pass,RenderPerformance::pass_count> definitions{{
     {"direct_filter_1","Spatial filter step 1",13,2,false},
     {"direct_filter_2","Spatial filter step 2",13,2,false},
     {"direct_filter_4","Spatial filter step 4",13,2,false},
+    {"direct_cluster","Light list construction",2,1,false},
+    {"shadow_cache","Shadow atlas updates",2,1,false},
     {"total","Measured total",-1,0,false}
 }};
-constexpr std::array<std::size_t,RenderPerformance::pass_count> row_order{RenderPerformance::total_pass,0,1,2,10,11,12,13,16,17,18,19,3,8,14,15,9,4,5,6,7};
+constexpr std::array<std::size_t,RenderPerformance::pass_count> row_order{RenderPerformance::total_pass,0,1,2,20,21,10,11,12,13,16,17,18,19,3,8,14,15,9,4,5,6,7};
 constexpr std::array<float,5> minima{120,60,60,60,55};
 constexpr std::array<std::wstring_view,4> aa_names{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
 std::wstring wide(std::string_view value) {return {value.begin(),value.end()};}
@@ -65,6 +67,8 @@ void RenderPerformance::observe(const renderer::Frame& frame,const renderer::Fra
         std::copy(stats.scene_lit_direct_gpu_ms.begin(),stats.scene_lit_direct_gpu_ms.end(),sample.begin()+10);
         std::copy(stats.scene_lit_ddgi_update_gpu_ms.begin(),stats.scene_lit_ddgi_update_gpu_ms.end(),sample.begin()+14);
         std::copy(stats.scene_lit_direct_reconstruction_gpu_ms.begin(),stats.scene_lit_direct_reconstruction_gpu_ms.end(),sample.begin()+16);
+        sample[20]=stats.scene_lit_direct_cluster_gpu_ms;
+        sample[21]=stats.scene_lit_shadow_cache_gpu_ms;
         sample[total_pass]=std::accumulate(sample.begin(),sample.begin()+8,0.);
         if(std::ranges::all_of(sample,[](double value){return std::isfinite(value) && value>=0;})) {
             force|=count_==0;
@@ -83,6 +87,8 @@ void RenderPerformance::publish(Clock::time_point now) {
         published_.antialiasing=domain_->view.lit.antialiasing;
         published_.direct_candidates=domain_->view.lit.direct_candidates;
         published_.ddgi=domain_->view.lit.ddgi;published_.direct_reference=domain_->view.lit.direct_reference;
+        published_.direct_clustered=domain_->view.lit.direct_clustered;
+        published_.direct_shadow_cache=domain_->view.lit.direct_shadow_cache;
     }
     published_.state=domain_ && domain_->active?(count_?State::ready:State::waiting):State::unavailable;
     published_.samples=count_;published_.sequence=sequence_;published_.frame_id=frame_id_;

@@ -1,5 +1,8 @@
 RWTexture2D<float4> lit_direct_diffuse_raw_output;
 RWTexture2D<float4> lit_direct_specular_raw_output;
+// Raw alpha describes stochastic support, not RGB validity. A deterministic
+// receiver keeps its current radiance with zero reconstructable history count.
+uint lit_direct_stochastic;
 Texture2D<float4> lit_direct_diffuse_raw;
 Texture2D<float4> lit_direct_specular_raw;
 Texture2D<float4> lit_direct_diffuse_previous;
@@ -38,6 +41,16 @@ bool lit_direct_surface(int2 pixel) {
 }
 float3 lit_direct_world(int2 pixel) {
     return lit_world(lit_direct_uv(pixel), lit_depth.Load(int3(pixel, 0)));
+}
+LitLightingSurface lit_direct_surface_data(uint2 p) {
+    LitLightingSurface surface;
+    float2 uv=lit_direct_uv(int2(p));
+    float4 nr=lit_normal_roughness.Load(int3(p,0)),bm=lit_base_metallic.Load(int3(p,0));
+    surface.position=lit_world(uv,lit_depth.Load(int3(p,0)));
+    surface.normal=lit_safe_normal(nr.xyz);surface.geometric_normal=lit_geometry_normal_at(p);
+    surface.view=lit_view_direction(uv);surface.base=bm.rgb;
+    surface.roughness=nr.w;surface.metallic=bm.w;
+    return surface;
 }
 float lit_direct_pixel_size(uint2 pixel) {
     float2 uv = lit_direct_uv(int2(pixel));
@@ -308,13 +321,25 @@ void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
     lit_direct_diffuse_history_output[p] = 0; lit_direct_specular_history_output[p] = 0;
     lit_direct_diffuse_moments_output[p] = 0; lit_direct_specular_moments_output[p] = 0;
     if (!lit_direct_surface(int2(p))) return;
-    float3 diffuse_current = lit_direct_finite(lit_direct_diffuse_raw.Load(int3(p, 0)).rgb);
-    float3 specular_current = lit_direct_finite(lit_direct_specular_raw.Load(int3(p, 0)).rgb);
+    float4 diffuse_raw = lit_direct_diffuse_raw.Load(int3(p, 0));
+    float4 specular_raw = lit_direct_specular_raw.Load(int3(p, 0));
+    float3 diffuse_current = lit_direct_finite(diffuse_raw.rgb);
+    float3 specular_current = lit_direct_finite(specular_raw.rgb);
     // The independent reference integrates the same fLV samples without
     // reconstruction bias. No-light frames must never retain a removed lamp.
     if (lit_di_settings.z != 0 || (lit_source_counts.x == 0 && lit_source_counts.y == 0)) {
         lit_direct_diffuse_history_output[p] = float4(diffuse_current, 1);
         lit_direct_specular_history_output[p] = float4(specular_current, 1);
+        lit_direct_diffuse_moments_output[p] = float2(lit_direct_luminance(diffuse_current), 0);
+        lit_direct_specular_moments_output[p] = float2(lit_direct_luminance(specular_current), 0);
+        return;
+    }
+    if (diffuse_raw.a == 0 && specular_raw.a == 0) {
+        // No random estimator contributes here. Moving a hard-shadow caster or
+        // editing a delta light changes the current answer immediately, rather
+        // than accumulating yesterday's deterministic illumination.
+        lit_direct_diffuse_history_output[p] = float4(diffuse_current, 0);
+        lit_direct_specular_history_output[p] = float4(specular_current, 0);
         lit_direct_diffuse_moments_output[p] = float2(lit_direct_luminance(diffuse_current), 0);
         lit_direct_specular_moments_output[p] = float2(lit_direct_luminance(specular_current), 0);
         return;
@@ -355,9 +380,12 @@ LitDirectFilter lit_direct_filter_begin(Texture2D<float4> source, Texture2D<floa
     filter.center = source.Load(int3(p, 0));
     if (lit_di_settings.z != 0 || (lit_source_counts.x == 0 && lit_source_counts.y == 0)) return filter;
     float2 moments = moment_source.Load(int3(p, 0));
-    if (filter.center.a <= 0 || !all(isfinite(filter.center)) || !all(isfinite(moments))) {
+    if (!all(isfinite(filter.center)) || !all(isfinite(moments))) {
         filter.center = 0; return filter;
     }
+    if (filter.center.a <= 0 || moments.y == 0) return filter;
+    // Exact zero variance only skips spatial work. Preserve a positive history
+    // count: a stochastic black sample is not proof of deterministic support.
     filter.noise = sqrt(max(moments.y, 0) / max(filter.center.a, 1));
     float relative_noise = saturate(filter.noise / max(moments.x, .005));
     filter.radius = specular ? clamp(roughness * roughness * 8, 1, 4) : 4;

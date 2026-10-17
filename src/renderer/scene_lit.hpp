@@ -13,6 +13,7 @@ struct SceneTriangle {
 struct SceneLitDraw {
     GfxBuffer triangles;
     std::uint32_t first{}, count{}, vertex_count{};
+    std::span<const std::uint8_t> raster_visibility; // One per instance; shadow draws still consume the complete range.
 };
 // Private pass owner; Renderer remains the sole frame/present/capture entry.
 class SceneLit {

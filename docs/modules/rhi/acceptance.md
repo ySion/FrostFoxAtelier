@@ -1,6 +1,6 @@
 # RHI 验收与证据
 
-最近一次完整 RHI 验收对应 `f45a3d6c0b60591def369259983df765d91757a7`（基线 `5d24e4a6ab10b954c3bda03ffdfea674e939b12d`），于 2026-10-10 在 Dev、Release 两种配置通过。本文整理现有运行证据；文档更新不代表重新执行验收，也不替代 Renderer/Application 的产品验收。
+最近一次完整 RHI 验收于 2026-10-16 在 Dev、Release 两种配置通过，覆盖基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加本批矩形清除与固定 depth bias。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
 
 ## 命令与环境
 
@@ -41,10 +41,14 @@ cmake --build --preset release --target rhi_acceptance
 | inline RayQuery | SM 6.5 compute；同次提交中 BLAS/TLAS build → trace → update → trace；命中、mask、instance、primitive、重心、最近距离和 first-hit 遮挡正确；提交前释放后的退休正确 |
 | Scene Lit 资源 | 双 FP16 MRT，包含 HDR 值；D32 深度 SRV；mip 2 顺序 UAV/SRV；GPU 生成间接派发 |
 | 原始 GPU 时间戳 | 8 个 query × 6 帧，共 48 个样本；完成序号、重复读取、旧平滑接口和 GPU 结果读回关联正确；finish 不推进录制序号 |
+| 阴影 atlas 局部清除 | D32 与 RGBA32F、3 个 mip × 2 个 slice；32,256 个读回字匹配。半开矩形及边缘像素、tile 外保留、viewport/scissor 独立、空列表、非法批次整批拒绝、原整图清除入口、深度比较采样和编码后退休均通过 |
+| 固定光栅 depth bias | Vertex/Mesh 各 7 种状态 × 2,048 像素；默认/显式零、正负 constant、slope-scaled、正负 clamp、非有限输入拒绝并保留旧值、prepare 后 DrawState 修改不影响已有 PSO 均通过 |
 | null-list / Mesh PS | 无 command list 的 interop 清理；Mesh PS 回归检查 2,048 个像素 |
 | 有限超时与严格一次执行 | 真实 queue 等待 CPU gate；失败后拒绝录制/推进/reset；放行后只排空，GPU 计数严格为 1 |
 
 生产调用经 `Context` 与许可的 gfx 借用范围执行。验收中的原生 fence gate、interop 和外部 readback 只用于验证对应原生边界，不是业务接口。
+
+本批独立工作树的构建与验收日志位于 `out/rhi-shadow-support-20261016/`；标准矩阵逐进程日志仍写入 `out/<配置>/rhi-acceptance.log` 和 `rhi-regression-*.log`。Dev 与 Release 的矩阵退出码均为 0，新增场景输出 `Shadow atlas RHI acceptance: PASS`。非法输入、错误 shader 与 timeout 拒绝场景会产生预期的 gfx 错误输出；通过条件是实际结果和 D3D12 InfoQueue 检查，不是 stderr 为空。
 
 ## 绘制前窗口同步
 

@@ -49,6 +49,21 @@
 - `gfxGetRecordingFrameSequence(gfx)` 返回当前正在录制、下一次 `Context::frame` 将使用的同一个 sequence；无效、失败、非录制或 interop context 返回 0。重复查询、普通录制及 `finish` 不推进序号，`frame` 才推进；Renderer 不自行镜像调用次数。录制 timestamp 与 raycounter 拷贝时取得该标识并存入读回 ring，收到相同 sequence 的完成样本后读取对应槽。拷贝须在该次 `frame` 前编码，且槽在消费前不能被新 GPU 写入覆盖；同一 DIRECT queue 的已完成帧 fence 覆盖二者。如果多个 render 只调用 `finish`、未调用 `frame`，它们属于同一 RHI 帧区间，消费者另存自身 render 标识来区分，不能把 sequence 当每次 render 的编号。
 - 旧 `gfxTimestampQueryGetDuration` 继续返回原有平滑值，首次结果也与初值 0 混合；p95/p99 使用新 sample 接口的去重原始值。新接口复用原有 query heap、readback buffer 和帧槽回收，不增加每帧等待或原生提交。验证模式耗时仅用于确认计时路径，不作为产品性能指标。
 
+`Context::frame(vsync, &details)` 的 `FrameInfo::cpu` 同时给出本次提交的 CPU 侧墙钟分段；不请求 details 时不读取计时时钟。结果仅在整次调用成功后发布，不改变队列提交、Present 或等待策略。`frame_sequence` 对应本次提交，GPU timestamp getter 则可能仍对应更早的已完成提交，消费者须分别记录身份。
+
+| CPU 字段（微秒） | 区间 |
+| --- | --- |
+| `prepare_us` | timestamp resolve 录制、窗口检查、自动尺寸纹理准备及提交前屏障 |
+| `submit_us` | 命令列表 Close、ExecuteCommandLists、当前帧槽 Signal |
+| `present_us` | Present、结果处理及下一个 backbuffer 索引查询；离屏为零 |
+| `wait_us` | 下一个帧槽的 fence 完成检查及必要等待 |
+| `resize_us` | frame 内发生的 swapchain 重建，包含其排空；无尺寸变化为零 |
+| `recycle_us` | 帧槽 reset、完成 timestamp 发布、状态衰减、常量池与录制状态复位 |
+| `reclaim_us` | 延迟资源与 descriptor 回收 |
+| `total_us` | 上述区间之和，限定于 gfx frame 内部 |
+
+这些区间包含线程被抢占或阻塞的时间，不等于 CPU 活跃执行时间或 GPU 时长；不可与 GPU pass 时长简单相加。Renderer 的命令录制、截图 `finish`、绘制前 `sync_window_target` 以及 RHI 外层参数检查不在该 total 内，应由调用层另行测量。
+
 DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_ShaderModel6_5.html) 和 [AS 更新及同步规范](https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#synchronizing-acceleration-structure-memory-writesreads)。实际硬件证据见 [验收](acceptance.md)。
 
 ## 窗口与读回
@@ -62,6 +77,26 @@ DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-
 - `ContextOptions::rgba8_window=true` 显式请求 SDR RGBA8，backbuffer 使用 sRGB RTV。默认 false 保留 gfx 按显示器选择格式的行为；10 位显示器的默认目标不保证 RGBA8。renderer 对需要的实际格式另做校验。
 - backbuffer 可与独立深度目标一起绑定：Pipeline 显式声明颜色格式等于 backbuffer 格式，并声明 depth 格式；不提供颜色声明的 depth-only 路径保留原义。
 - `gfxCommandCopyBackBufferToBuffer` 与 `gfxCommandCopyTextureToBufferPitched` 用于显式诊断读回；单采样、单平面 2D subresource 0，目标为 CPU-read buffer，行距须为 256 的倍数且不小于原生行字节数，buffer offset 为 512 的倍数，存储覆盖所有行。普通紧密 copy 入口保持不变。
+
+## 阴影 atlas 原语
+
+资源与命令继续经 `Context::borrow()` 使用 gfx，管线经 `Context::prepare()` 创建。
+
+- `gfxCommandClearImageRects(gfx, texture, rects, rect_count, mip_level=0, slice=0)` 清除指定 image 内的矩形列表。`D3D12_RECT` 仅作为坐标值传入；使用纹理创建时的 clear value，不依赖当前 viewport/scissor。颜色和深度 image 共用原有 clear 路径，深度带 stencil 时保留既有的同时清除语义。
+- 每个矩形是该 mip/slice 像素空间中的非空半开范围 `[left,right) × [top,bottom)`。坐标必须非负且完全位于 mip 尺寸内，允许矩形重叠。Context、texture、mip/slice 与整个列表在编码前检查；任一矩形非法，整批不创建 view、不转换状态、不编码 clear。
+- 在 Context/image 有效的前提下，`rect_count == 0` 是无操作，`rects` 可为空；非空列表不能传空指针。列表仅在调用期间借用。矩形外内容以及其他 mip/slice 保留；`gfxCommandClearImage` 和 `gfxCommandClearTexture` 仍分别清整个 image 和整个 texture。
+- `gfxDrawStateSetDepthBias(draw_state, constant, slope_scaled=0, clamp=0)` 设置固定光栅 depth bias。constant 使用 D3D12 的整数 bias 单位；slope/clamp 必须有限，可为负，非法输入不改变旧状态。默认三项均为零。它不等于接收端世界空间偏移。
+- bias 随 DrawState 快照进入 Vertex 与 Mesh 的 PSO，后续修改 DrawState 不改变已经准备好的管线。当前 gfx 没有引擎侧独立 PSO 缓存键；现有磁盘缓存保存 shader 字节码，光栅状态进入实际 PSO 描述，不新增缓存机制。
+- atlas 仍按整纹理跟踪资源状态：先完成所有脏 tile 的 DSV 写入，再解除深度附件绑定并作为 SRV 采样。不同 tile/mip/slice 不能成为同一次绘制中同时写入与采样同一纹理的依据。页表版本、tile 淘汰及过滤保护边属于 Renderer；物理资源释放沿既有 gfx 退休机制。
+
+最小调用示例（bias 数值需由具体阴影投影确定）：
+
+```cpp
+const D3D12_RECT dirty_tiles[] = {{0, 0, 256, 256}, {256, 0, 512, 256}};
+gfxCommandClearImageRects(gfx, atlas, dirty_tiles, 2);
+gfxDrawStateSetDepthBias(shadow_desc.draw_state, 256, 1.0f, 0.01f);
+// shadow_desc is prepared through Context::prepare before encoding draws.
+```
 
 ## 失败与有界关停
 

@@ -149,7 +149,6 @@
         }
         if (!sparse) for (const auto& [key,state]:states) if (!proposed.contains(key)) removed_keys.push_back(key);
         if (changes.empty() && added_keys.empty() && removed_keys.empty() && !structural) return Reply{};
-        retired.reserve(retired.size()+removed_keys.size());
         const auto revision=detail::new_identity();
         const auto absent=[&](ControlKey key) {
             while (key) {
@@ -202,12 +201,8 @@
             // Cleanup can allocate owned effects/history. Retain descriptors,
             // interaction and tree metadata until those fallible steps finish.
             if (cancelling) { reply=cancel(); edit.reset(); }
-            if (clear_focus) focus=0;
-            if (clear_keyboard) {
-                keyboard_pressed=0; keyboard_key=Key::none;
-                if (const auto* previous=live(old_keyboard);previous && previous->control.kind==ControlKind::table)
-                    terminal_key=old_keyboard_key; // Held native repeats cannot rearm a cancelled table activation.
-            }
+            if (clear_focus) set_focus(reply,0);
+            if (clear_keyboard) retire_keyboard(reply);
             for (auto key:removed_keys) removed.insert(states.extract(key));
             states.merge(additions); inserted=true;
             static_assert(std::is_nothrow_swappable_v<Control>);
@@ -235,7 +230,7 @@
             if (press && (states.at(press->key).tree_hidden || !states.at(press->key).tree_enabled)) reply=cancel();
             if (const auto* focused=live(focus);focused && (focused->tree_hidden || !focused->tree_enabled)) {
                 while (focused && (focused->tree_hidden || !focused->tree_enabled)) {
-                    focus=focused->control.tree_parent; focused=live(focus);
+                    set_focus(reply,focused->control.tree_parent); focused=live(focus);
                 }
             }
             update_popup(next_popup,reply);
@@ -260,7 +255,6 @@
         // No allocation or callbacks after this point. Text resources remain
         // owned by old frames even when the mutable store drops its cache.
         for (const auto& [key,state]:removed) {
-            if (state.node) retired.push_back(state.node);
             text.erase(key);
             for (auto text_key:state.table_text) text.erase(text_key);
         }

@@ -110,9 +110,10 @@ Result<ObjectId> SpaceGraph::parent(ObjectId object) {
             return error(ErrorCode::invalid_member, "Spatial origin requires a spatial Entity with the same World membership.");
         return origin;
     }
-    std::unordered_set<ObjectId> seen{object};
+    if((*current)->parent==ObjectId{}) return ObjectId{};
+    parent_seen.clear();parent_seen.add(object);
     for (auto id = (*current)->parent; id != ObjectId{};) {
-        if (!seen.insert(id).second) return error(ErrorCode::invalid_member, "Composition contains a cycle.");
+        if (!parent_seen.add(id)) return error(ErrorCode::invalid_member, "Composition contains a cycle.");
         auto ancestor = node(id);
         if (!ancestor) return std::unexpected(ancestor.error());
         if ((*ancestor)->world != world) return error(ErrorCode::invalid_member, "Composition crosses World membership.");
@@ -123,21 +124,21 @@ Result<ObjectId> SpaceGraph::parent(ObjectId object) {
 }
 Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
     if (object == ObjectId{}) return math::Matrix4::identity();
-    std::vector<ObjectId> path;
-    std::unordered_set<ObjectId> seen;
+    if(auto found=matrices.find(object);found!=matrices.end()) return found->second;
+    matrix_path.clear();matrix_seen.clear();
     auto result = math::Matrix4::identity();
     for (auto id = object; id != ObjectId{};) {
         if (auto found = matrices.find(id); found != matrices.end()) { result = found->second; break; }
-        if (!seen.insert(id).second) return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
+        if (!matrix_seen.add(id)) return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
         auto value = node(id);
         if (!value) return std::unexpected(value.error());
         if (!(*value)->spatial) return error(ErrorCode::invalid_member, "Entity has no Transform.");
-        path.push_back(id);
+        matrix_path.push_back(id);
         auto next = parent(id);
         if (!next) return std::unexpected(next.error());
         id = *next;
     }
-    for (auto it = path.rbegin(); it != path.rend(); ++it) {
+    for (auto it = matrix_path.rbegin(); it != matrix_path.rend(); ++it) {
         auto local = canonical_transform(nodes.at(*it).local);
         if (!local) return std::unexpected(local.error());
         auto composed = multiply(transform_matrix(*local), result);

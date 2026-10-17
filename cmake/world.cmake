@@ -16,7 +16,7 @@ function(atelier_add_world)
 
     add_executable(atelier_world_acceptance acceptance/world/main.cpp)
     atelier_target(atelier_world_acceptance)
-    target_link_libraries(atelier_world_acceptance PRIVATE atelier_world atelier_source)
+    target_link_libraries(atelier_world_acceptance PRIVATE atelier_world atelier_source mimalloc)
     add_custom_target(world_acceptance
         COMMAND $<TARGET_FILE:atelier_world_acceptance>
         DEPENDS atelier_world_acceptance USES_TERMINAL VERBATIM)

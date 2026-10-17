@@ -4,6 +4,53 @@ struct EntityDefaultSky : world::LightComponent {
 
 void verify_entity_composition() {
     {
+        editor::Session document;auto& runtime=document.world().runtime();
+        changed(document.add_entity());const auto parent=document.selection().entity;
+        take(document.set_transform(parent,{{.1f,0,0},{},{1,1,1}}));
+        changed(document.create_static_mesh(editor::mesh_assets().front(),{.3f,0,0}));const auto child=document.selection().entity;
+        take(document.set_transform(child,{{.3f,0,0},editor::from_euler_degrees({0,0,90}),{1,1,1}}));
+        changed(document.reparent(child,parent,world::ReparentRule::keep_local));
+        take(document.select_entities(std::array{parent,child},child));
+        const auto parent_before=take(world::read_transform(runtime,parent)),child_before=take(world::read_transform(runtime,child));
+        editor::Camera camera;camera.set_view(editor::CameraView::front);
+        const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1);
+        const auto pointer=*view.project(parent_before.position);
+        editor::ViewportTool tool;editor::ViewportTool::Settings settings;
+        settings.tool=editor::TransformTool::move;settings.orientation=editor::Orientation::local;
+        const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
+            return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,pointer);
+        };
+        const auto text=[&](std::wstring value) {
+            return tool.key(document,view,{.kind=ui::EventKind::text,.data=std::move(value)},0,settings,pointer);
+        };
+        const auto handle=pointer+math::Vector2{0,-60};
+        take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_move,.x=handle.x,.y=handle.y},settings));
+        require(tool.hovered()==editor::ViewportTool::Handle::move_x,"Parent/child selection lost the active child's Local move handle.");
+        take(key('G'));take(key('X'));take(text(L"1"));
+        auto moved=take(world::read_transform(runtime,parent));
+        require(std::abs(moved.position.x-.1f)<.0001f && std::abs(moved.position.y-1)<.0001f &&
+            take(world::read_transform(runtime,child))==child_before && tool.readout().find(L"D: 1.0000 m")!=std::wstring_view::npos,
+            "Local group movement did not use the active child's axis and distance without double-transforming it.");
+        take(key(27,ui::Key::escape));
+        require(take(world::read_transform(runtime,parent))==parent_before,"Cancelling active-child movement did not restore the parent.");
+        settings.orientation=editor::Orientation::global;settings.grid_snap=true;settings.grid_spacing=1;
+        const auto history=document.undo_count();take(key('G'));take(key('X'));
+        require(std::abs(take(world::world_matrix(runtime,child))[12])<.0001f &&
+            std::abs(take(world::read_transform(runtime,parent)).position.x+.3f)<.0001f,
+            "Group grid snapping aligned the mutation root instead of the active child.");
+        take(key(13,ui::Key::enter));require(document.undo_count()==history+1,"Active-child snapping did not record one group edit.");
+        changed(document.undo());require(take(world::read_transform(runtime,parent))==parent_before &&
+            take(world::read_transform(runtime,child))==child_before,"Active-child snapping Undo lost the original local poses.");
+        changed(document.create_static_mesh(editor::mesh_assets().front(),{2.1f,0,0}));const auto other=document.selection().entity;
+        take(document.select_entities(std::array{parent,other,child},child));settings.grid_snap=false;
+        take(key('S'));take(key('X'));take(text(L"2"));
+        require(std::abs(take(world::read_transform(runtime,parent)).position.x-.1f)<.0001f &&
+            std::abs(take(world::read_transform(runtime,other)).position.x-2.1f)<.0001f &&
+            tool.readout().find(L"along local X")!=std::wstring_view::npos,
+            "Group Scale did not use the active child's Local basis with a Global header setting.");
+        take(key(27,ui::Key::escape));
+    }
+    {
         editor::Session inherited;auto& rt=inherited.world().runtime();
         changed(inherited.add_entity());const auto parent=inherited.selection().entity;
         changed(inherited.create_static_mesh(editor::mesh_assets().front(),{3,0,0}));const auto child=inherited.selection().entity;

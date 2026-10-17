@@ -484,14 +484,22 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
 Result<std::vector<RenderItem>> World::render_items() const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     std::vector<RenderItem> result;
-    detail::SpaceGraph space{runtime()};
+    std::optional<detail::SpaceGraph> space;
     for (const auto object : impl_->presentation) {
         auto mesh=detail::is(runtime(),object,types().static_mesh_component);
         if (!mesh) return std::unexpected(mesh.error());
         if (!*mesh) continue;
         auto owner = impl_->component_owner(object);
         if (!owner) return std::unexpected(owner.error());
-        auto matrix = space.matrix(*owner);
+        if (!space) {
+            space.emplace(runtime());
+            // Capacity follows presentation work; spatial ancestors can grow it on demand.
+            const auto capacity = std::min(impl_->members.size(), impl_->presentation.size());
+            space->nodes.reserve(capacity);
+            space->matrices.reserve(capacity);
+            result.reserve(impl_->presentation.size());
+        }
+        auto matrix = space->matrix(*owner);
         if (!matrix) return std::unexpected(matrix.error());
         auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<RenderItem> {
             if (auto valid = validate_material(component.material); !valid) return std::unexpected(valid.error());

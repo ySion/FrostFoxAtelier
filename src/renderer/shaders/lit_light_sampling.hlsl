@@ -32,6 +32,7 @@ struct LitLightingSurface {
     float3 position,normal,geometric_normal,view,base;
     float roughness,metallic;
 };
+float lit_local_range(LitLightSource light) { return max(light.origin_range.w,1e-3); }
 struct LitLightEvaluation {
     float3 diffuse,specular,target,direction;
     float distance;
@@ -68,7 +69,7 @@ LitLightSample lit_prepare_light_sample(LitLightSource light, float2 sample_uv) 
     LitLightSample prepared=(LitLightSample)0;
     prepared.kind=light.meta.x;prepared.flags=light.meta.y;
     prepared.radiance=max(light.radiance.rgb,0);
-    prepared.range=max(light.origin_range.w,1e-3);
+    prepared.range=lit_local_range(light);
     prepared.minimum_distance_squared=max(.0025,light.direction_radius.w*light.direction_radius.w);
     prepared.area=light.edge1_area.w;
     if(prepared.kind==2) {

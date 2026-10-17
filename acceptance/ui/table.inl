@@ -50,6 +50,13 @@ void shared_table_view() {
         c.ui.focus(9); key(c.ui,ui::Key::tab); require(c.ui.focused_control()==10,"Tab did not enter the table collection");
         key(c.ui,ui::Key::tab); require(c.ui.focused_control()==11,"table added a Tab stop per cell");
         key(c.ui,ui::Key::tab,false,true); require(c.ui.focused_control()==10,"reverse Tab did not restore the table stop");
+        c.controls[2].kind=ui::ControlKind::text_edit;c.prepare();
+        c.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter});key(c.ui,ui::Key::tab);
+        require(c.ui.focused_control()==11 && !c.ui.interaction_state().keyboard,"table Enter survived Tab into a text field");
+        const auto transferred=c.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::enter});
+        require(transferred.consumed && actions_of(transferred).empty() && !c.ui.interaction_state().active(),
+            "text field swallowed table Enter release without retiring its activation");
+        c.controls[2].kind=ui::ControlKind::button;c.prepare();
         const auto [x,y]=press_cell(1002,1);
         select(c.ui.input({.kind=ui::EventKind::pointer_up,.x=x,.y=y}));
         require(geometry().selection==ui::TableSelection{1002,1},"accepted table selection missing");

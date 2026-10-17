@@ -147,6 +147,7 @@ struct TextProvider {
             rejected(self.active->update(self.active_leaf, text(query.content_key, query.content_revision)), ErrorCode::busy);
             rejected(self.active->move(self.active_leaf, self.active->root()), ErrorCode::busy);
             rejected(self.active->remove(self.active_leaf), ErrorCode::busy);
+            rejected(self.active->set_tree({}), ErrorCode::busy);
             rejected(self.active->set_root({Kind::row}), ErrorCode::busy);
             rejected(self.active->compute({1, 1}, query.provider_revision), ErrorCode::busy);
             require(self.active->view().publication != 0, "callback cannot read old publication");
@@ -463,6 +464,7 @@ void explicit_deep_tree() {
 #include "editor.inl"
 #include "flex_grid.inl"
 #include "audit.inl"
+#include "topology.inl"
 } // namespace
 
 int main(int argc, char** argv) {
@@ -509,7 +511,12 @@ int main(int argc, char** argv) {
             {"grid_sizing_batches", grid_sizing_batches},
             {"grid_sparse_spans", grid_sparse_spans},
             {"grid_collision_boundaries", grid_collision_boundaries},
-            {"collapsed_publication_indices", collapsed_publication_indices}
+            {"collapsed_publication_indices", collapsed_publication_indices},
+            {"final_tree_transactions", final_tree_transactions},
+            {"final_tree_validation_atomicity", final_tree_validation_atomicity},
+            {"final_tree_capacity_reuse", final_tree_capacity_reuse},
+            {"final_tree_measurement_recovery", final_tree_measurement_recovery},
+            {"final_tree_linear_siblings", final_tree_linear_siblings}
         };
         unsigned passed = 0, failed = 0;
         for (const auto& [name, run] : cases) {

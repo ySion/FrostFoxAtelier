@@ -16,16 +16,6 @@ uint lit_di_seed(uint2 p,uint salt) {
 float lit_di_confidence_cap() {
     return float(max(lit_di_settings.x,1u))*float(max(lit_di_settings.y,1u));
 }
-LitLightingSurface lit_di_surface(uint2 p) {
-    LitLightingSurface surface;
-    float2 uv=lit_direct_uv(int2(p));
-    float4 nr=lit_normal_roughness.Load(int3(p,0)),bm=lit_base_metallic.Load(int3(p,0));
-    surface.position=lit_world(uv,lit_depth.Load(int3(p,0)));
-    surface.normal=lit_safe_normal(nr.xyz);surface.geometric_normal=lit_geometry_normal_at(p);
-    surface.view=lit_view_direction(uv);surface.base=bm.rgb;
-    surface.roughness=nr.w;surface.metallic=bm.w;
-    return surface;
-}
 float3 lit_di_previous_world(float2 uv,float depth) {
     float2 local=(uv*lit_size_frame.xy-lit_viewport.xy)/lit_viewport.zw;
     float4 h=mul(float4(local*float2(2,-2)+float2(-1,1),depth,1),lit_previous_inverse_view_projection);
@@ -140,7 +130,7 @@ void lit_restir_initial_cs(uint3 dispatch:SV_DispatchThreadID) {
     lit_di_output[index]=lit_empty_reservoir();
     if(lit_source_counts.x==0)return;
     if(lit_di_settings.z!=0||!lit_direct_surface(int2(p)))return;
-    LitLightingSurface surface=lit_di_surface(p);
+    LitLightingSurface surface=lit_direct_surface_data(p);
     uint seed=lit_di_seed(p,0x63d83595u);
     LitReuseInput inputs[3];
     inputs[0].surface=surface;
@@ -172,7 +162,7 @@ bool lit_di_spatial_surface(uint2 p,int2 q,LitLightingSurface current,float pixe
                             out LitLightingSurface neighbor) {
     neighbor=(LitLightingSurface)0;
     if(!lit_direct_surface(q))return false;
-    neighbor=lit_di_surface(uint2(q));
+    neighbor=lit_direct_surface_data(uint2(q));
     if(dot(current.normal,neighbor.normal)<.85||dot(current.geometric_normal,neighbor.geometric_normal)<.95||
        abs(current.roughness-neighbor.roughness)>.2||abs(current.metallic-neighbor.metallic)>.2)return false;
     float3 delta=neighbor.position-current.position;
@@ -186,7 +176,7 @@ void lit_restir_spatial_cs(uint3 dispatch:SV_DispatchThreadID) {
     lit_di_output[index]=lit_empty_reservoir();
     if(lit_source_counts.x==0)return;
     if(lit_di_settings.z!=0||!lit_direct_surface(int2(p)))return;
-    LitLightingSurface surface=lit_di_surface(p);
+    LitLightingSurface surface=lit_direct_surface_data(p);
     LitReuseInput inputs[3];
     inputs[0].surface=surface;inputs[0].reservoir=lit_di_input[index];
     uint count=1,seed=lit_di_seed(p,0xb5297a4du);
@@ -215,7 +205,7 @@ void lit_restir_shade_cs(uint3 dispatch:SV_DispatchThreadID) {
     uint2 p;if(!lit_screen_pixel(dispatch.xy,p))return;
     lit_direct_diffuse_raw_output[p]=0;lit_direct_specular_raw_output[p]=0;
     if(!lit_direct_surface(int2(p)))return;
-    LitLightingSurface surface=lit_di_surface(p);
+    LitLightingSurface surface=lit_direct_surface_data(p);
     uint seed=lit_di_seed(p,0x68e31da4u);
     bool shadows=(lit_effect_flags&1u)!=0;
     float3 diffuse=0,specular=0;
@@ -237,10 +227,13 @@ void lit_restir_shade_cs(uint3 dispatch:SV_DispatchThreadID) {
     uint sun_samples=lit_di_settings.z!=0?max(lit_di_settings.w,1u):1u;
     lit_directional_lighting(surface,sun_samples,shadows,seed,sun_diffuse,sun_specular);
     diffuse+=sun_diffuse;specular+=sun_specular;
+    // Local reservoir selection is stochastic even for delta point lights.
+    // With no local sources, only a nonzero sun angle requires reconstruction.
+    bool stochastic=lit_direct_stochastic!=0 || lit_di_settings.z!=0;
     float4 material=float4(surface.base,surface.metallic);
     float3 diffuse_factor=lit_direct_diffuse_factor(material),specular_factor=lit_direct_specular_factor(material);
     float3 divisor=float3(diffuse_factor.r>0?diffuse_factor.r:1,diffuse_factor.g>0?diffuse_factor.g:1,
                          diffuse_factor.b>0?diffuse_factor.b:1);
-    lit_direct_diffuse_raw_output[p]=float4(lit_direct_finite(diffuse/divisor),1);
-    lit_direct_specular_raw_output[p]=float4(lit_direct_finite(specular/specular_factor),1);
+    lit_direct_diffuse_raw_output[p]=float4(lit_direct_finite(diffuse/divisor),stochastic?1:0);
+    lit_direct_specular_raw_output[p]=float4(lit_direct_finite(specular/specular_factor),stochastic?1:0);
 }

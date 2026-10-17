@@ -12,6 +12,7 @@ uint4 lit_size_frame; // width,height,sequence,history valid
 float4 lit_viewport; // x,y,width,height
 uint4 lit_screen_dispatch; // Integer pixel origin and exclusive end, preserving window coordinates.
 row_major float4x4 lit_view_projection;
+row_major float4x4 lit_camera_view;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
 row_major float4x4 lit_previous_inverse_view_projection;

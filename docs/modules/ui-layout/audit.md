@@ -4,7 +4,7 @@
 
 ## 2026-10-04 审计记录
 
-按专家首次审计、[原始资料核对](research.md)、正式消费者复现、实施和最终二审完成。基线为`f42d071b937ad0c9c81e2315c9a8b0ff49ddc00d`。原生布局这一阶段可以收尾；能力边界仍以[Flex/Grid合同](flex-grid.md)为准。
+按专家首次审计、[原始资料核对](decisions.md#算法依据)、正式消费者复现、实施和最终二审完成。基线为`f42d071b937ad0c9c81e2315c9a8b0ff49ddc00d`。当次原生布局阶段达到收尾条件；能力边界仍以[Flex/Grid合同](flex-grid.md)为准。
 
 ### 本次修复与优化
 
@@ -51,9 +51,9 @@ AMD Ryzen 9 3950X，Windows 11 build 26200，锁定工具链、Release、无窗�
 
 ## 前次39项审计记录
 
-以下保留前次复现和测量，当前验收以本页上方41项记录为准。范围一直是原生布局核心和既有端到端消费者。
+以下保留前次复现和测量；本页较新的固定版本证据为上方41项记录。当前源码的覆盖和运行入口见[正式验收](acceptance.md)，历史结果不代表当前工作树已重新通过。
 
-## 发现与处理
+### 发现与处理
 
 | 发现 | 复现或依据 | 处理 |
 |---|---|---|
@@ -69,7 +69,7 @@ AMD Ryzen 9 3950X，Windows 11 build 26200，锁定工具链、Release、无窗�
 
 交叉二审又发现比例快路径的触界舍入问题：大权重项目计算值舍入到 max，可能吞掉小权重项目原本应获得的剩余量。真实行布局把该差异放大到约 0.5 逻辑单位并复现；最终仅严格位于边界内部的候选进入快路径，触及 min/max 时回到原断点求解。新增 `allocation_rounded_saturation` 已通过两配置。
 
-## 核验和二次审计结果
+### 核验和二次审计结果
 
 **Dev/Release 各 39 项正式场景及最小消费者通过，两个正式目标退出码均为 0。** 新增数值触界、双方向 sparse、碰撞边界/容量保旧和折叠索引场景，并扩展原有真实基线验收。旧身份、缓存、失败回滚、文字资源保有、虚拟列表及深树场景继续执行。
 
@@ -77,7 +77,7 @@ Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Gr
 
 最终日志与源码、构建输入、二进制哈希：`out/review/ui-layout-audit/dev-acceptance.log`、`out/review/ui-layout-audit/release-acceptance.log`、`out/review/ui-layout-audit/environment.json`。
 
-## 同场景性能
+### 同场景性能
 
 保留修改前二进制，与最终 Release 二进制交错运行三轮，顺序为前/后、后/前、前/后。表中是三轮中位数的中位数及三轮 p95 的中位数，不是合并样本分位数。AMD Ryzen 9 3950X、项目锁定工具链、无窗口/GPU；真实文字显式使用 Microsoft YaHei UI。针对性场景各预热 4 次、采样 60 次，计时只含重排调用；创建节点不在计时内。
 
@@ -97,7 +97,7 @@ Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Gr
 
 使用正式消费者的 `--audit-performance`、`--flex-grid-performance` 和 `--editor-performance` 复现。各轮原始数据在 `out/review/ui-layout-audit/{before,after}-{audit,flex-grid,editor}-{1,2,3}.jsonl`，摘要见 `out/review/ui-layout-audit/performance-summary.json`。
 
-## 研究核对
+### 研究核对
 
 - [W3C 基线规则](https://www.w3.org/TR/css-align-3/#baseline-rules)：区分内容基线与盒边合成基线，不能把依赖最终高度的合成值提前固化。
 - [W3C 自动放置](https://www.w3.org/TR/css-grid-1/#auto-placement-algo)与 [Taffy placement.rs](https://github.com/DioxusLabs/taffy/blob/main/src/compute/grid/placement.rs)：核对跨轨 sparse 前进及碰撞跳跃机制。这里保持项目自己的原生语义，不据此宣称 CSS 兼容。
@@ -105,7 +105,7 @@ Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Gr
 - [Yoga CalculateLayout.cpp](https://github.com/facebook/yoga/blob/main/yoga/algorithm/CalculateLayout.cpp)：已知尺寸与所需信息决定是否进入测量或完整求解；只作为条件短路的实现参考。
 - [DirectWrite SetMaxWidth](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritetextlayout-setmaxwidth)：会修改排版对象。已有文字帧在共享资源更改前复制，旧帧持有对应版本的做法保持。
 
-## 生命周期与执行链
+### 生命周期与执行链
 
 编辑仍只改变描述和失效状态。计算准备本次工作区，先定宽、测量自然高度、分配和排列；全部成功后才在原提交点交换几何、查询索引和新测量缓存。提前为基线解析的排列也只写工作区。
 
@@ -113,10 +113,10 @@ Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Gr
 
 核心几何发布和完整呈现帧发布是两个事件。即使核心已成功计算，后续内容或绘制准备失败，composition 仍应持有上一完整帧；不能要求布局 publication 回退，也不能给旧几何换上新内容版本。固定尺寸、未发生测量的叶同样需要在呈现准备时捕获资源。
 
-## 阶段边界
+## 历史阶段结论与当前接入
 
-本轮完成后，原生布局基建这一节可以收尾：统一入口、明确依赖、失败保旧、内容消费寿命以及选定 Flex/Grid 能力均已有真实端到端证据。与 Runtime/JIT/RHI 的共同贯通属于后续协调阶段。
+上述审计完成时，原生布局基建已具备统一入口、明确依赖、失败保旧、内容消费寿命和选定 Flex/Grid 能力的端到端证据。当时待协调的生产接入现已由[UI](../ui/README.md)和[声明式编辑器](../editor/declarative-ui.md)承担，不再列为未实现功能。
 
-Grid 自动放置的代价仍受区域形状和跨度影响；跳跃消除已定位的重复扫描，不提供所有输入线性复杂度保证。折叠保留描述内存，展开后的工作缓冲保留高水位，拥有式快照还会复制发布索引。大型列表继续使用 VirtualList。
+Grid 自动放置的代价仍受区域形状和跨度影响；跳跃消除已定位的重复扫描，不提供所有输入线性复杂度保证。折叠保留描述内存，展开后的工作缓冲保留高水位，拥有式快照还会复制发布索引。VirtualList 的可见实例化须由消费者接入，普通 Session list/tree 的绘制裁剪不自动获得相同收益。
 
-一般几何变化仍计算参与布局的实例树，没有通用局部调度、异步布局、完整绘制或输入系统。未开放的循环尺寸、Grid 基线组和 CSS 特性维持明确边界。下一阶段由真实 UI composition、资源和业务语言接线驱动，不以继续补浏览器特性作为本节完成条件。
+布局核心仍无通用局部调度或异步求解；一般几何变化计算参与布局的实例树。未开放的循环尺寸、Grid 基线组和 CSS 特性维持明确边界。当前结构同步等消费成本见[UI 更新](../ui/updates.md#失效与实际成本)，不能用这些核心测量推断整套编辑器的帧成本。

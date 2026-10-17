@@ -50,11 +50,11 @@
         state.tree_expanded=expanded;
         trees_dirty=true;
         update_trees();
-        if (const auto* focused=live(focus);focused && focused->tree_hidden) focus=key;
-        keyboard_pressed=0; reply.redraw=reply.consumed=true;
+        if (const auto* focused=live(focus);focused && focused->tree_hidden) set_focus(reply,key);
+        retire_keyboard(reply); reply.redraw=reply.consumed=true;
     }
     void select_tree(Reply& reply,const ControlBox& box,SelectionModifiers modifiers={}) {
-        focus=box.key; keyboard_pressed=0;
+        set_focus(reply,box.key);
         auto& tree=states.at(states.at(box.key).control.parent);
         if (box.bounds.y<box.clip.top) tree.scroll-=(box.clip.top-box.bounds.y)/surface.dpi_scale;
         if (box.bounds.y+box.bounds.height>box.clip.bottom) tree.scroll+=(box.bounds.y+box.bounds.height-box.clip.bottom)/surface.dpi_scale;

@@ -2,7 +2,7 @@
 
 本页说明 headless 布局消费者中的资源持有与提交机制；该示例本身不含窗口、输入或 GPU 绘制。正式生产链见[UI 模块](../ui/README.md)与[编辑器](../editor/README.md)。布局覆盖矩阵见[验收记录](acceptance.md)，固定版本的同场景成本见[审计记录](audit.md)。
 
-## 唯一消费链与资源责任
+## 示例消费链与资源责任
 
 代码位于现有正式目标的 [main.cpp](../../../acceptance/ui_layout/main.cpp)、[scaling.inl](../../../acceptance/ui_layout/scaling.inl) 和 [editor.inl](../../../acceptance/ui_layout/editor.inl)。这是可执行接入示例，不是已交付的编辑器控件框架。
 
@@ -24,7 +24,7 @@
 - 即使两个节点使用同一内容key，也按各自宽度保有正确段落。固定宽高节点可能完全跳过测量，捕获阶段仍准备新文字；几何复用不等于文字资源复用。
 - provider缓存和帧共享段落拥有者。内容/provider版本变化创建新版本；已被帧引用的段落需要改变宽度或换行时，先另建段落。仅给可变COM对象AddRef不足以保证旧画面。
 - 范围修正可能经历多次内部compute。只有最终范围、几何和文字都准备成功，消费者才替换完整输出。失败允许输入和工作缓存继续保留待提交状态，已发布帧保持可消费。
-- 删除离屏缓存不会提前释放仍被帧使用的段落。最后一个拥有者释放后即可回收；长期保留多个历史帧会保留相应资源。这里验证CPU资源寿命，GPU提交及fence寿命仍由将来的渲染层负责。
+- 删除离屏缓存不会提前释放仍被帧使用的段落。最后一个拥有者释放后即可回收；长期保留多个历史帧会保留相应资源。这里验证CPU资源寿命，生产 GPU 提交及 fence 寿命由 [RHI](../rhi/contract.md) 与渲染层负责。
 
 ### 列表与业务状态
 
@@ -41,7 +41,9 @@ begin/update只修改候选宽度，cancel丢弃候选，release提交最终宽�
 
 核心几何发布与完整呈现帧提交是两个事件。布局成功后，如果图片或绘制准备失败，composition继续持有上一完整帧，不回退LayoutDocument的publication，也不把旧几何配上新内容。固定尺寸且未触发测量的叶也必须捕获资源。
 
-后续图片测量从捕获的固定内容版本读取固有尺寸，逻辑尺寸、宽高比和DPI政策由UI消费方负责；资源侧提供内容捕获与设备表示。LayoutDocument不持有Runtime根、Texture或GPU资源。生产composition模块位置和共同构建接线由跨线集成确定。
+生产链已经由 `ui::Session::prepare` 构建 `UiFrame`，宿主经 renderer 接受绘制帧后，再由 `Session::accept` 接受对应 UI 帧。控件、文字、图片与输入的当前合同见[UI 模块](../ui/README.md)，失败与候选校验见[更新协议](../ui/updates.md#候选失败和资源寿命)。本页的 `TextFrame` 只属于布局验收示例。
+
+LayoutDocument 不持有 Runtime 根、Texture 或 GPU 资源。需要按图片固有尺寸测量时，由提供者读取捕获的内容版本；逻辑尺寸、宽高比和 DPI 政策属于 UI 消费方，资源侧负责内容与设备表示。
 
 ## 工业依据
 

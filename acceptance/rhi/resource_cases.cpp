@@ -3,6 +3,7 @@
 #include "shaders.hpp"
 
 #include <array>
+#include <cmath>
 #include <utility>
 
 namespace rhi_acceptance {
@@ -331,6 +332,16 @@ float4 main(uint id : SV_VertexID) : SV_Position {
         check(gfxCommandCopyBackBufferToBuffer(gfx, readback, pitch));
         FrameInfo frame;
         complete(owner.frame(false, &frame));
+        const auto& cpu = frame.cpu;
+        double stage_sum = 0;
+        for (double us : {cpu.prepare_us, cpu.submit_us, cpu.present_us, cpu.wait_us,
+                          cpu.resize_us, cpu.recycle_us, cpu.reclaim_us}) {
+            require(std::isfinite(us) && us >= 0, "frame CPU timing is invalid");
+            stage_sum += us;
+        }
+        require(cpu.frame_sequence == sequence && std::isfinite(cpu.total_us) &&
+                std::abs(stage_sum - cpu.total_us) <= 1e-3,
+                "frame CPU timings do not partition their submitted frame");
         require(frame.rendered.width == width && frame.rendered.height == height &&
                 frame.next.width == width && frame.next.height == height &&
                 gfxGetRecordingFrameSequence(gfx) == sequence + 1,

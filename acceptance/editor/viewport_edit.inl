@@ -1,3 +1,152 @@
+void verify_rotated_viewport_transforms() {
+    using namespace editor;
+    Session document;
+    changed(document.create_light(world::LightKind::directional));
+    const auto entity=document.selection().entity;
+    const world::Trs authored{{-5.8103158e-9f,2.9999993f,-1.532578e-7f},
+        {.761490941f,.141828924f,-.176239014f,.607417405f},{1.f,.999999762f,.999999881f}};
+    take(document.set_transform(entity,authored));
+    const auto original=take(world::read_transform(document.world().runtime(),entity));
+    Camera camera;const auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);
+    ViewportTool tool;ViewportTool::Settings settings{TransformTool::transform,PivotMode::median};
+    const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
+        return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,{500,350});
+    };
+    const auto text=[&](std::wstring value) {
+        ui::Event event;event.kind=ui::EventKind::text;event.data=std::move(value);
+        return tool.key(document,view,event,0,settings,{500,350});
+    };
+    for(const auto mode:std::array<std::uint32_t,3>{'G','R','S'}) {
+        const auto history=document.undo_count();
+        take(key(mode));take(key('X'));take(text(mode=='R'?L"15":mode=='S'?L"2":L"1"));
+        const auto preview=take(world::read_transform(document.world().runtime(),entity));
+        require(preview!=original && document.undo_count()==history,"Rotated Entity did not preview its transform.");
+        if(mode=='G') require(std::abs(preview.position.x-original.position.x-1.f)<.0001f,
+            "Rotated Entity world-axis move did not reach its authored position.");
+        take(key(27,ui::Key::escape));
+        require(!tool.active() && !document.editing() &&
+            take(world::read_transform(document.world().runtime(),entity))==original && document.undo_count()==history,
+            "Cancelling a rotated Entity transform changed authoring or retained its gesture.");
+        take(key(mode));take(key('X'));take(text(mode=='R'?L"15":mode=='S'?L"2":L"1"));
+        take(key(13,ui::Key::enter));
+        require(!tool.active() && document.undo_count()==history+1,"Rotated Entity transform did not commit once.");
+        changed(document.undo());
+        require(take(world::read_transform(document.world().runtime(),entity))==original,
+            "Rotated Entity transform undo lost its original TRS.");
+    }
+    std::puts("Rotated viewport G/R/S: PASS (real imported pose, preview, cancel, commit and undo)");
+}
+void verify_viewport_local_constraints() {
+    using namespace editor;
+    Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto entity=document.selection().entity;
+    take(document.set_transform(entity,{{},from_euler_degrees({0,0,90}),{1,1,1}}));
+    const auto before=take(world::read_transform(document.world().runtime(),entity));
+    Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
+    const auto center=*view.project({}),travel=center+math::Vector2{60,0};
+    ViewportTool tool;ViewportTool::Settings settings;settings.tool=TransformTool::select;settings.orientation=Orientation::local;
+    const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
+        return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,center);
+    };
+    for(const auto mode:std::array<std::uint32_t,2>{'G','S'}) {
+        settings.orientation=mode=='G'?Orientation::local:Orientation::global;
+        take(key(mode));
+        take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_move,.x=travel.x,.y=travel.y},settings));
+        take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_down,.x=travel.x,.y=travel.y,.button=ui::PointerButton::middle},settings));
+        require(tool.readout().find(L"along local Y")!=std::wstring_view::npos,
+            "Middle-click constraint did not use the operation's Local projected axes.");
+        const auto preview=take(world::read_transform(document.world().runtime(),entity));
+        if(mode=='G') require(std::abs(preview.position.x)>.1f && std::abs(preview.position.y)<.0001f,
+            "Local middle-click movement changed direction after selecting its constraint.");
+        else require(preview.scale.x==1 && std::abs(preview.scale.y-1)>.1f && preview.scale.z==1,
+            "Middle-click Scale constrained the world-axis index instead of the Local axis.");
+        std::vector<renderer::OverlayShape> shapes;const std::array meshes{entity};tool.overlay(document,view,settings,meshes,shapes);
+        require(std::ranges::any_of(shapes,[](const auto& shape) {
+            return shape.kind==renderer::OverlayShape::Kind::segment && std::abs(shape.points[2]-shape.points[0])>700 &&
+                std::abs(shape.points[3]-shape.points[1])<.01f && shape.color.g>shape.color.r;
+        }),"The modal constraint line did not follow the same Local axis as the transform.");
+        take(key(27,ui::Key::escape));require(take(world::read_transform(document.world().runtime(),entity))==before,
+            "Cancelling a Local constraint did not restore the authored pose.");
+    }
+}
+void verify_viewport_gesture_input() {
+    using namespace editor;
+    Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto first=document.selection().entity;
+    changed(document.create_static_mesh(mesh_assets().front(),{2,0,0}));const auto second=document.selection().entity;take(document.select(first));
+    Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
+    const auto center=*view.project({});auto pointer=center;
+    ViewportTool tool;ViewportTool::Settings settings;settings.tool=TransformTool::select;settings.grid_spacing=.25f;
+    const auto key=[&](std::uint32_t code,ui::Event event=ui::Event{.kind=ui::EventKind::key_down}) {
+        return tool.key(document,view,event,code,settings,pointer);
+    };
+    const auto text=[&](std::wstring value,bool shift=false) {
+        return key(0,{.kind=ui::EventKind::text,.data=std::move(value),.shift=shift});
+    };
+    const auto escape=[&] {take(key(27,{.kind=ui::EventKind::key_down,.key=ui::Key::escape}));};
+    const auto pose=[&] {return take(world::read_transform(document.world().runtime(),first));};
+    const auto history=document.undo_count();
+    take(key('I',{.kind=ui::EventKind::key_down,.control=true}));
+    require(document.selected_entities().size()==1 && document.selection().entity==second,"Ctrl+I did not invert selection on its first key press.");
+    take(key('I',{.kind=ui::EventKind::key_down,.control=true,.repeat=true}));
+    require(document.selected_entities().size()==1 && document.selection().entity==second,"Auto-repeated Ctrl+I inverted the selection again.");
+    take(key('I',{.kind=ui::EventKind::key_down,.control=true}));
+    require(document.selected_entities().size()==1 && document.selection().entity==first,"A fresh Ctrl+I key press did not invert selection again.");
+    take(key('B'));
+    for(const auto code:std::array<std::uint32_t,4>{'G','R','S','A'}) {
+        take(key(code));require(tool.active() && !tool.modal() && !document.editing() && document.selected_entities().size()==1,
+            "A box-selection owner admitted another gesture or a selection shortcut.");
+    }
+    escape();require(!tool.active(),"Escape did not release the box-selection owner.");
+    for(const auto mode:std::array<std::uint32_t,3>{'G','R','S'}) {
+        take(key(mode));take(key('X'));take(text(mode=='R'?L"15":L"2"));
+        const auto preview=pose();const std::wstring readout(tool.readout());
+        take(key('X',{.kind=ui::EventKind::key_down,.repeat=true}));
+        require(pose()==preview && tool.readout()==readout,"An auto-repeated axis key toggled the active transform constraint.");
+        take(key('X'));require(tool.readout().find(L"along ")==std::wstring_view::npos,
+            "A fresh axis key did not release the previous constraint.");
+        escape();
+    }
+    take(key('G'));take(key('X'));
+    pointer=*view.project({1,0,0});
+    take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_move,.x=pointer.x,.y=pointer.y,.shift=true},settings));
+    require(std::abs(pose().position.x-.1f)<.0001f,"Shift pointer movement did not enter fine translation.");
+    take(key('Q',{.kind=ui::EventKind::key_down,.shift=true}));
+    require(std::abs(pose().position.x-.1f)<.0001f,"A key event dropped the held fine-movement modifier.");
+    take(text(L"Q",true));
+    require(std::abs(pose().position.x-.1f)<.0001f,"A text event dropped the held fine-movement modifier.");
+    take(text(L"2",true));require(std::abs(pose().position.x-2)<.0001f,"Fine movement scaled an explicitly typed value.");
+    take(key(8,{.kind=ui::EventKind::key_down,.key=ui::Key::backspace,.shift=true}));
+    require(std::abs(pose().position.x-.1f)<.0001f,"Clearing typed input did not resume fine movement with the current Shift state.");
+    take(key(0x10,{.kind=ui::EventKind::key_up}));
+    require(std::abs(pose().position.x-1)<.0001f,"Releasing Shift without moving the pointer left a stale fine preview.");
+    take(key(0x10,{.kind=ui::EventKind::key_down,.shift=true}));
+    require(std::abs(pose().position.x-.1f)<.0001f,"Pressing Shift without moving the pointer failed to refresh the preview.");
+    escape();
+    for(const bool enabled:{false,true}) {
+        settings.grid_snap=enabled;pointer=center;take(key('G'));take(key('X'));
+        pointer=*view.project({.31f,0,0});
+        take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_move,.x=pointer.x,.y=pointer.y},settings));
+        require(std::abs(pose().position.x-(enabled?.25f:.31f))<.0001f,"The initial movement preview ignored its snap setting.");
+        take(key(0x11,{.kind=ui::EventKind::key_down,.control=true}));
+        require(std::abs(pose().position.x-(enabled?.31f:.25f))<.0001f,"Pressing Ctrl did not invert snapping at a stationary pointer.");
+        take(key(0x11,{.kind=ui::EventKind::key_up}));
+        require(std::abs(pose().position.x-(enabled?.25f:.31f))<.0001f,"Releasing Ctrl left the previous snap preview active.");
+        escape();
+    }
+    require(document.undo_count()==history && pose().position==math::Vector3{},"Cancelled input gestures changed author history or position.");
+    settings.grid_snap=false;pointer=center;take(key('G'));take(key('X'));take(text(L"1"));
+    tool.arm_box_select({100,100},false);
+    take(key(13,{.kind=ui::EventKind::key_down,.key=ui::Key::enter}));
+    require(!tool.active() && !document.editing() && document.undo_count()==history+1,
+        "Arming a box select during a transform left a second gesture after confirmation.");
+    changed(document.undo());
+    pointer={100,100};take(key('B'));
+    take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_down,.x=pointer.x,.y=pointer.y},settings));
+    pointer={900,600};take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_move,.x=pointer.x,.y=pointer.y},settings));
+    take(key('B',{.kind=ui::EventKind::key_down,.repeat=true}));
+    take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_up,.x=pointer.x,.y=pointer.y},settings));
+    require(!tool.active() && document.selected_entities().size()==2 && document.undo_count()==history,
+        "Auto-repeated B rearmed an active box selection or lost its original drag.");
+}
 void verify_viewport_duplication() {
     editor::Session document;
     changed(document.create_static_mesh(editor::mesh_assets().front(),{1,2,3}));
@@ -79,6 +228,9 @@ void verify_viewport_duplication() {
         "Entity limit rejection partially published a duplicate.");
 }
 void verify_viewport_editing() {
+    verify_rotated_viewport_transforms();
+    verify_viewport_local_constraints();
+    verify_viewport_gesture_input();
     verify_viewport_duplication();
     using namespace editor;
     Session document;
@@ -205,15 +357,39 @@ void verify_viewport_editing() {
     require(document.selection().object==second_root && transform(second)==before_second,"Euler history lost the inspected Component or its transform.");
     take(pointer(ui::EventKind::pointer_down,{view.bounds.x+1,view.bounds.y+1}));
     take(pointer(ui::EventKind::pointer_move,{view.bounds.x+view.bounds.width-1,view.bounds.y+view.bounds.height-1}));
-    std::vector<renderer::OverlayShape> shapes;tool.overlay(document,view,settings,shapes);
+    application::SceneSnapshot overlay_scene;take(overlay_scene.refresh(document));
+    require(overlay_scene.mesh_entities.size()==overlay_scene.meshes.size(),"Overlay membership diverged from the render snapshot.");
+    std::vector<renderer::OverlayShape> shapes;tool.overlay(document,view,settings,overlay_scene.mesh_entities,shapes);
     require(std::ranges::any_of(shapes,[](const auto& shape){return shape.kind==renderer::OverlayShape::Kind::rectangle;}),"Box selection has no visible accepted geometry.");
     take(pointer(ui::EventKind::pointer_up,{view.bounds.x+view.bounds.width-1,view.bounds.y+view.bounds.height-1}));
     require(document.selected_entities().size()==2,"Box selection missed real projected geometry.");
     const auto deletion_history=document.undo_count();changed(document.erase_selected());
     require(take(document.world().members()).empty() && document.undo_count()==deletion_history+1,"Multi-delete was not one document operation.");
+    take(overlay_scene.refresh(document));
+    require(overlay_scene.mesh_entities.empty() && overlay_scene.meshes.empty(),"Deleted meshes retained overlay membership.");
     changed(document.undo());
     require(take(document.world().members()).size()==2 && document.is_selected(first) && document.is_selected(second) && document.selection().entity==second,
         "Multi-delete undo lost Entity identity, active member or membership.");
+    take(overlay_scene.refresh(document));
+    require(std::ranges::find(overlay_scene.mesh_entities,first)!=overlay_scene.mesh_entities.end() &&
+        std::ranges::find(overlay_scene.mesh_entities,second)!=overlay_scene.mesh_entities.end(),"Undo did not republish overlay membership.");
+    // Runtime writes need no Session revision. Extraction must still reread
+    // author values, including after rejecting an invalid transient value.
+    const auto runtime_position=take(world::read_transform(document.world().runtime(),first)).position;
+    const auto runtime_revision=document.revision(),snapshot_revision=overlay_scene.revision;
+    const auto write_position=[&](math::Vector3 position) {
+        take(document.world().runtime().with_native<world::Entity>(first,[&](auto& entity)->Result<void>{entity.position=position;return {};}));
+    };
+    write_position({runtime_position.x+7,runtime_position.y,runtime_position.z});take(overlay_scene.refresh(document));
+    const auto moved=std::ranges::find(overlay_scene.mesh_entities,first)-overlay_scene.mesh_entities.begin();
+    require(document.revision()==runtime_revision && overlay_scene.revision==snapshot_revision &&
+        overlay_scene.meshes[moved].world[12]==runtime_position.x+7,
+        "Scene extraction cached a direct Runtime transform behind Session revision.");
+    write_position({std::numeric_limits<float>::infinity(),0,0});
+    require(!overlay_scene.refresh(document),"Scene extraction accepted a non-finite Runtime transform.");
+    write_position(runtime_position);take(overlay_scene.refresh(document));
+    require(overlay_scene.meshes[moved].world[12]==runtime_position.x && document.revision()==runtime_revision,
+        "Scene extraction retained a failed traversal or changed author history.");
     changed(document.redo());require(document.selected_entities().empty(),"Delete redo retained a stale selection.");changed(document.undo());
     // Blender object-mode chords: A toggles all, Alt+A clears, Ctrl+I inverts.
     take(document.select(first));
@@ -265,7 +441,8 @@ void verify_viewport_editing() {
         const auto center=orthographic.project(transform(first).position);
         require(center && tool.pick(document,orthographic,center->x,center->y).has_value(),"Orthographic picking lost real geometry.");
     }
-    settings.tool=TransformTool::transform;shapes.clear();tool.overlay(document,view,settings,shapes);
+    settings.tool=TransformTool::transform;shapes.clear();take(overlay_scene.refresh(document));
+    tool.overlay(document,view,settings,overlay_scene.mesh_entities,shapes);
     require(shapes.size()>100,"Universal handle did not expose axes, planes and rotation rings.");
     Workspace workspace;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};ui::Session ui(fonts);
@@ -300,6 +477,50 @@ void verify_viewport_editing() {
         const auto frame=ui.prepare();require(frame && ui.accept(*frame),"Updated viewport chrome did not lay out.");
         workspace.commit_ui_controls();return controls;
     };
+    publish();
+    bool foreign_tree_row=false;
+    for(const auto& row:ui.presented()->tree_rows) {
+        const auto* binding=workspace.binding(row.key);
+        const bool owned=row.key==control::tree_world || (binding &&
+            (binding->kind==Workspace::Binding::Kind::object || binding->kind==Workspace::Binding::Kind::structure));
+        const auto& expansion=WorkspaceAcceptanceAccess::tree_expansion(workspace);
+        require(expansion.contains(row.key)==owned,"Workspace retained another view's tree state or lost its own row.");
+        foreign_tree_row|=!owned;
+    }
+    require(foreign_tree_row,"Tree ownership acceptance did not include the real Asset Browser directory rows.");
+    const std::vector<ObjectId> previous_selection(document.selected_entities().begin(),document.selected_entities().end());
+    const auto previous_active=document.selection().entity;
+    const std::array projected_selection{first,second};
+    for(unsigned pass=0;pass<3;++pass) {
+        take(document.select_entities(pass==1?std::span<const ObjectId>{}:std::span<const ObjectId>{projected_selection},pass==1?ObjectId{}:second));
+        const auto selected_controls=publish();
+        for(const auto object:std::array{first,second}) {
+            const auto key=workspace.object_control(object);
+            const auto row=std::ranges::find(selected_controls,key,&ui::Control::key);
+            require(row!=selected_controls.end() && row->selected==(pass!=1),"Tree selection projection reused a stale membership set.");
+        }
+    }
+    take(document.select_entities(previous_selection,previous_active));publish();
+    {
+        const auto authoring=take(document.serialize());const auto history=document.undo_count();
+        const auto diagnostic=std::ranges::find(view_options(),ViewOption::direct_shadow_cache,&ViewOptionInfo::option);
+        require(diagnostic!=view_options().end() && diagnostic->kind==ViewValueKind::boolean &&
+            view_value(workspace.view,ViewOption::direct_shadow_cache)==0,"Cached-shadow diagnostic metadata/default is missing.");
+        for(const bool clustered:{false,true}) for(const bool cached:{false,true}) {
+            auto candidate=workspace.view;
+            take(set_view_option(candidate,ViewOption::direct_clustered,clustered));
+            take(set_view_option(candidate,ViewOption::direct_shadow_cache,cached));
+            take(workspace.set_view_settings(document,candidate,{}));
+            require(workspace.view.lit.direct_shadow_cache==cached && workspace.view.lit.direct_clustered==clustered,
+                "Direct-light diagnostics lost their independent recorded values.");
+            const auto revision=workspace.view_revision();take(workspace.set_view_settings(document,candidate,{}));
+            require(workspace.view_revision()==revision,"Repeated cached-shadow diagnostic changed the view revision.");
+        }
+        auto candidate=workspace.view;candidate.lit.direct_clustered=false;candidate.lit.direct_shadow_cache=false;
+        take(workspace.set_view_settings(document,candidate,{}));
+        require(take(document.serialize())==authoring && document.undo_count()==history,
+            "Direct-light diagnostics entered World authoring or Scene history.");
+    }
     workspace.viewport_options_collapsed=true;publish();
     require(std::abs(ui.presented()->find(control::viewport)->bounds.height-expanded_height-16)<.1f,
         "Collapsed viewport options did not return their height to the scene.");

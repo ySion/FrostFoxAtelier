@@ -26,6 +26,7 @@ public:
     ui::Reply input(ui::Event);
     ui::ControlKey source() const noexcept { return source_; }
 private:
+    friend struct EditorAcceptanceAccess;
     Window window_;
     ui::Session ui_;
     ui::Session measurement_;

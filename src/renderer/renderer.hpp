@@ -138,6 +138,9 @@ struct ProbeInspection {
     std::array<Ray,256> ray_samples{};
 };
 struct FrameStats {
+    // Wall intervals of this CPU submission, not the older completed GPU sample.
+    double cpu_prepare_us{}, cpu_encode_us{};
+    rhi::FrameCpuTimings cpu_frame{};
     std::array<ProbeVolumeStats,probe_volume_limit> scene_lit_probe_volumes{};
     // Optional completed inspection; owns its exact sampled layout and frame.
     std::shared_ptr<const ProbeInspection> scene_lit_probe_inspection;
@@ -145,6 +148,7 @@ struct FrameStats {
     std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
     std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
+    std::uint64_t scene_instances{}, scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.
     std::uint64_t material_upload_count{}; // New immutable scene image versions, including neutral defaults.
     std::uint64_t cached_material_images{}; // Excludes UI textures and gfx's retirement queue.
     std::uint64_t viewport_draw_calls{}; // Background and reference guides; excludes scene geometry.
@@ -167,8 +171,20 @@ struct FrameStats {
     std::array<float, 4> scene_lit_direct_gpu_ms{}; // Initial/temporal reservoir, spatial reservoir, visibility/shading, radiance resolve/filter; subsets of direct time.
     std::array<float, 2> scene_lit_ddgi_update_gpu_ms{}; // Primary trace, hit lighting/convolution; subsets of update/transfer (copy excluded).
     std::array<float, 4> scene_lit_direct_reconstruction_gpu_ms{}; // Temporal resolve, spatial filter steps 1/2/4; subsets of direct resolve/filter.
+    float scene_lit_direct_cluster_gpu_ms{}; // Light list construction; subset of direct lighting.
+    // Completed conservative receiver clusters, not per-pixel light counts.
+    std::uint32_t scene_lit_direct_cluster_cells{},scene_lit_direct_cluster_overflows{},scene_lit_direct_cluster_max_sources{};
+    // Optional completed counts at actual GBuffer receivers: 0..64, then >64.
+    // Conservative local analytic support only; no directional/emissive sources or visibility test.
+    std::array<std::uint32_t,66> scene_lit_direct_receiver_histogram{};
+    std::uint32_t scene_lit_direct_receiver_max_sources{};
+    float scene_lit_shadow_cache_gpu_ms{}; // Atlas updates only; shading stays in direct subpass 12.
+    std::uint32_t scene_lit_shadow_cache_faces{},scene_lit_shadow_cache_reused_faces{};
+    std::uint32_t scene_lit_shadow_cache_static_updates{},scene_lit_shadow_cache_dynamic_updates{},scene_lit_shadow_cache_draws{};
+    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{},scene_lit_shadow_cache_pressure_batches{},scene_lit_shadow_cache_near_plane_faces{};
+    std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_clamped_taps{},scene_lit_shadow_cache_rt_fallbacks{},scene_lit_shadow_cache_plane_fallbacks{};
     // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
-    // 10..13 direct, 14..15 DDGI update, 16..19 direct reconstruction. A skipped scope still has timestamp overhead.
+    // 10..13 direct, 14..15 DDGI update, 16..19 direct reconstruction, 20 light lists, 21 shadow atlas updates. A skipped scope still has timestamp overhead.
     std::uint32_t scene_lit_gpu_pass_mask{};
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.

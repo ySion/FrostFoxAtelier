@@ -67,6 +67,8 @@ attached/detached 表示 World 成员注册与注销，activated/deactivated 表
 
 `set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照。具体合同见 [Lit 数据](lighting.md)和[项目场景](project-scenes.md)。
 
+`render_items()` 按呈现目录顺序提取网格，首个实际网格需要空间求值时才建立本次调用的 SpaceGraph 和结果容量；空间表的预留量参考呈现规模，祖先超出提示容量时正常扩容。零网格或纯灯光场景不建立这份空间缓存。缓存随调用结束释放，每次提取重新读取 Runtime 的当前数据。
+
 ## 运行位姿与验收入口
 
 Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界复核并批量应用；不保存字段地址。物理控制的 Entity 拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，整批先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。

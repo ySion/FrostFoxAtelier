@@ -1100,6 +1100,9 @@ void quality_ddgi(Fixture& f) {
 
 #include "scene_lit_work.inl"
 #include "scene_lit_restir.inl"
+#include "scene_lit_clustered.inl"
+#include "scene_lit_cost.inl"
+#include "scene_lit_shadow.inl"
 #include "scene_lit_contracts.inl"
 #include "scene_lit_audit.inl"
 #include "scene_lit_debug.inl"

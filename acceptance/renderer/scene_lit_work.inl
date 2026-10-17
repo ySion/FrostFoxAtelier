@@ -7,10 +7,11 @@ void quality_work_elision(Fixture& f) {
     evidence << "case,submission,case_first_frame,completed_sequence,completed_frame,current_logical_resource_bytes,visibility_queries,probe_queries,ddgi_hit_visibility,ddgi_gather_visibility\n";
     check(evidence.good(), "work-elision GPU evidence opened");
     std::uint64_t previous_sequence=0;
-    const auto completed=[&](const char* name,std::uint64_t first_frame) {
+    const auto completed=[&](const char* name,std::uint64_t first_frame,bool force_visibility=false) {
         std::array<render::FrameStats,3> samples{};
         std::size_t count=0;
         for(unsigned attempt=0;attempt<80 && count<samples.size();++attempt) {
+            if(force_visibility)f.frame.camera_cut=true;
             const auto stats=f.step().stats;
             if(!stats.scene_lit_gpu_timing_valid || stats.scene_lit_gpu_sample_sequence<=previous_sequence ||
                stats.scene_lit_gpu_sample_frame_id<first_frame) continue;
@@ -151,9 +152,12 @@ void quality_work_elision(Fixture& f) {
     options.probe_volumes[0].minimum={-6,-4,0};options.probe_volumes[0].maximum={6,4,8};options.probe_volumes[0].counts={4,4,4};
     options.probe_update_budget=64;options.probe_rays=64;
     const auto gather_case=[&](const char* name,bool needs_gather) {
-        f.edited();const auto first_frame=f.drawing.id+1;
+        f.edited();
         const auto image=f.capture(name,32);
-        for(const auto& stats:completed(name,first_frame)) {
+        // Exercise material work elimination independently of the exact LOS
+        // cache. Camera cuts retain the probe field but require fresh segments.
+        const auto uncached_first=f.drawing.id+1;
+        for(const auto& stats:completed(name,uncached_first,true)) {
             check(stats.scene_lit_probe_rays>0,"DDGI work elision retains real probe updates");
             check(needs_gather?stats.scene_lit_ddgi_visibility_rays[1]>0:stats.scene_lit_ddgi_visibility_rays[1]==0,
                   "DDGI receiver queries match exact material support and current consumers");

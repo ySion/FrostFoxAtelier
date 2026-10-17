@@ -107,6 +107,57 @@ void verify_property_descriptions(const Json& object) {
     }
     require(lanes==3,"Position descriptor did not expose its three scalar lanes");
 }
+Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities) {
+    const auto limit=capabilities.at("limits").at("inspect_page_items").get<unsigned>();
+    const auto bytes=capabilities.at("limits").at("inspect_page_bytes").get<std::size_t>();
+    require(limit==256 && bytes<maximum_message,"Object directory limits are not bounded below the transport limit");
+    Json expected=Json::array();
+    for(const auto& entity:full.at("entities")) {
+        expected.push_back({{"handle",entity.at("handle")},{"name",entity.at("name")},{"type",entity.at("type")},
+            {"kind","entity"},{"entity",entity.at("handle")},{"parent",entity.at("parent")}});
+        for(const auto& component:entity.at("components")) expected.push_back({{"handle",component.at("handle")},
+            {"name",component.at("name")},{"type",component.at("type")},{"kind","component"},{"entity",entity.at("handle")}});
+    }
+    const auto state_token=d.token;
+    auto page=d.ok("editor.inspect",{{"detail","objects"},{"limit",1}});
+    const auto first_cursor=page.at("next_cursor");Json actual=Json::array();
+    for(std::size_t count=0;;++count) {
+        require(count<=expected.size() && page.at("objects").size()<=1 && page.dump().size()<bytes,
+            "Object directory exceeded its bounds or did not advance");
+        for(const auto& entry:page.at("objects")) actual.push_back(entry);
+        if(page.at("next_cursor").is_null()) break;
+        page=d.ok("editor.inspect",{{"detail","objects"},{"limit",1},{"cursor",page.at("next_cursor")}});
+    }
+    require(actual==expected && !first_cursor.is_null(),"Object directory omitted, duplicated or expanded objects");
+    const auto& entity=full.at("entities")[0];const auto& component=entity.at("components")[0];
+    page=d.ok("editor.inspect",{{"detail","objects"},{"entity_name",entity.at("name")},{"limit",1}});
+    const auto rest=d.ok("editor.inspect",{{"detail","objects"},{"cursor",page.at("next_cursor")}});
+    require(page.at("objects")[0].at("handle")==entity.at("handle") &&
+        rest.at("objects")[0].at("handle")==component.at("handle") && rest.at("next_cursor").is_null(),
+        "Object cursor did not retain its exact entity-name filter");
+    page=d.ok("editor.inspect",{{"detail","objects"},{"type",component.at("type")}});
+    require(page.at("objects").size()==1 && page.at("objects")[0].at("handle")==component.at("handle"),
+        "Object type filter returned another object");
+    require(d.ok("editor.inspect",{{"detail","objects"},{"entity_name","No such entity"}}).at("objects").empty(),
+        "Missing entity name returned unrelated objects");
+    require(d.ok("editor.inspect",{{"detail","object"},{"object",component.at("handle")}}).at("object")==component,
+        "Single-object inspection diverged from the shared reflected object output");
+    error(d.call("editor.inspect",{{"detail","objects"},{"limit",0}}),"invalid_request");
+    error(d.call("editor.inspect",{{"detail","objects"},{"limit",limit+1}}),"invalid_request");
+    error(d.call("editor.inspect",{{"detail","summary"},{"limit",1}}),"invalid_request");
+    error(d.call("editor.inspect",{{"detail","object"}}),"invalid_request");
+    error(d.call("editor.inspect",{{"detail","object"},{"object","not-a-handle"}}),"stale_object");
+    error(d.call("editor.inspect",{{"detail","objects"},{"cursor",first_cursor},{"entity_name","Changed filter"}}),"invalid_request");
+    auto foreign=first_cursor;foreign["instance"]="another-instance";
+    error(d.call("editor.inspect",{{"detail","objects"},{"cursor",foreign}}),"stale_cursor");
+    foreign=first_cursor;foreign["document"]=foreign.at("document").get<std::uint64_t>()+1;
+    error(d.call("editor.inspect",{{"detail","objects"},{"cursor",foreign}}),"stale_cursor");
+    foreign=first_cursor;foreign["entity"]=full.at("entities").size()+1;
+    error(d.call("editor.inspect",{{"detail","objects"},{"cursor",foreign}}),"invalid_request");
+    require(d.token==state_token && d.inspect().at("entities")==full.at("entities"),
+        "Read-only object discovery changed the document or its state token");
+    return first_cursor;
+}
 void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
@@ -479,6 +530,8 @@ int wmain(int argc,wchar_t** argv) {
         }
         require(stable==5,"Initial surface mapping did not stabilize");
         require(initial.at("entities").empty() && !initial.at("last_frame").empty(),"Initial editor state is not ready");
+        const auto empty_directory=d.ok("editor.inspect",{{"detail","objects"}});
+        require(empty_directory.at("objects").empty() && empty_directory.at("next_cursor").is_null(),"Empty object directory has a continuation");
         const auto original_scene=read(project/"Content/Scenes/Main.scene");
         const auto original_scene_hash=descriptions?sha256_file(project/"Content/Scenes/Main.scene"):std::string{};
         Json request{{"op","scene.create"},{"args",{{"kind","mesh"}}},{"state_token",d.token},{"request_id",unique_id()}};
@@ -487,10 +540,13 @@ int wmain(int argc,wchar_t** argv) {
         request["args"]["kind"]="entity";error(d.client->call(request),"request_id_conflict");
         auto current=d.inspect();require(current.at("entities").size()==1 && current.at("undo")==1,"Duplicate request repeated creation");
         verify_property_descriptions(current.at("entities")[0]);
+        const auto directory_cursor=verify_object_directory(d,current,caps);
         if(descriptions) {
             write(root/"capabilities.json",caps.dump(2));
             write(root/"properties.json",current.at("entities")[0].dump(2));
             d.ok("scene.undo");const auto restored=d.inspect();
+            error(d.call("editor.inspect",{{"detail","objects"},{"cursor",directory_cursor}}),"stale_cursor");
+            error(d.call("editor.inspect",{{"detail","object"},{"object",current.at("entities")[0].at("handle")}}),"stale_object");
             require(restored.at("entities").empty() && !restored.at("dirty").get<bool>() &&
                 restored.at("undo")==initial.at("undo") && restored.at("view")==initial.at("view"),
                 "Description inspection or cleanup changed saved document state.");
@@ -500,12 +556,14 @@ int wmain(int argc,wchar_t** argv) {
                 sha256_file(project/"Content/Scenes/Main.scene")==original_scene_hash,
                 "Description inspection changed the original saved scene.");
             write(root/"result.json",Json{{"status","passed"},{"cases",{"discovery","shared-option-descriptions","utf8-newlines",
-                "aggregate-field-descriptions","undo-to-clean","saved-scene-preserved","clean-close"}}}.dump(2));
+                "aggregate-field-descriptions","bounded-object-directory","single-object-inspection","stale-cursor-and-object",
+                "undo-to-clean","saved-scene-preserved","clean-close"}}}.dump(2));
             std::cout<<"Editor Control descriptions E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
         }
         auto entity=current.at("entities")[0].at("handle").get<std::string>();auto component=current.at("entities")[0].at("components")[0].at("handle").get<std::string>();
         const auto stale=d.token;
         d.ok("scene.rename",{{"object",entity},{"name","Control cube"}});
+        error(d.call("editor.inspect",{{"detail","objects"},{"cursor",directory_cursor}}),"stale_cursor");
         error(d.client->call({{"op","scene.rename"},{"args",{{"object",entity},{"name","Wrong"}}},{"state_token",stale}}),"stale_state");
         d.ok("scene.transform",{{"object",entity},{"position",{1,2,3}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
         d.ok("scene.set_property",{{"object",entity},{"property","position.x"},{"value",4}});

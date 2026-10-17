@@ -17,11 +17,13 @@ enum class ProjectOpenPolicy { allow_repair, require_scene };
 struct FrameTiming {
     std::uint64_t frame_id{}; // Zero when the last step was not sampled/accepted.
     double prepare_us{}, render_us{}; // CPU wall time; render includes Present/waits.
+    double controls_us{}, scene_us{}, step_us{}; // Disjoint stages; step is the enclosing Application call.
+    double events_us{}, gc_us{};
 };
 class Application final {
 public:
     explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {},
-        std::optional<ui::PixelExtent> initial_client = {});
+        std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
     ~Application();
     bool step(renderer::Capture* = nullptr);
     void enable_control(const std::filesystem::path& directory);
@@ -104,6 +106,7 @@ private:
     std::vector<std::unique_ptr<PopupHost>> submenus_;
     std::vector<ui::ControlKey> menu_path_;
     bool gpu_validation_{};
+    bool vsync_{true};
     std::uint64_t menu_incarnation_{};
     ui::ControlKey menu_return_focus_{};
     ui::ControlKey menu_context_target_{},menu_context_group_{};
@@ -142,6 +145,8 @@ private:
     void update_camera_fly();
     void look_camera_fly(float dx,float dy);
     FrameTiming frame_timing_;
+    std::chrono::steady_clock::time_point render_retry_at_{};
+    std::chrono::milliseconds render_retry_delay_{};
     std::chrono::steady_clock::time_point fps_start_{};
     RenderClock lighting_clock_;
     std::uint64_t fps_frames_{};

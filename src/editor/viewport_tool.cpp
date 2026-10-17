@@ -50,7 +50,11 @@ std::optional<V3> on_plane(const ViewportView& view,V2 point,V3 origin,V3 normal
 // follow Houdini 22's object handles at 1x: 1 px axis lines reaching ~84 px,
 // solid 15 px tip markers, outlined plane diamonds at 0.3 of the axis, and a
 // rotate ball whose rings fade on the far hemisphere inside a purple view ring.
-template<class Emit> void handles(const ViewportView& view,V3 pivot,math::Quaternion orientation,math::Quaternion basis,TransformTool tool,Emit emit) {
+math::Quaternion transform_basis(math::Quaternion frame,Orientation orientation) noexcept {
+    return orientation==Orientation::local?frame:math::Quaternion{};
+}
+template<class Emit> void handles(const ViewportView& view,V3 pivot,math::Quaternion orientation,Orientation requested,TransformTool tool,Emit emit) {
+    const auto basis=transform_basis(orientation,requested);
     const std::array<V3,3> frame{math::rotate(basis,axes[0]),math::rotate(basis,axes[1]),math::rotate(basis,axes[2])};
     const auto center=view.project(pivot);if (!center || tool==TransformTool::select) return;
     const float scale=view.dpi_scale, unit=view.pixel_size(pivot)*scale;
@@ -196,9 +200,13 @@ std::optional<ViewportTool::Targets> ViewportTool::targets(const Session& sessio
             if(session.is_selected(*parent)) {inherited=true;break;}
             parent=world::spatial_parent(session.world().runtime(),*parent);
         }
-        if(inherited) continue;
+        if(inherited && entity!=session.selection().entity) continue;
         const auto matrix=world::world_matrix(session.world().runtime(),entity);if(!matrix) continue;
         const auto value=viewport_frame(session,entity,*matrix);if(!value) continue;
+        // The active Entity is last in selection order, even when its selected
+        // spatial ancestor owns the write. Keep its frame independent of roots.
+        result.active_frame=*value;
+        if(inherited) continue;
         result.entities.push_back(entity);result.transforms.push_back(*value);result.pivot+=value->position;
     }
     if(result.entities.empty()) return {};
@@ -232,8 +240,7 @@ Result<void> ViewportTool::preview_world(Session& session,std::uint64_t token,st
 }
 ViewportTool::Handle ViewportTool::hit(const ViewportView& view,const Targets& selected,TransformTool tool,V2 p,Orientation orientation) const {
     Handle best=Handle::none;float closest=7*view.dpi_scale;
-    handles(view,selected.pivot,selected.transforms.back().rotation,
-        orientation==Orientation::local?selected.transforms.back().rotation:math::Quaternion{},tool,[&](Handle handle,const Shape& shape) {
+    handles(view,selected.pivot,selected.active_frame.rotation,orientation,tool,[&](Handle handle,const Shape& shape) {
         float d;
         if(shape.kind==Shape::Kind::segment) d=distance(p,{shape.points[0],shape.points[1]},{shape.points[2],shape.points[3]});
         else d=length(p-V2{shape.points[0]+shape.points[2]*.5f,shape.points[1]+shape.points[3]*.5f})-shape.points[2]*.5f;
@@ -396,6 +403,7 @@ Result<void> ViewportTool::select_all(Session& session,SelectAll action) {
     return session.select_entities(all,all.empty()?ObjectId{}:all.back());
 }
 void ViewportTool::arm_box_select(V2 pointer,bool extend) {
+    if(active()) return;
     marquee_=Marquee{pointer,pointer,false,extend,false,true};hint_=L"Box select · Drag to select · Esc cancel";
 }
 Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView& view,Settings settings,V2 pointer) {
@@ -403,17 +411,21 @@ Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView&
     return begin(session,view,settings,Operation::move,Handle::none,true,pointer,true);
 }
 Result<void> ViewportTool::begin(Session& session,const ViewportView&,Settings settings,Operation operation,Handle handle,bool modal,V2 p,bool amend_creation) {
+    if(active()) return invalid("Finish the active viewport gesture before starting another.");
     auto selected=targets(session,settings.pivot,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     const auto token=next_session_++;
     if(auto begun=session.begin_transform(selected->entities,token,amend_creation);!begun) return begun;
     Gesture gesture;gesture.operation=operation;gesture.handle=handle;gesture.modal=modal;gesture.session=token;gesture.settings=settings;
-    gesture.entities=std::move(selected->entities);gesture.before=std::move(selected->transforms);gesture.pivot=selected->pivot;
+    gesture.entities=std::move(selected->entities);gesture.before=std::move(selected->transforms);gesture.active_frame=selected->active_frame;gesture.pivot=selected->pivot;
     gesture.start=gesture.last=p;
     if(handle>=Handle::move_x && handle<=Handle::move_z) gesture.axis=int(handle)-int(Handle::move_x);
     if(handle>=Handle::rotate_x && handle<=Handle::rotate_z) gesture.axis=int(handle)-int(Handle::rotate_x);
     if(handle>=Handle::scale_x && handle<=Handle::scale_z) gesture.axis=int(handle)-int(Handle::scale_x);
     if(handle>=Handle::plane_yz && handle<=Handle::plane_xy) {gesture.axis=int(handle)-int(Handle::plane_yz);gesture.plane=true;}
     gesture_=std::move(gesture);hint_=L"X/Y/Z constrain · Ctrl snap · Enter confirm · Esc cancel";return {};
+}
+math::Quaternion ViewportTool::Gesture::basis() const noexcept {
+    return transform_basis(active_frame.rotation,orientation());
 }
 Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p,bool snap,bool fine) {
     auto& g=*gesture_;g.valid=false;std::optional<float> typed;
@@ -430,8 +442,8 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
     const auto number=[](double value,int digits) {
         wchar_t text[48];std::swprintf(text,48,L"%.*f",digits,value);return std::wstring(text);
     };
-    const bool local=g.settings.orientation==Orientation::local;
-    const auto frame_q=local?g.before.back().rotation:math::Quaternion{};
+    const bool local=g.orientation()==Orientation::local;
+    const auto frame_q=g.basis();
     const std::array<V3,3> frame{math::rotate(frame_q,axes[0]),math::rotate(frame_q,axes[1]),math::rotate(frame_q,axes[2])};
     const auto basis=[&]{
         if(g.axis<0) return std::wstring{};
@@ -456,12 +468,12 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
         if(!typed) delta*=precision;
         if(((g.settings.grid_snap && g.settings.snap_move)!=snap) && !typed && !local) for(int axis=0;axis<3;++axis) {
             if(g.axis>=0 && (g.plane?axis==g.axis:axis!=g.axis)) continue;
-            const float step=g.settings.grid_spacing,origin=g.before.back().position[axis];
+            const float step=g.settings.grid_spacing,origin=g.active_frame.position[axis];
             delta[axis]=std::round((origin+delta[axis])/step)*step-origin;
         }
         for(auto& value:values) value.position+=delta;
         if(g.axis>=0 && !g.plane) {
-            const auto d=delta[g.axis];readout=L"D: "+number(d,4)+L" m ("+number(d,4)+L" m)"+basis();
+            const auto d=math::dot(delta,frame[g.axis]);readout=L"D: "+number(d,4)+L" m ("+number(d,4)+L" m)"+basis();
         } else readout=L"Dx: "+number(delta.x,4)+L" m   Dy: "+number(delta.y,4)+L" m   Dz: "+number(delta.z,4)+L" m ("+number(math::length(delta),4)+L" m)"+basis();
     } else if(g.operation==Operation::rotate) {
         const auto axis=g.axis>=0?frame[g.axis]:-view.forward;
@@ -479,7 +491,7 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
         readout=L"Rotation: "+number(angle*180/pi,2)+(g.axis>=0?basis():std::wstring{});
     } else {
         float amount=1+(p.x-g.start.x-(p.y-g.start.y))*.007f*precision;
-        const auto orientation=g.before.back().rotation;
+        const auto orientation=frame_q;
         if(g.axis>=0 && !g.plane) {
             const auto center=view.project(g.pivot);
             const auto tip=view.project(g.pivot+math::rotate(orientation,axes[g.axis])*(84*view.pixel_size(g.pivot)*view.dpi_scale));
@@ -497,7 +509,7 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
             for(int axis=0;axis<3;++axis) {value.scale[axis]*=factors[axis];offset[axis]*=factors[axis];}
             value.position=g.pivot+math::rotate(orientation,offset);
         }
-        // Blender: "Scale X: 1.8273   Y: 1.8273  Z: 1.8273", or "Scale: 1.8273 along global X".
+        // Scale always follows the active Entity's Local axes.
         readout=g.axis>=0 && !g.plane?L"Scale: "+number(amount,4)+basis():
             L"Scale X: "+number(factors.x,4)+L"   Y: "+number(factors.y,4)+L"  Z: "+number(factors.z,4)+basis();
     }
@@ -552,12 +564,12 @@ Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,con
     if(gesture_) {
         Result<void> result;
         if(event.kind==ui::EventKind::pointer_down && event.button==ui::PointerButton::middle && gesture_->modal) {
-            // Blender: middle click during G/R/S constrains to the world axis whose
+            // Blender: middle click during G/R/S constrains to the operation axis whose
             // screen direction best matches the pointer's travel since the start.
             const auto travel=p-gesture_->start;const auto center=view.project(gesture_->pivot);
-            int best=-1;float score=0;
+            int best=-1;float score=0;const auto basis=gesture_->basis();
             if(center && length(travel)>2*view.dpi_scale) for(int axis=0;axis<3;++axis) {
-                const auto tip=view.project(gesture_->pivot+axes[axis]*view.pixel_size(gesture_->pivot)*view.dpi_scale*60);if(!tip) continue;
+                const auto tip=view.project(gesture_->pivot+math::rotate(basis,axes[axis])*view.pixel_size(gesture_->pivot)*view.dpi_scale*60);if(!tip) continue;
                 const auto direction=math::try_normalize(*tip-*center);if(!direction) continue;
                 const float match=std::abs(math::dot(*direction,travel/length(travel)));
                 if(match>score) {score=match;best=axis;}
@@ -608,35 +620,41 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
     if(active() && event.kind==ui::EventKind::key_down && event.key==ui::Key::escape) {
         const auto result=cancel(session);if(!result) return std::unexpected(result.error());return true;
     }
+    if(marquee_) return true;
     if(gesture_) {
         if(event.kind==ui::EventKind::text) {
             if(const auto* text=std::get_if<std::wstring>(&event.data)) for(const auto c:*text) if((c>=L'0' && c<=L'9') || c==L'.' || c==L'-') {
                 if(gesture_->typed.size()<24) gesture_->typed+=c;
             }
-            const auto result=update(session,view,pointer,event.control);if(!result) return std::unexpected(result.error());return true;
+            const auto result=update(session,view,pointer,event.control,event.shift);if(!result) return std::unexpected(result.error());return true;
         }
-        if(event.kind!=ui::EventKind::key_down) return true;
-        if(event.key==ui::Key::enter) {const auto result=finish(session);if(!result) return std::unexpected(result.error());return true;}
-        if(!event.control && !event.alt && (vk=='X' || vk=='Y' || vk=='Z')) {
-            const int axis=int(vk-'X');gesture_->axis=gesture_->axis==axis && gesture_->plane==event.shift?-1:axis;
-            gesture_->plane=gesture_->axis>=0 && event.shift;gesture_->angle=0;gesture_->last=gesture_->start;
-        } else if(event.key==ui::Key::backspace && !gesture_->typed.empty()) gesture_->typed.pop_back();
-        const auto result=update(session,view,pointer,event.control);if(!result) return std::unexpected(result.error());return true;
+        if(event.kind==ui::EventKind::key_down) {
+            if(event.key==ui::Key::enter) {const auto result=finish(session);if(!result) return std::unexpected(result.error());return true;}
+            if(!event.repeat && !event.control && !event.alt && (vk=='X' || vk=='Y' || vk=='Z')) {
+                const int axis=int(vk-'X');gesture_->axis=gesture_->axis==axis && gesture_->plane==event.shift?-1:axis;
+                gesture_->plane=gesture_->axis>=0 && event.shift;gesture_->angle=0;gesture_->last=gesture_->start;
+            } else if(event.key==ui::Key::backspace && !gesture_->typed.empty()) gesture_->typed.pop_back();
+        } else if(event.kind!=ui::EventKind::key_up) return true;
+        const auto result=update(session,view,pointer,event.control,event.shift);if(!result) return std::unexpected(result.error());return true;
     }
     if(event.kind!=ui::EventKind::key_down) return false;
     // Blender object mode: Alt+A deselects, Ctrl+I inverts, Alt+G/R/S clear one TRS
     // channel of every selected root as a single history entry.
     if(event.alt && !event.control && vk=='A') {
+        if(event.repeat) return true;
         const auto result=select_all(session,SelectAll::deselect);if(!result) return std::unexpected(result.error());return true;
     }
     if(event.control && !event.alt && vk=='I') {
+        if(event.repeat) return true;
         const auto result=select_all(session,SelectAll::invert);if(!result) return std::unexpected(result.error());return true;
     }
     if(event.alt && !event.control && (vk=='G' || vk=='R' || vk=='S')) {
+        if(event.repeat) return true;
         const auto result=clear(session,vk=='G'?TransformChannel::location:vk=='R'?TransformChannel::rotation:TransformChannel::scale);
         if(!result) return std::unexpected(result.error());return true;
     }
     if(event.control || event.alt) return false;
+    if(event.repeat) return true;
     if(vk=='G' || vk=='R' || vk=='S') {
         const auto result=begin(session,view,settings,vk=='G'?Operation::move:vk=='R'?Operation::rotate:Operation::scale,Handle::none,true,pointer);
         if(!result) return std::unexpected(result.error());return true;
@@ -648,10 +666,9 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
     }
     return false;
 }
-void ViewportTool::overlay(const Session& session,const ViewportView& view,Settings settings,std::vector<Shape>& out) const {
+void ViewportTool::overlay(const Session& session,const ViewportView& view,Settings settings,std::span<const ObjectId> mesh_entities,std::vector<Shape>& out) const {
     const auto stroke=[&](V2 a,V2 b,float width,ui::Color color){out.push_back({Shape::Kind::segment,{a.x,a.y,b.x,b.y},width*view.dpi_scale,color});};
-    const auto items=session.world().render_items();std::unordered_set<ObjectId> rendered;
-    if(items) for(const auto& item:*items) rendered.insert(item.entity);
+    const std::unordered_set<ObjectId> rendered(mesh_entities.begin(),mesh_entities.end());
     const auto members=session.world().members();
     if(members) for(const auto& entity:*members) if(!rendered.contains(entity.id())) {
         const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
@@ -661,17 +678,17 @@ void ViewportTool::overlay(const Session& session,const ViewportView& view,Setti
         stroke(*p-V2{r,0},*p+V2{r,0},1.5f,color);stroke(*p-V2{0,r},*p+V2{0,r},1.5f,color);
     }
     if(const auto selected=targets(session,settings.pivot,cursor))
-        handles(view,selected->pivot,selected->transforms.back().rotation,
-            settings.orientation==Orientation::local?selected->transforms.back().rotation:math::Quaternion{},settings.tool,[&](Handle handle,Shape shape){
+        handles(view,selected->pivot,selected->active_frame.rotation,settings.orientation,settings.tool,[&](Handle handle,Shape shape){
             if(handle==hover_ || (gesture_ && handle==gesture_->handle)) shape.color=picked;out.push_back(shape);
         });
     if(gesture_) {
-        // Blender modal feedback: the active constraint as an infinite world line
+        // Blender modal feedback: the active constraint as an infinite line
         // through the pivot, and a dashed rubber band from the pivot to the pointer.
         const auto center=view.project(gesture_->pivot);
         if(gesture_->axis>=0 && center) {
+            const auto basis=gesture_->basis();
             const auto draw_axis=[&](int axis) {
-                const auto direction=axes[axis];const float reach=view.pixel_size(gesture_->pivot)*view.dpi_scale*4000;
+                const auto direction=math::rotate(basis,axes[axis]);const float reach=view.pixel_size(gesture_->pivot)*view.dpi_scale*4000;
                 const auto a=view.project(gesture_->pivot-direction*reach),b=view.project(gesture_->pivot+direction*reach);
                 const auto color=colors[axis];
                 if(a && b) stroke(*a,*b,1.5f,{color.r,color.g,color.b,.9f});

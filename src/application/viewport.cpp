@@ -75,7 +75,7 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
     if(!viewport_tool_.active() && !inside) return false;
     if(!viewport_tool_.active() && ui_.pointer_target(pointer_position_.x,pointer_position_.y)!=editor::control::viewport) return false;
     if(pointer && event.kind==ui::EventKind::pointer_down && !viewport_tool_.active()) {
-        effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+        cancel_interaction(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
         if(event.button==ui::PointerButton::middle || (event.button==ui::PointerButton::primary && event.alt)) {
             camera_drag_=CameraDrag{event.button,event.button==ui::PointerButton::middle && event.shift,{event.x,event.y}};
             window_.capture(true);window_.cursor(camera_drag_->pan?ui::Cursor::pan:ui::Cursor::orbit);return true;
@@ -94,7 +94,7 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
     if(!viewport_tool_.active() && event.kind==ui::EventKind::key_down && !event.control && !event.alt) {
         if (event.repeat) return true; // A held shortcut must not restart after its modal owner dismisses.
         if (event.shift && native_key=='D') {
-            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            cancel_interaction(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             const auto duplicated=execute(editor::Command::duplicate_selected);
             if (!duplicated) {status(duplicated,L"");return true;}
             if (!document_->selected_entities().empty())
@@ -107,7 +107,7 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
             return true;
         }
         if(native_key=='W') {
-            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             request_menu({editor::control::viewport,0,pointer_position_.x,pointer_position_.y});return true;
         }
         if(event.key==ui::Key::tab && event.shift) {status(execute(editor::Command::snap_toggle),L"Grid snapping toggled");return true;}
@@ -118,7 +118,7 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
         if(native_key==VK_DECIMAL && !event.shift) {status(frame_entities(true),L"View Selected");return true;}
         if(native_key==VK_HOME && !event.shift) {status(frame_entities(false),L"View All");return true;}
         if(native_key==VK_OEM_3 && event.shift) {
-            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            cancel_interaction(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             const auto entry=camera_;
             auto camera=camera_;camera.look(0,0);
             const auto changed=set_camera(camera,false);
@@ -129,12 +129,12 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
             return true;
         }
         if(native_key==VK_OEM_3 && !event.shift) {
-            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             request_menu({editor::control::viewport,editor::control::viewport_axis_pie,pointer_position_.x,pointer_position_.y});
             return true;
         }
         if((event.shift && native_key=='A') || (!event.shift && native_key=='Z')) {
-            effects(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
+            effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             // The scene is the anchor; group selects which pointer menu to build.
             request_menu({editor::control::viewport,native_key=='A'?editor::control::viewport_add_menu:editor::control::viewport_shading_pie,pointer_position_.x,pointer_position_.y});
             return true;

@@ -3,11 +3,13 @@
 #include "math/math.hpp"
 #include "scene_lit.hpp"
 #include "raster_viewport.hpp"
+#include "scene_visibility.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -305,6 +307,7 @@ struct Renderer::State {
     std::unordered_map<TextureKey, CachedImage, TextureHash> images;
     FrameStats stats;
     std::vector<Instance> instances;
+    std::vector<std::uint8_t> raster_visibility;
     std::vector<UiInstance> ui_instances;
     std::vector<UiBatch> ui_batches;
     std::size_t overlay_instances{}, overlay_batches{}; // Leading viewport annotations in ui_instances/ui_batches.
@@ -823,8 +826,13 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
                 for (const auto& batch : mesh_batches) {
-                    if(selected_only&&
-                       !std::ranges::any_of(frame.meshes.subspan(batch.first,batch.count),[](const MeshInstance& m){return m.selected;}))continue;
+                    const auto visible=[&](std::uint32_t index) {
+                        return raster_visibility[index] && (!selected_only||frame.meshes[index].selected);
+                    };
+                    const auto batch_end=batch.first+batch.count;
+                    auto first_visible=batch.first;
+                    while(first_visible<batch_end&&!visible(first_visible))++first_visible;
+                    if(first_visible==batch_end)continue;
                     const auto& geometry = geometries.at(batch.geometry.get());
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
                     for(const auto& part:geometry.source->parts()) {
@@ -835,24 +843,15 @@ struct Renderer::State {
                             require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
                             ++stats.scene_draw_calls;
                         };
-                        if(!selected_only) {draw_instances(batch.first,batch.count);continue;}
-                        // Preserve snapshot indices and part/instance order;
-                        // hidden instances never reach the vertex shader.
-                        const auto end=batch.first+batch.count;
-                        for(auto first=batch.first;first<end;) {
-                            while(first<end&&!frame.meshes[first].selected)++first;
-                            if(first==end)break;
-                            auto last=first+1;
-                            while(last<end&&frame.meshes[last].selected)++last;
-                            draw_instances(first,last-first);first=last;
-                        }
+                        detail::draw_visible_ranges(first_visible,batch_end-first_visible,visible,draw_instances);
                     }
                 }
             };
             if(lighting) {
                 lit_draws.clear();lit_draws.reserve(mesh_batches.size());
                 for(const auto& batch:mesh_batches){const auto& geometry=geometries.at(batch.geometry.get());
-                    lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size())});}
+                    lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size()),
+                        std::span<const std::uint8_t>(raster_visibility).subspan(batch.first,batch.count)});}
                 scene_lit->draw(frame,extent,depth,lit_draws,materials,stats);
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
                 if(editing_depth) {
@@ -1042,10 +1041,13 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     const auto destination = target();
     if (!destination) return std::unexpected(destination.error());
     auto &s = *state_;
+    s.stats.cpu_prepare_us = s.stats.cpu_encode_us = 0;
+    s.stats.cpu_frame = {};
     s.stats.ui_draw_calls = 0;
     s.stats.ui_quads = 0;
     s.stats.ui_instance_upload_bytes = 0;
     s.stats.scene_draw_calls = 0;
+    s.stats.scene_instances = s.stats.scene_culled_instances = 0;
     s.stats.material_upload_count = 0;
     s.stats.viewport_draw_calls = 0;
     s.stats.overlay_shapes = 0;
@@ -1067,6 +1069,8 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     try {
+        using Clock = std::chrono::steady_clock;
+        const auto prepare_started = Clock::now();
         validate(frame);
         if(!std::isfinite(frame.render_delta_seconds) || frame.render_delta_seconds<0 || frame.render_delta_seconds>.1f)
             throw error(rhi::ErrorCode::invalid_argument,"Render delta must be finite and in [0, .1] seconds");
@@ -1078,15 +1082,21 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.cavity_projection=prepare_cavity_projection(frame);
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
+        s.raster_visibility.clear();s.raster_visibility.reserve(frame.meshes.size());
+        const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height);
         s.mesh_batches.clear();
         for (const auto &mesh : frame.meshes) {
             const auto first = static_cast<std::uint32_t>(s.instances.size());
             s.instances.push_back(prepare_instance(mesh));
+            const bool visible=frustum.visible(mesh.geometry->bounds(),mesh.world);
+            s.raster_visibility.push_back(visible?1u:0u);
+            ++s.stats.scene_instances;s.stats.scene_culled_instances+=visible?0u:1u;
             if (!s.mesh_batches.empty() && s.mesh_batches.back().geometry == mesh.geometry)
                 ++s.mesh_batches.back().count;
             else s.mesh_batches.push_back({first, 1, mesh.geometry});
         }
         s.prepare_ui(frame);
+        s.stats.cpu_prepare_us = std::chrono::duration<double, std::micro>(Clock::now() - prepare_started).count();
         Capture pending;
         if (capture) {
             pending.frame_id = frame.ui_frame.id;
@@ -1094,14 +1104,17 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
             pending.rgba.resize(std::size_t(extent.width) * extent.height * 4);
             pending.depth.resize(std::size_t(extent.width) * extent.height);
         }
+        const auto encode_started = Clock::now();
         encoding = true;
         if(s.scene_lit && (frame.view.shading!=Shading::scene_lit || frame.view.wireframe==Wireframe::only ||
                           frame.meshes.empty() || frame.scene_viewport.width==0 || frame.scene_viewport.height==0))
             s.scene_lit->invalidate(frame.meshes.empty(),s.stats);
         s.draw(frame, extent, capture ? &pending : nullptr);
+        s.stats.cpu_encode_us = std::chrono::duration<double, std::micro>(Clock::now() - encode_started).count();
         rhi::FrameInfo details;
         const auto presented = s.context.frame(s.options.vsync, &details);
         if (!presented) throw Error{presented.error(), true};
+        s.stats.cpu_frame = details.cpu;
         s.check_debug();
         FrameResult result{.accepted_extent = {}, .next_extent = {details.next.width, details.next.height},
                            .stats = s.stats};

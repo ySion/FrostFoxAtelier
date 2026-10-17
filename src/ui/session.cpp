@@ -178,6 +178,7 @@ struct Session::Impl {
         float content_bottom{};
         bool baseline_content{};
         std::size_t frame_index{std::numeric_limits<std::size_t>::max()};
+        std::size_t layout_position{}; // Temporary index in a complete-tree input batch.
         bool style_dirty{true};
         bool layout_dirty{true}, layout_tree_hidden{};
         ui_layout::Insets layout_padding{};
@@ -254,7 +255,6 @@ struct Session::Impl {
     ui_layout::LayoutDocument layout{detail::TextStore::measure, &text, {10001, 128}};
     std::map<ControlKey, State> states;
     std::vector<ControlKey> order;
-    std::vector<ui_layout::LayoutNodeId> retired;
     bool structure_dirty{true}, trees_dirty{true};
     std::shared_ptr<const UiFrame> published;
     std::optional<Press> press;
@@ -317,6 +317,16 @@ struct Session::Impl {
         for (auto it = published->controls.rbegin(); it != published->controls.rend(); ++it)
             if (contains(it->bounds,x,y) && contains(it->clip,x,y) && current(*it)) return &*it;
         return nullptr;
+    }
+    void retire_keyboard(Reply& reply) noexcept {
+        if (!keyboard_pressed) return;
+        terminal_key=keyboard_key; // Native repeats belong to the retired owner until key-up.
+        keyboard_pressed=0; keyboard_key=Key::none; reply.redraw=true;
+    }
+    void set_focus(Reply& reply,ControlKey next) noexcept {
+        if (focus==next) return;
+        retire_keyboard(reply);
+        focus=next; reply.redraw=true;
     }
 #include "ui/session_tooltip.inl"
 #include "ui/session_edit.inl"
@@ -388,14 +398,8 @@ struct Session::Impl {
             return {};
         };
         update_trees();
-        if (structure_dirty) {
-            // Retained nodes detach before obsolete ancestors are removed.
-            for (auto key : order) if (states.at(key).node)
-                if (auto result = checked(layout.move(states.at(key).node, layout.root()), key); !result) return result;
-            for (auto node : retired) if (layout.input(node))
-                if (auto result = checked(layout.remove(node), 0); !result) return result;
-            retired.clear();
-        }
+        std::vector<ui_layout::TreeNodeInput> tree;
+        if (structure_dirty) tree.reserve(order.size());
         for (auto key : order) {
             auto& state = states.at(key);
             auto alignment=state.control.layout.vertical_alignment;
@@ -422,20 +426,32 @@ struct Session::Impl {
             if (!structure_dirty && !state.layout_dirty) continue;
             ++layout_syncs;
             auto input = input_for(state,padding);
-            const auto parent = state.control.parent ? states.at(state.control.parent).node : layout.root();
-            if (!state.node) {
-                const auto created = layout.create(parent, input);
-                if (!created) return std::unexpected(Error{ErrorCode::layout_failed,key,created.error().provider_code});
-                state.node = *created;
-                ++layout_nodes_created;
+            if (structure_dirty) {
+                state.layout_position = tree.size();
+                tree.push_back({state.node, owner ? std::optional<std::size_t>{owner->layout_position} : std::nullopt,
+                    std::move(input)});
             } else {
                 if (auto result = checked(layout.update(state.node, input), key); !result) return result;
-                if (structure_dirty)
-                    if (auto result = checked(layout.move(state.node, parent), key); !result) return result;
+                state.layout_dirty = false;
             }
-            state.layout_dirty=false;
+            // These are preparation caches. A failed tree batch keeps structure_dirty
+            // and all pending layout dirty flags, so retry regenerates every entry.
             state.layout_padding=padding; state.layout_tree_height=row_height;
             state.layout_tree_hidden=state.tree_hidden; state.display_revision=display_version;
+        }
+        if (structure_dirty) {
+            const auto result = layout.set_tree(tree);
+            if (!result) {
+                const auto index = result.error().tree_index;
+                const auto key = index && *index < order.size() ? order[*index] : ControlKey{};
+                return std::unexpected(Error{ErrorCode::layout_failed, key, result.error().provider_code});
+            }
+            for (std::size_t i = 0; i < order.size(); ++i) {
+                auto& state = states.at(order[i]);
+                if (!state.node) ++layout_nodes_created;
+                state.node = (*result)[i];
+                state.layout_dirty = false;
+            }
         }
         structure_dirty = false;
         return {};
@@ -481,7 +497,7 @@ Result<Reply> Session::set_surface(Surface surface) {
         return std::unexpected(Error{ErrorCode::invalid_surface});
     Reply reply;
     if (impl_->surface != surface) {
-        reply = impl_->cancel(); impl_->edit.reset(); impl_->focus = 0; impl_->surface = surface; reply.redraw = true;
+        reply = impl_->cancel(); impl_->edit.reset(); impl_->set_focus(reply,0); impl_->surface = surface; reply.redraw = true;
         for (auto& [key,state]:impl_->states) if (state.control.kind==ControlKind::popup) state.layout_dirty=true;
     }
     return reply;
@@ -996,7 +1012,7 @@ Reply Session::focus(ControlKey key) {
     const auto* box=impl_->published?impl_->published->find(key):nullptr;
     if (key && (!impl_->active() || !box || !impl_->current(*box) || !focusable(box->kind) || !visible(box->bounds,box->clip))) return reply;
     if (impl_->focus!=key) impl_->finish_edit(reply,true);
-    impl_->focus=key;
+    impl_->set_focus(reply,key);
     if (key && text_field(box->kind) && !impl_->edit) impl_->begin_edit(key,box->kind==ControlKind::text_edit);
     reply.redraw=true;
     return reply;

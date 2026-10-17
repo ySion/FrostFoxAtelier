@@ -219,6 +219,25 @@ bool ddgi_segment_visible(float3 from, float3 to, bool record_queries) {
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
 
+// Only the screen resolve opts in. Feedback and diagnostics retain independent
+// exact queries; constant-disabled callers compile out these resources entirely.
+Texture2D<float4> lit_probe_visibility_offsets;
+struct DDGIVisibilityCache {
+    uint2 previous, current; // x: visible; y: queried. Black light is still valid.
+    bool enabled;
+};
+bool ddgi_cached_segment_visible(uint probe,uint corner,float3 offset,float3 from,float3 to,
+                                 bool record_queries,inout DDGIVisibilityCache cache) {
+    uint bit=1u<<corner;
+    bool visible;
+    if(cache.enabled && (cache.previous.y&bit)!=0 &&
+       all(offset==lit_probe_visibility_offsets.Load(int3(ddgi_probe_texel(probe),0)).xyz))
+        visible=(cache.previous.x&bit)!=0;
+    else visible=ddgi_segment_visible(from,to,record_queries);
+    if(cache.enabled){cache.current.y|=bit;if(visible)cache.current.x|=bit;}
+    return visible;
+}
+
 // Status: unavailable/outside/pending/inside/no weight/valid dark/valid light/
 // missing directional observations/all candidates occluded. Black is valid data.
 struct DDGIResult {
@@ -229,7 +248,7 @@ struct DDGIResult {
 };
 DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_normal,
                              DDGIVolume v,DDGISampleStencil irradiance_stencil,bool trace_support,bool record_queries,
-                             bool inspect,uint slot) {
+                             bool inspect,uint slot,inout DDGIVisibilityCache cache) {
     DDGIResult result=(DDGIResult)0;
     if(ddgi_volume_count(v)==0)return result;
     float minimum_spacing=ddgi_minimum_spacing(v);
@@ -304,7 +323,7 @@ DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_nor
         // Exact zero work can be discarded before the expensive segment query.
         if(weight<=0 || !isfinite(weight))continue;
         weighted=true;
-        if(trace_support && !ddgi_segment_visible(probe_position,endpoint,record_queries)){
+        if(trace_support && !ddgi_cached_segment_visible(probe,record,offset.xyz,probe_position,endpoint,record_queries,cache)){
             if(inspect){lit_probe_inspection[record].identity.z=5;lit_probe_inspection[record].weights.w=0;}
             continue;
         }
@@ -324,7 +343,7 @@ DDGIResult ddgi_gather_volume(float3 position,float3 normal,float3 geometric_nor
     return result;
 }
 DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
-                       bool trace_support,bool record_queries,bool inspect=false) {
+                       bool trace_support,bool record_queries,bool inspect,inout DDGIVisibilityCache cache) {
     DDGIResult result=(DDGIResult)0;result.volume=0xffffffff;
     if(lit_probe_pool.y==0 || !all(isfinite(position)) || !all(isfinite(normal)))return result;
     DDGISampleStencil irradiance_stencil=ddgi_sample_stencil(normal);
@@ -332,7 +351,7 @@ DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
     float largest_share=0;
     [loop] for(uint slot=0;slot<4;++slot) {
         DDGIResult local=ddgi_gather_volume(position,normal,geometric_normal,
-            lit_probe_volumes[slot],irradiance_stencil,trace_support,record_queries,inspect,slot);
+            lit_probe_volumes[slot],irradiance_stencil,trace_support,record_queries,inspect,slot,cache);
         if(local.status==5 || local.status==6) {
             float share=(1-result.coverage)*local.coverage;
             result.irradiance+=local.irradiance*share;
@@ -347,6 +366,11 @@ DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
     result.irradiance=ddgi_finite_radiance(result.irradiance);
     if(result.coverage>0)result.dominance/=result.coverage;
     return result;
+}
+DDGIResult ddgi_gather(float3 position,float3 normal,float3 geometric_normal,
+                       bool trace_support,bool record_queries,bool inspect=false) {
+    DDGIVisibilityCache cache=(DDGIVisibilityCache)0;
+    return ddgi_gather(position,normal,geometric_normal,trace_support,record_queries,inspect,cache);
 }
 float3 ddgi_irradiance(float3 position,float3 normal,float3 geometric_normal,bool trace_support) {
     return ddgi_gather(position,normal,geometric_normal,trace_support,true).irradiance;

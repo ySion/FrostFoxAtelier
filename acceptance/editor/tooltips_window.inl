@@ -121,18 +121,54 @@ int verify_editor_tooltips(Application& app,const char* output_directory) {
     model(Access::command(app,editor::Command::undo));tick(app);
     require(channel(0)==2.f && channel(1)==1.f && channel(2)==1.f && !document.dirty(),
         "One undo did not restore all colour channels and the saved state.");
-    open_colour();click_control(editor::control::color_rgb);replace_text(L"4");
-    require(channel(0)==4.f,"Colour cancellation fixture did not preview its numeric draft.");
-    Access::input(app,{.kind=ui::EventKind::focus_lost});tick(app);
-    require(channel(0)==2.f && !document.editing() && !document.dirty() && document.undo_count()==colour_history &&
-        !app.presented()->find(editor::control::color_editor),"Focus cancellation retained a colour draft, transaction or popup.");
+    RECT colour_bounds{};require(GetWindowRect(app.window(),&colour_bounds)!=FALSE,"Cannot preserve colour fixture window bounds.");
+    for(unsigned reason=0;reason<6;++reason) {
+        open_colour();click_control(editor::control::color_rgb);replace_text(L"4");press_key(ui::Key::enter,VK_RETURN);
+        click_control(editor::control::color_rgb+1);replace_text(L"0.25");
+        require(channel(0)==4.f && channel(1)==.25f && document.undo_count()==colour_history,
+            "Colour cancellation fixture lost its completed channel or active draft.");
+        if(reason<2) Access::input(app,{.kind=reason==0?ui::EventKind::focus_lost:ui::EventKind::capture_lost});
+        else if(reason==2) require(SetWindowPos(app.window(),nullptr,0,0,colour_bounds.right-colour_bounds.left+16,
+            colour_bounds.bottom-colour_bounds.top+16,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"Cannot resize the colour fixture.");
+        else if(reason==3) {
+            const auto dpi=GetDpiForWindow(app.window());
+            SendMessageW(app.window(),WM_DPICHANGED,MAKEWPARAM(dpi,dpi),reinterpret_cast<LPARAM>(&colour_bounds));
+        }
+        else if(reason==4) press_key(ui::Key::tab,VK_TAB,true);
+        else press_key(ui::Key::f10,VK_F10);
+        tick(app);
+        require(channel(0)==2.f && channel(1)==1.f && channel(2)==1.f && !document.editing() && !document.dirty() &&
+            document.undo_count()==colour_history && !app.presented()->find(editor::control::color_editor),
+            "Forced cancellation committed part of a colour group or retained its transaction/popup.");
+        if(reason==2) {
+            require(SetWindowPos(app.window(),nullptr,0,0,colour_bounds.right-colour_bounds.left,
+                colour_bounds.bottom-colour_bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"Cannot restore colour fixture bounds.");
+            tick(app);
+        }
+        else if(reason==4) {Access::select_tab(app,editor::control::parameters_tab);tick(app);}
+        else if(reason==5) {
+            require(Access::menu_open(app) && app.menu_frame(),"Colour cancellation lost the new menu request.");
+            press_key(ui::Key::escape,VK_ESCAPE);
+            require(!Access::menu_open(app),"Colour handoff retained its menu after Escape.");
+        }
+    }
+    for(unsigned ending=0;ending<2;++ending) {
+        open_colour();click_control(editor::control::color_rgb);replace_text(L"4");press_key(ui::Key::enter,VK_RETURN);
+        if(ending==0) press_key(ui::Key::escape,VK_ESCAPE);
+        else {pointer(ui::EventKind::pointer_down);pointer(ui::EventKind::pointer_up);tick(app);}
+        require(channel(0)==4.f && !document.editing() && document.undo_count()==colour_history+1 &&
+            !app.presented()->find(editor::control::color_editor),"Normal colour dismissal did not keep exactly one group edit.");
+        model(Access::command(app,editor::Command::undo));tick(app);
+        require(channel(0)==2.f && !document.dirty() && document.undo_count()==colour_history,
+            "Normal colour dismissal no longer restores through one undo.");
+    }
     Access::mark_saved(app);app.close();
     require(!app.step(),"Tooltip acceptance did not close its owned editor normally.");
     std::ofstream report(output/"tooltips-acceptance.txt");
     report<<"Editor tooltip acceptance: PASS\nBuild: "<<build_info::revision<<" ("<<build_info::configuration<<")\n"
         <<"Real native window, Application input, DSL parameter labels, same-frame GPU drawing and capture.\n"
         <<"Position and World Exposure descriptions; pointer leave and menu cancellation; viewport extent and undo unchanged.\n"
-        <<"HDR colour popup: real RGB/Hex/Tab input, dirty state, Done, single undo and focus cancellation.\n"
+        <<"HDR colour popup: real RGB/Hex/Tab input, Done/Esc/outside acceptance, single undo; whole-group rollback on focus/capture loss, resize, current-monitor DPI transition, CtrlTab pane change and F10 menu handoff.\n"
         <<"No global keyboard/mouse input or foreground activation; owned mesh/light fixtures.\n";
     require(report.good(),"Cannot write tooltip window evidence.");
     std::puts("Editor tooltip acceptance: PASS (Parameters/World native GPU capture, cancellation, stable viewport/undo)");

@@ -3,6 +3,7 @@
 #include "editor/assets.hpp"
 #include "editor/fields.hpp"
 #include "editor/view_options.hpp"
+#include "foundation/set.hpp"
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
@@ -421,20 +422,33 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     ui_document_->poll();
     project_ui_configured=project && !project->ui_source().empty();
     const auto members = take(session.world().members());
-    std::unordered_set<ObjectId> live; live.reserve(members.size()*3);
-    for (const auto& member:members) {
-        live.insert(member.id());
-        for (const auto& component:take(world::components(runtime,member.id()))) live.insert(component.id());
-    }
+    // The World already indexes all attached components, including disabled
+    // ones. UI liveness only needs their IDs, not a new Root for each member.
+    const auto components=take(session.world().query(session.types().component));
+    Set<ObjectId> live;live.reserve(members.size()+components.size()+1);
+    for(const auto& member:members) live.add(member.id());
+    for(const auto component:components) live.add(component);
     const auto material_object=inspecting_asset?session.loaded_material(material_inspection):ObjectId{};
-    if(material_object!=ObjectId{}) live.insert(material_object);
-    for(const auto& member:members) for(const auto& component:take(world::components(runtime,member.id()))) {
-        const auto bindings=world::read_material_bindings(runtime,component.id());
-        if(bindings) for(const auto& binding:*bindings) live.insert(binding.resource.id());
+    if(material_object!=ObjectId{}) live.add(material_object);
+    // Only material objects can extend the membership directory. Most frames
+    // reference Entity/Component bindings exclusively, so avoid reading every
+    // mesh's material slots unless an existing UI reference needs that lookup.
+    const auto unresolved=[&](ObjectId object) {return object!=ObjectId{} && !live.contains(object);};
+    const bool needs_materials=unresolved(session.selection().object) ||
+        std::ranges::any_of(navigation_,unresolved) ||
+        std::ranges::any_of(bindings_,[&](const auto& binding){return unresolved(binding.object);});
+    if(needs_materials) for(const auto component:components) {
+        const auto bindings=world::read_material_bindings(runtime,component);
+        if(bindings) for(const auto& binding:*bindings) live.add(binding.resource.id());
     }
     // A stalled accepted frame must not reinsert keys retired on a prior projection.
     if (frame && frame->drawing->id!=tree_frame_) {
-        for (const auto& row:frame->tree_rows) tree_expansion_[row.key]=row.expanded;
+        Set<ui::ControlKey> owned_tree_rows;owned_tree_rows.reserve(bindings_.size()+1);
+        owned_tree_rows.add(control::tree_world);
+        for(const auto& binding:bindings_)
+            if(binding.kind==Binding::Kind::object || binding.kind==Binding::Kind::structure) owned_tree_rows.add(binding.key);
+        for (const auto& row:frame->tree_rows)
+            if(owned_tree_rows.contains(row.key)) tree_expansion_[row.key]=row.expanded;
         tree_frame_=frame->drawing->id;
     }
     // Closing/hiding a view is not an object lifetime change. Retire bindings and
@@ -660,6 +674,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     if (view.key==control::entities_tab) {
         auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(members.size());
+        Set<ObjectId> selected_entities;selected_entities.reserve(session.selected_entities().size());
+        for(const auto entity:session.selected_entities()) selected_entities.add(entity);
         std::unordered_map<ObjectId,ui::ControlKey> entity_keys;
         for (const auto& member:members) {
             const auto state=take(world::inspect_entity(runtime,member.id()));
@@ -671,7 +687,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             const auto expansion=tree_expansion_.find(entity_key);
             rows->push_back({entity_key,{std::move(title),
                 state.state==world::EntityState::attached_inactive || state.state==world::EntityState::active,
-                session.is_selected(member.id()),static_cast<double>(entity_icon(session,member.id())),
+                selected_entities.contains(member.id()),static_cast<double>(entity_icon(session,member.id())),
                 parent_key,expansion!=tree_expansion_.end() && expansion->second,
                 std::wstring(mesh_entity?L"mesh-entity":L"entity")+(tree_drop_row==entity_key?L" drop-target":L""),state.can_edit,entity_key}});
         }

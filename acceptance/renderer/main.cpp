@@ -37,15 +37,26 @@ void pump() {
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(window, message, wparam, lparam);
 }
+struct WindowClass {
+    WNDCLASSW description{};
+    WindowClass() {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        description.lpfnWndProc = procedure;
+        description.hInstance = GetModuleHandleW(nullptr);
+        description.lpszClassName = L"AtelierRendererAcceptance";
+        check(RegisterClassW(&description) != 0, "register fixture window");
+    }
+    ~WindowClass() {
+        UnregisterClassW(description.lpszClassName, description.hInstance);
+    }
+};
 struct Window {
     HWND hwnd{};
     Window(int width = 641, int height = 385) {
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        WNDCLASSW wc{};
-        wc.lpfnWndProc = procedure;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.lpszClassName = L"AtelierRendererAcceptance";
-        check(RegisterClassW(&wc) != 0, "register fixture window");
+        // A process may host several independent Renderer consumers at once.
+        // The shared class outlives every fixture HWND, including failed cases.
+        static const WindowClass window_class;
+        const auto& wc = window_class.description;
         hwnd = CreateWindowExW(0, wc.lpszClassName, L"Atelier renderer acceptance", WS_OVERLAPPEDWINDOW, 40,
                                40, 680, 440, nullptr, nullptr, wc.hInstance, nullptr);
         check(hwnd != nullptr, "create fixture window");
@@ -68,7 +79,6 @@ struct Window {
     }
     ~Window() {
         DestroyWindow(hwnd);
-        UnregisterClassW(L"AtelierRendererAcceptance", GetModuleHandleW(nullptr));
     }
 };
 const std::uint8_t *pixel(const render::Capture &c, unsigned x, unsigned y) {
@@ -240,8 +250,9 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     render::Frame frame{ui_frame,camera,{120,40,480,320},meshes};
     render::Capture capture;
     const auto result=take(renderer.render(frame,&capture));
-    check(result.status==render::FrameStatus::accepted && result.stats.scene_draw_calls==2,
-        "adjacent shared mesh instances batch while different geometry gets its own draw");
+    check(result.status==render::FrameStatus::accepted && result.stats.scene_draw_calls==1 &&
+        result.stats.scene_instances==3 && result.stats.scene_culled_instances==2,
+        "only the visible mesh is submitted while off-camera geometry retains scene membership");
     const double linear=.3+.7*.65/std::sqrt(1.015625*1.16);
     const int expected=static_cast<int>(std::lround((1.055*std::pow(linear,1/2.4)-.055)*255));
     check(std::abs(depth(capture,360,200)-.8f)<.00001f && std::abs(int(pixel(capture,360,200)[0])-expected)<=2,
@@ -254,7 +265,7 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     meshes[0].geometry=replacement; meshes[1].geometry=replacement;
     meshes[0].world[14]=2.5f; geometry.reset(); ++ui_frame.id;
     const auto replaced=take(renderer.render(frame,&capture));
-    check(replaced.status==render::FrameStatus::accepted && replaced.stats.scene_draw_calls==2 &&
+    check(replaced.status==render::FrameStatus::accepted && replaced.stats.scene_draw_calls==1 &&
         std::abs(depth(capture,500,240)-.75f)<.00001f && observed.expired(),
         "new immutable mesh version changes silhouette/depth and retires its old CPU owner");
     const auto accepted_id=capture.frame_id;
@@ -266,6 +277,68 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     const auto empty=take(renderer.render(frame));
     check(empty.stats.scene_draw_calls==0 && replacement_observer.expired(), "unused geometry CPU/GPU cache ownership retires");
     std::puts("Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
+}
+void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
+    ui::Frame drawing{.id=2500,.extent=extent,.draws={}};
+    render::Camera camera;camera.projection[10]=-.1f;
+    std::array<render::MeshInstance,3> meshes{};
+    for(auto& mesh:meshes)mesh.geometry=atelier::geometry::cube_mesh();
+    meshes[0].world=translation(-.5f,0,2);meshes[0].color={1,0,0,1};
+    meshes[1].world=translation(8,0,2);
+    meshes[2].world=translation(.5f,0,3);meshes[2].color={0,0,1,1};
+    render::Frame frame{drawing,camera,{12.25f,20.75f,480.5f,320.25f},meshes};
+    frame.view.cavity.enabled=false;
+    render::Capture image;
+    const auto capture=[&] {++drawing.id;return take(renderer.render(frame,&image)).stats;};
+    auto stats=capture();const auto reference=image;
+    check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==2,
+        "a visibility gap splits an instance batch while preserving original indices");
+    std::array<render::MeshInstance,2> visible{meshes[0],meshes[2]};frame.meshes=visible;
+    stats=capture();
+    check(stats.scene_draw_calls==1 && image.rgba==reference.rgba && image.depth==reference.depth,
+        "frustum filtering preserves material identity, pixel-center coverage, color and depth");
+    frame.meshes=meshes;
+    meshes[1].world=translation(0,0,1);stats=capture();
+    check(stats.scene_culled_instances==0 && stats.scene_draw_calls==1 && image.depth!=reference.depth,
+        "an object reentering the view is drawn immediately in its original snapshot position");
+    meshes[1].world=translation(8,0,2);meshes[1].world[0]=0;
+    ++drawing.id;const auto invalid=renderer.render(frame);
+    check(!invalid && !invalid.error().terminal,
+        "off-camera singular transforms still reject the complete frame before encoding");
+    std::array<render::MeshInstance,6> outside{};
+    const std::array<std::array<float,3>,6> positions{{{-3,0,2},{3,0,2},{0,-3,2},{0,3,2},{0,0,-2},{0,0,12}}};
+    for(std::size_t i=0;i<outside.size();++i) {
+        outside[i].geometry=atelier::geometry::cube_mesh();
+        outside[i].world=translation(positions[i][0],positions[i][1],positions[i][2]);
+    }
+    frame.meshes=outside;stats=capture();
+    check(stats.scene_culled_instances==6 && stats.scene_draw_calls==0 &&
+        std::ranges::all_of(image.depth,[](float d){return d==0;}),
+        "all six homogeneous clip planes reject fully outside objects and clear stale depth");
+    frame.meshes=std::span(outside).first(1);
+    outside[0].world=translation(.99f,0,2);outside[0].world[0]=-.1f;outside[0].world[5]=2;
+    stats=capture();
+    check(stats.scene_culled_instances==0 && stats.scene_draw_calls==1 &&
+        std::ranges::any_of(image.depth,[](float d){return d>0;}),
+        "a reflected nonuniform box crossing a side plane stays visible");
+    frame.camera.projection={1,0,0,0,0,1,0,0,0,0,-.01f,1,0,0,.1f,0};
+    outside[0].world=translation(0,0,.3f);stats=capture();
+    check(stats.scene_culled_instances==0 && stats.scene_draw_calls==1,
+        "a perspective box crossing the eye and near plane is conservatively retained");
+    frame.camera=camera;frame.meshes=meshes;
+    meshes[1].world=translation(8,0,2);meshes[1].material.emissive={4,2,1};
+    frame.view.shading=render::Shading::scene_lit;frame.scene_identity=drawing.id;
+    auto& lit=frame.view.lit;
+    lit.ddgi=lit.gtao=lit.sssr=lit.ssil=lit.bloom=false;
+    lit.antialiasing=render::Antialiasing::none;
+    stats=capture();
+    check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==2 &&
+        stats.scene_lit_light_sources>0 && std::ranges::any_of(image.depth,[](float d){return d>0;}),
+        "Lit filters primary GBuffer draws while retaining off-camera emitters in the complete light domain");
+    frame.meshes={};stats=capture();
+    check(stats.scene_instances==0 && stats.scene_culled_instances==0 && stats.scene_draw_calls==0,
+        "empty scenes reset visibility activity without carrying prior-frame counters");
+    std::puts("Renderer visibility: PASS (ranges, identical pixels, reentry, invalid input, six planes, reflected scale, eye crossing, off-camera light domain, empty scene)");
 }
 #include "ui_shapes.inl"
 #include "selection.inl"
@@ -288,19 +361,32 @@ int main(int argc, char** argv) try {
     const bool materials_only=argc>1&&std::string_view(argv[1])=="--materials";
     const bool cavity_only=argc>1&&std::string_view(argv[1])=="--cavity";
     const bool selection_only=argc>1&&std::string_view(argv[1])=="--selection";
+    const bool visibility_only=argc>1&&std::string_view(argv[1])=="--visibility";
     std::filesystem::path material_output;
-    if(materials_only||cavity_only||selection_only) {
-        check(argc==2||(argc==4&&std::string_view(argv[2])=="--output"),"usage: --materials|--cavity|--selection [--output <absolute-directory>]");
+    if(materials_only||cavity_only||selection_only||visibility_only) {
+        check(argc==2||(argc==4&&std::string_view(argv[2])=="--output"),"usage: --materials|--cavity|--selection|--visibility [--output <absolute-directory>]");
         if(argc==4) {material_output=std::filesystem::path(argv[3]);check(material_output.is_absolute(),"Evidence path must be absolute");std::filesystem::create_directories(material_output);}
     }
-    if (argc > 1&&!materials_only&&!cavity_only&&!selection_only) {
+    if (argc > 1&&!materials_only&&!cavity_only&&!selection_only&&!visibility_only) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes" || mode == "--scene-lit-restir" || mode == "--scene-lit-restir-suite" || mode == "--scene-lit-stability"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes|--scene-lit-restir|--scene-lit-restir-suite|--scene-lit-stability [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes" || mode == "--scene-lit-restir" || mode == "--scene-lit-restir-suite" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes|--scene-lit-restir|--scene-lit-restir-suite|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
+        if(mode=="--scene-lit-cost") {
+            scene_lit_e2e::Fixture fixture(false,output);
+            scene_lit_e2e::cost_cases(fixture);fixture.close();return 0;
+        }
+        if(mode=="--scene-lit-clustered") {
+            scene_lit_e2e::Fixture fixture(false,output);
+            scene_lit_e2e::clustered_cases(fixture);fixture.close();return 0;
+        }
+        if(mode=="--scene-lit-shadows") {
+            scene_lit_e2e::Fixture fixture(false,output);
+            scene_lit_e2e::shadow_cases(fixture);fixture.close();return 0;
+        }
         if(mode=="--scene-lit-stability") {
             scene_lit_e2e::Fixture fixture(false,output,atelier::rhi::Validation::debug_layer);
             const auto initial_view=fixture.frame.view;
@@ -354,6 +440,10 @@ int main(int argc, char** argv) try {
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    if(visibility_only) {
+        visibility_cases(renderer,take(renderer.target()).extent);
+        check(bool(renderer.close()),"close visibility renderer");return 0;
+    }
     if(selection_only) {
         if(!material_output.empty())std::filesystem::current_path(material_output);
         const auto extent=take(renderer.target()).extent;
@@ -527,6 +617,7 @@ int main(int argc, char** argv) try {
           "UI-only capture after a scene does not expose the retained scene depth");
     transform_cases(renderer, ui_frame.extent);
     mesh_cases(renderer, ui_frame.extent);
+    visibility_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
     selection_depth_cases(renderer,ui_frame.extent);
     selection_clipping_cases(renderer, ui_frame.extent);

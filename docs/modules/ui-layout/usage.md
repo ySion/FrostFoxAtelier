@@ -29,6 +29,23 @@ Result<PanelNodes> create_panel(LayoutDocument& document,
 
 物品格使用 `NodeInput::grid(80, 8, 6)`：最小槽宽80、项间距8、行间距6，随viewport自动改变列数。`NodeInput::wrap(8, 6)`用于不同自然宽度的标签流；描述上的`line_align`为0/0.5/1时分别靠起点、居中、靠终点。更多规则见[合同](contract.md)。
 
+## 一次提交最终树
+
+已持有完整描述的消费者用 `set_tree` 提交结构变化；普通属性变化继续用 `update`。下面保留面板与标签，创建一个新值节点；未列出的其他旧节点会全部退役，因此应提交文档的完整目标树。
+
+```cpp
+const TreeNodeInput tree[]{
+    {nodes.panel, std::nullopt, NodeInput::column()},
+    {nodes.label, 0, NodeInput::measured(label_key)},
+    {{}, 0, NodeInput::measured(value_key)},
+};
+auto next = document.set_tree(tree);
+if (!next) return std::unexpected(next.error());
+nodes.value = (*next)[2];
+```
+
+父项下标必须指向较早条目；同父条目的输入顺序决定兄弟顺序。保留节点的 ID 不变，新节点的 ID 从结果读取。批次失败不部分修改布局输入，旧几何仍可消费；尺寸依赖和文字测量错误仍可能在后续 `compute` 出现，见[完整树合同](contract.md#完整树批量提交)。
+
 ## 内容变化与版本
 
 1. provider更新实际文本或图片内容，并推进该内容的revision。
@@ -58,11 +75,11 @@ auto held = document.snapshot(); // 显式复制几何与索引，供跨发布�
 
 ## 性能与内存观察
 
-通过两次`stats()`的差值观察measure_calls、node_visits和内部缓冲分配；调用`--performance`复现[正式场景成本](audit.md)。内部缓冲计数排除provider、快照及列描述复制，不能把其零分配推广到整个调用链。频繁读取使用view；只有需要跨发布保存时才复制快照。
+通过两次`stats()`的差值观察measure_calls、node_visits和内部缓冲分配；调用`--performance`复现[正式场景成本](audit.md)。`topology_commits` 统计产生变化的完整树提交，`topology_links_written` 统计改变的最终孩子序列写入的节点数；它们不计普通 `move`，也不表示整个调用没有其他扫描。内部缓冲计数排除provider、快照、公开结果 ID 数组及列描述复制，不能把其零分配推广到整个调用链。频繁读取使用view；只有需要跨发布保存时才复制快照。
 
 ## 原生Flex与二维Grid
 
-原生Flex、二维Grid、首基线与旧对齐字段的迁移使用同一LayoutDocument入口，完整描述形式见[Flex/Grid示例](flex-grid.md)。
+原生 Flex、二维 Grid、首基线与两轴 Alignment 使用同一 LayoutDocument 入口，完整描述形式见[Flex/Grid 示例](flex-grid.md)。
 
 ## 大型列表
 

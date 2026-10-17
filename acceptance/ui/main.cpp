@@ -584,6 +584,7 @@ void control_candidate_revision() {
     require(c.ui.accept(c.frame) && c.ui.accept(c.frame) && actions_of(c.click(1)).size()==1,
         "fresh recovery or repeated acceptance failed");
 }
+#include "topology.inl"
 }
 int main() {
     UVersionInfo icu{},unicode{}; u_getVersion(icu); u_getUnicodeVersion(unicode);
@@ -600,7 +601,9 @@ int main() {
         {"persistent_control_updates",persistent_control_updates},{"control_batch_validation",control_batch_validation},
         {"control_update_cleanup",control_update_cleanup},{"control_candidate_revision",control_candidate_revision},
         {"button_activation_semantics",button_activation_semantics},{"shared_menu_semantics",shared_menu_semantics},
-        {"shared_table_view",shared_table_view},{"tooltip_contracts",tooltip_contracts}};
+        {"shared_table_view",shared_table_view},{"tooltip_contracts",tooltip_contracts},
+        {"control_topology_identity",control_topology_identity},
+        {"control_topology_failure_and_scaling",control_topology_failure_and_scaling}};
     for(const auto& [name,run]:cases)try{run();std::printf("UI %s: PASS\n",name);}catch(const std::exception& error){++failures;std::printf("UI %s: FAIL %s\n",name,error.what());}
     std::printf("UI acceptance: %s (%zu/%zu)\n",failures?"FAIL":"PASS",std::size(cases)-failures,std::size(cases));
     return failures?1:0;

@@ -16,6 +16,8 @@ namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
 constexpr unsigned repro_view_schema=2;
+constexpr unsigned inspect_page_items=256;
+constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
 template<class T> T take(Result<T> value) {if(!value) throw Failure("operation_failed",value.error().message);return std::move(*value);}
 void take(Result<void> value) {if(!value) throw Failure("operation_failed",value.error().message);}
 void committed(Result<world::Commit> value) {auto commit=take(std::move(value));if(commit.notification_error) throw Failure("operation_failed",commit.notification_error->message);}
@@ -92,7 +94,8 @@ Json performance_json(const editor::RenderPerformance& performance) {
         {"extent",{sample.extent.width,sample.extent.height}},
         {"viewport",{sample.viewport.x,sample.viewport.y,sample.viewport.width,sample.viewport.height}},
         {"configuration",{{"antialiasing",aa_names[static_cast<unsigned>(sample.antialiasing)]},{"direct_candidates",sample.direct_candidates},
-            {"direct_reference",sample.direct_reference},{"ddgi",sample.ddgi}}},
+            {"direct_reference",sample.direct_reference},{"direct_clustered",sample.direct_clustered},
+            {"direct_shadow_cache",sample.direct_shadow_cache},{"ddgi",sample.ddgi}}},
         {"logical_resource_bytes",sample.resource_bytes?Json(*sample.resource_bytes):Json(nullptr)},
         {"resource_semantics","Current logical Scene Lit allocation; excludes retired resources and physical residency"},
         {"total_semantics","Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present"},
@@ -173,7 +176,9 @@ const std::vector<Operation>& operations() {
     static const Json str{{"type","string"}},obj{{"type","object"}},arr{{"type","array"}};
     static const std::vector<Operation> values{
         {"capabilities","Discover operations, arguments, limits and display options",false,{},{}},
-        {"editor.inspect","Read editor state; detail=summary omits object and asset enumeration",false,{{"detail",{{"enum",{"full","summary"}}}}},{}},
+        {"editor.inspect","Read editor state, a bounded object directory, or one discovered object",false,
+            {{"detail",{{"enum",{"full","summary","objects","object"}}}},{"object",str},{"entity_name",str},{"type",str},
+             {"limit",{{"type","integer"},{"minimum",1},{"maximum",inspect_page_items}}},{"cursor",obj}},{}},
         {"project.open","Open an existing project; refuses unsaved scene or source drafts",true,{{"path",str}},{"path"}},
         {"scene.open","Open a project-relative scene; refuses unsaved scene",true,{{"path",str}},{"path"}},
         {"scene.save","Save the current scene through the normal project save command",true,{{"path",str}},{}},
@@ -214,7 +219,9 @@ const std::vector<Operation>& operations() {
     };return values;
 }
 Json capabilities() {
-    auto result=Json{{"operations",Json::array()},{"display_options",Json::object()},{"limits",{{"message_bytes",control::maximum_message},{"request_history",256},{"request_history_bytes",8*1024*1024},{"job_history",16},{"captures",16},{"capture_bytes",256*1024*1024},{"timeout_ms",control::maximum_timeout_ms}}}};
+    auto result=Json{{"operations",Json::array()},{"display_options",Json::object()},{"limits",{{"message_bytes",control::maximum_message},
+        {"inspect_page_items",inspect_page_items},{"inspect_page_bytes",inspect_page_bytes},
+        {"request_history",256},{"request_history_bytes",8*1024*1024},{"job_history",16},{"captures",16},{"capture_bytes",256*1024*1024},{"timeout_ms",control::maximum_timeout_ms}}}};
     for(const auto& op:operations()) result["operations"].push_back({{"op",op.name},{"description",op.description},{"requires_state_token",op.changes},
         {"args",{{"type","object"},{"properties",op.properties.is_null()?Json::object():op.properties},{"required",op.required},{"additionalProperties",false}}}});
     for(const auto& option:editor::view_options()) {
@@ -276,13 +283,25 @@ struct EditorControl::Impl {
         return {{"frame_id",f.id},{"accepted_count",f.count},{"viewport",{f.bounds.x,f.bounds.y,f.bounds.width,f.bounds.height}},
             {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
-            {"frame_stats",{{"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
+            {"frame_stats",{{"scene_draw_calls",s.scene_draw_calls},{"scene_instances",s.scene_instances},{"scene_culled_instances",s.scene_culled_instances},
+                {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
                 {"spatial_light_sampling",{{"retained_sources",s.scene_lit_spatial_sources},{"nonempty_cells",s.scene_lit_spatial_cells},{"resource_bytes",s.scene_lit_spatial_bytes},{"uploaded",s.scene_lit_spatial_changed}}},
                 {"probe_volumes",probe_volumes_json(s.scene_lit_probe_volumes)},{"probe_volumes_source","cpu_layout_and_schedule"},
                 {"probe_inspection",probe_inspection_json(s.scene_lit_probe_inspection)}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
             {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"direct_pass_ms",s.scene_lit_direct_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
             {"direct_reconstruction_pass_ms",s.scene_lit_direct_reconstruction_gpu_ms},
+            {"direct_cluster_ms",s.scene_lit_direct_cluster_gpu_ms},
+            {"shadow_cache_ms",s.scene_lit_shadow_cache_gpu_ms},
+            {"shadow_cache",{{"faces",s.scene_lit_shadow_cache_faces},{"reused_faces",s.scene_lit_shadow_cache_reused_faces},
+                {"static_updates",s.scene_lit_shadow_cache_static_updates},{"dynamic_updates",s.scene_lit_shadow_cache_dynamic_updates},
+                {"draws",s.scene_lit_shadow_cache_draws},{"resolution_downgrades",s.scene_lit_shadow_cache_resolution_downgrades},
+                {"pressure_batches",s.scene_lit_shadow_cache_pressure_batches},{"near_plane_faces",s.scene_lit_shadow_cache_near_plane_faces},
+                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},{"clamped_taps",s.scene_lit_shadow_cache_clamped_taps},
+                {"rt_fallbacks",s.scene_lit_shadow_cache_rt_fallbacks},{"plane_fallbacks",s.scene_lit_shadow_cache_plane_fallbacks}}},
+            {"direct_cluster",{{"cells",s.scene_lit_direct_cluster_cells},{"overflows",s.scene_lit_direct_cluster_overflows},
+                {"max_sources",s.scene_lit_direct_cluster_max_sources},{"receiver_histogram",s.scene_lit_direct_receiver_histogram},
+                {"receiver_max_sources",s.scene_lit_direct_receiver_max_sources}}},
             {"pass_mask",s.scene_lit_gpu_pass_mask},{"ddgi_visibility_rays",s.scene_lit_ddgi_visibility_rays},
             {"resource_bytes",s.scene_lit_resource_bytes},{"resource_bytes_source","current_cpu_logical"},
             {"shadow_rays",s.scene_lit_shadow_rays},{"probe_rays",s.scene_lit_probe_rays}}}};
@@ -399,10 +418,12 @@ struct EditorControl::Impl {
         const auto name=text(value,80);const auto found=objects.find(name);
         if(found==objects.end() || !member(found->second)) throw Failure("stale_object","Object handle is no longer a document member");return found->second;
     }
+    Json object_header(ObjectId id,std::string_view type) {
+        return {{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type}};
+    }
     Json object_json(ObjectId id) {
         auto& runtime=app.document_->world().runtime();const auto* type=take(runtime.describe(take(runtime.type_of(id))));
-        Json result{{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type->name},
-            {"type_description",type->description},{"properties",Json::array()}};
+        auto result=object_header(id,type->name);result["type_description"]=type->description;result["properties"]=Json::array();
         for(const auto& property:take(app.document_->properties(id))) {
             const auto* prop_type=take(runtime.describe(property.type));
             Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"description",property.description},
@@ -422,6 +443,62 @@ struct EditorControl::Impl {
                 result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
                     {"parent",state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:""},
                     {"parameter_mask",state.overrides},{"assignment_override",binding.overridden}});
+            }
+        }
+        return result;
+    }
+    Json inspect_objects(const Json& args) {
+        control::fields(args,{"detail","entity_name","type","limit","cursor"});
+        const auto limit=args.contains("limit")?integer(args.at("limit"),1,inspect_page_items):64u;
+        const auto revision=app.document_->revision();
+        const auto instance=server.identity().at("instance_id");
+        const Json* cursor=args.contains("cursor")?&args.at("cursor"):nullptr;
+        unsigned entity_index{},object_index{};
+        if(cursor) {
+            control::fields(*cursor,{"instance","document","revision","entity","component","entity_name","type"});
+            if(cursor->at("instance")!=instance || cursor->at("document")!=document_generation || cursor->at("revision")!=revision)
+                throw Failure("stale_cursor","The object directory changed; restart without a cursor");
+            entity_index=integer(cursor->at("entity"),0,editor::Session::maximum_entities);
+            object_index=integer(cursor->at("component"),0,editor::Session::maximum_components);
+        }
+        const auto filter=[&](const char* key) -> Json {
+            const auto value=cursor?cursor->at(key):args.value(key,Json(nullptr));
+            if(cursor && args.contains(key) && args.at(key)!=value)
+                throw Failure("invalid_request","A pagination cursor cannot change its filters");
+            if(!value.is_null()) static_cast<void>(text(value));
+            if(args.contains(key) && args.at(key).is_null()) throw Failure("invalid_request","Inspection filters must be strings");
+            return value;
+        };
+        const auto entity_filter=filter("entity_name"),type_filter=filter("type");
+        const auto entity_name=entity_filter.is_null()?std::wstring{}:control::wide(entity_filter.get<std::string>());
+        const auto entities=take(app.document_->world().members());
+        if(entity_index>entities.size() || (entity_index==entities.size() && object_index))
+            throw Failure("invalid_request","Object directory cursor is outside the document");
+        if(pruned_revision!=revision) prune_handles();
+        Json result{{"detail","objects"},{"document_generation",document_generation},{"revision",revision},
+            {"objects",Json::array()},{"next_cursor",nullptr}};
+        auto& entries=result["objects"];std::size_t bytes{};
+        auto& runtime=app.document_->world().runtime();
+        for(;entity_index<entities.size();++entity_index,object_index=0) {
+            const auto entity=entities[entity_index].id();
+            if(!entity_filter.is_null() && app.document_->name(entity)!=entity_name) continue;
+            const auto components=take(world::components(runtime,entity));
+            if(object_index>components.size()) throw Failure("invalid_request","Object directory cursor is outside the entity");
+            for(;object_index<=components.size();++object_index) {
+                const auto id=object_index?components[object_index-1].id():entity;
+                const auto* type=take(runtime.describe(take(runtime.type_of(id))));
+                if(!type_filter.is_null() && type->name!=type_filter.get_ref<const std::string&>()) continue;
+                auto entry=object_header(id,type->name);entry["kind"]=object_index?"component":"entity";
+                entry["entity"]=handle(entity);
+                if(!object_index) entry["parent"]=handle(take(world::parent_entity(runtime,entity)));
+                const auto size=entry.dump().size()+1;
+                if(size>inspect_page_bytes) throw Failure("result_too_large","One object directory entry exceeds the page byte limit");
+                if(entries.size()==limit || size>inspect_page_bytes-bytes) {
+                    result["next_cursor"]={{"instance",instance},{"document",document_generation},{"revision",revision},
+                        {"entity",entity_index},{"component",object_index},{"entity_name",entity_filter},{"type",type_filter}};
+                    return result;
+                }
+                bytes+=size;entries.push_back(std::move(entry));
             }
         }
         return result;
@@ -526,6 +603,12 @@ struct EditorControl::Impl {
         if(op=="capabilities") return capabilities();
         if(op=="editor.inspect") {
             const auto detail=args.contains("detail")?text(args.at("detail")):std::string{"full"};
+            if(detail=="objects") return inspect_objects(args);
+            if(detail=="object") {
+                control::fields(args,{"detail","object"});
+                return {{"detail","object"},{"object",object_json(object(args.at("object")))}};
+            }
+            control::fields(args,{"detail"});
             if(detail!="full" && detail!="summary") throw Failure("invalid_request","Unsupported editor inspection detail");
             return inspect(detail=="summary");
         }

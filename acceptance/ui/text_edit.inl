@@ -115,6 +115,48 @@ void shared_edit_history_and_focus() {
         "current Escape repeat escaped its terminal latch");
     escaped.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::escape});
     escaped.command(ui::Key::escape); require(escaped.value()==L"original","released Escape could not cancel a new draft");
+
+    for (const auto kind:{ui::ControlKind::text_edit,ui::ControlKind::number,ui::ControlKind::slider})
+        for (const auto activation:{ui::Key::space,ui::Key::enter}) for (bool tab:{false,true}) {
+            Consumer moved;
+            moved.controls={leaf(1,ui::ControlKind::button,10,L"Activate"),leaf(2,kind,50,L"Field")};
+            moved.prepare();moved.ui.focus(1);
+            moved.ui.input({.kind=ui::EventKind::key_down,.key=activation});
+            moved.ui.focus(1);
+            require(moved.ui.interaction_state().keyboard,"same focus retired a held activation");
+            const auto transition=tab?key(moved.ui,ui::Key::tab):moved.ui.focus(2);
+            require(transition.redraw && moved.ui.focused_control()==2 && !moved.ui.interaction_state().keyboard,
+                "focus transfer retained the previous control's held activation");
+            moved.ui.focus(1);
+            require(actions_of(moved.ui.input({.kind=ui::EventKind::key_down,.key=activation})).empty() &&
+                !moved.ui.interaction_state().keyboard,"held native repeat rearmed an activation after focus returned");
+            const auto released=moved.ui.input({.kind=ui::EventKind::key_up,.key=activation});
+            require(released.consumed && actions_of(released).empty() && !moved.ui.interaction_state().active(),
+                "retired activation release left the session busy or activated a control");
+            moved.ui.input({.kind=ui::EventKind::key_down,.key=activation});
+            moved.ui.input({.kind=ui::EventKind::key_down,.key=activation});
+            const auto activated=actions_of(moved.ui.input({.kind=ui::EventKind::key_up,.key=activation}));
+            require(activated.size()==1 && activated[0].kind==ui::ActionKind::activate && activated[0].key==1 &&
+                actions_of(moved.ui.input({.kind=ui::EventKind::key_up,.key=activation})).empty(),
+                "new activation after focus transfer did not complete exactly once");
+        }
+    Consumer cleared;cleared.controls={leaf(1,ui::ControlKind::button,10,L"Activate")};cleared.prepare();cleared.ui.focus(1);
+    cleared.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::space});
+    require(cleared.ui.focus(0).redraw && !cleared.ui.interaction_state().keyboard,"empty focus retained a keyboard activation");
+    require(cleared.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::space}).consumed && !cleared.ui.interaction_state().active(),
+        "activation release required a focused control");
+    cleared.ui.focus(1);cleared.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter});
+    cleared.controls[0].layout.width=ui_layout::Axis::fixed(-1);accepted(cleared.ui.set_controls(cleared.controls));
+    require(!cleared.ui.prepare(),"keyboard release fixture did not suspend input");
+    const auto suspended=cleared.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::enter});
+    require(suspended.consumed && suspended.redraw && actions_of(suspended).empty() && !cleared.ui.interaction_state().keyboard,
+        "failed frame preparation prevented keyboard release cleanup");
+    TextConsumer repeated(L"");repeated.command(ui::Key::a,true);
+    for (unsigned i=0;i<3;++i) {
+        repeated.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::space});repeated.type(L" ");
+    }
+    repeated.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::space});
+    require(repeated.value()==L"   ","keyboard ownership cleanup swallowed ordinary text repeats");
 }
 void unicode_visual_editing() {
     const std::wstring original=L"A\U0001f600e\u0301\U0001f469\u200d\U0001f4bb\u2764\ufe0fZ";

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace atelier::ui_layout {
@@ -275,6 +276,22 @@ struct LayoutDocument::Impl {
         stack.push_back(start);
         for (std::size_t i = 0; i < stack.size(); ++i)
             for (const auto child : slots[stack[i]].children) stack.push_back(child);
+    }
+    bool retire(std::uint32_t index, bool release_children = true) noexcept {
+        auto& slot = slots[index];
+        slot.live = false;
+        slot.parent = slot.next_free = no_slot;
+        slot.intrinsic = {};
+        slot.constrained = {};
+        slot.measured_generation = 0;
+        slot.children.clear();
+        if (release_children) Buffer<std::uint32_t>(slot.children.get_allocator()).swap(slot.children);
+        slot.input = {};
+        // Exhausted generations permanently retire; a free slot at MAX still
+        // has one remaining lifetime when its preceding removal advanced to MAX.
+        if (slot.generation == std::numeric_limits<std::uint32_t>::max()) return false;
+        ++slot.generation;
+        return true;
     }
     Work& work_for(std::uint32_t slot) { return work[slots[slot].work_index]; }
     LayoutBox& box_for(std::uint32_t slot) { return working[slots[slot].work_index]; }
@@ -1092,24 +1109,152 @@ Result<void> LayoutDocument::remove(LayoutNodeId node) {
     auto& siblings = d.slots[d.slots[node.slot_].parent].children;
     siblings.erase(std::find(siblings.begin(), siblings.end(), node.slot_));
     for (const auto index : d.stack) {
-        auto& slot = d.slots[index];
-        slot.live = false;
-        slot.parent = no_slot;
-        slot.intrinsic = {};
-        slot.constrained = {};
-        Buffer<std::uint32_t>(slot.children.get_allocator()).swap(slot.children);
-        slot.input = {};
-        if (slot.generation != std::numeric_limits<std::uint32_t>::max()) {
-            ++slot.generation;
-            slot.next_free = d.free_head;
+        if (d.retire(index)) {
+            d.slots[index].next_free = d.free_head;
             d.free_head = index;
         }
-        // Exhausted generations are permanently retired, never wrapped/reused.
     }
     d.live_count -= d.stack.size();
     d.geometry_dirty = true;
     ++d.input_revision;
     return {};
+}
+Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeNodeInput> input) {
+    auto& d = *impl_;
+    if (auto status = d.editable(); !status) return std::unexpected(status.error());
+    if (input.size() >= d.limits.max_nodes)
+        return std::unexpected(Error{ErrorCode::capacity_exceeded});
+    struct Plan {
+        std::uint32_t slot{}, parent{}, depth{};
+        std::size_t begin{}, count{}, cursor{};
+        bool fresh{}, children_changed{};
+    };
+    struct PreparedInput { std::uint32_t slot; NodeInput input; };
+    Buffer<Plan> plan(input.size() + 1, Plan{}, BufferAllocator<Plan>{&d.memory});
+    Buffer<std::uint32_t> positions(d.slots.size(), no_slot, BufferAllocator<std::uint32_t>{&d.memory});
+    positions[0] = 0;
+    std::size_t fresh_count = 0;
+    const auto failure = [](Error error, std::size_t index) {
+        error.tree_index = index;
+        return std::unexpected(error);
+    };
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const auto& item = input[i];
+        auto& entry = plan[i + 1];
+        if (item.node) {
+            if (!d.valid(item.node)) return failure({ErrorCode::invalid_node, item.node}, i);
+            if (item.node.slot_ == 0) return failure({ErrorCode::root_operation, item.node}, i);
+            if (positions[item.node.slot_] != no_slot)
+                return failure({ErrorCode::invalid_structure, item.node}, i);
+            entry.slot = item.node.slot_;
+            positions[entry.slot] = static_cast<std::uint32_t>(i + 1);
+        } else { entry.fresh = true; ++fresh_count; }
+        if (auto error = validate(item.input)) { error->node = item.node; return failure(*error, i); }
+        if (item.parent && (*item.parent >= i || !container(input[*item.parent].input.kind)))
+            return failure({ErrorCode::invalid_structure, item.node}, i);
+        entry.parent = item.parent ? static_cast<std::uint32_t>(*item.parent + 1) : 0;
+        auto& parent = plan[entry.parent];
+        if (parent.depth >= d.limits.max_depth)
+            return failure({ErrorCode::capacity_exceeded, item.node}, i);
+        entry.depth = parent.depth + 1;
+        ++parent.count;
+    }
+
+    Buffer<std::uint32_t> available{BufferAllocator<std::uint32_t>{&d.memory}};
+    available.reserve(d.slots.size() - 1);
+    for (auto index = d.free_head; index != no_slot; index = d.slots[index].next_free)
+        available.push_back(index);
+    for (std::uint32_t index = 1; index < d.slots.size(); ++index)
+        if (d.slots[index].live && positions[index] == no_slot && d.slots[index].generation != no_slot)
+            available.push_back(index);
+    const auto reused = std::min(fresh_count, available.size());
+    const auto appended_count = fresh_count - reused;
+    const auto old_size = d.slots.size();
+    if (appended_count > d.limits.max_nodes - old_size)
+        return std::unexpected(Error{ErrorCode::capacity_exceeded});
+    std::size_t used = 0, appended = 0;
+    std::vector<LayoutNodeId> result;
+    result.reserve(input.size());
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        auto& entry = plan[i + 1];
+        if (entry.fresh) {
+            entry.slot = used < reused ? available[used++] : static_cast<std::uint32_t>(old_size + appended++);
+            if (entry.slot < old_size) positions[entry.slot] = static_cast<std::uint32_t>(i + 1);
+        }
+        const auto generation = entry.slot < old_size ? d.slots[entry.slot].generation +
+            static_cast<std::uint32_t>(entry.fresh && d.slots[entry.slot].live) : 1;
+        result.push_back(LayoutNodeId{d.identity, entry.slot, generation});
+    }
+    Buffer<std::uint32_t> children(input.size(), 0, BufferAllocator<std::uint32_t>{&d.memory});
+    std::size_t begin = 0;
+    for (auto& entry : plan) { entry.begin = entry.cursor = begin; begin += entry.count; }
+    for (std::size_t i = 1; i < plan.size(); ++i)
+        children[plan[plan[i].parent].cursor++] = plan[i].slot;
+
+    Buffer<PreparedInput> prepared{BufferAllocator<PreparedInput>{&d.memory}};
+    bool changed = input.size() + 1 != d.live_count || fresh_count != 0;
+    for (std::size_t i = 0; i < plan.size(); ++i) {
+        auto& entry = plan[i];
+        const auto sequence = std::span<const std::uint32_t>{children}.subspan(entry.begin, entry.count);
+        entry.children_changed = entry.fresh || !std::ranges::equal(d.slots[entry.slot].children, sequence);
+        changed |= entry.children_changed;
+        if (i == 0) continue;
+        if (entry.fresh || d.slots[entry.slot].input != input[i - 1].input) {
+            prepared.push_back({entry.slot, input[i - 1].input});
+            changed = true;
+        }
+        changed |= entry.fresh || d.slots[entry.slot].parent != plan[entry.parent].slot;
+    }
+    if (!changed) return result;
+    if (auto status = d.revision_available(); !status) return std::unexpected(status.error());
+
+    // All descriptor copies and allocations precede the logical commit. Capacity
+    // may grow on failure, but inputs, identities, dirty state and publication stay.
+    static_assert(std::is_nothrow_move_constructible_v<Impl::Slot>);
+    static_assert(std::is_nothrow_move_assignable_v<NodeInput>);
+    Buffer<Impl::Slot> additions{BufferAllocator<Impl::Slot>{&d.memory}};
+    additions.reserve(appended_count);
+    for (std::size_t i = 0; i < appended_count; ++i) additions.emplace_back(&d.memory);
+    for (const auto& entry : plan) if (entry.children_changed) {
+        auto& slot = entry.slot < old_size ? d.slots[entry.slot] : additions[entry.slot - old_size];
+        if (entry.count > slot.children.capacity())
+            slot.children.reserve(std::min<std::size_t>(d.limits.max_nodes,
+                std::max(entry.count, slot.children.capacity() * 2)));
+    }
+    if (old_size + appended_count > d.slots.capacity())
+        d.slots.reserve(std::min<std::size_t>(d.limits.max_nodes,
+            std::max(old_size + appended_count, d.slots.capacity() * 2)));
+
+    for (auto& slot : additions) d.slots.push_back(std::move(slot));
+    for (std::uint32_t index = 1; index < old_size; ++index) {
+        const auto position = positions[index];
+        if (d.slots[index].live && (position == no_slot || plan[position].fresh))
+            d.retire(index, position == no_slot);
+    }
+    for (auto& item : prepared) d.slots[item.slot].input = std::move(item.input);
+    for (std::size_t i = 0; i < plan.size(); ++i) {
+        const auto& entry = plan[i];
+        auto& slot = d.slots[entry.slot];
+        slot.live = true;
+        slot.parent = i ? plan[entry.parent].slot : no_slot;
+        slot.depth = entry.depth;
+        slot.next_free = no_slot;
+        if (entry.children_changed) {
+            slot.children.resize(entry.count);
+            std::copy_n(children.begin() + static_cast<std::ptrdiff_t>(entry.begin), entry.count, slot.children.begin());
+            d.statistics.topology_links_written += entry.count;
+        }
+    }
+    d.free_head = no_slot;
+    for (auto i = available.size(); i > reused; --i) {
+        d.slots[available[i - 1]].next_free = d.free_head;
+        d.free_head = available[i - 1];
+    }
+    d.live_count = input.size() + 1;
+    d.geometry_dirty = true;
+    ++d.input_revision;
+    ++d.statistics.topology_commits;
+    return result;
 }
 Result<LayoutView> LayoutDocument::compute(Size viewport, std::uint64_t provider_revision) {
     auto& d = *impl_;

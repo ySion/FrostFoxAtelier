@@ -194,6 +194,7 @@ struct Workspace {
     std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
+    friend struct WorkspaceAcceptanceAccess;
     std::unordered_map<std::string,ui::ControlKey> category_keys_;
     PropertyHelpCache property_help_;
     bool parameter_by_category_{};

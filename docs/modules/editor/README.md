@@ -70,6 +70,10 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 视口编辑
 
+G／R／S 通过同一 ViewportTool 与 Session 事务预览、提交和撤销 TRS。仿射矩阵求逆保持精确的齐次末列，避免带旋转和平移的有效对象因消元舍入而被误判为透视变换；真正的剪切、反射、非有限值仍沿 World 规则拒绝。正式 `--viewport-edit` 场景覆盖实际导入灯光姿态的三种变换，以及取消、单次提交和精确撤销。
+
+父子多选时，继承去重只减少实际写入对象；活动 Entity 的世界原点和朝向独立保留，用于 Local 基底、吸附、手柄拾取、中键择轴、约束线与读数。缩放统一使用 Local。框选与变换互斥；约束切换、反选和清除变换只处理首次按下，修饰键释放会立即更新当前预览。相机拖动转入全局命令时，先结束旧拖动再释放捕获，迟到的鼠标释放不会恢复旧手势。
+
 Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采样，2026-10-08）。左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔；手柄工具使用中性立方体加 `#e04a1c` 手柄的双色图标，选中态 `#5d7289`。视口右侧是 Houdini 式显示栏（34 DIP）：参考网格、原点轴、线框叠加、纯线框、三角边、Cavity、Scene Lit、FPS，每个按钮只改其对应的一项视图设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。视口头部（32 DIP 一行）融合 Blender 的语义分组：路径之后依次为交互模式图标菜单、**View / Select / Add / Object** 平铺文字菜单、枢轴下拉、吸附开关+步长、叠加层（Guides）下拉、Cavity、四段着色按钮（Wireframe / Solid / MatCap / Scene Lit，与 Z 饼菜单同一组预设）及完整显示菜单箭头。View 菜单含 Focus Selection、Frame All、Viewpoint 子菜单、工具选项栏与 FPS 开关；Select 菜单含 Select All / None / Invert、Box Select 和选择模式子菜单；Add 列出全部创建命令（同 Shift+A）；Object 菜单含 Duplicate、Delete、Clear（Location/Rotation/Scale，同 Alt+G/R/S）、Snap 子菜单与 Transform 增删。面板宽度不足 660 DIP 时文字菜单与 Cavity 折叠，W 菜单和主菜单 View 仍可达。吸附菜单按 Blender 吸附面板分节（带灰色节标题）：总开关、步长（0.1/0.2/0.5/1 m）、Affect（Move/Rotate/Scale 各自是否随吸附开关吸附）、旋转步长（1°/5°/15°/45°）、选择/游标对齐；G/R/S 的 Ctrl 仍临时反转吸附，缩放步长 0.1。操作栏的 Global/Local 下拉即 Blender 变换朝向：Local 时移动/旋转手柄与 X/Y/Z 约束沿活动 Entity 的自身轴，网格吸附只在 Global 下生效（网格是世界格）；缩放始终沿局部轴。Normal/View/Cursor/Parent 朝向尚未实现，不在菜单中显示。头部下方是可折叠的 28 DIP 操作控制栏（`#2e2e2e`，黑色上边与 `#424242` 内沿），左侧为 Blender 五段选择模式（Set / Extend / Subtract / Invert / Intersect，决定右键点选和框选如何与当前选择合并；Shift 仍为切换、Ctrl 仍为减选），随后是轴空间、枢轴名称和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。图标沿原生符号栅格化和缓存链绘制，不复制 Houdini 专有图标素材。
 
 | 操作 | 行为 |
@@ -149,12 +153,48 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 - 场景身份、RT/视口范围或显示配置变化后清空窗口，并用当前域第一接受帧 ID 拒绝迟到的旧域样本。普通相机运动和选择变化继续统计；文档替换清空历史。此边界依赖正式 Application 单调分配的 UI 帧身份，不扩展成对任意低层 Frame 调用方的承诺。
 - 非 Scene Lit、视口无有效几何或尚无有效样本时显示 Unavailable / Waiting 和空值。mask 未启用的 scope 显示 Skipped；mask 表示进入计时范围，不保证内部存在非零工作。整个窗口均未启用的项不显示伪造的零成本。
 - Mean / P95 使用该窗口中同源的完成帧区间；p95 取最近秩。Measured total 对每个样本先累加八个主阶段，再计算统计量，不重复累加子阶段，也不累加各行 p95。子阶段比重也以主阶段合计为分母。
-- 表格共 21 行；Radiance resolve / filter 下展开 temporal resolve 与空间 filter step 1/2/4 四项。参考模式或无光源时三个 filter 显示 Skipped，resolve 仍有真实区间。原始 GPU 掩码使用 bit 0～19，表格另以 bit 20 表示计算出的合计。
+- 表格共 23 行；Radiance resolve / filter 下展开 temporal resolve 与空间 filter step 1/2/4 四项，Direct lighting 下另有 Light list construction 和 Shadow atlas updates。参考模式或无光源时三个 filter 显示 Skipped，resolve 仍有真实区间。原始 GPU 掩码使用 bit 0～21，其中 bit 20 是局部灯列表构建，bit 21 是阴影 atlas 更新；表格另以 bit 22 表示计算出的合计。两者均为 Direct 的子项，不重复加进合计；bit 12 保留 shading 的含义。Renderer B 候选已接入；原生 1440p 地牢对照已完成，但其性能和 CSM 图像正确性仍未达到默认启用门槛，`direct_clustered` 保持默认 false。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
 - 合计不含 UI、参考辅助线、探针显示叠层、Capture 或 CPU Present；父阶段可能包含传输、调度及计时边界开销，子阶段之和不保证等于父阶段。分组与原始计时范围见 [Scene Lit](../renderer/scene-lit.md)。
 
 统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。现有 `--acceptance-surfaces` 端到端入口同时验证真实 GPU 数据、Table 显示与列宽、禁用项、合计、概要读取和换域清理，并生成 `world-performance.png` 与 `performance.json`。
 
 2026-10-13 的主目录 Dev / Release 构建、Scene Lit 文档链和性能表窗口验收通过。最终日志为 `out/performance-{dev,release}-verified.log`；同名前缀目录保留禁用 DDGI、启用 DDGI（`world-performance-ddgi.png`）、Target 缩小（`world-performance-resized.png`）和非 Lit 的截图。启用场景收满 120 个完成样本，验证 update、primary trace、hit lighting 与 gather 行有效；这些小场景截图用于接线验收，不作为代表性性能基线。
+
+### 真实工程的原生 1440p 渲染对照
+
+当前 `direct_clustered=true`、`direct_shadow_cache=false` 对应精确枚举与 RT 可见性 A；两者都 true 才启用缓存阴影 B，Reference 优先。两个开关均默认 false，仅为视口诊断；新开关复用统一 ViewOption/Control 元数据与 Performance configuration，不进入正式着色菜单或 Scene/Undo。下面原生性能入口显式关闭缓存阴影，其 `clustered` case 现在采 A；历史报告的 B 数据不能直接按同名 case 对比，必须同时核对报告中的 view 与构建版本。
+
+`atelier_editor --project <工程目录> --acceptance-render-performance <绝对输出目录>` 使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此验收模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
+
+在首次产品帧与任何视图修改之前，验收锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 同时记录文件中的 `source_world` 和经过正常加载器解析的 `loaded_world`；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
+
+普通启动中的 `--scene-lit-camera` 保留自动拟合 DDGI 的既有行为，因此普通窗口与此验收的 World 配置可能不同。需要保留保存参数的交互诊断时，正常打开工程和 Scene 后通过 Control `camera.look_at` 设置相机，并检查实际 World 值。
+
+验收先调用既有 Scene pane maximize，再调整原生客户区。实际 Scene View 范围通过 Renderer 共用的 `raster_viewport` 计算：只在像素中心覆盖恰为 **2560×1440** 时继续。JSON 同时记录含小数的物理逻辑 rect、DIP rect、像素范围、DPI 和完整 Frame.extent；完整窗口 RT 仍包含编辑器 chrome，不能把它与视口像素数混为一谈。无法精确校准时失败，不接受近似尺寸。
+
+正常停靠布局可能需要超出桌面的客户区。仅验收校准使用 `SWP_NOSENDCHANGING` 避免 Windows 默认拖动尺寸上限截断，仍沿原生 `WM_SIZE` 和产品 resize 路径更新；产品窗口规则不变。报告的 `calibration` 按布局保存每步原窗口/客户区、实际 RT、DPI、viewport 像素误差、请求与实际调整尺寸及 Win32 错误。尺寸被截断、重复状态、超出 16384 像素窗口上限或耗尽校准步数均明确失败，不改变 Dock 比例或降低采样分辨率。
+
+完成冷资源准备后，独立采集接收面灯数 histogram。legacy/clustered 两个 Scene Lit case 均关闭该诊断和 reference，保留同一相机、Scene 和 World 设置；每个 case 额外 warmup 192 个接受帧，再收集 240 个按 sequence 去重、且来自 warmup 之后的完成 GPU 样本。随后使用同一场景、相机与原生视口测量最大化布局的 Smooth、MatCap，各 warmup 192 帧并记录 240 个真实接受步。最后通过 Dock 原有恢复入口解除最大化，保留原树和分隔比例，重新将实际 viewport 校准为 2560×1440，追加 docked_smooth、docked_matcap 两组；相机状态和 DPI 不变。非 Lit 的 gpu_passes 和 measured_main_total_ms 明确为 null，不读取上一组的 Scene Lit GPU 样本。统计含八个主区间、全部 DI/DDGI 子区间、cluster 计数、资源，以及接受帧呈现间隔的 P50/P95；`probe_rays`、`shadow_rays`、`ddgi_visibility_rays` 与耗时共用同一完成帧。CPU 观察帧和完成 GPU 帧分开标记。截图和 JSON 写盘在计时区间外。
+
+输出为 `render-performance.json`（schema v2）和六组同名 PNG：legacy、clustered、smooth、matcap、docked_smooth、docked_matcap。每个 case 明确记录 layout（maximized / docked）；layouts 目录记录各布局的实际 viewport、完整 RT、相机矩阵与活动 Dock 页。根级 viewport/camera 保留最初最大化布局，布局对照须读取 case 自身数据。正常布局可能需要更大的客户区；校准只接受像素覆盖精确相等，不以完整窗口尺寸代替 viewport。该补测比较同一版本的两种布局，不构成旧版正常布局的前后对照。仅此性能验收入口在 Application 创建主 Renderer 时关闭 VSync，正常编辑器保持默认开启；报告读取本次实际配置。默认 Release 不启用 GPU validation。呈现间隔包含 CPU、Present 等待及验收记录开销，GPU 时间倒数不代表实际 FPS。结束恢复原 view，禁止保存 Scene。`--gpu-validation` 可用于诊断，其结果须与正常性能数据区分。
+
+每个 case 的 cpu.samples 记录接受帧身份及当前提交的 RHI frame_sequence；cpu.stages 提供 Application 整步、事件/工程/Control、GC、控件生成、UI prepare、场景快照、Renderer prepare/encode 与 RHI submit/Present/frame-slot wait/resize/recycle/reclaim 的分布。Renderer 与 RHI 子阶段包含在 render_present 内，不能与父阶段相加；当前 CPU 提交身份也不能和异步完成的 GPU 样本身份混用。accepted_steps_per_second 来自接受步数与真实墙钟时间。
+
+2026-10-16，Editor／Renderer／Control 验收目标已通过 Dev／Release 构建，提前捕获作者基线及完成帧射线计数已在 `out/direct-clustered-20261016/dungeon-b-restored-idle-07/` 的正式对照中通过（旧 v1 报告，VSync 开启，尚不包含非 Lit 两组）。保存场景配置保持不变；B 尚未达到默认启用门槛，仍为显式诊断候选。性能数值和图像问题统一见 [Renderer 验收记录](../renderer/acceptance.md)；对象查询的实景与双配置端到端证据见 [Control 大场景查询](control.md#大场景对象查询)。
+
+### 不创建 GPU 的场景 CPU 定位
+
+`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot，以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，包含临时结果析构。结束检查序列化内容、源文件与文档历史不变。
+
+报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 Image 身份和 sRGB 模式计数的纹理数；纹理表大小额外包含默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
+
+此 CPU 定位不创建窗口或图形设备，也不提供接受 UI 帧；因此不包含 UI prepare、实际裁剪、Present 或完整帧耗时。尤其正常停靠布局的数值只能用于相同测量条件的前后比较，不能转换为产品 FPS。实现与地牢结果见 [CPU 链路记录](../../research/editor-cpu-pipeline-20261016.md)。
+
+### 可恢复渲染错误
+
+主 Renderer 在编码前返回可恢复错误时，Application 以 20 ms 起步、最多 250 ms 的退避间隔重试。门控位于事件、Project/Control 与 GC 服务之后，控件描述/场景提取/渲染之前；输入唤醒不会绕过重试时刻。每次消息等待最长 20 ms，关闭请求仍走正常退出链。成功接受帧或切换文档清除退避；终止性设备错误仍退出。正常帧没有增加帧率上限。
+
+现有 `--acceptance-surfaces` 原生验收覆盖真实 Renderer 参数拒绝、退避期间 Control 查询、修复后等待真实重试时刻并接受帧、再次失败时 WM_CLOSE 退出。2026-10-17 开发与发布版的完整 surfaces 及内嵌 performance 场景均 PASS、exit 0；证据位于 `out/editor-menu-transform-20261017/{dev,release}-surfaces-after/`，两份 `surfaces.csv` 均包含 `render-retry,validation-control-recovery-close,passed` 和菜单测量失效后重开的通过记录。
 
 ## 工作区与停靠
 
@@ -215,7 +255,9 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 ### 独立菜单窗口
 
-菜单栏、参数右键、Projection 下拉和 Pane 菜单全部通过同一个 PopupHost，使用独立 owned HWND，主窗口保留输入焦点。F10 或 Alt+F/E/C/V/W 打开顶部菜单；打开后左右键或悬停切换菜单，上下/Home/End 导航，Enter/Space 执行，Esc/Tab 关闭并返回原焦点。快捷键列与分隔线来自同一菜单模型。首项始终不绘制组间分隔线。菜单尺寸通过独立的 CPU 测量会话计算；勾选或可用性更新在尺寸不变时直接更新当前输入表面，保留悬停、焦点、滚动和行身份。窗口外点击只关闭，不执行背后的编辑器命令；视口和场景快捷键在菜单期间暂停。
+菜单栏、参数右键、Projection 下拉和 Pane 菜单全部通过同一个 PopupHost，使用独立 owned HWND，主窗口保留输入焦点。F10 或 Alt+F/E/C/P/V/W/H 打开顶部菜单；Scene Tree 非文本焦点下，Alt+P 优先解除父级。打开后左右键或悬停切换菜单，Right 优先展开当前可用分支；上下/Home/End 导航，Enter/Space 执行，Esc/Tab 关闭并返回原焦点。F10、面板最大化/关闭等一次性命令忽略自动重复，文本删除和历史导航保留重复。快捷键列与分隔线来自同一菜单模型。首项始终不绘制组间分隔线。菜单尺寸通过独立的 CPU 测量会话计算；勾选或可用性更新在尺寸不变时直接更新当前输入表面，保留悬停、焦点、滚动和行身份。窗口外点击只关闭，不执行背后的编辑器命令；视口和场景快捷键在菜单期间暂停。
+
+菜单切换请求立即退役旧菜单的输入身份；新菜单首帧接受前只消费过渡输入，不能执行旧条目。普通命令先关闭旧菜单，再接管输入或捕获；checkbox 的 keep-open 路径仍保留当前菜单。原生事件与菜单生命周期的回归共用 `--acceptance-shortcuts`，不注入桌面键鼠。
 
 顶部菜单在未展开时不因 hover 改色；按下和展开的标题，以及展开菜单中当前指向的条目，共用 `#b36600` 橙色底面。菜单背景为 `#3a3a3a`，细框上/左为 `#949494`、下/右为 `#262626`。条目最低高 25⅓ DIP，快捷键为右对齐的灰色斜体，分隔线位于组间留白中央。PopupHost 用同一个 SS/文字测量入口计算标题与快捷键两列的宽度；短菜单不留空滚动槽，超出屏幕高度时预留实际滚动条空间。
 
@@ -225,6 +267,8 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 弹出窗口基于锚点显示器的工作区定位，可超出编辑器边界；下拉空间不足时向上翻转，超宽/超高按可用空间限制并滚动。主窗口移动、尺寸/DPI 改变、失焦、系统取消或捕获丢失关闭菜单；关闭编辑器时先关闭弹出窗口的 GPU 资源，再销毁 HWND。它不创建第二套字段编辑或场景历史。
 
+PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则。DPI／工作区失效时，先退役测量控件树，再设置新 Surface 并重新投影；保留实际弹窗 HWND、接受帧和输入身份。正式 surfaces 验收覆盖测量域失效后 File 菜单重新打开；该场景不代替真实多显示器 DPI 迁移验证。
+
 当前 renderer/RHI 的所有权仍是一窗口一上下文，主菜单及首层子菜单宿主随应用初始化，其余层首次使用后复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。跨窗口共享 GPU 设备和纹理缓存尚未实现；多显示器真实 DPI 迁移需要额外设备验证。级联子菜单复用保留的原生菜单窗口，详见下方[页签菜单与弹窗资源](#页签菜单与弹窗资源)。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
 
 主窗口统一消费线程消息队列，每次分发后处理自身事件记录；弹出窗口只处理已由该消息泵或同步回调排入的自身记录和回调错误，业务消费者始终在 WndProc 返回后执行。
@@ -233,7 +277,7 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 ### 参数面板组合
 
-颜色色片打开同一 DSL 的 ColorEditor。RGB 与 HSV 的 V 沿用原属性范围，灯光与 emissive 可编辑 HDR；Hex 和色块展示按 0–1 范围表示，不能把它们当作 HDR 原值。弹窗内可键入、粘贴、按 Tab 切换字段，键盘导航不离开弹窗。颜色分组复用 Session 的 World 或材质事务：成功预览才更新显示，拒绝时还原所有通道与 override；Done 或点击外部只提交一次历史，失焦取消，Revert 恢复打开时的颜色。关闭确认和保存会先完成活动颜色事务；弹窗挂载失败取消事务，避免留下看不见的编辑。
+颜色色片打开同一 DSL 的 ColorEditor。RGB 与 HSV 的 V 沿用原属性范围，灯光与 emissive 可编辑 HDR；Hex 和色块展示按 0–1 范围表示，不能把它们当作 HDR 原值。弹窗内可键入、粘贴、按 Tab 切换字段，键盘导航不离开弹窗。颜色分组复用 Session 的 World 或材质事务：成功预览才更新显示，拒绝时还原所有通道与 override；Done、普通 Escape 或点击外部只提交一次历史，Revert 恢复打开时的颜色。失焦、外部捕获丢失、尺寸/DPI 改变和业务失败先回滚整组颜色，再消费字段与弹窗的清理通知；重复通知不提交历史。关闭确认和保存会先完成活动颜色事务；弹窗挂载失败取消事务，避免留下看不见的编辑。
 
 本批 Dev／Release 的材质、颜色、Tooltip 与 Control 端到端结果见[集成与审查记录](../../research/stage-merge-20261015.md)。
 
@@ -244,7 +288,7 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 无窗口的真实端到端说明验收使用 `atelier_editor_document_acceptance --tooltips`，覆盖 Runtime → 编辑器 → Source/JIT → 控件布局、延迟悬浮、World 说明和历史隔离；`atelier_ui_acceptance` 覆盖接受帧、取消、DPI 和绘制边界。
 
-原生画面验收使用 `atelier_editor --acceptance-tooltips <输出目录>`：在独立小场景中通过正式 Application 输入悬停 Position 与 World Exposure，输出两张 PNG，检查离窗/菜单取消、viewport 与撤销记录不变后关闭测试实例。它不激活前台，也不注入全局键鼠。2026-10-15 的 Dev／Release 已通过反射、上述 DSL／文档／原生窗口链及 Control `--descriptions`；原生 UI 套件的新增 Tooltip 场景通过，既有菜单图标断言仍失败，详见 [UI 验收](../ui/README.md#限额与验收)。
+原生画面验收使用 `atelier_editor --acceptance-tooltips <输出目录>`：在独立小场景中通过正式 Application 输入悬停 Position 与 World Exposure，输出 GPU 截图；同一入口覆盖颜色子字段提交后的组事务取消、失焦/捕获丢失、尺寸/DPI 变化、窗格与菜单交接，以及普通 Escape/外部点击接受。它不激活前台，也不注入全局键鼠。共享 UI、Transform、原生 shortcuts/tooltips/surfaces 的开发与发布版验收记录位于 `out/editor-chain-audit-20261017/`；细分覆盖见 [UI 验收](../ui/README.md#限额与验收)。
 
 参数标签沿 Houdini 习惯由字段名生成：取最后一段，下划线分词并首字母大写（`material.base_color` → `Base Color`，项目源码字段 `moving` → `Moving`）；字段路径和绑定身份不变。颜色元组（基础色、自发光、灯光颜色）末尾带当前值色块，HDR 值仅在色块上截断到 `[0,1]`。组件分组与变换分组共用整宽折叠条。
 
@@ -280,7 +324,9 @@ Tab 标签悬停不改变背景，统一使用正体。列表有带握柄和双�
 Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及菜单栏、参数区域等类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。对象类型使用 object-type 样式，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。菜单栏标题宽度按文字测量并保留最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
 主窗口和原生菜单通过同一 `editor_fonts()` 加载 Sarasa UI SC，数字使用 Source Code Pro；额外缺字及 emoji 沿系统回退，应用不修改系统字体设置。构建部署 `fonts/` 和两份 SIL OFL 许可证；选择依据、字重、体积与来源见[字体说明](../../../assets/fonts/README.md)。窄面板继续同一 Flex 换行。
 `Application::set_style` 直接进入 UI 的整体校验/应用路径，应用不保存另一份主题。颜色复用文字 Coverage，字体族、字重和字号经同一 TextStore 更新度量、caret 和栅格；已接受帧仍保有旧几何与不可变内容。具体样式、版本及状态合同见 [UI 模块](../ui/README.md)。
-`Application::sample_frames` 显式开启 CPU prepare/render 计时，默认关闭；Capture 帧不计入。窗口验收从同一 Create 菜单添加真实场景成员至 256，再采样列表滚动与位置拖动。主画布 UI 累计计数按段求差，主 renderer 的 `FrameResult::stats` 按实际采样帧合计；弹出窗口的独立上下文未计入这些既有计数。CPU Coverage 和 renderer cache 的持有峰值分别记录。
+`Application::sample_frames` 显式开启 CPU 墙钟采样，默认关闭；Capture 帧不计入。原有 prepare/render 字段保留，并记录事件/工程/Control、GC、控件生成、场景快照和整步耗时；所有值只发布给成功接受的当前帧。窗口验收从同一 Create 菜单添加真实场景成员至 256，再采样列表滚动与位置拖动。主画布 UI 累计计数按段求差，主 renderer 的 `FrameResult::stats` 按实际采样帧合计；弹出窗口的独立上下文未计入这些既有计数。CPU Coverage 和 renderer cache 的持有峰值分别记录。
+
+视口 locator 与渲染共用 SceneSnapshot 的同帧几何成员；Workspace 仅在已有 UI 引用需要时补查材质成员。两项重复工作清理的生命周期边界、无 GPU 验收和待测范围见 [Editor CPU 候选记录](../../research/editor-cpu-pipeline-20261016.md)。
 render 计时包括 Present/等待，R8 上传字节只表示有效 payload，缓存 texel 字节不表示物理显存。验收使用硬件 D3D12 debug/GBV 与 vsync，含 release 配置；数据用于说明该验收负载，不能直接当作关闭验证的产品帧耗时，也没有同负载改前基线可用于百分比提升结论。
 
 2026-10-01 独立菜单增量：dev/release UI 15/15 通过；正式窗口完整链分别接受 2632 / 2631 帧并 PASS。新增断言真实 owned WS_POPUP（非子窗口）、跨编辑器边界点击、显示器工作区约束、F10/Alt 快捷入口、左右键/悬停切换、宿主复用、焦点/捕获清理，以及原参数菜单和下拉业务操作。报告及独立 GPU 截图归档于 `out/native-menu-evidence-20261001/{dev,release}/`。开发版通过后仅调整了发布验收中完整拖动的消息投递时序和接口注释；最终两种配置均重新编译。本轮未运行真实搜狗验收。

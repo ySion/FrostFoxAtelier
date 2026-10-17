@@ -420,11 +420,25 @@ void DDGIInspect() {
     lit_probe_inspection[32]=receiver;
 }
 
+RWStructuredBuffer<uint2> lit_probe_visibility_cache;
+uint lit_probe_visibility_cache_mode; // 0 disabled (jitter), 1 populate, 2 exact reuse.
+Texture2D<float> lit_history_depth;
 [numthreads(8, 8, 1)]
 void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
     uint2 pixel;
     if (!lit_screen_pixel(dispatch_id.xy, pixel)) return;
+    uint index=pixel.x+pixel.y*lit_size_frame.x;
+    DDGIVisibilityCache cache=(DDGIVisibilityCache)0;
+    cache.enabled=lit_probe_visibility_cache_mode!=0;
     float depth = lit_depth.Load(int3(pixel, 0));
+    if(lit_probe_visibility_cache_mode==2 &&
+       asuint(depth)==asuint(lit_history_depth.Load(int3(pixel,0))) &&
+       all(lit_surface_id.Load(int3(pixel,0))==lit_history_surface_id.Load(int3(pixel,0))) &&
+       all(lit_geometry_normal.Load(int3(pixel,0))==lit_history_geometry_normal.Load(int3(pixel,0))))
+        cache.previous=lit_probe_visibility_cache[index];
+    // Every dispatched pixel owns its record, including early returns. There
+    // is no reprojection, neighbor read, or radiance stored in this cache.
+    if(cache.enabled)lit_probe_visibility_cache[index]=0;
     if (!lit_inside(pixel) || lit_is_background_depth(depth)) { lit_indirect[pixel] = 0; return; }
     if ((lit_effect_flags & 64) == 0) {
         float4 material = lit_base_metallic.Load(int3(pixel, 0));
@@ -438,5 +452,7 @@ void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
     float2 uv = (float2(pixel) + .5) / lit_size_frame.xy;
     float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(pixel, 0)).xyz);
     float3 position = lit_world(uv, depth);
-    lit_indirect[pixel] = float4(ddgi_irradiance(position, normal, lit_geometry_normal_at(pixel), true), 1);
+    DDGIResult gathered=ddgi_gather(position,normal,lit_geometry_normal_at(pixel),true,true,false,cache);
+    lit_indirect[pixel] = float4(gathered.irradiance, 1);
+    if(cache.enabled)lit_probe_visibility_cache[index]=cache.current;
 }

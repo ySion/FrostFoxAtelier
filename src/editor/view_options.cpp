@@ -72,6 +72,9 @@ constexpr std::array options{
     FIELD(probe_debug_volume,integer,-1,3,"Debug volume","Diagnostics","选择显示诊断几何的 Volume 槽位。All volumes（-1）显示所有槽位；不会关闭其他 Volume 的光照贡献。"),
     FIELD(direct_reference,boolean,0,1,"Direct reference","Diagnostics","直接光诊断参考：平均 64 次独立 RIS 估计，不使用跨帧复用或降噪。GPU 开销明显增加，适合对照采样偏差。"),
     FIELD(spatial_light_sampling,boolean,0,1,"Spatial light sampling","Diagnostics","DI 与 DDGI 共同使用附近光源提议，并保留全局光源采样支持。关闭后只使用全局提议，已有采样表仍保留，便于同场景对照。"),
+    FIELD(direct_clustered,boolean,0,1,"Clustered direct lighting","Diagnostics","临时 A/B 诊断：按屏幕 tile 与深度分层保守收集局部灯，再精确枚举。列表超过 64 项时回退完整枚举，不丢灯。Direct Reference 优先；此开关不改变 DDGI，也不保存进 Scene。"),
+    FIELD(direct_shadow_cache,boolean,0,1,"Cached direct shadows","Diagnostics","临时阴影诊断：仅 Clustered Direct 开启且 Reference 关闭时使用缓存阴影 B；关闭时使用精确 RT 可见性 A。默认关闭，不改变 World、Scene 或撤销历史。"),
+    FIELD(direct_cluster_inspect,boolean,0,1,"Inspect receiver lights","Diagnostics","按需统计有效 GBuffer 接收像素落入解析局部灯支持球的数量；不含太阳和发光网格，也不是遮挡后的灯数。仅 Clustered 且非 Reference 路径有效。诊断耗时计入光源列表构建，性能对比时必须关闭。"),
     ENUM(probe_history,probe_history,"Probe history","Diagnostics","Live 正常更新；Hold Irradiance 冻结辐照度历史；Hold Distance 冻结距离历史。用于定位 DDGI 波动来源，不修改 Scene。"),
     FIELD(probe_inspect,boolean,0,1,"Inspect receiver","Diagnostics","读取指定屏幕像素的 DDGI 接收面与探针贡献，供 Control 诊断使用。启用会增加少量诊断工作。"),
     FIELD(probe_inspect_x,integer,0,65535,"Receiver X (px)","Diagnostics","待检查接收面的屏幕 X 坐标，单位为物理像素。配合 Inspect Receiver 使用。"),
@@ -141,6 +144,9 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_inspect_x,lit.probe_inspect_pixel[0]);VALUE(probe_inspect_y,lit.probe_inspect_pixel[1]);
     VALUE(probe_inspect_source,lit.probe_inspect_source);
     VALUE(direct_reference,lit.direct_reference);VALUE(spatial_light_sampling,lit.spatial_light_sampling);
+    VALUE(direct_clustered,lit.direct_clustered);
+    VALUE(direct_shadow_cache,lit.direct_shadow_cache);
+    VALUE(direct_cluster_inspect,lit.direct_cluster_inspect);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
 #undef VALUE
     case ViewOption::volume_first:case ViewOption::volume_last:break;
@@ -180,6 +186,9 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_inspect_x,lit.probe_inspect_pixel[0]);SET(probe_inspect_y,lit.probe_inspect_pixel[1]);
     SET(probe_inspect_source,lit.probe_inspect_source);
     SET(direct_reference,lit.direct_reference);SET(spatial_light_sampling,lit.spatial_light_sampling);
+    SET(direct_clustered,lit.direct_clustered);
+    SET(direct_shadow_cache,lit.direct_shadow_cache);
+    SET(direct_cluster_inspect,lit.direct_cluster_inspect);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
 #undef SET
     case ViewOption::volume_first:case ViewOption::volume_last:break;

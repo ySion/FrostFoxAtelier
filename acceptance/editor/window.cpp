@@ -2,6 +2,7 @@
 #include "dungeons_roundtrip.hpp"
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"
+#include "renderer/raster_viewport.hpp"
 #include "ui/text.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -21,6 +22,12 @@ namespace atelier::application {
 struct EditorAcceptanceAccess {
     static void input(Application& app,ui::Event event,WPARAM key=0) {app.input(event,key);}
     static bool menu_open(const Application& app) {return app.workspace_.menu.has_value();}
+    static std::string menu_input_diagnostic(const Application& app) {
+        const auto pointer=app.pointer_position_;
+        return "pointer=("+std::to_string(pointer.x)+","+std::to_string(pointer.y)+"), ready="+std::to_string(app.pointer_ready())+
+            ", hit="+std::to_string(app.ui_.pointer_target(pointer.x,pointer.y))+", focus="+std::to_string(app.ui_.focused_control())+
+            ", wants_keyboard="+std::to_string(app.ui_.wants_keyboard())+", popup="+(app.popup_?std::string(app.popup_->diagnostic()):"missing");
+    }
     static unsigned menu_presents(Application& app) {return app.menu_host()?app.menu_host()->open_present_count():0;}
     static auto focused(const Application& app) {return app.ui_.focused_control();}
     static void finish_menu_hold(Application& app) {app.menu_requested_-=std::chrono::seconds(1);}
@@ -84,6 +91,30 @@ struct EditorAcceptanceAccess {
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
     static auto camera_mode(const Application& app) {return app.camera_.view();}
     static auto camera_eye(const Application& app) {return app.camera_.eye();}
+    static auto camera_state(const Application& app) {return app.camera_.state();}
+    static const auto& accepted_view(const Application& app) {return app.accepted_view_;}
+    static bool gpu_validation(const Application& app) {return app.gpu_validation_;}
+    static bool vsync(const Application& app) {return app.vsync_;}
+    static bool frame_sampling(const Application& app) {return app.sampling_;}
+    static auto render_retry_delay(const Application& app) {return app.render_retry_delay_;}
+    static auto render_retry_deadline(const Application& app) {return app.render_retry_at_;}
+    static void render_retry_deadline(Application& app,std::chrono::steady_clock::time_point value) {app.render_retry_at_=value;}
+    static void unchecked_cavity_radius(Application& app,float value) {app.workspace_.view.cavity.radius=value;}
+    static std::filesystem::path project_root(const Application& app) {return app.project_?app.project_->root():std::filesystem::path{};}
+    static std::filesystem::path scene_path(const Application& app) {return app.scene_path_;}
+    static auto dock_presentation(const Application& app) {
+        const auto size=app.surface_.extent;
+        return app.workspace_.dock.presentation(0,{float(size.width)/app.surface_.dpi_scale,float(size.height)/app.surface_.dpi_scale});
+    }
+    static void set_scene_maximized(Application& app,bool maximized) {
+        auto& dock=app.workspace_.dock;
+        if(!dock.select(editor::control::scene_tab)) throw std::runtime_error("Scene View cannot be selected.");
+        for(const auto& pane:dock_presentation(app).panes) if(pane.active && pane.active->key==editor::control::scene_tab) {
+            if(pane.maximized!=maximized) dock.maximize(editor::control::scene_tab);
+            return;
+        }
+        throw std::runtime_error("Scene View has no presented Dock pane.");
+    }
     static Result<void> select_entity(Application& app,ObjectId entity) {return app.document_->select(entity);}
     static auto cursor_position(const Application& app) {return app.viewport_tool_.cursor;}
     static auto viewport_settings(const Application& app) {return app.workspace_.viewport_settings;}
@@ -180,6 +211,11 @@ struct EditorAcceptanceAccess {
         if (!GetWindowRect(app.menu_window(),&anchor)) throw std::runtime_error("Cannot locate native menu fixture.");
         anchor.bottom=anchor.top;
         app.popup_->update(app.workspace_.menu->source,anchor,false,items,app.ui_.style(),app.style_sheet_,app.workspace_.ui_component("PopupMenu"));
+    }
+    static void invalidate_menu_measurement(Application& app) {
+        if (!app.popup_) throw std::runtime_error("Menu fixture needs a retained native host.");
+        // Model a changed monitor/DPI measurement domain without changing the desktop.
+        app.popup_->measured_dpi_=0;
     }
     static void menu_end(Application& app) {
         static_cast<void>(app.popup_->input({.kind=ui::EventKind::key_down,.key=ui::Key::end}));
@@ -1062,6 +1098,7 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
 #include "native_dialogs.inl"
 #include "dock_resize.inl"
 #include "viewport_navigation.inl"
+#include "shortcuts.inl"
 int verify_editor_shortcuts(Application& app,const char* output_directory) {
     using namespace atelier;
     namespace control=atelier::editor::control;
@@ -1073,6 +1110,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     verify_viewport_splitter_drag(app,output);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Shortcut scene creation failed.");tick(app);
     verify_viewport_navigation(app,output);
+    verify_menu_input_transitions(app);
     const auto first=app.document().selection().entity;
     const auto viewport=app.presented()->find(control::viewport)->bounds;
     const float x=viewport.x+viewport.width*.5f,y=viewport.y+viewport.height*.5f;
@@ -1104,7 +1142,12 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     const auto popup_hwnd=app.menu_window();const auto first_open=app.menu_open_cpu_us();
     key(VK_ESCAPE,ui::Key::escape);key(VK_ESCAPE,ui::Key::escape,false,false,true);tick(app);
     require(app.document().world().members()->size()==2 && !Access::menu_open(app),"Cancelling Delete changed the document.");
-    key('X');tick(app);require(app.menu_window()==popup_hwnd,"Delete menu recreated its native window.");
+    const auto before_reopen=Access::menu_input_diagnostic(app);
+    key('X');const bool reopen_requested=Access::menu_open(app);tick(app);
+    if(app.menu_window()!=popup_hwnd) throw std::runtime_error("Delete menu did not reuse its native window: old="+
+        std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd))+", new="+std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window()))+
+        ", requested="+std::to_string(reopen_requested)+", menu="+std::to_string(Access::menu_open(app))+", status="+editor::utf8(app.status_text())+
+        "; before=["+before_reopen+"]; after=["+Access::menu_input_diagnostic(app)+"].");
     const auto warm_open=app.menu_open_cpu_us();
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x,.y=y});tick(app);
     require(app.document().world().members()->size()==1 && !Access::menu_open(app),"Delete confirmation click missed its command.");
@@ -1146,9 +1189,11 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     key('D',ui::Key::none,true);key('X');key('Z',ui::Key::z);tick(app);
     require(!Access::menu_open(app) && !Access::tool_active(app) && app.document().undo_count()==text_history,
         "Viewport shortcuts escaped text focus.");
+    verify_shortcut_input_boundaries(app);
     Access::mark_saved(app);app.close();
     std::ofstream(output/"acceptance.txt")<<"Viewport shortcut acceptance: PASS\nConfiguration: "<<build_info::configuration
         <<"\nDelete menu CPU first/warm us: "<<first_open<<" / "<<warm_open
+        <<"\nMenu transitions: queued replacement, top-level branch, command capture transfer."
         <<"\nReal Application input routing, World history, Source/JIT controls, native popup, GPU captures. No desktop input injection.\n";
     std::puts("Viewport shortcut acceptance: PASS");return 0;
 }

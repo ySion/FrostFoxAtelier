@@ -29,7 +29,7 @@
         const auto row=state.table_index.find(key);
         return row!=state.table_index.end() && state.control.table->rows[row->second].enabled;
     }
-    bool table_input(Reply& reply,const Event& event,const ControlBox* hit) {
+    bool table_input(Reply& reply,const Event& event,const ControlBox* hit,ControlKey released_keyboard) {
         if (press && states.at(press->key).control.kind==ControlKind::table && !press->scrollbar) {
             auto& held=*press;
             const auto* box=published->find(held.key);
@@ -91,7 +91,7 @@
             if (event.kind==EventKind::pointer_down) {
                 reply.consumed=true;
                 if (event.button!=PointerButton::primary && event.button!=PointerButton::secondary) return true;
-                finish_edit(reply,true); focus=hit->key; keyboard_pressed=0; keyboard_key=Key::none;
+                finish_edit(reply,true); retire_keyboard(reply); set_focus(reply,hit->key);
                 const auto* cell=table_cell(*geometry,event.x,event.y);
                 if (cell && !table_row_enabled(state,cell->row)) return true;
                 if (event.button==PointerButton::secondary) {
@@ -125,8 +125,7 @@
         const auto selected_column=details && selected.column?selected.column:data.columns.front().key;
         if (event.key==Key::tab) return false; // A table contributes one stop to the ordinary focus order.
         if (event.kind==EventKind::key_up) {
-            if (event.key==keyboard_key && keyboard_pressed==focus) {
-                keyboard_pressed=0; keyboard_key=Key::none;
+            if (released_keyboard==focus) {
                 if (event.key==Key::enter && selected.row && table_row_enabled(states.at(focus),selected.row))
                     action(reply,ActionKind::activate,focus,TableSelection{selected.row,selected_column},box->action_target);
                 reply.consumed=reply.redraw=true; return true;

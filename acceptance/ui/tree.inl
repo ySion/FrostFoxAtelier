@@ -72,8 +72,13 @@ void shared_tree_view() {
         require(c.frame->find(4) && c.frame->find(4)->bounds.y>=c.frame->find(4)->clip.top &&
             c.frame->find(4)->bounds.y+c.frame->find(4)->bounds.height<=c.frame->find(4)->clip.bottom+1,
             "a new host selection did not reopen its ancestor and scroll back to the row");
+        c.ui.focus(4);c.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::space});
         c.controls[0].tree_filter=L"nothing matches"; c.prepare();
         require(c.frame->tree_rows.empty() && c.frame->scrollbars.empty(),"empty filter result kept interactive rows");
+        require(c.ui.focused_control()==0 && !c.ui.interaction_state().keyboard,"tree filtering retained a hidden row's keyboard activation");
+        const auto filtered_release=c.ui.input({.kind=ui::EventKind::key_up,.key=ui::Key::space});
+        require(filtered_release.consumed && actions_of(filtered_release).empty() && !c.ui.interaction_state().active(),
+            "hidden tree activation required its old focus to receive key-up");
     }
     Consumer drag;
     auto tree=leaf(80,ui::ControlKind::tree,0);tree.layout=ui_layout::NodeInput::column();tree.layout.width=ui_layout::Axis::fixed(240);

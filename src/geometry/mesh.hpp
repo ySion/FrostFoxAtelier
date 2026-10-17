@@ -27,6 +27,10 @@ struct MeshPart {
     std::uint32_t first_vertex{}, vertex_count{}, material{};
 };
 
+struct Bounds {
+    std::array<float,3> minimum{}, maximum{};
+};
+
 // Immutable CPU mesh resource, independent of World, Runtime and GPU lifetime.
 // Triangles use consecutive vertices. Sharing the resource never shares an Entity.
 class Mesh final {
@@ -56,11 +60,17 @@ public:
         if (end!=vertices_.size()) throw std::invalid_argument("Mesh parts must cover every vertex exactly once.");
         for (const auto& slot : materials_)
             if (!slot.surface) throw std::invalid_argument("Mesh material slot requires an immutable surface.");
+        std::copy_n(vertices_.front().position,3,bounds_.minimum.begin());
+        bounds_.maximum=bounds_.minimum;
         for (auto& vertex : vertices_) {
             for (float value : vertex.uv)
                 if (!std::isfinite(value)) throw std::invalid_argument("Mesh UV must be finite.");
             for (float value : vertex.position)
                 if (!std::isfinite(value)) throw std::invalid_argument("Mesh position must be finite.");
+            for(std::size_t axis=0;axis<3;++axis) {
+                bounds_.minimum[axis]=std::min(bounds_.minimum[axis],vertex.position[axis]);
+                bounds_.maximum[axis]=std::max(bounds_.maximum[axis],vertex.position[axis]);
+            }
             for (float value : vertex.normal)
                 if (!std::isfinite(value)) throw std::invalid_argument("Mesh normal must be finite.");
             const double length = std::hypot(double(vertex.normal[0]), double(vertex.normal[1]), double(vertex.normal[2]));
@@ -72,6 +82,7 @@ public:
     Mesh& operator=(const Mesh&) = delete;
     Mesh& operator=(Mesh&&) = delete;
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
+    [[nodiscard]] const Bounds& bounds() const noexcept { return bounds_; }
     [[nodiscard]] std::span<const material::Slot> materials() const noexcept { return materials_; }
     [[nodiscard]] std::span<const MeshPart> parts() const noexcept { return parts_; }
     [[nodiscard]] std::uint32_t material_slot(std::size_t triangle) const noexcept {
@@ -90,6 +101,7 @@ private:
     std::vector<std::uint8_t> edge_masks_;
     std::vector<material::Slot> materials_;
     std::vector<MeshPart> parts_;
+    Bounds bounds_;
 };
 
 using MeshRef = std::shared_ptr<const Mesh>;

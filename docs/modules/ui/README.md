@@ -48,6 +48,8 @@
 
 仅有 focus、被动文字绑定或可输入状态不表示活动草稿。字段提交/取消后可以保留焦点，同时不再有待提交事务；无效数字草稿仍属于 `text_draft`。`composition` 包含在途 IME 请求，`popup` 包含尚在已接受帧中显示的菜单。`wants_keyboard()` 继续表达键盘归属，`text_input()` 继续提供平台 token/位置，两者不替代待结束交互查询。
 
+实际焦点转移统一取消旧控件的键盘按压，包括 Tab、显式 `focus()` 和过滤隐藏树行。旧键的重复与释放只结束旧手势，不激活新焦点；同一焦点的正常按下/释放仍激活一次。匹配的 key-up 在帧准入和控件分发前收尾，因此布局准备失败、文字字段接管或焦点清空都不会留下 `keyboard` busy 状态。
+
 `CodeDocument` 的已确认文字与历史属于源码文档，不计入字段 `text_draft`；源码保存/替换是否允许由编辑器的文档规则决定。源码编辑中的按压、组合与剪贴板请求仍通过上述状态保护。
 
 ## 多行源码编辑
@@ -241,7 +243,7 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 ## 限额与验收
 
-正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。当前源码包含 25 组场景，数量以[消费者的 cases 列表](../../../acceptance/ui/main.cpp)为准。
+正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。当前源码包含 27 组场景，数量以[消费者的 cases 列表](../../../acceptance/ui/main.cpp)为准。2026-10-17 Dev/Release 均为 **27/27**，新增的两组完整树同步场景覆盖身份/草稿保持、结构失败恢复及大量兄弟节点写入范围，日志与布局核心结果见[完整树批次验收](../ui-layout/acceptance.md#完整树批次增量)。本次没有运行原生窗口/GPU 验收。
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 

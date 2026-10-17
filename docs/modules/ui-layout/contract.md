@@ -6,7 +6,7 @@
 
 `atelier::ui_layout::LayoutDocument` 将一棵有序树、确定 viewport 和同步叶测量转换为完整逻辑几何。实现为自有 C++23 内核，不使用 Yoga/Taffy/Clay，不依赖 Runtime、LLVM/JIT、RHI、Windows/文字头文件或任务系统。正式静态目标为 `atelier_ui_layout`，公开包含路径为 `ui_layout/layout.hpp`。
 
-进程沿项目正式入口使用共享 mimalloc；这不改变库、调用者和 Adapter 的所有权。DirectWrite 仅在真实验收 Adapter 中使用。最小消费者不链接 DirectWrite、Runtime、LLVM 或 RHI；具体构建图与运行情况见验收。没有验证非 Windows 构建。
+进程沿项目正式入口使用共享 mimalloc；这不改变库、调用者和 Adapter 的所有权。DirectWrite 由[生产 UI 的文字服务](../ui/README.md#cpu绘制与文字寿命)和真实验收 Adapter 使用，布局核心不链接它。最小消费者不链接 DirectWrite、Runtime、LLVM 或 RHI；具体构建图与运行情况见验收。没有验证非 Windows 构建。
 
 ## 2. 生命周期、身份与结构编辑
 
@@ -20,6 +20,18 @@
 - 测量回调期间所有编辑及计算重入返回 `busy`；读取旧view/input/stats允许。**从回调销毁 Document/provider 是违反寿命前提，不是可以事后返回busy的操作。** 当前不提供close、并发编辑或异步布局。
 - `NodeInput.collapsed` 保留该节点及子树的输入和身份，但计算时整棵子树不参与测量、间距或几何。`node_count()`仍包含折叠节点。恢复后按当前版本/约束使用已有缓存；折叠不是绘制可见性或业务对象销毁。
 - 含列配置的描述在编辑提交前完成可能失败的复制；分配异常不会留下半份新描述。
+
+### 完整树批量提交
+
+`set_tree(span<const TreeNodeInput>)` 在同一节点池中提交最终树，返回与输入一一对应的节点 ID。每项包含可选旧 `node`、父项下标和现有 `NodeInput`；不描述隐式 root，也不修改其设置。
+
+- 空 `node` 创建节点，活的旧 ID 保留身份。没有出现在批次中的旧节点全部退役；保留的孩子可以移出被删除的祖先，祖先与后代也可在合法最终树中交换上下关系。
+- `parent` 为空表示 root，否则必须引用本批较早的条目；同父条目的出现次序就是兄弟顺序，不要求整份输入严格深度优先。预检拒绝重复、外来、失效或 root 身份、向前/自身父引用、最终叶父和超深结构。
+- 容器改成叶以最终孩子序列为准。容量包含永久退役槽；新节点可复用本批省略的节点槽位，并推进代际。保留节点的 ID 不变，旧 ID 不会复活。
+- 全部校验、描述复制、结果存储和容量准备在逻辑提交前完成。失败保持输入、身份、输入 revision、几何失效标志和旧发布；准备阶段的缓冲容量与分配统计可以增长。`Error.tree_index` 在能够归属到具体输入条目时返回其下标。
+- 同值且同结构的完整批次不推进 revision。有效变更只推进一次输入 revision，并使几何失效；下一次 `compute` 全部成功才发布几何和新测量缓存。普通内容属性更新仍优先用 `update`，保留原有几何复用路径。
+
+拓扑处理时间和临时索引空间为 O(P + N)，P 是节点池历史槽位数，N 是本批节点数；另计描述比较及发生变化的描述复制成本。只覆写改变的父节点孩子序列，不逐项查找、移位或遍历旧子树。该复杂度是实现分析，尚不构成整次 UI 准备耗时的实测结论。
 
 ## 3. 尺寸、约束与依赖顺序
 
@@ -94,11 +106,11 @@ provider拥有实际文字、字体与排版对象；core只存纯值键和结�
 
 输入校验拒绝NaN/Inf、负尺寸、非法枚举/范围及结构；计算中检查中间值/输出转换，无法表达的量返回`numeric_overflow`。这不是对所有极端数值组合的数学完备性证明。错误码及附带节点/provider_code见公开头文件。
 
-当前编辑是真实节点池上的创建/更新/移动/删除。静态输入及没有几何度量依赖的内容变化可以复用结果；其余变化仍计算参与布局的实例树，不是通用局部调度。工作数组按参与节点初始化，折叠子树保留描述但不承担逐次初始化；索引扩容、节点编辑和快照复制仍有各自成本。稳定叶缓存减少provider调用，不承诺O(变更节点数)、零分配、硬帧预算或并行。Stats的node_visits计三次可见节点尺寸/定位遍历，不包含编辑验证、先序构造、独立宽度遍历、provider内部工作和整个进程成本。
+当前编辑是真实节点池上的创建/更新/移动/删除或完整树批量提交。静态输入及没有几何度量依赖的逐项内容变化可以复用结果；其余变化仍计算参与布局的实例树，不是通用局部调度。工作数组按参与节点初始化，折叠子树保留描述但不承担逐次初始化；索引扩容、节点编辑和快照复制仍有各自成本。稳定叶缓存减少provider调用，不承诺O(变更节点数)、零分配、硬帧预算或并行。Stats的node_visits计三次可见节点尺寸/定位遍历，不包含编辑验证、先序构造、独立宽度遍历、provider内部工作和整个进程成本。
 
-`Stats.buffer_allocations/buffer_bytes_allocated/buffer_bytes/peak_buffer_bytes`记录内部节点池、孩子数组、工作和发布缓冲的实际分配次数、累计申请字节、当前保留字节与峰值；仍使用进程默认分配器。它们排除公开NodeInput列描述的std::vector复制、快照、provider、Document拥有者本身与进程其他分配，不得称为全进程或全部布局内存。移除释放孩子数组和列描述，节点池/工作/索引向量保留高水位容量；没有自动shrink或硬内存预算。
+`Stats.buffer_allocations/buffer_bytes_allocated/buffer_bytes/peak_buffer_bytes`记录内部节点池、孩子数组、批量计划、工作和发布缓冲的实际分配次数、累计申请字节、当前保留字节与峰值；仍使用进程默认分配器。它们排除公开NodeInput列描述的std::vector复制、返回的 ID 数组、快照、provider、Document拥有者本身与进程其他分配，不得称为全进程或全部布局内存。移除释放孩子数组和列描述，批量复用槽位时可保留即将使用的孩子数组容量；节点池/工作/索引向量保留高水位容量，没有自动shrink或硬内存预算。
 
-`NodeInput`提供row/column/overlay/box/measured/table/wrap/grid构造辅助；它们直接产生同一描述，不创建另一个节点体系。输入错误附带`InputField`，`describe(ErrorCode/InputField)`返回静态说明，无需分配。构造辅助的非法参数仍由create/update统一拒绝。
+`NodeInput`提供row/column/overlay/box/measured/table/wrap/grid构造辅助；它们直接产生同一描述，不创建另一个节点体系。输入错误附带`InputField`，`describe(ErrorCode/InputField)`返回静态说明，无需分配。构造辅助的非法参数由create/update/set_tree共用的校验拒绝。
 
 共同工程和异常规则遵循[工程指南](../../engineering.md)；本增量的真实覆盖与未测项见[acceptance.md](acceptance.md)。
 

@@ -6,6 +6,9 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| 基础链路与精确工作复用 | 2026-10-17：CPU、三项正式 GPU 专项与地牢原生 1440p 采样通过；默认 Lit 40.81、A 路径 46.32 接受帧/秒，静止 DDGI gather 约 2.48 ms；正常停靠布局仍有 CPU 瓶颈，见[本批记录](#基础链路与精确工作复用2026-10-17) |
+| 编辑器整帧诊断 | 2026-10-16：空闲、无 VSync、原生 1440p 最大化视口的 App/UI 对照已完成，非 Lit 提速且画面一致；关闭 DDGI 的默认 Lit 约 45 接受帧/秒。正常停靠布局与 RHI 候选性能仍待验，见[本批记录](#编辑器整帧诊断2026-10-16) |
+| 精确局部光照与缓存阴影候选 | 2026-10-16 主目录工作区：小 ROI 通过；原生 1440p 实测 A 精确枚举＋RT 的 DI 下降约 20.5%，B 缓存阴影成本及真实地砖质量未过默认迁移门槛，见[本批记录](#精确局部光照与缓存阴影候选2026-10-16) |
 | DI 重建缓存与目标复用 | 2026-10-15 后续：分项计时、step 1 协作缓存、同帧 target 复用、显式探针端点归因，见[本批记录](#di-重建缓存与目标复用2026-10-15) |
 | DI 精确优化与共享空间提议 | 2026-10-15 主目录：双配置构建、地牢 Control A/B、Dev 稳定性、Release ReSTIR／质量／合同通过，见[本批记录](#di-精确优化与共享空间提议2026-10-15) |
 | DDGI 访问采样与有效响应 | 2026-10-15 主目录第二批：Dev/Release响应阶段、hold进度、1～256射线与原质量/滚动验收通过，见[本批采样与响应](#ddgi-访问采样与有效响应2026-10-15) |
@@ -24,6 +27,96 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## 基础链路与精确工作复用（2026-10-17）
+
+状态：Dev/Release Editor 与 Renderer acceptance 构建完成；两配置 Layout 46/46、UI 27/27、World 16/16、minimal、Editor viewport-edit / Entity composition 和 materials / color transactions 端到端通过。用户随后提供空闲时段，串行完成 Release `--scene-lit-cost`、Dev `--visibility`、Release `--scene-lit-clustered` 的 GPU validation 验收，以及正常 Release 地牢性能采样。该通过范围不包含所有旧专项重跑，也不表示达到 90 FPS。
+
+- DI 保守随机支持直通、严格零方差空间跳过；`direct_clustered=true` 默认回到 A 的精确枚举＋RT，`direct_shadow_cache=true` 才选择 B。二者仍为默认关闭的视口诊断；已知缓存阴影暗楔未在本批宣称修复。
+- DDGI 复用未变化端点/几何的精确 LOS；光照、矩权重和反馈照常更新。jitter 模式禁用该缓存。新增缓冲的逻辑内存计入已有资源统计，未改 D32/R32 精度或薄墙遮挡标准。
+- `out/render-cost-20261017/compile-shaders.ps1` 按实际 CMake 拼接顺序调用当前 DXC，`cs_6_5 / HV 2021 / O3 / enable-16bit-types / all_resources_bound / res_may_alias`。17 个修改相关 entry 全部成功；DXIL 的 feedback/inspection resource bindings 不包含新缓存资源。此过程未创建 GPU 设备，不能替代 PSO、GBV、图像与性能验收。
+- 两位 Astra 分别复审 DI 与 DDGI 主链，未发现生产逻辑阻断；其 jitter 缓存成本意见已处理。另两位 Astra 复审应用/World/Workspace 和 UI/Layout 基础修复，未发现 P1/P2。窗口退避和拓扑分配失败的证据边界保留在对应模块验收说明中。
+- Dev World 首轮零分配断言捕获 MSVC checked-iterator 的返回容器固定开销，修正采样区间后两配置复验通过；没有改变生产 API 或关闭 Debug 检查。Dev 空结果基线为 48 bytes、稀疏场景加入 256 个逻辑对象前后均 8592 bytes；Release 对应 0 / 8064 / 8064 bytes，无网格结果容量均为零。Astra 复核确认固定基线仍能识别原全成员预留回归。第一次 Renderer 编译的验收局部变量残留也已清理，最终两配置通过。
+- 新增 `--scene-lit-cost --output <绝对目录>` 沿正式 Renderer 小 ROI 消费者检验确定直接光当前帧、缓存生命周期和独立持续重追踪图像对照。光源编辑、finite→delta、移动遮挡物、B→A 首帧和旧路径 delta sun 五组 RGB8 差异为零，FP32 深度一致。DDGI 的 13 类生命周期产生 245 对已完成样本，包含相机、几何增删移动、Mask 恢复、体积布局/滚动、开关和新场景；图像/深度逐帧通过独立参考检查，光照改变时缓存仍可复用。TAA／SMAA T2x／无抖动切换也通过。实际小 ROI 为 127.5×95.25，不外推其绝对耗时。
+- Dev `--visibility` 通过连续区间、像素/深度参考、重入、非法输入、六面剔除、反向缩放、跨眼平面、离屏光照域和空场景；Release `--scene-lit-clustered` 通过 272 灯溢出、有限源/矩形边界、投影、小数/尾 tile、参考优先级与空场景重入。有限球光 ROI 均值为 182.348，对独立参考 184.673；矩形光为 189.576 对 188.118，仍属于有误差的采样重建，不称为严格积分等价。三次退出均为 0、stderr 为空。
+- 首轮 cost 的 240 秒 watchdog 在冷管线准备阶段截断；第二轮已完成五项 DI 对照，但第二个 Fixture 因窗口类重复注册而失败。验收 Window 改为共享的函数局部静态 WindowClass RAII，单窗口销毁不提前注销共享类；Astra 独立复核无阻断。两配置 acceptance 重编后，最终 cost 完整通过（含冷准备 418 秒）。原失败和超时记录保留，不能当通过或性能基线。
+- 性能测量结束并释放 GPU 后，应用负责人用同一冻结 Release Editor 串行完成正式 `--acceptance-surfaces`，退出 0、stderr 为空。`editor-surfaces-release/surfaces.csv` 包含 `render-retry,validation-control-recovery-close,passed`，实际覆盖 F1 新 deadline 自然到期恢复、Control 可达、成功清零和原生关闭；完整菜单/拖动验收及其内嵌性能检查也通过。此窗口证据不替代下列地牢计时。
+
+正式性能使用 RX 6800 XT / 驱动 `32.0.21045.5002`、相同保存地牢和相机、原生 viewport 2560×1440、Release、关闭验证层和 VSync。保留 SMAA、GTAO、SSSR、Bloom，以及单个 8³ DDGI volume、256 updates、128 lighting rays；不修改作者参数。每个 Lit 路径预热 192 个接受帧，采集 240 个唯一已完成 GPU 样本。FPS 是真实 Application 接受帧数除以墙钟时间，包含 CPU/UI/Present 与验收开销，不是 GPU 耗时取倒数。
+
+| 最大化 Scene View 路径 | 接受帧/秒 | 八主 GPU scope 均值 / P95 | DI 均值 / P95 | DDGI 均值 / P95 | 其中 DDGI gather |
+|---|---:|---:|---:|---:|---:|
+| 当前默认 ReSTIR DI | 40.81 | 24.127 / 24.510 ms | 13.036 / 13.077 ms | 3.432 / 3.812 ms | 2.484 ms |
+| A：精确局部枚举＋RT | 46.32 | 21.230 / 21.694 ms | 10.297 / 10.658 ms | 3.183 / 3.582 ms | 2.495 ms |
+
+DI 重建仍分别为 6.595 / 6.614 ms；本轮旁路未在该地牢显著改善 DI，总耗时仍是后续重点。DDGI update 为 .948 / .688 ms，不能将两路径间这项差异归因 DI 切换。静止 gather 的实际 LOS 均值约 118 / 122 条/帧；同场景旧默认基线约 2,767 万条/帧、gather 8.221 ms，现在下降到约 2.48 ms。没有降低 FP32 深度、probe 更新预算或取消遮挡；相机持续运动时缓存失效的 1440p 吞吐尚未测量，不能以静止结果证明动态 90 FPS。
+
+最大化视口 Smooth / MatCap 分别为 160.65 / 148.77 接受帧/秒；同相机旧基线为 77.36 / 72.80，两种模式的 2560×1440 RGB8 截图逐像素一致。主场景 draw 从 2,652 降至 557，3,381 实例中剔除 2,713 个。默认 Lit 从 32.24 提升到 40.81；单帧 RGB8 平均绝对差 .00348、P95 0、最大 34，保留随机采样差异，不将单帧近似一致当作全部时域质量证明。
+
+正常停靠布局同为 viewport 2560×1440，完整 target 从最大化的 2668×1730 变为 4315×2319。Smooth / MatCap 仅 56.81 / 54.09 接受帧/秒：controls 7.86 / 8.25 ms，UI prepare 3.07 / 3.27 ms，scene snapshot 3.06 / 3.22 ms，frame-slot wait 近零。此项仍受编辑器 CPU 工作影响，已将现有证据交应用负责人分析；本次没有测正常停靠布局的 Lit，不能拿最大化 Lit 数字代替它。
+
+`cost-final-20261017-01` 正式采集退出 0，原 Scene/UI authoring hash 不变。GPU 监控保留桌面 DWM 和 Chrome 视频/合成活动，未观察到游戏负载；数据按这类桌面后台环境解释，不称为完全无后台负载。未开启诊断计数直方图参与计时。GPU 父项与子项不可重复相加，非 Lit 没有 Scene Lit GPU scope，其缺失值不是零 GPU 成本。
+
+证据：CPU/构建仍见 `out/foundation-review-20261017/evidence.json`、`out/world-w1-20261017/`、`out/render-cost-20261017/{shader-build,final-build}.json`。GPU 见 `out/render-cost-20261017/gpu-acceptance/acceptance-summary.json`、对应三项目录及 `fixture-{dev,release}-build.log`。性能、图像、采样和场景哈希见 `out/pipeline-baseline-20261016/cost-final-20261017-01/` 的 `render-performance.json`、`runtime-result.json`、`image-comparison.json` 和 `desktop-gpu.jsonl`。Release Editor SHA256 保持 `C356AABD33DDA115F12D050C965A2DFD59B5E7B7C55FE7FCEAAC74923B6C9BB4`，Dev 保持 `4B06DEE825C84D9C6D9CC6D9A8A0193813F2BB893F87AEFE138E762D96A4A7DD`；修复验收窗口后的 acceptance Release 为 `21D97CAB44BA622604D0179C9F8EC6D91EA730A6F0711E2D70B5EE82790DA703`，Dev 为 `B62CFEB397C68874CA74154935B6464E7286823135C01696BDF001318F1106A3`。本批未提交推送。
+
+## 编辑器整帧诊断（2026-10-16）
+
+用户要求暂缓光照路径优化，优先排查非 Lit 同样缓慢的问题。正式编辑器既有 `--acceptance-render-performance` 入口现使用实际 VSync=false，并加入同场景、同相机、原生 2560×1440 的 Smooth/MatCap 各 192 帧预热与 240 个接受帧；正常产品默认 VSync 不变。CPU 记录 Application 控件、UI prepare、场景快照、整步、Renderer 准备/命令录制及 RHI 提交/Present/帧槽等待/回收。CPU 当前提交序号和异步 GPU 已完成序号分开，非 Lit 的 Scene Lit GPU 值明确为 null，不读取旧样本。
+
+Release 计时版 SHA256 `d09018e63fe81167e4dbe9c7ca6810393a90382e25af9a97aae527ef60563338` 构建通过。初次 `out/pipeline-baseline-20261016/uncapped-full-01` 因 Nivalis Nights 竞争负载不具性能基线资格，状态保留于 `qualification.json`。随后空闲对照 `idle-app-before-01` / `idle-app-after-01` 均退出 0，CPU 分段和、唯一提交/接受帧身份及原场景/UI 作者 hash 通过。两项 App/UI 重复工作清理的具体前后数据统一见[编辑器 CPU 记录](../../research/editor-cpu-pipeline-20261016.md)：Smooth 59.05 → 77.36 接受步/秒，MatCap 59.39 → 72.80；同相机 viewport PNG 的 RGB8 最大差均为 0。默认 Lit 仍约 32 接受步/秒，GPU 约 30 ms，不把 CPU 省时说成已改善 GPU 受限场景。监控中修改前启动/预热阶段出现过其他进程 GPU 活动，最后一次高活动记录早于计时段；保留完整原始时间戳，不将整段进程运行描述为始终无其他活动。
+
+`idle-no-ddgi-01` 使用原地牢的独立 Scene 副本，仅将 `world.ddgi` 改为 false，原相机、灯、阴影、GTAO、SSSR、SMAA 与曝光保持一致。默认 ReSTIR 路径为 45.02 接受步/秒，GPU 主 scope 合计 21.773 ms，其中 direct 13.102 ms、其重建子项 6.705 ms；DDGI 各 scope 为 inactive。它不等于传统无光追管线。临时副本前后 hash 一致，运行后移除，原 Scene 未改。汇总见 `out/pipeline-baseline-20261016/idle-results.json`。
+
+RHI 自动 Globals root-CBV 候选已经在其工作树通过 Dev/Release 真实 GPU RHI 端到端验收，日志为同目录 `rhi-root-cbv-{dev,release}.log`，两次退出 0、debug warnings/errors=0。但 `idle-rhi-root-cbv-01` 期间新启动的 PioneerGame 占用最高约 95% GPU，且后续正常停靠布局的精确 1440p 校准失败，不能作为性能通过或退化证据。已冻结该候选并从主目录撤回其增量，计时及已实测 App/UI 优化保留。正常布局补测和 RHI 独立性能对照仍待用户空闲时进行，最大化结果不替代完整停靠布局验收。
+
+同日继续排查的 CPU-only 证据为 `scene-cpu-before.json` / `scene-cpu-after.json`：通过正式 Project/Session 加载同一保存地牢，不创建图形设备或窗口，不修改源 Scene。3,381 个实例共 481 种几何、2,652 个相邻批次、1,853,242 个实例三角形。用上次已接受的 2560×1440 相机矩阵计算，新增保守主视图剔除保留 668 个实例、557 个连续几何区间、373,180 个三角形；2,713 个实例完全在视锥外。这是当前 CPU 可见性计算的工作量，尚不是 GPU 实测 draw/FPS，也不是遮挡剔除。完整 TLAS、材质与光源域继续包含屏幕外物体。静态图片表按 Image 与颜色空间去重为 12 项，另有 1 项默认白图。
+
+World/Workspace 的同次提取临时分配清理，将 SceneSnapshot 中位数从 3.984 ms 降至 3.062 ms、最大化 Workspace 描述从 1.749 ms 降至 0.232 ms。独立调用的 render_items 为 3.690 → 2.186 ms，不能和包含它的 SceneSnapshot 相加。正常停靠 Workspace 为 11.578 → 7.671 ms，但该 CPU 入口没有 accepted UI 帧、UI prepare 或 Present，只用于同条件归因，不代表正式编辑器稳态帧时间。代码细节与文档端到端验收由[编辑器 CPU 记录](../../research/editor-cpu-pipeline-20261016.md)维护。
+
+主视图剔除新增的 `atelier_renderer_acceptance --visibility` 沿同一真实 Renderer 入口覆盖原索引区间、图像/深度一致、重新入镜、视锥外非法矩阵仍拒绝、六裁剪面、镜像非均匀缩放、跨眼点和屏幕外发光域；该 GPU 验收目前待执行。既有 `--materials` 继续检验屏幕外纹理发光对可见接收面的真实照明。保持用户“先代码收尾，稍后再测”的安排，本批尚无新的 GPU 画面或 FPS 通过结论。新改动前的完整编辑器基线已留存为 `application-before-d09018/atelier_editor.calibration-baseline.exe`（SHA256 `709499f891e0dd080068dddc72c4a6f42541a019707588a16bca64ec8ea71743`）。
+
+最终集成的 Dev/Release `atelier_editor` 和 `atelier_renderer_acceptance` 均构建成功，日志 `scene-visibility-{dev,release}-build.log`，四份产物完整哈希见 `scene-visibility-build.json`；Release Editor 为 `9bbb4b46b359c7f6af49f4a0f1ac725081b27d3665da6f8a886cc093cbd4b45d`。Release CPU 端到端 World（15/15）、视口编辑与 Entity composition、材质/颜色事务均退出 0；新增验证包含同一 Session revision 下直接 Runtime 位置修改可见，以及非有限变换拒绝后恢复。构建与 CPU 验收不替代前述待执行的 GPU 画面和整帧对照。
+
+## 精确局部光照与缓存阴影候选（2026-10-16）
+
+基于主目录 `5e5d73c8` 的未提交工作区，沿[直接光执行计划](../../research/direct-lighting-execution-plan-20261015.md)推进 A/B 批。`direct_clustered` 仍是默认关闭的视口诊断；没有宣称完成默认迁移、旧 ReSTIR 退役或 90 FPS 目标。RHI 的矩形 clear/PSO bias 由负责人独立 Dev/Release GPU 验收后提供，本线程只通过现有 RHI/gfx 接入。
+
+A 阶段 `--scene-lit-clustered` 在 Dev/Release 启用 GPU validation 通过，输出保留于 `out/direct-clustered-20261016/dev-fixed` 与 `release`。最终可选接收面直方图又经 Dev `dev-inspect` 通过：272 灯溢出与等功率单灯图像 mean/p95 均为 0；delta 单灯与独立参考 mean .121、p95 1；有限点光范围、矩形面积边界、共享最小 range、小数/尾 tile、两种投影、参考优先级与空场景重入均通过。大球光范围边缘的平均显示值 167.483 对参考 184.673，约低 9.3%，仍是重建/低样本近似的限制，不能凭宽容差宣称最终画质达标。
+
+B 的 `--scene-lit-shadows` 在 Dev `shadow-dev-final` 与 Release `shadow-release-final` 启用 GPU validation 完整通过，退出 0、stderr 为空。Release 已包含独立 Astra 复审指出并修复的无限远 Reversed-Z 相机与冷分配全表复制问题；前述 Dev GPU 运行发生在这两项 CPU 补强之前，最终 CPU 版另在 Dev debug layer 的 `shadow-dev-cpu-final-debug` 完整通过。临时诊断构建后的验收入口已恢复默认 GPU validation。双配置 Editor/Renderer 构建通过。证据均位于 `out/direct-clustered-20261016/`，实际 159.5×111.25 或 31×23 小 ROI，不能外推地牢成本。
+
+覆盖精确完成帧 cold/warm、静转动、后续动态更新、删除/重建、Mask、光强/材质不触发深度重画、移灯、离屏 caster、空 World 重入、有限源与独立 RT 参考、四级 CSM、相机移动、atlas 压力及混合光源。静止点光 5/5 面复用、更新/绘制均 0；272 灯产生 1,632 面需求并分为两批，等功率单灯 ROI mean .0196/P95 0，无 missing tap、意外 RT 或重复计能。point/sun/rectangle/emitter 混合 ROI mean .6327/P95 1；球内 RT 计数 713，半径缩小后归零且原 5 面全部复用；无阴影球内点光仍有贡献且无 RT。Release 无限远相机同时验证冷启动、实际亮面、独立参考与暖缓存。
+
+修复期间的失败保留：混合 PCSS/RT kernel 首次 Bind 出现异常 CPU 内存增长；拆分编译后通过上述 GBV 运行，不能把等待位置直接解释成已证明的驱动/GBV 根因或 CPU 缓存泄漏。最终独立 DXIL：cached point 26,688 B、cached sun 35,784 B，均无 RayQuery；endpoint RT 42,420 B，见 `out/shadow-final-dxil-20261016/`。斜面条纹的修复同时覆盖 texel 中心的接收平面深度与固定 DXC 的矩阵访问差异；GPU float-bit 读回和 DXIL 偏移确认了问题，统一 `mul` 提取后 point mean/P95 从 5.862/37 降至 .323/1，有限点光 .799/1，CSM .010/0。未提高 bias 或放宽门槛，临时颜色/读回诊断已移除。压力完成样本改为有界等候真实序号，不再假设固定两帧延迟。
+
+PCSS 仍是中心深度图近似：本例局部半影与 RT 的 mean 9.716/P95 33，通过预先声明的 12/40 门槛，不代表所有大球光、薄遮挡与掠射条件等价。独立 Astra 当时确认齐次远方向和分配撤销记录的修复路径，未发现该范围的新阻断项；随后真实地牢暴露了下述质量和性能问题，默认迁移与旧 ReSTIR 退役仍未完成。
+
+正式编辑器验收入口已校准真实 pixel-centre 覆盖为 2560×1440：当时完整 RT 为 2668×1730、DPI 1.5、逻辑物理 rect 为 `[57,255,2560,1440.5]`。保存地牢场景与 UI authoring hash 前后不变，场景 SHA256 为 `68657ad2dce3c039b4e5cb2d2552ba6a59f4f62c66cd8cf340cd8b16c9c36b38`。有效接收面 3,686,395 个、保守解析局部支持最大 3；该观测只属于此固定相机与场景。
+
+`dungeon-a` 仅取得 legacy 半组 240 个连续唯一完成样本，随后 PNG COM 初始化遗漏导致停止；编辑器负责人已修复初始化。事后发现同机 Nioh 3/Houdini 与显存压力，GPU 专用占用约 15.29 GB、共享约 3.36 GB。这些内存值不是逐帧测量；原数据、失败报告和 `assessment.json` 保留，明确标记 `usable_as_performance_baseline:false`。不能使用这组被竞争的异常数据计算路径提速。
+
+用户随后提供空闲时段，正常 Release 在同一保存配置（单个 8³ volume、256 updates、128 lighting rays、SMAA、GTAO、SSSR）完成原生 1440p 对照。每路径额外预热 192 个接受帧，保存 240 个唯一完成 GPU 样本；VSync=true。下表吞吐由真实 Application 接受帧数/墙钟时间计算，包含 CPU、Present 等待和验收驱动开销，不是 GPU 毫秒取倒数，也不是独立测量的显示器扫描率。工具输出 PASS 表示采集合同完整，不表示达到性能或画质门槛。
+
+| 证据/路径 | Direct 均值 | 其中着色 | 其中重建 | 八主 GPU scope 合计 | 接受帧吞吐 |
+|---|---:|---:|---:|---:|---:|
+| `dungeon-a-idle-05` / legacy | 13.026 ms | 2.492 ms | 6.672 ms | 29.508 ms | 32.74/s |
+| 同进程 / A 精确枚举＋RT | 10.349 ms | 3.375 ms | 6.649 ms | 26.839 ms | 36.75/s |
+| `dungeon-b-gather-idle-06` / legacy | 13.144 ms | 2.517 ms | 6.732 ms | 29.873 ms | 33.04/s |
+| 同进程 / B＋Gather 实验（已撤回） | 16.139 ms | 9.341 ms | 6.478 ms | 32.610 ms | 28.35/s |
+| `dungeon-b-restored-idle-07` / legacy | 13.082 ms | 2.502 ms | 6.705 ms | 29.760 ms | 33.18/s |
+| 同进程 / 最终回退后的 B | 15.305 ms | 8.529 ms | 6.457 ms | 31.711 ms | 28.63/s |
+
+A 的 DI 降低约 20.5%，收益来自省去 reservoir 选灯/复用；实际 visibility/shading 比原路径更贵。A 仅用于有哈希记录的隔离实验可执行文件，关闭缓存选择的临时代码已恢复，不增加产品兼容入口。B 在 304 个 face 全暖、零重绘、零 missing tap/endpoint RT 的条件下仍较慢，不能把成本解释为冷缓存。`dungeon-b-idle-03` 的原始 B 为 DI 15.627 ms、着色 8.603 ms；该轮全程监控出现 Chrome/DWM 活动，不能据此单独证明跨运行的微小收益。
+
+两项指令级候选已撤回：`dungeon-b-idle-04` 的每 invocation 局部计数＋wave 汇总使着色增至 11.449 ms，虽保留事件计数语义，却没有实测收益；Gather 也未证明优于原四次 Load。最终两个缓存 HLSL 文件去除注释/空白后与此前 GBV 通过的拼接源码对应部分相同，没有留下这些实验实现。DI 重建约 6.7 ms，DDGI receiver gather 约 8.2 ms，是后续仍须处理的独立成本，不能由 A 的局部收益推算 90 FPS。
+
+07 为最终正常 Release、退出 0、stderr 为空、场景/UI authoring hash 不变；全程 GPU 引擎采样没有观察到显著的其他应用竞争。主 GPU scope 合计的 legacy/B P50 为 29.712/31.509 ms，P95 为 30.013/33.260 ms，P99 为 30.088/34.663 ms。每个同序号完成样本新增记录既有射线计数：probe primary 每帧 40,960；receiver gather LOS 的 legacy/B 均值分别为 27,675,032/27,674,972 条，约 7.51 条/有效接收像素，已接近八邻域理论上限。对应 gather 均值 8.106/7.930 ms，probe update 约 .72/.69 ms。这里的 LOS 是真实查询数量，既不是阴影光源数，也不由 probe 更新预算直接决定。
+
+真实地牢质量归因位于 `dungeon-shadow-inspection` 与 `dungeon-shadow-inspection-02`。关闭 DDGI/GTAO/SSSR/Bloom 后，B 的日照地砖/台阶仍有三角暗楔；太阳 angular radius 从 .05 改为 0 后仍存在；只关闭太阳 `casts_shadow`、保留局部灯投影后，相关暗楔消失。归因指向 B 的太阳缓存阴影链，尚不能确定为投影、级联、法线或深度比较中的哪一项，也不能仅归咎于 PCSS 软过滤。太阳两项均经正式 Control 编辑/Undo 恢复，最终 dirty=false、undo=0，源场景哈希不变。Astra 复审支持把此项列为 B 的默认迁移阻断，继续 A 与重建信号分离；有限源 RIS/太阳角度采样仍是随机信号，不能因“精确枚举”就直接删除其重建。
+
+与编辑器负责人补齐同一 `editor.inspect` 的有界对象目录和单对象详情，在 3,572 个 Entity 的地牢中实际完成按名称找太阳、读取精确属性、临时编辑与恢复。性能入口也提前锁定作者配置和 Undo/Redo/revision/dirty，在准备及每个接受帧拒绝作者状态变化，并保存源 World/加载后 World。普通 `--scene-lit-camera` 会自动 fit DDGI；本轮性能入口明确关闭这一行为，交互诊断则使用正常工程打开与 `camera.look_at`，没有把自动 fit 的 16³/1024 配置混入上述基准。
+
+最终 Dev/Release 的 Editor、Renderer acceptance 与 Control acceptance 构建通过。两配置 `--descriptions` 真实进程验收均退出 0，覆盖新增有界目录、分页/过滤、对象详情、非法请求、旧游标/句柄和查询不改变文档；日志为 `control-inspection-dev.log`、`control-inspection-release.log`。不重复把这些 Control 验收写成渲染质量通过。所有本轮启动的验收/诊断编辑器已结束，保存地牢哈希保持不变。
 
 ## DI 重建缓存与目标复用（2026-10-15）
 

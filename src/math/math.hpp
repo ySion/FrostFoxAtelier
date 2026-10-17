@@ -341,6 +341,13 @@ template<Real T>
             if (!std::isfinite(component) || std::abs(component) > std::numeric_limits<T>::max()) return std::nullopt;
             result(row, column) = static_cast<T>(component);
         }
+    // An affine inverse has this exact last column. Elimination can pivot through
+    // the translated row and leave tiny projective terms; retain the input's
+    // structural invariant so affine consumers need not accept projective data.
+    if (value(0, 3) == 0 && value(1, 3) == 0 && value(2, 3) == 0 && value(3, 3) == 1) {
+        result(0, 3) = result(1, 3) = result(2, 3) = T{};
+        result(3, 3) = T{1};
+    }
     return result;
 }
 

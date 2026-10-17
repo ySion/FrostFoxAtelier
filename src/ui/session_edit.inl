@@ -63,7 +63,7 @@
                     edit.emplace(states.at(old.key),format(old.original,states.at(old.key).control.single_precision),old.original,false,false);
             }
         }
-        finish_edit(reply,false,true); keyboard_pressed=0; keyboard_key=terminal_key=Key::none; hover=0; dismiss_popup(reply);
+        finish_edit(reply,false,true); retire_keyboard(reply); terminal_key=Key::none; hover=0; dismiss_popup(reply);
         return reply;
     }
     void changed(Reply& reply, detail::TextEdit::Change change, bool was_active) {

@@ -67,10 +67,11 @@ bool Application::confirm_discard(bool sources) {
 }
 void Application::publish_document(std::unique_ptr<editor::Session> next,editor::ProjectCode* code) {
     finish_camera_fly(false);camera_fly_release_.reset();
+    render_retry_at_={};render_retry_delay_={};
     if(control_) control_->document_replaced();
     const auto cancelled=viewport_tool_.cancel(*document_);if(!cancelled) throw std::runtime_error(cancelled.error().message);
     viewport_tool_.cursor={};accepted_view_.reset();
-    close_menu(false);effects(ui_.cancel_interaction());
+    cancel_interaction(ui_.cancel_interaction());
     auto cleared=ui_.set_controls({});if (!cleared) throw std::runtime_error("Cannot retire the previous document UI.");effects(*cleared);
     sync_text_input();
     if (popup_) popup_->reset_document();

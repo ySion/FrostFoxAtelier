@@ -51,9 +51,11 @@ struct TargetInfo {
     std::uint32_t width{}, height{};
     bool windowed{}, drawable{};
 };
+using FrameCpuTimings = GfxFrameCpuTimings;
 struct FrameInfo {
     TargetInfo rendered, next;
     bool occluded{};
+    FrameCpuTimings cpu; // This submission's CPU wall time; GPU samples may describe an older frame.
 };
 
 // Source strings are borrowed only during prepare. For file programs, optional
@@ -115,6 +117,7 @@ public:
     [[nodiscard]] Result<TargetInfo> sync_window_target();
     // Details are published only after the entire frame succeeds. Positive DXGI
     // occlusion status is successful execution but not an accepted visible frame.
+    // Requesting details also measures gfx frame stages; nullptr avoids clock reads.
     [[nodiscard]] Result<void> frame(bool vsync = false, FrameInfo* details = nullptr);
     [[nodiscard]] Result<void> finish();
     // Busy while Pipeline owners remain. Failure retains the execution domain;

@@ -53,6 +53,64 @@ void verify_about(Application& app,std::wstring_view expected_project) {
     require(!app.menu_window() && app.document().undo_count()==history,"About changed document history or retained its menu.");
 }
 
+void verify_menu_input_transitions(Application& app) {
+    using namespace atelier;
+    using Access=atelier::application::EditorAcceptanceAccess;
+    const auto history=app.document().undo_count();
+    const auto selection=app.document().selection();
+    const std::vector selected(app.document().selected_entities().begin(),app.document().selected_entities().end());
+    const auto member_count=entities(app).size();
+    const auto key=[&](ui::Key mapped,WPARAM native,bool present=true) {
+        Access::input(app,{.kind=ui::EventKind::key_down,.key=mapped},native);
+        Access::input(app,{.kind=ui::EventKind::key_up,.key=mapped},native);
+        if(present) tick(app,1);
+    };
+    const auto click_control=[&](ui::ControlKey key) {
+        const auto point=centre(app,key);
+        Access::input(app,{.kind=ui::EventKind::pointer_move,.x=float(point.x),.y=float(point.y)});
+        Access::input(app,{.kind=ui::EventKind::pointer_down,.x=float(point.x),.y=float(point.y),.button=ui::PointerButton::primary});
+        Access::input(app,{.kind=ui::EventKind::pointer_up,.x=float(point.x),.y=float(point.y),.button=ui::PointerButton::primary});
+        tick(app,1);
+    };
+    const auto live_menu=[&]() {
+        require(app.menu_frame()!=nullptr,"Expected a live accepted native menu frame.");
+        return app.menu_frame();
+    };
+    click_control(control::create_menu);key(ui::Key::home,VK_HOME);
+    // Both input sequences arrive before any replacement menu frame is prepared.
+    key(ui::Key::left,VK_LEFT,false);key(ui::Key::enter,VK_RETURN,false);tick(app,1);
+    require(entities(app).size()==member_count && app.document().undo_count()==history,
+        "Menu switching executed a command from the retired dropdown before its replacement was accepted.");
+    require(app.menu_frame() && live_menu()->find(control::undo),"Menu switching lost the requested Edit dropdown.");
+    key(ui::Key::escape,VK_ESCAPE);
+    require(!app.menu_window(),"Escape did not close the replacement menu.");
+
+    click_control(editor::menu_key(editor::CommandGroup::project));key(ui::Key::home,VK_HOME);
+    const auto parent=app.menu_window();
+    require(live_menu()->find(control::examples_menu),"Project menu is missing its Examples branch.");
+    key(ui::Key::right,VK_RIGHT);
+    require(app.menu_window()!=parent && live_menu()->find(static_cast<ControlKey>(editor::Command::example_sponza)),
+        "Right from a top-level menu branch switched menu groups instead of opening its child.");
+    key(ui::Key::escape,VK_ESCAPE);
+    require(app.menu_window()==parent && live_menu()->find(control::examples_menu),"Escape did not restore the Project parent menu.");
+    key(ui::Key::escape,VK_ESCAPE);
+    require(!app.menu_window(),"Escape did not close the Project root menu.");
+
+    click_control(control::viewport_select_menu);
+    click_control(static_cast<ControlKey>(editor::Command::select_box));
+    require(!app.menu_window() && Access::tool_active(app) && GetCapture()==app.window(),
+        "Closing the Select menu released the new Box Select tool's mouse capture.");
+    const auto viewport=centre(app,control::viewport);
+    Access::input(app,{.kind=ui::EventKind::pointer_move,.x=float(viewport.x),.y=float(viewport.y)});tick(app,1);
+    require(Access::tool_active(app) && GetCapture()==app.window(),"Menu-started Box Select lost capture on its first movement.");
+    key(ui::Key::escape,VK_ESCAPE);
+    require(!Access::tool_active(app) && !Access::menu_open(app) && GetCapture()!=app.window(),
+        "Cancelling menu-started Box Select retained a tool, menu or mouse capture.");
+    require(app.document().undo_count()==history && entities(app).size()==member_count && app.document().selection()==selection &&
+        std::ranges::equal(app.document().selected_entities(),selected),"Menu transitions changed scene history or selection.");
+    std::puts("Menu input transitions: PASS (queued replacement, top-level branch, command capture transfer).");
+}
+
 void verify_native_menus(Application& app,const std::filesystem::path& output,atelier::ObjectId entity) {
     const auto live_menu=[&]() {
         require(app.menu_frame()!=nullptr,"Expected a live accepted native menu frame.");
@@ -93,6 +151,7 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     require(live_menu()->find(control::exit),"Right from Help did not wrap to File.");
     key(app,VK_ESCAPE);
     verify_about(app,L"No project open");closed_titles();
+    verify_menu_input_transitions(app);closed_titles();
     for (const bool middle:{false,true}) {
         key(app,VK_ESCAPE);
         const auto original=x(app,entity);
