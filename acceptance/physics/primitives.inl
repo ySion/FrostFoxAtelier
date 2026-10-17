@@ -50,7 +50,7 @@ void primitive_composition() {
     const auto retained_constraint=take(f.scene->create_distance_constraint(a,b,0,100));
     for(const auto destination:{alternate_parent.id(),entity.id()}) {
         committed(f.world.reparent(child_entity.id(),destination,w::ReparentRule::keep_world));
-        take(f.scene->update(0));
+        step(f.world, *f.scene, 0);
         require(take(f.scene->body_handle(child_entity.id()))==b && f.scene->body_count()==2,
             "A keep-world reparent unnecessarily replaced a body handle.");
         const auto retained=take(f.scene->read_body_state(b));
@@ -69,7 +69,7 @@ void primitive_composition() {
     committed(f.world.set_enabled(child.id(),true));
     const auto fresh=take(f.scene->body_handle(child.id()));
     require(fresh!=b && !f.scene->add_impulse(b,{100,0,0}),"Old body handle can act on a rebuilt Primitive.");
-    require(take(f.scene->update(fixed_delta)).rejected_commands==1,"Queued old-generation command reached a replacement body.");
+    require(step(f.world, *f.scene, fixed_delta).rejected_commands==1,"Queued old-generation command reached a replacement body.");
     committed(f.world.stop());committed(f.world.stop());
     require(f.scene->body_count()==0,"Primitive bodies survived World stop.");
 }
@@ -102,7 +102,7 @@ void primitive_authoring() {
     require(!f.scene->body_handle(owner.id()),"Entity convenience lookup silently selected a descendant body.");
     const auto handle=take(f.scene->body_handle(trigger.id()));
     take(f.scene->set_kinematic_target(handle,{12,0,0},{0,0,0,1}));
-    take(f.scene->update(3*fixed_delta));
+    step(f.world, *f.scene, 3*fixed_delta);
     const auto state=take(f.scene->read_body_state(handle));
     require(near(state.position.x,12) && near(speed(state.linear_velocity),0),"Kinematic body drifted past a one-shot target.");
     require(near(take(w::read_transform(f.runtime,trigger_entity.id())).position.x,2),"Kinematic child pose was not converted back to local space.");
@@ -111,7 +111,7 @@ void primitive_authoring() {
     take(p::configure(f.runtime,trigger.id(),settings));
     take(f.world.set_transform(owner.id(),{{10,0,0},{0,0,0,1},{2,1,1}}));
     // Isolate keeps the World and unrelated bodies running without the unrepresentable body.
-    committed(f.world.start());take(f.scene->update(0));
+    committed(f.world.start());step(f.world, *f.scene, 0);
     const auto isolated=f.world.take_diagnostics();
     require(f.world.running() && !f.scene->body_handle(trigger.id()) && bool(f.scene->body_handle(mesh)) && !isolated.empty() &&
         std::ranges::all_of(isolated,[&](const auto& d){return d.entity==trigger_entity.id();}) &&
@@ -182,7 +182,7 @@ void mirrored_scale() {
     committed(f.world.reparent(flat_child.id(),flat.id(),w::ReparentRule::keep_local));
     committed(f.world.reparent(flat_grandchild.id(),flat_child.id(),w::ReparentRule::keep_local));
     committed(f.world.reparent(flat_sibling.id(),flat.id(),w::ReparentRule::keep_local));
-    f.start();take(f.scene->set_gravity({0,0,0}));take(f.scene->update(0));
+    f.start();take(f.scene->set_gravity({0,0,0}));step(f.world, *f.scene, 0);
 
     for(const float z:{0.f,10.f}) {
         const auto hit=take(f.scene->raycast({-1.5f,10,z},{-1.5f,-10,z}));
@@ -222,7 +222,7 @@ void mirrored_scale() {
     committed(f.world.stop());
     take(f.world.set_transform(flat.id(),{{0,0,80},{0,0,0,1},{1,1,1}}));
     take(f.world.set_transform(flat_child.id(),{{0,1,0},{0,0,0,1},{1,1,1}}));
-    f.start();take(f.scene->update(0));
+    f.start();step(f.world, *f.scene, 0);
     for(const auto& body:{flat_child.id(),flat_grandchild.id(),flat_sibling.id()})
         require(bool(f.scene->body_handle(body)),"A Primitive did not regain its body once its space was no longer degenerate.");
     committed(f.world.stop());

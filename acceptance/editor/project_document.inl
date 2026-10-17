@@ -111,11 +111,11 @@ void verify_physics_test_project() {
     take(scene->add_impulse(target,{1,0,0}));
     const auto platform_handle=take(scene->body_handle(platform));
     take(scene->set_kinematic_target(platform_handle,{-1,.5f,2},{0,0,0,1}));
-    take(scene->update(1.f/60.f));
+    take(world.update(1.f/60.f));
     require(take(scene->read_body_state(take(scene->body_handle(target)))).linear_velocity.x>0 &&
         take(scene->read_body_state(platform_handle)).position.x==-1.f,
         "The sample physics commands did not affect the first completed step.");
-    for (unsigned step=1;step<90;++step) take(scene->update(1.f/60.f));
+    for (unsigned step=1;step<90;++step) take(world.update(1.f/60.f));
     require(take(scene->read_body_state(take(scene->body_handle(box)))).position.y<1.f &&
         entered_sensor,"The sample physics project did not exercise gravity and sensor contact.");
     changed(world.stop());
@@ -205,7 +205,7 @@ void verify_project_document() {
         auto& simulation=const_cast<world::World&>(reopened->world());
         auto physics_scene=take(physics::PhysicsScene::create(simulation,reopened->physics_types()));
         changed(simulation.start());
-        take(physics_scene->update(1.f/60.f));
+        take(simulation.update(1.f/60.f));
         require(physics_scene->body_count()==1,"Reopened built-in triangle collision did not create a body.");
         changed(simulation.stop());
     }
@@ -253,7 +253,7 @@ void verify_project_document() {
         auto& simulation=const_cast<world::World&>(restored_physics->world());
         auto physics_scene=take(physics::PhysicsScene::create(simulation,restored_physics->physics_types()));
         changed(simulation.start());
-        take(physics_scene->update(1.f/60.f));
+        take(simulation.update(1.f/60.f));
         require(physics_scene->body_count()==1,"Reopened collision asset did not create a World body.");
         changed(simulation.stop());
         physics_scene.reset();

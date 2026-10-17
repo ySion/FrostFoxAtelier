@@ -28,7 +28,7 @@ struct PhysicsFixture {
         return make({0, -.5f, 0}, settings);
     }
     void start() { committed(world.start()); }
-    void advance(unsigned steps) { for (unsigned i = 0; i < steps; ++i) take(scene->update(fixed_delta)); }
+    void advance(unsigned steps) { for (unsigned i = 0; i < steps; ++i) step(world, *scene, fixed_delta); }
     p::BodyHandle handle(const Entity& entity) { return take(scene->body_handle(entity.id())); }
     p::BodyState state(const Entity& entity) { return take(scene->read_body_state(handle(entity))); }
 };
@@ -157,39 +157,40 @@ void fixed_step() {
     PhysicsFixture f;
     auto entity = f.make({0, 10, 0}, dynamic_body());
     f.start();
-    require(!f.scene->update(-1) && !f.scene->update(1.01f) &&
-        !f.scene->update(std::numeric_limits<float>::quiet_NaN()), "invalid elapsed time rejected");
-    require(take(f.scene->update(fixed_delta / 2)).steps == 0, "fractional frame waits for a full step");
-    require(take(f.scene->update(fixed_delta / 2)).steps == 1, "two half frames form one step");
-    const auto bounded = take(f.scene->update(1));
+    require(!f.world.update(-1) && !f.world.update(std::numeric_limits<float>::quiet_NaN()) && f.world.running(),
+        "invalid elapsed time is rejected without stopping the World");
+    require(step(f.world, *f.scene, fixed_delta / 2).steps == 0, "fractional frame waits for a full step");
+    require(step(f.world, *f.scene, fixed_delta / 2).steps == 1, "two half frames form one step");
+    const auto bounded = step(f.world, *f.scene, 1);
     require(bounded.steps == 8 && bounded.dropped > .86f && bounded.remaining < fixed_delta,
         "long frames cap work and report dropped time");
-    require(take(f.scene->update(0)).steps == 0, "zero elapsed does not repeat completed steps");
+    require(step(f.world, *f.scene, 0).steps == 0, "zero elapsed does not repeat completed steps");
     f.scene->set_paused(true);
     const auto before = f.state(entity);
-    require(take(f.scene->update(.5f)).steps == 0 && f.state(entity).position == before.position,
+    require(step(f.world, *f.scene, .5f).steps == 0 && f.state(entity).position == before.position,
         "pause freezes simulation without accumulating wall time");
     f.scene->step_once();
     f.scene->step_once();
-    require(take(f.scene->update(0)).steps == 1 && take(f.scene->update(0)).steps == 0,
+    require(step(f.world, *f.scene, 0).steps == 1 && step(f.world, *f.scene, 0).steps == 0,
         "repeated step requests coalesce and consume once");
     f.scene->on_before_step([&](std::uint64_t, float) -> atelier::Result<void> {
-        require(!f.scene->update(0), "recursive update is rejected");
+        require(!f.world.update(0), "recursive update is rejected");
         return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed, "expected before-step failure"});
     });
     f.scene->step_once();
     const auto pending = f.scene->completed_step();
-    require(!f.scene->update(0) && f.scene->completed_step() == pending, "failed pre-step does not simulate");
+    require(!f.world.update(0) && f.scene->completed_step() == pending && !f.world.running() && f.scene->body_count() == 0,
+        "a failed pre-step simulates nothing and stops the World");
     f.scene->on_before_step({});
-    require(take(f.scene->update(0)).steps == 1, "failed pre-step preserves the pending single step for retry");
+    f.start();
+    require(step(f.world, *f.scene, 0).steps == 0, "a stopped World discards its pending single step");
     f.scene->on_after_step([](std::uint64_t, float) -> atelier::Result<void> {
         throw std::runtime_error("expected after-step failure");
     });
     f.scene->step_once();
-    require(!f.scene->update(0) && f.scene->completed_step() == pending + 2,
-        "failed post-step still records the completed solve");
+    require(!f.world.update(0) && f.scene->completed_step() == pending + 1 && !f.world.running(),
+        "a failed post-step keeps the completed solve and stops the World");
     f.scene->on_after_step({});
-    require(take(f.scene->update(0)).steps == 0, "post-step retry does not repeat a completed solve");
 
     PhysicsFixture slow;
     PhysicsFixture fast;
@@ -197,12 +198,31 @@ void fixed_step() {
     auto fast_entity = fast.make({0, 10, 0}, dynamic_body());
     slow.start();
     fast.start();
-    for (unsigned i = 0; i < 30; ++i) take(slow.scene->update(1.f / 30.f));
-    for (unsigned i = 0; i < 120; ++i) take(fast.scene->update(1.f / 120.f));
+    for (unsigned i = 0; i < 30; ++i) step(slow.world, *slow.scene, 1.f / 30.f);
+    for (unsigned i = 0; i < 120; ++i) step(fast.world, *fast.scene, 1.f / 120.f);
     require(slow.scene->completed_step() == 60 && fast.scene->completed_step() == 60 &&
         near(slow.state(slow_entity).position.y, fast.state(fast_entity).position.y) &&
         near(slow.state(slow_entity).linear_velocity.y, fast.state(fast_entity).linear_velocity.y),
         "30 Hz and 120 Hz hosts produce the same 60 fixed steps");
+
+    PhysicsFixture phased;
+    auto falling = phased.make({0, 10, 0}, dynamic_body());
+    std::vector<std::pair<char, std::uint64_t>> seen;
+    float post_elapsed = 0;
+    take(phased.world.bind_behavior(phased.world_types.entity, {
+        .tick = [&](atelier::Runtime&, atelier::ObjectId, float) -> atelier::Result<void> {
+            seen.emplace_back('P', phased.scene->completed_step());
+            return {};
+        },
+        .post_physics_tick = [&](atelier::Runtime&, atelier::ObjectId, float elapsed) -> atelier::Result<void> {
+            seen.emplace_back('Q', phased.scene->completed_step());
+            post_elapsed = elapsed;
+            return {};
+        }}));
+    phased.start();
+    require(step(phased.world, *phased.scene, 1.f / 30.f).steps == 2 &&
+        seen == std::vector<std::pair<char, std::uint64_t>>{{'P', 0}, {'Q', 2}} && post_elapsed == 1.f / 30.f && falling.id() != atelier::ObjectId{},
+        "post_physics Tick did not run once after every substep with the whole frame time");
 }
 
 void collision_matrix() {
@@ -308,7 +328,7 @@ void failed_lifecycle() {
             if (exit == Exit::task) take(f.world.start_task(first.id(), [](atelier::Runtime& runtime, atelier::ObjectId) {
                 return atelier::Coroutine::create(runtime, std::make_unique<FailedTask>());
             }));
-            const auto updated = f.scene->update(fixed_delta);
+            const auto updated = f.world.update(fixed_delta);
             require(!updated && updated.error().message == "primary failure", "Cleanup replaced the original execution failure.");
         } else {
             if (exit == Exit::activation) {
@@ -334,7 +354,7 @@ void failed_lifecycle() {
             f.start();
             const auto fresh = f.handle(second);
             require(fresh != second_handle, "Restart reused a body from the failed run.");
-            take(f.scene->update(fixed_delta));
+            step(f.world, *f.scene, fixed_delta);
             require(near(f.state(second).linear_velocity.x, 0), "Failed run's queued impulse affected the restart.");
             committed(f.world.stop());
             require(events.size() == expected.size() * 2, "Restart did not receive one independent exit.");
@@ -362,8 +382,8 @@ void lifecycle() {
     require(f.scene->body_count() == 0 && !f.scene->read_body_state(old), "repeated disable is harmless");
     committed(f.world.set_enabled(entity.body.id(), true));
     require(f.handle(entity).revision != old.revision, "reenable creates a new body generation");
-    const auto step = take(f.scene->update(fixed_delta));
-    require(step.rejected_commands == 1 && near(f.state(entity).linear_velocity.x, 0),
+    const auto stepped = step(f.world, *f.scene, fixed_delta);
+    require(stepped.rejected_commands == 1 && near(f.state(entity).linear_velocity.x, 0),
         "a queued command cannot affect a replacement body");
     committed(f.world.stop());
     committed(f.world.stop());

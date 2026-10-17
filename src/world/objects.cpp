@@ -27,6 +27,23 @@ Result<Types> register_types(Runtime& runtime) {
         return detail::queue_translation(call.runtime,call.self,
             {call.arguments[0].get<float>(),call.arguments[1].get<float>(),call.arguments[2].get<float>()});
     },true});
+    // Requests only enqueue; the World applies them when the current phase ends.
+    SignatureDefinition toggle;
+    toggle.parameters.push_back(ParameterDefinition{{TypeReference::native<bool>()}});
+    const auto requests=[&](TypeDefinition& definition,Invoker destroy,Invoker enable) {
+        definition.methods.push_back({"destroy",{},destroy,true});
+        definition.methods.push_back({"set_enabled",toggle,enable,true});
+    };
+    requests(definitions[0],[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::destroy_entity,false);
+    },[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::entity_enabled,call.arguments[0].get<bool>());
+    });
+    requests(definitions[1],[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::destroy_component,false);
+    },[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::component_enabled,call.arguments[0].get<bool>());
+    });
     definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
@@ -210,7 +227,7 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
         if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
         status.state = state.running && member->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
         status.can_edit = !state.running && !state.dispatch_depth;
-        status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != detail::Access::State::Presentation::none; });
+        status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != 0; });
     }
     return status;
 }
@@ -238,7 +255,7 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
             const auto item = std::ranges::find(member->components, object, &detail::Access::State::ComponentState::id);
             if (item == member->components.end()) return std::unexpected(state.inconsistent("World component index is inconsistent."));
             status.active = state.running && item->begun && member->eligible && data->enabled;
-            status.can_present = item->presentation != detail::Access::State::Presentation::none;
+            status.can_present = item->presentation != 0;
         }
     }
     return status;
@@ -324,7 +341,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         Access::geometry(component) = std::move(binding.resolved); return {};
     });
     if (!changed) return changed;
-    return world ? Access::state(*world).rederive(component->owner) : Result<void>{};
+    return world ? world->reevaluate_presentation(object) : Result<void>{};
 }
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());

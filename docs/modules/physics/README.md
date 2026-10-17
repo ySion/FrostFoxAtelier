@@ -12,11 +12,11 @@ Box、Sphere、Capsule 支持静态、运动学和动态体。世界缩放先按
 
 ## 固定步与位姿写入
 
-`PhysicsScene::update(elapsed)` 每帧先执行一次 `World::update`，再只协调可能参与物理的 Entity（Primitive 的 body 已启用、已有刚体或专用后端、拥有物理控制器组件），其余成员不进入逐帧检查；随后按 60 Hz 最多推进 8 个固定子步。`StepResult` 报告完成步号、子步数、剩余/丢弃时间、失效命令和接触通知溢出。`set_paused`、`step_once` 控制子步；`on_before_step` 在消费命令前调用，`on_after_step` 在求解、位姿回写与接触收集后调用。运动学目标保留到被下一目标或传送替换，每个子步重新计算速度，到达后停止。位姿以物理体世界状态为准；场景先缓存全部刚体求解结果，再按 Entity 空间依赖顺序整批回写 Entity，保留局部缩放。移动使用力、冲量、运动学目标或显式传送；直接改写作者变换不替代这些物理命令。
+PhysicsScene 创建时向 World 登记为模拟系统，析构时注销；`World::update(dt)` 在 pre_physics 阶段之后调用它的 step。step 只协调可能参与物理的 Entity（Primitive 的 body 已启用、已有刚体或专用后端、拥有物理控制器组件），其余成员不进入逐帧检查；随后按 60 Hz 最多推进 8 个固定子步，超出上限的时间丢弃。`last_step()` 返回最近一次 step 的 `StepResult`：完成步号、子步数、剩余/丢弃时间、失效命令和接触通知溢出。登记的 `writes_pose` 声明物理写入位姿的 Entity：已有 body、角色、布娃娃或绑定目标的 Entity，以及带有启用的 Character / Ragdoll 组件的 Entity（控制器在下一次 step 创建之前即已声明）；`translate_owner` 对它们逐条拒绝。`set_paused`、`step_once` 控制子步；`on_before_step` 在消费命令前调用，`on_after_step` 在求解、位姿回写与接触收集后调用。运动学目标保留到被下一目标或传送替换，每个子步重新计算速度，到达后停止。位姿以物理体世界状态为准；场景先缓存全部刚体求解结果，再按 Entity 空间依赖顺序整批回写 Entity，保留局部缩放。移动使用力、冲量、运动学目标或显式传送；直接改写作者变换不替代这些物理命令。
 
-暂停下重复 `step_once` 合并为一次请求；前回调失败时请求保留，修复回调后可重试；求解完成后的回调失败不重复执行已完成步。当前使用单宿主同步推进，求解期间不开放外部 World/Runtime 访问或并发查询；Jolt 接触回调只收集值数据，业务通知在求解结束后交付。World 的普通 Tick 每显示帧执行一次，每个固定子步的业务工作通过场景前/后回调接入；尚无通用 World TickGroup。
+暂停下重复 `step_once` 合并为一次请求，由完成的求解消耗。step 内任何失败（包括前/后回调）都停止 World，已完成的求解保留步号，World 停止丢弃待处理的单步请求与命令。当前使用单宿主同步推进，求解期间不开放外部 World/Runtime 访问或并发查询；Jolt 接触回调只收集值数据，业务通知在求解结束后交付。World 的 Tick 阶段每显示帧各执行一次（pre_physics 在全部子步之前，post_physics 与 late 在之后），每个固定子步的业务工作通过场景前/后回调接入。
 
-物理失败遵循 World 的[失败策略](../world/README.md#失败策略与诊断)，诊断以 physics 阶段写入同一 World 日志。isolate 下，普通 body 协调失败的 Entity 不保留普通 body，其余 Entity 照常模拟；位姿写入者冲突时拒绝普通 body，保留控制器组件；同一 Entity 上有多个位姿控制器（Character、Ragdoll 任意组合或同类重复）时，该 Entity 上写入位姿或依赖 body 的控制器组件（Character、Ragdoll、Vehicle、Force、KinematicMotion、DistanceConstraint）全部拒绝，与创建先后无关，只读 owner 空间的 Scene Query 照常工作；控制器组件逐项创建、采样与回写，失败项不创建或跳过该步，下一步重新采样；被拒绝的位姿不回写。halt 保持原行为：首个失败使该次 `update` 或生命周期调用失败。
+物理失败遵循 World 的[失败策略](../world/README.md#失败策略与诊断)，诊断以 physics 阶段写入同一 World 日志。isolate 下，普通 body 协调失败的 Entity 不保留普通 body，其余 Entity 照常模拟；位姿写入者冲突时拒绝普通 body，保留控制器组件；同一 Entity 上有多个位姿控制器（Character、Ragdoll 任意组合或同类重复）时，该 Entity 上写入位姿或依赖 body 的控制器组件（Character、Ragdoll、Vehicle、Force、KinematicMotion、DistanceConstraint）全部拒绝，与创建先后无关，只读 owner 空间的 Scene Query 照常工作；控制器组件逐项创建、采样与回写，失败项不创建或跳过该步，下一步重新采样；被拒绝的位姿不回写。halt 保持原行为：首个失败使该次 `World::update` 或生命周期调用失败。
 
 ## 身份、碰撞与查询
 

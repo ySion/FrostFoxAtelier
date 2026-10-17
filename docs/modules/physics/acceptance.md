@@ -33,7 +33,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
 | `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |
 | `cooked_assets` | 磁盘 Cook 网格反复加载到新 World | 形状可查询、二进制往返、损坏/版本/来源/缩放不匹配拒绝 |
-| `fixed_step` | 空中自由落体 | 半帧积累、8 子步上限与丢时、暂停/单步、重复请求合并、重入拒绝、前后回调失败、30/120 Hz 宿主得到相同 60 步 |
+| `fixed_step` | 空中自由落体 | 经 `World::update` 驱动：半帧积累、8 子步上限与丢时、暂停/单步、重复请求合并、重入拒绝、前后回调失败停止 World、30/120 Hz 宿主得到相同 60 步、pre_physics/post_physics Tick 位于全部子步前后并收到整帧时间 |
 | `lifecycle` | 同时存在的两个独立 Runtime/World/场景 | 失效命令拒绝、停用/重启代际、重复 disable/stop/close、销毁一场景不影响另一场景、运行中重建场景 |
 | `world_ownership` | 同一 Runtime 中两个 World | 拒绝跨 World 角色/布娃娃创建、句柄限定场景、detach 清理、转移后仅新 World 可创建 |
 | `character` | 胶囊角色落地、移动和跳跃 | grounded、跳跃只消费一次、输入/重复创建拒绝、销毁重建代际、根停用清理 |

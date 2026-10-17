@@ -154,7 +154,7 @@ Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additio
     // Replacement edits are checked against members, preserving detached edits.
     if(sky==ObjectId{} && (!replacement || replacement->kind!=LightKind::sky)) return {};
     for(const auto& member:states) for(const auto& item:member.components)
-        if(item.presentation==Presentation::light) if(auto valid=visit(item.id);!valid) return valid;
+        if(item.presentation & bit(lights)) if(auto valid=visit(item.id);!valid) return valid;
     return {};
 }
 Result<void> World::set_material(ObjectId object,Material value) {
@@ -215,12 +215,10 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
     bool has_sky=false;
     state.begin_pass(DiagnosticPhase::lighting);
     state.space.begin_pass();
-    for (std::size_t i=0;i<state.members.size();++i) {
-        const auto owner=state.members[i].id();
-        const auto& member=state.states[i];
-        for (const auto& item:member.components) {
-            if (item.presentation!=Impl::Presentation::light) continue;
-            const auto object=item.id;
+    auto lights=presented(state.lights);
+    if (!lights) return std::unexpected(lights.error());
+    {
+        for (const auto& [owner,object,active]:*lights) {
             // Isolated lights are skipped. The first Sky Light in composition
             // preorder, enabled or not, owns the World's single sky slot.
             const auto skip=[&](const Error& failure,DiagnosticKind kind,ObjectId at,ObjectId entity,std::vector<std::string> field) {
@@ -236,7 +234,7 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
                 }
                 has_sky=true;
             }
-            if (!member.eligible || !item.enabled) continue;
+            if (!active) continue;
             if (auto valid=validate_light(*settings); !valid) {
                 if (!skip(valid.error(),DiagnosticKind::invalid_value,object,owner,{"settings"})) return std::unexpected(valid.error());
                 continue;

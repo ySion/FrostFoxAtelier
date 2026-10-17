@@ -6,7 +6,7 @@ void trace_queries() {
     auto wall=f.make({0,0,3},block);auto behind=f.make({0,0,6},block);
     auto ignored_settings=block;take(ignored_settings.set_response(7,p::Response::ignore));
     auto ignored=f.make({0,0,9},ignored_settings);
-    f.start();take(f.scene->update(0));
+    f.start();step(f.world, *f.scene, 0);
     p::TraceSettings query;query.channel=7;
     const Vector3 start{0,0,-3},end{0,0,12};
     p::QueryFilter legacy;legacy.category=7;
@@ -47,7 +47,7 @@ void trace_queries() {
     query.object_types=0x10000;require(!f.scene->trace(start,end,query),"Out-of-range object mask was accepted.");query.object_types=0xffff;
     query.mode=static_cast<p::TraceMode>(99);require(!f.scene->trace(start,end,query),"Unknown trace mode was accepted.");
     committed(f.world.stop());touch.sensor=true;take(touch.set_response(7,p::Response::block));take(p::configure(f.runtime,near_body.body.id(),touch));
-    f.start();take(f.scene->update(0));query.mode=p::TraceMode::single;query.object_types=1u<<1;
+    f.start();step(f.world, *f.scene, 0);query.mode=p::TraceMode::single;query.object_types=1u<<1;
     require(take(f.scene->trace(start,end,query)).has_hit,"Object trace excluded a requested Sensor.");
     query.include_sensors=false;require(!take(f.scene->trace(start,end,query)).has_hit,"Sensor exclusion was ignored.");
 }
@@ -68,7 +68,7 @@ void query_exclusions() {
     const auto field=std::ranges::find(description->fields,exposed,&atelier::FieldInfo::id);
     require(field!=description->fields.end() && field->value.form==atelier::ValueForm::strong_sequence,
         "Query exclusions are not public Entity references in the shared type definition.");
-    f.start();take(f.scene->update(0));
+    f.start();step(f.world, *f.scene, 0);
     const auto initial=take(f.scene->execute_query(query.id()));
     require(initial.has_hit && initial.hits.front().body.entity==group.id(),
         "ignore_self guessed a grouping ancestor instead of the real owner Entity.");
@@ -116,7 +116,7 @@ void affine_query_space() {
     auto query=take(w::create_component(f.runtime,f.physics_types.scene_query_component));
     take(f.runtime.with_native<p::SceneQueryComponent>(query.id(),[](auto& value)->atelier::Result<void>{value.automatic=false;value.end={0,0,10};return {};}));
     committed(f.world.attach_components(owner.id(),std::array{w::Attachment{query.id()}}));
-    f.start();take(f.scene->update(0));const auto hit=take(f.scene->execute_query(query.id()));
+    f.start();step(f.world, *f.scene, 0);const auto hit=take(f.scene->execute_query(query.id()));
     require(hit.has_hit && hit.hits.front().body.entity==target.id() && near(hit.hits.front().distance,2.5f),
         "Query rejected a valid affine owner matrix or transformed its endpoints incorrectly.");
     take(f.runtime.with_native<p::SceneQueryComponent>(query.id(),[](auto& value)->atelier::Result<void>{value.request_query();return {};}));
@@ -125,10 +125,10 @@ void affine_query_space() {
     f.advance(1);const auto pending=take(f.scene->read_query_result(query.id()));
     require(pending.step_id==1 && pending.has_hit && pending.hits.front().body.entity==target.id(),
         "Disabling an independent spatial origin discarded a pending query or stopped its active owner.");
-    committed(f.world.set_enabled(logical.id(),false));take(f.scene->update(0));
+    committed(f.world.set_enabled(logical.id(),false));step(f.world, *f.scene, 0);
     require(!f.scene->read_query_result(query.id()) && !f.scene->execute_query(query.id()),
         "Inactive composition owner retained an affine query.");
-    committed(f.world.set_enabled(logical.id(),true));take(f.scene->update(0));
+    committed(f.world.set_enabled(logical.id(),true));step(f.world, *f.scene, 0);
     require(take(f.scene->execute_query(query.id())).has_hit,"Active query did not resume with its independent origin still disabled.");
     committed(f.world.stop());
 }
@@ -144,27 +144,27 @@ void query_components() {
     committed(f.world.attach_components(emitter.id(),std::array{w::Attachment{query.id()}}));
     const auto edit=[&](auto callback) {take(f.runtime.with_native<p::SceneQueryComponent>(query.id(),[&](auto& value)->atelier::Result<void>{callback(value);return {};}));};
     const auto ready=[&] {return take(f.runtime.with_native<const p::SceneQueryComponent>(query.id(),[](const auto& value)->atelier::Result<bool>{return value.query_ready();}));};
-    f.start();take(f.scene->update(0));require(!f.scene->read_query_result(query.id()) && !ready(),"Unsampled component reported a result.");
+    f.start();step(f.world, *f.scene, 0);require(!f.scene->read_query_result(query.id()) && !ready(),"Unsampled component reported a result.");
     auto snapshot=take(f.scene->execute_query(query.id()));
     require(snapshot.hits.front().body.entity==target.id() && near(snapshot.hits.front().distance,2.5f),"Component did not transform its ray or ignore its owner.");
     edit([](auto& q){q.ignore_self=false;});
     require(take(f.scene->execute_query(query.id())).hits.front().body.entity==emitter.id(),"Opting into self detection did not hit the emitter.");
     edit([](auto& q){q.ignore_self=true;});f.advance(1);
     require(take(f.scene->read_query_result(query.id())).step_id==1,"Automatic query did not stamp the completed fixed step.");
-    f.scene->set_paused(true);take(f.scene->update(.1f));
+    f.scene->set_paused(true);step(f.world, *f.scene, .1f);
     require(take(f.scene->read_query_result(query.id())).step_id==1,"Paused component query advanced.");
-    edit([](auto& q){q.automatic=false;q.request_query();q.request_query();});f.scene->step_once();take(f.scene->update(0));
+    edit([](auto& q){q.automatic=false;q.request_query();q.request_query();});f.scene->step_once();step(f.world, *f.scene, 0);
     require(take(f.scene->read_query_result(query.id())).step_id==2,"Coalesced request was not sampled on the next fixed step.");
-    f.scene->step_once();take(f.scene->update(0));require(take(f.scene->read_query_result(query.id())).step_id==2,"One-shot request replayed.");
+    f.scene->step_once();step(f.world, *f.scene, 0);require(take(f.scene->read_query_result(query.id())).step_id==2,"One-shot request replayed.");
     edit([](auto& q){q.settings.capacity=0;});require(!f.scene->execute_query(query.id()) && !ready() && !f.scene->read_query_result(query.id()),"Failed query retained a stale success.");
     edit([](auto& q){q.settings.capacity=64;q.end={0,10,0};});
     require(!take(f.scene->execute_query(query.id())).has_hit && ready(),"Miss was not published as a completed empty result.");
     edit([](auto& q){q.end={0,0,10};});take(f.scene->execute_query(query.id()));
     committed(f.world.set_enabled(parent.id(),false));require(!ready() && !f.scene->read_query_result(query.id()),"Inactive ancestor retained a cached result.");
-    take(f.scene->update(0));require(!f.scene->execute_query(query.id()),"Query executed under an inactive ancestor.");
-    committed(f.world.set_enabled(parent.id(),true));take(f.scene->update(0));take(f.scene->execute_query(query.id()));
+    step(f.world, *f.scene, 0);require(!f.scene->execute_query(query.id()),"Query executed under an inactive ancestor.");
+    committed(f.world.set_enabled(parent.id(),true));step(f.world, *f.scene, 0);take(f.scene->execute_query(query.id()));
     auto removed=take(f.world.remove_component(query.id()));require(!ready() && !f.scene->read_query_result(query.id()),"Removed component retained query data.");
-    committed(f.world.restore(removed));take(f.scene->update(0));take(f.scene->execute_query(query.id()));
+    committed(f.world.restore(removed));step(f.world, *f.scene, 0);take(f.scene->execute_query(query.id()));
     committed(f.world.set_enabled(target.body.id(),false));require(!f.scene->read_body_state(snapshot.hits.front().body),"Saved hit handle remained valid after body removal.");
     require(!take(f.scene->execute_query(query.id())).has_hit,"Removed target was still hittable.");
     w::World other{f.runtime,f.world_types};auto other_scene=take(p::PhysicsScene::create(other,f.physics_types));
@@ -174,7 +174,7 @@ void query_components() {
     committed(f.world.set_enabled(target.body.id(),true));
     take(f.world.set_transform(parent.id(),w::Trs{{-5,0,0},{0,0,0,1},{1,1,1}}));
     take(f.world.set_transform(emitter.id(),w::Trs{{0,0,0},{0,.70710678f,0,.70710678f},{1,1,2}}));
-    f.start();take(f.scene->update(0));auto transformed=take(f.scene->execute_query(query.id()));
+    f.start();step(f.world, *f.scene, 0);auto transformed=take(f.scene->execute_query(query.id()));
     require(transformed.hits.front().body.entity==target.id() && near(transformed.start.x,-5) && near(transformed.end.x,15,.001f),"Nested rotation/scale was not applied to query endpoints.");
     committed(f.world.stop());
     // Stop also cancels a request made before this component's first reconcile.

@@ -39,6 +39,11 @@ atelier::ObjectId mesh_component(atelier::Runtime& runtime,atelier::ObjectId ent
         if(take(runtime.is_a(take(runtime.type_of(component.id())),type))) return component.id();
     throw std::runtime_error("Expected a mesh component on the Entity.");
 }
+// World::update is the only frame entry; it steps the registered PhysicsScene.
+atelier::physics::StepResult step(atelier::world::World& world, const atelier::physics::PhysicsScene& scene, float elapsed) {
+    take(world.update(elapsed));
+    return scene.last_step();
+}
 
 #include "integration.inl"
 #include "scenarios.inl"

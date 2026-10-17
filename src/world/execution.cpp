@@ -1,6 +1,7 @@
 #include "world/detail.hpp"
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
@@ -230,6 +231,7 @@ Result<Commit> World::close() {
             if (!cleared && !failure) failure = cleared.error();
         }
         state.states.clear(); state.buckets.clear(); state.positions.clear();
+        state.prerequisites.clear(); state.dependents.clear();
         state.changed();
     }
     // Member roots retain every object until all reverse deregistrations finish.
@@ -259,7 +261,6 @@ Result<const World::Behavior*> World::Impl::behavior(TypeId type) const {
 }
 Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     if (auto ready = impl_->admit(); !ready) return ready;
-    if (impl_->running) return error(ErrorCode::busy, "Stop the World before replacing a behavior binding.");
     auto component = runtime().is_a(type, types().component);
     if (!component) return std::unexpected(component.error());
     auto entity = runtime().is_a(type, types().entity);
@@ -292,6 +293,47 @@ Result<void> World::bind_behavior(TypeId type, Behavior binding) {
         for (auto& item : member.components) item.behavior = *next++;
     }
     state.changed(false);
+    return {};
+}
+Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return ready;
+    if (object == prerequisite) return error(ErrorCode::argument_mismatch, "An object cannot be its own tick prerequisite.");
+    for (const auto id : {object, prerequisite}) {
+        auto entity = detail::is(runtime(), id, types().entity);
+        if (!entity) return std::unexpected(entity.error());
+        if (*entity) { if (auto at = state.member(id); !at) return std::unexpected(at.error()); }
+        else if (auto owner = state.component_owner(id); !owner) return std::unexpected(owner.error());
+    }
+    if (const auto found = state.prerequisites.find(object);
+        found != state.prerequisites.end() && std::ranges::find(found->second, prerequisite) != found->second.end()) return {};
+    // The edge closes a cycle when `object` already precedes `prerequisite`.
+    std::vector<ObjectId> stack{object};
+    std::unordered_set<ObjectId> seen{object};
+    while (!stack.empty()) {
+        const auto next = stack.back();
+        stack.pop_back();
+        if (next == prerequisite) return error(ErrorCode::argument_mismatch, "Tick prerequisites would form a cycle.");
+        if (const auto found = state.dependents.find(next); found != state.dependents.end())
+            for (const auto later : found->second) if (seen.insert(later).second) stack.push_back(later);
+    }
+    state.prerequisites[object].push_back(prerequisite);
+    state.dependents[prerequisite].push_back(object);
+    state.schedule_dirty = true;
+    return {};
+}
+Result<void> World::remove_tick_prerequisite(ObjectId object, ObjectId prerequisite) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return ready;
+    const auto unlink = [](auto& edges, ObjectId key, ObjectId value) {
+        const auto found = edges.find(key);
+        if (found == edges.end()) return;
+        std::erase(found->second, value);
+        if (found->second.empty()) edges.erase(found);
+    };
+    unlink(state.prerequisites, object, prerequisite);
+    unlink(state.dependents, prerequisite, object);
+    state.schedule_dirty = true;
     return {};
 }
 Result<void> World::observe_lifecycle(LifecycleObserver observer) {
@@ -361,29 +403,25 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     return {};
 }
 
-Result<void> World::update(float amount) {
-    auto& state = *impl_;
-    if (auto ready = state.admit(); !ready) return ready;
-    if (!std::isfinite(amount) || amount < 0.f) return error(ErrorCode::argument_mismatch, "World update amount must be finite and nonnegative.");
-    if (!state.running) return {};
-    state.begin_pass(DiagnosticPhase::physics);
-    state.begin_pass(DiagnosticPhase::command);
-    if (state.schedule_dirty) state.rebuild_schedule();
+std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
+    if (schedule_dirty) rebuild_schedule();
     std::optional<Error> failure;
     {
-        auto execution = ExecutionScope::enter(runtime());
-        if (!execution) return std::unexpected(execution.error());
-        detail::DispatchScope dispatch{state.dispatch_depth};
+        auto execution = ExecutionScope::enter(runtime);
+        if (!execution) return execution.error();
+        detail::DispatchScope dispatch{dispatch_depth};
         // Registration arrays cannot change under this guard. Member roots keep
         // their composition alive; each invocation also owns its receiver root.
         // An isolated failure stops that object's Tick from the next schedule.
-        for (const auto& item : state.updates) {
+        for (const auto& item : updates[std::size_t(phase)]) {
             const auto object = item.object;
-            auto root = runtime().hold(object);
+            auto root = runtime.hold(object);
             if (!root) { failure = root.error(); break; }
+            const auto& tick = phase == TickPhase::pre_physics ? item.behavior->tick
+                : phase == TickPhase::post_physics ? item.behavior->post_physics_tick : item.behavior->late_tick;
             std::optional<Error> error;
             try {
-                auto invoked = item.behavior->tick(runtime(), object, amount);
+                auto invoked = tick(runtime, object, amount);
                 if (!invoked) error = invoked.error();
             } catch (const std::bad_alloc&) {
                 error = Error{ErrorCode::capacity_exceeded, "World object Tick ran out of memory."};
@@ -391,33 +429,68 @@ Result<void> World::update(float amount) {
                 error = Error{ErrorCode::invocation_failed, exception.what()};
             } catch (...) { error = Error{ErrorCode::invocation_failed, "World object Tick threw an unknown exception."}; }
             if (!error) continue;
-            if (!state.contain(*error, DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) { failure = std::move(error); break; }
-            state.fault_tick(object, item.entity);
+            if (!contain(*error, DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) { failure = std::move(error); break; }
+            fault_tick(object, item.entity);
         }
-        if (!failure) {
+        if (!failure && phase == TickPhase::pre_physics) {
             // Cancelling erases tasks, so faults apply after the resume loop.
             std::vector<std::pair<ObjectId, ObjectId>> faulted;
-            for (auto& task : state.tasks) {
+            for (auto& task : tasks) {
                 if (std::ranges::any_of(faulted, [&](const auto& other) { return other.first == task.object; })) continue;
                 auto stepped = task.coroutine.resume();
                 if (stepped) continue;
-                if (!state.contain(stepped.error(), DiagnosticKind::task_failed, DiagnosticPhase::task, task.object, task.entity)) {
+                if (!contain(stepped.error(), DiagnosticKind::task_failed, DiagnosticPhase::task, task.object, task.entity)) {
                     failure = stepped.error(); break;
                 }
                 faulted.emplace_back(task.object, task.entity);
             }
-            for (const auto& [object, entity] : faulted) state.fault_tick(object, entity);
+            for (const auto& [object, entity] : faulted) fault_tick(object, entity);
         }
     }
-    if (!failure) {
-        auto applied=state.apply_translations();
-        if (!applied) failure=applied.error();
+    if (failure) return failure;
+    if (phase == TickPhase::pre_physics)
+        std::erase_if(tasks, [](const Task& task) {
+            const auto state = task.coroutine.state();
+            return state == CoroutineState::completed || state == CoroutineState::cancelled || state == CoroutineState::failed;
+        });
+    if (auto applied = apply_translations(); !applied) return applied.error();
+    return flush_requests();
+}
+
+Result<void> World::update(float amount) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return ready;
+    if (state.updating) return error(ErrorCode::busy, "World update cannot be nested.");
+    if (!std::isfinite(amount) || amount < 0.f) return error(ErrorCode::argument_mismatch, "World update amount must be finite and nonnegative.");
+    if (!state.running) return {};
+    detail::FlagScope updating{state.updating};
+    state.begin_pass(DiagnosticPhase::physics);
+    state.begin_pass(DiagnosticPhase::command);
+    const auto fail = [&](Error failure) -> Result<void> {
+        (void)state.shutdown();
+        return std::unexpected(std::move(failure));
+    };
+    if (auto failure = state.run_phase(TickPhase::pre_physics, amount)) return fail(std::move(*failure));
+    std::vector<std::shared_ptr<const Simulation>> systems;
+    for (const auto& entry : state.simulations) if (entry.simulation) systems.push_back(entry.simulation);
+    for (const auto& system : systems) {
+        if (!state.running) return {};
+        if (std::ranges::none_of(state.simulations, [&](const auto& entry) { return entry.simulation == system; })) continue;
+        std::optional<Error> failure;
+        try {
+            auto stepped = system->step(amount);
+            if (!stepped) failure = stepped.error();
+        } catch (const std::bad_alloc&) {
+            failure = Error{ErrorCode::capacity_exceeded, "World simulation step ran out of memory."};
+        } catch (const std::exception& exception) {
+            failure = Error{ErrorCode::invocation_failed, exception.what()};
+        } catch (...) { failure = Error{ErrorCode::invocation_failed, "World simulation step threw an unknown exception."}; }
+        if (failure) return fail(std::move(*failure));
     }
-    if (failure) { (void)state.shutdown(); return std::unexpected(std::move(*failure)); }
-    std::erase_if(state.tasks, [](const Impl::Task& task) {
-        const auto phase = task.coroutine.state();
-        return phase == CoroutineState::completed || phase == CoroutineState::cancelled || phase == CoroutineState::failed;
-    });
+    for (const auto phase : {TickPhase::post_physics, TickPhase::late}) {
+        if (!state.running) return {};
+        if (auto failure = state.run_phase(phase, amount)) return fail(std::move(*failure));
+    }
     return {};
 }
 
@@ -465,6 +538,67 @@ Result<std::uint64_t> World::request(Request command) {
     return state.next_request++;
 }
 
+Result<Commit> World::Impl::apply_request(const Pending& item) {
+    const auto& command = item.request;
+    if (closed || closing) {
+        if (command.kind == RequestKind::close) return Commit{};
+        return error(ErrorCode::unsupported_operation, "World closed before the queued operation committed.");
+    }
+    if (item.member_required) {
+        if (item.owner != ObjectId{}) {
+            auto owner = component_owner(command.target);
+            if (!owner) return std::unexpected(owner.error());
+            if (*owner != item.owner) return error(ErrorCode::invalid_member, "Queued component operation has a different owner.");
+        } else {
+            auto at = member(command.target);
+            if (!at) return std::unexpected(at.error());
+        }
+    }
+    switch (command.kind) {
+    case RequestKind::attach_entity: return world.attach(command.target, command.index, command.parent);
+    case RequestKind::detach_entity: {
+        auto removed = world.detach(command.target);
+        if (!removed) return std::unexpected(removed.error());
+        return std::move(removed->commit);
+    }
+    case RequestKind::attach_component: {
+        auto at = member(item.owner);
+        if (!at) return std::unexpected(at.error());
+        const std::array added{Attachment{command.target}};
+        return world.attach_components(item.owner, added, command.index);
+    }
+    case RequestKind::remove_component: {
+        auto removed = world.remove_component(command.target);
+        if (!removed) return std::unexpected(removed.error());
+        return std::move(removed->commit);
+    }
+    case RequestKind::destroy_entity: return world::destroy_entity(runtime, command.target);
+    case RequestKind::destroy_component: return world::destroy_component(runtime, command.target);
+    case RequestKind::entity_enabled: case RequestKind::component_enabled: return world.set_enabled(command.target, command.enabled);
+    case RequestKind::start: return world.start();
+    case RequestKind::stop: return world.stop();
+    case RequestKind::close: return world.close();
+    }
+    return error(ErrorCode::argument_mismatch, "Unknown World request.");
+}
+std::optional<Error> World::Impl::flush_requests() {
+    if (pending.empty()) return {};
+    if (auto ready = runtime.check_code_publication(); !ready) return ready.error();
+    auto batch = std::move(pending);
+    pending.clear();
+    detail::FlagScope scope{flushing};
+    for (const auto& item : batch) {
+        auto result = apply_request(item);
+        // A committed failure already stopped the World.
+        if (result) { if (result->notification_error) return result->notification_error; continue; }
+        const auto target = item.request.target;
+        if (target == ObjectId{}) return result.error();
+        const auto entity = item.owner != ObjectId{} ? item.owner : target;
+        if (!contain(result.error(), DiagnosticKind::command_rejected, DiagnosticPhase::command, target, entity, {}, Severity::warning))
+            return result.error();
+    }
+    return {};
+}
 Result<std::vector<RequestCompletion>> World::flush() {
     auto& state = *impl_;
     if (state.dispatch_depth || state.transitioning || state.flushing)
@@ -475,52 +609,7 @@ Result<std::vector<RequestCompletion>> World::flush() {
     auto pending = std::move(state.pending);
     state.pending.clear();
     detail::FlagScope flushing{state.flushing};
-    for (const auto& item : pending) {
-        const auto apply = [&]() -> Result<Commit> {
-            const auto& command = item.request;
-            if (state.closed || state.closing) {
-                if (command.kind == RequestKind::close) return Commit{};
-                return error(ErrorCode::unsupported_operation, "World closed before the queued operation committed.");
-            }
-            if (item.member_required) {
-                if (item.owner != ObjectId{}) {
-                    auto owner = state.component_owner(command.target);
-                    if (!owner) return std::unexpected(owner.error());
-                    if (*owner != item.owner) return error(ErrorCode::invalid_member, "Queued component operation has a different owner.");
-                } else {
-                    auto member = state.member(command.target);
-                    if (!member) return std::unexpected(member.error());
-                }
-            }
-            switch (command.kind) {
-            case RequestKind::attach_entity: return attach(command.target, command.index, command.parent);
-            case RequestKind::detach_entity: {
-                auto removed = detach(command.target);
-                if (!removed) return std::unexpected(removed.error());
-                return std::move(removed->commit);
-            }
-            case RequestKind::attach_component: {
-                auto member = state.member(item.owner);
-                if (!member) return std::unexpected(member.error());
-                const std::array added{Attachment{command.target}};
-                return attach_components(item.owner, added, command.index);
-            }
-            case RequestKind::remove_component: {
-                auto removed = remove_component(command.target);
-                if (!removed) return std::unexpected(removed.error());
-                return std::move(removed->commit);
-            }
-            case RequestKind::destroy_entity: return world::destroy_entity(runtime(), command.target);
-            case RequestKind::destroy_component: return world::destroy_component(runtime(), command.target);
-            case RequestKind::entity_enabled: case RequestKind::component_enabled: return set_enabled(command.target, command.enabled);
-            case RequestKind::start: return start();
-            case RequestKind::stop: return stop();
-            case RequestKind::close: return close();
-            }
-            return error(ErrorCode::argument_mismatch, "Unknown World request.");
-        };
-        completed.push_back({item.serial, apply()});
-    }
+    for (const auto& item : pending) completed.push_back({item.serial, state.apply_request(item)});
     return completed;
 }
 
