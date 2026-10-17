@@ -65,18 +65,32 @@ Result<void> patch_light(Runtime& runtime,const Types& types,LightSettings& sett
     else return error(ErrorCode::type_mismatch,"Invalid LightSettings scalar field.");
     return {};
 }
-// Compose the actual local rotations; decomposing the world matrix would make
-// emitter orientation depend on nonuniform parent scale and shear.
-// Walks the chain validated by the latest matrix() call of this pass.
-Result<math::Quaterniond> light_rotation(const detail::SpaceCache& space,ObjectId object) {
-    math::Quaterniond result;
+// Each level contributes R*diag(sign(scale)), ignoring magnitudes and shear so
+// nonuniform parents cannot distort an emitter; a zero axis counts as positive.
+// An odd sign pattern is -1 times a proper half turn, so the frame is
+// `mirrored ? -R : R`. Walks the chain validated by the latest matrix() call.
+struct LightFrame { math::Quaterniond rotation; bool mirrored{}; };
+Result<LightFrame> light_frame(const detail::SpaceCache& space,ObjectId object) {
+    LightFrame result;
     for (auto node=object;node!=ObjectId{};) {
         const auto* entry=space.entry(node);
         auto canonical=canonical_transform(entry->local); if (!canonical) return std::unexpected(canonical.error());
         const auto& q=canonical->rotation;
-        const auto composed=math::try_normalize(math::Quaterniond{q.x,q.y,q.z,q.w}*result);
+        const auto& s=canonical->scale;
+        std::array negative{s.x<0,s.y<0,s.z<0};
+        const bool odd=negative[0]^negative[1]^negative[2];
+        if (odd) for (auto& axis:negative) axis=!axis;
+        result.mirrored^=odd;
+        math::Quaterniond local{q.x,q.y,q.z,q.w};
+        // Two negative axes are a half turn about the remaining positive one.
+        if (negative[0] || negative[1] || negative[2]) {
+            math::Quaterniond turn{0,0,0,0};
+            if (!negative[0]) turn.x=1; else if (!negative[1]) turn.y=1; else turn.z=1;
+            local=local*turn;
+        }
+        const auto composed=math::try_normalize(local*result.rotation);
         if (!composed) return error(ErrorCode::argument_mismatch,"Light orientation is not finite.");
-        result=*composed;
+        result.rotation=*composed;
         node=entry->parent;
     }
     return result;
@@ -237,14 +251,16 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
                 if (!skip(matrix.error(),DiagnosticKind::invalid_value,at,at,{})) return std::unexpected(matrix.error());
                 continue;
             }
-            auto rotation=light_rotation(state.space,owner);
-            if (!rotation) { if (!skip(rotation.error(),DiagnosticKind::invalid_value,owner,owner,{"rotation"})) return std::unexpected(rotation.error()); continue; }
+            auto frame=light_frame(state.space,owner);
+            if (!frame) { if (!skip(frame.error(),DiagnosticKind::invalid_value,owner,owner,{"rotation"})) return std::unexpected(frame.error()); continue; }
+            // A mirrored frame is -R; negating its right axis keeps it right-handed.
+            const double sign=frame->mirrored?-1:1;
             const auto axis=[&](math::Vector3d local) {
-                const auto value=math::rotate(*rotation,local);
+                const auto value=math::rotate(frame->rotation,local);
                 return math::Vector3{float(value.x),float(value.y),float(value.z)};
             };
             result.push_back({owner,object,{(*matrix)[12],(*matrix)[13],(*matrix)[14]},
-                axis({0,0,1}),axis({1,0,0}),axis({0,1,0}),*settings});
+                axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings});
         }
     }
     return result;
