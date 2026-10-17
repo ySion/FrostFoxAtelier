@@ -316,6 +316,10 @@ private:
                         "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
                 if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
                     reject(function_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
+                if (parameter.passing == ParameterPassing::reference && function_.expressions[argument].kind == Expression::Kind::field &&
+                    environment_.fields[function_.expressions[argument].value].constrained)
+                    reject(function_.expressions[argument].position,
+                        "Hard-bounded fields cannot be borrowed writably; assign the field instead.");
                 arguments.push_back(argument);
             } while (accept(","));
             expect(")");

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cmath>
+#include <concepts>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -50,6 +52,46 @@ struct CallbackScope {
     explicit CallbackScope(std::size_t& count) : depth(count) { ++depth; }
     ~CallbackScope() { --depth; }
 };
+
+// Exact for every range leaf type: f32, i32 and u32 all widen losslessly.
+double range_value(const Scalar& value) noexcept {
+    return std::visit([](const auto& v) {
+        if constexpr (std::same_as<std::remove_cvref_t<decltype(v)>, EnumValue>) return 0.0;
+        else return static_cast<double>(v);
+    }, value);
+}
+
+template<class T> concept RangeLeaf = std::same_as<T, float> || std::same_as<T, double> ||
+    std::same_as<T, std::int32_t> || std::same_as<T, std::uint32_t>;
+
+template<RangeLeaf T> bool constrain_leaf(const FieldRange& range, T& value) noexcept {
+    if constexpr (std::floating_point<T>) if (!std::isfinite(value)) return false;
+    if (range.hard_min && value < std::get<T>(*range.hard_min)) value = std::get<T>(*range.hard_min);
+    if (range.hard_max && value > std::get<T>(*range.hard_max)) value = std::get<T>(*range.hard_max);
+    return true;
+}
+
+// Publication guarantees the value and both hard bounds share the field's leaf type.
+bool constrain_scalar(const FieldRange& range, Scalar& value) noexcept {
+    return std::visit([&](auto& v) {
+        if constexpr (RangeLeaf<std::remove_cvref_t<decltype(v)>>) return constrain_leaf(range, v);
+        else return true;
+    }, value);
+}
+
+// Constrains one leaf in place through memcpy, since storage need not be typed.
+bool constrain_storage(const FieldRange& range, void* data, bool write) noexcept {
+    return std::visit([&](const auto& bound) {
+        using T = std::remove_cvref_t<decltype(bound)>;
+        if constexpr (RangeLeaf<T>) {
+            T value;
+            std::memcpy(&value, data, sizeof value);
+            if (!constrain_leaf(range, value)) return false;
+            if (write) std::memcpy(data, &value, sizeof value);
+        }
+        return true;
+    }, range.hard_min ? *range.hard_min : *range.hard_max);
+}
 
 Result<std::size_t> aligned_size(std::size_t value, std::size_t alignment) {
     if (value > std::numeric_limits<std::size_t>::max() - (alignment - 1)) {
@@ -251,6 +293,13 @@ struct Runtime::Impl {
         ValueDescription value;
         const Type* type{};
         std::optional<Scalar> default_value{};
+        // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
+        std::unique_ptr<const FieldRange> hard{};
+    };
+    // A hard-bounded scalar inside a record, reached through field indices from it.
+    struct ConstrainedLeaf {
+        std::vector<std::uint32_t> path;
+        const FieldRange* range;
     };
     struct Type {
         TypeInfo info;
@@ -269,6 +318,8 @@ struct Runtime::Impl {
         bool needs_destroy{};
         // Only built-in scalars and padding-free homogeneous described layouts qualify.
         const Type* scalar_leaf{};
+        // Records only: every hard-bounded leaf, so whole-value writes can enforce them.
+        std::vector<ConstrainedLeaf> constrained_leaves;
     };
     struct Slot {
         TypeId type;
@@ -575,6 +626,15 @@ struct Runtime::Impl {
     static void* base_storage(const Type& actual, const Type& expected, void* storage) noexcept {
         for (const auto* type = &actual; type != &expected; type = type->base) {
             if (type->native.base_address) storage = type->native.base_address(storage);
+        }
+        return storage;
+    }
+
+    static void* leaf_storage(const Type& record, void* storage, std::span<const std::uint32_t> path) noexcept {
+        for (const auto* type = &record; const auto index : path) {
+            const auto& access = type->fields[index];
+            storage = access.address ? access.address(storage) : static_cast<std::byte*>(storage) + access.offset;
+            type = access.type;
         }
         return storage;
     }
@@ -1344,9 +1404,34 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 form != ValueForm::inline_value || target->info.kind != TypeKind::scalar ||
                 std::holds_alternative<EnumValue>(*field.default_value) || impl_->scalar_type(*field.default_value) != target->info.id))
                 return failure(ErrorCode::invalid_definition, "Default value requires a described object's exact scalar field type.");
-            type.fields.push_back({0, field.native_address, value, nullptr, field.default_value});
+            if (const auto& range = field.range; range.ui_min || range.ui_max || range.hard_min || range.hard_max) {
+                const auto invalid = [&](std::string_view reason) {
+                    return failure(ErrorCode::invalid_definition, "Field range " + std::string(reason) + ": " + type.info.name + "." + field.name);
+                };
+                const auto& vector = target->info.math;
+                const auto leaf = form != ValueForm::inline_value ? TypeId{} : target->info.kind == TypeKind::scalar ? target->info.id
+                    : vector.vector() ? (vector.precision == math::Precision::f64 ? impl_->f64 : impl_->f32) : TypeId{};
+                if (leaf != impl_->f32 && leaf != impl_->f64 && leaf != impl_->i32 && leaf != impl_->u32)
+                    return invalid("requires an f32, f64, i32, u32 or math vector field");
+                for (const auto* bound : {&range.ui_min, &range.ui_max, &range.hard_min, &range.hard_max})
+                    if (*bound && (impl_->scalar_type(**bound) != leaf || !std::isfinite(range_value(**bound))))
+                        return invalid("bounds must be finite values of the field's leaf scalar type");
+                const auto above = [](const std::optional<Scalar>& low, const std::optional<Scalar>& high) {
+                    return low && high && range_value(*high) < range_value(*low);
+                };
+                if (above(range.ui_min, range.ui_max) || above(range.hard_min, range.hard_max))
+                    return invalid("minimum exceeds maximum");
+                for (const auto* ui : {&range.ui_min, &range.ui_max})
+                    if (above(range.hard_min, *ui) || above(*ui, range.hard_max)) return invalid("UI bounds must lie within hard bounds");
+                if (field.default_value && range.constrains() && (!std::isfinite(range_value(*field.default_value)) ||
+                    above(range.hard_min, field.default_value) || above(field.default_value, range.hard_max)))
+                    return invalid("default lies outside hard bounds");
+            }
+            type.fields.push_back({0, field.native_address, value, nullptr, field.default_value,
+                field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr});
             if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value,
-                field.native_offset, field.default_value, std::move(field.label), std::move(field.category), std::move(field.description)});
+                field.native_offset, field.default_value, std::move(field.label), std::move(field.category), std::move(field.description),
+                field.range});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());
@@ -1418,6 +1503,17 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 const auto* target = resolved_type(value.type);
                 type.fields[field_index].type = target;
                 const bool reference = value.form != ValueForm::inline_value;
+                if (type.info.kind == TypeKind::record && !reference) {
+                    const auto index = static_cast<std::uint32_t>(field_index);
+                    if (const auto* range = type.fields[field_index].hard.get()) {
+                        if (target->info.kind == TypeKind::scalar) type.constrained_leaves.push_back({{index}, range});
+                        else for (std::uint32_t component = 0; component != target->info.math.components(); ++component)
+                            type.constrained_leaves.push_back({{index, component}, range});
+                    } else for (const auto& leaf : target->constrained_leaves) {
+                        auto& nested = type.constrained_leaves.emplace_back(Impl::ConstrainedLeaf{{index}, leaf.range});
+                        nested.path.insert(nested.path.end(), leaf.path.begin(), leaf.path.end());
+                    }
+                }
                 if (!is_native && type.info.kind == TypeKind::record)
                     type.info.value_operations_preserve_borrows &= !reference && (target->info.kind == TypeKind::scalar ||
                         target->info.kind == TypeKind::enumeration || target->info.value_operations_preserve_borrows);
@@ -2141,10 +2237,15 @@ Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::
         if (!owner || !Impl::derives_from(*actual, *owner) || field.index_ >= owner->fields.size()) {
             return failure(ErrorCode::invalid_member, "Field does not belong to its containing type.");
         }
-        result.data = Impl::base_storage(*actual, *owner, result.data);
         const auto& access = owner->fields[field.index_];
-        result.data = access.address ? access.address(result.data) : static_cast<std::byte*>(result.data) + access.offset;
+        // Null storage resolves only the description and range, for constrain().
+        if (result.data) {
+            result.data = Impl::base_storage(*actual, *owner, result.data);
+            result.data = access.address ? access.address(result.data) : static_cast<std::byte*>(result.data) + access.offset;
+        }
         result.value = access.value;
+        // A math vector's components inherit the vector field's bounds.
+        result.range = access.hard ? access.hard.get() : actual->info.math ? result.range : nullptr;
     }
     return result;
 }
@@ -2251,6 +2352,8 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
     }
     if (std::holds_alternative<EnumValue>(value) && impl_->lookup(address->value.type)->info.kind != TypeKind::enumeration)
         return failure(ErrorCode::type_mismatch, "Enum value cannot masquerade as a scalar.");
+    if (address->range && !constrain_scalar(*address->range, value))
+        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
     if (address->value.type == impl_->f32) *static_cast<float*>(address->data) = std::get<float>(value);
     else if (address->value.type == impl_->f64) *static_cast<double*>(address->data) = std::get<double>(value);
     else if (address->value.type == impl_->u32) *static_cast<std::uint32_t*>(address->data) = std::get<std::uint32_t>(value);
@@ -2263,6 +2366,18 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
         std::memcpy(address->data, &std::get<EnumValue>(value).bits, 4);
     }
     return {};
+}
+
+Result<Scalar> Runtime::constrain(TypeId type, std::span<const FieldId> path, Scalar value) const {
+    if (!impl_->lookup(type)) return failure(ErrorCode::invalid_type, "Constraint query requires a registered type.");
+    const auto address = resolve_path(type, nullptr, path);
+    if (!address) return std::unexpected(address.error());
+    if (address->value.form != ValueForm::inline_value || address->value.type != impl_->scalar_type(value) ||
+        (std::holds_alternative<EnumValue>(value) && impl_->lookup(address->value.type)->info.kind != TypeKind::enumeration))
+        return failure(ErrorCode::type_mismatch, "Value type does not match the field.");
+    if (address->range && !constrain_scalar(*address->range, value))
+        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
+    return value;
 }
 
 Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const {
@@ -2286,7 +2401,28 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Valu
         return failure(ErrorCode::type_mismatch, "Plain value field write requires its exact Runtime type.");
     if (!value.data || reinterpret_cast<std::uintptr_t>(value.data) % type->info.alignment != 0)
         return failure(ErrorCode::invalid_storage, "Plain value input storage is null or misaligned.");
+    if (!address->range && type->constrained_leaves.empty()) {
+        std::memmove(address->data, value.data, type->info.size);
+        return {};
+    }
+    // Every leaf is checked before any byte changes; clamping then applies in place.
+    CallbackScope scope{impl_->callbacks};
+    const auto each_leaf = [&](void* data, bool write) {
+        if (address->range) {
+            const bool scalar = type->info.kind == TypeKind::scalar;
+            const auto stride = scalar ? type->info.size : type->info.math.scalar_size();
+            for (std::size_t i = 0, count = scalar ? 1 : type->info.math.components(); i != count; ++i)
+                if (!constrain_storage(*address->range, static_cast<std::byte*>(data) + i * stride, write)) return false;
+            return true;
+        }
+        return std::ranges::all_of(type->constrained_leaves, [&](const auto& leaf) {
+            return constrain_storage(*leaf.range, Impl::leaf_storage(*type, data, leaf.path), write);
+        });
+    };
+    if (!each_leaf(const_cast<void*>(value.data), false))
+        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
     std::memmove(address->data, value.data, type->info.size);
+    each_leaf(address->data, true);
     return {};
 }
 
@@ -2344,6 +2480,8 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
             if (address->value.form != ValueForm::inline_value)
                 return failure(ErrorCode::argument_mismatch, "Reference parameter requires inline value storage.");
             actual = impl_->lookup(address->value.type);
+            if (parameter.passing == ParameterPassing::reference && (address->range || !actual->constrained_leaves.empty()))
+                return failure(ErrorCode::argument_mismatch, "Hard-bounded fields cannot be borrowed writably; write them through Runtime.");
             data = writable = address->data;
         } else if (argument.borrowed_) {
             if (!data) return failure(ErrorCode::invalid_storage, "Borrowed argument is null.");

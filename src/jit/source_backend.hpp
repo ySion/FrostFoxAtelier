@@ -75,7 +75,8 @@ static_assert(sizeof(BusinessValue) == 40 && alignof(BusinessValue) == 8 &&
     offsetof(BusinessValue, bits) == 8 && offsetof(BusinessValue, storage) == 16 &&
     offsetof(BusinessValue, data) == 24 && offsetof(BusinessValue, slot) == 32 && offsetof(BusinessValue, field) == 36);
 
-struct BusinessFieldBinding { const char* name; BusinessType kind; };
+// `constrained`: Runtime hard bounds apply, so the field cannot be borrowed writably.
+struct BusinessFieldBinding { const char* name; BusinessType kind; bool constrained{}; };
 struct BusinessMethodBinding {
     const char* name;
     const BusinessParameter* parameters;

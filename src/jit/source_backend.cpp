@@ -1567,7 +1567,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     state->fields.reserve(environment.fields.size());
     for (const auto& field : environment.fields) {
         state->field_names.emplace_back(field.name);
-        state->fields.push_back({state->field_names.back().c_str(), business_type(field.type)});
+        state->fields.push_back({state->field_names.back().c_str(), business_type(field.type), field.constrained});
     }
     state->method_names.reserve(environment.methods.size());
     state->method_parameters.reserve(environment.methods.size());
@@ -1835,7 +1835,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             for (std::uint32_t index = 0; index < environment->field_count; ++index) {
                 const auto& field = environment->fields[index];
                 if (!field.name) throw std::runtime_error("Host field name is null.");
-                fields.push_back({field.name, source_type(field.kind)});
+                fields.push_back({field.name, source_type(field.kind), field.constrained});
             }
             method_parameters.reserve(environment->method_count);
             methods.reserve(environment->method_count);
