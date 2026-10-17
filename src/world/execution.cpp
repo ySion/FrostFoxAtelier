@@ -15,49 +15,53 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         auto data = state.composition_entity(object);
         if (!data) return std::unexpected(data.error());
         if (data->enabled == enabled) return Commit{};
-        auto owned = detail::subtree(runtime(), object);
-        if (!owned) return std::unexpected(owned.error());
-        std::vector<bool> before;
-        before.reserve(owned->size());
-        for (const auto& root : *owned) {
-            auto member = state.composition_entity(root.id());
-            if (!member) return std::unexpected(member.error());
-            if (member->world != data->world) return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
-            auto eligible = effective_enabled(runtime(), root.id());
-            if (!eligible) return std::unexpected(eligible.error());
-            before.push_back(*eligible);
+        if (!data->world) {
+            auto owned = detail::subtree(runtime(), object);
+            if (!owned) return std::unexpected(owned.error());
+            for (const auto& root : *owned) {
+                auto member = state.composition_entity(root.id());
+                if (!member) return std::unexpected(member.error());
+                if (member->world) return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
+            }
         }
-        if (data->world) state.prepare_activity();
+        std::size_t first{}, count{};
+        std::vector<bool> before;
+        if (data->world) {
+            auto at = state.member(object);
+            if (!at) return std::unexpected(at.error());
+            first = *at; count = state.states[first].size;
+            before.reserve(count);
+            for (auto i = first; i < first + count; ++i) before.push_back(state.states[i].eligible);
+        }
         {
             detail::FlagScope transition{state.transitioning};
             auto changed = runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
                 Access::enabled(entity) = enabled; return {};
             });
             if (!changed) return std::unexpected(changed.error());
+            if (data->world) {
+                state.states[first].enabled = enabled;
+                state.refresh_eligibility(first, count);
+                state.changed(false);
+            }
         }
         if (!data->world) return Commit{true, {}};
-        if (auto refreshed = state.refresh(); !refreshed) return state.finish(true, refreshed.error());
         std::optional<Error> failure;
         // Entity notifications cover its capability registrations. Emit only
         // actual effective transitions, without repeating Begin/End.
-        for (std::size_t i = owned->size(); i-- > 0;) {
-            auto eligible = effective_enabled(runtime(), (*owned)[i].id());
-            if (!eligible) { if (!failure) failure = eligible.error(); continue; }
-            if (before[i] && !*eligible) {
-                state.cancel_tasks((*owned)[i].id());
-                if (state.running) {
-                    auto notified = state.notify(Lifecycle::deactivated, (*owned)[i].id());
-                    if (!failure) failure = std::move(notified);
-                }
-            }
-        }
-        if (state.running) for (std::size_t i = 0; i < owned->size(); ++i) {
-            auto eligible = effective_enabled(runtime(), (*owned)[i].id());
-            if (!eligible) { if (!failure) failure = eligible.error(); continue; }
-            if (!before[i] && *eligible) {
-                auto notified = state.notify(Lifecycle::activated, (*owned)[i].id());
+        for (std::size_t i = count; i-- > 0;) {
+            if (!before[i] || state.states[first + i].eligible) continue;
+            const auto id = state.members[first + i].id();
+            state.cancel_tasks(id);
+            if (state.running) {
+                auto notified = state.notify(Lifecycle::deactivated, id);
                 if (!failure) failure = std::move(notified);
             }
+        }
+        if (state.running) for (std::size_t i = 0; i < count; ++i) {
+            if (before[i] || !state.states[first + i].eligible) continue;
+            auto notified = state.notify(Lifecycle::activated, state.members[first + i].id());
+            if (!failure) failure = std::move(notified);
         }
         return state.finish(true, std::move(failure));
     }
@@ -73,7 +77,6 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         if (!eligible) return std::unexpected(eligible.error());
         owner_enabled = *eligible;
     }
-    if (registered) state.prepare_activity();
     {
         detail::FlagScope transition{state.transitioning};
         auto changed = runtime().with_native<Component>(object, [&](Component& component) -> Result<void> {
@@ -81,9 +84,12 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         });
         if (!changed) return std::unexpected(changed.error());
         if (!enabled) state.cancel_tasks(object, false);
+        if (registered) {
+            if (auto* item = state.component_state(data->owner, object)) item->enabled = enabled;
+            state.changed(false);
+        }
     }
     if (!registered) return Commit{true, {}};
-    if (auto refreshed = state.refresh(); !refreshed) return state.finish(true, refreshed.error());
     return state.finish(true, state.running && owner_enabled
         ? state.notify(enabled ? Lifecycle::activated : Lifecycle::deactivated, object) : std::nullopt);
 }
@@ -104,45 +110,44 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
     } catch (...) { return Error{ErrorCode::invocation_failed, "World object lifecycle callback threw an unknown exception."}; }
     return {};
 }
-Result<bool> World::Impl::begun(const Scheduled& item) const {
-    if (item.object == item.entity) {
-        auto data = detail::entity_data(runtime, item.object);
-        if (!data) return std::unexpected(data.error());
-        return data->begun;
-    }
-    auto data = detail::component_data(runtime, item.object);
-    if (!data) return std::unexpected(data.error());
-    return data->begun;
-}
-Result<void> World::Impl::mark_begun(const Scheduled& item, bool value) {
-    const auto mark = [value](auto& object) -> Result<void> { Access::begun(object) = value; return {}; };
-    return item.object == item.entity ? runtime.with_native<Entity>(item.object, mark)
-                                    : runtime.with_native<Component>(item.object, mark);
-}
-std::optional<Error> World::Impl::begin(ObjectId entity, ObjectId component) {
-    for (const auto& item : ordered) {
-        if ((entity != ObjectId{} && item.entity != entity) || (component != ObjectId{} && item.object != component)) continue;
-        auto started = begun(item);
-        if (!started) return started.error();
-        if (*started) continue;
-        if (auto failure = invoke(item, true)) return failure;
-        auto marked = mark_begun(item, true);
-        if (!marked) return marked.error();
+// Callbacks cannot change membership or registrations (dispatch guard), so
+// state references stay valid across each invocation.
+std::optional<Error> World::Impl::begin(std::size_t first, std::size_t last, ObjectId component) {
+    for (auto i = first; i < last; ++i) {
+        const auto entity = members[i].id();
+        if (component == ObjectId{} && !states[i].begun) {
+            if (auto failure = invoke({entity, entity, states[i].behavior}, true)) return failure;
+            states[i].begun = true;
+            schedule_dirty = true;
+        }
+        for (auto& item : states[i].components) {
+            if ((component != ObjectId{} && item.id != component) || item.begun) continue;
+            if (auto failure = invoke({item.id, entity, item.behavior}, true)) return failure;
+            item.begun = true;
+            schedule_dirty = true;
+        }
     }
     return {};
 }
-std::optional<Error> World::Impl::end(ObjectId entity, ObjectId component) {
+std::optional<Error> World::Impl::end(std::size_t first, std::size_t last, ObjectId component) {
     std::optional<Error> failure;
-    for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
-        if ((entity != ObjectId{} && it->entity != entity) || (component != ObjectId{} && it->object != component)) continue;
-        auto started = begun(*it);
-        if (!started) { if (!failure) failure = started.error(); continue; }
-        if (!*started) continue;
-        // Clear before invoking: End is attempted exactly once, including failures.
-        auto marked = mark_begun(*it, false);
-        if (!marked) { if (!failure) failure = marked.error(); continue; }
-        auto ended = invoke(*it, false);
-        if (!failure) failure = std::move(ended);
+    // Clear before invoking: End is attempted exactly once, including failures.
+    for (auto i = last; i-- > first;) {
+        const auto entity = members[i].id();
+        auto& group = states[i].components;
+        for (auto it = group.rbegin(); it != group.rend(); ++it) {
+            if ((component != ObjectId{} && it->id != component) || !it->begun) continue;
+            it->begun = false;
+            schedule_dirty = true;
+            auto ended = invoke({it->id, entity, it->behavior}, false);
+            if (!failure) failure = std::move(ended);
+        }
+        if (component == ObjectId{} && states[i].begun) {
+            states[i].begun = false;
+            schedule_dirty = true;
+            auto ended = invoke({entity, entity, states[i].behavior}, false);
+            if (!failure) failure = std::move(ended);
+        }
     }
     return failure;
 }
@@ -152,14 +157,10 @@ std::optional<Error> World::Impl::shutdown() {
     auto failure = end();
     // Keep the graph and registration indexes available to cleanup observers.
     // Reverse the current composition order, including after running reparent.
-    if (was_running) for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
-        if (it->object != it->entity) continue;
-        auto eligible = effective_enabled(runtime, it->entity);
-        if (!eligible) { if (!failure) failure = eligible.error(); continue; }
-        if (*eligible) {
-            auto notified = notify(Lifecycle::deactivated, it->entity);
-            if (!failure) failure = std::move(notified);
-        }
+    if (was_running) for (auto i = members.size(); i-- > 0;) {
+        if (!states[i].eligible) continue;
+        auto notified = notify(Lifecycle::deactivated, members[i].id());
+        if (!failure) failure = std::move(notified);
     }
     return failure;
 }
@@ -167,21 +168,11 @@ Result<Commit> World::start() {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
     if (state.running) return Commit{};
-    state.prepare_activity();
     state.running = true;
-    auto refreshed = state.refresh();
-    if (!refreshed) return state.finish(true, refreshed.error());
+    state.changed(false);
     auto failure = state.begin();
-    if (!failure) { auto active = state.refresh(); if (!active) failure = active.error(); }
-    if (!failure) for (const auto& item : state.ordered) {
-        if (item.object != item.entity) continue;
-        auto eligible = effective_enabled(runtime(), item.entity);
-        if (!eligible) { failure = eligible.error(); break; }
-        if (*eligible) {
-            failure = state.notify(Lifecycle::activated, item.entity);
-            if (failure) break;
-        }
-    }
+    for (std::size_t i = 0; !failure && i < state.members.size(); ++i)
+        if (state.states[i].eligible) failure = state.notify(Lifecycle::activated, state.members[i].id());
     return state.finish(true, std::move(failure));
 }
 Result<Commit> World::stop() {
@@ -200,6 +191,12 @@ Result<Commit> World::close() {
     // closing blocks mutation, but deactivated observers still need read-only
     // access to the complete registered graph to release subsystem state.
     auto failure = state.shutdown();
+    std::vector<ObjectId> exiting;
+    for (auto i = state.members.size(); i-- > 0;) {
+        const auto& group = state.states[i].components;
+        for (auto it = group.rbegin(); it != group.rend(); ++it) exiting.push_back(it->id);
+        exiting.push_back(state.members[i].id());
+    }
     {
         detail::FlagScope transition{state.transitioning};
         for (const auto& member : state.members) {
@@ -208,14 +205,15 @@ Result<Commit> World::close() {
             });
             if (!cleared && !failure) failure = cleared.error();
         }
-        state.presentation.clear();state.buckets.clear();state.positions.clear();
+        state.states.clear(); state.buckets.clear(); state.positions.clear();
+        state.changed();
     }
     // Member roots retain every object until all reverse deregistrations finish.
     // The public directory is already empty and every object is Detached.
     auto roots = std::move(state.members);
-    auto exiting = std::move(state.ordered);
-    for (auto it = exiting.rbegin(); it != exiting.rend(); ++it) {
-        auto notified = state.notify(Lifecycle::detached, it->object);
+    state.members.clear();
+    for (const auto object : exiting) {
+        auto notified = state.notify(Lifecycle::detached, object);
         if (!failure) failure = std::move(notified);
     }
     state.closed = true;
@@ -243,10 +241,34 @@ Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     auto entity = runtime().is_a(type, types().entity);
     if (!entity) return std::unexpected(entity.error());
     if (!*component && !*entity) return error(ErrorCode::type_mismatch, "Behavior requires an Entity or Component type.");
-    auto found = std::ranges::find(impl_->behaviors, type, &Impl::Binding::type);
-    if (found == impl_->behaviors.end()) impl_->behaviors.push_back({type, std::move(binding)});
-    else found->behavior = std::move(binding);
-    return impl_->refresh();
+    auto& state = *impl_;
+    auto found = std::ranges::find(state.behaviors, type, &Impl::Binding::type);
+    if (found != state.behaviors.end()) {
+        // Same address and type resolution; only the callbacks change.
+        found->behavior = std::move(binding);
+        state.changed(false);
+        return {};
+    }
+    // Bindings keep their addresses, so a failed re-resolution leaves every registration valid.
+    state.behaviors.push_back({type, std::move(binding)});
+    std::vector<const Behavior*> resolved;
+    for (const auto& member : state.states) {
+        auto own = state.behavior(member.type);
+        if (!own) { state.behaviors.pop_back(); return std::unexpected(own.error()); }
+        resolved.push_back(*own);
+        for (const auto& item : member.components) {
+            auto bound = state.behavior(item.type);
+            if (!bound) { state.behaviors.pop_back(); return std::unexpected(bound.error()); }
+            resolved.push_back(*bound);
+        }
+    }
+    auto next = resolved.begin();
+    for (auto& member : state.states) {
+        member.behavior = *next++;
+        for (auto& item : member.components) item.behavior = *next++;
+    }
+    state.changed(false);
+    return {};
 }
 Result<void> World::observe_lifecycle(LifecycleObserver observer) {
     if (auto ready = impl_->admit(); !ready) return ready;
@@ -318,6 +340,7 @@ Result<void> World::update(float amount) {
     if (auto ready = state.admit(); !ready) return ready;
     if (!std::isfinite(amount) || amount < 0.f) return error(ErrorCode::argument_mismatch, "World update amount must be finite and nonnegative.");
     if (!state.running) return {};
+    if (state.schedule_dirty) state.rebuild_schedule();
     std::optional<Error> failure;
     {
         auto execution = ExecutionScope::enter(runtime());

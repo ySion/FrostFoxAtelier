@@ -250,19 +250,28 @@ Result<void> ComponentSimulation::removed(ObjectId object,bool detached) try {
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::reconcile() try {
     auto& runtime=world_.runtime();
-    std::unordered_set<ObjectId> seen,membership;std::unordered_map<ObjectId,ObjectId> writers;
+    std::unordered_set<ObjectId> seen,owners;std::unordered_map<ObjectId,ObjectId> writers;
     std::vector<std::pair<Entry,bool>> desired_entries;
     const auto is=[&]<class T>(ObjectId id) {return take(runtime.is_a(take(runtime.type_of(id)),take(runtime.native_type<T>())));};
-    const auto members=take(world_.members());
-    for(const auto& member:members) membership.insert(member.id());
+    const auto membership=[&](ObjectId id) {return world_.contains(id);};
+    // Only owners of controller components can produce entries; visit them in member order.
+    const auto add_owners=[&]<class T>() {
+        for(auto component:take(world_.query(take(runtime.native_type<T>())))) owners.insert(take(world::inspect_component(runtime,component)).owner);
+    };
+    add_owners.template operator()<CharacterComponent>();add_owners.template operator()<RagdollComponent>();
+    add_owners.template operator()<VehicleComponent>();add_owners.template operator()<DistanceConstraintComponent>();
+    add_owners.template operator()<ForceComponent>();add_owners.template operator()<KinematicMotionComponent>();
+    add_owners.template operator()<SceneQueryComponent>();
+    // A member's existing body or special controller claims its pose before any desired claim.
     const auto claim=[&](ObjectId entity,ObjectId writer) {
+        if(!writers.contains(entity) && membership(entity))
+            if(const auto current=scene_.pose_writer(entity);current!=ObjectId{}) writers.emplace(entity,current);
         auto [at,added]=writers.try_emplace(entity,writer);
         require(added || at->second==writer,"An Entity may have only one active physics pose writer.");
     };
+    const auto members=owners.empty()?std::span<const world::Member>{}:take(world_.members());
     for(const auto& member:members) {
-        if(const auto writer=scene_.pose_writer(member.id());writer!=ObjectId{}) claim(member.id(),writer);
-    }
-    for(const auto& member:members) {
+        if(!owners.contains(member.id())) continue;
         if(take(world::inspect_entity(runtime,member.id())).state!=world::EntityState::active) continue;
         if(!take(world::has_transform(runtime,member.id()))) continue;
         const auto group=take(world::components(runtime,member.id()));std::set<Kind> unique;
@@ -280,7 +289,7 @@ Result<void> ComponentSimulation::reconcile() try {
             if(kind!=Kind::distance && kind!=Kind::force && kind!=Kind::query) require(unique.insert(kind).second,"Duplicate physics controller on one Entity.");
             Entry desired{kind,member.id(),item.id()};bool available=true;
             for(auto node=member.id();node!=ObjectId{};) {
-                require(membership.contains(node),"Physics spatial origin belongs to another World or is detached.");
+                require(membership(node),"Physics spatial origin belongs to another World or is detached.");
                 desired.ancestors.push_back(node);
                 node=take(world::spatial_parent(runtime,node));
             }
@@ -291,7 +300,7 @@ Result<void> ComponentSimulation::reconcile() try {
                 for(auto target:desired.targets) {
                     require(target!=ObjectId{} && targets.insert(target).second,"Physics bindings require distinct non-null Entities.");
                     const auto target_status=take(world::inspect_entity(runtime,target));
-                    if(!membership.contains(target)) {
+                    if(!membership(target)) {
                         require(target_status.state!=world::EntityState::active,"Physics binding Entity belongs to another World.");
                         available=false;continue;
                     }
@@ -318,12 +327,12 @@ Result<void> ComponentSimulation::reconcile() try {
             }
             if(kind==Kind::distance) {
                 desired.target=take(constraint_target(runtime,item.id()));
-                if(desired.target!=ObjectId{} && !membership.contains(desired.target)) {
+                if(desired.target!=ObjectId{} && !membership(desired.target)) {
                     auto status=world::inspect_entity(runtime,desired.target);
                     require(!status || status->state!=world::EntityState::active,"Constraint target belongs to another World.");
                 }
                 auto other=scene_.body_handle(desired.target);
-                if(other && membership.contains(desired.target)) desired.other_body=*other;else available=false;
+                if(other && membership(desired.target)) desired.other_body=*other;else available=false;
             }
             if(available) {
                 if(kind==Kind::character || kind==Kind::ragdoll) claim(member.id(),member.id());

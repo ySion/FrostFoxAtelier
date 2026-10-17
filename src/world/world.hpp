@@ -46,7 +46,6 @@ private:
     bool world_origin_{};
     World* member_world_{};
     bool enabled_{true};
-    bool begun_{};
     bool transitioning_{};
 };
 
@@ -69,7 +68,6 @@ private:
     AFIELD(Name="owner", Hidden, Strong="world.Entity")
     ReferenceSlot owner_;
     bool enabled_{true};
-    bool begun_{};
 };
 
 AENUM(Name="world.CollisionShape", DESC="碰撞几何的种类：Box、Sphere、Capsule 或 Triangle Mesh。Triangle Mesh 使用网格资源，只支持 Stationary body。")
@@ -437,6 +435,7 @@ public:
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool closed() const noexcept;
     [[nodiscard]] Activity activity() const noexcept;
+    [[nodiscard]] bool contains(ObjectId entity) const noexcept;
     // Borrow ends at the next structural change. Queries during a transition fail.
     [[nodiscard]] Result<std::span<const Member>> members() const;
     [[nodiscard]] Result<std::vector<ObjectId>> query(TypeId, bool include_derived = true) const;

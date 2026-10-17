@@ -1,5 +1,6 @@
 #include "world/detail.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <unordered_set>
 
@@ -61,6 +62,14 @@ Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
     return settings->kind != LightKind::sky;
 }
 Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
+    auto entity = detail::entity_data(runtime, object);
+    if (!entity) return std::unexpected(entity.error());
+    if (entity->world && !entity->transitioning) {
+        // Members use the World's eligibility, maintained with every enablement or composition change.
+        const auto& state = Access::state(*entity->world);
+        if (!state.transitioning)
+            if (const auto* member = state.state_of(object)) return member->eligible;
+    }
     std::unordered_set<ObjectId> seen;
     for (auto node = object; node != ObjectId{};) {
         if (!seen.insert(node).second) return error(ErrorCode::invalid_member, "Composition contains a cycle.");
@@ -148,6 +157,78 @@ Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
     }
     return result;
 }
+namespace {
+bool same_bits(const Trs& left, const Trs& right) noexcept {
+    const std::array<float, 10> a{left.position.x, left.position.y, left.position.z, left.rotation.x, left.rotation.y,
+        left.rotation.z, left.rotation.w, left.scale.x, left.scale.y, left.scale.z};
+    const std::array<float, 10> b{right.position.x, right.position.y, right.position.z, right.rotation.x, right.rotation.y,
+        right.rotation.z, right.rotation.w, right.scale.x, right.scale.y, right.scale.z};
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (std::bit_cast<std::uint32_t>(a[i]) != std::bit_cast<std::uint32_t>(b[i])) return false;
+    return true;
+}
+}
+void SpaceCache::clear() noexcept {
+    entries.clear();
+    relations.nodes.clear();
+    relations.matrices.clear();
+}
+Result<SpaceCache::Entry*> SpaceCache::resolve(ObjectId object) {
+    if (auto* found = entries.find(object)) return found;
+    auto node = relations.node(object);
+    if (!node) return std::unexpected(node.error());
+    Entry entry;
+    entry.spatial = (*node)->spatial;
+    auto parent = relations.parent(object);
+    if (!parent) return std::unexpected(parent.error());
+    entry.parent = *parent;
+    return entries.try_emplace(object, entry).value;
+}
+Result<ObjectId> SpaceCache::parent(ObjectId object) {
+    auto entry = resolve(object);
+    if (!entry) return std::unexpected(entry.error());
+    return (*entry)->parent;
+}
+Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
+    // Collect the chain up to world space or an ancestor already composed in this pass.
+    path.clear();
+    ObjectId composed{};
+    for (auto id = object;;) {
+        auto entry = resolve(id);
+        if (!entry) return std::unexpected(entry.error());
+        if (!(*entry)->spatial) return error(ErrorCode::invalid_member, "Entity has no Transform.");
+        if ((*entry)->checked == pass && (*entry)->composed) { composed = id; break; }
+        path.push_back(id);
+        if (path.size() > relations.nodes.size()) return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
+        if ((*entry)->parent == ObjectId{}) break;
+        id = (*entry)->parent;
+    }
+    auto parent_world = math::Matrix4::identity();
+    std::uint64_t parent_version{};
+    if (composed != ObjectId{}) {
+        const auto* entry = entries.find(composed);
+        parent_world = entry->world; parent_version = entry->version;
+    }
+    for (auto it = path.rbegin(); it != path.rend(); ++it) {
+        auto local = relations.runtime.with_native<Entity>(*it, [](Entity& entity) -> Result<Trs> {
+            return Trs{entity.position, entity.rotation, entity.scale};
+        });
+        if (!local) return std::unexpected(local.error());
+        auto* entry = entries.find(*it);
+        if (!entry->composed || entry->parent_version != parent_version || !same_bits(*local, entry->local)) {
+            entry->composed = false;
+            auto canonical = canonical_transform(*local);
+            if (!canonical) return std::unexpected(canonical.error());
+            auto world = multiply(transform_matrix(*canonical), parent_world);
+            if (!world) return std::unexpected(world.error());
+            entry->local = *local; entry->world = *world; entry->parent_version = parent_version;
+            ++entry->version; entry->composed = true;
+        }
+        entry->checked = pass;
+        parent_world = entry->world; parent_version = entry->version;
+    }
+    return entries.find(object)->world;
+}
 Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
     std::vector<ObjectRoot> result;
     std::vector<ObjectId> pending{object};
@@ -215,12 +296,27 @@ Result<void> clear_component(Runtime& runtime, ObjectId entity, ObjectId object,
     });
 }
 }
+namespace {
+// The member cache serves only an open World outside its own transitions.
+detail::SpaceCache* member_space(Runtime& runtime, ObjectId object) {
+    auto data = detail::entity_data(runtime, object);
+    if (!data || !data->world || data->transitioning) return nullptr;
+    auto& state = Access::state(*data->world);
+    if (!state.admit(false) || !state.positions.contains(object)) return nullptr;
+    return &state.space;
+}
+}
 Result<ObjectId> spatial_parent(Runtime& runtime, ObjectId object) {
+    if (auto* space = member_space(runtime, object)) return space->parent(object);
     detail::SpaceGraph graph{runtime};
     return graph.parent(object);
 }
 Result<math::Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
     if (object == ObjectId{}) return error(ErrorCode::invalid_object, "World matrix requires an Entity identity.");
+    if (auto* space = member_space(runtime, object)) {
+        space->begin_pass();
+        return space->matrix(object);
+    }
     detail::SpaceGraph graph{runtime};
     return graph.matrix(object);
 }
@@ -339,6 +435,8 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
     if (auto valid = graph.matrix(object); !valid) return std::unexpected(valid.error());
     return runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
         entity.position = canonical->position; entity.rotation = canonical->rotation; entity.scale = canonical->scale;
+        // Gaining space changes resolved parents below it; TRS values alone are revalidated per pass.
+        if (!Access::spatial(entity)) impl_->changed();
         Access::spatial(entity) = true;
         return {};
     });
@@ -395,6 +493,8 @@ Result<void> World::remove_transform(ObjectId object) {
         Access::explicit_origin(entity) = false;
         Access::world_origin(entity) = false;
         Access::spatial(entity) = false;
+        if (auto* member = data->world ? impl_->state_of(object) : nullptr) member->origin = {};
+        impl_->changed();
         return {};
     });
 }
@@ -439,6 +539,8 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
         if (auto changed = runtime().apply_reference_changes({&change, 1}); !changed) return changed;
         Access::explicit_origin(entity) = origin.has_value();
         Access::world_origin(entity) = origin && *origin == ObjectId{};
+        if (auto* member = data->world ? impl_->state_of(object) : nullptr) member->origin = origin.value_or(ObjectId{});
+        impl_->changed();
         return {};
     });
     if (!published) return std::unexpected(published.error());
@@ -506,12 +608,10 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
     if (parent == ObjectId{} && data->world) {
         std::vector<ObjectId> roots;
         std::size_t old_index{};
-        for (const auto& member : state.members) {
-            auto owner = parent_entity(runtime(), member.id());
-            if (!owner) return std::unexpected(owner.error());
-            if (*owner != ObjectId{}) continue;
-            if (member.id() == object) { old_index = roots.size(); continue; }
-            roots.push_back(member.id());
+        for (std::size_t i = 0; i < state.members.size(); i += state.states[i].size) {
+            const auto id = state.members[i].id();
+            if (id == object) { old_index = roots.size(); continue; }
+            roots.push_back(id);
         }
         const auto destination = index == append ? roots.size() : index;
         if (destination > roots.size()) return error(ErrorCode::argument_mismatch, "Root insertion index is out of range.");
@@ -547,17 +647,43 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
         if (!changes) return std::unexpected(changes.error());
         transforms = std::move(*changes);
     }
+    // The member range moves before the next sibling, or to its new parent's subtree end.
+    ObjectId next_sibling{};
+    if (data->world && parent != ObjectId{}) {
+        auto siblings = children(runtime(), parent);
+        if (!siblings) return std::unexpected(siblings.error());
+        std::vector<ObjectId> others;
+        others.reserve(siblings->size());
+        for (const auto& child : *siblings) if (child.id() != object) others.push_back(child.id());
+        const auto at = index == append ? others.size() : index;
+        if (at < others.size()) next_sibling = others[at];
+    }
     if (auto changed = assign_parent(runtime(), object, parent, index); !changed) return std::unexpected(changed.error());
+    if (data->world) {
+        detail::FlagScope transition{state.transitioning};
+        const auto first = *state.positions.find(object);
+        const auto count = state.states[first].size;
+        const auto previous_parent = state.states[first].parent;
+        auto target = state.members.size();
+        if (next_sibling != ObjectId{}) target = *state.positions.find(next_sibling);
+        else if (parent != ObjectId{}) { const auto at = *state.positions.find(parent); target = at + state.states[at].size; }
+        else if (root_before != ObjectId{}) target = *state.positions.find(root_before);
+        const auto move = [&](auto& values) {
+            const auto begin = values.begin();
+            if (target > first + count) std::rotate(begin + std::ptrdiff_t(first), begin + std::ptrdiff_t(first + count), begin + std::ptrdiff_t(target));
+            else if (target < first) std::rotate(begin + std::ptrdiff_t(target), begin + std::ptrdiff_t(first), begin + std::ptrdiff_t(first + count));
+        };
+        move(state.members); move(state.states);
+        state.reindex(std::min(first, target), std::max(first + count, target));
+        state.resize_ancestors(previous_parent, -std::ptrdiff_t(count));
+        state.resize_ancestors(parent, std::ptrdiff_t(count));
+        const auto moved = *state.positions.find(object);
+        state.states[moved].parent = parent;
+        state.refresh_eligibility(moved, count);
+        state.changed();
+    }
     if (auto changed = publish_transforms(runtime(), transforms); !changed) return state.finish(true, changed.error());
     if (!data->world) return Commit{true, {}};
-    if (parent == ObjectId{}) {
-        auto current = std::ranges::find_if(state.members, [&](const Member& item) { return item.id() == object; });
-        auto moved = std::move(*current);
-        state.members.erase(current);
-        auto destination = std::ranges::find_if(state.members, [&](const Member& item) { return item.id() == root_before; });
-        state.members.insert(destination, std::move(moved));
-    }
-    if (auto refreshed = state.refresh(); !refreshed) return state.finish(true, refreshed.error());
     std::optional<Error> failure;
     if (state.running) {
         for (std::size_t i = owned->size(); i-- > 0;) {
@@ -613,11 +739,8 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world,
         if (attachment.parent == ObjectId{}) {
             const auto index = attachment.index == append ? state.members.size() : attachment.index;
             if (index > state.members.size()) return error(ErrorCode::argument_mismatch, "Entity insertion index is out of range.");
-            if (index < state.members.size()) {
-                auto parent = parent_entity(runtime, state.members[index].id());
-                if (!parent) return std::unexpected(parent.error());
-                if (*parent != ObjectId{}) return error(ErrorCode::argument_mismatch, "Root insertion index must be at a root boundary.");
-            }
+            if (index < state.members.size() && state.states[index].parent != ObjectId{})
+                return error(ErrorCode::argument_mismatch, "Root insertion index must be at a root boundary.");
         } else {
             if (auto member = state.member(attachment.parent); !member) return std::unexpected(member.error());
             auto count = parent_sizes.find(attachment.parent);
@@ -696,7 +819,6 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     auto candidate = prepare_attachment_graph(*this, attachments, spaces);
     if (!candidate) return std::unexpected(candidate.error());
     auto& incoming = candidate->incoming;
-    auto& capabilities = candidate->capabilities;
     auto& tree_ranges = candidate->ranges;
     struct ParentPlan {
         ObjectId parent;
@@ -706,16 +828,10 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     };
     std::vector<ParentPlan> parents;
     std::unordered_map<ObjectId, std::size_t> parent_positions;
-    std::vector<std::pair<std::size_t, std::size_t>> root_insertions;
-    std::unordered_set<ObjectId> ids;
-    for (const auto& root : incoming) ids.insert(root.id());
     for (std::size_t i = 0; i < attachments.size(); ++i) {
         const auto& attachment = attachments[i];
         const auto parent = attachment.parent;
-        if (parent == ObjectId{}) {
-            const auto index = attachment.index == append ? state.members.size() : attachment.index;
-            root_insertions.emplace_back(index, i);
-        } else {
+        if (parent != ObjectId{}) {
             auto at = parent_positions.find(parent);
             if (at == parent_positions.end()) {
                 auto existing = children(runtime(), parent);
@@ -729,9 +845,55 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             plan.insertions.emplace_back(index, i);
         }
     }
-    state.members.reserve(state.members.size() + incoming.size());
-    state.positions.reserve(state.positions.size() + incoming.size());
-    state.prepare_activity(incoming.size() + capabilities.size());
+    // Derive arriving member state and final preorder positions before any
+    // relation commits; the commit itself only moves prepared values.
+    std::unordered_map<ObjectId, std::size_t> arriving_index;
+    std::vector<Impl::MemberState> arriving;
+    arriving.reserve(incoming.size());
+    arriving_index.reserve(incoming.size());
+    for (std::size_t i = 0; i < incoming.size(); ++i) {
+        const auto& node = candidate->space.nodes.at(incoming[i].id());
+        auto derived = state.derive(incoming[i].id(), node.parent, node.origin.value_or(ObjectId{}));
+        if (!derived) return std::unexpected(derived.error());
+        arriving.push_back(std::move(*derived));
+        arriving_index.emplace(incoming[i].id(), i);
+    }
+    // Each incoming tree is preorder, so subtree sizes accumulate from its back.
+    for (const auto& [first, count] : tree_ranges)
+        for (auto i = first + count; i-- > first + 1;) arriving[arriving_index.at(arriving[i].parent)].size += arriving[i].size;
+    // A tree enters before an existing next sibling, at its parent's subtree
+    // end, or at a root boundary. Equal gaps order deeper parents first, then input.
+    struct Insertion { std::size_t at, depth, attachment; };
+    std::vector<Insertion> insertions;
+    insertions.reserve(attachments.size());
+    for (std::size_t i = 0; i < attachments.size(); ++i) {
+        const auto& attachment = attachments[i];
+        if (attachment.parent == ObjectId{}) {
+            insertions.push_back({attachment.index == append ? state.members.size() : attachment.index, 0, i});
+            continue;
+        }
+        auto parent = state.member(attachment.parent);
+        if (!parent) return std::unexpected(parent.error());
+        const auto& plan = parents[parent_positions.at(attachment.parent)];
+        const auto child = attachment.index == append ? plan.existing.size() : attachment.index;
+        auto at = child < plan.existing.size() ? state.member(plan.existing[child].id()) : Result<std::size_t>{*parent + state.states[*parent].size};
+        if (!at) return std::unexpected(at.error());
+        std::size_t depth = 1;
+        for (auto id = state.states[*parent].parent; id != ObjectId{}; id = state.states[*state.positions.find(id)].parent) ++depth;
+        insertions.push_back({*at, depth, i});
+    }
+    std::ranges::sort(insertions, [](const Insertion& left, const Insertion& right) {
+        if (left.at != right.at) return left.at < right.at;
+        if (left.depth != right.depth) return left.depth > right.depth;
+        return left.attachment < right.attachment;
+    });
+    const auto total = state.members.size() + incoming.size();
+    std::vector<Member> next_members;
+    std::vector<Impl::MemberState> next_states;
+    std::vector<std::size_t> starts(attachments.size());
+    next_members.reserve(total);
+    next_states.reserve(total);
+    state.positions.reserve(total);
     // Build one complete sequence per existing parent. Indices refer to the
     // original sequence, so same-position roots preserve input order.
     const auto by_index = [](const auto& left, const auto& right) { return left.first < right.first; };
@@ -747,37 +909,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             if (index < plan.existing.size()) plan.references.push_back(plan.existing[index].reference());
         }
     }
-    // Prepare the whole member directory before committing any parent relation.
-    std::vector<Member> publication;
-    publication.reserve(state.members.size() + incoming.size());
-    const auto add_member = [&](ObjectId id) -> Result<void> {
-        auto held = runtime().hold(id);
-        if (!held) return std::unexpected(held.error());
-        publication.push_back({std::move(*held)});
-        return {};
-    };
-    const auto add_tree = [&](std::size_t attachment_index) -> Result<void> {
-        const auto [first, count] = tree_ranges[attachment_index];
-        for (std::size_t i = first; i < first + count; ++i) {
-            if (auto added = add_member(incoming[i].id()); !added) return added;
-        }
-        return {};
-    };
-    std::stable_sort(root_insertions.begin(), root_insertions.end(), by_index);
-    std::size_t insertion{};
-    for (std::size_t index = 0; index <= state.members.size(); ++index) {
-        while (insertion < root_insertions.size() && root_insertions[insertion].first == index) {
-            if (auto added = add_tree(root_insertions[insertion++].second); !added) return std::unexpected(added.error());
-        }
-        if (index < state.members.size()) {
-            if (auto added = add_member(state.members[index].id()); !added) return std::unexpected(added.error());
-        }
-    }
-    for (std::size_t i = 0; i < attachments.size(); ++i) if (attachments[i].parent != ObjectId{})
-        if (auto added = add_tree(i); !added) return std::unexpected(added.error());
     // Borrow all native membership locations before the reference transaction.
     // The outer borrow keeps those addresses valid through the nonthrowing
-    // membership writes and directory swap; no native pointer escapes it.
+    // membership writes and directory moves; no native pointer escapes it.
     auto published = runtime().with_native<Entity>(incoming.front().id(), [&](Entity&) -> Result<void> {
         std::vector<Entity*> entities;
         entities.reserve(incoming.size());
@@ -842,27 +976,56 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             Access::world_origin(*flags.entity) = flags.world_origin;
         }
         for (auto* entity : entities) Access::member_world(*entity) = this;
-        state.members.swap(publication);
+        std::size_t source{};
+        const auto keep = [&](std::size_t until) {
+            for (; source < until; ++source) {
+                next_members.push_back(std::move(state.members[source]));
+                next_states.push_back(std::move(state.states[source]));
+            }
+        };
+        for (const auto& insertion : insertions) {
+            keep(insertion.at);
+            const auto [first, count] = tree_ranges[insertion.attachment];
+            starts[insertion.attachment] = next_members.size();
+            for (auto i = first; i < first + count; ++i) {
+                next_members.push_back({std::move(incoming[i])});
+                next_states.push_back(std::move(arriving[i]));
+            }
+        }
+        keep(state.members.size());
+        state.members.swap(next_members);
+        state.states.swap(next_states);
+        state.reindex(insertions.front().at, total);
+        for (std::size_t i = 0; i < attachments.size(); ++i) {
+            const auto count = tree_ranges[i].second;
+            state.resize_ancestors(attachments[i].parent, std::ptrdiff_t(count));
+            state.refresh_eligibility(starts[i], count);
+        }
+        state.changed();
         return {};
     });
     if (!published) return std::unexpected(published.error());
-    auto refreshed = state.refresh();
-    if (!refreshed) return state.finish(true, refreshed.error());
+    // Callbacks observe arriving trees in final composition order.
+    std::vector<std::size_t> order(attachments.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::ranges::sort(order, {}, [&](std::size_t i) { return starts[i]; });
     std::optional<Error> failure;
-    for (const auto& item : state.ordered) if (ids.contains(item.entity)) {
-        auto notified = state.notify(Lifecycle::attached, item.object);
-        if (!failure) failure = std::move(notified);
-    }
+    for (const auto i : order)
+        for (auto at = starts[i]; at < starts[i] + tree_ranges[i].second; ++at) {
+            auto notified = state.notify(Lifecycle::attached, state.members[at].id());
+            if (!failure) failure = std::move(notified);
+            for (const auto& item : state.states[at].components) {
+                notified = state.notify(Lifecycle::attached, item.id);
+                if (!failure) failure = std::move(notified);
+            }
+        }
     if (!failure && state.running) failure = state.begin();
-    if (!failure) if (auto active = state.refresh(); !active) failure = active.error();
-    if (!failure && state.running) for (const auto& item : state.ordered) if (item.object == item.entity && ids.contains(item.entity)) {
-        auto eligible = effective_enabled(runtime(), item.entity);
-        if (!eligible) { failure = eligible.error(); break; }
-        if (*eligible) if (auto notified = state.notify(Lifecycle::activated, item.entity)) { failure = std::move(notified); break; }
-    }
+    if (state.running)
+        for (const auto i : order)
+            for (auto at = starts[i]; !failure && at < starts[i] + tree_ranges[i].second; ++at)
+                if (state.states[at].eligible) failure = state.notify(Lifecycle::activated, state.members[at].id());
     return state.finish(true, std::move(failure));
 }
-
 Result<EntityRemoval> World::detach(ObjectId object) {
     auto removed = detach_batch(std::span<const ObjectId>{&object, 1});
     if (!removed) return std::unexpected(removed.error());
@@ -877,57 +1040,53 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         std::vector<ObjectRoot> existing;
         std::vector<ObjectReference> references;
     };
+    struct Range { std::size_t at, count; ObjectId parent; };
     std::vector<ParentPlan> parents;
     std::unordered_map<ObjectId, std::size_t> parent_positions;
     std::vector<EntityRemoval> removals;
     removals.reserve(roots.size());
-    std::vector<ObjectRoot> owned;
+    std::vector<Range> ranges;
+    ranges.reserve(roots.size());
     std::unordered_set<ObjectId> ids, root_ids;
     for (const auto object : roots) {
         auto at = state.member(object);
         if (!at) return std::unexpected(at.error());
-        auto tree = detail::subtree(runtime(), object);
-        if (!tree) return std::unexpected(tree.error());
+        const auto count = state.states[*at].size;
+        const auto parent = state.states[*at].parent;
         auto held = runtime().hold(object);
         if (!held) return std::unexpected(held.error());
-        auto parent = parent_entity(runtime(), object);
-        if (!parent) return std::unexpected(parent.error());
         EntityRemoval removal;
-        removal.root = std::move(*held); removal.index = *at; removal.parent = *parent;
-        removal.member_count = tree->size(); removal.origin_ = state.lifetime;
-        if (*parent != ObjectId{}) {
-            if (auto member = state.member(*parent); !member) return std::unexpected(member.error());
-            auto plan = parent_positions.find(*parent);
+        removal.root = std::move(*held); removal.index = *at; removal.parent = parent;
+        removal.member_count = count; removal.origin_ = state.lifetime;
+        if (parent != ObjectId{}) {
+            auto plan = parent_positions.find(parent);
             if (plan == parent_positions.end()) {
-                auto existing = children(runtime(), *parent);
+                auto existing = children(runtime(), parent);
                 if (!existing) return std::unexpected(existing.error());
                 const auto position = parents.size();
-                parents.push_back({*parent, std::move(*existing), {}});
-                plan = parent_positions.emplace(*parent, position).first;
+                parents.push_back({parent, std::move(*existing), {}});
+                plan = parent_positions.emplace(parent, position).first;
             }
             const auto& siblings = parents[plan->second].existing;
             auto found = std::ranges::find_if(siblings, [&](const auto& item) { return item.id() == object; });
             if (found == siblings.end()) return error(ErrorCode::invalid_member, "Entity is absent from its parent.");
             removal.sibling_index = std::size_t(found - siblings.begin());
         }
-        for (auto& root : *tree) {
-            if (!ids.insert(root.id()).second) return error(ErrorCode::invalid_member, "Detach contains overlapping subtrees.");
-            auto member = state.composition_entity(root.id());
-            if (!member) return std::unexpected(member.error());
-            if (member->world != this) return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
-            if (auto indexed = state.member(root.id()); !indexed) return std::unexpected(indexed.error());
-            owned.push_back(std::move(root));
+        for (auto i = *at; i < *at + count; ++i) {
+            const auto id = state.members[i].id();
+            if (!ids.insert(id).second) return error(ErrorCode::invalid_member, "Detach contains overlapping subtrees.");
+            if (auto member = state.composition_entity(id); !member) return std::unexpected(member.error());
         }
         root_ids.insert(object);
+        ranges.push_back({*at, count, parent});
         removals.push_back(std::move(removal));
     }
     // Retained members must keep valid spatial targets. Departing objects keep
     // their authored weak origins even when Detached space cannot be evaluated;
     // a later attachment validates the complete prospective membership again.
-    for (const auto& member : state.members) {
-        auto origin = space_reference(runtime(), member.id());
-        if (!origin) return std::unexpected(origin.error());
-        if (*origin && **origin != ObjectId{} && !ids.contains(member.id()) && ids.contains(**origin))
+    for (std::size_t i = 0; i < state.members.size(); ++i) {
+        const auto origin = state.states[i].origin;
+        if (origin != ObjectId{} && ids.contains(origin) && !ids.contains(state.members[i].id()))
             return error(ErrorCode::invalid_member, "Rebind external spatial dependencies before detaching the forest.");
     }
     // Prepare complete parent sequences and the surviving member directory
@@ -939,48 +1098,44 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
     }
     auto null_parent = runtime().null_reference(types().entity, ValueForm::weak_reference);
     if (!null_parent) return std::unexpected(null_parent.error());
-    std::vector<Member> publication;
-    publication.reserve(state.members.size() - owned.size());
-    for (const auto& member : state.members) if (!ids.contains(member.id())) {
-        auto held = runtime().hold(member.id());
-        if (!held) return std::unexpected(held.error());
-        publication.push_back({std::move(*held)});
-    }
-    std::vector<Impl::Scheduled> exiting;
-    exiting.reserve(state.ordered.size());
-    for (const auto& item : state.ordered) if (ids.contains(item.entity)) exiting.push_back(item);
-    std::vector<ObjectId> eligible;
-    eligible.reserve(owned.size());
-    for (const auto& item : exiting) if (item.object == item.entity) {
-        auto active = effective_enabled(runtime(), item.entity);
-        if (!active) return std::unexpected(active.error());
-        if (*active) eligible.push_back(item.entity);
-    }
-    for (const auto& root : owned) state.cancel_tasks(root.id());
+    std::ranges::sort(ranges, {}, &Range::at);
+    std::vector<ObjectId> exiting;
+    for (auto range = ranges.rbegin(); range != ranges.rend(); ++range)
+        for (auto i = range->at + range->count; i-- > range->at;) {
+            const auto& group = state.states[i].components;
+            for (auto it = group.rbegin(); it != group.rend(); ++it) exiting.push_back(it->id);
+            exiting.push_back(state.members[i].id());
+        }
+    std::vector<Member> next_members, departed;
+    std::vector<Impl::MemberState> next_states;
+    next_members.reserve(state.members.size() - ids.size());
+    next_states.reserve(state.members.size() - ids.size());
+    departed.reserve(ids.size());
+    for (const auto& range : ranges)
+        for (auto i = range.at; i < range.at + range.count; ++i) state.cancel_tasks(state.members[i].id());
     std::optional<Error> failure;
-    for (auto it = exiting.rbegin(); it != exiting.rend(); ++it) {
-        auto started = state.begun(*it);
-        if (!started) { if (!failure) failure = started.error(); continue; }
-        if (!*started) continue;
-        auto marked = state.mark_begun(*it, false);
-        if (!marked) { if (!failure) failure = marked.error(); continue; }
-        auto ended = state.invoke(*it, false);
+    for (auto range = ranges.rbegin(); range != ranges.rend(); ++range) {
+        auto ended = state.end(range->at, range->at + range->count);
         if (!failure) failure = std::move(ended);
     }
-    if (state.running) for (auto it = eligible.rbegin(); it != eligible.rend(); ++it) {
-        auto notified = state.notify(Lifecycle::deactivated, *it);
-        if (!failure) failure = std::move(notified);
-    }
+    if (state.running)
+        for (auto range = ranges.rbegin(); range != ranges.rend(); ++range)
+            for (auto i = range->at + range->count; i-- > range->at;) {
+                if (!state.states[i].eligible) continue;
+                auto notified = state.notify(Lifecycle::deactivated, state.members[i].id());
+                if (!failure) failure = std::move(notified);
+            }
     // All native locators and membership pointers stay within one outer borrow.
-    auto published = runtime().with_native<Entity>(owned.front().id(), [&](Entity&) -> Result<void> {
+    auto published = runtime().with_native<Entity>(roots.front(), [&](Entity&) -> Result<void> {
         std::vector<Entity*> entities;
-        entities.reserve(owned.size());
-        for (const auto& root : owned) {
-            auto borrowed = runtime().with_native<Entity>(root.id(), [&](Entity& entity) -> Result<void> {
-                entities.push_back(&entity); return {};
-            });
-            if (!borrowed) return borrowed;
-        }
+        entities.reserve(ids.size());
+        for (const auto& range : ranges)
+            for (auto i = range.at; i < range.at + range.count; ++i) {
+                auto borrowed = runtime().with_native<Entity>(state.members[i].id(), [&](Entity& entity) -> Result<void> {
+                    entities.push_back(&entity); return {};
+                });
+                if (!borrowed) return borrowed;
+            }
         std::vector<ReferenceChange> changes;
         changes.reserve(parents.size() + roots.size());
         for (const auto& plan : parents) {
@@ -1000,7 +1155,27 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         detail::FlagScope transition{state.transitioning};
         if (auto changed = runtime().apply_reference_changes(changes); !changed) return changed;
         for (auto* entity : entities) Access::member_world(*entity) = nullptr;
-        state.members.swap(publication);
+        // Departing member roots stay alive until the detached notifications finish.
+        std::size_t source{};
+        const auto keep = [&](std::size_t until) {
+            for (; source < until; ++source) {
+                next_members.push_back(std::move(state.members[source]));
+                next_states.push_back(std::move(state.states[source]));
+            }
+        };
+        for (const auto& range : ranges) {
+            keep(range.at);
+            for (; source < range.at + range.count; ++source) {
+                state.positions.remove(state.members[source].id());
+                departed.push_back(std::move(state.members[source]));
+            }
+        }
+        keep(state.members.size());
+        state.members.swap(next_members);
+        state.states.swap(next_states);
+        state.reindex(ranges.front().at, state.members.size());
+        for (const auto& range : ranges) state.resize_ancestors(range.parent, -std::ptrdiff_t(range.count));
+        state.changed();
         return {};
     });
     if (!published) {
@@ -1008,9 +1183,8 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         auto stopped = state.finish(false, std::move(failure));
         return std::unexpected(std::move(*stopped.notification_error));
     }
-    if (auto refreshed = state.refresh(); !refreshed && !failure) failure = refreshed.error();
-    for (auto it = exiting.rbegin(); it != exiting.rend(); ++it) {
-        auto notified = state.notify(Lifecycle::detached, it->object);
+    for (const auto object : exiting) {
+        auto notified = state.notify(Lifecycle::detached, object);
         if (!failure) failure = std::move(notified);
     }
     const auto commit = state.finish(true, std::move(failure));

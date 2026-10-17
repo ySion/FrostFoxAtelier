@@ -57,10 +57,7 @@ std::unexpected<Error> failure(ErrorCode code, const char* message) {
 Result<void> validate_active_entity(world::World& world, ObjectId entity) {
     auto state = world::inspect_entity(world.runtime(), entity);
     if (!state) return std::unexpected(state.error());
-    auto members = world.members();
-    if (!members) return std::unexpected(members.error());
-    if (state->state != world::EntityState::active ||
-        std::ranges::none_of(*members, [entity](const auto& member) { return member.id() == entity; }))
+    if (state->state != world::EntityState::active || !world.contains(entity))
         return failure(ErrorCode::invalid_member, "Physics Entity must be active in this World.");
     return {};
 }
@@ -554,7 +551,7 @@ void PhysicsScene::remove_special(ObjectId entity) noexcept {
         impl_->ragdolls.erase(found);
     }
 }
-Result<void> PhysicsScene::reconcile(ObjectId entity,const std::unordered_set<ObjectId>* membership) {
+Result<void> PhysicsScene::reconcile(ObjectId entity) {
     auto& runtime=world_.runtime();
     auto status=world::inspect_entity(runtime,entity);if(!status) return std::unexpected(status.error());
     ObjectId candidate;unsigned drivers=0;
@@ -577,9 +574,9 @@ Result<void> PhysicsScene::reconcile(ObjectId entity,const std::unordered_set<Ob
         if(drivers+unsigned(candidate!=ObjectId{})>1) return failure(ErrorCode::invalid_member,"An Entity may have only one active physics pose writer.");
     } else remove_special(entity);
     if(auto current=impl_->entity_bodies.find(entity);current!=impl_->entity_bodies.end() && current->second!=candidate) remove(current->second);
-    return candidate==ObjectId{}?Result<void>{}:reconcile_component(entity,candidate,membership);
+    return candidate==ObjectId{}?Result<void>{}:reconcile_component(entity,candidate);
 }
-Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId component,const std::unordered_set<ObjectId>* membership) {
+Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId component) {
     auto& runtime=world_.runtime();
     auto settings=read_settings(runtime,component);
     if (!settings) return std::unexpected(settings.error());
@@ -587,16 +584,9 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     if (!settings->enabled) {remove(component);return {};}
     auto spatial=world::has_transform(runtime,entity);if(!spatial) return std::unexpected(spatial.error());
     if(!*spatial) return failure(ErrorCode::invalid_member,"A Primitive requires a spatial owner Entity.");
-    std::unordered_set<ObjectId> current_members;
-    if(!membership) {
-        auto members=world_.members();if(!members) return std::unexpected(members.error());
-        current_members.reserve(members->size());
-        for(const auto& member:*members) current_members.insert(member.id());
-        membership=&current_members;
-    }
     std::vector<ObjectId> ancestors;
     for(auto node=entity;node!=ObjectId{};) {
-        if(!membership->contains(node)) return failure(ErrorCode::invalid_member,"Physics spatial origin belongs to another World or is detached.");
+        if(!world_.contains(node)) return failure(ErrorCode::invalid_member,"Physics spatial origin belongs to another World or is detached.");
         ancestors.push_back(node);
         auto status=world::inspect_entity(runtime,node);if(!status) return std::unexpected(status.error());
         if(node==entity && status->state!=world::EntityState::active) {remove(component);return {};}
@@ -740,12 +730,38 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
         single_step_ = false;
         return StepResult{.completed_step = completed_step_};
     }
-    auto members = world_.members();
-    if (!members) return std::unexpected(members.error());
-    std::unordered_set<ObjectId> membership;membership.reserve(members->size());
-    for(const auto& member:*members) membership.insert(member.id());
-    for (const auto& member : *members)
-        if (auto found = reconcile(member.id(),&membership); !found) return std::unexpected(found.error());
+    // Body settings are sampled every frame, including direct field writes.
+    // Other members hold no body or pose driver, so reconcile is a no-op for them.
+    auto& runtime = world_.runtime();
+    std::unordered_set<ObjectId> candidates;
+    for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
+    for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
+    for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
+    const auto add_owners = [&](TypeId type, bool body) -> Result<void> {
+        auto found = world_.query(type);
+        if (!found) return std::unexpected(found.error());
+        for (const auto component : *found) {
+            if (body) {
+                auto settings = read_settings(runtime, component);
+                if (!settings) return std::unexpected(settings.error());
+                if (!settings->enabled) continue;
+            }
+            auto status = world::inspect_component(runtime, component);
+            if (!status) return std::unexpected(status.error());
+            candidates.insert(status->owner);
+        }
+        return {};
+    };
+    if (auto added = add_owners(world_.types().primitive_component, true); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(types_.character_component, false); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(types_.ragdoll_component, false); !added) return std::unexpected(added.error());
+    if (!candidates.empty()) {
+        auto members = world_.members();
+        if (!members) return std::unexpected(members.error());
+        for (const auto& member : *members)
+            if (candidates.contains(member.id()))
+                if (auto found = reconcile(member.id()); !found) return std::unexpected(found.error());
+    }
     if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
     constexpr float fixed = 1.f / 60.f;
     constexpr std::uint32_t maximum_steps = 8;
