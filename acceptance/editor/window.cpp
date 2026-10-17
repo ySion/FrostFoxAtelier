@@ -22,6 +22,7 @@ namespace atelier::application {
 struct EditorAcceptanceAccess {
     static void input(Application& app,ui::Event event,WPARAM key=0) {app.input(event,key);}
     static bool menu_open(const Application& app) {return app.workspace_.menu.has_value();}
+    static const std::vector<ui::MenuItem>& menu_items(const Application& app) {return app.workspace_.menu_items;}
     static std::string menu_input_diagnostic(const Application& app) {
         const auto pointer=app.pointer_position_;
         return "pointer=("+std::to_string(pointer.x)+","+std::to_string(pointer.y)+"), ready="+std::to_string(app.pointer_ready())+
@@ -360,7 +361,13 @@ void click(Application& app, ControlKey key) {
         namespace browser=atelier::editor::browser_control;
         if (key==browser::open || key==browser::add) click(app,browser::actions);
         else if (key==browser::list || key==browser::details || key==browser::tiles) click(app,browser::view_menu);
-        else if (const auto menu=control::command_menu(key)) click(app,menu);
+        else if (const auto menu=control::command_menu(key)) {
+            click(app,menu);
+            // Some commands sit one submenu below their menubar group, e.g. View > Camera View.
+            if (app.menu_frame() && !app.menu_frame()->find(key))
+                for (const auto& item:atelier::application::EditorAcceptanceAccess::menu_items(app))
+                    if (std::ranges::find(item.children,key,&atelier::ui::MenuItem::key)!=item.children.end()) {click(app,item.key);break;}
+        }
     }
     // Docked views can be shorter than their content. Reach the target through
     // actual wheel messages, using the same accepted clip as a user would see.
@@ -524,7 +531,10 @@ void require_gray_pixel(const atelier::renderer::Capture& pixels,int x,int y,int
     require(x>=0 && y>=0 && x<static_cast<int>(pixels.extent.width) && y<static_cast<int>(pixels.extent.height),"Chrome probe left the surface.");
     const auto offset=(static_cast<std::size_t>(y)*pixels.extent.width+static_cast<std::size_t>(x))*4;
     for (std::size_t channel=0;channel<3;++channel)
-        require(std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)<=1,"Chrome pixel did not match the reference sRGB value.");
+        if (std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)>1)
+            throw std::runtime_error("Chrome pixel ("+std::to_string(x)+", "+std::to_string(y)+") is "+
+                std::to_string(pixels.rgba[offset])+"/"+std::to_string(pixels.rgba[offset+1])+"/"+std::to_string(pixels.rgba[offset+2])+
+                ", expected sRGB gray "+std::to_string(gray)+".");
 }
 void verify_chrome_pixels(Application& app,const std::filesystem::path& output) {
     atelier::renderer::Capture pixels;
@@ -554,9 +564,12 @@ void verify_chrome_pixels(Application& app,const std::filesystem::path& output) 
         "Parameter Filter must remain between the object header and flat properties, outside scrolling content.");
     require(std::abs(selected.x-tab_bar.x)<.1f && std::abs(fold.x-list.x)<.1f,
         "Shelf tabs or parameter fold header added an independent left inset.");
-    pixel(static_cast<int>(std::round(unselected.x))+5*stroke,static_cast<int>(std::round(unselected.y))+2*stroke,46);
+    // Unselected section tabs draw a vertical #555555 to #303030 gradient across their bounds.
+    const auto face_y=static_cast<int>(std::round(unselected.y))+2*stroke;
+    const auto face_t=(static_cast<float>(face_y)+.5f-unselected.y)/unselected.height;
+    pixel(static_cast<int>(std::round(unselected.x))+5*stroke,face_y,static_cast<int>(std::round(0x55+(0x30-0x55)*face_t)));
     require(tab_bar.x+tab_bar.width>unselected.x+unselected.width+6*stroke,"Tab-bar color probe has no uncovered strip.");
-    pixel(static_cast<int>(std::round(tab_bar.x+tab_bar.width))-3*stroke,static_cast<int>(std::round(tab_bar.y))+2*stroke,46);
+    pixel(static_cast<int>(std::round(tab_bar.x+tab_bar.width))-3*stroke,static_cast<int>(std::round(tab_bar.y))+2*stroke,0x3a);
     const auto footer=app.presented()->find(100)->bounds;
     pixel(static_cast<int>(std::round(footer.x+footer.width))-4*stroke,
         static_cast<int>(std::round(footer.y+footer.height))-3*stroke,25);

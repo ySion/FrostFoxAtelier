@@ -96,7 +96,9 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后仍使用 `scene.set_property` 和 `scene.undo` 等原有编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
 
-现有真实进程验收 `atelier_editor_control_acceptance editor.exe <输出目录> --descriptions` 同时覆盖空目录、单项分页、名称/类型过滤、详情一致性、非法参数、游标失效、对象删除及查询不改变文档。
+宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。
+
+现有真实进程验收 `atelier_editor_control_acceptance editor.exe <输出目录> --descriptions` 同时覆盖空目录、单项分页、名称/类型过滤、详情一致性、非法参数、游标失效、对象删除、占位对象的 `saved_type` / `saved_data` 及查询不改变文档。
 
 2026-10-16 的 Dev／Release 均通过，日志为 `out/direct-clustered-20261016/control-inspection-{dev,release}.log`。真实 3572 实体地牢另验证了 objects → object → 临时修改太阳属性 → render.compare → undo；最终 dirty=false、undo=0，源 Scene 哈希不变。
 

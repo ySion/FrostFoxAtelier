@@ -201,14 +201,18 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     key(app,VK_RIGHT);
     require(live_menu()->find(control::add_entity) && app.menu_window()==native_popup,"Menu switching rebuilt its native host.");
     mouse(app,WM_MOUSEMOVE,centre(app,control::view_menu));
-    require(live_menu()->find(control::reset),"Menubar hover did not switch the open dropdown.");
+    require(live_menu()->find(control::focus),"Menubar hover did not switch the open dropdown.");
     atelier::renderer::Capture menu_pixels; app.capture_menu(menu_pixels);
     require(menu_pixels.extent.width>0 && !menu_pixels.rgba.empty(),"Native menu did not render through the GPU.");
     const auto menu_pixel=[&](unsigned x,unsigned y,int gray) {
         const auto offset=(static_cast<std::size_t>(y)*menu_pixels.extent.width+x)*4;
         for (std::size_t channel=0;channel<3;++channel)
-            require(std::abs(static_cast<int>(menu_pixels.rgba[offset+channel])-gray)<=1,"Native menu frame differs from the reference edge color.");
+            if (std::abs(static_cast<int>(menu_pixels.rgba[offset+channel])-gray)>1)
+                throw std::runtime_error("Native menu frame pixel ("+std::to_string(x)+", "+std::to_string(y)+") is "+
+                    std::to_string(menu_pixels.rgba[offset])+"/"+std::to_string(menu_pixels.rgba[offset+1])+"/"+std::to_string(menu_pixels.rgba[offset+2])+
+                    ", expected edge gray "+std::to_string(gray)+".");
     };
+    png(menu_pixels,output/"native-menu-view.png");
     menu_pixel(0,5,148); menu_pixel(5,0,148);
     menu_pixel(menu_pixels.extent.width-1,5,38);
     menu_pixel(5,menu_pixels.extent.height-1,38);
@@ -216,7 +220,6 @@ void verify_native_menus(Application& app,const std::filesystem::path& output,at
     for (const auto& box:live_menu()->controls) if (box.kind==atelier::ui::ControlKind::label)
         require(box.style->font.style==atelier::ui::FontStyle::italic &&
             box.style->text_vertical_align==atelier::ui::TextVerticalAlign::center,"Menu shortcut lost its italic, vertically centered style.");
-    png(menu_pixels,output/"native-menu-view.png");
     key(app,VK_ESCAPE);
     if (app.menu_window() || !app.wants_keyboard() || GetCapture()==app.window())
         throw std::runtime_error("Menu dismissal: visible="+std::to_string(app.menu_window()!=nullptr)+
