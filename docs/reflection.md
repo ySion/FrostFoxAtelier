@@ -80,6 +80,8 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 
 生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义；`.source` 类字段暂不能声明范围，建议语法见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
 
+跨字段规则由类型校验器表达，目前只能通过手写注册的 `.validate<&F>()` 或 `TypeDefinition::validate` 声明，生成器还没有对应的宏。生成的类型可以在发布前，对 `Definition<T>::build` 返回的定义设置 `validate`，例如 `definition.validate = [](const void* p) { return check(*static_cast<const T*>(p)); };`。语义见[类型校验](runtime-model.md#类型校验)。
+
 ### 字段与方法
 
 - 内联字段支持 bool、float、double、int/int32_t、uint32_t、本生成组中的反射枚举与记录，以及内建数学值、引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。

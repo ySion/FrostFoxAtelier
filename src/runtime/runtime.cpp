@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <concepts>
 #include <cstring>
@@ -90,6 +91,36 @@ bool constrain_storage(const FieldRange& range, void* data, bool write) noexcept
             if (write) std::memcpy(data, &value, sizeof value);
         }
         return true;
+    }, range.hard_min ? *range.hard_min : *range.hard_max);
+}
+
+std::string scalar_text(const Scalar& value) {
+    return std::visit([](const auto& v) -> std::string {
+        using T = std::remove_cvref_t<decltype(v)>;
+        if constexpr (std::same_as<T, EnumValue>) return std::to_string(v.bits);
+        else if constexpr (std::same_as<T, bool>) return v ? "true" : "false";
+        else {
+            char digits[64];
+            return {digits, std::to_chars(digits, digits + sizeof digits, v).ptr};
+        }
+    }, value);
+}
+
+// Why a stored leaf breaks its hard bounds, or empty; `value` receives the leaf either way.
+std::string bound_violation(const FieldRange& range, const void* data, Scalar& value) {
+    return std::visit([&](const auto& bound) -> std::string {
+        using T = std::remove_cvref_t<decltype(bound)>;
+        if constexpr (RangeLeaf<T>) {
+            T leaf;
+            std::memcpy(&leaf, data, sizeof leaf);
+            value = leaf;
+            if constexpr (std::floating_point<T>) if (!std::isfinite(leaf)) return scalar_text(value) + " is not finite";
+            if (range.hard_min && leaf < std::get<T>(*range.hard_min))
+                return scalar_text(value) + " is below the hard minimum " + scalar_text(*range.hard_min);
+            if (range.hard_max && leaf > std::get<T>(*range.hard_max))
+                return scalar_text(value) + " is above the hard maximum " + scalar_text(*range.hard_max);
+        }
+        return {};
     }, range.hard_min ? *range.hard_min : *range.hard_max);
 }
 
@@ -296,10 +327,18 @@ struct Runtime::Impl {
         // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
         std::unique_ptr<const FieldRange> hard{};
     };
-    // A hard-bounded scalar inside a record, reached through field indices from it.
+    // A hard-bounded scalar inside a record or object, reached through storage indices
+    // (base segments included); `field` is the reported path, without base segments.
     struct ConstrainedLeaf {
         std::vector<std::uint32_t> path;
         const FieldRange* range;
+        std::vector<FieldId> field;
+    };
+    // A type validator for the value at `path`: an inline record, a base segment or the type itself.
+    struct ValidatorStep {
+        std::vector<std::uint32_t> path;
+        std::vector<FieldId> field;
+        Result<void> (*validate)(const void*);
     };
     struct Type {
         TypeInfo info;
@@ -318,8 +357,11 @@ struct Runtime::Impl {
         bool needs_destroy{};
         // Only built-in scalars and padding-free homogeneous described layouts qualify.
         const Type* scalar_leaf{};
-        // Records only: every hard-bounded leaf, so whole-value writes can enforce them.
+        // Every hard-bounded leaf, so whole-value writes and validate() can enforce them.
         std::vector<ConstrainedLeaf> constrained_leaves;
+        Result<void> (*validate)(const void*){};
+        // Inline records innermost first, base segment before the type's own validator.
+        std::vector<ValidatorStep> validators;
     };
     struct Slot {
         TypeId type;
@@ -637,6 +679,43 @@ struct Runtime::Impl {
             type = access.type;
         }
         return storage;
+    }
+
+    // Hidden fields have no FieldInfo, so names come from the declaration order.
+    const std::string& field_name(FieldId field) const {
+        const auto& owner = *lookup(field.owner_);
+        return owner.member_names[field.index_ - (owner.base && owner.base->info.id != object ? 1 : 0)];
+    }
+
+    std::optional<ValidationFailure> check_rules(const Type& root, void* storage) {
+        CallbackScope scope{callbacks};
+        const auto failed = [&](const std::vector<FieldId>& field, std::optional<Scalar> value, ErrorCode code, std::string reason) {
+            ValidationFailure result{field, {}, std::move(value), {code, root.info.name}};
+            for (const auto id : field) {
+                result.names.push_back(field_name(id));
+                result.error.message += '.';
+                result.error.message += result.names.back();
+            }
+            result.error.message += ": " + reason;
+            return result;
+        };
+        for (const auto& leaf : root.constrained_leaves) {
+            Scalar value;
+            if (auto reason = bound_violation(*leaf.range, leaf_storage(root, storage, leaf.path), value); !reason.empty())
+                return failed(leaf.field, value, ErrorCode::argument_mismatch, std::move(reason));
+        }
+        for (const auto& step : root.validators) {
+            Result<void> checked;
+            try {
+                checked = step.validate(leaf_storage(root, storage, step.path));
+            } catch (const std::exception& error) {
+                return failed(step.field, {}, ErrorCode::invocation_failed, std::string("validator threw: ") + error.what());
+            } catch (...) {
+                return failed(step.field, {}, ErrorCode::invocation_failed, "validator threw an unknown exception");
+            }
+            if (!checked) return failed(step.field, {}, ErrorCode::argument_mismatch, std::move(checked.error().message));
+        }
+        return std::nullopt;
     }
 
     const Type* lookup(const TypeReference& reference,
@@ -1280,10 +1359,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             return failure(ErrorCode::invalid_definition, "Foundation values require native ownership operations and no inline fields.");
         if (string && native.representation != detail::representation<String>())
             return failure(ErrorCode::invalid_definition, "String types require the engine UTF-8 String representation.");
+        if (definition.validate && definition.kind != TypeKind::record && definition.kind != TypeKind::object)
+            return failure(ErrorCode::invalid_definition, "Type validators require a record or object type.");
         const TypeId id{impl_->context, static_cast<std::uint32_t>(first_index + staged.size())};
         auto type = std::make_unique<Impl::Type>();
         type->info = {id, std::move(definition.name), definition.kind, native.size, is_native ? native.alignment : 1, {}, {}};
         type->info.description = std::move(definition.description);
+        type->validate = definition.validate;
         if (definition.kind != TypeKind::object) {
             type->info.copy_constructible = !is_native || native.copy_construct;
             type->info.copy_assignable = !is_native || native.copy_assign;
@@ -1503,16 +1585,29 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 const auto* target = resolved_type(value.type);
                 type.fields[field_index].type = target;
                 const bool reference = value.form != ValueForm::inline_value;
-                if (type.info.kind == TypeKind::record && !reference) {
+                if (!reference && (type.info.kind == TypeKind::record || type.info.kind == TypeKind::object)) {
                     const auto index = static_cast<std::uint32_t>(field_index);
+                    // The base segment carries inherited fields under their declaring FieldIds.
+                    const bool base_segment = field_index == 0 && type.base && type.base->info.id != impl_->object;
+                    const auto reported = [&](const std::vector<FieldId>& nested) {
+                        std::vector<FieldId> field;
+                        if (!base_segment) field.push_back(FieldId{type.info.id, index});
+                        field.insert(field.end(), nested.begin(), nested.end());
+                        return field;
+                    };
+                    const auto stored = [&](const std::vector<std::uint32_t>& nested) {
+                        std::vector<std::uint32_t> path{index};
+                        path.insert(path.end(), nested.begin(), nested.end());
+                        return path;
+                    };
                     if (const auto* range = type.fields[field_index].hard.get()) {
-                        if (target->info.kind == TypeKind::scalar) type.constrained_leaves.push_back({{index}, range});
+                        if (target->info.kind == TypeKind::scalar) type.constrained_leaves.push_back({{index}, range, reported({})});
                         else for (std::uint32_t component = 0; component != target->info.math.components(); ++component)
-                            type.constrained_leaves.push_back({{index, component}, range});
-                    } else for (const auto& leaf : target->constrained_leaves) {
-                        auto& nested = type.constrained_leaves.emplace_back(Impl::ConstrainedLeaf{{index}, leaf.range});
-                        nested.path.insert(nested.path.end(), leaf.path.begin(), leaf.path.end());
-                    }
+                            type.constrained_leaves.push_back({{index, component}, range, reported({FieldId{target->info.id, component}})});
+                    } else for (const auto& leaf : target->constrained_leaves)
+                        type.constrained_leaves.push_back({stored(leaf.path), leaf.range, reported(leaf.field)});
+                    for (const auto& step : target->validators)
+                        type.validators.push_back({stored(step.path), reported(step.field), step.validate});
                 }
                 if (!is_native && type.info.kind == TypeKind::record)
                     type.info.value_operations_preserve_borrows &= !reference && (target->info.kind == TypeKind::scalar ||
@@ -1554,6 +1649,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     }
                 }
             }
+            if (type.validate) type.validators.push_back({{}, {}, type.validate});
             // Direct offsets are published only after every dependent layout is complete.
             for (auto& field : type.info.fields) {
                 if (field.id.owner_ != type.info.id) continue;
@@ -2378,6 +2474,22 @@ Result<Scalar> Runtime::constrain(TypeId type, std::span<const FieldId> path, Sc
     if (address->range && !constrain_scalar(*address->range, value))
         return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
     return value;
+}
+
+Result<std::optional<ValidationFailure>> Runtime::validate(ObjectId object) const {
+    const auto index = resolve_object(object);
+    if (!index) return std::unexpected(index.error());
+    const auto& slot = impl_->slots[*index];
+    const auto& type = *impl_->lookup(slot.type);
+    if (type.constrained_leaves.empty() && type.validators.empty()) return std::nullopt;
+    return impl_->check_rules(type, slot.storage);
+}
+
+Result<std::optional<ValidationFailure>> Runtime::validate_value(TypeId type_id, std::span<const std::byte> storage) const {
+    const auto type = impl_->value_type(type_id, storage);
+    if (!type) return std::unexpected(type.error());
+    if ((*type)->constrained_leaves.empty() && (*type)->validators.empty()) return std::nullopt;
+    return impl_->check_rules(**type, const_cast<std::byte*>(storage.data()));
 }
 
 Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const {
