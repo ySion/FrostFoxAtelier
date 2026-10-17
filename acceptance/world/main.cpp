@@ -102,9 +102,8 @@ void editing_and_execution() {
     require(near(matrix[0], 0.f) && near(matrix[1], 2.f) && near(matrix[4], -3.f) && near(matrix[10], 4.f) && matrix[12] == 4.f,
         "TRS did not produce S*R*T row-vector geometry.");
     const auto original = take(w::read_transform(runtime, entity.id()));
-    auto illegal = original; illegal.scale.x = 0.f;
-    reject(world.set_transform(entity.id(), illegal), "Zero scale was accepted.");
-    illegal.scale.x = -1.f; reject(world.set_transform(entity.id(), illegal), "Negative scale was accepted.");
+    auto illegal = original; illegal.scale.x = std::numeric_limits<float>::quiet_NaN();
+    reject(world.set_transform(entity.id(), illegal), "Non-finite scale was accepted.");
     illegal = original; illegal.rotation = {0,0,0,0}; reject(world.set_transform(entity.id(), illegal), "Zero quaternion was accepted.");
     require(take(w::read_transform(runtime, entity.id())) == original, "Rejected TRS changed stored values.");
     illegal = original; illegal.scale = {1e-20f, 1e-20f, 1e-20f}; take(world.set_transform(entity.id(), illegal));
@@ -757,7 +756,8 @@ int main() {
         hierarchical_space_boundaries();
         forest_publication();
         attachment_space_and_authoring();
-        std::puts("World acceptance: PASS (17/17)");
+        mirrored_and_degenerate_space();
+        std::puts("World acceptance: PASS (18/18)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

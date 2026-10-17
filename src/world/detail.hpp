@@ -112,6 +112,8 @@ struct SpaceCache {
     Result<ObjectId> parent(ObjectId);
     // The visited chain of the latest matrix() call in this pass.
     [[nodiscard]] const Entry* entry(ObjectId id) const noexcept { return entries.find(id); }
+    // The topmost node with a zero scale axis on that chain, else `object`.
+    [[nodiscard]] ObjectId degenerate_root(ObjectId object) const noexcept;
 private:
     Result<Entry*> resolve(ObjectId);
 };

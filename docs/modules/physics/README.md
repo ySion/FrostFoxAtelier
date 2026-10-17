@@ -6,7 +6,7 @@
 
 先在 Runtime 创建对象前依次调用 `world::register_types(runtime)` 和 `physics::register_types(runtime)`。一个运行中的 World 对应一个由宿主持有的 `PhysicsScene`，场景先于 World/Runtime 销毁；同进程多个场景共享 Jolt 全局注册。`PrimitiveComponent : Component` 统一持有反射的 `BodySettings body`；`StaticMeshComponent` 默认关闭 body，`CollisionComponent` 默认开启且不参与网格呈现。二者使用同一物理注册、查询和生命周期入口，运行时不再注册 `BodyComponent`。空间由 owner Entity 的可选内联 TRS 提供；每个 Entity 的位姿写入者单独验证，多个独立物理部件使用子 Entity，组件不再形成第二棵空间树。
 
-Box、Sphere、Capsule 支持静态、运动学和动态体。Box 烘入正世界缩放；Sphere/Capsule 要求均匀世界缩放；静态三角网格使用该 StaticMeshComponent 自己的网格及正世界缩放。剪切变换拒绝；运动体的空间祖先要求均匀缩放，以保证模拟旋转可无损转换回局部 TRS。
+Box、Sphere、Capsule 支持静态、运动学和动态体。世界缩放先按 World 规则分解为真旋转与带符号 scale；Box 烘入各轴缩放的绝对值，Sphere/Capsule 要求各轴绝对值相同。这三种形状没有局部偏移且关于各局部轴对称，镜像只改变符号，不影响碰撞；以后加入形状偏移或非对称形状时须重新处理反射。静态三角网格把带符号的世界缩放烘入顶点，并按作者法线的逆转置决定正面，镜像后正反面不变；Cook 数据以带符号缩放为键。剪切变换拒绝；运动体的空间祖先要求各轴缩放绝对值相同，以保证模拟旋转可无损转换回局部 TRS，镜像祖先的回写保持作者局部 TRS。Character 与 Ragdoll 要求单位且未镜像的世界缩放；车轮显示 Entity 可以镜像。零缩放的空间不建刚体，只在最上层零缩放节点报告一条 `degenerate_value` 警告，恢复非零缩放后重新协调即重建刚体。
 
 父子挂接不产生物理焊接。动态子体独立模拟，纯视觉后代照常跟随。当前不支持 compound，也不让静态/运动学 body（包含 Sensor）隐含跟随移动的物理祖先；此组合明确报错，应使用独立空间分支。Character/Ragdoll 控制器 Entity 下新增普通物理子体也明确拒绝，避免多套姿态驱动交错。
 

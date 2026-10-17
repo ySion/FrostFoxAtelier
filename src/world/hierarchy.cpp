@@ -184,6 +184,16 @@ Result<SpaceCache::Entry*> SpaceCache::resolve(ObjectId object) {
     entry.parent = *parent;
     return entries.try_emplace(object, entry).value;
 }
+ObjectId SpaceCache::degenerate_root(ObjectId object) const noexcept {
+    auto root = object;
+    for (const auto* entry = entries.find(object); entry; entry = entries.find(entry->parent)) {
+        const auto& scale = entry->local.scale;
+        if (scale.x == 0 || scale.y == 0 || scale.z == 0) root = object;
+        if (entry->parent == ObjectId{}) break;
+        object = entry->parent;
+    }
+    return root;
+}
 Result<ObjectId> SpaceCache::parent(ObjectId object) {
     auto entry = resolve(object);
     if (!entry) return std::unexpected(entry.error());
@@ -408,7 +418,7 @@ Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph&
                 auto original = before.matrix(root.id()), origin = candidate.matrix(*next_parent);
                 if (!original) return std::unexpected(original.error());
                 if (!origin) return std::unexpected(origin.error());
-                auto local = relative_transform(*original, *origin);
+                auto local = relative_transform(*original, *origin, (*value)->local.scale);
                 if (!local) return std::unexpected(local.error());
                 (*value)->local = *local;
                 candidate.invalidate();
@@ -599,12 +609,12 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
                 if (!parent) return std::unexpected(parent.error());
                 auto origin = candidate.matrix(*parent);
                 if (!origin) return std::unexpected(origin.error());
-                auto value = relative_transform(transform_matrix(desired.at(pose.entity)), *origin);
-                if (!value) return std::unexpected(value.error());
                 auto authored = before.node(pose.entity);
                 if (!authored) return std::unexpected(authored.error());
+                auto value = relative_transform(transform_matrix(desired.at(pose.entity)), *origin, (*authored)->local.scale);
+                if (!value) return std::unexpected(value.error());
                 for (std::size_t axis = 0; axis < 3; ++axis)
-                    if (std::abs(value->scale[axis] - (*authored)->local.scale[axis]) > 1e-5f * std::max(1.f, (*authored)->local.scale[axis]))
+                    if (std::abs(value->scale[axis] - (*authored)->local.scale[axis]) > 1e-5f * std::max(1.f, std::abs((*authored)->local.scale[axis])))
                         return error(ErrorCode::argument_mismatch, "Simulation pose would change authored local scale.");
                 value->scale = (*authored)->local.scale;
                 return value;

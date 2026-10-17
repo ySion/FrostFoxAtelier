@@ -644,6 +644,16 @@ Result<std::vector<RenderItem>> World::render_items() const {
                 if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, at, at)) return std::unexpected(matrix.error());
                 continue;
             }
+            // A degenerate space is not a failure: its meshes are skipped under every policy.
+            if (singular(*matrix)) {
+                Diagnostic diagnostic;
+                diagnostic.severity = Severity::warning; diagnostic.kind = DiagnosticKind::degenerate_value;
+                diagnostic.phase = DiagnosticPhase::presentation;
+                diagnostic.object = diagnostic.entity = state.space.degenerate_root(owner); diagnostic.field = {"scale"};
+                diagnostic.message = "A zero scale axis makes this space degenerate; meshes in it are not drawn.";
+                state.report(std::move(diagnostic));
+                continue;
+            }
             auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<RenderItem> {
                 if (auto valid = validate_material(value.material); !valid) return std::unexpected(valid.error());
                 return RenderItem{owner, object, *matrix, Access::geometry(value), value.material};
