@@ -180,7 +180,9 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     click(app,sample::long_labels);
     const auto width=app.parameter_width();
     resize_panel(180); // Cross the lower bound to verify its clamp.
-    require(std::abs(app.parameter_width()-220)<1,"Narrow workbench did not reach the declared minimum.");
+    // A pane's floor is its widest tab's declared minimum: World (280) shares this pane.
+    if (std::abs(app.parameter_width()-280)>=1)
+        throw std::runtime_error("Narrow workbench did not reach the declared minimum: width "+std::to_string(app.parameter_width())+" from "+std::to_string(width)+".");
     const auto* first=app.presented()->find(sample::position_x);
     for (const auto field:{sample::position_x,sample::position_y,sample::position_z}) {
         const auto* box=app.presented()->find(field);
@@ -342,12 +344,12 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         "Color tuple and its swatch diverged.");
     click(app,sample::rgb_page); key(app,VK_RIGHT);
     require(app.presented()->find(sample::channels_page)->selected && app.presented()->find(480),"Nested parameter tabs did not support arrow navigation.");
-    const auto nested_scale=app.presented()->drawing->dpi_scale;
     const auto outer=app.presented()->find(sample::list)->bounds;
     const auto nested=app.presented()->find(sample::color_pages)->bounds;
     const auto nested_tab=app.presented()->find(sample::rgb_page)->bounds;
     const auto nested_fold=app.presented()->find(sample::color_fold)->bounds;
-    require(std::abs(nested.x-outer.x-8*nested_scale)<.1f && std::abs(nested_tab.x-nested.x)<.1f &&
+    // Section bars start flush with their list on every parameter page; only rows under a section are inset.
+    require(std::abs(nested.x-outer.x)<.1f && std::abs(nested_tab.x-nested.x)<.1f &&
         std::abs(nested_fold.x-nested.x)<.1f && std::abs(nested_fold.width-nested.width)<.1f,
         "Nested page insets accumulated in tabs or its full-width fold header.");
     capture(app,output/"controls-color-channels.png");
