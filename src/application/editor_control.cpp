@@ -419,7 +419,12 @@ struct EditorControl::Impl {
         if(found==objects.end() || !member(found->second)) throw Failure("stale_object","Object handle is no longer a document member");return found->second;
     }
     Json object_header(ObjectId id,std::string_view type) {
-        return {{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type}};
+        Json header{{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type}};
+        // A placeholder stands in for a saved type the current build does not register.
+        if(app.document_->has_retained(id)) if(const auto saved=app.document_->retained(id);saved && !saved->type.empty()) {
+            header["placeholder"]=true;header["saved_type"]=saved->type;
+        }
+        return header;
     }
     Json object_json(ObjectId id) {
         auto& runtime=app.document_->world().runtime();const auto* type=take(runtime.describe(take(runtime.type_of(id))));
@@ -430,6 +435,13 @@ struct EditorControl::Impl {
                 {"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
             if(prop_type->enumeration) {field["choices"]=Json::array();for(const auto& [name,bits]:prop_type->enumeration->values) {static_cast<void>(bits);field["choices"].push_back(name);}}
             result["properties"].push_back(std::move(field));
+        }
+        if(app.document_->has_retained(id)) if(const auto saved=app.document_->retained(id);saved && !saved->entries.empty()) {
+            auto& data=result["saved_data"]=Json::array();
+            for(const auto& entry:saved->entries) {
+                std::string path;for(const auto& part:entry.path) path+=(path.empty()?"":".")+part;
+                data.push_back({{"path",path},{"value",entry.value},{"kind",std::string(world::name(entry.kind))}});
+            }
         }
         if(take(runtime.is_a(take(runtime.type_of(id)),app.document_->types().entity))) {
             const auto origin=take(world::space_reference(runtime,id));result["space_reference"]=origin?Json(*origin==ObjectId{}?"":handle(*origin)):Json(nullptr);

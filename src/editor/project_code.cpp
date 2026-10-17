@@ -175,8 +175,8 @@ ProjectDocument load_project_scene(Project& project,std::string_view source,Load
         auto code=std::make_shared<ProjectCode>(world);const auto built=code->build(project);result.build=code->report();
         if (!built) {
             if (!allow_failed_build) return std::unexpected(built.error());
-            // Type registration closes once the scene exists, so this document never gains
-            // project types; a successful build replaces it through a fresh load.
+            // Placeholders keep a different type identity than the project types they stand in
+            // for, so a successful build replaces this document through a fresh load.
             return std::shared_ptr<void>{};
         }
         result.code=code.get();return std::static_pointer_cast<void>(std::move(code));
