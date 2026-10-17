@@ -54,13 +54,20 @@ std::atomic<std::uint64_t> next_scene_id{1};
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
     return std::unexpected(Error{code, message});
 }
+}
+namespace detail {
+bool contain(world::World& world, const Error& error, ObjectId object, ObjectId entity) {
+    world::Diagnostic diagnostic;
+    diagnostic.kind = world::DiagnosticKind::invalid_value; diagnostic.phase = world::DiagnosticPhase::physics;
+    diagnostic.object = object; diagnostic.entity = entity;
+    return world.contain(error, std::move(diagnostic));
+}
+}
+namespace {
 Result<void> validate_active_entity(world::World& world, ObjectId entity) {
     auto state = world::inspect_entity(world.runtime(), entity);
     if (!state) return std::unexpected(state.error());
-    auto members = world.members();
-    if (!members) return std::unexpected(members.error());
-    if (state->state != world::EntityState::active ||
-        std::ranges::none_of(*members, [entity](const auto& member) { return member.id() == entity; }))
+    if (state->state != world::EntityState::active || !world.contains(entity))
         return failure(ErrorCode::invalid_member, "Physics Entity must be active in this World.");
     return {};
 }
@@ -135,8 +142,9 @@ Result<JPH::ShapeRefC> mesh_shape(const geometry::Mesh& mesh, math::Vector3 scal
             return JPH::Vec3(value[0] * scale.x, value[1] * scale.y, value[2] * scale.z);
         };
         const auto a = point(0), b = point(1), c = point(2);
+        // The inverse-transpose keeps the authored front under a mirrored scale.
         const auto& normal = vertices[index].normal;
-        if ((b - a).Cross(c - a).Dot(JPH::Vec3(normal[0], normal[1], normal[2])) >= 0)
+        if ((b - a).Cross(c - a).Dot(JPH::Vec3(normal[0] / scale.x, normal[1] / scale.y, normal[2] / scale.z)) >= 0)
             triangles.emplace_back(a, b, c);
         else triangles.emplace_back(a, c, b);
     }
@@ -181,8 +189,8 @@ Result<JPH::ShapeRefC> restore_shape(std::string_view bytes, const geometry::Mes
 Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh,
     math::Vector3 scale, std::string_view source_key) {
     if (!mesh || source_key.empty() || source_key.size() > 4096 ||
-        !math::is_finite(scale) || scale.x <= 0 || scale.y <= 0 || scale.z <= 0)
-        return failure(ErrorCode::argument_mismatch, "Cook needs a mesh, stable source key and positive scale.");
+        !math::is_finite(scale) || scale.x == 0 || scale.y == 0 || scale.z == 0)
+        return failure(ErrorCode::argument_mismatch, "Cook needs a mesh, stable source key and nonzero scale.");
     if (auto registered = acquire_jolt(); !registered) return std::unexpected(registered.error());
     struct Registration { ~Registration() { release_jolt(); } } registration;
     auto shape = mesh_shape(*mesh, scale);
@@ -211,8 +219,8 @@ Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh,
 Result<void> validate_cooked_triangle_mesh(std::string_view bytes,
     const geometry::MeshRef& mesh, math::Vector3 scale, std::string_view source_key) {
     if (!mesh || source_key.empty() || !math::is_finite(scale) ||
-        scale.x <= 0 || scale.y <= 0 || scale.z <= 0)
-        return failure(ErrorCode::argument_mismatch, "Collision validation needs a mesh, source and positive scale.");
+        scale.x == 0 || scale.y == 0 || scale.z == 0)
+        return failure(ErrorCode::argument_mismatch, "Collision validation needs a mesh, source and nonzero scale.");
     if (auto registered = acquire_jolt(); !registered) return std::unexpected(registered.error());
     struct Registration { ~Registration() { release_jolt(); } } registration;
     auto shape = restore_shape(bytes, *mesh, scale, source_key);
@@ -554,7 +562,7 @@ void PhysicsScene::remove_special(ObjectId entity) noexcept {
         impl_->ragdolls.erase(found);
     }
 }
-Result<void> PhysicsScene::reconcile(ObjectId entity,const std::unordered_set<ObjectId>* membership) {
+Result<void> PhysicsScene::reconcile(ObjectId entity) {
     auto& runtime=world_.runtime();
     auto status=world::inspect_entity(runtime,entity);if(!status) return std::unexpected(status.error());
     ObjectId candidate;unsigned drivers=0;
@@ -577,9 +585,9 @@ Result<void> PhysicsScene::reconcile(ObjectId entity,const std::unordered_set<Ob
         if(drivers+unsigned(candidate!=ObjectId{})>1) return failure(ErrorCode::invalid_member,"An Entity may have only one active physics pose writer.");
     } else remove_special(entity);
     if(auto current=impl_->entity_bodies.find(entity);current!=impl_->entity_bodies.end() && current->second!=candidate) remove(current->second);
-    return candidate==ObjectId{}?Result<void>{}:reconcile_component(entity,candidate,membership);
+    return candidate==ObjectId{}?Result<void>{}:reconcile_component(entity,candidate);
 }
-Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId component,const std::unordered_set<ObjectId>* membership) {
+Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId component) {
     auto& runtime=world_.runtime();
     auto settings=read_settings(runtime,component);
     if (!settings) return std::unexpected(settings.error());
@@ -587,24 +595,22 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     if (!settings->enabled) {remove(component);return {};}
     auto spatial=world::has_transform(runtime,entity);if(!spatial) return std::unexpected(spatial.error());
     if(!*spatial) return failure(ErrorCode::invalid_member,"A Primitive requires a spatial owner Entity.");
-    std::unordered_set<ObjectId> current_members;
-    if(!membership) {
-        auto members=world_.members();if(!members) return std::unexpected(members.error());
-        current_members.reserve(members->size());
-        for(const auto& member:*members) current_members.insert(member.id());
-        membership=&current_members;
-    }
     std::vector<ObjectId> ancestors;
+    // A zero scale axis anywhere in the chain is reported once, on the topmost such node.
+    ObjectId degenerate;
+    std::optional<Error> hierarchy;
     for(auto node=entity;node!=ObjectId{};) {
-        if(!membership->contains(node)) return failure(ErrorCode::invalid_member,"Physics spatial origin belongs to another World or is detached.");
+        if(!world_.contains(node)) return failure(ErrorCode::invalid_member,"Physics spatial origin belongs to another World or is detached.");
         ancestors.push_back(node);
         auto status=world::inspect_entity(runtime,node);if(!status) return std::unexpected(status.error());
         if(node==entity && status->state!=world::EntityState::active) {remove(component);return {};}
         auto local=world::read_transform(runtime,node);if(!local) return std::unexpected(local.error());
-        if(node!=entity && settings->motion!=MotionKind::stationary &&
-            (std::abs(local->scale.x-local->scale.y)>1e-5f || std::abs(local->scale.x-local->scale.z)>1e-5f))
-            return failure(ErrorCode::argument_mismatch,"Moving Primitive ancestors require uniform scale for lossless pose writeback.");
-        if(node!=entity && settings->motion!=MotionKind::dynamic) {
+        if(local->scale.x==0 || local->scale.y==0 || local->scale.z==0) degenerate=node;
+        const auto size=[](float value){return std::abs(value);};
+        if(!hierarchy && node!=entity && settings->motion!=MotionKind::stationary &&
+            (std::abs(size(local->scale.x)-size(local->scale.y))>1e-5f || std::abs(size(local->scale.x)-size(local->scale.z))>1e-5f))
+            hierarchy=Error{ErrorCode::argument_mismatch,"Moving Primitive ancestors require uniform scale for lossless pose writeback."};
+        if(!hierarchy && node!=entity && settings->motion!=MotionKind::dynamic) {
             auto group=world::components(runtime,node);if(!group) return std::unexpected(group.error());
             for(const auto& ancestor:*group) {
                 auto state=world::inspect_component(runtime,ancestor.id());if(!state) return std::unexpected(state.error());
@@ -612,17 +618,33 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
                 if(!*primitive || !state->active) continue;
                 auto body=read_settings(runtime,ancestor.id());if(!body) return std::unexpected(body.error());
                 if(body->enabled && body->motion!=MotionKind::stationary)
-                    return failure(ErrorCode::unsupported_operation,"Independent static or kinematic bodies cannot follow a moving physical ancestor; use an independent spatial branch.");
+                    hierarchy=Error{ErrorCode::unsupported_operation,"Independent static or kinematic bodies cannot follow a moving physical ancestor; use an independent spatial branch."};
             }
         }
         auto parent=world::spatial_parent(runtime,node);if(!parent) return std::unexpected(parent.error());node=*parent;
     }
     auto matrix=world::world_matrix(runtime,entity);if(!matrix) return std::unexpected(matrix.error());
+    if(degenerate!=ObjectId{} || world::singular(*matrix)) {
+        remove(component);
+        world::Diagnostic diagnostic;
+        diagnostic.severity=world::Severity::warning;diagnostic.kind=world::DiagnosticKind::degenerate_value;
+        diagnostic.phase=world::DiagnosticPhase::physics;
+        diagnostic.object=diagnostic.entity=degenerate!=ObjectId{}?degenerate:entity;diagnostic.field={"scale"};
+        diagnostic.message="A zero scale axis makes this space degenerate; Primitives in it have no physical body.";
+        world_.report(std::move(diagnostic));
+        return {};
+    }
+    if(hierarchy) return std::unexpected(std::move(*hierarchy));
     auto canonical=world::relative_transform(*matrix,world::transform_matrix({}));
     if (!canonical) return std::unexpected(canonical.error());
+    // Box, sphere and capsule have no local offset and are symmetric about every
+    // local axis, so a mirrored world scale only changes sign: their dimensions
+    // use |scale| and the reflection stays in the decomposition. Offsets or
+    // asymmetric shapes would need the reflection applied to the shape itself.
     const auto scale=canonical->scale;
+    const math::Vector3 size{std::abs(scale.x),std::abs(scale.y),std::abs(scale.z)};
     if ((settings->shape==ShapeKind::sphere || settings->shape==ShapeKind::capsule) &&
-        (std::abs(scale.x-scale.y)>1e-5f || std::abs(scale.x-scale.z)>1e-5f))
+        (std::abs(size.x-size.y)>1e-5f || std::abs(size.x-size.z)>1e-5f))
         return failure(ErrorCode::argument_mismatch,"Sphere and capsule collision require uniform world scale.");
     geometry::MeshRef mesh;
     std::string source;
@@ -634,7 +656,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     }
     auto current=impl_->bodies.find(component);
     const auto same_scale=[&](math::Vector3 a,math::Vector3 b) {
-        for (std::size_t i=0;i<3;++i) if (std::abs(a[i]-b[i])>1e-5f*std::max(1.f,b[i])) return false;
+        for (std::size_t i=0;i<3;++i) if (std::abs(a[i]-b[i])>1e-5f*std::max(1.f,std::abs(b[i]))) return false;
         return true;
     };
     if (current!=impl_->bodies.end() && current->second.entity==entity && current->second.mesh==mesh &&
@@ -658,18 +680,18 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
             return {};
         }
     }
-    const math::Vector3 dimensions{settings->half_extents.x*scale.x,settings->half_extents.y*scale.y,settings->half_extents.z*scale.z};
+    const math::Vector3 dimensions{settings->half_extents.x*size.x,settings->half_extents.y*size.y,settings->half_extents.z*size.z};
     if (!math::is_finite(dimensions) || dimensions.x<=0 || dimensions.y<=0 || dimensions.z<=0 ||
-        !std::isfinite(settings->radius*scale.x) || settings->radius*scale.x<=0 ||
-        !std::isfinite(settings->capsule_half_height*scale.x) || settings->capsule_half_height*scale.x<=0)
+        !std::isfinite(settings->radius*size.x) || settings->radius*size.x<=0 ||
+        !std::isfinite(settings->capsule_half_height*size.x) || settings->capsule_half_height*size.x<=0)
         return failure(ErrorCode::argument_mismatch,"Scaled collision dimensions exceed finite range.");
     JPH::ShapeRefC shape;
     if (settings->shape==ShapeKind::box)
         shape=new JPH::BoxShape(vector(dimensions));
     else if (settings->shape==ShapeKind::sphere)
-        shape=new JPH::SphereShape(settings->radius*scale.x);
+        shape=new JPH::SphereShape(settings->radius*size.x);
     else if (settings->shape==ShapeKind::capsule)
-        shape=new JPH::CapsuleShape(settings->capsule_half_height*scale.x,settings->radius*scale.x);
+        shape=new JPH::CapsuleShape(settings->capsule_half_height*size.x,settings->radius*size.x);
     else {
         auto built=settings->cooked_shape?restore_shape(*settings->cooked_shape,*mesh,scale,source):mesh_shape(*mesh,scale);
         if (!built) return std::unexpected(built.error());
@@ -740,12 +762,43 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
         single_step_ = false;
         return StepResult{.completed_step = completed_step_};
     }
-    auto members = world_.members();
-    if (!members) return std::unexpected(members.error());
-    std::unordered_set<ObjectId> membership;membership.reserve(members->size());
-    for(const auto& member:*members) membership.insert(member.id());
-    for (const auto& member : *members)
-        if (auto found = reconcile(member.id(),&membership); !found) return std::unexpected(found.error());
+    // Body settings are sampled every frame, including direct field writes.
+    // Other members hold no body or pose driver, so reconcile is a no-op for them.
+    auto& runtime = world_.runtime();
+    std::unordered_set<ObjectId> candidates;
+    for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
+    for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
+    for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
+    const auto add_owners = [&](TypeId type, bool body) -> Result<void> {
+        auto found = world_.query(type);
+        if (!found) return std::unexpected(found.error());
+        for (const auto component : *found) {
+            if (body) {
+                auto settings = read_settings(runtime, component);
+                if (!settings) return std::unexpected(settings.error());
+                if (!settings->enabled) continue;
+            }
+            auto status = world::inspect_component(runtime, component);
+            if (!status) return std::unexpected(status.error());
+            candidates.insert(status->owner);
+        }
+        return {};
+    };
+    if (auto added = add_owners(world_.types().primitive_component, true); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(types_.character_component, false); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(types_.ragdoll_component, false); !added) return std::unexpected(added.error());
+    if (!candidates.empty()) {
+        auto members = world_.members();
+        if (!members) return std::unexpected(members.error());
+        for (const auto& member : *members) {
+            if (!candidates.contains(member.id())) continue;
+            auto found = reconcile(member.id());
+            if (found) continue;
+            // An isolated Entity keeps no ordinary body until its configuration is valid again.
+            if (!detail::contain(world_, found.error(), member.id(), member.id())) return std::unexpected(found.error());
+            if (auto body = impl_->entity_bodies.find(member.id()); body != impl_->entity_bodies.end()) remove(body->second);
+        }
+    }
     if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
     constexpr float fixed = 1.f / 60.f;
     constexpr std::uint32_t maximum_steps = 8;
@@ -1029,7 +1082,7 @@ Result<SpecialHandle> PhysicsScene::create_character(ObjectId entity, CharacterS
     auto matrix=world::world_matrix(world_.runtime(),entity);if(!matrix) return std::unexpected(matrix.error());
     auto trs=world::relative_transform(*matrix,world::transform_matrix({}));if(!trs) return std::unexpected(trs.error());
     if (std::abs(trs->scale.x-1)>1e-5f || std::abs(trs->scale.y-1)>1e-5f || std::abs(trs->scale.z-1)>1e-5f)
-        return failure(ErrorCode::argument_mismatch, "Character Entity requires unit world scale.");
+        return failure(ErrorCode::argument_mismatch, "Character Entity requires unit, unmirrored world scale.");
     JPH::Ref<JPH::CharacterVirtualSettings> jolt = new JPH::CharacterVirtualSettings();
     jolt->mShape = new JPH::CapsuleShape(settings.capsule_half_height, settings.radius);
     jolt->mMaxSlopeAngle = settings.max_slope_radians;
@@ -1094,7 +1147,7 @@ Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity,
     auto matrix=world::world_matrix(world_.runtime(),entity);if(!matrix) return std::unexpected(matrix.error());
     auto trs=world::relative_transform(*matrix,world::transform_matrix({}));if(!trs) return std::unexpected(trs.error());
     if (std::abs(trs->scale.x-1)>1e-5f || std::abs(trs->scale.y-1)>1e-5f || std::abs(trs->scale.z-1)>1e-5f)
-        return failure(ErrorCode::argument_mismatch, "Ragdoll Entity requires unit world scale.");
+        return failure(ErrorCode::argument_mismatch, "Ragdoll Entity requires unit, unmirrored world scale.");
     const auto world_part = [&](math::Vector3 local) {
         const auto rotated = math::rotate(trs->rotation, local);
         return position({trs->position.x + rotated.x, trs->position.y + rotated.y,

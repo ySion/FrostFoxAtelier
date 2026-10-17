@@ -314,8 +314,8 @@ private:
     struct Impl;
     explicit PhysicsScene(world::World&, Types);
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
-    [[nodiscard]] Result<void> reconcile(ObjectId entity,const std::unordered_set<ObjectId>* membership = nullptr);
-    [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component,const std::unordered_set<ObjectId>* membership);
+    [[nodiscard]] Result<void> reconcile(ObjectId entity);
+    [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component);
     [[nodiscard]] ObjectId pose_writer(ObjectId entity) const noexcept;
     [[nodiscard]] Result<bool> controller_transform_matches(ObjectId,math::Vector3,math::Quaternion) const;
     void remove(ObjectId component) noexcept;

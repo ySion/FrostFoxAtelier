@@ -70,6 +70,7 @@ const Scenario scenarios[]{
     {"query_exclusions", query_exclusions},
     {"primitive_composition", primitive_composition},
     {"primitive_authoring", primitive_authoring},
+    {"mirrored_scale", mirrored_scale},
 };
 } // namespace
 

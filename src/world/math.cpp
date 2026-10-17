@@ -6,10 +6,8 @@ namespace atelier::world {
 
 Result<Trs> canonical_transform(Trs value) {
     const auto& q = value.rotation;
-    if (!math::is_finite(value.position) || !math::is_finite(value.scale) ||
-        value.scale.x <= 0.f || value.scale.y <= 0.f || value.scale.z <= 0.f ||
-        !math::is_finite(q))
-        return std::unexpected(Error{ErrorCode::argument_mismatch, "Transform requires finite values and strictly positive scale."});
+    if (!math::is_finite(value.position) || !math::is_finite(value.scale) || !math::is_finite(q))
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Transform requires finite values."});
     const auto unit = math::try_normalize(math::Quaterniond{q.x, q.y, q.z, q.w});
     if (!unit)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Transform rotation must be a nonzero quaternion."});
@@ -42,9 +40,14 @@ Result<math::Matrix4> multiply(const math::Matrix4& a, const math::Matrix4& b) {
     return result;
 }
 
-Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& parent) {
+bool singular(const math::Matrix4& m) noexcept {
+    const double a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    return a*(e*i-f*h) + b*(f*g-d*i) + c*(d*h-e*g) == 0;
+}
+
+Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& parent, math::Vector3 preferred) {
     const auto invalid = [] { return std::unexpected(Error{ErrorCode::argument_mismatch,
-        "Keeping the world transform requires a finite local TRS without shear or reflection."}); };
+        "Keeping the world transform requires a finite, nonsingular local TRS without shear."}); };
     for (float value : world) if (!std::isfinite(value)) return invalid();
     for (float value : parent) if (!std::isfinite(value)) return invalid();
     for (const auto* matrix : {&world, &parent})
@@ -63,8 +66,14 @@ Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& 
             local[row * 3 + col] += double(world[row * 4 + k]) * cof[col * 3 + k] / determinant;
     for (std::size_t col = 0; col < 3; ++col) for (std::size_t k = 0; k < 3; ++k)
         position[col] += (double(world[12 + k]) - parent[12 + k]) * cof[col * 3 + k] / determinant;
+    const double handedness = local[0]*(local[4]*local[8]-local[5]*local[7])
+        -local[1]*(local[3]*local[8]-local[5]*local[6])+local[2]*(local[3]*local[7]-local[4]*local[6]);
+    // The rotation stays proper: a reflection is carried by an odd number of
+    // negative scale axes, preferably the ones the caller already uses.
+    std::array<double, 3> sign{preferred.x < 0 ? -1. : 1., preferred.y < 0 ? -1. : 1., preferred.z < 0 ? -1. : 1.};
+    if ((sign[0] * sign[1] * sign[2] < 0) != (handedness < 0)) sign = {handedness < 0 ? -1. : 1., 1., 1.};
     for (std::size_t row = 0; row < 3; ++row) {
-        scale[row] = std::hypot(local[row * 3], local[row * 3 + 1], local[row * 3 + 2]);
+        scale[row] = sign[row] * std::hypot(local[row * 3], local[row * 3 + 1], local[row * 3 + 2]);
         if (!std::isfinite(scale[row]) || scale[row] == 0) return invalid();
         for (std::size_t col = 0; col < 3; ++col) local[row * 3 + col] /= scale[row];
     }

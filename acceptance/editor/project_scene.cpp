@@ -31,6 +31,7 @@ struct Code {
 editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
     return [evidence](world::World& world)->Result<std::shared_ptr<void>> {
         auto& runtime=world.runtime(); ++evidence->prepared;
+        take(world.set_failure_policy(world::FailurePolicy::halt));
         take(NativeRegistration<Entity>{runtime,"game.Entity",TypeKind::object}.base<world::Entity>().field<&Entity::health>("health").publish());
         const auto move=take(NativeRegistration<Move>{runtime,"game.Move",TypeKind::object}.base<world::Component>()
             .field<&Move::speed>("speed").field<&Move::mass>("mass").field<&Move::count>("count").field<&Move::allowed>("allowed").publish());
@@ -144,6 +145,7 @@ void verify_stop_reentry() {
     bool fail_tick{};
     unsigned ends{}, live_ends{};
     editor::Session document([&](world::World& world)->Result<std::shared_ptr<void>> {
+        take(world.set_failure_policy(world::FailurePolicy::halt));
         take(world.bind_behavior(world.types().entity, {
             .tick=[&](Runtime&,ObjectId,float)->Result<void> {
                 if (fail_tick) return std::unexpected(Error{ErrorCode::invocation_failed,"reentry tick failure"});

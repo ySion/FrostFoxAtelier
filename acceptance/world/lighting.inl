@@ -140,11 +140,23 @@ void lit_materials_and_lights() {
     committed(world.stop());committed(world.stop());
     require(ends==std::vector<ObjectId>{directional_id,point_id,rectangle_id},"Light End order/pairing is wrong.");
     take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=-1;return {};}));
+    const auto isolated_lights=take(world.light_items());const auto light_report=world.take_diagnostics();
+    require(isolated_lights.size()==2 && std::ranges::none_of(isolated_lights,[&](const auto& light){return light.component==point_id;}) &&
+        light_report.size()==1 && light_report[0].object==point_id && light_report[0].entity==point_entity.id() &&
+        light_report[0].kind==w::DiagnosticKind::invalid_value && light_report[0].phase==w::DiagnosticPhase::lighting &&
+        light_report[0].field==std::vector<std::string>{"settings"} && light_report[0].type=="world.LightComponent",
+        "Isolated light extraction did not skip and report only the invalid light.");
+    take(world.set_failure_policy(w::FailurePolicy::halt));
     reject(world.light_items(),"Unsafe native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
     take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=1e38f;return {};}));
     reject(world.light_items(),"Finite overflowing native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
     take(runtime.with_native<w::StaticMeshComponent>(root,[](auto& mesh)->Result<void>{mesh.material.metallic=2;return {};}));
     reject(world.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(world.set_material(root,material));
+    // The light failure persisted from the isolated pass, so only the Material is new.
+    const auto halted=world.take_diagnostics();
+    require(halted.size()==1 && halted[0].object==root && halted[0].field==std::vector<std::string>{"material"},
+        "Halted extraction failures were not reported once per persisting cause.");
+    take(world.set_failure_policy(w::FailurePolicy::isolate));
     auto detached=take(world.detach(entity.id()));
     require(take(world.light_items()).empty() && take(world.query(types.light_component)).empty(),"Detached history graph remained a light source.");
     committed(world.restore(detached));detached.root.reset();
@@ -164,6 +176,15 @@ void lit_materials_and_lights() {
     take(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,static_cast<std::uint32_t>(w::LightKind::point)}));
     require(take(w::read_light(runtime,light_root.id())).kind==w::LightKind::point && take(world.light_items()).size()==4,
         "Adding Transform did not permit the same spatial Light edit.");
+    // Authoring rejects a second Sky; one written directly loses to the first in composition preorder.
+    take(world.set_light(light_root.id(),sky_settings));
+    take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.kind=w::LightKind::sky;return {};}));
+    const auto skies=take(world.light_items());const auto sky_report=world.take_diagnostics();
+    require(skies.size()==3 && skies[1].component==point_id && skies[1].settings.kind==w::LightKind::sky &&
+        std::ranges::none_of(skies,[&](const auto& light){return light.component==light_root.id();}) &&
+        sky_report.size()==1 && sky_report[0].object==light_root.id() && sky_report[0].kind==w::DiagnosticKind::conflict,
+        "A second Sky Light did not lose to the first in composition preorder.");
+    take(world.set_light(point_id,point_settings));
     committed(world.close());committed(world.close());reject(world.light_items(),"Closed World exposed a stale light directory.");
     const auto saved_identity=snapshot.front().component;
     entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();collect(runtime);

@@ -67,17 +67,17 @@ Result<void> patch_light(Runtime& runtime,const Types& types,LightSettings& sett
 }
 // Compose the actual local rotations; decomposing the world matrix would make
 // emitter orientation depend on nonuniform parent scale and shear.
-Result<math::Quaterniond> light_rotation(Runtime& runtime,ObjectId object) {
+// Walks the chain validated by the latest matrix() call of this pass.
+Result<math::Quaterniond> light_rotation(const detail::SpaceCache& space,ObjectId object) {
     math::Quaterniond result;
     for (auto node=object;node!=ObjectId{};) {
-        auto value=read_transform(runtime,node); if (!value) return std::unexpected(value.error());
-        auto canonical=canonical_transform(*value); if (!canonical) return std::unexpected(canonical.error());
+        const auto* entry=space.entry(node);
+        auto canonical=canonical_transform(entry->local); if (!canonical) return std::unexpected(canonical.error());
         const auto& q=canonical->rotation;
         const auto composed=math::try_normalize(math::Quaterniond{q.x,q.y,q.z,q.w}*result);
         if (!composed) return error(ErrorCode::argument_mismatch,"Light orientation is not finite.");
         result=*composed;
-        auto parent=spatial_parent(runtime,node); if (!parent) return std::unexpected(parent.error());
-        node=*parent;
+        node=entry->parent;
     }
     return result;
 }
@@ -137,9 +137,10 @@ Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additio
     };
     for(const auto& object:additions) if(auto valid=visit(object.id());!valid) return valid;
     // Ordinary composition changes cannot introduce another Sky Light.
-    // Replacement edits are checked in presentation, preserving detached edits.
+    // Replacement edits are checked against members, preserving detached edits.
     if(sky==ObjectId{} && (!replacement || replacement->kind!=LightKind::sky)) return {};
-    for(const auto object:presentation) if(auto valid=visit(object);!valid) return valid;
+    for(const auto& member:states) for(const auto& item:member.components)
+        if(item.presentation==Presentation::light) if(auto valid=visit(item.id);!valid) return valid;
     return {};
 }
 Result<void> World::set_material(ObjectId object,Material value) {
@@ -195,35 +196,56 @@ Result<bool> write_lighting_property(World& world,ObjectId object,std::span<cons
 }
 Result<std::vector<LightRenderItem>> World::light_items() const {
     if (auto ready=impl_->admit(false); !ready) return std::unexpected(ready.error());
+    auto& state=*impl_;
     std::vector<LightRenderItem> result;
-    detail::SpaceGraph space{runtime()};
     bool has_sky=false;
-    for (const auto object:impl_->presentation) {
-        auto light=detail::is(runtime(),object,types().light_component); if (!light) return std::unexpected(light.error());
-        if (!*light) continue;
-        auto owner=impl_->component_owner(object); if (!owner) return std::unexpected(owner.error());
-        auto entity=detail::entity_data(runtime(),*owner); if (!entity) return std::unexpected(entity.error());
-        auto component=detail::component_data(runtime(),object); if (!component) return std::unexpected(component.error());
-        auto settings=read_light(runtime(),object); if (!settings) return std::unexpected(settings.error());
-        if(settings->kind==LightKind::sky) {
-            if(has_sky) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
-            has_sky=true;
+    state.begin_pass(DiagnosticPhase::lighting);
+    state.space.begin_pass();
+    for (std::size_t i=0;i<state.members.size();++i) {
+        const auto owner=state.members[i].id();
+        const auto& member=state.states[i];
+        for (const auto& item:member.components) {
+            if (item.presentation!=Impl::Presentation::light) continue;
+            const auto object=item.id;
+            // Isolated lights are skipped. The first Sky Light in composition
+            // preorder, enabled or not, owns the World's single sky slot.
+            const auto skip=[&](const Error& failure,DiagnosticKind kind,ObjectId at,ObjectId entity,std::vector<std::string> field) {
+                return state.contain(failure,kind,DiagnosticPhase::lighting,at,entity,std::move(field));
+            };
+            auto settings=read_light(runtime(),object);
+            if (!settings) { if (!skip(settings.error(),DiagnosticKind::invalid_value,object,owner,{"settings"})) return std::unexpected(settings.error()); continue; }
+            if(settings->kind==LightKind::sky) {
+                if(has_sky) {
+                    const Error conflict{ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components."};
+                    if (!skip(conflict,DiagnosticKind::conflict,object,owner,{"settings","kind"})) return std::unexpected(conflict);
+                    continue;
+                }
+                has_sky=true;
+            }
+            if (!member.eligible || !item.enabled) continue;
+            if (auto valid=validate_light(*settings); !valid) {
+                if (!skip(valid.error(),DiagnosticKind::invalid_value,object,owner,{"settings"})) return std::unexpected(valid.error());
+                continue;
+            }
+            if(settings->kind==LightKind::sky) {
+                result.push_back({owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
+                continue;
+            }
+            auto matrix=state.space.matrix(owner);
+            if (!matrix) {
+                const auto at=state.space.failed;
+                if (!skip(matrix.error(),DiagnosticKind::invalid_value,at,at,{})) return std::unexpected(matrix.error());
+                continue;
+            }
+            auto rotation=light_rotation(state.space,owner);
+            if (!rotation) { if (!skip(rotation.error(),DiagnosticKind::invalid_value,owner,owner,{"rotation"})) return std::unexpected(rotation.error()); continue; }
+            const auto axis=[&](math::Vector3d local) {
+                const auto value=math::rotate(*rotation,local);
+                return math::Vector3{float(value.x),float(value.y),float(value.z)};
+            };
+            result.push_back({owner,object,{(*matrix)[12],(*matrix)[13],(*matrix)[14]},
+                axis({0,0,1}),axis({1,0,0}),axis({0,1,0}),*settings});
         }
-        auto enabled=effective_enabled(runtime(),*owner); if (!enabled) return std::unexpected(enabled.error());
-        if (!*enabled || !component->enabled) continue;
-        if (auto valid=validate_light(*settings); !valid) return std::unexpected(valid.error());
-        if(settings->kind==LightKind::sky) {
-            result.push_back({*owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
-            continue;
-        }
-        auto matrix=space.matrix(*owner); if (!matrix) return std::unexpected(matrix.error());
-        auto rotation=light_rotation(runtime(),*owner); if (!rotation) return std::unexpected(rotation.error());
-        const auto axis=[&](math::Vector3d local) {
-            const auto value=math::rotate(*rotation,local);
-            return math::Vector3{float(value.x),float(value.y),float(value.z)};
-        };
-        result.push_back({*owner,object,{(*matrix)[12],(*matrix)[13],(*matrix)[14]},
-            axis({0,0,1}),axis({1,0,0}),axis({0,1,0}),*settings});
     }
     return result;
 }

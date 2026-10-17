@@ -101,12 +101,12 @@ Result<void> validate_body_settings(const BodySettings& value) {
 namespace detail {
 Result<EntityData> entity_data(Runtime& runtime, ObjectId object) {
     return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<EntityData> {
-        return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity), Access::begun(entity)};
+        return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity)};
     });
 }
 Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
     return runtime.with_native<Component>(object, [](Component& component) -> Result<ComponentData> {
-        return ComponentData{Access::owner(component).id(), Access::enabled(component), Access::begun(component)};
+        return ComponentData{Access::owner(component).id(), Access::enabled(component)};
     });
 }
 Result<bool> is(Runtime& runtime, ObjectId object, TypeId expected) {
@@ -206,11 +206,11 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
     if (data->world) {
         const auto& state = Access::state(*data->world);
         if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
-        status.state = state.running && data->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
+        const auto* member = state.state_of(object);
+        if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
+        status.state = state.running && member->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
         status.can_edit = !state.running && !state.dispatch_depth;
-        const auto member = state.positions.find(object);
-        if (member == state.positions.end()) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
-        status.can_present = member->second.presentations != 0;
+        status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != detail::Access::State::Presentation::none; });
     }
     return status;
 }
@@ -233,10 +233,12 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
             const auto& state = Access::state(*entity->world);
             if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
             // Components without a game updater still have activation eligibility.
-            auto eligible = effective_enabled(runtime, data->owner);
-            if (!eligible) return std::unexpected(eligible.error());
-            status.active = state.running && data->begun && *eligible && data->enabled;
-            status.can_present = std::ranges::find(state.presentation, object) != state.presentation.end();
+            const auto* member = state.state_of(data->owner);
+            if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
+            const auto item = std::ranges::find(member->components, object, &detail::Access::State::ComponentState::id);
+            if (item == member->components.end()) return std::unexpected(state.inconsistent("World component index is inconsistent."));
+            status.active = state.running && item->begun && member->eligible && data->enabled;
+            status.can_present = item->presentation != detail::Access::State::Presentation::none;
         }
     }
     return status;
@@ -299,7 +301,6 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         if (world) {
             auto& state = Access::state(*world);
             if (auto ready = state.admit(); !ready) return ready;
-            state.prepare_activity();
         }
     }
     auto changed = runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<void> {
@@ -323,7 +324,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         Access::geometry(component) = std::move(binding.resolved); return {};
     });
     if (!changed) return changed;
-    return world ? Access::state(*world).refresh() : Result<void>{};
+    return world ? Access::state(*world).rederive(component->owner) : Result<void>{};
 }
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());

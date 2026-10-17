@@ -6,15 +6,17 @@
 
 先在 Runtime 创建对象前依次调用 `world::register_types(runtime)` 和 `physics::register_types(runtime)`。一个运行中的 World 对应一个由宿主持有的 `PhysicsScene`，场景先于 World/Runtime 销毁；同进程多个场景共享 Jolt 全局注册。`PrimitiveComponent : Component` 统一持有反射的 `BodySettings body`；`StaticMeshComponent` 默认关闭 body，`CollisionComponent` 默认开启且不参与网格呈现。二者使用同一物理注册、查询和生命周期入口，运行时不再注册 `BodyComponent`。空间由 owner Entity 的可选内联 TRS 提供；每个 Entity 的位姿写入者单独验证，多个独立物理部件使用子 Entity，组件不再形成第二棵空间树。
 
-Box、Sphere、Capsule 支持静态、运动学和动态体。Box 烘入正世界缩放；Sphere/Capsule 要求均匀世界缩放；静态三角网格使用该 StaticMeshComponent 自己的网格及正世界缩放。剪切变换拒绝；运动体的空间祖先要求均匀缩放，以保证模拟旋转可无损转换回局部 TRS。
+Box、Sphere、Capsule 支持静态、运动学和动态体。世界缩放先按 World 规则分解为真旋转与带符号 scale；Box 烘入各轴缩放的绝对值，Sphere/Capsule 要求各轴绝对值相同。这三种形状没有局部偏移且关于各局部轴对称，镜像只改变符号，不影响碰撞；以后加入形状偏移或非对称形状时须重新处理反射。静态三角网格把带符号的世界缩放烘入顶点，并按作者法线的逆转置决定正面，镜像后正反面不变；Cook 数据以带符号缩放为键。剪切变换拒绝；运动体的空间祖先要求各轴缩放绝对值相同，以保证模拟旋转可无损转换回局部 TRS，镜像祖先的回写保持作者局部 TRS。Character 与 Ragdoll 要求单位且未镜像的世界缩放；车轮显示 Entity 可以镜像。零缩放的空间不建刚体，只在最上层零缩放节点报告一条 `degenerate_value` 警告，恢复非零缩放后重新协调即重建刚体。
 
 父子挂接不产生物理焊接。动态子体独立模拟，纯视觉后代照常跟随。当前不支持 compound，也不让静态/运动学 body（包含 Sensor）隐含跟随移动的物理祖先；此组合明确报错，应使用独立空间分支。Character/Ragdoll 控制器 Entity 下新增普通物理子体也明确拒绝，避免多套姿态驱动交错。
 
 ## 固定步与位姿写入
 
-`PhysicsScene::update(elapsed)` 每帧先执行一次 `World::update`，再按 60 Hz 最多推进 8 个固定子步。`StepResult` 报告完成步号、子步数、剩余/丢弃时间、失效命令和接触通知溢出。`set_paused`、`step_once` 控制子步；`on_before_step` 在消费命令前调用，`on_after_step` 在求解、位姿回写与接触收集后调用。运动学目标保留到被下一目标或传送替换，每个子步重新计算速度，到达后停止。位姿以物理体世界状态为准；场景先缓存全部刚体求解结果，再按 Entity 空间依赖顺序整批回写 Entity，保留局部缩放。移动使用力、冲量、运动学目标或显式传送；直接改写作者变换不替代这些物理命令。
+`PhysicsScene::update(elapsed)` 每帧先执行一次 `World::update`，再只协调可能参与物理的 Entity（Primitive 的 body 已启用、已有刚体或专用后端、拥有物理控制器组件），其余成员不进入逐帧检查；随后按 60 Hz 最多推进 8 个固定子步。`StepResult` 报告完成步号、子步数、剩余/丢弃时间、失效命令和接触通知溢出。`set_paused`、`step_once` 控制子步；`on_before_step` 在消费命令前调用，`on_after_step` 在求解、位姿回写与接触收集后调用。运动学目标保留到被下一目标或传送替换，每个子步重新计算速度，到达后停止。位姿以物理体世界状态为准；场景先缓存全部刚体求解结果，再按 Entity 空间依赖顺序整批回写 Entity，保留局部缩放。移动使用力、冲量、运动学目标或显式传送；直接改写作者变换不替代这些物理命令。
 
 暂停下重复 `step_once` 合并为一次请求；前回调失败时请求保留，修复回调后可重试；求解完成后的回调失败不重复执行已完成步。当前使用单宿主同步推进，求解期间不开放外部 World/Runtime 访问或并发查询；Jolt 接触回调只收集值数据，业务通知在求解结束后交付。World 的普通 Tick 每显示帧执行一次，每个固定子步的业务工作通过场景前/后回调接入；尚无通用 World TickGroup。
+
+物理失败遵循 World 的[失败策略](../world/README.md#失败策略与诊断)，诊断以 physics 阶段写入同一 World 日志。isolate 下，普通 body 协调失败的 Entity 不保留普通 body，其余 Entity 照常模拟；位姿写入者冲突时拒绝普通 body，保留控制器组件；同一 Entity 上有多个位姿控制器（Character、Ragdoll 任意组合或同类重复）时，该 Entity 上写入位姿或依赖 body 的控制器组件（Character、Ragdoll、Vehicle、Force、KinematicMotion、DistanceConstraint）全部拒绝，与创建先后无关，只读 owner 空间的 Scene Query 照常工作；控制器组件逐项创建、采样与回写，失败项不创建或跳过该步，下一步重新采样；被拒绝的位姿不回写。halt 保持原行为：首个失败使该次 `update` 或生命周期调用失败。
 
 ## 身份、碰撞与查询
 

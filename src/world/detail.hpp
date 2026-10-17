@@ -1,14 +1,16 @@
 #pragma once
 
 #include "world/world.hpp"
+#include "foundation/map.hpp"
 #include "foundation/set.hpp"
+#include <deque>
 #include <unordered_map>
 
 namespace atelier::world::detail {
 
 struct WorldLifetime { bool open{true}; };
-struct EntityData { World* world{}; bool enabled{}; bool transitioning{}; bool begun{}; };
-struct ComponentData { ObjectId owner; bool enabled{}, begun{}; };
+struct EntityData { World* world{}; bool enabled{}; bool transitioning{}; };
+struct ComponentData { ObjectId owner; bool enabled{}; };
 struct FlagScope {
     bool& flag;
     explicit FlagScope(bool& value) : flag(value) { flag = true; }
@@ -42,8 +44,6 @@ struct Access {
     static auto& surfaces(StaticMeshComponent& value) noexcept {return value.surfaces_;}
     static auto& surface_geometry(StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
     static auto& surface_parameters(StaticMeshComponent& value) noexcept {return value.surface_parameters_;}
-    static bool& begun(Component& value) noexcept { return value.begun_; }
-    static bool& begun(Entity& value) noexcept { return value.begun_; }
     static World*& member_world(Entity& value) noexcept { return value.member_world_; }
     static bool& enabled(Entity& value) noexcept { return value.enabled_; }
     static bool& enabled(Component& value) noexcept { return value.enabled_; }
@@ -64,8 +64,8 @@ Result<void> validate_object(Runtime&, ObjectId, TypeId);
 Result<bool> write_lighting_property(World&, ObjectId, std::span<const FieldId>, Scalar);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 
-// A short-lived evaluation snapshot. Direct native/JIT writes remain valid:
-// no cache survives its host phase and no cached TRS is an authoring source.
+// A short-lived evaluation snapshot for candidate graphs and Detached objects.
+// No cached TRS is an authoring source.
 struct SpaceNode {
     ObjectId parent{};
     std::optional<ObjectId> origin;
@@ -87,15 +87,71 @@ struct SpaceGraph {
     void invalidate() { matrices.clear(); }
 };
 
+// One World's member spatial evaluation, shared by every consumer. Relations
+// and Transform presence change only through World operations, which clear the
+// cache. TRS values may also change through Runtime field writes or generated
+// code, so each pass re-reads the TRS of every Entity it visits and recomposes
+// only a chain whose own TRS or parent matrix changed.
+struct SpaceCache {
+    struct Entry {
+        Trs local;                 // As read in pass `checked`.
+        ObjectId parent;           // Resolved spatial parent; null is world space.
+        std::uint64_t checked{}, version{}, parent_version{};
+        math::Matrix4 world{};
+        bool spatial{}, composed{};
+    };
+    Map<ObjectId, Entry> entries;
+    SpaceGraph relations;
+    std::vector<ObjectId> path;
+    std::uint64_t pass{};
+    ObjectId failed;               // The Entity whose relation or TRS failed the latest matrix().
+    explicit SpaceCache(Runtime& runtime) : relations(runtime) {}
+    void clear() noexcept;
+    void begin_pass() noexcept { ++pass; }
+    Result<math::Matrix4> matrix(ObjectId);
+    Result<ObjectId> parent(ObjectId);
+    // The visited chain of the latest matrix() call in this pass.
+    [[nodiscard]] const Entry* entry(ObjectId id) const noexcept { return entries.find(id); }
+    // The topmost node with a zero scale axis on that chain, else `object`.
+    [[nodiscard]] ObjectId degenerate_root(ObjectId object) const noexcept;
+private:
+    Result<Entry*> resolve(ObjectId);
+};
+
 }
 
 namespace atelier::world {
 
 struct World::Impl {
-    struct Position { std::size_t index{}, presentations{}; };
-    struct Bucket { TypeId type; std::vector<ObjectId> objects; };
     struct Task { ObjectId object, entity; Coroutine coroutine; };
     struct Pending { std::uint64_t serial; Request request; ObjectId owner; bool member_required{}; };
+    struct Scheduled { ObjectId object, entity; const Behavior* behavior{}; };
+    enum class Presentation : std::uint8_t { none, mesh, light };
+    // An isolated behavior failure. Begin-faulted objects never began; Tick-
+    // faulted objects began and still receive End. Cleared when the object
+    // leaves running participation or by clear_faults().
+    enum class Fault : std::uint8_t { none, begin, tick };
+    struct ComponentState {
+        ObjectId id;
+        TypeId type;
+        const Behavior* behavior{};
+        Presentation presentation{};
+        bool enabled{}, begun{};
+        Fault fault{};
+    };
+    // Execution and registration state of one member, parallel to `members`.
+    // Derived from Runtime when the Entity enters or its own composition changes.
+    struct MemberState {
+        TypeId type;
+        const Behavior* behavior{};
+        ObjectId parent;
+        ObjectId origin;            // Explicit non-world spatial origin, if any.
+        std::size_t size{1};        // Members in its composition subtree, itself included.
+        bool enabled{}, eligible{}, begun{};
+        Fault fault{};
+        std::vector<ComponentState> components;
+    };
+    struct Bucket { TypeId type; std::vector<ObjectId> objects; };
 
     rendering::SceneLightingSettings lighting;
     Runtime& runtime;
@@ -104,29 +160,66 @@ struct World::Impl {
     std::shared_ptr<detail::WorldLifetime> lifetime{std::make_shared<detail::WorldLifetime>()};
     bool running{}, closing{}, closed{}, transitioning{}, flushing{};
     std::size_t dispatch_depth{};
+    // Composition preorder: every member's subtree is one contiguous range.
     std::vector<Member> members;
-    std::unordered_map<ObjectId, Position> positions;
+    std::vector<MemberState> states;
+    Map<ObjectId, std::size_t> positions;
+    // Derived lazily from `states`.
+    bool schedule_dirty{true}, buckets_dirty{true};
+    std::vector<Scheduled> updates;
     std::vector<Bucket> buckets;
-    struct Scheduled { ObjectId object, entity; const Behavior* behavior{}; };
-    std::vector<Scheduled> ordered, updates;
-    std::vector<ObjectId> presentation;
+    detail::SpaceCache space;
     std::vector<Task> tasks;
     struct Translation { ObjectId component, entity; math::Vector3 delta; };
     std::vector<Translation> translations;
     struct TranslationChange { ObjectId entity; Trs value; };
     std::vector<TranslationChange> translation_changes;
     Result<void> apply_translations();
+    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase);
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
     struct Binding { TypeId type; Behavior behavior; };
-    std::vector<Binding> behaviors;
+    std::deque<Binding> behaviors;
     Result<const Behavior*> behavior(TypeId) const;
     LifecycleObserver observer;
     struct Subscription { std::uint64_t id; std::shared_ptr<LifecycleObserver> observer; };
     std::vector<Subscription> subscriptions;
     std::uint64_t next_subscription{1};
 
-    Impl(Runtime& r, const Types& t, World& w) : runtime(r), types(t), world(w) {}
+    FailurePolicy policy{FailurePolicy::isolate};
+    static constexpr std::size_t diagnostic_capacity = 1024;
+    std::vector<Diagnostic> diagnostics;
+    std::uint64_t next_diagnostic{1}, dropped_diagnostics{};
+    // A consumer failure reported again in the next pass of its phase extends
+    // one entry; a pass without it resolves it. Presentation and lighting
+    // passes are extraction calls; physics and command passes are updates.
+    struct DiagnosticKey {
+        ObjectId object; DiagnosticKind kind; DiagnosticPhase phase; std::string field;
+        bool operator==(const DiagnosticKey&) const = default;
+    };
+    struct DiagnosticKeyHash { std::size_t operator()(const DiagnosticKey&) const noexcept; };
+    struct Recent { std::uint64_t serial, pass; };
+    std::unordered_map<DiagnosticKey, Recent, DiagnosticKeyHash> recent;
+    std::array<std::uint64_t, std::size_t(DiagnosticPhase::lifecycle) + 1> passes{};
+    void begin_pass(DiagnosticPhase) noexcept;
+    void report(Diagnostic);
+    // Reports an object failure. True when it stays with that object; false
+    // means the World must stop and surface `error` (halt policy or a World-
+    // level failure, which is not reported as an object diagnostic).
+    bool contain(const Error&, Diagnostic);
+    bool contain(const Error&, DiagnosticKind, DiagnosticPhase, ObjectId object, ObjectId entity,
+        std::vector<std::string> field = {}, Severity = Severity::error);
+    // A broken World index is a World-level failure; once seen, nothing is isolated.
+    mutable bool invariant_failed{};
+    Error inconsistent(const char* message) const {
+        invariant_failed = true;
+        return Error{ErrorCode::invalid_member, message};
+    }
+    Fault* fault_of(ObjectId object, ObjectId entity) noexcept;
+    // Stops a begun object's Tick: cancels its tasks and drops its pending translations.
+    void fault_tick(ObjectId object, ObjectId entity) noexcept;
+
+    Impl(Runtime& r, const Types& t, World& w) : runtime(r), types(t), world(w), space(r) {}
     Result<void> admit(bool mutation = true) const;
     Result<void> admit_edit(ObjectId) const;
     Result<std::size_t> member(ObjectId) const;
@@ -134,22 +227,38 @@ struct World::Impl {
     // Admits same-context detached composition as well as this World's members.
     Result<detail::EntityData> composition_entity(ObjectId) const;
     Result<detail::ComponentData> composition_component(ObjectId) const;
-    Result<std::size_t> prepare_bucket(TypeId, std::size_t additional);
-    void prepare_activity(std::size_t additional = 0);
-    Result<void> refresh();
+
+    // Member index maintenance. Callers keep `members`, `states` and
+    // `positions` consistent before any callback can observe them.
+    // Invalidates derived schedules/directories; `spatial` also drops cached
+    // relations and matrices.
+    void changed(bool spatial = true) noexcept;
+    Result<std::vector<ComponentState>> derive_components(ObjectId entity) const;
+    Result<MemberState> derive(ObjectId entity, ObjectId parent, ObjectId origin) const;
+    Result<void> rederive(ObjectId entity);
+    void reindex(std::size_t first, std::size_t last) noexcept;
+    void resize_ancestors(ObjectId parent, std::ptrdiff_t delta) noexcept;
+    void refresh_eligibility(std::size_t first, std::size_t count) noexcept;
+    MemberState* state_of(ObjectId) noexcept;
+    const MemberState* state_of(ObjectId) const noexcept;
+    ComponentState* component_state(ObjectId entity, ObjectId component) noexcept;
+    void rebuild_schedule();
+    void rebuild_buckets();
+
     // Validate prospective membership/settings before publishing a second sky.
     Result<void> validate_sky_light(std::span<const ObjectRoot> additions = {}, ObjectId edited = {}, const LightSettings* replacement = nullptr) const;
     void cancel_tasks(ObjectId target = {}, bool entity = true) noexcept;
     void halt() noexcept;
-    std::optional<Error> begin(ObjectId entity = {}, ObjectId component = {});
-    std::optional<Error> end(ObjectId entity = {}, ObjectId component = {});
+    // Begin visits [first,last) members; End reverses it. A non-null component
+    // limits the visit to that component of the range.
+    std::optional<Error> begin(std::size_t first, std::size_t last, ObjectId component = {});
+    std::optional<Error> end(std::size_t first, std::size_t last, ObjectId component = {});
+    std::optional<Error> begin() { return begin(0, members.size()); }
+    std::optional<Error> end() { return end(0, members.size()); }
     std::optional<Error> invoke(const Scheduled&, bool beginning);
-    Result<bool> begun(const Scheduled&) const;
-    Result<void> mark_begun(const Scheduled&, bool);
     std::optional<Error> shutdown();
     std::optional<Error> notify(Lifecycle, ObjectId);
     Commit finish(bool changed, std::optional<Error> failure = {});
-    void erase_indexes(ObjectId component) noexcept;
 };
 
 }

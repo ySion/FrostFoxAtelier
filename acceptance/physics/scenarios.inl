@@ -276,6 +276,7 @@ void failed_lifecycle() {
         std::vector<Event> events;
         bool fail_tick{}, fail_activation{}, fail_cleanup{};
         PhysicsFixture f;
+        take(f.world.set_failure_policy(w::FailurePolicy::halt));
         auto first = f.make({0, 4, 0}, dynamic_body());
         auto second = f.make({4, 4, 0}, dynamic_body());
         take(f.world.bind_behavior(f.world_types.entity, {

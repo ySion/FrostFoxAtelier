@@ -102,8 +102,16 @@ void component_lifecycle() {
     committed(f.world.stop());
     // A component may not silently become a second transform writer.
     auto physical=take(p::read_settings(f.runtime,entity.body.id()));physical.enabled=true;take(p::configure(f.runtime,entity.body.id(),physical));
+    // Isolate rejects the ordinary body and keeps the controller; halt stops the World.
+    committed(f.world.start());take(f.scene->update(0));
+    const auto conflicts=f.world.take_diagnostics();
+    require(f.world.running() && bool(f.scene->character_handle(entity.id())) && !f.scene->body_handle(entity.body.id()) &&
+        !conflicts.empty() && std::ranges::all_of(conflicts,[&](const auto& d){return d.object==entity.id() && d.entity==entity.id();}),
+        "Isolated pose-writer conflict kept both writers or was not reported on its Entity.");
+    committed(f.world.stop());take(f.world.set_failure_policy(w::FailurePolicy::halt));
     const auto conflict=take(f.world.start());
-    require(conflict.notification_error && !f.world.running(),"Body and Character components were accepted together.");committed(f.world.stop());
+    require(conflict.notification_error && !f.world.running() && !f.world.take_diagnostics().empty(),
+        "Body and Character components were accepted together.");committed(f.world.stop());
     committed(f.world.set_enabled(character.id(),false));
     auto vehicle=take(w::create_component(f.runtime,f.physics_types.vehicle_component));
     auto settings=take(p::read_settings(f.runtime,entity.body.id()));settings.motion=p::MotionKind::dynamic;
@@ -146,6 +154,21 @@ void component_lifecycle() {
     const auto rebuilt=take(f.scene->ragdoll_handle(doll.id()));require(rebuilt!=ragdoll,"Restoring a ragdoll part reused its generation.");
     committed(f.world.set_enabled(controller.id(),false));require(!f.scene->read_ragdoll_pose(rebuilt),"Disabling the ragdoll controller retained its bodies.");
     committed(f.world.stop());
+    // Two pose controllers on one Entity are both rejected, whichever was created first.
+    take(f.world.set_failure_policy(w::FailurePolicy::isolate));
+    // A scene query only reads its owner's space, so it keeps working.
+    auto rival=take(w::create_component(f.runtime,f.physics_types.character_component));
+    auto probe=take(w::create_component(f.runtime,f.physics_types.scene_query_component));
+    committed(f.world.attach_components(doll.id(),std::array{w::Attachment{rival.id()},w::Attachment{probe.id()}}));
+    committed(f.world.set_enabled(controller.id(),true));f.start();take(f.scene->update(0));f.advance(2);
+    require(f.world.running() && !f.scene->ragdoll_handle(doll.id()) && !f.scene->character_handle(doll.id()) &&
+        std::ranges::any_of(f.world.take_diagnostics(),[&](const auto& d){return d.entity==doll.id();}),
+        "Two pose controllers on one Entity were not both rejected.");
+    require(take(f.runtime.with_native<const p::SceneQueryComponent>(probe.id(),[](const auto& v)->atelier::Result<bool>{return v.query_ready();})),
+        "A controller conflict rejected the Entity's scene query.");
+    committed(f.world.stop());committed(f.world.set_enabled(rival.id(),false));committed(f.world.set_enabled(controller.id(),false));
+    committed(f.world.set_enabled(probe.id(),false));
+    take(f.world.set_failure_policy(w::FailurePolicy::halt));
 
     auto anchor=f.make({-12,6,0});auto bob=f.make({-12,4,0},dynamic_body());
     auto joint=take(w::create_component(f.runtime,f.physics_types.distance_constraint_component));
@@ -168,7 +191,7 @@ void component_lifecycle() {
 }
 
 void entity_physics_bindings() {
-    PhysicsFixture f;auto ground=f.ground();
+    PhysicsFixture f;take(f.world.set_failure_policy(w::FailurePolicy::halt));auto ground=f.ground();
     auto base=take(w::create_entity(f.runtime));
     take(f.world.set_transform(base.id(),{{10,0,0},{0,.70710678f,0,.70710678f},{1,1,1}}));
     committed(f.world.attach(base.id()));
