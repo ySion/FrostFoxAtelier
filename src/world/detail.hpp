@@ -62,6 +62,8 @@ Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
 // True means this is a native Material/LightSettings path and was handled.
 Result<bool> write_lighting_property(World&, ObjectId, std::span<const FieldId>, Scalar);
+// One Sky Light per World, disabled components included.
+World::Admission unique_sky_light(PresentationId lights);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 Result<void> queue_request(Runtime&, ObjectId object, RequestKind, bool enabled);
 
@@ -258,8 +260,14 @@ struct World::Impl {
     void rebuild_schedule();
     void rebuild_buckets();
 
-    // Validate prospective membership/settings before publishing a second sky.
-    Result<void> validate_sky_light(std::span<const ObjectRoot> additions = {}, ObjectId edited = {}, const LightSettings* replacement = nullptr) const;
+    struct AdmissionEntry { TypeId type; Admission admission; };
+    std::vector<AdmissionEntry> admissions;
+    // Runs each admission on the candidates of its type; empty selections are skipped.
+    Result<void> check_admissions(std::span<const ObjectId> candidates) const;
+    Result<void> check_admissions(std::span<const ObjectRoot> candidates) const;
+    // Whether an edit of this member component runs admissions; detached composition does not.
+    Result<bool> admitted(ObjectId component) const;
+    Result<void> check_edit(ObjectId component) const;
     void cancel_tasks(ObjectId target = {}, bool entity = true) noexcept;
     void halt() noexcept;
     // Begin visits [first,last) members; End reverses it. A non-null component

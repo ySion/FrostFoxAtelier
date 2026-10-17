@@ -34,7 +34,7 @@
 
 点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
 
-同一 World 最多有一个 Sky Light，停用的组件也占该位置。Entity 入场、向已入场 Entity 添加组件以及 Light Type 修改，在发布前检查唯一性；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段造成重复天光时，`light_items()` 按组合前序保留第一个，之后的天光以 `conflict` 诊断跳过（halt 策略下整次提取失败），不进行相加。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
+同一 World 最多有一个 Sky Light，停用的组件也占该位置。这条规则是 world 库登记的准入（`add_admission`，见 [World](README.md#编辑呈现与资源)）：Entity 入场、向已入场 Entity 添加组件在发布前检查唯一性；Light Type 修改先写入、再检查，冲突时恢复原值并拒绝；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段造成重复天光时，`light_items()` 按组合前序保留第一个，之后的天光以 `conflict` 诊断跳过（halt 策略下整次提取失败），不进行相加。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
 
 首版 Sky Light 提供均匀天空入射辐射；位置、旋转、缩放、range、发光面尺寸和直接灯阴影开关不影响它。空间字段只保留统一组件组成能力。没有启用的天光组件时环境辐射为零；没有可见天空、HDRI 或方向性天空分布的隐式资源。
 

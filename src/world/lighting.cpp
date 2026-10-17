@@ -65,36 +65,6 @@ Result<void> patch_light(Runtime& runtime,const Types& types,LightSettings& sett
     else return error(ErrorCode::type_mismatch,"Invalid LightSettings scalar field.");
     return {};
 }
-// Each level contributes R*diag(sign(scale)), ignoring magnitudes and shear so
-// nonuniform parents cannot distort an emitter; a zero axis counts as positive.
-// An odd sign pattern is -1 times a proper half turn, so the frame is
-// `mirrored ? -R : R`. Walks the chain validated by the latest matrix() call.
-struct LightFrame { math::Quaterniond rotation; bool mirrored{}; };
-Result<LightFrame> light_frame(const detail::SpaceCache& space,ObjectId object) {
-    LightFrame result;
-    for (auto node=object;node!=ObjectId{};) {
-        const auto* entry=space.entry(node);
-        auto canonical=canonical_transform(entry->local); if (!canonical) return std::unexpected(canonical.error());
-        const auto& q=canonical->rotation;
-        const auto& s=canonical->scale;
-        std::array negative{s.x<0,s.y<0,s.z<0};
-        const bool odd=negative[0]^negative[1]^negative[2];
-        if (odd) for (auto& axis:negative) axis=!axis;
-        result.mirrored^=odd;
-        math::Quaterniond local{q.x,q.y,q.z,q.w};
-        // Two negative axes are a half turn about the remaining positive one.
-        if (negative[0] || negative[1] || negative[2]) {
-            math::Quaterniond turn{0,0,0,0};
-            if (!negative[0]) turn.x=1; else if (!negative[1]) turn.y=1; else turn.z=1;
-            local=local*turn;
-        }
-        const auto composed=math::try_normalize(local*result.rotation);
-        if (!composed) return error(ErrorCode::argument_mismatch,"Light orientation is not finite.");
-        result.rotation=*composed;
-        node=entry->parent;
-    }
-    return result;
-}
 }
 
 Result<void> validate_material(const Material& material) {
@@ -138,47 +108,53 @@ Result<void> validate_light(const LightSettings& settings) {
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
     return runtime.with_native<const LightComponent>(object,[](const LightComponent& light)->Result<LightSettings> { return light.settings; });
 }
-Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additions,ObjectId edited,const LightSettings* replacement) const {
-    ObjectId sky;
-    const auto visit=[&](ObjectId object)->Result<void> {
-        auto light=detail::is(runtime,object,types.light_component);if(!light) return std::unexpected(light.error());
-        if(!*light) return {};
-        auto settings=object==edited && replacement?Result<LightSettings>{*replacement}:read_light(runtime,object);
-        if(!settings) return std::unexpected(settings.error());
-        if(settings->kind!=LightKind::sky) return {};
-        if(sky!=ObjectId{} && sky!=object) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
-        sky=object;return {};
+World::Admission detail::unique_sky_light(PresentationId lights) {
+    return [lights](const World& world,std::span<const ObjectId> candidates)->Result<void> {
+        ObjectId sky;
+        const auto visit=[&](ObjectId object)->Result<void> {
+            auto settings=read_light(world.runtime(),object);if(!settings) return std::unexpected(settings.error());
+            if(settings->kind!=LightKind::sky) return {};
+            if(sky!=ObjectId{} && sky!=object) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
+            sky=object;return {};
+        };
+        for(const auto object:candidates) if(auto valid=visit(object);!valid) return valid;
+        if(sky==ObjectId{}) return {};
+        auto members=world.presented(lights);if(!members) return std::unexpected(members.error());
+        for(const auto& member:*members) if(auto valid=visit(member.component);!valid) return valid;
+        return {};
     };
-    for(const auto& object:additions) if(auto valid=visit(object.id());!valid) return valid;
-    // Ordinary composition changes cannot introduce another Sky Light.
-    // Replacement edits are checked against members, preserving detached edits.
-    if(sky==ObjectId{} && (!replacement || replacement->kind!=LightKind::sky)) return {};
-    for(const auto& member:states) for(const auto& item:member.components)
-        if(item.presentation & bit(lights)) if(auto valid=visit(item.id);!valid) return valid;
-    return {};
 }
 Result<void> World::set_material(ObjectId object,Material value) {
     if (auto ready=impl_->admit_edit(object); !ready) return ready;
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
     if (auto valid=validate_material(value); !valid) return valid;
-    return runtime().with_native<StaticMeshComponent>(object,[&](auto& mesh)->Result<void> {mesh.material=value;return {};});
+    const auto assign=[&](const Material& material) {
+        return runtime().with_native<StaticMeshComponent>(object,[&](auto& mesh)->Result<void> {mesh.material=material;return {};});
+    };
+    auto previous=runtime().with_native<const StaticMeshComponent>(object,[](const auto& mesh)->Result<Material> {return mesh.material;});
+    if (!previous) return std::unexpected(previous.error());
+    if (auto written=assign(value); !written) return written;
+    if (auto admitted=impl_->check_edit(object); !admitted) { (void)assign(*previous); return admitted; }
+    return {};
 }
 Result<void> World::set_light(ObjectId object,LightSettings value) {
     if (auto ready=impl_->admit_edit(object); !ready) return ready;
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
     if (auto valid=validate_light(value); !valid) return valid;
-    bool registered{};
-    if(component->owner!=ObjectId{}) {
+    if(component->owner!=ObjectId{} && value.kind!=LightKind::sky) {
         auto owner=impl_->composition_entity(component->owner);if(!owner) return std::unexpected(owner.error());
-        registered=owner->world!=nullptr;
-        if(registered && value.kind!=LightKind::sky) {
+        if(owner->world) {
             auto spatial=has_transform(runtime(),component->owner);if(!spatial) return std::unexpected(spatial.error());
             if(!*spatial) return error(ErrorCode::invalid_member,"Spatial Light requires its owner Entity to have a Transform.");
         }
     }
-    if(registered && value.kind==LightKind::sky)
-        if(auto valid=impl_->validate_sky_light({},object,&value);!valid) return valid;
-    return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=value;return {};});
+    const auto assign=[&](const LightSettings& settings) {
+        return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=settings;return {};});
+    };
+    auto previous=read_light(runtime(),object); if (!previous) return std::unexpected(previous.error());
+    if (auto written=assign(value); !written) return written;
+    if (auto admitted=impl_->check_edit(object); !admitted) { (void)assign(*previous); return admitted; }
+    return {};
 }
 namespace detail {
 Result<bool> write_lighting_property(World& world,ObjectId object,std::span<const FieldId> path,Scalar value) {
@@ -209,12 +185,11 @@ Result<bool> write_lighting_property(World& world,ObjectId object,std::span<cons
 }
 }
 Result<std::vector<LightRenderItem>> World::light_items() const {
-    if (auto ready=impl_->admit(false); !ready) return std::unexpected(ready.error());
+    auto pass=spatial_pass(DiagnosticPhase::lighting);
+    if (!pass) return std::unexpected(pass.error());
     auto& state=*impl_;
     std::vector<LightRenderItem> result;
     bool has_sky=false;
-    state.begin_pass(DiagnosticPhase::lighting);
-    state.space.begin_pass();
     auto lights=presented(state.lights);
     if (!lights) return std::unexpected(lights.error());
     {
@@ -243,21 +218,20 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
                 result.push_back({owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
                 continue;
             }
-            auto matrix=state.space.matrix(owner);
-            if (!matrix) {
-                const auto at=state.space.failed;
-                if (!skip(matrix.error(),DiagnosticKind::invalid_value,at,at,{})) return std::unexpected(matrix.error());
-                continue;
-            }
-            auto frame=light_frame(state.space,owner);
-            if (!frame) { if (!skip(frame.error(),DiagnosticKind::invalid_value,owner,owner,{"rotation"})) return std::unexpected(frame.error()); continue; }
+            auto matrix=pass->matrix(owner);
+            if (!matrix) return std::unexpected(matrix.error());
+            if (!*matrix) continue;
+            auto frame=pass->orientation(owner);
+            if (!frame) return std::unexpected(frame.error());
+            if (!*frame) continue;
             // A mirrored frame is -R; negating its right axis keeps it right-handed.
-            const double sign=frame->mirrored?-1:1;
+            const double sign=(*frame)->mirrored?-1:1;
             const auto axis=[&](math::Vector3d local) {
-                const auto value=math::rotate(frame->rotation,local);
+                const auto value=math::rotate((*frame)->rotation,local);
                 return math::Vector3{float(value.x),float(value.y),float(value.z)};
             };
-            result.push_back({owner,object,{(*matrix)[12],(*matrix)[13],(*matrix)[14]},
+            const auto& world=**matrix;
+            result.push_back({owner,object,{world[12],world[13],world[14]},
                 axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings});
         }
     }

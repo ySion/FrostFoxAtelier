@@ -446,6 +446,7 @@ struct PresentedComponent {
 // The World owns only member roots and execution/registration state. Entity's
 // private member_world relation is authoritative; directories are indexes.
 class World final {
+    struct Impl;
 public:
     struct Behavior {
         std::function<Result<void>(Runtime&, ObjectId)> begin{};
@@ -572,6 +573,40 @@ public:
     [[nodiscard]] Result<std::span<const PresentedComponent>> presented(PresentationId) const;
     // Re-evaluates presentation predicates after a member component's data changed.
     [[nodiscard]] Result<void> reevaluate_presentation(ObjectId component);
+    // A rule over the components of one registered type (or derived) that may
+    // become or stay members. Attach runs it on the incoming components before
+    // publishing. Author edits (write, set_material, set_light) of a member
+    // component run it on that component after writing and restore the previous
+    // value when it fails. Runtime writes outside World are not admitted.
+    using Admission = std::function<Result<void>(const World&, std::span<const ObjectId> candidates)>;
+    [[nodiscard]] Result<void> add_admission(TypeId component_type, Admission);
+
+    // Rotation of a space with scale magnitudes dropped and signs kept: each
+    // level contributes R*diag(sign(scale)), a zero axis counting as positive.
+    // An odd sign total is -1 times a proper rotation, so the frame is
+    // `mirrored ? -rotation : rotation`.
+    struct Orientation { math::Quaterniond rotation; bool mirrored{}; };
+    // One extraction pass over the members' shared space cache. Starting it
+    // begins a diagnostic pass of its phase (see take_diagnostics); it ends
+    // when the next pass starts.
+    class SpatialPass {
+    public:
+        // World matrix of a member Entity. An unusable space is reported on
+        // the failing Entity and yields nullopt; an error means the caller
+        // fails (halt policy or a World-level failure, see contain).
+        [[nodiscard]] Result<std::optional<math::Matrix4>> matrix(ObjectId entity);
+        // True when `world`, this pass's matrix of `entity`, is singular; one
+        // warning names the topmost zero-scale node of the chain. Degenerate
+        // spaces are not object failures under any policy.
+        [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string message);
+        [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
+    private:
+        friend class World;
+        SpatialPass(Impl& impl, DiagnosticPhase phase) noexcept : impl_(&impl), phase_(phase) {}
+        Impl* impl_;
+        DiagnosticPhase phase_;
+    };
+    [[nodiscard]] Result<SpatialPass> spatial_pass(DiagnosticPhase) const;
 
     // Scheduling configuration keyed by the Runtime's existing type identity.
     // The nearest ancestor binding is inherited as a whole. Allowed at host
@@ -615,7 +650,6 @@ public:
 
 private:
     friend struct detail::Access;
-    struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
