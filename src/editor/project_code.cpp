@@ -109,6 +109,9 @@ Result<void> ProjectCode::build(const Project& project) {
             auto step=world_.runtime().collect_step({1024});if (!step) return reject(step.error());
         }
         if (!program_) program_=std::make_unique<source::Program>(world_.runtime());
+        // Request through publish runs synchronously here, and this is the Runtime's only
+        // Program, so no other producer can invalidate the candidate; an asynchronous
+        // build would need to re-request once when publication reports a stale catalog.
         auto request=program_->request(*next->sources);if (!request) return reject(request.error());
         auto candidate=source::Program::prepare(*request);if (!candidate) return reject(candidate.error());
         auto valid=validate(*candidate);if(!valid) return reject(valid.error());
