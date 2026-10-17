@@ -15,6 +15,8 @@ struct BoundField {
     std::string name;
     std::vector<FieldId> path;
     BusinessType kind;
+    // Hard bounds apply here or to the containing math vector.
+    bool constrained{};
     bool operator==(const BoundField&) const = default;
 };
 struct BoundMethod {

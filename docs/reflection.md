@@ -25,7 +25,7 @@ public:
 | `ACLASS(Name = "...", DESC = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
 | `ASTRUCT(Name = "...", DESC = "...")` | 声明 Runtime 记录值，允许内联使用 |
 | `AENUM(Name = "...", DESC = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t，不需要 AGENERATED_BODY |
-| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Strong = "...")` | 声明字段；展示名称、分组与说明均可省略，引用形式见下文 |
+| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Strong = "...", Min = "...", Max = "...", LockMin, LockMax, HardMin = "...", HardMax = "...")` | 声明字段；展示名称、分组、说明与范围均可省略，引用形式和范围见下文 |
 | `AFUNCTION(Name = "...", DESC = "...")` | 声明成员方法；名称与说明可省略，重载须使用不同的反射名称 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
@@ -63,6 +63,22 @@ math::Vector3 read_position() const;
 手写 `NativeRegistration<T>` 的构造器在 `kind` 后接受说明；自动推导类型的 `field(name, description)` 与 `hidden_field(name, description)` 直接传入说明，完整字段重载则在 `label, category` 后接受说明。`method` 在 `preserves_borrows` 后接受说明。也可以直接填写 `TypeDefinition` 及其成员的 `description`。
 
 类型说明解释类型本身，字段说明解释该字段在声明处的具体含义，两者不互相覆盖。继承字段和方法保留原声明 ID、签名及说明；派生类型的空说明不会自动变成基类说明。文本按类型保存，不复制到每个对象，不进入 Scene 数据，也不参与类型/成员身份、对象存储布局或调用 ABI。拷贝的 `TypeInfo` 自行拥有文本；借用 `Info` 的消费者仍须遵守原 Runtime 生命周期。
+
+### 字段范围与硬边界
+
+```cpp
+AFIELD(Min = "0", Max = "10", LockMin, HardMax = "65504") float emissive_strength{1.0f};
+AFIELD(Min = "0", Max = "1", LockMin, LockMax) math::Vector3 albedo{1.0f, 1.0f, 1.0f};
+AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
+```
+
+- `Min / Max` 是 UI 范围，供滑条和数值阶梯使用；单独出现时不约束写入，编辑器允许输入范围外的值。
+- `LockMin / LockMax` 把同侧 UI 边界同时作为硬边界（Houdini strict range），需要同侧的 `Min / Max`。
+- `HardMin / HardMax` 单独指定同侧硬边界并隐含锁定，用于 UI 范围远小于合法范围的字段；同侧不能再写 `LockX`。只有硬边界、没有 UI 边界的一侧合法，滑条范围由 UI 自行决定。
+- 适用于 float、double、int32、uint32 字段及 float/double 数学向量；向量的范围逐分量生效。bool、枚举、四元数、矩阵、记录和引用字段报错。值按字段叶标量的精确类型解析：浮点接受有限的十进制写法，整数拒绝小数、负 uint 和溢出。生成代码用十六进制浮点保持位精确。
+- 大小顺序、UI 边界须落在硬边界内、描述型默认值须满足硬边界等语义检查由 Runtime 发布统一执行，规则见[字段范围与写入约束](runtime-model.md#字段范围与写入约束)。
+
+生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义；`.source` 类字段暂不能声明范围，建议语法见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
 
 ### 字段与方法
 

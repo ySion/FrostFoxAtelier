@@ -444,6 +444,16 @@ struct NativeLayout {
     bool plain_value{};
 };
 
+// Bounds use the field's exact leaf scalar type; math vectors apply them to each
+// component. UI bounds only guide editors. Hard bounds are enforced by every Runtime
+// write: values clamp to the closed range, and NaN/Inf are rejected before any byte
+// changes. Allowed on f32/f64/i32/u32 and math vector fields only.
+struct FieldRange {
+    std::optional<Scalar> ui_min{}, ui_max{}, hard_min{}, hard_max{};
+    [[nodiscard]] bool constrains() const noexcept { return hard_min || hard_max; }
+    bool operator==(const FieldRange&) const = default;
+};
+
 struct FieldDefinition {
     std::string name;
     ValueDefinition value;
@@ -466,6 +476,8 @@ struct FieldDefinition {
     // Owned UTF-8 help text; publication normalizes CRLF/CR to LF.
     // Empty means no description. Only LF and tab are permitted controls.
     std::string description{};
+    // Part of the published definition; checked against the leaf type and default.
+    FieldRange range{};
 };
 
 struct MethodDefinition {
@@ -503,6 +515,7 @@ struct FieldInfo {
     std::optional<Scalar> default_value{};
     // Owned by the type descriptor, including inherited field copies.
     std::string label{}, category{}, description{};
+    FieldRange range{};
 };
 
 struct MethodInfo {
@@ -683,10 +696,15 @@ public:
 
     // A field path traverses inline records. Scalar and plain record
     // fields share the same path resolution and exact-type checks.
+    // Writes apply FieldRange hard bounds, including to a math vector's components
+    // and to constrained leaves inside a written record.
     [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);
     [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, ValueInput value);
+    // The value a scalar write to this path of `type` would store, without an object:
+    // clamped to hard bounds, argument_mismatch for NaN/Inf under a hard bound.
+    [[nodiscard]] Result<Scalar> constrain(TypeId type, std::span<const FieldId> path, Scalar value) const;
     [[nodiscard]] Result<Scalar> read(ObjectId object, FieldId field) const {
         return read(object, {&field, 1});
     }
@@ -771,7 +789,8 @@ private:
     [[nodiscard]] Result<void> enter_execution_inspection();
     void leave_execution_inspection() noexcept;
     struct Impl;
-    struct Address { void* data; ValueDescription value; };
+    // `range` is set when hard bounds apply to the addressed value or its components.
+    struct Address { void* data; ValueDescription value; const FieldRange* range{}; };
     struct NativeBorrow {
         Runtime* runtime;
         void* storage;

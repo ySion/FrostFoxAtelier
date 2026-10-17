@@ -147,6 +147,12 @@ public:
         return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, std::move(description));
     }
 
+    // Applies to the most recently declared field.
+    NativeRegistration& range(FieldRange range) {
+        definition_.fields.back().range = std::move(range);
+        return *this;
+    }
+
     template<auto Pointer>
     NativeRegistration& method(std::string name, bool preserves_borrows = false, std::string description = {}) {
         using Traits = detail::Method<decltype(Pointer)>;

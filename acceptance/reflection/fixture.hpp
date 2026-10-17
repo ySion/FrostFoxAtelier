@@ -37,6 +37,15 @@ class CounterChild : public Counter {
     AGENERATED_BODY(CounterChild)
 };
 
+ACLASS(Name = "reflection.RangeProbe")
+struct RangeProbe {
+    AGENERATED_BODY(RangeProbe)
+    AFIELD(Min = "0", Max = "10", LockMin, HardMax = "65504") float emissive{1.0f};
+    AFIELD(Min = "0.1", Max = "1", LockMax) math::Vector3d tint{0.5, 0.5, 0.5};
+    AFIELD(HardMin = "-5", HardMax = "5") int offset{};
+    AFIELD(Min = "1", Max = "64") std::uint32_t samples{8};
+};
+
 AENUM(Name = "reflection.Mode", DESC = "Mode 工作状态。\nidle 表示空闲。")
 enum class Mode : std::int32_t { idle = -1, active = 2, alias = active };
 AENUM(Name = "reflection.OtherMode")
