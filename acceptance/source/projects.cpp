@@ -59,6 +59,15 @@ void verify_declaration_only_project() {
     require(!rejected && rejected.error().code == ErrorCode::rebuild_required, "Changed signed-zero default was silently ignored.");
     input.files[0].path = "Data.source/";
     require(!Program::prepare(take(program.request(input))), "A directory-like source path was accepted.");
+    Program phases(runtime);
+    source::SourceSnapshot staged{"phases", 1, {{"Phases.source", 1,
+        "class game.Phases : world.Component { void post_physics_tick(float dt) {} void late_tick() {} }"}}};
+    rejected = Program::prepare(take(phases.request(staged)));
+    require(!rejected && rejected.error().code == ErrorCode::invalid_definition,
+        "A phase lifecycle method accepted a signature other than void(float).");
+    staged.files[0].source.replace(staged.files[0].source.find("late_tick()"), 11, "late_tick(float dt)");
+    publish(phases, staged);
+    require(phases.entries().size() == 2, "Phase lifecycle methods were not exported.");
 }
 
 struct CollectionProbe {

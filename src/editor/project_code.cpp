@@ -24,7 +24,8 @@ Result<void> completed(Result<std::optional<Scalar>> result) {
 }
 bool lifecycle(std::string_view entry,std::string_view type) {
     if (entry.size()<=type.size()+1 || !entry.starts_with(type) || entry[type.size()]!='.') return false;
-    const auto name=entry.substr(type.size()+1);return name=="begin" || name=="tick" || name=="end";
+    const auto name=entry.substr(type.size()+1);
+    return name=="begin" || name=="tick" || name=="post_physics_tick" || name=="late_tick" || name=="end";
 }
 Result<void> validate_ui(const source::SourceFile& file) {
     // Compilation only. Project expressions and event handlers are evaluated
@@ -117,7 +118,7 @@ Result<void> ProjectCode::build(const Project& project) {
         auto valid=validate(*candidate);if(!valid) return reject(valid.error());
         const bool rebind=!bound_ || adds_behavior(*candidate);
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
-        if (rebind) {auto binding=bind();if (!binding) return reject(binding.error());bound_=true;}
+        if (rebind) {auto binding=bind();if (!binding) {bound_=false;return reject(binding.error());}bound_=true;}
     }
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
     next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
