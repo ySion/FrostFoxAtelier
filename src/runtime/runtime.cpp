@@ -1,3 +1,4 @@
+#include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 #include "runtime/detail/type_publication.hpp"
@@ -282,6 +283,8 @@ struct Runtime::Impl {
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
     std::vector<std::unique_ptr<Type>> types;
+    // Published C++ representation -> types index; registration keeps representations unique.
+    Map<const void*, std::uint32_t> representations;
     std::vector<Slot> slots;
     // Handles keep only this registry alive, never the Runtime or its objects.
     std::shared_ptr<detail::RootState> roots{std::make_shared<detail::RootState>()};
@@ -584,8 +587,14 @@ struct Runtime::Impl {
             return type->native.representation == std::get<const void*>(reference.target_);
         };
         for (const auto& type : staged) if (matches(type)) return type.get();
+        if (const auto* representation = std::get_if<const void*>(&reference.target_)) return native(*representation);
         for (const auto& type : types) if (matches(type)) return type.get();
         return nullptr;
+    }
+
+    const Type* native(const void* representation) const noexcept {
+        const auto* index = representations.find(representation);
+        return index ? types[*index].get() : nullptr;
     }
 
     Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition,
@@ -671,6 +680,7 @@ struct Runtime::Impl {
             [](void* destination, const void* source) {
                 *static_cast<T*>(destination) = *static_cast<const T*>(source);
             }};
+        representations.try_emplace(type->native.representation, id.index_);
         types.push_back(std::move(type));
         return id;
     }
@@ -1087,9 +1097,14 @@ Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
     if (impl.phase != CollectionPhase::idle || impl.sealed || impl.callbacks != 0)
         return failure(ErrorCode::busy, "Type registration requires an idle Runtime before object execution.");
     std::size_t walk_depth = 1;
-    for (const auto& type : state_->staged) walk_depth = std::max(walk_depth, type->walk_depth);
+    std::size_t representations = impl.representations.size();
+    for (const auto& type : state_->staged) {
+        walk_depth = std::max(walk_depth, type->walk_depth);
+        if (type->native.representation) ++representations;
+    }
     impl.walk_stack.reserve(walk_depth);
     impl.types.reserve(state_->first_index + state_->staged.size());
+    impl.representations.reserve(representations);
     state_->reserved = true;
     return {};
 }
@@ -1099,6 +1114,8 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
         std::terminate();
     for (auto& type : state_->staged) {
         if (!type->trace_fields.empty()) impl.maximum_trace_depth = std::max(impl.maximum_trace_depth, type->trace_depth);
+        if (type->native.representation)
+            impl.representations.try_emplace(type->native.representation, static_cast<std::uint32_t>(impl.types.size()));
         impl.types.push_back(std::move(type));
     }
     state_->staged.clear();
@@ -1157,7 +1174,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             const auto same_representation = [&](const auto& type) {
                 return type->native.representation == native.representation;
             };
-            if (std::ranges::any_of(impl_->types, same_representation) ||
+            if (impl_->representations.contains(native.representation) ||
                 std::ranges::any_of(staged, same_representation)) {
                 return failure(ErrorCode::invalid_definition, "C++ representation already has a type definition.");
             }
@@ -1490,9 +1507,7 @@ Result<TypeId> Runtime::find_type(std::string_view name) const {
 }
 
 Result<TypeId> Runtime::find_representation(const void* representation) const {
-    for (const auto& type : impl_->types) {
-        if (type->native.representation == representation) return type->info.id;
-    }
+    if (const auto* type = impl_->native(representation)) return type->info.id;
     return failure(ErrorCode::invalid_type, "Register the native value type before exposing its members.");
 }
 
