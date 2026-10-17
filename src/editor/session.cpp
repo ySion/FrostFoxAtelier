@@ -876,12 +876,7 @@ Result<world::Commit> Session::start() {
     return started;
 }
 Result<void> Session::update(float amount) {
-    auto result=[&]()->Result<void> {
-        if (!physics_) return world_.update(amount);
-        auto stepped=physics_->update(amount);
-        if (!stepped) return std::unexpected(stepped.error());
-        return {};
-    }();
+    auto result=world_.update(amount);
     if (!result) (void)stop();
     return result;
 }

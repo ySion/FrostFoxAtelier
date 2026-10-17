@@ -505,6 +505,10 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
     });
     if (!subscribed) return std::unexpected(subscribed.error());
     result->subscription_ = *subscribed;
+    auto simulation = world.add_simulation({[scene = result.get()](float elapsed) { return scene->step(elapsed); },
+        [scene = result.get()](ObjectId entity) { return scene->writes_pose(entity); }});
+    if (!simulation) return std::unexpected(simulation.error());
+    result->simulation_ = *simulation;
     auto members = world.members();
     if (!members) return std::unexpected(members.error());
     for (const auto& member : *members) {
@@ -513,6 +517,7 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
     return result;
 }
 PhysicsScene::~PhysicsScene() {
+    if (simulation_) world_.remove_simulation(simulation_);
     if (subscription_) world_.unsubscribe_lifecycle(subscription_);
     components_.reset();
     while (!impl_->characters.empty()) remove_special(impl_->characters.begin()->first);
@@ -725,6 +730,12 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     auto entity = world_.runtime().is_a(*type, world_.types().entity);
     if (!entity) return std::unexpected(entity.error());
     if (phase == world::Lifecycle::deactivated || phase == world::Lifecycle::detached) {
+        if (!world_.running()) {
+            // A stopped World steps nothing; the next start begins from an empty accumulator.
+            impl_->commands.clear();
+            remaining_ = 0;
+            single_step_ = false;
+        }
         if(auto removed=components_->removed(object,phase==world::Lifecycle::detached); !removed) return removed;
         if (*entity) remove_special(object);
         if(!*entity) remove(object);
@@ -745,23 +756,7 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     if (!state) return std::unexpected(state.error());
     return state->owner == ObjectId{} ? Result<void>{} : reconcile(state->owner);
 }
-Result<StepResult> PhysicsScene::update(float elapsed) {
-    if (!std::isfinite(elapsed) || elapsed < 0 || elapsed > 1.f)
-        return failure(ErrorCode::argument_mismatch, "Physics frame duration must be within [0, 1] seconds.");
-    if (updating_) return failure(ErrorCode::busy, "Physics update cannot be nested.");
-    updating_ = true;
-    struct ResetUpdate { bool& flag; ~ResetUpdate() { flag = false; } } reset{updating_};
-    if (auto ticked = world_.update(elapsed); !ticked) return std::unexpected(ticked.error());
-    if (!world_.running()) {
-        components_->clear();
-        while (!impl_->characters.empty()) remove_special(impl_->characters.begin()->first);
-        while (!impl_->ragdolls.empty()) remove_special(impl_->ragdolls.begin()->first);
-        while (!impl_->bodies.empty()) remove(impl_->bodies.begin()->first);
-        impl_->commands.clear();
-        remaining_ = 0;
-        single_step_ = false;
-        return StepResult{.completed_step = completed_step_};
-    }
+Result<void> PhysicsScene::step(float elapsed) {
     // Body settings are sampled every frame, including direct field writes.
     // Other members hold no body or pose driver, so reconcile is a no-op for them.
     auto& runtime = world_.runtime();
@@ -932,7 +927,8 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
             return failure(ErrorCode::invocation_failed, "Contact handler threw an unknown exception.");
         }
     }
-    return result;
+    last_step_ = result;
+    return {};
 }
 Result<void> PhysicsScene::set_gravity(math::Vector3 gravity) {
     if (!math::is_finite(gravity)) return failure(ErrorCode::argument_mismatch, "Gravity must be finite.");
@@ -966,6 +962,25 @@ Result<void> PhysicsScene::add_impulse(BodyHandle handle, math::Vector3 impulse)
         return failure(ErrorCode::invalid_member,"Impulse requires an active dynamic body.");
     impl_->commands.push_back({Impl::CommandKind::impulse,handle,impulse});
     return {};
+}
+bool PhysicsScene::writes_pose(ObjectId entity) const {
+    if (pose_writer(entity) != ObjectId{} || components_->bound_pose_writer(entity) != ObjectId{}) return true;
+    // An active Character or Ragdoll claims its owner before the next step creates the controller.
+    auto& runtime = world_.runtime();
+    auto group = world::components(runtime, entity);
+    if (!group) return true;
+    for (const auto& component : *group) {
+        auto type = runtime.type_of(component.id());
+        if (!type) return true;
+        for (const auto controller : {types_.character_component, types_.ragdoll_component}) {
+            auto is = runtime.is_a(*type, controller);
+            if (!is) return true;
+            if (!*is) continue;
+            auto status = world::inspect_component(runtime, component.id());
+            if (!status || status->active) return true;
+        }
+    }
+    return false;
 }
 ObjectId PhysicsScene::pose_writer(ObjectId entity) const noexcept {
     if(auto body=impl_->entity_bodies.find(entity);body!=impl_->entity_bodies.end()) return body->second;

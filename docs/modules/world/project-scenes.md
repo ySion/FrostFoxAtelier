@@ -39,7 +39,7 @@ v1–v5 的 Actor 主体映射到真实 Entity 派生类型，根组件 TRS 提�
 
 ## 运行与 World 配置
 
-Session::start/update/stop 是运行宿主唯一驱动。start 创建 PhysicsScene 后开始 World，update 执行一次游戏 Tick 和物理子步，任一路径错误都停止清理。代码保留到 close，重复 stop 不重复 End。Project → Run 从编辑快照创建独立 Session，不复用编辑 Runtime 身份，也不自动把运行结果写回编辑场景。
+Session::start/update/stop 是运行宿主唯一驱动。start 创建 PhysicsScene 后开始 World，update 只调用 `World::update`，由它依次执行各 Tick 阶段和物理子步，任一路径错误都停止清理。代码保留到 close，重复 stop 不重复 End。Project → Run 从编辑快照创建独立 Session，不复用编辑 Runtime 身份，也不自动把运行结果写回编辑场景。
 
 `world` 保存共享 SceneLightingSettings，包括直接光预算；Session 历史负责持久化与撤销，Renderer 消费副本。诊断模式、GPU 缓存与实际 follow-focus 锚点不属于存档，详见[持久格式与责任](../editor/projects.md#持久格式与责任)。
 

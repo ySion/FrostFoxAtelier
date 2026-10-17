@@ -240,8 +240,10 @@ struct StepResult {
 };
 
 // The host owns this beside a World and destroys it before that World/Runtime.
-// update runs gameplay once, then bounded fixed physics substeps. Contact
-// handlers run only after Jolt::Update returns and may enqueue World requests.
+// It registers as the World's simulation: World::update steps it between the
+// pre_physics and post_physics phases with bounded fixed substeps. Step,
+// contact and before/after-step handlers run at a World host boundary and may
+// call World APIs; a failure there stops the World.
 class PhysicsScene final {
 public:
     [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types);
@@ -249,7 +251,8 @@ public:
     PhysicsScene(const PhysicsScene&) = delete;
     PhysicsScene& operator=(const PhysicsScene&) = delete;
 
-    [[nodiscard]] Result<StepResult> update(float elapsed);
+    // The latest step World::update ran; completed_step is cumulative.
+    [[nodiscard]] const StepResult& last_step() const noexcept { return last_step_; }
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
     [[nodiscard]] Result<void> add_force(ObjectId entity, math::Vector3);
     [[nodiscard]] Result<void> add_impulse(ObjectId entity, math::Vector3);
@@ -295,13 +298,13 @@ public:
     // returns all matching bodies. Test/single channel modes ignore touches.
     [[nodiscard]] Result<QueryResult> trace(math::Vector3 start, math::Vector3 end,
         const TraceSettings& = {}, QueryIgnore = {}) const;
-    // Component must be active and reconciled by update(0). Manual sampling works
+    // Component must be active and reconciled by World::update(0). Manual sampling works
     // while paused. Returned snapshots own values, never the hit Entities/bodies.
     [[nodiscard]] Result<QueryResult> execute_query(ObjectId component, QueryIgnore = {});
     [[nodiscard]] Result<QueryResult> read_query_result(ObjectId component) const;
     void set_paused(bool paused) noexcept { paused_ = paused; }
-    // Paused requests coalesce. A failed before-step preserves the request;
-    // a completed solve consumes it even if the after-step callback fails.
+    // Paused requests coalesce and a completed solve consumes them. A failed
+    // step stops the World, which discards a pending request.
     void step_once() noexcept { single_step_ = true; }
     [[nodiscard]] std::uint64_t completed_step() const noexcept { return completed_step_; }
     void on_contact(ContactHandler handler) { handler_ = std::move(handler); }
@@ -313,6 +316,9 @@ private:
     friend class detail::ComponentSimulation;
     struct Impl;
     explicit PhysicsScene(world::World&, Types);
+    [[nodiscard]] Result<void> step(float elapsed);
+    // Lookup failures answer true, so an unknown Entity is never translated.
+    [[nodiscard]] bool writes_pose(ObjectId entity) const;
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
     [[nodiscard]] Result<void> reconcile(ObjectId entity);
     [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component);
@@ -326,10 +332,11 @@ private:
     std::unique_ptr<detail::ComponentSimulation> components_;
     ContactHandler handler_;
     StepHandler before_step_, after_step_;
-    std::uint64_t subscription_{};
+    std::uint64_t subscription_{}, simulation_{};
+    StepResult last_step_{};
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
-    bool paused_{}, single_step_{}, updating_{};
+    bool paused_{}, single_step_{};
 };
 
 }

@@ -413,6 +413,29 @@ struct Activity {
 // receiving Begin/Tick/tasks. halt keeps first-error shutdown and whole-call
 // failure. Both policies report object diagnostics.
 enum class FailurePolicy : std::uint8_t { isolate, halt };
+// World::update runs the phases in this order, with the registered
+// simulations stepping between pre_physics and post_physics. Every phase
+// receives the whole frame's dt; late runs before the host extracts
+// presentation. Within a phase only explicit tick prerequisites order objects.
+enum class TickPhase : std::uint8_t { pre_physics, post_physics, late };
+// A system that World::update advances after pre_physics. step runs at a host
+// boundary, outside behavior dispatch, so it may call World APIs; a failed step
+// is a World-level failure. writes_pose(entity) claims that Entity's pose, so
+// translate_owner commands for it are rejected.
+struct Simulation {
+    std::function<Result<void>(float)> step;
+    std::function<bool(ObjectId)> writes_pose;
+};
+// Opaque handle of a type registered for presentation in one World.
+struct PresentationId {
+    std::uint32_t value{};
+    bool operator==(const PresentationId&) const = default;
+};
+using PresentationPredicate = std::function<Result<bool>(Runtime&, ObjectId component)>;
+struct PresentedComponent {
+    ObjectId entity, component;
+    bool active{}; // Enabled with an effectively enabled owner.
+};
 // False for failures of the World or Runtime itself (busy/reentry, code
 // publication, aborted execution, capacity/allocation); those stop the World
 // and fail the call under every policy, as does any failure after the World
@@ -426,8 +449,9 @@ class World final {
 public:
     struct Behavior {
         std::function<Result<void>(Runtime&, ObjectId)> begin{};
-        std::function<Result<void>(Runtime&, ObjectId, float)> tick{};
+        std::function<Result<void>(Runtime&, ObjectId, float)> tick{}; // pre_physics
         std::function<Result<void>(Runtime&, ObjectId)> end{};
+        std::function<Result<void>(Runtime&, ObjectId, float)> post_physics_tick{}, late_tick{};
     };
     using LifecycleObserver = std::function<Result<void>(World&, Lifecycle, ObjectId)>;
     using TaskStart = std::function<Result<Coroutine>(Runtime&, ObjectId)>;
@@ -490,10 +514,11 @@ public:
     [[nodiscard]] Result<ComponentRemoval> remove_component(ObjectId component);
     [[nodiscard]] Result<Commit> restore(const ComponentRemoval&);
     [[nodiscard]] Result<Commit> set_enabled(ObjectId entity_or_component, bool);
-    // Begin/Tick visit each Entity before its components in composition order.
+    // Begin visits each Entity before its components in composition order.
     // End reverses that order and pairs only with completed Begin.
     // Enabled gates Tick, not Begin.
-    // Dynamic insertion begins new components immediately; End uses current order.
+    // Dynamic insertion begins new objects immediately; they tick from the next
+    // phase that runs. End uses current order.
     [[nodiscard]] Result<Commit> start();
     [[nodiscard]] Result<Commit> stop();
     [[nodiscard]] Result<Commit> close();
@@ -539,23 +564,50 @@ public:
     [[nodiscard]] Result<std::vector<RenderItem>> render_items() const;
     // Enabled members, in Entity/composition order. Stopped Worlds also present.
     [[nodiscard]] Result<std::vector<LightRenderItem>> light_items() const;
+    // Components of `type` (or derived) for which `predicate` holds are kept in
+    // that registration's presentation bucket. At most 32 per World.
+    [[nodiscard]] Result<PresentationId> register_presentation(TypeId component_type, PresentationPredicate = {});
+    // Registered member components in composition order, including inactive
+    // ones. The borrow ends at the next change of this World.
+    [[nodiscard]] Result<std::span<const PresentedComponent>> presented(PresentationId) const;
+    // Re-evaluates presentation predicates after a member component's data changed.
+    [[nodiscard]] Result<void> reevaluate_presentation(ObjectId component);
 
-    // Stopped-only scheduling configuration, keyed by the Runtime's existing
-    // type identity. The nearest ancestor binding is inherited as a whole.
+    // Scheduling configuration keyed by the Runtime's existing type identity.
+    // The nearest ancestor binding is inherited as a whole. Allowed at host
+    // boundaries while running: begun objects use the new Tick from the next
+    // phase without a second Begin, and End uses the binding current at End.
     // Native method and source/JIT adapters run outside every native borrow.
     [[nodiscard]] Result<void> bind_behavior(TypeId entity_or_component_type, Behavior);
+    // `prerequisite` ticks before `object` in every phase where both tick. The
+    // order follows the transitive closure, also through objects without that
+    // phase's Tick. Both must belong to this World; cycles are rejected. Edges
+    // persist across stop/start and are dropped when either object leaves.
+    [[nodiscard]] Result<void> add_tick_prerequisite(ObjectId object, ObjectId prerequisite);
+    [[nodiscard]] Result<void> remove_tick_prerequisite(ObjectId object, ObjectId prerequisite);
     [[nodiscard]] Result<void> observe_lifecycle(LifecycleObserver);
     // Unsubscribing during dispatch immediately prevents later calls, including
     // calls still pending in the current notification.
     [[nodiscard]] Result<std::uint64_t> subscribe_lifecycle(LifecycleObserver);
     void unsubscribe_lifecycle(std::uint64_t) noexcept;
+    // The single frame entry: pre_physics Tick, task resumption, then each
+    // simulation's step, post_physics Tick and late Tick. Every phase ends by
+    // applying its commands and flushing queued requests. Stops early, without
+    // an error, when a step or request stops the World.
     [[nodiscard]] Result<void> update(float amount);
+    // Steps run in registration order. Removal during update takes effect
+    // before the next step call.
+    [[nodiscard]] Result<std::uint64_t> add_simulation(Simulation);
+    void remove_simulation(std::uint64_t) noexcept;
     // The trusted starter uses the provided Runtime/receiver. World owns the
     // resulting task; deactivate/detach/stop/close cancels it before exit completes.
     [[nodiscard]] Result<void> start_task(ObjectId entity_or_component, const TaskStart&);
 
     // Request acceptance is not completion. Replay checks the original World's
     // membership/owner conditions; it never follows a target into another World.
+    // Each update phase flushes the queue: a failed request is reported as a
+    // command_rejected diagnostic on its target and isolated under the failure
+    // policy. flush() applies the remaining queue and returns its receipts.
     // Receipts contain Commit only. Queued detach/remove do not return history
     // mementos or retain objects; a consumer needing them must already own roots.
     [[nodiscard]] Result<std::uint64_t> request(Request);

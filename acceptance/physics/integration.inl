@@ -64,7 +64,7 @@ void simulate_world() {
     take(w::set_geometry(runtime, floor_mesh,
         std::make_shared<const atelier::geometry::Mesh>(
             std::vector<atelier::geometry::Vertex>(vertices.begin(), vertices.end()))));
-    take(scene->update(0));
+    step(world, *scene, 0);
     require(scene->body_count() == 3, "active static mesh replacement rebuilds its body");
     require(!scene->read_body_state(first_handle), "mesh replacement invalidates old body handle");
     std::vector<p::ContactPhase> contacts;
@@ -76,17 +76,17 @@ void simulate_world() {
         contacts.push_back(event.phase);
         return {};
     });
-    for (int i = 0; i < 120; ++i) take(scene->update(1.f / 60.f));
+    for (int i = 0; i < 120; ++i) step(world, *scene, 1.f / 60.f);
     const auto resting = take(w::read_transform(runtime, entity.id())).position.y;
     require(std::abs(resting - .5f) < .06f, "dynamic Entity rests on static mesh");
     require(std::find(contacts.begin(), contacts.end(), p::ContactPhase::began) != contacts.end(),
         "World contact began event");
     take(scene->set_gravity({0, 0, 0}));
     scene->set_paused(true);
-    const auto paused = take(scene->update(1.f / 60.f));
+    const auto paused = step(world, *scene, 1.f / 60.f);
     require(paused.steps == 0, "paused scene does not advance physics");
     scene->step_once();
-    const auto stepped = take(scene->update(0));
+    const auto stepped = step(world, *scene, 0);
     require(stepped.steps == 1 && stepped.completed_step > paused.completed_step,
         "single step advances exactly one physics step");
     scene->set_paused(false);
@@ -104,17 +104,17 @@ void simulate_world() {
         ++after_steps;
         return {};
     });
-    const auto twice = take(scene->update(1.f / 30.f));
+    const auto twice = step(world, *scene, 1.f / 30.f);
     require(twice.steps == 2 && before_steps == 2 && after_steps == 2,
         "fixed-step gameplay callbacks run for every substep");
     scene->on_before_step({});
     scene->on_after_step({});
     take(scene->add_force(entity.id(), {0, 100, 0}));
-    take(scene->update(1.f / 60.f));
+    step(world, *scene, 1.f / 60.f);
     const auto after_force = take(w::read_transform(runtime, entity.id())).position.y;
     require(after_force > resting, "force moves dynamic Entity");
     take(scene->add_impulse(entity.id(), {0, 2, 0}));
-    take(scene->update(1.f / 60.f));
+    step(world, *scene, 1.f / 60.f);
     const auto after_impulse = take(w::read_transform(runtime, entity.id())).position.y;
     require(after_impulse > after_force, "impulse moves dynamic Entity");
     require(std::find(contacts.begin(), contacts.end(), p::ContactPhase::ended) != contacts.end(),
@@ -164,14 +164,14 @@ void simulate_filter_and_trigger() {
         events.push_back(event);
         return {};
     });
-    take(scene->update(1.f / 60.f));
+    step(world, *scene, 1.f / 60.f);
     require(events.size() == 1 && events[0].phase == p::ContactPhase::began &&
         events[0].trigger && events[0].step_id == 1, "trigger enters once per body pair");
     const auto contact_area = events[0].first.entity == area.id() ? events[0].first : events[0].second;
     require(contact_area == take(scene->body_handle(area.id())),
         "contact carries the same scene and body generation as queries and commands");
     const auto position_before = take(scene->read_body_state(take(scene->body_handle(target.id())))).position;
-    take(scene->update(1.f / 60.f));
+    step(world, *scene, 1.f / 60.f);
     require(events.size() == 2 && events[1].phase == p::ContactPhase::persisted,
         "trigger remains once per fixed step");
     const auto position_after = take(scene->read_body_state(take(scene->body_handle(target.id())))).position;
@@ -186,7 +186,7 @@ void simulate_filter_and_trigger() {
     require(filtered.hits.size() == 1 && filtered.hits[0].body.entity == area.id() &&
         !filtered.has_block, "query checks reciprocal response and sensor overlap");
     committed(world.set_enabled(area_body.id(), false));
-    take(scene->update(0));
+    step(world, *scene, 0);
     require(events.size() == 3 && events.back().phase == p::ContactPhase::ended &&
         events.back().exit_reason == p::ContactExitReason::body_removed,
         "deactivation emits one explicit trigger exit");
@@ -324,7 +324,7 @@ void simulate_special_systems() {
     const auto tether = take(scene->create_distance_constraint(
         take(scene->body_handle(ground.id())), chassis_handle, 0, 11));
     take(scene->set_vehicle_input(vehicle, .5f, 0, 0));
-    for (int i = 0; i < 150; ++i) take(scene->update(1.f / 60.f));
+    for (int i = 0; i < 150; ++i) step(world, *scene, 1.f / 60.f);
     const auto character_state = take(scene->read_character_state(character));
     require(character_state.grounded && character_state.position.y < 1.3f,
         "virtual character lands on World ground");
@@ -340,16 +340,16 @@ void simulate_special_systems() {
         vehicle_state.position.z * vehicle_state.position.z) < 11.5f,
         "distance constraint limits chassis travel");
     take(scene->set_character_input(character, {2, 0, 0}, true));
-    take(scene->update(1.f / 60.f));
+    step(world, *scene, 1.f / 60.f);
     const auto jumped = take(scene->read_character_state(character));
     require(jumped.velocity.y > 0 && jumped.position.x > character_state.position.x,
         "character jump and horizontal movement");
     take(scene->set_character_input(character, {0, 0, 0}));
-    for (int i = 0; i < 100; ++i) take(scene->update(1.f / 60.f));
+    for (int i = 0; i < 100; ++i) step(world, *scene, 1.f / 60.f);
     take(scene->set_character_input(character, {3, 0, 0}));
     float maximum_step_height = 0;
     for (int i = 0; i < 90; ++i) {
-        take(scene->update(1.f / 60.f));
+        step(world, *scene, 1.f / 60.f);
         maximum_step_height = std::max(maximum_step_height,
             take(scene->read_character_state(character)).position.y);
     }
@@ -358,7 +358,7 @@ void simulate_special_systems() {
     take(scene->set_character_input(slope_character, {3, 0, 0}));
     float maximum_slope_height = 0;
     for (int i = 0; i < 120; ++i) {
-        take(scene->update(1.f / 60.f));
+        step(world, *scene, 1.f / 60.f);
         maximum_slope_height = std::max(maximum_slope_height,
             take(scene->read_character_state(slope_character)).position.y);
     }
@@ -369,7 +369,7 @@ void simulate_special_systems() {
     const auto platform_handle = take(scene->body_handle(platform_entity.id()));
     for (int i = 1; i <= 60; ++i) {
         take(scene->set_kinematic_target(platform_handle, {20, .25f + .01f * i, 0}, {0, 0, 0, 1}));
-        take(scene->update(1.f / 60.f));
+        step(world, *scene, 1.f / 60.f);
     }
     const auto rider_after = take(scene->read_character_state(rider));
     require(rider_after.grounded && rider_after.position.y > rider_before.position.y + .3f,

@@ -63,6 +63,7 @@ Result<void> validate_object(Runtime&, ObjectId, TypeId);
 // True means this is a native Material/LightSettings path and was handled.
 Result<bool> write_lighting_property(World&, ObjectId, std::span<const FieldId>, Scalar);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
+Result<void> queue_request(Runtime&, ObjectId object, RequestKind, bool enabled);
 
 // A short-lived evaluation snapshot for candidate graphs and Detached objects.
 // No cached TRS is an authoring source.
@@ -126,7 +127,6 @@ struct World::Impl {
     struct Task { ObjectId object, entity; Coroutine coroutine; };
     struct Pending { std::uint64_t serial; Request request; ObjectId owner; bool member_required{}; };
     struct Scheduled { ObjectId object, entity; const Behavior* behavior{}; };
-    enum class Presentation : std::uint8_t { none, mesh, light };
     // An isolated behavior failure. Begin-faulted objects never began; Tick-
     // faulted objects began and still receive End. Cleared when the object
     // leaves running participation or by clear_faults().
@@ -135,7 +135,7 @@ struct World::Impl {
         ObjectId id;
         TypeId type;
         const Behavior* behavior{};
-        Presentation presentation{};
+        std::uint32_t presentation{}; // Bit i: in the bucket of presentations[i].
         bool enabled{}, begun{};
         Fault fault{};
     };
@@ -158,7 +158,7 @@ struct World::Impl {
     Types types;
     World& world;
     std::shared_ptr<detail::WorldLifetime> lifetime{std::make_shared<detail::WorldLifetime>()};
-    bool running{}, closing{}, closed{}, transitioning{}, flushing{};
+    bool running{}, closing{}, closed{}, transitioning{}, flushing{}, updating{};
     std::size_t dispatch_depth{};
     // Composition preorder: every member's subtree is one contiguous range.
     std::vector<Member> members;
@@ -166,8 +166,21 @@ struct World::Impl {
     Map<ObjectId, std::size_t> positions;
     // Derived lazily from `states`.
     bool schedule_dirty{true}, buckets_dirty{true};
-    std::vector<Scheduled> updates;
+    std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
     std::vector<Bucket> buckets;
+    struct PresentationRegistration { TypeId type; PresentationPredicate predicate; };
+    std::vector<PresentationRegistration> presentations;
+    std::vector<std::vector<PresentedComponent>> presented; // Rebuilt with `buckets`.
+    // The world library's own registrations; owned by presentation code.
+    PresentationId meshes, lights;
+    static constexpr std::uint32_t bit(PresentationId id) noexcept { return 1u << id.value; }
+    Result<std::uint32_t> presentation_of(ObjectId component, TypeId type) const;
+    // Tick prerequisite edges, both directions; only between current participants.
+    std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites, dependents;
+    void forget_prerequisites(ObjectId) noexcept;
+    struct SimulationEntry { std::uint64_t id; std::shared_ptr<const Simulation> simulation; };
+    std::vector<SimulationEntry> simulations;
+    std::uint64_t next_simulation{1};
     detail::SpaceCache space;
     std::vector<Task> tasks;
     struct Translation { ObjectId component, entity; math::Vector3 delta; };
@@ -256,6 +269,11 @@ struct World::Impl {
     std::optional<Error> begin() { return begin(0, members.size()); }
     std::optional<Error> end() { return end(0, members.size()); }
     std::optional<Error> invoke(const Scheduled&, bool beginning);
+    // One phase of update: Tick, tasks (pre_physics only), commands, requests.
+    std::optional<Error> run_phase(TickPhase, float amount);
+    // Applies queued requests; object failures are contained, others returned.
+    std::optional<Error> flush_requests();
+    Result<Commit> apply_request(const Pending&);
     std::optional<Error> shutdown();
     std::optional<Error> notify(Lifecycle, ObjectId);
     Commit finish(bool changed, std::optional<Error> failure = {});

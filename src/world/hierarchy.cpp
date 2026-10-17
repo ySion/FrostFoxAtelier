@@ -1190,6 +1190,11 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         // Departing member roots stay alive until the detached notifications finish.
         // Descending ranges leave earlier positions valid.
         for (auto range = ranges.rbegin(); range != ranges.rend(); ++range) {
+            if (!state.prerequisites.empty() || !state.dependents.empty())
+                for (auto i = range->at; i < range->at + range->count; ++i) {
+                    state.forget_prerequisites(state.members[i].id());
+                    for (const auto& item : state.states[i].components) state.forget_prerequisites(item.id);
+                }
             const auto first = state.members.begin() + std::ptrdiff_t(range->at), last = first + std::ptrdiff_t(range->count);
             for (auto it = first; it != last; ++it) {
                 state.positions.remove(it->id());

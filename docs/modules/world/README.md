@@ -53,13 +53,26 @@ StaticMeshComponent 保存网格与材质，LightComponent 保存灯参数，Pri
 
 ## 生命周期与执行顺序
 
-`bind_behavior(TypeId, Behavior{begin,tick,end})` 给真实 Entity 或 Component 配置可选执行入口，派生类型沿 Runtime 基类链选择最近完整登记；显式空登记关闭继承行为。原生与 Source 回调在 native borrow 外执行，接收者受普通根和 ExecutionScope 保护。
+`bind_behavior(TypeId, Behavior{begin,tick,end,post_physics_tick,late_tick})` 给真实 Entity 或 Component 配置可选执行入口，派生类型沿 Runtime 基类链选择最近完整登记；显式空登记关闭继承行为。原生与 Source 回调在 native borrow 外执行，接收者受普通根和 ExecutionScope 保护。Source 的生命周期方法名为 `begin / tick / end / post_physics_tick / late_tick`。运行中也可以在宿主边界重新绑定（行为分发内返回 busy）：已开始的对象从下一个执行的阶段起使用新的 Tick，不补发 Begin；End 使用退出时的当前绑定；`clear_faults()` 仍按原规则重新 Begin。
 
-Begin/Tick 沿组合前序：Entity 自身、其组件组成顺序、子 Entity 子树。End 反转当前组成顺序，只配对已成功完成 Begin 的对象。没有 Tick 的数据组件不产生空调用；静态呈现不依赖 Tick。运行中插入只开始新对象，禁用不重发 Begin/End；祖先禁用阻止其子树 Tick 并取消相应任务。
+`World::update(dt)` 是唯一的帧入口，顺序由结构保证，不公开单独推进某个阶段的入口：
+
+```text
+pre_physics Tick → 任务恢复 → 平移命令 → flush 请求
+→ 各模拟系统 step(dt)（按登记顺序）
+→ post_physics Tick → 平移命令 → flush 请求
+→ late Tick → 平移命令 → flush 请求
+```
+
+三个阶段都收到整帧 dt，post_physics 不随物理子步数变化；late 位于 post_physics 之后、宿主提取呈现之前。阶段内顺序不作承诺，只由显式前置约束排序：`add_tick_prerequisite(object, prerequisite)` 让 prerequisite 在两者都有 Tick 的每个阶段先执行；约束按全图的传递闭包生效，A→B→C 中 B 在某阶段没有 Tick 时，A 仍先于 C。形成环的约束在添加时拒绝；约束跨 stop/start 保留，任一端离开 World 时移除。目前只提供宿主/原生入口，Source 在引用字段落地后接入。
+
+Begin 沿组合前序：Entity 自身、其组件组成顺序、子 Entity 子树。End 反转当前组成顺序，只配对已成功完成 Begin 的对象。没有 Tick 的数据组件不产生空调用；静态呈现不依赖 Tick。运行中插入立即 Begin，从下一个执行的阶段开始 Tick；禁用不重发 Begin/End；祖先禁用阻止其子树 Tick 并取消相应任务。
+
+模拟系统用 `add_simulation(Simulation{step, writes_pose})` 登记；PhysicsScene 创建时登记，析构时注销。step 在行为分发之外的宿主边界执行，可以调用 World API；step 失败按 World 级处理：停止 World 并使该次 update 失败。World 停止时不调用 step，子系统经生命周期通知清理。`writes_pose(entity)` 声明该系统写入此 Entity 的位姿。
 
 失败按 World 的 `FailurePolicy` 处理，见下一节。stop、异常停机与 close 共用任务取消、逆序 End 和物理参与撤销入口。
 
-attached/detached 表示 World 成员注册与注销，activated/deactivated 表示启用资格变化，不代替 Begin/End。回调中同步结构修改拒绝，可通过 `request/flush` 延后到宿主边界；请求在执行前复核 World 与归属，不跟随对象迁入另一个 World。
+attached/detached 表示 World 成员注册与注销，activated/deactivated 表示启用资格变化，不代替 Begin/End。回调中同步结构修改拒绝，改用 `request` 入队：每个 update 阶段结束时自动 flush，宿主也可以在帧外调用 `flush()` 取得回执。Entity 与 Component 的原生方法 `destroy()`、`set_enabled(bool)`（Source 可调用）只入队，走同一队列。请求在执行前复核 World 与归属，不跟随对象迁入另一个 World；阶段末 flush 中失败的请求记为目标上的 `command_rejected` 警告，并按失败策略处理（halt 下停机）。运行期生成对象尚未提供。
 
 ## 失败策略与诊断
 
@@ -73,7 +86,7 @@ isolate 下：
 - Tick 或任务失败的对象停止 Tick，取消其任务并丢弃它待应用的平移；它已完成 Begin，退出时仍收到一次 End。End 失败只记诊断，清理继续。
 - 观察者失败记为 `observer_failed`，不写 `Commit.notification_error`。
 - `render_items / light_items` 逐项跳过：空间不可求值时诊断记在失败的 Entity 上，材质、灯参数记在组件上。重复天光按组合前序保留第一个，之后的以 `conflict` 跳过。
-- `translate_owner` 命令逐条复核，被拒绝的命令（例如物理控制的 Entity）记 `command_rejected` 警告；`apply_simulation_transforms` 逐个拒绝无效位姿并以剩余位姿重新换算，被拒绝的 Entity 保持局部 TRS。物理按 Entity 或控制器排除失败项，见[物理](../physics/README.md)。
+- `translate_owner` 命令逐条复核，被拒绝的命令（例如模拟系统写入位姿的 Entity）记 `command_rejected` 警告；`apply_simulation_transforms` 逐个拒绝无效位姿并以剩余位姿重新换算，被拒绝的 Entity 保持局部 TRS。物理按 Entity 或控制器排除失败项，见[物理](../physics/README.md)。
 
 halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行，并逆序清理已开始对象；End 或通知错误继续清理并保留首错，不回滚已产生的业务副作用；提取与位姿批次整次失败，不部分发布。
 
@@ -89,10 +102,12 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 `set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照。具体合同见 [Lit 数据](lighting.md)和[项目场景](project-scenes.md)。
 
+呈现能力按类型登记：`register_presentation(component_type, predicate)` 返回不透明的 `PresentationId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出），由 `presented(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_presentation(component)` 重新求值谓词。每个 World 最多 32 个登记。目前 world 库自己登记网格（需要有几何）与灯光，`render_items / light_items` 只遍历这两个桶。
+
 `render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。成员的世界矩阵来自 World 持有的一份空间缓存，`render_items`、`light_items`、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。Detached 对象和候选图仍使用临时求值。
 
 ## 运行位姿与验收入口
 
-Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。物理控制的 Entity 拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。被拒绝的命令与位姿按失败策略处理。
+Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。已登记模拟系统以 `writes_pose` 声明位姿的 Entity（例如物理 body 或控制器所在的 Entity）拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。被拒绝的命令与位姿按失败策略处理。
 
 端到端入口为 `world_acceptance`、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。官方内容使用 Scene v6；旧 v1–v5 仅通过严格导入进入同一模型。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。
