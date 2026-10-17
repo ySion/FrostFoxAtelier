@@ -7,12 +7,22 @@
 
 namespace atelier::physics {
 namespace {
+// Keeps the original error, so World-level codes stay distinguishable from object failures.
+struct Failure : std::runtime_error {
+    Error error;
+    explicit Failure(Error value) : std::runtime_error(value.message), error(std::move(value)) {}
+};
 template<class T> T take(Result<T> result) {
-    if(!result) throw std::runtime_error(result.error().message);
+    if(!result) throw Failure(result.error());
     if constexpr(!std::is_void_v<T>) return std::move(*result);
 }
 void require(bool ok,const char* message) {if(!ok) throw std::runtime_error(message);}
-auto failed(const std::exception& e) {return std::unexpected(Error{ErrorCode::invalid_member,e.what()});}
+Error failure_of(const std::exception& e) {
+    if(const auto* carried=dynamic_cast<const Failure*>(&e)) return carried->error;
+    if(dynamic_cast<const std::bad_alloc*>(&e)) return Error{ErrorCode::capacity_exceeded,e.what()};
+    return Error{ErrorCode::invalid_member,e.what()};
+}
+auto failed(const std::exception& e) {return std::unexpected(failure_of(e));}
 template<class T,class F> auto read(Runtime& runtime,ObjectId id,F callback) {
     using V=std::invoke_result_t<F,const T&>;
     return take(runtime.with_native<const T>(id,[&](const T& value)->Result<V>{return callback(value);}));
@@ -272,6 +282,9 @@ Result<void> ComponentSimulation::reconcile() try {
     const auto members=owners.empty()?std::span<const world::Member>{}:take(world_.members());
     for(const auto& member:members) {
         if(!owners.contains(member.id())) continue;
+        // An isolated member contributes no entries or pose claims to this pass.
+        const auto claimed=writers;const auto planned=desired_entries.size();
+        try {
         if(take(world::inspect_entity(runtime,member.id())).state!=world::EntityState::active) continue;
         if(!take(world::has_transform(runtime,member.id()))) continue;
         const auto group=take(world::components(runtime,member.id()));std::set<Kind> unique;
@@ -340,9 +353,13 @@ Result<void> ComponentSimulation::reconcile() try {
             }
             desired_entries.emplace_back(std::move(desired),available);
         }
+        } catch(const std::exception& e) {
+            if(!contain(world_,failure_of(e),member.id(),member.id())) throw;
+            writers=claimed;desired_entries.erase(desired_entries.begin()+std::ptrdiff_t(planned),desired_entries.end());
+        }
     }
     // Validate every pose claim before constructing or replacing any controller.
-    for(auto& [desired,available]:desired_entries) {
+    for(auto& [desired,available]:desired_entries) try {
         const auto kind=desired.kind;
         auto current=entries_.find(desired.component);
         if(current!=entries_.end()) {
@@ -380,6 +397,9 @@ Result<void> ComponentSimulation::reconcile() try {
         }
         try {entries_.emplace(desired.component,desired);}catch(...) {release(desired);throw;}
         seen.insert(desired.component);
+    } catch(const std::exception& e) {
+        // An isolated controller is not created; an unconfirmed old one is released below.
+        if(!contain(world_,failure_of(e),desired.component,desired.entity)) throw;
     }
     for(auto it=entries_.begin();it!=entries_.end();) {
         if(seen.contains(it->first)) ++it;else {release(it->second);it=entries_.erase(it);}
@@ -388,7 +408,8 @@ Result<void> ComponentSimulation::reconcile() try {
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::before_step(float fixed) try {
     auto& runtime=world_.runtime();
-    for(auto& [id,e]:entries_) {
+    // An isolated controller skips this step and is sampled again next step.
+    for(auto& [id,e]:entries_) try {
         switch(e.kind) {
         case Kind::character: {
             const auto input=read<CharacterComponent>(runtime,id,[](const auto& v){return std::pair{v.velocity,v.jump};});
@@ -414,13 +435,16 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
         }
         default:break;
         }
+    } catch(const std::exception& failure) {
+        if(!contain(world_,failure_of(failure),id,e.entity)) throw;
     }
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose>& poses) try {
     auto& runtime=world_.runtime();
     for(const auto& [id,e]:entries_) {
-        (void)id;
+        const auto appended=poses.size();
+        try {
         if(e.kind==Kind::ragdoll) {
             auto pose=take(scene_.read_ragdoll_pose(e.special));
             require(pose.positions.size()==e.targets.size() && pose.rotations.size()==e.targets.size(),"Ragdoll pose does not match its Entity bindings.");
@@ -433,11 +457,15 @@ Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose
                 poses.push_back({e.targets[i],state.wheel_positions[index],state.wheel_rotations[index]});
             }
         }
+        } catch(const std::exception& failure) {
+            if(!contain(world_,failure_of(failure),id,e.entity)) throw;
+            poses.resize(appended);
+        }
     }
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::after_step() try {
-    for(auto& [id,e]:entries_) {
+    for(auto& [id,e]:entries_) try {
         if(e.kind==Kind::character || e.kind==Kind::ragdoll) {
             // Remember the published owner frame, which need not equal a ragdoll's
             // first rest-body frame before its first completed simulation step.
@@ -445,6 +473,8 @@ Result<void> ComponentSimulation::after_step() try {
             e.origin=pose.position;e.rotation=pose.rotation;
         } else if(e.kind==Kind::query &&
             read<SceneQueryComponent>(world_.runtime(),id,[](const auto& v){return v.automatic || v.pending_;})) take(sample_query(id));
+    } catch(const std::exception& failure) {
+        if(!contain(world_,failure_of(failure),id,e.entity)) throw;
     }
     return {};
 } catch(const std::exception& e) {return failed(e);}

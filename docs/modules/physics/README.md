@@ -16,6 +16,8 @@ Box、Sphere、Capsule 支持静态、运动学和动态体。Box 烘入正世�
 
 暂停下重复 `step_once` 合并为一次请求；前回调失败时请求保留，修复回调后可重试；求解完成后的回调失败不重复执行已完成步。当前使用单宿主同步推进，求解期间不开放外部 World/Runtime 访问或并发查询；Jolt 接触回调只收集值数据，业务通知在求解结束后交付。World 的普通 Tick 每显示帧执行一次，每个固定子步的业务工作通过场景前/后回调接入；尚无通用 World TickGroup。
 
+物理失败遵循 World 的[失败策略](../world/README.md#失败策略与诊断)，诊断以 physics 阶段写入同一 World 日志。isolate 下，普通 body 协调失败的 Entity 不保留普通 body，其余 Entity 照常模拟；位姿写入者冲突时拒绝普通 body，保留控制器组件；控制器组件逐项创建、采样与回写，失败项不创建或跳过该步，下一步重新采样；被拒绝的位姿不回写。halt 保持原行为：首个失败使该次 `update` 或生命周期调用失败。
+
 ## 身份、碰撞与查询
 
 `body_handle` 接受 Primitive 身份；传 Entity 时只解析其自身启用的 Primitive，不从子 Entity 猜选刚体。`BodyHandle` 包含 Entity、组件、场景与重建代际；查询返回同一 handle，状态读取和命令验证其有效性。`BodySettings` 提供 16 类对象的双向 Ignore/Overlap/Block 响应、Sensor、摩擦和恢复系数。两个不相交的 16 位类别掩码表示 Ignore/Overlap，其余为 Block；C++ 可使用 `response`/`set_response`，底层使用同一值。双方 Block 才阻挡，Ignore 优先，Overlap/Sensor 不求解阻挡。接触按刚体对归并为 began/persisted/ended，卸载的 Exit 标记 `body_removed`。`ContactEvent::first/second` 保存历史 BodyHandle；刚体移除后的结束事件仍可交付，旧 handle 不能操作同组件重建的新 body。事件在本帧子步结束后交付，其新命令从后续固定步生效。

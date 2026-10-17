@@ -207,7 +207,7 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
         const auto& state = Access::state(*data->world);
         if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
         const auto* member = state.state_of(object);
-        if (!member) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
+        if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
         status.state = state.running && member->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
         status.can_edit = !state.running && !state.dispatch_depth;
         status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != detail::Access::State::Presentation::none; });
@@ -234,9 +234,9 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
             if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
             // Components without a game updater still have activation eligibility.
             const auto* member = state.state_of(data->owner);
-            if (!member) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
+            if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
             const auto item = std::ranges::find(member->components, object, &detail::Access::State::ComponentState::id);
-            if (item == member->components.end()) return error(ErrorCode::invalid_member, "World component index is inconsistent.");
+            if (item == member->components.end()) return std::unexpected(state.inconsistent("World component index is inconsistent."));
             status.active = state.running && item->begun && member->eligible && data->enabled;
             status.can_present = item->presentation != detail::Access::State::Presentation::none;
         }

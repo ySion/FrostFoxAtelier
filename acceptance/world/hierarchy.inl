@@ -5,6 +5,7 @@ void hierarchical_lifecycle() {
     publish(program,"async void later() { yield; self.advance(50.0); }");
     const auto later=take(program.bind<void>(FunctionExecution::coroutine));
     w::World world(runtime,types);
+    take(world.set_failure_policy(w::FailurePolicy::halt));
     auto root=take(w::create_entity(runtime)), child=take(w::create_entity(runtime));
     auto leaf=take(w::create_entity(runtime)), other=take(w::create_entity(runtime));
     auto a=take(w::create_component(runtime,types.counter)), b=take(w::create_component(runtime,types.counter));
@@ -237,6 +238,15 @@ void hierarchical_space_boundaries() {
         "Child-first physics pose batch used stale ancestor world pose.");
     const std::array invalid_poses{w::SimulationPose{a.id(),{300,0,0},{}},
         w::SimulationPose{x.id(),{std::numeric_limits<float>::infinity(),0,0},{}}};
+    // Isolate rejects only the invalid pose; its Entity keeps its local pose under the moved parent.
+    take(world.apply_simulation_transforms(invalid_poses));
+    const auto rejected_pose=world.take_diagnostics();
+    require(near(take(w::world_matrix(runtime,a.id()))[12],300) && near(take(w::world_matrix(runtime,x.id()))[12],301) &&
+        rejected_pose.size()==1 && rejected_pose[0].object==x.id() && rejected_pose[0].kind==w::DiagnosticKind::command_rejected &&
+        rejected_pose[0].phase==w::DiagnosticPhase::physics && rejected_pose[0].severity==w::Severity::warning,
+        "Isolated simulation batch did not reject exactly the invalid pose.");
+    committed(world.stop());take(world.set_failure_policy(w::FailurePolicy::halt));committed(world.start());
+    take(world.apply_simulation_transforms(poses));
     reject(world.apply_simulation_transforms(invalid_poses),"Invalid final simulation pose was accepted.");
     require(equal_matrix(parent_world,take(w::world_matrix(runtime,a.id()))) && equal_matrix(child_world,take(w::world_matrix(runtime,x.id()))),
         "Failed simulation batch partially moved an ancestor.");

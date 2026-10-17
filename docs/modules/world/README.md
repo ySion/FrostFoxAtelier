@@ -19,7 +19,7 @@ Entity 是唯一的组成与可选空间节点。它内联保存 position、rota
 
 Entity 的隐藏强引用序列分别拥有有序 children 和 components；组合 parent 和显式空间 origin 为弱引用，Component 强持 owner。同类型组件允许多实例，物理位姿写入者的排他规则由物理模块校验。普通根可以保住组成图；无外部根的引用环沿 Runtime GC 回收。
 
-World 为每个成员 Entity 持有 ObjectRoot，成员身份以 Entity 的 World 归属为准；执行和查询目录是派生索引。`members()` 按组合前序列出所有 Entity，每个身份一次，每棵子树占连续区间；attach、detach、reparent、启用与组件增删只更新受影响的子树区间及其祖先计数，不重建整个目录。`contains(entity)` 以常数时间判断成员资格。类型查询不改变执行顺序。`components / children` 返回普通 ObjectRoot 快照，保留身份与当前数据。对象可以活过旧 World；Runtime 必须晚于 World、对象操作和任务结束。
+World 为每个成员 Entity 持有 ObjectRoot，成员身份以 Entity 的 World 归属为准；执行和查询目录是派生索引。`members()` 按组合前序列出所有 Entity，每个身份一次，每棵子树占连续区间。attach 只从 Runtime 推导进入的子树，Begin/End 与生命周期通知只访问进出的子树，并调整受影响祖先的子树计数；插入点或移除点之后的成员只移动并更新下标，reparent 只移动源位置与目标位置之间的区间，均不重新从 Runtime 推导。启用与组件增删只更新对应成员。Tick 计划与类型目录在下次使用时由内存中的成员状态重建。`contains(entity)` 以常数时间判断成员资格。类型查询不改变执行顺序。`components / children` 返回普通 ObjectRoot 快照，保留身份与当前数据。对象可以活过旧 World；Runtime 必须晚于 World、对象操作和任务结束。
 
 ## 完整创建与组合
 
@@ -55,9 +55,29 @@ StaticMeshComponent 保存网格与材质，LightComponent 保存灯参数，Pri
 
 Begin/Tick 沿组合前序：Entity 自身、其组件组成顺序、子 Entity 子树。End 反转当前组成顺序，只配对已成功完成 Begin 的对象。没有 Tick 的数据组件不产生空调用；静态呈现不依赖 Tick。运行中插入只开始新对象，禁用不重发 Begin/End；祖先禁用阻止其子树 Tick 并取消相应任务。
 
-任一 Begin 或 Tick 首错停止后续执行，并逆序清理已开始对象。End 或通知错误仍继续清理，保留首错，不回滚已产生业务副作用。stop、异常停机与 close 共用任务取消、逆序 End 和物理参与撤销入口。
+失败按 World 的 `FailurePolicy` 处理，见下一节。stop、异常停机与 close 共用任务取消、逆序 End 和物理参与撤销入口。
 
 attached/detached 表示 World 成员注册与注销，activated/deactivated 表示启用资格变化，不代替 Begin/End。回调中同步结构修改拒绝，可通过 `request/flush` 延后到宿主边界；请求在执行前复核 World 与归属，不跟随对象迁入另一个 World。
+
+## 失败策略与诊断
+
+`FailurePolicy` 默认为 isolate，Play 使用默认值；验收与编辑器测试用 `set_failure_policy(halt)` 选择首错即停，只能在 World 停止时切换。两种策略都把对象失败写入同一诊断日志。
+
+只有能归属到对象的错误才隔离：Begin/Tick/End 行为回调、任务恢复、生命周期观察者、呈现/灯光/物理的逐项校验与协调、单条平移命令与模拟位姿。World 与 Runtime 自身的错误在任何策略下都按 World 级处理：停止 World 或使整个调用失败，不写对象诊断。`isolatable(Error)` 是这条分界：busy（重入、遍历中）、rebuild_required（代码发布检查）、execution_aborted（执行中止）、capacity_exceeded（含分配失败）不可隔离；World 发现自身成员或组件索引不一致后，此后的任何失败都不再隔离。结构编辑、attach/detach、start/stop 等宿主调用的失败照常返回给调用者。
+
+isolate 下：
+
+- Begin 失败的对象记为 Begin 故障，不 Tick、不启动任务、不收到 End；它的组件与子 Entity 照常 Begin。
+- Tick 或任务失败的对象停止 Tick，取消其任务并丢弃它待应用的平移；它已完成 Begin，退出时仍收到一次 End。End 失败只记诊断，清理继续。
+- 观察者失败记为 `observer_failed`，不写 `Commit.notification_error`。
+- `render_items / light_items` 逐项跳过：空间不可求值时诊断记在失败的 Entity 上，材质、灯参数记在组件上。重复天光按组合前序保留第一个，之后的以 `conflict` 跳过。
+- `translate_owner` 命令逐条复核，被拒绝的命令（例如物理控制的 Entity）记 `command_rejected` 警告；`apply_simulation_transforms` 逐个拒绝无效位姿并以剩余位姿重新换算，被拒绝的 Entity 保持局部 TRS。物理按 Entity 或控制器排除失败项，见[物理](../physics/README.md)。
+
+halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行，并逆序清理已开始对象；End 或通知错误继续清理并保留首错，不回滚已产生的业务副作用；提取与位姿批次整次失败，不部分发布。
+
+故障状态属于一次运行，按对象存于 World 执行状态；对象退出参与或 World 停止时清除。`clear_faults()` 由宿主在兼容代码发布成功后于宿主边界调用：Tick 故障的对象恢复 Tick，不重发 Begin；Begin 故障的对象经运行中插入的 Begin 路径重新 Begin。
+
+诊断记录定义在 [diagnostic.hpp](../../../src/world/diagnostic.hpp)：severity、kind、phase、object、entity、type（限定名）、field（字段名路径）、source（生成代码的失败位置，有值时转发）、message、serial、repeats。场景加载诊断使用同一记录与 kind 词表。`take_diagnostics()` 取走日志；日志最多 1024 条，溢出计入 `dropped_diagnostics()`。呈现、灯光、物理与命令阶段中，同一对象、kind 与字段的失败若在下一次提取或更新中重复，只增加 repeats，某次未再出现即视为解决；已取走的条目在失败持续期间不再重发。行为失败每次发生各记一条。物理等子系统经 `World::contain(Error, Diagnostic)` 按同一策略报告与判断。
 
 ## 编辑、呈现与资源
 
@@ -71,6 +91,6 @@ attached/detached 表示 World 成员注册与注销，activated/deactivated 表
 
 ## 运行位姿与验收入口
 
-Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界复核并批量应用；不保存字段地址。物理控制的 Entity 拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，整批先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。
+Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。物理控制的 Entity 拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。被拒绝的命令与位姿按失败策略处理。
 
 端到端入口为 `world_acceptance`、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。官方内容使用 Scene v6；旧 v1–v5 仅通过严格导入进入同一模型。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。

@@ -3,6 +3,7 @@
 
 #include "runtime/execution.hpp"
 #include "runtime/reflection.hpp"
+#include "world/diagnostic.hpp"
 #include "world/math.hpp"
 #include "geometry/mesh.hpp"
 #include "material/resources.hpp"
@@ -407,6 +408,16 @@ struct Activity {
     std::size_t presentation_registrations{};
     std::size_t tasks{};
 };
+// isolate confines an object-attributable failure to that Entity or Component:
+// it is reported, excluded from its consumer, and a failed behavior stops
+// receiving Begin/Tick/tasks. halt keeps first-error shutdown and whole-call
+// failure. Both policies report object diagnostics.
+enum class FailurePolicy : std::uint8_t { isolate, halt };
+// False for failures of the World or Runtime itself (busy/reentry, code
+// publication, aborted execution, capacity/allocation); those stop the World
+// and fail the call under every policy, as does any failure after the World
+// found its own index inconsistent.
+[[nodiscard]] bool isolatable(const Error&) noexcept;
 
 // Same Runtime thread. Runtime outlives World, its detached objects and tasks.
 // The World owns only member roots and execution/registration state. Entity's
@@ -486,6 +497,27 @@ public:
     [[nodiscard]] Result<Commit> start();
     [[nodiscard]] Result<Commit> stop();
     [[nodiscard]] Result<Commit> close();
+
+    // Defaults to isolate. Changeable only while stopped.
+    [[nodiscard]] FailurePolicy failure_policy() const noexcept;
+    [[nodiscard]] Result<void> set_failure_policy(FailurePolicy);
+    // Object diagnostics in serial order; taking empties the log. Repeated
+    // consumer failures of one object/field coalesce into `repeats` while they
+    // persist across consecutive frames, and a taken entry is not reissued
+    // until its failure resolves. The log keeps at most 1024 entries.
+    [[nodiscard]] std::vector<Diagnostic> take_diagnostics();
+    [[nodiscard]] std::uint64_t dropped_diagnostics() const noexcept;
+    // Lets subsystems such as physics write to the same log; fills `serial`
+    // and, when empty, the qualified `type` of `object`.
+    void report(Diagnostic);
+    // Reports `diagnostic` for an object failure with `error`'s message and
+    // source. True when the World isolates it; false means fail the caller
+    // (halt policy, or a World-level failure, which is not reported).
+    [[nodiscard]] bool contain(const Error&, Diagnostic);
+    // Host boundary, typically after a compatible code publication. Tick- and
+    // task-faulted objects resume Tick without a second Begin; Begin-faulted
+    // objects take the running insertion Begin path again.
+    [[nodiscard]] Result<Commit> clear_faults();
 
     [[nodiscard]] Result<Scalar> read(ObjectId entity_or_component, std::span<const FieldId>) const;
     // Authoring requires an open World at a host boundary. Current running

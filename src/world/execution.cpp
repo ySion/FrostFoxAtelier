@@ -105,26 +105,35 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
             const auto& callback = beginning ? item.behavior->begin : item.behavior->end;
             if (callback) { auto result = callback(runtime, item.object); if (!result) return result.error(); }
         }
+    } catch (const std::bad_alloc&) {
+        return Error{ErrorCode::capacity_exceeded, "World object lifecycle callback ran out of memory."};
     } catch (const std::exception& exception) {
         return Error{ErrorCode::invocation_failed, exception.what()};
     } catch (...) { return Error{ErrorCode::invocation_failed, "World object lifecycle callback threw an unknown exception."}; }
     return {};
 }
 // Callbacks cannot change membership or registrations (dispatch guard), so
-// state references stay valid across each invocation.
+// state references stay valid across each invocation. An isolated Begin
+// failure leaves only that object unbegun; its components and children continue.
 std::optional<Error> World::Impl::begin(std::size_t first, std::size_t last, ObjectId component) {
+    const auto begin_one = [&](ObjectId object, ObjectId entity, const Behavior* behavior, bool& begun, Fault& fault) -> std::optional<Error> {
+        if (begun || fault != Fault::none) return {};
+        if (auto failure = invoke({object, entity, behavior}, true)) {
+            if (!contain(*failure, DiagnosticKind::behavior_failed, DiagnosticPhase::begin, object, entity)) return failure;
+            fault = Fault::begin;
+            return {};
+        }
+        begun = true;
+        schedule_dirty = true;
+        return {};
+    };
     for (auto i = first; i < last; ++i) {
         const auto entity = members[i].id();
-        if (component == ObjectId{} && !states[i].begun) {
-            if (auto failure = invoke({entity, entity, states[i].behavior}, true)) return failure;
-            states[i].begun = true;
-            schedule_dirty = true;
-        }
+        if (component == ObjectId{})
+            if (auto failure = begin_one(entity, entity, states[i].behavior, states[i].begun, states[i].fault)) return failure;
         for (auto& item : states[i].components) {
-            if ((component != ObjectId{} && item.id != component) || item.begun) continue;
-            if (auto failure = invoke({item.id, entity, item.behavior}, true)) return failure;
-            item.begun = true;
-            schedule_dirty = true;
+            if (component != ObjectId{} && item.id != component) continue;
+            if (auto failure = begin_one(item.id, entity, item.behavior, item.begun, item.fault)) return failure;
         }
     }
     return {};
@@ -140,13 +149,15 @@ std::optional<Error> World::Impl::end(std::size_t first, std::size_t last, Objec
             it->begun = false;
             schedule_dirty = true;
             auto ended = invoke({it->id, entity, it->behavior}, false);
-            if (!failure) failure = std::move(ended);
+            if (ended && !contain(*ended, DiagnosticKind::behavior_failed, DiagnosticPhase::end, it->id, entity) && !failure)
+                failure = std::move(ended);
         }
         if (component == ObjectId{} && states[i].begun) {
             states[i].begun = false;
             schedule_dirty = true;
             auto ended = invoke({entity, entity, states[i].behavior}, false);
-            if (!failure) failure = std::move(ended);
+            if (ended && !contain(*ended, DiagnosticKind::behavior_failed, DiagnosticPhase::end, entity, entity) && !failure)
+                failure = std::move(ended);
         }
     }
     return failure;
@@ -174,6 +185,19 @@ Result<Commit> World::start() {
     for (std::size_t i = 0; !failure && i < state.members.size(); ++i)
         if (state.states[i].eligible) failure = state.notify(Lifecycle::activated, state.members[i].id());
     return state.finish(true, std::move(failure));
+}
+Result<Commit> World::clear_faults() {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
+    bool cleared = false;
+    const auto clear = [&](Impl::Fault& fault) { cleared |= fault != Impl::Fault::none; fault = Impl::Fault::none; };
+    for (auto& member : state.states) {
+        clear(member.fault);
+        for (auto& item : member.components) clear(item.fault);
+    }
+    if (!cleared) return Commit{};
+    state.schedule_dirty = true;
+    return state.finish(true, state.begin());
 }
 Result<Commit> World::stop() {
     auto& state = *impl_;
@@ -317,6 +341,8 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
         if (!status->valid || !status->active) return error(ErrorCode::invalid_member, "Tasks require an active Component.");
         entity_id = *owner;
     }
+    if (const auto* fault = state.fault_of(object, entity_id); fault && *fault != Impl::Fault::none)
+        return error(ErrorCode::invalid_member, "Tasks require an object without an isolated failure.");
     auto root = runtime().hold(object);
     if (!root) return std::unexpected(root.error());
     state.tasks.reserve(state.tasks.size() + 1);
@@ -340,6 +366,8 @@ Result<void> World::update(float amount) {
     if (auto ready = state.admit(); !ready) return ready;
     if (!std::isfinite(amount) || amount < 0.f) return error(ErrorCode::argument_mismatch, "World update amount must be finite and nonnegative.");
     if (!state.running) return {};
+    state.begin_pass(DiagnosticPhase::physics);
+    state.begin_pass(DiagnosticPhase::command);
     if (state.schedule_dirty) state.rebuild_schedule();
     std::optional<Error> failure;
     {
@@ -348,22 +376,37 @@ Result<void> World::update(float amount) {
         detail::DispatchScope dispatch{state.dispatch_depth};
         // Registration arrays cannot change under this guard. Member roots keep
         // their composition alive; each invocation also owns its receiver root.
+        // An isolated failure stops that object's Tick from the next schedule.
         for (const auto& item : state.updates) {
             const auto object = item.object;
             auto root = runtime().hold(object);
             if (!root) { failure = root.error(); break; }
+            std::optional<Error> error;
             try {
                 auto invoked = item.behavior->tick(runtime(), object, amount);
-                if (!invoked) { failure = invoked.error(); break; }
+                if (!invoked) error = invoked.error();
+            } catch (const std::bad_alloc&) {
+                error = Error{ErrorCode::capacity_exceeded, "World object Tick ran out of memory."};
             } catch (const std::exception& exception) {
-                failure = Error{ErrorCode::invocation_failed, exception.what()}; break;
-            } catch (...) { failure = Error{ErrorCode::invocation_failed, "World object Tick threw an unknown exception."}; break; }
+                error = Error{ErrorCode::invocation_failed, exception.what()};
+            } catch (...) { error = Error{ErrorCode::invocation_failed, "World object Tick threw an unknown exception."}; }
+            if (!error) continue;
+            if (!state.contain(*error, DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) { failure = std::move(error); break; }
+            state.fault_tick(object, item.entity);
         }
         if (!failure) {
+            // Cancelling erases tasks, so faults apply after the resume loop.
+            std::vector<std::pair<ObjectId, ObjectId>> faulted;
             for (auto& task : state.tasks) {
+                if (std::ranges::any_of(faulted, [&](const auto& other) { return other.first == task.object; })) continue;
                 auto stepped = task.coroutine.resume();
-                if (!stepped) { failure = stepped.error(); break; }
+                if (stepped) continue;
+                if (!state.contain(stepped.error(), DiagnosticKind::task_failed, DiagnosticPhase::task, task.object, task.entity)) {
+                    failure = stepped.error(); break;
+                }
+                faulted.emplace_back(task.object, task.entity);
             }
+            for (const auto& [object, entity] : faulted) state.fault_tick(object, entity);
         }
     }
     if (!failure) {

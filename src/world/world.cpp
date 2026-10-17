@@ -9,6 +9,78 @@ namespace atelier::world {
 using detail::Access;
 using detail::error;
 
+bool isolatable(const Error& failure) noexcept {
+    switch (failure.code) {
+    case ErrorCode::busy: case ErrorCode::rebuild_required: case ErrorCode::execution_aborted: case ErrorCode::capacity_exceeded:
+        return false;
+    default:
+        return true;
+    }
+}
+std::size_t World::Impl::DiagnosticKeyHash::operator()(const DiagnosticKey& key) const noexcept {
+    auto value = std::hash<ObjectId>{}(key.object);
+    value ^= (std::size_t(key.kind) << 8 | std::size_t(key.phase)) + 0x9e3779b97f4a7c15ull + (value << 6) + (value >> 2);
+    return value ^ (std::hash<std::string>{}(key.field) + 0x9e3779b97f4a7c15ull + (value << 6) + (value >> 2));
+}
+void World::Impl::begin_pass(DiagnosticPhase phase) noexcept {
+    const auto pass = ++passes[std::size_t(phase)];
+    std::erase_if(recent, [&](const auto& entry) { return entry.first.phase == phase && entry.second.pass + 1 < pass; });
+}
+void World::Impl::report(Diagnostic diagnostic) {
+    if (diagnostic.type.empty() && diagnostic.object != ObjectId{})
+        if (auto type = runtime.type_of(diagnostic.object))
+            if (auto info = runtime.describe(*type)) diagnostic.type = (*info)->name;
+    // Behavior failures fault their object and are reported once per incident.
+    const auto phase = diagnostic.phase;
+    const bool consumer = phase == DiagnosticPhase::presentation || phase == DiagnosticPhase::lighting ||
+        phase == DiagnosticPhase::physics || phase == DiagnosticPhase::command;
+    std::optional<DiagnosticKey> key;
+    if (consumer) {
+        std::string field;
+        for (const auto& name : diagnostic.field) { if (!field.empty()) field += '.'; field += name; }
+        key.emplace(DiagnosticKey{diagnostic.object, diagnostic.kind, phase, std::move(field)});
+        const auto pass = passes[std::size_t(phase)];
+        // `repeats` counts consecutive passes; dependents failing on one cause count once per pass.
+        if (auto found = recent.find(*key); found != recent.end() && found->second.pass + 1 >= pass) {
+            if (found->second.pass == pass) return;
+            found->second.pass = pass;
+            const auto pending = std::ranges::lower_bound(diagnostics, found->second.serial, {}, &Diagnostic::serial);
+            if (pending != diagnostics.end() && pending->serial == found->second.serial && pending->repeats != UINT32_MAX) ++pending->repeats;
+            return;
+        }
+    }
+    if (diagnostics.size() >= diagnostic_capacity) { ++dropped_diagnostics; return; }
+    diagnostic.serial = next_diagnostic++;
+    if (key) recent.insert_or_assign(std::move(*key), Recent{diagnostic.serial, passes[std::size_t(phase)]});
+    diagnostics.push_back(std::move(diagnostic));
+}
+bool World::Impl::contain(const Error& failure, Diagnostic diagnostic) {
+    if (invariant_failed || !isolatable(failure)) return false;
+    diagnostic.source = failure.source; diagnostic.message = failure.message;
+    report(std::move(diagnostic));
+    return policy == FailurePolicy::isolate;
+}
+bool World::Impl::contain(const Error& failure, DiagnosticKind kind, DiagnosticPhase phase, ObjectId object, ObjectId entity,
+    std::vector<std::string> field, Severity severity) {
+    Diagnostic diagnostic;
+    diagnostic.severity = severity; diagnostic.kind = kind; diagnostic.phase = phase;
+    diagnostic.object = object; diagnostic.entity = entity; diagnostic.field = std::move(field);
+    return contain(failure, std::move(diagnostic));
+}
+World::Impl::Fault* World::Impl::fault_of(ObjectId object, ObjectId entity) noexcept {
+    auto* member = state_of(entity);
+    if (!member) return nullptr;
+    if (object == entity) return &member->fault;
+    const auto found = std::ranges::find(member->components, object, &ComponentState::id);
+    return found == member->components.end() ? nullptr : &found->fault;
+}
+void World::Impl::fault_tick(ObjectId object, ObjectId entity) noexcept {
+    if (auto* fault = fault_of(object, entity)) *fault = Fault::tick;
+    schedule_dirty = true;
+    cancel_tasks(object, false);
+    std::erase_if(translations, [&](const Translation& command) { return command.component == object; });
+}
+
 Result<void> World::Impl::admit(bool mutation) const {
     if (closed || (closing && mutation)) return error(ErrorCode::unsupported_operation, closing ? "World is closing." : "World is closed.");
     if (transitioning || (mutation && dispatch_depth)) return error(ErrorCode::busy, "World operation cannot reenter this phase.");
@@ -21,7 +93,7 @@ Result<std::size_t> World::Impl::member(ObjectId object) const {
     if (entity->world != &world)
         return error(ErrorCode::invalid_member, entity->world ? "Entity belongs to another World." : "Entity is not a World member.");
     const auto* found = positions.find(object);
-    if (!found) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
+    if (!found) return std::unexpected(inconsistent("World member index is inconsistent."));
     return *found;
 }
 Result<ObjectId> World::Impl::component_owner(ObjectId object) const {
@@ -136,7 +208,7 @@ Result<void> World::Impl::rederive(ObjectId entity) {
     auto next = derive_components(entity);
     if (!next) return std::unexpected(next.error());
     auto* state = state_of(entity);
-    if (!state) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
+    if (!state) return std::unexpected(inconsistent("World member index is inconsistent."));
     for (auto& item : *next) {
         const auto previous = std::ranges::find(state->components, item.id, &ComponentState::id);
         if (previous != state->components.end()) item.begun = previous->begun;
@@ -173,9 +245,10 @@ void World::Impl::rebuild_schedule() {
         const auto& state = states[i];
         if (!state.eligible) continue;
         const auto id = members[i].id();
-        if (state.begun && state.behavior && state.behavior->tick) updates.push_back({id, id, state.behavior});
+        if (state.begun && state.fault == Fault::none && state.behavior && state.behavior->tick) updates.push_back({id, id, state.behavior});
         for (const auto& item : state.components)
-            if (item.begun && item.enabled && item.behavior && item.behavior->tick) updates.push_back({item.id, id, item.behavior});
+            if (item.begun && item.fault == Fault::none && item.enabled && item.behavior && item.behavior->tick)
+                updates.push_back({item.id, id, item.behavior});
     }
 }
 void World::Impl::rebuild_buckets() {
@@ -200,6 +273,11 @@ void World::Impl::cancel_tasks(ObjectId target, bool entity) noexcept {
 }
 void World::Impl::halt() noexcept {
     running = false; updates.clear(); translations.clear(); cancel_tasks();
+    // Faults belong to one run; the next start begins every member again.
+    for (auto& member : states) {
+        member.fault = Fault::none;
+        for (auto& item : member.components) item.fault = Fault::none;
+    }
     changed(false);
 }
 std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
@@ -208,16 +286,26 @@ std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     if (!scope) return scope.error();
     detail::DispatchScope dispatch{dispatch_depth};
     std::optional<Error> failure;
+    const auto owner = [&] {
+        if (positions.contains(object)) return object;
+        auto component = detail::component_data(runtime, object);
+        return component ? component->owner : ObjectId{};
+    };
     const auto invoke = [&](const LifecycleObserver& callback) {
         if (!callback) return;
+        std::optional<Error> error;
         try {
             auto result = callback(world, event, object);
-            if (!result && !failure) failure = result.error();
+            if (!result) error = result.error();
+        } catch (const std::bad_alloc&) {
+            error = Error{ErrorCode::capacity_exceeded, "World lifecycle observer ran out of memory."};
         } catch (const std::exception& exception) {
-            if (!failure) failure = Error{ErrorCode::invocation_failed, exception.what()};
+            error = Error{ErrorCode::invocation_failed, exception.what()};
         } catch (...) {
-            if (!failure) failure = Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
+            error = Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
         }
+        if (error && !contain(*error, DiagnosticKind::observer_failed, DiagnosticPhase::lifecycle, object, owner()) && !failure)
+            failure = std::move(error);
     };
     invoke(observer);
     for (const auto& entry : subscriptions) {
@@ -262,15 +350,29 @@ Activity World::activity() const noexcept {
     const auto& state = *impl_;
     Activity result{0, 0, state.tasks.size()};
     for (const auto& member : state.states) {
-        result.update_registrations += state.running && member.begun && member.eligible && member.behavior && member.behavior->tick;
+        result.update_registrations += state.running && member.begun && member.fault == Impl::Fault::none && member.eligible &&
+            member.behavior && member.behavior->tick;
         for (const auto& item : member.components) {
-            result.update_registrations += state.running && item.begun && member.eligible && item.enabled && item.behavior && item.behavior->tick;
+            result.update_registrations += state.running && item.begun && item.fault == Impl::Fault::none && member.eligible &&
+                item.enabled && item.behavior && item.behavior->tick;
             result.presentation_registrations += item.presentation != Impl::Presentation::none;
         }
     }
     return result;
 }
 bool World::contains(ObjectId entity) const noexcept { return impl_->positions.contains(entity); }
+FailurePolicy World::failure_policy() const noexcept { return impl_->policy; }
+Result<void> World::set_failure_policy(FailurePolicy policy) {
+    if (auto ready = impl_->admit(); !ready) return ready;
+    if (impl_->running) return error(ErrorCode::busy, "Stop the World before changing its failure policy.");
+    if (policy != FailurePolicy::isolate && policy != FailurePolicy::halt) return error(ErrorCode::argument_mismatch, "Unknown failure policy.");
+    impl_->policy = policy;
+    return {};
+}
+std::vector<Diagnostic> World::take_diagnostics() { return std::exchange(impl_->diagnostics, {}); }
+std::uint64_t World::dropped_diagnostics() const noexcept { return impl_->dropped_diagnostics; }
+void World::report(Diagnostic diagnostic) { impl_->report(std::move(diagnostic)); }
+bool World::contain(const Error& failure, Diagnostic diagnostic) { return impl_->contain(failure, std::move(diagnostic)); }
 Result<std::span<const Member>> World::members() const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     return std::span<const Member>{impl_->members};
@@ -423,25 +525,24 @@ Result<void> World::Impl::apply_translations() {
     struct Cleanup { Impl& state; ~Cleanup() { state.translations.clear(); state.translation_changes.clear(); } } cleanup{*this};
     auto& changes=translation_changes; changes.reserve(translations.size());
     const std::array physical_types{runtime.find_type("physics.CharacterComponent"),runtime.find_type("physics.RagdollComponent")};
-    for (const auto& command:translations) {
+    // Each command is checked alone: a rejected one is reported and dropped.
+    const auto check=[&](const Translation& command)->Result<void> {
         auto owner=component_owner(command.component);
         if (!owner) return std::unexpected(owner.error());
         if (*owner!=command.entity) return error(ErrorCode::invalid_member,"Translation receiver changed owner.");
-        {
-            auto group=components(runtime,command.entity); if (!group) return std::unexpected(group.error());
-            for (const auto& component:*group) {
-                auto type=runtime.type_of(component.id()); if (!type) return std::unexpected(type.error());
-                auto primitive=runtime.is_a(*type,types.primitive_component);
-                if (!primitive) return std::unexpected(primitive.error());
-                if (*primitive) {
-                    auto physical=runtime.with_native<const PrimitiveComponent>(component.id(),[](const auto& p)->Result<bool>{return p.body.enabled;});
-                    if (!physical) return std::unexpected(physical.error());
-                    if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Entity; use physics actions.");
-                }
-                for(const auto& physical_type:physical_types) if(physical_type) {
-                    auto physical=runtime.is_a(*type,*physical_type); if (!physical) return std::unexpected(physical.error());
-                    if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Entity; use physics actions.");
-                }
+        auto group=components(runtime,command.entity); if (!group) return std::unexpected(group.error());
+        for (const auto& component:*group) {
+            auto type=runtime.type_of(component.id()); if (!type) return std::unexpected(type.error());
+            auto primitive=runtime.is_a(*type,types.primitive_component);
+            if (!primitive) return std::unexpected(primitive.error());
+            if (*primitive) {
+                auto physical=runtime.with_native<const PrimitiveComponent>(component.id(),[](const auto& p)->Result<bool>{return p.body.enabled;});
+                if (!physical) return std::unexpected(physical.error());
+                if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Entity; use physics actions.");
+            }
+            for(const auto& physical_type:physical_types) if(physical_type) {
+                auto physical=runtime.is_a(*type,*physical_type); if (!physical) return std::unexpected(physical.error());
+                if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Entity; use physics actions.");
             }
         }
         auto found=std::ranges::find(changes,command.entity,&TranslationChange::entity);
@@ -450,15 +551,20 @@ Result<void> World::Impl::apply_translations() {
             auto value=relative_transform(*matrix,math::Matrix4::identity()); if (!value) return std::unexpected(value.error());
             changes.push_back({command.entity,*value}); found=std::prev(changes.end());
         }
-        auto& value=found->value;
+        auto value=found->value;
         value.position.x+=command.delta.x; value.position.y+=command.delta.y; value.position.z+=command.delta.z;
         auto canonical=canonical_transform(value); if (!canonical) return std::unexpected(canonical.error());
-        value=*canonical;
-    }
+        found->value=*canonical;
+        return {};
+    };
+    for (const auto& command:translations)
+        if (auto checked=check(command); !checked &&
+            !contain(checked.error(),DiagnosticKind::command_rejected,DiagnosticPhase::command,command.component,command.entity,{},Severity::warning))
+            return checked;
     std::vector<SimulationPose> poses;
     poses.reserve(changes.size());
     for (const auto& change:changes) poses.push_back({change.entity,change.value.position,change.value.rotation});
-    return world.apply_simulation_transforms(poses);
+    return apply_poses(poses,DiagnosticPhase::command);
 }
 
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
@@ -519,6 +625,7 @@ Result<std::vector<RenderItem>> World::render_items() const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     auto& state = *impl_;
     std::vector<RenderItem> result;
+    state.begin_pass(DiagnosticPhase::presentation);
     std::size_t count{};
     for (const auto& member : state.states)
         for (const auto& component : member.components) count += component.presentation == Impl::Presentation::mesh;
@@ -529,14 +636,29 @@ Result<std::vector<RenderItem>> World::render_items() const {
         for (const auto& component : state.states[i].components) {
             if (component.presentation != Impl::Presentation::mesh) continue;
             const auto object = component.id;
+            // Isolated items are skipped: an unusable space is reported once on
+            // its Entity, an invalid material on its component.
             auto matrix = state.space.matrix(owner);
-            if (!matrix) return std::unexpected(matrix.error());
+            if (!matrix) {
+                const auto at = state.space.failed;
+                if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, at, at)) return std::unexpected(matrix.error());
+                continue;
+            }
             auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<RenderItem> {
                 if (auto valid = validate_material(value.material); !valid) return std::unexpected(valid.error());
                 return RenderItem{owner, object, *matrix, Access::geometry(value), value.material};
             });
-            if (!item) return std::unexpected(item.error());
-            auto surfaces=material_surfaces(runtime(),object);if(!surfaces) return std::unexpected(surfaces.error());
+            if (!item) {
+                if (!state.contain(item.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"material"}))
+                    return std::unexpected(item.error());
+                continue;
+            }
+            auto surfaces=material_surfaces(runtime(),object);
+            if (!surfaces) {
+                if (!state.contain(surfaces.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"materials"}))
+                    return std::unexpected(surfaces.error());
+                continue;
+            }
             item->surfaces=std::move(*surfaces);
             result.push_back(std::move(*item));
         }

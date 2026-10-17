@@ -54,6 +54,16 @@ std::atomic<std::uint64_t> next_scene_id{1};
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
     return std::unexpected(Error{code, message});
 }
+}
+namespace detail {
+bool contain(world::World& world, const Error& error, ObjectId object, ObjectId entity) {
+    world::Diagnostic diagnostic;
+    diagnostic.kind = world::DiagnosticKind::invalid_value; diagnostic.phase = world::DiagnosticPhase::physics;
+    diagnostic.object = object; diagnostic.entity = entity;
+    return world.contain(error, std::move(diagnostic));
+}
+}
+namespace {
 Result<void> validate_active_entity(world::World& world, ObjectId entity) {
     auto state = world::inspect_entity(world.runtime(), entity);
     if (!state) return std::unexpected(state.error());
@@ -758,9 +768,14 @@ Result<StepResult> PhysicsScene::update(float elapsed) {
     if (!candidates.empty()) {
         auto members = world_.members();
         if (!members) return std::unexpected(members.error());
-        for (const auto& member : *members)
-            if (candidates.contains(member.id()))
-                if (auto found = reconcile(member.id()); !found) return std::unexpected(found.error());
+        for (const auto& member : *members) {
+            if (!candidates.contains(member.id())) continue;
+            auto found = reconcile(member.id());
+            if (found) continue;
+            // An isolated Entity keeps no ordinary body until its configuration is valid again.
+            if (!detail::contain(world_, found.error(), member.id(), member.id())) return std::unexpected(found.error());
+            if (auto body = impl_->entity_bodies.find(member.id()); body != impl_->entity_bodies.end()) remove(body->second);
+        }
     }
     if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
     constexpr float fixed = 1.f / 60.f;

@@ -194,6 +194,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     path.clear();
     ObjectId composed{};
     for (auto id = object;;) {
+        failed = id;
         auto entry = resolve(id);
         if (!entry) return std::unexpected(entry.error());
         if (!(*entry)->spatial) return error(ErrorCode::invalid_member, "Entity has no Transform.");
@@ -210,6 +211,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
         parent_world = entry->world; parent_version = entry->version;
     }
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
+        failed = *it;
         auto local = relations.runtime.with_native<Entity>(*it, [](Entity& entity) -> Result<Trs> {
             return Trs{entity.position, entity.rotation, entity.scale};
         });
@@ -227,6 +229,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
         entry->checked = pass;
         parent_world = entry->world; parent_version = entry->version;
     }
+    failed = {};
     return entries.find(object)->world;
 }
 Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
@@ -553,41 +556,64 @@ Result<void> World::apply_simulation_transform(ObjectId entity, math::Vector3 po
     return apply_simulation_transforms({&pose, 1});
 }
 Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses) {
-    if (auto ready = impl_->admit(); !ready) return ready;
-    if (!running()) return error(ErrorCode::busy, "Simulation writes require a running World.");
-    detail::SpaceGraph before{runtime()}, candidate{runtime()};
-    std::unordered_map<ObjectId, Trs> desired;
-    for (const auto& pose : poses) {
-        if (auto member = impl_->member(pose.entity); !member) return std::unexpected(member.error());
-        if (desired.contains(pose.entity)) return error(ErrorCode::invalid_member, "An Entity has multiple simulation pose writers.");
-        auto matrix = before.matrix(pose.entity);
-        if (!matrix) return std::unexpected(matrix.error());
-        auto original = relative_transform(*matrix, math::Matrix4::identity());
-        if (!original) return std::unexpected(original.error());
-        auto value = canonical_transform({pose.position, pose.rotation, original->scale});
-        if (!value) return std::unexpected(value.error());
-        desired.emplace(pose.entity, *value);
+    return impl_->apply_poses(poses, DiagnosticPhase::physics);
+}
+Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase) {
+    if (auto ready = admit(); !ready) return ready;
+    if (!running) return error(ErrorCode::busy, "Simulation writes require a running World.");
+    // A rejected pose is reported and excluded; conversion then restarts so no
+    // retained pose is expressed relative to a rejected parent's target.
+    std::vector<bool> rejected(poses.size());
+    const auto reject = [&](std::size_t i, const Error& failure) {
+        rejected[i] = true;
+        return contain(failure, DiagnosticKind::command_rejected, phase, poses[i].entity, poses[i].entity, {}, Severity::warning);
+    };
+    for (;;) {
+        detail::SpaceGraph before{runtime}, candidate{runtime};
+        std::unordered_map<ObjectId, Trs> desired;
+        for (std::size_t i = 0; i < poses.size(); ++i) {
+            if (rejected[i]) continue;
+            const auto& pose = poses[i];
+            auto value = [&]() -> Result<Trs> {
+                if (auto at = member(pose.entity); !at) return std::unexpected(at.error());
+                if (desired.contains(pose.entity)) return error(ErrorCode::invalid_member, "An Entity has multiple simulation pose writers.");
+                auto matrix = before.matrix(pose.entity);
+                if (!matrix) return std::unexpected(matrix.error());
+                auto original = relative_transform(*matrix, math::Matrix4::identity());
+                if (!original) return std::unexpected(original.error());
+                return canonical_transform({pose.position, pose.rotation, original->scale});
+            }();
+            if (!value) { if (!reject(i, value.error())) return std::unexpected(value.error()); continue; }
+            desired.emplace(pose.entity, *value);
+        }
+        // Desired world matrices make conversion independent of hash/container order.
+        for (const auto& [id, value] : desired) candidate.matrices.emplace(id, transform_matrix(value));
+        std::vector<std::pair<ObjectId, Trs>> locals;
+        locals.reserve(poses.size());
+        bool restart = false;
+        for (std::size_t i = 0; i < poses.size() && !restart; ++i) {
+            if (rejected[i]) continue;
+            const auto& pose = poses[i];
+            auto local = [&]() -> Result<Trs> {
+                auto parent = candidate.parent(pose.entity);
+                if (!parent) return std::unexpected(parent.error());
+                auto origin = candidate.matrix(*parent);
+                if (!origin) return std::unexpected(origin.error());
+                auto value = relative_transform(transform_matrix(desired.at(pose.entity)), *origin);
+                if (!value) return std::unexpected(value.error());
+                auto authored = before.node(pose.entity);
+                if (!authored) return std::unexpected(authored.error());
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    if (std::abs(value->scale[axis] - (*authored)->local.scale[axis]) > 1e-5f * std::max(1.f, (*authored)->local.scale[axis]))
+                        return error(ErrorCode::argument_mismatch, "Simulation pose would change authored local scale.");
+                value->scale = (*authored)->local.scale;
+                return value;
+            }();
+            if (!local) { if (!reject(i, local.error())) return std::unexpected(local.error()); restart = true; continue; }
+            locals.emplace_back(pose.entity, *local);
+        }
+        if (!restart) return publish_transforms(runtime, locals);
     }
-    // Desired world matrices make conversion independent of hash/container order.
-    for (const auto& [id, value] : desired) candidate.matrices.emplace(id, transform_matrix(value));
-    std::vector<std::pair<ObjectId, Trs>> locals;
-    locals.reserve(poses.size());
-    for (const auto& pose : poses) {
-        auto parent = candidate.parent(pose.entity);
-        if (!parent) return std::unexpected(parent.error());
-        auto origin = candidate.matrix(*parent);
-        if (!origin) return std::unexpected(origin.error());
-        auto local = relative_transform(transform_matrix(desired.at(pose.entity)), *origin);
-        if (!local) return std::unexpected(local.error());
-        auto authored = before.node(pose.entity);
-        if (!authored) return std::unexpected(authored.error());
-        for (std::size_t i = 0; i < 3; ++i)
-            if (std::abs(local->scale[i] - (*authored)->local.scale[i]) > 1e-5f * std::max(1.f, (*authored)->local.scale[i]))
-                return error(ErrorCode::argument_mismatch, "Simulation pose would change authored local scale.");
-        local->scale = (*authored)->local.scale;
-        locals.emplace_back(pose.entity, *local);
-    }
-    return publish_transforms(runtime(), locals);
 }
 
 Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule rule, std::size_t index) {
@@ -888,11 +914,15 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         return left.attachment < right.attachment;
     });
     const auto total = state.members.size() + incoming.size();
-    std::vector<Member> next_members;
-    std::vector<Impl::MemberState> next_states;
+    // Capacity is reserved so the in-place insertions inside the commit cannot fail.
     std::vector<std::size_t> starts(attachments.size());
-    next_members.reserve(total);
-    next_states.reserve(total);
+    std::size_t inserted{};
+    for (const auto& insertion : insertions) {
+        starts[insertion.attachment] = insertion.at + inserted;
+        inserted += tree_ranges[insertion.attachment].second;
+    }
+    state.members.reserve(total);
+    state.states.reserve(total);
     state.positions.reserve(total);
     // Build one complete sequence per existing parent. Indices refer to the
     // original sequence, so same-position roots preserve input order.
@@ -909,13 +939,16 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             if (index < plan.existing.size()) plan.references.push_back(plan.existing[index].reference());
         }
     }
+    std::vector<Member> arriving_members;
+    arriving_members.reserve(incoming.size());
+    for (auto& root : incoming) arriving_members.push_back({std::move(root)});
     // Borrow all native membership locations before the reference transaction.
     // The outer borrow keeps those addresses valid through the nonthrowing
     // membership writes and directory moves; no native pointer escapes it.
-    auto published = runtime().with_native<Entity>(incoming.front().id(), [&](Entity&) -> Result<void> {
+    auto published = runtime().with_native<Entity>(arriving_members.front().id(), [&](Entity&) -> Result<void> {
         std::vector<Entity*> entities;
-        entities.reserve(incoming.size());
-        for (const auto& root : incoming) {
+        entities.reserve(arriving_members.size());
+        for (const auto& root : arriving_members) {
             auto borrowed = runtime().with_native<Entity>(root.id(), [&](Entity& entity) -> Result<void> {
                 entities.push_back(&entity); return {};
             });
@@ -976,25 +1009,15 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             Access::world_origin(*flags.entity) = flags.world_origin;
         }
         for (auto* entity : entities) Access::member_world(*entity) = this;
-        std::size_t source{};
-        const auto keep = [&](std::size_t until) {
-            for (; source < until; ++source) {
-                next_members.push_back(std::move(state.members[source]));
-                next_states.push_back(std::move(state.states[source]));
-            }
-        };
-        for (const auto& insertion : insertions) {
-            keep(insertion.at);
-            const auto [first, count] = tree_ranges[insertion.attachment];
-            starts[insertion.attachment] = next_members.size();
-            for (auto i = first; i < first + count; ++i) {
-                next_members.push_back({std::move(incoming[i])});
-                next_states.push_back(std::move(arriving[i]));
-            }
+        // Descending gaps leave earlier positions valid; equal gaps insert in reverse.
+        for (auto it = insertions.rbegin(); it != insertions.rend(); ++it) {
+            const auto [first, count] = tree_ranges[it->attachment];
+            const auto at = std::ptrdiff_t(it->at), from = std::ptrdiff_t(first), to = std::ptrdiff_t(first + count);
+            state.members.insert(state.members.begin() + at,
+                std::make_move_iterator(arriving_members.begin() + from), std::make_move_iterator(arriving_members.begin() + to));
+            state.states.insert(state.states.begin() + at,
+                std::make_move_iterator(arriving.begin() + from), std::make_move_iterator(arriving.begin() + to));
         }
-        keep(state.members.size());
-        state.members.swap(next_members);
-        state.states.swap(next_states);
         state.reindex(insertions.front().at, total);
         for (std::size_t i = 0; i < attachments.size(); ++i) {
             const auto count = tree_ranges[i].second;
@@ -1006,9 +1029,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     });
     if (!published) return std::unexpected(published.error());
     // Callbacks observe arriving trees in final composition order.
-    std::vector<std::size_t> order(attachments.size());
-    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::ranges::sort(order, {}, [&](std::size_t i) { return starts[i]; });
+    std::vector<std::size_t> order;
+    order.reserve(insertions.size());
+    for (const auto& insertion : insertions) order.push_back(insertion.attachment);
     std::optional<Error> failure;
     for (const auto i : order)
         for (auto at = starts[i]; at < starts[i] + tree_ranges[i].second; ++at) {
@@ -1019,7 +1042,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
                 if (!failure) failure = std::move(notified);
             }
         }
-    if (!failure && state.running) failure = state.begin();
+    if (state.running)
+        for (const auto i : order)
+            if (!failure) failure = state.begin(starts[i], starts[i] + tree_ranges[i].second);
     if (state.running)
         for (const auto i : order)
             for (auto at = starts[i]; !failure && at < starts[i] + tree_ranges[i].second; ++at)
@@ -1106,10 +1131,7 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             for (auto it = group.rbegin(); it != group.rend(); ++it) exiting.push_back(it->id);
             exiting.push_back(state.members[i].id());
         }
-    std::vector<Member> next_members, departed;
-    std::vector<Impl::MemberState> next_states;
-    next_members.reserve(state.members.size() - ids.size());
-    next_states.reserve(state.members.size() - ids.size());
+    std::vector<Member> departed;
     departed.reserve(ids.size());
     for (const auto& range : ranges)
         for (auto i = range.at; i < range.at + range.count; ++i) state.cancel_tasks(state.members[i].id());
@@ -1156,23 +1178,16 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         if (auto changed = runtime().apply_reference_changes(changes); !changed) return changed;
         for (auto* entity : entities) Access::member_world(*entity) = nullptr;
         // Departing member roots stay alive until the detached notifications finish.
-        std::size_t source{};
-        const auto keep = [&](std::size_t until) {
-            for (; source < until; ++source) {
-                next_members.push_back(std::move(state.members[source]));
-                next_states.push_back(std::move(state.states[source]));
+        // Descending ranges leave earlier positions valid.
+        for (auto range = ranges.rbegin(); range != ranges.rend(); ++range) {
+            const auto first = state.members.begin() + std::ptrdiff_t(range->at), last = first + std::ptrdiff_t(range->count);
+            for (auto it = first; it != last; ++it) {
+                state.positions.remove(it->id());
+                departed.push_back(std::move(*it));
             }
-        };
-        for (const auto& range : ranges) {
-            keep(range.at);
-            for (; source < range.at + range.count; ++source) {
-                state.positions.remove(state.members[source].id());
-                departed.push_back(std::move(state.members[source]));
-            }
+            state.members.erase(first, last);
+            state.states.erase(state.states.begin() + std::ptrdiff_t(range->at), state.states.begin() + std::ptrdiff_t(range->at + range->count));
         }
-        keep(state.members.size());
-        state.members.swap(next_members);
-        state.states.swap(next_states);
         state.reindex(ranges.front().at, state.members.size());
         for (const auto& range : ranges) state.resize_ancestors(range.parent, -std::ptrdiff_t(range.count));
         state.changed();

@@ -104,6 +104,7 @@ struct SpaceCache {
     SpaceGraph relations;
     std::vector<ObjectId> path;
     std::uint64_t pass{};
+    ObjectId failed;               // The Entity whose relation or TRS failed the latest matrix().
     explicit SpaceCache(Runtime& runtime) : relations(runtime) {}
     void clear() noexcept;
     void begin_pass() noexcept { ++pass; }
@@ -124,12 +125,17 @@ struct World::Impl {
     struct Pending { std::uint64_t serial; Request request; ObjectId owner; bool member_required{}; };
     struct Scheduled { ObjectId object, entity; const Behavior* behavior{}; };
     enum class Presentation : std::uint8_t { none, mesh, light };
+    // An isolated behavior failure. Begin-faulted objects never began; Tick-
+    // faulted objects began and still receive End. Cleared when the object
+    // leaves running participation or by clear_faults().
+    enum class Fault : std::uint8_t { none, begin, tick };
     struct ComponentState {
         ObjectId id;
         TypeId type;
         const Behavior* behavior{};
         Presentation presentation{};
         bool enabled{}, begun{};
+        Fault fault{};
     };
     // Execution and registration state of one member, parallel to `members`.
     // Derived from Runtime when the Entity enters or its own composition changes.
@@ -140,6 +146,7 @@ struct World::Impl {
         ObjectId origin;            // Explicit non-world spatial origin, if any.
         std::size_t size{1};        // Members in its composition subtree, itself included.
         bool enabled{}, eligible{}, begun{};
+        Fault fault{};
         std::vector<ComponentState> components;
     };
     struct Bucket { TypeId type; std::vector<ObjectId> objects; };
@@ -166,6 +173,7 @@ struct World::Impl {
     struct TranslationChange { ObjectId entity; Trs value; };
     std::vector<TranslationChange> translation_changes;
     Result<void> apply_translations();
+    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase);
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
     struct Binding { TypeId type; Behavior behavior; };
@@ -175,6 +183,39 @@ struct World::Impl {
     struct Subscription { std::uint64_t id; std::shared_ptr<LifecycleObserver> observer; };
     std::vector<Subscription> subscriptions;
     std::uint64_t next_subscription{1};
+
+    FailurePolicy policy{FailurePolicy::isolate};
+    static constexpr std::size_t diagnostic_capacity = 1024;
+    std::vector<Diagnostic> diagnostics;
+    std::uint64_t next_diagnostic{1}, dropped_diagnostics{};
+    // A consumer failure reported again in the next pass of its phase extends
+    // one entry; a pass without it resolves it. Presentation and lighting
+    // passes are extraction calls; physics and command passes are updates.
+    struct DiagnosticKey {
+        ObjectId object; DiagnosticKind kind; DiagnosticPhase phase; std::string field;
+        bool operator==(const DiagnosticKey&) const = default;
+    };
+    struct DiagnosticKeyHash { std::size_t operator()(const DiagnosticKey&) const noexcept; };
+    struct Recent { std::uint64_t serial, pass; };
+    std::unordered_map<DiagnosticKey, Recent, DiagnosticKeyHash> recent;
+    std::array<std::uint64_t, std::size_t(DiagnosticPhase::lifecycle) + 1> passes{};
+    void begin_pass(DiagnosticPhase) noexcept;
+    void report(Diagnostic);
+    // Reports an object failure. True when it stays with that object; false
+    // means the World must stop and surface `error` (halt policy or a World-
+    // level failure, which is not reported as an object diagnostic).
+    bool contain(const Error&, Diagnostic);
+    bool contain(const Error&, DiagnosticKind, DiagnosticPhase, ObjectId object, ObjectId entity,
+        std::vector<std::string> field = {}, Severity = Severity::error);
+    // A broken World index is a World-level failure; once seen, nothing is isolated.
+    mutable bool invariant_failed{};
+    Error inconsistent(const char* message) const {
+        invariant_failed = true;
+        return Error{ErrorCode::invalid_member, message};
+    }
+    Fault* fault_of(ObjectId object, ObjectId entity) noexcept;
+    // Stops a begun object's Tick: cancels its tasks and drops its pending translations.
+    void fault_tick(ObjectId object, ObjectId entity) noexcept;
 
     Impl(Runtime& r, const Types& t, World& w) : runtime(r), types(t), world(w), space(r) {}
     Result<void> admit(bool mutation = true) const;

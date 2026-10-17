@@ -385,8 +385,11 @@ void verify_viewport_editing() {
     require(document.revision()==runtime_revision && overlay_scene.revision==snapshot_revision &&
         overlay_scene.meshes[moved].world[12]==runtime_position.x+7,
         "Scene extraction cached a direct Runtime transform behind Session revision.");
-    write_position({std::numeric_limits<float>::infinity(),0,0});
-    require(!overlay_scene.refresh(document),"Scene extraction accepted a non-finite Runtime transform.");
+    // The World isolates the invalid Entity: the rest of the scene still extracts.
+    write_position({std::numeric_limits<float>::infinity(),0,0});take(overlay_scene.refresh(document));
+    require(std::ranges::find(overlay_scene.mesh_entities,first)==overlay_scene.mesh_entities.end() &&
+        std::ranges::find(overlay_scene.mesh_entities,second)!=overlay_scene.mesh_entities.end(),
+        "Scene extraction kept a non-finite Runtime transform or dropped valid Entities.");
     write_position(runtime_position);take(overlay_scene.refresh(document));
     require(overlay_scene.meshes[moved].world[12]==runtime_position.x && document.revision()==runtime_revision,
         "Scene extraction retained a failed traversal or changed author history.");

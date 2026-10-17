@@ -102,8 +102,16 @@ void component_lifecycle() {
     committed(f.world.stop());
     // A component may not silently become a second transform writer.
     auto physical=take(p::read_settings(f.runtime,entity.body.id()));physical.enabled=true;take(p::configure(f.runtime,entity.body.id(),physical));
+    // Isolate rejects the ordinary body and keeps the controller; halt stops the World.
+    committed(f.world.start());take(f.scene->update(0));
+    const auto conflicts=f.world.take_diagnostics();
+    require(f.world.running() && bool(f.scene->character_handle(entity.id())) && !f.scene->body_handle(entity.body.id()) &&
+        !conflicts.empty() && std::ranges::all_of(conflicts,[&](const auto& d){return d.object==entity.id() && d.entity==entity.id();}),
+        "Isolated pose-writer conflict kept both writers or was not reported on its Entity.");
+    committed(f.world.stop());take(f.world.set_failure_policy(w::FailurePolicy::halt));
     const auto conflict=take(f.world.start());
-    require(conflict.notification_error && !f.world.running(),"Body and Character components were accepted together.");committed(f.world.stop());
+    require(conflict.notification_error && !f.world.running() && !f.world.take_diagnostics().empty(),
+        "Body and Character components were accepted together.");committed(f.world.stop());
     committed(f.world.set_enabled(character.id(),false));
     auto vehicle=take(w::create_component(f.runtime,f.physics_types.vehicle_component));
     auto settings=take(p::read_settings(f.runtime,entity.body.id()));settings.motion=p::MotionKind::dynamic;
@@ -168,7 +176,7 @@ void component_lifecycle() {
 }
 
 void entity_physics_bindings() {
-    PhysicsFixture f;auto ground=f.ground();
+    PhysicsFixture f;take(f.world.set_failure_policy(w::FailurePolicy::halt));auto ground=f.ground();
     auto base=take(w::create_entity(f.runtime));
     take(f.world.set_transform(base.id(),{{10,0,0},{0,.70710678f,0,.70710678f},{1,1,1}}));
     committed(f.world.attach(base.id()));

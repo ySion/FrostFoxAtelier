@@ -110,6 +110,14 @@ void primitive_authoring() {
     settings.motion=p::MotionKind::dynamic;settings.sensor=false;
     take(p::configure(f.runtime,trigger.id(),settings));
     take(f.world.set_transform(owner.id(),{{10,0,0},{0,0,0,1},{2,1,1}}));
+    // Isolate keeps the World and unrelated bodies running without the unrepresentable body.
+    committed(f.world.start());take(f.scene->update(0));
+    const auto isolated=f.world.take_diagnostics();
+    require(f.world.running() && !f.scene->body_handle(trigger.id()) && bool(f.scene->body_handle(mesh)) && !isolated.empty() &&
+        std::ranges::all_of(isolated,[&](const auto& d){return d.entity==trigger_entity.id();}) &&
+        std::ranges::any_of(isolated,[](const auto& d){return d.phase==w::DiagnosticPhase::physics;}),
+        "Isolated physics kept an unrepresentable body, affected another Entity or did not report it.");
+    committed(f.world.stop());take(f.world.set_failure_policy(w::FailurePolicy::halt));
     const auto invalid=take(f.world.start());
     require(invalid.notification_error && !f.world.running() && f.scene->body_count()==0,
         "Unrepresentable moving hierarchy did not fail and clean up its bodies.");
