@@ -85,14 +85,23 @@ void run(const std::filesystem::path& root) {
     require(!document.dirty(),"Playing modified the authoring document.");
     take(editor::write_file(helper,"float travel(float speed,float dt) { return speed * dt * 2.0f; }\n"));
     take(playing.code->poll(project,true));take(play.update(.5f));check_position(position(play,moving_entity),3);
-    auto with_begin=declaration;with_begin.insert(with_begin.find("    void tick"),"    void begin() {}\n");take(editor::write_file(component,with_begin));
-    const auto added=playing.code->poll(project,true);
-    require(!added && added.error().code==ErrorCode::rebuild_required,"A lifecycle method added during Play was published without its binding.");
-    take(editor::write_file(component,declaration));
+    // Lifecycle methods added during Play bind between frames: the begun component
+    // gets no Begin, and each phase method runs in its phase from the next frame.
+    auto phased=declaration;phased.insert(phased.find("    void tick"),"    void begin() { self.ticks = 1000; }\n");
+    phased.insert(phased.rfind('}'),"    void late_tick(float dt) { self.ticks = self.ticks * 10 + 3; }\n"
+        "    void post_physics_tick(float dt) { self.ticks = self.ticks * 10 + 2; }\n");
+    const auto ticks=[&] {
+        auto& runtime=play.world().runtime();const auto move=behavior(play);
+        return std::get<std::uint32_t>(take(runtime.read(move,take(runtime.find_field(take(runtime.type_of(move)),"ticks")))));
+    };
+    const auto before=ticks();take(editor::write_file(component,phased));take(playing.code->poll(project,true));
+    require(ticks()==before,"A lifecycle method added during Play replayed Begin.");
+    take(play.update(.5f));check_position(position(play,moving_entity),5);
+    require(ticks()==((before+1)*10+2)*10+3,"Source tick, post_physics_tick and late_tick did not run once each in phase order.");
     take(editor::write_file(helper,"float travel(float speed,float dt) { return missing; }\n"));
     require(!playing.code->poll(project,true),"Invalid project source was published.");
     require(playing.code->report()->error && playing.code->report()->error->source && playing.code->report()->error->source->path=="Source/Math.source","Compiler lost the failing file identity.");
-    take(play.update(.5f));check_position(position(play,moving_entity),5);complete(play.stop());complete(play.stop());
+    take(play.update(.5f));check_position(position(play,moving_entity),7);complete(play.stop());complete(play.stop());
     take(workspace.source_editor.open(component));workspace.project_build=playing.code->report();workspace.dock.select(editor::source_control::tab);
     controls=workspace.describe(document,{1280,800},ui.presented().get(),&project);display(ui.set_controls(controls));workspace.commit_ui_controls();
     require(workspace.source_editor.locate_problem(),"Cross-file compiler diagnostic could not open its source.");

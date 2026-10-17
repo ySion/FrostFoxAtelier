@@ -125,7 +125,8 @@ Result<void> ProjectCode::build(const Project& project) {
     published_=next;report_=std::move(next);return {};
 }
 // Compatible publications may add classes or lifecycle methods; those need a
-// binding, which World accepts only while stopped.
+// new binding. build runs between frames, where World accepts it while running:
+// begun objects take the new methods from the next phase without a second Begin.
 bool ProjectCode::adds_behavior(const source::Program::Candidate& candidate) const {
     auto& runtime=world_.runtime();
     for(const auto& type:candidate.classes()) {
@@ -142,8 +143,6 @@ Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) 
         const auto entity=runtime.is_a(type.base,world_.types().entity),component=runtime.is_a(type.base,world_.types().component);
         if(!entity || !component) return fail("Cannot resolve a project class's published native base.");
     }
-    if(world_.running() && adds_behavior(candidate))
-        return std::unexpected(Error{ErrorCode::rebuild_required,"Stop and rebuild the project before adding its behavior bindings."});
     return {};
 }
 Result<void> ProjectCode::bind() {
@@ -157,10 +156,11 @@ Result<void> ProjectCode::bind() {
         for (const auto& method:program_->entries()) {
             const auto prefix=type.name+".";if (!method.name.starts_with(prefix)) continue;
             const auto name=std::string_view(method.name).substr(prefix.size());
-            if (name!="begin" && name!="tick" && name!="end") continue;
-            const bool tick=name=="tick";
+            auto* tick=name=="tick"?&behavior.tick:name=="post_physics_tick"?&behavior.post_physics_tick:
+                name=="late_tick"?&behavior.late_tick:nullptr;
+            if (!tick && name!="begin" && name!="end") continue;
             auto entry=program_->entry(method.name);if (!entry) return std::unexpected(entry.error());
-            if (tick) behavior.tick=[entry=*entry](Runtime&,ObjectId self,float dt) {
+            if (tick) *tick=[entry=*entry](Runtime&,ObjectId self,float dt) {
                 const std::array<Scalar,1> args{dt};return completed(entry.invoke(self,args));
             };
             else {
@@ -168,7 +168,7 @@ Result<void> ProjectCode::bind() {
                 if (name=="begin") behavior.begin=std::move(call);else behavior.end=std::move(call);
             }
         }
-        if(behavior.begin || behavior.tick || behavior.end)
+        if(behavior.begin || behavior.tick || behavior.post_physics_tick || behavior.late_tick || behavior.end)
             if (auto bound=world_.bind_behavior(type.type,std::move(behavior));!bound) return bound;
     }
     return {};
