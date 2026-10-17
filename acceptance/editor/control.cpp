@@ -550,6 +550,20 @@ int wmain(int argc,wchar_t** argv) {
             require(restored.at("entities").empty() && !restored.at("dirty").get<bool>() &&
                 restored.at("undo")==initial.at("undo") && restored.at("view")==initial.at("view"),
                 "Description inspection or cleanup changed saved document state.");
+            // Placeholders report the saved type they stand in for and the data they keep.
+            write(project/"Content/Scenes/Placeholder.scene",Json{{"version",6},{"next_id","3"},{"roots",{"1"}},{"materials",Json::array()},{"world",Json::object()},
+                {"entities",{{{"id","1"},{"type","world.Entity"},{"name","Holder"},{"enabled",true},{"properties",Json::object()},{"children",Json::array()},{"space",nullptr},
+                    {"components",{{{"id","2"},{"type","project.Gone"},{"name",""},{"enabled",true},{"properties",{{"strength",3}}}}}}}}}}.dump());
+            d.ok("scene.open",{{"path","Content/Scenes/Placeholder.scene"}});
+            const auto placed=d.ok("editor.inspect",{{"detail","objects"}}).at("objects");
+            const auto gone=std::ranges::find_if(placed,[](const Json& entry){return entry.at("kind")=="component";});
+            require(placed.size()==2 && !placed[0].contains("placeholder") && !placed[0].contains("saved_type") && gone!=placed.end() &&
+                gone->at("placeholder")==true && gone->at("saved_type")=="project.Gone" && gone->at("type")=="world.Component",
+                "Object directory did not identify a placeholder and its saved type.");
+            const auto detail=d.ok("editor.inspect",{{"detail","object"},{"object",gone->at("handle")}}).at("object");
+            require(detail.at("saved_type")=="project.Gone" && detail.at("saved_data").size()==1 &&
+                detail.at("saved_data")[0].at("path")=="properties.strength" && detail.at("saved_data")[0].at("value")=="3" &&
+                detail.at("saved_data")[0].at("kind")=="unknown_field","Object inspection did not report a placeholder's saved data.");
             d.client.reset();editor.close();
             require(discover(directory).empty(),"Description editor descriptor remained live after close.");
             require(read(project/"Content/Scenes/Main.scene")==original_scene &&
@@ -557,7 +571,7 @@ int wmain(int argc,wchar_t** argv) {
                 "Description inspection changed the original saved scene.");
             write(root/"result.json",Json{{"status","passed"},{"cases",{"discovery","shared-option-descriptions","utf8-newlines",
                 "aggregate-field-descriptions","bounded-object-directory","single-object-inspection","stale-cursor-and-object",
-                "undo-to-clean","saved-scene-preserved","clean-close"}}}.dump(2));
+                "undo-to-clean","placeholder-inspection","saved-scene-preserved","clean-close"}}}.dump(2));
             std::cout<<"Editor Control descriptions E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
         }
         auto entity=current.at("entities")[0].at("handle").get<std::string>();auto component=current.at("entities")[0].at("components")[0].at("handle").get<std::string>();

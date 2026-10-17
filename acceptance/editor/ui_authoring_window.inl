@@ -61,7 +61,7 @@ void verify_asset_ui_authoring_window(Application& app,const std::filesystem::pa
     };
     auto changed=model(atelier::editor::read_file(path));
     replace_component(changed,"AssetResults","padding_left: 0;","padding_left: 4;");
-    replace_component(changed,"AssetBrowserShell","height: 18;","height: 20;");
+    replace_component(changed,"AssetBrowserShell","height: 20;","height: 22;");
     const auto verify_retained=[&] {
         const auto* current=app.presented()->find_table(browser::results);
         const auto* box=app.presented()->find(browser::results);

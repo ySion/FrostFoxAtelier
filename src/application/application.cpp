@@ -1318,7 +1318,8 @@ bool Application::step(renderer::Capture* capture) try {
     }
     // Native popups render on their retained surface before scene submission /
     // Present can block. Their anchor still comes from accepted owner geometry.
-    if (!workspace_.pie_menu()) update_menu();
+    // A pending keyboard reveal waits for this frame's acceptance; closing here would drop it.
+    if (!workspace_.pie_menu() && !pending_menu_) update_menu();
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};

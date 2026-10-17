@@ -111,6 +111,8 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     width=std::min(static_cast<LONG>(std::ceil(wanted*dpi)),area.right-area.left);
     height=std::min(static_cast<LONG>(std::ceil(menu->bounds.height)),area.bottom-area.top);
     controls.front().layout.width=ui_layout::Axis::fixed(static_cast<float>(width)/dpi);
+    // Pin the root to the rounded window height too, so a fractional content height leaves no unpainted bottom row.
+    controls.front().layout.height=ui_layout::Axis::fixed(static_cast<float>(height)/dpi);
     controls.front().style.scrollbar_gutter=scrolling?ui::ScrollbarGutter::stable:ui::ScrollbarGutter::overlay;
     for (auto& control:controls) if (control.kind==ui::ControlKind::menu_item) {
         control.layout.width=ui_layout::Axis::expand();

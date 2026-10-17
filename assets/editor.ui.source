@@ -939,5 +939,5 @@ ui CodePanel(in CodeBinding document, in Text title, in Text status, in Text dia
 }
 
 ui ProjectOutput(in TableBinding output) {
-    Table messages { model: input.output; expand_height: true; view: "list"; row_height: 23; classes: "asset-table"; }
+    Table messages { model: input.output; expand_height: true; view: "details"; row_height: 23; classes: "asset-table"; }
 }

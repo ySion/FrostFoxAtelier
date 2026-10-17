@@ -14,8 +14,9 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
         "Scene Tree exposed component rows beneath an Entity");
     key(app,VK_RIGHT);
     require(app.document().selection()==atelier::editor::Selection{entity,entity},"Entity leaf navigation selected a component");
-    click(app,control::tree_filter); type(app,L"StaticMeshEntity"); key(app,VK_RETURN);
-    require(app.presented()->find(entity_key),"Actual Entity type was not searchable");
+    // Rows show only the name (the icon carries the type), so the filter matches names.
+    click(app,control::tree_filter); type(app,std::wstring(app.document().name(entity)).c_str()); key(app,VK_RETURN);
+    require(app.presented()->find(entity_key),"Entity name was not searchable");
     capture(app,output/"tree-filtered.png");
     click(app,control::tree_filter); type(app,L""); key(app,VK_RETURN);
     click(app,control::tree_world); key(app,VK_LEFT);

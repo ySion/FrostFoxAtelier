@@ -45,6 +45,14 @@ void Workspace::log(std::wstring text) {
         if(end==text.npos) break;start=end+1;
     }
     if(messages->rows.size()>256) messages->rows.erase(messages->rows.begin(),messages->rows.end()-256);
+    // The Message column spans the longest retained line, so details view scrolls instead of clipping it.
+    float width=1000;
+    for(const auto& row:messages->rows) {
+        float estimate=24;
+        for(const auto c:row.cells.front().text) estimate+=c<0x2e80?7.5f:13.f;
+        width=std::max(width,std::min(estimate,32768.f));
+    }
+    messages->columns.front().width=width;
     output=std::move(messages);
 }
 void Workspace::reset_layout() {
