@@ -229,7 +229,7 @@ Result<void> validate_cooked_triangle_mesh(std::string_view bytes,
 }
 
 Result<void> configure(Runtime& runtime, ObjectId component, BodySettings settings) {
-    if (auto valid = world::validate_body_settings(settings); !valid) return valid;
+    if (auto valid = world::validate_body_settings(runtime, settings); !valid) return valid;
     auto state = world::inspect_component(runtime, component);
     if (!state) return std::unexpected(state.error());
     if (state->active) return failure(ErrorCode::busy, "Stop the World before changing a physical body.");
@@ -596,7 +596,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     auto& runtime=world_.runtime();
     auto settings=read_settings(runtime,component);
     if (!settings) return std::unexpected(settings.error());
-    if (auto valid=world::validate_body_settings(*settings);!valid) return valid;
+    if (auto valid=world::validate_body_settings(runtime,*settings);!valid) return valid;
     if (!settings->enabled) {remove(component);return {};}
     auto spatial=world::has_transform(runtime,entity);if(!spatial) return std::unexpected(spatial.error());
     if(!*spatial) return failure(ErrorCode::invalid_member,"A Primitive requires a spatial owner Entity.");

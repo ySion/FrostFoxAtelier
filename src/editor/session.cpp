@@ -237,7 +237,7 @@ Result<world::Commit> Session::create_light(world::LightKind kind,math::Vector3 
     auto configured=runtime_.with_native<world::LightComponent>(light->id(),[&](auto& value)->Result<void> {
         value.settings.kind=kind;
         if(kind==world::LightKind::sky) value.settings.intensity=.03f;
-        return world::validate_light(value.settings);
+        return world::validate_light(runtime_,value.settings);
     });
     if(!configured) return std::unexpected(configured.error());
     if(kind!=world::LightKind::sky) {

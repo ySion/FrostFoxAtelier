@@ -60,10 +60,22 @@ Result<void> unlink_parent(Runtime&, ObjectId entity);
 Result<void> requires_space(Runtime&, ObjectId entity, std::span<const ObjectRoot>);
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
-// True means this is a native Material/LightSettings path and was handled.
-Result<bool> write_lighting_property(World&, ObjectId, std::span<const FieldId>, Scalar);
+// Validators registered with LightSettings and BodySettings.
+Result<void> light_rules(const LightSettings&);
+Result<void> body_rules(const BodySettings&);
+// Checks a native value against its reflected type's hard bounds and validators.
+template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
+    auto type = runtime.native_type<T>();
+    if (!type) return std::unexpected(type.error());
+    auto failure = runtime.validate_value(*type, std::as_bytes(std::span{&value, 1}));
+    if (!failure) return std::unexpected(failure.error());
+    if (*failure) return std::unexpected((*failure)->error);
+    return {};
+}
 // One Sky Light per World, disabled components included.
 World::Admission unique_sky_light(PresentationId lights);
+// A light other than Sky needs a Transform on its member owner.
+World::Admission spatial_lights();
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 Result<void> queue_request(Runtime&, ObjectId object, RequestKind, bool enabled);
 

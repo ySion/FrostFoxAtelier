@@ -17,7 +17,7 @@ void verify_color_edits() {
         return result;
     };
     const std::array first{Scalar{.2f},Scalar{.4f},Scalar{.6f}},last{Scalar{.7f},Scalar{.3f},Scalar{.5f}};
-    const std::array invalid_type{Scalar{.8f},Scalar{.9},Scalar{.1f}},invalid_range{Scalar{.8f},Scalar{-.2f},Scalar{.1f}};
+    const std::array invalid_type{Scalar{.8f},Scalar{.9},Scalar{.1f}},invalid_range{Scalar{.8f},Scalar{1e30f},Scalar{.1f}};
 
     changed(document.create_light(world::LightKind::point,{0,2,0}));
     const auto light=take(world::components(runtime,document.selection().entity)).front().id();

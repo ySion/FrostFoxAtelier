@@ -106,7 +106,9 @@ physics::BodySettings body_settings(const Json& value,bool legacy) {
         if (found==value.end()) return fallback;
         const auto& item=*found;
         if (!item.is_number()) throw std::runtime_error(std::string("Expected numeric physics field: ")+key);
-        return item.get<float>();
+        const auto number=item.get<float>();
+        if (!std::isfinite(number)) throw std::runtime_error(std::string("Physics field must be finite: ")+key);
+        return number;
     };
     if (!value.contains("radius")) throw std::runtime_error("Missing physics radius.");
     settings.radius=number("radius",settings.radius);
@@ -260,7 +262,7 @@ world::Trs json_trs(const Json& value) {
 }
 Json body_properties(const physics::BodySettings& body) {
     constexpr std::array shapes{"box","sphere","triangle_mesh","capsule"};
-    constexpr std::array motions{"stationary","kinematic","dynamic"};take(world::validate_body_settings(body));
+    constexpr std::array motions{"stationary","kinematic","dynamic"};
     return {{"enabled",body.enabled},{"shape",shapes[static_cast<std::size_t>(body.shape)]},{"motion",motions[static_cast<std::size_t>(body.motion)]},
         {"half_extents",{{"x",body.half_extents.x},{"y",body.half_extents.y},{"z",body.half_extents.z}}},{"radius",body.radius},
         {"capsule_half_height",body.capsule_half_height},{"category",body.category},{"ignore_categories",body.ignore_categories},
@@ -706,14 +708,14 @@ struct Session::GraphCodec {
             for(const auto& child:take(world::children(runtime,object))) children.push_back(std::to_string(ids.at(child.id())));
             for(const auto& part:take(world::components(runtime,object))) {
                 const auto state=take(world::inspect_component(runtime,part.id()));const auto key=std::to_string(ids.at(part.id()));
-                if(derives(runtime,state.type,session.types_.light_component)) take(world::validate_light(take(world::read_light(runtime,part.id()))));
+                if(derives(runtime,state.type,session.types_.light_component)) take(world::validate_light(runtime,take(world::read_light(runtime,part.id()))));
                 if(physical_type(runtime,state.type)) {
-                    auto body=take(physics::read_settings(runtime,part.id()));take(world::validate_body_settings(body));
+                    auto body=take(physics::read_settings(runtime,part.id()));take(world::validate_body_settings(runtime,body));
                     graph.bodies.emplace(key,std::move(body));
                 }
                 Json value={{"id",key},{"type",type_name(runtime,state.type)},{"name",utf8(session.name(part.id()))},{"enabled",state.enabled},{"properties",properties(part.id(),state.type)}};
                 if(derives(runtime,state.type,session.types_.static_mesh_component)) {
-                    auto mesh=take(world::read_static_mesh(runtime,part.id()));take(world::validate_material(mesh.material));
+                    auto mesh=take(world::read_static_mesh(runtime,part.id()));take(world::validate_material(runtime,mesh.material));
                     if(persistent && mesh.mesh.resolved && mesh.mesh.source.empty()) throw std::runtime_error("A procedural mesh has no persistent source; save/import it before archiving.");
                     auto bindings=take(world::read_material_bindings(runtime,part.id()));graph.meshes.emplace(key,MeshCopy{mesh,bindings});
                     value["mesh"]=mesh.mesh.source;value["base_color"]=vector(mesh.material.base_color);value["roughness"]=mesh.material.roughness;
@@ -953,11 +955,13 @@ struct Session::GraphCodec {
                         else self(self,item,next_path);
                         continue;
                     }
-                    bool converted{};std::string problem;
+                    bool converted{};std::string problem;std::optional<Scalar> clamped;
                     try {
                         if(field->form==ValueForm::inline_value) {
                             const auto scalar=decode_scalar(runtime,take(runtime.read(object,field->path)),item,&converted);
-                            if(auto written=runtime.write(object,field->path,scalar);!written) throw Mismatch(written.error().message);
+                            auto stored=runtime.constrain(type,field->path,scalar);if(!stored) throw Mismatch(stored.error().message);
+                            if(*stored!=scalar) clamped=*stored;
+                            if(auto written=runtime.write(object,field->path,*stored);!written) throw Mismatch(written.error().message);
                         } else if(field->form==ValueForm::strong_sequence) {
                             if(!item.is_array() || item.size()>maximum_entities*maximum_components) throw Mismatch("Expected an object reference sequence.");
                             std::vector<ObjectReference> refs;refs.reserve(item.size());
@@ -976,6 +980,8 @@ struct Session::GraphCodec {
                         }
                     } catch(const Mismatch& error) {problem=error.what();}
                     if(!problem.empty()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,problem+" The default is used and the saved value is kept.");
+                    else if(clamped) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,
+                        "Outside the field's hard bounds; "+encode_scalar(runtime,*clamped).dump()+" is used and the saved value is kept.");
                     else if(converted) load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
                 }
             };
@@ -1088,11 +1094,11 @@ struct Session::GraphCodec {
                         take(world::set_material_bindings(runtime,object,bindings));
                     }
                 }
-                if(light) if(auto valid=world::validate_light(take(world::read_light(runtime,object)));!valid)
+                if(light) if(auto valid=world::validate_light(runtime,take(world::read_light(runtime,object)));!valid)
                     invalid_record(object,"settings",light_defaults,valid.error().message);
                 if(physical) {
                     auto settings=take(physics::read_settings(runtime,object));std::string problem;
-                    if(auto valid=world::validate_body_settings(settings);!valid) problem=valid.error().message;
+                    if(auto valid=world::validate_body_settings(runtime,settings);!valid) problem=valid.error().message;
                     else if(settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh && project) {
                         const auto mesh=world::read_static_mesh(runtime,object);
                         if(!mesh) problem=mesh.error().message;

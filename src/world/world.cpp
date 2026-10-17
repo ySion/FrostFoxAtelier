@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <format>
 #include <queue>
 #include <stdexcept>
 #include <unordered_set>
@@ -18,6 +19,20 @@ bool isolatable(const Error& failure) noexcept {
     default:
         return true;
     }
+}
+Diagnostic validation_diagnostic(const ValidationFailure& failure, DiagnosticPhase phase,
+    ObjectId object, ObjectId entity, std::vector<std::string> record) {
+    Diagnostic diagnostic;
+    diagnostic.kind = DiagnosticKind::invalid_value; diagnostic.phase = phase;
+    diagnostic.object = object; diagnostic.entity = entity;
+    diagnostic.field = std::move(record);
+    diagnostic.field.insert(diagnostic.field.end(), failure.names.begin(), failure.names.end());
+    if (failure.value) diagnostic.value = std::visit([](const auto& value) -> std::string {
+        if constexpr (std::same_as<std::decay_t<decltype(value)>, EnumValue>) return std::to_string(value.bits);
+        else return std::format("{}", value);
+    }, *failure.value);
+    diagnostic.message = failure.error.message;
+    return diagnostic;
 }
 std::size_t World::Impl::DiagnosticKeyHash::operator()(const DiagnosticKey& key) const noexcept {
     auto value = std::hash<ObjectId>{}(key.object);
@@ -394,6 +409,7 @@ World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl
     impl_->lights = {1};
     impl_->presentations.push_back({types.light_component, {}});
     impl_->admissions.push_back({types.light_component, detail::unique_sky_light(impl_->lights)});
+    impl_->admissions.push_back({types.light_component, detail::spatial_lights()});
 }
 World::~World() {
     if (!impl_->closed) {
@@ -812,19 +828,15 @@ Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) co
 }
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
     if (auto ready = impl_->admit_edit(object); !ready) return ready;
-    auto lighting=detail::write_lighting_property(*this,object,path,value);
-    if (!lighting) return std::unexpected(lighting.error());
-    if (*lighting) return {};
     auto transform = detail::is(runtime(), object, types().entity);
     if (!transform) return std::unexpected(transform.error());
-    if (*transform) {
-        const auto match = [&](const auto& paths) -> std::optional<std::size_t> {
-            for (std::size_t i = 0; i < paths.size(); ++i)
-                if (std::ranges::equal(path, paths[i])) return i;
-            return {};
-        };
-        const auto position = match(types().position_fields), rotation = match(types().rotation_fields), scale = match(types().scale_fields);
-        if (!position && !rotation && !scale) return runtime().write(object, path, value);
+    const auto match = [&](const auto& paths) -> std::optional<std::size_t> {
+        for (std::size_t i = 0; i < paths.size(); ++i)
+            if (std::ranges::equal(path, paths[i])) return i;
+        return {};
+    };
+    const auto position = match(types().position_fields), rotation = match(types().rotation_fields), scale = match(types().scale_fields);
+    if (*transform && (position || rotation || scale)) {
         auto current = read_transform(runtime(), object);
         if (!current) return std::unexpected(current.error());
         if (!std::holds_alternative<float>(value)) return error(ErrorCode::type_mismatch, "Transform fields require float values.");
@@ -837,37 +849,27 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
         }
         return set_transform(object, *current);
     }
-    const auto write_field = [&]() -> Result<void> {
-        auto primitive=detail::is(runtime(),object,types().primitive_component);
-        if (!primitive) return std::unexpected(primitive.error());
-        if (*primitive && !path.empty()) {
-            auto body_field=runtime().find_field(types().primitive_component,"body");
-            if (!body_field) return std::unexpected(body_field.error());
-            if (path.front()==*body_field) {
-                auto previous=runtime().with_native<const PrimitiveComponent>(object,[](const auto& p)->Result<BodySettings>{return p.body;});
-                if (!previous) return std::unexpected(previous.error());
-                if (auto written=runtime().write(object,path,value);!written) return written;
-                return runtime().with_native<PrimitiveComponent>(object,[&](auto& p)->Result<void>{
-                    if (p.body.shape!=previous->shape) p.body.cooked_shape.reset();
-                    auto valid=validate_body_settings(p.body);
-                    if (!valid) p.body=*previous;
-                    return valid;
-                });
-            }
-        }
-        return runtime().write(object, path, value);
-    };
-    // Admissions see the written value; a rejected edit restores the previous one.
-    auto admitted = impl_->admitted(object);
-    if (!admitted) return std::unexpected(admitted.error());
-    if (!*admitted) return write_field();
+    // An edit may not make a valid object fail its type rules or an admission;
+    // a rejected edit restores the previous value. Objects already invalid
+    // stay editable so their faults can be repaired one field at a time.
     auto previous = runtime().read(object, path);
     if (!previous) return std::unexpected(previous.error());
-    if (auto written = write_field(); !written) return written;
-    if (auto valid = impl_->check_admissions(std::span<const ObjectId>{&object, 1}); !valid) {
+    auto before = runtime().validate(object);
+    if (!before) return std::unexpected(before.error());
+    auto admitted = *transform ? Result<bool>{false} : impl_->admitted(object);
+    if (!admitted) return std::unexpected(admitted.error());
+    if (auto written = runtime().write(object, path, value); !written) return written;
+    const auto reject = [&](Error failure) -> Result<void> {
         (void)runtime().write(object, path, *previous);
-        return valid;
+        return std::unexpected(std::move(failure));
+    };
+    if (!*before) {
+        auto after = runtime().validate(object);
+        if (!after) return reject(after.error());
+        if (*after) return reject((*after)->error);
     }
+    if (*admitted)
+        if (auto valid = impl_->check_admissions(std::span<const ObjectId>{&object, 1}); !valid) return reject(valid.error());
     return {};
 }
 Result<std::vector<RenderItem>> World::render_items() const {
@@ -888,12 +890,19 @@ Result<std::vector<RenderItem>> World::render_items() const {
             if (!*matrix || pass->degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
                 continue;
             auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<RenderItem> {
-                if (auto valid = validate_material(value.material); !valid) return std::unexpected(valid.error());
                 return RenderItem{owner, object, **matrix, Access::geometry(value), value.material};
             });
             if (!item) {
-                if (!state.contain(item.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"material"}))
+                if (!state.contain(item.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner))
                     return std::unexpected(item.error());
+                continue;
+            }
+            auto invalid = runtime().validate_value(types().material, std::as_bytes(std::span{&item->material, 1}));
+            if (!invalid) return std::unexpected(invalid.error());
+            if (*invalid) {
+                const auto& failure = **invalid;
+                if (!state.contain(failure.error, validation_diagnostic(failure, DiagnosticPhase::presentation, object, owner, {"material"})))
+                    return std::unexpected(failure.error);
                 continue;
             }
             auto surfaces=material_surfaces(runtime(),object);
