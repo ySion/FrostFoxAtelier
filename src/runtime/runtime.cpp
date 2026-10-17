@@ -1,3 +1,4 @@
+#include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 #include "runtime/detail/type_publication.hpp"
@@ -282,6 +283,10 @@ struct Runtime::Impl {
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
     std::vector<std::unique_ptr<Type>> types;
+    // Published C++ representation -> types index; registration keeps representations unique.
+    Map<const void*, std::uint32_t> representations;
+    // Published name -> types index. Keys view the immutable name inside each heap Type.
+    Map<StringView, std::uint32_t> names;
     std::vector<Slot> slots;
     // Handles keep only this registry alive, never the Runtime or its objects.
     std::shared_ptr<detail::RootState> roots{std::make_shared<detail::RootState>()};
@@ -291,7 +296,6 @@ struct Runtime::Impl {
     std::size_t native_borrows{};
     bool changing_references{};
     std::size_t active_executions{};
-    bool sealed{};
     TypeId f32;
     TypeId f64;
     TypeId u32;
@@ -579,13 +583,24 @@ struct Runtime::Impl {
         std::span<const std::unique_ptr<Type>> staged = {}) const {
         // Even inside a transaction, explicit IDs name only published types.
         if (const auto* id = std::get_if<TypeId>(&reference.target_)) return lookup(*id);
+        const auto* name = std::get_if<std::string>(&reference.target_);
         const auto matches = [&](const auto& type) {
-            if (const auto* name = std::get_if<std::string>(&reference.target_)) return type->info.name == *name;
+            if (name) return type->info.name == *name;
             return type->native.representation == std::get<const void*>(reference.target_);
         };
         for (const auto& type : staged) if (matches(type)) return type.get();
-        for (const auto& type : types) if (matches(type)) return type.get();
-        return nullptr;
+        if (name) return named(*name);
+        return native(std::get<const void*>(reference.target_));
+    }
+
+    const Type* named(std::string_view name) const noexcept {
+        const auto* index = names.find(StringView{name});
+        return index ? types[*index].get() : nullptr;
+    }
+
+    const Type* native(const void* representation) const noexcept {
+        const auto* index = representations.find(representation);
+        return index ? types[*index].get() : nullptr;
     }
 
     Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition,
@@ -671,6 +686,8 @@ struct Runtime::Impl {
             [](void* destination, const void* source) {
                 *static_cast<T*>(destination) = *static_cast<const T*>(source);
             }};
+        representations.try_emplace(type->native.representation, id.index_);
+        names.try_emplace(StringView{std::string_view{type->info.name}}, id.index_);
         types.push_back(std::move(type));
         return id;
     }
@@ -921,6 +938,7 @@ Runtime::Runtime() : impl_(std::make_unique<Impl>()) {
     impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
     auto root = std::make_unique<Impl::Type>();
     root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
+    impl_->names.try_emplace(StringView{std::string_view{root->info.name}}, impl_->object.index_);
     impl_->types.push_back(std::move(root));
     const auto registered = register_types(math::type_definitions(*this));
     if (!registered) throw std::logic_error(registered.error().message);
@@ -1084,12 +1102,21 @@ Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
     auto& impl = *runtime.impl_;
     if (state_->context != impl.context || state_->committed || state_->first_index != impl.types.size())
         return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
-    if (impl.phase != CollectionPhase::idle || impl.sealed || impl.callbacks != 0)
-        return failure(ErrorCode::busy, "Type registration requires an idle Runtime before object execution.");
+    // Type safe point: code-publication quiescence plus an idle collector, whose
+    // trace stack was reserved for the depths known when its cycle began.
+    if (impl.phase != CollectionPhase::idle || !impl.roots->alive || impl.callbacks != 0 ||
+        impl.roots->traversals != 0 || impl.active_executions != 0)
+        return failure(ErrorCode::busy, "Type publication requires a host safe point without collection, callbacks or generated execution.");
     std::size_t walk_depth = 1;
-    for (const auto& type : state_->staged) walk_depth = std::max(walk_depth, type->walk_depth);
+    std::size_t representations = impl.representations.size();
+    for (const auto& type : state_->staged) {
+        walk_depth = std::max(walk_depth, type->walk_depth);
+        if (type->native.representation) ++representations;
+    }
     impl.walk_stack.reserve(walk_depth);
     impl.types.reserve(state_->first_index + state_->staged.size());
+    impl.representations.reserve(representations);
+    impl.names.reserve(state_->first_index + state_->staged.size());
     state_->reserved = true;
     return {};
 }
@@ -1098,7 +1125,10 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
     if (!state_->reserved || state_->committed || state_->context != impl.context || state_->first_index != impl.types.size())
         std::terminate();
     for (auto& type : state_->staged) {
+        const auto index = static_cast<std::uint32_t>(impl.types.size());
         if (!type->trace_fields.empty()) impl.maximum_trace_depth = std::max(impl.maximum_trace_depth, type->trace_depth);
+        if (type->native.representation) impl.representations.try_emplace(type->native.representation, index);
+        impl.names.try_emplace(StringView{std::string_view{type->info.name}}, index);
         impl.types.push_back(std::move(type));
     }
     state_->staged.clear();
@@ -1116,10 +1146,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
 }
 
 Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
-    if (impl_->phase != CollectionPhase::idle) return failure(ErrorCode::busy, "Cannot publish types during collection.");
-    if (impl_->sealed || impl_->callbacks != 0) {
-        return failure(ErrorCode::busy, "Type registration closes when object execution begins.");
-    }
+    // Preparation only reads the published catalog; reserve_commit checks the safe point.
     if (definitions.empty()) {
         return failure(ErrorCode::invalid_definition, "Type publication requires a non-empty batch.");
     }
@@ -1149,7 +1176,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         for (auto& method : definition.methods)
             if (!normalize_description(method.description)) return invalid_description(definition.name + "." + method.name);
         const auto same_name = [&](const auto& type) { return type->info.name == definition.name; };
-        if (std::ranges::any_of(impl_->types, same_name) || std::ranges::any_of(staged, same_name)) {
+        if (impl_->named(definition.name) || std::ranges::any_of(staged, same_name)) {
             return failure(ErrorCode::duplicate_name, "Type already defined: " + definition.name);
         }
         const auto& native = definition.native;
@@ -1157,7 +1184,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             const auto same_representation = [&](const auto& type) {
                 return type->native.representation == native.representation;
             };
-            if (std::ranges::any_of(impl_->types, same_representation) ||
+            if (impl_->representations.contains(native.representation) ||
                 std::ranges::any_of(staged, same_representation)) {
                 return failure(ErrorCode::invalid_definition, "C++ representation already has a type definition.");
             }
@@ -1483,16 +1510,12 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
 }
 
 Result<TypeId> Runtime::find_type(std::string_view name) const {
-    for (const auto& type : impl_->types) {
-        if (type->info.name == name) return type->info.id;
-    }
+    if (const auto* type = impl_->named(name)) return type->info.id;
     return failure(ErrorCode::invalid_type, "Unknown type: " + std::string{name});
 }
 
 Result<TypeId> Runtime::find_representation(const void* representation) const {
-    for (const auto& type : impl_->types) {
-        if (type->native.representation == representation) return type->info.id;
-    }
+    if (const auto* type = impl_->native(representation)) return type->info.id;
     return failure(ErrorCode::invalid_type, "Register the native value type before exposing its members.");
 }
 
@@ -1502,12 +1525,14 @@ Result<const TypeInfo*> Runtime::describe(TypeId type) const {
     return &found->info;
 }
 
-std::vector<TypeId> Runtime::types() const {
+std::vector<TypeId> Runtime::types(std::size_t first) const {
     std::vector<TypeId> result;
-    result.reserve(impl_->types.size());
-    for (const auto& type : impl_->types) result.push_back(type->info.id);
+    if (first >= impl_->types.size()) return result;
+    result.reserve(impl_->types.size() - first);
+    for (auto index = first; index < impl_->types.size(); ++index) result.push_back(impl_->types[index]->info.id);
     return result;
 }
+std::size_t Runtime::type_count() const noexcept { return impl_->types.size(); }
 TypeId Runtime::object_type() const noexcept { return impl_->object; }
 
 Result<bool> Runtime::is_a(TypeId actual, TypeId expected) const {
@@ -1947,7 +1972,6 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     } else {
         impl_->shade(object);
     }
-    impl_->sealed = true;
     return root;
 }
 

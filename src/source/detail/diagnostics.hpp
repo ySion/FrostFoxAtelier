@@ -30,7 +30,6 @@ struct DiagnosticAccess {
     static void pause(DiagnosticState&, const Runtime&, DiagnosticStatus) noexcept;
     static void fail(DiagnosticState&, const Error&) noexcept;
     static void finish(DiagnosticState&, const Runtime&, DiagnosticStatus) noexcept;
-    static void locate_error(const DiagnosticState&, Error&);
 };
 inline void diagnostic_add(std::uint64_t& target, std::uint64_t amount) noexcept {
     target += std::min(amount, UINT64_MAX - target);
@@ -64,10 +63,7 @@ public:
         completed_ = true;
         terminal_ = result ? DiagnosticStatus::completed : result.error().code == ErrorCode::execution_aborted ?
             DiagnosticStatus::cancelled : DiagnosticStatus::failed;
-        if (state_ && !result) {
-            DiagnosticAccess::fail(*state_, result.error());
-            DiagnosticAccess::locate_error(*state_, result.error());
-        }
+        if (state_ && !result) DiagnosticAccess::fail(*state_, result.error());
         return result;
     }
     void transfer(DiagnosticStatus status) noexcept {

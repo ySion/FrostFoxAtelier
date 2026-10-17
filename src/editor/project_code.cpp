@@ -22,6 +22,10 @@ Result<void> completed(Result<std::optional<Scalar>> result) {
     if (!result) return std::unexpected(result.error());
     return {};
 }
+bool lifecycle(std::string_view entry,std::string_view type) {
+    if (entry.size()<=type.size()+1 || !entry.starts_with(type) || entry[type.size()]!='.') return false;
+    const auto name=entry.substr(type.size()+1);return name=="begin" || name=="tick" || name=="end";
+}
 Result<void> validate_ui(const source::SourceFile& file) {
     // Compilation only. Project expressions and event handlers are evaluated
     // exclusively by the isolated runner, including UI previews.
@@ -105,25 +109,40 @@ Result<void> ProjectCode::build(const Project& project) {
             auto step=world_.runtime().collect_step({1024});if (!step) return reject(step.error());
         }
         if (!program_) program_=std::make_unique<source::Program>(world_.runtime());
+        // Request through publish runs synchronously here, and this is the Runtime's only
+        // Program, so no other producer can invalidate the candidate; an asynchronous
+        // build would need to re-request once when publication reports a stale catalog.
         auto request=program_->request(*next->sources);if (!request) return reject(request.error());
         auto candidate=source::Program::prepare(*request);if (!candidate) return reject(candidate.error());
         auto valid=validate(*candidate);if(!valid) return reject(valid.error());
+        const bool rebind=!bound_ || adds_behavior(*candidate);
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
-        if (!bound_) {auto binding=bind();if (!binding) return reject(binding.error());bound_=true;}
+        if (rebind) {auto binding=bind();if (!binding) return reject(binding.error());bound_=true;}
     }
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
     next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     published_=next;report_=std::move(next);return {};
+}
+// Compatible publications may add classes or lifecycle methods; those need a
+// binding, which World accepts only while stopped.
+bool ProjectCode::adds_behavior(const source::Program::Candidate& candidate) const {
+    auto& runtime=world_.runtime();
+    for(const auto& type:candidate.classes()) {
+        const auto entity=runtime.is_a(type.base,world_.types().entity),component=runtime.is_a(type.base,world_.types().component);
+        if(!entity || !component || (!*entity && !*component)) continue;
+        for(const auto& entry:candidate.entries())
+            if(lifecycle(entry.name,type.name) && !(bound_ && program_->entry(entry.name))) return true;
+    }
+    return false;
 }
 Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) const {
     auto& runtime=world_.runtime();
     for(const auto& type:candidate.classes()) {
         const auto entity=runtime.is_a(type.base,world_.types().entity),component=runtime.is_a(type.base,world_.types().component);
         if(!entity || !component) return fail("Cannot resolve a project class's published native base.");
-        if(!*entity && !*component) continue;
-        if(!bound_ && world_.running()) return std::unexpected(Error{ErrorCode::rebuild_required,"Stop and rebuild the project before adding its behavior bindings."});
-
     }
+    if(world_.running() && adds_behavior(candidate))
+        return std::unexpected(Error{ErrorCode::rebuild_required,"Stop and rebuild the project before adding its behavior bindings."});
     return {};
 }
 Result<void> ProjectCode::bind() {

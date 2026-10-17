@@ -29,7 +29,6 @@ struct DebugSessionState {
     DebugStatus status{DebugStatus::unused};
     DebugAction action{DebugAction::continue_execution};
     std::uint64_t next_stop_id{}, step_activation{};
-    std::uint32_t failure_location{no_diagnostic_location};
     bool active{}, entry_stopped{}, error_stopped{}, handler_failed{};
 };
 std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo&);
@@ -41,7 +40,6 @@ struct DebugAccess {
     static Error reject(Debugger*, Error);
     static void status(DebugSessionState&, DebugStatus) noexcept;
     static void finish(DebugSessionState&, DebugStatus) noexcept;
-    static void locate_error(const DebugSessionState&, Error&);
 };
 // Invocation owns the active session; generated frames are borrowed only while
 // on that invocation's native stack or in its LLVM coroutine frame.
@@ -59,7 +57,6 @@ public:
     template<class T> Result<T> complete(Result<T> result) {
         terminal_ = result ? DebugStatus::completed : result.error().code == ErrorCode::execution_aborted ?
             DebugStatus::cancelled : DebugStatus::failed;
-        if (state_ && !result) DebugAccess::locate_error(*state_, result.error());
         return result;
     }
     void transfer(DebugStatus status) noexcept {

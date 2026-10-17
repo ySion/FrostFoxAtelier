@@ -52,7 +52,7 @@ flowchart TD
 
 | 职责 | 当前实现 | 当前边界 |
 | --- | --- | --- |
-| 发布类型定义 | 一组 `TypeDefinition` → `Runtime::register_types` → `Impl::Type` | 解析全部依赖、验证并完成布局后整体发布；首次成功创建对象后封闭注册 |
+| 发布类型定义 | 一组 `TypeDefinition` → `Runtime::register_types` → `Impl::Type` | 解析全部依赖、验证并完成布局后整体发布；类型目录只追加，在类型安全点发布，已发布定义不可变 |
 | 查询类型信息 | `TypeInfo`、`TypeId`、`is_a` | 标量、枚举、记录、对象共用类型表；对象以 `core.Object` 为根单继承；没有定义版本切换 |
 | 标识对象实例 | `ObjectId`、`Impl::Slot`、实例存储 | 运行时上下文与代际校验；显式销毁或 GC 提交死亡后拒绝访问，GC 不搬迁存活对象 |
 | 描述和定位字段 | `FieldInfo::value`、`ValueDescription`、`FieldStorage`、`ReferenceField` | 内联值、`ReferenceSlot` 与对象字段中的 `ReferenceSequence` 均可操作；隐藏字段通过受保护原生访问定位，仍参与引用遍历 |
@@ -70,11 +70,13 @@ flowchart TD
 
 `TypeDefinition` 是发布输入，`TypeInfo` 是发布后元数据的查询面；它们指向同一类型身份，不能因结构体不同就判定为两套类型世界。`Runtime::call` 仍只执行原生 `Invoker`；源码编译与 JIT 经独立执行作用域使用同一 Runtime，不把机器码地址塞进原生借用通路。仅 JIT 的决定见[编译与执行契约](language-contract.md#编译与执行)。
 
+**类型目录只追加。** 创建对象后仍可发布新的类型组：新类型可以派生或内联已发布类型，也可以引用之后的类型。准备阶段只读取已发布目录；提交需要类型安全点，即 `check_code_publication()` 的条件（没有回调、借用、遍历或活动的生成代码调用）加上 GC 空闲，否则返回 `busy` 且保留候选，宿主在下一个安全点重试。挂起的协程不阻止发布。已发布类型不重定义、不注销、不增删成员，同名仍返回 `duplicate_name`；`TypeId`、`TypeInfo`/`FieldInfo` 地址与内容在 Runtime 存续期内保持有效。`find_type` 与原生表示查找使用发布时维护的索引。目录消费者缓存 `type_count()`，之后用 `types(first)` 只扫描新增类型；Runtime 不发送增长通知。
+
 ## 共享函数签名与结果
 
 对象继承的成员查找、布局与引用规则见下面的[正式对象单继承](#正式对象单继承)。
 
-`SignatureDefinition` 使用既有 `TypeReference` / `ParameterDefinition` 表达参数，`ValueDefinition` 表达可选结果和可选接收者；`Runtime::resolve_signature` 返回拥有其描述数组的 `FunctionSignature`。它只解析已发布类型，不登记函数、不拥有 Runtime 或代码，在类型注册封闭后仍可查询。成组方法发布复用同一私有验证实现，并在事务内处理暂存类型；布局及引用闭包完成后再核对完整方法签名，防止同批前向记录隐藏 GC 引用；成员接收者默认取所属对象类型，显式提供者必须匹配，不让临时身份逃逸。空结果表示 `void`，不是伪造的类型 ID 或零标量。
+`SignatureDefinition` 使用既有 `TypeReference` / `ParameterDefinition` 表达参数，`ValueDefinition` 表达可选结果和可选接收者；`Runtime::resolve_signature` 返回拥有其描述数组的 `FunctionSignature`。它只解析已发布类型，不登记函数、不拥有 Runtime 或代码，不需要类型安全点。成组方法发布复用同一私有验证实现，并在事务内处理暂存类型；布局及引用闭包完成后再核对完整方法签名，防止同批前向记录隐藏 GC 引用；成员接收者默认取所属对象类型，显式提供者必须匹配，不让临时身份逃逸。空结果表示 `void`，不是伪造的类型 ID 或零标量。
 
 原生成员的权威签名归 `MethodInfo::signature`，源码入口的权威签名归既有程序所有者的不可变声明。AST 分类、LLVM 类型和私有 DLL 参数描述是经核对的转换表示，不是另立业务类型身份或独立手填的声明。调用暂存归当前作用域，不拥有程序或执行代码；没有新增函数注册表。
 
@@ -132,7 +134,7 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 
 ## 正式对象单继承
 
-`Runtime::object_type()` 返回本 Runtime 内建的 `core.Object`。它是可创建的空对象根，不要求 C++ 对象增加公共头部。对象定义未填写 `TypeDefinition::base` 时默认派生此根；显式基类用同一 `TypeReference` 解析，允许同批前向声明。`TypeInfo::base` 保存解析后的父类型。记录和标量不参与继承；首次成功 `create` 后仍封闭注册，全部对象销毁后也不解封。
+`Runtime::object_type()` 返回本 Runtime 内建的 `core.Object`。它是可创建的空对象根，不要求 C++ 对象增加公共头部。对象定义未填写 `TypeDefinition::base` 时默认派生此根；显式基类用同一 `TypeReference` 解析，允许同批前向声明。`TypeInfo::base` 保存解析后的父类型。记录和标量不参与继承。
 
 `NativeRegistration<Derived>::base<Base>()` 显式登记基类，并生成 `NativeLayout::base_address` 的 C++ 地址转换。未登记的 C++ 继承不会自动成为 Runtime 祖先。循环基类、非法父类型及祖先成员重名（含隐藏字段）在整批发布前拒绝；不实现成员遮蔽或覆盖。
 
@@ -406,10 +408,10 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 单入口兼容方法体发布
 
-[source::Program](../src/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。公共调用使用 Scalar 值或 Argument 借用；私有 DLL 参数布局与内部观察接缝不进入该接口。首次发布可提交源码 enum/struct 类型与代码；后续兼容更新保持类型身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
+[source::Program](../src/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。公共调用使用 Scalar 值或 Argument 借用；私有 DLL 参数布局与内部观察接缝不进入该接口。每个版本都可以随代码提交新的源码 enum/struct 类型；兼容更新保持已发布类型的身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
 
 - **声明与依赖**：构造程序时只绑定 Runtime 和对象目录，不重复手写源码的函数名或参数/结果声明。首次成功发布从真实编译产物通过 Runtime 解析建立不可变 `FunctionSignature`；后续请求捕获该声明及类型/字段/方法、布局和服务表快照。依赖复核使用该程序捕获的目录，其他模块追加无关类型不改变已有索引。`describe()` 交付拥有描述数组的副本；`bind<R,Args...>(expected_execution)` 核对宿主参数、结果和执行种类期望，并返回原 `Entry`。执行种类默认 `FunctionExecution::synchronous`；绑定协程时显式传入 `FunctionExecution::coroutine`，再通过该入口的 `start()` 创建实例。执行种类不匹配返回 `argument_mismatch`，不从已发布声明推断宿主期望，也不改变参数 ABI。
-- **源码类型发布**：enum/struct 的定义来自源码，身份、布局、字段与值操作来自同一 Runtime。首次发布在注册未封闭且 GC 空闲时，完成代码编译、签名解析、依赖核验与全部分配，再提交类型和代码；失败不占用类型名。类型集合与定义随后冻结，关闭代码不注销类型，具体见[源码类型声明](source-type-declarations.md)。
+- **源码类型发布**：enum/struct 的定义来自源码，身份、布局、字段与值操作来自同一 Runtime。发布在类型安全点完成代码编译、签名解析、依赖核验与全部分配，再提交新类型和代码；失败不占用类型名。已发布的定义随后冻结，后续版本可以追加新声明；关闭代码不注销类型，具体见[源码类型声明](source-type-declarations.md)。
 - **接收者固定**：首次声明确定是否需要接收者；目录中有对象类型并不表示必须提供 self。无接收者声明不能在兼容更新中新增 self；已有接收者即使新函数体不再读取 self，调用方仍须提供正确活对象。`BusinessCodeInfo::requires_receiver` 只是当前代码使用标志，不能重新决定已发布声明。
 - **候选与准备**：请求自有完整源名、模块源码、入口名称、声明快照和单调序号，并通过 Runtime 内部批次准备新类型布局；候选走真实解析、定型、链接及物化，只读捕获输入，不读取 live Runtime 或执行初始化。后端拥有签名/目录/名字及实际引用槽和调用缓冲需求。内部函数按定型参数直接互调；公开入口固定，私有助手随整个候选编译与发布。发布前保留完整兼容及依赖核验；已发布 Version 缓存自身 info/layout，热调用不重复比较整份目录。原始未绑定入口仍完整验证，两条入口共用执行与清理实现。
 - **诊断与身份**：过长源名在编译诊断和 COFF 文件标签中使用有界首尾显示，保留尾部请求号与 UTF-8 边界，为位置、阶段和原因留出空间；请求快照及 `BusinessCodeInfo::source_name` 仍保存完整名字，兼容性检查不使用缩略标签。短名格式不变，显示标签不是身份键。
@@ -433,7 +435,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 - [调用入口](../src/runtime/runtime.hpp)与源码入口已贯通[共享函数签名](#共享函数签名与结果)，源码拥有值已有词法构析；对象引用参数、资源记录与容器按值调用、借用返回与返回值的非平凡构造交接尚未实现。Invoker 仍为原生函数指针，不拥有 JIT 代码，C++ `std::variant` / `std::expected` 布局也不是跨 JIT 协议。
 - [Runtime::call](../src/runtime/runtime.cpp)仍用 `CallbackScope` 保护整个原生 Invoker；创建、销毁和 GC 在此范围内被拒绝。最小业务入口已通过独立顶层执行和只读准入检查解决本例，尚未把语言方法集成到通用方法分派；不能把新的机器码指针直接塞进旧 Invoker 而绕过这一差异。
-- 类型在首次成功创建对象后封闭注册，已发布元数据没有定义版本切换。方法体版本发布不能简单等同于重新注册全部类型，也不能通过无条件解除注册封闭来获得安全热更新。
+- 类型目录只追加，已发布元数据没有定义版本切换。方法体版本发布不能简单等同于重新注册全部类型；已有类型的布局变化仍需重建上下文或另行定义迁移。
 - LLVM 开发依赖与正式源码模块已接通：[环境准备](../tools/enter-dev.ps1)安装完整 SDK，[JIT 构建](../cmake/jit.cmake)让正式后端和平台探针共用展开支持对象，并各自隔离 LLVM ABI。同步活动调用、租约与挂起协程均有代码版本所有权；发布归 source::Program，Runtime 方法表尚无通用代码替换与依赖失效协议。其余技术债见[处理时机](runtime-structure.md#已知成本与能力边界)。
 
 ### 仍待源码语言层落定的契约

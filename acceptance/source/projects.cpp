@@ -202,6 +202,33 @@ void verify_source_projects() {
     { auto execution = take(ExecutionScope::enter(runtime)); require(!program.try_publish(latest) && latest, "Busy publication consumed a candidate."); }
     take(program.try_publish(latest));
     require(!program.try_publish(latest) && !latest, "Repeated project publication was accepted.");
+    // Compatible growth while objects run: a struct, a global function, a class and a
+    // method publish together at a type safe point; published slots and types stay valid.
+    const auto catalog_size = runtime.type_count();
+    auto grown = sources(4);
+    grown.files[0].source += "\nstruct game.Pair { float a; float b; };\nfloat doubled(float v) { return v * 2.0f; }\n"
+        "float pair_sum(float a, float b) { game.Pair pair; pair.a = a; pair.b = b; return pair.a + pair.b; }\n";
+    grown.files[1].source.insert(grown.files[1].source.rfind('}'), "    float boosted() { return doubled(self.speed); }\n");
+    grown.files.push_back({"Source/Spin.source", 31,
+        "class game.Spin : world.Component {\n    float rate = 3.0f;\n    float spin() { return doubled(self.rate); }\n}\n"});
+    auto growth = take(Program::prepare(take(program.request(grown))));
+    take(runtime.begin_collection());
+    require(!program.try_publish(growth) && growth && !runtime.find_type("game.Spin"), "Type publication ignored an active collection.");
+    while (take(runtime.collect_step({64})).phase != CollectionPhase::idle) {}
+    take(program.try_publish(growth));
+    const auto spin = take(runtime.find_type("game.Spin"));
+    require(runtime.type_count() == catalog_size + 2 && take(runtime.describe(type)) == info && program.classes().size() == 2 &&
+        std::get<float>(*take(take(program.entry("game.Move.boosted")).invoke(instance.id(), {}))) == 8.f,
+        "Compatible growth replaced published metadata or missed a new method.");
+    auto spinner = take(w::create_component(runtime, spin));
+    const std::array pair_args{Scalar{1.5f}, Scalar{2.f}};
+    require(std::get<float>(*take(take(program.entry("game.Spin.spin")).invoke(spinner.id(), {}))) == 6.f &&
+        std::get<float>(*take(take(program.entry("pair_sum")).invoke({}, pair_args))) == 3.5f,
+        "A class, struct or function added after objects existed did not run.");
+    take(begin.invoke(instance.id(), {}));
+    require(std::get<std::uint32_t>(take(runtime.read(instance.id(), begins))) == 3, "Compatible growth moved a bound entry slot.");
+    failed = Program::prepare(take(program.request(sources(4))));
+    require(!failed && failed.error().code == ErrorCode::rebuild_required, "Removing published classes or exports did not require a rebuild.");
     take(end.invoke(instance.id(),{}));
     require(!std::get<bool>(take(runtime.read(instance.id(),take(runtime.find_field(type,"enabled"))))), "End did not use the real instance.");
     const auto stopped=take(world.stop());require(!stopped.notification_error,"Source lifecycle End failed.");

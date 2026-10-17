@@ -44,6 +44,7 @@ private:
     std::vector<Stamp> stamps_;
     std::chrono::steady_clock::time_point next_poll_{};
     bool bound_{};
+    bool adds_behavior(const source::Program::Candidate&) const;
     Result<void> validate(const source::Program::Candidate&) const;
     Result<void> bind();
 };

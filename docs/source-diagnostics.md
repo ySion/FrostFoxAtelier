@@ -25,7 +25,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 `SourceSnapshot` 同样通过 `request(snapshot, options)` 选择编译能力。参数、输出存储、准入、发布和版本保活继续使用原有入口和契约。
 
-- `CompileOptions::diagnostics` 默认为 false，普通生成代码不包含诊断计数、位置写入或空指针检查。启用后，调用方仍可省略 `Diagnostics*`。
+- `CompileOptions::diagnostics` 默认为 false，普通生成代码不包含诊断计数、追踪位置写入或空指针检查；失败位置只在失败出口记录，见下文。启用后，调用方仍可省略 `Diagnostics*`。
 - 未插桩版本收到采集请求返回 `unsupported_operation`，在参数构造、协程帧分配与源码副作用之前拒绝。通过普通编译与兼容发布切换诊断能力，业务签名不变。
 - `DiagnosticOptions::timing` 独立控制时钟采样。关闭时只计数，`active_time` 为零。
 - 所有操作遵循现有 Runtime 单线程约定。一个 capture 同时归一个调用所有；活动期间再次使用返回 `busy`，原记录不被覆盖。终态后可以复用，下一次调用重置记录。
@@ -64,7 +64,28 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 协程帧拥有采集状态，所以调用方释放 `Diagnostics` 外壳不影响执行或清理；复制的句柄观察同一记录。报告与位置元数据不保活 Runtime、帧或机器码。热更新、Program.close 和旧 Lease 的调用分别记录实际使用的版本；Runtime 的原有外部寿命要求仍适用。
 
-嵌套函数先记录失败位置，外层传播与清理保留该位置。有采集时，同步调用结果和协程结果中的 `Error.source` 也补充原始源码位置。需要断点、单步、只读变量和调用栈时，使用同一执行链的[源码调试接口](source-debugger.md)。
+嵌套函数先记录失败位置，外层传播与清理保留该位置。需要断点、单步、只读变量和调用栈时，使用同一执行链的[源码调试接口](source-debugger.md)。
+
+### 始终可用的失败位置
+
+不启用诊断或调试时，同步调用和协程恢复失败的 `Error.source` 同样给出最内层失败点：函数内检查、原生服务或方法调用、字段访问与内部函数传播都适用。宿主检查在进入生成代码前失败（参数、接收者、准入）时没有源码位置。
+
+- **生成代码。** 每个失败点有独立的冷出口块，只在失败时把位置序号写入入口失败输出；失败分支标记为不太可能执行。生成代码的成功路径不携带位置，也不增加指令。内部函数失败由调用点转发被调方写入的序号。
+- **宿主。** 宿主成功路径每次同步调用多约 5 条指令（`Version::invoke` 与 `execute_admitted` 传递并检查位置序号的出参）；协程 `poll` 不变。
+- **位置表。** 编译单元始终保留位置表，每个失败点一条 32 字节记录（函数名、合并文本偏移、行、列），由代码版本拥有。宿主只在失败返回后解析序号；单文本请求直接使用请求路径与序号，项目单元按需扫描快照中的原文件换算行列，不额外常驻行索引。
+- **诊断与调试。** 启用诊断或调试的版本预先解析全部位置，用于采集报告与停点；`Error.source` 与无插桩版本使用同一位置序号，结果一致。
+
+**已知成本（2026-10-17，release，`atelier_source_measure --artifacts DIR` 重现产物）。** 冷出口与位置表是有意接受的开销：
+
+| 项目 | 引入前 → 引入后 |
+| --- | --- |
+| `.text`：uint_loop / checked_helpers / native 方法 / async | 198 → 216 B / 581 → 677 B / 229 → 271 B / 477 → 509 B |
+| 位置表 | 每个失败点 32 B；256 个内联 helper 的密集模块 2,049 点 = 65,568 B，live bytes 共 +92,400 B（含冷出口代码与函数名） |
+| 编译：UI 热重载冷编译 / 替换 | 18.2 → 19.8 ms（+8.7%）/ 9.0 → 9.6 ms（+6.7%） |
+| 编译：上述密集模块（对抗性） | +31.5% |
+| 调用与协程运行时间 | −0.3% ～ +2.7%，在同机噪声带（±5%）内 |
+
+checked_helpers 的循环反而从 62 条指令减为 55 条：此前合并的失败测试和原因常量被提升到成功路径。若真实项目的编译时间成为问题，再考虑按函数合并冷出口。
 
 ## IR、对象代码与反汇编
 
@@ -80,7 +101,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 ## 验收入口
 
-[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖调用计数、借用/拥有值、GC、跨文件故障位置、协程终态与旧版本、报告及产物寿命。它纳入现有 `source_acceptance`，也可聚焦执行：
+[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖调用计数、借用/拥有值、GC、跨文件故障位置、无插桩版本的失败位置、协程终态与旧版本、报告及产物寿命。它纳入现有 `source_acceptance`，也可聚焦执行：
 
 ```powershell
 . ./tools/enter-dev.ps1

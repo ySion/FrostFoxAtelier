@@ -233,8 +233,8 @@ struct Types {
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
 };
-// Call once per Runtime, before object creation; additional derived definitions
-// may be registered afterwards, before the Runtime closes registration.
+// Call once per Runtime; additional derived definitions may be registered
+// afterwards at any type safe point.
 [[nodiscard]] Result<Types> register_types(Runtime&);
 
 enum class EntityState { detached, attached_inactive, active, invalid };
