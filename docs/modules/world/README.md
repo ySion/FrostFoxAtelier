@@ -106,7 +106,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 呈现能力按类型登记：`register_presentation(component_type, predicate)` 返回不透明的 `PresentationId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出），由 `presented(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_presentation(component)` 重新求值谓词。每个 World 最多 32 个登记。目前 world 库自己登记网格（需要有几何）与灯光，`render_items / light_items` 只遍历这两个桶。
 
-跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write`、`set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 用写入前读出的 Scalar 经 Runtime::write 恢复，原值若由可信路径写成越过硬边界，恢复时按硬边界夹值；`set_material / set_light` 按整值精确恢复。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。world 库目前登记一条：每个 World 至多一个 Sky Light。
+跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write`、`set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 用写入前读出的 Scalar 经 Runtime::write 恢复，原值若由可信路径写成越过硬边界，恢复时按硬边界夹值；这样的原值本身已违反字段不变量，`Runtime::validate` 会报告它。`set_material / set_light` 按整值精确恢复。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。world 库目前登记一条：每个 World 至多一个 Sky Light。
 
 `spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对奇异矩阵在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](lighting.md)）。`render_items / light_items` 只经这三个入口读取空间。
 
