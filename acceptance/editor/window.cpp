@@ -3,6 +3,7 @@
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"
 #include "renderer/raster_viewport.hpp"
+#include "renderer/timing.hpp"
 #include "ui/text.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>

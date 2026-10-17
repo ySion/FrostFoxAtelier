@@ -143,6 +143,17 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 源码拥有型局部复用原生构析操作，序列修改经 `Runtime::mutate_sequence` 分派到基础库；`sequence_mutate` 与 `value_operations_preserve_borrows` 由同一 TypeInfo 发布，数组能力还取决于元素的操作契约。当前没有数组元素编辑器、非平凡按值调用 ABI 或跨挂起借用。同步原生值区间只允许 `BorrowSafe` 原生方法，结构修改限于源码拥有的序列，并把 GC 留给区间外的宿主；原生调用方仍负责实际存续期。详细限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
 
+## 帧阶段计时
+
+[frame_timing.hpp](../src/foundation/frame_timing.hpp) 提供常开的 CPU 帧阶段计时机制，dev 与 release 行为一致。foundation 只拥有根标记 `timing::frame`；各模块在自己的 `timing.hpp` 中以 `inline constinit timing::Marker` 声明阶段，给出键名、显示标题和父标记，例如 [renderer/timing.hpp](../src/renderer/timing.hpp) 的 `render` 以 `timing::frame` 为父项。父标记只引用本模块或其依赖模块的标记，依赖方向与链接一致。
+
+宿主在启动时、任何线程记录之前调用一次 `timing::install({module_a::markers, module_b::markers})`：先登记 `frame`，再按参数顺序登记各模块标记，由此确定进程内唯一的目录、下标和显示行序。重复调用、空标记、同一标记重复登记、键名重复、父项未先登记或超过 64 项都会拒绝，被拒绝的调用不登记任何项。没有静态自动注册，不依赖静态初始化顺序。`catalog()` 按下标返回已登记标记，`depth()` 给出层级深度。
+
+宿主线程每帧用 `Recorder::Frame` 绑定一个 `Recorder` 并打开 `frame`，`finish()` 或析构时关闭并解绑；`last()` 保留最近一个完成帧的 `FrameRecord`。`Scope` 只读取标记预先分配的下标和父下标，与当前打开的阶段比较后读两次 `steady_clock`，不分配、不查找、不加锁。计时为包含式：父阶段包含子阶段；同一帧多次进入同一阶段时累加时长并增加 `entries`。`record(marker, duration)` 把其他时钟测得的分段（例如 RHI 帧调用内部的提交与等待）记为当前阶段的子项，遵守同一父项规则。
+
+Recorder 已绑定时，未登记的标记、未在声明父项下打开的标记以及嵌套的 `Frame` 计入 `structure_errors`，`first_error` 指向第一个出错的标记，这些条目不记录时长。`Suspend` 在作用域内解绑当前线程，被挂起的工作整体计入外层已打开的阶段，用于辅助表面等不属于本帧阶段结构的嵌套调用。
+
+没有绑定 Recorder 的线程只读取一次线程局部变量，不做记录。物理工作线程等辅助线程的耗时体现在发起它们的宿主阶段的墙钟时间中。Recorder 不是线程安全的，只能由绑定它的线程写入。计时值只用于诊断、性能表和报告，不作为验收的通过条件；验收只检查阶段是否存在、层级、进入次数和 `structure_errors`。单个作用域的开销由 `atelier_editor_document_acceptance --profile-scene-cpu` 输出的 `timing_scope_ns` 在同一机器上标定。
 ## 验收
 
 ```powershell
@@ -155,7 +166,7 @@ Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包�
 
 [生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
 
-[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 增量覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
+[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 增量覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)覆盖目录组装的拒绝与回滚、行序、包含式计数、同帧累加、父项不符与未登记标记、`record`、`Suspend` 和嵌套帧。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
 
 [源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
 

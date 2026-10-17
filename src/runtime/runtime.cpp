@@ -1178,18 +1178,17 @@ Result<CollectionProgress> Runtime::collect_step(CollectionBudget budget) {
     if (budget.max_work == 0 || budget.max_time < std::chrono::nanoseconds::zero()) {
         return failure(ErrorCode::argument_mismatch, "Collection requires positive work and nonnegative time limits.");
     }
-    const auto started = std::chrono::steady_clock::now();
+    const bool timed = budget.max_time != std::chrono::nanoseconds::zero();
+    const auto started = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     CollectionProgress progress;
     CallbackScope scope{impl_->callbacks};
     while (progress.work_done != budget.max_work && impl_->phase != CollectionPhase::idle) {
-        if (progress.work_done != 0 && budget.max_time != std::chrono::nanoseconds::zero() &&
-            std::chrono::steady_clock::now() - started >= budget.max_time) break;
+        if (progress.work_done != 0 && timed && std::chrono::steady_clock::now() - started >= budget.max_time) break;
         progress.reclaimed += impl_->collect_one();
         ++progress.work_done;
     }
     progress.phase = impl_->phase;
     progress.pending_reclamation = impl_->pending;
-    progress.elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started);
     return progress;
 }
 

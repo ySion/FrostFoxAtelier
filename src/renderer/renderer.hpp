@@ -138,9 +138,6 @@ struct ProbeInspection {
     std::array<Ray,256> ray_samples{};
 };
 struct FrameStats {
-    // Wall intervals of this CPU submission, not the older completed GPU sample.
-    double cpu_prepare_us{}, cpu_encode_us{};
-    rhi::FrameCpuTimings cpu_frame{};
     std::array<ProbeVolumeStats,probe_volume_limit> scene_lit_probe_volumes{};
     // Optional completed inspection; owns its exact sampled layout and frame.
     std::shared_ptr<const ProbeInspection> scene_lit_probe_inspection;

@@ -211,14 +211,14 @@ int verify_editor_render_performance(Application& app,const char* output_directo
         model(Access::performance_view(app,candidate));
         unchanged_author();
     };
-    Json report{{"schema","atelier.editor.render-performance.v2"},{"status","preparing"},
+    Json report{{"schema","atelier.editor.render-performance.v3"},{"status","preparing"},
         {"revision",build_info::revision},{"configuration",build_info::configuration},
         {"project",editor::utf8(project.wstring())},{"scene",editor::utf8(scene.wstring())},{"scene_sha256",file_hash},
         {"authoring_baseline",{{"source_world",source_world},
             {"loaded_world",Json::parse(original_scene).at("world")},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
         {"gpu_validation",Access::gpu_validation(app)},{"vsync",Access::vsync(app)},
-        {"wall_semantics","Intervals between accepted Application steps after Present; includes CPU, waits and harness overhead. GPU durations are not FPS."},
-        {"cpu_semantics","CPU wall time of current accepted Application calls. Renderer and RHI stages are nested within render_present; do not sum parent and child stages. RHI frame_sequence is a current submission identity, separate from completed GPU sequence/frame_id. Step intervals also include any skipped calls and harness overhead."},
+        {"wall_semantics","Intervals between the frame timing ends of consecutive accepted Application steps; include skipped calls, waits and harness work between steps. GPU durations are not FPS."},
+        {"cpu_semantics","CPU wall time in milliseconds of current accepted Application calls. render.* are frame timing phases of the same step: render contains prepare, encode and frame; frame contains submit, present, wait and recycle. Do not sum parent and child stages. timing_sequence is the step's frame timing ordinal, separate from completed GPU sequence/frame_id."},
         {"resource_semantics","Current CPU logical Scene Lit bytes, tagged with observation frame; not completed-frame physical VRAM."},
         {"warmup_accepted_frames",192},{"completed_gpu_samples_per_scene_lit_case",240},
         {"non_lit_accepted_steps_per_case",240},{"cases",Json::array()}};
@@ -234,15 +234,24 @@ int verify_editor_render_performance(Application& app,const char* output_directo
             ~RestoreSampling() {app.sample_frames(enabled);}
         } restore_sampling{app,Access::frame_sampling(app)};
         app.sample_frames(true);
+        // Each product step is one frame of this Recorder; accepted intervals and
+        // renderer stages are read from its records, never from a harness clock.
+        timing::install({renderer::phases::markers});
+        timing::Recorder recorder;
+        const auto frame_end=[](const timing::FrameRecord& record) {return record.begin+record.time(timing::frame);};
         const auto next_frame=[&](Clock::time_point deadline) {
             const auto before=app.accepted_frames();
             while(app.accepted_frames()==before) {
                 require(Clock::now()<deadline,"Render performance timed out waiting for an accepted product frame.");
+                timing::Recorder::Frame frame{recorder};
                 require(app.step(),"Render performance editor closed before completion.");
+                frame.finish();
                 unchanged_author();
             }
             require(app.presented() && Access::accepted_view(app),"Accepted Scene View is absent.");
-            return Clock::now();
+            require(recorder.last().structure_errors==0 && recorder.last().count(renderer::phases::frame)==1,
+                "Accepted step did not record exactly one renderer frame phase.");
+            return frame_end(recorder.last());
         };
         // Let the product publish its loaded World into the accepted UI/view.
         // No stale workspace defaults may flow back into Session authoring.
@@ -381,15 +390,17 @@ int verify_editor_render_performance(Application& app,const char* output_directo
         // Finish cold uploads and obtain a real completed sample before the two
         // timed cases. The fixed case warmup is additional to this preparation.
         std::uint64_t bytes=0;unsigned stable=0,prepared=0;
-        const auto cold_start=Clock::now(),cold_deadline=cold_start+std::chrono::minutes(5);
+        const auto cold_deadline=Clock::now()+std::chrono::minutes(5);
+        Clock::time_point cold_begin{},cold_end{};
         while(stable<16 || prepared<32 || !app.frame_statistics().scene_lit_gpu_timing_valid) {
-            next_frame(cold_deadline);invariant();++prepared;
+            cold_end=next_frame(cold_deadline);invariant();++prepared;
+            if(prepared==1) cold_begin=recorder.last().begin;
             const auto& stats=app.frame_statistics();
             stable=bytes==stats.scene_lit_resource_bytes && !stats.material_upload_count?stable+1:0;
             bytes=stats.scene_lit_resource_bytes;
         }
         require(app.frame_statistics().scene_draw_calls>0,"The selected Scene contains no rendered geometry.");
-        report["cold_preparation"]={{"accepted_frames",prepared},{"elapsed_ms",std::chrono::duration<double,std::milli>(Clock::now()-cold_start).count()},
+        report["cold_preparation"]={{"accepted_frames",prepared},{"elapsed_ms",std::chrono::duration<double,std::milli>(cold_end-cold_begin).count()},
             {"logical_resource_bytes",bytes}};
         unchanged_scene();
         report["gpu_pass_order"]=Json::array();
@@ -429,44 +440,42 @@ int verify_editor_render_performance(Application& app,const char* output_directo
                 {"p50",values[(values.size()*50+99)/100-1]},{"p95",values[(values.size()*95+99)/100-1]}};
         };
         struct CpuSample {
-            application::FrameTiming timing;
+            application::FrameTiming host;
             std::array<std::uint64_t,3> draws{};
             std::uint64_t scene_instances{},scene_culled_instances{};
-            double renderer_prepare_us{},renderer_encode_us{};
-            rhi::FrameCpuTimings frame;
+            timing::FrameRecord record;
         };
         const auto collect_cpu=[&](std::vector<CpuSample>& samples) {
-            const auto& timing=app.frame_timing();
-            require(timing.frame_id==app.presented()->drawing->id,"CPU timings do not belong to the accepted frame.");
-            const auto& stats=app.frame_statistics();const auto& frame=stats.cpu_frame;
-            require(frame.frame_sequence!=0,"RHI CPU timings do not identify the current submission.");
-            const std::array values{timing.step_us,timing.controls_us,timing.prepare_us,timing.scene_us,timing.render_us,timing.events_us,timing.gc_us,
-                stats.cpu_prepare_us,stats.cpu_encode_us,frame.total_us,frame.prepare_us,frame.submit_us,frame.present_us,
-                frame.wait_us,frame.resize_us,frame.recycle_us,frame.reclaim_us};
+            const auto& host=app.frame_timing();
+            require(host.frame_id==app.presented()->drawing->id,"CPU timings do not belong to the accepted frame.");
+            const std::array values{host.step_us,host.controls_us,host.prepare_us,host.scene_us,host.render_us,host.events_us,host.gc_us};
             require(std::ranges::all_of(values,[](auto value){return std::isfinite(value) && value>=0;}),"Invalid CPU frame timing.");
-            samples.push_back({timing,{stats.scene_draw_calls,stats.ui_draw_calls,stats.viewport_draw_calls},
-                stats.scene_instances,stats.scene_culled_instances,stats.cpu_prepare_us,stats.cpu_encode_us,frame});
+            const auto& stats=app.frame_statistics();
+            samples.push_back({host,{stats.scene_draw_calls,stats.ui_draw_calls,stats.viewport_draw_calls},
+                stats.scene_instances,stats.scene_culled_instances,recorder.last()});
         };
         const auto cpu_json=[&](const std::vector<CpuSample>& samples) {
-            constexpr std::array keys{"application_step_ms","events_project_control_ms","gc_ms","controls_ms","ui_prepare_ms","scene_snapshot_ms","render_present_ms","other_application_ms",
-                "renderer_prepare_ms","renderer_encode_ms","rhi_frame_ms","rhi_prepare_ms","submit_ms","present_ms","frame_slot_wait_ms",
-                "resize_ms","recycle_ms","reclaim_ms"};
-            std::array<std::vector<double>,keys.size()> stages;
+            constexpr std::array keys{"application_step_ms","events_project_control_ms","gc_ms","controls_ms","ui_prepare_ms","scene_snapshot_ms","render_present_ms","other_application_ms"};
+            const auto& markers=renderer::phases::markers;
+            std::array<std::vector<double>,keys.size()+markers.size()> stages;
             for(auto& stage:stages) stage.reserve(samples.size());
             Json result{{"stages",Json::object()},{"samples",Json::array()}};
             for(const auto& sample:samples) {
-                const auto& timing=sample.timing;const auto& frame=sample.frame;
-                const std::array values{timing.step_us/1000.,timing.events_us/1000.,timing.gc_us/1000.,timing.controls_us/1000.,timing.prepare_us/1000.,timing.scene_us/1000.,timing.render_us/1000.,
-                    std::max(0.,timing.step_us-timing.events_us-timing.gc_us-timing.controls_us-timing.prepare_us-timing.scene_us-timing.render_us)/1000.,
-                    sample.renderer_prepare_us/1000.,sample.renderer_encode_us/1000.,frame.total_us/1000.,frame.prepare_us/1000.,
-                    frame.submit_us/1000.,frame.present_us/1000.,frame.wait_us/1000.,frame.resize_us/1000.,frame.recycle_us/1000.,frame.reclaim_us/1000.};
-                Json row{{"accepted_frame_id",timing.frame_id},{"rhi_frame_sequence",frame.frame_sequence},{"scene_draw_calls",sample.draws[0]},
+                const auto& host=sample.host;
+                const std::array values{host.step_us/1000.,host.events_us/1000.,host.gc_us/1000.,host.controls_us/1000.,host.prepare_us/1000.,host.scene_us/1000.,host.render_us/1000.,
+                    std::max(0.,host.step_us-host.events_us-host.gc_us-host.controls_us-host.prepare_us-host.scene_us-host.render_us)/1000.};
+                Json row{{"accepted_frame_id",host.frame_id},{"timing_sequence",sample.record.sequence},{"scene_draw_calls",sample.draws[0]},
                     {"ui_draw_calls",sample.draws[1]},{"viewport_draw_calls",sample.draws[2]},
                     {"scene_instances",sample.scene_instances},{"scene_culled_instances",sample.scene_culled_instances}};
                 for(std::size_t i=0;i<keys.size();++i) {stages[i].push_back(values[i]);row[keys[i]]=values[i];}
+                for(std::size_t i=0;i<markers.size();++i) {
+                    const auto value=std::chrono::duration<double,std::milli>(sample.record.time(*markers[i])).count();
+                    stages[keys.size()+i].push_back(value);row[std::string(markers[i]->key())]=value;
+                }
                 result["samples"].push_back(std::move(row));
             }
             for(std::size_t i=0;i<keys.size();++i) result["stages"][keys[i]]=distribution(std::move(stages[i]));
+            for(std::size_t i=0;i<markers.size();++i) result["stages"][std::string(markers[i]->key())]=distribution(std::move(stages[keys.size()+i]));
             return result;
         };
         for(const bool clustered:{false,true}) {
@@ -476,7 +485,7 @@ int verify_editor_render_performance(Application& app,const char* output_directo
             std::vector<double> wall;wall.reserve(512);
             std::vector<CpuSample> cpu;cpu.reserve(512);
             std::uint64_t sequence=0;unsigned accepted=0;
-            auto previous=Clock::now();const auto measurement_start=previous,deadline=previous+std::chrono::minutes(10);
+            auto previous=frame_end(recorder.last());const auto measurement_start=previous,deadline=Clock::now()+std::chrono::minutes(10);
             while(samples.size()<240) {
                 const auto presented=next_frame(deadline);invariant();
                 wall.push_back(std::chrono::duration<double,std::milli>(presented-previous).count());previous=presented;++accepted;
@@ -505,7 +514,7 @@ int verify_editor_render_performance(Application& app,const char* output_directo
                 require(std::ranges::all_of(sample.ms,[](auto n){return std::isfinite(n) && n>=0;}),"Invalid completed GPU duration.");
                 samples.push_back(sample);sequence=sample.sequence;
             }
-            const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-measurement_start).count();
+            const auto elapsed=std::chrono::duration<double,std::milli>(previous-measurement_start).count();
             Json result{{"name",clustered?"clustered":"legacy"},{"layout",layout},{"view",settings_json(view)},{"viewport",viewport_json()},
                 {"camera",camera_json()},{"warmup_last_frame",fence},{"accepted_frames",accepted},{"elapsed_ms",elapsed},
                 {"accepted_steps_per_second",double(accepted)*1000./elapsed},{"gpu_sample_state","completed"},{"cpu",cpu_json(cpu)},
@@ -541,13 +550,13 @@ int verify_editor_render_performance(Application& app,const char* output_directo
             const auto fence=warmup(192);
             std::vector<double> wall;wall.reserve(240);
             std::vector<CpuSample> cpu;cpu.reserve(240);
-            auto previous=Clock::now();const auto measurement_start=previous,deadline=previous+std::chrono::minutes(10);
+            auto previous=frame_end(recorder.last());const auto measurement_start=previous,deadline=Clock::now()+std::chrono::minutes(10);
             for(unsigned accepted=0;accepted<240;++accepted) {
                 const auto presented=next_frame(deadline);invariant();
                 wall.push_back(std::chrono::duration<double,std::milli>(presented-previous).count());previous=presented;
                 collect_cpu(cpu);
             }
-            const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-measurement_start).count();
+            const auto elapsed=std::chrono::duration<double,std::milli>(previous-measurement_start).count();
             // Non-Lit modes have no Scene Lit GPU scopes. Never reuse the last
             // completed Lit sample or infer GPU time from accepted step rate.
             Json result{{"name",name},{"layout",layout},{"view",settings_json(view)},{"viewport",viewport_json()},{"camera",camera_json()},

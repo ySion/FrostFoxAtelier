@@ -1,10 +1,23 @@
+// Each sample is one frame of a profile Recorder, so samples and nested phases use the product clock.
+constinit timing::Marker profile_calibration{"profile.calibration","Scope cost calibration",&timing::frame};
+constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
+
 // Loads the real project through Session and measures existing CPU consumers.
 // No window, graphics device, author edits or alternate World are constructed.
 void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output,
                        const std::filesystem::path& camera_report) {
     using Json=nlohmann::json;
-    using Clock=std::chrono::steady_clock;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute CPU profile file.");
+    timing::install({profile_markers});
+    timing::Recorder recorder;
+    const auto milliseconds=[](std::chrono::nanoseconds value){return std::chrono::duration<double,std::milli>(value).count();};
+    // Temporaries destroyed by the operation are part of its sample.
+    const auto sample=[&](auto&& operation) {
+        timing::Recorder::Frame frame{recorder};operation();
+        const auto& record=frame.finish();
+        require(record.structure_errors==0,"CPU profile recorded a misplaced or unregistered phase.");
+        return milliseconds(record.time(timing::frame));
+    };
     auto project=take(editor::Project::open(root));
     const auto path=take(project.resolve(scene));
     const auto source=take(editor::read_file(path));
@@ -34,13 +47,13 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     for(const auto& item:geometry) for(const auto& binding:take(world::read_material_bindings(document->world().runtime(),item.component))) {
         materials.insert(binding.resource.id());++material_bindings;
     }
-    Json report{{"schema","atelier.editor.scene-cpu.v1"},{"project",editor::utf8(root.wstring())},{"scene",scene},
+    Json report{{"schema","atelier.editor.scene-cpu.v2"},{"project",editor::utf8(root.wstring())},{"scene",scene},
         {"gpu",false},{"samples",121},{"warmup",20},{"source_bytes",source.size()},
         {"entities",take(document->world().members()).size()},{"meshes",snapshot.meshes.size()},
         {"unique_geometries",unique.size()},{"adjacent_geometry_batches",batches},{"instance_triangles",triangles},
         {"unique_sampled_images",sampled_images},{"material_texture_table_entries",sampled_images+1},
         {"material_bindings",material_bindings},{"unique_bound_materials",materials.size()},
-        {"semantics","Independent CPU calls, including temporary destruction, in one loaded project. No GPU, Present, UI prepare or FPS estimate. Workspace includes DSL commit; no accepted UI frame is supplied."}};
+        {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present, UI prepare or FPS estimate. Workspace includes DSL commit; no accepted UI frame is supplied."}};
     if(!camera_report.empty()) {
         // Consume the accepted product matrices, including its actual aspect.
         const auto reference=Json::parse(take(editor::read_file(camera_report)));
@@ -71,8 +84,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     const auto measure=[&](std::string_view name,auto&& operation) {
         std::vector<double> samples;samples.reserve(121);
         for(unsigned i=0;i<141;++i) {
-            const auto start=Clock::now();operation();
-            const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+            const auto elapsed=sample(operation);
             if(i>=20) samples.push_back(elapsed);
         }
         const auto total=std::accumulate(samples.begin(),samples.end(),0.);
@@ -103,8 +115,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
                 if(take(world::has_transform(runtime,member.id()))) take(world::world_matrix(runtime,member.id()));
         });
         const auto once=[&](std::string_view name,auto&& operation) {
-            const auto start=Clock::now();operation();
-            const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+            const auto elapsed=sample(operation);
             report["stages"][name]={{"single_ms",elapsed}};
             std::printf("Scene CPU %.*s: %.3f ms single\n",static_cast<int>(name.size()),name.data(),elapsed);
         };
@@ -123,6 +134,22 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("workspace_maximized",describe);
     workspace.dock.maximize(editor::control::scene_tab);
     measure("workspace_docked",describe);
+    {
+        // Overhead estimate on the same clock and machine; never a pass condition.
+        constexpr std::uint32_t scopes=10000;
+        std::vector<double> samples;
+        for(unsigned i=0;i<41;++i) {
+            timing::Recorder::Frame frame{recorder};
+            for(std::uint32_t n=0;n<scopes;++n) timing::Scope scope{profile_calibration};
+            const auto& record=frame.finish();
+            require(record.structure_errors==0 && record.count(profile_calibration)==scopes,"Scope calibration lost entries.");
+            if(i>=10) samples.push_back(double(record.time(timing::frame).count())/scopes);
+        }
+        std::ranges::sort(samples);
+        report["timing_scope_ns"]={{"median",samples[15]},{"scopes_per_sample",scopes},
+            {"semantics","Frame root time divided by sequential empty scopes, including loop overhead."}};
+        std::printf("Scene CPU timing scope: %.1f ns median\n",samples[15]);
+    }
     require(take(document->serialize())==original && take(editor::read_file(path))==source &&
         !document->dirty() && document->undo_count()==0 && document->redo_count()==0,
         "CPU profile changed the document or source Scene.");
@@ -135,13 +162,14 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
 // It creates its own fixture; it never opens or changes a user's project.
 void profile_project_json(const std::filesystem::path& output) {
     using Json = nlohmann::json;
-    using Clock = std::chrono::steady_clock;
     namespace fs = std::filesystem;
     require(!fs::exists(output), "Choose a new JSON measurement output directory.");
+    timing::install({});
+    timing::Recorder recorder;
     fs::create_directories(output);
     auto project = take(editor::Project::create(output / "Project"));
     Json report = {{"schema", 1}, {"json_library", "nlohmann/json 3.12.0"},
-        {"rounds", 21}, {"clock", "steady_clock"},
+        {"rounds", 21}, {"clock", "frame timing Recorder (steady_clock)"},
         {"notes", "Warm file-system cache; same process. Parse excludes DOM destruction. Scene load includes parse, validation, resource resolution and fresh Runtime/World construction; excludes document destruction. No GUI or GPU work."},
         {"scenes", Json::array()}};
 #ifdef NDEBUG
@@ -149,14 +177,14 @@ void profile_project_json(const std::filesystem::path& output) {
 #else
     report["configuration"] = "dev";
 #endif
-    const auto measure = [](auto&& operation) {
+    const auto measure = [&](auto&& operation) {
         std::vector<double> samples;
         for (int round = -2; round < 21; ++round) {
-            const auto start = Clock::now();
+            timing::Recorder::Frame frame{recorder};
+            // Keep the operation's output alive until the frame has finished.
             auto result = operation();
-            const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+            const auto elapsed = std::chrono::duration<double, std::milli>(frame.finish().time(timing::frame)).count();
             if (round >= 0) samples.push_back(elapsed);
-            // Keep the operation's output alive until after the end timestamp.
             (void)result;
         }
         std::ranges::sort(samples);

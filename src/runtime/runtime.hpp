@@ -587,7 +587,6 @@ struct CollectionProgress {
     std::size_t work_done{};
     std::size_t reclaimed{};
     std::size_t pending_reclamation{};
-    std::chrono::nanoseconds elapsed{};
 };
 
 // Single-threaded, explicitly owned context. Definitions are immutable after publication.
