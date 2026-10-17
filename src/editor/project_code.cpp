@@ -117,7 +117,7 @@ Result<void> ProjectCode::build(const Project& project) {
         auto valid=validate(*candidate);if(!valid) return reject(valid.error());
         const bool rebind=!bound_ || adds_behavior(*candidate);
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
-        if (rebind) {auto binding=bind();if (!binding) return reject(binding.error());bound_=true;}
+        if (rebind) {auto binding=bind();if (!binding) {bound_=false;return reject(binding.error());}bound_=true;}
     }
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
     next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
