@@ -116,3 +116,67 @@ void quality_signal_edits(Fixture& f) {
     check(passed,"material radiance and reflection eligibility edits remove stale SSR promptly without chroma trails");
     std::puts("Renderer SceneLit signal edits: PASS");
 }
+
+// Direct radiance changes have a bounded response. A light and material edit
+// that is restored returns to its baseline; continuously animated radiance
+// keeps a filtered penumbra instead of a single-frame estimate. Only direct
+// light is enabled, so DDGI's own response cannot mask the DI history. Both
+// paths share the resolve under test; the A path is used because ReSTIR's
+// spatiotemporal reuse leaves low-frequency mottling above this residual.
+void quality_direct_radiance_response(Fixture& f,Region penumbra) {
+    const auto lights=f.lights;const auto meshes=f.room.meshes;const auto view=f.frame.view;
+    auto& options=f.frame.view.lit;
+    options.antialiasing=render::Antialiasing::none;
+    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.direct_reference=false;options.direct_clustered=true;
+    // The edit is chromatic, so its stale residual shows as red minus blue,
+    // where estimator noise of the mostly neutral lighting largely cancels.
+    const auto red_shift=[](const render::Capture& a,const render::Capture& b) {
+        double sum=0;std::size_t count=0;
+        for(std::size_t i=0;i<a.depth.size();++i) {
+            if(a.depth[i]==0 || std::abs(a.depth[i]-b.depth[i])>1e-5f)continue;
+            sum+=(int(b.rgba[i*4])-int(a.rgba[i*4]))-(int(b.rgba[i*4+2])-int(a.rgba[i*4+2]));
+            ++count;
+        }
+        return sum/double(count);
+    };
+    f.frame.camera_cut=true;f.edited();
+    const auto baseline=f.average("radiance-baseline",warmup_frames,32);
+    f.lights[3].color={1,.25f,.05f};f.lights[3].intensity=lights[3].intensity*4;
+    f.room.meshes[4].color={.9f,.2f,.1f,1};f.edited();
+    for(unsigned i=0;i<8;++i)f.step();
+    f.lights=lights;f.room.meshes=meshes;f.edited();
+    const auto early=red_shift(baseline,f.average("radiance-restored-16",16,16));
+    const auto settled=red_shift(baseline,f.average("radiance-restored-64",48,16));
+    std::printf("SceneLit radiance-restore red shift: frames 1-16=%+.3f frames 49-64=%+.3f\n",early,settled);
+    check(early>=1,"a restored chromatic light and material edit reaches the direct history");
+    check(std::abs(settled)<=early*.1,"restored direct radiance returns to its baseline within 64 frames");
+    const auto roi_noise=[&](auto&& advance) {
+        render::Capture previous,current;
+        advance();f.step(&previous);
+        double sum=0;std::size_t count=0;
+        for(unsigned frame=0;frame<32;++frame) {
+            advance();f.step(&current);
+            for(unsigned y=penumbra.top;y<penumbra.bottom;++y) for(unsigned x=penumbra.left;x<penumbra.right;++x) {
+                unsigned delta=0;
+                for(unsigned c=0;c<3;++c)delta=std::max(delta,unsigned(std::abs(int(pixel(current,x,y)[c])-int(pixel(previous,x,y)[c]))));
+                sum+=delta;++count;
+            }
+            std::swap(previous,current);
+        }
+        return sum/double(count);
+    };
+    for(unsigned i=0;i<warmup_frames;++i)f.step();
+    const auto still=roi_noise([]{});
+    unsigned phase=0;
+    const auto animated=roi_noise([&] {
+        // A 0.1% alternating intensity marks radiance changed every frame
+        // without moving the converged signal.
+        f.lights[3].intensity=lights[3].intensity*(++phase%2?1.001f:1.f);f.edited();
+    });
+    f.lights=lights;f.edited();
+    const auto single=roi_noise([&]{f.frame.camera_cut=true;});
+    std::printf("SceneLit radiance-animated penumbra noise: still=%.3f animated=%.3f single-frame=%.3f\n",still,animated,single);
+    check(animated<=single*.25,"continuously animated direct radiance keeps a filtered penumbra");
+    f.lights=lights;f.room.meshes=meshes;f.frame.view=view;f.frame.camera_cut=true;f.edited();
+}

@@ -3,6 +3,9 @@ RWTexture2D<float4> lit_direct_specular_raw_output;
 // Raw alpha describes stochastic support, not RGB validity. A deterministic
 // receiver keeps its current radiance with zero reconstructable history count.
 uint lit_direct_stochastic;
+// One during a bounded window after any light, material, emitter or
+// environment radiance change, zero once older radiance has decayed.
+float lit_direct_response;
 // Per-receiver soft-visibility outcomes of compact sources: bit source%15 was
 // seen visible, bit 16+source%15 occluded. Bits 15/31 mark an estimator that
 // is random regardless of visibility. Unclassified shading forces every pixel.
@@ -294,9 +297,11 @@ void lit_direct_resolve_signal(float3 current, bool specular, float roughness, f
     if (valid) {
         float motion_pixels = length(motion.xy * lit_size_frame.xy);
         float maximum_count = specular ? lerp(15, 47, saturate(roughness)) : 47;
-        // Known light edits shorten support gently. They never globally turn
-        // history off; geometry validity remains an independent hard gate.
-        maximum_count = lerp(maximum_count, specular ? 7 : 11, saturate(lit_temporal.z));
+        // Radiance changes shorten support for a whole window, so old radiance
+        // decays geometrically whether or not the latest change was an edit
+        // frame. They never globally turn history off; geometry validity
+        // remains an independent hard gate.
+        maximum_count = lerp(maximum_count, specular ? 7 : 11, lit_direct_response);
         // A moving occluder changes illumination on stationary receivers too.
         // Preserve their history, but let new visibility replace old shadows.
         // Unlike an authored light/color edit, this is not proof that a random
@@ -307,7 +312,7 @@ void lit_direct_resolve_signal(float3 current, bool specular, float roughness, f
         // evidence of a new signal, independently of the old signal variance.
         // Clip color as well as luminance so a removed colored lamp cannot
         // leave a long chromatic tail. Noisy neighborhoods keep wider bounds.
-        if (lit_temporal.z > 0) {
+        if (lit_direct_response > 0) {
             float response_range = 3 * sqrt(max(local.y, 0)) + .1 * local.x + .001;
             history.rgb = clamp(history.rgb, max(0, average - response_range), average + response_range);
         }

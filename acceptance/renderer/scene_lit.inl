@@ -1262,12 +1262,13 @@ void quality_cases(Fixture& f) {
         check(std::abs(distinct_mean[channel]-reference[channel])<=3,
               "legacy fallback and authored uint64 keys preserve the reference lighting mean");
     f.room.meshes[4].stable_key=central_key;f.room.meshes[5].stable_key=metal_key;f.edited();
+    quality_direct_radiance_response(f,penumbra);
     quality_ssil(f);
     quality_depth(f);
     quality_ddgi(f);
     quality_contracts(f);
     check(f.metrics.good() && trajectory.good(),"SceneLit quality evidence and accepted-frame trajectory written");
-    std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, direct64, bounded SSIL, geometry/camera recovery, reversed depth, emissive DDGI wall continuity/motion/divider)");
+    std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, direct64, bounded direct radiance response, bounded SSIL, geometry/camera recovery, reversed depth, emissive DDGI wall continuity/motion/divider)");
 }
 } // namespace scene_lit_e2e
 

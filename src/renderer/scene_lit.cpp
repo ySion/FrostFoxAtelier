@@ -192,7 +192,8 @@ struct SceneLit::State {
     bool spatial_uploaded{};
     std::array<std::uint32_t,4> screen_dispatch{};
     std::array<float,4> raster_transform{1,1,0,0};
-    std::uint32_t effect_flags{},di_history_valid{},direct_stochastic{};
+    std::uint32_t effect_flags{},di_history_valid{},direct_stochastic{},direct_radiance_age{};
+    float direct_response{};
     std::uint64_t scene_identity{},scene_revision{},reset_events{},sequence{};
     std::uint32_t parity{},probe_parity{},probe_response_epoch{},probe_geometry_pending{},probe_sequence{};
     std::uint32_t probe_history_mode{};
@@ -487,7 +488,7 @@ struct SceneLit::State {
         bind(p,"lit_environment",environment);bind(p,"lit_controls",controls);
         bind(p,"lit_temporal",temporal);bind(p,"lit_jitter",jitter);bind(p,"lit_effect_flags",effect_flags);
         bind(p,"lit_source_counts",source_counts);bind(p,"lit_di_settings",di_settings);bind(p,"lit_di_history_valid",di_history_valid);
-        bind(p,"lit_direct_stochastic",direct_stochastic);
+        bind(p,"lit_direct_stochastic",direct_stochastic);bind(p,"lit_direct_response",direct_response);
         bind(p,"lit_history_invalid",history_invalid);
         bind(p,"lit_instances",gpu_instances);bind(p,"lit_rt_triangles",rt_triangles);bind(p,"lit_closed_slots",rt_closed_slots);
         bind(p,"lit_sources",gpu_sources);bind(p,"lit_previous_sources",gpu_previous_sources);bind(p,"lit_light_proposals",gpu_proposals);
@@ -942,6 +943,12 @@ struct SceneLit::State {
         const bool visibility_changed=transform_changed||coverage_changed;
         const std::array<float,4> next_environment{frame.environment[0],frame.environment[1],frame.environment[2],1};
         const bool radiance_changed=light_changed||material_changed||emitter_changed||next_environment!=environment;
+        // DI keeps 11/12 of its history per frame under the shortened diffuse
+        // support, so 48 frames after the last radiance change older radiance
+        // is below 1/64. Continuous animation keeps the window open.
+        constexpr std::uint32_t direct_response_frames=48;
+        direct_radiance_age=radiance_changed?0u:std::min(direct_radiance_age+1,direct_response_frames);
+        direct_response=direct_radiance_age<direct_response_frames?1.f:0.f;
         // The epoch describes an authored change, never stochastic radiance.
         // GPU directions keep their own progress even when sparsely scheduled.
         if(radiance_changed||transform_changed||shadow_bias_changed)
