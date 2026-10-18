@@ -1,5 +1,7 @@
 # 游戏世界与对象模型：比较研究后的改良判断
 
+2026-10-17 状态：第 5 节描述的 Actor/SceneComponent 模型已被 [Entity 模型](entity-component-model-evaluation-2026-10-12.md)取代，不再是当前状态入口；现行合同以 [World](../modules/world/README.md) 为准，硬闸复核见[工业引擎对照](world-hard-gates-industrial-comparison-20261017.md)。
+
 实现同步：2026-10-10。SceneComponent、显式空间树、Actor/Component 有序生命周期及 Primitive 物理组成均已落地。本文保留行业研究，并更新第 1、5、7 节的项目结论；当前接口见 [World](../modules/world/README.md)、[物理](../modules/physics/README.md)与[项目场景](../modules/world/project-scenes.md)。
 
 研究日期：2026-10-01。对照代码为 `70e08ded193fcf33a2bcf414cf03bc4b7e105569`，源码树与 main `8d774cf82b30d320a246246853e3359a4f6c83e9` 相同。本轮组织了五个 gpt-6.1-sol 研究席：UE、Unity、Godot/CryEngine、Frostbite/大厂分享、当前实现；各席完成了一轮针对其他席结论的质询。主持补充了 ECS 存储及并发论文。

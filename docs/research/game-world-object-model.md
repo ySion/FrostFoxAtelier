@@ -1,6 +1,6 @@
 # 游戏世界与对象模型：研究与会审方案
 
-状态：历史研究与会审记录。文中的 I–IV 阶段、接口候选及验收数字只描述 2026-09-30 的基线；基础 World、编辑器接入、空间树、有序生命周期与 Primitive 物理组成现已落地。当前行为统一见 [World 模块](../modules/world/README.md)、[项目场景](../modules/world/project-scenes.md)与[物理模块](../modules/physics/README.md)，后续缺口见 [Class/Actor 评估](ue-class-actor-attachment-2026-10.md)。
+状态：历史研究与会审记录。文中的 I–IV 阶段、接口候选及验收数字只描述 2026-09-30 的基线；基础 World、编辑器接入、空间树、有序生命周期与 Primitive 物理组成现已落地。当前行为统一见 [World 模块](../modules/world/README.md)、[项目场景](../modules/world/project-scenes.md)与[物理模块](../modules/physics/README.md)；Actor 模型已被 [Entity 模型](entity-component-model-evaluation-2026-10-12.md)取代，本文“首片”限制在后续文档中硬化的情况见[工业引擎对照](world-hard-gates-industrial-comparison-20261017.md)。
 
 日期：2026-09-30。III 实现基线为 II 提交 `ce36a2ef71cfd31da39f98aa3c75004b69e77929`，含 I 提交 `3985869a3c700ddddf190aae6291ea39d3616bf6`。第 2 节历史代码定位对应原 main `9d33f4fc1c8a88481c93be4b166e6eb311456a1b`；这些提交用于追溯当时的取舍，不代表当前 Core 能力或工作分支状态。
 

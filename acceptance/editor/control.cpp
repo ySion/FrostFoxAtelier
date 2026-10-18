@@ -642,8 +642,8 @@ int wmain(int argc,wchar_t** argv) {
         const Json cancelled_request{{"op","render.capture"},{"state_token",d.token},{"request_id",cancelled_id},{"args",{{"sample_frames",{4096}}}}};
         pending=d.client->call(cancelled_request);require(pending.at("status")=="pending",pending.dump());
         const auto unchanged=d.token;
-        error(d.call("scene.transform",{{"object",entity},{"position",{4,2,3}},{"rotation",{0,0,0,1}},{"scale",{0,1,1}}}),"operation_failed");
-        error(d.call("scene.set_property",{{"object",entity},{"property","scale.x"},{"value",0}}),"operation_failed");
+        error(d.call("scene.transform",{{"object",entity},{"position",{4,2,3}},{"rotation",{0,0,0,0}},{"scale",{1,1,1}}}),"operation_failed");
+        error(d.call("scene.set_property",{{"object",entity},{"property","rotation.w"},{"value",0}}),"operation_failed");
         error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
         d.ok("camera.set",{{"state",d.inspect().at("camera")}});d.ok("view.set",{{"patch",Json::object()}});
         require(d.token==unchanged && d.call("job.status",{{"job_id",cancelled_id}}).at("status")=="pending","Rejected or no-op requests cancelled unchanged rendering");

@@ -1,6 +1,6 @@
 # 游戏世界与对象模型：引擎及公开技术资料比较
 
-资料状态：保留 2026-10-01 的行业来源与研究基线；项目实现进展统一见[改良判断](world-model-reassessment-2026-10.md#5-已落地的项目合同与剩余缺口)及 [World 模块](../modules/world/README.md)。下文对旧代码的比较不作为当前能力清单。
+资料状态：保留 2026-10-01 的行业来源与研究基线；项目当前合同见 [World 模块](../modules/world/README.md)（改良判断第 5 节描述的是已被 [Entity 模型](entity-component-model-evaluation-2026-10-12.md)取代的旧状态），2026-10-17 的硬闸复核见[工业引擎对照](world-hard-gates-industrial-comparison-20261017.md)。下文对旧代码的比较不作为当前能力清单。
 
 研究日期：2026-10-01。六个研究席均使用 gpt-6.1-sol，分别调查 UE、Unity、CryEngine、Godot、Frostbite 和跨公司技术分享，并完成一轮交叉质询。本文是汇总后的研究入口；过程材料保存在本工作树忽略的 `out/world-paradigms-research/`。FrostFox 对照基线为 `70e08ded193fcf33a2bcf414cf03bc4b7e105569`，源码树与已合并 main `8d774cf` 一致；当前合同见 [World 模块文档](../modules/world/README.md)。
 
