@@ -111,12 +111,16 @@ void shared_tree_view() {
         require(h.shown(29),"keyboard selection was not revealed");
         require(c.frame->find(2) && !c.frame->find(10),"scrolled window kept rows above it");
         h.apply(key(c.ui,ui::Key::home)); require(h.shown(2) && h.primary==2,"Home did not reveal the first row");
+        h.apply(key(c.ui,ui::Key::down)); require(h.primary==3,"Down did not select the next row");
         // Wheel scrolling covers every host row; the host then describes the newly visible ones.
         const auto box=c.frame->find(1)->bounds;
         require(c.ui.input({.kind=ui::EventKind::wheel,.x=box.x+20,.y=box.y+20,.wheel=-1000}).consumed,"tree did not scroll");
         c.prepare();
         require(std::abs(c.ui.tree_viewport(1).scroll-(24*20-c.ui.tree_viewport(1).height))<.5,"tree scroll range ignored undescribed rows");
         h.describe(); require(h.shown(28) && h.shown(29),"scrolled rows were not described");
+        // Arrow keys before the next description stop at the end of the focused row's described neighbours.
+        const auto first_down=actions_of(key(c.ui,ui::Key::down)),second_down=actions_of(key(c.ui,ui::Key::down));
+        require(first_down.size()==1 && first_down[0].key==4 && second_down.empty(),"Down stepped across undescribed rows");
         // A primary row is revealed once when it becomes primary, not on every description.
         h.primary=4;h.describe();
         require(h.shown(4),"a new primary row was not revealed");
@@ -173,6 +177,15 @@ void shared_tree_view() {
     const std::array<ui::TreeNode,2> unordered{{{1,false,L"Child"},{ui::no_tree_node,false,L"Parent"}}};
     bool threw=false;try{ui::flatten_tree(unordered,{},rows);}catch(const std::invalid_argument&){threw=true;}
     require(threw,"tree flattening accepted a child before its parent");
+    // A content-height tree stops at its maximum and scrolls over the remaining host rows.
+    Consumer bounded;
+    auto list=leaf(90,ui::ControlKind::tree,0);list.layout=ui_layout::NodeInput::column();list.layout.width=ui_layout::Axis::fixed(240);
+    list.layout.height=ui_layout::Axis::content(0,60);list.tree_row_count=10;bounded.controls={list};
+    for (std::uint32_t i=0;i<3;++i) {
+        auto item=leaf(91+i,ui::ControlKind::tree_item,0,L"Row");item.parent=90;item.tree_index=i;bounded.controls.push_back(item);
+    }
+    bounded.prepare();
+    require(bounded.frame->find(90)->bounds.height<=60.5f && bounded.frame->scrollbars.size()==1,"a bounded content-height tree did not scroll its rows");
     Consumer drag;
     auto tree=leaf(80,ui::ControlKind::tree,0);tree.layout=ui_layout::NodeInput::column();tree.layout.width=ui_layout::Axis::fixed(240);tree.tree_row_count=1;
     auto row=leaf(81,ui::ControlKind::tree_item,0,L"Drag Entity");row.parent=80;row.tree_draggable=true;

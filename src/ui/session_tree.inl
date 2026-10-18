@@ -38,31 +38,46 @@
         if (focused.control.kind!=ControlKind::tree_item || event.kind!=EventKind::key_down || event.control || event.alt ||
             (event.key!=Key::up && event.key!=Key::down && event.key!=Key::left && event.key!=Key::right && event.key!=Key::home && event.key!=Key::end)) return false;
         reply.consumed=true;
-        // Accepted rows of this tree in host order; tree_rows parallels the tree_item boxes.
-        struct Row { const ControlBox* box; const TreeRowGeometry* geometry; };
+        // Described rows of this tree in host order; tree_rows parallels the tree_item boxes.
+        // Disabled rows stay in the list so arrow keys never step across an undescribed range.
+        struct Row { const ControlBox* box; const TreeRowGeometry* geometry; bool selectable; };
         std::vector<Row> rows;
         std::size_t next{};
         for (const auto& box:published->controls) {
             if (box.kind!=ControlKind::tree_item) continue;
             const auto& geometry=published->tree_rows[next++];
-            if (box.parent==focused.control.parent && box.bounds.height>0 && current(box)) rows.push_back({&box,&geometry});
+            if (box.parent==focused.control.parent && box.bounds.height>0) rows.push_back({&box,&geometry,current(box)});
         }
         const auto at=std::find_if(rows.begin(),rows.end(),[&](const auto& row){return row.box->key==focus;});
         if (at==rows.end()) return true;
         const auto& row=*at->geometry;
         const bool branch=focused.control.tree_branch;
         auto target=at;
+        // The nearest selectable row in one direction through consecutive host rows.
+        const auto step=[&](auto from,int direction) {
+            for (auto index=from->geometry->index;;) {
+                if (direction<0?from==rows.begin():from+1==rows.end()) return at;
+                from+=direction;
+                if (from->geometry->index!=static_cast<std::uint32_t>(index+direction)) return at;
+                if (from->selectable) return from;
+                index=from->geometry->index;
+            }
+        };
         if (event.key==Key::left) {
             if (branch && row.expanded) expand_tree(reply,focus,false);
             else for (auto parent=at;row.depth && parent!=rows.begin();)
-                if ((--parent)->geometry->depth+1==row.depth) {target=parent;break;}
+                if ((--parent)->geometry->depth+1==row.depth) {if (parent->selectable) target=parent;break;}
         } else if (event.key==Key::right) {
             if (branch && !row.expanded) expand_tree(reply,focus,true);
-            else if (branch && at+1!=rows.end() && (at+1)->geometry->index==row.index+1 && (at+1)->geometry->depth==row.depth+1) target=at+1;
-        } else if (event.key==Key::home) target=rows.begin();
-        else if (event.key==Key::end) target=rows.end()-1;
-        else if (event.key==Key::up && at!=rows.begin()) --target;
-        else if (event.key==Key::down && at+1!=rows.end()) ++target;
+            else if (branch && at+1!=rows.end() && (at+1)->selectable && (at+1)->geometry->index==row.index+1 &&
+                (at+1)->geometry->depth==row.depth+1) target=at+1;
+        } else if (event.key==Key::home) {
+            const auto found=std::find_if(rows.begin(),rows.end(),[](const auto& r){return r.selectable;});
+            if (found!=rows.end()) target=found;
+        } else if (event.key==Key::end) {
+            const auto found=std::find_if(rows.rbegin(),rows.rend(),[](const auto& r){return r.selectable;});
+            if (found!=rows.rend()) target=std::prev(found.base());
+        } else target=step(at,event.key==Key::up?-1:1);
         if (target!=at) select_tree(reply,*target->box,{event.shift,event.control});
         return true;
     }

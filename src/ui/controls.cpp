@@ -137,7 +137,8 @@ std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows,TreeViewpor
     if (rows.empty()) return result;
     const auto last=static_cast<std::uint32_t>(rows.size()-1);
     const double row_height=std::max(1.f,viewport.row_height),height=std::max(0.f,viewport.height);
-    const auto row_at=[&](double y) { return static_cast<std::uint32_t>(std::clamp(std::floor(y/row_height),0.,static_cast<double>(last))); };
+    // NaN or a negative position maps to the first row.
+    const auto row_at=[&](double y) { return y>0?static_cast<std::uint32_t>(std::min(std::floor(y/row_height),static_cast<double>(last))):0u; };
     const auto begin=row_at(viewport.scroll-height),end=row_at(viewport.scroll+2*height);
     result.reserve(end-begin+3+pinned.size()*4);
     result.push_back(0);result.push_back(last);

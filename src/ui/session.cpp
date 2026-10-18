@@ -300,7 +300,8 @@ struct Session::Impl {
             found->second.control.context_target!=box.context_target || found->second.control.context_group!=box.context_group ||
             found->second.control.button_behavior!=box.button_behavior || found->second.control.menu_behavior!=box.menu_behavior ||
             found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table ||
-            found->second.control.table_layout!=box.table_layout || found->second.control.code!=box.code || !box.enabled) return false;
+            found->second.control.table_layout!=box.table_layout || found->second.control.code!=box.code || !box.enabled ||
+            (box.kind==ControlKind::tree_item && box.parent!=found->second.control.parent)) return false;
         auto key = box.key;
         while (key) {
             const auto& control = states.at(key).control;
@@ -372,9 +373,12 @@ struct Session::Impl {
             input.anchor_x=input.anchor_y=input.pivot_x=input.pivot_y=input.offset_x=0;
             input.offset_y=static_cast<float>(static_cast<double>(state.control.tree_index)*row_height);
             input.height=ui_layout::Axis::fixed(row_height);
-        } else if (state.control.kind==ControlKind::tree && input.height.rule==ui_layout::SizeRule::content)
-            input.height.minimum=std::max(input.height.minimum,static_cast<float>(
-                static_cast<double>(state.control.tree_row_count)*appearance.tree_row_height+padding.top+padding.bottom));
+        } else if (state.control.kind==ControlKind::tree && input.height.rule==ui_layout::SizeRule::content) {
+            // Content height covers every host row, up to the tree's own maximum; scrolling covers the rest.
+            auto rows=static_cast<float>(static_cast<double>(state.control.tree_row_count)*appearance.tree_row_height+padding.top+padding.bottom);
+            if (input.height.maximum) rows=std::min(rows,*input.height.maximum);
+            input.height.minimum=std::max(input.height.minimum,rows);
+        }
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
