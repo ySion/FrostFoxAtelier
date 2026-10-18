@@ -5,6 +5,7 @@
 #include <filesystem>
 
 namespace atelier::editor {
+enum class AssetKind { folder, mesh, scene, source, file, texture, material };
 // Resolved resource data shared by engine and project catalogs. Keys identify
 // persistent catalog entries, never Runtime objects or GPU allocations.
 struct MeshAsset {

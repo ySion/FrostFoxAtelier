@@ -78,8 +78,9 @@ Result<void> Project::save_material(const MaterialAsset& asset) {
         const auto& item=entry(*this,asset.key,AssetKind::material);
         static_cast<void>(material::Surface(asset.description));
         // A key the catalog no longer lists is a missing texture; saving keeps the reference.
+        // A listed key must name a texture; whether its file still decodes does not block the save.
         for(const auto& key:asset.textures)
-            if(!key.empty() && std::ranges::find(entries_,key,&ProjectEntry::key)!=entries_.end()) static_cast<void>(take(texture(key)));
+            if(!key.empty() && std::ranges::find(entries_,key,&ProjectEntry::key)!=entries_.end()) static_cast<void>(entry(*this,key,AssetKind::texture));
         take(write_file(take(resolve(item.path)),material_format::encode(asset).dump(2)+"\n"));
         return {}; // The caller records the successful save before refreshing the catalog.
     } catch(const std::exception& error) {return failure(error);}

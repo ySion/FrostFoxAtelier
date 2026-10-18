@@ -611,7 +611,7 @@ struct Session::GraphCodec {
         std::unordered_map<ObjectId,std::wstring> labels;
         std::unordered_set<std::string> material_keys,texture_keys;
         std::unordered_map<ObjectId,std::uint64_t> identities_before;
-        std::unordered_map<std::string,MissingResource> unavailable_before;
+        UnavailableResources unavailable_before;
         std::uint64_t next_before{};
         bool published{};
         explicit Prepared(Session& owner):session(&owner),identities_before(owner.local_ids_),unavailable_before(owner.unavailable_),next_before(owner.next_local_id_) {
@@ -1224,7 +1224,7 @@ struct Session::GraphCodec {
                         if(!source.empty()) {
                             if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
                             else {
-                                const auto& item=session.remember_unavailable(*project,source,loaded.error());const Json value=source;
+                                const auto& item=session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());const Json value=source;
                                 load.report(world::Severity::warning,item.kind,object,{"mesh"},&value,item.reason+
                                     " The component draws nothing; the reference and its material bindings are saved unchanged.");
                             }
@@ -1302,7 +1302,7 @@ struct Session::GraphCodec {
                     if(settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh) {
                         const auto mesh=take(world::read_static_mesh(runtime,object));
                         if(!mesh.mesh.resolved && !mesh.mesh.source.empty()) {
-                            const auto* item=session.unavailable(mesh.mesh.source);
+                            const auto* item=session.unavailable(AssetKind::mesh,mesh.mesh.source);
                             load.report(world::Severity::warning,item?item->kind:world::DiagnosticKind::missing_resource,object,{"properties","body","shape"},nullptr,
                                 "Triangle collision has no mesh to cook; Play cannot create this body until the mesh is restored.");
                         } else if(mesh.mesh.source.starts_with("project/")) result.triangle_meshes.push_back(object);
@@ -1651,7 +1651,7 @@ struct Session::GraphCodec {
                         state.description.textures[i].image=take(material::read_texture(runtime,state.textures[i].id())).image;
                     }
                     take(material::update_material(runtime,at->second.root.id(),state));
-                    session.unavailable_.erase(key);
+                    session.unavailable_.erase(std::pair{AssetKind::material,std::string(key)});
                 } else take(session.material_resource(project,asset));
             } else throw std::runtime_error("Unknown change: "+kind);
             for(const auto key:load.dropped) note(world::Severity::warning,world::DiagnosticKind::reference_dropped,
@@ -1877,7 +1877,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         if(!document && !material) schema=business_fields(world_.runtime(),types_,take(runtime_.type_of(object)));
         const MissingResource* mesh_unavailable{};
         if(!document && !material) if(const auto mesh=world::read_static_mesh(world_.runtime(),object); mesh && !mesh->mesh.resolved)
-            mesh_unavailable=unavailable(mesh->mesh.source);
+            mesh_unavailable=unavailable(AssetKind::mesh,mesh->mesh.source);
         // Descends into records the current schema still declares; anything else is one entry.
         const auto classify=[&](std::span<const std::string> path)->std::pair<bool,world::DiagnosticKind> {
             using enum world::DiagnosticKind;

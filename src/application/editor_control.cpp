@@ -463,7 +463,7 @@ struct EditorControl::Impl {
                 const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
                 result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
                     {"parent",parent},{"parameter_mask",state.overrides},{"assignment_override",binding.overridden},
-                    {"missing",app.document_->unavailable(parent.empty()?state.source:parent)!=nullptr}});
+                    {"missing",app.document_->unavailable(editor::AssetKind::material,parent.empty()?state.source:parent)!=nullptr}});
             }
         }
         return result;
@@ -641,10 +641,10 @@ struct EditorControl::Impl {
             const auto state=take(material::read_material(runtime,target));
             const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
             auto result=object_json(target);result["asset"]=state.source;result["parent"]=parent;
-            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(parent.empty()?state.source:parent)!=nullptr;
+            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(editor::AssetKind::material,parent.empty()?state.source:parent)!=nullptr;
             auto& textures=result["missing_textures"]=Json::array();
             for(const auto& texture:state.textures) if(texture.registered())
-                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(source)) textures.push_back(std::move(source));
+                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(editor::AssetKind::texture,source)) textures.push_back(std::move(source));
             result["dirty"]=state.source.empty()?doc.dirty():doc.material_dirty(state.source);return result;
         }
         if(op=="job.status" || op=="job.cancel") {

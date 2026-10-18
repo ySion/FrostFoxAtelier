@@ -7,7 +7,6 @@
 #include <unordered_map>
 
 namespace atelier::editor {
-enum class AssetKind { folder, mesh, scene, source, file, texture, material };
 struct TextureAsset {std::string key;std::wstring name;material::ImageRef image;};
 struct MaterialAsset {
     std::string key;

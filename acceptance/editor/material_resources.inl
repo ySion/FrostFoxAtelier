@@ -280,13 +280,13 @@ void verify_missing_resources() {
     const auto shared_state=take(material::read_material(kept_runtime,shared.id()));
     const auto missing_texture=take(material::read_texture(kept_runtime,shared_state.textures[0].id()));
     require(shared_state.source==stone && shared_state.description.parameters.roughness==.4f && missing_texture.source==texture &&
-        !missing_texture.image && kept->unavailable(texture) && !kept->unavailable(stone),
+        !missing_texture.image && kept->unavailable(editor::AssetKind::texture,texture) && !kept->unavailable(editor::AssetKind::material,stone),
         "A missing texture replaced its material or lost the material's other parameters.");
     const auto instance=take(world::read_material_bindings(kept_runtime,part(1))).front().resource;
     const auto instance_state=take(material::read_material(kept_runtime,instance.id()));
     const auto stand_in=instance_state.parent;
     require(take(material::capture(kept_runtime,instance.id()))->description().parameters.roughness==.8f &&
-        take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(brick),
+        take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(editor::AssetKind::material,brick),
         "A missing parent material lost its instance's overrides or reference.");
     const auto mesh=take(world::read_static_mesh(kept_runtime,part(2))).mesh;
     const auto retained=take(kept->retained(part(2)));
@@ -326,6 +326,28 @@ void verify_missing_resources() {
         take(world::read_material_bindings(restored->world().runtime(),restored_part(2))).size()==1 &&
         take(physics::read_settings(restored->world().runtime(),restored_part(2))).cooked_shape,
         "Restored resources did not resolve through the preserved references or rebuild the missing Cook cache.");
+    {
+        const auto stone_file=root/std::ranges::find(repaired.entries(),stone,&editor::ProjectEntry::key)->path;
+        const auto stone_text=take(editor::read_file(stone_file));
+        // A scene that names a material as a mesh leaves only that mesh unavailable.
+        auto misnamed_scene=nlohmann::json::parse(saved);misnamed_scene["entities"][1]["components"][0]["mesh"]=stone;
+        auto misnamed=take(editor::Session::deserialize(misnamed_scene.dump(),repaired));
+        require(misnamed->unavailable(editor::AssetKind::mesh,stone) && !misnamed->unavailable(editor::AssetKind::material,stone) &&
+            misnamed->open_material(repaired,stone) && misnamed->save_material(repaired,stone),
+            "A material key named as a mesh made the healthy material unavailable.");
+        // An undecodable texture file does not block saving a material that references it.
+        const auto texture_file=root/std::ranges::find(repaired.entries(),texture,&editor::ProjectEntry::key)->path;
+        const auto image=take(editor::read_file(texture_file));take(editor::write_file(texture_file,"not an image"));
+        auto undecodable=take(editor::Project::open(root));
+        auto opened=take(editor::Session::deserialize(saved,undecodable));
+        const auto opened_stone=take(opened->open_material(undecodable,stone));
+        const auto opened_properties=take(opened->properties(opened_stone.id()));
+        take(opened->set_property(opened_stone.id(),
+            std::ranges::find(opened_properties,std::string("parameters.roughness"),&editor::Property::name)->path,Scalar{.6f},205));
+        require(opened->unavailable(editor::AssetKind::texture,texture) && opened->save_material(undecodable,stone),
+            "An undecodable texture blocked saving a material that references it.");
+        take(editor::write_file(texture_file,image));take(editor::write_file(stone_file,stone_text));
+    }
     const auto moss_file=root/std::ranges::find(repaired.entries(),moss,&editor::ProjectEntry::key)->path;
     take(editor::write_file(moss_file,"{"));
     require(!editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict),"Strict loading accepted an unreadable material.");

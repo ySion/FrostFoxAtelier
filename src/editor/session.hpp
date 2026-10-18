@@ -4,6 +4,7 @@
 #include "world/diagnostic.hpp"
 #include "editor/assets.hpp"
 #include "physics/physics.hpp"
+#include <map>
 #include <unordered_map>
 
 namespace atelier::editor {
@@ -40,6 +41,13 @@ struct MissingResource {
     std::optional<std::size_t> input;
     world::DiagnosticKind kind{world::DiagnosticKind::missing_resource};
 };
+// A key names one resource of each kind: a scene that names a material as a mesh
+// leaves only the mesh unavailable.
+struct ResourceLess {
+    using is_transparent = void;
+    bool operator()(std::pair<AssetKind, std::string_view> a, std::pair<AssetKind, std::string_view> b) const noexcept { return a < b; }
+};
+using UnavailableResources = std::map<std::pair<AssetKind, std::string>, MissingResource, ResourceLess>;
 
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
@@ -118,7 +126,7 @@ public:
     // unavailable textures stand in so the material can be repaired.
     Result<ObjectRoot> open_material(Project&,std::string_view key);
     // The unavailable Mesh, Material or Texture a stand-in in this document replaces.
-    const MissingResource* unavailable(std::string_view key) const;
+    const MissingResource* unavailable(AssetKind,std::string_view key) const;
     Result<MaterialAsset> material_asset(ObjectId) const;
     Result<std::vector<MaterialAsset>> material_assets() const;
     std::vector<ObjectId> material_objects() const;
@@ -284,8 +292,8 @@ private:
     struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};
     std::unordered_map<std::string,MaterialDocument> materials_;
     std::unordered_map<std::string,ObjectRoot> textures_;
-    std::unordered_map<std::string,MissingResource> unavailable_; // By resource key.
-    const MissingResource& remember_unavailable(const Project&,std::string_view key,const Error&);
+    UnavailableResources unavailable_;
+    const MissingResource& remember_unavailable(const Project&,AssetKind,std::string_view key,const Error&);
     struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};std::vector<world::FieldPath> paths;ObjectId entity,component;};
     std::optional<MaterialEdit> material_edit_;
     Result<ObjectRoot> texture_resource(Project&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);
