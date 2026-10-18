@@ -267,7 +267,7 @@ void verify_value_operations() {
     require(ValueResource::live == 0 && runtime.live_objects() == 0, "Value operations leaked values or created object identities.");
     require(ValueResource::callbacks_blocked, "Value callbacks bypassed runtime lifecycle protection.");
     ValueResource::callback_runtime = nullptr;
-    // Values do not seal the object registration phase.
+    // Value operations leave registration usable.
     TypeDefinition after_values;
     after_values.name = "values.AfterValueOperations";
     take(runtime.register_type(std::move(after_values)));
@@ -404,7 +404,7 @@ void verify_runtime() {
         const auto types = register_types(runtime);
         reject(runtime.create(types.failing_machine), ErrorCode::construction_failed, "Constructor exception was not reported.");
         require(NativeState::live == 0 && runtime.live_objects() == 0, "Partial construction leaked an inline value.");
-        // Failed construction must not seal registration.
+        // Failed construction leaves registration usable.
         TypeDefinition after_failure;
         after_failure.name = "acceptance.AfterFailedConstruction";
         take(runtime.register_type(std::move(after_failure)));
@@ -427,8 +427,8 @@ void verify_runtime() {
         reject(runtime.call(described, raises, {}), ErrorCode::invocation_failed, "Native exception escaped the invocation boundary.");
         take(runtime.destroy(described));
         TypeDefinition late;
-        late.name = "acceptance.TooLate";
-        reject(runtime.register_type(std::move(late)), ErrorCode::busy, "Registration remained open during execution.");
+        late.name = "acceptance.AfterExecution";
+        take(runtime.register_type(std::move(late)));
         std::cout << "[pass] Receiver checks, callback lifetime protection and native error reporting\n";
 
         Runtime other;
@@ -590,13 +590,12 @@ void verify_signature_publication() {
 
     auto object = take(runtime.create(ids[0]));
     require(take(runtime.resolve_signature(staged)) == published,
-        "Read-only signature resolution stopped after object creation sealed registration.");
-    reject(runtime.register_type({"signature.TooLate", TypeKind::object, {}, {}, {}}), ErrorCode::busy,
-        "Read-only signature resolution reopened registration.");
+        "Read-only signature resolution stopped after object creation.");
+    take(runtime.register_type({"signature.AfterObjects", TypeKind::object, {}, {}, {}}));
     Scalar output{0.0f};
     take(runtime.call(object.id(), take(runtime.find_method(ids[0], "read")), {}, &output));
     require(output == Scalar{std::uint32_t{41}}, "Published staged result method was not executable.");
-    std::cout << "[pass] Shared signatures own resolved metadata, infer receivers and preserve atomic sealed registration\n";
+    std::cout << "[pass] Shared signatures own resolved metadata, infer receivers and preserve atomic registration\n";
 }
 
 Result<void> read_signature_value(CallContext& call) {
@@ -827,8 +826,7 @@ void verify_forward_publication() {
     require(std::get<float>(take(runtime.read(owner, path))) == 17.5f, "Forward native inline storage was not usable.");
     take(runtime.destroy(owner));
     require(NativeState::live == 0, "Grouped construction leaked a native inline value.");
-    reject(runtime.register_types({{"batch.TooLate", TypeKind::object, {}, {}, {}}}), ErrorCode::busy,
-        "Batch registration bypassed sealing.");
+    take(runtime.register_types({{"batch.AfterObjects", TypeKind::object, {}, {}, {}}}));
     std::cout << "[pass] Atomic batches resolve native and described forward layouts, fields and methods\n";
 }
 
@@ -1359,6 +1357,32 @@ void verify_collection_cycle() {
     require(finish_collection(runtime) == 2 && runtime.live_objects() == 0 && CollectionNode::live == 0,
         "Subsequent collection leaked sweep-time allocations.");
     std::cout << "[pass] Incremental collection preserves rooted mixed cycles and commits death before bounded sweeping\n";
+}
+
+void verify_late_registration() {
+    Runtime runtime;
+    const auto ids = register_collection_types(runtime);
+    auto target = take(runtime.create(ids[0]));
+    const auto* published = take(runtime.describe(ids[0]));
+    const auto first = runtime.type_count();
+    take(runtime.begin_collection());
+    const TypeDefinition holder_definition{"gc.Late", TypeKind::object,
+        {{"peer", {TypeReference{"gc.A"}, ValueForm::strong_reference}}}, {}, {}};
+    reject(runtime.register_type(holder_definition), ErrorCode::busy, "Type publication interleaved with a collection cycle.");
+    finish_collection(runtime);
+    const auto late = take(runtime.register_type(holder_definition));
+    require(runtime.type_count() == first + 1 && runtime.types(first) == std::vector{late} &&
+        take(runtime.describe(ids[0])) == published && take(runtime.find_type("gc.Late")) == late,
+        "Late publication moved published metadata or missed the incremental catalog.");
+    auto holder = take(runtime.create(late));
+    take(runtime.write_reference(holder.id(), take(runtime.find_field(late, "peer")), target.reference()));
+    target.reset();
+    take(runtime.begin_collection());
+    require(finish_collection(runtime) == 0 && runtime.live_objects() == 2, "A late type's reference did not keep its target alive.");
+    holder.reset();
+    take(runtime.begin_collection());
+    require(finish_collection(runtime) == 2 && runtime.live_objects() == 0, "Objects of a late type were not collected.");
+    std::cout << "[pass] Types publish at safe points after objects exist and join later collection cycles\n";
 }
 
 void verify_collection_mutations() {
@@ -2087,6 +2111,9 @@ void verify_native_member_address() {
 void verify_runtime_math_precision();
 void verify_runtime_inheritance();
 void verify_reference_sequences();
+void verify_field_ranges();
+void verify_type_validation();
+void verify_array_elements();
 
 int main() {
     try {
@@ -2101,6 +2128,7 @@ int main() {
         verify_publication_failures();
         verify_value_operations();
         verify_collection_cycle();
+        verify_late_registration();
         verify_collection_mutations();
         verify_collection_value_mutations();
         verify_collection_cursor_lifetimes();
@@ -2112,6 +2140,9 @@ int main() {
         verify_runtime_math_precision();
         verify_runtime_inheritance();
         verify_reference_sequences();
+        verify_field_ranges();
+        verify_type_validation();
+        verify_array_elements();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

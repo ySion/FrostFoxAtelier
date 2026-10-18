@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -386,6 +388,64 @@ void measure_gc_history(const Options& settings, std::size_t high_water) {
         "\"root_phase_work_units\":%zu,\"full_cycle_work_units\":%zu,\"validated\":true}\n", high_water, root_work, work);
 }
 
+constexpr std::string_view checked_source =
+    "int scale(int value, int divisor) { return value / divisor; }\n"
+    "uint mix(uint value, uint shift) { return (value << shift) % (shift + 1); }\n"
+    "int truncate(float value) { return int(value); }\n"
+    "int combine(int a, int b, uint s, float f) { int total = 0;\n"
+    "    for (int i = 0; i < 4; i = i + 1) { total = total + scale(a + i, b) + int(mix(uint(i), s)) + truncate(f); }\n"
+    "    return total; }\n";
+
+// Codegen evidence for failure-path changes: per-case assembly, optimized IR and
+// object size, plus the retained cost of a module dense in failure sites.
+void dump_artifacts(const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    const auto write = [&](const std::string& name, std::string_view text) {
+        std::ofstream file(directory / name, std::ios::binary);
+        file.write(text.data(), static_cast<std::streamsize>(text.size()));
+        require(static_cast<bool>(file), "Cannot write measurement artifact.");
+    };
+    const auto dump = [&](const char* name, Runtime& runtime, TypeId receiver, std::string_view text, std::string_view entry) {
+        Program program(runtime, receiver);
+        auto candidate = take(Program::prepare(take(program.request(name, text, entry, {.artifacts = true}))));
+        take(program.try_publish(candidate));
+        const auto artifacts = take(take(program.pin()).artifacts());
+        write(std::string(name) + ".s", artifacts.assembly);
+        write(std::string(name) + ".ll", artifacts.optimized_ir);
+        std::printf("{\"record\":\"artifact\",\"case\":\"%s\",\"object_code_bytes\":%zu,\"assembly_bytes\":%zu}\n",
+            name, artifacts.object_code.size(), artifacts.assembly.size());
+    };
+    { Runtime runtime; dump("uint_loop", runtime, {}, loop_source, {}); }
+    { Runtime runtime; dump("checked_helpers", runtime, {}, checked_source, "combine"); }
+    { Runtime runtime; dump("native_object_advance", runtime, counter_type(runtime, true),
+        "uint advance(uint delta) { self.value = self.value + delta; return self.value; }", {}); }
+    { Runtime runtime; dump("async_delayed", runtime, {}, "async uint delayed(uint value) { yield; return value + 1; }", {}); }
+
+    constexpr int functions = 256;
+    std::string dense;
+    for (int index = 0; index < functions; ++index)
+        dense += "int f" + std::to_string(index) + "(int a, int b, uint s, float x) { int q = a / b; "
+            "uint m = (uint(a) << s) % (s + 1); return q + int(m) + int(x); }\n";
+    dense += "int dense(int a) { int t = 0;";
+    for (int index = 0; index < functions; ++index) dense += " t = t + f" + std::to_string(index) + "(a, 3, 2, 1.5f);";
+    dense += " return t; }\n";
+    Runtime runtime;
+    Program program(runtime, {});
+    const auto before = resources();
+    const auto started = Clock::now();
+    auto candidate = take(Program::prepare(take(program.request("dense.source", dense, "dense"))));
+    take(program.try_publish(candidate));
+    const auto elapsed = nanoseconds(started);
+    candidate = {};
+    const auto after = resources();
+    std::printf("{\"record\":\"dense_module\",\"functions\":%d,\"prepare_publish_ns\":%.0f,"
+        "\"live_rounded_bytes_delta\":%lld,\"process_private_bytes_delta\":%lld}\n", functions, elapsed,
+        static_cast<long long>(after.live_bytes - before.live_bytes),
+        static_cast<long long>(after.private_bytes - before.private_bytes));
+    const std::array args{Scalar{std::int32_t{7}}};
+    require(take(program.entry().invoke({}, args)).has_value(), "Dense module preflight failed.");
+}
+
 void configuration(const Options& settings) {
     std::array<char, 49> cpu{};
     std::array<int, 4> registers{};
@@ -416,6 +476,11 @@ int main(int argc, char** argv) {
 #if !defined(NDEBUG)
         throw std::runtime_error("Run this measurement target in Release configuration.");
 #endif
+        if (argc == 3 && std::string_view(argv[1]) == "--artifacts") {
+            dump_artifacts(argv[2]);
+            std::puts("{\"record\":\"complete\",\"validated\":true}");
+            return 0;
+        }
         const auto settings = options(argc, argv);
         configuration(settings);
         verify_allocator();

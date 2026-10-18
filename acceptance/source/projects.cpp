@@ -59,12 +59,67 @@ void verify_declaration_only_project() {
     require(!rejected && rejected.error().code == ErrorCode::rebuild_required, "Changed signed-zero default was silently ignored.");
     input.files[0].path = "Data.source/";
     require(!Program::prepare(take(program.request(input))), "A directory-like source path was accepted.");
+    Program phases(runtime);
+    source::SourceSnapshot staged{"phases", 1, {{"Phases.source", 1,
+        "class game.Phases : world.Component { void post_physics_tick(float dt) {} void late_tick() {} }"}}};
+    rejected = Program::prepare(take(phases.request(staged)));
+    require(!rejected && rejected.error().code == ErrorCode::invalid_definition,
+        "A phase lifecycle method accepted a signature other than void(float).");
+    staged.files[0].source.replace(staged.files[0].source.find("late_tick()"), 11, "late_tick(float dt)");
+    publish(phases, staged);
+    require(phases.entries().size() == 2, "Phase lifecycle methods were not exported.");
 }
 
 struct CollectionProbe {
     Runtime* runtime{};
     bool collecting() const { return runtime->collection_phase() != CollectionPhase::idle; }
 };
+struct RangedBody {
+    float speed{1.0f};
+    float loose{};
+    math::Vector3 tint{0.5f, 0.5f, 0.5f};
+    void bump(float& value) { value += 1.0f; }
+};
+void verify_project_field_ranges() {
+    Runtime runtime;
+    const auto base = take(runtime.register_type(NativeRegistration<RangedBody>(runtime, "project.RangedBody", TypeKind::object)
+        .field<&RangedBody::speed>("speed").range({.ui_max = Scalar{5.0f}, .hard_min = Scalar{0.0f}, .hard_max = Scalar{10.0f}})
+        .field<&RangedBody::loose>("loose")
+        .field<&RangedBody::tint>("tint").range({.hard_min = Scalar{0.0f}, .hard_max = Scalar{1.0f}})
+        .method<&RangedBody::bump>("bump").build()));
+    Program program(runtime);
+    for (const auto* body : {"self.bump(self.speed);", "self.bump(self.tint.x);"}) {
+        source::SourceSnapshot input{"ranges", 1, {{"Ranges.source", 1,
+            std::string("class game.Ranged : project.RangedBody { void bad() { ") + body + " } }"}}};
+        auto failed = Program::prepare(take(program.request(input)));
+        require(!failed && failed.error().source && failed.error().message.find("Hard-bounded") != std::string::npos,
+            "A hard-bounded field or its component compiled as a writable reference argument.");
+    }
+    publish(program, {"ranges", 2, {{"Ranges.source", 2, R"(
+class game.Ranged : project.RangedBody {
+    void push() { self.speed = 50.0f; self.tint.x = -1.0f; self.bump(self.loose); }
+    void whole() { self.tint = vector3(2.0, 0.25, -3.0); }
+    void poison() { self.speed = 0.0f / 0.0f; }
+}
+)"}}});
+    auto object = take(runtime.create(program.classes()[0].type));
+    const auto id = object.id();
+    const std::array speed{take(runtime.find_field(base, "speed"))}, loose{take(runtime.find_field(base, "loose"))};
+    const auto tint = take(runtime.find_field(base, "tint"));
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
+    const std::array tint_path{tint};
+    const std::array tint_x{tint, take(runtime.find_field(vector3, "x"))};
+    take(take(program.entry("game.Ranged.push")).invoke(id, {}));
+    require(take(runtime.read(id, speed)) == Scalar{10.0f} && take(runtime.read(id, tint_x)) == Scalar{0.0f} &&
+        take(runtime.read(id, loose)) == Scalar{1.0f}, "Source field writes bypassed hard bounds or broke unconstrained borrows.");
+    take(take(program.entry("game.Ranged.whole")).invoke(id, {}));
+    math::Vector3 stored;
+    take(runtime.read(id, tint_path, ValueOutput{vector3, &stored}));
+    require(stored == math::Vector3{1.0f, 0.25f, 0.0f}, "A whole Source vector write bypassed per-component bounds.");
+    const auto poisoned = take(program.entry("game.Ranged.poison")).invoke(id, {});
+    require(!poisoned && poisoned.error().source && take(runtime.read(id, speed)) == Scalar{10.0f},
+        "A Source NaN write reached a hard-bounded field or lost its failure site.");
+}
 void verify_project_borrow_effects() {
     Runtime runtime;
     take(runtime.register_types({string_definition(runtime),
@@ -202,6 +257,33 @@ void verify_source_projects() {
     { auto execution = take(ExecutionScope::enter(runtime)); require(!program.try_publish(latest) && latest, "Busy publication consumed a candidate."); }
     take(program.try_publish(latest));
     require(!program.try_publish(latest) && !latest, "Repeated project publication was accepted.");
+    // Compatible growth while objects run: a struct, a global function, a class and a
+    // method publish together at a type safe point; published slots and types stay valid.
+    const auto catalog_size = runtime.type_count();
+    auto grown = sources(4);
+    grown.files[0].source += "\nstruct game.Pair { float a; float b; };\nfloat doubled(float v) { return v * 2.0f; }\n"
+        "float pair_sum(float a, float b) { game.Pair pair; pair.a = a; pair.b = b; return pair.a + pair.b; }\n";
+    grown.files[1].source.insert(grown.files[1].source.rfind('}'), "    float boosted() { return doubled(self.speed); }\n");
+    grown.files.push_back({"Source/Spin.source", 31,
+        "class game.Spin : world.Component {\n    float rate = 3.0f;\n    float spin() { return doubled(self.rate); }\n}\n"});
+    auto growth = take(Program::prepare(take(program.request(grown))));
+    take(runtime.begin_collection());
+    require(!program.try_publish(growth) && growth && !runtime.find_type("game.Spin"), "Type publication ignored an active collection.");
+    while (take(runtime.collect_step({64})).phase != CollectionPhase::idle) {}
+    take(program.try_publish(growth));
+    const auto spin = take(runtime.find_type("game.Spin"));
+    require(runtime.type_count() == catalog_size + 2 && take(runtime.describe(type)) == info && program.classes().size() == 2 &&
+        std::get<float>(*take(take(program.entry("game.Move.boosted")).invoke(instance.id(), {}))) == 8.f,
+        "Compatible growth replaced published metadata or missed a new method.");
+    auto spinner = take(w::create_component(runtime, spin));
+    const std::array pair_args{Scalar{1.5f}, Scalar{2.f}};
+    require(std::get<float>(*take(take(program.entry("game.Spin.spin")).invoke(spinner.id(), {}))) == 6.f &&
+        std::get<float>(*take(take(program.entry("pair_sum")).invoke({}, pair_args))) == 3.5f,
+        "A class, struct or function added after objects existed did not run.");
+    take(begin.invoke(instance.id(), {}));
+    require(std::get<std::uint32_t>(take(runtime.read(instance.id(), begins))) == 3, "Compatible growth moved a bound entry slot.");
+    failed = Program::prepare(take(program.request(sources(4))));
+    require(!failed && failed.error().code == ErrorCode::rebuild_required, "Removing published classes or exports did not require a rebuild.");
     take(end.invoke(instance.id(),{}));
     require(!std::get<bool>(take(runtime.read(instance.id(),take(runtime.find_field(type,"enabled"))))), "End did not use the real instance.");
     const auto stopped=take(world.stop());require(!stopped.notification_error,"Source lifecycle End failed.");
@@ -217,5 +299,6 @@ void verify_source_projects() {
     require(!old.invoke(instance.id(),args), "Lease accepted a destroyed receiver.");
     verify_declaration_only_project();
     verify_project_borrow_effects();
+    verify_project_field_ranges();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime)");
 }

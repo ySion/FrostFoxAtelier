@@ -36,6 +36,49 @@ void verify_rotated_viewport_transforms() {
     }
     std::puts("Rotated viewport G/R/S: PASS (real imported pose, preview, cancel, commit and undo)");
 }
+void verify_mirrored_viewport_transforms() {
+    using namespace editor;
+    Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto entity=document.selection().entity;
+    const auto pose=[&]{return take(world::read_transform(document.world().runtime(),entity));};
+    // One mirrored axis: an unbiased decomposition reports (-1,1,1) plus a half turn instead.
+    const world::Trs mirrored{{1,2,3},from_euler_degrees({0,30,0}),{1,-1,1}};
+    take(document.set_transform(entity,mirrored));
+    Camera camera;const auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);
+    ViewportTool tool;ViewportTool::Settings settings{TransformTool::transform,PivotMode::median};
+    const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
+        return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,{500,350});
+    };
+    const auto text=[&](std::wstring value) {
+        ui::Event event;event.kind=ui::EventKind::text;event.data=std::move(value);
+        return tool.key(document,view,event,0,settings,{500,350});
+    };
+    const auto nearly=[](math::Vector3 a,math::Vector3 b){return math::length(a-b)<1e-4f;};
+    const auto same_turn=[](math::Quaternion a,math::Quaternion b){return std::abs(std::abs(a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w)-1)<1e-5f;};
+    const auto gesture=[&](std::uint32_t mode,std::uint32_t axis,const wchar_t* amount) {
+        take(key(mode));if(axis) take(key(axis));take(text(amount));take(key(13,ui::Key::enter));
+    };
+    const auto history=document.undo_count();
+    gesture('G','X',L"2");
+    require(nearly(pose().position,{3,2,3}) && nearly(pose().scale,{1,-1,1}) && same_turn(pose().rotation,mirrored.rotation),
+        "Moving a mirrored Entity changed its mirror axis or rotation.");
+    gesture('R','Z',L"90");
+    const auto turned=pose();
+    require(nearly(turned.scale,{1,-1,1}) && !same_turn(turned.rotation,mirrored.rotation),"Rotating a mirrored Entity moved its mirror to another axis.");
+    gesture('S',0,L"2");
+    require(nearly(pose().scale,{2,-2,2}) && same_turn(pose().rotation,turned.rotation),"Scaling a mirrored Entity lost its own mirror axis.");
+    gesture('S',0,L"-0.5");
+    require(nearly(pose().scale,{-1,1,-1}) && same_turn(pose().rotation,turned.rotation),"A scale gesture did not cross zero into a mirror.");
+    take(key('S'));take(text(L"0"));
+    require(document.editing() && pose().scale==math::Vector3{},"A zero scale preview was refused.");
+    take(key(27,ui::Key::escape));
+    require(nearly(pose().scale,{-1,1,-1}) && document.undo_count()==history+4,"Cancelling a zero scale preview did not restore the mirror.");
+    const auto field=document.types().scale_fields[0];
+    take(document.begin_edit(entity,field,77));
+    require(!document.preview_edit(77,10001.f) && !document.preview_edit(77,-10001.f),"Scale field accepted a magnitude above the editor bound.");
+    take(document.preview_edit(77,0.f));take(document.preview_edit(77,-3.f));take(document.commit_edit(77));
+    require(pose().scale.x==-3 && document.undo_count()==history+5,"Scale field did not commit a negative value.");
+    std::puts("Mirrored viewport G/R/S: PASS (single-axis mirror kept, scale crosses zero, zero preview, signed scale field)");
+}
 void verify_viewport_local_constraints() {
     using namespace editor;
     Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto entity=document.selection().entity;
@@ -229,6 +272,7 @@ void verify_viewport_duplication() {
 }
 void verify_viewport_editing() {
     verify_rotated_viewport_transforms();
+    verify_mirrored_viewport_transforms();
     verify_viewport_local_constraints();
     verify_viewport_gesture_input();
     verify_viewport_duplication();
@@ -385,8 +429,11 @@ void verify_viewport_editing() {
     require(document.revision()==runtime_revision && overlay_scene.revision==snapshot_revision &&
         overlay_scene.meshes[moved].world[12]==runtime_position.x+7,
         "Scene extraction cached a direct Runtime transform behind Session revision.");
-    write_position({std::numeric_limits<float>::infinity(),0,0});
-    require(!overlay_scene.refresh(document),"Scene extraction accepted a non-finite Runtime transform.");
+    // The World isolates the invalid Entity: the rest of the scene still extracts.
+    write_position({std::numeric_limits<float>::infinity(),0,0});take(overlay_scene.refresh(document));
+    require(std::ranges::find(overlay_scene.mesh_entities,first)==overlay_scene.mesh_entities.end() &&
+        std::ranges::find(overlay_scene.mesh_entities,second)!=overlay_scene.mesh_entities.end(),
+        "Scene extraction kept a non-finite Runtime transform or dropped valid Entities.");
     write_position(runtime_position);take(overlay_scene.refresh(document));
     require(overlay_scene.meshes[moved].world[12]==runtime_position.x && document.revision()==runtime_revision,
         "Scene extraction retained a failed traversal or changed author history.");

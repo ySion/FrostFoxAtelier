@@ -27,17 +27,36 @@ Result<Types> register_types(Runtime& runtime) {
         return detail::queue_translation(call.runtime,call.self,
             {call.arguments[0].get<float>(),call.arguments[1].get<float>(),call.arguments[2].get<float>()});
     },true});
+    // Requests only enqueue; the World applies them when the current phase ends.
+    SignatureDefinition toggle;
+    toggle.parameters.push_back(ParameterDefinition{{TypeReference::native<bool>()}});
+    const auto requests=[&](TypeDefinition& definition,Invoker destroy,Invoker enable) {
+        definition.methods.push_back({"destroy",{},destroy,true});
+        definition.methods.push_back({"set_enabled",toggle,enable,true});
+    };
+    requests(definitions[0],[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::destroy_entity,false);
+    },[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::entity_enabled,call.arguments[0].get<bool>());
+    });
+    requests(definitions[1],[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::destroy_component,false);
+    },[](CallContext& call)->Result<void> {
+        return detail::queue_request(call.runtime,call.self,RequestKind::component_enabled,call.arguments[0].get<bool>());
+    });
     definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
     definitions.push_back(reflection::Definition<LightKind>::build(runtime));
     definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
+    definitions.back().validate = [](const void* value) { return detail::light_rules(*static_cast<const LightSettings*>(value)); };
     definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
     definitions.push_back(reflection::Definition<ShapeKind>::build(runtime));
     definitions.push_back(reflection::Definition<MotionKind>::build(runtime));
     definitions.push_back(reflection::Definition<Response>::build(runtime));
     definitions.push_back(reflection::Definition<PhysicsMaterial>::build(runtime));
     definitions.push_back(reflection::Definition<BodySettings>::build(runtime));
+    definitions.back().validate = [](const void* value) { return detail::body_rules(*static_cast<const BodySettings*>(value)); };
     definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
     definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
     if (!runtime.find_type("core.String")) definitions.push_back(string_definition(runtime));
@@ -79,34 +98,31 @@ Result<void> BodySettings::set_response(std::uint32_t channel, Response value) {
     overlap_categories=(overlap_categories&~bit)|(value==Response::overlap?bit:0);
     return {};
 }
-Result<void> validate_body_settings(const BodySettings& value) {
+// Single-field bounds are AFIELD hard bounds, checked before this runs.
+Result<void> detail::body_rules(const BodySettings& value) {
     if (value.shape!=ShapeKind::box && value.shape!=ShapeKind::sphere && value.shape!=ShapeKind::triangle_mesh && value.shape!=ShapeKind::capsule)
         return error(ErrorCode::argument_mismatch,"Unknown collision shape.");
     if (value.motion!=MotionKind::stationary && value.motion!=MotionKind::kinematic && value.motion!=MotionKind::dynamic)
         return error(ErrorCode::argument_mismatch,"Unknown body motion type.");
-    if (!math::is_finite(value.half_extents) || value.half_extents.x<=0 || value.half_extents.y<=0 || value.half_extents.z<=0 ||
-        !std::isfinite(value.radius) || value.radius<=0 || !std::isfinite(value.capsule_half_height) || value.capsule_half_height<=0)
-        return error(ErrorCode::argument_mismatch,"Collision dimensions must be finite and positive.");
-    if (value.category>=16 || (value.ignore_categories|value.overlap_categories)>0xffff ||
-        (value.ignore_categories&value.overlap_categories)!=0 || !std::isfinite(value.material.friction) || value.material.friction<0 ||
-        !std::isfinite(value.material.restitution) || value.material.restitution<0 || value.material.restitution>1)
-        return error(ErrorCode::argument_mismatch,"Invalid collision category, response masks or physical material.");
+    if (value.half_extents.x==0 || value.half_extents.y==0 || value.half_extents.z==0 || value.radius==0 || value.capsule_half_height==0)
+        return error(ErrorCode::argument_mismatch,"Collision dimensions must be positive.");
+    if ((value.ignore_categories&value.overlap_categories)!=0)
+        return error(ErrorCode::argument_mismatch,"A collision category cannot be both ignored and overlapping.");
     if (value.shape==ShapeKind::triangle_mesh && value.motion!=MotionKind::stationary)
         return error(ErrorCode::argument_mismatch,"Triangle mesh collision requires a stationary body.");
-    if (value.cooked_shape && value.shape!=ShapeKind::triangle_mesh)
-        return error(ErrorCode::argument_mismatch,"Cooked collision requires a triangle mesh body.");
     return {};
 }
+Result<void> validate_body_settings(Runtime& runtime, const BodySettings& value) { return detail::check_value(runtime, value); }
 
 namespace detail {
 Result<EntityData> entity_data(Runtime& runtime, ObjectId object) {
     return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<EntityData> {
-        return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity), Access::begun(entity)};
+        return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity)};
     });
 }
 Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
     return runtime.with_native<Component>(object, [](Component& component) -> Result<ComponentData> {
-        return ComponentData{Access::owner(component).id(), Access::enabled(component), Access::begun(component)};
+        return ComponentData{Access::owner(component).id(), Access::enabled(component)};
     });
 }
 Result<bool> is(Runtime& runtime, ObjectId object, TypeId expected) {
@@ -147,7 +163,7 @@ Result<ObjectRoot> create_static_mesh_entity(World& world, const StaticMeshEntit
     if (auto ready = Access::state(world).admit(); !ready) return std::unexpected(ready.error());
     auto transform = canonical_transform(description.transform);
     if (!transform) return std::unexpected(transform.error());
-    if (auto valid = validate_material(description.material); !valid) return std::unexpected(valid.error());
+    if (auto valid = validate_material(world.runtime(), description.material); !valid) return std::unexpected(valid.error());
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;
@@ -206,11 +222,11 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
     if (data->world) {
         const auto& state = Access::state(*data->world);
         if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
-        status.state = state.running && data->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
+        const auto* member = state.state_of(object);
+        if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
+        status.state = state.running && member->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
         status.can_edit = !state.running && !state.dispatch_depth;
-        const auto member = state.positions.find(object);
-        if (member == state.positions.end()) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
-        status.can_present = member->second.presentations != 0;
+        status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != 0; });
     }
     return status;
 }
@@ -233,10 +249,12 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
             const auto& state = Access::state(*entity->world);
             if (auto ready = state.admit(false); !ready) return std::unexpected(ready.error());
             // Components without a game updater still have activation eligibility.
-            auto eligible = effective_enabled(runtime, data->owner);
-            if (!eligible) return std::unexpected(eligible.error());
-            status.active = state.running && data->begun && *eligible && data->enabled;
-            status.can_present = std::ranges::find(state.presentation, object) != state.presentation.end();
+            const auto* member = state.state_of(data->owner);
+            if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
+            const auto item = std::ranges::find(member->components, object, &detail::Access::State::ComponentState::id);
+            if (item == member->components.end()) return std::unexpected(state.inconsistent("World component index is inconsistent."));
+            status.active = state.running && item->begun && member->eligible && data->enabled;
+            status.can_present = item->presentation != 0;
         }
     }
     return status;
@@ -299,7 +317,6 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         if (world) {
             auto& state = Access::state(*world);
             if (auto ready = state.admit(); !ready) return ready;
-            state.prepare_activity();
         }
     }
     auto changed = runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<void> {
@@ -323,7 +340,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         Access::geometry(component) = std::move(binding.resolved); return {};
     });
     if (!changed) return changed;
-    return world ? Access::state(*world).refresh() : Result<void>{};
+    return world ? world->reevaluate_presentation(object) : Result<void>{};
 }
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());

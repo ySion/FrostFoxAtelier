@@ -131,7 +131,7 @@ void verify_source_types() {
     const auto host_type = take(runtime.register_type(std::move(host)));
     Program consumer(runtime, host_type);
     publish(consumer, "uint inspect(const combat.DamageInfo& value) { return self.amount(value); }");
-    const auto object = take(runtime.create(host_type)); // seals further type registration
+    const auto object = take(runtime.create(host_type));
     require(number(take(consumer.entry().invoke(object.id(), readonly))) == 7,
         "Native consumer could not borrow the published source record.");
     Program enum_consumer(runtime, {});
@@ -152,10 +152,17 @@ void verify_source_types() {
         number(take(program.entry().invoke({}, arguments))) == 107, "Compatible code update replaced source type identity or storage.");
     reset();
     require(number(take(old.invoke({}, arguments))) == 13, "Old module lease lost its source type metadata or helper code.");
-    const auto changed = std::string(schema) + "struct Extra { uint value; }; uint process(combat.DamageInfo& damage) { return 0; }";
-    require(!Program::prepare(take(program.request("changed.source", changed))) && !runtime.find_type("Extra"),
-        "Compatible update changed the frozen source declaration set.");
-    auto changed_layout = std::string(schema);
+    // Objects exist; a code update still appends new declarations beside the frozen ones.
+    constexpr std::string_view extra = "struct combat.Extra { combat.Point origin; uint value; };";
+    reset();
+    publish(program, std::string(schema) + std::string(extra) +
+        "uint process(combat.DamageInfo& damage) { combat.Extra added; added.value = 5; return damage.amount + added.value; }");
+    const auto* extra_info = take(runtime.describe(take(runtime.find_type("combat.Extra"))));
+    require(take(runtime.describe(damage)) == damage_info && field(*extra_info, "origin").value.type == point &&
+        number(take(program.entry().invoke({}, arguments))) == 8, "Compatible update did not append a source type beside frozen ones.");
+    require(!Program::prepare(take(program.request("removed.source", std::string(schema) +
+        "uint process(combat.DamageInfo& damage) { return 0; }"))), "A published source type was removed during code-only publication.");
+    auto changed_layout = std::string(schema) + std::string(extra);
     changed_layout.replace(changed_layout.find("uint amount;"), 12, "float amount;");
     require(!Program::prepare(take(program.request("layout.source", changed_layout +
         "uint process(combat.DamageInfo& damage) { return 0; }"))), "Source layout changed during code-only publication.");

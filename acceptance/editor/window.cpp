@@ -3,6 +3,7 @@
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"
 #include "renderer/raster_viewport.hpp"
+#include "renderer/timing.hpp"
 #include "ui/text.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -22,6 +23,7 @@ namespace atelier::application {
 struct EditorAcceptanceAccess {
     static void input(Application& app,ui::Event event,WPARAM key=0) {app.input(event,key);}
     static bool menu_open(const Application& app) {return app.workspace_.menu.has_value();}
+    static const std::vector<ui::MenuItem>& menu_items(const Application& app) {return app.workspace_.menu_items;}
     static std::string menu_input_diagnostic(const Application& app) {
         const auto pointer=app.pointer_position_;
         return "pointer=("+std::to_string(pointer.x)+","+std::to_string(pointer.y)+"), ready="+std::to_string(app.pointer_ready())+
@@ -134,7 +136,10 @@ struct EditorAcceptanceAccess {
     static Result<void> fps_setting(Application& app,bool enabled) {
         return app.action({ui::ActionKind::activate,editor::control::command_key(editor::Command::show_fps),enabled});
     }
-    static void scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {app.workspace_.view.lit=settings;}
+    static Result<void> scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {
+        auto view=app.workspace_.view;view.lit=settings;
+        return app.workspace_.set_view_settings(*app.document_,view,app.lighting_focus());
+    }
     static const auto& scene_snapshot(const Application& app) {return app.scene_;}
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}
@@ -261,6 +266,26 @@ struct KeyStateScope {
     }
     ~KeyStateScope() { SetKeyboardState(original); }
 };
+// Unattended runs cannot wait for a person: any top-level dialog outside an expected scope ends the run.
+int expected_native_dialogs{};
+struct ExpectedNativeDialogs {
+    ExpectedNativeDialogs() { ++expected_native_dialogs; }
+    ~ExpectedNativeDialogs() { --expected_native_dialogs; }
+};
+LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) {
+    if (code == HCBT_CREATEWND && !expected_native_dialogs) {
+        const auto& created = *reinterpret_cast<const CBT_CREATEWNDW*>(parameter)->lpcs;
+        const bool dialog = IS_INTRESOURCE(created.lpszClass) ? reinterpret_cast<ULONG_PTR>(created.lpszClass) == 0x8002
+                                                              : std::wstring_view(created.lpszClass) == L"#32770";
+        if (dialog && !(created.style & WS_CHILD)) {
+            const std::wstring_view title = created.lpszName && !IS_INTRESOURCE(created.lpszName) ? created.lpszName : L"";
+            std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", atelier::editor::utf8(title).c_str());
+            std::fflush(stderr);
+            TerminateProcess(GetCurrentProcess(), 1);
+        }
+    }
+    return CallNextHookEx(nullptr, code, window, parameter);
+}
 void require_input_focus(Application& app) {
     require(GetFocus() == app.window() && GetForegroundWindow() == app.window(),
         "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
@@ -363,7 +388,13 @@ void click(Application& app, ControlKey key) {
         namespace browser=atelier::editor::browser_control;
         if (key==browser::open || key==browser::add) click(app,browser::actions);
         else if (key==browser::list || key==browser::details || key==browser::tiles) click(app,browser::view_menu);
-        else if (const auto menu=control::command_menu(key)) click(app,menu);
+        else if (const auto menu=control::command_menu(key)) {
+            click(app,menu);
+            // Some commands sit one submenu below their menubar group, e.g. View > Camera View.
+            if (app.menu_frame() && !app.menu_frame()->find(key))
+                for (const auto& item:atelier::application::EditorAcceptanceAccess::menu_items(app))
+                    if (std::ranges::find(item.children,key,&atelier::ui::MenuItem::key)!=item.children.end()) {click(app,item.key);break;}
+        }
     }
     // Docked views can be shorter than their content. Reach the target through
     // actual wheel messages, using the same accepted clip as a user would see.
@@ -527,7 +558,10 @@ void require_gray_pixel(const atelier::renderer::Capture& pixels,int x,int y,int
     require(x>=0 && y>=0 && x<static_cast<int>(pixels.extent.width) && y<static_cast<int>(pixels.extent.height),"Chrome probe left the surface.");
     const auto offset=(static_cast<std::size_t>(y)*pixels.extent.width+static_cast<std::size_t>(x))*4;
     for (std::size_t channel=0;channel<3;++channel)
-        require(std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)<=1,"Chrome pixel did not match the reference sRGB value.");
+        if (std::abs(static_cast<int>(pixels.rgba[offset+channel])-gray)>1)
+            throw std::runtime_error("Chrome pixel ("+std::to_string(x)+", "+std::to_string(y)+") is "+
+                std::to_string(pixels.rgba[offset])+"/"+std::to_string(pixels.rgba[offset+1])+"/"+std::to_string(pixels.rgba[offset+2])+
+                ", expected sRGB gray "+std::to_string(gray)+".");
 }
 void verify_chrome_pixels(Application& app,const std::filesystem::path& output) {
     atelier::renderer::Capture pixels;
@@ -557,9 +591,12 @@ void verify_chrome_pixels(Application& app,const std::filesystem::path& output) 
         "Parameter Filter must remain between the object header and flat properties, outside scrolling content.");
     require(std::abs(selected.x-tab_bar.x)<.1f && std::abs(fold.x-list.x)<.1f,
         "Shelf tabs or parameter fold header added an independent left inset.");
-    pixel(static_cast<int>(std::round(unselected.x))+5*stroke,static_cast<int>(std::round(unselected.y))+2*stroke,46);
+    // Unselected section tabs draw a vertical #555555 to #303030 gradient across their bounds.
+    const auto face_y=static_cast<int>(std::round(unselected.y))+2*stroke;
+    const auto face_t=(static_cast<float>(face_y)+.5f-unselected.y)/unselected.height;
+    pixel(static_cast<int>(std::round(unselected.x))+5*stroke,face_y,static_cast<int>(std::round(0x55+(0x30-0x55)*face_t)));
     require(tab_bar.x+tab_bar.width>unselected.x+unselected.width+6*stroke,"Tab-bar color probe has no uncovered strip.");
-    pixel(static_cast<int>(std::round(tab_bar.x+tab_bar.width))-3*stroke,static_cast<int>(std::round(tab_bar.y))+2*stroke,46);
+    pixel(static_cast<int>(std::round(tab_bar.x+tab_bar.width))-3*stroke,static_cast<int>(std::round(tab_bar.y))+2*stroke,0x3a);
     const auto footer=app.presented()->find(100)->bounds;
     pixel(static_cast<int>(std::round(footer.x+footer.width))-4*stroke,
         static_cast<int>(std::round(footer.y+footer.height))-3*stroke,25);
@@ -1018,6 +1055,11 @@ RECT await_acceptance_activation(Application& app,const std::filesystem::path& o
 #include "viewport.inl"
 #include "viewport_edit_window.inl"
 #include "scene_lit_window.inl"
+}
+
+void guard_acceptance_native_dialogs() {
+    if (!SetWindowsHookExW(WH_CBT, native_dialog_guard, nullptr, GetCurrentThreadId()))
+        throw std::runtime_error("Cannot install the acceptance native dialog guard.");
 }
 
 int verify_editor_scene_lit(Application& app,const char* output_directory,const wchar_t* source_project) {

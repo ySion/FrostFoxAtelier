@@ -4,6 +4,9 @@
 #include <optional>
 
 namespace atelier::physics::detail {
+// Reports a physics failure of one object to the World log. True when the
+// World's policy isolates it; false means the physics update must fail.
+bool contain(world::World&, const Error&, ObjectId object, ObjectId entity);
 // Orchestrates component ownership through the same public backend API used by
 // native clients. It never owns another Jolt world or another object registry.
 class ComponentSimulation final {

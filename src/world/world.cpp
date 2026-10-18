@@ -1,13 +1,102 @@
 #include "world/detail.hpp"
 #include "foundation/set.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <format>
+#include <queue>
 #include <stdexcept>
 #include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
 using detail::error;
+
+bool isolatable(const Error& failure) noexcept {
+    switch (failure.code) {
+    case ErrorCode::busy: case ErrorCode::rebuild_required: case ErrorCode::execution_aborted: case ErrorCode::capacity_exceeded:
+        return false;
+    default:
+        return true;
+    }
+}
+Diagnostic validation_diagnostic(const ValidationFailure& failure, DiagnosticPhase phase,
+    ObjectId object, ObjectId entity, std::vector<std::string> record) {
+    Diagnostic diagnostic;
+    diagnostic.kind = DiagnosticKind::invalid_value; diagnostic.phase = phase;
+    diagnostic.object = object; diagnostic.entity = entity;
+    diagnostic.field = std::move(record);
+    diagnostic.field.insert(diagnostic.field.end(), failure.names.begin(), failure.names.end());
+    if (failure.value) diagnostic.value = std::visit([](const auto& value) -> std::string {
+        if constexpr (std::same_as<std::decay_t<decltype(value)>, EnumValue>) return std::to_string(value.bits);
+        else return std::format("{}", value);
+    }, *failure.value);
+    diagnostic.message = failure.error.message;
+    return diagnostic;
+}
+std::size_t World::Impl::DiagnosticKeyHash::operator()(const DiagnosticKey& key) const noexcept {
+    auto value = std::hash<ObjectId>{}(key.object);
+    value ^= (std::size_t(key.kind) << 8 | std::size_t(key.phase)) + 0x9e3779b97f4a7c15ull + (value << 6) + (value >> 2);
+    return value ^ (std::hash<std::string>{}(key.field) + 0x9e3779b97f4a7c15ull + (value << 6) + (value >> 2));
+}
+void World::Impl::begin_pass(DiagnosticPhase phase) noexcept {
+    const auto pass = ++passes[std::size_t(phase)];
+    std::erase_if(recent, [&](const auto& entry) { return entry.first.phase == phase && entry.second.pass + 1 < pass; });
+}
+void World::Impl::report(Diagnostic diagnostic) {
+    if (diagnostic.type.empty() && diagnostic.object != ObjectId{})
+        if (auto type = runtime.type_of(diagnostic.object))
+            if (auto info = runtime.describe(*type)) diagnostic.type = (*info)->name;
+    // Behavior failures fault their object and are reported once per incident.
+    const auto phase = diagnostic.phase;
+    const bool consumer = phase == DiagnosticPhase::presentation || phase == DiagnosticPhase::lighting ||
+        phase == DiagnosticPhase::physics || phase == DiagnosticPhase::command;
+    std::optional<DiagnosticKey> key;
+    if (consumer) {
+        std::string field;
+        for (const auto& name : diagnostic.field) { if (!field.empty()) field += '.'; field += name; }
+        key.emplace(DiagnosticKey{diagnostic.object, diagnostic.kind, phase, std::move(field)});
+        const auto pass = passes[std::size_t(phase)];
+        // `repeats` counts consecutive passes; dependents failing on one cause count once per pass.
+        if (auto found = recent.find(*key); found != recent.end() && found->second.pass + 1 >= pass) {
+            if (found->second.pass == pass) return;
+            found->second.pass = pass;
+            const auto pending = std::ranges::lower_bound(diagnostics, found->second.serial, {}, &Diagnostic::serial);
+            if (pending != diagnostics.end() && pending->serial == found->second.serial && pending->repeats != UINT32_MAX) ++pending->repeats;
+            return;
+        }
+    }
+    if (diagnostics.size() >= diagnostic_capacity) { ++dropped_diagnostics; return; }
+    diagnostic.serial = next_diagnostic++;
+    if (key) recent.insert_or_assign(std::move(*key), Recent{diagnostic.serial, passes[std::size_t(phase)]});
+    diagnostics.push_back(std::move(diagnostic));
+}
+bool World::Impl::contain(const Error& failure, Diagnostic diagnostic) {
+    if (invariant_failed || !isolatable(failure)) return false;
+    diagnostic.source = failure.source; diagnostic.message = failure.message;
+    report(std::move(diagnostic));
+    return policy == FailurePolicy::isolate;
+}
+bool World::Impl::contain(const Error& failure, DiagnosticKind kind, DiagnosticPhase phase, ObjectId object, ObjectId entity,
+    std::vector<std::string> field, Severity severity) {
+    Diagnostic diagnostic;
+    diagnostic.severity = severity; diagnostic.kind = kind; diagnostic.phase = phase;
+    diagnostic.object = object; diagnostic.entity = entity; diagnostic.field = std::move(field);
+    return contain(failure, std::move(diagnostic));
+}
+World::Impl::Fault* World::Impl::fault_of(ObjectId object, ObjectId entity) noexcept {
+    auto* member = state_of(entity);
+    if (!member) return nullptr;
+    if (object == entity) return &member->fault;
+    const auto found = std::ranges::find(member->components, object, &ComponentState::id);
+    return found == member->components.end() ? nullptr : &found->fault;
+}
+void World::Impl::fault_tick(ObjectId object, ObjectId entity) noexcept {
+    if (auto* fault = fault_of(object, entity)) *fault = Fault::tick;
+    schedule_dirty = true;
+    cancel_tasks(object, false);
+    std::erase_if(translations, [&](const Translation& command) { return command.component == object; });
+}
 
 Result<void> World::Impl::admit(bool mutation) const {
     if (closed || (closing && mutation)) return error(ErrorCode::unsupported_operation, closing ? "World is closing." : "World is closed.");
@@ -20,9 +109,9 @@ Result<std::size_t> World::Impl::member(ObjectId object) const {
     if (!entity) return std::unexpected(entity.error());
     if (entity->world != &world)
         return error(ErrorCode::invalid_member, entity->world ? "Entity belongs to another World." : "Entity is not a World member.");
-    auto found = positions.find(object);
-    if (found == positions.end()) return error(ErrorCode::invalid_member, "World member index is inconsistent.");
-    return found->second.index;
+    const auto* found = positions.find(object);
+    if (!found) return std::unexpected(inconsistent("World member index is inconsistent."));
+    return *found;
 }
 Result<ObjectId> World::Impl::component_owner(ObjectId object) const {
     auto component = detail::component_data(runtime, object);
@@ -69,109 +158,184 @@ Result<void> World::Impl::admit_edit(ObjectId object) const {
     if (running && owner) return error(ErrorCode::busy, "Stop the World before editing its members.");
     return {};
 }
-Result<std::size_t> World::Impl::prepare_bucket(TypeId type, std::size_t additional) {
-    for (std::size_t i = 0; i < buckets.size(); ++i) {
-        if (buckets[i].type == type) {
-            auto& objects = buckets[i].objects;
-            if (objects.size() + additional > objects.capacity())
-                objects.reserve(std::max(objects.size() + additional, std::max(std::size_t{8}, objects.capacity() * 2)));
-            return i;
-        }
-    }
-    Bucket bucket{type, {}};
-    bucket.objects.reserve(additional);
-    buckets.push_back(std::move(bucket));
-    return buckets.size() - 1;
+void World::Impl::changed(bool spatial) noexcept {
+    schedule_dirty = buckets_dirty = true;
+    if (spatial) space.clear();
 }
-void World::Impl::prepare_activity(std::size_t additional) {
-    std::size_t count = additional + members.size();
-    for (const auto& bucket : buckets) count += bucket.objects.size();
-    presentation.reserve(count); updates.reserve(count); ordered.reserve(count);
+World::Impl::MemberState* World::Impl::state_of(ObjectId object) noexcept {
+    const auto* found = positions.find(object);
+    return found ? &states[*found] : nullptr;
 }
-Result<void> World::Impl::refresh() {
-    // A single member directory, ordered by the owned forest. Children never
-    // create a second registration path or a second Tick traversal.
-    std::unordered_set<ObjectId> admitted;
-    for (const auto& member : members) admitted.insert(member.id());
-    std::vector<ObjectId> roots, pending;
-    for (const auto& member : members) {
-        auto parent = parent_entity(runtime, member.id());
-        if (!parent) return std::unexpected(parent.error());
-        if (*parent == ObjectId{}) roots.push_back(member.id());
-        else if (!admitted.contains(*parent)) return error(ErrorCode::invalid_member, "Member's composition parent is absent from its World.");
-    }
-    for (auto it = roots.rbegin(); it != roots.rend(); ++it) pending.push_back(*it);
-    std::vector<Member> ordered_members;
-    ordered_members.reserve(members.size());
-    std::unordered_set<ObjectId> seen;
-    while (!pending.empty()) {
-        const auto id = pending.back(); pending.pop_back();
-        if (!admitted.contains(id) || !seen.insert(id).second)
-            return error(ErrorCode::invalid_member, "World composition contains an absent or repeated Entity.");
-        auto owned = children(runtime, id);
-        if (!owned) return std::unexpected(owned.error());
-        for (auto it = owned->rbegin(); it != owned->rend(); ++it) pending.push_back(it->id());
-        auto held = runtime.hold(id);
-        if (!held) return std::unexpected(held.error());
-        ordered_members.push_back({std::move(*held)});
-    }
-    if (seen.size() != members.size()) return error(ErrorCode::invalid_member, "World composition contains a cycle.");
-    members = std::move(ordered_members);
-    updates.clear(); presentation.clear(); ordered.clear(); positions.clear();
-    for (auto& bucket : buckets) bucket.objects.clear();
-    std::unordered_map<ObjectId, bool> eligible;
-    const auto index_type = [&](ObjectId object, TypeId type) -> Result<void> {
-        auto bucket = prepare_bucket(type, 1);
-        if (!bucket) return std::unexpected(bucket.error());
-        buckets[*bucket].objects.push_back(object);
-        return {};
-    };
-    for (std::size_t i = 0; i < members.size(); ++i) {
-        const auto id = members[i].id();
-        positions.emplace(id, Position{i, 0});
-        auto entity = detail::entity_data(runtime, id);
-        auto parent = parent_entity(runtime, id);
-        auto type = runtime.type_of(id);
-        if (!entity) return std::unexpected(entity.error());
-        if (!parent) return std::unexpected(parent.error());
+const World::Impl::MemberState* World::Impl::state_of(ObjectId object) const noexcept {
+    const auto* found = positions.find(object);
+    return found ? &states[*found] : nullptr;
+}
+World::Impl::ComponentState* World::Impl::component_state(ObjectId entity, ObjectId component) noexcept {
+    auto* owner = state_of(entity);
+    if (!owner) return nullptr;
+    const auto found = std::ranges::find(owner->components, component, &ComponentState::id);
+    return found == owner->components.end() ? nullptr : &*found;
+}
+Result<std::vector<World::Impl::ComponentState>> World::Impl::derive_components(ObjectId entity) const {
+    auto group = components(runtime, entity);
+    if (!group) return std::unexpected(group.error());
+    std::vector<ComponentState> result;
+    result.reserve(group->size());
+    for (const auto& root : *group) {
+        const auto object = root.id();
+        auto type = runtime.type_of(object);
         if (!type) return std::unexpected(type.error());
-        const bool active = entity->enabled && (*parent == ObjectId{} || eligible.at(*parent));
-        eligible.emplace(id, active);
-        if (auto indexed = index_type(id, *type); !indexed) return indexed;
         auto binding = behavior(*type);
         if (!binding) return std::unexpected(binding.error());
-        Scheduled item{id, id, *binding};
-        ordered.push_back(item);
-        if (running && entity->begun && active && item.behavior && item.behavior->tick) updates.push_back(item);
-        auto group = components(runtime, id);
-        if (!group) return std::unexpected(group.error());
-        for (const auto& root : *group) {
-            const auto object = root.id();
-            auto component_type = runtime.type_of(object);
-            if (!component_type) return std::unexpected(component_type.error());
-            if (auto indexed = index_type(object, *component_type); !indexed) return indexed;
-            auto component_binding = behavior(*component_type);
-            if (!component_binding) return std::unexpected(component_binding.error());
-            Scheduled component_item{object, id, *component_binding};
-            ordered.push_back(component_item);
-            auto data = detail::component_data(runtime, object);
-            if (!data) return std::unexpected(data.error());
-            if (running && data->begun && active && data->enabled && component_item.behavior && component_item.behavior->tick)
-                updates.push_back(component_item);
-            auto mesh = runtime.is_a(*component_type, types.static_mesh_component);
-            if (!mesh) return std::unexpected(mesh.error());
-            if (*mesh) {
-                auto present = runtime.with_native<StaticMeshComponent>(object, [](StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
-                if (!present) return std::unexpected(present.error());
-                if (*present) { ++positions.at(id).presentations; presentation.push_back(object); }
-            } else {
-                auto light = runtime.is_a(*component_type, types.light_component);
-                if (!light) return std::unexpected(light.error());
-                if (*light) { ++positions.at(id).presentations; presentation.push_back(object); }
-            }
+        auto data = detail::component_data(runtime, object);
+        if (!data) return std::unexpected(data.error());
+        auto presentation = presentation_of(object, *type);
+        if (!presentation) return std::unexpected(presentation.error());
+        result.push_back({object, *type, *binding, *presentation, data->enabled, false});
+    }
+    return result;
+}
+Result<std::uint32_t> World::Impl::presentation_of(ObjectId component, TypeId type) const {
+    std::uint32_t result{};
+    for (std::uint32_t i = 0; i < presentations.size(); ++i) {
+        const auto& registration = presentations[i];
+        auto matches = runtime.is_a(type, registration.type);
+        if (!matches) return std::unexpected(matches.error());
+        if (!*matches) continue;
+        if (registration.predicate) {
+            auto present = registration.predicate(runtime, component);
+            if (!present) return std::unexpected(present.error());
+            if (!*present) continue;
+        }
+        result |= 1u << i;
+    }
+    return result;
+}
+Result<World::Impl::MemberState> World::Impl::derive(ObjectId entity, ObjectId parent, ObjectId origin) const {
+    auto type = runtime.type_of(entity);
+    if (!type) return std::unexpected(type.error());
+    auto binding = behavior(*type);
+    if (!binding) return std::unexpected(binding.error());
+    auto data = detail::entity_data(runtime, entity);
+    if (!data) return std::unexpected(data.error());
+    auto group = derive_components(entity);
+    if (!group) return std::unexpected(group.error());
+    MemberState state;
+    state.type = *type; state.behavior = *binding; state.parent = parent;
+    state.origin = origin;
+    state.enabled = data->enabled;
+    state.components = std::move(*group);
+    return state;
+}
+Result<void> World::Impl::rederive(ObjectId entity) {
+    auto next = derive_components(entity);
+    if (!next) return std::unexpected(next.error());
+    auto* state = state_of(entity);
+    if (!state) return std::unexpected(inconsistent("World member index is inconsistent."));
+    for (auto& item : *next) {
+        const auto previous = std::ranges::find(state->components, item.id, &ComponentState::id);
+        if (previous != state->components.end()) item.begun = previous->begun;
+    }
+    state->components = std::move(*next);
+    changed(false);
+    return {};
+}
+void World::Impl::reindex(std::size_t first, std::size_t last) noexcept {
+    for (auto i = first; i < last; ++i) {
+        const auto [value, inserted] = positions.try_emplace(members[i].id(), i);
+        if (!inserted) *value = i;
+    }
+}
+void World::Impl::resize_ancestors(ObjectId parent, std::ptrdiff_t delta) noexcept {
+    for (auto id = parent; id != ObjectId{};) {
+        auto& state = states[*positions.find(id)];
+        state.size = std::size_t(std::ptrdiff_t(state.size) + delta);
+        id = state.parent;
+    }
+}
+void World::Impl::refresh_eligibility(std::size_t first, std::size_t count) noexcept {
+    // Preorder: every parent outside the range is already current.
+    for (auto i = first; i < first + count; ++i) {
+        auto& state = states[i];
+        state.eligible = state.enabled && (state.parent == ObjectId{} || states[*positions.find(state.parent)].eligible);
+    }
+}
+void World::Impl::rebuild_schedule() {
+    for (auto& phase : updates) phase.clear();
+    schedule_dirty = false;
+    if (!running) return;
+    struct Node { Scheduled item; bool ticks; };
+    // Every participant takes part in ordering, so prerequisites hold
+    // transitively through objects that do not tick in a phase.
+    std::vector<Node> order;
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        const auto& state = states[i];
+        const auto id = members[i].id();
+        order.push_back({{id, id, state.behavior}, state.eligible && state.begun && state.fault == Fault::none});
+        for (const auto& item : state.components)
+            order.push_back({{item.id, id, item.behavior}, state.eligible && item.enabled && item.begun && item.fault == Fault::none});
+    }
+    if (!prerequisites.empty()) {
+        // Kahn's algorithm; ties keep composition preorder, so the result is deterministic.
+        std::unordered_map<ObjectId, std::size_t> index;
+        index.reserve(order.size());
+        for (std::size_t i = 0; i < order.size(); ++i) index.emplace(order[i].item.object, i);
+        std::vector<std::size_t> pending(order.size());
+        for (const auto& [object, before] : prerequisites) pending[index.at(object)] = before.size();
+        std::priority_queue<std::size_t, std::vector<std::size_t>, std::greater<>> ready;
+        for (std::size_t i = 0; i < order.size(); ++i) if (!pending[i]) ready.push(i);
+        std::vector<Node> sorted;
+        sorted.reserve(order.size());
+        while (!ready.empty()) {
+            const auto next = ready.top();
+            ready.pop();
+            sorted.push_back(order[next]);
+            if (const auto found = dependents.find(order[next].item.object); found != dependents.end())
+                for (const auto object : found->second) if (!--pending[index.at(object)]) ready.push(index.at(object));
+        }
+        order = std::move(sorted);
+    }
+    for (const auto& node : order) {
+        const auto* behavior = node.item.behavior;
+        if (!node.ticks || !behavior) continue;
+        if (behavior->tick) updates[std::size_t(TickPhase::pre_physics)].push_back(node.item);
+        if (behavior->post_physics_tick) updates[std::size_t(TickPhase::post_physics)].push_back(node.item);
+        if (behavior->late_tick) updates[std::size_t(TickPhase::late)].push_back(node.item);
+    }
+}
+void World::Impl::forget_prerequisites(ObjectId object) noexcept {
+    const auto unlink = [&](auto& from, auto& to) {
+        const auto found = from.find(object);
+        if (found == from.end()) return;
+        for (const auto other : found->second) {
+            auto& back = to.at(other);
+            std::erase(back, object);
+            if (back.empty()) to.erase(other);
+        }
+        from.erase(found);
+        schedule_dirty = true;
+    };
+    unlink(prerequisites, dependents);
+    unlink(dependents, prerequisites);
+}
+void World::Impl::rebuild_buckets() {
+    for (auto& bucket : buckets) bucket.objects.clear();
+    const auto add = [&](TypeId type, ObjectId object) {
+        auto found = std::ranges::find(buckets, type, &Bucket::type);
+        if (found == buckets.end()) { buckets.push_back({type, {}}); found = std::prev(buckets.end()); }
+        found->objects.push_back(object);
+    };
+    presented.assign(presentations.size(), {});
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        const auto id = members[i].id();
+        add(states[i].type, id);
+        for (const auto& item : states[i].components) {
+            add(item.type, item.id);
+            for (std::uint32_t mask = item.presentation; mask; mask &= mask - 1)
+                presented[std::countr_zero(mask)].push_back({id, item.id, states[i].eligible && item.enabled});
         }
     }
-    return {};
+    buckets_dirty = false;
 }
 void World::Impl::cancel_tasks(ObjectId target, bool entity) noexcept {
     std::erase_if(tasks, [&](Task& task) {
@@ -180,23 +344,42 @@ void World::Impl::cancel_tasks(ObjectId target, bool entity) noexcept {
         return true;
     });
 }
-void World::Impl::halt() noexcept { running = false; updates.clear(); translations.clear(); cancel_tasks(); }
+void World::Impl::halt() noexcept {
+    running = false; translations.clear(); cancel_tasks();
+    for (auto& phase : updates) phase.clear();
+    // Faults belong to one run; the next start begins every member again.
+    for (auto& member : states) {
+        member.fault = Fault::none;
+        for (auto& item : member.components) item.fault = Fault::none;
+    }
+    changed(false);
+}
 std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     if (!observer && subscriptions.empty()) return {};
     auto scope = ExecutionScope::enter(runtime);
     if (!scope) return scope.error();
     detail::DispatchScope dispatch{dispatch_depth};
     std::optional<Error> failure;
+    const auto owner = [&] {
+        if (positions.contains(object)) return object;
+        auto component = detail::component_data(runtime, object);
+        return component ? component->owner : ObjectId{};
+    };
     const auto invoke = [&](const LifecycleObserver& callback) {
         if (!callback) return;
+        std::optional<Error> error;
         try {
             auto result = callback(world, event, object);
-            if (!result && !failure) failure = result.error();
+            if (!result) error = result.error();
+        } catch (const std::bad_alloc&) {
+            error = Error{ErrorCode::capacity_exceeded, "World lifecycle observer ran out of memory."};
         } catch (const std::exception& exception) {
-            if (!failure) failure = Error{ErrorCode::invocation_failed, exception.what()};
+            error = Error{ErrorCode::invocation_failed, exception.what()};
         } catch (...) {
-            if (!failure) failure = Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
+            error = Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
         }
+        if (error && !contain(*error, DiagnosticKind::observer_failed, DiagnosticPhase::lifecycle, object, owner()) && !failure)
+            failure = std::move(error);
     };
     invoke(observer);
     for (const auto& entry : subscriptions) {
@@ -214,16 +397,19 @@ Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
     if (failure) (void)shutdown();
     return {changed, std::move(failure)};
 }
-void World::Impl::erase_indexes(ObjectId object) noexcept {
-    for (auto& bucket : buckets) std::erase(bucket.objects, object);
-    std::erase(presentation, object);
-    std::erase_if(updates, [object](const Scheduled& item) { return item.object == object; });
-    std::erase_if(ordered, [object](const Scheduled& item) { return item.object == object; });
-}
 
 World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl>(runtime, types, *this)) {
     const auto registered = runtime.native_type<Entity>();
     if (!registered || *registered != types.entity) throw std::invalid_argument("World types must be registered in its Runtime.");
+    // The world library presents its own mesh and light components; a mesh needs geometry.
+    impl_->meshes = {0};
+    impl_->presentations.push_back({types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
+        return runtime.with_native<StaticMeshComponent>(object, [](StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
+    }});
+    impl_->lights = {1};
+    impl_->presentations.push_back({types.light_component, {}});
+    impl_->admissions.push_back({types.light_component, detail::unique_sky_light(impl_->lights)});
+    impl_->admissions.push_back({types.light_component, detail::spatial_lights()});
 }
 World::~World() {
     if (!impl_->closed) {
@@ -243,15 +429,207 @@ Result<void> World::set_lighting_settings(const rendering::SceneLightingSettings
 const Types& World::types() const noexcept { return impl_->types; }
 bool World::running() const noexcept { return impl_->running; }
 bool World::closed() const noexcept { return impl_->closed; }
-Activity World::activity() const noexcept { return {impl_->updates.size(), impl_->presentation.size(), impl_->tasks.size()}; }
+Activity World::activity() const noexcept {
+    const auto& state = *impl_;
+    Activity result{0, 0, state.tasks.size()};
+    for (const auto& member : state.states) {
+        const auto ticks = [](const Behavior* behavior) {
+            return behavior && (behavior->tick || behavior->post_physics_tick || behavior->late_tick);
+        };
+        result.update_registrations += state.running && member.begun && member.fault == Impl::Fault::none && member.eligible &&
+            ticks(member.behavior);
+        for (const auto& item : member.components) {
+            result.update_registrations += state.running && item.begun && item.fault == Impl::Fault::none && member.eligible &&
+                item.enabled && ticks(item.behavior);
+            result.presentation_registrations += item.presentation != 0;
+        }
+    }
+    return result;
+}
+bool World::contains(ObjectId entity) const noexcept { return impl_->positions.contains(entity); }
+FailurePolicy World::failure_policy() const noexcept { return impl_->policy; }
+Result<void> World::set_failure_policy(FailurePolicy policy) {
+    if (auto ready = impl_->admit(); !ready) return ready;
+    if (impl_->running) return error(ErrorCode::busy, "Stop the World before changing its failure policy.");
+    if (policy != FailurePolicy::isolate && policy != FailurePolicy::halt) return error(ErrorCode::argument_mismatch, "Unknown failure policy.");
+    impl_->policy = policy;
+    return {};
+}
+std::vector<Diagnostic> World::take_diagnostics() { return std::exchange(impl_->diagnostics, {}); }
+std::uint64_t World::dropped_diagnostics() const noexcept { return impl_->dropped_diagnostics; }
+void World::report(Diagnostic diagnostic) { impl_->report(std::move(diagnostic)); }
+bool World::contain(const Error& failure, Diagnostic diagnostic) { return impl_->contain(failure, std::move(diagnostic)); }
 Result<std::span<const Member>> World::members() const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     return std::span<const Member>{impl_->members};
+}
+Result<PresentationId> World::register_presentation(TypeId type, PresentationPredicate predicate) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
+    if (state.presentations.size() >= 32) return error(ErrorCode::capacity_exceeded, "A World supports at most 32 presentation registrations.");
+    auto component = runtime().is_a(type, types().component);
+    if (!component) return std::unexpected(component.error());
+    if (!*component) return error(ErrorCode::type_mismatch, "Presentation requires a Component type.");
+    const auto id = PresentationId{std::uint32_t(state.presentations.size())};
+    state.presentations.push_back({type, std::move(predicate)});
+    // Evaluate the new registration for current members before publishing any bit.
+    std::vector<bool> present;
+    for (const auto& member : state.states)
+        for (const auto& item : member.components) {
+            auto value = state.presentation_of(item.id, item.type);
+            if (!value) { state.presentations.pop_back(); return std::unexpected(value.error()); }
+            present.push_back(*value & Impl::bit(id));
+        }
+    auto next = present.begin();
+    for (auto& member : state.states)
+        for (auto& item : member.components) if (*next++) item.presentation |= Impl::bit(id);
+    state.changed(false);
+    return id;
+}
+Result<std::span<const PresentedComponent>> World::presented(PresentationId id) const {
+    if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
+    if (id.value >= impl_->presentations.size()) return error(ErrorCode::argument_mismatch, "Unknown presentation registration.");
+    if (impl_->buckets_dirty) impl_->rebuild_buckets();
+    return std::span<const PresentedComponent>{impl_->presented[id.value]};
+}
+Result<void> World::reevaluate_presentation(ObjectId component) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return ready;
+    auto owner = state.component_owner(component);
+    if (!owner) return std::unexpected(owner.error());
+    return state.rederive(*owner);
+}
+Result<void> World::add_admission(TypeId type, Admission admission) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return ready;
+    if (!admission) return error(ErrorCode::argument_mismatch, "An admission needs a check.");
+    auto component = runtime().is_a(type, types().component);
+    if (!component) return std::unexpected(component.error());
+    if (!*component) return error(ErrorCode::type_mismatch, "Admission requires a Component type.");
+    state.admissions.push_back({type, std::move(admission)});
+    return {};
+}
+Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates) const {
+    std::vector<ObjectId> selected;
+    for (const auto& [type, admission] : admissions) {
+        selected.clear();
+        for (const auto object : candidates) {
+            auto object_type = runtime.type_of(object);
+            if (!object_type) return std::unexpected(object_type.error());
+            auto matches = runtime.is_a(*object_type, type);
+            if (!matches) return std::unexpected(matches.error());
+            if (*matches) selected.push_back(object);
+        }
+        if (!selected.empty())
+            if (auto admitted = admission(world, selected); !admitted) return admitted;
+    }
+    return {};
+}
+Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidates) const {
+    if (admissions.empty()) return {};
+    std::vector<ObjectId> ids;
+    ids.reserve(candidates.size());
+    for (const auto& root : candidates) ids.push_back(root.id());
+    return check_admissions(std::span<const ObjectId>{ids});
+}
+Result<bool> World::Impl::admitted(ObjectId component) const {
+    if (admissions.empty()) return false;
+    auto data = detail::component_data(runtime, component);
+    if (!data) return std::unexpected(data.error());
+    if (data->owner == ObjectId{} || !positions.contains(data->owner)) return false;
+    auto type = runtime.type_of(component);
+    if (!type) return std::unexpected(type.error());
+    for (const auto& entry : admissions) {
+        auto matches = runtime.is_a(*type, entry.type);
+        if (!matches) return std::unexpected(matches.error());
+        if (*matches) return true;
+    }
+    return false;
+}
+Result<void> World::Impl::check_edit(ObjectId component) const {
+    auto checked = admitted(component);
+    if (!checked) return std::unexpected(checked.error());
+    if (!*checked) return {};
+    return check_admissions(std::span<const ObjectId>{&component, 1});
+}
+Result<World::SpatialPass> World::spatial_pass(DiagnosticPhase phase) const {
+    if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
+    impl_->begin_pass(phase);
+    impl_->space.begin_pass();
+    return SpatialPass{*impl_, phase};
+}
+Result<std::optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity) {
+    auto& state = *impl_;
+    if (!state.positions.contains(entity)) return error(ErrorCode::invalid_member, "A spatial pass reads only member Entities.");
+    auto matrix = state.space.matrix(entity);
+    if (matrix) return *matrix;
+    const auto at = state.space.failed;
+    if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, phase_, at, at)) return std::unexpected(matrix.error());
+    return std::nullopt;
+}
+bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string message) {
+    if (!singular(world)) return false;
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::warning; diagnostic.kind = DiagnosticKind::degenerate_value;
+    diagnostic.phase = phase_;
+    diagnostic.object = diagnostic.entity = impl_->space.degenerate_root(entity); diagnostic.field = {"scale"};
+    diagnostic.message = std::move(message);
+    impl_->report(std::move(diagnostic));
+    return true;
+}
+Result<std::optional<World::Orientation>> World::SpatialPass::orientation(ObjectId entity) {
+    auto matrix = this->matrix(entity);
+    if (!matrix) return std::unexpected(matrix.error());
+    if (!*matrix) return std::nullopt;
+    // The chain was validated in this pass. An odd sign pattern is -1 times a
+    // pattern with two negative axes, a half turn about the remaining positive one.
+    Orientation result;
+    const auto composed = [&]() -> Result<void> {
+        for (auto node = entity; node != ObjectId{};) {
+            const auto* entry = impl_->space.entry(node);
+            auto canonical = canonical_transform(entry->local);
+            if (!canonical) return std::unexpected(canonical.error());
+            const auto& q = canonical->rotation;
+            const auto& s = canonical->scale;
+            std::array negative{s.x < 0, s.y < 0, s.z < 0};
+            const bool odd = negative[0] ^ negative[1] ^ negative[2];
+            if (odd) for (auto& axis : negative) axis = !axis;
+            result.mirrored ^= odd;
+            math::Quaterniond local{q.x, q.y, q.z, q.w};
+            if (negative[0] || negative[1] || negative[2]) {
+                math::Quaterniond turn{0, 0, 0, 0};
+                if (!negative[0]) turn.x = 1; else if (!negative[1]) turn.y = 1; else turn.z = 1;
+                local = local * turn;
+            }
+            const auto next = math::try_normalize(local * result.rotation);
+            if (!next) return error(ErrorCode::argument_mismatch, "Space orientation is not finite.");
+            result.rotation = *next;
+            node = entry->parent;
+        }
+        return {};
+    }();
+    if (composed) return result;
+    if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, phase_, entity, entity, {"rotation"})) return std::unexpected(composed.error());
+    return std::nullopt;
+}
+Result<std::uint64_t> World::add_simulation(Simulation simulation) {
+    auto& state = *impl_;
+    if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
+    if (!simulation.step || !simulation.writes_pose) return error(ErrorCode::argument_mismatch, "A simulation needs step and writes_pose.");
+    std::erase_if(state.simulations, [](const Impl::SimulationEntry& entry) { return !entry.simulation; });
+    const auto id = state.next_simulation++;
+    state.simulations.push_back({id, std::make_shared<const Simulation>(std::move(simulation))});
+    return id;
+}
+void World::remove_simulation(std::uint64_t id) noexcept {
+    for (auto& entry : impl_->simulations) if (entry.id == id) entry.simulation.reset();
+    if (!impl_->updating) std::erase_if(impl_->simulations, [](const Impl::SimulationEntry& entry) { return !entry.simulation; });
 }
 Result<std::vector<ObjectId>> World::query(TypeId type, bool include_derived) const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     auto info = runtime().describe(type);
     if (!info) return std::unexpected(info.error());
+    if (impl_->buckets_dirty) impl_->rebuild_buckets();
     std::vector<ObjectId> result;
     for (const auto& bucket : impl_->buckets) {
         auto matches = include_derived ? runtime().is_a(bucket.type, type) : Result<bool>{bucket.type == type};
@@ -290,10 +668,9 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     // by attach_batch before any member, observer or behavior is published.
     if (entity->world)
         if (auto valid = detail::requires_space(runtime(), entity_id, roots); !valid) return std::unexpected(valid.error());
-    if (entity->world) if (auto sky = state.validate_sky_light(roots); !sky) return std::unexpected(sky.error());
+    if (entity->world) if (auto admitted = state.check_admissions(roots); !admitted) return std::unexpected(admitted.error());
     auto held = runtime().hold(entity_id, types().entity);
     if (!held) return std::unexpected(held.error());
-    state.prepare_activity(incoming.size());
     auto changed = runtime().with_native<Entity>(entity_id, [&](Entity& value) -> Result<void> {
     auto sequence = runtime().reference_field(entity_id, Access::sequence(value));
     if (!sequence) return std::unexpected(sequence.error());
@@ -309,14 +686,16 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     });
     if (!changed) return std::unexpected(changed.error());
     if (!entity->world) return Commit{true, {}};
-    if (auto refreshed = state.refresh(); !refreshed) return state.finish(true, refreshed.error());
+    if (auto rederived = state.rederive(entity_id); !rederived) return state.finish(true, rederived.error());
     std::optional<Error> failure;
     for (const auto& item : incoming) {
         auto notification = state.notify(Lifecycle::attached, item.component);
         if (!failure) failure = std::move(notification);
     }
-    if (!failure && state.running) failure = state.begin(entity_id);
-    if (!failure) if (auto active = state.refresh(); !active) failure = active.error();
+    if (!failure && state.running) {
+        auto at = state.member(entity_id);
+        failure = at ? state.begin(*at, *at + 1) : std::optional<Error>{at.error()};
+    }
     return state.finish(true, std::move(failure));
 }
 Result<ComponentRemoval> World::remove_component(ObjectId object) {
@@ -341,17 +720,23 @@ Result<ComponentRemoval> World::remove_component(ObjectId object) {
     result.root = std::move(*root); result.owner = owner;
     result.index = std::size_t(at - group->begin()); result.origin_ = state.lifetime;
     if (registered) state.cancel_tasks(object, false);
-    std::optional<Error> failure = registered ? state.end({}, object) : std::nullopt;
+    std::optional<Error> failure;
+    if (registered) {
+        auto position = state.member(owner);
+        failure = position ? state.end(*position, *position + 1, object) : std::optional<Error>{position.error()};
+    }
     if (status->active) { auto notification = state.notify(Lifecycle::deactivated, object); if (!failure) failure = std::move(notification); }
     {
         detail::FlagScope transition{state.transitioning};
         auto removed = detail::clear_component(runtime(), owner, object, result.index);
         if (!removed) { if (registered) state.halt(); return std::unexpected(removed.error()); }
-        if (registered) state.erase_indexes(object);
+        if (registered) {
+            if (auto* member = state.state_of(owner)) std::erase_if(member->components, [&](const Impl::ComponentState& item) { return item.id == object; });
+            state.forget_prerequisites(object);
+            state.changed(false);
+        }
     }
     if (!registered) { result.commit = Commit{true, {}}; return result; }
-    auto refreshed = state.refresh();
-    if (!refreshed && !failure) failure = refreshed.error();
     auto detached = state.notify(Lifecycle::detached, object);
     if (!failure) failure = std::move(detached);
     result.commit = state.finish(true, std::move(failure));
@@ -381,6 +766,21 @@ Result<void> queue_translation(Runtime& runtime,ObjectId object,math::Vector3 de
     state.translations.push_back({object,component->owner,delta});
     return {};
 }
+Result<void> queue_request(Runtime& runtime,ObjectId object,RequestKind kind,bool enabled) {
+    auto owner=object;
+    if (kind!=RequestKind::destroy_entity && kind!=RequestKind::entity_enabled) {
+        auto component=component_data(runtime,object); if (!component) return std::unexpected(component.error());
+        owner=component->owner;
+    }
+    auto entity=owner==ObjectId{}?Result<EntityData>{EntityData{}}:entity_data(runtime,owner);
+    if (!entity) return std::unexpected(entity.error());
+    if (!entity->world) return error(ErrorCode::invalid_member,"World requests require World membership.");
+    Request request;
+    request.kind=kind; request.target=object; request.enabled=enabled;
+    auto queued=entity->world->request(request);
+    if (!queued) return std::unexpected(queued.error());
+    return {};
+}
 }
 Result<void> World::Impl::apply_translations() {
     if (translations.empty()) return {};
@@ -388,43 +788,34 @@ Result<void> World::Impl::apply_translations() {
     // discard the batch on every exit so a rejected action cannot replay later.
     struct Cleanup { Impl& state; ~Cleanup() { state.translations.clear(); state.translation_changes.clear(); } } cleanup{*this};
     auto& changes=translation_changes; changes.reserve(translations.size());
-    const std::array physical_types{runtime.find_type("physics.CharacterComponent"),runtime.find_type("physics.RagdollComponent")};
-    for (const auto& command:translations) {
+    // Each command is checked alone: a rejected one is reported and dropped.
+    const auto check=[&](const Translation& command)->Result<void> {
         auto owner=component_owner(command.component);
         if (!owner) return std::unexpected(owner.error());
         if (*owner!=command.entity) return error(ErrorCode::invalid_member,"Translation receiver changed owner.");
-        {
-            auto group=components(runtime,command.entity); if (!group) return std::unexpected(group.error());
-            for (const auto& component:*group) {
-                auto type=runtime.type_of(component.id()); if (!type) return std::unexpected(type.error());
-                auto primitive=runtime.is_a(*type,types.primitive_component);
-                if (!primitive) return std::unexpected(primitive.error());
-                if (*primitive) {
-                    auto physical=runtime.with_native<const PrimitiveComponent>(component.id(),[](const auto& p)->Result<bool>{return p.body.enabled;});
-                    if (!physical) return std::unexpected(physical.error());
-                    if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Entity; use physics actions.");
-                }
-                for(const auto& physical_type:physical_types) if(physical_type) {
-                    auto physical=runtime.is_a(*type,*physical_type); if (!physical) return std::unexpected(physical.error());
-                    if (*physical) return error(ErrorCode::unsupported_operation,"translate_owner cannot move a physics-controlled Entity; use physics actions.");
-                }
-            }
-        }
+        for (const auto& entry:simulations)
+            if (entry.simulation && entry.simulation->writes_pose(command.entity))
+                return error(ErrorCode::unsupported_operation,"translate_owner cannot move an Entity whose pose a simulation writes; use that system's actions.");
         auto found=std::ranges::find(changes,command.entity,&TranslationChange::entity);
         if (found==changes.end()) {
             auto matrix=world_matrix(runtime,command.entity); if (!matrix) return std::unexpected(matrix.error());
             auto value=relative_transform(*matrix,math::Matrix4::identity()); if (!value) return std::unexpected(value.error());
             changes.push_back({command.entity,*value}); found=std::prev(changes.end());
         }
-        auto& value=found->value;
+        auto value=found->value;
         value.position.x+=command.delta.x; value.position.y+=command.delta.y; value.position.z+=command.delta.z;
         auto canonical=canonical_transform(value); if (!canonical) return std::unexpected(canonical.error());
-        value=*canonical;
-    }
+        found->value=*canonical;
+        return {};
+    };
+    for (const auto& command:translations)
+        if (auto checked=check(command); !checked &&
+            !contain(checked.error(),DiagnosticKind::command_rejected,DiagnosticPhase::command,command.component,command.entity,{},Severity::warning))
+            return checked;
     std::vector<SimulationPose> poses;
     poses.reserve(changes.size());
     for (const auto& change:changes) poses.push_back({change.entity,change.value.position,change.value.rotation});
-    return world.apply_simulation_transforms(poses);
+    return apply_poses(poses,DiagnosticPhase::command);
 }
 
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
@@ -437,36 +828,15 @@ Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) co
 }
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
     if (auto ready = impl_->admit_edit(object); !ready) return ready;
-    auto lighting=detail::write_lighting_property(*this,object,path,value);
-    if (!lighting) return std::unexpected(lighting.error());
-    if (*lighting) return {};
-    auto primitive=detail::is(runtime(),object,types().primitive_component);
-    if (!primitive) return std::unexpected(primitive.error());
-    if (*primitive && !path.empty()) {
-        auto body_field=runtime().find_field(types().primitive_component,"body");
-        if (!body_field) return std::unexpected(body_field.error());
-        if (path.front()==*body_field) {
-            auto previous=runtime().with_native<const PrimitiveComponent>(object,[](const auto& p)->Result<BodySettings>{return p.body;});
-            if (!previous) return std::unexpected(previous.error());
-            if (auto written=runtime().write(object,path,value);!written) return written;
-            return runtime().with_native<PrimitiveComponent>(object,[&](auto& p)->Result<void>{
-                if (p.body.shape!=previous->shape) p.body.cooked_shape.reset();
-                auto valid=validate_body_settings(p.body);
-                if (!valid) p.body=*previous;
-                return valid;
-            });
-        }
-    }
     auto transform = detail::is(runtime(), object, types().entity);
     if (!transform) return std::unexpected(transform.error());
-    if (*transform) {
-        const auto match = [&](const auto& paths) -> std::optional<std::size_t> {
-            for (std::size_t i = 0; i < paths.size(); ++i)
-                if (std::ranges::equal(path, paths[i])) return i;
-            return {};
-        };
-        const auto position = match(types().position_fields), rotation = match(types().rotation_fields), scale = match(types().scale_fields);
-        if (!position && !rotation && !scale) return runtime().write(object, path, value);
+    const auto match = [&](const auto& paths) -> std::optional<std::size_t> {
+        for (std::size_t i = 0; i < paths.size(); ++i)
+            if (std::ranges::equal(path, paths[i])) return i;
+        return {};
+    };
+    const auto position = match(types().position_fields), rotation = match(types().rotation_fields), scale = match(types().scale_fields);
+    if (*transform && (position || rotation || scale)) {
         auto current = read_transform(runtime(), object);
         if (!current) return std::unexpected(current.error());
         if (!std::holds_alternative<float>(value)) return error(ErrorCode::type_mismatch, "Transform fields require float values.");
@@ -479,36 +849,71 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
         }
         return set_transform(object, *current);
     }
-    return runtime().write(object, path, value);
+    // An edit may not make a valid object fail its type rules or an admission;
+    // a rejected edit restores the previous value. Objects already invalid
+    // stay editable so their faults can be repaired one field at a time.
+    auto previous = runtime().read(object, path);
+    if (!previous) return std::unexpected(previous.error());
+    auto before = runtime().validate(object);
+    if (!before) return std::unexpected(before.error());
+    auto admitted = *transform ? Result<bool>{false} : impl_->admitted(object);
+    if (!admitted) return std::unexpected(admitted.error());
+    if (auto written = runtime().write(object, path, value); !written) return written;
+    const auto reject = [&](Error failure) -> Result<void> {
+        (void)runtime().write(object, path, *previous);
+        return std::unexpected(std::move(failure));
+    };
+    if (!*before) {
+        auto after = runtime().validate(object);
+        if (!after) return reject(after.error());
+        if (*after) return reject((*after)->error);
+    }
+    if (*admitted)
+        if (auto valid = impl_->check_admissions(std::span<const ObjectId>{&object, 1}); !valid) return reject(valid.error());
+    return {};
 }
 Result<std::vector<RenderItem>> World::render_items() const {
-    if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
+    auto pass = spatial_pass(DiagnosticPhase::presentation);
+    if (!pass) return std::unexpected(pass.error());
+    auto& state = *impl_;
     std::vector<RenderItem> result;
-    std::optional<detail::SpaceGraph> space;
-    for (const auto object : impl_->presentation) {
-        auto mesh=detail::is(runtime(),object,types().static_mesh_component);
-        if (!mesh) return std::unexpected(mesh.error());
-        if (!*mesh) continue;
-        auto owner = impl_->component_owner(object);
-        if (!owner) return std::unexpected(owner.error());
-        if (!space) {
-            space.emplace(runtime());
-            // Capacity follows presentation work; spatial ancestors can grow it on demand.
-            const auto capacity = std::min(impl_->members.size(), impl_->presentation.size());
-            space->nodes.reserve(capacity);
-            space->matrices.reserve(capacity);
-            result.reserve(impl_->presentation.size());
+    auto meshes = presented(state.meshes);
+    if (!meshes) return std::unexpected(meshes.error());
+    result.reserve(meshes->size());
+    {
+        for (const auto& [owner, object, active] : *meshes) {
+            (void)active;
+            // Isolated items are skipped: an unusable space is reported once on
+            // its Entity, an invalid material on its component.
+            auto matrix = pass->matrix(owner);
+            if (!matrix) return std::unexpected(matrix.error());
+            if (!*matrix || pass->degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
+                continue;
+            auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<RenderItem> {
+                return RenderItem{owner, object, **matrix, Access::geometry(value), value.material};
+            });
+            if (!item) {
+                if (!state.contain(item.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner))
+                    return std::unexpected(item.error());
+                continue;
+            }
+            auto invalid = runtime().validate_value(types().material, std::as_bytes(std::span{&item->material, 1}));
+            if (!invalid) return std::unexpected(invalid.error());
+            if (*invalid) {
+                const auto& failure = **invalid;
+                if (!state.contain(failure.error, validation_diagnostic(failure, DiagnosticPhase::presentation, object, owner, {"material"})))
+                    return std::unexpected(failure.error);
+                continue;
+            }
+            auto surfaces=material_surfaces(runtime(),object);
+            if (!surfaces) {
+                if (!state.contain(surfaces.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"materials"}))
+                    return std::unexpected(surfaces.error());
+                continue;
+            }
+            item->surfaces=std::move(*surfaces);
+            result.push_back(std::move(*item));
         }
-        auto matrix = space->matrix(*owner);
-        if (!matrix) return std::unexpected(matrix.error());
-        auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<RenderItem> {
-            if (auto valid = validate_material(component.material); !valid) return std::unexpected(valid.error());
-            return RenderItem{*owner, object, *matrix, Access::geometry(component), component.material};
-        });
-        if (!item) return std::unexpected(item.error());
-        auto surfaces=material_surfaces(runtime(),object);if(!surfaces) return std::unexpected(surfaces.error());
-        item->surfaces=std::move(*surfaces);
-        result.push_back(std::move(*item));
     }
     return result;
 }

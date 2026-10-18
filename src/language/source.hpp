@@ -24,7 +24,7 @@ struct ValueType {
 struct ParameterType { ValueType type; ParameterPassing passing{ParameterPassing::value}; };
 struct EnumItem { std::string_view name; std::uint32_t bits; };
 struct EnumBinding { std::string_view name; ValueType underlying; std::span<const EnumItem> values; };
-struct FieldBinding { std::string_view name; ValueType type; };
+struct FieldBinding { std::string_view name; ValueType type; bool constrained{}; };
 struct ValueField { std::string name; ValueType type; std::size_t offset; };
 struct ValueLayout {
     std::string name;

@@ -321,8 +321,16 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
     const auto project=root/"Project";
     const auto directory=deep_control?root/"Control"/std::wstring(100,L'x'):root/"Control";
     project_fixture(project);
-    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+".scene");
-    std::filesystem::rename(project/"Content/Scenes/Main.scene",project/scene);
+    // The frozen copy is always named Control-<id>.scene. With a short control directory the
+    // long-name source scene is what crosses MAX_PATH ("Project/Content/Scenes/" plus 247
+    // characters); with the deep control directory the frozen copy itself does.
+    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+(deep_control?"":"-"+std::string(200,'n'))+".scene");
+    std::filesystem::rename(atelier::platform::windows_file_path(project/"Content/Scenes/Main.scene"),atelier::platform::windows_file_path(project/scene));
+    const auto bytes=[](const std::filesystem::path& path) {
+        std::ifstream stream(atelier::platform::windows_file_path(path),std::ios::binary);require(bool(stream),"Cannot read E2E artifact: "+utf8(path.wstring()));
+        return std::string(std::istreambuf_iterator<char>(stream),{});
+    };
+    const auto source_scene=bytes(project/scene);
     auto config=read(project/"Config/Project.json");config["startup_scene"]=utf8(scene.generic_wstring());
     write(project/"Config/Project.json",config.dump());
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
@@ -341,7 +349,12 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
         const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
         repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto manifest=read(repro/"manifest.json");const auto frozen=repro/"Project"/wide(manifest.at("scene").get<std::string>());
-        require(frozen.wstring().size()>260 && read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
+        if(deep_control) require(frozen.wstring().size()>260,"Deep-control export did not place the frozen scene past MAX_PATH");
+        else {
+            const auto copied=repro/"Project"/scene;
+            require(copied.wstring().size()>260 && bytes(copied)==source_scene,"Short-control export did not copy the long-name scene unchanged");
+        }
+        require(read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
         if(pass==0) require(std::filesystem::exists(atelier::platform::windows_file_path(repro/"unpublished"/unpublished)),"Deep-path source archive is missing");
         if(pass==0) d.ok("scene.undo");
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
@@ -550,6 +563,20 @@ int wmain(int argc,wchar_t** argv) {
             require(restored.at("entities").empty() && !restored.at("dirty").get<bool>() &&
                 restored.at("undo")==initial.at("undo") && restored.at("view")==initial.at("view"),
                 "Description inspection or cleanup changed saved document state.");
+            // Placeholders report the saved type they stand in for and the data they keep.
+            write(project/"Content/Scenes/Placeholder.scene",Json{{"version",6},{"next_id","3"},{"roots",{"1"}},{"materials",Json::array()},{"world",Json::object()},
+                {"entities",{{{"id","1"},{"type","world.Entity"},{"name","Holder"},{"enabled",true},{"properties",Json::object()},{"children",Json::array()},{"space",nullptr},
+                    {"components",{{{"id","2"},{"type","project.Gone"},{"name",""},{"enabled",true},{"properties",{{"strength",3}}}}}}}}}}.dump());
+            d.ok("scene.open",{{"path","Content/Scenes/Placeholder.scene"}});
+            const auto placed=d.ok("editor.inspect",{{"detail","objects"}}).at("objects");
+            const auto gone=std::ranges::find_if(placed,[](const Json& entry){return entry.at("kind")=="component";});
+            require(placed.size()==2 && !placed[0].contains("placeholder") && !placed[0].contains("saved_type") && gone!=placed.end() &&
+                gone->at("placeholder")==true && gone->at("saved_type")=="project.Gone" && gone->at("type")=="world.Component",
+                "Object directory did not identify a placeholder and its saved type.");
+            const auto detail=d.ok("editor.inspect",{{"detail","object"},{"object",gone->at("handle")}}).at("object");
+            require(detail.at("saved_type")=="project.Gone" && detail.at("saved_data").size()==1 &&
+                detail.at("saved_data")[0].at("path")=="properties.strength" && detail.at("saved_data")[0].at("value")=="3" &&
+                detail.at("saved_data")[0].at("kind")=="unknown_field","Object inspection did not report a placeholder's saved data.");
             d.client.reset();editor.close();
             require(discover(directory).empty(),"Description editor descriptor remained live after close.");
             require(read(project/"Content/Scenes/Main.scene")==original_scene &&
@@ -557,7 +584,7 @@ int wmain(int argc,wchar_t** argv) {
                 "Description inspection changed the original saved scene.");
             write(root/"result.json",Json{{"status","passed"},{"cases",{"discovery","shared-option-descriptions","utf8-newlines",
                 "aggregate-field-descriptions","bounded-object-directory","single-object-inspection","stale-cursor-and-object",
-                "undo-to-clean","saved-scene-preserved","clean-close"}}}.dump(2));
+                "undo-to-clean","placeholder-inspection","saved-scene-preserved","clean-close"}}}.dump(2));
             std::cout<<"Editor Control descriptions E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
         }
         auto entity=current.at("entities")[0].at("handle").get<std::string>();auto component=current.at("entities")[0].at("components")[0].at("handle").get<std::string>();
@@ -628,8 +655,8 @@ int wmain(int argc,wchar_t** argv) {
         const Json cancelled_request{{"op","render.capture"},{"state_token",d.token},{"request_id",cancelled_id},{"args",{{"sample_frames",{4096}}}}};
         pending=d.client->call(cancelled_request);require(pending.at("status")=="pending",pending.dump());
         const auto unchanged=d.token;
-        error(d.call("scene.transform",{{"object",entity},{"position",{4,2,3}},{"rotation",{0,0,0,1}},{"scale",{0,1,1}}}),"operation_failed");
-        error(d.call("scene.set_property",{{"object",entity},{"property","scale.x"},{"value",0}}),"operation_failed");
+        error(d.call("scene.transform",{{"object",entity},{"position",{4,2,3}},{"rotation",{0,0,0,0}},{"scale",{1,1,1}}}),"operation_failed");
+        error(d.call("scene.set_property",{{"object",entity},{"property","rotation.w"},{"value",0}}),"operation_failed");
         error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
         d.ok("camera.set",{{"state",d.inspect().at("camera")}});d.ok("view.set",{{"patch",Json::object()}});
         require(d.token==unchanged && d.call("job.status",{{"job_id",cancelled_id}}).at("status")=="pending","Rejected or no-op requests cancelled unchanged rendering");

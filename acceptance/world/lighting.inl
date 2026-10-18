@@ -78,7 +78,11 @@ void lit_materials_and_lights() {
     const auto material_field=take(runtime.find_field(types.static_mesh_component,"material"));
     const auto light_path=[&](std::string_view name){return w::FieldPath{light_field,take(runtime.find_field(types.light_settings,name))};};
     const auto material_path=[&](std::string_view name){return w::FieldPath{material_field,take(runtime.find_field(types.material,name))};};
-    reject(world.write(point_id,light_path("intensity"),-1.f),"Negative intensity was accepted.");
+    // Hard bounds clamp scalar edits; type validators reject an edit that breaks a valid light and keep its value.
+    take(world.write(point_id,light_path("intensity"),-1.f));
+    require(take(w::read_light(runtime,point_id)).intensity==0,"Negative intensity was not clamped to its hard minimum.");
+    take(world.write(point_id,light_path("intensity"),point_settings.intensity));
+    reject(world.write(point_id,light_path("intensity"),std::numeric_limits<float>::quiet_NaN()),"NaN intensity was accepted.");
     reject(world.write(point_id,light_path("intensity"),1e38f),"Finite intensity beyond the analytic sampling range was accepted.");
     reject(world.write(point_id,light_path("range"),0.f),"Zero point range was accepted.");
     reject(world.write(point_id,light_path("kind"),EnumValue{types.light_kind,99}),"Unknown LightKind was accepted.");
@@ -88,13 +92,24 @@ void lit_materials_and_lights() {
     reject(world.write(directional_id,light_path("source_radius"),2.f),"Directional angular radius beyond a hemisphere was accepted.");
     require(take(w::read_light(runtime,point_id))==point_settings && take(w::read_light(runtime,rectangle_id))==rect_settings &&
         take(w::read_light(runtime,directional_id))==sun_settings,"Rejected light edits changed authored settings.");
-    reject(world.write(root,material_path("roughness"),1.1f),"Roughness exceeded one.");
-    reject(world.write(root,material_path("metallic"),-.1f),"Negative metallic was accepted.");
+    // A light already broken outside World authoring stays editable, so its fault can be repaired.
+    take(runtime.write(point_id,light_path("range"),0.f));
+    take(world.write(point_id,light_path("intensity"),3.f));
+    take(world.write(point_id,light_path("range"),point_settings.range));
+    take(world.write(point_id,light_path("intensity"),point_settings.intensity));
+    require(take(w::read_light(runtime,point_id))==point_settings,"An invalid light could not be repaired through World authoring.");
+    take(world.write(root,material_path("roughness"),1.1f));
+    take(world.write(root,material_path("metallic"),-.1f));
     auto emissive=material_path("emissive");emissive.push_back(take(runtime.find_field(types.vector3,"x")));
-    reject(world.write(root,emissive,-1.f),"Negative emissive was accepted.");
-    reject(world.write(root,emissive,std::nextafter(atelier::material::emission_limit,
-        std::numeric_limits<float>::infinity())),"World accepted emission rejected by its material capture.");
-    require(take(w::read_static_mesh(runtime,root)).material==material,"Rejected Material edits changed the value.");
+    take(world.write(root,emissive,-1.f));
+    auto clamped=take(w::read_static_mesh(runtime,root)).material;
+    require(clamped.roughness==1 && clamped.metallic==0 && clamped.emissive.x==0,"Material edits were not clamped to their hard bounds.");
+    take(world.write(root,emissive,std::nextafter(atelier::material::emission_limit,std::numeric_limits<float>::infinity())));
+    require(take(w::read_static_mesh(runtime,root)).material.emissive.x==atelier::material::emission_limit,
+        "Emission above the HDR range was not clamped to the material capture limit.");
+    reject(world.write(root,emissive,std::numeric_limits<float>::infinity()),"Infinite emission was accepted.");
+    take(world.set_material(root,material));
+    require(take(w::read_static_mesh(runtime,root)).material==material,"Restoring the Material changed the value.");
     take(world.write(root,emissive,32.f));take(world.write(root,material_path("roughness"),0.f));
     require(take(world.render_items()).front().material.emissive.x==32 && take(world.render_items()).front().material.roughness==0,"HDR emission or zero roughness was clamped away.");
     take(world.set_material(root,material));
@@ -140,11 +155,25 @@ void lit_materials_and_lights() {
     committed(world.stop());committed(world.stop());
     require(ends==std::vector<ObjectId>{directional_id,point_id,rectangle_id},"Light End order/pairing is wrong.");
     take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=-1;return {};}));
+    const auto isolated_lights=take(world.light_items());const auto light_report=world.take_diagnostics();
+    require(isolated_lights.size()==2 && std::ranges::none_of(isolated_lights,[&](const auto& light){return light.component==point_id;}) &&
+        light_report.size()==1 && light_report[0].object==point_id && light_report[0].entity==point_entity.id() &&
+        light_report[0].kind==w::DiagnosticKind::invalid_value && light_report[0].phase==w::DiagnosticPhase::lighting &&
+        light_report[0].field==std::vector<std::string>{"settings","intensity"} && light_report[0].value=="-1" && light_report[0].type=="world.LightComponent",
+        "Isolated light extraction did not skip and report only the invalid light.");
+    take(world.set_failure_policy(w::FailurePolicy::halt));
     reject(world.light_items(),"Unsafe native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
     take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=1e38f;return {};}));
     reject(world.light_items(),"Finite overflowing native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
     take(runtime.with_native<w::StaticMeshComponent>(root,[](auto& mesh)->Result<void>{mesh.material.metallic=2;return {};}));
     reject(world.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(world.set_material(root,material));
+    // The negative intensity persisted from the isolated pass; the analytic overflow (a
+    // LightSettings validator failure) and the Material bound are new causes.
+    const auto halted=world.take_diagnostics();
+    require(halted.size()==2 && halted[0].object==point_id && halted[0].field==std::vector<std::string>{"settings"} && halted[0].value.empty() &&
+        halted[1].object==root && halted[1].field==std::vector<std::string>{"material","metallic"} && halted[1].value=="2",
+        "Halted extraction failures were not reported once per persisting cause.");
+    take(world.set_failure_policy(w::FailurePolicy::isolate));
     auto detached=take(world.detach(entity.id()));
     require(take(world.light_items()).empty() && take(world.query(types.light_component)).empty(),"Detached history graph remained a light source.");
     committed(world.restore(detached));detached.root.reset();
@@ -164,6 +193,15 @@ void lit_materials_and_lights() {
     take(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,static_cast<std::uint32_t>(w::LightKind::point)}));
     require(take(w::read_light(runtime,light_root.id())).kind==w::LightKind::point && take(world.light_items()).size()==4,
         "Adding Transform did not permit the same spatial Light edit.");
+    // Authoring rejects a second Sky; one written directly loses to the first in composition preorder.
+    take(world.set_light(light_root.id(),sky_settings));
+    take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.kind=w::LightKind::sky;return {};}));
+    const auto skies=take(world.light_items());const auto sky_report=world.take_diagnostics();
+    require(skies.size()==3 && skies[1].component==point_id && skies[1].settings.kind==w::LightKind::sky &&
+        std::ranges::none_of(skies,[&](const auto& light){return light.component==light_root.id();}) &&
+        sky_report.size()==1 && sky_report[0].object==light_root.id() && sky_report[0].kind==w::DiagnosticKind::conflict,
+        "A second Sky Light did not lose to the first in composition preorder.");
+    take(world.set_light(point_id,point_settings));
     committed(world.close());committed(world.close());reject(world.light_items(),"Closed World exposed a stale light directory.");
     const auto saved_identity=snapshot.front().component;
     entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();collect(runtime);

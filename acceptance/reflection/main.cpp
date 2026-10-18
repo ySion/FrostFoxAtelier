@@ -32,6 +32,36 @@ const MethodInfo& method_info(Runtime& runtime, TypeId type, std::string_view na
         if (method.id == id) return method;
     throw std::runtime_error("Published method is missing from its type description.");
 }
+void verify_ranges(Runtime& runtime) {
+    const auto type = take(runtime.native_type<RangeProbe>());
+    const auto& emissive = field_info(runtime, type, "emissive").range;
+    const auto& tint = field_info(runtime, type, "tint").range;
+    const auto& offset = field_info(runtime, type, "offset").range;
+    const auto& samples = field_info(runtime, type, "samples").range;
+    require(emissive == FieldRange{Scalar{0.0f}, Scalar{10.0f}, Scalar{0.0f}, Scalar{65504.0f}} &&
+        tint == FieldRange{Scalar{0.1}, Scalar{1.0}, std::nullopt, Scalar{1.0}} &&
+        offset == FieldRange{std::nullopt, std::nullopt, Scalar{std::int32_t{-5}}, Scalar{std::int32_t{5}}} &&
+        samples == FieldRange{Scalar{std::uint32_t{1}}, Scalar{std::uint32_t{64}}, std::nullopt, std::nullopt},
+        "Generated ranges lost Lock/Hard semantics or exact leaf types.");
+    auto probe = take(runtime.create(type));
+    const std::array emissive_path{take(runtime.find_field(type, "emissive"))};
+    take(runtime.write(probe.id(), emissive_path, Scalar{100.0f}));
+    require(take(runtime.read(probe.id(), emissive_path)) == Scalar{100.0f}, "An unlocked UI maximum constrained a generated field.");
+    take(runtime.write(probe.id(), emissive_path, Scalar{1e6f}));
+    require(take(runtime.read(probe.id(), emissive_path)) == Scalar{65504.0f}, "A generated hard maximum was not enforced.");
+
+    // An Array<double> range bounds each element on insertion and on element writes.
+    const auto weights = take(runtime.find_field(type, "weights"));
+    require(field_info(runtime, type, "weights").range == FieldRange{std::nullopt, Scalar{0.5}, Scalar{0.0}, Scalar{1.0}},
+        "A generated Array range lost its element bounds.");
+    const std::array weights_path{weights};
+    const double heavy = 4.0;
+    take(runtime.insert_element(probe.id(), weights_path, 0, {take(runtime.native_type<double>()), &heavy}));
+    const std::array first{weights, take(runtime.element(take(runtime.native_type<Array<double>>()), 0))};
+    require(take(runtime.read(probe.id(), first)) == Scalar{1.0}, "An inserted Array element escaped its generated hard bound.");
+    take(runtime.write(probe.id(), first, Scalar{-3.0}));
+    require(take(runtime.read(probe.id(), first)) == Scalar{0.0}, "An Array element write escaped its generated hard bound.");
+}
 void verify_field_presentation(Runtime& runtime) {
     const auto sample_type = take(runtime.native_type<Sample>());
     const auto& value = field_info(runtime, sample_type, "value");
@@ -297,10 +327,12 @@ int main() {
             atelier::reflection::Definition<UnsignedMode>::build(runtime),
             atelier::reflection::Definition<PlainRecord>::build(runtime),
             atelier::reflection::Definition<CounterChild>::build(runtime),
+            atelier::reflection::Definition<RangeProbe>::build(runtime),
             array_definition<double>(runtime, "reflection.DoubleArray"),
             array_definition<bool>(runtime, "reflection.BoolArray")}));
         verify_field_presentation(runtime);
         verify_descriptions(runtime);
+        verify_ranges(runtime);
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);

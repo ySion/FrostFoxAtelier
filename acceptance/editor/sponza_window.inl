@@ -2,8 +2,9 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     using Access=atelier::application::EditorAcceptanceAccess;
     namespace render=atelier::renderer;
     namespace world=atelier::world;
-    const auto authored=model(app.document().serialize());
+    // Fitting the DDGI volume writes World lighting; the dynamic checks below must restore this fitted state.
     model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit,true));
+    const auto authored=model(app.document().serialize());
     tick(app,128);
     auto settings=Access::scene_lit_view(app).lit;
     const auto& meshes=Access::scene_snapshot(app).meshes;
@@ -55,16 +56,20 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         <<" budget="<<settings.probe_update_budget<<" rays/probe="<<settings.probe_rays<<'\n';
     // Sponza has no Sky Light; isolate indirect diffuse from AO, screen reflections and bloom.
     require(Access::scene_snapshot(app).environment==std::array<float,3>{},"Sponza unexpectedly has environment radiance.");
+    // These are World-authored settings; the test edits them like the World panel and restores them below.
+    const auto authored_lighting=settings;
     settings.gtao=false;settings.sssr=false;settings.bloom=false;
-    Access::scene_lit_settings(app,settings);
+    model(Access::scene_lit_settings(app,settings));
     auto on=shot("sponza-ddgi-on",128);
     const auto stable=shot("sponza-ddgi-stable",32);
-    settings.ddgi=false;Access::scene_lit_settings(app,settings);
+    settings.ddgi=false;model(Access::scene_lit_settings(app,settings));
     const auto off=shot("sponza-ddgi-off",64);
+    require(app.frame_statistics().scene_lit_shadow_rays>0 && app.frame_statistics().scene_lit_probe_rays==0,
+        "Sponza DDGI Off did not reach the renderer.");
     const auto contribution=difference(on,off),noise=difference(on,stable);
     report<<"Static mean absolute RGB difference (0..255): DDGI="<<contribution<<" temporal="<<noise<<'\n';report.flush();
     require(contribution>.5 && contribution>noise*2,"Sponza DDGI contribution is absent or indistinguishable from temporal noise.");
-    settings.ddgi=true;Access::scene_lit_settings(app,settings);tick(app,64);
+    settings.ddgi=true;model(Access::scene_lit_settings(app,settings));tick(app,64);
     const auto& scene=app.document().world();auto& runtime=scene.runtime();
     const auto edit=[&](atelier::ObjectId component,std::string_view name,float value) {
         const auto fields=model(app.document().properties(component));
@@ -88,7 +93,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         if(frame==32) shot("sponza-moving-32",0);
     }
     const auto moved=shot("sponza-moved-ddgi-on",128);
-    settings.ddgi=false;Access::scene_lit_settings(app,settings);
+    settings.ddgi=false;model(Access::scene_lit_settings(app,settings));
     const auto moved_off=shot("sponza-moved-ddgi-off",64);
     const auto moved_contribution=difference(moved,moved_off);
     double indirect_change=0;std::size_t indirect_samples=0;
@@ -102,20 +107,25 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         <<" indirect difference-of-differences="<<indirect_change<<'\n';report.flush();
     require(difference(on,moved)>1 && moved_contribution>.5 && indirect_change>std::max(.5,noise*2),
         "Sponza moved light did not produce a new indirect-lit result.");
-    settings.ddgi=true;Access::scene_lit_settings(app,settings);tick(app,64);
+    settings.ddgi=true;model(Access::scene_lit_settings(app,settings));tick(app,64);
     for(const auto& item:light_items) edit(item.component,"settings.intensity",0);
     const auto dark_early=shot("sponza-lights-off-early",1);
     shot("sponza-lights-off-128",128);
     shot("sponza-lights-off-256",128);
     const auto dark_late=shot("sponza-lights-off-settled",128);
-    report<<"Lights off luminance (0..255): early="<<luminance(dark_early)<<" settled="<<luminance(dark_late)<<'\n';report.flush();
-    require(luminance(dark_late)<std::max(2.,luminance(dark_early)*.3),"Sponza retained stale probe lighting after lights were switched off.");
+    // With lights and probes off only editor overlays remain; stale probe light is what stays above that floor.
+    settings.ddgi=false;model(Access::scene_lit_settings(app,settings));
+    const auto unlit=luminance(shot("sponza-lights-off-ddgi-off",64));
+    const auto early=luminance(dark_early)-unlit,late=luminance(dark_late)-unlit;
+    report<<"Lights off luminance (0..255): early="<<luminance(dark_early)<<" settled="<<luminance(dark_late)<<" unlit overlay floor="<<unlit<<'\n';report.flush();
+    require(early>.5 && late<early*.3,"Sponza retained stale probe lighting after lights were switched off.");
     for(const auto& item:light_items) edit(item.component,"settings.intensity",item.settings.intensity);
     edit(moving->entity,"position.x",original.position.x);
+    model(Access::scene_lit_settings(app,authored_lighting));
     require(model(app.document().serialize())==authored,"Sponza dynamic acceptance did not restore authored World data.");
     model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit));
     require(Access::scene_lit_view(app).lit.probe_volumes[0].minimum==settings.probe_volumes[0].minimum,"Camera configuration unexpectedly rebuilt the DDGI volume.");
-    report<<"PASS. Scene Lit currently uses instance colors and opaque coverage; diffuse/opacity textures are verified separately in Smooth.\n";
+    report<<"PASS.\n";
     require(report.good() && motion.good(),"Cannot write Sponza DDGI evidence.");
 }
 

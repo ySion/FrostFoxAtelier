@@ -41,7 +41,7 @@
 
 ## C++ 接口
 
-已有运行中的 World/PhysicsScene 完成 `update(0)` 登记后，可以同步调用：
+已有运行中的 World/PhysicsScene 经 `World::update(0)` 完成登记后，可以同步调用：
 
 ```cpp
 physics::TraceSettings settings;
@@ -66,7 +66,7 @@ for (const auto& hit : result->hits) {
 
 - 默认 automatic=true：每个已完成物理步、所有模拟位姿回写后采样，在外部 `on_after_step` 之前发布。
 - automatic=false：调用 `request_query()`，在下一个实际固定步采样；重复请求合并，成功消费一次。没有子步或处于暂停时不自动更新。
-- 宿主可用 `execute_query(component, ignore)` 立即采样，即使物理暂停；必须先通过 `update(0)` 登记活动组件。
+- 宿主可用 `execute_query(component, ignore)` 立即采样，即使物理暂停；必须先通过 `World::update(0)` 登记活动组件。
 - `read_query_result(component)` 返回拥有型快照副本。未采样、采样失败或组件失效返回错误；已完成但未命中返回成功空结果。
 - ignore_self 默认只追加忽略实际 owner Entity，不自动扩展到组合父实体或兄弟实体。`ignored_entities` 显式排除所列 Entity，与 ignore_self 及调用时的 ignore 集合共同生效；显式绑定目标必须有效且不重复，空身份或重复目标更新失败并保留旧集合。`set_query_ignored_entities / query_ignored_entities` 使用同一字段，允许活动查询更新，并在下次采样生效。
 - 组件、所属 Entity 或其组合祖先停用/删除/离场会清除其活动结果和请求；恢复后重新登记。独立空间参考目标的停用不清除查询资格。尚未首次 reconcile 的活动组件在停用时也会取消请求。

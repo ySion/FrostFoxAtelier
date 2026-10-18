@@ -19,7 +19,11 @@
 #include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
@@ -91,6 +95,8 @@ struct Field {
     unsigned line{};
     bool direct_layout{};
     std::string label{}, category{}, description{};
+    // Designated FieldRange initializers, empty when the field declares no range.
+    std::string range{};
 };
 struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; std::string description{}; };
 struct Type {
@@ -184,10 +190,12 @@ struct State {
                 } else if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
                     error(marker.location, "Reflection option strings must contain no control characters."); return {};
                 }
-            } else if (name != "Hidden" && name != "BorrowSafe") {
+            } else if (name != "Hidden" && name != "BorrowSafe" && name != "LockMin" && name != "LockMax") {
                 error(marker.location, "Reflection option " + name + " requires a value."); return {};
             }
-            if ((name == "Hidden" || name == "BorrowSafe") && !value.empty()) { error(marker.location, name + " is a flag, without a value."); return {}; }
+            if ((name == "Hidden" || name == "BorrowSafe" || name == "LockMin" || name == "LockMax") && !value.empty()) {
+                error(marker.location, name + " is a flag, without a value."); return {};
+            }
             result.emplace(name, std::move(value));
             if (i < tokens.size()) {
                 if (!tokens[i++].is(tok::comma) || i == tokens.size()) {
@@ -405,6 +413,40 @@ const ClassTemplateSpecializationDecl* array_specialization(QualType type) {
         ? specialization : nullptr;
 }
 
+// Range bounds use the exact leaf scalar; math vectors apply them per component and
+// Arrays of scalars or vectors per element.
+std::optional<std::string> range_leaf(QualType type, ASTContext& context) {
+    if (const auto* array = array_specialization(type)) type = array->getTemplateArgs()[0].getAsType();
+    type = type.getCanonicalType();
+    if (const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(type->getAsCXXRecordDecl())) {
+        if (!math_value(type, context) || specialization->getSpecializedTemplate()->getQualifiedNameAsString() != "atelier::math::BasicVector")
+            return {};
+        type = specialization->getTemplateArgs()[0].getAsType().getCanonicalType();
+    }
+    if (type->isSpecificBuiltinType(BuiltinType::Float)) return "float";
+    if (type->isSpecificBuiltinType(BuiltinType::Double)) return "double";
+    if (type->isSpecificBuiltinType(BuiltinType::Int) && context.getTypeSize(type) == 32) return "std::int32_t";
+    if (type->isSpecificBuiltinType(BuiltinType::UInt) && context.getTypeSize(type) == 32) return "std::uint32_t";
+    return {};
+}
+
+// Hex floats keep generated bounds bit-exact; integers reject fractions and overflow.
+template<class T> std::optional<std::string> range_bound(const std::string& text) {
+    T value{};
+    const auto* last = text.data() + text.size();
+    if (const auto parsed = std::from_chars(text.data(), last, value); parsed.ec != std::errc{} || parsed.ptr != last) return {};
+    if constexpr (std::is_floating_point_v<T>) {
+        if (!std::isfinite(value)) return {};
+        char digits[64];
+        const auto end = std::to_chars(digits, digits + sizeof digits, std::abs(value), std::chars_format::hex).ptr;
+        return std::string("Scalar{") + (std::signbit(value) ? "-0x" : "0x") + std::string(digits, end) +
+            (std::is_same_v<T, float> ? "f}" : "}");
+    } else {
+        return std::string("Scalar{") + (std::is_same_v<T, std::int32_t> ? "std::int32_t{" : "std::uint32_t{") +
+            std::to_string(value) + (std::is_same_v<T, std::int32_t> ? "}}" : "u}}");
+    }
+}
+
 bool contains_reference_storage(QualType type, ASTContext& context, std::set<const CXXRecordDecl*>& visited) {
     type = type.getCanonicalType();
     if (const auto* array = context.getAsArrayType(type)) return contains_reference_storage(array->getElementType(), context, visited);
@@ -485,7 +527,8 @@ void members(State& state, Type& type, ASTContext& context) {
                 state.error(field->getLocation(), "Runtime reference storage, including inline records and arrays, requires an explicit AFIELD marker.");
             continue;
         }
-        const auto options = state.options(*marker, {"Name", "Label", "Category", "DESC", "Hidden", "Strong", "Weak", "Sequence"});
+        const auto options = state.options(*marker, {"Name", "Label", "Category", "DESC", "Hidden", "Strong", "Weak", "Sequence",
+            "Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax"});
         if (!options) continue;
         if (field->isBitField() || field->isAnonymousStructOrUnion() || field->getType().isConstQualified() || field->getType().isVolatileQualified()) {
             state.error(field->getLocation(), "AFIELD requires a named, mutable, addressable data member."); continue;
@@ -518,6 +561,37 @@ void members(State& state, Type& type, ASTContext& context) {
             if (!value_field(field->getType(), state, context)) {
                 state.error(field->getLocation(), "AFIELD requires a supported scalar/enum/record, String, reference-free Array<T>, or explicit Runtime reference storage. Borrowed views cannot be persistent fields."); continue;
             }
+        }
+        if (std::ranges::any_of(std::array{"Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax"},
+                [&](const char* name) { return options->contains(name); })) {
+            const auto leaf = range_leaf(field->getType(), context);
+            if (!leaf) {
+                state.error(field->getLocation(), "Field ranges require a float, double, int32, uint32 or math vector field, or an Array of them."); continue;
+            }
+            bool valid = true;
+            for (const std::string side : {"Min", "Max"})
+                if (options->contains("Lock" + side) && (!options->contains(side) || options->contains("Hard" + side))) {
+                    state.error(field->getLocation(), "Lock" + side + " requires " + side + " and excludes Hard" + side + ".");
+                    valid = false;
+                }
+            // Runtime publication owns ordering, UI-within-hard and default checks.
+            const auto bound = [&](const char* member, const std::string& option) {
+                if (!valid || !options->contains(option)) return;
+                const auto& text = options->at(option);
+                const auto parsed = *leaf == "float" ? range_bound<float>(text) : *leaf == "double" ? range_bound<double>(text)
+                    : *leaf == "std::int32_t" ? range_bound<std::int32_t>(text) : range_bound<std::uint32_t>(text);
+                if (!parsed) {
+                    state.error(field->getLocation(), option + " requires a finite decimal " + *leaf + " value: " + text);
+                    valid = false;
+                    return;
+                }
+                result.range += std::string(result.range.empty() ? "" : ", ") + "." + member + " = " + *parsed;
+            };
+            bound("ui_min", "Min");
+            bound("ui_max", "Max");
+            bound("hard_min", options->contains("LockMin") ? "Min" : "HardMin");
+            bound("hard_max", options->contains("LockMax") ? "Max" : "HardMax");
+            if (!valid) continue;
         }
         if (!names.insert(result.name).second) state.error(field->getLocation(), "Duplicate reflected member name: " + result.name);
         type.fields.push_back(std::move(result));
@@ -667,6 +741,7 @@ void emit(const State& state) {
             if (presentation) cpp += ", " + quote(field.label) + ", " + quote(field.category);
             if (!field.description.empty()) cpp += ", " + quote(field.description);
             cpp += ")";
+            if (!field.range.empty()) cpp += "\n        .range({" + field.range + "})";
         }
         for (const auto& method : type.methods) {
             cpp += location(method.line) + "        .method<static_cast<" + method.pointer + ">(&Self::" + method.cpp_name + ")>(" + quote(method.name);

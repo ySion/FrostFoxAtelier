@@ -224,7 +224,7 @@ Result<void> ViewportTool::preview_world(Session& session,std::uint64_t token,st
         if(values[i]==*frame) {local.push_back(*original);continue;}
         if(local_scale) {
             auto desired=*original_world;desired[12]=values[i].position.x;desired[13]=values[i].position.y;desired[14]=values[i].position.z;
-            auto converted=world::relative_transform(desired,matrix);if(!converted) return std::unexpected(converted.error());
+            auto converted=world::relative_transform(desired,matrix,original->scale);if(!converted) return std::unexpected(converted.error());
             for(std::size_t axis=0;axis<3;++axis) converted->scale[axis]=original->scale[axis]*values[i].scale[axis]/frame->scale[axis];
             local.push_back(*converted);continue;
         }
@@ -233,7 +233,8 @@ Result<void> ViewportTool::preview_world(Session& session,std::uint64_t token,st
         // TRS only expresses the gesture's delta; it never replaces object space.
         auto delta=world::multiply(*inverse,world::transform_matrix(values[i]));if(!delta) return std::unexpected(delta.error());
         auto desired=world::multiply(*original_world,*delta);if(!desired) return std::unexpected(desired.error());
-        auto converted=world::relative_transform(*desired,matrix);
+        // A mirrored Entity keeps its own negative axes instead of the canonical X reflection.
+        auto converted=world::relative_transform(*desired,matrix,original->scale);
         if(!converted) return std::unexpected(converted.error());local.push_back(*converted);
     }
     return session.preview_transform(token,local);
@@ -501,7 +502,6 @@ Result<void> ViewportTool::update(Session& session,const ViewportView& view,V2 p
         if(typed) amount=*typed;
         else if(((g.settings.grid_snap && g.settings.snap_scale)!=snap) && g.settings.scale_step>0)
             amount=std::round(amount/g.settings.scale_step)*g.settings.scale_step;
-        if(amount<=0) return invalid("Scale must stay positive.");
         V3 factors{1,1,1};
         for(int axis=0;axis<3;++axis) if(g.axis<0 || (g.plane?axis!=g.axis:axis==g.axis)) factors[axis]=amount;
         for(auto& value:values) {

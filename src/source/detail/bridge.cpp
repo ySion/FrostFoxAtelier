@@ -88,7 +88,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         if (std::find(binding.dependencies.begin(), binding.dependencies.end(), dependency) == binding.dependencies.end())
             binding.dependencies.push_back(dependency);
     };
-    struct FieldCursor { const TypeInfo* type; std::size_t next{}, depth{}, prefix_length{}; };
+    struct FieldCursor { const TypeInfo* type; std::size_t next{}, depth{}, prefix_length{}; bool constrained{}; };
     std::vector<FieldCursor> cursors{{info}};
     std::vector<FieldId> path;
     std::string prefix;
@@ -108,14 +108,15 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         prefix += field.name;
         const auto field_kind = value_kind(binding, field.value.type);
         const bool typed_field = field_kind.kind == ValueKind::record && binding.values[field_kind.type_index].math;
+        const bool constrained = cursor.constrained || field.range.constrains();
         if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || typed_field))
-            binding.fields.push_back({prefix, path, field_kind});
+            binding.fields.push_back({prefix, path, field_kind, constrained});
         if (field_kind == ValueKind::void_value || aggregate(field_kind)) {
             const auto* nested = describe(field.value.type);
             if (nested->kind != TypeKind::record) continue;
             remember(nested->id);
             prefix += '.';
-            cursors.push_back({nested, 0, path.size(), prefix.size()});
+            cursors.push_back({nested, 0, path.size(), prefix.size(), constrained});
         }
     }
     for (const auto& method : info->methods) {
@@ -194,7 +195,7 @@ EnvironmentView::EnvironmentView(const Binding& binding) {
         values.push_back({value.name.c_str(), value.kind, value.size, value.alignment, value.element,
             fields.data(), static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own, value.can_mutate, value.math, value.plain_value});
     }
-    for (const auto& field : binding.fields) fields.push_back({field.name.c_str(), field.kind});
+    for (const auto& field : binding.fields) fields.push_back({field.name.c_str(), field.kind, field.constrained});
     for (const auto& method : binding.methods) {
         require(method.parameters.size() <= std::numeric_limits<std::uint32_t>::max(), "Host signature is too large.");
         methods.push_back({method.name.c_str(), method.parameters.data(), static_cast<std::uint32_t>(method.parameters.size()),
@@ -664,7 +665,8 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
         }
     }
     for (std::size_t i = 0; i < binding.fields.size(); ++i)
-        if (binding.fields[i].name != environment.fields[i].name || binding.fields[i].kind != environment.fields[i].kind) return false;
+        if (binding.fields[i].name != environment.fields[i].name || binding.fields[i].kind != environment.fields[i].kind ||
+            binding.fields[i].constrained != environment.fields[i].constrained) return false;
     for (std::size_t i = 0; i < binding.methods.size(); ++i) {
         const auto& actual = environment.methods[i];
         const auto& expected = binding.methods[i];
@@ -715,7 +717,8 @@ Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const Binding& binding,
     BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver,
     std::span<const BusinessValue> arguments, bool request_collection, InvocationObserver observer,
-    CollectionBudget budget, void* result_data, BusinessTrace* trace, std::shared_ptr<DebugSessionState> debugger) {
+    CollectionBudget budget, void* result_data, BusinessTrace* trace, std::shared_ptr<DebugSessionState> debugger,
+    std::uint32_t* failure_site) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
         auto checked = check_source_receiver(binding, receiver);
@@ -731,8 +734,9 @@ Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const 
     char backend_error[512];
     BusinessValue value{};
     value.data = result_data;
+    std::uint32_t site = no_diagnostic_location;
     const auto status = atelier_invoke_business(code, &invocation, arguments.data(),
-        static_cast<std::uint32_t>(arguments.size()), &value, backend_error, sizeof(backend_error), trace);
+        static_cast<std::uint32_t>(arguments.size()), &value, backend_error, sizeof(backend_error), trace, &site);
     // Inspect generated cleanup before the RAII fallback. Observers cannot
     // manufacture success or substitute for this production invariant.
     const bool cleared = invocation.resources_cleared();
@@ -743,9 +747,11 @@ Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const 
             return std::unexpected(Error{ErrorCode::invocation_failed, "Aborted source execution left resources alive."});
         return std::unexpected(Error{ErrorCode::execution_aborted, "Source execution aborted by the debugger."});
     }
-    if (status != 0 || invocation.failed)
+    if (status != 0 || invocation.failed) {
+        if (failure_site) *failure_site = site;
         return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
             invocation.failed ? invocation.error : backend_error});
+    }
     if (!cleared)
         return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});
     return value;

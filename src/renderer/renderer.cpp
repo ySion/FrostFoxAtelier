@@ -4,6 +4,7 @@
 #include "scene_lit.hpp"
 #include "raster_viewport.hpp"
 #include "scene_visibility.hpp"
+#include "timing.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -1038,11 +1039,10 @@ Result<Target> Renderer::sync_window_target() {
     return Target{{target->width,target->height},target->drawable};
 }
 Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
+    timing::Scope rendering{phases::render};
     const auto destination = target();
     if (!destination) return std::unexpected(destination.error());
     auto &s = *state_;
-    s.stats.cpu_prepare_us = s.stats.cpu_encode_us = 0;
-    s.stats.cpu_frame = {};
     s.stats.ui_draw_calls = 0;
     s.stats.ui_quads = 0;
     s.stats.ui_instance_upload_bytes = 0;
@@ -1069,8 +1069,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     try {
-        using Clock = std::chrono::steady_clock;
-        const auto prepare_started = Clock::now();
+        std::optional<timing::Scope> stage{std::in_place, phases::prepare};
         validate(frame);
         if(!std::isfinite(frame.render_delta_seconds) || frame.render_delta_seconds<0 || frame.render_delta_seconds>.1f)
             throw error(rhi::ErrorCode::invalid_argument,"Render delta must be finite and in [0, .1] seconds");
@@ -1096,7 +1095,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
             else s.mesh_batches.push_back({first, 1, mesh.geometry});
         }
         s.prepare_ui(frame);
-        s.stats.cpu_prepare_us = std::chrono::duration<double, std::micro>(Clock::now() - prepare_started).count();
+        stage.reset();
         Capture pending;
         if (capture) {
             pending.frame_id = frame.ui_frame.id;
@@ -1104,17 +1103,26 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
             pending.rgba.resize(std::size_t(extent.width) * extent.height * 4);
             pending.depth.resize(std::size_t(extent.width) * extent.height);
         }
-        const auto encode_started = Clock::now();
+        stage.emplace(phases::encode);
         encoding = true;
         if(s.scene_lit && (frame.view.shading!=Shading::scene_lit || frame.view.wireframe==Wireframe::only ||
                           frame.meshes.empty() || frame.scene_viewport.width==0 || frame.scene_viewport.height==0))
             s.scene_lit->invalidate(frame.meshes.empty(),s.stats);
         s.draw(frame, extent, capture ? &pending : nullptr);
-        s.stats.cpu_encode_us = std::chrono::duration<double, std::micro>(Clock::now() - encode_started).count();
+        stage.reset();
         rhi::FrameInfo details;
-        const auto presented = s.context.frame(s.options.vsync, &details);
-        if (!presented) throw Error{presented.error(), true};
-        s.stats.cpu_frame = details.cpu;
+        {
+            timing::Scope submitting{phases::frame};
+            const auto presented = s.context.frame(s.options.vsync, &details);
+            if (!presented) throw Error{presented.error(), true};
+            // gfx partitions its frame call by CPU wall time; record it as children of the call.
+            const auto stage_time = [](double us) { return std::chrono::nanoseconds{std::llround(us * 1000)}; };
+            const auto &cpu = details.cpu;
+            timing::record(phases::submit, stage_time(cpu.prepare_us + cpu.submit_us));
+            timing::record(phases::present, stage_time(cpu.present_us));
+            timing::record(phases::wait, stage_time(cpu.wait_us));
+            timing::record(phases::recycle, stage_time(cpu.resize_us + cpu.recycle_us + cpu.reclaim_us));
+        }
         s.check_debug();
         FrameResult result{.accepted_extent = {}, .next_extent = {details.next.width, details.next.height},
                            .stats = s.stats};

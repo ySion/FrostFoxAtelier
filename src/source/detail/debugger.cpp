@@ -325,8 +325,6 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
             return 1;
         }
         frame->location = location;
-        if (point == DebugPoint::error && state->failure_location == no_diagnostic_location)
-            state->failure_location = location;
         if (invocation.trace) {
             invocation.trace->current_location = location;
             if (point == DebugPoint::error && invocation.trace->failure_location == no_diagnostic_location)

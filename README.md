@@ -16,7 +16,7 @@
 | Runtime / JIT 诊断 | 按需调用计数与计时、GC/拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
 | Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 10 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
-| C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
+| C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
 
@@ -36,7 +36,7 @@ cmake --build --preset dev --target atelier_editor
 
 编辑器直接消费正式 Entity/Component/World，无参数启动打开自带的 Sponza 默认场景（Scene Lit + DDGI）。资源浏览器按 Project → Examples → 场景名组织 Sponza / Scene Lit Room / Physic / Dungeons，顶部同名菜单负责切换；首次打开建立整个官方示例工程的用户副本，后续保存保留修改，见 [官方 Examples](assets/examples/README.md)。顶部 Create 快捷区创建空 Entity 或真正的 StaticMeshEntity；Asset Browser 浏览工程文件与内置网格，选择资源后 Add to Scene 一次创建完整 Entity，撤销/重做保留 Entity 子树与组件身份。Scene Tree 展示 World → Entity 组合层级与实际类型，组件组成由 Entity Structure 维护，属性由 Parameters 展示。菜单、快捷区和快捷键共用指令定义、可用性与应用执行入口。位置字段编辑 Entity 的内联空间数据，拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Entity。
 视口支持真实网格拾取、多选、框选、移动/旋转/缩放手柄及 G/R/S 数值操作；Shift+D 复制后移动，X 在指针下确认删除，Z 打开支持点击与按住划动松键选择的渲染模式饼菜单；Shift+反引号进入 FPS 自由视角，WASD/QE 移动、鼠标看向、滚轮调速。左键放置 3D 游标、右键选择、W 打开操作菜单，中键环绕、Shift+中键平移、滚轮缩放。工具选项栏提供枢轴、网格吸附与步长；视口内显示当前模式及透视/正交视图菜单。Parameters 的位置、欧拉角和缩放使用三分量数值行，其他数学向量按实际类型组合；选择资源时显示资源元数据。操作、事务和边界见[编辑器模块](docs/modules/editor/README.md#视口编辑)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
-World 提供 Entity 递归组合、有序组件、可选内联 TRS 和独立空间参考，以及 Entity/Component 共用的有序 Begin/Tick/End 和任务取消；完整 Detached 子树经统一入口注册，网格、灯和物理消费所属 Entity 的空间。renderer 消费矩阵、共享网格与按槽解析的不可变材质快照。开发与发布配置的 CPU 验收结果、实际日志和仍未完成的 GPU 窗口链统一记录在[当前验收状态](docs/modules/editor/README.md#entity-迁移验收状态)。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)。编辑器内源码断点/单步交互、节点图、参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
+World 提供 Entity 递归组合、有序组件、可选内联 TRS 和独立空间参考，以及 Entity/Component 共用的有序 Begin/End、分阶段 Tick 和任务取消；完整 Detached 子树经统一入口注册，网格、灯和物理消费所属 Entity 的空间。renderer 消费矩阵、共享网格与按槽解析的不可变材质快照。开发与发布配置的 CPU 验收结果、实际日志和仍未完成的 GPU 窗口链统一记录在[当前验收状态](docs/modules/editor/README.md#entity-迁移验收状态)。[首版方案](docs/first-editor-plan.md)作为 M0/M1 历史保留；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)。编辑器内源码断点/单步交互、节点图、参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 
 Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat / Scene Lit**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。普通新建场景使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格，Sponza 与 Scene Lit Room 入口设置 Scene Lit，Physic 与 Dungeons 使用 Smooth；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，OBJ 简单多边形经三角化后保留原边界。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_viewport_acceptance`，后者用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
 
@@ -103,7 +103,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口先完成基础库、反射（含 CLI）和 RHI 验收依赖，再执行 Runtime、源码公共消费者、JIT 业务、布局、生产 UI 和编辑器消费者；真实窗口按顺序运行。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。真实输入法使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口是合并 main 前的完整门禁：包含全部可无人值守运行的验收目标，包括基础库、反射（含 CLI）、RHI、Renderer 各入口、Runtime、源码公共消费者、JIT 业务、World、物理、布局、生产 UI、编辑器文档链的全部模式、工程场景与集成、Control，以及编辑器的全部真实窗口入口。GPU 与真实窗口目标按顺序运行，完整一次需数小时；日常开发使用各模块的专项目标，新增的验收入口必须归入某个被总入口包含的目标。测量入口统一以 `--profile-*` 命名（如 `atelier_editor_document_acceptance --profile-scene-cpu`、`atelier_editor --profile-render-performance`），只输出数值报告，不属于验收，也不进入总入口；其中的数值不作为任何通过条件。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
@@ -225,9 +225,9 @@ cmake --build --preset release --target ui_layout_acceptance
 
 [模块函数消费者](acceptance/source/modules.cpp)覆盖前向/嵌套调用、直接定型参数、跨函数引用别名、逐层资源清理、对象根与 GC，以及 async 入口调用同步助手。宿主通过 `Program::request(name, source, entry_name)` 选择公开入口；整模块随代码版本一起发布和退休。当前内部调用图无环，不支持递归或调用 async 函数。详见[同模块多函数](docs/source-function-modules.md)。
 
-[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量默认值和具名多入口。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量默认值和具名多入口。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态并可追加类、方法、函数和类型，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
 
-[类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型在注册封闭前发布，代码更新保持类型定义与身份；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
+[类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型可在创建对象后随代码更新追加，已发布类型的定义与身份保持不变；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
 同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
 
@@ -240,6 +240,8 @@ cmake --build --preset release --target ui_layout_acceptance
 ```powershell
 cmake --build --preset release --target atelier_source_measure
 ./out/release/atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
+# 代码生成证据：每个用例的 .s / 优化后 .ll、对象字节数，以及失败点密集模块的编译时间与内存
+./out/release/atelier_source_measure.exe --artifacts out/codegen
 ```
 
 [机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定，不再由固定手写业务 IR 决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。
@@ -268,7 +270,7 @@ cmake --build --preset release --target atelier_source_measure
 
 ### 单入口兼容方法体热更新
 
-正式 [source::Program](src/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，并准备源码类型布局；`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。首次发布可一并提交源码类型；后续更新固定类型定义、函数名、参数/结果、接收者要求、成员目录及实际服务地址。共享发布与类型生命周期合同见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
+正式 [source::Program](src/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，并准备源码类型布局；`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。每次发布都可一并提交新的源码类型；后续更新固定已发布的类型定义、函数名、参数/结果、接收者要求、成员目录及实际服务地址。共享发布与类型生命周期合同见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
 
 - 同一 Runtime 任一语言调用仍活动，或正处于原生借用、遍历/GC 回调时，发布返回 `busy`，候选保留供外层返回后重试。暂停的 GC 周期本身允许兼容发布；安全点不暗中切换版本。
 - 最新请求一经接受，旧候选不能再提交；最新源码的解析、类型检查或真实链接失败，均保留上次已发布版本，不回退发布过期候选。重复提交及不兼容入口/签名/接收者/服务表明确拒绝。
@@ -324,19 +326,22 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 ## 当前契约与范围
 
 - 每个 `Runtime` 显式拥有自己的类型和对象实例，单线程使用，不可复制或移动。值操作使用的外部存储及其生命周期由调用方管理。
-- 类型先注册后使用，实例首次创建成功后关闭注册。支持原生与描述型定义成组发布，前向依赖和引用环不要求按依赖顺序提交；整组验证与布局计算成功后才公开，失败不会留下半注册类型。单条注册复用同一路径。
+- 类型先注册后使用；创建对象后仍可在类型安全点（无回调、借用、遍历或活动生成代码调用，且 GC 空闲）追加类型，已发布定义不可变。支持原生与描述型定义成组发布，前向依赖和引用环不要求按依赖顺序提交；整组验证与布局计算成功后才公开，失败不会留下半注册类型。单条注册复用同一路径。
 - `TypeId`、`FieldId`、`MethodId` 和 `ObjectId` 都限于所属运行时；限定类型名是声明名称，进程内标识不是存档 ID。
 - `create` 交付已登记的 `ObjectRoot`，`ObjectId` 仍只标识身份。根复制增加独立登记，移动转移登记；释放根不立即销毁目标，也不延长 `Runtime` 自身的生命。显式销毁及运行时退出仍释放对象；不可达对象由宿主显式推进 GC 回收。
 - 当前支持 bool/float/double/u32/i32、i32/u32 底层枚举、含引用内联记录与单继承对象；原生成员方法支持标量/枚举的值、只读引用及可写引用参数；原生方法与源码入口还支持无 GC 引用的原生记录/Array/String 借用，源码入口的 String 参数限于只读。对象强引用序列见上方合同；资源记录按值调用、对象引用参数与结果、借用返回、通用值容器及记录方法尚未实现；内建数学记录与 plain struct 支持同步按值调用。
 - 标量和记录支持调用方存储上的初始化、复制构造、赋值和销毁。含引用记录的复制保持共享目标，不克隆对象；原生记录执行 C++ 操作，描述型记录按字段执行。`TypeInfo` 分别提供复制构造和赋值能力，缺少能力时在操作开始前拒绝。
 - `root_value` 用可移动的 `ValueRoot` 登记调用方的活值存储，不接管或延长存储寿命。登记撤销前禁止重建或销毁该存储；赋值仍可更新其中的引用。值接口检查类型、容量、对齐和重叠，调用方负责实际表示、构造状态和存续期。这仍是可信原生接口，不是任意字节的安全验证器，见[值操作入口](docs/runtime-model.md#已实现的值操作入口)。
 - `Scalar` 是保存 bool/float/double/u32/i32 或带类型身份枚举值的无堆分配值载体，不承担语言对象或通用动态值的存储。bool 使用独立的 `core.bool` 身份，值存储大小与对齐为 1 字节。
-- 通过名称查找成员后可缓存成员标识。类型/成员名称查询目前是线性扫描，定位于注册和发现阶段；缓存后的字段路径访问与方法调用不重新查名字，不分配堆内存（错误报告除外）。
-- `read/write` 的终字段必须是标量，`read_reference/write_reference` 操作引用字段；字段路径只穿过内联记录，不隐式解引用对象。引用写入检查目标类型和形式，弱引用不能直接写入持有字段；`try_acquire` 对活的观察目标交付根句柄，空或失效目标返回空结果。已定型的失效引用仍可复制，旧身份不自动清空，也不绑定复用槽位的新对象。
+- 通过名称查找成员后可缓存成员标识。类型/成员名称查询目前是线性扫描，定位于注册和发现阶段；缓存后的字段路径访问与方法调用不重新查名字，不分配堆内存（错误报告除外）。C++ 表示到类型的查询（`native_type`、`with_native`/`borrow_native`）使用发布时维护的哈希索引，不随已注册类型数量线性增长。
+- `read/write` 的终字段必须是标量，`read_reference/write_reference` 操作引用字段；字段路径穿过内联记录和数组元素，不隐式解引用对象。引用写入检查目标类型和形式，弱引用不能直接写入持有字段；`try_acquire` 对活的观察目标交付根句柄，空或失效目标返回空结果。已定型的失效引用仍可复制，旧身份不自动清空，也不绑定复用槽位的新对象。
+- 字段可声明 UI 范围与硬边界（`FieldRange`）。Runtime 的标量、数学向量、数组元素和记录整值写入会把值夹到硬边界内，NaN/Inf 在改动任何字节之前被拒绝；`constrain` 用于无对象预演。受约束字段拒绝可写借用，可信的 C++ 直接访问不做检查。详见[字段范围与写入约束](docs/runtime-model.md#字段范围与写入约束)。
+- 记录和对象类型可以声明纯函数校验器。`validate` / `validate_value` 先检查硬边界，再按后序执行内联记录、数组元素和继承链上的校验器，返回第一个失败及其结构化字段路径；它从不在写入时自动运行。详见[类型校验](docs/runtime-model.md#类型校验)。
+- `FieldId` 是成员选择子：记录和对象的成员是字段，Array 的成员是元素。`element` 构造元素选择子，`insert_element/remove_elements/move_element` 原子地改变内联 Array 字段的结构，回调和借用期间返回 busy。元素选择子是位置性的，结构变化后可能失效。详见[成员选择子与数组元素](docs/runtime-model.md#成员选择子与数组元素)。
 - `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根，异常转换为调用错误。
 - `begin_collection` 开始一轮非移动增量标记—清扫；宿主在同一运行时线程的安全点调用 `collect_step`，按根处理、标记、清扫分步推进。分配、普通值操作和撤根不隐式触发收集；编辑器与项目运行宿主在各自帧安全点推进收集。
 - 标记完成时统一提交死亡判定，`live_objects` 立即排除待回收对象，`pending_reclamation` 单独报告待析构数量。即使内存尚未释放，观察取得和对象访问也不能复活已判死目标；旧引用保留身份。
-- 收集步支持工作量上限和可选的软时间上限，返回阶段、实际工作量、回收数量、待回收数量与耗时。单次原生析构不可中断；写入屏障与值操作不计入 GC 步预算，不承诺硬帧时间。具体计量与存活规则见[分步回收](docs/runtime-model.md#已实现的分步回收)。
+- 收集步支持工作量上限和可选的软时间上限，返回阶段、实际工作量、回收数量与待回收数量。单次原生析构不可中断；写入屏障与值操作不计入 GC 步预算，不承诺硬帧时间。具体计量与存活规则见[分步回收](docs/runtime-model.md#已实现的分步回收)。
 - 方法参数或非 void 输出存储检查失败不会进入用户代码。成功值先在 `CallContext::result` 暂存，核对声明后才写 output；缺值、错类型、未声明结果或异常不覆盖调用方原值。已发生的业务修改不自动回滚。
 - 初始化/复制构造失败会清理已构造部分，不留下半成品；赋值失败保证可销毁、基本不变量成立，允许部分更新，不自动回滚。原生操作必须遵守这些保证，方法异常转换为调用错误。回调中抛出的 `std::bad_alloc` 同样由这些异常边界转换；运行时自身存储、元数据、根登记和错误信息的分配失败可能继续向外传播分配异常，当前不提供完整的内存耗尽恢复保证。
 - 原生绑定属于可信代码，必须提供正确的布局和生命周期操作，并声明全部对象引用，包括不公开的原生成员；析构不得抛出异常。原生引用槽通过 Runtime 的引用接口修改，整条原生记录复制走值操作；不能绕过这些入口任意覆盖引用存储。C++ 表示标记只验证原生字段兼容性，不是语言类型身份。

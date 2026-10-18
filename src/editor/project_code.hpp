@@ -44,6 +44,7 @@ private:
     std::vector<Stamp> stamps_;
     std::chrono::steady_clock::time_point next_poll_{};
     bool bound_{};
+    bool adds_behavior(const source::Program::Candidate&) const;
     Result<void> validate(const source::Program::Candidate&) const;
     Result<void> bind();
 };
@@ -55,5 +56,9 @@ struct ProjectDocument {
     std::shared_ptr<const ProjectBuild> build;
     std::optional<Error> error;
 };
-ProjectDocument load_project_scene(Project&,std::string_view);
+// With allow_failed_build, a Source build failure still produces a document without
+// a code owner: project types are absent, so their objects load as placeholders.
+ProjectDocument load_project_scene(Project&,std::string_view,LoadPolicy=LoadPolicy::tolerant,bool allow_failed_build=false);
+// Project Output lines for a load: one summary, then one line per diagnostic.
+std::vector<std::wstring> describe_issues(const Session&,std::span<const world::Diagnostic>,std::wstring_view source);
 }

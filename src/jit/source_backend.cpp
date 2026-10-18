@@ -13,6 +13,7 @@
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ObjectTransformLayer.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/IR/Intrinsics.h>
@@ -39,13 +40,13 @@
 
 namespace atelier::source::detail {
 namespace {
-// Keep generated failure reasons separate from opaque host service status codes.
-// This entry is private to the DLL; the exported invocation ABI stays unchanged.
-using Entry = std::uint32_t (*)(void*, const BusinessValue*, void*, EntryFailure*) noexcept;
-using CoroutineEntry = void* (*)(void*, const BusinessValue*, void*, EntryFailure*,
+// Keep generated failure reasons and sites separate from opaque host service
+// status codes. This entry is private to the DLL.
+using Entry = std::uint32_t (*)(void*, const BusinessValue*, void*, BusinessFailure*) noexcept;
+using CoroutineEntry = void* (*)(void*, const BusinessValue*, void*, BusinessFailure*,
     std::uint32_t*, std::uint32_t*) noexcept;
-using DiagnosticEntry = std::uint32_t (*)(void*, const BusinessValue*, void*, EntryFailure*, BusinessTrace*) noexcept;
-using DiagnosticCoroutineEntry = void* (*)(void*, const BusinessValue*, void*, EntryFailure*,
+using DiagnosticEntry = std::uint32_t (*)(void*, const BusinessValue*, void*, BusinessFailure*, BusinessTrace*) noexcept;
+using DiagnosticCoroutineEntry = void* (*)(void*, const BusinessValue*, void*, BusinessFailure*,
     std::uint32_t*, std::uint32_t*, BusinessTrace*) noexcept;
 using CoroutineAction = void (*)(void*) noexcept;
 using llvm::orc::LLJIT;
@@ -262,7 +263,9 @@ public:
         ir_.SetInsertPoint(failure_);
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
         failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
-        if (catalog_) failure_location_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.location");
+        // Without weights, block placement makes each per-site failure stub the
+        // fall-through and moves the success path behind a taken branch.
+        failure_weights_ = llvm::MDBuilder(*context_).createLikelyBranchWeights();
         ir_.SetInsertPoint(start);
         if (function_.is_coroutine) setup_coroutine();
         else prepare_debug_storage();
@@ -275,7 +278,8 @@ public:
         float_result_->setAlignment(llvm::Align(4));
         uint_result_->setAlignment(llvm::Align(4));
         if (has_source_calls_) {
-            source_failure_ = ir_.CreateAlloca(ir_.getInt32Ty(), nullptr, "callee.failure");
+            source_failure_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt32Ty(), 2), nullptr, "callee.failure");
+            source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
             source_result_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), 128), nullptr, "callee.result");
             source_result_->setAlignment(llvm::Align(8));
         }
@@ -447,7 +451,8 @@ private:
         trace_event(DiagnosticCall::debug_hook);
         // An error stop cannot recover the failed operation. Its command is
         // observed by the host, then the original failure continues to cleanup.
-        ir_.CreateCall(debug_point_, {invocation_, debug_frame_, failure_location_,
+        ir_.CreateCall(debug_point_, {invocation_, debug_frame_,
+            ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(failure_output_)),
             ir_.getInt32(static_cast<std::uint32_t>(DebugPoint::error)), failure_reason_});
     }
     void close_debug_frame() {
@@ -506,17 +511,38 @@ private:
             ir_.CreateStore(ir_.getInt32(id), trace_address(offsetof(BusinessTrace, current_location)));
         });
     }
-    void failure_edge(llvm::Value* status, llvm::Value* reason) {
-        failure_status_->addIncoming(status, ir_.GetInsertBlock());
-        failure_reason_->addIncoming(reason, ir_.GetInsertBlock());
-        if (catalog_) failure_location_->addIncoming(ir_.getInt32(location()), ir_.GetInsertBlock());
+    // Each failure site gets its own block that records where it failed, so the
+    // location never travels with the success path. A null reason forwards the
+    // callee's reason and innermost site.
+    llvm::BasicBlock* failure_edge(llvm::Value* status, llvm::Value* reason) {
+        auto* origin = ir_.GetInsertBlock();
+        auto* site = block("failure.site");
+        ir_.SetInsertPoint(site);
+        llvm::Value* location = ir_.getInt32(this->location());
+        if (!reason) {
+            reason = ir_.CreateLoad(ir_.getInt32Ty(), source_failure_);
+            location = ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(source_failure_));
+        }
+        ir_.CreateStore(location, failure_location_address(failure_output_));
+        // SimplifyCFG would otherwise sink these stores into a location PHI
+        // materialized on the success path; a nomerge call cannot be sunk and emits no code.
+        llvm::cast<llvm::CallInst>(ir_.CreateIntrinsic(llvm::Intrinsic::sideeffect, {}))->addFnAttr(llvm::Attribute::NoMerge);
+        ir_.CreateBr(failure_);
+        failure_status_->addIncoming(status, site);
+        failure_reason_->addIncoming(reason, site);
+        ir_.SetInsertPoint(origin);
+        return site;
+    }
+    llvm::Value* failure_location_address(llvm::Value* failure) {
+        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, location));
     }
     void trace_failure() {
         record([&] {
             auto* address = trace_address(offsetof(BusinessTrace, failure_location));
             auto* previous = ir_.CreateLoad(ir_.getInt32Ty(), address);
+            auto* failed = ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(failure_output_));
             ir_.CreateStore(ir_.CreateSelect(ir_.CreateICmpEQ(previous, ir_.getInt32(no_diagnostic_location)),
-                failure_location_, previous), address);
+                failed, previous), address);
         });
     }
     DiagnosticCall service_kind(llvm::FunctionCallee function) {
@@ -693,9 +719,9 @@ private:
     void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments) {
         if (diagnostics_) trace_event(service_kind(function));
         auto* status = ir_.CreateCall(function, arguments);
-        failure_edge(status, ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none)));
+        auto* failed = failure_edge(status, ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none)));
         auto* next = block("service.ok");
-        ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failure_);
+        ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failed, failure_weights_);
         ir_.SetInsertPoint(next);
     }
     void clear_slot(std::uint32_t slot) {
@@ -842,9 +868,9 @@ private:
         ir_.SetInsertPoint(next);
     }
     void check_value(llvm::Value* valid, EntryFailure reason) {
-        failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(reason)));
+        auto* failed = failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(reason)));
         auto* next = block("borrow.valid");
-        ir_.CreateCondBr(valid, next, failure_);
+        ir_.CreateCondBr(valid, next, failed, failure_weights_);
         ir_.SetInsertPoint(next);
     }
     struct Sequence { llvm::Value *data{}, *size{}; };
@@ -1034,9 +1060,9 @@ private:
             debug_location();
             trace_event(DiagnosticCall::source_call);
             auto* status = ir_.CreateCall(functions_.at(node.value), arguments);
-            failure_edge(status, ir_.CreateLoad(ir_.getInt32Ty(), source_failure_));
+            auto* failed = failure_edge(status, nullptr);
             auto* next = block("function.ok");
-            ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failure_);
+            ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failed, failure_weights_);
             ir_.SetInsertPoint(next);
             trace_position();
             debug_stop(DebugPoint::call_return);
@@ -1112,7 +1138,7 @@ private:
             if (node.type == language::ValueType::void_value) return nullptr;
             auto* kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 0));
             auto* next = block("result.ok");
-            failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)));
+            auto* failed = failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)));
             const auto expected = business_type(node.type);
             auto* type_index = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 1));
             auto* storage_kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 3));
@@ -1127,7 +1153,7 @@ private:
                 valid = ir_.CreateAnd(valid, ir_.CreateICmpULE(bits,
                     ir_.getInt64(node.type == language::ValueType::boolean ? 1 : UINT32_MAX)));
             }
-            ir_.CreateCondBr(valid, next, failure_);
+            ir_.CreateCondBr(valid, next, failed, failure_weights_);
             ir_.SetInsertPoint(next);
             // Load now: later operands may invoke another method using this slot.
             if (managed_value(node.type)) return value_result;
@@ -1368,6 +1394,9 @@ private:
     llvm::BasicBlock* finish_{};
     llvm::PHINode* failure_status_{};
     llvm::PHINode* failure_reason_{};
+    // Failure edges are cold; without weights, block placement would make
+    // each single-predecessor failure stub the fall-through.
+    llvm::MDNode* failure_weights_{};
     llvm::BasicBlock *coroutine_return_{}, *coroutine_final_{}, *coroutine_cancel_{}, *coroutine_free_{};
     llvm::Value *coroutine_id_{}, *coroutine_handle_{}, *coroutine_alignment_{};
     llvm::StructType* abi_value_type_{};
@@ -1399,7 +1428,6 @@ private:
     language::SourcePosition position_;
     std::map<std::size_t, std::uint32_t> location_ids_;
     llvm::Value* trace_{};
-    llvm::PHINode* failure_location_{};
     llvm::Value* borrow_active_{};
     std::uint32_t max_call_arguments_{};
     bool has_call_result_{}, has_source_calls_{};
@@ -1539,7 +1567,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
     state->fields.reserve(environment.fields.size());
     for (const auto& field : environment.fields) {
         state->field_names.emplace_back(field.name);
-        state->fields.push_back({state->field_names.back().c_str(), business_type(field.type)});
+        state->fields.push_back({state->field_names.back().c_str(), business_type(field.type), field.constrained});
     }
     state->method_names.reserve(environment.methods.size());
     state->method_parameters.reserve(environment.methods.size());
@@ -1601,12 +1629,11 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
         target.setCodeModel(llvm::CodeModel::Large);
         target.setRelocationModel(llvm::Reloc::PIC_);
-        if (options.diagnostics || options.debugging) {
-            state->diagnostics = std::make_shared<DiagnosticCatalog>();
-            state->diagnostics->functions.reserve(program.functions.size());
-            for (const auto& function : program.functions)
-                state->diagnostics->functions.push_back(function.function_name);
-        }
+        // Failure sites always record a location; the table is read only after a failure.
+        state->diagnostics = std::make_shared<DiagnosticCatalog>();
+        state->diagnostics->functions.reserve(program.functions.size());
+        for (const auto& function : program.functions)
+            state->diagnostics->functions.push_back(function.function_name);
         if (options.debugging) {
             auto& catalog = *state->diagnostics;
             catalog.variable_names.resize(program.functions.size());
@@ -1704,6 +1731,8 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
         check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout,
             state->diagnostics.get(), options, state->artifacts.get())));
+        // The table is complete once lowering returns; it is retained for the code's lifetime.
+        state->diagnostics->locations.shrink_to_fit();
     }
     state->layout.object_type_name = state->object_type_name.c_str();
     state->entry_symbol = program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(program.entry);
@@ -1731,7 +1760,7 @@ struct BusinessCoroutineState {
     void* handle{};
     std::uint64_t bits{};
     std::uint32_t status{}, completed{};
-    EntryFailure failure{EntryFailure::none};
+    BusinessFailure failure{};
     bool running{};
     ~BusinessCoroutineState() { if (handle) code->destroy(handle); }
 };
@@ -1806,7 +1835,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             for (std::uint32_t index = 0; index < environment->field_count; ++index) {
                 const auto& field = environment->fields[index];
                 if (!field.name) throw std::runtime_error("Host field name is null.");
-                fields.push_back({field.name, source_type(field.kind)});
+                fields.push_back({field.name, source_type(field.kind), field.constrained});
             }
             method_parameters.reserve(environment->method_count);
             methods.reserve(environment->method_count);
@@ -1978,7 +2007,7 @@ atelier::source::detail::BusinessFrameLayout atelier_business_layout(
 std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* code, void* invocation,
     const atelier::source::detail::BusinessValue* arguments, std::uint32_t argument_count,
     atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity,
-    atelier::source::detail::BusinessTrace* trace) noexcept {
+    atelier::source::detail::BusinessTrace* trace, std::uint32_t* failure_location) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     if (!code || !invocation) {
@@ -2038,12 +2067,13 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         std::snprintf(error, error_capacity, "%s", "Could not allocate record result staging.");
         return 1;
     }
-    auto failure_reason = atelier::source::detail::EntryFailure::none;
+    atelier::source::detail::BusinessFailure failure{};
     const auto status = active_code->options.diagnostics ? active_code->diagnostic_entry(invocation, arguments,
-        value_result ? staged_value : &staged_bits, &failure_reason, trace) :
-        active_code->entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure_reason);
-    if (const auto* message = atelier::source::detail::failure_message(failure_reason))
+        value_result ? staged_value : &staged_bits, &failure, trace) :
+        active_code->entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure);
+    if (const auto* message = atelier::source::detail::failure_message(failure.reason))
         std::snprintf(error, error_capacity, "%s", message);
+    if (status != 0 && failure_location) *failure_location = failure.location;
     if (status == 0 && result) {
         if (value_result) {
             std::memcpy(const_cast<void*>(result->data), staged_value, value_result->size);
@@ -2102,7 +2132,8 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
 }
 
 std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine,
-    bool* suspended, atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity) noexcept {
+    bool* suspended, atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity,
+    std::uint32_t* failure_location) noexcept {
     if (!error || error_capacity == 0) return 1;
     error[0] = '\0';
     if (!coroutine || !suspended || !result) {
@@ -2117,9 +2148,12 @@ std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::Busines
     active->running = true;
     active->code->resume(active->handle);
     active->running = false;
-    if (const auto* message = atelier::source::detail::failure_message(active->failure))
+    if (const auto* message = atelier::source::detail::failure_message(active->failure.reason))
         std::snprintf(error, error_capacity, "%s", message);
-    if (active->status != 0) return active->status;
+    if (active->status != 0) {
+        if (failure_location) *failure_location = active->failure.location;
+        return active->status;
+    }
     *suspended = active->completed == 0;
     if (active->completed) *result = {active->code->signature.result, active->bits};
     return 0;

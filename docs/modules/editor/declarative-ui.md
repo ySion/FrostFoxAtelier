@@ -433,6 +433,6 @@ Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动�
 
 组件只求值失效绑定，输入只复制变化槽位；变化片段可通过 swap 提交或恢复，长度变化时准备新的连续快照。控件 key 序列不变时跳过 key 集合构造与差集统计；稳定帧不递归执行退休清理。源码按组件生成代码复用 JIT，不是一般的函数级增量编译。宿主仍逐帧采样并 describe/set_controls；这不等于整个编辑器只遍历变化节点，也不等于增量布局求解。
 
-可选真实热更采样入口为 `atelier_editor_document_acceptance --profile-ui-reload output.csv`，在对应构建目录运行。它执行 120 轮编译、替换、失败和关闭，记录编译量、编译/准备提交耗时、实际 Context 创建/回收、Runtime 存活数和进程内存。准备提交耗时包括 Instance 与 Session 控件提交，不含后续布局和渲染。演进前的测量见[热更审计](../../research/ui-hot-reload-audit-20261005.md)，本轮结果见[源码 patch 验收](../../research/ui-source-patch-20261005.md)。
+可选真实热更采样入口为 `atelier_editor_document_acceptance --profile-ui-reload output.csv`，在对应构建目录运行。它执行 120 轮编译、替换、失败和关闭，记录编译量、编译/准备提交耗时、实际 Context 创建/回收、Runtime 存活数和进程内存。准备提交耗时包括 Instance 与 Session 控件提交，不含后续布局和渲染。两项耗时分别是每轮帧阶段计时 Recorder 帧中的 `profile.compile` 与 `profile.publish` 阶段。演进前的测量见[热更审计](../../research/ui-hot-reload-audit-20261005.md)，本轮结果见[源码 patch 验收](../../research/ui-source-patch-20261005.md)。
 
 第一阶段的历史证据见[原生 UI 首片](../../research/native-ui-language-20261005.md)。第二阶段起点结果见[组件与保存更新验收](../../research/native-ui-authoring-20261005.md)。现有界面已完成装配迁移；后续按实际需求补齐 Inspector 业务能力、多窗格实例、跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。

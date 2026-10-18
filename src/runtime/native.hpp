@@ -147,6 +147,21 @@ public:
         return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, std::move(description));
     }
 
+    // Applies to the most recently declared field.
+    NativeRegistration& range(FieldRange range) {
+        definition_.fields.back().range = std::move(range);
+        return *this;
+    }
+
+    // Validate is a free function or const member returning Result<void> for const T&.
+    template<auto Validate> requires std::is_invocable_r_v<Result<void>, decltype(Validate), const T&>
+    NativeRegistration& validate() {
+        definition_.validate = [](const void* storage) -> Result<void> {
+            return std::invoke(Validate, *static_cast<const T*>(storage));
+        };
+        return *this;
+    }
+
     template<auto Pointer>
     NativeRegistration& method(std::string name, bool preserves_borrows = false, std::string description = {}) {
         using Traits = detail::Method<decltype(Pointer)>;

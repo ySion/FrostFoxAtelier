@@ -5,115 +5,21 @@
 
 namespace atelier::world {
 using detail::error;
-namespace {
-bool nonnegative(math::Vector3 color) {
-    return math::is_finite(color) && color.x>=0.f && color.y>=0.f && color.z>=0.f;
-}
-Result<std::string_view> field_name(Runtime& runtime,TypeId type,FieldId id) {
-    auto info=runtime.describe(type); if (!info) return std::unexpected(info.error());
-    const auto found=std::ranges::find((*info)->fields,id,&FieldInfo::id);
-    if (found==(*info)->fields.end()) return error(ErrorCode::type_mismatch,"Field does not belong to this lighting value.");
-    return std::string_view(found->name);
-}
-Result<float> float_value(const Scalar& value) {
-    const auto* number=std::get_if<float>(&value);
-    if (!number) return error(ErrorCode::type_mismatch,"Lighting numeric fields require float values.");
-    return *number;
-}
-Result<void> patch_vector(Runtime& runtime,TypeId type,math::Vector3& target,FieldId field,const Scalar& value) {
-    auto name=field_name(runtime,type,field); if (!name) return std::unexpected(name.error());
-    auto number=float_value(value); if (!number) return std::unexpected(number.error());
-    if (*name=="x") target.x=*number;
-    else if (*name=="y") target.y=*number;
-    else if (*name=="z") target.z=*number;
-    else return error(ErrorCode::type_mismatch,"Invalid lighting color channel.");
-    return {};
-}
-Result<void> patch_material(Runtime& runtime,const Types& types,Material& material,std::span<const FieldId> path,const Scalar& value) {
-    if (path.empty()) return error(ErrorCode::type_mismatch,"A scalar edit requires a Material leaf field.");
-    auto name=field_name(runtime,types.material,path.front()); if (!name) return std::unexpected(name.error());
-    if (path.size()==2 && (*name=="base_color" || *name=="emissive"))
-        return patch_vector(runtime,types.vector3,*name=="base_color"?material.base_color:material.emissive,path[1],value);
-    if (path.size()!=1) return error(ErrorCode::type_mismatch,"Invalid Material field path.");
-    auto number=float_value(value); if (!number) return std::unexpected(number.error());
-    if (*name=="roughness") material.roughness=*number;
-    else if (*name=="metallic") material.metallic=*number;
-    else return error(ErrorCode::type_mismatch,"Invalid Material scalar field.");
-    return {};
-}
-Result<void> patch_light(Runtime& runtime,const Types& types,LightSettings& settings,std::span<const FieldId> path,const Scalar& value) {
-    if (path.empty()) return error(ErrorCode::type_mismatch,"A scalar edit requires a LightSettings leaf field.");
-    auto name=field_name(runtime,types.light_settings,path.front()); if (!name) return std::unexpected(name.error());
-    if (path.size()==2 && *name=="color") return patch_vector(runtime,types.vector3,settings.color,path[1],value);
-    if (path.size()!=1) return error(ErrorCode::type_mismatch,"Invalid LightSettings field path.");
-    if (*name=="kind") {
-        const auto* kind=std::get_if<EnumValue>(&value);
-        if (!kind || kind->type!=types.light_kind) return error(ErrorCode::type_mismatch,"Light kind requires world.LightKind.");
-        settings.kind=static_cast<LightKind>(kind->bits); return {};
-    }
-    if (*name=="two_sided" || *name=="casts_shadow") {
-        const auto* boolean=std::get_if<bool>(&value);
-        if (!boolean) return error(ErrorCode::type_mismatch,"Light flags require bool values.");
-        (*name=="two_sided"?settings.two_sided:settings.casts_shadow)=*boolean; return {};
-    }
-    auto number=float_value(value); if (!number) return std::unexpected(number.error());
-    if (*name=="intensity") settings.intensity=*number;
-    else if (*name=="range") settings.range=*number;
-    else if (*name=="source_radius") settings.source_radius=*number;
-    else if (*name=="width") settings.width=*number;
-    else if (*name=="height") settings.height=*number;
-    else return error(ErrorCode::type_mismatch,"Invalid LightSettings scalar field.");
-    return {};
-}
-// Compose the actual local rotations; decomposing the world matrix would make
-// emitter orientation depend on nonuniform parent scale and shear.
-Result<math::Quaterniond> light_rotation(Runtime& runtime,ObjectId object) {
-    math::Quaterniond result;
-    for (auto node=object;node!=ObjectId{};) {
-        auto value=read_transform(runtime,node); if (!value) return std::unexpected(value.error());
-        auto canonical=canonical_transform(*value); if (!canonical) return std::unexpected(canonical.error());
-        const auto& q=canonical->rotation;
-        const auto composed=math::try_normalize(math::Quaterniond{q.x,q.y,q.z,q.w}*result);
-        if (!composed) return error(ErrorCode::argument_mismatch,"Light orientation is not finite.");
-        result=*composed;
-        auto parent=spatial_parent(runtime,node); if (!parent) return std::unexpected(parent.error());
-        node=*parent;
-    }
-    return result;
-}
-}
 
-Result<void> validate_material(const Material& material) {
-    if (!nonnegative(material.base_color) || material.base_color.x>1.f || material.base_color.y>1.f || material.base_color.z>1.f)
-        return error(ErrorCode::argument_mismatch,"Material base color must be finite and within [0,1].");
-    if (!std::isfinite(material.roughness) || material.roughness<0.f || material.roughness>1.f ||
-        !std::isfinite(material.metallic) || material.metallic<0.f || material.metallic>1.f)
-        return error(ErrorCode::argument_mismatch,"Material roughness and metallic must be finite and within [0,1].");
-    if (!nonnegative(material.emissive)) return error(ErrorCode::argument_mismatch,"Material emissive must be finite and nonnegative.");
-    for(std::size_t channel=0;channel<3;++channel)
-        if(material.emissive[channel]>atelier::material::emission_limit)
-            return error(ErrorCode::argument_mismatch,"Material emissive exceeds the HDR scene range.");
-    return {};
-}
-Result<void> validate_light(const LightSettings& settings) {
+// Single-field bounds are AFIELD hard bounds, checked before this runs.
+Result<void> detail::light_rules(const LightSettings& settings) {
     if (settings.kind!=LightKind::point && settings.kind!=LightKind::rectangle && settings.kind!=LightKind::directional && settings.kind!=LightKind::sky)
         return error(ErrorCode::argument_mismatch,"Unknown LightKind.");
-    if (!nonnegative(settings.color) || !std::isfinite(settings.intensity) || settings.intensity<0.f)
-        return error(ErrorCode::argument_mismatch,"Light color and intensity must be finite and nonnegative.");
     if(settings.kind==LightKind::sky)
         for(std::size_t channel=0;channel<3;++channel)
             if(double(settings.color[channel])*settings.intensity>65504)
                 return error(ErrorCode::argument_mismatch,"Sky Light radiance exceeds the HDR scene range.");
-    if (!std::isfinite(settings.range) || settings.range<0.f ||
-        ((settings.kind==LightKind::point || settings.kind==LightKind::rectangle) && settings.range==0.f))
-        return error(ErrorCode::argument_mismatch,"Local light range must be finite and positive; directional range may be zero.");
-    if (!std::isfinite(settings.source_radius) || settings.source_radius<0.f)
-        return error(ErrorCode::argument_mismatch,"Light source radius must be finite and nonnegative.");
+    if ((settings.kind==LightKind::point || settings.kind==LightKind::rectangle) && settings.range==0.f)
+        return error(ErrorCode::argument_mismatch,"Local light range must be positive; directional range may be zero.");
     if (settings.kind==LightKind::directional && double(settings.source_radius)>=std::numbers::pi_v<double>/2)
         return error(ErrorCode::argument_mismatch,"Directional angular radius must be below pi/2 radians.");
-    if (!std::isfinite(settings.width) || !std::isfinite(settings.height) || settings.width<0.f || settings.height<0.f ||
-        (settings.kind==LightKind::rectangle && (settings.width==0.f || settings.height==0.f)))
-        return error(ErrorCode::argument_mismatch,"Rectangle width and height must be finite and positive.");
+    if (settings.kind==LightKind::rectangle && (settings.width==0.f || settings.height==0.f))
+        return error(ErrorCode::argument_mismatch,"Rectangle width and height must be positive.");
     if(settings.kind!=LightKind::sky)
         if(const auto* message=rendering::analytic_light_range_error(
             {settings.color.x,settings.color.y,settings.color.z},settings.intensity,
@@ -121,109 +27,120 @@ Result<void> validate_light(const LightSettings& settings) {
             return error(ErrorCode::argument_mismatch,message);
     return {};
 }
+Result<void> validate_material(Runtime& runtime,const Material& material) { return detail::check_value(runtime,material); }
+Result<void> validate_light(Runtime& runtime,const LightSettings& settings) { return detail::check_value(runtime,settings); }
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
     return runtime.with_native<const LightComponent>(object,[](const LightComponent& light)->Result<LightSettings> { return light.settings; });
 }
-Result<void> World::Impl::validate_sky_light(std::span<const ObjectRoot> additions,ObjectId edited,const LightSettings* replacement) const {
-    ObjectId sky;
-    const auto visit=[&](ObjectId object)->Result<void> {
-        auto light=detail::is(runtime,object,types.light_component);if(!light) return std::unexpected(light.error());
-        if(!*light) return {};
-        auto settings=object==edited && replacement?Result<LightSettings>{*replacement}:read_light(runtime,object);
-        if(!settings) return std::unexpected(settings.error());
-        if(settings->kind!=LightKind::sky) return {};
-        if(sky!=ObjectId{} && sky!=object) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
-        sky=object;return {};
+World::Admission detail::unique_sky_light(PresentationId lights) {
+    return [lights](const World& world,std::span<const ObjectId> candidates)->Result<void> {
+        ObjectId sky;
+        const auto visit=[&](ObjectId object)->Result<void> {
+            auto settings=read_light(world.runtime(),object);if(!settings) return std::unexpected(settings.error());
+            if(settings->kind!=LightKind::sky) return {};
+            if(sky!=ObjectId{} && sky!=object) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
+            sky=object;return {};
+        };
+        for(const auto object:candidates) if(auto valid=visit(object);!valid) return valid;
+        if(sky==ObjectId{}) return {};
+        auto members=world.presented(lights);if(!members) return std::unexpected(members.error());
+        for(const auto& member:*members) if(auto valid=visit(member.component);!valid) return valid;
+        return {};
     };
-    for(const auto& object:additions) if(auto valid=visit(object.id());!valid) return valid;
-    // Ordinary composition changes cannot introduce another Sky Light.
-    // Replacement edits are checked in presentation, preserving detached edits.
-    if(sky==ObjectId{} && (!replacement || replacement->kind!=LightKind::sky)) return {};
-    for(const auto object:presentation) if(auto valid=visit(object);!valid) return valid;
-    return {};
+}
+World::Admission detail::spatial_lights() {
+    return [](const World& world,std::span<const ObjectId> candidates)->Result<void> {
+        auto& runtime=world.runtime();
+        for(const auto object:candidates) {
+            auto settings=read_light(runtime,object);if(!settings) return std::unexpected(settings.error());
+            if(settings->kind==LightKind::sky) continue;
+            auto component=component_data(runtime,object);if(!component) return std::unexpected(component.error());
+            // Components entering an Entity are checked by its spatial requirements.
+            if(component->owner==ObjectId{}) continue;
+            auto spatial=has_transform(runtime,component->owner);if(!spatial) return std::unexpected(spatial.error());
+            if(!*spatial) return error(ErrorCode::invalid_member,"Spatial Light requires its owner Entity to have a Transform.");
+        }
+        return {};
+    };
 }
 Result<void> World::set_material(ObjectId object,Material value) {
     if (auto ready=impl_->admit_edit(object); !ready) return ready;
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
-    if (auto valid=validate_material(value); !valid) return valid;
-    return runtime().with_native<StaticMeshComponent>(object,[&](auto& mesh)->Result<void> {mesh.material=value;return {};});
+    if (auto valid=validate_material(runtime(),value); !valid) return valid;
+    const auto assign=[&](const Material& material) {
+        return runtime().with_native<StaticMeshComponent>(object,[&](auto& mesh)->Result<void> {mesh.material=material;return {};});
+    };
+    auto previous=runtime().with_native<const StaticMeshComponent>(object,[](const auto& mesh)->Result<Material> {return mesh.material;});
+    if (!previous) return std::unexpected(previous.error());
+    if (auto written=assign(value); !written) return written;
+    if (auto admitted=impl_->check_edit(object); !admitted) { (void)assign(*previous); return admitted; }
+    return {};
 }
 Result<void> World::set_light(ObjectId object,LightSettings value) {
     if (auto ready=impl_->admit_edit(object); !ready) return ready;
     auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
-    if (auto valid=validate_light(value); !valid) return valid;
-    bool registered{};
-    if(component->owner!=ObjectId{}) {
-        auto owner=impl_->composition_entity(component->owner);if(!owner) return std::unexpected(owner.error());
-        registered=owner->world!=nullptr;
-        if(registered && value.kind!=LightKind::sky) {
-            auto spatial=has_transform(runtime(),component->owner);if(!spatial) return std::unexpected(spatial.error());
-            if(!*spatial) return error(ErrorCode::invalid_member,"Spatial Light requires its owner Entity to have a Transform.");
-        }
-    }
-    if(registered && value.kind==LightKind::sky)
-        if(auto valid=impl_->validate_sky_light({},object,&value);!valid) return valid;
-    return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=value;return {};});
-}
-namespace detail {
-Result<bool> write_lighting_property(World& world,ObjectId object,std::span<const FieldId> path,Scalar value) {
-    if (path.empty()) return false;
-    auto& runtime=world.runtime(); const auto& types=world.types();
-    auto mesh=is(runtime,object,types.static_mesh_component); if (!mesh) return std::unexpected(mesh.error());
-    if (*mesh) {
-        auto field=runtime.find_field(types.static_mesh_component,"material"); if (!field) return std::unexpected(field.error());
-        if (path.front()==*field) {
-            auto settings=runtime.with_native<const StaticMeshComponent>(object,[](const auto& component)->Result<Material>{return component.material;});
-            if (!settings) return std::unexpected(settings.error());
-            auto changed=patch_material(runtime,types,*settings,path.subspan(1),value); if (!changed) return std::unexpected(changed.error());
-            auto written=world.set_material(object,*settings); if (!written) return std::unexpected(written.error());
-            return true;
-        }
-    }
-    auto light=is(runtime,object,types.light_component); if (!light) return std::unexpected(light.error());
-    if (*light) {
-        auto field=runtime.find_field(types.light_component,"settings"); if (!field) return std::unexpected(field.error());
-        if (path.front()==*field) {
-            auto settings=read_light(runtime,object); if (!settings) return std::unexpected(settings.error());
-            auto changed=patch_light(runtime,types,*settings,path.subspan(1),value); if (!changed) return std::unexpected(changed.error());
-            auto written=world.set_light(object,*settings); if (!written) return std::unexpected(written.error());
-            return true;
-        }
-    }
-    return false;
-}
+    if (auto valid=validate_light(runtime(),value); !valid) return valid;
+    const auto assign=[&](const LightSettings& settings) {
+        return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=settings;return {};});
+    };
+    auto previous=read_light(runtime(),object); if (!previous) return std::unexpected(previous.error());
+    if (auto written=assign(value); !written) return written;
+    if (auto admitted=impl_->check_edit(object); !admitted) { (void)assign(*previous); return admitted; }
+    return {};
 }
 Result<std::vector<LightRenderItem>> World::light_items() const {
-    if (auto ready=impl_->admit(false); !ready) return std::unexpected(ready.error());
+    auto pass=spatial_pass(DiagnosticPhase::lighting);
+    if (!pass) return std::unexpected(pass.error());
+    auto& state=*impl_;
     std::vector<LightRenderItem> result;
-    detail::SpaceGraph space{runtime()};
     bool has_sky=false;
-    for (const auto object:impl_->presentation) {
-        auto light=detail::is(runtime(),object,types().light_component); if (!light) return std::unexpected(light.error());
-        if (!*light) continue;
-        auto owner=impl_->component_owner(object); if (!owner) return std::unexpected(owner.error());
-        auto entity=detail::entity_data(runtime(),*owner); if (!entity) return std::unexpected(entity.error());
-        auto component=detail::component_data(runtime(),object); if (!component) return std::unexpected(component.error());
-        auto settings=read_light(runtime(),object); if (!settings) return std::unexpected(settings.error());
-        if(settings->kind==LightKind::sky) {
-            if(has_sky) return error(ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components.");
-            has_sky=true;
+    auto lights=presented(state.lights);
+    if (!lights) return std::unexpected(lights.error());
+    {
+        for (const auto& [owner,object,active]:*lights) {
+            // Isolated lights are skipped. The first Sky Light in composition
+            // preorder, enabled or not, owns the World's single sky slot.
+            const auto skip=[&](const Error& failure,DiagnosticKind kind,ObjectId at,ObjectId entity,std::vector<std::string> field) {
+                return state.contain(failure,kind,DiagnosticPhase::lighting,at,entity,std::move(field));
+            };
+            auto settings=read_light(runtime(),object);
+            if (!settings) { if (!skip(settings.error(),DiagnosticKind::invalid_value,object,owner,{"settings"})) return std::unexpected(settings.error()); continue; }
+            if(settings->kind==LightKind::sky) {
+                if(has_sky) {
+                    const Error conflict{ErrorCode::invalid_member,"A World can contain only one Sky Light, including disabled components."};
+                    if (!skip(conflict,DiagnosticKind::conflict,object,owner,{"settings","kind"})) return std::unexpected(conflict);
+                    continue;
+                }
+                has_sky=true;
+            }
+            if (!active) continue;
+            auto invalid=runtime().validate_value(types().light_settings,std::as_bytes(std::span{&*settings,1}));
+            if (!invalid) return std::unexpected(invalid.error());
+            if (*invalid) {
+                const auto& failure=**invalid;
+                if (!state.contain(failure.error,validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
+                continue;
+            }
+            if(settings->kind==LightKind::sky) {
+                result.push_back({owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
+                continue;
+            }
+            auto matrix=pass->matrix(owner);
+            if (!matrix) return std::unexpected(matrix.error());
+            if (!*matrix) continue;
+            auto frame=pass->orientation(owner);
+            if (!frame) return std::unexpected(frame.error());
+            if (!*frame) continue;
+            // A mirrored frame is -R; negating its right axis keeps it right-handed.
+            const double sign=(*frame)->mirrored?-1:1;
+            const auto axis=[&](math::Vector3d local) {
+                const auto value=math::rotate((*frame)->rotation,local);
+                return math::Vector3{float(value.x),float(value.y),float(value.z)};
+            };
+            const auto& world=**matrix;
+            result.push_back({owner,object,{world[12],world[13],world[14]},
+                axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings});
         }
-        auto enabled=effective_enabled(runtime(),*owner); if (!enabled) return std::unexpected(enabled.error());
-        if (!*enabled || !component->enabled) continue;
-        if (auto valid=validate_light(*settings); !valid) return std::unexpected(valid.error());
-        if(settings->kind==LightKind::sky) {
-            result.push_back({*owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
-            continue;
-        }
-        auto matrix=space.matrix(*owner); if (!matrix) return std::unexpected(matrix.error());
-        auto rotation=light_rotation(runtime(),*owner); if (!rotation) return std::unexpected(rotation.error());
-        const auto axis=[&](math::Vector3d local) {
-            const auto value=math::rotate(*rotation,local);
-            return math::Vector3{float(value.x),float(value.y),float(value.z)};
-        };
-        result.push_back({*owner,object,{(*matrix)[12],(*matrix)[13],(*matrix)[14]},
-            axis({0,0,1}),axis({1,0,0}),axis({0,1,0}),*settings});
     }
     return result;
 }

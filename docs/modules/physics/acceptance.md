@@ -28,11 +28,13 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `forces` | 零重力下三个相同动态体 | 等效力与冲量、延迟消费且只消费一次、传送保留/清除速度、自定义重力、NaN 拒绝 |
 | `primitive_composition` | Entity 子树中的网格刚体、动态碰撞子实体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |
 | `primitive_authoring` | 反射配置的缩放网格与运动学触发子实体 | 属性验证回滚、Box 缩放、owner Entity 刚体查找、运动学目标到达后停止、局部位姿转换、非法缩放拒绝并清理 |
+| `mirrored_scale` | 镜像的非对称三角网格（运行时构建与 Cook 各一）、负缩放 Box、(-1,-1,-1) 动态体及其子体、嵌套零缩放空间 | 镜像位置与正面、Box 尺寸取绝对值、镜像 Character 拒绝、镜像回写保持局部 TRS、零缩放不建刚体且只在最上层节点报告一次、恢复后重建；全程 halt 策略 |
 | `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤；事件保留场景与刚体代际，历史结束事件不能操作重建后的刚体 |
 | `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
 | `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |
 | `cooked_assets` | 磁盘 Cook 网格反复加载到新 World | 形状可查询、二进制往返、损坏/版本/来源/缩放不匹配拒绝 |
-| `fixed_step` | 空中自由落体 | 半帧积累、8 子步上限与丢时、暂停/单步、重复请求合并、重入拒绝、前后回调失败、30/120 Hz 宿主得到相同 60 步 |
+| `fixed_step` | 空中自由落体 | 经 `World::update` 驱动：半帧积累、8 子步上限与丢时、暂停/单步、重复请求合并、重入拒绝、前后回调失败停止 World、30/120 Hz 宿主得到相同 60 步、pre_physics/post_physics Tick 位于全部子步前后并收到整帧时间 |
+| `frame_timing` | 地面上的动态体，每帧 2.5 个固定步长 | 在帧阶段计时 Recorder 帧内调用 `World::update`：停止的 World 不记录阶段；运行后无结构错误，各 World 阶段、`physics.step/reconcile/events` 各进入 1 次，`world.schedule` 只在启动后的首帧进入，`physics.substep/solve/write_back` 次数等于 `last_step().steps`；不检查耗时数值 |
 | `lifecycle` | 同时存在的两个独立 Runtime/World/场景 | 失效命令拒绝、停用/重启代际、重复 disable/stop/close、销毁一场景不影响另一场景、运行中重建场景 |
 | `world_ownership` | 同一 Runtime 中两个 World | 拒绝跨 World 角色/布娃娃创建、句柄限定场景、detach 清理、转移后仅新 World 可创建 |
 | `character` | 胶囊角色落地、移动和跳跃 | grounded、跳跃只消费一次、输入/重复创建拒绝、销毁重建代际、根停用清理 |

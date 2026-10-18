@@ -77,6 +77,9 @@ private:
     std::uint64_t generation_{};
 };
 
+// Member selector: the index-th member of its owner type. Records and objects
+// select fields; Array types select elements. An element selector is positional
+// and only valid while the array keeps at least index + 1 elements.
 class FieldId {
 public:
     FieldId() = default;
@@ -444,6 +447,16 @@ struct NativeLayout {
     bool plain_value{};
 };
 
+// Bounds use the field's exact leaf scalar type; math vectors apply them to each
+// component and Arrays of scalars or vectors to each element. UI bounds only guide
+// editors. Hard bounds are enforced by every Runtime write: values clamp to the closed
+// range, and NaN/Inf are rejected before any byte changes.
+struct FieldRange {
+    std::optional<Scalar> ui_min{}, ui_max{}, hard_min{}, hard_max{};
+    [[nodiscard]] bool constrains() const noexcept { return hard_min || hard_max; }
+    bool operator==(const FieldRange&) const = default;
+};
+
 struct FieldDefinition {
     std::string name;
     ValueDefinition value;
@@ -466,6 +479,8 @@ struct FieldDefinition {
     // Owned UTF-8 help text; publication normalizes CRLF/CR to LF.
     // Empty means no description. Only LF and tab are permitted controls.
     std::string description{};
+    // Part of the published definition; checked against the leaf type and default.
+    FieldRange range{};
 };
 
 struct MethodDefinition {
@@ -493,6 +508,9 @@ struct TypeDefinition {
     std::optional<Enumeration> enumeration{};
     std::optional<TypeReference> element{};
     std::string description{};
+    // Records and objects only. A pure check of one value's bytes, run by Runtime::validate
+    // and never on writes; it must not call the Runtime. Exceptions become failures.
+    Result<void> (*validate)(const void* storage){};
 };
 
 struct FieldInfo {
@@ -503,6 +521,7 @@ struct FieldInfo {
     std::optional<Scalar> default_value{};
     // Owned by the type descriptor, including inherited field copies.
     std::string label{}, category{}, description{};
+    FieldRange range{};
 };
 
 struct MethodInfo {
@@ -546,6 +565,17 @@ struct TypeInfo {
     std::string description{};
 };
 
+// A value that breaks its type's rules. `field` is the failing leaf for a hard bound,
+// the record for a type validator, and empty for the validated type's own validator;
+// `names` spells the same path. `value` holds the offending leaf of a hard-bound failure.
+struct ValidationFailure {
+    std::vector<FieldId> field;
+    std::vector<std::string> names;
+    std::optional<Scalar> value{};
+    // argument_mismatch, or invocation_failed when a validator threw; readable message.
+    Error error;
+};
+
 enum class CollectionPhase { idle, roots, mark, sweep };
 
 struct CollectionBudget {
@@ -560,11 +590,10 @@ struct CollectionProgress {
     std::size_t work_done{};
     std::size_t reclaimed{};
     std::size_t pending_reclamation{};
-    std::chrono::nanoseconds elapsed{};
 };
 
 // Single-threaded, explicitly owned context. Definitions are immutable after publication.
-// Registration closes on first successful object creation. Callbacks cannot create/destroy objects.
+// Callbacks cannot create/destroy objects or publish types.
 class Runtime final {
 public:
     Runtime();
@@ -577,8 +606,14 @@ public:
     [[nodiscard]] Result<TypeId> register_type(TypeDefinition definition);
     // Resolve the entire batch, including forward references, before publishing anything.
     // Results follow input order. Empty batches are invalid. No provisional IDs escape.
+    // Publication needs a type safe point: check_code_publication() plus an idle
+    // collector, otherwise busy. Published types never change or unregister, so
+    // their TypeInfo addresses stay valid for the Runtime's lifetime.
     [[nodiscard]] Result<std::vector<TypeId>> register_types(std::vector<TypeDefinition> definitions);
-    [[nodiscard]] std::vector<TypeId> types() const;
+    // The catalog only grows, in publication order. Cache type_count() and pass it
+    // as first to scan only types published since.
+    [[nodiscard]] std::vector<TypeId> types(std::size_t first = 0) const;
+    [[nodiscard]] std::size_t type_count() const noexcept;
     [[nodiscard]] TypeId object_type() const noexcept;
     [[nodiscard]] Result<bool> is_a(TypeId actual, TypeId expected) const;
     // Preserves identity and strength. Upcasts preserve stale identities; a
@@ -675,12 +710,36 @@ public:
     [[nodiscard]] bool belongs_to_context(ObjectId object) const noexcept;
     [[nodiscard]] Result<TypeId> type_of(ObjectId object) const;
 
-    // A field path traverses inline records. Scalar and plain record
+    // A field path traverses inline records and Array elements. Scalar and plain record
     // fields share the same path resolution and exact-type checks.
+    // Writes apply FieldRange hard bounds, including to a math vector's components,
+    // to the elements of a ranged Array, and to constrained leaves inside a written record.
     [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);
     [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, ValueInput value);
+    // The value a scalar write to this path of `type` would store, without an object:
+    // clamped to hard bounds, argument_mismatch for NaN/Inf under a hard bound.
+    [[nodiscard]] Result<Scalar> constrain(TypeId type, std::span<const FieldId> path, Scalar value) const;
+    // Checks, without changing anything: every hard bound, then type validators of inline
+    // records innermost first, then the inheritance chain base first. Reports the first
+    // failure; the outer error only means the object, type or storage is invalid.
+    [[nodiscard]] Result<std::optional<ValidationFailure>> validate(ObjectId object) const;
+    [[nodiscard]] Result<std::optional<ValidationFailure>> validate_value(TypeId type, std::span<const std::byte> storage) const;
+    // Selects element `index` of an Array type. Out-of-range selectors fail when resolved.
+    [[nodiscard]] Result<FieldId> element(TypeId array, std::uint32_t index) const;
+    // The index of an element selector; empty for a field selector or unknown owner.
+    [[nodiscard]] std::optional<std::uint32_t> element_index(FieldId member) const;
+    // Structural changes to an inline Array field. Every check precedes the change and a
+    // failure leaves the array unchanged. Busy during callbacks, native borrows and traversal,
+    // so no borrowed element address outlives a change. Inserted copies are clamped to hard
+    // bounds; a null ValueInput default-constructs the element.
+    [[nodiscard]] Result<std::size_t> element_count(ObjectId object, std::span<const FieldId> array) const;
+    [[nodiscard]] Result<void> insert_element(ObjectId object, std::span<const FieldId> array, std::size_t index,
+                                              ValueInput value = {});
+    [[nodiscard]] Result<void> remove_elements(ObjectId object, std::span<const FieldId> array, std::size_t first,
+                                               std::size_t count = 1);
+    [[nodiscard]] Result<void> move_element(ObjectId object, std::span<const FieldId> array, std::size_t from, std::size_t to);
     [[nodiscard]] Result<Scalar> read(ObjectId object, FieldId field) const {
         return read(object, {&field, 1});
     }
@@ -765,7 +824,8 @@ private:
     [[nodiscard]] Result<void> enter_execution_inspection();
     void leave_execution_inspection() noexcept;
     struct Impl;
-    struct Address { void* data; ValueDescription value; };
+    // `range` is set when hard bounds apply to the addressed value or its components.
+    struct Address { void* data; ValueDescription value; const FieldRange* range{}; };
     struct NativeBorrow {
         Runtime* runtime;
         void* storage;
@@ -781,6 +841,9 @@ private:
     [[nodiscard]] Result<TypeId> find_representation(const void* representation) const;
     [[nodiscard]] Result<std::uint32_t> resolve_object(ObjectId object) const;
     [[nodiscard]] Result<Address> resolve_field(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_array(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<void> mutate_elements(ObjectId object, std::span<const FieldId> path, SequenceMutation operation,
+                                               std::size_t position, std::size_t operand, ValueInput value);
     [[nodiscard]] Result<Address> resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> validate_reference(const ObjectReference& reference) const;
     [[nodiscard]] Result<ObjectReference> read_reference_at(Address address) const;

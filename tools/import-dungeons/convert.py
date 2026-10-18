@@ -31,10 +31,6 @@ def entity(name, part, identity, position, rotation, scale, active=True):
                 children=[], properties={}, components=[part])
 
 
-def scale_sign(instance):
-    return tuple(-1 if x < 0 else 1 for x in instance['scale'])
-
-
 def validate_transform(instance):
     x,y,z,w = instance['rotation']
     rotation = ((1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)),
@@ -75,9 +71,9 @@ def main():
         for item in scene['instances']: defaults[item['mesh']] = tuple(item['materials'])
     # Every imported mesh is available in the browser, including unused models and LODs.
     variants = defaultdict(set)
-    for mesh in data['meshes']: variants[mesh['id']].add((defaults.get(mesh['id'], ()), (1,1,1)))
+    for mesh in data['meshes']: variants[mesh['id']].add(defaults.get(mesh['id'], ()))
     for scene in data['scenes']:
-        for item in scene['instances']: variants[item['mesh']].add((tuple(item['materials']), scale_sign(item)))
+        for item in scene['instances']: variants[item['mesh']].add(tuple(item['materials']))
     bindings = {}; exported = []
     for mesh in data['meshes']:
         raw = (args.export / mesh['file']).read_bytes()
@@ -89,17 +85,14 @@ def main():
             submeshes.append(struct.unpack_from('<' + 'i'*n, raw, offset)); offset += n*4
         assert offset == len(raw)
         if not any(submeshes): raise ValueError('Empty mesh: ' + mesh['name'])
-        for slots, signs in sorted(variants[mesh['id']]):
-            # Runtime TRS requires positive scale. Preserve authored reflections in
-            # mesh positions/normals and reverse winding for odd reflections.
+        for slots in sorted(variants[mesh['id']]):
+            # Authored reflections stay in the instance's negative scale; the mesh is shared.
             body = []
-            for v in vertices: body.append('v ' + ' '.join(format(x*s,'.9g') for x,s in zip(v[:3],signs)))
-            for v in vertices: body.append('vn ' + ' '.join(format(x*s,'.9g') for x,s in zip(v[3:6],signs)))
+            for v in vertices: body.append('v ' + ' '.join(format(x,'.9g') for x in v[:3]))
+            for v in vertices: body.append('vn ' + ' '.join(format(x,'.9g') for x in v[3:6]))
             for v in vertices: body.append('vt ' + ' '.join(format(x,'.9g') for x in v[6:]))
             body = '\n'.join(body) + '\n'
-            reflected = signs != (1,1,1)
             seed = mesh['id'] + '|' + '|'.join(slots)
-            if reflected: seed += '|reflection:' + ','.join(map(str,signs))
             identity = str(uuid.uuid5(NAMESPACE, seed)).upper()
             basename = re.sub(r'[^a-zA-Z0-9_-]', '_', mesh['name'])[:90] + '_' + identity[:8]
             obj = models / (basename + '.obj'); mtl = models / (basename + '.mtl')
@@ -115,14 +108,13 @@ def main():
                 lines.append('usemtl '+name)
                 for i in range(0,len(indices),3):
                     triangle = indices[i:i+3]
-                    if signs[0]*signs[1]*signs[2]<0: triangle = triangle[::-1]
                     lines.append('f '+' '.join(f'{v+1}/{v+1}/{v+1}' for v in triangle))
             obj.write_text('mtllib '+mtl.name+'\n'+body+'\n'.join(lines)+'\n',encoding='utf-8')
             mtl.write_text('\n'.join(mtl_lines)+'\n',encoding='utf-8')
             write_json(Path(str(obj)+'.asset.json'),dict(version=1,id='{'+identity+'}'))
-            bindings[mesh['id'],slots,signs] = 'project/{'+identity+'}'
+            bindings[mesh['id'],slots] = 'project/{'+identity+'}'
             exported.append(dict(source=mesh['source'], mesh=mesh['id'], materials=slots, triangles=mesh['triangles'],
-                                 reflection=signs, path=obj.relative_to(root).as_posix(), resource=bindings[mesh['id'],slots,signs]))
+                                 path=obj.relative_to(root).as_posix(), resource=bindings[mesh['id'],slots]))
     scenes = []
     for source in data['scenes']:
         entities = []; paths = []; visible = 0; next_id = 1
@@ -131,10 +123,10 @@ def main():
             active = instance['active'] and instance['enabled'] and instance['lod'] == 0
             if any(abs(v)<1e-6 for v in instance['scale']):
                 raise ValueError('Degenerate authored scale: '+instance['path'])
-            c = component('world.StaticMeshComponent',mesh=bindings[instance['mesh'],tuple(instance['materials']),scale_sign(instance)],
+            c = component('world.StaticMeshComponent',mesh=bindings[instance['mesh'],tuple(instance['materials'])],
                           base_color=[1,1,1],roughness=.8,metallic=0,emissive=[0,0,0])
             e = entity(instance['path'], c, next_id, instance['position'],
-                       instance['rotation'], [abs(x) for x in instance['scale']], active)
+                       instance['rotation'], instance['scale'], active)
             entities.append(e); next_id += 2; visible += active
             paths.append(dict(entity=e['id'], **instance))
         for light in source['lights']:

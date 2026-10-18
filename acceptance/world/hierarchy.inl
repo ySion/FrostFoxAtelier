@@ -5,6 +5,7 @@ void hierarchical_lifecycle() {
     publish(program,"async void later() { yield; self.advance(50.0); }");
     const auto later=take(program.bind<void>(FunctionExecution::coroutine));
     w::World world(runtime,types);
+    take(world.set_failure_policy(w::FailurePolicy::halt));
     auto root=take(w::create_entity(runtime)), child=take(w::create_entity(runtime));
     auto leaf=take(w::create_entity(runtime)), other=take(w::create_entity(runtime));
     auto a=take(w::create_component(runtime,types.counter)), b=take(w::create_component(runtime,types.counter));
@@ -237,6 +238,15 @@ void hierarchical_space_boundaries() {
         "Child-first physics pose batch used stale ancestor world pose.");
     const std::array invalid_poses{w::SimulationPose{a.id(),{300,0,0},{}},
         w::SimulationPose{x.id(),{std::numeric_limits<float>::infinity(),0,0},{}}};
+    // Isolate rejects only the invalid pose; its Entity keeps its local pose under the moved parent.
+    take(world.apply_simulation_transforms(invalid_poses));
+    const auto rejected_pose=world.take_diagnostics();
+    require(near(take(w::world_matrix(runtime,a.id()))[12],300) && near(take(w::world_matrix(runtime,x.id()))[12],301) &&
+        rejected_pose.size()==1 && rejected_pose[0].object==x.id() && rejected_pose[0].kind==w::DiagnosticKind::command_rejected &&
+        rejected_pose[0].phase==w::DiagnosticPhase::physics && rejected_pose[0].severity==w::Severity::warning,
+        "Isolated simulation batch did not reject exactly the invalid pose.");
+    committed(world.stop());take(world.set_failure_policy(w::FailurePolicy::halt));committed(world.start());
+    take(world.apply_simulation_transforms(poses));
     reject(world.apply_simulation_transforms(invalid_poses),"Invalid final simulation pose was accepted.");
     require(equal_matrix(parent_world,take(w::world_matrix(runtime,a.id()))) && equal_matrix(child_world,take(w::world_matrix(runtime,x.id()))),
         "Failed simulation batch partially moved an ancestor.");
@@ -500,4 +510,98 @@ void attachment_space_and_authoring() {
         "Final explicit world space multiplied the child's author scale by its composition parent.");
     committed(world.close());
     std::puts("[pass] Final space plans: atomic origin publication, preview/Cook matrices, root boundaries, inherited Transform removal and Detached running authoring");
+}
+void mirrored_and_degenerate_space() {
+    Runtime runtime;const auto types=take(w::register_types(runtime));w::World world(runtime,types);
+    const auto same=[](const math::Matrix4& left,const math::Matrix4& right){for(std::size_t i=0;i<16;++i) if(std::abs(left[i]-right[i])>1e-4f) return false;return true;};
+    const auto item=[&](ObjectId entity)->std::optional<w::RenderItem>{
+        for(const auto& value:take(world.render_items())) if(value.entity==entity) return value;
+        return std::nullopt;
+    };
+    const float half=std::sqrt(.5f);
+    // A negative axis mirrors: S*R*T keeps its sign and the matrix turns left-handed.
+    auto mirror=take(w::create_entity(runtime));auto mirror_shape=add_shape(runtime,types,world,mirror.id());
+    take(world.set_transform(mirror.id(),{{1,2,3},{},{-2,3,4}}));committed(world.attach(mirror.id()));
+    const auto mirrored=item(mirror.id());
+    require(mirrored && mirrored->world[0]==-2 && mirrored->world[5]==3 && mirrored->world[10]==4 && mirrored->world[12]==1,
+        "Negative scale did not produce a mirrored S*R*T matrix.");
+    // Decomposition keeps a proper rotation: X carries the reflection unless the
+    // object's own sign pattern has the same parity.
+    const auto inverted=w::transform_matrix({{},{},{-1,-1,-1}});
+    const auto split=take(w::relative_transform(inverted,w::transform_matrix({})));
+    const auto kept=take(w::relative_transform(inverted,w::transform_matrix({}),{-1,-1,-1}));
+    require(near(split.scale.x,-1) && near(split.scale.y,1) && near(split.scale.z,1) && near(std::abs(split.rotation.x),1) &&
+        near(kept.scale.x,-1) && near(kept.scale.y,-1) && near(kept.scale.z,-1) && near(std::abs(kept.rotation.w),1) &&
+        same(w::transform_matrix(split),inverted) && same(w::transform_matrix(kept),inverted),
+        "Mirrored decomposition lost the matrix or the preferred sign pattern.");
+    auto a=take(w::create_entity(runtime)),d=take(w::create_entity(runtime)),b=take(w::create_entity(runtime)),c=take(w::create_entity(runtime));
+    take(world.set_transform(a.id(),{{5,0,0},{0,0,half,half},{2,2,2}}));
+    take(world.set_transform(d.id(),{{0,5,0},{half,0,0,half},{4,4,4}}));
+    take(world.set_transform(b.id(),{{0,0,5},{0,half,0,half},{-1,1,1}}));
+    take(world.set_transform(c.id(),{{1,0,0},{0,std::sin(.2f),0,std::cos(.2f)},{1,-1,1}}));
+    committed(world.reparent(c.id(),a.id(),w::ReparentRule::keep_local));
+    committed(world.attach(a.id()));committed(world.attach(d.id()));committed(world.attach(b.id()));
+    const auto placed=take(w::world_matrix(runtime,c.id()));
+    committed(world.reparent(c.id(),d.id(),w::ReparentRule::keep_world));
+    auto local=take(w::read_transform(runtime,c.id()));
+    require(same(take(w::world_matrix(runtime,c.id())),placed) && local.scale.x>0 && local.scale.y<0 && local.scale.z>0,
+        "Keep-world under an unmirrored parent lost the world pose or the Entity's own mirrored axis.");
+    committed(world.reparent(c.id(),b.id(),w::ReparentRule::keep_world));
+    local=take(w::read_transform(runtime,c.id()));
+    require(same(take(w::world_matrix(runtime,c.id())),placed) && local.scale.x>0 && local.scale.y>0 && local.scale.z>0,
+        "Keep-world under a mirrored parent lost the world pose or kept a now-redundant reflection.");
+    // A zero axis is stored; its subtree is skipped and reported once, on the cause.
+    auto flat=take(w::create_entity(runtime)),u=take(w::create_entity(runtime)),v=take(w::create_entity(runtime));
+    auto u_shape=add_shape(runtime,types,world,u.id()),v_shape=add_shape(runtime,types,world,v.id());
+    take(world.set_transform(flat.id(),{{0,0,0},{},{1,0,1}}));
+    committed(world.reparent(u.id(),flat.id(),w::ReparentRule::keep_local));committed(world.reparent(v.id(),u.id(),w::ReparentRule::keep_local));
+    committed(world.attach(flat.id()));
+    (void)world.take_diagnostics();
+    require(!item(u.id()) && !item(v.id()) && item(mirror.id()),"Degenerate space was drawn or hid an unrelated Entity.");
+    auto report=world.take_diagnostics();
+    require(report.size()==1 && report[0].object==flat.id() && report[0].kind==w::DiagnosticKind::degenerate_value &&
+        report[0].phase==w::DiagnosticPhase::presentation && report[0].severity==w::Severity::warning &&
+        report[0].field==std::vector<std::string>{"scale"},
+        "Degenerate space was not reported once on its zero-scale cause.");
+    require(!item(u.id()) && world.take_diagnostics().empty(),"A persisting degenerate space was reported again.");
+    take(world.set_failure_policy(w::FailurePolicy::halt));
+    require(!item(v.id()) && item(mirror.id()),"Halt treated a degenerate space as an extraction failure.");
+    take(world.set_failure_policy(w::FailurePolicy::isolate));
+    reject(world.reparent(v.id(),mirror.id(),w::ReparentRule::keep_world),"Keep-world accepted a singular world pose.");
+    reject(world.reparent(b.id(),flat.id(),w::ReparentRule::keep_world),"Keep-world accepted a singular parent.");
+    take(world.set_transform(flat.id(),{{0,0,0},{},{1,1,1}}));
+    require(item(u.id()) && item(v.id()),"Restoring the zero axis did not restore its subtree.");
+    take(world.set_transform(flat.id(),{{0,0,0},{},{0,1,1}}));(void)item(u.id());
+    require(world.take_diagnostics().size()==1,"A degenerate space that recurred after resolving was not reported again.");
+    // Light frames ignore scale magnitudes and keep signs: under a uniform mirror
+    // they follow the mirrored local axes, with right negated to stay right-handed.
+    std::vector<atelier::ObjectRoot> lights;
+    const auto light=[&](ObjectId parent,w::LightKind kind,math::Quaternion rotation) {
+        auto entity=take(w::create_entity(runtime));auto component=take(w::create_component(runtime,types.light_component));
+        w::LightSettings settings;settings.kind=kind;take(world.set_light(component.id(),settings));
+        committed(world.attach_components(entity.id(),std::array{w::Attachment{component.id()}}));
+        take(world.set_transform(entity.id(),{{1,2,3},rotation,{1,1,1}}));
+        committed(world.attach(entity.id(),w::append,parent));
+        const auto id=component.id();lights.push_back(std::move(component));lights.push_back(std::move(entity));return id;
+    };
+    const auto axis=[](const math::Matrix4& m,std::size_t row) {
+        const math::Vector3 value{m[row*4],m[row*4+1],m[row*4+2]};return value*(1/std::sqrt(math::dot(value,value)));
+    };
+    const math::Quaternion tilt{std::sin(.3f)*.6f,std::sin(.3f)*.8f,0,std::cos(.3f)},roll{0,std::sin(.5f),0,std::cos(.5f)};
+    for(const auto& [scale,odd]:{std::pair{math::Vector3{-1,1,1},true},std::pair{math::Vector3{-1,-1,1},false}}) {
+        auto parent=take(w::create_entity(runtime));
+        take(world.set_transform(parent.id(),{{0,0,20},roll,scale}));committed(world.attach(parent.id()));
+        const auto rectangle=light(parent.id(),w::LightKind::rectangle,tilt),sun=light(parent.id(),w::LightKind::directional,tilt);
+        for(const auto& value:take(world.light_items())) {
+            if(value.component!=rectangle && value.component!=sun) continue;
+            const auto m=take(w::world_matrix(runtime,value.entity));
+            const auto right=axis(m,0)*(odd?-1.f:1.f);
+            require(near(math::dot(value.direction,axis(m,2)),1) && near(math::dot(value.up,axis(m,1)),1) &&
+                near(math::dot(value.right,right),1) && near(math::dot(math::cross(value.right,value.up),value.direction),1),
+                "A light under a mirrored parent did not follow its mirrored local axes in a right-handed frame.");
+        }
+        lights.push_back(std::move(parent));
+    }
+    committed(world.close());
+    std::puts("[pass] Mirrored and degenerate space: signed S*R*T, proper-rotation decomposition, sign-preserving keep-world, one diagnostic per zero-scale cause, mirrored light frames");
 }

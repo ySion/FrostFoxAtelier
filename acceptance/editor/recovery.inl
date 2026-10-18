@@ -42,8 +42,11 @@ void verify_scene_recovery() {
     const auto& missing_result=missing_recovery.preserve(missing,project.root(),{},"missing asset",evidence/"Recovery");
     require(missing_result && *missing_result && missing_result->value().scene!=path,"Missing asset blocked raw scene preservation.");
     const auto missing_bytes=take(editor::read_file(missing_result->value().scene));
-    require(missing_bytes.find(missing_key)!=std::string::npos && !editor::Session::deserialize(missing_bytes,project),
+    require(missing_bytes.find(missing_key)!=std::string::npos && !editor::Session::deserialize(missing_bytes,project,{},editor::LoadPolicy::strict),
         "Recovery silently removed a missing asset reference or claimed a complete project.");
+    const auto tolerated=take(editor::Session::deserialize(missing_bytes,project));
+    require(std::ranges::any_of(tolerated->load_issues(),[](const auto& item){return item.kind==world::DiagnosticKind::missing_resource;}) &&
+        take(tolerated->serialize()).find(missing_key)!=std::string::npos,"Tolerant recovery loading lost or hid the missing asset reference.");
 
     application::SceneRecovery clean_recovery;
     reopened->mark_saved();

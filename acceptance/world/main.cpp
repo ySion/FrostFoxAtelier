@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
+#include <tuple>
 
 namespace {
 using namespace atelier;
@@ -102,9 +103,8 @@ void editing_and_execution() {
     require(near(matrix[0], 0.f) && near(matrix[1], 2.f) && near(matrix[4], -3.f) && near(matrix[10], 4.f) && matrix[12] == 4.f,
         "TRS did not produce S*R*T row-vector geometry.");
     const auto original = take(w::read_transform(runtime, entity.id()));
-    auto illegal = original; illegal.scale.x = 0.f;
-    reject(world.set_transform(entity.id(), illegal), "Zero scale was accepted.");
-    illegal.scale.x = -1.f; reject(world.set_transform(entity.id(), illegal), "Negative scale was accepted.");
+    auto illegal = original; illegal.scale.x = std::numeric_limits<float>::quiet_NaN();
+    reject(world.set_transform(entity.id(), illegal), "Non-finite scale was accepted.");
     illegal = original; illegal.rotation = {0,0,0,0}; reject(world.set_transform(entity.id(), illegal), "Zero quaternion was accepted.");
     require(take(w::read_transform(runtime, entity.id())) == original, "Rejected TRS changed stored values.");
     illegal = original; illegal.scale = {1e-20f, 1e-20f, 1e-20f}; take(world.set_transform(entity.id(), illegal));
@@ -335,6 +335,7 @@ void failures_and_reentry() {
     Runtime runtime;
     const auto types = take(w::register_types(runtime));
     w::World world(runtime, types);
+    take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime));
     bool callback_called = false;
     take(world.observe_lifecycle([&](w::World& current, w::Lifecycle event, ObjectId target) -> Result<void> {
@@ -378,6 +379,7 @@ void ordered_lifecycle() {
     std::vector<Event> events;
     ObjectId fail_begin, fail_tick, fail_end;
     w::World world(runtime, types);
+    take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime));
     auto second_entity = take(w::create_entity(runtime));
     auto a = take(w::create_component(runtime, types.counter));
@@ -410,7 +412,6 @@ void ordered_lifecycle() {
     committed(world.start());
     require(events == std::vector<Event>{{'B',a.id()},{'B',b.id()},{'B',c.id()},{'B',d.id()}},
         "Begin order depended on TypeId or skipped disabled components.");
-    reject(world.bind_behavior(derived, {}), "Running behavior was replaced.");
     events.clear(); take(world.update(1));
     require(events == std::vector<Event>{{'T',a.id()},{'T',c.id()},{'T',d.id()}}, "Disabled component still ticked.");
     events.clear(); committed(world.set_enabled(b.id(), true));
@@ -419,8 +420,9 @@ void ordered_lifecycle() {
     committed(world.attach_components(entity.id(), addition, 1));
     require(events == std::vector<Event>{{'B',inserted.id()}}, "Dynamic addition repeated existing Begin.");
     events.clear(); take(world.update(1));
-    require(events == std::vector<Event>{{'T',a.id()},{'T',inserted.id()},{'T',b.id()},{'T',c.id()},{'T',d.id()}},
-        "Tick did not preserve member/composition order across actual types and dynamic insertion.");
+    // Tick order within a phase is unspecified without prerequisites.
+    const std::vector<Event> ticked{{'T',a.id()},{'T',inserted.id()},{'T',b.id()},{'T',c.id()},{'T',d.id()}};
+    require(std::ranges::is_permutation(events, ticked), "Tick skipped or repeated an actual type or dynamically inserted component.");
     events.clear(); auto removal = take(world.remove_component(b.id()));
     require(events == std::vector<Event>{{'E',b.id()}}, "Dynamic removal did not pair End.");
     events.clear(); committed(world.restore(removal));
@@ -449,11 +451,141 @@ void ordered_lifecycle() {
         "Derived empty binding incorrectly mixed inherited Begin/End with its own Tick.");
     std::puts("[pass] Ordered lifecycle: inherited native binding, composition order, disabled participation, dynamic insertion/removal, failure cleanup");
 }
+void isolated_failures() {
+    Runtime runtime;
+    const auto types = register_test_types(runtime);
+    source::Program ticking(runtime, types.counter), waiting(runtime, types.counter);
+    auto candidate = take(source::Program::prepare(take(ticking.request("world-failure.source",
+        "void tick(float dt) {\n    self.steps = 10 / self.steps;\n}\n", {}, {.diagnostics = true}))));
+    take(ticking.try_publish(candidate));
+    publish(waiting, "async void later() { yield; self.steps = 10 / self.steps; }");
+    const auto script = take(ticking.pin());
+    const auto later = take(waiting.bind<void>(FunctionExecution::coroutine));
+    const auto steps = take(runtime.find_field(types.counter, "steps"));
+    const auto translate = take(runtime.find_method(types.component, "translate_owner"));
+    w::World world(runtime, types);
+    require(world.failure_policy() == w::FailurePolicy::isolate, "World did not default to object isolation.");
+    auto e = take(w::create_entity(runtime)), f = take(w::create_entity(runtime)), g = take(w::create_entity(runtime));
+    auto a = take(w::create_component(runtime, types.counter)), b = take(w::create_component(runtime, types.counter));
+    auto c = take(w::create_component(runtime, types.counter)), d = take(w::create_component(runtime, types.counter));
+    auto m = take(w::create_component(runtime, types.counter));
+    const auto a_id = a.id(), b_id = b.id(), c_id = c.id(), d_id = d.id(), m_id = m.id();
+    take(world.set_transform(f.id(), {})); take(world.set_transform(g.id(), {}));
+    // A registered simulation owns g's pose, as PhysicsScene does for bodies.
+    take(world.add_simulation({[](float) -> Result<void> { return {}; }, [g = g.id()](ObjectId entity) { return entity == g; }}));
+    const std::array e_group{w::Attachment{a_id}, w::Attachment{b_id}, w::Attachment{c_id}};
+    const std::array f_group{w::Attachment{d_id}};
+    const std::array g_group{w::Attachment{m_id}};
+    committed(world.attach_components(e.id(), e_group));
+    committed(world.attach_components(f.id(), f_group));
+    committed(world.attach_components(g.id(), g_group));
+    using Event = std::pair<char, ObjectId>;
+    std::vector<Event> events;
+    ObjectId fail_begin;
+    bool world_failure{}, fail_observer{true};
+    take(world.bind_behavior(types.counter, {
+        .begin = [&](Runtime&, ObjectId id) -> Result<void> {
+            events.emplace_back('B', id);
+            if (id == fail_begin) return std::unexpected(Error{ErrorCode::invocation_failed, "Intentional isolated Begin failure."});
+            return {};
+        },
+        .tick = [&](Runtime& rt, ObjectId id, float dt) -> Result<void> {
+            events.emplace_back('T', id);
+            if (id == b_id) {
+                source::Diagnostics capture;
+                const std::array arguments{Scalar{dt}};
+                if (auto invoked = script.invoke(id, arguments, {1}, &capture); !invoked) return std::unexpected(invoked.error());
+            }
+            if (id == d_id && world_failure) return std::unexpected(Error{ErrorCode::capacity_exceeded, "Intentional World-level failure."});
+            if (id == d_id || id == m_id) {
+                const std::array arguments{Scalar{1.f}, Scalar{0.f}, Scalar{0.f}};
+                return rt.call(id, translate, arguments);
+            }
+            return {};
+        },
+        .end = [&](Runtime&, ObjectId id) -> Result<void> { events.emplace_back('E', id); return {}; }
+    }));
+    take(world.observe_lifecycle([&](w::World&, w::Lifecycle event, ObjectId id) -> Result<void> {
+        if (!fail_observer || event != w::Lifecycle::attached || id != d_id) return {};
+        fail_observer = false;
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Intentional isolated observer failure."});
+    }));
+    committed(world.attach(e.id())); committed(world.attach(f.id())); committed(world.attach(g.id()));
+    auto report = world.take_diagnostics();
+    require(report.size() == 1 && report[0].kind == w::DiagnosticKind::observer_failed && report[0].phase == w::DiagnosticPhase::lifecycle &&
+        report[0].object == d_id && report[0].entity == f.id() && report[0].message == "Intentional isolated observer failure.",
+        "Observer failure was not isolated to a diagnostic on its object.");
+
+    fail_begin = a_id;
+    committed(world.start());
+    require(world.running() && events == std::vector<Event>{{'B',a_id},{'B',b_id},{'B',c_id},{'B',d_id},{'B',m_id}},
+        "Isolated Begin failure stopped the World or skipped later objects.");
+    report = world.take_diagnostics();
+    require(report.size() == 1 && report[0].kind == w::DiagnosticKind::behavior_failed && report[0].phase == w::DiagnosticPhase::begin &&
+        report[0].severity == w::Severity::error && report[0].object == a_id && report[0].entity == e.id() &&
+        report[0].type == "worldAcceptance.Counter" && report[0].serial > 1 && report[0].repeats == 1,
+        "Begin failure diagnostic lost object identity, type or phase.");
+    reject(world.set_failure_policy(w::FailurePolicy::halt), "Failure policy changed while running.");
+    const auto starter = [later](Runtime&, ObjectId id) { return later.start(id, {}); };
+    reject(world.start_task(a_id, starter), "A Begin-faulted Component accepted a task.");
+    take(world.start_task(c_id, starter));
+    events.clear(); take(world.update(1));
+    require(events == std::vector<Event>{{'T',b_id},{'T',c_id},{'T',d_id},{'T',m_id}} && world.running(),
+        "Tick visited a Begin-faulted object or stopped at the first isolated Tick failure.");
+    take(world.update(1));
+    events.clear(); take(world.update(1));
+    require(events == std::vector<Event>{{'T',d_id},{'T',m_id}} && world.activity().tasks == 0 && world.activity().update_registrations == 2,
+        "Tick or task failure did not stop only the failing object's Tick and tasks.");
+    require(near(take(w::world_matrix(runtime, f.id()))[12], 3) && near(take(w::world_matrix(runtime, g.id()))[12], 0),
+        "Translation rejection was not limited to the simulation-controlled Entity.");
+    report = world.take_diagnostics();
+    require(report.size() == 3 && report[0].object == b_id && report[0].phase == w::DiagnosticPhase::tick &&
+        report[0].kind == w::DiagnosticKind::behavior_failed && report[0].message.find("nonzero divisor") != std::string::npos &&
+        report[0].source && report[0].source->path == "world-failure.source" && report[0].source->line == 2,
+        "Script Tick failure lost its message or source location.");
+    require(report[1].object == m_id && report[1].entity == g.id() && report[1].kind == w::DiagnosticKind::command_rejected &&
+        report[1].phase == w::DiagnosticPhase::command && report[1].severity == w::Severity::warning && report[1].repeats == 3 &&
+        report[1].message.find("translate_owner") != std::string::npos,
+        "Simulation-controlled translation was not rejected per command and coalesced while persisting.");
+    require(report[2].object == c_id && report[2].kind == w::DiagnosticKind::task_failed && report[2].phase == w::DiagnosticPhase::task,
+        "Task failure was not isolated to its object.");
+
+    // A host clears faults after publishing fixed code: Tick resumes without a
+    // second Begin, and the Begin-faulted object begins through the running path.
+    take(runtime.write(b_id, steps, Scalar{std::uint32_t{1}}));
+    fail_begin = {}; events.clear();
+    committed(world.clear_faults());
+    require(events == std::vector<Event>{{'B',a_id}}, "clear_faults repeated Begin or skipped a Begin-faulted object.");
+    events.clear(); take(world.update(1));
+    require(events == std::vector<Event>{{'T',a_id},{'T',b_id},{'T',c_id},{'T',d_id},{'T',m_id}} && world.take_diagnostics().empty(),
+        "Cleared objects did not resume Tick or a persisting rejection was reported again.");
+    events.clear(); committed(world.stop());
+    require(events == std::vector<Event>{{'E',m_id},{'E',d_id},{'E',c_id},{'E',b_id},{'E',a_id}}, "Isolation broke End pairing or reverse order.");
+    fail_begin = d_id; committed(world.start());
+    events.clear(); committed(world.stop());
+    require(events == std::vector<Event>{{'E',m_id},{'E',c_id},{'E',b_id},{'E',a_id}}, "A Begin-faulted object received End.");
+    (void)world.take_diagnostics();
+
+    fail_begin = {}; committed(world.start());
+    world_failure = true;
+    reject(world.update(1), "A World-level Tick failure was isolated.");
+    require(!world.running() && world.take_diagnostics().empty(), "A World-level failure did not stop the World or was reported as an object fault.");
+    world_failure = false;
+    take(world.set_failure_policy(w::FailurePolicy::halt));
+    fail_begin = d_id;
+    const auto halted = take(world.start());
+    report = world.take_diagnostics();
+    require(halted.notification_error && !world.running() && report.size() == 1 && report[0].object == d_id &&
+        report[0].phase == w::DiagnosticPhase::begin, "Halt policy did not stop on the first failure and report it.");
+    committed(world.close());
+    std::puts("[pass] Object isolation: Begin/Tick/task/observer/command faults, script source, coalesced diagnostics, clear_faults, World-level and halt boundaries");
+}
 
 #include "lifecycle.inl"
 #include "static_mesh_entity.inl"
 #include "lighting.inl"
 #include "hierarchy.inl"
+#include "frame.inl"
 
 void spatial_tree_and_mesh() {
     Runtime runtime;
@@ -576,8 +708,23 @@ void sparse_presentation() {
     take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{5.f}));
     auto moved=take(world.render_items());
     require(near(moved[0].world[12],14) && near(moved[1].world[12],15),"Extraction hid a direct Runtime transform write.");
-    take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{std::numeric_limits<float>::infinity()}));
-    reject(world.render_items(),"Sparse extraction accepted a non-finite ancestor transform.");
+    // Isolate (default) skips the dependent meshes and reports the failing Entity
+    // once while the failure persists; halt fails the whole extraction.
+    const auto break_ancestor=[&] {take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{std::numeric_limits<float>::infinity()}));};
+    break_ancestor();
+    require(take(world.render_items()).empty() && take(world.render_items()).empty(),"Isolated extraction kept meshes below a non-finite ancestor.");
+    const auto isolated=world.take_diagnostics();
+    require(isolated.size()==1 && isolated[0].object==ancestors.front().id() && isolated[0].entity==ancestors.front().id() &&
+        isolated[0].kind==w::DiagnosticKind::invalid_value && isolated[0].phase==w::DiagnosticPhase::presentation &&
+        isolated[0].severity==w::Severity::error && isolated[0].type=="world.Entity" && isolated[0].repeats==2 && !isolated[0].message.empty(),
+        "Isolated extraction did not report the non-finite ancestor once per persisting failure.");
+    take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{1.f}));
+    require(near(take(world.render_items()).front().world[12],10),"Failed extraction retained invalid spatial state.");
+    take(world.set_failure_policy(w::FailurePolicy::halt));
+    break_ancestor();
+    reject(world.render_items(),"Halted extraction accepted a non-finite ancestor transform.");
+    require(world.take_diagnostics().size()==1,"Halted extraction did not report its resolved-then-repeated failure.");
+    take(world.set_failure_policy(w::FailurePolicy::isolate));
     take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{1.f}));
     require(near(take(world.render_items()).front().world[12],10),"Failed extraction retained invalid spatial state.");
     take(w::set_geometry(runtime,sparse.first[0].component,{}));
@@ -602,6 +749,7 @@ int main() {
         lifecycle_subscription_unsubscribe();
         failures_and_reentry();
         ordered_lifecycle();
+        isolated_failures();
         entity_lifecycle_and_detached_graph();
         spatial_tree_and_mesh();
         static_mesh_entity_creation();
@@ -611,7 +759,9 @@ int main() {
         hierarchical_space_boundaries();
         forest_publication();
         attachment_space_and_authoring();
-        std::puts("World acceptance: PASS (16/16)");
+        mirrored_and_degenerate_space();
+        frame_phases();
+        std::puts("World acceptance: PASS (19/19)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

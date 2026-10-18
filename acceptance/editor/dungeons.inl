@@ -4,7 +4,7 @@ void verify_dungeons() {
     const auto folder=root/"Examples/Dungeons";
     auto project=take(editor::Project::open(root));
     const auto manifest=nlohmann::json::parse(take(editor::read_file(folder/"Import/models.json")));
-    require(manifest.size()==2332,"Dungeons model library is incomplete.");
+    require(manifest.size()==2314,"Dungeons model library is incomplete.");
     std::size_t models{},textured{};std::unordered_set<const material::Image*> images;
     for(const auto& row:manifest) {
         const auto mesh=take(project.mesh(row.at("resource").get<std::string>())).mesh;

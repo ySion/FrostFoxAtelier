@@ -77,8 +77,8 @@ void static_mesh_entity_creation() {
 
     const auto objects_before = runtime.live_objects(), roots_before = runtime.root_count();
     auto invalid = description;
-    invalid.transform.scale.x = 0;
-    reject(w::create_static_mesh_entity(world,invalid), "Factory accepted singular scale.");
+    invalid.transform.scale.x = std::numeric_limits<float>::infinity();
+    reject(w::create_static_mesh_entity(world,invalid), "Factory accepted non-finite scale.");
     invalid = description; invalid.transform.rotation = {0,0,0,0};
     reject(w::create_static_mesh_entity(world,invalid), "Factory accepted a zero quaternion.");
     invalid = description; invalid.material.base_color.x = std::numeric_limits<float>::quiet_NaN();

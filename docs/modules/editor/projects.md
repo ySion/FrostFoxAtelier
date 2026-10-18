@@ -133,13 +133,14 @@ Scene 统一写出 v6：顶层 `materials` 按文档 ID 保存材质定义，Sta
 
 ## 持久格式与责任
 
-- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 5`，继续读取 v1/v2/v3/v4。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段和未知字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。内部 JSON 结构不穿过 Project/Session 公共接口。
+- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 5`，继续读取 v1/v2/v3/v4。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene v6 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
-- Scene v6 根 `world` 保存 World 光照与效果值，字段来自与 UI / Control 共用的 author-option 目录，包括 `direct_candidates`。v1–v3 使用固定默认值；v4–v6 必须提供 `world` 对象，未保存字段使用默认值，非法/未知/诊断字段整体拒绝。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5/v6 不接受这两个旧字段；`direct_reference` 始终是视口诊断，不进入 Scene。`World::lighting_settings` 是权威值，`Session::set_world_lighting` 是编辑入口，完整候选仅记录一次 Undo；无变化为空操作。运行中或关闭后的 World 拒绝 authoring 写入。World 是宿主服务，配置目前是共享值类型，不伪装成带 ObjectId 的反射对象。
+- Scene v6 根 `world` 保存 World 光照与效果值，字段来自与 UI / Control 共用的 author-option 目录，包括 `direct_candidates`。v1–v3 使用固定默认值；v4–v6 必须提供 `world` 对象，未保存字段使用默认值；非法、未知或诊断字段由严格加载拒绝，宽容加载对该项使用默认值并保留原值。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5/v6 不接受这两个旧字段；`direct_reference` 始终是视口诊断，不进入 Scene。`World::lighting_settings` 是权威值，`Session::set_world_lighting` 是编辑入口，完整候选仅记录一次 Undo；无变化为空操作。运行中或关闭后的 World 拒绝 authoring 写入。World 是宿主服务，配置目前是共享值类型，不伪装成带 ObjectId 的反射对象。
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质、灯光与天空。没有 Sky Light 时环境光仍为零。探针滚动位置、历史、统计、可视化与相机不写入 Scene。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。旧 Scene v1–v5 经严格导入进入 Entity 模型，保存统一写出 v6，旧 `actors` 目录与 world.Actor / world.StaticMeshActor / world.SceneComponent 名称只在严格导入边界解释，不作为现行 Runtime 或 Control 别名。
-- Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、未知类型、未知已保存属性、失效关系、缺失资源和无法编码的字段明确失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
+- Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
+- 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）遇到任何诊断都拒绝。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing`，材质槽带 `missing`。当前限制：World 级保留数据（未知或不符的 World 设置）只在 Project Output 报告，面板中没有对应显示。
 - 物理角色、布娃娃/部件、车辆/车轮、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts / VehicleComponent.wheels 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。旧 constraint_target 序号仅在 v1–v5 导入时解析。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
 - SceneQueryComponent 复用 Scene v6 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源和解析内容，`read_static_mesh` 覆盖 Detached 与空网格。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
@@ -177,7 +178,7 @@ JSON 当前位于打开、保存和显式目录刷新路径；帧绘制不解析
 ### 使用步骤
 
 1. 打开工程，在 Project → New Component Source 创建 `Source/Move.source`。创建使用独占写入，已有文件不会被覆盖。Code 面板的 New 使用同一入口。
-2. 编辑后 Ctrl+S。F6 或 Project → Build 编译所有工程 Source；外部保存由 500 ms 文件检查发现。新增类型、字段、默认值或改变公开函数签名后，停止运行并选择 Rebuild Types。
+2. 编辑后 Ctrl+S。F6 或 Project → Build 编译所有工程 Source；外部保存由 500 ms 文件检查发现。新增类、方法、全局函数或 struct/enum 直接兼容发布。生命周期方法为 begin、tick（pre_physics）、post_physics_tick、late_tick、end，新增后在发布的同时绑定，Play 中也在帧间生效：已开始的对象从下一个阶段起执行新方法，不补发 Begin。修改已有类型的字段或默认值，或删除、改名、改变公开函数签名后，停止运行并选择 Rebuild Types。
 3. 选择一个 Entity，打开 Window → Entity Structure，通过 Add Component 选择 `project.Move`。添加后自动检查该组件。Parameters 中公开数值使用单行参数编辑器，bool 使用 Checkbox，枚举使用命名选项菜单；结构页负责删除，属性修改与结构变化都进入场景文档。
 4. 保存场景。F8 或 Run 启动独立游戏窗口；Shift+F8 或 Stop 停止。Project Output 显示构建、运行与退出信息。
 5. 运行时修改方法体并保存，兼容版本在下个安全点发布。语法或类型错误保留原代码；Code 的诊断可打开实际出错文件并定位行列。
@@ -216,7 +217,7 @@ Project 配置 + Source 文件快照
 
 Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路径排序。每份文件保留正文和版本；上限为 256 份、单份 1 MiB、总计 16 MiB。源码编译是同步、整工程候选发布；没有逐文件混合发布或磁盘机器码缓存。未改变内容不会重复编译。轮询依赖修改时间和大小，显式 Build 会重新读取内容。
 
-Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有者。退出顺序保证 End 能访问行为代码，World 先于代码释放，Runtime 最后销毁。启用 PhysicsScene 后只调用其 update，由它更新 World，避免重复 Tick。编辑器 UI Runtime 由 Workspace 独立拥有，场景替换不会让 UI 借用失效的运行时。
+Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有者。退出顺序保证 End 能访问行为代码，World 先于代码释放，Runtime 最后销毁。PhysicsScene 是 World 登记的模拟系统，Session::update 只调用 `World::update`，物理子步在其中推进。编辑器 UI Runtime 由 Workspace 独立拥有，场景替换不会让 UI 借用失效的运行时。
 
 项目 Play 和 UI Preview 共用一个进程宿主。父进程只传入工程位置、场景快照、停止事件并读取输出。Stop 先请求正常退出；2 秒未响应后结束该运行进程组。关闭编辑器或切换工程也回收它。运行中的对象身份、GPU 资源和 JIT 地址不会跨进程传递。停止后保留编辑场景、选择和撤销历史；运行结果不会自动写回。
 
@@ -252,13 +253,13 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 - 未保存源码保留在 CodeDocument 中；构建、运行和预览命令先保存当前工程的已修改 Source 文档，磁盘冲突按原保存流程处理。
 - 方法体更新保留对象、字段和场景历史；稳定 Entry 在下一次调用使用当前代码，旧 Lease 保留其代码。构建失败不替换最后成功版本。
 - Rebuild Types 从当前场景值准备新 Session，成功才替换文档。它保留源码缓冲和源码撤销，清空依赖旧对象身份的场景撤销；存在 Undo 或 Redo 任一方向的场景历史时确认这一行为。未保存场景仍保持未保存标记。
-- 删除已保存字段、改变字段类型或移除仍在场景中使用的类型会明确失败。先用旧版本移除相应组件或迁移数据，不静默丢值。
-- 初次打开时源码失败仍进入工程和 Code；原场景文本保留，创建和保存场景被禁用。修复源码后重建候选再激活场景，不能用空白替代文档覆盖原文件。
+- 删除已保存字段、改变字段类型或移除仍在场景中使用的类型时，Rebuild Types 仍然成功：旧值作为未知字段、不符值或占位对象保留，保存原样写回；恢复字段或类型后再次 Rebuild Types 即还原。只有编辑该字段或 Discard Saved Data 才丢弃旧值。
+- 交互打开工程或场景时源码构建失败：仍进入工程和 Code，场景以占位对象加载（工程类型全部缺失，原生部分照常显示），可以编辑和保存，保存按原类型写回；不沿用上次成功构建的类型。构建失败期间 Run 不可用。场景对象创建后 Runtime 不再接受新类型，所以修复源码后由一次新加载恢复真实类型：没有场景 Undo/Redo 历史时自动重新加载，否则提示 Rebuild Types（清空场景历史）。严格打开在构建失败时直接拒绝。
 - Cache 只放临时运行快照。关闭正常运行后删除本轮快照；源码、配置、资源和场景均保存在工程目录，删除 Cache 或搬移目录后可重建关联。
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期和物理设置往返。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
+`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返，以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 
@@ -270,4 +271,4 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ## Dungeons 地牢资源
 
-[Dungeons](../../../assets/examples/Examples/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。官方菜单及 `--dungeons` 配置原始 Demo 相机与 Smooth 贴图显示；无参数启动仍为 Sponza。全部非脚本 Unity 资源保留在 Originals，转换后的 2332 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。
+[Dungeons](../../../assets/examples/Examples/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。官方菜单及 `--dungeons` 配置原始 Demo 相机与 Smooth 贴图显示；无参数启动仍为 Sponza。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。

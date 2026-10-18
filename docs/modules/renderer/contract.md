@@ -18,7 +18,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - 相机为左手系，+Y 向上，使用有限 Reversed-Z：D3D 深度近端为 1、远端为 0，背景清除值为 0。矩阵为 row-major，行向量按 `p * world * view * projection` 执行；透视和正交都遵循同一深度约定。renderer 不维护相机控制状态。
 - `Frame::lighting_focus` 由宿主提供光照关注点，默认世界原点，与相机眼点及 Edit/Play 独立；编辑器使用观察 target，游戏可提供其接收区域关注点。DDGI 跟随体积与有界近源选灯网格消费该点，分别维护自己的布局。宿主发布 camera/view 前共用 `probe_focus_error` 校验实际世界精度；Renderer 编码前再次校验。近源网格无法保持 8 米格边精度时退回全局 proposal，不为这个可选采样加速结构额外收紧合法 Frame；原有 DDGI 体积、focus 与 World 作者值校验继续适用。体积组织、历史与预算合同见 [Scene Lit](scene-lit.md#ddgi-探针场)。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
-- 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留作者朝向，默认双面；显式单面材质在共享表面路径中裁弃背面。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 仍限定正、非零、有限。
+- 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留作者朝向，默认双面；显式单面材质在共享表面路径中裁弃背面。正反面由逆转置几何法线判定，不依赖三角形绕序；将来启用光栅背面剔除或 RayQuery/TLAS 剔除标志时，镜像实例必须按行列式符号翻转正面约定，或按符号分批。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 可为负（镜像）或零；World 不提交奇异 world 矩阵的网格，零缩放空间在 World 侧按退化跳过并诊断。
 - 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。场景覆盖按像素中心处于逻辑视口半开区间判断。`RasterViewport` 统一导出整数外包硬件视口、像素中心 scissor 与最终 clip 补偿，避免 D3D 对小数 viewport 的隐式向下取整漏掉末列/末行；场景表面、深度、线框、辅助显示和 Lit 诊断复用同一转换。逻辑相机、运动、深度 Z/W 和屏幕重建矩阵不变，整数视口直接保留原 clip。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
 - UI 支持半开 scissor、实色矩形、R8 覆盖图与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
@@ -98,7 +98,7 @@ Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Applic
 
 `FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-CPU 墙钟分段同样沿该快照返回：`cpu_prepare_us` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`cpu_encode_us` 覆盖显示模式失效处理及场景/UI 绘制命令录制。`cpu_frame` 透传本次 `Context::frame` 的提交、Present、帧槽等待和回收分段，字段定义以 [RHI 合同](../rhi/contract.md) 为准。它们在每次 render 开始清零，不复用上一帧；提前 skipped 时没有提交序号。CPU 的 `frame_sequence` 属于本次提交，不能与读取时可能更早的 Scene Lit 完成 GPU 样本混为同帧。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加；总 Application 步进时间应由宿主独立测量。
+CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制；`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
 
 | 字段 | 统计边界 |
 | --- | --- |

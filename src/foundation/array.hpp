@@ -104,6 +104,21 @@ public:
             copy_construct(destination, values.data(), count, constructed);
         });
     }
+    // Construction precedes relocation, so arguments may alias elements. The array is
+    // unchanged if construction or growth fails; the final rotation moves elements.
+    template<class... A> requires std::constructible_from<T, A...> && std::is_move_assignable_v<T>
+    T& insert(std::size_t index, A&&... arguments) {
+        if (index > size_) throw std::out_of_range("Array insert position.");
+        emplace(std::forward<A>(arguments)...);
+        std::rotate(data_ + index, data_ + size_ - 1, data_ + size_);
+        return data_[index];
+    }
+    // Moves one element to `to`, shifting the elements between them.
+    void move(std::size_t from, std::size_t to) requires std::is_move_assignable_v<T> {
+        if (from >= size_ || to >= size_) throw std::out_of_range("Array move position.");
+        if (from < to) std::rotate(data_ + from, data_ + from + 1, data_ + to + 1);
+        else if (to < from) std::rotate(data_ + to, data_ + from, data_ + from + 1);
+    }
     void resize(std::size_t size) requires std::default_initializable<T> {
         if (size < size_) { destroy(data_ + size, size_ - size); size_ = size; }
         else extend(size - size_, [](T* destination, std::size_t count, std::size_t& constructed) {

@@ -419,7 +419,12 @@ struct EditorControl::Impl {
         if(found==objects.end() || !member(found->second)) throw Failure("stale_object","Object handle is no longer a document member");return found->second;
     }
     Json object_header(ObjectId id,std::string_view type) {
-        return {{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type}};
+        Json header{{"handle",handle(id)},{"name",control::utf8(app.document_->name(id))},{"type",type}};
+        // A placeholder stands in for a saved type the current build does not register.
+        if(app.document_->has_retained(id)) if(const auto saved=app.document_->retained(id);saved && !saved->type.empty()) {
+            header["placeholder"]=true;header["saved_type"]=saved->type;
+        }
+        return header;
     }
     Json object_json(ObjectId id) {
         auto& runtime=app.document_->world().runtime();const auto* type=take(runtime.describe(take(runtime.type_of(id))));
@@ -431,18 +436,28 @@ struct EditorControl::Impl {
             if(prop_type->enumeration) {field["choices"]=Json::array();for(const auto& [name,bits]:prop_type->enumeration->values) {static_cast<void>(bits);field["choices"].push_back(name);}}
             result["properties"].push_back(std::move(field));
         }
+        if(app.document_->has_retained(id)) if(const auto saved=app.document_->retained(id);saved && !saved->entries.empty()) {
+            auto& data=result["saved_data"]=Json::array();
+            for(const auto& entry:saved->entries) {
+                std::string path;for(const auto& part:entry.path) path+=(path.empty()?"":".")+part;
+                data.push_back({{"path",path},{"value",entry.value},{"kind",std::string(world::name(entry.kind))}});
+            }
+        }
         if(take(runtime.is_a(take(runtime.type_of(id)),app.document_->types().entity))) {
             const auto origin=take(world::space_reference(runtime,id));result["space_reference"]=origin?Json(*origin==ObjectId{}?"":handle(*origin)):Json(nullptr);
         }
         if(auto transform=world::read_transform(runtime,id)) result["transform"]={{"position",vector3(transform->position)},
             {"rotation",{transform->rotation.x,transform->rotation.y,transform->rotation.z,transform->rotation.w}},{"scale",vector3(transform->scale)}};
         if(auto bindings=world::read_material_bindings(runtime,id);bindings) {
+            if(const auto mesh=world::read_static_mesh(runtime,id))
+                result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()}};
             result["materials"]=Json::array();
             for(const auto& binding:*bindings) {
                 const auto state=take(material::read_material(runtime,binding.resource.id()));
+                const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
                 result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
-                    {"parent",state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:""},
-                    {"parameter_mask",state.overrides},{"assignment_override",binding.overridden}});
+                    {"parent",parent},{"parameter_mask",state.overrides},{"assignment_override",binding.overridden},
+                    {"missing",app.document_->unavailable(parent.empty()?state.source:parent)!=nullptr}});
             }
         }
         return result;
@@ -615,12 +630,15 @@ struct EditorControl::Impl {
         if(op=="material.inspect") {
             if(!app.project_) throw Failure("not_ready","No project is open");
             if(args.contains("asset")==args.contains("object")) throw Failure("invalid_request","Specify exactly one material asset or object");
-            const auto target=args.contains("asset")?take(doc.material_resource(*app.project_,text(args.at("asset")))).id():object(args.at("object"));
+            const auto target=args.contains("asset")?take(doc.open_material(*app.project_,text(args.at("asset")))).id():object(args.at("object"));
             if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
             const auto state=take(material::read_material(runtime,target));
-            auto result=object_json(target);result["asset"]=state.source;
-            result["parent"]=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:"";
-            result["parameter_mask"]=state.overrides;
+            const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
+            auto result=object_json(target);result["asset"]=state.source;result["parent"]=parent;
+            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(parent.empty()?state.source:parent)!=nullptr;
+            auto& textures=result["missing_textures"]=Json::array();
+            for(const auto& texture:state.textures) if(texture.registered())
+                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(source)) textures.push_back(std::move(source));
             result["dirty"]=state.source.empty()?doc.dirty():doc.material_dirty(state.source);return result;
         }
         if(op=="job.status" || op=="job.cancel") {

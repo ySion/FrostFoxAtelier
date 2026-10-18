@@ -35,12 +35,23 @@ void publication_failures() {
     Failing::fail = false;
     require(Base::live == 0 && Base::destroyed == before + 1 && Resource::live == 0 &&
         Resource::destroyed == 1 && runtime.root_count() == 0, "Failed derived construction did not unwind exactly once.");
-    // A failed first creation must not seal registration.
+    // Registration stays open after objects exist. New types may derive from
+    // published ones, and published metadata keeps its address and identity.
     take(runtime.register_type({"after.Failure", TypeKind::object, {}, {}, {}}));
+    const auto parent = take(runtime.find_type("after.Failure"));
+    const auto* parent_info = take(runtime.describe(parent));
+    const auto first = runtime.type_count();
     auto root = take(runtime.create(runtime.object_type()));
-    reject(runtime.register_type({"after.Success", TypeKind::object, {}, {}, {}}), ErrorCode::busy);
+    TypeDefinition late{"after.Success", TypeKind::object, {}, {}, {}}; late.base = TypeReference{"after.Failure"};
+    const auto late_type = take(runtime.register_type(late));
+    auto late_root = take(runtime.create(late_type));
+    require(runtime.type_count() == first + 1 && runtime.types(first) == std::vector{late_type} &&
+        take(runtime.find_type("after.Success")) == late_type && take(runtime.describe(parent)) == parent_info &&
+        take(runtime.is_a(late_type, parent)), "Late registration changed published metadata or missed the catalog.");
+    reject(runtime.register_type(late), ErrorCode::duplicate_name);
+    take(runtime.destroy(late_root.id()));
     take(runtime.destroy(root.id()));
-    reject(runtime.register_type({"after.Destroy", TypeKind::object, {}, {}, {}}), ErrorCode::busy);
+    take(runtime.register_type({"after.Destroy", TypeKind::object, {}, {}, {}}));
 }
 
 void objects_and_views() {

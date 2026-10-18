@@ -195,7 +195,11 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
     workspace_.sync_world(*document_);
     auto candidate=workspace_.view;
-    if(fit_ddgi_volume) {
+    // Fitting fills a probe volume the scene did not save. It belongs to loading,
+    // not authoring: no history, the document stays clean and the next save writes
+    // it. A saved volume is the author's and stays.
+    const bool fit=fit_ddgi_volume && document_->world().lighting_settings().probe_volumes==rendering::SceneLightingSettings{}.probe_volumes;
+    if(fit) {
         auto fitted=fitted_probe_view(false);if(!fitted) return std::unexpected(fitted.error());candidate=*fitted;
         const auto& counts=candidate.lit.probe_volumes[0].counts;
         candidate.lit.probe_update_budget=(counts[0]*counts[1]*counts[2]+3)/4;
@@ -203,6 +207,7 @@ Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,
     auto camera=camera_;
     if(shading>renderer::Shading::scene_lit || !camera.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
+    if(fit) if(auto initialized=document_->initialize_world_lighting(candidate.lit);!initialized) return initialized;
     candidate.shading=shading;if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
     camera_=camera;camera_cut_=true;invalidate_surface();return {};
 }
@@ -291,7 +296,7 @@ Result<void> Application::action(const ui::Action& source) {
         if(choice->kind==Kind::assign) return document_->assign_material(*project_,choice->object,choice->slot,choice->key);
         if(choice->kind==Kind::clear) return document_->clear_material(choice->object,choice->slot);
         if(choice->kind==Kind::texture) return document_->set_material_texture(*project_,choice->object,static_cast<material::Input>(choice->index),choice->key);
-        auto root=document_->material_resource(*project_,choice->key);if(!root) return std::unexpected(root.error());
+        auto root=document_->open_material(*project_,choice->key);if(!root) return std::unexpected(root.error());
         workspace_.material_inspection=choice->key;workspace_.inspecting_asset=true;return {};
     }
     if (workspace_.workbench.apply(event)) return {};
@@ -301,7 +306,7 @@ Result<void> Application::action(const ui::Action& source) {
             workspace_.inspecting_asset=true;workspace_.material_inspection.clear();
             const auto& selected=workspace_.assets.selected();
             if(selected && selected->kind==editor::AssetKind::material && project_) {
-                auto root=document_->material_resource(*project_,selected->key);if(!root) return std::unexpected(root.error());
+                auto root=document_->open_material(*project_,selected->key);if(!root) return std::unexpected(root.error());
                 workspace_.material_inspection=selected->key;
             }
         }
@@ -325,7 +330,7 @@ Result<void> Application::action(const ui::Action& source) {
             return execute(editor::Command::create_static_mesh,selected->key);
         if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
         else if(selected->kind==editor::AssetKind::material && project_) {
-            auto root=document_->material_resource(*project_,selected->key);if(!root) return std::unexpected(root.error());
+            auto root=document_->open_material(*project_,selected->key);if(!root) return std::unexpected(root.error());
             workspace_.material_inspection=selected->key;workspace_.inspecting_asset=true;workspace_.dock.select(editor::control::parameters_tab);
         }
         else if (selected->kind==editor::AssetKind::scene) return open_scene(selected->path);
@@ -638,6 +643,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         }
         break;
     }
+    case discard_saved_data: result=document_->discard_retained(document_->selection().object);break;
     case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
         workspace_.viewport_settings.select_mode=static_cast<editor::SelectMode>(static_cast<unsigned>(command)-static_cast<unsigned>(select_mode_set));break;
     case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
@@ -1317,7 +1323,8 @@ bool Application::step(renderer::Capture* capture) try {
     }
     // Native popups render on their retained surface before scene submission /
     // Present can block. Their anchor still comes from accepted owner geometry.
-    if (!workspace_.pie_menu()) update_menu();
+    // A pending keyboard reveal waits for this frame's acceptance; closing here would drop it.
+    if (!workspace_.pie_menu() && !pending_menu_) update_menu();
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};

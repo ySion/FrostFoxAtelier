@@ -64,6 +64,21 @@ if (-not (Get-Content -Raw $generatedSource).Contains('"Position", "Transform"')
     throw 'Generated registration lost field presentation metadata.'
 }
 Run-Generator 'empty-description' $valid.Replace('AFIELD()', 'AFIELD(DESC="")')
+$ranged = '#include "math/math.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', @'
+AFIELD(Min="0", Max="10", LockMin, HardMax="65504") ProbeScalar value{};
+    AFIELD(Min="-1.5", Max="2", LockMax) atelier::math::Vector3d direction;
+    AFIELD(HardMin="-5", HardMax="007") int count{};
+    AFIELD(HardMin="1") unsigned samples{1};
+'@)
+Run-Generator 'range' $ranged
+$rangeOutput = Get-Content -Raw $generatedSource
+foreach ($text in @(
+    '.range({.ui_min = Scalar{0x0p+0f}, .ui_max = Scalar{0x1.4p+3f}, .hard_min = Scalar{0x0p+0f}, .hard_max = Scalar{0x1.ffcp+15f}})',
+    '.range({.ui_min = Scalar{-0x1.8p+0}, .ui_max = Scalar{0x1p+1}, .hard_max = Scalar{0x1p+1}})',
+    '.range({.hard_min = Scalar{std::int32_t{-5}}, .hard_max = Scalar{std::int32_t{7}}})',
+    '.range({.hard_min = Scalar{std::uint32_t{1u}}})')) {
+    if (-not $rangeOutput.Contains($text)) { throw "Generated registration lost an exact field range: $text" }
+}
 $described = $valid.Replace('Name="probe.Widget"', 'Name="probe.Widget", DESC="Widget 类型\r\n说明"').Replace(
     'AFIELD() ProbeScalar value{};',
     'AFIELD(DESC="Value 字段\n说明") ProbeScalar value{}; AFUNCTION(DESC="Read 方法\t说明") float read() const { return value; }')
@@ -112,7 +127,18 @@ $cases = @(
     @{name='static-method'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() static float bad() { return 0; }'); error='non-static member with a scalar, void or plain record result'},
     @{name='body'; text=$valid.Replace('AGENERATED_BODY(Widget)', ''); error='requires exactly one AGENERATED_BODY'},
     @{name='grouped'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() float first{}, second{};'); error='split grouped declarations'},
-    @{name='inherited-name'; text='ACLASS() struct Base { AGENERATED_BODY(Base) AFIELD() float value{}; };' + $valid.Replace('struct Widget {', 'struct Widget : Base {'); error='Inherited reflected member name cannot be shadowed'}
+    @{name='inherited-name'; text='ACLASS() struct Base { AGENERATED_BODY(Base) AFIELD() float value{}; };' + $valid.Replace('struct Widget {', 'struct Widget : Base {'); error='Inherited reflected member name cannot be shadowed'},
+    @{name='range-lock-alone'; text=$valid.Replace('AFIELD()', 'AFIELD(LockMin)'); error='LockMin requires Min and excludes HardMin'},
+    @{name='range-lock-hard'; text=$valid.Replace('AFIELD()', 'AFIELD(Max="1", LockMax, HardMax="2")'); error='LockMax requires Max and excludes HardMax'},
+    @{name='range-flag-value'; text=$valid.Replace('AFIELD()', 'AFIELD(Min="0", LockMin="1")'); error='LockMin is a flag'},
+    @{name='range-bool'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Max="1") bool flag{};'); error='Field ranges require a float, double, int32, uint32 or math vector field'},
+    @{name='range-quaternion'; text=('#include "math/math.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Max="1") atelier::math::Quaternion rotation;')); error='Field ranges require a float, double, int32, uint32 or math vector field'},
+    @{name='range-array-bool'; text=('#include "foundation/array.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Max="1") atelier::Array<bool> flags;')); error='Field ranges require a float, double, int32, uint32 or math vector field, or an Array of them'},
+    @{name='range-array-fraction'; text=('#include "foundation/array.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(HardMax="0.5") atelier::Array<int> counts;')); error='HardMax requires a finite decimal std::int32_t value'},
+    @{name='range-fraction'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(HardMax="1.5") int count{};'); error='HardMax requires a finite decimal std::int32_t value'},
+    @{name='range-negative-uint'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(HardMin="-1") unsigned count{};'); error='HardMin requires a finite decimal std::uint32_t value'},
+    @{name='range-nan'; text=$valid.Replace('AFIELD()', 'AFIELD(Max="nan")'); error='Max requires a finite decimal float value'},
+    @{name='range-overflow'; text=$valid.Replace('AFIELD()', 'AFIELD(Min="1e39")'); error='Min requires a finite decimal float value'}
 )
 foreach ($case in $cases) {
     Run-Generator $case.name $case.text $case.error

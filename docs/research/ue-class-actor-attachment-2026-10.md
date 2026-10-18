@@ -1,5 +1,7 @@
 # UE 对照与 Actor/Component 核心模型评估
 
+2026-10-17 状态：第 5–7 节的组件清单与跨 Actor 附着缺口属于 Actor/SceneComponent 模型，该模型已被 [Entity 模型](entity-component-model-evaluation-2026-10-12.md)取代（跨实体空间参考现由 `space_reference` 提供）；硬闸复核见[工业引擎对照](world-hard-gates-industrial-comparison-20261017.md)。
+
 日期：2026-10-10。第 1–4 节保留 Epic 官方资料对照；第 5–7 节已同步本轮 PrimitiveComponent 实现，研究起始基线为 `5d24e4a6ab10b954c3bda03ffdfea674e939b12d`。当前接口以 [World](../modules/world/README.md)、[物理](../modules/physics/README.md)与[项目场景](../modules/world/project-scenes.md)为准。所引无版本参数官方页面在调研时显示为 UE 5.8。
 
 用户后续澄清：这里所需的 Class 是核心类型系统中可引用、可实例化并与 JIT/Runtime 深度结合的类描述，不要求它必须成为独立资产。下文“Class 资产”只讨论一种可选作者与持久化形式；类引用、类型身份和实例化语义的完善不以资产化为前提。

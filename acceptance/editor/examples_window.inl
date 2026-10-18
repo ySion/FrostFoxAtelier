@@ -9,6 +9,9 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     require(entities(app).size()==4 && model(app.document().world().render_items()).front().geometry->vertices().size()==786801 &&
         Access::scene_lit_view(app).shading==atelier::renderer::Shading::scene_lit && Access::scene_lit_view(app).lit.ddgi,
         "Editor default startup did not load the complete Sponza Scene Lit/DDGI scene.");
+    // Fitting an unsaved DDGI volume is load initialization: switching examples must not prompt to save.
+    const auto clean=[&](const char* message) {require(!app.document().dirty() && app.document().undo_count()==0,message);};
+    clean("Default Sponza startup left the document modified or with history.");
     tick(app,128);capture(app,output/"01-default-sponza.png");
     for(const auto* folder:{"Examples","Examples/Sponza","Examples/Scene Lit Room"}) {
         const auto key=Access::directory_key(app,folder);
@@ -29,7 +32,8 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
             "Example selection did not close the menu and configure Scene Lit.");
     };
     choose(Command::example_scene_lit);
-    require(entities(app).size()==15 && model(app.document().world().light_items()).size()==4,"Examples menu did not open the complete Scene Lit Room, including its Sky Light Entity.");
+    require(entities(app).size()==15 && model(app.document().world().light_items()).size()==5,"Examples menu did not open the complete Scene Lit Room, including its Sky Light Entity.");
+    clean("Opening Scene Lit Room left the document modified or with history.");
     tick(app,96);capture(app,output/"03-scene-lit-room.png");
     const auto shipped=atelier::editor::asset_directory()/"examples/Examples/Scene Lit Room/Scenes/Main.scene";
     const auto original=model(atelier::editor::read_file(shipped));
@@ -37,7 +41,10 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     const auto fields=model(app.document().properties(mesh));
     const auto roughness=std::ranges::find(fields,"material.roughness",&atelier::editor::Property::name);
     require(roughness!=fields.end(),"Scene Lit Room has no editable roughness.");
-    model(Access::edit_field(app,mesh,roughness->path,.61f));model(app.save_scene());
+    model(Access::edit_field(app,mesh,roughness->path,.61f));
+    // A saved volume is the author's: reopening must keep it, so the saved budget differs from a fresh fit.
+    auto lit=Access::scene_lit_view(app).lit;--lit.probe_update_budget;model(Access::scene_lit_settings(app,lit));
+    model(app.save_scene());
     const auto saved=model(app.document().serialize());
     choose(Command::example_sponza);require(entities(app).size()==4,"Examples menu did not return to Sponza.");
     choose(Command::example_scene_lit);

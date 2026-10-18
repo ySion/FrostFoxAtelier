@@ -35,7 +35,8 @@ void Session::remember(Change change) {
     ++revision_;
     if (saved_cursor_ && *saved_cursor_>cursor_) saved_cursor_.reset();
     history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_), history_.end());
-    history_.push_back(std::move(change));
+    auto released=release(change);
+    history_.push_back(Entry{std::move(change),std::move(released)});
     if (history_.size() > history_limit) {
         history_.erase(history_.begin());
         if (saved_cursor_) { if (*saved_cursor_) --*saved_cursor_; else saved_cursor_.reset(); }
@@ -75,6 +76,11 @@ Result<void> Session::set_world_lighting(const rendering::SceneLightingSettings&
     if(editing()) return invalid("Finish the current property edit before changing World settings.");
     if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
     remember(LightingChange{before,settings});return {};
+}
+Result<void> Session::initialize_world_lighting(const rendering::SceneLightingSettings& settings) {
+    if(undo_count() || redo_count() || editing()) return invalid("World settings initialize only a freshly opened document.");
+    if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
+    ++revision_;return {};
 }
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     if (auto valid=validate_name(name);!valid) return valid;
@@ -236,7 +242,7 @@ Result<world::Commit> Session::create_light(world::LightKind kind,math::Vector3 
     auto configured=runtime_.with_native<world::LightComponent>(light->id(),[&](auto& value)->Result<void> {
         value.settings.kind=kind;
         if(kind==world::LightKind::sky) value.settings.intensity=.03f;
-        return world::validate_light(value.settings);
+        return world::validate_light(runtime_,value.settings);
     });
     if(!configured) return std::unexpected(configured.error());
     if(kind!=world::LightKind::sky) {
@@ -512,7 +518,7 @@ Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::u
         change.entries.push_back({std::move(*root),entity,*value,*value});
     }
     if (amend_creation) {
-        const auto* creation=cursor_ && cursor_==history_.size()?std::get_if<EntityChange>(&history_.back()):nullptr;
+        const auto* creation=cursor_ && cursor_==history_.size()?std::get_if<EntityChange>(&history_.back().change):nullptr;
         if (!creation || !creation->added || saved_cursor_==cursor_ ||
             std::ranges::any_of(change.entries,[&](const auto& entry) {
                 return std::ranges::none_of(creation->removals,[&](const auto& item){return item.id()==entry.entity;});
@@ -531,7 +537,7 @@ Result<void> Session::preview_transform(std::uint64_t control_session, std::span
     if (!transform_ || transform_->control_session!=control_session) return invalid("No matching transform edit.");
     for(const auto& value:values) for(std::size_t axis=0;axis<3;++axis)
         if(value.position[axis]<parameters_[axis].minimum || value.position[axis]>parameters_[axis].maximum ||
-            value.scale[axis]<minimum_scale || value.scale[axis]>maximum_scale)
+            std::abs(value.scale[axis])>maximum_scale)
             return invalid("Transform value is outside the editor range.");
     return write_transforms(*transform_,values);
 }
@@ -598,7 +604,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
     }
     for(const auto& path:types_.scale_fields) if(std::ranges::equal(path,active_->path)) {
         const auto* number=std::get_if<float>(&value);
-        if(!number || *number<minimum_scale || *number>maximum_scale) return invalid("Scale is outside the editor range.");
+        if(!number || std::abs(*number)>maximum_scale) return invalid("Scale is outside the editor range.");
     }
     const auto before=world_.read(active_->root.id(),active_->path);
     if(!before) return std::unexpected(before.error());
@@ -786,6 +792,8 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             if (!changed) return std::unexpected(changed.error());
             set_selection({item.entity,item.root.id()});
             return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, RetainedChange>) {
+            return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, EntityChange>) {
             world::Commit result;
             const auto merge=[&](world::Commit& commit) {
@@ -841,8 +849,8 @@ Result<world::Commit> Session::undo() {
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (!cursor_) return world::Commit{};
-    auto result = replay(history_[cursor_ - 1], false);
-    if (result) --cursor_;
+    auto result = replay(history_[cursor_ - 1].change, false);
+    if (result) {restore(history_[cursor_ - 1].retained,false);--cursor_;}
     return result;
 }
 Result<world::Commit> Session::redo() {
@@ -850,8 +858,8 @@ Result<world::Commit> Session::redo() {
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (cursor_ == history_.size()) return world::Commit{};
-    auto result = replay(history_[cursor_], true);
-    if (result) ++cursor_;
+    auto result = replay(history_[cursor_].change, true);
+    if (result) {restore(history_[cursor_].retained,true);++cursor_;}
     return result;
 }
 Result<world::Commit> Session::close() {
@@ -860,8 +868,8 @@ Result<world::Commit> Session::close() {
     auto closed = world_.close();
     if (!closed) return closed;
     physics_.reset();
-    history_.clear(); names_.clear(); cursor_ = 0; set_selection({});
-    materials_.clear();textures_.clear();
+    history_.clear(); names_.clear(); retained_.clear(); retained_document_={}; cursor_ = 0; set_selection({});
+    materials_.clear();textures_.clear();unavailable_.clear();
     prepared_.reset();
     return closed;
 }
@@ -876,12 +884,7 @@ Result<world::Commit> Session::start() {
     return started;
 }
 Result<void> Session::update(float amount) {
-    auto result=[&]()->Result<void> {
-        if (!physics_) return world_.update(amount);
-        auto stepped=physics_->update(amount);
-        if (!stepped) return std::unexpected(stepped.error());
-        return {};
-    }();
+    auto result=world_.update(amount);
     if (!result) (void)stop();
     return result;
 }
@@ -898,8 +901,10 @@ Result<void> Session::collect_step() {
     }
     auto progress = runtime_.collect_step({32});
     if (!progress) return std::unexpected(progress.error());
-    if (runtime_.collection_phase()==CollectionPhase::idle)
+    if (runtime_.collection_phase()==CollectionPhase::idle) {
         std::erase_if(names_,[&](const auto& item){return !runtime_.type_of(item.first);});
+        std::erase_if(retained_,[&](const auto& item){return !runtime_.type_of(item.first);});
+    }
     return {};
 }
 }

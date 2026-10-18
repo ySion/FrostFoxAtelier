@@ -1,4 +1,5 @@
 #include "physics/physics.hpp"
+#include "physics/timing.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -39,6 +40,11 @@ atelier::ObjectId mesh_component(atelier::Runtime& runtime,atelier::ObjectId ent
         if(take(runtime.is_a(take(runtime.type_of(component.id())),type))) return component.id();
     throw std::runtime_error("Expected a mesh component on the Entity.");
 }
+// World::update is the only frame entry; it steps the registered PhysicsScene.
+atelier::physics::StepResult step(atelier::world::World& world, const atelier::physics::PhysicsScene& scene, float elapsed) {
+    take(world.update(elapsed));
+    return scene.last_step();
+}
 
 #include "integration.inl"
 #include "scenarios.inl"
@@ -56,6 +62,7 @@ const Scenario scenarios[]{
     {"queries", queries},
     {"cooked_assets", simulate_cooked_assets},
     {"fixed_step", fixed_step},
+    {"frame_timing", frame_timing},
     {"lifecycle", lifecycle},
     {"world_ownership", world_ownership},
     {"character", character},
@@ -70,6 +77,7 @@ const Scenario scenarios[]{
     {"query_exclusions", query_exclusions},
     {"primitive_composition", primitive_composition},
     {"primitive_authoring", primitive_authoring},
+    {"mirrored_scale", mirrored_scale},
 };
 } // namespace
 

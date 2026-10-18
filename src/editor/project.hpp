@@ -59,6 +59,7 @@ public:
     // The startup scene, UI source and top-level folders are not renamed here.
     Result<std::filesystem::path> rename(const std::filesystem::path& relative, std::wstring_view name);
     Result<std::filesystem::path> cook_collision(std::string_view mesh_key, math::Vector3 scale);
+    // Cooked collision for the mesh at this scale; a missing or stale cache entry is rebuilt and written back.
     Result<std::shared_ptr<const std::string>> collision(std::string_view mesh_key, math::Vector3 scale);
 private:
     std::filesystem::path root_, startup_, ui_source_;

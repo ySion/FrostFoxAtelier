@@ -22,6 +22,11 @@ Result<void> completed(Result<std::optional<Scalar>> result) {
     if (!result) return std::unexpected(result.error());
     return {};
 }
+bool lifecycle(std::string_view entry,std::string_view type) {
+    if (entry.size()<=type.size()+1 || !entry.starts_with(type) || entry[type.size()]!='.') return false;
+    const auto name=entry.substr(type.size()+1);
+    return name=="begin" || name=="tick" || name=="post_physics_tick" || name=="late_tick" || name=="end";
+}
 Result<void> validate_ui(const source::SourceFile& file) {
     // Compilation only. Project expressions and event handlers are evaluated
     // exclusively by the isolated runner, including UI previews.
@@ -105,24 +110,38 @@ Result<void> ProjectCode::build(const Project& project) {
             auto step=world_.runtime().collect_step({1024});if (!step) return reject(step.error());
         }
         if (!program_) program_=std::make_unique<source::Program>(world_.runtime());
+        // Request through publish runs synchronously here, and this is the Runtime's only
+        // Program, so no other producer can invalidate the candidate; an asynchronous
+        // build would need to re-request once when publication reports a stale catalog.
         auto request=program_->request(*next->sources);if (!request) return reject(request.error());
         auto candidate=source::Program::prepare(*request);if (!candidate) return reject(candidate.error());
         auto valid=validate(*candidate);if(!valid) return reject(valid.error());
+        const bool rebind=!bound_ || adds_behavior(*candidate);
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
-        if (!bound_) {auto binding=bind();if (!binding) return reject(binding.error());bound_=true;}
+        if (rebind) {auto binding=bind();if (!binding) {bound_=false;return reject(binding.error());}bound_=true;}
     }
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
     next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     published_=next;report_=std::move(next);return {};
+}
+// Compatible publications may add classes or lifecycle methods; those need a
+// new binding. build runs between frames, where World accepts it while running:
+// begun objects take the new methods from the next phase without a second Begin.
+bool ProjectCode::adds_behavior(const source::Program::Candidate& candidate) const {
+    auto& runtime=world_.runtime();
+    for(const auto& type:candidate.classes()) {
+        const auto entity=runtime.is_a(type.base,world_.types().entity),component=runtime.is_a(type.base,world_.types().component);
+        if(!entity || !component || (!*entity && !*component)) continue;
+        for(const auto& entry:candidate.entries())
+            if(lifecycle(entry.name,type.name) && !(bound_ && program_->entry(entry.name))) return true;
+    }
+    return false;
 }
 Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) const {
     auto& runtime=world_.runtime();
     for(const auto& type:candidate.classes()) {
         const auto entity=runtime.is_a(type.base,world_.types().entity),component=runtime.is_a(type.base,world_.types().component);
         if(!entity || !component) return fail("Cannot resolve a project class's published native base.");
-        if(!*entity && !*component) continue;
-        if(!bound_ && world_.running()) return std::unexpected(Error{ErrorCode::rebuild_required,"Stop and rebuild the project before adding its behavior bindings."});
-
     }
     return {};
 }
@@ -137,10 +156,11 @@ Result<void> ProjectCode::bind() {
         for (const auto& method:program_->entries()) {
             const auto prefix=type.name+".";if (!method.name.starts_with(prefix)) continue;
             const auto name=std::string_view(method.name).substr(prefix.size());
-            if (name!="begin" && name!="tick" && name!="end") continue;
-            const bool tick=name=="tick";
+            auto* tick=name=="tick"?&behavior.tick:name=="post_physics_tick"?&behavior.post_physics_tick:
+                name=="late_tick"?&behavior.late_tick:nullptr;
+            if (!tick && name!="begin" && name!="end") continue;
             auto entry=program_->entry(method.name);if (!entry) return std::unexpected(entry.error());
-            if (tick) behavior.tick=[entry=*entry](Runtime&,ObjectId self,float dt) {
+            if (tick) *tick=[entry=*entry](Runtime&,ObjectId self,float dt) {
                 const std::array<Scalar,1> args{dt};return completed(entry.invoke(self,args));
             };
             else {
@@ -148,7 +168,7 @@ Result<void> ProjectCode::bind() {
                 if (name=="begin") behavior.begin=std::move(call);else behavior.end=std::move(call);
             }
         }
-        if(behavior.begin || behavior.tick || behavior.end)
+        if(behavior.begin || behavior.tick || behavior.post_physics_tick || behavior.late_tick || behavior.end)
             if (auto bound=world_.bind_behavior(type.type,std::move(behavior));!bound) return bound;
     }
     return {};
@@ -169,16 +189,32 @@ Result<void> ProjectCode::poll(const Project& project,bool force) {
     if (!force && stamps==stamps_) return {};
     stamps_=std::move(stamps);return build(project);
 }
-ProjectDocument load_project_scene(Project& project,std::string_view source) {
+ProjectDocument load_project_scene(Project& project,std::string_view source,LoadPolicy policy,bool allow_failed_build) {
     ProjectDocument result;
     auto document=Session::deserialize(source,project,[&](world::World& world)->Result<std::shared_ptr<void>> {
         auto code=std::make_shared<ProjectCode>(world);const auto built=code->build(project);result.build=code->report();
-        if (!built) return std::unexpected(built.error());
+        if (!built) {
+            if (!allow_failed_build) return std::unexpected(built.error());
+            // Placeholders keep a different type identity than the project types they stand in
+            // for, so a successful build replaces this document through a fresh load.
+            return std::shared_ptr<void>{};
+        }
         result.code=code.get();return std::static_pointer_cast<void>(std::move(code));
-    });
-    if (document) result.session=std::move(*document);
-    else {result.error=result.build && result.build->error?*result.build->error:document.error();result.code=nullptr;}
+    },policy);
+    if (document) {
+        result.session=std::move(*document);
+        if(result.build && result.build->error) result.error=*result.build->error;
+    } else {result.error=result.build && result.build->error?*result.build->error:document.error();result.code=nullptr;}
     return result;
+}
+std::vector<std::wstring> describe_issues(const Session& session,std::span<const world::Diagnostic> issues,std::wstring_view source) {
+    std::vector<std::wstring> lines;
+    if(issues.empty()) return lines;
+    lines.push_back(std::wstring(source)+L": "+std::to_wstring(issues.size())+L" scene diagnostic(s), "+std::to_wstring(session.placeholder_count())+
+        L" placeholder object(s). Saved data that could not be applied is kept and written back on save.");
+    for(const auto& item:issues)
+        lines.push_back(L"  ["+wide(world::name(item.severity))+L"] "+wide(item.message)+(item.value.empty()?std::wstring{}:L" Saved: "+wide(item.value)));
+    return lines;
 }
 std::string ProjectCode::component_source(std::string_view name) {
     return "class project."+std::string(name)+" : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n";

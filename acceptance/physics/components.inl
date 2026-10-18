@@ -39,7 +39,7 @@ void controller_relation_state() {
     const auto before_force=f.state(forced),before_motion=f.state(moving);
     for(const auto target:{forced.id(),moving.id()})
         committed(f.world.set_space_reference(target,alternate.id(),w::ReparentRule::keep_world));
-    take(f.scene->update(0));
+    step(f.world, *f.scene, 0);
     require(f.handle(forced)==force_handle && f.handle(moving)==motion_handle &&
         f.state(forced).position==before_force.position && f.state(moving).position==before_motion.position,
         "Running keep-world spatial reference change replaced a body or moved its backend pose.");
@@ -52,7 +52,7 @@ void controller_relation_state() {
     for(const auto target:{forced.id(),moving.id()}) {
         committed(f.world.reparent(target,{},w::ReparentRule::keep_world));
     }
-    committed(f.world.set_enabled(alternate.id(),false));take(f.scene->update(0));
+    committed(f.world.set_enabled(alternate.id(),false));step(f.world, *f.scene, 0);
     require(take(w::effective_enabled(f.runtime,forced.id())) && take(w::effective_enabled(f.runtime,moving.id())) &&
         f.handle(forced)==force_handle && f.handle(moving)==motion_handle,
         "Disabling an independent spatial origin disabled or recreated active physical owners.");
@@ -60,10 +60,10 @@ void controller_relation_state() {
     require(near(f.state(moving).position.x,5.f+2.f*std::sin(18.f*fixed_delta*6.283185307179586f),.002f) &&
         f.state(forced).linear_velocity.x<=velocity*1.01f,"Inactive origin reset a controller's continuous state.");
     committed(f.world.reparent(forced.id(),logical.id(),w::ReparentRule::keep_world));
-    take(f.scene->update(0));committed(f.world.set_enabled(logical.id(),false));
+    step(f.world, *f.scene, 0);committed(f.world.set_enabled(logical.id(),false));
     require(!take(w::effective_enabled(f.runtime,forced.id())) && !f.scene->read_body_state(force_handle) && f.handle(moving)==motion_handle,
         "Real composition deactivation failed to clear its own physics or affected an independent owner.");
-    committed(f.world.set_enabled(logical.id(),true));take(f.scene->update(0));
+    committed(f.world.set_enabled(logical.id(),true));step(f.world, *f.scene, 0);
     require(f.handle(forced)!=force_handle,"Real owner reactivation retained an obsolete body generation.");
     committed(f.world.stop());
 }
@@ -78,42 +78,50 @@ void component_lifecycle() {
     committed(f.world.attach(frame.id()));
     auto alternate=take(w::create_entity(f.runtime));take(f.world.set_transform(alternate.id(),{{-4,0,0},{0,0,0,1},{1,1,1}}));
     committed(f.world.attach(alternate.id()));
-    f.start();take(f.scene->update(0));
+    f.start();step(f.world, *f.scene, 0);
     const auto first=take(f.scene->character_handle(entity.id()));
-    take(f.scene->update(0));require(take(f.scene->character_handle(entity.id()))==first,"Idempotent component reconcile rebuilt a character.");
+    step(f.world, *f.scene, 0);require(take(f.scene->character_handle(entity.id()))==first,"Idempotent component reconcile rebuilt a character.");
     committed(f.world.reparent(entity.id(),frame.id(),w::ReparentRule::keep_world));
-    take(f.scene->update(0));require(take(f.scene->character_handle(entity.id()))==first,"Keep-world reparent rebuilt a Character controller.");
+    step(f.world, *f.scene, 0);require(take(f.scene->character_handle(entity.id()))==first,"Keep-world reparent rebuilt a Character controller.");
     const auto character_pose=take(f.scene->read_character_state(first)).position;
-    committed(f.world.set_space_reference(entity.id(),alternate.id(),w::ReparentRule::keep_world));take(f.scene->update(0));
+    committed(f.world.set_space_reference(entity.id(),alternate.id(),w::ReparentRule::keep_world));step(f.world, *f.scene, 0);
     require(take(f.scene->character_handle(entity.id()))==first && take(f.scene->read_character_state(first)).position==character_pose,
         "Running keep-world spatial reference change rebuilt or moved a Character controller.");
     committed(f.world.set_enabled(character.id(),false));require(!f.scene->read_character_state(first),"Disabled character component retained its backend.");
-    take(f.scene->update(0));require(!f.scene->character_handle(entity.id()),"Disabled character recreated itself.");
-    committed(f.world.set_enabled(character.id(),true));take(f.scene->update(0));
+    step(f.world, *f.scene, 0);require(!f.scene->character_handle(entity.id()),"Disabled character recreated itself.");
+    committed(f.world.set_enabled(character.id(),true));step(f.world, *f.scene, 0);
     const auto second=take(f.scene->character_handle(entity.id()));require(second!=first,"Character re-enable reused its old generation.");
     committed(f.world.set_enabled(entity.entity.id(),false));require(!f.scene->read_character_state(second),"Root disable retained component physics.");
-    committed(f.world.set_enabled(entity.entity.id(),true));take(f.scene->update(0));
+    committed(f.world.set_enabled(entity.entity.id(),true));step(f.world, *f.scene, 0);
     auto removal=take(f.world.remove_component(character.id()));
     require(!f.scene->character_handle(entity.id()),"Removing a controller retained component physics.");
-    committed(f.world.restore(removal));take(f.scene->update(0));
+    committed(f.world.restore(removal));step(f.world, *f.scene, 0);
     const auto restored=take(f.scene->character_handle(entity.id()));
     committed(f.world.stop());require(!f.scene->read_character_state(restored),"World stop retained a character.");
-    committed(f.world.start());take(f.scene->update(0));require(take(f.scene->character_handle(entity.id()))!=restored,"Restart retained the special handle.");
+    committed(f.world.start());step(f.world, *f.scene, 0);require(take(f.scene->character_handle(entity.id()))!=restored,"Restart retained the special handle.");
     committed(f.world.stop());
     // A component may not silently become a second transform writer.
     auto physical=take(p::read_settings(f.runtime,entity.body.id()));physical.enabled=true;take(p::configure(f.runtime,entity.body.id(),physical));
+    // Isolate rejects the ordinary body and keeps the controller; halt stops the World.
+    committed(f.world.start());step(f.world, *f.scene, 0);
+    const auto conflicts=f.world.take_diagnostics();
+    require(f.world.running() && bool(f.scene->character_handle(entity.id())) && !f.scene->body_handle(entity.body.id()) &&
+        !conflicts.empty() && std::ranges::all_of(conflicts,[&](const auto& d){return d.object==entity.id() && d.entity==entity.id();}),
+        "Isolated pose-writer conflict kept both writers or was not reported on its Entity.");
+    committed(f.world.stop());take(f.world.set_failure_policy(w::FailurePolicy::halt));
     const auto conflict=take(f.world.start());
-    require(conflict.notification_error && !f.world.running(),"Body and Character components were accepted together.");committed(f.world.stop());
+    require(conflict.notification_error && !f.world.running() && !f.world.take_diagnostics().empty(),
+        "Body and Character components were accepted together.");committed(f.world.stop());
     committed(f.world.set_enabled(character.id(),false));
     auto vehicle=take(w::create_component(f.runtime,f.physics_types.vehicle_component));
     auto settings=take(p::read_settings(f.runtime,entity.body.id()));settings.motion=p::MotionKind::dynamic;
     take(p::configure(f.runtime,entity.body.id(),settings));committed(f.world.attach_components(entity.id(),std::array{w::Attachment{vehicle.id()}}));
-    f.start();take(f.scene->update(0));const auto car=take(f.scene->vehicle_handle(entity.id()));
+    f.start();step(f.world, *f.scene, 0);const auto car=take(f.scene->vehicle_handle(entity.id()));
     committed(f.world.set_enabled(entity.body.id(),false));require(!f.scene->read_vehicle_state(car),"Chassis disable retained vehicle controller.");
-    take(f.scene->update(0));committed(f.world.set_enabled(entity.body.id(),true));take(f.scene->update(0));
+    step(f.world, *f.scene, 0);committed(f.world.set_enabled(entity.body.id(),true));step(f.world, *f.scene, 0);
     require(take(f.scene->vehicle_handle(entity.id()))!=car,"Chassis re-enable reused a vehicle handle.");
     auto detached=take(f.world.detach(entity.id()));require(!f.scene->vehicle_handle(entity.id()),"Detached Entity retained vehicle controller.");
-    take(f.scene->update(0));committed(f.world.restore(detached));take(f.scene->update(0));
+    step(f.world, *f.scene, 0);committed(f.world.restore(detached));step(f.world, *f.scene, 0);
     require(bool(f.scene->vehicle_handle(entity.id())),"Restored Entity did not reconstruct its vehicle.");
     committed(f.world.stop());
 
@@ -133,19 +141,34 @@ void component_lifecycle() {
     committed(f.world.attach(second_entity.id(),w::append,doll.id()));
     committed(f.world.attach_components(doll.id(),std::array{w::Attachment{controller.id()}}));
     take(p::set_ragdoll_parts(f.runtime,controller.id(),std::array{first_entity.id(),second_entity.id()}));
-    f.start();take(f.scene->update(0));const auto ragdoll=take(f.scene->ragdoll_handle(doll.id()));
+    f.start();step(f.world, *f.scene, 0);const auto ragdoll=take(f.scene->ragdoll_handle(doll.id()));
     reject_bound_native_controllers(f,first_entity.id());
     require(take(f.scene->ragdoll_handle(doll.id()))==ragdoll && bool(f.scene->read_ragdoll_pose(ragdoll)),
         "Rejected native part controller replaced the original ragdoll.");
-    take(f.scene->update(0));require(take(f.scene->ragdoll_handle(doll.id()))==ragdoll,"Ragdoll reconcile duplicated its backend.");
-    committed(f.world.reparent(doll.id(),frame.id(),w::ReparentRule::keep_world));take(f.scene->update(0));
+    step(f.world, *f.scene, 0);require(take(f.scene->ragdoll_handle(doll.id()))==ragdoll,"Ragdoll reconcile duplicated its backend.");
+    committed(f.world.reparent(doll.id(),frame.id(),w::ReparentRule::keep_world));step(f.world, *f.scene, 0);
     require(take(f.scene->ragdoll_handle(doll.id()))==ragdoll,"Keep-world reparent rebuilt an unsolved ragdoll with a nonzero first rest pose.");
     committed(f.world.set_enabled(second_part.id(),false));require(!f.scene->read_ragdoll_pose(ragdoll),"Disabling a ragdoll part retained its backend.");
-    take(f.scene->update(0));require(!f.scene->ragdoll_handle(doll.id()),"Incomplete ragdoll recreated itself.");
-    committed(f.world.set_enabled(second_part.id(),true));take(f.scene->update(0));
+    step(f.world, *f.scene, 0);require(!f.scene->ragdoll_handle(doll.id()),"Incomplete ragdoll recreated itself.");
+    committed(f.world.set_enabled(second_part.id(),true));step(f.world, *f.scene, 0);
     const auto rebuilt=take(f.scene->ragdoll_handle(doll.id()));require(rebuilt!=ragdoll,"Restoring a ragdoll part reused its generation.");
     committed(f.world.set_enabled(controller.id(),false));require(!f.scene->read_ragdoll_pose(rebuilt),"Disabling the ragdoll controller retained its bodies.");
     committed(f.world.stop());
+    // Two pose controllers on one Entity are both rejected, whichever was created first.
+    take(f.world.set_failure_policy(w::FailurePolicy::isolate));
+    // A scene query only reads its owner's space, so it keeps working.
+    auto rival=take(w::create_component(f.runtime,f.physics_types.character_component));
+    auto probe=take(w::create_component(f.runtime,f.physics_types.scene_query_component));
+    committed(f.world.attach_components(doll.id(),std::array{w::Attachment{rival.id()},w::Attachment{probe.id()}}));
+    committed(f.world.set_enabled(controller.id(),true));f.start();step(f.world, *f.scene, 0);f.advance(2);
+    require(f.world.running() && !f.scene->ragdoll_handle(doll.id()) && !f.scene->character_handle(doll.id()) &&
+        std::ranges::any_of(f.world.take_diagnostics(),[&](const auto& d){return d.entity==doll.id();}),
+        "Two pose controllers on one Entity were not both rejected.");
+    require(take(f.runtime.with_native<const p::SceneQueryComponent>(probe.id(),[](const auto& v)->atelier::Result<bool>{return v.query_ready();})),
+        "A controller conflict rejected the Entity's scene query.");
+    committed(f.world.stop());committed(f.world.set_enabled(rival.id(),false));committed(f.world.set_enabled(controller.id(),false));
+    committed(f.world.set_enabled(probe.id(),false));
+    take(f.world.set_failure_policy(w::FailurePolicy::halt));
 
     auto anchor=f.make({-12,6,0});auto bob=f.make({-12,4,0},dynamic_body());
     auto joint=take(w::create_component(f.runtime,f.physics_types.distance_constraint_component));
@@ -161,14 +184,14 @@ void component_lifecycle() {
     committed(foreign.attach(foreign_entity.id()));
     take(p::set_constraint_target(f.runtime,joint.id(),foreign_entity.id()));
     committed(foreign.start());f.start();
-    const auto cross_world=f.scene->update(0);
+    const auto cross_world=f.world.update(0);
     require(!cross_world && cross_world.error().message.find("another World")!=std::string::npos,
         "Constraint component accepted an active target from a different World.");
     committed(f.world.stop());committed(foreign.stop());
 }
 
 void entity_physics_bindings() {
-    PhysicsFixture f;auto ground=f.ground();
+    PhysicsFixture f;take(f.world.set_failure_policy(w::FailurePolicy::halt));auto ground=f.ground();
     auto base=take(w::create_entity(f.runtime));
     take(f.world.set_transform(base.id(),{{10,0,0},{0,.70710678f,0,.70710678f},{1,1,1}}));
     committed(f.world.attach(base.id()));
@@ -196,14 +219,14 @@ void entity_physics_bindings() {
     const auto description=take(f.runtime.describe(f.physics_types.vehicle_component));
     const auto exposed=std::ranges::find(description->fields,field,&atelier::FieldInfo::id);
     require(exposed!=description->fields.end() && exposed->value.form==atelier::ValueForm::strong_sequence,"Entity binding is hidden from the shared type definition.");
-    f.start();take(f.scene->update(0));
+    f.start();step(f.world, *f.scene, 0);
     const auto vehicle_handle=take(f.scene->vehicle_handle(chassis.id()));
     reject_bound_native_controllers(f,wheel.id());
     require(take(f.scene->vehicle_handle(chassis.id()))==vehicle_handle && bool(f.scene->read_vehicle_state(vehicle_handle)),
         "Rejected native wheel controller replaced the original vehicle.");
     committed(f.world.stop());
     take(f.world.set_transform(wheel.id(),{{0,0,0},{0,0,0,1},{.35f,.35f,.15f}}));
-    f.start();take(f.scene->update(0));
+    f.start();step(f.world, *f.scene, 0);
     const auto character_handle=take(f.scene->character_handle(character.id()));
     const auto initial=take(f.scene->read_character_state(character_handle));
     require(near(initial.position.x,12) && near(initial.position.z,0),"Nested Character used local pose as world pose.");
@@ -220,13 +243,13 @@ void entity_physics_bindings() {
         "Nested Character pose did not use the batch spatial publication.");
     committed(f.world.set_enabled(wheel.id(),false));
     require(!f.scene->vehicle_handle(chassis.id()),"Deactivating a bound Entity retained its controller.");
-    take(f.scene->update(0));require(!f.scene->vehicle_handle(chassis.id()),"Incomplete binding recreated its controller.");
-    committed(f.world.set_enabled(wheel.id(),true));take(f.scene->update(0));
+    step(f.world, *f.scene, 0);require(!f.scene->vehicle_handle(chassis.id()),"Incomplete binding recreated its controller.");
+    committed(f.world.set_enabled(wheel.id(),true));step(f.world, *f.scene, 0);
     require(bool(f.scene->vehicle_handle(chassis.id())),"Reactivating a bound Entity did not recreate its controller.");
     committed(f.world.stop());
     // The wheel target cannot also be driven by its own ordinary rigid body.
     take(p::configure(f.runtime,mesh.id(),dynamic_body()));f.start();
-    require(!f.scene->update(0),"Two distinct producers were allowed to write one Entity pose.");
+    require(!f.world.update(0),"Two distinct producers were allowed to write one Entity pose.");
     committed(f.world.stop());require(f.scene->body_count()==0,"Rejected pose bindings leaked ordinary bodies.");
     auto extra=take(w::create_component(f.runtime,f.world_types.collision_component));
     committed(f.world.attach_components(chassis.id(),std::array{w::Attachment{extra.id()}}));

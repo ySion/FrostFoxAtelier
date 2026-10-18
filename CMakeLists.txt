@@ -47,7 +47,7 @@ function(atelier_target target)
 endfunction()
 
 include(cmake/unordered_dense.cmake)
-add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp)
+add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp src/foundation/frame_timing.cpp)
 target_include_directories(atelier_foundation PUBLIC src)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
 target_link_libraries(atelier_foundation PUBLIC unordered_dense::unordered_dense)
@@ -75,6 +75,9 @@ add_executable(atelier_runtime_acceptance
     acceptance/runtime/inheritance.cpp
     acceptance/runtime/reference_sequence.cpp
     acceptance/runtime/math_precision.cpp
+    acceptance/runtime/field_ranges.cpp
+    acceptance/runtime/validation.cpp
+    acceptance/runtime/arrays.cpp
     acceptance/memory/acceptance.cpp)
 atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)
@@ -145,4 +148,10 @@ add_custom_target(acceptance
     DEPENDS math_acceptance atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance atelier_physics_acceptance ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
         atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance foundation_acceptance
+        renderer_acceptance project_scene_acceptance project_integration_acceptance
+        editor_recovery_acceptance editor_material_acceptance editor_physics_project_acceptance
+        editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
+        editor_viewport_acceptance editor_shortcuts_acceptance editor_edit_acceptance
+        editor_surfaces_acceptance editor_dialogs_acceptance editor_scene_lit_acceptance
+        physics_examples_acceptance editor_sponza_acceptance editor_examples_acceptance editor_dungeons_acceptance
     USES_TERMINAL VERBATIM)
