@@ -281,7 +281,12 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
                                                               : std::wstring_view(created.lpszClass) == L"#32770";
         if (dialog && !(created.style & WS_CHILD)) {
             const std::wstring_view title = created.lpszName && !IS_INTRESOURCE(created.lpszName) ? created.lpszName : L"";
-            std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", atelier::editor::utf8(title).c_str());
+            // The hook runs inside a Win32 callback: an unconvertible title must not throw past it.
+            try {
+                std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", atelier::editor::utf8(title).c_str());
+            } catch (...) {
+                std::fputs("Editor acceptance: FAIL: unexpected native dialog (title not printable)\n", stderr);
+            }
             std::fflush(stderr);
             TerminateProcess(GetCurrentProcess(), 1);
         }

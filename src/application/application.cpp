@@ -218,8 +218,11 @@ Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,
     auto camera=camera_;
     if(shading>renderer::Shading::scene_lit || !camera.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
+    candidate.shading=shading;
+    // Reject the whole view before the fitted volume reaches the World, which keeps no history of it.
+    if(auto valid=editor::validate_view_options(candidate,{target.x,target.y,target.z});!valid) return valid;
     if(fit) if(auto initialized=document_->initialize_world_lighting(candidate.lit);!initialized) return initialized;
-    candidate.shading=shading;if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
+    if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
     camera_=camera;camera_cut_=true;invalidate_surface();return {};
 }
 Result<void> Application::action(const ui::Action& source) {

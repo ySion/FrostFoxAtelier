@@ -79,7 +79,7 @@ Result<void> Session::set_world_lighting(const rendering::SceneLightingSettings&
     remember(LightingChange{before,settings});return {};
 }
 Result<void> Session::initialize_world_lighting(const rendering::SceneLightingSettings& settings) {
-    if(undo_count() || redo_count() || editing()) return invalid("World settings initialize only a freshly opened document.");
+    if(undo_count() || redo_count() || editing() || dirty()) return invalid("World settings initialize only a freshly opened document.");
     if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
     ++revision_;return {};
 }
