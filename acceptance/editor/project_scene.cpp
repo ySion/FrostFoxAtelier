@@ -1,6 +1,7 @@
 #include "editor/session.hpp"
 #include "editor/project.hpp"
 #include "editor/material_format.hpp"
+#include "editor/properties.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 #include "physics/physics.hpp"
@@ -22,6 +23,8 @@ struct Entity : world::Entity { std::int32_t health{100}; };
 struct Move : world::Component { float speed{2}; double mass{3.5}; std::uint32_t count{7}; bool allowed{true}; };
 struct Spatial : world::Component { float offset{4}; };
 struct QueryProbe : physics::SceneQueryComponent { bool observed{};std::uint32_t count{};float distance{};math::Vector3 point{}; };
+struct Caption { String text; float size{1}; std::uint32_t lines{1}; };
+struct Label : world::Component { String title; Caption caption; };
 struct Evidence { unsigned prepared{},destroyed{},begins{},ends{}; bool fail_tick{},fail_begin{},fail_end{},live_runtime_on_release{true}; };
 struct Code {
     Runtime& runtime;
@@ -38,6 +41,10 @@ editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
         const auto move=take(NativeRegistration<Move>{runtime,"game.Move",TypeKind::object}.base<world::Component>()
             .field<&Move::speed>("speed").field<&Move::mass>("mass").field<&Move::count>("count").field<&Move::allowed>("allowed").publish());
         take(NativeRegistration<Spatial>{runtime,"game.Spatial",TypeKind::object}.base<world::Component>().field<&Spatial::offset>("offset").publish());
+        take(NativeRegistration<Caption>{runtime,"game.Caption",TypeKind::record}.field<&Caption::text>("text")
+            .field<&Caption::size>("size").range({.hard_min=Scalar{0.f},.hard_max=Scalar{10.f}}).field<&Caption::lines>("lines").publish());
+        take(NativeRegistration<Label>{runtime,"game.Label",TypeKind::object}.base<world::Component>()
+            .field<&Label::title>("title").field<&Label::caption>("caption").publish());
         auto code=std::make_shared<Code>(runtime,move,evidence);
         auto candidate=take(source::Program::prepare(take(code->program.request("Move.source",
             "void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); }"))));
@@ -457,6 +464,107 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     damaged=scene;damaged["version"]=7;
     rejects(damaged,"A newer scene version was accepted.");
 }
+// String leaves use the scene codec's shared leaf decoder, which also decodes operator parameters strictly.
+void verify_string_properties(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
+    acceptance_phase="String properties";
+    using enum world::DiagnosticKind;
+    editor::Session document(prepare(evidence));auto& runtime=document.world().runtime();
+    const auto label_type=take(runtime.find_type("game.Label")),caption_type=take(runtime.find_type("game.Caption"));
+    const auto string_type=take(runtime.native_type<String>());
+    changed(document.add_entity());const auto entity=document.selection().entity;
+    changed(document.add_component(label_type));const auto label=member(document,label_type);
+    const auto caption=take(runtime.find_field(label_type,"caption"));
+    const world::FieldPath title{take(runtime.find_field(label_type,"title"))},text{caption,take(runtime.find_field(caption_type,"text"))};
+    const world::FieldPath size{caption,take(runtime.find_field(caption_type,"size"))},lines{caption,take(runtime.find_field(caption_type,"lines"))};
+    const auto set=[&](ObjectId object,const world::FieldPath& path,std::string_view value) {
+        String stored{StringView{value}};take(runtime.write(object,path,ValueInput{string_type,&stored}));
+    };
+    // Each session owns a Runtime with its own field identities, so paths resolve by name per session.
+    const auto path=[](editor::Session& session,std::string_view leaf)->world::FieldPath {
+        auto& owner=session.world().runtime();const auto type=take(owner.find_type("game.Label"));
+        if(leaf=="title") return {take(owner.find_field(type,leaf))};
+        return {take(owner.find_field(type,"caption")),take(owner.find_field(take(owner.find_type("game.Caption")),leaf))};
+    };
+    const auto get=[&](editor::Session& session,ObjectId object,std::string_view leaf) {
+        auto& owner=session.world().runtime();String value;
+        take(owner.read(object,path(session,leaf),ValueOutput{take(owner.native_type<String>()),&value}));return std::string{value.c_str(),value.size()};
+    };
+    const auto label_json=[](Json& scene)->Json& {
+        for(auto& part:scene["entities"][0]["components"]) if(part["type"]=="game.Label") return part;
+        throw std::runtime_error("The saved scene lost its Label component.");
+    };
+    const std::string gate="Gate \"north\" \xE5\x8C\x97\xE9\x97\xA8";
+    set(label,title,gate);set(label,text,"line\nbreak");
+    auto saved=Json::parse(take(document.serialize()));
+    const auto label_id=std::stoull(label_json(saved)["id"].get<std::string>());
+    require(subset(label_json(saved)["properties"],{{"title",gate},{"caption",{{"text","line\nbreak"},{"size",1.0},{"lines",1}}}}),
+        "String fields were not saved as JSON strings beside their record siblings.");
+    {
+        auto reopened=take(editor::Session::deserialize(saved.dump(),project,prepare(evidence)));
+        const auto copy=take(reopened->local_object(label_id));
+        require(reopened->load_issues().empty() && get(*reopened,copy,"title")==gate && get(*reopened,copy,"text")=="line\nbreak" &&
+            Json::parse(take(reopened->serialize()))==saved,"String fields did not round-trip through a scene load.");
+    }
+    {
+        auto damaged=saved;auto& properties=label_json(damaged)["properties"];
+        properties["title"]=5;properties["caption"]["size"]=50;properties["caption"]["lines"]=2.0;
+        require(!editor::Session::deserialize(damaged.dump(),project,prepare(evidence),editor::LoadPolicy::strict),
+            "Strict load accepted a mistyped String or a clamped value.");
+        auto tolerant=take(editor::Session::deserialize(damaged.dump(),project,prepare(evidence)));
+        const auto copy=take(tolerant->local_object(label_id));const auto issues=tolerant->load_issues();
+        auto& owner=tolerant->world().runtime();
+        require(issues.size()==3 && count(issues,mismatch)==2 && count(issues,converted)==1 && get(*tolerant,copy,"title").empty() &&
+            std::get<float>(take(owner.read(copy,path(*tolerant,"size"))))==10 && std::get<std::uint32_t>(take(owner.read(copy,path(*tolerant,"lines"))))==2,
+            "A mistyped String did not keep its default, or its record siblings were not decoded.");
+        auto resaved_scene=Json::parse(take(tolerant->serialize()));const auto& resaved=label_json(resaved_scene)["properties"];
+        require(resaved["title"]==5 && resaved["caption"]["size"]==50 && resaved["caption"]["text"]=="line\nbreak",
+            "The saved values of mismatched leaves were not written back.");
+    }
+
+    acceptance_phase="strict properties decoding";
+    alignas(Caption) std::array<std::byte,sizeof(Caption)> storage{};take(runtime.initialize_value(caption_type,storage));
+    const editor::PropertyTarget record{caption_type,{},storage};
+    const auto value_of=[&](const world::FieldPath& path){return take(runtime.read(caption_type,storage,std::span(path).subspan(1)));};
+    take(editor::decode_properties(runtime,record,{{"text","hi"},{"size",3},{"lines",2.0}}));
+    String decoded;take(runtime.read(caption_type,storage,std::span(text).subspan(1),ValueOutput{string_type,&decoded}));
+    require(std::string{decoded.c_str(),decoded.size()}=="hi" && value_of(size)==Scalar{3.f} && value_of(lines)==Scalar{std::uint32_t{2}},
+        "Strict decoding did not write a caller-owned record, or rejected an exact integral conversion.");
+    const auto rejects=[&](const Json& args,std::string_view message) {
+        const auto result=editor::decode_properties(runtime,record,args);
+        require(!result && result.error().code==ErrorCode::argument_mismatch && result.error().message.starts_with(message),
+            "Strict decoding accepted or misreported an invalid leaf.");
+    };
+    rejects({{"size",50}},"size: Outside the field's hard bounds.");
+    rejects({{"text",5}},"text: Expected a string property.");
+    rejects({{"lines",2.5}},"lines: Expected an integer property.");
+    rejects({{"nope",1}},"nope: Unknown field.");
+    rejects({{"size",{{"x",1}}}},"size: Expected a numeric property.");
+    require(value_of(size)==Scalar{3.f},"A rejected strict decode clamped and wrote its value.");
+    take(runtime.destroy_value(caption_type,storage));
+
+    // A write hook turns an object decode into a patch without touching the object.
+    std::vector<std::pair<world::FieldPath,editor::PropertyLeaf>> patch;
+    take(editor::decode_properties(runtime,{label_type,label},{{"title","patched"},{"caption",{{"size",4}}}},{},
+        [&](std::span<const FieldId> path,const editor::PropertyLeaf& leaf)->Result<void> {patch.emplace_back(world::FieldPath(path.begin(),path.end()),leaf);return {};}));
+    const auto leaf=[&](const world::FieldPath& path)->const editor::PropertyLeaf* {
+        const auto at=std::ranges::find(patch,path,&std::pair<world::FieldPath,editor::PropertyLeaf>::first);return at==patch.end()?nullptr:&at->second;
+    };
+    require(patch.size()==2 && leaf(title) && std::get<String>(*leaf(title))==String{StringView{"patched"}} &&
+        leaf(size) && std::get<Scalar>(*leaf(size))==Scalar{4.f} && get(document,label,"title")==gate,
+        "A collecting write hook did not receive the decoded String and scalar leaves, or the object changed.");
+    require(!editor::decode_properties(runtime,{caption_type,label},Json::object()),"A decode accepted an object of another type.");
+    const auto unresolved=[](const Json&,TypeId,ValueForm)->std::optional<ObjectReference>{return std::nullopt;};
+    const auto hooked=editor::decode_properties(runtime,{label_type,label},Json::object(),unresolved,
+        [](std::span<const FieldId>,const editor::PropertyLeaf&)->Result<void>{return {};});
+    require(!hooked && hooked.error().code==ErrorCode::argument_mismatch,"A write hook was combined with reference resolution.");
+
+    acceptance_phase="String properties in duplicates";
+    take(document.select(entity));changed(document.duplicate_selected());
+    const auto duplicate=document.selection().entity;ObjectId copied{};
+    for(const auto& part:take(world::components(runtime,duplicate))) if(take(runtime.type_of(part.id()))==label_type) copied=part.id();
+    require(duplicate!=entity && copied!=ObjectId{} && get(document,copied,"title")==gate && get(document,copied,"text")=="line\nbreak",
+        "A duplicate did not copy its String fields.");
+}
 // Editor document A authors; its Play copy B follows A's changes while it runs.
 void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase="Play change batches";
@@ -686,6 +794,7 @@ void run() {
     require(take(document.serialize())==saved,"Failed candidate load changed the edit document.");
     verify_retained_data(project,saved_json,evidence);
     verify_play_changes(project,evidence);
+    verify_string_properties(project,evidence);
     acceptance_phase="Source play and stop lifecycle";
     const auto history=document.undo_count();
     for (int pass=0;pass<3;++pass) {
@@ -760,7 +869,7 @@ void run() {
     verify_query_source(project);
     verify_primitive_source(project);
     require(evidence->prepared==evidence->destroyed && evidence->live_runtime_on_release,"Prepared code leaked or outlived its Runtime.");
-    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, retained data, load cleanup, Play change batches, Source actions, repeated play/stop, Jolt ownership)");
+    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, retained data, load cleanup, Play change batches, String properties and strict decoding, Source actions, repeated play/stop, Jolt ownership)");
 }
 }
 int main() { try { run(); return 0; } catch (const std::exception& error) { std::fprintf(stderr,"Project Scene acceptance: FAIL [%s]: %s\n",acceptance_phase,error.what()); return 1; } }

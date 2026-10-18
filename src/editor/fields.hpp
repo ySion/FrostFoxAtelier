@@ -10,6 +10,8 @@ struct ScalarField {
     TypeId type;
     std::string label,category,description;
     ValueForm form{ValueForm::inline_value};
+    // Inline leaves are scalars, enumerations or strings; only the first two are Scalar values.
+    TypeKind kind{TypeKind::scalar};
     // The declared range of the leaf, or of its math vector for a lane.
     FieldRange range{};
 };
@@ -19,11 +21,11 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
         if (prefix.path.size() > 16) return std::unexpected(Error{ErrorCode::invalid_definition,"Scene field nesting exceeds 16 levels."});
         auto info = runtime.describe(current);
         if (!info) return std::unexpected(info.error());
-        if ((*info)->kind == TypeKind::scalar || (*info)->kind == TypeKind::enumeration) {
-            prefix.type = current; result.push_back(std::move(prefix)); return {};
+        if ((*info)->kind == TypeKind::scalar || (*info)->kind == TypeKind::enumeration || (*info)->kind == TypeKind::string) {
+            prefix.type = current; prefix.kind = (*info)->kind; result.push_back(std::move(prefix)); return {};
         }
         if (!prefix.path.empty() && (*info)->kind != TypeKind::record)
-            return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene properties support scalars, enums and records of those values."});
+            return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene properties support scalars, enums, strings and records of those values."});
         for (const auto& field : (*info)->fields) {
             auto child = prefix; child.names.push_back(field.name); child.path.push_back(field.id);
             // A vector's lanes share the aggregate caption. Other record children
@@ -49,7 +51,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
 }
 inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime,TypeId type) {
     auto result=author_fields(runtime,type);
-    if(result) std::erase_if(*result,[](const auto& field){return field.form!=ValueForm::inline_value;});
+    if(result) std::erase_if(*result,[](const auto& field){return field.form!=ValueForm::inline_value || field.kind==TypeKind::string;});
     return result;
 }
 inline bool finite_scalar(const Scalar& value) {

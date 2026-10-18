@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "editor/json_format.hpp"
 #include "editor/fields.hpp"
+#include "editor/properties.hpp"
 #include "editor/view_options.hpp"
 #include "editor/material_format.hpp"
 #include "physics/physics.hpp"
@@ -17,8 +18,13 @@ namespace atelier::editor {
 namespace {
 using json_format::Json;
 using json_format::fields;
+// A failed Runtime or World result; callers that report error codes keep its code.
+struct Failure : std::runtime_error {
+    ErrorCode code;
+    explicit Failure(const Error& error) : std::runtime_error(error.message), code(error.code) {}
+};
 template<class T> T take(Result<T> value) {
-    if (!value) throw std::runtime_error(value.error().message);
+    if (!value) throw Failure(value.error());
     if constexpr (!std::is_void_v<T>) return std::move(*value);
 }
 void committed(Result<world::Commit> value) {
@@ -152,6 +158,8 @@ Json encode_scalar(Runtime& runtime,const Scalar& value) {
 // A saved value that does not fit the current schema. Unlike other exceptions it
 // does not reject the scene: the value is kept and the field keeps its default.
 struct Mismatch : std::runtime_error {using std::runtime_error::runtime_error;};
+// A strict properties decode rejecting one leaf of its caller's record.
+struct Rejected : std::runtime_error {using std::runtime_error::runtime_error;};
 Scalar decode_scalar(Runtime& runtime,const Scalar& prototype,const Json& value,bool* converted=nullptr) {
     return std::visit([&](const auto& original)->Scalar {
         using T=std::decay_t<decltype(original)>;
@@ -242,6 +250,93 @@ std::vector<detail::ScalarField> business_fields(Runtime& runtime,const world::T
     if(derives(runtime,type,types.static_mesh_component)) reserved.push_back(take(runtime.find_field(types.static_mesh_component,"material")));
     std::erase_if(result,[&](const auto& field){return std::ranges::find(reserved,field.path.front())!=reserved.end();});
     return result;
+}
+Json encode_string(Runtime& runtime,ObjectId object,const detail::ScalarField& field) {
+    String value;take(runtime.read(object,field.path,ValueOutput{field.type,&value}));
+    return std::string{value.c_str(),value.size()};
+}
+// How a tolerant decode reports a saved leaf it does not apply as saved. Strict decodes fail instead.
+struct LeafReport {
+    std::function<void(std::vector<std::string>,const Json&,world::DiagnosticKind,const std::string&)> keep;
+    std::function<void(std::vector<std::string>,const Json&)> converted;
+};
+// Decodes a properties record leaf by leaf: the one path for scene loads, Play changes and operator
+// parameters. Tolerant decodes write a clamped leaf and then keep the saved value; strict decodes
+// (no report) throw at the first leaf they cannot apply as saved and never clamp.
+void read_record(Runtime& runtime,const PropertyTarget& target,std::span<const detail::ScalarField> schema,const Json& record,
+                 const std::vector<std::string>& prefix,const ResolveReference& resolve,const WriteLeaf& write,const LeafReport* report) {
+    const auto object=target.object!=ObjectId{};
+    const auto store=[&](std::span<const FieldId> path,const PropertyLeaf& leaf)->Result<void> {
+        if(write) return write(path,leaf);
+        return std::visit([&](const auto& value)->Result<void> {
+            if constexpr(std::same_as<std::decay_t<decltype(value)>,Scalar>)
+                return object?runtime.write(target.object,path,value):runtime.write(target.type,target.storage,path,value);
+            else {
+                const ValueInput input{take(runtime.native_type<String>()),&value};
+                return object?runtime.write(target.object,path,input):runtime.write(target.type,target.storage,path,input);
+            }
+        },leaf);
+    };
+    const auto issue=[&](std::vector<std::string> at,const Json& item,world::DiagnosticKind kind,const std::string& problem,const std::string& kept) {
+        if(!report) throw Rejected(dotted(std::span(at).subspan(prefix.size()))+": "+problem);
+        report->keep(std::move(at),item,kind,kept);
+    };
+    const auto read=[&](auto&& self,const Json& value,const std::vector<std::string>& path)->void {
+        for(const auto& [name,item]:value.items()) {
+            auto next_path=path;next_path.push_back(name);
+            auto at=prefix;at.insert(at.end(),next_path.begin(),next_path.end());
+            const auto field=std::ranges::find_if(schema,[&](const auto& f){return f.names==next_path;});
+            if(field==schema.end()) {
+                const bool nested=std::ranges::any_of(schema,[&](const auto& f){return f.names.size()>next_path.size() && std::equal(next_path.begin(),next_path.end(),f.names.begin());});
+                if(!nested) issue(std::move(at),item,world::DiagnosticKind::unknown_field,"Unknown field.","Unknown field kept from the saved scene.");
+                else if(!item.is_object()) issue(std::move(at),item,world::DiagnosticKind::mismatch,"Expected a record.","Expected a record. Defaults are used and the saved value is kept.");
+                else self(self,item,next_path);
+                continue;
+            }
+            bool converted{};std::string problem;std::optional<Scalar> clamped;
+            try {
+                if(field->form==ValueForm::inline_value && field->kind==TypeKind::string) {
+                    if(!item.is_string()) throw Mismatch("Expected a string property.");
+                    const auto& text=item.get_ref<const std::string&>();
+                    if(!StringView{text}.is_valid_utf8()) throw Mismatch("Expected UTF-8 text.");
+                    if(auto written=store(field->path,String{StringView{text}});!written) throw Mismatch(written.error().message);
+                } else if(field->form==ValueForm::inline_value) {
+                    const auto current=object?runtime.read(target.object,field->path):runtime.read(target.type,target.storage,field->path);
+                    const auto scalar=decode_scalar(runtime,take(current),item,&converted);
+                    auto stored=runtime.constrain(target.type,field->path,scalar);if(!stored) throw Mismatch(stored.error().message);
+                    if(*stored!=scalar) {
+                        if(!report) throw Mismatch("Outside the field's hard bounds.");
+                        clamped=*stored;
+                    }
+                    if(auto written=store(field->path,*stored);!written) throw Mismatch(written.error().message);
+                } else if(!resolve) {
+                    throw Mismatch("This decode does not accept object references.");
+                } else if(field->form==ValueForm::strong_sequence) {
+                    if(!item.is_array() || item.size()>Session::maximum_entities*Session::maximum_components) throw Mismatch("Expected an object reference sequence.");
+                    std::vector<ObjectReference> refs;refs.reserve(item.size());
+                    for(const auto& ref:item) {
+                        auto resolved=resolve(ref,field->type,ValueForm::strong_reference);
+                        if(!resolved) throw Mismatch("A sequence element is not a reference of the field's type.");
+                        refs.push_back(std::move(*resolved));
+                    }
+                    const auto locator=take(runtime.reference_field(target.object,field->path));
+                    const ReferenceChange change=SequenceSplice{locator,0,take(runtime.sequence_size(locator)),refs};
+                    if(auto applied=runtime.apply_reference_changes({&change,1});!applied) throw Mismatch(applied.error().message);
+                } else {
+                    auto resolved=resolve(item,field->type,field->form);
+                    if(!resolved) throw Mismatch("Expected a reference of the field's type.");
+                    auto written=object?runtime.write_reference(target.object,field->path,*resolved):
+                        runtime.write_reference(target.type,target.storage,field->path,*resolved);
+                    if(!written) throw Mismatch(written.error().message);
+                }
+            } catch(const Mismatch& error) {problem=error.what();}
+            if(!problem.empty()) issue(std::move(at),item,world::DiagnosticKind::mismatch,problem,problem+" The default is used and the saved value is kept.");
+            else if(clamped) issue(std::move(at),item,world::DiagnosticKind::mismatch,{},
+                "Outside the field's hard bounds; "+encode_scalar(runtime,*clamped).dump()+" is used and the saved value is kept.");
+            else if(converted && report) report->converted(std::move(at),item);
+        }
+    };
+    read(read,record,{});
 }
 std::uint64_t local_key(const Json& value,bool allow_null=false) {
     if(!value.is_string()) throw std::runtime_error("Document object identity requires a decimal string.");
@@ -419,6 +514,25 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
 }
 }
 
+
+Result<void> decode_properties(Runtime& runtime,const PropertyTarget& target,const Json& record,const ResolveReference& resolve,const WriteLeaf& write) {
+    try {
+        if((target.object==ObjectId{})==target.storage.empty())
+            return std::unexpected(Error{ErrorCode::argument_mismatch,"A properties target is either an object or a record value."});
+        if(write && resolve)
+            return std::unexpected(Error{ErrorCode::argument_mismatch,"A write hook does not receive reference leaves; decode references without one."});
+        if(target.object!=ObjectId{} && take(runtime.type_of(target.object))!=target.type)
+            return std::unexpected(Error{ErrorCode::type_mismatch,"A properties target object must have the target type."});
+        if(!record.is_object()) return std::unexpected(Error{ErrorCode::argument_mismatch,"Expected a property record."});
+        auto schema=detail::author_fields(runtime,target.type);if(!schema) return std::unexpected(schema.error());
+        read_record(runtime,target,*schema,record,{},resolve,write,nullptr);
+        return {};
+    } catch(const Rejected& error) {
+        return std::unexpected(Error{ErrorCode::argument_mismatch,error.what()});
+    } catch(const Failure& error) {
+        return std::unexpected(Error{error.code,error.what()});
+    } catch(const std::exception& error) {return failed(error);}
+}
 
 struct Session::GraphCodec {
     struct MeshCopy {world::StaticMeshState state;std::vector<world::MaterialBinding> bindings;};
@@ -695,7 +809,8 @@ struct Session::GraphCodec {
             Json result=Json::object();
             for(const auto& field:business_fields(runtime,session.types_,type)) {
                 Json value;
-                if(field.form==ValueForm::inline_value) value=encode_scalar(runtime,take(runtime.read(object,field.path)));
+                if(field.form==ValueForm::inline_value)
+                    value=field.kind==TypeKind::string?encode_string(runtime,object,field):encode_scalar(runtime,take(runtime.read(object,field.path)));
                 else if(field.form==ValueForm::strong_sequence) {
                     value=Json::array();const auto locator=take(runtime.reference_field(object,field.path));const auto count=take(runtime.sequence_size(locator));
                     for(std::size_t i=0;i<count;++i) value.push_back(reference(take(runtime.sequence_read(locator,i)).id()));
@@ -757,55 +872,15 @@ struct Session::GraphCodec {
         return graph;
     }
 
-    using Resolve=std::function<std::optional<ObjectReference>(const Json&,TypeId,ValueForm)>;
-    using WriteScalar=std::function<Result<void>(ObjectId,std::span<const FieldId>,Scalar)>;
-    // Scene and Play changes decode a properties record leaf by leaf through this one path.
-    static void read_properties(Session& session,ObjectId object,const Json& record,Load& load,const Resolve& resolve,const WriteScalar& write) {
-        auto& runtime=session.runtime_;
-        const auto type=take(runtime.type_of(object));const auto schema=business_fields(runtime,session.types_,type);
-        const auto read=[&](auto&& self,const Json& value,const std::vector<std::string>& path)->void {
-            for(const auto& [name,item]:value.items()) {
-                auto next_path=path;next_path.push_back(name);
-                std::vector<std::string> at{"properties"};at.insert(at.end(),next_path.begin(),next_path.end());
-                const auto field=std::ranges::find_if(schema,[&](const auto& f){return f.names==next_path;});
-                if(field==schema.end()) {
-                    const bool prefix=std::ranges::any_of(schema,[&](const auto& f){return f.names.size()>next_path.size() && std::equal(next_path.begin(),next_path.end(),f.names.begin());});
-                    if(!prefix) load.keep(object,std::move(at),item,world::DiagnosticKind::unknown_field,"Unknown field kept from the saved scene.");
-                    else if(!item.is_object()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,"Expected a record. Defaults are used and the saved value is kept.");
-                    else self(self,item,next_path);
-                    continue;
-                }
-                bool converted{};std::string problem;std::optional<Scalar> clamped;
-                try {
-                    if(field->form==ValueForm::inline_value) {
-                        const auto scalar=decode_scalar(runtime,take(runtime.read(object,field->path)),item,&converted);
-                        auto stored=runtime.constrain(type,field->path,scalar);if(!stored) throw Mismatch(stored.error().message);
-                        if(*stored!=scalar) clamped=*stored;
-                        if(auto written=write(object,field->path,*stored);!written) throw Mismatch(written.error().message);
-                    } else if(field->form==ValueForm::strong_sequence) {
-                        if(!item.is_array() || item.size()>maximum_entities*maximum_components) throw Mismatch("Expected an object reference sequence.");
-                        std::vector<ObjectReference> refs;refs.reserve(item.size());
-                        for(const auto& ref:item) {
-                            auto resolved=resolve(ref,field->type,ValueForm::strong_reference);
-                            if(!resolved) throw Mismatch("A sequence element is not a reference of the field's type.");
-                            refs.push_back(std::move(*resolved));
-                        }
-                        const auto locator=take(runtime.reference_field(object,field->path));
-                        const ReferenceChange change=SequenceSplice{locator,0,take(runtime.sequence_size(locator)),refs};
-                        if(auto applied=runtime.apply_reference_changes({&change,1});!applied) throw Mismatch(applied.error().message);
-                    } else {
-                        auto resolved=resolve(item,field->type,field->form);
-                        if(!resolved) throw Mismatch("Expected a reference of the field's type.");
-                        if(auto written=runtime.write_reference(object,field->path,*resolved);!written) throw Mismatch(written.error().message);
-                    }
-                } catch(const Mismatch& error) {problem=error.what();}
-                if(!problem.empty()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,problem+" The default is used and the saved value is kept.");
-                else if(clamped) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,
-                    "Outside the field's hard bounds; "+encode_scalar(runtime,*clamped).dump()+" is used and the saved value is kept.");
-                else if(converted) load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
-            }
-        };
-        read(read,record,{});
+    // Scene and Play changes decode a properties record leaf by leaf through the shared decoder.
+    static void read_properties(Session& session,ObjectId object,const Json& record,Load& load,const ResolveReference& resolve,const WriteLeaf& write={}) {
+        auto& runtime=session.runtime_;const auto type=take(runtime.type_of(object));
+        const LeafReport report{
+            [&](std::vector<std::string> at,const Json& item,world::DiagnosticKind kind,const std::string& detail) {load.keep(object,std::move(at),item,kind,detail);},
+            [&](std::vector<std::string> at,const Json& item) {
+                load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
+            }};
+        read_record(runtime,{type,object},business_fields(runtime,session.types_,type),record,{"properties"},resolve,write,&report);
     }
     // Scene material definition or inline binding entry to a material object.
     static ObjectRoot restore_material(Session& session,Project* project,const Json& entry,std::vector<MissingResource>* missing=nullptr) {
@@ -1068,9 +1143,8 @@ struct Session::GraphCodec {
             result.spaces.push_back({ids.at(local_key(entity.at("id"))),target});
         }
         const auto properties=[&](const Json& value,ObjectId object) {
-            const auto write=[&](ObjectId target,std::span<const FieldId> path,Scalar scalar){return runtime.write(target,path,scalar);};
             if(const auto at=value.find("properties");at!=value.end()) {
-                if(at->is_object()) read_properties(session,object,*at,load,resolve,write);
+                if(at->is_object()) read_properties(session,object,*at,load,resolve);
                 else load.keep(object,{"properties"},*at,world::DiagnosticKind::mismatch,"Expected a property record. Defaults are used and the saved value is kept.");
             }
             bool enabled=true;
@@ -1081,12 +1155,14 @@ struct Session::GraphCodec {
             committed(world.set_enabled(object,enabled));
         };
         // A record that fails its combined validation returns to the type defaults.
-        using Defaults=std::vector<std::pair<world::FieldPath,Scalar>>;
+        using Defaults=std::vector<std::pair<world::FieldPath,PropertyLeaf>>;
         const auto snapshot=[&](ObjectId object,std::string_view prefix) {
             Defaults values;
             for(const auto& field:business_fields(runtime,session.types_,take(runtime.type_of(object))))
-                if(field.form==ValueForm::inline_value && !field.names.empty() && field.names.front()==prefix)
-                    values.emplace_back(field.path,take(runtime.read(object,field.path)));
+                if(field.form==ValueForm::inline_value && !field.names.empty() && field.names.front()==prefix) {
+                    if(field.kind!=TypeKind::string) {values.emplace_back(field.path,take(runtime.read(object,field.path)));continue;}
+                    String text;take(runtime.read(object,field.path,ValueOutput{field.type,&text}));values.emplace_back(field.path,std::move(text));
+                }
             return values;
         };
         const auto saved_property=[&](ObjectId object,std::string_view name)->const Json* {
@@ -1097,7 +1173,10 @@ struct Session::GraphCodec {
         const auto invalid_record=[&](ObjectId object,const std::string& name,const Defaults& defaults,const std::string& problem) {
             if(const auto* value=saved_property(object,name)) load.keep(object,{"properties",name},*value,world::DiagnosticKind::mismatch,problem+" Defaults are used and the saved value is kept.");
             else load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"properties",name},nullptr,problem+" Defaults are used.");
-            for(const auto& [path,value]:defaults) take(runtime.write(object,path,value));
+            for(const auto& [path,value]:defaults) {
+                if(const auto* scalar=std::get_if<Scalar>(&value)) take(runtime.write(object,path,*scalar));
+                else take(runtime.write(object,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(value)}));
+            }
         };
         // Without its mesh a component has no slots. Its binding table is kept verbatim,
         // with scene material references renamed to document identities kept alive by it.
@@ -1477,7 +1556,7 @@ struct Session::GraphCodec {
                 }
                 if(const auto at=op.find("properties");at!=op.end()) {
                     if(!at->is_object()) throw std::runtime_error("Expected a property record.");
-                    const Resolve resolve=[&](const Json& value,TypeId field_type,ValueForm form)->std::optional<ObjectReference> {
+                    const ResolveReference resolve=[&](const Json& value,TypeId field_type,ValueForm form)->std::optional<ObjectReference> {
                         const auto null=[&]{return take(runtime.null_reference(field_type,form==ValueForm::weak_reference?form:ValueForm::strong_reference));};
                         if(value.is_null()) return null();
                         if(!value.is_object() || !value.contains("$ref")) return std::nullopt;
@@ -1486,7 +1565,11 @@ struct Session::GraphCodec {
                         auto held=runtime.hold(*live,field_type);if(!held) return std::nullopt;
                         return form==ValueForm::weak_reference?take(runtime.observe(held->reference())):held->reference();
                     };
-                    read_properties(session,edited,*at,load,resolve,[&](ObjectId written,std::span<const FieldId> path,Scalar scalar){return world.write(written,path,scalar);});
+                    // World authoring has no whole-value write yet; failing the change marks Play as diverged.
+                    read_properties(session,edited,*at,load,resolve,[&](std::span<const FieldId> path,const PropertyLeaf& leaf)->Result<void> {
+                        if(const auto* scalar=std::get_if<Scalar>(&leaf)) return world.write(edited,path,*scalar);
+                        throw std::runtime_error("Play cannot apply String fields yet.");
+                    });
                 }
                 if(op.contains("base_color") || op.contains("roughness") || op.contains("metallic") || op.contains("emissive")) {
                     auto material=take(world::read_static_mesh(runtime,edited)).material;
