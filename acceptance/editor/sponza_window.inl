@@ -113,8 +113,12 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     shot("sponza-lights-off-128",128);
     shot("sponza-lights-off-256",128);
     const auto dark_late=shot("sponza-lights-off-settled",128);
-    report<<"Lights off luminance (0..255): early="<<luminance(dark_early)<<" settled="<<luminance(dark_late)<<'\n';report.flush();
-    require(luminance(dark_late)<std::max(2.,luminance(dark_early)*.3),"Sponza retained stale probe lighting after lights were switched off.");
+    // With lights and probes off only editor overlays remain; stale probe light is what stays above that floor.
+    settings.ddgi=false;model(Access::scene_lit_settings(app,settings));
+    const auto unlit=luminance(shot("sponza-lights-off-ddgi-off",64));
+    const auto early=luminance(dark_early)-unlit,late=luminance(dark_late)-unlit;
+    report<<"Lights off luminance (0..255): early="<<luminance(dark_early)<<" settled="<<luminance(dark_late)<<" unlit overlay floor="<<unlit<<'\n';report.flush();
+    require(early>.5 && late<early*.3,"Sponza retained stale probe lighting after lights were switched off.");
     for(const auto& item:light_items) edit(item.component,"settings.intensity",item.settings.intensity);
     edit(moving->entity,"position.x",original.position.x);
     model(Access::scene_lit_settings(app,authored_lighting));
