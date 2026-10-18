@@ -77,7 +77,17 @@ void verify_mirrored_viewport_transforms() {
     require(!document.preview_edit(77,10001.f) && !document.preview_edit(77,-10001.f),"Scale field accepted a magnitude above the editor bound.");
     take(document.preview_edit(77,0.f));take(document.preview_edit(77,-3.f));take(document.commit_edit(77));
     require(pose().scale.x==-3 && document.undo_count()==history+5,"Scale field did not commit a negative value.");
-    std::puts("Mirrored viewport G/R/S: PASS (single-axis mirror kept, scale crosses zero, zero preview, signed scale field)");
+    // A zero axis leaves the Entity's frame singular; G, R and S still apply, and the axis stays zero.
+    take(document.set_transform(entity,{{1,2,3},{},{0,-1,1}}));
+    gesture('G','Y',L"2");
+    require(nearly(pose().position,{1,4,3}) && nearly(pose().scale,{0,-1,1}) && pose().scale.x==0,"Moving a zero scale Entity failed or changed its scale.");
+    gesture('R','Z',L"30");
+    const auto spun=pose();
+    require(nearly(spun.position,{1,4,3}) && nearly(spun.scale,{0,-1,1}) && spun.scale.x==0 && std::abs(spun.rotation.x)<1e-5f && std::abs(spun.rotation.y)<1e-5f &&
+        std::abs(std::abs(spun.rotation.z)-std::sin(std::numbers::pi_v<float>/12))<1e-5f,"Rotating a zero scale Entity failed, or changed its scale or turn axis.");
+    gesture('S','Y',L"2");gesture('S','X',L"2");
+    require(nearly(pose().scale,{0,-2,1}) && pose().scale.x==0 && nearly(pose().position,{1,4,3}),"Scaling a zero scale Entity failed or left its zero axis.");
+    std::puts("Mirrored viewport G/R/S: PASS (single-axis mirror kept, scale crosses zero, zero preview, signed scale field, zero-axis G/R/S)");
 }
 void verify_viewport_local_constraints() {
     using namespace editor;

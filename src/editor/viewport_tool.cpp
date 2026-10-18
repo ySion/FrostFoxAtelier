@@ -219,23 +219,29 @@ Result<void> ViewportTool::preview_world(Session& session,std::uint64_t token,st
         auto matrix=math::Matrix4::identity();
         if(*parent!=ObjectId{}) {auto read=world::world_matrix(session.world().runtime(),*parent);if(!read) return std::unexpected(read.error());matrix=*read;}
         const auto original=session.original_transform(token,entities[i]);if(!original) return std::unexpected(original.error());
-        const auto original_world=world::multiply(world::transform_matrix(*original),matrix);if(!original_world) return std::unexpected(original_world.error());
-        const auto frame=viewport_frame(session,entities[i],*original_world,*original);if(!frame) return std::unexpected(frame.error());
-        if(values[i]==*frame) {local.push_back(*original);continue;}
+        // A zero scale axis is valid but leaves the Entity's own frame singular. The gesture works on
+        // a unit axis in its place, leaves that axis unchanged, and the result keeps it zero.
+        auto regular=*original;auto value=values[i];
+        for(std::size_t axis=0;axis<3;++axis) if(regular.scale[axis]==0) regular.scale[axis]=1;
+        const auto original_world=world::multiply(world::transform_matrix(regular),matrix);if(!original_world) return std::unexpected(original_world.error());
+        const auto frame=viewport_frame(session,entities[i],*original_world,regular);if(!frame) return std::unexpected(frame.error());
+        for(std::size_t axis=0;axis<3;++axis) if(original->scale[axis]==0) value.scale[axis]=frame->scale[axis];
+        if(value==*frame) {local.push_back(*original);continue;}
         if(local_scale) {
-            auto desired=*original_world;desired[12]=values[i].position.x;desired[13]=values[i].position.y;desired[14]=values[i].position.z;
+            auto desired=*original_world;desired[12]=value.position.x;desired[13]=value.position.y;desired[14]=value.position.z;
             auto converted=world::relative_transform(desired,matrix,original->scale);if(!converted) return std::unexpected(converted.error());
-            for(std::size_t axis=0;axis<3;++axis) converted->scale[axis]=original->scale[axis]*values[i].scale[axis]/frame->scale[axis];
+            for(std::size_t axis=0;axis<3;++axis) converted->scale[axis]=original->scale[axis]*value.scale[axis]/frame->scale[axis];
             local.push_back(*converted);continue;
         }
         const auto inverse=math::try_inverse(world::transform_matrix(*frame));if(!inverse) return invalid("The viewport frame is singular.");
         // Keep the original affine frame, including inherited shear. The proxy
         // TRS only expresses the gesture's delta; it never replaces object space.
-        auto delta=world::multiply(*inverse,world::transform_matrix(values[i]));if(!delta) return std::unexpected(delta.error());
+        auto delta=world::multiply(*inverse,world::transform_matrix(value));if(!delta) return std::unexpected(delta.error());
         auto desired=world::multiply(*original_world,*delta);if(!desired) return std::unexpected(desired.error());
         // A mirrored Entity keeps its own negative axes instead of the canonical X reflection.
-        auto converted=world::relative_transform(*desired,matrix,original->scale);
-        if(!converted) return std::unexpected(converted.error());local.push_back(*converted);
+        auto converted=world::relative_transform(*desired,matrix,original->scale);if(!converted) return std::unexpected(converted.error());
+        for(std::size_t axis=0;axis<3;++axis) if(original->scale[axis]==0) converted->scale[axis]=0;
+        local.push_back(*converted);
     }
     return session.preview_transform(token,local);
 }

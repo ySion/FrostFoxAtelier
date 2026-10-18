@@ -16,6 +16,7 @@
 #include <chrono>
 #include <fstream>
 #include <numeric>
+#include <numbers>
 #include <cstdio>
 #include <stdexcept>
 #include <unordered_set>
