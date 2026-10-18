@@ -54,45 +54,46 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
     });
 }
 Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime& runtime,ObjectId id) {
+    return runtime.with_native<StaticMeshComponent>(id,[&](StaticMeshComponent& value) {return detail::material_surfaces(runtime,id,value);});
+}
+Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::material_surfaces(Runtime& runtime,ObjectId id,StaticMeshComponent& value) {
     using Snapshot=std::shared_ptr<const std::vector<material::SurfaceRef>>;
-    return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<Snapshot> {
-        const auto& mesh=Access::geometry(value);if(!mesh) return Snapshot{};
-        auto& cached=Access::surfaces(value);
-        const bool base_changed=!cached || Access::surface_geometry(value)!=mesh || Access::surface_parameters(value)!=value.material;
-        if(!base_changed && Access::material_slots(value).empty()) return cached;
-        std::optional<ReferenceField> field;
-        if(!Access::material_slots(value).empty()) {
-            auto references=runtime.reference_field(id,Access::materials(value));if(!references) return std::unexpected(references.error());
-            field=std::move(*references);
-        }
-        std::shared_ptr<std::vector<material::SurfaceRef>> next;
-        const auto writable=[&]() -> auto& {
-            if(!next) next=base_changed?std::make_shared<std::vector<material::SurfaceRef>>(mesh->materials().size()):
-                std::make_shared<std::vector<material::SurfaceRef>>(*cached);
-            return *next;
-        };
-        for(std::size_t i=0;i<mesh->materials().size();++i) {
-            material::SurfaceRef surface;
-            const auto name=material_slot_name(*mesh,i);
-            const auto at=std::ranges::find(Access::material_slots(value),name);
-            if(at!=Access::material_slots(value).end()) {
-                const auto index=static_cast<std::size_t>(at-Access::material_slots(value).begin());
-                auto reference=runtime.sequence_read(*field,index);if(!reference) return std::unexpected(reference.error());
-                auto captured=material::capture(runtime,reference->id());if(!captured) return std::unexpected(captured.error());
-                surface=*captured;
-            } else if(base_changed) {
-                auto description=mesh->materials()[i].surface->description();
-                const auto& p=value.material;
-                for(unsigned channel=0;channel<3;++channel) description.parameters.base_color[channel]*=p.base_color[channel];
-                description.parameters.roughness=p.roughness;description.parameters.metallic=p.metallic;
-                description.parameters.emissive={p.emissive.x,p.emissive.y,p.emissive.z};
-                try {surface=std::make_shared<const material::Surface>(std::move(description));}
-                catch(const std::exception& failure) {return error(ErrorCode::argument_mismatch,failure.what());}
-            } else surface=(*cached)[i];
-            if(base_changed || (*cached)[i]!=surface) writable()[i]=std::move(surface);
-        }
-        if(next) {cached=std::move(next);Access::surface_geometry(value)=mesh;Access::surface_parameters(value)=value.material;}
-        return cached;
-    });
+    const auto& mesh=Access::geometry(value);if(!mesh) return Snapshot{};
+    auto& cached=Access::surfaces(value);
+    const bool base_changed=!cached || Access::surface_geometry(value)!=mesh || Access::surface_parameters(value)!=value.material;
+    if(!base_changed && Access::material_slots(value).empty()) return cached;
+    std::optional<ReferenceField> field;
+    if(!Access::material_slots(value).empty()) {
+        auto references=runtime.reference_field(id,Access::materials(value));if(!references) return std::unexpected(references.error());
+        field=std::move(*references);
+    }
+    std::shared_ptr<std::vector<material::SurfaceRef>> next;
+    const auto writable=[&]() -> auto& {
+        if(!next) next=base_changed?std::make_shared<std::vector<material::SurfaceRef>>(mesh->materials().size()):
+            std::make_shared<std::vector<material::SurfaceRef>>(*cached);
+        return *next;
+    };
+    for(std::size_t i=0;i<mesh->materials().size();++i) {
+        material::SurfaceRef surface;
+        const auto name=material_slot_name(*mesh,i);
+        const auto at=std::ranges::find(Access::material_slots(value),name);
+        if(at!=Access::material_slots(value).end()) {
+            const auto index=static_cast<std::size_t>(at-Access::material_slots(value).begin());
+            auto reference=runtime.sequence_read(*field,index);if(!reference) return std::unexpected(reference.error());
+            auto captured=material::capture(runtime,reference->id());if(!captured) return std::unexpected(captured.error());
+            surface=*captured;
+        } else if(base_changed) {
+            auto description=mesh->materials()[i].surface->description();
+            const auto& p=value.material;
+            for(unsigned channel=0;channel<3;++channel) description.parameters.base_color[channel]*=p.base_color[channel];
+            description.parameters.roughness=p.roughness;description.parameters.metallic=p.metallic;
+            description.parameters.emissive={p.emissive.x,p.emissive.y,p.emissive.z};
+            try {surface=std::make_shared<const material::Surface>(std::move(description));}
+            catch(const std::exception& failure) {return error(ErrorCode::argument_mismatch,failure.what());}
+        } else surface=(*cached)[i];
+        if(base_changed || (*cached)[i]!=surface) writable()[i]=std::move(surface);
+    }
+    if(next) {cached=std::move(next);Access::surface_geometry(value)=mesh;Access::surface_parameters(value)=value.material;}
+    return cached;
 }
 }

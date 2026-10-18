@@ -3,7 +3,10 @@
 #include "world/world.hpp"
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
+#include <cstring>
 #include <deque>
+#include <optional>
+#include <type_traits>
 #include <unordered_map>
 
 namespace atelier::world::detail {
@@ -72,6 +75,21 @@ template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
     if (*failure) return std::unexpected((*failure)->error);
     return {};
 }
+// Values that passed validation, by bucket position. Validators are pure checks
+// of a value's bytes and published types never change, so the same bytes pass
+// again; any other value at that position is validated again.
+template<class T> class PassedValues {
+    static_assert(std::is_trivially_copyable_v<T>);
+    std::vector<std::optional<T>> values_;
+public:
+    void resize(std::size_t size) { values_.resize(size); }
+    [[nodiscard]] bool contains(std::size_t at, const T& value) const noexcept {
+        return values_[at] && std::memcmp(&*values_[at], &value, sizeof(T)) == 0;
+    }
+    void insert(std::size_t at, const T& value) noexcept { std::memcpy(&values_[at].emplace(), &value, sizeof(T)); }
+};
+// world::material_surfaces inside the caller's borrow of the mesh component.
+Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&, ObjectId, StaticMeshComponent&);
 // One Sky Light per World, disabled components included.
 World::Admission unique_sky_light(CapabilityId lights);
 // A light other than Sky needs a Transform on its member owner.
@@ -187,6 +205,9 @@ struct World::Impl {
     std::vector<std::vector<CapabilityMember>> capable; // Rebuilt with `buckets`.
     // The world library's own registrations; owned by presentation code.
     CapabilityId meshes, lights;
+    // Aligned with the meshes and lights buckets at each extraction call.
+    detail::PassedValues<Material> valid_materials;
+    detail::PassedValues<LightSettings> valid_lights;
     static constexpr std::uint32_t bit(CapabilityId id) noexcept { return 1u << id.value; }
     std::uint32_t presented() const noexcept { return bit(meshes) | bit(lights); }
     Result<std::uint32_t> capabilities_of(ObjectId component, TypeId type) const;

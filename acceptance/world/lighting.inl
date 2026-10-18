@@ -174,6 +174,44 @@ void lit_materials_and_lights() {
         halted[1].object==root && halted[1].field==std::vector<std::string>{"material","metallic"} && halted[1].value=="2",
         "Halted extraction failures were not reported once per persisting cause.");
     take(world.set_failure_policy(w::FailurePolicy::isolate));
+    // Extraction skips validating bytes that already passed at the same bucket position. A
+    // repaired mesh moving onto a position that holds those bytes is drawn and its failure
+    // resolves, exactly as when validated.
+    auto twin=take(w::create_static_mesh_entity(world,{geometry::cube_mesh(),{},material}));
+    const auto twin_mesh=take(w::components(runtime,twin.id())).front().id();
+    committed(world.attach(twin.id()));
+    const auto set_metallic=[&](float value) {
+        take(runtime.with_native<w::StaticMeshComponent>(twin_mesh,[value](auto& mesh)->Result<void>{mesh.material.metallic=value;return {};}));
+    };
+    require(take(world.render_items()).size()==2,"A second valid mesh was not drawn.");
+    // Each mesh resolves the slot materials bound to it within its single extraction borrow.
+    {
+        material::State warm_state;warm_state.description.parameters.roughness=.2f;
+        material::State cool_state=warm_state;cool_state.description.parameters.roughness=.8f;
+        const auto warm=take(material::create_material(runtime,warm_state)),cool=take(material::create_material(runtime,cool_state));
+        const std::array<w::MaterialBinding,1> warm_binding{{{"slot/0",warm,true}}},cool_binding{{{"slot/0",cool,true}}};
+        take(w::set_material_bindings(runtime,root,warm_binding));take(w::set_material_bindings(runtime,twin_mesh,cool_binding));
+    }
+    const auto slotted=take(world.render_items());
+    const auto roughness=[](const w::RenderItem& item){return item.surfaces->front()->description().parameters.roughness;};
+    require(slotted.size()==2 && roughness(slotted[0])==.2f && roughness(slotted[1])==.8f,
+        "Meshes bound to different slot materials did not keep their own surfaces.");
+    set_metallic(2);
+    const auto excluded=take(world.render_items());const auto persisting=take(world.render_items());const auto twin_report=world.take_diagnostics();
+    require(excluded.size()==1 && excluded[0].component==root && persisting.size()==1 && twin_report.size()==1 &&
+        twin_report[0].object==twin_mesh && twin_report[0].field==std::vector<std::string>{"material","metallic"} && twin_report[0].repeats==2,
+        "A mesh broken after a valid pass was not isolated and reported on every extraction.");
+    set_metallic(material.metallic);
+    auto parked=take(world.detach(entity.id()));
+    const auto recovered=take(world.render_items());
+    require(recovered.size()==1 && recovered[0].component==twin_mesh && recovered[0].material==material &&
+        world.take_diagnostics().empty(),"A repaired mesh moved onto a validated position was not drawn.");
+    set_metallic(2);
+    require(take(world.render_items()).empty() && world.take_diagnostics().size()==1,"The repaired pass did not resolve the earlier failure.");
+    set_metallic(material.metallic);
+    committed(world.restore(parked));parked.root.reset();
+    auto twin_removal=take(world.detach(twin.id()));twin_removal.root.reset();twin.reset();
+    require(take(world.render_items()).size()==1 && take(world.light_items()).size()==3,"Restoring the parked Entity changed extraction.");
     auto detached=take(world.detach(entity.id()));
     require(take(world.light_items()).empty() && take(world.query(types.light_component)).empty(),"Detached history graph remained a light source.");
     committed(world.restore(detached));detached.root.reset();
@@ -207,5 +245,5 @@ void lit_materials_and_lights() {
     entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();collect(runtime);
     require(runtime.live_objects()==0 && !runtime.type_of(saved_identity) && snapshot.front().settings==rect_settings,
         "Light snapshots retained business objects or depended on their later state.");
-    std::puts("[pass] Lit data: reflected Material/LightSettings, HDR validation, Source inheritance, TRS extraction, identity/history and lifecycle");
+    std::puts("[pass] Lit data: reflected Material/LightSettings, HDR validation, Source inheritance, TRS extraction, position-cached validation, slot surfaces, identity/history and lifecycle");
 }

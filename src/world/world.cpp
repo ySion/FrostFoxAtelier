@@ -896,40 +896,49 @@ Result<std::vector<RenderItem>> World::render_items() const {
     auto meshes = members(state.meshes);
     if (!meshes) return std::unexpected(meshes.error());
     result.reserve(meshes->size());
-    {
-        for (const auto& [owner, object, active] : *meshes) {
-            (void)active;
-            // Isolated items are skipped: an unusable space is reported once on
-            // its Entity, an invalid material on its component.
-            auto matrix = pass->matrix(owner);
-            if (!matrix) return std::unexpected(matrix.error());
-            if (!*matrix || pass->degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
-                continue;
-            auto item = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<RenderItem> {
-                return RenderItem{owner, object, **matrix, Access::geometry(value), value.material};
-            });
-            if (!item) {
-                if (!state.contain(item.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner))
-                    return std::unexpected(item.error());
-                continue;
+    state.valid_materials.resize(meshes->size());
+    for (std::size_t slot = 0; slot < meshes->size(); ++slot) {
+        const auto& [owner, object, active] = (*meshes)[slot];
+        (void)active;
+        // Isolated items are skipped: an unusable space is reported once on
+        // its Entity, an invalid material on its component.
+        auto matrix = pass->matrix(owner);
+        if (!matrix) return std::unexpected(matrix.error());
+        if (!*matrix || pass->degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
+            continue;
+        RenderItem item{owner, object, **matrix, {}, {}};
+        Result<std::optional<ValidationFailure>> invalid = std::nullopt;
+        Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> surfaces;
+        auto read = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<void> {
+            item.geometry = Access::geometry(value);
+            item.material = value.material;
+            if (!state.valid_materials.contains(slot, value.material)) {
+                invalid = runtime().validate_value(types().material, std::as_bytes(std::span{&value.material, 1}));
+                if (!invalid || *invalid) return {};
+                state.valid_materials.insert(slot, value.material);
             }
-            auto invalid = runtime().validate_value(types().material, std::as_bytes(std::span{&item->material, 1}));
-            if (!invalid) return std::unexpected(invalid.error());
-            if (*invalid) {
-                const auto& failure = **invalid;
-                if (!state.contain(failure.error, validation_diagnostic(failure, DiagnosticPhase::presentation, object, owner, {"material"})))
-                    return std::unexpected(failure.error);
-                continue;
-            }
-            auto surfaces=material_surfaces(runtime(),object);
-            if (!surfaces) {
-                if (!state.contain(surfaces.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"materials"}))
-                    return std::unexpected(surfaces.error());
-                continue;
-            }
-            item->surfaces=std::move(*surfaces);
-            result.push_back(std::move(*item));
+            surfaces = detail::material_surfaces(runtime(), object, value);
+            return {};
+        });
+        if (!read) {
+            if (!state.contain(read.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner))
+                return std::unexpected(read.error());
+            continue;
         }
+        if (!invalid) return std::unexpected(invalid.error());
+        if (*invalid) {
+            const auto& failure = **invalid;
+            if (!state.contain(failure.error, validation_diagnostic(failure, DiagnosticPhase::presentation, object, owner, {"material"})))
+                return std::unexpected(failure.error);
+            continue;
+        }
+        if (!surfaces) {
+            if (!state.contain(surfaces.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"materials"}))
+                return std::unexpected(surfaces.error());
+            continue;
+        }
+        item.surfaces = std::move(*surfaces);
+        result.push_back(std::move(item));
     }
     return result;
 }

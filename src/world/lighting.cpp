@@ -96,8 +96,10 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
     bool has_sky=false;
     auto lights=members(state.lights);
     if (!lights) return std::unexpected(lights.error());
+    state.valid_lights.resize(lights->size());
     {
-        for (const auto& [owner,object,active]:*lights) {
+        for (std::size_t slot=0;slot<lights->size();++slot) {
+            const auto& [owner,object,active]=(*lights)[slot];
             // Isolated lights are skipped. The first Sky Light in composition
             // preorder, enabled or not, owns the World's single sky slot.
             const auto skip=[&](const Error& failure,DiagnosticKind kind,ObjectId at,ObjectId entity,std::vector<std::string> field) {
@@ -114,12 +116,15 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
                 has_sky=true;
             }
             if (!active) continue;
-            auto invalid=runtime().validate_value(types().light_settings,std::as_bytes(std::span{&*settings,1}));
-            if (!invalid) return std::unexpected(invalid.error());
-            if (*invalid) {
-                const auto& failure=**invalid;
-                if (!state.contain(failure.error,validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
-                continue;
+            if (!state.valid_lights.contains(slot,*settings)) {
+                auto invalid=runtime().validate_value(types().light_settings,std::as_bytes(std::span{&*settings,1}));
+                if (!invalid) return std::unexpected(invalid.error());
+                if (*invalid) {
+                    const auto& failure=**invalid;
+                    if (!state.contain(failure.error,validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
+                    continue;
+                }
+                state.valid_lights.insert(slot,*settings);
             }
             if(settings->kind==LightKind::sky) {
                 result.push_back({owner,object,{}, {0,0,1},{1,0,0},{0,1,0},*settings});
