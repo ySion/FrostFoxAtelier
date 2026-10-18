@@ -32,7 +32,7 @@ Result<void> validate_light(Runtime& runtime,const LightSettings& settings) { re
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
     return runtime.with_native<const LightComponent>(object,[](const LightComponent& light)->Result<LightSettings> { return light.settings; });
 }
-World::Admission detail::unique_sky_light(PresentationId lights) {
+World::Admission detail::unique_sky_light(CapabilityId lights) {
     return [lights](const World& world,std::span<const ObjectId> candidates)->Result<void> {
         ObjectId sky;
         const auto visit=[&](ObjectId object)->Result<void> {
@@ -43,7 +43,7 @@ World::Admission detail::unique_sky_light(PresentationId lights) {
         };
         for(const auto object:candidates) if(auto valid=visit(object);!valid) return valid;
         if(sky==ObjectId{}) return {};
-        auto members=world.presented(lights);if(!members) return std::unexpected(members.error());
+        auto members=world.members(lights);if(!members) return std::unexpected(members.error());
         for(const auto& member:*members) if(auto valid=visit(member.component);!valid) return valid;
         return {};
     };
@@ -94,7 +94,7 @@ Result<std::vector<LightRenderItem>> World::light_items() const {
     auto& state=*impl_;
     std::vector<LightRenderItem> result;
     bool has_sky=false;
-    auto lights=presented(state.lights);
+    auto lights=members(state.lights);
     if (!lights) return std::unexpected(lights.error());
     {
         for (const auto& [owner,object,active]:*lights) {

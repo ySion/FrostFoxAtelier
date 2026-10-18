@@ -203,16 +203,16 @@ Result<std::vector<World::Impl::ComponentState>> World::Impl::derive_components(
         if (!binding) return std::unexpected(binding.error());
         auto data = detail::component_data(runtime, object);
         if (!data) return std::unexpected(data.error());
-        auto presentation = presentation_of(object, *type);
-        if (!presentation) return std::unexpected(presentation.error());
-        result.push_back({object, *type, *binding, *presentation, data->enabled, false});
+        auto capabilities = capabilities_of(object, *type);
+        if (!capabilities) return std::unexpected(capabilities.error());
+        result.push_back({object, *type, *binding, *capabilities, data->enabled, false});
     }
     return result;
 }
-Result<std::uint32_t> World::Impl::presentation_of(ObjectId component, TypeId type) const {
+Result<std::uint32_t> World::Impl::capabilities_of(ObjectId component, TypeId type) const {
     std::uint32_t result{};
-    for (std::uint32_t i = 0; i < presentations.size(); ++i) {
-        const auto& registration = presentations[i];
+    for (std::uint32_t i = 0; i < registrations.size(); ++i) {
+        const auto& registration = registrations[i];
         auto matches = runtime.is_a(type, registration.type);
         if (!matches) return std::unexpected(matches.error());
         if (!*matches) continue;
@@ -339,14 +339,14 @@ void World::Impl::rebuild_buckets() {
         if (found == buckets.end()) { buckets.push_back({type, {}}); found = std::prev(buckets.end()); }
         found->objects.push_back(object);
     };
-    presented.assign(presentations.size(), {});
+    capable.assign(registrations.size(), {});
     for (std::size_t i = 0; i < members.size(); ++i) {
         const auto id = members[i].id();
         add(states[i].type, id);
         for (const auto& item : states[i].components) {
             add(item.type, item.id);
-            for (std::uint32_t mask = item.presentation; mask; mask &= mask - 1)
-                presented[std::countr_zero(mask)].push_back({id, item.id, states[i].eligible && item.enabled});
+            for (std::uint32_t mask = item.capabilities; mask; mask &= mask - 1)
+                capable[std::countr_zero(mask)].push_back({id, item.id, states[i].eligible && item.enabled});
         }
     }
     buckets_dirty = false;
@@ -417,11 +417,11 @@ World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl
     if (!registered || *registered != types.entity) throw std::invalid_argument("World types must be registered in its Runtime.");
     // The world library presents its own mesh and light components; a mesh needs geometry.
     impl_->meshes = {0};
-    impl_->presentations.push_back({types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
+    impl_->registrations.push_back({types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
         return runtime.with_native<StaticMeshComponent>(object, [](StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
     }});
     impl_->lights = {1};
-    impl_->presentations.push_back({types.light_component, {}});
+    impl_->registrations.push_back({types.light_component, {}});
     impl_->admissions.push_back({types.light_component, detail::unique_sky_light(impl_->lights)});
     impl_->admissions.push_back({types.light_component, detail::spatial_lights()});
 }
@@ -454,7 +454,7 @@ Activity World::activity() const noexcept {
         for (const auto& item : member.components) {
             result.update_registrations += state.running && item.begun && item.fault == Impl::Fault::none && member.eligible &&
                 item.enabled && ticks(item.behavior);
-            result.presentation_registrations += item.presentation != 0;
+            result.presentation_registrations += (item.capabilities & state.presented()) != 0;
         }
     }
     return result;
@@ -476,36 +476,39 @@ Result<std::span<const Member>> World::members() const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     return std::span<const Member>{impl_->members};
 }
-Result<PresentationId> World::register_presentation(TypeId type, PresentationPredicate predicate) {
+Result<CapabilityId> World::register_capability(TypeId type, CapabilityPredicate predicate) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
-    if (state.presentations.size() >= 32) return error(ErrorCode::capacity_exceeded, "A World supports at most 32 presentation registrations.");
+    if (!predicate)
+        for (std::uint32_t i = 0; i < state.registrations.size(); ++i)
+            if (state.registrations[i].type == type && !state.registrations[i].predicate) return CapabilityId{i};
+    if (state.registrations.size() >= 32) return error(ErrorCode::capacity_exceeded, "A World supports at most 32 capability registrations.");
     auto component = runtime().is_a(type, types().component);
     if (!component) return std::unexpected(component.error());
-    if (!*component) return error(ErrorCode::type_mismatch, "Presentation requires a Component type.");
-    const auto id = PresentationId{std::uint32_t(state.presentations.size())};
-    state.presentations.push_back({type, std::move(predicate)});
+    if (!*component) return error(ErrorCode::type_mismatch, "A capability requires a Component type.");
+    const auto id = CapabilityId{std::uint32_t(state.registrations.size())};
+    state.registrations.push_back({type, std::move(predicate)});
     // Evaluate the new registration for current members before publishing any bit.
     std::vector<bool> present;
     for (const auto& member : state.states)
         for (const auto& item : member.components) {
-            auto value = state.presentation_of(item.id, item.type);
-            if (!value) { state.presentations.pop_back(); return std::unexpected(value.error()); }
+            auto value = state.capabilities_of(item.id, item.type);
+            if (!value) { state.registrations.pop_back(); return std::unexpected(value.error()); }
             present.push_back(*value & Impl::bit(id));
         }
     auto next = present.begin();
     for (auto& member : state.states)
-        for (auto& item : member.components) if (*next++) item.presentation |= Impl::bit(id);
+        for (auto& item : member.components) if (*next++) item.capabilities |= Impl::bit(id);
     state.changed(false);
     return id;
 }
-Result<std::span<const PresentedComponent>> World::presented(PresentationId id) const {
+Result<std::span<const CapabilityMember>> World::members(CapabilityId id) const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
-    if (id.value >= impl_->presentations.size()) return error(ErrorCode::argument_mismatch, "Unknown presentation registration.");
+    if (id.value >= impl_->registrations.size()) return error(ErrorCode::argument_mismatch, "Unknown capability registration.");
     if (impl_->buckets_dirty) impl_->rebuild_buckets();
-    return std::span<const PresentedComponent>{impl_->presented[id.value]};
+    return std::span<const CapabilityMember>{impl_->capable[id.value]};
 }
-Result<void> World::reevaluate_presentation(ObjectId component) {
+Result<void> World::reevaluate_capabilities(ObjectId component) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return ready;
     auto owner = state.component_owner(component);
@@ -890,7 +893,7 @@ Result<std::vector<RenderItem>> World::render_items() const {
     if (!pass) return std::unexpected(pass.error());
     auto& state = *impl_;
     std::vector<RenderItem> result;
-    auto meshes = presented(state.meshes);
+    auto meshes = members(state.meshes);
     if (!meshes) return std::unexpected(meshes.error());
     result.reserve(meshes->size());
     {

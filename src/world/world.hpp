@@ -246,7 +246,7 @@ struct EntityStatus {
     TypeId type;
     bool enabled{};
     bool can_edit{};
-    // True when this member has at least one registered presentation component.
+    // True when this member has at least one mesh or light the World presents.
     // UI selection uses membership; an empty Entity can still be selected/edited.
     bool can_present{};
     bool effective_enabled{};
@@ -257,7 +257,7 @@ struct ComponentStatus {
     ObjectId owner;
     bool enabled{};
     bool active{};
-    // True when this component has an actual World presentation registration.
+    // True when the World presents this component as a mesh or light.
     bool can_present{};
 };
 
@@ -434,13 +434,13 @@ struct Simulation {
     std::function<bool(ObjectId)> writes_pose;
     std::function<Result<void>(std::span<const ObjectId>)> relocated;
 };
-// Opaque handle of a type registered for presentation in one World.
-struct PresentationId {
+// Opaque handle of a component type registered as a capability in one World.
+struct CapabilityId {
     std::uint32_t value{};
-    bool operator==(const PresentationId&) const = default;
+    bool operator==(const CapabilityId&) const = default;
 };
-using PresentationPredicate = std::function<Result<bool>(Runtime&, ObjectId component)>;
-struct PresentedComponent {
+using CapabilityPredicate = std::function<Result<bool>(Runtime&, ObjectId component)>;
+struct CapabilityMember {
     ObjectId entity, component;
     bool active{}; // Enabled with an effectively enabled owner.
 };
@@ -581,14 +581,18 @@ public:
     [[nodiscard]] Result<std::vector<RenderItem>> render_items() const;
     // Enabled members, in Entity/composition order. Stopped Worlds also present.
     [[nodiscard]] Result<std::vector<LightRenderItem>> light_items() const;
-    // Components of `type` (or derived) for which `predicate` holds are kept in
-    // that registration's presentation bucket. At most 32 per World.
-    [[nodiscard]] Result<PresentationId> register_presentation(TypeId component_type, PresentationPredicate = {});
+    // Domains (presentation, simulation) register the component types they
+    // consume. Member components of `type` (or derived) for which `predicate`
+    // holds are kept in that registration's bucket, maintained with every
+    // composition, membership and enablement change. Registering a type again
+    // without a predicate returns its existing predicate-free registration, so
+    // a domain host recreated on one World reuses it. At most 32 per World.
+    [[nodiscard]] Result<CapabilityId> register_capability(TypeId component_type, CapabilityPredicate = {});
     // Registered member components in composition order, including inactive
     // ones. The borrow ends at the next change of this World.
-    [[nodiscard]] Result<std::span<const PresentedComponent>> presented(PresentationId) const;
-    // Re-evaluates presentation predicates after a member component's data changed.
-    [[nodiscard]] Result<void> reevaluate_presentation(ObjectId component);
+    [[nodiscard]] Result<std::span<const CapabilityMember>> members(CapabilityId) const;
+    // Re-evaluates capability predicates after a member component's data changed.
+    [[nodiscard]] Result<void> reevaluate_capabilities(ObjectId component);
     // A rule over the components of one registered type (or derived) that may
     // become or stay members. Attach runs it on the incoming components before
     // publishing. Author edits (write, set_material, set_light) of a member

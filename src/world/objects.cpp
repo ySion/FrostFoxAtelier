@@ -226,7 +226,7 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
         if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
         status.state = state.running && member->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
         status.can_edit = !state.dispatch_depth;
-        status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != 0; });
+        status.can_present = std::ranges::any_of(member->components, [&](const auto& item) { return (item.capabilities & state.presented()) != 0; });
     }
     return status;
 }
@@ -254,7 +254,7 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
             const auto item = std::ranges::find(member->components, object, &detail::Access::State::ComponentState::id);
             if (item == member->components.end()) return std::unexpected(state.inconsistent("World component index is inconsistent."));
             status.active = state.running && item->begun && member->eligible && data->enabled;
-            status.can_present = item->presentation != 0;
+            status.can_present = (item->capabilities & state.presented()) != 0;
         }
     }
     return status;
@@ -340,7 +340,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         Access::geometry(component) = std::move(binding.resolved); return {};
     });
     if (!changed) return changed;
-    return world ? world->reevaluate_presentation(object) : Result<void>{};
+    return world ? world->reevaluate_capabilities(object) : Result<void>{};
 }
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());

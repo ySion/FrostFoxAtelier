@@ -101,33 +101,37 @@ void frame_phases() {
     require(count('E', a.id()) == 1 && count('B', a.id()) == 0, "Running rebind did not pair End through the current binding.");
     committed(world.close());
 
-    // Presentation buckets are registered per World and re-evaluated on demand.
+    // Capability buckets are registered per World and re-evaluated on demand.
     w::World shown(runtime, types);
     auto owner = take(w::create_entity(runtime));
     committed(shown.attach(owner.id()));
     auto lit = take(w::create_component(runtime, types.counter)), dark = take(w::create_component(runtime, types.counter));
     committed(shown.attach_components(owner.id(), std::array{w::Attachment{lit.id()}, w::Attachment{dark.id()}}));
     take(runtime.write(lit.id(), types.counter_value, Scalar{1.f}));
-    const auto glowing = take(shown.register_presentation(types.counter, [&](Runtime& rt, ObjectId id) -> Result<bool> {
+    const auto glowing = take(shown.register_capability(types.counter, [&](Runtime& rt, ObjectId id) -> Result<bool> {
         auto value = rt.read(id, types.counter_value);
         if (!value) return std::unexpected(value.error());
         return std::get<float>(*value) > 0.f;
     }));
     const auto bucket = [&] {
-        const auto items = take(shown.presented(glowing));
-        return std::vector<w::PresentedComponent>(items.begin(), items.end());
+        const auto items = take(shown.members(glowing));
+        return std::vector<w::CapabilityMember>(items.begin(), items.end());
     };
     auto items = bucket();
     require(items.size() == 1 && items[0].component == lit.id() && items[0].entity == owner.id() && items[0].active,
-        "A presentation registration did not evaluate existing members.");
+        "A capability registration did not evaluate existing members.");
     take(runtime.write(dark.id(), types.counter_value, Scalar{2.f}));
-    require(bucket().size() == 1, "A presentation bucket changed before re-evaluation.");
-    take(shown.reevaluate_presentation(dark.id()));
+    require(bucket().size() == 1, "A capability bucket changed before re-evaluation.");
+    take(shown.reevaluate_capabilities(dark.id()));
     committed(shown.set_enabled(lit.id(), false));
     items = bucket();
     require(items.size() == 2 && items[0].component == lit.id() && !items[0].active && items[1].component == dark.id() && items[1].active,
-        "A presentation bucket lost composition order, an inactive member or a re-evaluated component.");
-    reject(shown.register_presentation(types.entity), "An Entity type was registered for presentation.");
+        "A capability bucket lost composition order, an inactive member or a re-evaluated component.");
+    reject(shown.register_capability(types.entity), "An Entity type was registered as a capability.");
+    // A host recreated on one World reuses its predicate-free registration; a predicate always adds one.
+    const auto plain = take(shown.register_capability(types.counter));
+    require(take(shown.register_capability(types.counter)) == plain && !(plain == glowing) && take(shown.members(plain)).size() == 2,
+        "A repeated predicate-free capability registration was not reused or missed members.");
 
     // Admissions see attach candidates and edited values; a rejected edit is restored.
     std::vector<ObjectId> admitted;
@@ -160,5 +164,5 @@ void frame_phases() {
     take(shown.write(dark.id(), std::array{types.counter_value}, Scalar{5.f}));
     require(std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 5.f, "An admitted author edit was not kept.");
     committed(shown.close());
-    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, presentation buckets, admissions");
+    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions");
 }

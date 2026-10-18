@@ -430,6 +430,30 @@ void lifecycle() {
     require(other.state(other_entity).linear_velocity.y < 0, "destroying one scene keeps other scenes alive");
     f.scene = take(p::PhysicsScene::create(f.world, f.physics_types));
     require(f.scene->body_count() == 1, "new scene reconciles an already running World");
+    // Direct field writes do not notify, so each step samples the bodies of active Primitives.
+    const auto body_field = take(f.runtime.find_field(f.world_types.primitive_component, "body"));
+    const std::array enabled{body_field, take(f.runtime.find_field(take(f.runtime.native_type<p::BodySettings>()), "enabled"))};
+    auto idle = f.make({5, 4, 0}, dynamic_body(), false);
+    const auto bodies = [&] { step(f.world, *f.scene, 0); return f.scene->body_count(); };
+    require(bodies() == 1, "a disabled body was created");
+    take(f.runtime.write(idle.body.id(), enabled, atelier::Scalar{true}));
+    require(bodies() == 2 && bool(f.scene->body_handle(idle.body.id())), "a body enabled by a direct write was not created");
+    take(f.runtime.write(idle.body.id(), enabled, atelier::Scalar{false}));
+    require(bodies() == 1, "a body disabled by a direct write was kept");
+    committed(f.world.set_enabled(idle.body.id(), false));
+    take(f.runtime.write(idle.body.id(), enabled, atelier::Scalar{true}));
+    require(bodies() == 1, "a disabled Primitive created a body");
+    committed(f.world.set_enabled(idle.body.id(), true));
+    require(bodies() == 2, "re-enabling a Primitive did not restore its body");
+    auto removal = take(f.world.detach(idle.id()));
+    require(bodies() == 1, "a detached Primitive kept its body");
+    committed(f.world.restore(removal));
+    require(bodies() == 2, "a restored Primitive did not get its body back");
+    // A scene recreated on one World reuses its capability registrations instead of exhausting them.
+    for (int i = 0; i < 40; ++i) { f.scene.reset(); f.scene = take(p::PhysicsScene::create(f.world, f.physics_types)); }
+    require(bodies() == 2, "recreated scenes lost a body");
+    require(!take(w::inspect_component(f.runtime, idle.body.id())).can_present && f.world.activity().presentation_registrations == 0,
+        "a physics capability made a Primitive count as presented");
     committed(f.world.close());
     committed(f.world.close());
     require(f.scene->body_count() == 0 && !p::PhysicsScene::create(f.world, f.physics_types),

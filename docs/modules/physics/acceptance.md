@@ -35,7 +35,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `cooked_assets` | 磁盘 Cook 网格反复加载到新 World | 形状可查询、二进制往返、损坏/版本不符拒绝；来源/缩放不符时按当前缩放运行期重建一次（`runtime_cooks`），缓存校验仍报不符 |
 | `fixed_step` | 空中自由落体 | 经 `World::update` 驱动：半帧积累、8 子步上限与丢时、暂停/单步、重复请求合并、重入拒绝、前后回调失败停止 World、30/120 Hz 宿主得到相同 60 步、pre_physics/post_physics Tick 位于全部子步前后并收到整帧时间 |
 | `frame_timing` | 地面上的动态体，每帧 2.5 个固定步长 | 在帧阶段计时 Recorder 帧内调用 `World::update`：停止的 World 不记录阶段；运行后无结构错误，各 World 阶段、`physics.step/reconcile/events` 各进入 1 次，`world.schedule` 只在启动后的首帧进入，`physics.substep/solve/write_back` 次数等于 `last_step().steps`；不检查耗时数值 |
-| `lifecycle` | 同时存在的两个独立 Runtime/World/场景 | 失效命令拒绝、停用/重启代际、重复 disable/stop/close、销毁一场景不影响另一场景、运行中重建场景 |
+| `lifecycle` | 同时存在的两个独立 Runtime/World/场景 | 失效命令拒绝、停用/重启代际、重复 disable/stop/close、销毁一场景不影响另一场景、运行中重建场景；直接写 `body.enabled`（不经 World）在下一步建立或撤销刚体，组件停用时不建，重新启用、detach/restore 随之撤销与恢复；同一 World 上重建 40 次场景复用能力登记，物理登记不使 Primitive 计为呈现 |
 | `world_ownership` | 同一 Runtime 中两个 World | 拒绝跨 World 角色/布娃娃创建、句柄限定场景、detach 清理、转移后仅新 World 可创建 |
 | `character` | 胶囊角色落地、移动和跳跃 | grounded、跳跃只消费一次、输入/重复创建拒绝、销毁重建代际、根停用清理 |
 | `constraint` | 固定锚点悬挂动态体 | 距离保持、无效端点/区间拒绝、约束删除失效、显式删除及端点停用后唤醒休眠体并自由落下 |

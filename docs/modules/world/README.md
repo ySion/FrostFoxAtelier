@@ -108,7 +108,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 `set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照。具体合同见 [Lit 数据](lighting.md)和[项目场景](project-scenes.md)。
 
-呈现能力按类型登记：`register_presentation(component_type, predicate)` 返回不透明的 `PresentationId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出），由 `presented(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_presentation(component)` 重新求值谓词。每个 World 最多 32 个登记。目前 world 库自己登记网格（需要有几何）与灯光，`render_items / light_items` 只遍历这两个桶。
+能力按组件类型登记：`register_capability(component_type, predicate)` 返回不透明的 `CapabilityId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出，active 即自身启用且 owner 有效启用，不含是否已 Begin），随组合、成员与启用的每次变化更新，由 `members(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_capabilities(component)` 重新求值谓词。不带谓词再次登记同一类型时返回已有的无谓词登记，所以在同一 World 上重建的领域宿主（例如每次 Play 新建的 PhysicsScene）不会累积登记。每个 World 最多 32 个登记。目前 world 库自己登记网格（需要有几何）与灯光，`render_items / light_items` 只遍历这两个桶，`can_present` 与 `Activity::presentation_registrations` 也只按这两个登记计算；物理登记 Primitive、Character、Ragdoll 作为逐帧协调的候选来源。
 
 跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write`、`set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 用写入前读出的 Scalar 经 Runtime::write 恢复，原值若由可信路径写成越过硬边界，恢复时按硬边界夹值；这样的原值本身已违反字段不变量，`Runtime::validate` 会报告它。`set_material / set_light` 按整值精确恢复。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。world 库目前登记两条：每个 World 至多一个 Sky Light；非 Sky 灯光的成员 owner 必须有 Transform（attach 时由空间需求检查覆盖，这条用于编辑改变灯光种类）。
 

@@ -511,6 +511,12 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
         [scene = result.get()](std::span<const ObjectId> entities) { return scene->relocate(entities); }});
     if (!simulation) return std::unexpected(simulation.error());
     result->simulation_ = *simulation;
+    for (auto [id, type] : {std::pair{&result->primitives_, world.types().primitive_component},
+             std::pair{&result->characters_, types.character_component}, std::pair{&result->ragdolls_, types.ragdoll_component}}) {
+        auto registered = world.register_capability(type);
+        if (!registered) return std::unexpected(registered.error());
+        *id = *registered;
+    }
     auto members = world.members();
     if (!members) return std::unexpected(members.error());
     for (const auto& member : *members) {
@@ -770,24 +776,27 @@ Result<void> PhysicsScene::step(float elapsed) {
     for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
     for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
     for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
-    const auto add_owners = [&](TypeId type, bool body) -> Result<void> {
-        auto found = world_.query(type);
+    // World keeps these buckets with composition and enablement. Body settings
+    // are still sampled every frame because direct field writes do not notify.
+    // Existing bodies and controllers stay candidates so that leaving removes them.
+    const auto add_owners = [&](world::CapabilityId id, bool body) -> Result<void> {
+        auto found = world_.members(id);
         if (!found) return std::unexpected(found.error());
-        for (const auto component : *found) {
+        for (const auto& item : *found) {
+            if (!item.active) continue;
             if (body) {
-                auto settings = read_settings(runtime, component);
-                if (!settings) return std::unexpected(settings.error());
-                if (!settings->enabled) continue;
+                auto enabled = runtime.with_native<const world::PrimitiveComponent>(item.component,
+                    [](const world::PrimitiveComponent& value) -> Result<bool> { return value.body.enabled; });
+                if (!enabled) return std::unexpected(enabled.error());
+                if (!*enabled) continue;
             }
-            auto status = world::inspect_component(runtime, component);
-            if (!status) return std::unexpected(status.error());
-            candidates.insert(status->owner);
+            candidates.insert(item.entity);
         }
         return {};
     };
-    if (auto added = add_owners(world_.types().primitive_component, true); !added) return std::unexpected(added.error());
-    if (auto added = add_owners(types_.character_component, false); !added) return std::unexpected(added.error());
-    if (auto added = add_owners(types_.ragdoll_component, false); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(primitives_, true); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(characters_, false); !added) return std::unexpected(added.error());
+    if (auto added = add_owners(ragdolls_, false); !added) return std::unexpected(added.error());
     if (!candidates.empty()) {
         auto members = world_.members();
         if (!members) return std::unexpected(members.error());

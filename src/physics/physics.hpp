@@ -336,6 +336,8 @@ private:
     ContactHandler handler_;
     StepHandler before_step_, after_step_;
     std::uint64_t subscription_{}, simulation_{};
+    // World buckets of the components that can claim an Entity's physics pose.
+    world::CapabilityId primitives_, characters_, ragdolls_;
     StepResult last_step_{};
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};

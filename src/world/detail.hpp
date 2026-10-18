@@ -73,7 +73,7 @@ template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
     return {};
 }
 // One Sky Light per World, disabled components included.
-World::Admission unique_sky_light(PresentationId lights);
+World::Admission unique_sky_light(CapabilityId lights);
 // A light other than Sky needs a Transform on its member owner.
 World::Admission spatial_lights();
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
@@ -149,7 +149,7 @@ struct World::Impl {
         ObjectId id;
         TypeId type;
         const Behavior* behavior{};
-        std::uint32_t presentation{}; // Bit i: in the bucket of presentations[i].
+        std::uint32_t capabilities{}; // Bit i: in the bucket of registrations[i].
         bool enabled{}, begun{};
         Fault fault{};
     };
@@ -182,13 +182,14 @@ struct World::Impl {
     bool schedule_dirty{true}, buckets_dirty{true};
     std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
     std::vector<Bucket> buckets;
-    struct PresentationRegistration { TypeId type; PresentationPredicate predicate; };
-    std::vector<PresentationRegistration> presentations;
-    std::vector<std::vector<PresentedComponent>> presented; // Rebuilt with `buckets`.
+    struct Registration { TypeId type; CapabilityPredicate predicate; };
+    std::vector<Registration> registrations;
+    std::vector<std::vector<CapabilityMember>> capable; // Rebuilt with `buckets`.
     // The world library's own registrations; owned by presentation code.
-    PresentationId meshes, lights;
-    static constexpr std::uint32_t bit(PresentationId id) noexcept { return 1u << id.value; }
-    Result<std::uint32_t> presentation_of(ObjectId component, TypeId type) const;
+    CapabilityId meshes, lights;
+    static constexpr std::uint32_t bit(CapabilityId id) noexcept { return 1u << id.value; }
+    std::uint32_t presented() const noexcept { return bit(meshes) | bit(lights); }
+    Result<std::uint32_t> capabilities_of(ObjectId component, TypeId type) const;
     // Tick prerequisite edges, both directions; only between current participants.
     std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites, dependents;
     void forget_prerequisites(ObjectId) noexcept;
