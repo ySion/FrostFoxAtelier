@@ -1,8 +1,10 @@
 #pragma once
+#include "editor/camera.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace atelier::application {
@@ -15,7 +17,8 @@ public:
     PlayProcess(const PlayProcess&)=delete;
     PlayProcess& operator=(const PlayProcess&)=delete;
     Result<void> start(const std::filesystem::path& project,const std::filesystem::path& scene,
-        bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false,bool halt=false);
+        bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false,bool halt=false,
+        const std::optional<editor::CameraState>& camera={});
     void stop() noexcept;
     void poll();
     void close() noexcept;

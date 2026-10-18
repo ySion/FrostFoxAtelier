@@ -1,9 +1,11 @@
 #pragma once
+#include "editor/camera.hpp"
 #include "world/diagnostic.hpp"
 #include <Windows.h>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <span>
 
 namespace atelier::editor { class Project; class Session; }
@@ -24,6 +26,7 @@ struct RunOptions {
     // Stops the World at the first object failure (acceptance and CI) instead of isolating it.
     bool halt{};
     std::uint64_t frames{};
+    std::optional<editor::CameraState> camera;
     PlayChannel* channel{}; // Not owned; outlives the run.
 };
 int run_project(const RunOptions&);

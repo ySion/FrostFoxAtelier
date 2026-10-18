@@ -8,6 +8,7 @@
 #include "editor/camera.hpp"
 #include "renderer/renderer.hpp"
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -40,6 +41,22 @@ std::uint64_t number(std::wstring_view text) {
     }
     return value;
 }
+// "view,target-x,target-y,target-z,yaw,pitch,distance", written by PlayProcess with round-trip floats.
+editor::CameraState camera_state(std::wstring_view text) {
+    std::string narrow;for(const auto ch:text) {if(ch>0x7f) throw std::runtime_error("Invalid run camera.");narrow+=static_cast<char>(ch);}
+    const char* at=narrow.data();const char* const end=at+narrow.size();
+    const auto field=[&](auto& value,bool last) {
+        const auto [next,error]=std::from_chars(at,end,value);
+        if(error!=std::errc{} || (last?next!=end:next==end || *next!=',')) throw std::runtime_error("Invalid run camera.");
+        at=last?next:next+1;
+    };
+    unsigned view{};editor::CameraState state;field(view,false);
+    field(state.target.x,false);field(state.target.y,false);field(state.target.z,false);
+    field(state.yaw,false);field(state.pitch,false);field(state.distance,true);
+    if(view>static_cast<unsigned>(editor::CameraView::left)) throw std::runtime_error("Invalid run camera.");
+    state.view=static_cast<editor::CameraView>(view);
+    return state;
+}
 }
 int run_project_command(std::span<wchar_t*> arguments) {
     try {
@@ -54,6 +71,7 @@ int run_project_command(std::span<wchar_t*> arguments) {
             if(option==L"--scene-snapshot") options.scene_snapshot=arguments[i];
             else if(option==L"--report") options.report=arguments[i];
             else if(option==L"--frames") options.frames=number(arguments[i]);
+            else if(option==L"--camera") options.camera=camera_state(arguments[i]);
             else if(option==L"--stop-event") options.stop_event=reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));
             else throw std::runtime_error("Unknown project run option.");
         }
@@ -125,10 +143,13 @@ int run_project(const RunOptions& options) {
         if(project_ui.configured()) {std::printf("Project UI evaluating\n");std::fflush(stdout);}
         SceneSnapshot scene;
         editor::Camera camera;std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
-        // Frame the authored mesh centers once; large collision floors should
-        // not force a tiny view of the moving Entities. Navigation stays a host concern.
+        // Play from the editor opens on the editor's view. A standalone run frames the
+        // authored mesh centers once; large collision floors should not force a tiny
+        // view of the moving Entities. Navigation stays a host concern.
         const auto initial=take(document.world().render_items());
-        if(!initial.empty()) {
+        if(options.camera) {
+            if(!camera.set_state(*options.camera)) throw std::runtime_error("Invalid run camera.");
+        } else if(!initial.empty()) {
             math::Vector3 low{initial.front().world.elements[12],initial.front().world.elements[13],initial.front().world.elements[14]},high=low;
             for(const auto& item:initial) for(unsigned axis=0;axis<3;++axis) {
                 low[axis]=std::min(low[axis],item.world.elements[12+axis]);high[axis]=std::max(high[axis],item.world.elements[12+axis]);

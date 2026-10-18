@@ -87,7 +87,7 @@ Result<void> Application::run_project() {
         std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(++serial)+L".scene");
     const auto path=project_->resolve(relative);if(!path) return std::unexpected(path.error());
     auto saved=editor::write_file(*path,*source,editor::WriteMode::create);if(!saved) return saved;
-    auto started=play_.start(project_->root(),*path);
+    auto started=play_.start(project_->root(),*path,false,0,{},false,false,camera_.state());
     if(!started) {std::error_code ignored;std::filesystem::remove(*path,ignored);return started;}
     play_snapshot_=*path;workspace_.project_running=true;workspace_.project_stopping=false;
     workspace_.log(L"Running "+project_->name());return {};
