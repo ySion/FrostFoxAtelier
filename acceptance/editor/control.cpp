@@ -61,6 +61,13 @@ struct Driver {
     }
     Json ok(std::string op,Json args=Json::object()) {auto result=call(std::move(op),std::move(args));require(result.value("status","")=="ok",result.dump());return result.at("result");}
     Json inspect() {return ok("editor.inspect");}
+    // A new editor records its surface only after serving that step's requests, so the token of a
+    // first inspection can be stale by the next call. Five unchanged inspections, one per step, settle it.
+    Json settle() {
+        auto state=inspect();unsigned stable{};
+        for(unsigned i=0;i<200 && stable<5;++i) {const auto before=token;std::this_thread::sleep_for(30ms);state=inspect();stable=before==token?stable+1:0;}
+        require(stable==5,"The editor state token did not settle after start");return state;
+    }
     Json wait(std::string id,std::chrono::seconds timeout=125s) {
         const auto deadline=std::chrono::steady_clock::now()+timeout;
         while(std::chrono::steady_clock::now()<deadline) {auto result=call("job.status",{{"job_id",id}});if(result.at("status")!="pending") return result;std::this_thread::sleep_for(20ms);}
@@ -296,7 +303,7 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
 void repro_lighting(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"Project",directory=root/"Control";project_fixture(project);
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
-    Driver d(discover_editor(editor,directory));d.inspect();d.ok("scene.create",{{"kind","mesh"}});
+    Driver d(discover_editor(editor,directory));d.settle();d.ok("scene.create",{{"kind","mesh"}});
     d.ok("camera.look_at",{{"eye",{8,5,-10}},{"target",{1,2,3}}});
     d.ok("view.set",{{"patch",{{"direct_candidates",16},{"direct_reference",true},{"exposure_ev",1.25}}}});
     d.ok("scene.save");const auto id=unique_id();
@@ -311,8 +318,8 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"NestedProject";project_fixture(project);const auto directory=project/"Content/Control";
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"nested-editor.log");
-    Driver d(discover_editor(editor,directory));d.inspect();const auto id=unique_id();
-    require(d.call("repro.export",Json::object(),id).at("status")=="pending","Nested output fixture did not start");
+    Driver d(discover_editor(editor,directory));d.settle();const auto id=unique_id();
+    const auto started=d.call("repro.export",Json::object(),id);require(started.at("status")=="pending","Nested output fixture did not start: "+started.dump());
     error(d.wait(id),"invalid_destination");
     require(std::filesystem::is_empty(atelier::platform::windows_file_path(directory/"artifacts"/wide(d.descriptor.at("instance_id").get<std::string>()))),"Rejected nested export left a recursive output");
     d.client.reset();editor.close();
@@ -334,12 +341,7 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
     auto config=read(project/"Config/Project.json");config["startup_scene"]=utf8(scene.generic_wstring());
     write(project/"Config/Project.json",config.dump());
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
-    Driver d(discover_editor(editor,directory));
-    unsigned stable{};
-    for(unsigned i=0;i<200 && stable<5;++i) {
-        const auto before=d.token;d.inspect();stable=before==d.token?stable+1:0;std::this_thread::sleep_for(30ms);
-    }
-    require(stable==5,"Project paths fixture did not stabilize");
+    Driver d(discover_editor(editor,directory));d.settle();
     d.ok("scene.create",{{"kind","mesh"}});
     const auto unpublished=std::filesystem::path("Source")/(std::wstring(72,L'u')+L".source");
     write(project/unpublished,"invalid saved source");std::this_thread::sleep_for(750ms);d.inspect();
