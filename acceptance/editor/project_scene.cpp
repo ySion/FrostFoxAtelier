@@ -575,6 +575,7 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
         changed(a.add_entity(entity_type));const auto entity=a.selection().entity;take(a.set_transform(entity,{position,{},{1,1,1}}));return entity;
     };
     const auto mover=added({});changed(a.add_component(move_type));const auto move=member(a,move_type);
+    const auto label_type=take(ra.find_type("game.Label"));changed(a.add_component(label_type));const auto label=member(a,label_type);
     const auto doomed=added({0,0,4});
     const auto falling=added({0,5,0});
     const auto body_type=take(ra.find_type("world.CollisionComponent"));changed(a.add_component(body_type));const auto body=member(a,body_type);
@@ -610,6 +611,23 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     require(position(b_mover).x==paused,"A disabled component kept ticking.");
     applied({{{"op","set"},{"id",id(move)},{"enabled",true}}});step();
     require(std::abs(position(b_mover).x-paused-5.f/60)<1e-5f,"A re-enabled component did not tick with its new speed.");
+    // String leaves apply as whole values; an admission that rejects one restores the whole previous String.
+    const auto b_label_type=take(rb.find_type("game.Label")),b_string=take(rb.native_type<String>());
+    const world::FieldPath title{take(rb.find_field(b_label_type,"title"))};
+    const auto title_of=[&](const world::World& world,ObjectId object) {
+        String value;take(world.runtime().read(object,title,ValueOutput{b_string,&value}));return std::string{value.c_str(),value.size()};
+    };
+    const auto b_label=in_b(label);
+    applied({{{"op","set"},{"id",id(label)},{"properties",{{"title","North gate"}}}}});
+    require(title_of(b->world(),b_label)=="North gate","A Play String field change was not applied.");
+    take(const_cast<world::World&>(b->world()).add_admission(b_label_type,[&](const world::World& world,std::span<const ObjectId> candidates)->Result<void> {
+        for(const auto object:candidates)
+            if(title_of(world,object)=="Closed") return std::unexpected(Error{ErrorCode::invalid_member,"A Label cannot be titled Closed."});
+        return {};
+    }));
+    const auto closed=apply({{{"op","set"},{"id",id(label)},{"properties",{{"title","Closed"}}}}});
+    require(closed.size()==1 && closed[0].severity==world::Severity::error && closed[0].kind==command_rejected &&
+        title_of(b->world(),b_label)=="North gate","A rejected Play String change did not restore the whole previous value.");
 
     // An authored pose replaces the simulated one, and body settings reach physics.
     const auto b_falling=in_b(falling);

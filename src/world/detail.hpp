@@ -303,6 +303,8 @@ struct World::Impl {
     Result<void> check_admissions(std::span<const ObjectRoot> candidates) const;
     // Whether an edit of this member component runs admissions; detached composition does not.
     Result<bool> admitted(ObjectId component) const;
+    // Shared by World::write: write, then type rules and admissions; `restore` undoes a rejected edit.
+    template<class Write, class Restore> Result<void> checked_write(ObjectId, bool entity, Write&&, Restore&&);
     Result<void> check_edit(ObjectId component) const;
     void cancel_tasks(ObjectId target = {}, bool entity = true) noexcept;
     void halt() noexcept;

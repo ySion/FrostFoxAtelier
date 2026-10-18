@@ -102,7 +102,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 已入场成员的作者字段、Transform 增删、材质、材质槽与灯参数，以及 World 光照设置，都可以在宿主边界编辑，World 运行中也一样：新值从下一个执行的阶段起生效，不重发 Begin/End，不取消任务；夹值、类型规则、准入与失败恢复与停止时相同。行为分发内的重入、结构转换期间的编辑以及其他 World 的成员仍拒绝；`inspect_entity` 的 `can_edit` 表示当前不在行为分发内。失败策略属于 World 配置，仍只在停止时可改。组合归属和空间参考按结构操作的准入规则处理。同 Runtime 的 Detached 图可以在 World 运行时于宿主边界准备，完整校验后经同一入口原子发布。Entity 和 Component 属性走同一 Runtime FieldPath 与 scalar 编辑事务；TRS 历史保存完整前后值，业务字段保留精确 Scalar。空 Entity 仍可选择编辑；成员资格、对象存活、运行激活和呈现登记分别判断。
 
-`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
+`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。整值重载 `write(object, path, ValueInput)` 用于 String、Array 与记录：写入前先把旧的整值读到同类型的临时值里，之后的校验、准入与恢复与标量版相同；Runtime 对非 plain 值的写入有强保证，写入本身失败时字段不变。整值写入不能替换 Entity 的 Transform 字段，这些字段只能经标量写入或 `set_transform`。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
 
 `destroy_entity / destroy_component` 是游戏对象终结入口：先退出 World，再清理组成并调用 Runtime；可信宿主不得绕过它直接销毁活跃成员。detach 保留对象图；历史裁剪只释放根，不隐式 destroy。close 退出所有子树、释放成员根后不可重启，重复 close 无副作用。
 

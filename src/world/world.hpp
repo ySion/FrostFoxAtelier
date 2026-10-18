@@ -567,6 +567,10 @@ public:
     // hard-bound clamping; an edit that makes a valid object fail its type
     // rules (Runtime::validate) or an admission is restored and rejected.
     [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldId>, Scalar);
+    // Whole values (String, Array, records) through Runtime::write(ValueInput), with the
+    // same type-rule and admission checks; a rejected edit restores the previous whole
+    // value. Transform fields use the scalar form or set_transform.
+    [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldId>, ValueInput);
     [[nodiscard]] Result<void> set_transform(ObjectId entity, Trs);
     [[nodiscard]] Result<void> remove_transform(ObjectId entity);
     // Whole-value authoring, rejected (not clamped) when the value fails its

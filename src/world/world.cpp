@@ -834,6 +834,29 @@ Result<void> World::Impl::apply_translations() {
     return apply_poses(poses,DiagnosticPhase::command);
 }
 
+// An edit may not make a valid object fail its type rules or an admission; a
+// rejected edit restores the previous value. Objects already invalid stay
+// editable so their faults can be repaired one field at a time.
+template<class Write, class Restore>
+Result<void> World::Impl::checked_write(ObjectId object, bool entity, Write&& write, Restore&& restore) {
+    auto before = runtime.validate(object);
+    if (!before) return std::unexpected(before.error());
+    auto candidate = entity ? Result<bool>{false} : admitted(object);
+    if (!candidate) return std::unexpected(candidate.error());
+    if (auto written = write(); !written) return written;
+    const auto reject = [&](Error failure) -> Result<void> {
+        restore();
+        return std::unexpected(std::move(failure));
+    };
+    if (!*before) {
+        auto after = runtime.validate(object);
+        if (!after) return reject(after.error());
+        if (*after) return reject((*after)->error);
+    }
+    if (*candidate)
+        if (auto valid = check_admissions(std::span<const ObjectId>{&object, 1}); !valid) return reject(valid.error());
+    return {};
+}
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     auto entity = detail::is(runtime(),component,types().entity);
@@ -865,28 +888,37 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
         }
         return set_transform(object, *current);
     }
-    // An edit may not make a valid object fail its type rules or an admission;
-    // a rejected edit restores the previous value. Objects already invalid
-    // stay editable so their faults can be repaired one field at a time.
     auto previous = runtime().read(object, path);
     if (!previous) return std::unexpected(previous.error());
-    auto before = runtime().validate(object);
-    if (!before) return std::unexpected(before.error());
-    auto admitted = *transform ? Result<bool>{false} : impl_->admitted(object);
-    if (!admitted) return std::unexpected(admitted.error());
-    if (auto written = runtime().write(object, path, value); !written) return written;
-    const auto reject = [&](Error failure) -> Result<void> {
-        (void)runtime().write(object, path, *previous);
-        return std::unexpected(std::move(failure));
+    return impl_->checked_write(object, *transform,
+        [&] { return runtime().write(object, path, value); },
+        [&] { (void)runtime().write(object, path, *previous); });
+}
+Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
+    if (auto ready = impl_->admit_edit(object); !ready) return ready;
+    auto entity = detail::is(runtime(), object, types().entity);
+    if (!entity) return std::unexpected(entity.error());
+    const auto transform = [&](const auto& leaves) {
+        return std::ranges::any_of(leaves, [&](const auto& leaf) { return !path.empty() && leaf.front() == path.front(); });
     };
-    if (!*before) {
-        auto after = runtime().validate(object);
-        if (!after) return reject(after.error());
-        if (*after) return reject((*after)->error);
-    }
-    if (*admitted)
-        if (auto valid = impl_->check_admissions(std::span<const ObjectId>{&object, 1}); !valid) return reject(valid.error());
-    return {};
+    if (*entity && (transform(types().position_fields) || transform(types().rotation_fields) || transform(types().scale_fields)))
+        return error(ErrorCode::unsupported_operation, "Transform fields are written as scalars or with set_transform.");
+    auto info = runtime().describe(value.type);
+    if (!info) return std::unexpected(info.error());
+    struct Previous {
+        Runtime& runtime; TypeId type; std::align_val_t alignment; std::span<std::byte> storage; bool live{};
+        Previous(Runtime& owner, const TypeInfo& info) : runtime(owner), type(info.id), alignment{info.alignment},
+            storage{static_cast<std::byte*>(::operator new(info.size, alignment)), info.size} {}
+        Previous(const Previous&) = delete;
+        Previous& operator=(const Previous&) = delete;
+        ~Previous() { if (live) (void)runtime.destroy_value(type, storage); ::operator delete(storage.data(), alignment); }
+    } previous{runtime(), **info};
+    if (auto made = runtime().initialize_value(value.type, previous.storage); !made) return made;
+    previous.live = true;
+    if (auto read = runtime().read(object, path, ValueOutput{value.type, previous.storage.data()}); !read) return read;
+    return impl_->checked_write(object, *entity,
+        [&] { return runtime().write(object, path, value); },
+        [&] { (void)runtime().write(object, path, ValueInput{value.type, previous.storage.data()}); });
 }
 Result<std::vector<RenderItem>> World::render_items() const {
     auto pass = spatial_pass(DiagnosticPhase::presentation);

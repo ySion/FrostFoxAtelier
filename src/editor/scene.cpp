@@ -1565,10 +1565,9 @@ struct Session::GraphCodec {
                         auto held=runtime.hold(*live,field_type);if(!held) return std::nullopt;
                         return form==ValueForm::weak_reference?take(runtime.observe(held->reference())):held->reference();
                     };
-                    // World authoring has no whole-value write yet; failing the change marks Play as diverged.
                     read_properties(session,edited,*at,load,resolve,[&](std::span<const FieldId> path,const PropertyLeaf& leaf)->Result<void> {
                         if(const auto* scalar=std::get_if<Scalar>(&leaf)) return world.write(edited,path,*scalar);
-                        throw std::runtime_error("Play cannot apply String fields yet.");
+                        return world.write(edited,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(leaf)});
                     });
                 }
                 if(op.contains("base_color") || op.contains("roughness") || op.contains("metallic") || op.contains("emissive")) {
@@ -1995,11 +1994,14 @@ Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> Session::legacy_sele
 Result<ObjectId> Session::local_object(std::uint64_t identity) const {
     try {
         if(!identity) throw std::runtime_error("Document identity cannot be empty.");
-        const auto at=std::ranges::find_if(local_ids_,[&](const auto& value){return value.second==identity;});
-        if(at==local_ids_.end()) throw std::runtime_error("Unknown document object identity.");
+        // A Play copy that re-adds a removed identity keeps the destroyed object's entry beside the new one.
+        std::vector<ObjectId> candidates;
+        for(const auto& [object,key]:local_ids_) if(key==identity) candidates.push_back(object);
+        if(candidates.empty()) throw std::runtime_error("Unknown document object identity.");
+        const auto live=[&](ObjectId object){return std::ranges::contains(candidates,object);};
         for(const auto& entity:take(world_.members())) {
-            if(entity.id()==at->first) return at->first;
-            for(const auto& component:take(world::components(world_.runtime(),entity.id()))) if(component.id()==at->first) return at->first;
+            if(live(entity.id())) return entity.id();
+            for(const auto& component:take(world::components(world_.runtime(),entity.id()))) if(live(component.id())) return component.id();
         }
         throw std::runtime_error("Document identity does not belong to a live Entity or Component.");
     } catch(const std::exception& error) {return failed(error);}

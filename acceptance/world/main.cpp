@@ -97,6 +97,11 @@ void editing_and_execution() {
     require(take(world.query(types.component)).size() == 2 && take(world.query(types.component, false)).empty(), "Inherited component query is incorrect.");
     take(world.write(entity.id(), types.position_fields[0], Scalar{4.f}));
     require(std::get<float>(take(world.read(entity.id(), types.position_fields[0]))) == 4.f, "Formal Transform path did not edit the actual object.");
+    // Whole-value writes cannot replace a Transform record around set_transform.
+    const math::Vector3 bypass{7.f, 0.f, 0.f};
+    reject(world.write(entity.id(), std::span(types.position_fields[0]).first(1), ValueInput{types.vector3, &bypass}),
+        "A whole-value write replaced a Transform record.");
+    require(take(w::read_transform(runtime, entity.id())).position.x == 4.f, "A rejected whole-value Transform write changed the position.");
     w::Trs trs{{4.f, 5.f, 6.f}, {0.f, 0.f, std::sqrt(.5f), std::sqrt(.5f)}, {2.f, 3.f, 4.f}};
     take(world.set_transform(entity.id(), trs));
     const auto matrix = take(world.render_items()).front().world;
