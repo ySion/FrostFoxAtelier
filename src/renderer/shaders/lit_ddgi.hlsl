@@ -59,7 +59,12 @@ float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,
     // environment and light that has scattered at least once before the probe.
     LitLightingSurface receiver;
     receiver.position=surface.position;receiver.normal=surface.normal;receiver.geometric_normal=surface.geometric_normal;
-    receiver.view=toward_probe;receiver.base=surface.base;receiver.roughness=surface.roughness;receiver.metallic=surface.metallic;
+    receiver.view=toward_probe;receiver.base=surface.base;receiver.metallic=surface.metallic;
+    // A glossy lobe aimed at the point probe origin turns rare light alignments
+    // into 30-70x radiance outliers that young probes adopt. Evaluate the hit
+    // fully rough (path regularization, as Lumen's surface cache does): the
+    // specular response and F0 remain but spread over the hemisphere.
+    receiver.roughness=1;
     // The same unit-square light domain and PDFs serve secondary hits, but a
     // probe owns fresh RIS samples, never screen-space temporal reservoirs.
     // Explicit directionals cannot disappear in a large local-light lottery.

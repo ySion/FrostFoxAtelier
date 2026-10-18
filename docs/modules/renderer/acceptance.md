@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| Edit/Play 收敛修复 | 2026-10-18 rendering 工作树：DDGI 命中点改为完全粗糙求值；`--scene-lit` 的 Edit/Play 收敛检查从 mean 4.212、p95 14 降到 2.659、8，通过，见[本批记录](#editplay-收敛修复2026-10-18) |
 | Lit 帧率批次 | 2026-10-18 rendering 工作树：原生 1440p 静止 A 路径 61.50 接受帧/秒（GPU 15.88 ms），默认 ReSTIR 44.70；相机持续环绕 53.77。半分辨率 DDGI、GTAO 深度层级、A 路径半影分类；Edit/Play 收敛检查在基线上同样失败，见[本批记录](#lit-帧率批次2026-10-18) |
 | 基础链路与精确工作复用 | 2026-10-17：CPU、三项正式 GPU 专项与地牢原生 1440p 采样通过；默认 Lit 40.81、A 路径 46.32 接受帧/秒，静止 DDGI gather 约 2.48 ms；正常停靠布局仍有 CPU 瓶颈，见[本批记录](#基础链路与精确工作复用2026-10-17) |
 | 编辑器整帧诊断 | 2026-10-16：空闲、无 VSync、原生 1440p 最大化视口的 App/UI 对照已完成，非 Lit 提速且画面一致；关闭 DDGI 的默认 Lit 约 45 接受帧/秒。正常停靠布局与 RHI 候选性能仍待验，见[本批记录](#编辑器整帧诊断2026-10-16) |
@@ -28,6 +29,35 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## Edit/Play 收敛修复（2026-10-18）
+
+状态：基于 `f8202f25` 的单独本地提交，未推送、未并入 main。只改 DDGI 命中着色；renderer contract、Frame/FrameStats 接口和 GPU scope 都没有变化。
+
+失败的检查是 `--scene-lit` 的 “identical Edit and Play snapshots converge”。夹具把旧执行域（一串编辑之后约 104 帧）与只递增 `scene_identity` 的新域（96 帧）比较，两边提交的 Frame 除身份外完全相同，所以差异来自渲染器内部，与编辑器或 World 交出的快照无关。
+
+根因（实测）：新域的 DDGI 运输场按域确定，种子随 `probe_sequence` 一起重置，每个新域都重放同一组样本。立柱接收点几乎只依赖一个探针（空间权重 .43，主导度约 1）。临时逐射线检查显示，该探针的 64 条射线中，典型辐射约 0.3～2.5，个别射线落在粗糙度 0.18 的光泽面上，并恰好对准光源的镜面方向，GGX 镜面项达到 23～73。新场前 12 次更新的历史权重只有 .5～.8（成熟后 .93），这三条样本出现在第 7、9、10 次更新，各以约 20% 的权重进入（成熟场为 7%），使该探针在第 96 帧附近约为成熟值的 1.6 倍，约百帧后才回落。旧域已成熟，于是两张图在立柱、墙面和地面上出现大片低频差异。同一二进制重复运行结果完全一致（4.212/14），所以这不是偶发噪声。
+
+修复：探针命中点按完全粗糙（roughness 1）求值材质，颜色、金属度和 F0 不变，详见 [Scene Lit](scene-lit.md#ddgi-探针场)。这是路径正则化，与 Lumen 表面缓存的 fully rough 折算、RTXGI 和 Flax 的纯漫反射命中属同类取舍。另外两个候选没有采用：限幅单条射线会丢失能量，而且原注释已明确拒绝；新场改用纯运行平均，会与多次反弹预热的非平稳反馈冲突。阈值未改。
+
+测量（Release，同一 `--scene-lit` 序列）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---:|---:|
+| Edit/Play 收敛 mean / p95（阈值 3 / 8） | 4.212 / 14 | 2.659 / 8 |
+| temporal-stable mean / p95 | .800 / 3 | .579 / 2 |
+| 主导探针单次更新射线均值（12 次） | .26～2.05 | .29～.36 |
+| 主导探针 200 帧内读数 | .33 → 1.48 → 回落 | .37～.46 平稳 |
+
+代价（实测）：成熟画面（`temporal-stable-1`）修复前后对比 mean 3.40、p95 14，有符号 −2.42，整体约暗 1.6%，主要分布在后墙、立柱和右墙，并排观察看不出差别。原因是光泽地面朝立柱的集中镜面反射被摊平，该立柱探针的成熟读数从约 .88 降到约 .38。材质、金属、发光和 SSSR 截图逐像素不变，颜色反弹图 mean .80。
+
+余量：p95 正好等于阈值 8。剩余差异主要来自屏幕随机序列：屏幕 RNG 使用全局 `sequence` 且从不重置，同龄的两个新域相互比较也有 mean 1.6、p95 6。若要让这一项更稳健，可以改为比较多帧平均，这需要总负责人决定，本批没有改动。
+
+另记，未修：DI 降噪器只在编辑帧置 `radiance_changed`，颜色或材质编辑后再恢复，会残留约 +.8 的有符号偏亮，约 230 帧消失；亮度裁剪也不约束色度。本检查路径中 DI 历史被 `direct_reference` 切换重置，所以它不是这次失败的原因。
+
+验收：Release 与 Dev 各自全量构建 acceptance 后，持锁串行运行 `--scene-lit`、`--scene-lit-stability`、`--scene-lit-quality`、`--scene-lit-ddgi`、`--scene-lit-cost`，均为默认 GPU validation，十次全部退出 0，stderr 为空（`out/accept-20261018/{release,dev}-*-ep1`）。两配置的收敛指标一致（2.659/8），`--scene-lit` 中该检查之后的删光、正交、MatCap 独立性和 resize 检查也全部通过。cost 的五组 DI 图像对差异仍为零。
+
+证据：`out/accept-20261018/editplay-diag-06`（修复前逐射线）、`editplay-fix-01`（修复后逐射线）及各验收目录。
 
 ## Lit 帧率批次（2026-10-18）
 
@@ -57,7 +87,7 @@
 Renderer GPU 验收逐项持锁串行，均为默认 GPU validation：
 
 - Release `--scene-lit-quality`：修复前在 `work-ddgi-metal` 失败，修复后 `release-scene-lit-quality-03` 通过。`--scene-lit-ddgi`（`-03`）、`--scene-lit-cost`（`-03`）在修复后通过；cost 的五组 DI 图像对差异为零，DDGI 缓存生命周期与重追踪图像对通过。`--scene-lit-clustered`（`-02`）在修复前的构建上通过，该修复只涉及 DDGI receiver gather。
-- Release `--scene-lit`（`-02`）只在“identical Edit and Play snapshots converge…”处失败，mean 4.212、p95 14，阈值为 3/8。同机 `d2b6da2b` 基线（`lit-baseline`）同样失败，mean 4.222、p95 14；此前各项指标与基线的 mean 差都不超过 .03。因此这是既有缺陷，不由本批引入。差异是墙面和地面上大片低频斑驳；推断是两套独立收敛的随机历史在预热帧数内未达到阈值，根因待查。该检查之后的删光、正交、MatCap 独立性、resize 等检查在基线和本批都被它挡住。为覆盖这些检查，用临时构建只跳过这一项断言（指标照常输出，未提交），Release 与 Dev 的 `--scene-lit` 其余检查全部通过（`{release,dev}-scene-lit-coverage`），跳过项仍为 mean 4.212、p95 14。
+- Release `--scene-lit`（`-02`）只在“identical Edit and Play snapshots converge…”处失败，mean 4.212、p95 14，阈值为 3/8。同机 `d2b6da2b` 基线（`lit-baseline`）同样失败，mean 4.222、p95 14；此前各项指标与基线的 mean 差都不超过 .03。因此这是既有缺陷，不由本批引入。差异是墙面和地面上大片低频斑驳；推断是两套独立收敛的随机历史在预热帧数内未达到阈值，根因与修复见 [Edit/Play 收敛修复](#editplay-收敛修复2026-10-18)。该检查之后的删光、正交、MatCap 独立性、resize 等检查在基线和本批都被它挡住。为覆盖这些检查，用临时构建只跳过这一项断言（指标照常输出，未提交），Release 与 Dev 的 `--scene-lit` 其余检查全部通过（`{release,dev}-scene-lit-coverage`），跳过项仍为 mean 4.212、p95 14。
 - Dev（`out/dev` 全量构建）：`--scene-lit-cost`、`--scene-lit-clustered`、`--scene-lit-ddgi`、`--scene-lit-quality`（均为 `dev-*-03`）在修复后的构建上全部通过，stderr 为空。
 
 证据：性能、图像与场景哈希见 `out/perf-20261018/{baseline-01,phase1-03,final-01}/`；验收输出见 `out/accept-20261018/` 下各同名目录。
