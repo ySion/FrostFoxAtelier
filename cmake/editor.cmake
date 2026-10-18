@@ -136,28 +136,28 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dungeons "${CMAKE_BINARY_DIR}/dungeons-evidence"
         DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
-        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_ime_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-ime "${CMAKE_BINARY_DIR}/editor-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_project_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-project "${CMAKE_BINARY_DIR}/project-evidence"
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-source "${CMAKE_BINARY_DIR}/source-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_viewport_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-viewport "${CMAKE_BINARY_DIR}/viewport-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_shortcuts_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-shortcuts "${CMAKE_BINARY_DIR}/shortcut-evidence"
-        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_edit_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-edit "${CMAKE_BINARY_DIR}/edit-mode-evidence"
         DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     add_custom_target(editor_surfaces_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-surfaces "${CMAKE_BINARY_DIR}/surface-evidence"
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-tooltips "${CMAKE_BINARY_DIR}/tooltip-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_dialogs_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dialogs "${CMAKE_BINARY_DIR}/dialog-evidence"

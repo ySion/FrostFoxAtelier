@@ -286,9 +286,9 @@ PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则�
 
 悬停参数标签或字段 500ms，可看到标题、完整字段身份及实际类型、中文/English 混合说明；向量共享聚合字段的说明，Rotation 明确区分 Quaternion 存储与 Euler 角度编辑。对象标题提供实际类型说明。提示只持有文字快照，切换对象或热更后旧提示失效，不改变 dirty、撤销或场景数据。`editor.inspect`、`material.inspect` 与 `capabilities.display_options` 返回同源描述，`AFUNCTION(DESC=...)` 保存到 Runtime 方法元数据，暂不自动创建函数调用按钮。
 
-无窗口的真实端到端说明验收使用 `atelier_editor_document_acceptance --tooltips`，覆盖 Runtime → 编辑器 → Source/JIT → 控件布局、延迟悬浮、World 说明和历史隔离；`atelier_ui_acceptance` 覆盖接受帧、取消、DPI 和绘制边界。
+无窗口的真实端到端说明验收包含在 `editor_document_acceptance` 默认运行中，覆盖 Runtime → 编辑器 → Source/JIT → 控件布局、延迟悬浮、World 说明和历史隔离；`atelier_ui_acceptance` 覆盖接受帧、取消、DPI 和绘制边界。
 
-原生画面验收使用 `atelier_editor --acceptance-tooltips <输出目录>`：在独立小场景中通过正式 Application 输入悬停 Position 与 World Exposure，输出 GPU 截图；同一入口覆盖颜色子字段提交后的组事务取消、失焦/捕获丢失、尺寸/DPI 变化、窗格与菜单交接，以及普通 Escape/外部点击接受。它不激活前台，也不注入全局键鼠。共享 UI、Transform、原生 shortcuts/tooltips/surfaces 的开发与发布版验收记录位于 `out/editor-chain-audit-20261017/`；细分覆盖见 [UI 验收](../ui/README.md#限额与验收)。
+原生画面验收使用 `atelier_editor --acceptance-tooltips <输出目录>`，由 `editor_surfaces_acceptance` 运行：在独立小场景中通过正式 Application 输入悬停 Position 与 World Exposure，输出 GPU 截图；同一入口覆盖颜色子字段提交后的组事务取消、失焦/捕获丢失、尺寸/DPI 变化、窗格与菜单交接，以及普通 Escape/外部点击接受。它不激活前台，也不注入全局键鼠。共享 UI、Transform、原生 shortcuts/tooltips/surfaces 的开发与发布版验收记录位于 `out/editor-chain-audit-20261017/`；细分覆盖见 [UI 验收](../ui/README.md#限额与验收)。
 
 参数标签沿 Houdini 习惯由字段名生成：取最后一段，下划线分词并首字母大写（`material.base_color` → `Base Color`，项目源码字段 `moving` → `Moving`）；字段路径和绑定身份不变。颜色元组（基础色、自发光、灯光颜色）末尾带当前值色块，HDR 值仅在色块上截断到 `[0,1]`。组件分组与变换分组共用整宽折叠条。
 
@@ -341,6 +341,8 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 ## 验收入口
 
+总 `acceptance` 目标中每项检查只运行一次：已有独立构建目标的文档模式（`--recovery`、`--materials`、`--physics-test-project`、`--textured-obj`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--profile-*` 是测量入口，不进入总入口。
+
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开 About、文件选择、工程目录选择，以及 Examples 子菜单触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 
 所有无人值守的编辑器窗口入口（`--acceptance*`、`--snapshot*`）在 UI 线程上挂一个 WH_CBT 钩子：在验收声明的预期范围之外，只要创建顶层原生对话框（`#32770`，包括 MessageBoxW 和文件选择框），进程就立即以退出码 1 结束，并输出 `unexpected native dialog "<标题>"`，不会停在那里等人点击。只有 About 和上述对话框验收会声明预期范围。正常启动不挂钩子；由 Control 驱动的编辑器子进程和 `--profile-*` 测量入口不在覆盖范围内。
@@ -351,7 +353,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 2026-10-07 的范围、修正及证据见[视口编辑验收记录](../../research/editor-viewport-edit-20261007.md)。
 `--viewport-edit` 另覆盖 A/Alt+A/Ctrl+I、Alt+G/R/S 单次历史、表面游标朝向、G/R/S 中键选轴、添加/饼菜单内容和框选相机距离；复制验收比较完整场景序列化结果、组件关系、物理配置和共享网格，检查组合撤销、取消、空选择和容量拒绝。窗口验收覆盖经 `WM_SYSKEYDOWN` 的 Alt 组合键与模态读数栏截图 `modal-readout.png`。
 
-`editor_shortcuts_acceptance` 先执行上述文档链，再通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Z、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；GPU 截图、菜单 CPU 耗时与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
+`editor_shortcuts_acceptance` 通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Z、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；GPU 截图、菜单 CPU 耗时与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
 
 本轮集成的 Dev / Release 编译、World、场景/JIT、材质及原生窗口快捷键/弹窗尺寸端到端均通过；包含 FPS 开关、采样、重复设置、被动文字绘制与关闭清理。发布版完整编辑器文档链及地牢的 2332 个模型、30 张共享图集、三个场景保存重开也通过。日志为 `out/stage-{dev,release}-{world,scene,materials,shortcuts,surfaces}.log`，发布版完整链为 `out/stage-release-{documents,dungeons}.log`；FPS 截图与逐移动记录在 `out/stage-{dev,release}-shortcuts/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 `editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口且仅需一次 Present、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；`surface-evidence/surfaces.csv` 保存每次打开的提交次数、CPU 耗时与整个 step 耗时，PNG 保存拖动预览和提交后的画面。耗时包含当前机器负载，不代表输入到显示器的端到端延迟。

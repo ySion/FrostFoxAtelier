@@ -53,9 +53,9 @@ Workspace 独立拥有编辑器 UI Runtime；场景切换清理旧业务绑定�
 
 ## 端到端验收
 
-后台验收包含于 `editor_document_acceptance`；聚焦运行可在对应构建目录执行 `atelier_editor_document_acceptance --source-editor`。它使用真实作者文件、Source/JIT、Workspace、CodeEditor 和 Session，覆盖编辑/保存/错误保留/定位/恢复、虚拟行、剪贴板协议、文件冲突、换行保持、重复打开和隐藏恢复。
+后台验收包含于 `editor_document_acceptance`。它使用真实作者文件、Source/JIT、Workspace、CodeEditor 和 Session，覆盖编辑/保存/错误保留/定位/恢复、虚拟行、剪贴板协议、文件冲突、换行保持、重复打开和隐藏恢复。
 
-真实窗口入口为 `atelier_editor --acceptance-source <输出目录>`，要求前台焦点。覆盖菜单打开、原生选区输入、Ctrl+S 发布、错误点击、恢复、大段系统剪贴板、撤销与关闭；同一窗口还创建工程、添加 Source 组件、编辑数值与 bool、跨文件定位、保存重开并启动和停止游戏/UI 预览。每轮导出 PNG。后台协议验收不替代真实系统 IME 或窗口验收。
+真实窗口入口为 `atelier_editor --acceptance-source <输出目录>`，由 `editor_project_acceptance` 运行，要求前台焦点。覆盖菜单打开、原生选区输入、Ctrl+S 发布、错误点击、恢复、大段系统剪贴板、撤销与关闭；同一窗口还创建工程、添加 Source 组件、编辑数值与 bool、跨文件定位、保存重开并启动和停止游戏/UI 预览。每轮导出 PNG。后台协议验收不替代真实系统 IME 或窗口验收。
 
 2026-10-06 工程接线基线结果（审查前）；本轮修订后的结果以[工作流审查](../../research/editor-project-review-20261006.md)为准：
 

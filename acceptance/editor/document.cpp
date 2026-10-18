@@ -81,10 +81,8 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 int main(int argc, char** argv) {
     std::string_view stage=argc>1?argv[1]:"document history";
     try {
-        if(argc==2 && std::string_view(argv[1])=="--tooltips") {verify_tooltip_dsl();verify_property_tooltips();verify_declarative_parameters();verify_object_inspection();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--recovery") {verify_scene_recovery();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();verify_missing_resources();verify_color_edits();return 0;}
-        if(argc==2 && std::string_view(argv[1])=="--color-edits") {verify_color_edits();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
@@ -93,7 +91,6 @@ int main(int argc, char** argv) {
         if((argc==2 || argc==3) && std::string_view(argv[1])=="--scene-lit") {
             verify_scene_lit_application(argc==3?std::filesystem::path{argv[2]}:std::filesystem::path{});return 0;
         }
-        if (argc==2 && std::string_view(argv[1])=="--source-editor") {verify_source_editor();return 0;}
         if (argc == 3 && std::string_view(argv[1]) == "--profile-json") {
             profile_project_json(argv[2]);
             return 0;
@@ -110,17 +107,13 @@ int main(int argc, char** argv) {
             std::puts("Editor physics project acceptance: PASS");
             return 0;
         }
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --color-edits | --examples | --physics-examples | --physics-test-project | --viewport-edit | --scene-lit [source-project] | --source-editor | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
-        stage="physics project";verify_physics_test_project();
+        // Each check runs once in the acceptance gate: a mode run by its own target is not repeated here.
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --examples | --physics-examples | --physics-test-project | --textured-obj | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
         stage="project document";verify_project_document();
-        stage="scene recovery";verify_scene_recovery();
-        stage="textured OBJ";verify_textured_obj();
         stage="declarative parameters";verify_declarative_parameters();
         stage="tooltip DSL";verify_tooltip_dsl();
         stage="property tooltips";verify_property_tooltips();
         stage="object inspection";verify_object_inspection();
-        stage="viewport editing";verify_viewport_editing();
-        stage="scene lighting";verify_scene_lit_application();
         stage="UI actions";verify_ui_actions();
         stage="table DSL";verify_table_dsl();
         stage="table views";verify_table_views();
