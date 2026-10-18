@@ -251,7 +251,11 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 - error `command_rejected`：应用失败，Play 已与文档分歧，需要重启 Play。`add`/`attach` 要么整项生效，要么不留下对象；`set` 在中途失败时已写入的部分不回滚。
 - `add`/`attach` 携带文档本身的保留数据（占位类型、缺失资源等）时，按加载诊断的种类以 warning 报告，不算分歧。
 
-批次格式错误，或对编辑文档调用时，整次调用返回错误。当前帧循环还没有接入批次来源，Play 进程也尚未调用 `enter_play`；两者随编辑器到 Play 的传输一起接入。
+批次格式错误，或对编辑文档调用时，整次调用返回错误。
+
+Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除外。`RunOptions::channel` 可以挂一个 `PlayChannel`（不持有），帧循环每帧在宿主边界调用一次它的 `service(Session&, Project&, Report)`：首帧在 start 之前，之后每次都在 update 之前。批次的取得、应用、回执都在 service 内完成，service 不阻塞也不抛出；`Report` 与 World 诊断走同一条输出（`describe_diagnostic` 逐行写入 Project Output）。独立运行的 `--run-project` 没有 channel，编辑器到 Play 的传输随 P1 接入。
+
+已知限制：`--report`（验收用）在停止后按文档身份序列化 Play 副本，而 Play 副本不给运行中生成的对象分配文档身份。停止时只要还有运行中生成的对象，`--report` 就显式失败，进程返回 1。P2 的运行时树改为按运行时句柄寻址时，与 `inspect` 一起解决。
 
 命令行与编辑器使用同一个入口：
 
@@ -293,7 +297,7 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、运行中 Source 故障的对象隔离与修复后恢复、子进程诊断输出与 `--halt-on-fault`、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、根与子级的序号及越界夹值、三角网格碰撞体运行中缩放后按新缩放重建、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
+`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、运行中 Source 故障的对象隔离与修复后恢复、子进程诊断输出与 `--halt-on-fault`、进程内运行时 Play 通道在 start 之前及每次 update 之前得到服务且批次在首帧生效、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、根与子级的序号及越界夹值、三角网格碰撞体运行中缩放后按新缩放重建、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 

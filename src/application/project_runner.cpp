@@ -76,12 +76,18 @@ int run_project(const RunOptions& options) {
         if(!loaded.session) throw std::runtime_error(loaded.error?loaded.error->message:"Project scene was not loaded.");
         auto& document=*loaded.session;
         if(options.halt) take(document.set_failure_policy(world::FailurePolicy::halt));
+        // The editor owns document identities; this copy addresses objects it spawns by runtime handle.
+        if(!options.preview_ui) document.enter_play();
         if(const auto summary=editor::describe_issues(document,document.load_issues(),L"Scene");!summary.empty())
             {std::printf("%s\n",editor::utf8(summary.front()).c_str());std::fflush(stdout);}
         // Isolated failures keep Play running; under halt the failing call is reported before it stops the run.
         std::uint64_t dropped{};
+        const Report report=[&](std::span<const world::Diagnostic> items) {
+            for(const auto& item:items) std::printf("%s\n",editor::utf8(editor::describe_diagnostic(document,item)).c_str());
+            std::fflush(stdout);
+        };
         const auto report_diagnostics=[&] {
-            for(const auto& item:document.take_diagnostics()) std::printf("%s\n",editor::utf8(editor::describe_diagnostic(document,item)).c_str());
+            report(document.take_diagnostics());
             if(const auto lost=document.world().dropped_diagnostics();lost!=dropped)
                 {std::printf("Diagnostics: %llu dropped while the log was full.\n",static_cast<unsigned long long>(lost-dropped));dropped=lost;}
             std::fflush(stdout);
@@ -160,6 +166,7 @@ int run_project(const RunOptions& options) {
             previous=now;if(started || target.drawable) elapsed+=dt;
             auto prepared=take(project_ui.prepare(ui,{extent,window?window->dpi_scale():1.f,surface_revision},elapsed,
                 take(document.world().members()).size(),effects));
+            if(options.channel && !options.preview_ui) options.channel->service(document,project,report);
             if(prepared && !started) {
                 if(!options.preview_ui) {auto begun=document.start();report_diagnostics();complete(std::move(begun));}
                 started=true;

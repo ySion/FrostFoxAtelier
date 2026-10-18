@@ -2,6 +2,7 @@
 #include "editor/project_ui.hpp"
 #include "editor/workspace.hpp"
 #include "application/play_process.hpp"
+#include "application/project_runner.hpp"
 #include "application/presentation.hpp"
 #include "ui/session.hpp"
 #include <Windows.h>
@@ -152,6 +153,25 @@ void run(const std::filesystem::path& root) {
     auto executed=editor::load_project_scene(project,take(editor::read_file(report)));require(executed.session!=nullptr,"Run output did not restore through the shared scene loader.");
     check_position(position(*executed.session,entity(*executed.session)),2.f/3);
     require(take(editor::read_file(root/"Content/Scenes/Main.scene"))==original,"The runner overwrote the authored scene.");
+    {
+        // The runner enters Play and services its channel at the host boundary: before start, then before every update.
+        struct Probe final : application::PlayChannel {
+            std::string batch;std::uint64_t calls{};bool stopped_first{};
+            void service(editor::Session& session,editor::Project& project,const application::Report& report) override {
+                if(calls++) return;
+                stopped_first=!session.world().running();
+                const auto issues=take(session.apply_live(batch,project));report(issues);
+                require(issues.empty(),"The probe's Play change did not apply.");
+            }
+        } probe;
+        probe.batch=R"({"ops":[{"op":"set","id":")"+std::to_string(*document.document_identity(behavior(document)))+R"(","properties":{"speed":4.0}}]})";
+        application::RunOptions options;options.project=root;options.scene_snapshot=snapshot;options.report=report;
+        options.headless=true;options.frames=20;options.channel=&probe;
+        require(application::run_project(options)==0 && probe.calls==20 && probe.stopped_first,
+            "The runner did not service its Play channel before start and before every update.");
+        auto served=editor::load_project_scene(project,take(editor::read_file(report)));require(served.session!=nullptr,"The served run's report did not load.");
+        check_position(position(*served.session,entity(*served.session)),4.f/3);
+    }
     {
         auto& source=*rebuilt.session;auto& runtime=source.world().runtime();
         const auto move=behavior(source);const std::array speed{take(runtime.find_field(take(runtime.type_of(move)),"speed"))};

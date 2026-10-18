@@ -72,7 +72,7 @@ function(atelier_add_editor)
     target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
     target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
-    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi atelier_control_transport)
+    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi atelier_control_transport atelier_renderer PRIVATE imm32)
     add_executable(atelier_editor
         "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
