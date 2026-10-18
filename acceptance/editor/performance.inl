@@ -31,7 +31,7 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     Access::performance_panel(app);tick(app);click(key::performance_tab);
     auto view=Access::scene_lit_view(app);view.shading=renderer::Shading::scene_lit;view.wireframe=renderer::Wireframe::off;
     view.lit.ddgi=false;view.lit.direct_reference=false;view.lit.direct_clustered=false;view.lit.direct_shadow_cache=false;view.lit.direct_candidates=8;
-    require(bool(Access::performance_view(app,view)),"Performance Scene Lit setup failed.");
+    require(bool(Access::performance_view(app,view)),"Performance Scene Lit setup failed.");tick(app,1);
     const auto history=app.document().undo_count();
     const auto wait_samples=[&](std::size_t minimum,std::uint64_t after=0) {
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(180);
@@ -242,7 +242,8 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         const auto frame_end=[](const timing::FrameRecord& record) {return record.begin+record.time(timing::frame);};
         const auto next_frame=[&](Clock::time_point deadline) {
             const auto before=app.accepted_frames();
-            while(app.accepted_frames()==before) {
+            // A fallback for an unprepared Lit view is not a frame of the measured view.
+            while(app.accepted_frames()==before || Access::fallback_presented(app)) {
                 require(Clock::now()<deadline,"Render performance timed out waiting for an accepted product frame.");
                 timing::Recorder::Frame frame{recorder};
                 require(app.step(),"Render performance editor closed before completion.");

@@ -146,7 +146,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 ## 渲染对照
 
-冷启动先调用 render.prepare，等待 phase=ready，再重新观察状态并发起正式对照。准备需要可绘制视口和网格实例，默认临时使用 Scene Lit 填充模式，不改变基础显示。准备默认期限 600000 毫秒，CLI 也应指定 --timeout-ms 600000；成功的 preparation_ms 是请求到接受帧的墙钟时间，包含 UI、管线准备和绘制，不是独立的 shader 编译计时。
+冷启动先调用 render.prepare，等待 phase=ready，再重新观察状态并发起正式对照。准备需要可绘制视口和网格实例，默认临时使用 Scene Lit 填充模式，不改变基础显示。管线在工作线程上准备，编辑器在此期间画回退帧（见[编辑器](README.md)中的 Scene View 说明）；回退帧不计入任务的接受帧，也不成为 last_frame，任务在第一个真正画出该视图的接受帧完成。进行中的 job.status 附带 compiled/total，即该视图需要的管线中已完成的数量和总数；total 随视图启用的管线组变化，不保证不变。准备默认期限 600000 毫秒，CLI 也应指定 --timeout-ms 600000；成功的 preparation_ms 是请求到接受帧的墙钟时间，包含 UI、管线准备和绘制，不是独立的 shader 编译计时。
 
     {"op":"render.prepare","state_token":"INSTANCE_ID:VERSION","args":{}}
 

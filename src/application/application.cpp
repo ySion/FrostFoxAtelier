@@ -77,6 +77,7 @@ Application::Application(bool validation,bool activate,std::filesystem::path exa
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     options.vsync = vsync_;
+    options.shader_cache = shader_cache_directory();
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
     popup_=std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_);
     submenus_.push_back(std::make_unique<PopupHost>(window(),editor_fonts(),gpu_validation_));
@@ -1275,6 +1276,11 @@ bool Application::step(renderer::Capture* capture) try {
     const auto plane_normal=camera_.construction_normal();
     workspace_.view.grid_plane=plane_normal.z!=0?renderer::GridPlane::xy:
         plane_normal.x!=0?renderer::GridPlane::yz:renderer::GridPlane::xz;
+    // After its pipelines are ready this is a bit check; before, the frame draws a fallback.
+    if(const auto preparation=renderer_.preparation(control_?control_->view():workspace_.view);!preparation)
+        workspace_.render_notice=L"Shader preparation failed: "+widen(preparation.error().cause.message);
+    else workspace_.render_notice=preparation->ready?std::wstring{}:
+        L"Compiling shaders "+std::to_wstring(preparation->done)+L"/"+std::to_wstring(preparation->total);
     const auto describe=[&] {
         // Selection/document commands can cancel the business edit before the next UI frame.
         if(workspace_.color_edit && !document_->owns_edit(editor::control::color_group)) workspace_.color_edit.reset();
@@ -1367,34 +1373,41 @@ bool Application::step(renderer::Capture* capture) try {
         effective_view.shading==renderer::Shading::scene_lit && effective_view.wireframe!=renderer::Wireframe::only && effective_view.lit.ddgi;
     render_frame.render_delta_seconds=lighting_clock_.delta(lighting_start,lighting_active);
     const auto render_start = sample ? Clock::now() : Clock::time_point{};
-    auto rendered = renderer_.render(render_frame, frame_capture);
+    auto drawn = lit_fallback_.render(renderer_, render_frame, frame_capture);
     const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
-    if (!rendered) {
+    if (!drawn) {
         lighting_clock_.reset();
         update_viewport_fps(false);
-        if(control_) control_->render_failed(rendered.error().cause.message);
-        if (rendered.error().terminal) throw std::runtime_error("Renderer stopped: " + rendered.error().cause.message);
+        if(control_) control_->render_failed(drawn.error().cause.message);
+        if (drawn.error().terminal) throw std::runtime_error("Renderer stopped: " + drawn.error().cause.message);
         render_retry_delay_=std::min(render_retry_delay_.count()?render_retry_delay_*2:std::chrono::milliseconds(20),std::chrono::milliseconds(250));
         render_retry_at_=Clock::now()+render_retry_delay_;
-        workspace_.status = widen(rendered.error().cause.message); return true;
+        workspace_.status = widen(drawn.error().cause.message); return true;
     }
-    frame_statistics_ = rendered->stats;
-    workspace_.lighting.performance().observe(render_frame,*rendered);
-    if (rendered->status == renderer::FrameStatus::accepted) {
-        if (rendered->accepted_id != frame.drawing->id || rendered->accepted_extent != frame.drawing->extent)
+    const auto& rendered = drawn->result;
+    auto drawn_frame = render_frame;drawn_frame.view = drawn->view;
+    frame_statistics_ = rendered.stats;
+    workspace_.lighting.performance().observe(drawn_frame,rendered);
+    // Control sees a fallback as the requested frame not being ready, so it is neither a Lit sample nor its last frame.
+    if(control_ && drawn->fallback) {
+        if(!drawn->failure.empty()) control_->render_failed(drawn->failure);
+        renderer::FrameResult not_ready;not_ready.status=renderer::FrameStatus::not_ready;control_->rendered(render_frame,not_ready,nullptr);
+    }
+    if (rendered.status == renderer::FrameStatus::accepted) {
+        if (rendered.accepted_id != frame.drawing->id || rendered.accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
         render_retry_at_={};render_retry_delay_={};
-        lighting_clock_.accept(lighting_start,lighting_active);
+        lighting_clock_.accept(lighting_start,lighting_active && drawn->view.shading==renderer::Shading::scene_lit);
+        fallback_presented_=drawn->fallback;
         accepted_view_=viewport?std::optional(viewport_view):std::nullopt;
-        workspace_.lighting.observe(rendered->stats);
+        workspace_.lighting.observe(rendered.stats);
         if(viewport) camera_cut_=false;
-        workspace_.render_notice.clear();
         ++accepted_frames_;
         update_viewport_fps(workspace_.show_fps && viewport && !frame_capture);
-        if(control_) {
-            if(capture && capturing_control) {control_capture=*capture;control_->rendered(render_frame,*rendered,&control_capture);}
-            else control_->rendered(render_frame,*rendered,frame_capture);
+        if(control_ && !drawn->fallback) {
+            if(capture && capturing_control) {control_capture=*capture;control_->rendered(render_frame,rendered,&control_capture);}
+            else control_->rendered(render_frame,rendered,frame_capture);
         }
         if (pending_source_focus_) {
             pending_source_focus_=false;
@@ -1419,12 +1432,12 @@ bool Application::step(renderer::Capture* capture) try {
             const auto menu=pending_menu_; pending_menu_=0;
             effects(ui_.focus(menu)); request_menu({menu,0,0,0});
         } else update_menu();
-        if (sample) frame_timing_ = {rendered->accepted_id, prepare_us, render_us, controls_us, scene_us,
+        if (sample) frame_timing_ = {rendered.accepted_id, prepare_us, render_us, controls_us, scene_us,
             0,events_us,gc_us};
     } else {
         lighting_clock_.reset();
         update_viewport_fps(false);
-        if(control_) control_->rendered(render_frame,*rendered,nullptr);
+        if(control_ && !drawn->fallback) control_->rendered(render_frame,rendered,nullptr);
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     return true;

@@ -700,7 +700,9 @@ struct EditorControl::Impl {
             const auto job_id=text(args.at("job_id"),80);for(auto& job:jobs) if(job->id==job_id) {
                 if(op=="job.cancel") cancel(*job,"cancelled","Cancelled by control client");
                 if(job->complete) return job->response;
-                return {{"status","pending"},{"job_id",job->id},{"result",{{"phase",job->preparing?"preparing":job->rendering?"rendering":"writing"},{"case_index",job->case_index},{"accepted_frames",job->accepted},{"cancel_requested",job->cancel->load()}}}};
+                Json progress={{"phase",job->preparing?"preparing":job->rendering?"rendering":"writing"},{"case_index",job->case_index},{"accepted_frames",job->accepted},{"cancel_requested",job->cancel->load()}};
+                if(job->preparing) if(const auto prepared=app.renderer_.preparation(job->cases.front().view)) {progress["compiled"]=prepared->done;progress["total"]=prepared->total;}
+                return {{"status","pending"},{"job_id",job->id},{"result",std::move(progress)}};
             }
             throw Failure("unknown_job","Job expired or belongs to another instance");
         }

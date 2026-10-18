@@ -191,7 +191,7 @@ struct Workspace {
     WorldPanel lighting;
     std::wstring status{L"Ready"};
     std::wstring query;
-    std::wstring render_notice; // Derived from the last accepted renderer frame.
+    std::wstring render_notice; // Shader preparation progress or failure for the current view.
     std::wstring tree_query;
     std::wstring structure_query;
     std::optional<ui::ContextMenuRequest> menu;

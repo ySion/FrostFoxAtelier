@@ -1,0 +1,35 @@
+#include "application/lit_preparation.hpp"
+#include <Windows.h>
+
+namespace atelier::application {
+std::filesystem::path shader_cache_directory() {
+    std::wstring value(32768,L'\0');
+    const auto count=GetEnvironmentVariableW(L"LOCALAPPDATA",value.data(),static_cast<DWORD>(value.size()));
+    if(!count || count>=value.size()) return {};
+    value.resize(count);
+    return std::filesystem::path(value)/L"FrostFoxAtelier"/L"ShaderCache";
+}
+renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer,renderer::Frame frame,renderer::Capture* capture) {
+    auto result=renderer.render(frame,capture);
+    if(result && result->status!=renderer::FrameStatus::not_ready) {
+        if(result->status==renderer::FrameStatus::accepted && frame.view.shading==renderer::Shading::scene_lit) last_lit_=frame.view;
+        return Drawn{*result,frame.view,false,{}};
+    }
+    std::string failure;
+    if(!result) {
+        // Other recoverable failures keep the caller's retry path.
+        if(result.error().terminal || renderer.preparation(frame.view)) return std::unexpected(result.error());
+        failure=result.error().cause.message;last_lit_.reset();
+    }
+    if(last_lit_ && *last_lit_!=frame.view) {
+        auto lit=frame;lit.view=*last_lit_;
+        auto drawn=renderer.render(lit,nullptr);
+        if(!drawn) return std::unexpected(drawn.error());
+        if(drawn->status!=renderer::FrameStatus::not_ready) return Drawn{*drawn,lit.view,true,{}};
+    }
+    frame.view.shading=renderer::Shading::smooth;
+    auto drawn=renderer.render(frame,nullptr);
+    if(!drawn) return std::unexpected(drawn.error());
+    return Drawn{*drawn,frame.view,true,std::move(failure)};
+}
+}
