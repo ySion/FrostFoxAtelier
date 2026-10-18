@@ -385,8 +385,12 @@ struct Runtime::Impl {
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
     std::vector<std::unique_ptr<Type>> types;
+    // The table mixes the address once; MSVC's std::hash would hash its bytes one at a time first.
+    struct AddressHash {
+        std::size_t operator()(const void* key) const noexcept { return reinterpret_cast<std::uintptr_t>(key); }
+    };
     // Published C++ representation -> types index; registration keeps representations unique.
-    Map<const void*, std::uint32_t> representations;
+    Map<const void*, std::uint32_t, AddressHash> representations;
     // Published name -> types index. Keys view the immutable name inside each heap Type.
     Map<StringView, std::uint32_t> names;
     std::vector<Slot> slots;
@@ -1965,18 +1969,17 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
         return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
     auto index = resolve_object(object);
     if (!index) return std::unexpected(index.error());
-    auto target = find_representation(representation);
-    if (!target) return std::unexpected(target.error());
+    const auto* expected = impl_->native(representation);
+    if (!expected) return failure(ErrorCode::invalid_type, "Register the native value type before exposing its members.");
     if (!path.empty()) {
         NativeBorrow borrow{*this, nullptr};
         auto field = resolve_field(object, path);
         if (!field) return std::unexpected(field.error());
-        if (field->value.form != ValueForm::inline_value || field->value.type != *target)
+        if (field->value.form != ValueForm::inline_value || field->value.type != expected->info.id)
             return failure(ErrorCode::type_mismatch, "Field does not have the requested native value representation.");
         borrow.storage = field->data;
         return borrow;
     }
-    const auto* expected = impl_->lookup(*target);
     const auto& slot = impl_->slots[*index];
     const auto* actual = impl_->lookup(slot.type);
     if (expected->info.kind != TypeKind::object || !expected->native.construct)
