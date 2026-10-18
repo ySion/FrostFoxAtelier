@@ -321,8 +321,10 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
     const auto project=root/"Project";
     const auto directory=deep_control?root/"Control"/std::wstring(100,L'x'):root/"Control";
     project_fixture(project);
-    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+".scene");
-    std::filesystem::rename(project/"Content/Scenes/Main.scene",project/scene);
+    // With a short control directory the long-name scene alone carries the copy past MAX_PATH,
+    // whatever the build directory: "Project/Content/Scenes/" plus 247 characters exceeds 260.
+    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+(deep_control?"":"-"+std::string(200,'n'))+".scene");
+    std::filesystem::rename(atelier::platform::windows_file_path(project/"Content/Scenes/Main.scene"),atelier::platform::windows_file_path(project/scene));
     auto config=read(project/"Config/Project.json");config["startup_scene"]=utf8(scene.generic_wstring());
     write(project/"Config/Project.json",config.dump());
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
