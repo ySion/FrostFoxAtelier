@@ -172,7 +172,8 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
 
 // This consumer advances the product Application. It never constructs a second
 // Renderer or Frame, and calibrates against the renderer's shared pixel range.
-int verify_editor_render_performance(Application& app,const char* output_directory) {
+// Measurement entry, not acceptance: no timing or rate is a pass condition. The checks below only reject invalid samples.
+int profile_editor_render_performance(Application& app,const char* output_directory) {
     using namespace atelier;
     using Access=application::EditorAcceptanceAccess;
     using Json=atelier::control::Json;
@@ -582,7 +583,7 @@ int verify_editor_render_performance(Application& app,const char* output_directo
         apply_view(original_view);restore.active=false;unchanged_scene();
         report["status"]="pass";report["restored_view"]=settings_json(Access::scene_lit_view(app));write_report();
         app.close();
-        std::puts("Editor render performance: PASS (native 1440p, VSync off, maximized Lit/Smooth/MatCap, restored Dock Smooth/MatCap, CPU stage timings)");
+        std::puts("Editor render performance profile: written (native 1440p, VSync off, maximized Lit/Smooth/MatCap, restored Dock Smooth/MatCap, CPU stage timings)");
         return 0;
     } catch(const std::exception& error) {
         report["status"]="failed";report["error"]=error.what();write_report();throw;

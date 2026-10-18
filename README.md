@@ -103,7 +103,7 @@ cmake --preset release
 cmake --build --preset release --target acceptance
 ```
 
-总入口是合并 main 前的完整门禁：包含全部可无人值守运行的验收目标，包括基础库、反射（含 CLI）、RHI、Renderer 各入口、Runtime、源码公共消费者、JIT 业务、World、物理、布局、生产 UI、编辑器文档链的全部模式、工程场景与集成、Control，以及编辑器的全部真实窗口入口。GPU 与真实窗口目标按顺序运行，完整一次需数小时；日常开发使用各模块的专项目标，新增的验收入口必须归入某个被总入口包含的目标。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+总入口是合并 main 前的完整门禁：包含全部可无人值守运行的验收目标，包括基础库、反射（含 CLI）、RHI、Renderer 各入口、Runtime、源码公共消费者、JIT 业务、World、物理、布局、生产 UI、编辑器文档链的全部模式、工程场景与集成、Control，以及编辑器的全部真实窗口入口。GPU 与真实窗口目标按顺序运行，完整一次需数小时；日常开发使用各模块的专项目标，新增的验收入口必须归入某个被总入口包含的目标。测量入口统一以 `--profile-*` 命名（如 `atelier_editor_document_acceptance --profile-scene-cpu`、`atelier_editor --profile-render-performance`），只输出数值报告，不属于验收，也不进入总入口；其中的数值不作为任何通过条件。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
