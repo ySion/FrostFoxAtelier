@@ -5,8 +5,10 @@
 #include <string>
 
 namespace atelier::application {
-// %LOCALAPPDATA%\FrostFoxAtelier\ShaderCache, or empty (no cache) when LOCALAPPDATA is unavailable.
+// ATELIER_SHADER_CACHE, else %LOCALAPPDATA%\FrostFoxAtelier\ShaderCache, else empty (no cache).
 std::filesystem::path shader_cache_directory();
+// Unless the host chose one, harness runs and the Play processes they start cache beside the executable.
+void isolate_shader_cache();
 // A Lit view draws once its pipelines are prepared. Until then the frame shows the
 // last Lit view that drew, which keeps its lighting history, or Smooth before any did.
 // A preparation failure fails every Lit view, so the frame shows Smooth and reports it.

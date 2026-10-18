@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "application/lit_preparation.hpp"
 #include "application/project_runner.hpp"
 #include "control/control.hpp"
 #include "atelier/build_info.hpp"
@@ -106,8 +107,10 @@ int wmain(int argc, wchar_t** argv) {
         // Each dedicated example run must consume current templates. Product workspaces
         // intentionally preserve existing folders and must not be refreshed here.
         if(physics_examples||dungeons_acceptance) example_workspace/=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-        if(acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || project_acceptance || scene_lit ||
-            sponza || physics_examples || dungeons_acceptance || examples) guard_acceptance_native_dialogs();
+        const bool harness=acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || project_acceptance || scene_lit ||
+            sponza || physics_examples || dungeons_acceptance || examples;
+        if(harness) guard_acceptance_native_dialogs();
+        if(harness || render_performance_output) atelier::application::isolate_shader_cache();
         atelier::application::Application app(gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit || sponza || physics_examples || (examples && !examples_snapshot),!snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !examples_snapshot && !render_performance_output,
             example_workspace,initial_client,!render_performance_output);
         if(argc==1 || examples || physic || dungeons) {

@@ -1,13 +1,25 @@
 #include "application/lit_preparation.hpp"
+#include "editor/assets.hpp"
 #include <Windows.h>
 
 namespace atelier::application {
-std::filesystem::path shader_cache_directory() {
+namespace {
+std::wstring environment(const wchar_t* name) {
     std::wstring value(32768,L'\0');
-    const auto count=GetEnvironmentVariableW(L"LOCALAPPDATA",value.data(),static_cast<DWORD>(value.size()));
+    const auto count=GetEnvironmentVariableW(name,value.data(),static_cast<DWORD>(value.size()));
     if(!count || count>=value.size()) return {};
     value.resize(count);
-    return std::filesystem::path(value)/L"FrostFoxAtelier"/L"ShaderCache";
+    return value;
+}
+}
+std::filesystem::path shader_cache_directory() {
+    if(auto host=environment(L"ATELIER_SHADER_CACHE");!host.empty()) return host;
+    const auto local=environment(L"LOCALAPPDATA");
+    return local.empty()?std::filesystem::path{}:std::filesystem::path(local)/L"FrostFoxAtelier"/L"ShaderCache";
+}
+void isolate_shader_cache() {
+    if(environment(L"ATELIER_SHADER_CACHE").empty())
+        SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",(editor::asset_directory()/L"shader-cache").c_str());
 }
 renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer,renderer::Frame frame,renderer::Capture* capture) {
     auto result=renderer.render(frame,capture);

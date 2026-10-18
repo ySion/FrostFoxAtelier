@@ -571,6 +571,9 @@ int wmain(int argc,wchar_t** argv) {
     try {
         require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting" || std::wstring_view(argv[3])==L"--descriptions" || std::wstring_view(argv[3])==L"--client-size")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions|--client-size]");
         const bool descriptions=argc==4 && std::wstring_view(argv[3])==L"--descriptions";
+        // Launched editors and their Play processes inherit the editor's harness cache, not the user's.
+        if(!GetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",nullptr,0))
+            SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",(std::filesystem::absolute(argv[1]).parent_path()/L"shader-cache").c_str());
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
         if(argc==4 && std::wstring_view(argv[3])==L"--client-size") {client_size(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
