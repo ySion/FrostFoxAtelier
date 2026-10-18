@@ -70,7 +70,6 @@ ui::PixelExtent client_extent(HWND window) {
 }
 Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace,std::optional<ui::PixelExtent> initial_client,bool vsync)
     : window_(nullptr,initial_client),examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation),vsync_(vsync) {
-    editor::register_builtin_operators(operators_);
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
@@ -130,21 +129,13 @@ Result<void> Application::set_camera(const editor::Camera& camera,bool cut) {
     return {};
 }
 editor::Context Application::operator_context(bool interactive) {
-    using editor::RegionKind;
-    const auto tab=workspace_.dock.focused_tab();
-    const auto region=tab==editor::control::scene_tab?RegionKind::viewport:tab==editor::control::entities_tab?RegionKind::scene_tree:
-        tab==editor::control::structure_tab?RegionKind::structure:tab==editor::control::parameters_tab?RegionKind::parameters:
-        tab==editor::control::assets_tab?RegionKind::assets:tab==editor::source_control::tab?RegionKind::code:
-        tab==editor::control::output_tab?RegionKind::output:tab==editor::world_control::tab?RegionKind::world:
-        tab==editor::control::workbench?RegionKind::controls:RegionKind::none;
-    return {*document_,project_?&*project_:nullptr,
-        {document_->selection().entity,document_->selection().object,{document_->selected_entities().begin(),document_->selected_entities().end()}},
-        region,workspace_.inspecting_asset?workspace_.material_inspection:std::string{},
-        workspace_.scene_available,workspace_.project_running,interactive};
+    return workspace_.operator_context(*document_,project_?&*project_:nullptr,interactive);
 }
 Result<editor::OperatorReport> Application::call_operator(const editor::OperatorCall& request,bool interactive) {
-    auto report=editor::call(operators_,*this,operator_context(interactive),request);
-    if(report && report->status==editor::OperatorStatus::finished) workspace_.status=operators_.find(request.id)->title;
+    const auto shown=workspace_.status;
+    auto report=editor::call(workspace_.operators,*this,operator_context(interactive),request);
+    // An operator whose host work reported its own status keeps it.
+    if(report && report->status==editor::OperatorStatus::finished && workspace_.status==shown) workspace_.status=workspace_.operators.find(request.id)->title;
     return report;
 }
 Result<void> Application::run_operator(std::string_view id,bool report_unavailable) {
@@ -161,15 +152,20 @@ Result<void> Application::end_interaction() {
     if(!workspace_.menu) window_.capture(false);
     return {};
 }
-bool Application::source_history_available(bool redo) const noexcept {
-    const auto* file=workspace_.source_editor.active();
-    return file && (redo?file->document->edit().can_redo():file->document->edit().can_undo());
-}
 Result<void> Application::source_history(bool redo) {
     workspace_.source_editor.active()->document->edit().history(redo);pending_source_focus_=true;return {};
 }
-bool Application::workbench_history_available(bool redo) const noexcept {
-    return (redo?workspace_.workbench.redo_count():workspace_.workbench.undo_count())!=0;
+Result<void> Application::close_tab(editor::RegionKind region,bool interactive) {
+    const auto tab=editor::region_tab(region);if(!tab) return {};
+    if(const auto* file=workspace_.source_editor.active();region==editor::RegionKind::code && file) {
+        if(!interactive && file->dirty())
+            return std::unexpected(Error{ErrorCode::unsupported_operation,"The Code page's active document has unsaved changes; save or reload it first."});
+        return source_command(editor::Command::close_source,{});
+    }
+    workspace_.dock.close(tab);return {};
+}
+void Application::maximize_tab(editor::RegionKind region) {
+    if(const auto tab=editor::region_tab(region)) workspace_.dock.maximize(tab);
 }
 Result<void> Application::workbench_history(bool redo) {
     if(redo) workspace_.workbench.redo();else workspace_.workbench.undo();return {};
@@ -610,28 +606,15 @@ Result<void> Application::begin_asset_rename() {
     workspace_.row_rename=editor::Workspace::RowRename{{},item.path.filename().wstring(),item.path,(row<<2)|editor::browser_control::name_column};
     pending_rename_focus_=true;return {};
 }
-namespace {
-// Commands already served by operators; the rest move in later O1 steps.
-std::string_view migrated_operator(editor::Command command) {
-    switch(command) {
-    case editor::Command::frame_all:return "view.frame_all";
-    case editor::Command::focus:return "view.frame_selected";
-    case editor::Command::reset_camera:return "view.reset";
-    case editor::Command::reset_layout:return "layout.reset";
-    case editor::Command::undo:return "edit.undo";
-    case editor::Command::redo:return "edit.redo";
-    default:return {};
-    }
-}
-}
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
     using enum editor::Command;
-    if(const auto id=migrated_operator(command);!id.empty()) return run_operator(id);
+    if(const auto id=editor::operator_for(command);!id.empty()) return run_operator(id);
     if (!workspace_.command_enabled(command,*document_)) return {};
     if(auto ended=end_interaction();!ended) return ended;
     Result<void> result;
     switch (command) {
-    case frame_all:case focus:case reset_camera:case reset_layout:case undo:case redo:break; // Operators, routed above.
+    case frame_all:case focus:case reset_camera:case reset_layout:case close_tab:case maximize_pane:case undo:case redo:
+    case add_transform:case remove_transform:case discard_saved_data:break; // Operators, routed above.
     case example_sponza:case example_scene_lit:case example_physic:case example_dungeons:return open_example(command);
     case tool_select: case tool_transform: case tool_move: case tool_rotate: case tool_scale:
         workspace_.viewport_settings.tool=static_cast<editor::TransformTool>(static_cast<unsigned>(command)-static_cast<unsigned>(tool_select));
@@ -685,7 +668,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         }
         break;
     }
-    case discard_saved_data: result=document_->discard_retained(document_->selection().object);break;
     case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
         workspace_.viewport_settings.select_mode=static_cast<editor::SelectMode>(static_cast<unsigned>(command)-static_cast<unsigned>(select_mode_set));break;
     case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
@@ -703,8 +685,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
     case create_entity: workspace_.inspecting_asset=false;result=completion(document_->add_entity()); break;
-    case add_transform: result=document_->set_transform(document_->selection().entity,{});break;
-    case remove_transform: result=document_->remove_transform(document_->selection().entity);break;
     case create_point_light:case create_rectangle_light:case create_directional_light:case create_sky_light: {
         workspace_.inspecting_asset=false;
         const auto kind=command==create_point_light?world::LightKind::point:
@@ -740,11 +720,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         return workspace_.set_view_settings(*document_,*fitted,lighting_focus());
     }
     case show_assets: workspace_.dock.select(editor::control::assets_tab); break;
-    case maximize_pane: workspace_.dock.maximize(workspace_.dock.focused_tab()); break;
     case previous_tab: case next_tab: workspace_.dock.cycle(command==previous_tab?-1:1); break;
-    case close_tab:
-        if (workspace_.source_history() && workspace_.source_editor.active()) return source_command(close_source,{});
-        workspace_.dock.close(workspace_.dock.focused_tab());break;
     case about: {
         close_menu(false);
         const auto details=L"FrostFox Atelier\n\nBuild: "+editor::wide(build_info::revision)+

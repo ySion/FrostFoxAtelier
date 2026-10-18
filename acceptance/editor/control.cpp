@@ -99,7 +99,8 @@ void verify_operators(Driver& d,const std::string& entity) {
             "Operator lacks a title or a closed parameter schema: "+info.dump());
     }
     require(find("edit.undo").at("flags")==Json::array({"history"}) && find("edit.redo").at("flags")==Json::array({"history"}) &&
-        find("view.frame_all").at("flags").empty() && find("scene.select").at("flags").empty() && find("layout.reset").at("flags").empty(),
+        find("view.frame_all").at("flags").empty() && find("scene.select").at("flags").empty() && find("layout.reset").at("flags").empty() &&
+        find("scene.transform_remove").at("flags")==Json::array({"undo"}) && find("layout.close_tab").at("flags").empty(),
         "Operator flags do not match their history contracts");
     const auto& regions=listed.at("context").at("properties").at("region").at("enum");
     require(std::ranges::find(regions,Json("viewport"))!=regions.end() && std::ranges::find(regions,Json("code"))!=regions.end(),"Context schema lacks regions");
@@ -116,6 +117,17 @@ void verify_operators(Driver& d,const std::string& entity) {
     require(undo>0,"The operator check needs scene history");
     d.op("edit.undo");after=d.inspect();require(after.at("undo")==undo-1 && after.at("redo")==redo+1,"edit.undo did not move the cursor by one");
     d.op("edit.redo");after=d.inspect();require(after.at("undo")==undo && after.at("redo")==redo,"edit.redo did not restore the cursor");
+    // A plain Entity has no spatial capabilities, so its Transform can come and go.
+    const auto plain=d.ok("scene.create",{{"kind","entity"}}).at("object").get<std::string>();
+    error(d.try_op("scene.transform_remove",Json::object(),selection(plain)),"poll_failed");
+    d.op("scene.transform_add",selection(plain));
+    error(d.try_op("scene.transform_add",Json::object(),selection(plain)),"poll_failed");
+    d.op("scene.select",{{"selection",{{"entities",Json::array()}}}});
+    d.op("scene.transform_remove",selection(plain));after=d.inspect();
+    require(after.at("undo")==undo+3 && after.at("redo")==0 && after.at("selection").empty(),
+        "scene.transform_add/remove did not record one entry each for their context Entity");
+    d.op("edit.undo");error(d.try_op("scene.transform_add",Json::object(),selection(plain)),"poll_failed");
+    d.op("edit.undo");d.op("edit.undo");
     error(d.try_op("edit.undo",Json::object(),{{"region","code"}}),"poll_failed");
     require(d.inspect().at("undo")==undo,"A Code-region undo without a source file must not touch the scene");
 

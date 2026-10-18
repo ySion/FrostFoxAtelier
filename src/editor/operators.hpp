@@ -34,12 +34,15 @@ struct SelectionContext {
     ObjectId object;                // Inspected Entity or one of the active Entity's components.
     std::vector<ObjectId> entities; // Selected Entities; active is the last when present.
 };
+struct HistoryState { bool undo{}, redo{}; };
 struct Context {
     Session& document;
     Project* project{};
     SelectionContext selection;
     RegionKind region{};
     std::string asset; // Material asset key while Parameters inspects that asset.
+    HistoryState source_history;    // The Code page's active document; both false without one.
+    HistoryState workbench_history; // The Controls page samples.
     bool scene_available{true}; // False while a project has no loadable scene.
     bool playing{};             // A project run owns the World; scene edits wait for Stop.
     bool interactive{};
@@ -59,9 +62,11 @@ public:
     virtual const Camera& camera() const noexcept = 0;
     virtual Result<void> set_camera(const Camera&) = 0;
     virtual void reset_layout() = 0;
-    virtual bool source_history_available(bool redo) const noexcept = 0;
+    // A region without a Dock page is a no-op; the Code page closes its active document first,
+    // asking about unsaved changes only when interactive.
+    virtual Result<void> close_tab(RegionKind, bool interactive) = 0;
+    virtual void maximize_tab(RegionKind) = 0;
     virtual Result<void> source_history(bool redo) = 0;
-    virtual bool workbench_history_available(bool redo) const noexcept = 0;
     virtual Result<void> workbench_history(bool redo) = 0;
     // The scene document changed outside an edit gesture; views follow it.
     virtual void scene_changed() = 0;
@@ -72,7 +77,7 @@ struct OperatorInfo {
     std::wstring title;
     std::string description;
     OperatorFlag flags{};
-    std::function<Result<void>(const OperatorHost&, const Context&)> poll; // The error message is the reason.
+    std::function<Result<void>(const Context&)> poll; // The error message is the reason.
     std::function<Result<void>(OperatorHost&, const Context&)> execute;
 };
 class OperatorRegistry {

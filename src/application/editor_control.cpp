@@ -620,7 +620,7 @@ struct EditorControl::Impl {
     }
     Json operator_list() const {
         auto operators=Json::array();
-        for(const auto& info:app.operators_.all()) {
+        for(const auto& info:app.workspace_.operators.all()) {
             auto flags=Json::array();
             for(const auto& [flag,name]:{std::pair{editor::OperatorFlag::undo,"undo"},{editor::OperatorFlag::history,"history"},
                 {editor::OperatorFlag::replaces_document,"replaces_document"},{editor::OperatorFlag::prompts,"prompts"}})
@@ -657,7 +657,7 @@ struct EditorControl::Impl {
     }
     Json call_operator(const Json& args) {
         editor::OperatorCall request{text(args.at("id"),80),Json::object(),{}};
-        if(!app.operators_.find(request.id)) throw Failure("unknown_operator","No editor operator has this ID");
+        if(!app.workspace_.operators.find(request.id)) throw Failure("unknown_operator","No editor operator has this ID");
         if(args.contains("args")) {if(!args.at("args").is_object()) throw Failure("invalid_request","args must be an object");request.args=args.at("args");}
         if(args.contains("context")) request.context=context_override(args.at("context"));
         const auto report=app.call_operator(request,false);

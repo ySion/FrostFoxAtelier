@@ -6,7 +6,7 @@
 namespace atelier::editor {
 namespace {
 std::unexpected<Error> unavailable(std::string reason) { return std::unexpected(Error{ErrorCode::unsupported_operation, std::move(reason)}); }
-Result<void> available(const OperatorHost&, const Context&) { return {}; }
+Result<void> available(const Context&) { return {}; }
 Result<void> committed(Result<world::Commit> result) {
     if (!result) return std::unexpected(result.error());
     if (result->notification_error) return std::unexpected(*result->notification_error);
@@ -46,7 +46,7 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
     return host.set_camera(camera);
 }
 // Something in a selected subtree must have a Transform to frame.
-Result<void> frame_selected_poll(const OperatorHost&, const Context& context) {
+Result<void> frame_selected_poll(const Context& context) {
     if (!context.scene_available || context.playing) return unavailable("Stop the project and load a scene before framing the selection.");
     if (context.selection.entities.empty()) return unavailable("Select an Entity with a Transform to frame.");
     auto& runtime = context.document.world().runtime();
@@ -68,10 +68,11 @@ OperatorInfo history(bool redo) {
     const auto empty = [redo] { return unavailable(redo ? "Nothing to redo." : "Nothing to undo."); };
     return {redo ? "edit.redo" : "edit.undo", redo ? L"Redo" : L"Undo",
         redo ? "Redo one step of the focused region's history" : "Undo one step of the focused region's history", OperatorFlag::history,
-        [redo, empty](const OperatorHost& host, const Context& context) -> Result<void> {
-            if (context.region == RegionKind::code) return host.source_history_available(redo) ? Result<void>{} : empty();
+        [redo, empty](const Context& context) -> Result<void> {
+            const auto can = [&](HistoryState history) { return (redo ? history.redo : history.undo) ? Result<void>{} : empty(); };
+            if (context.region == RegionKind::code) return can(context.source_history);
             if (!context.asset.empty()) return context.document.material_can_undo(context.asset, redo) ? Result<void>{} : empty();
-            if (context.region == RegionKind::controls) return host.workbench_history_available(redo) ? Result<void>{} : empty();
+            if (context.region == RegionKind::controls) return can(context.workbench_history);
             return (redo ? context.document.redo_count() : context.document.undo_count()) ? Result<void>{} : empty();
         },
         [redo](OperatorHost& host, const Context& context) -> Result<void> {
@@ -82,6 +83,31 @@ OperatorInfo history(bool redo) {
             host.scene_changed();
             return moved;
         }};
+}
+// Scene edits address the context's active Entity.
+Result<void> editable_entity(const Context& context) {
+    if (!context.scene_available || context.playing) return unavailable("Stop the project and load a scene before editing it.");
+    if (context.selection.active == ObjectId{}) return unavailable("Select an Entity.");
+    const auto state = world::inspect_entity(context.document.world().runtime(), context.selection.active);
+    if (!state || !state->can_edit) return unavailable("The selected Entity cannot be edited.");
+    return {};
+}
+OperatorInfo transform_presence(bool add) {
+    return {add ? "scene.transform_add" : "scene.transform_remove", add ? L"Add Transform" : L"Remove Transform",
+        add ? "Give the active Entity an identity Transform" : "Remove the active Entity's Transform", OperatorFlag::undo,
+        [add](const Context& context) -> Result<void> {
+            if (auto editable = editable_entity(context); !editable) return editable;
+            const auto spatial = world::has_transform(context.document.world().runtime(), context.selection.active);
+            if (!spatial) return std::unexpected(spatial.error());
+            if (*spatial == add) return unavailable(add ? "The Entity already has a Transform." : "The Entity has no Transform.");
+            return {};
+        },
+        [add](OperatorHost&, const Context& context) {
+            return add ? context.document.set_transform(context.selection.active, {}) : context.document.remove_transform(context.selection.active);
+        }};
+}
+Result<void> docked(const Context& context) {
+    return context.region == RegionKind::none ? unavailable("Focus a pane first.") : Result<void>{};
 }
 }
 void register_builtin_operators(OperatorRegistry& registry) {
@@ -94,8 +120,23 @@ void register_builtin_operators(OperatorRegistry& registry) {
         [](OperatorHost& host, const Context&) { auto camera = host.camera(); camera.reset(); return host.set_camera(camera); }});
     add({"layout.reset", L"Reset Layout", "Restore the default pane layout", OperatorFlag::none, available,
         [](OperatorHost& host, const Context&) { host.reset_layout(); return Result<void>{}; }});
+    add({"layout.close_tab", L"Close Pane Tab", "Close the focused region's pane tab; on the Code page, close its active document first",
+        OperatorFlag::none, docked, [](OperatorHost& host, const Context& context) { return host.close_tab(context.region, context.interactive); }});
+    add({"layout.maximize", L"Maximize / Restore Pane", "Maximize the focused region's pane, or restore the layout when it is maximized",
+        OperatorFlag::none, docked, [](OperatorHost& host, const Context& context) { host.maximize_tab(context.region); return Result<void>{}; }});
     add(history(false));
     add(history(true));
+    add(transform_presence(true));
+    add(transform_presence(false));
+    add({"scene.discard_saved_data", L"Discard Saved Data", "Drop the saved data kept for the inspected object's missing type, fields or resources",
+        OperatorFlag::undo,
+        [](const Context& context) -> Result<void> {
+            if (!context.scene_available || context.playing) return unavailable("Stop the project and load a scene before editing it.");
+            const auto object = context.selection.object;
+            if (object == ObjectId{} || !context.document.has_retained(object)) return unavailable("The inspected object has no saved data.");
+            return {};
+        },
+        [](OperatorHost&, const Context& context) { return context.document.discard_retained(context.selection.object); }});
     add({"scene.select", L"Select", "Make the context selection the document selection; a component can be inspected only with one Entity selected",
         OperatorFlag::none, available,
         [](OperatorHost& host, const Context& context) -> Result<void> {

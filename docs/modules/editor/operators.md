@@ -1,6 +1,6 @@
 # 编辑器操作符（设计稿）
 
-状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
+状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。第 3 步已迁移不带参数的 `layout.close_tab`、`layout.maximize`、`scene.transform_add`、`scene.transform_remove`、`scene.discard_saved_data`。注册表由 Workspace 持有，Context 也由 Workspace 构建；第 4 步之前菜单和快捷区仍按命令登记，`command_enabled` 对已迁移的命令直接取对应操作符的 poll，不再保留第二份可用性判断。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
 
 编辑器的每个操作都是一个注册的操作符。菜单、快捷区、按钮、快捷键、Control，以及以后的自有语言，都经同一个入口调用它：`OperatorCall {id, args, context}` → poll → 解码参数 → execute。UI 只描述“调用哪个操作符、带什么参数”，不写逻辑。
 
@@ -109,6 +109,7 @@ struct Context {
 };
 ```
 
+- 实现中 Context 另带 `source_history` 和 `workbench_history`：代码页活动文档与 Controls 示例各自能否撤销、重做。`edit.undo` / `edit.redo` 的 poll 因此只读 Context，Control 覆盖 region 时也按覆盖后的区域判断。
 - 操作符只读 Context，不读 Session 内部的选择。因此 Session 中按“当前选择”工作的方法（`erase_entities`、`duplicate_selected`、`erase_selected`、clear/snap 等）改为接收显式目标；仍然只有一份实现。
 - UI 调用：由获得焦点的区域填充。视口在指针位于其上且没有文本控件占用键盘时是活动区域（保持现有行为），否则是获得焦点的 Dock 页。第 5 步 keymap 落地之前，UI 和 Control 的基础 Context 都取获得焦点的 Dock 页，与现有撤销路由一致。
 - Control 覆盖（`op.call` 的 `context`），只在本次调用内有效，不改文档选择：

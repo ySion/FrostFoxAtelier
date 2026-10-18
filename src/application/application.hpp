@@ -81,7 +81,6 @@ private:
     friend struct EditorAcceptanceAccess; // Seeds real backend failures in the window E2E.
     friend class EditorControl;
     std::unique_ptr<EditorControl> control_;
-    editor::OperatorRegistry operators_;
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
     SceneRecovery recovery_;
@@ -177,9 +176,9 @@ private:
     const editor::Camera& camera() const noexcept override { return camera_; }
     Result<void> set_camera(const editor::Camera& camera) override { return set_camera(camera,true); }
     void reset_layout() override { workspace_.reset_layout(); }
-    bool source_history_available(bool redo) const noexcept override;
+    Result<void> close_tab(editor::RegionKind,bool interactive) override;
+    void maximize_tab(editor::RegionKind) override;
     Result<void> source_history(bool redo) override;
-    bool workbench_history_available(bool redo) const noexcept override;
     Result<void> workbench_history(bool redo) override;
     void scene_changed() override;
     Result<void> action(const ui::Action&);

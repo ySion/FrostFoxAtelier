@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
-#include <unordered_set>
 #include <cwctype>
 #include <format>
 
@@ -32,7 +31,46 @@ Workspace::Workspace() : dock(1ULL<<48,{
     const auto registered=ui_language::register_types(ui_runtime_);
     if (!registered) throw std::runtime_error(registered.error().message);
     auto messages=std::make_shared<ui::TableData>();messages->columns.push_back({1,L"Message",1000,160,ui::TextAlign::left,false});output=std::move(messages);
+    register_builtin_operators(operators);
     reset_layout();
+}
+namespace {
+constexpr std::array<std::pair<RegionKind,ui::ControlKey>,9> region_tabs{{
+    {RegionKind::viewport,control::scene_tab},{RegionKind::scene_tree,control::entities_tab},{RegionKind::structure,control::structure_tab},
+    {RegionKind::parameters,control::parameters_tab},{RegionKind::assets,control::assets_tab},{RegionKind::code,source_control::tab},
+    {RegionKind::output,control::output_tab},{RegionKind::world,world_control::tab},{RegionKind::controls,control::workbench}}};
+}
+RegionKind region_of(ui::ControlKey tab) noexcept {
+    const auto at=std::ranges::find(region_tabs,tab,&std::pair<RegionKind,ui::ControlKey>::second);
+    return at==region_tabs.end()?RegionKind::none:at->first;
+}
+ui::ControlKey region_tab(RegionKind region) noexcept {
+    const auto at=std::ranges::find(region_tabs,region,&std::pair<RegionKind,ui::ControlKey>::first);
+    return at==region_tabs.end()?ui::ControlKey{}:at->second;
+}
+std::string_view operator_for(Command command) noexcept {
+    switch(command) {
+    case Command::frame_all:return "view.frame_all";
+    case Command::focus:return "view.frame_selected";
+    case Command::reset_camera:return "view.reset";
+    case Command::reset_layout:return "layout.reset";
+    case Command::close_tab:return "layout.close_tab";
+    case Command::maximize_pane:return "layout.maximize";
+    case Command::undo:return "edit.undo";
+    case Command::redo:return "edit.redo";
+    case Command::add_transform:return "scene.transform_add";
+    case Command::remove_transform:return "scene.transform_remove";
+    case Command::discard_saved_data:return "scene.discard_saved_data";
+    default:return {};
+    }
+}
+Context Workspace::operator_context(Session& session,Project* project,bool interactive) const {
+    const auto* source=source_editor.active();
+    const auto source_history=source?HistoryState{source->document->edit().can_undo(),source->document->edit().can_redo()}:HistoryState{};
+    return {session,project,
+        {session.selection().entity,session.selection().object,{session.selected_entities().begin(),session.selected_entities().end()}},
+        region_of(dock.focused_tab()),inspecting_asset?material_inspection:std::string{},
+        source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,project_running,interactive};
 }
 void Workspace::log(std::wstring text) {
     auto messages=std::make_shared<ui::TableData>(*output);
@@ -244,21 +282,16 @@ std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree,ObjectId 
                 rows.push_back(static_cast<std::uint32_t>(row-tree.rows.begin()));
     return ui::tree_window(tree.rows,viewport,rows);
 }
-bool Workspace::command_enabled(Command command,const Session& session) const {
-    switch (command) {
-    case Command::add_transform: case Command::remove_transform: {
-        const auto entity=session.selection().entity;
-        if(entity==ObjectId{} || !scene_available || project_running) return false;
-        const auto state=world::inspect_entity(session.world().runtime(),entity);
-        if(!state || !state->can_edit) return false;
-        const auto spatial=world::has_transform(session.world().runtime(),entity);
-        return spatial && (command==Command::add_transform?!*spatial:*spatial);
+bool Workspace::command_enabled(Command command,Session& session,Project* project) const {
+    if(const auto id=operator_for(command);!id.empty()) {
+        const auto* info=operators.find(id);
+        return info && info->poll(operator_context(session,project,true)).has_value();
     }
+    switch (command) {
     case Command::erase_entities: return scene_available && !project_running && !session.selected_entities().empty();
     case Command::select_all: case Command::select_invert: case Command::select_box: return scene_available && !project_running;
     case Command::select_none: return scene_available && !project_running && !session.selected_entities().empty();
     case Command::rename_selected: return scene_available && !project_running && session.selection().entity!=ObjectId{};
-    case Command::discard_saved_data: return scene_available && !project_running && session.selection().object!=ObjectId{} && session.has_retained(session.selection().object);
     case Command::unparent_selected: {
         if(!scene_available || project_running) return false;
         for(const auto entity:session.selected_entities()) {
@@ -285,8 +318,6 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
     case Command::import_mesh:case Command::import_texture:case Command::create_material: case Command::refresh_assets: return project_open;
     case Command::save_document: return source_history()?source_editor.active()!=nullptr:project_open && scene_available;
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
-    case Command::undo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_undo();if(inspecting_asset && !material_inspection.empty()) return session.material_can_undo(material_inspection);return (sample_history()?workbench.undo_count():session.undo_count())!=0;
-    case Command::redo: if (source_history()) return source_editor.active() && source_editor.active()->document->edit().can_redo();if(inspecting_asset && !material_inspection.empty()) return session.material_can_undo(material_inspection,true);return (sample_history()?workbench.redo_count():session.redo_count())!=0;
     case Command::create_entity: case Command::create_static_mesh:
     case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: case Command::create_sky_light: {
         const auto members=session.world().members();
@@ -301,23 +332,6 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
         }
         return true;
     }
-    case Command::focus: {
-        if(!scene_available || project_running || session.selected_entities().empty()) return false;
-        auto& runtime=session.world().runtime();
-        std::vector<ObjectId> pending(session.selected_entities().begin(),session.selected_entities().end());
-        std::unordered_set<ObjectId> seen;
-        while(!pending.empty()) {
-            const auto object=pending.back();pending.pop_back();
-            if(!seen.insert(object).second) continue;
-            const auto state=world::inspect_entity(runtime,object);if(!state || !state->can_edit) return false;
-            const auto spatial=world::has_transform(runtime,object);if(!spatial) return false;
-            // view.frame_selected includes geometry and every remaining spatial locator in this subtree.
-            if(*spatial) return true;
-            const auto children=world::children(runtime,object);if(!children) return false;
-            for(const auto& child:*children) pending.push_back(child.id());
-        }
-        return false;
-    }
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
     case Command::erase_selected: {
         if (session.selection().entity==ObjectId{}) return false;
@@ -327,7 +341,7 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
         const auto spatial=world::has_transform(session.world().runtime(),session.selection().entity);
         return spatial && *spatial;
     }
-    case Command::previous_tab: case Command::next_tab: case Command::close_tab: case Command::maximize_pane:
+    case Command::previous_tab: case Command::next_tab:
         return dock.focused_tab()!=0;
     default: return true;
     }
@@ -522,7 +536,7 @@ std::wstring parameter_label(std::string_view path) {
     return label;
 }
 }
-std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project,const ui::Session* ui) {
+std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,Project* project,const ui::Session* ui) {
     property_help_.begin();
     sync_world(session);
     const auto take = []<class T>(Result<T> value) -> T {
@@ -629,7 +643,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             definition.id==Command::create_entity?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
         items->push_back({shelf_items_[index],{std::wstring(title),static_cast<double>(icon),
-            ui_language::ActionBinding{static_cast<ui::ControlKey>(definition.id),command_enabled(definition.id,session)}}});
+            ui_language::ActionBinding{static_cast<ui::ControlKey>(definition.id),command_enabled(definition.id,session,project)}}});
     }
     const std::array<ui_language::InputValue,12> shelf_inputs{shelf_collapsed,shelf_page==control::shelf_create,
         ui_language::ItemList{std::move(create_tools)},ui_language::ItemList{std::move(view_tools)},
@@ -781,7 +795,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         lighting.append(result,view.content,*ui_document_,this->view,!session.world().running());continue;
     }
     if (view.key==control::assets_tab) {
-        assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session),frame,*ui_document_);
+        assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session,project),frame,*ui_document_);
         continue;
     }
     if (view.key==control::entities_tab) {
@@ -881,7 +895,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             ui_language::ItemList{std::move(rows)},static_cast<double>(tree.rows.size()),
             ui_language::TextEditBinding{control::structure_filter,structure_query},selected!=ObjectId{},
             selected!=ObjectId{} && entity_status.can_edit,control::add_component,
-            ui_language::ActionBinding{control::remove_selected,command_enabled(Command::erase_selected,session)},double(ui::ControlIcon::close)};
+            ui_language::ActionBinding{control::remove_selected,command_enabled(Command::erase_selected,session,project)},double(ui::ControlIcon::close)};
         const std::array<ui_language::KeyBinding,2> keys{{{"tree",control::structure_tree},{"add",control::add_component}}};
         static_cast<void>(ui_document_->append("EntityStructure",view.content,keys,inputs,result));
         continue;
@@ -1249,7 +1263,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         else {
             const auto command_item=[&](Command command) {
                 const auto key=static_cast<ui::ControlKey>(command);const auto* definition=command_definition(key);
-                ui::MenuItem item{key,std::wstring(definition->title),command_enabled(command,session),false,{},std::wstring(definition->shortcut),definition->separator};
+                ui::MenuItem item{key,std::wstring(definition->title),command_enabled(command,session,project),false,{},std::wstring(definition->shortcut),definition->separator};
                 const auto radio=[&](Command first,bool selected) {item.behavior=ui::MenuBehavior::radio;item.radio_group=static_cast<ui::ControlKey>(first);item.selected=selected;};
                 if(command>=Command::tool_select && command<=Command::tool_scale)
                     radio(Command::tool_select,key-static_cast<ui::ControlKey>(Command::tool_select)==std::size_t(viewport_settings.tool));

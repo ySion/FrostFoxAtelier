@@ -2,6 +2,7 @@
 
 #include "editor/session.hpp"
 #include "editor/commands.hpp"
+#include "editor/operators.hpp"
 #include "editor/control_workbench.hpp"
 #include "editor/world_panel.hpp"
 #include "editor/property_row.hpp"
@@ -99,6 +100,7 @@ struct Workspace {
     Workspace& operator=(const Workspace&)=delete;
     Workspace(Workspace&&)=delete; // Live scopes borrow this workspace's key authority.
     Workspace& operator=(Workspace&&)=delete;
+    OperatorRegistry operators; // Built-in operators; menus, Control and later the keymap call them.
     ui::DockSpace dock;
     ViewportTool::Settings viewport_settings;
     bool camera_flying{}; // Projection only; Application owns the navigation lifecycle.
@@ -143,7 +145,10 @@ struct Workspace {
     Result<void> set_tree_expanded(const Session&,EntityTree,std::span<const ObjectId>,bool expanded);
     // Expands the Entity's Scene Tree ancestors; false when the tree filter hides its row.
     Result<bool> reveal_in_tree(const Session&,ObjectId entity);
-    bool command_enabled(Command,const Session&) const;
+    // Commands served by an operator answer with its poll.
+    bool command_enabled(Command,Session&,Project* = nullptr) const;
+    // Built from the focused Dock page until the keymap step; UI calls are interactive.
+    Context operator_context(Session&,Project*,bool interactive) const;
     Result<bool> apply_view(Session&,const ui::Action&,std::array<float,3> focus = {});
     void sync_world(const Session&);
     Result<void> set_view_settings(Session&,const renderer::ViewSettings&,std::array<float,3> focus = {});
@@ -191,7 +196,7 @@ struct Workspace {
     bool pie_menu() const noexcept { return menu && menu->source==control::viewport &&
         (menu->group==control::viewport_shading_pie || menu->group==control::viewport_axis_pie); }
     // ui supplies tree scroll and focus; trees describe only rows near their viewport.
-    std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*,const Project* = nullptr,const ui::Session* ui = nullptr);
+    std::vector<ui::Control> describe(Session&, ui_layout::Size, const ui::UiFrame*,Project* = nullptr,const ui::Session* ui = nullptr);
     void reset_document();
     const Binding* binding(ui::ControlKey) const noexcept;
     ui::ControlKey object_control(ObjectId) const noexcept;
@@ -252,4 +257,8 @@ private:
     ui::ControlKey bind_material(ObjectId,std::span<const FieldId>,Binding::Kind,ObjectId component={},std::string_view slot={},std::size_t index=0);
     std::vector<ui::MenuItem> material_menu(const Binding&,const Session&,const Project*);
 };
+// The operator serving a command, or empty; menus and keys call operators directly in later O1 steps.
+std::string_view operator_for(Command) noexcept;
+RegionKind region_of(ui::ControlKey tab) noexcept;
+ui::ControlKey region_tab(RegionKind) noexcept; // 0 when the region has no Dock page.
 }

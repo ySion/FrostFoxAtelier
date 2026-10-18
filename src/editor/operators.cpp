@@ -86,7 +86,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     Context context = base;
     if (request.context.selection) context.selection = *request.context.selection;
     if (request.context.region) context.region = *request.context.region;
-    if (auto available = info->poll(host, context); !available) return OperatorReport{OperatorStatus::unavailable, available.error().message};
+    if (auto available = info->poll(context); !available) return OperatorReport{OperatorStatus::unavailable, available.error().message};
     if (auto ended = host.end_interaction(); !ended) return std::unexpected(ended.error());
     // A replacing operator only files a host request, so the Session stays valid here.
     auto& document = context.document;
