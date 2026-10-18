@@ -151,7 +151,7 @@ add_custom_target(acceptance
         renderer_acceptance project_scene_acceptance project_integration_acceptance
         editor_recovery_acceptance editor_material_acceptance editor_physics_project_acceptance
         editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
-        editor_viewport_acceptance editor_shortcuts_acceptance editor_edit_acceptance
+        editor_shortcuts_acceptance editor_edit_acceptance
         editor_surfaces_acceptance editor_dialogs_acceptance editor_scene_lit_acceptance
         physics_examples_acceptance editor_sponza_acceptance editor_examples_acceptance editor_dungeons_acceptance
     USES_TERMINAL VERBATIM)

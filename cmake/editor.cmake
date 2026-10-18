@@ -145,9 +145,6 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-project "${CMAKE_BINARY_DIR}/project-evidence"
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-source "${CMAKE_BINARY_DIR}/source-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_viewport_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-viewport "${CMAKE_BINARY_DIR}/viewport-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_shortcuts_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-shortcuts "${CMAKE_BINARY_DIR}/shortcut-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)

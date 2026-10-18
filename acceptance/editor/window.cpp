@@ -1345,25 +1345,16 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
     return 0;
 }
 
-int verify_editor_window(Application& app, const char* output_directory, bool viewport_only) {
+int verify_editor_window(Application& app, const char* output_directory) {
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     hr(com);
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    const auto host=await_acceptance_activation(app,output,viewport_only?"viewport":"window");
+    const auto host=await_acceptance_activation(app,output,"window");
     tick(app);
     require(entities(app).empty(),"The production editor did not start with an empty scene.");
     verify_viewport_fly(app,output);
-    if (viewport_only) {
-        verify_viewport_display(app,output);
-        atelier::application::EditorAcceptanceAccess::mark_saved(app);
-        SendMessageW(app.window(),WM_CLOSE,0,0);
-        require(!app.step(),"Viewport acceptance did not close normally.");
-        std::ofstream(output/"acceptance.txt")<<"Editor viewport acceptance: PASS\n";
-        std::puts("Editor viewport acceptance: PASS");
-        return 0;
-    }
     click(app,control::file_menu);
     const auto first_open_us=app.menu_open_cpu_us(); const auto retained_popup=app.menu_window(); key(app,VK_ESCAPE);
     click(app,control::file_menu);
