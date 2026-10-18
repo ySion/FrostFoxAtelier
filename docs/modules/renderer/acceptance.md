@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| temporal isolation 参考配置 | 2026-10-18 rendering 工作树：`--scene-lit-temporal` 自 10-13 起一直失败（main 基线 `d2b6da2b` 同样失败），原因是参考配置从确定性 64 阴影样本换成逐帧独立的随机参考；改为比较两段 16 帧均值后为 1.032/3，通过，见[本批记录](#temporal-isolation-参考配置2026-10-18) |
 | DI 辐射响应窗口 | 2026-10-18 rendering 工作树：DI 降噪器按距最后一次辐射变化的帧数缩短支持，编辑后恢复的残留在 64 帧内回到基线（A 路径 R−B 从 +.70 降到 +.04）；持续动画光源的半影噪声不变；去掉窗口的变体使新验收失败，见[本批记录](#di-辐射响应窗口2026-10-18) |
 | Edit/Play 收敛修复 | 2026-10-18 rendering 工作树：DDGI 命中点改为完全粗糙求值；`--scene-lit` 的 Edit/Play 收敛检查从 mean 4.212、p95 14 降到 2.659、8，通过；随后改为比较两域各 64 帧的平均，为 2.224、7，见[本批记录](#editplay-收敛修复2026-10-18) |
 | Lit 帧率批次 | 2026-10-18 rendering 工作树：原生 1440p 静止 A 路径 61.50 接受帧/秒（GPU 15.88 ms），默认 ReSTIR 44.70；相机持续环绕 53.77。半分辨率 DDGI、GTAO 深度层级、A 路径半影分类；Edit/Play 收敛检查在基线上同样失败，见[本批记录](#lit-帧率批次2026-10-18) |
@@ -73,6 +74,18 @@ K 的选择（Release 实测，`editplay-k-01`、`editplay-age-01`）：
 
 结果：Release 与 Dev（`{release,dev}-scene-lit-avg1`）均为 2.224/7，`--scene-lit` 全部通过，stderr 为空。p95 余量从 0 级增加到 1 级，mean 余量为 .78。剩余差异由两部分组成：几十到上百帧内相关的估计噪声，64 帧平均只能削弱、不能消除；以及新域缓慢的多次反弹预热亏量（域龄 96 为 −.50，705–768 为 −.18）。后者是 DDGI 多次反弹反馈的预热速率，属于渲染器性质，不是测试假象。余量增幅不大，所以没有收紧阈值。代价是该用例多渲染 128 帧。
 
+## temporal isolation 参考配置（2026-10-18）
+
+状态：基于 `53f20601` 的单独本地提交，未推送。只改 `--scene-lit-temporal` 的 temporal isolation 检查，渲染代码不变，阈值 3/8 不变。
+
+现象：`--scene-lit-temporal` 在 “all SceneLit temporal isolation configurations meet the unchanged stability bounds” 失败。五种配置中只有 `direct-reference` 越界，相隔 8 帧的两帧 mean 3.729、p95 11。main 基线 `d2b6da2b`（`temporal-d2b`）、`53f20601` 去掉 B 的构建和 `53f20601` 本身数值都相同。
+
+根因（代码历史）：该检查写于 `fbd2cad7`（10-09），第五种配置当时是 `shadow_samples=64`，即确定性的 64 次阴影采样参考，逐帧稳定。`c868ef99`（10-13，引入 ReSTIR）把它机械替换为 `direct_reference=true`。后者每帧重新抽取 64 次独立 RIS 估计，没有降噪，逐帧差异就是估计量的白噪声；差异图在所有受光面上都是均匀的空间白噪声。文档中最后一次 `--scene-lit-temporal` 通过记录是 10-11，此后各批验收都没有运行这个入口，所以失败一直没有被发现。
+
+修复：参考配置的稳定性按收敛信号比较，即两段相邻 16 帧均值之间的差异；四种降噪配置仍比较实际显示的单帧，因为闪烁正是用户能看到的。参考帧之间相互独立，16 帧均值应把噪声降到约 1/4。
+
+结果：`direct-reference` 为 mean 1.032、p95 3，与 3.729/11 按 √16 缩小的预测（约 .93/3）一致；其余四种配置不变（all .617/2，no-sssr .542/2，no-ddgi .616/2，direct-only .591/2）。Release 与 Dev 的 `--scene-lit-temporal` 均退出 0，stderr 为空（`{release,dev}-scene-lit-temporal-tf1`）。
+
 ## DI 辐射响应窗口（2026-10-18）
 
 状态：基于 `35b07c17` 的单独本地提交，未推送、未并入 main。改动 `lit_direct.hlsl`、`scene_lit.cpp` 与 quality 验收；renderer contract、Frame/FrameStats 接口和 GPU scope 都没有变化。新增的 `lit_direct_response` 只是内部 shader 常量。
@@ -113,7 +126,7 @@ N 的实测：A 路径修复后在 64 帧内回到基线（第 49–64 帧 +.043
 
 Edit/Play 收敛检查在两种配置下为 2.262/8（本提交前为 2.224/7），仍通过，但 p95 又回到阈值。B 只在辐射变化后 48 帧内改变 DI 历史，两域的平均窗口都在此之后；差异来自该序列开头恢复场景时旧域历史的衰减方式不同，改变了相关噪声的实现。默认切到 A 后噪声结构会明显改变，届时重新评估这一余量。
 
-`--scene-lit-temporal` 在两种配置下都在 “all SceneLit temporal isolation configurations meet the unchanged stability bounds” 失败。`direct-reference` 配置相隔 8 帧的两帧为 mean 3.729、p95 11，阈值 3/8。同一提交点去掉本提交渲染改动的构建（`release-temporal-base`）数值完全相同，且参考模式本身不经过 DI 历史，所以这是既有失败，与本提交无关，根因另查。同一入口中的信号编辑、移动历史及其余四种配置均通过。
+`--scene-lit-temporal` 在两种配置下都在 “all SceneLit temporal isolation configurations meet the unchanged stability bounds” 失败。`direct-reference` 配置相隔 8 帧的两帧为 mean 3.729、p95 11，阈值 3/8。同一提交点去掉本提交渲染改动的构建（`release-temporal-base`）数值完全相同，且参考模式本身不经过 DI 历史，所以这是既有失败，与本提交无关，根因与修复见 [temporal isolation 参考配置](#temporal-isolation-参考配置2026-10-18)。同一入口中的信号编辑、移动历史及其余四种配置均通过。
 
 ## Lit 帧率批次（2026-10-18）
 

@@ -685,8 +685,14 @@ void temporal_isolation(Fixture& f) {
         if(mode>=2) f.frame.view.lit.ddgi=false;
         if(mode==4) f.frame.view.lit.direct_reference=true;
         f.edited();
-        const auto first=f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
-        const auto second=f.capture((std::string(names[mode])+"-1").c_str(),8);
+        // The reference redraws 64 independent estimates every frame without
+        // denoising, so its stability is that of the converged signal: compare
+        // means of independent frames. Denoised modes compare displayed frames.
+        const bool reference=mode==4;
+        const auto first=reference?f.average((std::string(names[mode])+"-0").c_str(),warmup_frames,16):
+            f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
+        const auto second=reference?f.average((std::string(names[mode])+"-1").c_str(),16,16):
+            f.capture((std::string(names[mode])+"-1").c_str(),8);
         const auto delta=f.compare(names[mode],first,second);
         stable&=delta.mean<=3 && delta.p95<=8;
         check(f.step().stats.scene_lit_history_resets==0,"static temporal isolation retains scene histories");
