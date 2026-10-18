@@ -425,7 +425,7 @@ cmake --build --preset release --target editor_ime_acceptance
 
 Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合关系。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Entity、StaticMeshEntity 使用不同的原生矢量符号和颜色。组件组成在 Entity Structure 中显示，不进入 Scene Tree。Entity 组合 parent 决定树缩进；无空间的组织 Entity 仍显示，组件保留在 Entity Structure，不另建组件空间树。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
 
-参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。Workspace 持有 Scene Tree 与 Entity Structure 的展开状态（按 ObjectId，两棵树各自一份），资源目录树由 AssetBrowser 按目录路径持有；状态跨停靠、隐藏及重开保留，随对象退役清理，不进入撤销历史。每帧宿主按组合先序展平全部成员（O(n)），只为视口附近约三屏的行、首末行以及选中、焦点、重命名行和它们的祖先生成 TreeItem 描述，Dungeons（3617 个 Entity）停靠布局下 Scene Tree 每帧描述约 35 行。展开请求经 `Workspace::set_tree_expanded`（Entity 身份、绝对值、整体校验）或 `AssetBrowser::set_expanded`（目录路径）进入；选中行或其父变化时展开祖先一次，F2 通过 `reveal_in_tree` 展开祖先后开始内联重命名。底部过滤保留祖先并展开结果，不改写保存的展开状态。
+参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。Workspace 持有 Scene Tree 与 Entity Structure 的展开状态（按 ObjectId，两棵树各自一份），资源目录树由 AssetBrowser 按目录路径持有，目录行首次出现时当前目录及其祖先展开、其余目录折叠；状态跨停靠、隐藏及重开保留，随对象退役清理，不进入撤销历史。每帧宿主按组合先序展平全部成员（O(n)），只为视口附近约三屏的行、首末行以及选中、焦点、重命名行和它们的祖先生成 TreeItem 描述，Dungeons（3617 个 Entity）停靠布局下 Scene Tree 每帧描述约 35 行。展开请求经 `Workspace::set_tree_expanded`（Entity 身份、绝对值、整体校验）或 `AssetBrowser::set_expanded`（目录路径）进入；选中行或其父变化时展开祖先一次，F2 通过 `reveal_in_tree` 展开祖先后开始内联重命名。底部过滤保留祖先并展开结果，不改写保存的展开状态。
 
 上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。Ctrl 切换 Entity 选择，Shift 按宿主展平的行选择范围（含尚未描述的行）；选择与视口共用 Session 的有序 Entity 集及活动 Entity。复用当前路径栏、字号、滚动条、输入捕获与接受帧；树层级来自真实 Entity 组合关系。
 

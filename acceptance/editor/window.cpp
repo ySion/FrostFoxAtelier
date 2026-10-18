@@ -929,18 +929,21 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     click(app, control::add_static_mesh);
     const auto first = entities(app).front().id();
     const auto last = entities(app).back().id();
-    require(text_coverage(*app.presented(),app.object_control(last))!=nullptr,
+    // Scene Tree describes rows near its viewport; an undescribed row emits no text.
+    const auto row_text=[&](atelier::ObjectId entity) {
+        const auto key=app.object_control(entity);
+        return app.presented()->find(key)?text_coverage(*app.presented(),key):nullptr;
+    };
+    require(row_text(last)!=nullptr,
         "Creating an Entity did not reveal its selected Scene Tree row.");
     wheel(app,control::entity_tree,240);
-    require(app.presented()->find(app.object_control(last)) &&
-        !text_coverage(*app.presented(), app.object_control(last)),
+    require(app.presented()->find(app.object_control(last)) && !row_text(last),
         "Offscreen list row lost geometry or emitted text before scrolling.");
     wheel(app, 23, -240);
-    require(text_coverage(*app.presented(), app.object_control(last)) &&
-        !text_coverage(*app.presented(), app.object_control(first)), "Scrolling did not exchange visible list text.");
+    require(row_text(last) && !row_text(first), "Scrolling did not exchange visible list text.");
     capture(app, output / "s1-list-256.png");
     wheel(app, 23, 240);
-    require(text_coverage(*app.presented(), app.object_control(first)) != nullptr,
+    require(row_text(first) != nullptr,
         "Scrolling back did not regenerate visible list text.");
 
     const auto bar=[&]() {
@@ -966,7 +969,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
         SendMessageW(app.window(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(to.x,to.y));
         SendMessageW(app.window(),WM_LBUTTONUP,0,MAKELPARAM(to.x,to.y)); tick(app,2);
     }
-    require(bar().value==bar().maximum && text_coverage(*app.presented(),app.object_control(last)),"Scrollbar thumb did not reach the last Entity.");
+    require(bar().value==bar().maximum && row_text(last),"Scrollbar thumb did not reach the last Entity.");
     mouse(app,WM_LBUTTONDOWN,middle(bar().thumb));
     key(app,VK_ESCAPE);
     require(GetCapture()!=app.window() && app.document().undo_count()==history_before_scroll,"Scrollbar cancellation changed document history or retained capture.");

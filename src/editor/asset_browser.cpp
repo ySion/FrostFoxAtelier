@@ -73,10 +73,15 @@ void AssetBrowser::update_directories(const Project* project) {
     const auto root=project?project->root():std::filesystem::path{};
     const auto revision=project?project->revision():0;
     if (root==project_root_ && revision==directory_revision_ && has_project_==(project!=nullptr)) return;
-    has_project_=project!=nullptr;project_root_=root;directory_revision_=revision;directories_.clear();targets_.clear();directory_items_dirty_=true;
+    has_project_=project!=nullptr;project_root_=root;directory_revision_=revision;directory_items_dirty_=true;
+    const auto previous=std::exchange(directories_,{});targets_.clear();
     if (project) for (const auto& entry:project->entries()) if (entry.kind==AssetKind::folder) {
         directories_.push_back({entry.key,entry.path,entry.path.filename().wstring(),entry.kind,0});
         targets_.push_back({key_for("nav:"+utf8(entry.path.generic_wstring())),directories_.back()});
+        // A directory first appears expanded when it is or holds the current directory.
+        if (!engine_ && std::ranges::none_of(previous,[&](const auto& item){return item.path==entry.path;}))
+            if (const auto relative=directory_.lexically_relative(entry.path);!relative.empty() && *relative.begin()!=L"..")
+                expansion_.try_emplace(entry.path,true);
     }
     std::erase_if(expansion_,[&](const auto& entry) {
         return !entry.first.empty() && std::ranges::none_of(directories_,[&](const auto& item){return item.path==entry.first;});

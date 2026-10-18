@@ -70,7 +70,7 @@ private:
     bool directory_items_dirty_{true};
     std::filesystem::path project_root_;
     std::uint64_t directory_revision_{};
-    std::map<std::filesystem::path,bool> expansion_; // Overrides; Project starts expanded, directories collapsed.
+    std::map<std::filesystem::path,bool> expansion_; // Overrides; Project starts expanded, directories collapsed unless they first appear holding the current directory.
     std::uint64_t catalog_revision_{};
     bool items_dirty_{true};
     ui::ControlKey key_for(const std::string&);

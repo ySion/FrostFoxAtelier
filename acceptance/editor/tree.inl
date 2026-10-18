@@ -9,11 +9,13 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
     };
     click(app,control::tree_world);
     require(app.document().selection().entity==atelier::ObjectId{},"Tree World row did not select the world context");
-    // A parent row is the nearest shallower row before the child.
+    // A parent row is the nearest shallower row of the same tree before the child.
+    const auto tree_of=[&](ControlKey key) {const auto* box=app.presented()->find(key);return box?box->parent:ControlKey{};};
     const auto child_of=[&](ControlKey child,ControlKey parent) {
-        const auto c=row(child),p=row(parent);
-        return c.depth==p.depth+1 && c.index>p.index && std::none_of(app.presented()->tree_rows.begin(),app.presented()->tree_rows.end(),
-            [&](const auto& r){return r.index>p.index && r.index<c.index && r.depth<=p.depth;});
+        const auto c=row(child),p=row(parent);const auto tree=tree_of(parent);
+        return tree && tree_of(child)==tree && c.depth==p.depth+1 && c.index>p.index &&
+            std::none_of(app.presented()->tree_rows.begin(),app.presented()->tree_rows.end(),
+                [&](const auto& r){return tree_of(r.key)==tree && r.index>p.index && r.index<c.index && r.depth<=p.depth;});
     };
     click(app,entity_key);
     require(row(entity_key).disclosure.width==0,"Scene Tree exposed component rows beneath an Entity");

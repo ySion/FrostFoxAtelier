@@ -129,7 +129,8 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         // Scene Tree describes rows around its last laid-out viewport. Growing the pane past that
         // margin may miss rows for one frame; the next frame lays out every visible row again.
         const auto selected=app.document().selection().entity;
-        constexpr unsigned created=160;
+        const auto members=model(app.document().world().members()).size();
+        constexpr unsigned created=120; // Stays below Session's 128 undo entries so undo removes them all.
         for(unsigned i=0;i<created;++i) require(bool(Access::command(app,editor::Command::create_entity)),"Scene Tree population failed.");
         require(bool(Access::command(app,editor::Command::show_entities)),"Scene Tree did not open.");tick(app,2);
         const auto missing=[&] {
@@ -153,7 +154,8 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         require(bool(Access::command(app,editor::Command::maximize_pane)),"Scene Tree did not restore.");tick(app,2);
         require(missing()==0,"Restored Scene Tree omitted a visible row.");
         for(unsigned i=0;i<created;++i) require(bool(Access::command(app,editor::Command::undo)),"Scene Tree population did not undo.");
-        tick(app,1);require(app.document().selection().entity==selected,"Undoing Scene Tree population lost the original selection.");
+        require(model(app.document().world().members()).size()==members,"Undoing Scene Tree population left Entities behind.");
+        model(Access::select_entity(app,selected));tick(app,1);
     }
     namespace browser=editor::browser_control;
     const auto history=app.document().undo_count();
