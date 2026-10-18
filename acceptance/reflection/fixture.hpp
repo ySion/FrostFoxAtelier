@@ -47,6 +47,13 @@ struct RangeProbe {
     AFIELD(Max = "0.5", HardMin = "0", HardMax = "1") Array<double> weights;
 };
 
+// Targets outside the generated group resolve by name when the Runtime publishes the batch.
+ASTRUCT(Name = "reflection.ParentArgs")
+struct ParentArgs {
+    AGENERATED_BODY(ParentArgs)
+    AFIELD(Weak = "reflection.External") ReferenceSlot parent;
+};
+
 AENUM(Name = "reflection.Mode", DESC = "Mode 工作状态。\nidle 表示空闲。")
 enum class Mode : std::int32_t { idle = -1, active = 2, alias = active };
 AENUM(Name = "reflection.OtherMode")

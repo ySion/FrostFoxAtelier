@@ -130,7 +130,15 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 
 同步 plain struct 参数沿现有 `Argument`、`PreparedArguments` 和共享签名入口在执行前冻结快照；原生成员的定型 C++ thunk 根据真实参数与返回类型处理平台 ABI，JIT 不自行猜测寄存器分类。返回沿同一 `Runtime::call` 或 `Program::Entry/Lease::invoke` 的 `ValueOutput` 提交，要求调用方提供精确类型的活值和正确对齐。参数与结果暂存共用 `ValueStorage` 的内联容量和对齐扩展实现。源码内部返回值直接复制到独立结果槽，Program 的结果暂存仅保存返回字节；两者都不额外执行默认构造或析构。原生 Invoker 的输出仍沿已构造活值契约。完整成功后才复制到宿主输出，失败保留原输出，已发生的可变参数或业务修改仍可见。
 
-`Runtime::read/write` 的 `ValueOutput/ValueInput` 也接受 plain struct，复用既有字段路径与类型身份。源码对象字段继续投影标量及数学值叶字段，不提供普通记录字段的整体读写语法。含 String/Array、GC 引用或其他资源的记录、容器按值参数/结果和异步聚合边界仍拒绝。
+`Runtime::read/write` 的 `ValueOutput/ValueInput` 也接受 plain struct，复用既有字段路径与类型身份。源码对象字段继续投影标量及数学值叶字段，不提供普通记录字段的整体读写语法。容器按值参数/结果和异步聚合边界仍拒绝含 String/Array、GC 引用或其他资源的记录。
+
+### 整值读写与调用方存储
+
+`read/write(…, ValueOutput/ValueInput)` 接受 plain 值，以及可复制构造与赋值、值操作保持借用、不含 GC 引用的值，即 String、Array 和由它们组成的记录。含 GC 引用的值仍只能经 `read_reference/write_reference` 写引用字段。
+
+- plain 值整块复制。其他值先复制构造到临时值，在临时值上完成硬边界夹值，再与目标做 noexcept 交换：复制、分配或夹值前的 NaN 检查失败时，字段保持原值。读出时同样先复制再交换，失败时输出保持原值。交换来自 `NativeLayout::swap`（`NativeRegistration` 在类型 nothrow 可交换时自动提供），描述型记录由字段的字节交换和原生交换组合而成。没有 noexcept 交换的类型退回复制赋值，只有基本保证。
+- 对象目标上替换非 plain 值会释放旧缓冲，所以在回调、原生借用和引用遍历期间返回 `busy`；plain 值和标量写入不受影响。
+- `read/write(TypeId, storage, path, Scalar)` 与 `read/write(TypeId, storage, path, ValueOutput/ValueInput)` 对调用方持有的活值做同样的访问，与 `read_reference/write_reference(TypeId, storage, path)` 对称。存储规则与[值操作入口](#已实现的值操作入口)相同：调用方提供已构造的活值，Runtime 检查类型、容量与对齐。路径解析、精确类型、硬边界和元素选择子与对象目标共用同一份实现；写入只在引用遍历或批量引用准备期间返回 `busy`，因为存储归调用方所有。
 
 ## 正式对象单继承
 
@@ -216,7 +224,7 @@ C++ 生产者使用 `AFIELD(Label = "Position", Category = "Transform")`，规�
 `FieldDefinition::range` 与 `FieldInfo::range` 是 `FieldRange{ui_min, ui_max, hard_min, hard_max}`，四个可选 `Scalar`。UI 范围只供编辑器滑条和数值阶梯使用，不约束写入；硬边界由 Runtime 在自己的写入路径上强制执行。C++ 写法见[自动反射](reflection.md#字段范围与硬边界)。
 
 - 发布：范围只允许出现在 f32/f64/i32/u32 内联字段、f32/f64 数学向量字段以及这些类型的 Array 字段上，向量按分量、数组按元素生效。边界必须有限，且是叶标量的精确类型；`ui_min ≤ ui_max`、`hard_min ≤ hard_max`，每个 UI 边界落在硬边界内，描述型默认值有限且满足硬边界。任一项失败时整组发布失败。继承字段保留声明的范围。范围属于已发布定义，同类型不能改范围。
-- 写入：`write(Scalar)` 和 `write(ValueInput)` 只看硬边界。越界值夹到闭区间边界；只要存在任一硬边界，NaN/±Inf 就以 `argument_mismatch` 拒绝。整值写入先检查输入中所有受约束叶，再改动任何字节，然后原位夹值。覆盖范围包括标量字段、数学向量整值与分量、数组元素，以及内含受约束字段的记录整值（发布时为类型预计算受约束叶路径）；`insert_element` 的副本遵循同一规则。源码字段读写桥和场景反序列化都经过这些入口。
+- 写入：`write(Scalar)` 和 `write(ValueInput)` 只看硬边界。越界值夹到闭区间边界；只要存在任一硬边界，NaN/±Inf 就以 `argument_mismatch` 拒绝。整值写入先检查输入中所有受约束叶，再改动任何字节，然后夹值（非 plain 值在交换前的副本上夹值），输入本身不变。覆盖范围包括标量字段、数学向量整值与分量、数组元素、带范围数组的整值，以及内含受约束字段的记录整值（发布时为类型预计算受约束叶路径）；`insert_element` 的副本和调用方存储的写入遵循同一规则。源码字段读写桥和场景反序列化都经过这些入口。
 - 预演：`constrain(TypeId, path, Scalar)` 不需要对象，返回同一次写入会存储的值，或同样的拒绝。编辑器预显示与场景加载诊断共用它。
 - 借用：对受约束字段、内含受约束叶的记录字段以及元素受约束的 Array 字段，`Argument::field` 的可写引用实参以 `argument_mismatch` 拒绝，只读引用和按值仍可使用。源码前端在编译期给出同样的诊断，绑定目录为每个字段记录 `constrained`，数学分量继承所在向量的标记。
 - 可信直接访问不检查：`with_native`、`borrow_native`、原生方法的 `this` 和公开偏移的直接存储。编写作者数据的宿主路径应改用 Runtime 写入，或先调用 `constrain`。

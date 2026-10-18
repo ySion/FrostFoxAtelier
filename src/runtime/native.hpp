@@ -90,6 +90,12 @@ public:
                     *static_cast<T*>(destination) = *static_cast<const T*>(source);
                 };
             }
+            if constexpr (std::is_nothrow_swappable_v<T>) {
+                definition_.native.swap = [](void* first, void* second) noexcept {
+                    using std::swap;
+                    swap(*static_cast<T*>(first), *static_cast<T*>(second));
+                };
+            }
         }
     }
 

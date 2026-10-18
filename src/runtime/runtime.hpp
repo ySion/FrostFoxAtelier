@@ -431,6 +431,9 @@ struct NativeLayout {
     // a destructible value and its basic invariants, but need not roll back.
     void (*copy_construct)(void*, const void*){};
     void (*copy_assign)(void*, const void*){};
+    // Optional for values: exchanges two live values without throwing. Whole-value field
+    // writes use it to commit a fully prepared copy, leaving the field unchanged on failure.
+    void (*swap)(void*, void*) noexcept{};
     // Complete native representation to its explicitly declared native base.
     void* (*base_address)(void*) noexcept{};
     // Array element representation, checked against the same registered value type.
@@ -716,8 +719,18 @@ public:
     // to the elements of a ranged Array, and to constrained leaves inside a written record.
     [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);
+    // Whole values: plain values, or copyable values whose operations preserve borrows and that
+    // hold no GC references (String, Array, records of them). Non-trivial writes prepare a clamped
+    // copy and swap it in, so a failure leaves the field unchanged; on objects they are busy during
+    // callbacks and native borrows. Reads copy into a live value of the exact type.
     [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, ValueInput value);
+    // The same accesses on a caller-owned live value of `type`, under the value-operation trust rules.
+    [[nodiscard]] Result<Scalar> read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<void> write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, Scalar value);
+    [[nodiscard]] Result<void> read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path,
+                                    ValueOutput output) const;
+    [[nodiscard]] Result<void> write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, ValueInput value);
     // The value a scalar write to this path of `type` would store, without an object:
     // clamped to hard bounds, argument_mismatch for NaN/Inf under a hard bound.
     [[nodiscard]] Result<Scalar> constrain(TypeId type, std::span<const FieldId> path, Scalar value) const;
@@ -845,6 +858,12 @@ private:
     [[nodiscard]] Result<void> mutate_elements(ObjectId object, std::span<const FieldId> path, SequenceMutation operation,
                                                std::size_t position, std::size_t operand, ValueInput value);
     [[nodiscard]] Result<Address> resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_storage(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path) const;
+    // One implementation for object and caller-owned targets; `object` selects the borrow rule.
+    [[nodiscard]] Result<Scalar> read_at(const Address& address) const;
+    [[nodiscard]] Result<void> write_at(const Address& address, Scalar value);
+    [[nodiscard]] Result<void> read_at(const Address& address, ValueOutput output) const;
+    [[nodiscard]] Result<void> write_at(const Address& address, ValueInput value, bool object);
     [[nodiscard]] Result<void> validate_reference(const ObjectReference& reference) const;
     [[nodiscard]] Result<ObjectReference> read_reference_at(Address address) const;
     [[nodiscard]] Result<void> write_reference_at(Address address, const ObjectReference& reference);

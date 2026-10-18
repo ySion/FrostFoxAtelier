@@ -120,7 +120,7 @@ $cases = @(
     @{name='unmarked'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'atelier::ReferenceSlot missing;'); error='requires an explicit AFIELD'},
     @{name='nested-unmarked'; text='struct Nested { atelier::ReferenceSlot slot; };' + $valid.Replace('AFIELD() ProbeScalar value{};', 'Nested missing;'); error='requires an explicit AFIELD'},
     @{name='strength'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Sequence="probe.Widget") atelier::ReferenceSlot slot;'); error='matching Strong, Weak or Sequence'},
-    @{name='target'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Strong="probe.Missing") atelier::ReferenceSlot slot;'); error='Reference target must name'},
+    @{name='target-record'; text=('ASTRUCT(Name="probe.Value") struct Value { AGENERATED_BODY(Value) AFIELD() float x{}; };' + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Strong="probe.Value") atelier::ReferenceSlot slot;')); error='Reference target must name an object type: probe.Value'},
     @{name='signature'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() void bad(float&&) {}'); error='scalar/enum/plain record values or const T&/T& borrows'},
     @{name='enum-width'; text='AENUM() enum class Small : unsigned char { value };'; error='int32_t or uint32_t underlying type'},
     @{name='enum-unscoped'; text='AENUM() enum Plain { value };'; error='namespace-level enum class'},

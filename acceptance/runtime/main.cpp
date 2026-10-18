@@ -2114,6 +2114,7 @@ void verify_reference_sequences();
 void verify_field_ranges();
 void verify_type_validation();
 void verify_array_elements();
+void verify_value_paths();
 
 int main() {
     try {
@@ -2143,6 +2144,7 @@ int main() {
         verify_field_ranges();
         verify_type_validation();
         verify_array_elements();
+        verify_value_paths();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

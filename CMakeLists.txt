@@ -78,6 +78,7 @@ add_executable(atelier_runtime_acceptance
     acceptance/runtime/field_ranges.cpp
     acceptance/runtime/validation.cpp
     acceptance/runtime/arrays.cpp
+    acceptance/runtime/value_paths.cpp
     acceptance/memory/acceptance.cpp)
 atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)

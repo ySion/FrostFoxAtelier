@@ -62,6 +62,21 @@ void verify_ranges(Runtime& runtime) {
     take(runtime.write(probe.id(), first, Scalar{-3.0}));
     require(take(runtime.read(probe.id(), first)) == Scalar{0.0}, "An Array element write escaped its generated hard bound.");
 }
+struct External {};
+void verify_external_reference() {
+    Runtime runtime;
+    const auto missing = runtime.register_types({atelier::reflection::Definition<ParentArgs>::build(runtime)});
+    require(!missing && missing.error().code == ErrorCode::invalid_definition &&
+        missing.error().message.find("'reflection.External'") != std::string::npos &&
+        missing.error().message.find("reflection.ParentArgs.parent") != std::string::npos,
+        "A missing reference target did not name its field and target.");
+    const auto types = take(runtime.register_types({
+        NativeRegistration<External>{runtime, "reflection.External", TypeKind::object}.build(),
+        atelier::reflection::Definition<ParentArgs>::build(runtime)}));
+    const auto& parent = field_info(runtime, types[1], "parent");
+    require(parent.value.type == types[0] && parent.value.form == ValueForm::weak_reference,
+        "A reference target outside the generated group did not resolve by name.");
+}
 void verify_field_presentation(Runtime& runtime) {
     const auto sample_type = take(runtime.native_type<Sample>());
     const auto& value = field_info(runtime, sample_type, "value");
@@ -333,6 +348,7 @@ int main() {
         verify_field_presentation(runtime);
         verify_descriptions(runtime);
         verify_ranges(runtime);
+        verify_external_reference();
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);

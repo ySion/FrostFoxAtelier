@@ -85,7 +85,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 ### 字段与方法
 
 - 内联字段支持 bool、float、double、int/int32_t、uint32_t、本生成组中的反射枚举与记录，以及内建数学值、引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
-- `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标须为本组反射对象或 `core.Object`。这些选项不能用于普通内联值。
+- `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标可以是本组的反射对象，也可以是组外任意对象类型的限定名（如 `world.Entity`）：生成代码按名称引用，由 Runtime 在发布时解析，所以组外目标必须先发布或在同一批中，缺失时发布错误写明字段和所引用的名称。目标指向本组的非对象类型时生成器报错。这些选项不能用于普通内联值。
 - `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。
 - 漏标直接引用槽、序列或内嵌包含引用存储的记录/数组会报错，避免遗漏 GC 边。未标记的普通原生状态不自动成为反射字段；任意外部资源的所有权仍由原生实现负责。
 - 对象支持一个 public、非 virtual 的原生反射基类，基类须在本组中；记录不支持继承。继承反射成员重名会报错。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。

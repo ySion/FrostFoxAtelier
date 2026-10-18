@@ -553,9 +553,10 @@ void members(State& state, Type& type, ASTContext& context) {
             state.error(field->getLocation(), "Reference storage requires exactly its matching Strong, Weak or Sequence target; sequences belong to objects."); continue;
         }
         if (slot || sequence) {
-            const auto target = std::find_if(state.types.begin(), state.types.end(), [&](const Type& candidate) { return candidate.runtime_name == result.target && candidate.object; });
-            if (target == state.types.end() && result.target != "core.Object") {
-                state.error(field->getLocation(), "Reference target must name a reflected object in this group or core.Object: " + result.target); continue;
+            // Targets outside this group resolve by name when the Runtime publishes the batch.
+            const auto target = std::find_if(state.types.begin(), state.types.end(), [&](const Type& candidate) { return candidate.runtime_name == result.target; });
+            if (result.target.empty() || (target != state.types.end() && !target->object)) {
+                state.error(field->getLocation(), "Reference target must name an object type: " + result.target); continue;
             }
         } else {
             if (!value_field(field->getType(), state, context)) {

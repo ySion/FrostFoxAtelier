@@ -367,6 +367,10 @@ struct Runtime::Impl {
         Result<void> (*validate)(const void*){};
         // Post-order: base segment, inline records and Arrays innermost first, the type's own validator last.
         std::vector<ValidatorStep> validators;
+        // Non-trivial values only: byte ranges (null swap) and native swaps that exchange two
+        // values without throwing. Empty when the type cannot, so writes fall back to assignment.
+        struct SwapPart { std::size_t offset, size; void (*swap)(void*, void*) noexcept; };
+        std::vector<SwapPart> swap_parts;
     };
     struct Slot {
         TypeId type;
@@ -763,6 +767,13 @@ struct Runtime::Impl {
     // Checks (write == false) or clamps a value; false on NaN/Inf. `range` bounds a scalar
     // or math vector as a whole, otherwise the type's own hard-bounded leaves apply.
     bool constrain_value(const Type& type, const FieldRange* range, void* storage, bool write) const {
+        if (range && type.info.kind == TypeKind::array) {
+            const auto& element = *lookup(*type.info.element);
+            const auto [items, count] = elements(type, storage);
+            for (std::size_t i = 0; i != count; ++i)
+                if (!constrain_value(element, range, items + i * element.info.size, write)) return false;
+            return true;
+        }
         if (range) {
             const bool scalar = type.info.kind == TypeKind::scalar;
             const auto stride = scalar ? type.info.size : type.info.math.scalar_size();
@@ -772,6 +783,54 @@ struct Runtime::Impl {
         }
         auto leaf = [write](const FieldRange& bounds, void* data) { return constrain_storage(bounds, data, write); };
         return each_bounded(type, storage, nullptr, leaf);
+    }
+
+    static void swap_value(const Type& type, void* first, void* second) noexcept {
+        for (const auto& part : type.swap_parts) {
+            auto* a = static_cast<std::byte*>(first) + part.offset;
+            auto* b = static_cast<std::byte*>(second) + part.offset;
+            if (part.swap) part.swap(a, b);
+            else std::swap_ranges(a, a + part.size, b);
+        }
+    }
+
+    // Copies `source` over the live value at `destination`, rejecting NaN/Inf under hard bounds
+    // before any change and clamping afterwards when `constrained`. Non-trivial values are copied
+    // and clamped in a temporary, then swapped in, so a failure leaves `destination` unchanged;
+    // types without a noexcept swap fall back to copy assignment (basic guarantee).
+    Result<void> replace_value(const Type& type, const FieldRange* range, bool constrained, void* destination, const void* source) {
+        CallbackScope scope{callbacks};
+        if (constrained && !constrain_value(type, range, const_cast<void*>(source), false))
+            return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
+        if (type.info.plain_value || type.info.kind == TypeKind::scalar) {
+            std::memmove(destination, source, type.info.size);
+            if (constrained) constrain_value(type, range, destination, true);
+            return {};
+        }
+        if (type.swap_parts.empty()) {
+            try {
+                assign(type, destination, source);
+            } catch (const std::exception& error) {
+                return failure(ErrorCode::assignment_failed, error.what());
+            } catch (...) {
+                return failure(ErrorCode::assignment_failed, "Native value assignment raised an unknown exception.");
+            }
+            if (constrained) constrain_value(type, range, destination, true);
+            return {};
+        }
+        detail::ValueStorage temporary;
+        std::byte* copy{};
+        try {
+            copy = temporary.prepare(type.info.size, type.info.alignment);
+        } catch (const std::exception& error) {
+            return failure(ErrorCode::assignment_failed, error.what());
+        }
+        if (auto made = try_construct(type, copy, source); !made)
+            return failure(ErrorCode::assignment_failed, made.error().message);
+        if (constrained) constrain_value(type, range, copy, true);
+        swap_value(type, destination, copy);
+        destroy(type, copy);
+        return {};
     }
 
     std::optional<ValidationFailure> check_rules(const Type& root, void* storage) {
@@ -1421,7 +1480,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
         const bool is_native = native.size || native.alignment || native.representation || native.construct ||
-                               native.destroy || native.copy_construct || native.copy_assign || native.base_address || native.element_representation || native.sequence_view || native.sequence_mutate || native.value_operations_preserve_borrows || native.plain_value;
+                               native.destroy || native.copy_construct || native.copy_assign || native.swap || native.base_address || native.element_representation || native.sequence_view || native.sequence_mutate || native.value_operations_preserve_borrows || native.plain_value;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) ||
             !native.representation || !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition, "Native layout requires valid size, alignment and lifecycle operations.");
@@ -1545,7 +1604,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             type.member_names.push_back(field.name);
             const auto* target = resolve(field.value.type);
             if (!target) {
-                return failure(ErrorCode::invalid_definition, "Unresolved field type: " + type.info.name + "." + field.name);
+                const auto* named = std::get_if<std::string>(&field.value.type.target_);
+                return failure(ErrorCode::invalid_definition, "Unresolved field type" + (named ? " '" + *named + "'" : std::string{}) +
+                    ": " + type.info.name + "." + field.name);
             }
             const auto form = field.value.form;
             if (form == ValueForm::inline_value) {
@@ -1781,6 +1842,21 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     }
                     if (end == type.info.size) type.scalar_leaf = scalar;
                     if (type.scalar_leaf) type.walk_depth = 1;
+                }
+            }
+            // Trivial values swap their bytes directly; others compose field swaps or use the native one.
+            if (type.info.kind != TypeKind::object && !type.info.plain_value && !type.info.contains_references) {
+                if (is_native) {
+                    if (type.native.swap) type.swap_parts = {{0, type.info.size, type.native.swap}};
+                } else {
+                    for (const auto& field : type.fields) {
+                        const auto& target = *field.type;
+                        if (target.info.plain_value || target.info.kind == TypeKind::scalar)
+                            type.swap_parts.push_back({field.offset, target.info.size, nullptr});
+                        else if (target.swap_parts.empty()) { type.swap_parts.clear(); break; }
+                        else for (const auto& part : target.swap_parts)
+                            type.swap_parts.push_back({field.offset + part.offset, part.size, part.swap});
+                    }
                 }
             }
             states[frame.type] = LayoutState::complete;
@@ -2520,9 +2596,7 @@ Result<void> Runtime::write_reference(ObjectId object, std::span<const FieldId> 
 
 Result<ObjectReference> Runtime::read_reference(TypeId type_id, std::span<const std::byte> storage,
                                                std::span<const FieldId> path) const {
-    const auto type = impl_->value_type(type_id, storage);
-    if (!type) return std::unexpected(type.error());
-    const auto address = resolve_path(type_id, const_cast<std::byte*>(storage.data()), path);
+    const auto address = resolve_storage(type_id, storage, path);
     if (!address) return std::unexpected(address.error());
     return read_reference_at(*address);
 }
@@ -2530,9 +2604,7 @@ Result<ObjectReference> Runtime::read_reference(TypeId type_id, std::span<const 
 Result<void> Runtime::write_reference(TypeId type_id, std::span<std::byte> storage,
                                      std::span<const FieldId> path, const ObjectReference& reference) {
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Reference mutation is not allowed during traversal.");
-    const auto type = impl_->value_type(type_id, storage);
-    if (!type) return std::unexpected(type.error());
-    const auto address = resolve_path(type_id, storage.data(), path);
+    const auto address = resolve_storage(type_id, storage, path);
     if (!address) return std::unexpected(address.error());
     return write_reference_at(*address, reference);
 }
@@ -2540,41 +2612,69 @@ Result<void> Runtime::write_reference(TypeId type_id, std::span<std::byte> stora
 Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) const {
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
-    if (address->value.type == impl_->f32) return Scalar{*static_cast<const float*>(address->data)};
-    if (address->value.type == impl_->f64) return Scalar{*static_cast<const double*>(address->data)};
-    if (address->value.type == impl_->u32) return Scalar{*static_cast<const std::uint32_t*>(address->data)};
-    if (address->value.type == impl_->i32) return Scalar{*static_cast<const std::int32_t*>(address->data)};
-    if (address->value.type == impl_->boolean) return Scalar{*static_cast<const bool*>(address->data)};
-    const auto* type = impl_->lookup(address->value.type);
-    if (type && type->info.kind == TypeKind::enumeration && address->value.form == ValueForm::inline_value) {
-        std::uint32_t bits;
-        std::memcpy(&bits, address->data, 4);
-        return Scalar{EnumValue{type->info.id, bits}};
-    }
-    return failure(ErrorCode::type_mismatch, "Read requires a scalar or enum field; select a field inside the record.");
+    return read_at(*address);
 }
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
-    if (address->value.form != ValueForm::inline_value || address->value.type != impl_->scalar_type(value)) {
+    return write_at(*address, value);
+}
+
+Result<Scalar> Runtime::read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path) const {
+    const auto address = resolve_storage(type, storage, path);
+    if (!address) return std::unexpected(address.error());
+    return read_at(*address);
+}
+
+Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, Scalar value) {
+    if (impl_->roots->traversals != 0 || impl_->changing_references)
+        return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal or batch preparation.");
+    const auto address = resolve_storage(type, storage, path);
+    if (!address) return std::unexpected(address.error());
+    return write_at(*address, value);
+}
+
+Result<Runtime::Address> Runtime::resolve_storage(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path) const {
+    const auto valid = impl_->value_type(type, storage);
+    if (!valid) return std::unexpected(valid.error());
+    return resolve_path(type, const_cast<std::byte*>(storage.data()), path);
+}
+
+Result<Scalar> Runtime::read_at(const Address& address) const {
+    if (address.value.type == impl_->f32) return Scalar{*static_cast<const float*>(address.data)};
+    if (address.value.type == impl_->f64) return Scalar{*static_cast<const double*>(address.data)};
+    if (address.value.type == impl_->u32) return Scalar{*static_cast<const std::uint32_t*>(address.data)};
+    if (address.value.type == impl_->i32) return Scalar{*static_cast<const std::int32_t*>(address.data)};
+    if (address.value.type == impl_->boolean) return Scalar{*static_cast<const bool*>(address.data)};
+    const auto* type = impl_->lookup(address.value.type);
+    if (type && type->info.kind == TypeKind::enumeration && address.value.form == ValueForm::inline_value) {
+        std::uint32_t bits;
+        std::memcpy(&bits, address.data, 4);
+        return Scalar{EnumValue{type->info.id, bits}};
+    }
+    return failure(ErrorCode::type_mismatch, "Read requires a scalar or enum field; select a field inside the record.");
+}
+
+Result<void> Runtime::write_at(const Address& address, Scalar value) {
+    if (address.value.form != ValueForm::inline_value || address.value.type != impl_->scalar_type(value)) {
         return failure(ErrorCode::type_mismatch, "Value type does not match the field.");
     }
-    if (std::holds_alternative<EnumValue>(value) && impl_->lookup(address->value.type)->info.kind != TypeKind::enumeration)
+    if (std::holds_alternative<EnumValue>(value) && impl_->lookup(address.value.type)->info.kind != TypeKind::enumeration)
         return failure(ErrorCode::type_mismatch, "Enum value cannot masquerade as a scalar.");
-    if (address->range && !constrain_scalar(*address->range, value))
+    if (address.range && !constrain_scalar(*address.range, value))
         return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
-    if (address->value.type == impl_->f32) *static_cast<float*>(address->data) = std::get<float>(value);
-    else if (address->value.type == impl_->f64) *static_cast<double*>(address->data) = std::get<double>(value);
-    else if (address->value.type == impl_->u32) *static_cast<std::uint32_t*>(address->data) = std::get<std::uint32_t>(value);
-    else if (address->value.type == impl_->i32) *static_cast<std::int32_t*>(address->data) = std::get<std::int32_t>(value);
-    else if (address->value.type == impl_->boolean) *static_cast<bool*>(address->data) = std::get<bool>(value);
+    if (address.value.type == impl_->f32) *static_cast<float*>(address.data) = std::get<float>(value);
+    else if (address.value.type == impl_->f64) *static_cast<double*>(address.data) = std::get<double>(value);
+    else if (address.value.type == impl_->u32) *static_cast<std::uint32_t*>(address.data) = std::get<std::uint32_t>(value);
+    else if (address.value.type == impl_->i32) *static_cast<std::int32_t*>(address.data) = std::get<std::int32_t>(value);
+    else if (address.value.type == impl_->boolean) *static_cast<bool*>(address.data) = std::get<bool>(value);
     else {
-        const auto* type = impl_->lookup(address->value.type);
+        const auto* type = impl_->lookup(address.value.type);
         if (!type || type->info.kind != TypeKind::enumeration || !std::holds_alternative<EnumValue>(value))
             return failure(ErrorCode::type_mismatch, "Value is not an enum of the field type.");
-        std::memcpy(address->data, &std::get<EnumValue>(value).bits, 4);
+        std::memcpy(address.data, &std::get<EnumValue>(value).bits, 4);
     }
     return {};
 }
@@ -2683,35 +2783,66 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
 Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const {
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
-    const auto* type = impl_->lookup(address->value.type);
-    if (address->value.form != ValueForm::inline_value || !type->info.plain_value || output.type != type->info.id)
-        return failure(ErrorCode::type_mismatch, "Plain value field read requires its exact Runtime type.");
-    if (!output.data || reinterpret_cast<std::uintptr_t>(output.data) % type->info.alignment != 0)
-        return failure(ErrorCode::invalid_storage, "Plain value output storage is null or misaligned.");
-    std::memmove(output.data, address->data, type->info.size);
-    return {};
+    return read_at(*address, output);
 }
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
-    const auto* type = impl_->lookup(address->value.type);
-    if (address->value.form != ValueForm::inline_value || !type->info.plain_value || value.type != type->info.id)
-        return failure(ErrorCode::type_mismatch, "Plain value field write requires its exact Runtime type.");
-    if (!value.data || reinterpret_cast<std::uintptr_t>(value.data) % type->info.alignment != 0)
-        return failure(ErrorCode::invalid_storage, "Plain value input storage is null or misaligned.");
-    if (!address->range && type->constrained_leaves.empty()) {
-        std::memmove(address->data, value.data, type->info.size);
+    return write_at(*address, value, true);
+}
+
+Result<void> Runtime::read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path, ValueOutput output) const {
+    const auto address = resolve_storage(type, storage, path);
+    if (!address) return std::unexpected(address.error());
+    return read_at(*address, output);
+}
+
+Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, ValueInput value) {
+    if (impl_->roots->traversals != 0 || impl_->changing_references)
+        return failure(ErrorCode::busy, "Value mutation is not allowed during reference traversal or batch preparation.");
+    const auto address = resolve_storage(type, storage, path);
+    if (!address) return std::unexpected(address.error());
+    return write_at(*address, value, false);
+}
+
+namespace {
+// Plain values move as bytes; other whole values must copy without GC references or borrow hazards.
+bool whole_value(const TypeInfo& info) {
+    return info.plain_value || (info.kind != TypeKind::object && !info.contains_references && info.copy_constructible &&
+        info.copy_assignable && info.value_operations_preserve_borrows);
+}
+}
+
+Result<void> Runtime::read_at(const Address& address, ValueOutput output) const {
+    const auto* type = impl_->lookup(address.value.type);
+    if (address.value.form != ValueForm::inline_value || !whole_value(type->info) || output.type != type->info.id)
+        return failure(ErrorCode::type_mismatch, "Whole-value field read requires its exact Runtime type, without GC references.");
+    if (!output.data || reinterpret_cast<std::uintptr_t>(output.data) % type->info.alignment != 0)
+        return failure(ErrorCode::invalid_storage, "Value output storage is null or misaligned.");
+    if (type->info.plain_value) {
+        std::memmove(output.data, address.data, type->info.size);
         return {};
     }
-    // Every leaf is checked before any byte changes; clamping then applies in place.
-    CallbackScope scope{impl_->callbacks};
-    if (!impl_->constrain_value(*type, address->range, const_cast<void*>(value.data), false))
-        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
-    std::memmove(address->data, value.data, type->info.size);
-    impl_->constrain_value(*type, address->range, address->data, true);
-    return {};
+    return impl_->replace_value(*type, nullptr, false, output.data, address.data);
+}
+
+Result<void> Runtime::write_at(const Address& address, ValueInput value, bool object) {
+    const auto* type = impl_->lookup(address.value.type);
+    if (address.value.form != ValueForm::inline_value || !whole_value(type->info) || value.type != type->info.id)
+        return failure(ErrorCode::type_mismatch, "Whole-value field write requires its exact Runtime type, without GC references.");
+    if (!value.data || reinterpret_cast<std::uintptr_t>(value.data) % type->info.alignment != 0)
+        return failure(ErrorCode::invalid_storage, "Value input storage is null or misaligned.");
+    const bool constrained = address.range || !type->constrained_leaves.empty();
+    if (type->info.plain_value && !constrained) {
+        std::memmove(address.data, value.data, type->info.size);
+        return {};
+    }
+    // Replacing a buffer would leave borrowed addresses into the old one dangling.
+    if (!type->info.plain_value && object && impl_->callbacks != 0)
+        return failure(ErrorCode::busy, "Non-plain field values cannot be replaced during callbacks or native borrows.");
+    return impl_->replace_value(*type, address.range, constrained, address.data, value.data);
 }
 
 Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
