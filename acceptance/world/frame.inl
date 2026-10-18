@@ -163,6 +163,30 @@ void frame_phases() {
         "A rejected author edit was not checked on its written value or not restored.");
     take(shown.write(dark.id(), std::array{types.counter_value}, Scalar{5.f}));
     require(std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 5.f, "An admitted author edit was not kept.");
+    // An admission may read the World but not edit it or register admissions while it runs; one
+    // that throws rejects the edit like a returned error, and the previous value is restored.
+    enum class Probe { none, reenter, raise } probe{};
+    std::optional<Result<void>> nested_write, nested_admission;
+    take(shown.add_admission(types.counter, [&](const w::World&, std::span<const ObjectId> candidates) -> Result<void> {
+        if (probe == Probe::reenter) {
+            nested_write = shown.write(candidates.front(), std::array{types.counter_value}, Scalar{9.f});
+            nested_admission = shown.add_admission(types.counter, [](const w::World&, std::span<const ObjectId>) -> Result<void> { return {}; });
+        }
+        if (probe == Probe::raise) throw std::runtime_error("Admission probe threw.");
+        return {};
+    }));
+    probe = Probe::reenter;
+    take(shown.write(dark.id(), std::array{types.counter_value}, Scalar{3.f}));
+    require(nested_write && !*nested_write && nested_write->error().code == ErrorCode::busy &&
+        nested_admission && !*nested_admission && nested_admission->error().code == ErrorCode::busy &&
+        std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 3.f,
+        "An admission edited the World or registered an admission while it ran.");
+    probe = Probe::raise;
+    const auto raised = shown.write(dark.id(), std::array{types.counter_value}, Scalar{7.f});
+    require(!raised && raised.error().code == ErrorCode::invocation_failed && raised.error().message == "Admission probe threw." &&
+        std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 3.f,
+        "A throwing admission did not reject the edit and restore the previous value.");
+    probe = Probe::none;
     committed(shown.close());
-    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions");
+    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore)");
 }

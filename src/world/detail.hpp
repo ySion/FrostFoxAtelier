@@ -299,13 +299,13 @@ struct World::Impl {
     struct AdmissionEntry { TypeId type; Admission admission; };
     std::vector<AdmissionEntry> admissions;
     // Runs each admission on the candidates of its type; empty selections are skipped.
-    Result<void> check_admissions(std::span<const ObjectId> candidates) const;
-    Result<void> check_admissions(std::span<const ObjectRoot> candidates) const;
+    Result<void> check_admissions(std::span<const ObjectId> candidates);
+    Result<void> check_admissions(std::span<const ObjectRoot> candidates);
     // Whether an edit of this member component runs admissions; detached composition does not.
     Result<bool> admitted(ObjectId component) const;
     // Shared by World::write: write, then type rules and admissions; `restore` undoes a rejected edit.
     template<class Write, class Restore> Result<void> checked_write(ObjectId, bool entity, Write&&, Restore&&);
-    Result<void> check_edit(ObjectId component) const;
+    Result<void> check_edit(ObjectId component);
     void cancel_tasks(ObjectId target = {}, bool entity = true) noexcept;
     void halt() noexcept;
     // Begin visits [first,last) members; End reverses it. A non-null component

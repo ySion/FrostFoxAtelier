@@ -525,7 +525,9 @@ Result<void> World::add_admission(TypeId type, Admission admission) {
     state.admissions.push_back({type, std::move(admission)});
     return {};
 }
-Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates) const {
+Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates) {
+    // Admissions may read the World; edits and registrations stay busy until they return.
+    detail::DispatchScope dispatch{dispatch_depth};
     std::vector<ObjectId> selected;
     for (const auto& [type, admission] : admissions) {
         selected.clear();
@@ -536,12 +538,22 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates)
             if (!matches) return std::unexpected(matches.error());
             if (*matches) selected.push_back(object);
         }
-        if (!selected.empty())
-            if (auto admitted = admission(world, selected); !admitted) return admitted;
+        if (selected.empty()) continue;
+        Result<void> admitted;
+        try {
+            admitted = admission(world, selected);
+        } catch (const std::bad_alloc&) {
+            return error(ErrorCode::capacity_exceeded, "A World admission ran out of memory.");
+        } catch (const std::exception& exception) {
+            return error(ErrorCode::invocation_failed, exception.what());
+        } catch (...) {
+            return error(ErrorCode::invocation_failed, "A World admission threw an unknown exception.");
+        }
+        if (!admitted) return admitted;
     }
     return {};
 }
-Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidates) const {
+Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidates) {
     if (admissions.empty()) return {};
     std::vector<ObjectId> ids;
     ids.reserve(candidates.size());
@@ -562,7 +574,7 @@ Result<bool> World::Impl::admitted(ObjectId component) const {
     }
     return false;
 }
-Result<void> World::Impl::check_edit(ObjectId component) const {
+Result<void> World::Impl::check_edit(ObjectId component) {
     auto checked = admitted(component);
     if (!checked) return std::unexpected(checked.error());
     if (!*checked) return {};
@@ -583,13 +595,13 @@ Result<std::optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity)
     if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, phase_, at, at)) return std::unexpected(matrix.error());
     return std::nullopt;
 }
-bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string message) {
+bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message) {
     if (!singular(world)) return false;
     Diagnostic diagnostic;
     diagnostic.severity = Severity::warning; diagnostic.kind = DiagnosticKind::degenerate_value;
     diagnostic.phase = phase_;
     diagnostic.object = diagnostic.entity = impl_->space.degenerate_root(entity); diagnostic.field = {"scale"};
-    diagnostic.message = std::move(message);
+    diagnostic.message = message;
     impl_->report(std::move(diagnostic));
     return true;
 }
@@ -845,7 +857,8 @@ Result<void> World::Impl::checked_write(ObjectId object, bool entity, Write&& wr
     if (!candidate) return std::unexpected(candidate.error());
     if (auto written = write(); !written) return written;
     const auto reject = [&](Error failure) -> Result<void> {
-        restore();
+        if (auto restored = restore(); !restored)
+            return error(restored.error().code, "The rejected value could not be restored (" + restored.error().message + "); it was rejected because: " + failure.message);
         return std::unexpected(std::move(failure));
     };
     if (!*before) {
@@ -892,7 +905,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
     if (!previous) return std::unexpected(previous.error());
     return impl_->checked_write(object, *transform,
         [&] { return runtime().write(object, path, value); },
-        [&] { (void)runtime().write(object, path, *previous); });
+        [&] { return runtime().write(object, path, *previous); });
 }
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
     if (auto ready = impl_->admit_edit(object); !ready) return ready;
@@ -918,7 +931,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
     if (auto read = runtime().read(object, path, ValueOutput{value.type, previous.storage.data()}); !read) return read;
     return impl_->checked_write(object, *entity,
         [&] { return runtime().write(object, path, value); },
-        [&] { (void)runtime().write(object, path, ValueInput{value.type, previous.storage.data()}); });
+        [&] { return runtime().write(object, path, ValueInput{value.type, previous.storage.data()}); });
 }
 Result<std::vector<RenderItem>> World::render_items() const {
     auto pass = spatial_pass(DiagnosticPhase::presentation);

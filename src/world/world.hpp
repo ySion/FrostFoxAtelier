@@ -622,7 +622,7 @@ public:
         // True when `world`, this pass's matrix of `entity`, is singular; one
         // warning names the topmost zero-scale node of the chain. Degenerate
         // spaces are not object failures under any policy.
-        [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string message);
+        [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
         [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
     private:
         friend class World;
