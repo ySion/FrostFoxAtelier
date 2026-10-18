@@ -29,7 +29,7 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
             "Example selection did not close the menu and configure Scene Lit.");
     };
     choose(Command::example_scene_lit);
-    require(entities(app).size()==15 && model(app.document().world().light_items()).size()==4,"Examples menu did not open the complete Scene Lit Room, including its Sky Light Entity.");
+    require(entities(app).size()==15 && model(app.document().world().light_items()).size()==5,"Examples menu did not open the complete Scene Lit Room, including its Sky Light Entity.");
     tick(app,96);capture(app,output/"03-scene-lit-room.png");
     const auto shipped=atelier::editor::asset_directory()/"examples/Examples/Scene Lit Room/Scenes/Main.scene";
     const auto original=model(atelier::editor::read_file(shipped));
