@@ -358,20 +358,11 @@ int main(int argc, char** argv) try {
     (void)_CrtSetReportMode(_CRT_ASSERT,_CRTDBG_MODE_FILE);
     (void)_CrtSetReportFile(_CRT_ASSERT,_CRTDBG_FILE_STDERR);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const bool materials_only=argc>1&&std::string_view(argv[1])=="--materials";
-    const bool cavity_only=argc>1&&std::string_view(argv[1])=="--cavity";
-    const bool selection_only=argc>1&&std::string_view(argv[1])=="--selection";
-    const bool visibility_only=argc>1&&std::string_view(argv[1])=="--visibility";
-    std::filesystem::path material_output;
-    if(materials_only||cavity_only||selection_only||visibility_only) {
-        check(argc==2||(argc==4&&std::string_view(argv[2])=="--output"),"usage: --materials|--cavity|--selection|--visibility [--output <absolute-directory>]");
-        if(argc==4) {material_output=std::filesystem::path(argv[3]);check(material_output.is_absolute(),"Evidence path must be absolute");std::filesystem::create_directories(material_output);}
-    }
-    if (argc > 1&&!materials_only&&!cavity_only&&!selection_only&&!visibility_only) {
+    if (argc > 1) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-ddgi" || mode == "--scene-lit-contracts" || mode == "--scene-lit-debug" || mode == "--scene-lit-volumes" || mode == "--scene-lit-restir" || mode == "--scene-lit-restir-suite" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-ddgi|--scene-lit-contracts|--scene-lit-debug|--scene-lit-volumes|--scene-lit-restir|--scene-lit-restir-suite|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-restir-suite" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-restir-suite|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
@@ -434,27 +425,14 @@ int main(int argc, char** argv) try {
             std::puts("Renderer ReSTIR suite: PASS (materials, transport, ReSTIR, volumes, DDGI quality/debug, audit, contracts; one Renderer)");
             return 0;
         }
-        return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal",
-                                    mode == "--scene-lit-quality", mode == "--scene-lit-ddgi", mode == "--scene-lit-contracts", mode == "--scene-lit-debug", mode == "--scene-lit-volumes", mode == "--scene-lit-restir");
+        return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal", mode == "--scene-lit-quality");
     }
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
-    if(visibility_only) {
-        visibility_cases(renderer,take(renderer.target()).extent);
-        check(bool(renderer.close()),"close visibility renderer");return 0;
-    }
-    if(selection_only) {
-        if(!material_output.empty())std::filesystem::current_path(material_output);
-        const auto extent=take(renderer.target()).extent;
-        selection_depth_cases(renderer,extent);selection_clipping_cases(renderer,extent);
-        check(bool(renderer.close()),"close selection renderer");return 0;
-    }
-    if(!materials_only)cavity_cases(renderer,window,material_output);
-    if(cavity_only){check(bool(renderer.close()),"close cavity renderer");check(bool(renderer.close()),"repeat cavity renderer close");return 0;}
-    material_cases(renderer,material_output);
-    material_transport_cases(renderer,material_output);
-    if(materials_only){check(bool(renderer.close()),"close material renderer");return 0;}
+    cavity_cases(renderer,window);
+    material_cases(renderer);
+    material_transport_cases(renderer);
     ui_only_cases(renderer, window);
     auto target = take(renderer.target());
     check(target.drawable && target.extent == ui::PixelExtent{641, 385}, "actual initial target");

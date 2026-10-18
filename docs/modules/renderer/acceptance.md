@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| Renderer 验收入口盘点 | 2026-10-18 rendering 工作树：此前 `renderer_acceptance` 只运行无参数默认入口，14 个 `--scene-lit*` 入口都不在任何常规目标里；现在该目标依次运行默认入口和 9 个有独有检查的入口，删除 9 个完全被覆盖的子集入口，见[本批记录](#renderer-验收入口盘点2026-10-18) |
 | temporal isolation 参考配置 | 2026-10-18 rendering 工作树：`--scene-lit-temporal` 自 10-13 起一直失败（main 基线 `d2b6da2b` 同样失败），原因是参考配置从确定性 64 阴影样本换成逐帧独立的随机参考；改为比较两段 16 帧均值后为 1.032/3，通过，见[本批记录](#temporal-isolation-参考配置2026-10-18) |
 | DI 辐射响应窗口 | 2026-10-18 rendering 工作树：DI 降噪器按距最后一次辐射变化的帧数缩短支持，编辑后恢复的残留在 64 帧内回到基线（A 路径 R−B 从 +.70 降到 +.04）；持续动画光源的半影噪声不变；去掉窗口的变体使新验收失败，见[本批记录](#di-辐射响应窗口2026-10-18) |
 | Edit/Play 收敛修复 | 2026-10-18 rendering 工作树：DDGI 命中点改为完全粗糙求值；`--scene-lit` 的 Edit/Play 收敛检查从 mean 4.212、p95 14 降到 2.659、8，通过；随后改为比较两域各 64 帧的平均，为 2.224、7，见[本批记录](#editplay-收敛修复2026-10-18) |
@@ -73,6 +74,36 @@ K 的选择（Release 实测，`editplay-k-01`、`editplay-age-01`）：
 - 两边各取 64 帧平均：同一序列下为 2.224/7。域龄 193–256、321–384、705–768 的 64 帧平均分别为 2.096/7、1.797/5、2.060/7，延长预热不再稳定改善。
 
 结果：Release 与 Dev（`{release,dev}-scene-lit-avg1`）均为 2.224/7，`--scene-lit` 全部通过，stderr 为空。p95 余量从 0 级增加到 1 级，mean 余量为 .78。剩余差异由两部分组成：几十到上百帧内相关的估计噪声，64 帧平均只能削弱、不能消除；以及新域缓慢的多次反弹预热亏量（域龄 96 为 −.50，705–768 为 −.18）。后者是 DDGI 多次反弹反馈的预热速率，属于渲染器性质，不是测试假象。余量增幅不大，所以没有收紧阈值。代价是该用例多渲染 128 帧。
+
+## Renderer 验收入口盘点（2026-10-18）
+
+状态：基于 `4be48d33` 的单独本地提交，未推送。只改验收入口、`renderer_acceptance` 的运行脚本和文档，渲染代码不变。
+
+盘点前：`renderer_acceptance` 目标只以无参数方式运行 `atelier_renderer_acceptance` 一次；顶层 `acceptance` 目标不依赖 `renderer_acceptance`。所有 `--scene-lit*` 入口都只能手动运行，`--scene-lit-temporal` 因此从 10-13 起失败而无人发现。
+
+| 入口 | 盘点前在常规目标中 | 独有检查 | 处理 |
+|---|---|---|---|
+| 无参数默认入口 | `renderer_acceptance` | cavity、材质、UI、变换、网格、可见性、选中、视口、参考辅助、关闭 | 保留 |
+| `--materials`、`--cavity`、`--selection`、`--visibility` | 否 | 无，均为默认入口的子集 | 删除 |
+| `--scene-lit` | 否 | 环境与逐项图像 | 并入 |
+| `--scene-lit-benchmark` | 否 | 原生 2560×1440 完成样本与 GPU 分段计时合同 | 并入 |
+| `--scene-lit-temporal` | 否 | 信号编辑、移动历史、时间隔离 | 并入 |
+| `--scene-lit-quality` | 否 | 四种 AA、收敛、direct64、DI 辐射响应、SSIL、深度 | 并入 |
+| `--scene-lit-stability` | 否 | 稳定性 | 并入 |
+| `--scene-lit-restir-suite` | 否 | ReSTIR、probe debug、audit | 并入 |
+| `--scene-lit-clustered`、`--scene-lit-shadows`、`--scene-lit-cost` | 否 | A 路径、缓存阴影 B、DI 成本 | 并入 |
+| `--scene-lit-restir` | 否 | 无，`restir-suite` 已含 | 删除 |
+| `--scene-lit-volumes`、`--scene-lit-debug` | 否 | 无，`restir-suite` 已含多体积、DDGI 质量与 probe debug | 删除 |
+| `--scene-lit-contracts` | 否 | 无，`quality` 与 `restir-suite` 已含 audit/contracts | 删除 |
+| `--scene-lit-ddgi` | 否 | 无，`quality`、`stability`、`restir-suite` 已含 | 删除 |
+
+现在 `renderer_acceptance` 在各自的进程中依次运行默认入口和 9 个保留的 `--scene-lit*` 入口，每个入口限时 1800 秒，任一失败即整体失败；日志为 `renderer-acceptance-<入口>.log`，证据在构建目录的 `renderer-evidence/<入口>`。入口清单维护在 [Scene Lit](scene-lit.md#诊断与性能边界)。
+
+验证（Release 与 Dev，持锁串行）：
+- 运行脚本：只保留默认入口和 `--scene-lit-shadows` 的脚本副本退出 0，两个入口的日志都写出（`{release,dev}-runner-inv1`）；不存在的入口名使脚本以 FATAL_ERROR 退出 1，并写出该入口的日志。
+- 此前没有近期结果的入口：默认入口、`--scene-lit-shadows`、`--scene-lit-benchmark`、`--scene-lit-restir-suite` 均退出 0，stderr 为空（`{release,dev}-scene-lit-{benchmark,restir-suite}-inv1`）。
+- 其余入口在本提交前一轮已通过：`--scene-lit`、`--scene-lit-quality`、`--scene-lit-stability`、`--scene-lit-clustered`、`--scene-lit-cost`（`*-rb1`），`--scene-lit-temporal`（`*-tf1`）。本提交只删除分派分支，没有改变这些入口执行的用例。
+- 为缩短单次持锁时间，没有一次性运行完整目标；完整目标在 Release 下约需一小时。
 
 ## temporal isolation 参考配置（2026-10-18）
 

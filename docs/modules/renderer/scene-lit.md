@@ -185,7 +185,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 `probe_history` 的 `live / hold_irradiance / hold_distance` 仅作视口归因对照，不写 Scene/Undo。前者冻结有效运输与呈现 RGB，后者冻结距离矩；几何身份失效始终优先。它们不能作为生产稳定算法。`--scene-lit-stability` 沿已有真实 Renderer 验收入口输出异步 CSV，覆盖通道冻结、运输/显示时钟分离及场景/像素生命周期。
 
-端到端入口：`atelier_renderer_acceptance --scene-lit-volumes --output <绝对目录>` 覆盖多体积、共享预算、滚动寿命和运输/增益合同，并在同一 Renderer 上继续执行既有隔墙传播与空间显示回归，使用真实 GPU validation；`--scene-lit-debug` 可单独运行空间显示。`atelier_editor_control_acceptance <editor.exe> <绝对输出目录> --ddgi-debug` 验证正式编辑器、统一选项发现、幂等 patch、非法 patch 原子拒绝、临时对照及场景/撤销隔离。具体已通过的候选和证据仍以[验收记录](acceptance.md)为准。
+端到端入口：`atelier_renderer_acceptance --scene-lit-restir-suite --output <绝对目录>` 覆盖多体积、共享预算、滚动寿命和运输/增益合同，并在同一 Renderer 上继续执行隔墙传播与空间显示回归，使用真实 GPU validation；`--scene-lit-stability` 另覆盖多体积。`atelier_editor_control_acceptance <editor.exe> <绝对输出目录> --ddgi-debug` 验证正式编辑器、统一选项发现、幂等 patch、非法 patch 原子拒绝、临时对照及场景/撤销隔离。具体已通过的候选和证据仍以[验收记录](acceptance.md)为准。
 
 ## 显示菜单与近场策略
 
@@ -256,11 +256,24 @@ ReSTIR、直接光降噪、GTAO、Local GI、最终 TAA 以及 SSSR 接收面/�
 
 空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码是否上传这些缓冲）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 
-性能入口为 `atelier_renderer_acceptance --scene-lit-benchmark --output <绝对目录>`：原生 2560×1440，预热后收集唯一的原始完成样本，测量阶段关闭验证并且不 Capture。逐项图像入口为 `--scene-lit`，时间响应入口为 `--scene-lit-temporal`，完整质量入口为 `--scene-lit-quality`，统一采样专项为 `--scene-lit-restir`。`--scene-lit-ddgi` 复用其中的强自发光、整墙接缝、连续运动与薄隔墙场景，使用 debug layer 加快定位；完整质量入口使用 GPU validation 覆盖相同场景。以上入口均可追加 `--output <绝对目录>`，同步图像读回耗时不作为性能结果。菜单与工程入口由 `editor_scene_lit_acceptance` 验证。
+Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程和窗口中依次运行下列入口，任一入口失败即整体失败；证据写入构建目录的 `renderer-evidence/<入口>`，日志为 `renderer-acceptance-<入口>.log`：
 
-`--scene-lit-restir-suite` 在同一个 Renderer 中组合材质/传输、ReSTIR、多体积、DDGI 质量/调试与最后关闭的 contracts，适合本次统一采样改动的完整回归；保留各专项入口。实际通过范围、图片和性能样本由 [验收记录](acceptance.md) 维护；首批版本的 4.25 ms 属于其原采样条件，不能作为新版独立降噪、探针设置与 SMAA/Local GI 的性能结果。
+| 入口 | 覆盖 |
+|---|---|
+| 默认（无参数） | cavity、材质与材质光输运、UI、变换、网格、可见性、选中、视口显示与参考辅助、关闭 |
+| `--scene-lit` | 环境、逐项图像、时间稳定、Edit/Play 收敛、删灯、正交、模式独立性、resize |
+| `--scene-lit-benchmark` | 原生 2560×1440 完成样本与 GPU 分段计时合同；测量阶段关闭验证且不 Capture |
+| `--scene-lit-temporal` | 信号编辑、移动历史、时间隔离、刚体运动响应 |
+| `--scene-lit-quality` | 四种 AA、灯光编辑与收敛、direct64、DI 辐射响应、SSIL、深度、DDGI 质量、contracts |
+| `--scene-lit-stability` | 稳定性、DDGI 质量、多体积 |
+| `--scene-lit-restir-suite` | 材质/传输、ReSTIR、多体积、DDGI 质量/调试、audit、contracts（同一 Renderer） |
+| `--scene-lit-clustered`、`--scene-lit-shadows`、`--scene-lit-cost` | A 路径、缓存阴影 B、DI 成本与等价 |
 
-`--scene-lit-contracts` 通过同一真实 Renderer 覆盖灯光值域、混合开放与闭合几何、反绕序/镜像、连续成员变化、无效帧隔离、小预算能量与实际射线计数、空场景退休/重入和重复关闭；也包含在 `--scene-lit-quality` 中。旧确定性灯循环的查询复用判据不再代表当前统一采样工作量，新候选以 `--scene-lit-restir` 和当前验收记录为准。零／极小漫反射及 Local GI／调试消费者仍须保留其行为。`--scene-lit-temporal` 另覆盖原位关闭 emission、等亮度换色、材质粗糙度与反射上限编辑，和移动光照历史响应。
+各入口也可单独运行并追加 `--output <绝对目录>`；同步图像读回耗时不作为性能结果。菜单与工程入口由 `editor_scene_lit_acceptance` 验证。
+
+`--scene-lit-restir-suite` 在同一个 Renderer 中组合材质/传输、ReSTIR、多体积、DDGI 质量/调试、audit 与最后关闭的 contracts。实际通过范围、图片和性能样本由 [验收记录](acceptance.md) 维护；首批版本的 4.25 ms 属于其原采样条件，不能作为新版独立降噪、探针设置与 SMAA/Local GI 的性能结果。
+
+contracts 通过同一真实 Renderer 覆盖灯光值域、混合开放与闭合几何、反绕序/镜像、连续成员变化、无效帧隔离、小预算能量与实际射线计数、空场景退休/重入和重复关闭，包含在 `--scene-lit-quality` 与 `--scene-lit-restir-suite` 中。旧确定性灯循环的查询复用判据不再代表当前统一采样工作量，新候选以 `--scene-lit-restir-suite` 和当前验收记录为准。零／极小漫反射及 Local GI／调试消费者仍须保留其行为。`--scene-lit-temporal` 另覆盖原位关闭 emission、等亮度换色、材质粗糙度与反射上限编辑，和移动光照历史响应。
 
 资源账目必须包含新采样状态：每像素 24 字节 reservoir 的 previous / scratch / current 三份共 `72P` 逻辑字节，另有当前/前帧表面身份、前帧材质及光源快照/映射；FP32 探针照度另按实际 atlas 计数。旧版移除直接光中转的 `8P` 节省不能单独代表本批净资源变化。参考模式跳过直接光滤波，关闭 SSSR 或 Bloom 仍按前述裁剪工作；保留的可复用纹理继续计入统计。P 为窗口像素数，逻辑字节、dispatch 数均不是实际外部带宽或帧时测量。
 

@@ -1278,32 +1278,9 @@ void quality_cases(Fixture& f) {
 }
 } // namespace scene_lit_e2e
 
-int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false, bool volumes_only=false, bool restir_only=false) {
-    scene_lit_e2e::Fixture fixture(benchmark_mode,output,ddgi_only?atelier::rhi::Validation::debug_layer:atelier::rhi::Validation::gpu);
+int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only, bool quality_only) {
+    scene_lit_e2e::Fixture fixture(benchmark_mode,output);
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
-    else if(restir_only) scene_lit_e2e::restir_cases(fixture);
-    else if(volumes_only) {
-        // Reuse the prepared renderer for the related real-GPU regressions;
-        // shader preparation is not repeated for each independent scene.
-        const auto initial_view=fixture.frame.view;
-        const auto initial_camera=fixture.frame.camera;
-        const auto initial_environment=fixture.frame.environment;
-        const auto restore=[&] {
-            fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
-            fixture.frame.view=initial_view;fixture.frame.camera=initial_camera;
-            fixture.frame.environment=initial_environment;fixture.frame.lighting_focus={};
-            ++fixture.frame.scene_identity;fixture.edited();
-        };
-        scene_lit_e2e::probe_volume_cases(fixture);
-        restore();scene_lit_e2e::quality_ddgi(fixture);
-        restore();scene_lit_e2e::probe_debug_cases(fixture);
-    }
-    else if(debug_only) scene_lit_e2e::probe_debug_cases(fixture);
-    else if(contracts_only) {
-        scene_lit_e2e::quality_audit(fixture);
-        scene_lit_e2e::quality_contracts(fixture);
-    }
-    else if(ddgi_only) scene_lit_e2e::quality_ddgi(fixture);
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);
     else if(temporal_only) scene_lit_e2e::temporal_isolation(fixture);
     else {scene_lit_e2e::environment_cases(fixture);scene_lit_e2e::image_cases(fixture);}
