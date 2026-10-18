@@ -148,4 +148,10 @@ add_custom_target(acceptance
     DEPENDS math_acceptance atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance atelier_physics_acceptance ${_jit_acceptance_dependencies}
         atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
         atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance foundation_acceptance
+        renderer_acceptance project_scene_acceptance project_integration_acceptance
+        editor_recovery_acceptance editor_material_acceptance editor_physics_project_acceptance
+        editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
+        editor_viewport_acceptance editor_shortcuts_acceptance editor_edit_acceptance
+        editor_surfaces_acceptance editor_dialogs_acceptance editor_scene_lit_acceptance
+        physics_examples_acceptance editor_sponza_acceptance editor_examples_acceptance editor_dungeons_acceptance
     USES_TERMINAL VERBATIM)
