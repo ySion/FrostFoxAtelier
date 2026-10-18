@@ -94,31 +94,33 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")
     atelier_target(atelier_editor_document_acceptance)
     target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
-    add_custom_target(editor_document_acceptance
+    atelier_headless_acceptance(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
-        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
-    add_custom_target(editor_recovery_acceptance
+        DEPENDS atelier_editor_document_acceptance)
+    atelier_headless_acceptance(editor_recovery_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --recovery
-        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
-    add_custom_target(editor_material_acceptance
+        DEPENDS atelier_editor_document_acceptance)
+    atelier_headless_acceptance(editor_material_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --materials
-        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_editor_document_acceptance)
     add_executable(atelier_project_scene_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_scene.cpp")
     atelier_target(atelier_project_scene_acceptance)
     target_link_libraries(atelier_project_scene_acceptance PRIVATE atelier_editor_core atelier_source atelier_physics nlohmann_json::nlohmann_json)
-    add_custom_target(project_scene_acceptance
+    atelier_headless_acceptance(project_scene_acceptance
         COMMAND $<TARGET_FILE:atelier_project_scene_acceptance>
-        DEPENDS atelier_project_scene_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_project_scene_acceptance)
     add_executable(atelier_project_integration_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_execution.cpp")
     atelier_target(atelier_project_integration_acceptance)
     target_link_libraries(atelier_project_integration_acceptance PRIVATE atelier_editor_application)
     add_dependencies(atelier_project_integration_acceptance atelier_editor)
-    add_custom_target(project_integration_acceptance
+    atelier_headless_acceptance(project_integration_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
-        DEPENDS atelier_project_integration_acceptance USES_TERMINAL VERBATIM)
-    add_custom_target(editor_physics_project_acceptance
+        DEPENDS atelier_project_integration_acceptance)
+    # __FILE__ locates a source-tree fixture whose Cache may be written on load.
+    # Keep its consumers in one pool; the gate also runs configurations sequentially.
+    atelier_headless_acceptance(editor_physics_project_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-test-project
-        DEPENDS atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_editor_document_acceptance JOB_POOL acceptance_source_fixture)
     add_custom_target(physics_examples_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-examples
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-physics-examples "${CMAKE_BINARY_DIR}/physics-examples-evidence"

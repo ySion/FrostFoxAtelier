@@ -29,6 +29,7 @@ if(NOT _msvc STREQUAL _pin_msvc OR NOT _sdk STREQUAL _pin_windowsSdk)
 endif()
 
 include(cmake/mimalloc.cmake)
+include(cmake/acceptance.cmake)
 
 function(atelier_target target)
     set_target_properties(${target} PROPERTIES
@@ -56,9 +57,9 @@ atelier_target(atelier_foundation)
 add_executable(atelier_math_acceptance acceptance/math/main.cpp)
 atelier_target(atelier_math_acceptance)
 target_include_directories(atelier_math_acceptance PRIVATE src)
-add_custom_target(math_acceptance
+atelier_headless_acceptance(math_acceptance
     COMMAND $<TARGET_FILE:atelier_math_acceptance>
-    DEPENDS atelier_math_acceptance USES_TERMINAL VERBATIM)
+    DEPENDS atelier_math_acceptance)
 
 add_library(atelier_runtime STATIC src/runtime/runtime.cpp src/runtime/execution.cpp)
 target_include_directories(atelier_runtime PUBLIC src)
@@ -83,6 +84,9 @@ add_executable(atelier_runtime_acceptance
 atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)
 target_link_libraries(atelier_runtime_acceptance PRIVATE atelier_runtime atelier_allocator_client)
+atelier_headless_acceptance(runtime_acceptance
+    COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
+    DEPENDS atelier_runtime_acceptance)
 
 add_library(atelier_ui_layout STATIC src/ui_layout/layout.cpp)
 target_include_directories(atelier_ui_layout PUBLIC src)
@@ -96,10 +100,10 @@ target_link_libraries(atelier_ui_layout_minimal PRIVATE atelier_ui_layout)
 add_executable(atelier_ui_layout_acceptance acceptance/ui_layout/main.cpp)
 atelier_target(atelier_ui_layout_acceptance)
 target_link_libraries(atelier_ui_layout_acceptance PRIVATE atelier_ui_layout dwrite)
-add_custom_target(ui_layout_acceptance
+atelier_headless_acceptance(ui_layout_acceptance
     COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
-    DEPENDS atelier_ui_layout_minimal atelier_ui_layout_acceptance USES_TERMINAL VERBATIM)
+    DEPENDS atelier_ui_layout_minimal atelier_ui_layout_acceptance)
 
 include(cmake/jit.cmake)
 atelier_add_source()
@@ -128,31 +132,22 @@ atelier_add_renderer()
 include(cmake/editor.cmake)
 atelier_add_editor()
 
-set(_jit_acceptance_commands)
-set(_jit_acceptance_dependencies)
-if(ATELIER_BUILD_JIT_ACCEPTANCE)
-    list(APPEND _jit_acceptance_commands COMMAND $<TARGET_FILE:atelier_jit_acceptance>)
-    list(APPEND _jit_acceptance_dependencies atelier_jit_acceptance)
-endif()
-
-add_custom_target(acceptance
-    COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
-    COMMAND $<TARGET_FILE:atelier_source_minimal>
-    COMMAND $<TARGET_FILE:atelier_world_acceptance>
-    COMMAND $<TARGET_FILE:atelier_physics_acceptance>
-    ${_jit_acceptance_commands}
-    COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
-    COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
-    COMMAND $<TARGET_FILE:atelier_ui_acceptance>
-    COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
-    COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
-    DEPENDS math_acceptance atelier_runtime_acceptance atelier_source_minimal atelier_world_acceptance atelier_physics_acceptance ${_jit_acceptance_dependencies}
-        atelier_ui_layout_minimal atelier_ui_layout_acceptance atelier_ui_acceptance
-        atelier_editor_document_acceptance atelier_editor rhi_acceptance reflection_acceptance foundation_acceptance
-        renderer_acceptance project_scene_acceptance project_integration_acceptance
-        editor_recovery_acceptance editor_material_acceptance editor_physics_project_acceptance
-        editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
-        editor_shortcuts_acceptance editor_edit_acceptance
-        editor_surfaces_acceptance editor_dialogs_acceptance editor_scene_lit_acceptance
-        physics_examples_acceptance editor_sponza_acceptance editor_examples_acceptance editor_dungeons_acceptance
-    USES_TERMINAL VERBATIM)
+get_property(_headless_acceptance GLOBAL PROPERTY ATELIER_HEADLESS_ACCEPTANCE)
+# GPU creation and native input belong here even when a target starts with CPU checks.
+# USES_TERMINAL on these leaf targets serializes them in Ninja's console pool.
+set(_dev_window_acceptance rhi_acceptance renderer_acceptance)
+set(_window_acceptance
+    ${_dev_window_acceptance} editor_acceptance
+    editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
+    editor_shortcuts_acceptance editor_edit_acceptance editor_surfaces_acceptance
+    editor_dialogs_acceptance editor_scene_lit_acceptance physics_examples_acceptance
+    editor_sponza_acceptance editor_examples_acceptance editor_dungeons_acceptance)
+add_custom_target(acceptance_headless DEPENDS ${_headless_acceptance})
+add_custom_target(acceptance_window DEPENDS ${_window_acceptance})
+add_custom_target(acceptance DEPENDS acceptance_headless acceptance_window)
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/acceptance-window-targets.txt"
+    CONTENT "$<JOIN:${_window_acceptance},\n>\n")
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/acceptance-dev-window-targets.txt"
+    CONTENT "$<JOIN:${_dev_window_acceptance},\n>\n")
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/acceptance-headless-targets.txt"
+    CONTENT "$<JOIN:${_headless_acceptance},\n>\n")
