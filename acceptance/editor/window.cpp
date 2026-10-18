@@ -67,6 +67,7 @@ struct EditorAcceptanceAccess {
         for(const auto& row:app.workspace_.output->rows) if(row.cells.front().text.find(text)!=std::wstring::npos) return true;
         return false;
     }
+    static const ui::TableData& output(const Application& app) {return *app.workspace_.output;}
 
     static auto name_control(const Application& app,ObjectId entity) { return app.workspace_.name_control(entity); }
     static ui::ControlKey structure_control(const Application& app,ObjectId object) {
@@ -646,7 +647,7 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     const auto edge=app.presented()->find(field)->style->border;
     require(edge.r==edge.g && edge.g==edge.b,"Editing focus did not use a neutral field edge.");
     capture(app, output / "s1-focused.png");
-    type(app, L"10001");
+    type(app, L"1000e");
     require(solid_colors(*app.presented(), field) != focused, "Invalid draft did not change the shared field state.");
     capture(app, output / "s1-invalid.png");
     key(app, VK_ESCAPE);
@@ -1175,6 +1176,25 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     require(app.document().world().members()->size()==1,"Ctrl+Z did not undo the entire duplicate gesture.");
     key('Z',ui::Key::z,true,true);tick(app);
     require(app.document().world().members()->size()==2,"Redo did not restore the duplicate.");
+    {
+        // Zero scale is legal but degenerate: Project Output shows one line, counted in place when it recurs.
+        auto& document=Access::physics_document(app);const auto copy=document.selection().entity;
+        const auto original=*world::read_transform(document.world().runtime(),copy);auto flat=original;flat.scale={0,1,1};
+        const auto degenerate=[&] {
+            std::vector<std::wstring> lines;
+            for(const auto& row:Access::output(app).rows)
+                if(row.cells.front().text.find(L"degenerate_value")!=std::wstring::npos) lines.push_back(row.cells.front().text);
+            return lines;
+        };
+        const auto flatten=[&](const world::Trs& value) {require(bool(document.set_transform(copy,value)),"A zero or restored scale was rejected.");tick(app);};
+        flatten(flat);
+        auto lines=degenerate();
+        require(lines.size()==1 && lines[0].starts_with(L"Diagnostic [warning] degenerate_value in presentation") &&
+            lines[0].find(L" scale: ")!=std::wstring::npos && lines[0].find(L"(×")==std::wstring::npos,"Zero scale did not report one degenerate warning.");
+        flatten(original);flatten(flat);lines=degenerate();
+        require(lines.size()==1 && lines[0].ends_with(L" (×2)"),"A recurring zero scale was not counted on its existing Project Output line.");
+        flatten(original);
+    }
     move(x,y);key('X');tick(app);
     require(app.menu_frame() && app.menu_frame()->find(static_cast<ui::ControlKey>(editor::Command::erase_entities)),"X did not open its confirmation menu.");
     RECT popup{};GetWindowRect(app.menu_window(),&popup);POINT client{static_cast<LONG>(x),static_cast<LONG>(y)};ClientToScreen(app.window(),&client);
@@ -1345,25 +1365,16 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
     return 0;
 }
 
-int verify_editor_window(Application& app, const char* output_directory, bool viewport_only) {
+int verify_editor_window(Application& app, const char* output_directory) {
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     hr(com);
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
     const std::filesystem::path output(output_directory);
     std::filesystem::create_directories(output);
-    const auto host=await_acceptance_activation(app,output,viewport_only?"viewport":"window");
+    const auto host=await_acceptance_activation(app,output,"window");
     tick(app);
     require(entities(app).empty(),"The production editor did not start with an empty scene.");
     verify_viewport_fly(app,output);
-    if (viewport_only) {
-        verify_viewport_display(app,output);
-        atelier::application::EditorAcceptanceAccess::mark_saved(app);
-        SendMessageW(app.window(),WM_CLOSE,0,0);
-        require(!app.step(),"Viewport acceptance did not close normally.");
-        std::ofstream(output/"acceptance.txt")<<"Editor viewport acceptance: PASS\n";
-        std::puts("Editor viewport acceptance: PASS");
-        return 0;
-    }
     click(app,control::file_menu);
     const auto first_open_us=app.menu_open_cpu_us(); const auto retained_popup=app.menu_window(); key(app,VK_ESCAPE);
     click(app,control::file_menu);
@@ -1504,7 +1515,7 @@ int verify_editor_window(Application& app, const char* output_directory, bool vi
     key(app, VK_ESCAPE);
     click(app, field); type(app, L"-2.5"); key(app, VK_RETURN);
     require(std::abs(x(app, object) + 2.5f) < .0001f, "Numeric text commit did not update the Runtime field.");
-    click(app, field); type(app, L"10001");
+    click(app, field); type(app, L"1000e");
     const auto last_valid_preview = x(app, object);
     const auto invalid_history = app.document().undo_count();
     key(app, VK_RETURN);

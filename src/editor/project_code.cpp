@@ -119,6 +119,8 @@ Result<void> ProjectCode::build(const Project& project) {
         const bool rebind=!bound_ || adds_behavior(*candidate);
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
         if (rebind) {auto binding=bind();if (!binding) {bound_=false;return reject(binding.error());}bound_=true;}
+        // Published code may fix isolated objects; they resume without a second Begin.
+        if (world_.running()) if (auto cleared=world_.clear_faults();!cleared) return reject(cleared.error());
     }
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
     next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
@@ -215,6 +217,20 @@ std::vector<std::wstring> describe_issues(const Session& session,std::span<const
     for(const auto& item:issues)
         lines.push_back(L"  ["+wide(world::name(item.severity))+L"] "+wide(item.message)+(item.value.empty()?std::wstring{}:L" Saved: "+wide(item.value)));
     return lines;
+}
+std::wstring describe_diagnostic(const Session& session,const world::Diagnostic& item) {
+    auto line=L"Diagnostic ["+wide(world::name(item.severity))+L"] "+wide(world::name(item.kind))+L" in "+wide(world::name(item.phase));
+    if(item.entity!=ObjectId{}) {
+        const auto label=session.name(item.entity);
+        line+=label.empty()?std::wstring(L" Entity"):L" \""+std::wstring(label)+L"\"";
+    }
+    if(!item.type.empty()) line+=L" ("+wide(item.type)+L")";
+    for(std::size_t i=0;i<item.field.size();++i) line+=(i?L".":L" ")+wide(item.field[i]);
+    line+=L": "+wide(item.message);
+    if(!item.value.empty()) line+=L" Value: "+wide(item.value);
+    if(item.source) line+=L" at "+wide(item.source->path)+L":"+std::to_wstring(item.source->line)+L":"+std::to_wstring(item.source->column);
+    if(item.repeats>1) line+=L" (×"+std::to_wstring(item.repeats)+L")";
+    return line;
 }
 std::string ProjectCode::component_source(std::string_view name) {
     return "class project."+std::string(name)+" : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n";

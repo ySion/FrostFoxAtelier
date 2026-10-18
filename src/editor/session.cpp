@@ -382,7 +382,7 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
         auto value=read_property(object,field.path); if (!value) return std::unexpected(value.error());
         std::string name;
         for (const auto& part:field.names) { if (!name.empty()) name+='.'; name+=part; }
-        result.push_back({std::move(name),std::move(field.path),field.type,std::move(*value),std::move(field.label),std::move(field.category),std::move(field.description)});
+        result.push_back({std::move(name),std::move(field.path),field.type,std::move(*value),std::move(field.label),std::move(field.category),std::move(field.description),field.range});
     }
     return result;
 }

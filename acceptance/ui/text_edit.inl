@@ -98,6 +98,12 @@ void shared_edit_history_and_focus() {
     require(numeric.command(ui::Key::enter).effects.empty(),"passive numeric focus committed without editing");
     numeric.type(L"7");
     require(numeric.controls[0].value==7,"numeric focus did not preserve Enter-to-edit selection");
+    TextConsumer clamped(L"",ui::ControlKind::number);
+    clamped.controls[0].value=4;clamped.controls[0].minimum=0;clamped.controls[0].maximum=8;clamped.prepare();
+    clamped.command(ui::Key::a,true);clamped.type(L"12");
+    const auto clamped_commit=actions_of(clamped.command(ui::Key::enter));
+    require(clamped_commit.size()==1 && clamped_commit[0].kind==ui::ActionKind::edit_commit && clamped.controls[0].value==8,
+        "a typed number above the legal range did not clamp to its maximum");
 
     TextConsumer transferred(L"",ui::ControlKind::number);
     transferred.apply(transferred.ui.input({.kind=ui::EventKind::key_down,.key=ui::Key::enter}));

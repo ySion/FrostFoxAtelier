@@ -49,6 +49,7 @@ int run_project_command(std::span<wchar_t*> arguments) {
             const std::wstring_view option=arguments[i];
             if(option==L"--headless") {options.headless=true;continue;}
             if(option==L"--preview-ui") {options.preview_ui=true;continue;}
+            if(option==L"--halt-on-fault") {options.halt=true;continue;}
             if(++i==arguments.size()) throw std::runtime_error("Missing run option value.");
             if(option==L"--scene-snapshot") options.scene_snapshot=arguments[i];
             else if(option==L"--report") options.report=arguments[i];
@@ -74,8 +75,17 @@ int run_project(const RunOptions& options) {
         }
         if(!loaded.session) throw std::runtime_error(loaded.error?loaded.error->message:"Project scene was not loaded.");
         auto& document=*loaded.session;
+        if(options.halt) take(document.set_failure_policy(world::FailurePolicy::halt));
         if(const auto summary=editor::describe_issues(document,document.load_issues(),L"Scene");!summary.empty())
             {std::printf("%s\n",editor::utf8(summary.front()).c_str());std::fflush(stdout);}
+        // Isolated failures keep Play running; under halt the failing call is reported before it stops the run.
+        std::uint64_t dropped{};
+        const auto report_diagnostics=[&] {
+            for(const auto& item:document.take_diagnostics()) std::printf("%s\n",editor::utf8(editor::describe_diagnostic(document,item)).c_str());
+            if(const auto lost=document.world().dropped_diagnostics();lost!=dropped)
+                {std::printf("Diagnostics: %llu dropped while the log was full.\n",static_cast<unsigned long long>(lost-dropped));dropped=lost;}
+            std::fflush(stdout);
+        };
         struct StopWorld {
             editor::Session& session;
             ~StopWorld(){auto stopped=session.stop();if(!stopped) std::fprintf(stderr,"Project stop: %s\n",stopped.error().message.c_str());}
@@ -151,11 +161,11 @@ int run_project(const RunOptions& options) {
             auto prepared=take(project_ui.prepare(ui,{extent,window?window->dpi_scale():1.f,surface_revision},elapsed,
                 take(document.world().members()).size(),effects));
             if(prepared && !started) {
-                if(!options.preview_ui) complete(document.start());
+                if(!options.preview_ui) {auto begun=document.start();report_diagnostics();complete(std::move(begun));}
                 started=true;
                 std::printf("Project started: %s\n",editor::utf8(project.root().wstring()).c_str());std::fflush(stdout);
             }
-            if(started && !options.preview_ui) take(document.update(dt));
+            if(started && !options.preview_ui) {auto updated=document.update(dt);report_diagnostics();take(std::move(updated));}
             take(document.collect_step());
             if(project_ui.revision()!=ui_revision) {
                 ui_revision=project_ui.revision();std::printf("Project UI published: %llu\n",static_cast<unsigned long long>(ui_revision));std::fflush(stdout);
@@ -163,7 +173,7 @@ int run_project(const RunOptions& options) {
             if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty()) {std::printf("Project UI: %s\n",ui_error.c_str());std::fflush(stdout);}}
             if(prepared) {
                 if(renderer) {
-                    take(scene.refresh(document));
+                    {auto refreshed=scene.refresh(document);report_diagnostics();take(std::move(refreshed));}
                     for(auto& mesh:scene.meshes) mesh.selected=false;
                     const auto matrices=camera.matrices(static_cast<float>(extent.width)/std::max(extent.height,1u));
                     renderer::ViewSettings view;view.shading=renderer::Shading::scene_lit;
@@ -189,7 +199,7 @@ int run_project(const RunOptions& options) {
             if(!renderer && !options.frames) Sleep(4);
             else if(!target.drawable) Sleep(16);
         }
-        complete(document.stop());
+        {auto stopped=document.stop();report_diagnostics();complete(std::move(stopped));}
         if(!options.report.empty()) take(editor::write_file(options.report,take(document.serialize())));
         std::printf("Project stopped: %llu frames\n",static_cast<unsigned long long>(frame));std::fflush(stdout);
         return 0;

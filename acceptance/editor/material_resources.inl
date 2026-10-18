@@ -79,8 +79,12 @@ void verify_material_resources() {
     take(document.material_undo(key,true));
     take(document.begin_edit(instance.id(),roughness.path,113));take(document.preview_edit(113,.1f));take(document.cancel_edit());
     require(capture(a)->description().parameters.roughness==.8f,"Cancelling an instance edit lost its original value.");
-    require(!document.set_property(instance.id(),roughness.path,Scalar{2.f},114),"Invalid material value was published.");
+    require(!document.set_property(instance.id(),roughness.path,Scalar{std::nanf("")},114),"Invalid material value was published.");
     require(capture(a)->description().parameters.roughness==.8f,"Rejected value damaged the last valid material.");
+    // Roughness is bounded to 0–1: like every Runtime write, a larger value clamps instead of failing.
+    take(document.begin_edit(instance.id(),roughness.path,117));take(document.preview_edit(117,2.f));
+    require(capture(a)->description().parameters.roughness==1,"A material value above its hard maximum did not clamp to it.");
+    take(document.cancel_edit());
     take(document.set_material_override(a,"slot/0",roughness.path,false));
     require(capture(a)->description().parameters.roughness==.4f,"Clearing an override did not restore inheritance.");
     changed(document.undo());require(capture(a)->description().parameters.roughness==.8f,"Scene undo did not restore override intent.");

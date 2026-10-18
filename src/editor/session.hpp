@@ -17,7 +17,7 @@ struct Parameter {
     float default_value{};
 };
 struct ComponentType { TypeId type; std::string name; };
-struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category,description; };
+struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category,description; FieldRange range{}; };
 struct Selection {
     ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;
@@ -51,6 +51,8 @@ public:
     explicit Session(Prepare = {});
     ~Session();
     const world::World& world() const noexcept { return world_; }
+    Result<void> set_failure_policy(world::FailurePolicy policy) { return world_.set_failure_policy(policy); }
+    std::vector<world::Diagnostic> take_diagnostics() { return world_.take_diagnostics(); }
     const world::Types& types() const noexcept { return types_; }
     const physics::Types& physics_types() const noexcept { return physics_types_; }
     // Borrowed running scene; invalidated by stop, close, or a failed update.

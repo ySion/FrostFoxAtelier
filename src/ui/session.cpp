@@ -83,9 +83,9 @@ std::optional<double> number(std::wstring_view text, const Control& control) {
     if (*begin == '+') ++begin;
     double value{};
     const auto parsed = std::from_chars(begin, buffer + text.size(), value, std::chars_format::general);
-    if (parsed.ec != std::errc{} || parsed.ptr != buffer + text.size() || !std::isfinite(value) ||
-        value < control.minimum || value > control.maximum) return {};
-    return value;
+    if (parsed.ec != std::errc{} || parsed.ptr != buffer + text.size() || !std::isfinite(value)) return {};
+    // Like Runtime writes to bounded fields, typed values clamp to the legal range.
+    return std::clamp(value, control.minimum, control.maximum);
 }
 }
 

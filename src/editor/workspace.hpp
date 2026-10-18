@@ -83,7 +83,7 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 }
 struct Workspace {
     struct Binding {
-        enum class Kind { object, structure, property_group, field, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
+        enum class Kind { object, structure, property_group, field, slider, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
             material_slot, material_texture, material_override, color_pick, saved_data };
         ui::ControlKey key{};
         ObjectId object;
@@ -163,6 +163,9 @@ struct Workspace {
     SourceEditor source_editor;
     std::shared_ptr<const ProjectBuild> project_build;
     void log(std::wstring);
+    // Repeats of the latest line update it in place with a count, so a failure that
+    // resolves and recurs (a gesture through zero scale) does not flood the output.
+    void log_repeated(std::wstring);
     std::shared_ptr<const ui::TableData> output;
     bool source_history() const noexcept {return dock.focused_tab()==source_control::tab;}
     bool project_open{};
@@ -213,6 +216,9 @@ private:
     std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.
     std::uint64_t tree_frame_{}; // Consume each accepted snapshot once, including across hidden frames.
     ui::ControlKey next_output_{1};
+    std::wstring repeated_line_;
+    ui::ControlKey repeated_row_{};
+    std::uint64_t repeated_count_{};
     std::vector<ComponentType> component_choices_;
     std::vector<PropertyChoice> property_choices_;
     std::vector<MaterialChoice> material_choices_;

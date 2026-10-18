@@ -15,7 +15,7 @@ public:
     PlayProcess(const PlayProcess&)=delete;
     PlayProcess& operator=(const PlayProcess&)=delete;
     Result<void> start(const std::filesystem::path& project,const std::filesystem::path& scene,
-        bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false);
+        bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false,bool halt=false);
     void stop() noexcept;
     void poll();
     void close() noexcept;

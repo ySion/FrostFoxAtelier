@@ -191,7 +191,7 @@ Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变�
 
 ## 共享单行编辑
 
-`text_edit`以`Control.text`作为权威投影，number保留value/min/max及拖调策略；两者共用[TextEdit](../../../src/ui/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化。输入文字本身不使用ASCII白名单：非法数字可以保留为invalid草稿，不写业务preview。
+`text_edit`以`Control.text`作为权威投影，number保留value/min/max及拖调策略；两者共用[TextEdit](../../../src/ui/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化：有限数值超出 min/max 时夹到端点，与 Runtime 对有界字段的写入一致。输入文字本身不使用ASCII白名单：非数字或非有限的文字保留为invalid草稿，不写业务preview。
 
 focus、文字模式和编辑事务分开。number普通拖动仍在超过原指针阈值后调值，Shift细调；单击进入文字模式后，拖动用于选择文字。仅聚焦时Enter或普通文字输入可进入文字模式。text_edit聚焦即可输入。移动caret、选择文字和进入模式均不建立事务。
 

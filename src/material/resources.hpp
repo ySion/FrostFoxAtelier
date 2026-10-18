@@ -13,15 +13,15 @@ enum class NormalY : std::uint32_t {positive,negative};
 ASTRUCT(Name="material.Parameters", DESC="标准表面的颜色、粗糙度、自发光和覆盖规则。Material 实例只覆盖明确启用的参数组，其余继续继承共享材质。")
 struct ParameterValues {
     AGENERATED_BODY(ParameterValues)
-    AFIELD(DESC="线性 RGB 基础色因子，每通道 0–1，与 Base Color Texture 的 sRGB 颜色解码结果相乘。") math::Vector3 base_color{1,1,1};
-    AFIELD(DESC="Alpha 因子，范围 0–1。启用 Mask 时与颜色贴图 Alpha、Opacity Texture 相乘后决定覆盖；当前不产生半透明混合。") float opacity{1};
-    AFIELD(DESC="Roughness 因子，范围 0–1，与粗糙度贴图指定通道相乘。值越小，反射越集中。") float roughness{.65f};
-    AFIELD(DESC="Metallic 因子，范围 0–1，与金属度贴图指定通道相乘。0 为非金属，1 为金属。") float metallic{};
-    AFIELD(DESC="线性 HDR RGB 自发光因子，与 Emissive Texture 的颜色解码结果相乘。它是表面辐射，不是曝光后的屏幕亮度。") math::Vector3 emissive{};
-    AFIELD(DESC="切线空间 Normal Map 的强度，范围 0–16。0 去掉法线贴图造成的表面起伏；不改变网格几何。") float normal_scale{1};
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="线性 RGB 基础色因子，每通道 0–1，与 Base Color Texture 的 sRGB 颜色解码结果相乘。") math::Vector3 base_color{1,1,1};
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="Alpha 因子，范围 0–1。启用 Mask 时与颜色贴图 Alpha、Opacity Texture 相乘后决定覆盖；当前不产生半透明混合。") float opacity{1};
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="Roughness 因子，范围 0–1，与粗糙度贴图指定通道相乘。值越小，反射越集中。") float roughness{.65f};
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="Metallic 因子，范围 0–1，与金属度贴图指定通道相乘。0 为非金属，1 为金属。") float metallic{};
+    AFIELD(Min="0", Max="10", LockMin, HardMax="65504", DESC="线性 HDR RGB 自发光因子，与 Emissive Texture 的颜色解码结果相乘。它是表面辐射，不是曝光后的屏幕亮度。") math::Vector3 emissive{};
+    AFIELD(Min="0", Max="16", LockMin, LockMax, DESC="切线空间 Normal Map 的强度，范围 0–16。0 去掉法线贴图造成的表面起伏；不改变网格几何。") float normal_scale{1};
     AFIELD(DESC="法线贴图绿色通道的方向约定。若凹凸朝向相反，可切换 Positive / Negative；不改变纹理原文件。") NormalY normal_y_sign{NormalY::positive};
     AFIELD(DESC="启用 Alpha 裁切。最终 Alpha 低于 Alpha Cutoff 的位置不覆盖表面；关闭时按 Opaque 处理，不使用 Alpha 裁切。") bool mask{};
-    AFIELD(DESC="Mask 的覆盖阈值，范围 0–1。最终 Alpha 等于或高于此值时保留表面，否则形成孔洞。") float alpha_cutoff{.5f};
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="Mask 的覆盖阈值，范围 0–1。最终 Alpha 等于或高于此值时保留表面，否则形成孔洞。") float alpha_cutoff{.5f};
     AFIELD(DESC="是否显示三角形背面。它控制双面显示，双面发光由 Emission Two Sided 单独决定。") bool double_sided{true};
     AFIELD(DESC="是否让表面的两面都发出 Emissive 辐射。关闭后按三角形的作者朝向单面发光。") bool emission_two_sided{true};
 };

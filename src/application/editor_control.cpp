@@ -434,6 +434,12 @@ struct EditorControl::Impl {
             Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"description",property.description},
                 {"type",prop_type->name},{"value",scalar_json(property.value,runtime)}};
             if(prop_type->enumeration) {field["choices"]=Json::array();for(const auto& [name,bits]:prop_type->enumeration->values) {static_cast<void>(bits);field["choices"].push_back(name);}}
+            if(property.range!=FieldRange{}) {
+                auto& range=field["range"]=Json::object();
+                const auto bound=[&](const char* name,const std::optional<Scalar>& value){if(value) range[name]=scalar_json(*value,runtime);};
+                bound("ui_min",property.range.ui_min);bound("ui_max",property.range.ui_max);
+                bound("hard_min",property.range.hard_min);bound("hard_max",property.range.hard_max);
+            }
             result["properties"].push_back(std::move(field));
         }
         if(app.document_->has_retained(id)) if(const auto saved=app.document_->retained(id);saved && !saved->entries.empty()) {
