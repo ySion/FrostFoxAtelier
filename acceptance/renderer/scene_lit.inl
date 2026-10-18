@@ -3,6 +3,9 @@
 namespace scene_lit_e2e {
 using Vec3 = std::array<float, 3>;
 constexpr unsigned warmup_frames = 96;
+// Temporal filters (DI history, DDGI transport) keep estimator noise correlated
+// over tens of frames, so converged appearances compare means of this window.
+constexpr unsigned convergence_frames = 64;
 
 void png(const render::Capture& image, const std::filesystem::path& path) {
     // PNG's uncompressed DEFLATE blocks keep evidence dependency-free. Encoding
@@ -249,6 +252,21 @@ struct Fixture {
     render::Capture capture(const char* name, unsigned settle = 1) {
         for (unsigned index = 1; index < settle; ++index) step();
         render::Capture result; step(&result);
+        png(result, output / (std::string(name) + ".png"));
+        return result;
+    }
+    // The last `frames` of `settle` accepted images, averaged per channel:
+    // per-frame estimator noise averages out, the converged signal remains.
+    render::Capture average(const char* name, unsigned settle, unsigned frames) {
+        for (unsigned index = frames; index < settle; ++index) step();
+        render::Capture result;
+        std::vector<unsigned> sum;
+        for (unsigned index = 0; index < frames; ++index) {
+            step(&result);
+            sum.resize(result.rgba.size());
+            for (std::size_t i = 0; i < sum.size(); ++i) sum[i] += result.rgba[i];
+        }
+        for (std::size_t i = 0; i < sum.size(); ++i) result.rgba[i] = static_cast<std::uint8_t>((sum[i] + frames / 2) / frames);
         png(result, output / (std::string(name) + ".png"));
         return result;
     }
@@ -582,6 +600,7 @@ void image_cases(Fixture& f) {
     const auto stable_delta = f.compare("temporal-stable",stable0,stable1);
     check(stable_delta.mean <= 3 && stable_delta.p95 <= 8,
           "converged combined SceneLit remains stable in real geometry pixels");
+    const auto converged_edit = f.average("10-converged-edit", convergence_frames, convergence_frames);
     f.frame.camera_cut = true;
     render::Capture cut; const auto cut_result = f.step(&cut); png(cut,f.output/"10-camera-cut.png");
     check(cut_result.stats.scene_lit_history_resets > 0,
@@ -592,8 +611,8 @@ void image_cases(Fixture& f) {
     const auto replaced = f.step();
     check(replaced.stats.scene_lit_history_resets > 0,
           "replacement scene/Edit-Play execution domain cannot reuse another world's histories");
-    const auto simulation = f.capture("10-simulation-independent",warmup_frames);
-    const auto simulation_delta = f.compare("scene-lit-simulation-independent",stable1,simulation);
+    const auto simulation = f.average("10-simulation-independent",warmup_frames+convergence_frames,convergence_frames);
+    const auto simulation_delta = f.compare("scene-lit-simulation-independent",converged_edit,simulation);
     check(simulation_delta.mean <= 3 && simulation_delta.p95 <= 8,
           "identical Edit and Play snapshots converge to the same SceneLit appearance");
     f.lights.clear(); f.edited();
