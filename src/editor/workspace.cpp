@@ -311,7 +311,7 @@ bool Workspace::command_enabled(Command command,const Session& session) const {
             if(!seen.insert(object).second) continue;
             const auto state=world::inspect_entity(runtime,object);if(!state || !state->can_edit) return false;
             const auto spatial=world::has_transform(runtime,object);if(!spatial) return false;
-            // frame_entities includes geometry and every remaining spatial locator in this subtree.
+            // view.frame_selected includes geometry and every remaining spatial locator in this subtree.
             if(*spatial) return true;
             const auto children=world::children(runtime,object);if(!children) return false;
             for(const auto& child:*children) pending.push_back(child.id());

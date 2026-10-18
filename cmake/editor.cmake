@@ -66,7 +66,9 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/project_ui.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/project.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/project_execution.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/control_workbench.cpp")
+        "${PROJECT_SOURCE_DIR}/src/editor/control_workbench.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/operators.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/builtin_operators.cpp")
     atelier_target(atelier_editor_application)
     add_dependencies(atelier_editor_application atelier_editor_build_info)
     target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")

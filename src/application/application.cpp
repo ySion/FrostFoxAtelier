@@ -70,6 +70,7 @@ ui::PixelExtent client_extent(HWND window) {
 }
 Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace,std::optional<ui::PixelExtent> initial_client,bool vsync)
     : window_(nullptr,initial_client),examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation),vsync_(vsync) {
+    editor::register_builtin_operators(operators_);
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
@@ -110,7 +111,6 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
     status(completion(std::move(result)), success);
 }
 
-Result<void> Application::focus_selected() { return frame_entities(true); }
 void Application::sync_world_view() {
     workspace_.sync_world(*document_);
     // Undo/reopen may restore a finer follow-focus lattice. The scene remains
@@ -129,37 +129,52 @@ Result<void> Application::set_camera(const editor::Camera& camera,bool cut) {
     if(camera.state()!=camera_.state()) {camera_=camera;camera_cut_|=cut;}
     return {};
 }
-Result<void> Application::frame_entities(bool selected_only) {
-    // Bounds of the rendered geometry (Blender View Selected / View All); locators count as points.
-    auto& runtime=document_->world().runtime();
-    math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;
-    bool any{};
-    const auto include=[&](math::Vector3 p) {for(int i=0;i<3;++i) {low[i]=std::min(low[i],p[i]);high[i]=std::max(high[i],p[i]);} any=true;};
-    const auto wanted=[&](ObjectId entity) {
-        if(!selected_only) return true;
-        while(entity!=ObjectId{}) {
-            if(document_->is_selected(entity) || entity==document_->selection().entity) return true;
-            const auto parent=world::parent_entity(runtime,entity);if(!parent) return false;entity=*parent;
-        }
-        return false;
-    };
-    auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
-    std::vector<ObjectId> rendered;
-    for(const auto& item:*items) {
-        rendered.push_back(item.entity);if(!wanted(item.entity)) continue;
-        for(const auto& vertex:item.geometry->vertices())
-            include(math::transform_point(math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world));
-    }
-    auto members=document_->world().members();if(!members) return std::unexpected(members.error());
-    for(const auto& member:*members) {
-        if(!wanted(member.id()) || std::ranges::find(rendered,member.id())!=rendered.end()) continue;
-        auto spatial=world::has_transform(runtime,member.id());if(!spatial || !*spatial) continue;
-        auto matrix=world::world_matrix(runtime,member.id());if(!matrix) continue;
-        include({(*matrix)[12],(*matrix)[13],(*matrix)[14]});
-    }
-    if(!any) return std::unexpected(Error{ErrorCode::invalid_definition,selected_only?"Select an Entity with a Transform to frame.":"The scene has nothing to frame."});
-    auto camera=camera_;camera.frame((low+high)*.5f,math::length(high-low)*.5f);return set_camera(camera,true);
+editor::Context Application::operator_context(bool interactive) {
+    using editor::RegionKind;
+    const auto tab=workspace_.dock.focused_tab();
+    const auto region=tab==editor::control::scene_tab?RegionKind::viewport:tab==editor::control::entities_tab?RegionKind::scene_tree:
+        tab==editor::control::structure_tab?RegionKind::structure:tab==editor::control::parameters_tab?RegionKind::parameters:
+        tab==editor::control::assets_tab?RegionKind::assets:tab==editor::source_control::tab?RegionKind::code:
+        tab==editor::control::output_tab?RegionKind::output:tab==editor::world_control::tab?RegionKind::world:
+        tab==editor::control::workbench?RegionKind::controls:RegionKind::none;
+    return {*document_,project_?&*project_:nullptr,
+        {document_->selection().entity,document_->selection().object,{document_->selected_entities().begin(),document_->selected_entities().end()}},
+        region,workspace_.inspecting_asset?workspace_.material_inspection:std::string{},
+        workspace_.scene_available,workspace_.project_running,interactive};
 }
+Result<editor::OperatorReport> Application::call_operator(const editor::OperatorCall& request,bool interactive) {
+    auto report=editor::call(operators_,*this,operator_context(interactive),request);
+    if(report && report->status==editor::OperatorStatus::finished) workspace_.status=operators_.find(request.id)->title;
+    return report;
+}
+Result<void> Application::run_operator(std::string_view id,bool report_unavailable) {
+    auto report=call_operator({std::string(id),editor::json_format::Json::object(),{}},true);if(!report) return std::unexpected(report.error());
+    if(report->status==editor::OperatorStatus::unavailable && report_unavailable)
+        return std::unexpected(Error{ErrorCode::unsupported_operation,report->message});
+    return {};
+}
+// Command transitions retire the old owner before releasing native capture;
+// cleanup must run before the command can establish a new gesture.
+Result<void> Application::end_interaction() {
+    if(camera_drag_) cancel_interaction(ui_.cancel_interaction());
+    if(auto cancelled=viewport_tool_.cancel(*document_);!cancelled) return cancelled;
+    if(!workspace_.menu) window_.capture(false);
+    return {};
+}
+bool Application::source_history_available(bool redo) const noexcept {
+    const auto* file=workspace_.source_editor.active();
+    return file && (redo?file->document->edit().can_redo():file->document->edit().can_undo());
+}
+Result<void> Application::source_history(bool redo) {
+    workspace_.source_editor.active()->document->edit().history(redo);pending_source_focus_=true;return {};
+}
+bool Application::workbench_history_available(bool redo) const noexcept {
+    return (redo?workspace_.workbench.redo_count():workspace_.workbench.undo_count())!=0;
+}
+Result<void> Application::workbench_history(bool redo) {
+    if(redo) workspace_.workbench.redo();else workspace_.workbench.undo();return {};
+}
+void Application::scene_changed() {workspace_.inspecting_asset=false;sync_world_view();}
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
     auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
     if(items->empty()) return std::unexpected(Error{ErrorCode::invalid_definition,"DDGI volume fitting requires rendered geometry."});
@@ -595,16 +610,28 @@ Result<void> Application::begin_asset_rename() {
     workspace_.row_rename=editor::Workspace::RowRename{{},item.path.filename().wstring(),item.path,(row<<2)|editor::browser_control::name_column};
     pending_rename_focus_=true;return {};
 }
+namespace {
+// Commands already served by operators; the rest move in later O1 steps.
+std::string_view migrated_operator(editor::Command command) {
+    switch(command) {
+    case editor::Command::frame_all:return "view.frame_all";
+    case editor::Command::focus:return "view.frame_selected";
+    case editor::Command::reset_camera:return "view.reset";
+    case editor::Command::reset_layout:return "layout.reset";
+    case editor::Command::undo:return "edit.undo";
+    case editor::Command::redo:return "edit.redo";
+    default:return {};
+    }
+}
+}
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
     using enum editor::Command;
+    if(const auto id=migrated_operator(command);!id.empty()) return run_operator(id);
     if (!workspace_.command_enabled(command,*document_)) return {};
-    // Command transitions retire the old owner before releasing native capture;
-    // cleanup must run before the command can establish a new gesture.
-    if(camera_drag_) cancel_interaction(ui_.cancel_interaction());
-    if(auto cancelled=viewport_tool_.cancel(*document_);!cancelled) return cancelled;
-    if(!workspace_.menu) window_.capture(false);
+    if(auto ended=end_interaction();!ended) return ended;
     Result<void> result;
     switch (command) {
+    case frame_all:case focus:case reset_camera:case reset_layout:case undo:case redo:break; // Operators, routed above.
     case example_sponza:case example_scene_lit:case example_physic:case example_dungeons:return open_example(command);
     case tool_select: case tool_transform: case tool_move: case tool_rotate: case tool_scale:
         workspace_.viewport_settings.tool=static_cast<editor::TransformTool>(static_cast<unsigned>(command)-static_cast<unsigned>(tool_select));
@@ -634,7 +661,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case clear_location:case clear_rotation:case clear_scale:
         result=viewport_tool_.clear(*document_,command==clear_location?editor::TransformChannel::location:
             command==clear_rotation?editor::TransformChannel::rotation:editor::TransformChannel::scale);break;
-    case frame_all:result=frame_entities(false);if(result) camera_cut_=true;break;
     case rename_selected: {
         if(workspace_.dock.focused_tab()==editor::control::assets_tab) return begin_asset_rename();
         // Houdini/Blender F2: rename in place on the Scene Tree row, revealing it first;
@@ -703,18 +729,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case erase_selected: workspace_.inspecting_asset=false;result=completion(document_->erase_selected()); break;
     case erase_entities: workspace_.inspecting_asset=false;result=completion(document_->erase_entities()); break;
     case duplicate_selected: workspace_.inspecting_asset=false;result=completion(document_->duplicate_selected()); break;
-    case undo: case redo:
-        if (workspace_.source_history()) {
-            workspace_.source_editor.active()->document->edit().history(command==redo);pending_source_focus_=true;
-        } else if(workspace_.inspecting_asset && !workspace_.material_inspection.empty()) result=document_->material_undo(workspace_.material_inspection,command==redo);
-        else if (workspace_.sample_history()) { if (command==undo) workspace_.workbench.undo(); else workspace_.workbench.redo(); }
-        else {
-            workspace_.inspecting_asset=false;result=completion(command==undo?document_->undo():document_->redo());
-            sync_world_view();
-        }
-        break;
-    case focus: result=focus_selected();if(result) camera_cut_=true;break;
-    case reset_camera: {auto camera=camera_;camera.reset();result=set_camera(camera,true);break;}
     case show_scene: workspace_.dock.select(editor::control::scene_tab); break;
     case show_parameters: workspace_.dock.select(editor::control::parameters_tab); break;
     case show_controls: workspace_.dock.select(editor::control::workbench); break;
@@ -731,7 +745,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case close_tab:
         if (workspace_.source_history() && workspace_.source_editor.active()) return source_command(close_source,{});
         workspace_.dock.close(workspace_.dock.focused_tab());break;
-    case reset_layout: workspace_.reset_layout(); break;
     case about: {
         close_menu(false);
         const auto details=L"FrostFox Atelier\n\nBuild: "+editor::wide(build_info::revision)+

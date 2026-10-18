@@ -7,6 +7,7 @@
 #include "application/scene_snapshot.hpp"
 #include "application/recovery.hpp"
 #include "editor/camera.hpp"
+#include "editor/operators.hpp"
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
 #include <chrono>
@@ -20,7 +21,7 @@ struct FrameTiming {
     double controls_us{}, scene_us{}, step_us{}; // Disjoint stages; step is the enclosing Application call.
     double events_us{}, gc_us{};
 };
-class Application final {
+class Application final : private editor::OperatorHost {
 public:
     explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {},
         std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
@@ -80,6 +81,7 @@ private:
     friend struct EditorAcceptanceAccess; // Seeds real backend failures in the window E2E.
     friend class EditorControl;
     std::unique_ptr<EditorControl> control_;
+    editor::OperatorRegistry operators_;
     Window window_;
     std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
     SceneRecovery recovery_;
@@ -167,12 +169,23 @@ private:
     bool invoke_menu(const ui::Action&,std::span<const ui::MenuItem>);
     bool effects(const ui::Reply&);
     Result<void> execute(editor::Command,std::string_view asset={});
+    editor::Context operator_context(bool interactive);
+    Result<editor::OperatorReport> call_operator(const editor::OperatorCall&,bool interactive);
+    // UI entry: an unavailable operator is a silent no-op unless the caller reports its reason.
+    Result<void> run_operator(std::string_view id,bool report_unavailable=false);
+    Result<void> end_interaction() override;
+    const editor::Camera& camera() const noexcept override { return camera_; }
+    Result<void> set_camera(const editor::Camera& camera) override { return set_camera(camera,true); }
+    void reset_layout() override { workspace_.reset_layout(); }
+    bool source_history_available(bool redo) const noexcept override;
+    Result<void> source_history(bool redo) override;
+    bool workbench_history_available(bool redo) const noexcept override;
+    Result<void> workbench_history(bool redo) override;
+    void scene_changed() override;
     Result<void> action(const ui::Action&);
     void sync_text_input();
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
-    Result<void> focus_selected();
-    Result<void> frame_entities(bool selected_only);
     Result<void> open_color_edit(ObjectId,std::span<const FieldId> prefix,ui::ControlKey swatch);
     Result<bool> color_edit_action(const ui::Action&);
     Result<void> apply_color(std::array<double,3> rgb);

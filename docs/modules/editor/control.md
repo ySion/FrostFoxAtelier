@@ -44,23 +44,24 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | 操作 | 权威入口与行为 |
 | --- | --- |
 | editor.inspect | 默认 `detail: full` 返回完整场景与资源目录，适用于小场景；`summary` 返回状态、历史、相机、显示和最近接受帧，不枚举对象；`objects` 分页发现 Entity/Component 句柄，`object` 读取一个已发现对象的反射属性。full/summary 的 `performance` 共用 World 性能表的有界统计快照 |
+| op.list | 列出编辑器操作符：ID、标题、说明、历史标志和参数 schema，以及 Context 覆盖的 schema。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
+| op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`context` 只在本次调用内替换 `selection {entities, active, object}` 或 `region`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`，参数或 Context 不合法为 `invalid_request`。成功时返回调用后的选择 |
 | view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | project.open、scene.open、scene.save | Application 工程/场景命令；替换拒绝未保存场景或源码草稿，避免无人处理的保存对话框 |
 | scene.create | Entity、StaticMeshEntity、Point/Rectangle/Directional/Sky Light，共用现有命令和 World 工厂 |
-| scene.select、scene.rename、scene.delete | Session 的选择、名称和删除；rename 只修改 Entity 名称，Component 使用类型名 |
+| scene.rename、scene.delete | Session 的名称和删除；rename 只修改 Entity 名称，Component 使用类型名。选择改用 `op.call scene.select`，选择放在 context |
 | scene.set_property | 按发现到的属性名及精确标量类型写入；枚举使用名称 |
 | scene.transform | Entity 的可选内联完整 TRS；无空间时显式添加空间，一次撤销；位置/缩放三分量，旋转 quaternion xyzw |
 | scene.add_component、scene.remove_component | 现有组件组合和生命周期；类型来自 component_types |
 | scene.remove_transform | 移除指定 Entity 的内联空间，一次撤销 |
 | scene.reparent | 调整 Entity 组合 parent；支持 keep_world 和组成 index，一次撤销 |
 | scene.set_space_reference | 设置 Entity 空间参考：继承组合祖先、世界或另一个 Entity；支持 keep_world，一次撤销 |
-| scene.undo、scene.redo | 文档原有撤销/重做链 |
 | material.create、texture.import | Project 创建 `.material` 或导入图片，沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
 | material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
 | material.set_property、material.set_texture | 通过 Session 编辑材质对象；参数使用发现到的字段名/标量/枚举，贴图使用 input 名与 Texture GUID |
 | material.assign | 按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
 | material.override | 按真实参数字段名启用/取消实例覆盖；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
-| material.save、material.undo、material.redo | 共享资产独立保存和历史；实例覆盖使用 scene.undo/redo。保存后目录刷新失败返回 saved 与 catalog_warning |
+| material.save、material.undo、material.redo | 共享资产独立保存和历史；实例覆盖使用场景历史（`op.call edit.undo / edit.redo`）。保存后目录刷新失败返回 saved 与 catalog_warning |
 | camera.set、camera.look_at | 公共 Camera 状态和观察目标 |
 | view.set | 原子应用显示 patch，与菜单共用 ViewOption 规则 |
 | repro.export、repro.open | 内存场景的独立复现工程 |
@@ -68,7 +69,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | render.capture、render.compare | 当前显示捕获或临时设置对照 |
 | job.status、job.cancel | 查询和幂等取消任务 |
 
-场景身份与参数统一使用 Entity 名称：`editor.inspect` 的目录和 `scene.select` 的有序选择数组均为 `entities`；没有 actor/entitys 别名。`scene.create` 的空实体 `kind` 为 `entity`。`scene.add_component` 对当前选中 Entity 添加 `type` 指定的真实组件。
+场景身份与参数统一使用 Entity 名称：`editor.inspect` 的目录和 `scene.select` 的 context 选择数组均为 `entities`；没有 actor/entitys 别名。`scene.create` 的空实体 `kind` 为 `entity`。`scene.add_component` 对当前选中 Entity 添加 `type` 指定的真实组件。
 
 `scene.transform / scene.remove_transform / scene.reparent / scene.set_space_reference` 的 `object` 必须是 Entity 句柄，组件不接受 TRS。reparent 的 parent 为 Entity 句柄，null 或省略表示顶层；keep_world 默认 true，index 可省略。set_space_reference 的 origin 为 null 时继承组合祖先，空字符串表示世界，Entity 句柄表示显式空间参考；keep_world 默认 true。
 
@@ -94,7 +95,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 {"op":"editor.inspect","args":{"detail":"object","object":"<返回的组件 handle>"}}
 ```
 
-结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后仍使用 `scene.set_property` 和 `scene.undo` 等原有编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
+结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后仍使用 `scene.set_property` 和 `op.call edit.undo` 等编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
 
 宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing}`，`materials` 每项带 `missing`；`missing` 为 true 表示工程资源缺失或无法读取、当前由占位资源代替（实例按父材质判断），保存仍写回原引用。
 
@@ -273,4 +274,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v6 保存；`direct_reference`、`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`scene.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v6 保存；`direct_reference`、`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

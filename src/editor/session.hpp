@@ -199,6 +199,8 @@ public:
     bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value() || group_.has_value(); }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
+    // History entries ever recorded; eviction at the history limit does not lower it.
+    std::uint64_t recorded() const noexcept { return recorded_; }
     static constexpr std::size_t maximum_entities = 8192;
     static constexpr std::size_t maximum_components = 1024;
 private:
@@ -267,6 +269,7 @@ private:
     std::array<Parameter, 3> parameters_;
     std::vector<Entry> history_;
     std::size_t cursor_{};
+    std::uint64_t recorded_{};
     std::uint64_t revision_{1};
     std::optional<std::size_t> saved_cursor_{0};
     Selection selection_;

@@ -115,8 +115,8 @@ bool Application::viewport_input(const ui::Event& event,std::uint32_t native_key
         using enum editor::Command;
         const auto view=[&](editor::Command command,const wchar_t* text){status(execute(command),text);return true;};
         if((native_key==VK_NUMPAD5 || native_key==VK_NUMPAD0) && !event.shift) return view(view_perspective,L"Perspective view");
-        if(native_key==VK_DECIMAL && !event.shift) {status(frame_entities(true),L"View Selected");return true;}
-        if(native_key==VK_HOME && !event.shift) {status(frame_entities(false),L"View All");return true;}
+        if(native_key==VK_DECIMAL && !event.shift) {status(run_operator("view.frame_selected",true),L"View Selected");return true;}
+        if(native_key==VK_HOME && !event.shift) {status(run_operator("view.frame_all",true),L"View All");return true;}
         if(native_key==VK_OEM_3 && event.shift) {
             cancel_interaction(ui_.cancel_interaction());effects(ui_.focus(0));workspace_.dock.select(editor::control::scene_tab);
             const auto entry=camera_;

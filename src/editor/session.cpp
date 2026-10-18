@@ -37,6 +37,7 @@ void Session::remember(Change change) {
     history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_), history_.end());
     auto released=release(change);
     history_.push_back(Entry{std::move(change),std::move(released)});
+    ++recorded_;
     if (history_.size() > history_limit) {
         history_.erase(history_.begin());
         if (saved_cursor_) { if (*saved_cursor_) --*saved_cursor_; else saved_cursor_.reset(); }

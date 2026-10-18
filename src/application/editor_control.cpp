@@ -176,6 +176,8 @@ const std::vector<Operation>& operations() {
     static const Json str{{"type","string"}},obj{{"type","object"}},arr{{"type","array"}};
     static const std::vector<Operation> values{
         {"capabilities","Discover operations, arguments, limits and display options",false,{},{}},
+        {"op.list","List editor operators: identity, flags and parameter schema; the context override schema",false,{},{}},
+        {"op.call","Call one editor operator; context replaces selection or region for this call only",true,{{"id",str},{"args",obj},{"context",obj}},{"id"}},
         {"editor.inspect","Read editor state, a bounded object directory, or one discovered object",false,
             {{"detail",{{"enum",{"full","summary","objects","object"}}}},{"object",str},{"entity_name",str},{"type",str},
              {"limit",{{"type","integer"},{"minimum",1},{"maximum",inspect_page_items}}},{"cursor",obj}},{}},
@@ -183,7 +185,6 @@ const std::vector<Operation>& operations() {
         {"scene.open","Open a project-relative scene; refuses unsaved scene",true,{{"path",str}},{"path"}},
         {"scene.save","Save the current scene through the normal project save command",true,{{"path",str}},{}},
         {"scene.create","Create one entity, mesh, point/rectangle/directional/sky light",true,{{"kind",{{"enum",{"entity","mesh","point","rectangle","directional","sky"}}}},{"mesh",str}},{"kind"}},
-        {"scene.select","Select entity handles; optional inspected object must belong to active entity",true,{{"entities",arr},{"active",str},{"object",str}},{"entities"}},
         {"scene.rename","Rename one entity through document history; components use their type names",true,{{"object",str},{"name",str}},{"object","name"}},
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
@@ -203,8 +204,6 @@ const std::vector<Operation>& operations() {
         {"scene.add_component","Add one discovered component type to the selected entity",true,{{"type",str}},{"type"}},
         {"scene.remove_component","Remove a component through document history",true,{{"object",str}},{"object"}},
         {"scene.delete","Delete selected entities through document history",true,{},{}},
-        {"scene.undo","Undo one document operation",true,{},{}},
-        {"scene.redo","Redo one document operation",true,{},{}},
         {"camera.set","Restore an exact camera state from editor.inspect",true,{{"state",obj}},{"state"}},
         {"camera.look_at","Aim a perspective camera at a world-space target (metres, +Y up)",true,{{"eye",arr},{"target",arr}},{"eye","target"}},
         {"view.set","Atomically apply a typed display patch using the same rules as menus",true,{{"patch",obj}},{"patch"}},
@@ -619,9 +618,59 @@ struct EditorControl::Impl {
         job.manifest["history_policy"]="natural renderer transitions, no full history reset or GPU-history restoration; accepted ordinals exclude skipped frames";
         return {{"status","pending"},{"job_id",id},{"result",{{"phase",prepare?"preparing":"rendering"}}}};
     }
+    Json operator_list() const {
+        auto operators=Json::array();
+        for(const auto& info:app.operators_.all()) {
+            auto flags=Json::array();
+            for(const auto& [flag,name]:{std::pair{editor::OperatorFlag::undo,"undo"},{editor::OperatorFlag::history,"history"},
+                {editor::OperatorFlag::replaces_document,"replaces_document"},{editor::OperatorFlag::prompts,"prompts"}})
+                if(editor::has_flag(info.flags,flag)) flags.push_back(name);
+            operators.push_back({{"id",info.id},{"title",control::utf8(info.title)},{"description",info.description},{"flags",flags},
+                {"parameters",{{"type","object"},{"properties",Json::object()},{"additionalProperties",false}}}});
+        }
+        auto regions=Json::array();for(const auto name:editor::region_names()) regions.push_back(name);
+        const Json handle{{"type","string"}};
+        return {{"operators",std::move(operators)},{"context",{{"type","object"},{"additionalProperties",false},{"properties",{
+            {"selection",{{"type","object"},{"additionalProperties",false},{"required",{"entities"}},{"properties",{
+                {"entities",{{"type","array"},{"items",handle},{"maxItems",editor::Session::maximum_entities}}},{"active",handle},{"object",handle}}}}},
+            {"region",{{"enum",std::move(regions)}}}}}}}};
+    }
+    editor::ContextOverride context_override(const Json& value) {
+        control::fields(value,{"selection","region"});
+        editor::ContextOverride result;
+        if(value.contains("selection")) {
+            const auto& selection=value.at("selection");control::fields(selection,{"entities","active","object"});
+            const auto& entities=selection.at("entities");
+            if(!entities.is_array() || entities.size()>editor::Session::maximum_entities) throw Failure("invalid_request","Invalid entity selection");
+            editor::SelectionContext context;for(const auto& entity:entities) context.entities.push_back(object(entity));
+            context.active=selection.contains("active")?object(selection.at("active")):context.entities.empty()?ObjectId{}:context.entities.back();
+            context.object=selection.contains("object")?object(selection.at("object")):context.active;
+            if(const auto at=std::ranges::find(context.entities,context.active);at!=context.entities.end()) std::rotate(at,at+1,context.entities.end());
+            result.selection=std::move(context);
+        }
+        if(value.contains("region")) {
+            const auto name=text(value.at("region"),40);const auto names=editor::region_names();const auto at=std::ranges::find(names,name);
+            if(at==names.end()) throw Failure("invalid_request","Unknown region");
+            result.region=static_cast<editor::RegionKind>(at-names.begin());
+        }
+        return result;
+    }
+    Json call_operator(const Json& args) {
+        editor::OperatorCall request{text(args.at("id"),80),Json::object(),{}};
+        if(!app.operators_.find(request.id)) throw Failure("unknown_operator","No editor operator has this ID");
+        if(args.contains("args")) {if(!args.at("args").is_object()) throw Failure("invalid_request","args must be an object");request.args=args.at("args");}
+        if(args.contains("context")) request.context=context_override(args.at("context"));
+        const auto report=app.call_operator(request,false);
+        if(!report) throw Failure(report.error().code==ErrorCode::argument_mismatch?"invalid_request":"operation_failed",report.error().message);
+        if(report->status==editor::OperatorStatus::unavailable) throw Failure("poll_failed",report->message);
+        auto selection=Json::array();for(const auto entity:app.document_->selected_entities()) selection.push_back(handle(entity));
+        return {{"operator",request.id},{"selection",std::move(selection)},{"active",handle(app.document_->selection().entity)},
+            {"inspected_object",handle(app.document_->selection().object)}};
+    }
     Json dispatch(std::string_view op,const Json& args,const std::string& id,const std::shared_ptr<control::Peer>& peer) {
         auto& doc=*app.document_;auto& runtime=doc.world().runtime();
         if(op=="capabilities") return capabilities();
+        if(op=="op.list") return operator_list();
         if(op=="editor.inspect") {
             const auto detail=args.contains("detail")?text(args.at("detail")):std::string{"full"};
             if(detail=="objects") return inspect_objects(args);
@@ -656,6 +705,7 @@ struct EditorControl::Impl {
             throw Failure("unknown_job","Job expired or belongs to another instance");
         }
         idle();
+        if(op=="op.call") return call_operator(args);
         if(op.starts_with("material.") || op=="texture.import") {
             if(!app.project_) throw Failure("not_ready","No project is open");
             auto& project=*app.project_;
@@ -700,14 +750,6 @@ struct EditorControl::Impl {
             else throw Failure("invalid_request","Unknown entity creation kind");
             if(!app.workspace_.command_enabled(command,doc)) throw Failure("unavailable","Creation is unavailable in this document");
             take(app.execute(command,text(args.value("mesh",Json("")))));return {{"object",handle(doc.selection().entity)}};
-        } else if(op=="scene.select") {
-            const auto& values=args.at("entities");if(!values.is_array() || values.size()>editor::Session::maximum_entities) throw Failure("invalid_request","Invalid entity selection");
-            std::vector<ObjectId> selected;for(const auto& value:values) selected.push_back(object(value));
-            const auto active_id=args.contains("active")?object(args["active"]):(selected.empty()?ObjectId{}:selected.back());
-            if(active_id!=ObjectId{} && std::ranges::find(selected,active_id)==selected.end()) throw Failure("invalid_request","Active entity must be included in the selection");
-            const auto inspected=args.contains("object")?object(args["object"]):active_id;
-            if(inspected!=active_id) {const auto status=take(world::inspect_component(runtime,inspected));if(!status.valid || status.owner!=active_id || selected.size()!=1) throw Failure("invalid_request","Inspected component must belong to the sole selected entity");}
-            take(doc.select_entities(selected,active_id));if(inspected!=active_id) take(doc.select(inspected));app.workspace_.inspecting_asset=false;
         } else if(op=="scene.rename") take(doc.rename(object(args.at("object")),control::wide(text(args.at("name"),1024))));
         else if(op=="scene.set_property") {
             const auto target=object(args.at("object"));const auto name=text(args.at("property"),256);const auto properties=take(doc.properties(target));
@@ -732,8 +774,6 @@ struct EditorControl::Impl {
             if(found==types.end()) throw Failure("invalid_request","Component type is not available");committed(doc.add_component(found->type));return {{"object",handle(doc.selection().object)}};
         } else if(op=="scene.remove_component") committed(doc.remove_component(object(args.at("object"))));
         else if(op=="scene.delete") committed(doc.erase_selected());
-        else if(op=="scene.undo") {committed(doc.undo());app.sync_world_view();}
-        else if(op=="scene.redo") {committed(doc.redo());app.sync_world_view();}
         else if(op=="camera.set" || op=="camera.look_at") {
             auto camera=app.camera_;
             const auto valid=op=="camera.set"?camera.set_state(camera_state(args.at("state"))):camera.look_at(vector3(args.at("eye")),vector3(args.at("target")));

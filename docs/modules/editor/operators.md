@@ -1,6 +1,6 @@
 # 编辑器操作符（设计稿）
 
-状态：O1 设计稿，已由总负责人定稿，未实现。实现后本文改写为当前行为文档。
+状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
 
 编辑器的每个操作都是一个注册的操作符。菜单、快捷区、按钮、快捷键、Control，以及以后的自有语言，都经同一个入口调用它：`OperatorCall {id, args, context}` → poll → 解码参数 → execute。UI 只描述“调用哪个操作符、带什么参数”，不写逻辑。
 
@@ -79,7 +79,7 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 | `replaces_document` | 不检查（文档被替换，历史随之清零） |
 | 无以上标志 | u 和 r 都不变 |
 
-这是开发和发布构建中都生效的运行时检查：违反时 `call` 返回 failed，附带一条写明操作符 ID、标志和前后计数的诊断（开发构建可以额外断言）。验收在 dev 和 release 下都把它当作失败。迁移中发现的、会产生多个条目的现有动作，都要合成一个条目。目前已知 `unparent_selected` 按每个 Entity 各调一次 `reparent`，多选时会产生多个条目，`scene.parent_set` 需要 Session 提供批量改父级的单条目事务（属于 Session，若要改 `World::reparent` 的签名，先告知 World 负责人）；合不了的报总负责人。
+检查依据是 Session 的 `recorded()`（累计记录的历史条目数，历史达到上限时淘汰旧条目也不会减少）加上撤销和重做计数。这是开发和发布构建中都生效的运行时检查：违反时 `call` 返回 failed，附带一条写明操作符 ID、标志和前后计数的诊断（开发构建可以额外断言）。验收在 dev 和 release 下都把它当作失败。迁移中发现的、会产生多个条目的现有动作，都要合成一个条目。目前已知 `unparent_selected` 按每个 Entity 各调一次 `reparent`，多选时会产生多个条目，`scene.parent_set` 需要 Session 提供批量改父级的单条目事务（属于 Session，若要改 `World::reparent` 的签名，先告知 World 负责人）；合不了的报总负责人。
 
 ### 替换文档
 
@@ -104,12 +104,13 @@ struct Context {
     std::optional<ViewportContext> viewport;        // 仅当 region 为 viewport
     std::string asset;                              // 资源浏览器的活动资产或被检视的材质资产键
     std::filesystem::path source;                   // 代码页的活动文档
+    bool scene_available{true}, playing{};          // 工程场景是否可用；Play 运行时 World 归运行进程
     bool interactive{};                             // UI/keymap 调用为 true；Control 与语言为 false
 };
 ```
 
 - 操作符只读 Context，不读 Session 内部的选择。因此 Session 中按“当前选择”工作的方法（`erase_entities`、`duplicate_selected`、`erase_selected`、clear/snap 等）改为接收显式目标；仍然只有一份实现。
-- UI 调用：由获得焦点的区域填充。视口在指针位于其上且没有文本控件占用键盘时是活动区域（保持现有行为），否则是获得焦点的 Dock 页。
+- UI 调用：由获得焦点的区域填充。视口在指针位于其上且没有文本控件占用键盘时是活动区域（保持现有行为），否则是获得焦点的 Dock 页。第 5 步 keymap 落地之前，UI 和 Control 的基础 Context 都取获得焦点的 Dock 页，与现有撤销路由一致。
 - Control 覆盖（`op.call` 的 `context`），只在本次调用内有效，不改文档选择：
   ```json
   {"selection":{"entities":["h1","h2"],"active":"h1","object":"h3"},

@@ -68,6 +68,8 @@ struct Driver {
         for(unsigned i=0;i<200 && stable<5;++i) {const auto before=token;std::this_thread::sleep_for(30ms);state=inspect();stable=before==token?stable+1:0;}
         require(stable==5,"The editor state token did not settle after start");return state;
     }
+    Json op(std::string id,Json context=Json::object()) {return ok("op.call",{{"id",std::move(id)},{"context",std::move(context)}});}
+    Json try_op(std::string id,Json args,Json context=Json::object()) {return call("op.call",{{"id",std::move(id)},{"args",std::move(args)},{"context",std::move(context)}});}
     Json wait(std::string id,std::chrono::seconds timeout=125s) {
         const auto deadline=std::chrono::steady_clock::now()+timeout;
         while(std::chrono::steady_clock::now()<deadline) {auto result=call("job.status",{{"job_id",id}});if(result.at("status")!="pending") return result;std::this_thread::sleep_for(20ms);}
@@ -83,6 +85,48 @@ Json discover_editor(const Process& editor,const std::filesystem::path& director
     throw std::runtime_error("Editor did not publish its endpoint");
 }
 void error(const Json& result,std::string_view expected) {require(result.value("status","")=="error" && result.at("error").at("code").get<std::string>()==expected,result.dump());}
+Json selection(const std::string& entity) {return {{"selection",{{"entities",Json::array({entity})}}}};}
+// One operator registry serves menus, keys and Control; the context override lasts one call.
+void verify_operators(Driver& d,const std::string& entity) {
+    const auto listed=d.ok("op.list");
+    const auto find=[&](std::string_view id)->const Json& {
+        for(const auto& info:listed.at("operators")) if(info.at("id").get<std::string>()==id) return info;
+        throw std::runtime_error("op.list is missing "+std::string(id));
+    };
+    for(const auto& info:listed.at("operators")) {
+        const auto& parameters=info.at("parameters");
+        require(!info.at("title").get<std::string>().empty() && parameters.at("type")=="object" && parameters.at("additionalProperties")==false,
+            "Operator lacks a title or a closed parameter schema: "+info.dump());
+    }
+    require(find("edit.undo").at("flags")==Json::array({"history"}) && find("edit.redo").at("flags")==Json::array({"history"}) &&
+        find("view.frame_all").at("flags").empty() && find("scene.select").at("flags").empty() && find("layout.reset").at("flags").empty(),
+        "Operator flags do not match their history contracts");
+    const auto& regions=listed.at("context").at("properties").at("region").at("enum");
+    require(std::ranges::find(regions,Json("viewport"))!=regions.end() && std::ranges::find(regions,Json("code"))!=regions.end(),"Context schema lacks regions");
+
+    d.op("scene.select",selection(entity));d.op("scene.select",{{"selection",{{"entities",Json::array()}}}});
+    auto before=d.inspect();require(before.at("selection").empty(),"scene.select did not clear the selection");
+    auto unavailable=d.try_op("view.frame_selected",Json::object());error(unavailable,"poll_failed");
+    require(unavailable.at("error").at("message").get<std::string>().find("Select an Entity")!=std::string::npos,"Poll failure did not give its reason: "+unavailable.dump());
+    d.op("view.frame_selected",selection(entity));auto after=d.inspect();
+    require(after.at("camera")!=before.at("camera") && after.at("selection").empty() && after.at("undo")==before.at("undo"),
+        "A context selection must frame its Entity without changing the document selection or history");
+
+    const auto undo=before.at("undo").get<std::size_t>(),redo=before.at("redo").get<std::size_t>();
+    require(undo>0,"The operator check needs scene history");
+    d.op("edit.undo");after=d.inspect();require(after.at("undo")==undo-1 && after.at("redo")==redo+1,"edit.undo did not move the cursor by one");
+    d.op("edit.redo");after=d.inspect();require(after.at("undo")==undo && after.at("redo")==redo,"edit.redo did not restore the cursor");
+    error(d.try_op("edit.undo",Json::object(),{{"region","code"}}),"poll_failed");
+    require(d.inspect().at("undo")==undo,"A Code-region undo without a source file must not touch the scene");
+
+    error(d.try_op("view.unknown",Json::object()),"unknown_operator");
+    error(d.try_op("view.frame_all",{{"zoom",2}}),"invalid_request");
+    error(d.try_op("scene.select",Json::object(),{{"selection",{{"entities",Json::array({entity})},{"active","stale/1"}}}}),"stale_object");
+    error(d.try_op("view.frame_all",Json::object(),{{"region","nowhere"}}),"invalid_request");
+    error(d.try_op("scene.select",Json::object(),{{"selection",{{"entities",Json::array({entity,entity})}}}}),"invalid_request");
+    d.op("scene.select",selection(entity));
+    require(d.inspect().at("selection")==Json::array({entity}),"scene.select did not restore the selection");
+}
 void verify_option_descriptions(const Json& capabilities) {
     const auto& options=capabilities.at("display_options");
     for(const auto& [name,option]:options.items()) {
@@ -358,7 +402,7 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
         }
         require(read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
         if(pass==0) require(std::filesystem::exists(atelier::platform::windows_file_path(repro/"unpublished"/unpublished)),"Deep-path source archive is missing");
-        if(pass==0) d.ok("scene.undo");
+        if(pass==0) d.op("edit.undo");
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
         const auto reopened=d.inspect();require(reopened.at("entities").size()==1 && !reopened.at("dirty").get<bool>(),"Deep-path repro did not reopen");
         d.ok("scene.save");
@@ -474,7 +518,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     const auto exported=d.wait(export_id);require(exported.at("status")=="ok",exported.dump());
     const std::filesystem::path repro=wide(exported.at("result").at("directory").get<std::string>());
     auto manifest=read(repro/"manifest.json");require(manifest.at("view")==repro_view,"Repro lost canonical volume settings");
-    d.ok("scene.undo");d.ok("scene.save",{{"path","Content/Scenes/Editing.scene"}});d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
+    d.op("edit.undo");d.ok("scene.save",{{"path","Content/Scenes/Editing.scene"}});d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
     require(d.inspect().at("view")==repro_view,"Repro did not restore all four volume settings");
     for(const char* field:{"min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z"}) {
         const auto canonical=std::string("probe_volume_0_")+field;
@@ -559,7 +603,7 @@ int wmain(int argc,wchar_t** argv) {
         if(descriptions) {
             write(root/"capabilities.json",caps.dump(2));
             write(root/"properties.json",current.at("entities")[0].dump(2));
-            d.ok("scene.undo");const auto restored=d.inspect();
+            d.op("edit.undo");const auto restored=d.inspect();
             error(d.call("editor.inspect",{{"detail","objects"},{"cursor",directory_cursor}}),"stale_cursor");
             error(d.call("editor.inspect",{{"detail","object"},{"object",current.at("entities")[0].at("handle")}}),"stale_object");
             require(restored.at("entities").empty() && !restored.at("dirty").get<bool>() &&
@@ -597,8 +641,8 @@ int wmain(int argc,wchar_t** argv) {
         d.ok("scene.transform",{{"object",entity},{"position",{1,2,3}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
         d.ok("scene.set_property",{{"object",entity},{"property","position.x"},{"value",4}});
         current=d.inspect();require(current.at("entities")[0].at("transform").at("position")[0]==4,"Property command did not write the document");
-        d.ok("scene.undo");current=d.inspect();require(current.at("entities")[0].at("transform").at("position")[0]==1,"Undo did not restore the transform");d.ok("scene.redo");
-        d.ok("scene.select",{{"entities",{entity}}});
+        d.op("edit.undo");current=d.inspect();require(current.at("entities")[0].at("transform").at("position")[0]==1,"Undo did not restore the transform");d.op("edit.redo");
+        verify_operators(d,entity);
         const auto added=d.ok("scene.add_component",{{"type","world.Component"}}).at("object");
         current=d.inspect();require(current.at("entities")[0].at("components").size()==2,"Component addition failed");
         d.ok("scene.remove_component",{{"object",added}});current=d.inspect();require(current.at("entities")[0].at("components").size()==1 &&
@@ -701,7 +745,7 @@ int wmain(int argc,wchar_t** argv) {
         require(current.at("entities").size()==1 && current.at("entities")[0].at("name")=="Control cube" && !current.at("dirty").get<bool>(),"Repro reopen failed");
         error(d.call("scene.rename",{{"object",entity},{"name","Old handle"}}),"stale_object");
         repro_lighting_migration(d,repro,root);
-        d.ok("scene.delete");require(d.inspect().at("entities").empty(),"Delete command did not remove the selected entity");d.ok("scene.undo");require(d.inspect().at("entities").size()==1,"Undo did not restore the entity");
+        d.ok("scene.delete");require(d.inspect().at("entities").empty(),"Delete command did not remove the selected entity");d.op("edit.undo");require(d.inspect().at("entities").size()==1,"Undo did not restore the entity");
         d.client.reset();
         Process cli(std::filesystem::path(argv[1]).parent_path()/"atelier_control.exe",L"--list --directory "+quote(directory),root/"cli.json");
         require(WaitForSingleObject(cli.process,10000)==WAIT_OBJECT_0,"CLI discovery did not finish");require(read(root/"cli.json").at("instances").size()==1,"CLI did not discover the live editor");
