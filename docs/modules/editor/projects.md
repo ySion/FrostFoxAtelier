@@ -221,6 +221,34 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 
 项目 Play 和 UI Preview 共用一个进程宿主。父进程只传入工程位置、场景快照、停止事件并读取输出。Stop 先请求正常退出；2 秒未响应后结束该运行进程组。关闭编辑器或切换工程也回收它。运行中的对象身份、GPU 资源和 JIT 地址不会跨进程传递。停止后保留编辑场景、选择和撤销历史；运行结果不会自动写回。
 
+### Play 副本与变更批次
+
+编辑器文档是唯一权威，Play 进程持有它的副本。副本加载后调用 `Session::enter_play()`：对象沿用编辑器分配的文档身份，副本自己不再分配，复制、导入等需要新身份的操作因此失败；游戏运行中生成的对象没有文档身份，只用运行时句柄寻址。
+
+`Session::apply_live(batch, Project&)` 在宿主边界（帧循环中 update 之前）按顺序应用编辑器的一批修改，不写历史。批次为 `{"ops":[...]}`，身份是十进制字符串，值都是绝对值：
+
+| op | 字段 | 语义 |
+| --- | --- | --- |
+| `add` | `parent`（身份或 null）、`index`（null 为末尾）、`graph` | 一个根 Entity 及其子树，graph 由 `serialize_live_subtree` 生成：保留身份，graph 外的引用写作 `{"$ref":身份}`。新对象按运行中插入的规则立即 Begin。 |
+| `attach` | `entity`、`index`、`graph` | 给已有 Entity 增加组件。graph 中该 Entity 的记录为 `{"id","existing":true,"children":[],"components":[...]}`，由 `serialize_live_components` 生成。 |
+| `remove` | `id` | 经 World 退出链销毁 Entity（连同子树）或 Component，End 照常执行；之后可以用同一身份再次 `add`（撤销删除）。 |
+| `set` | `id`，可选 `name`、`enabled`、`space`、`properties`、`base_color`/`roughness`/`metallic`/`emissive`、`materials` | `properties` 是稀疏记录，只写出现的叶，游戏写过的其他字段不受影响；字段写入经过 `World::write` 的夹值、校验和准入。`space` 为 null 时移除空间；记录中缺省的叶保持当前值，`origin` 取 `"0"`（世界）、null（继承）或身份。物理接管的 Entity 改位姿时由模拟系统瞬移。`materials` 是完整绑定表。 |
+| `move` | `id`、`parent`、`index`、`space` | 以 keep-world 改父级和顺序，再写入最终局部 TRS。 |
+| `world` | `world`（Scene 的 world 记录） | 整体替换 World 设置。 |
+| `materials` | `materials`（Scene 材质定义列表） | 已有身份按定义更新值；新身份创建后登记。绑定新材质前先发送它的定义。 |
+| `resource` | `key`、`material`（`.material` 资产内容） | Play 已加载的同键材质原地更新，引用它的实例随之变化；未加载的键只登记，供之后的 `add` 使用。新导入的 Mesh / Texture 由 `add` 按需从磁盘读取。 |
+
+数组字段按整个数组传输：经过元素路径的修改和数组的增删、移动，都扩大为对该数组字段的一次 `set`，携带完整数组（随 Scene 的数组编码一起实现）。
+
+返回值是未完全应用的项的诊断，phase 为 `command`，消息以 `Play change <序号> #<身份>` 开头：
+
+- warning `reference_dropped`：目标已被游戏销毁，该项跳过；或某个引用的目标已被销毁，该引用写为 null，其余照常应用。
+- warning `command_rejected`：Play 无法跟随这项修改，该项不生效，例如移动 Ragdoll 部件或 Vehicle 车轮的祖先（见[物理](../physics/README.md)）。
+- error `command_rejected`：应用失败，Play 已与文档分歧，需要重启 Play。`add`/`attach` 要么整项生效，要么不留下对象；`set` 在中途失败时已写入的部分不回滚。
+- `add`/`attach` 携带文档本身的保留数据（占位类型、缺失资源等）时，按加载诊断的种类以 warning 报告，不算分歧。
+
+批次格式错误，或对编辑文档调用时，整次调用返回错误。当前帧循环还没有接入批次来源，Play 进程也尚未调用 `enter_play`；两者随编辑器到 Play 的传输一起接入。
+
 命令行与编辑器使用同一个入口：
 
 ```powershell
@@ -259,7 +287,7 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返，以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
+`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 

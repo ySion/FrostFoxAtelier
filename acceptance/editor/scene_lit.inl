@@ -424,7 +424,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     json=nlohmann::json{{"version",3},{"actors",nlohmann::json::array()}};
     auto legacy=take(Session::deserialize(json.dump(),project));
     require(legacy->world().lighting_settings()==rendering::SceneLightingSettings{},"An old scene inherited another document's World settings.");
-    take(restored->start());require(!restored->set_world_lighting(before),"Running World accepted author settings.");take(restored->stop());
+    take(restored->start());take(restored->set_world_lighting(before));
+    require(restored->world().lighting_settings()==before,"A running World rejected World settings at the host boundary.");take(restored->stop());
     workspace.dock.select(control::parameters_tab);publish();
     const auto entity=document.selection().entity;const auto root=entity;
     const auto schema=take(document.properties(root));
