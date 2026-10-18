@@ -619,9 +619,9 @@ public:
         // the failing Entity and yields nullopt; an error means the caller
         // fails (halt policy or a World-level failure, see contain).
         [[nodiscard]] Result<std::optional<math::Matrix4>> matrix(ObjectId entity);
-        // True when `world`, this pass's matrix of `entity`, is singular; one
-        // warning names the topmost zero-scale node of the chain. Degenerate
-        // spaces are not object failures under any policy.
+        // True when the chain of `entity` has a zero scale axis or `world`, this
+        // pass's matrix of it, is singular; one warning names the topmost
+        // zero-scale node. Degenerate spaces are not object failures under any policy.
         [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
         [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
     private:

@@ -571,6 +571,31 @@ void mirrored_and_degenerate_space() {
     require(item(u.id()) && item(v.id()),"Restoring the zero axis did not restore its subtree.");
     take(world.set_transform(flat.id(),{{0,0,0},{},{0,1,1}}));(void)item(u.id());
     require(world.take_diagnostics().size()==1,"A degenerate space that recurred after resolving was not reported again.");
+    // Under a rotated zero axis, a rotated child's FP32 matrix keeps a rounding
+    // residue in its determinant; the space is still degenerate.
+    const auto turn=[](float degrees,math::Vector3 axis){
+        const float length=std::sqrt(axis.x*axis.x+axis.y*axis.y+axis.z*axis.z),angle=degrees*3.14159265f/360,s=std::sin(angle)/length;
+        return math::Quaternion{axis.x*s,axis.y*s,axis.z*s,std::cos(angle)};
+    };
+    bool residue=false;
+    for(const float degrees:{17.f,37.f,53.f,71.f}) {
+        auto tilted=take(w::create_entity(runtime)),leaf=take(w::create_entity(runtime));
+        auto tilted_shape=add_shape(runtime,types,world,tilted.id()),leaf_shape=add_shape(runtime,types,world,leaf.id());
+        take(world.set_transform(tilted.id(),{{},turn(degrees,{1,2,3}),{0,1,1}}));
+        take(world.set_transform(leaf.id(),{{},turn(29,{1,2,3}),{1,1,1}}));
+        committed(world.reparent(leaf.id(),tilted.id(),w::ReparentRule::keep_local));committed(world.attach(tilted.id()));
+        residue|=!w::singular(take(w::world_matrix(runtime,leaf.id())));
+        (void)world.take_diagnostics();
+        require(!item(leaf.id()) && !item(tilted.id()),"A mesh under a rotated zero scale axis was drawn.");
+        report=world.take_diagnostics();
+        require(report.size()==1 && report[0].object==tilted.id() && report[0].kind==w::DiagnosticKind::degenerate_value,
+            "A rotated zero scale axis was not reported on its cause.");
+        // Recomposing only the child reuses the parent's entry from this pass.
+        take(world.set_transform(leaf.id(),{{},turn(41,{1,2,3}),{1,1,1}}));
+        require(!item(leaf.id()) && world.take_diagnostics().empty(),"A child recomposed under a cached zero scale axis was drawn.");
+        (void)take(world.detach(tilted.id()));
+    }
+    require(residue,"No rotated zero axis left an FP32 rounding residue; the case no longer exercises it.");
     // Light frames ignore scale magnitudes and keep signs: under a uniform mirror
     // they follow the mirrored local axes, with right negated to stay right-handed.
     std::vector<atelier::ObjectRoot> lights;

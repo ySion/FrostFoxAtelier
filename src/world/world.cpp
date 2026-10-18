@@ -596,7 +596,7 @@ Result<std::optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity)
     return std::nullopt;
 }
 bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message) {
-    if (!singular(world)) return false;
+    if (!singular(world) && !impl_->space.entry(entity)->flat) return false;
     Diagnostic diagnostic;
     diagnostic.severity = Severity::warning; diagnostic.kind = DiagnosticKind::degenerate_value;
     diagnostic.phase = phase_;

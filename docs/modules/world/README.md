@@ -47,7 +47,7 @@ EntityRemoval 保留子树、原组合父与位置；ComponentRemoval 保留 own
 
 TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每轴 scale。Matrix4 为行主序、行向量，local = S * R * T，平移位于 12–14，world = local * reference_world。层级矩阵可含剪切，不保存第二份可编辑空间状态，也不以伪造单位矩阵掩盖无效关系。
 
-负 scale 表示镜像，rotation 始终是真旋转。从矩阵分解 TRS（keep_world、物理回写）时，奇数个负轴优先取对象原局部 scale 的符号，符号奇偶不符时只取 X 为负，因此 (-1,-1,-1) 的回写保持原 TRS，而无偏好的世界分解为 (-1,1,1) 加半周旋转。零 scale 可以存储，但该节点及其整棵空间子树的世界矩阵奇异：网格不绘制、Primitive 不建刚体，各报告一条 `degenerate_value` 警告，身份指向链上最上层的零缩放节点，持续期间合并计数；这不是对象失败，任何策略下都不停用行为或停机。涉及奇异矩阵的 keep_world 仍拒绝。灯光朝向忽略 scale 幅值、保留符号，随镜像一起镜像；零缩放不使灯光退化，见[灯光](lighting.md)。
+负 scale 表示镜像，rotation 始终是真旋转。从矩阵分解 TRS（keep_world、物理回写）时，奇数个负轴优先取对象原局部 scale 的符号，符号奇偶不符时只取 X 为负，因此 (-1,-1,-1) 的回写保持原 TRS，而无偏好的世界分解为 (-1,1,1) 加半周旋转。零 scale 可以存储，但该节点及其整棵空间子树退化：按链上是否有零缩放轴判定，不看舍入成 FP32 后的行列式（旋转后的零轴会在子级矩阵里留下非零舍入残差）；网格不绘制、Primitive 不建刚体，各报告一条 `degenerate_value` 警告，身份指向链上最上层的零缩放节点，持续期间合并计数；这不是对象失败，任何策略下都不停用行为或停机。涉及奇异矩阵的 keep_world 仍拒绝。灯光朝向忽略 scale 幅值、保留符号，随镜像一起镜像；零缩放不使灯光退化，见[灯光](lighting.md)。
 
 StaticMeshComponent 保存网格与材质，LightComponent 保存灯参数，PrimitiveComponent 保存 body 作者配置；绘制、灯光与物理都查询 owner Entity 的空间。需要独立空间时创建子 Entity，将能力组件放到该子实体。
 
@@ -112,7 +112,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write`、`set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 用写入前读出的 Scalar 经 Runtime::write 恢复，原值若由可信路径写成越过硬边界，恢复时按硬边界夹值；这样的原值本身已违反字段不变量，`Runtime::validate` 会报告它。`set_material / set_light` 按整值精确恢复。Admission 运行时按分派处理：它可以读 World，但其中的编辑和 `add_admission` 返回 busy。Admission 抛出的异常转为 `invocation_failed`（内存不足时为 `capacity_exceeded`），与返回错误一样拒绝这次改动并恢复原值。恢复本身失败时（例如整值复制时分配失败），返回的错误会写明被拒的值未能恢复，并给出原因。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。world 库目前登记两条：每个 World 至多一个 Sky Light；非 Sky 灯光的成员 owner 必须有 Transform（attach 时由空间需求检查覆盖，这条用于编辑改变灯光种类）。
 
-`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对奇异矩阵在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](lighting.md)）。`render_items / light_items` 只经这三个入口读取空间。
+`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对链上有零缩放轴或矩阵奇异的空间，在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](lighting.md)）。`render_items / light_items` 只经这三个入口读取空间。
 
 `render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。成员的世界矩阵来自 World 持有的一份空间缓存，`render_items`、`light_items`、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。Detached 对象和候选图仍使用临时求值。
 

@@ -132,6 +132,9 @@ struct SpaceCache {
         std::uint64_t checked{}, version{}, parent_version{};
         math::Matrix4 world{};
         bool spatial{}, composed{};
+        // A zero scale axis on this node or an ancestor; FP32 rounding can leave
+        // the composed matrix of such a space with a tiny nonzero determinant.
+        bool flat{};
     };
     Map<ObjectId, Entry> entries;
     SpaceGraph relations;

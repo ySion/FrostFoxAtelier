@@ -216,9 +216,10 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     }
     auto parent_world = math::Matrix4::identity();
     std::uint64_t parent_version{};
+    bool parent_flat{};
     if (composed != ObjectId{}) {
         const auto* entry = entries.find(composed);
-        parent_world = entry->world; parent_version = entry->version;
+        parent_world = entry->world; parent_version = entry->version; parent_flat = entry->flat;
     }
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
         failed = *it;
@@ -234,10 +235,11 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
             auto world = multiply(transform_matrix(*canonical), parent_world);
             if (!world) return std::unexpected(world.error());
             entry->local = *local; entry->world = *world; entry->parent_version = parent_version;
+            entry->flat = parent_flat || local->scale.x == 0 || local->scale.y == 0 || local->scale.z == 0;
             ++entry->version; entry->composed = true;
         }
         entry->checked = pass;
-        parent_world = entry->world; parent_version = entry->version;
+        parent_world = entry->world; parent_version = entry->version; parent_flat = entry->flat;
     }
     failed = {};
     return entries.find(object)->world;
