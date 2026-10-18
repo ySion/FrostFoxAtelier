@@ -1,4 +1,5 @@
 #include "world/detail.hpp"
+#include "world/timing.hpp"
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>
@@ -404,9 +405,21 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
 }
 
 std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
-    if (schedule_dirty) rebuild_schedule();
+    struct PhaseMarkers { const timing::Marker &phase, &tick, &commands, &flush; };
+    static constexpr std::array<PhaseMarkers, 3> markers{{
+        {phases::pre_physics, phases::pre_physics_tick, phases::pre_physics_commands, phases::pre_physics_flush},
+        {phases::post_physics, phases::post_physics_tick, phases::post_physics_commands, phases::post_physics_flush},
+        {phases::late, phases::late_tick, phases::late_commands, phases::late_flush}}};
+    const auto& marked = markers[std::size_t(phase)];
+    if (schedule_dirty) {
+        timing::Scope scheduling{phases::schedule};
+        rebuild_schedule();
+    }
+    timing::Scope timed{marked.phase};
     std::optional<Error> failure;
+    std::optional<timing::Scope> resuming;
     {
+        std::optional<timing::Scope> ticking{std::in_place, marked.tick};
         auto execution = ExecutionScope::enter(runtime);
         if (!execution) return execution.error();
         detail::DispatchScope dispatch{dispatch_depth};
@@ -432,7 +445,9 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
             if (!contain(*error, DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) { failure = std::move(error); break; }
             fault_tick(object, item.entity);
         }
+        ticking.reset();
         if (!failure && phase == TickPhase::pre_physics) {
+            resuming.emplace(phases::pre_physics_tasks);
             // Cancelling erases tasks, so faults apply after the resume loop.
             std::vector<std::pair<ObjectId, ObjectId>> faulted;
             for (auto& task : tasks) {
@@ -453,7 +468,12 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
             const auto state = task.coroutine.state();
             return state == CoroutineState::completed || state == CoroutineState::cancelled || state == CoroutineState::failed;
         });
-    if (auto applied = apply_translations(); !applied) return applied.error();
+    resuming.reset();
+    {
+        timing::Scope commanding{marked.commands};
+        if (auto applied = apply_translations(); !applied) return applied.error();
+    }
+    timing::Scope flushing{marked.flush};
     return flush_requests();
 }
 
@@ -463,6 +483,7 @@ Result<void> World::update(float amount) {
     if (state.updating) return error(ErrorCode::busy, "World update cannot be nested.");
     if (!std::isfinite(amount) || amount < 0.f) return error(ErrorCode::argument_mismatch, "World update amount must be finite and nonnegative.");
     if (!state.running) return {};
+    timing::Scope timed{phases::update};
     detail::FlagScope updating{state.updating};
     state.begin_pass(DiagnosticPhase::physics);
     state.begin_pass(DiagnosticPhase::command);
@@ -471,6 +492,7 @@ Result<void> World::update(float amount) {
         return std::unexpected(std::move(failure));
     };
     if (auto failure = state.run_phase(TickPhase::pre_physics, amount)) return fail(std::move(*failure));
+    std::optional<timing::Scope> simulating{std::in_place, phases::simulation};
     std::vector<std::shared_ptr<const Simulation>> systems;
     for (const auto& entry : state.simulations) if (entry.simulation) systems.push_back(entry.simulation);
     for (const auto& system : systems) {
@@ -487,6 +509,7 @@ Result<void> World::update(float amount) {
         } catch (...) { failure = Error{ErrorCode::invocation_failed, "World simulation step threw an unknown exception."}; }
         if (failure) return fail(std::move(*failure));
     }
+    simulating.reset();
     for (const auto phase : {TickPhase::post_physics, TickPhase::late}) {
         if (!state.running) return {};
         if (auto failure = state.run_phase(phase, amount)) return fail(std::move(*failure));

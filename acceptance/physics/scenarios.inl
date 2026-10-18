@@ -153,6 +153,41 @@ void queries() {
     require(take(f.scene->overlap_sphere({}, 1)).step_id == 1, "query stamp follows completed simulation");
 }
 
+void frame_timing() {
+    // Structure only: which World and physics phases ran, under which parent and how often.
+    namespace timing = atelier::timing;
+    namespace wp = w::phases;
+    namespace pp = p::phases;
+    timing::install({wp::markers, pp::markers});
+    timing::Recorder recorder;
+    PhysicsFixture f;
+    f.ground();
+    f.make({0, 2, 0}, dynamic_body());
+    const auto frame = [&](float elapsed) {
+        timing::Recorder::Frame timed{recorder};
+        take(f.world.update(elapsed));
+        return timed.finish();
+    };
+    const auto stopped = frame(fixed_delta);
+    require(stopped.structure_errors == 0 && stopped.count(wp::update) == 0, "a stopped World records no update phase");
+    f.start();
+    const std::array<const timing::Marker*, 18> once{&wp::update, &wp::pre_physics, &wp::pre_physics_tick, &wp::pre_physics_tasks,
+        &wp::pre_physics_commands, &wp::pre_physics_flush, &wp::simulation, &wp::post_physics, &wp::post_physics_tick,
+        &wp::post_physics_commands, &wp::post_physics_flush, &wp::late, &wp::late_tick, &wp::late_commands, &wp::late_flush,
+        &pp::step, &pp::reconcile, &pp::events};
+    // Start dirties the schedule; an unchanged World does not rebuild it again.
+    for (const std::uint32_t rebuilds : {1u, 0u}) {
+        const auto record = frame(2.5f * fixed_delta);
+        const auto steps = f.scene->last_step().steps;
+        require(record.structure_errors == 0, "World and physics phases open under their declared parents");
+        require(std::ranges::all_of(once, [&](const auto* marker) { return record.count(*marker) == 1; }),
+            "each World phase and the physics step run once per frame");
+        require(record.count(wp::schedule) == rebuilds, "the schedule rebuild is timed only when it runs");
+        require(steps >= 2 && record.count(pp::substep) == steps && record.count(pp::solve) == steps &&
+            record.count(pp::write_back) == steps, "substep phases run once per fixed step");
+    }
+}
+
 void fixed_step() {
     PhysicsFixture f;
     auto entity = f.make({0, 10, 0}, dynamic_body());

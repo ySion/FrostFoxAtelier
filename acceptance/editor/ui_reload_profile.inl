@@ -76,9 +76,15 @@ UiReloadResources ui_reload_resources() {
     }
     return result;
 }
+// Each replacement round is one frame of a profile Recorder; compile and publish are its phases.
+constinit timing::Marker reload_compile{"profile.compile","UI compile",&timing::frame};
+constinit timing::Marker reload_publish{"profile.publish","UI publish",&timing::frame};
+constexpr std::array<timing::Marker*,2> reload_markers{&reload_compile,&reload_publish};
+
 void profile_ui_reload(const std::filesystem::path& path) {
     namespace language=ui_language;
-    using Clock=std::chrono::steady_clock;
+    timing::install({reload_markers});
+    timing::Recorder recorder;
     std::ofstream output(path,std::ios::binary);
     require(static_cast<bool>(output),"Cannot create UI reload profile CSV.");
     output<<"round,phase,compile_ms,publish_ms,compiled,reused,scope_creations,scope_retirements,roots,live_objects,private_bytes,executable_committed_bytes\n";
@@ -100,17 +106,21 @@ void profile_ui_reload(const std::filesystem::path& path) {
     };
     sample(0,"baseline",0,0,{},{});
     for (unsigned round=0;round<120;++round) {
-        const auto started=Clock::now();
-        auto candidate=take(language::Module::compile(runtime,"profile.ui.source",reload_source(round),active.get()));
-        const auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-started).count();
-        const auto publish_started=Clock::now();
+        timing::Recorder::Frame timed{recorder};
+        auto candidate=[&]{timing::Scope compiling{reload_compile};
+            return take(language::Module::compile(runtime,"profile.ui.source",reload_source(round),active.get()));}();
+        std::optional<timing::Scope> publishing{std::in_place,reload_publish};
         if (instance) take(instance->update(inputs,candidate->find("Host")));
         else {instance=take(language::Instance::create(candidate->find("Host"),0,keys,{},inputs));identity=instance->statistics().instance;}
         take(instance->update()); // An idempotent retry must keep the source candidate.
         auto reply=surface.set_controls(instance->controls());
         require(reply.has_value() && !reply->error && reply->effects.empty(),"UI profile replacement descriptors failed.");
         instance->commit_controls();active=std::move(candidate);
-        const auto publish=std::chrono::duration<double,std::milli>(Clock::now()-publish_started).count();
+        publishing.reset();
+        const auto& record=timed.finish();
+        require(record.structure_errors==0,"UI reload profile recorded a misplaced phase.");
+        const auto elapsed=std::chrono::duration<double,std::milli>(record.time(reload_compile)).count();
+        const auto publish=std::chrono::duration<double,std::milli>(record.time(reload_publish)).count();
         auto frame=surface.prepare();require(frame.has_value() && surface.accept(*frame),"UI profile replacement frame failed.");
         require(runtime.root_count()==baseline_roots+2 && runtime.live_objects()==baseline_live+2,"UI replacement retained old scopes.");
         const auto scopes=instance->statistics();

@@ -176,15 +176,15 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 
 完成冷资源准备后，独立采集接收面灯数 histogram。legacy/clustered 两个 Scene Lit case 均关闭该诊断和 reference，保留同一相机、Scene 和 World 设置；每个 case 额外 warmup 192 个接受帧，再收集 240 个按 sequence 去重、且来自 warmup 之后的完成 GPU 样本。随后使用同一场景、相机与原生视口测量最大化布局的 Smooth、MatCap，各 warmup 192 帧并记录 240 个真实接受步。最后通过 Dock 原有恢复入口解除最大化，保留原树和分隔比例，重新将实际 viewport 校准为 2560×1440，追加 docked_smooth、docked_matcap 两组；相机状态和 DPI 不变。非 Lit 的 gpu_passes 和 measured_main_total_ms 明确为 null，不读取上一组的 Scene Lit GPU 样本。统计含八个主区间、全部 DI/DDGI 子区间、cluster 计数、资源，以及接受帧呈现间隔的 P50/P95；`probe_rays`、`shadow_rays`、`ddgi_visibility_rays` 与耗时共用同一完成帧。CPU 观察帧和完成 GPU 帧分开标记。截图和 JSON 写盘在计时区间外。
 
-输出为 `render-performance.json`（schema v2）和六组同名 PNG：legacy、clustered、smooth、matcap、docked_smooth、docked_matcap。每个 case 明确记录 layout（maximized / docked）；layouts 目录记录各布局的实际 viewport、完整 RT、相机矩阵与活动 Dock 页。根级 viewport/camera 保留最初最大化布局，布局对照须读取 case 自身数据。正常布局可能需要更大的客户区；校准只接受像素覆盖精确相等，不以完整窗口尺寸代替 viewport。该补测比较同一版本的两种布局，不构成旧版正常布局的前后对照。仅此性能验收入口在 Application 创建主 Renderer 时关闭 VSync，正常编辑器保持默认开启；报告读取本次实际配置。默认 Release 不启用 GPU validation。呈现间隔包含 CPU、Present 等待及验收记录开销，GPU 时间倒数不代表实际 FPS。结束恢复原 view，禁止保存 Scene。`--gpu-validation` 可用于诊断，其结果须与正常性能数据区分。
+输出为 `render-performance.json`（schema v3）和六组同名 PNG：legacy、clustered、smooth、matcap、docked_smooth、docked_matcap。每个 case 明确记录 layout（maximized / docked）；layouts 目录记录各布局的实际 viewport、完整 RT、相机矩阵与活动 Dock 页。根级 viewport/camera 保留最初最大化布局，布局对照须读取 case 自身数据。正常布局可能需要更大的客户区；校准只接受像素覆盖精确相等，不以完整窗口尺寸代替 viewport。该补测比较同一版本的两种布局，不构成旧版正常布局的前后对照。仅此性能验收入口在 Application 创建主 Renderer 时关闭 VSync，正常编辑器保持默认开启；报告读取本次实际配置。默认 Release 不启用 GPU validation。验收把每次 Application 步进包成一个[帧阶段计时](../../foundation.md#帧阶段计时)帧，呈现间隔取相邻两个接受步的帧记录结束时刻之差，包含被跳过的步进、等待以及步与步之间的验收工作；GPU 时间倒数不代表实际 FPS。结束恢复原 view，禁止保存 Scene。`--gpu-validation` 可用于诊断，其结果须与正常性能数据区分。
 
-每个 case 的 cpu.samples 记录接受帧身份及当前提交的 RHI frame_sequence；cpu.stages 提供 Application 整步、事件/工程/Control、GC、控件生成、UI prepare、场景快照、Renderer prepare/encode 与 RHI submit/Present/frame-slot wait/resize/recycle/reclaim 的分布。Renderer 与 RHI 子阶段包含在 render_present 内，不能与父阶段相加；当前 CPU 提交身份也不能和异步完成的 GPU 样本身份混用。accepted_steps_per_second 来自接受步数与真实墙钟时间。
+每个 case 的 cpu.samples 记录接受帧身份及该步的帧计时序号 `timing_sequence`；cpu.stages 提供 Application 整步、事件/工程/Control、GC、控件生成、UI prepare、场景快照，以及帧记录中的 `render.*` 阶段（prepare/encode/frame，frame 下为 submit/present/wait/recycle）的分布。`render.*` 包含在 render_present 内，子阶段也不能与父阶段相加；帧计时序号不能和异步完成的 GPU 样本身份混用。accepted_steps_per_second 来自接受步数与帧记录覆盖的墙钟时间。
 
 2026-10-16，Editor／Renderer／Control 验收目标已通过 Dev／Release 构建，提前捕获作者基线及完成帧射线计数已在 `out/direct-clustered-20261016/dungeon-b-restored-idle-07/` 的正式对照中通过（旧 v1 报告，VSync 开启，尚不包含非 Lit 两组）。保存场景配置保持不变；B 尚未达到默认启用门槛，仍为显式诊断候选。性能数值和图像问题统一见 [Renderer 验收记录](../renderer/acceptance.md)；对象查询的实景与双配置端到端证据见 [Control 大场景查询](control.md#大场景对象查询)。
 
 ### 不创建 GPU 的场景 CPU 定位
 
-`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot，以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，包含临时结果析构。结束检查序列化内容、源文件与文档历史不变。
+`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot，以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95。报告（schema v2）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
 
 报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 Image 身份和 sRGB 模式计数的纹理数；纹理表大小额外包含默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
 

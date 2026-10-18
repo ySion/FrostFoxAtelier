@@ -70,6 +70,8 @@ pre_physics Tick → 任务恢复 → 平移命令 → flush 请求
 
 Begin 沿组合前序：Entity 自身、其组件组成顺序、子 Entity 子树。End 反转当前组成顺序，只配对已成功完成 Begin 的对象。没有 Tick 的数据组件不产生空调用；静态呈现不依赖 Tick。运行中插入立即 Begin，从下一个执行的阶段开始 Tick；禁用不重发 Begin/End；祖先禁用阻止其子树 Tick 并取消相应任务。
 
+每次 update 记为[帧阶段计时](../../foundation.md#帧阶段计时)的 `world.*` 阶段（标记见 [world/timing.hpp](../../../src/world/timing.hpp)）：`world.update` 下依次是 `world.pre_physics`、`world.simulation`、`world.post_physics` 和 `world.late`；每个 Tick 阶段各有自己的 `.tick`、`.commands`、`.flush` 子阶段，pre_physics 另有任务恢复子阶段 `world.pre_physics.tasks`。结构变化后的调度重建记为 `world.update` 下的 `world.schedule`，只在重建发生的阶段之前进入。停止的 World 不记录任何阶段；某阶段使 World 停止时，之后的阶段不再出现。模拟系统自己的阶段挂在 `world.simulation` 下。
+
 模拟系统用 `add_simulation(Simulation{step, writes_pose})` 登记；PhysicsScene 创建时登记，析构时注销。step 在行为分发之外的宿主边界执行，可以调用 World API；step 失败按 World 级处理：停止 World 并使该次 update 失败。World 停止时不调用 step，子系统经生命周期通知清理。`writes_pose(entity)` 声明该系统写入此 Entity 的位姿。
 
 失败按 World 的 `FailurePolicy` 处理，见下一节。stop、异常停机与 close 共用任务取消、逆序 End 和物理参与撤销入口。
