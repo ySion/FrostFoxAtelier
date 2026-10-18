@@ -89,7 +89,7 @@ void Workspace::reset_document() {
     lighting.performance().reset();
     if (ui_document_ && ui_document_->committed_source()) ui_checkpoint_=ui_document_->committed_source();
     ui_document_.reset();
-    bindings_.clear(); binding_cursor_=0; tree_expansion_.clear(); tree_frame_=0;
+    bindings_.clear(); binding_cursor_=0; scene_tree_={}; structure_tree_={};
     navigation_={ObjectId{}}; navigation_cursor_=0; query.clear(); tree_query.clear(); structure_query.clear(); parameter_search_visible=false;
     inspecting_asset=false;material_inspection.clear();
     menu.reset(); assets.reset(project_open);
@@ -161,7 +161,7 @@ Result<void> Workspace::navigate(Session& session,int direction) {
     if (changed) {navigation_cursor_=next;inspecting_asset=false;}
     return changed;
 }
-Result<void> Workspace::select_tree(Session& session,ui::ControlKey key,ui::SelectionModifiers modifiers,const ui::UiFrame* frame) {
+Result<void> Workspace::select_tree(Session& session,ui::ControlKey key,ui::SelectionModifiers modifiers) {
     inspecting_asset=false;
     if (key==control::tree_world) return session.select({});
     const auto* target=binding(key);
@@ -169,19 +169,80 @@ Result<void> Workspace::select_tree(Session& session,ui::ControlKey key,ui::Sele
         std::vector<ObjectId> selected;
         if(modifiers.control) selected.assign(session.selected_entities().begin(),session.selected_entities().end());
         if(modifiers.shift) {
-            const auto members=session.world().members();if(!members) return std::unexpected(members.error());
-            std::vector<ObjectId> visible;
-            for(const auto& entity:*members) if(!frame || frame->find(object_control(entity.id()))) visible.push_back(entity.id());
-            const auto first=std::ranges::find(visible,session.selection().entity),last=std::ranges::find(visible,target->object);
-            if(first!=visible.end() && last!=visible.end()) {
+            // The range runs over the rows the Scene Tree shows, described or scrolled away.
+            const auto row_of=[&](ObjectId entity) {
+                return std::ranges::find_if(scene_tree_.rows,[&](const auto& row){return scene_tree_.objects[row.node]==entity;});
+            };
+            const auto first=row_of(session.selection().entity),last=row_of(target->object);
+            if(first!=scene_tree_.rows.end() && last!=scene_tree_.rows.end()) {
                 for(auto at=std::min(first,last);at<=std::max(first,last);++at)
-                    if(std::ranges::find(selected,*at)==selected.end()) selected.push_back(*at);
+                    if(const auto entity=scene_tree_.objects[at->node];entity!=ObjectId{} && std::ranges::find(selected,entity)==selected.end())
+                        selected.push_back(entity);
             } else selected.push_back(target->object);
         } else if(std::ranges::find(selected,target->object)!=selected.end()) std::erase(selected,target->object);
         else selected.push_back(target->object);
         return session.select_entities(selected,target->object);
     }
     return target && (target->kind==Binding::Kind::object || target->kind==Binding::Kind::structure)?session.select(target->object):Result<void>{};
+}
+void Workspace::build_structure_tree(const Session& session,ObjectId entity) {
+    // The Entity, then each Entity's Components before its children, in preorder.
+    auto& tree=structure_tree_;tree.nodes.clear();tree.objects.clear();
+    if(entity==ObjectId{}) return;
+    auto& runtime=session.world().runtime();
+    struct Pending {ObjectId entity;std::uint32_t parent;};
+    std::vector<Pending> pending{{entity,ui::no_tree_node}};
+    while(!pending.empty()) {
+        const auto entry=pending.back();pending.pop_back();
+        const auto node=static_cast<std::uint32_t>(tree.nodes.size());
+        tree.nodes.push_back({entry.parent,tree.expanded(entry.entity,true),{}});tree.objects.push_back(entry.entity);
+        auto components=world::components(runtime,entry.entity);if(!components) throw std::runtime_error(components.error().message);
+        for(const auto& component:*components) {tree.nodes.push_back({node,false,{}});tree.objects.push_back(component.id());}
+        auto children=world::children(runtime,entry.entity);if(!children) throw std::runtime_error(children.error().message);
+        for(auto child=children->rbegin();child!=children->rend();++child) pending.push_back({child->id(),node});
+    }
+}
+Result<void> Workspace::set_tree_expanded(const Session& session,EntityTree tree,std::span<const ObjectId> objects,bool expanded) {
+    auto& view=tree==EntityTree::scene_tree?scene_tree_:structure_tree_;
+    if(tree==EntityTree::structure) {
+        const auto entity=session.selection().entity;
+        build_structure_tree(session,entity!=ObjectId{} && session.world().contains(entity)?entity:ObjectId{});
+    }
+    for(const auto object:objects)
+        if(tree==EntityTree::scene_tree?object!=ObjectId{} && !session.world().contains(object):view.node(object)==ui::no_tree_node)
+            return std::unexpected(Error{ErrorCode::invalid_member,"The identity is not a row of this tree."});
+    for(const auto object:objects) view.expansion[object]=expanded;
+    return {};
+}
+Result<bool> Workspace::reveal_in_tree(const Session& session,ObjectId entity) {
+    if(!session.world().contains(entity)) return std::unexpected(Error{ErrorCode::invalid_member,"The Entity is not a member of this World."});
+    std::vector<ObjectId> ancestors{ObjectId{}};
+    for(auto parent=world::parent_entity(session.world().runtime(),entity);;parent=world::parent_entity(session.world().runtime(),*parent)) {
+        if(!parent) return std::unexpected(parent.error());
+        if(*parent==ObjectId{}) break;
+        ancestors.push_back(*parent);
+    }
+    if(auto expanded=set_tree_expanded(session,EntityTree::scene_tree,ancestors,true);!expanded) return std::unexpected(expanded.error());
+    return tree_query.empty() || std::ranges::any_of(scene_tree_.rows,[&](const auto& row){return scene_tree_.objects[row.node]==entity;});
+}
+std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree,ObjectId primary,std::wstring_view filter,
+    ui::TreeViewport viewport,std::span<const ObjectId> pinned) {
+    // A new primary row, or the primary row under a new parent, expands its ancestors once.
+    if(const auto node=tree.node(primary);node!=ui::no_tree_node) {
+        const auto parent=tree.nodes[node].parent;
+        const std::pair current{primary,parent==ui::no_tree_node?ObjectId{}:tree.objects[parent]};
+        if(tree.primary!=current) {
+            for(auto at=parent;at!=ui::no_tree_node;at=tree.nodes[at].parent) {tree.expansion[tree.objects[at]]=true;tree.nodes[at].expanded=true;}
+            tree.primary=current;
+        }
+    } else tree.primary.reset();
+    ui::flatten_tree(tree.nodes,filter,tree.rows);
+    std::vector<std::uint32_t> rows;
+    for(const auto object:pinned)
+        if(const auto node=tree.node(object);node!=ui::no_tree_node)
+            if(const auto row=std::ranges::find(tree.rows,node,&ui::TreeRow::node);row!=tree.rows.end())
+                rows.push_back(static_cast<std::uint32_t>(row-tree.rows.begin()));
+    return ui::tree_window(tree.rows,viewport,rows);
 }
 bool Workspace::command_enabled(Command command,const Session& session) const {
     switch (command) {
@@ -461,7 +522,7 @@ std::wstring parameter_label(std::string_view path) {
     return label;
 }
 }
-std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project) {
+std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::Size size, const ui::UiFrame* frame,const Project* project,const ui::Session* ui) {
     property_help_.begin();
     sync_world(session);
     const auto take = []<class T>(Result<T> value) -> T {
@@ -504,23 +565,11 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const auto bindings=world::read_material_bindings(runtime,component);
         if(bindings) for(const auto& binding:*bindings) live.add(binding.resource.id());
     }
-    // A stalled accepted frame must not reinsert keys retired on a prior projection.
-    if (frame && frame->drawing->id!=tree_frame_) {
-        Set<ui::ControlKey> owned_tree_rows;owned_tree_rows.reserve(bindings_.size()+1);
-        owned_tree_rows.add(control::tree_world);
-        for(const auto& binding:bindings_)
-            if(binding.kind==Binding::Kind::object || binding.kind==Binding::Kind::structure) owned_tree_rows.add(binding.key);
-        for (const auto& row:frame->tree_rows)
-            if(owned_tree_rows.contains(row.key)) tree_expansion_[row.key]=row.expanded;
-        tree_frame_=frame->drawing->id;
-    }
     // Closing/hiding a view is not an object lifetime change. Retire bindings and
-    // their view state together; undo later restores identity with fresh keys.
-    std::erase_if(bindings_,[&](const auto& item) {
-        if (live.contains(item.object)) return false;
-        tree_expansion_.erase(item.key);
-        return true;
-    });
+    // tree view state together; undo later restores identity with fresh keys.
+    std::erase_if(bindings_,[&](const auto& item) {return !live.contains(item.object);});
+    for(auto* tree:{&scene_tree_,&structure_tree_})
+        std::erase_if(tree->expansion,[&](const auto& entry){return entry.first!=ObjectId{} && !live.contains(entry.first);});
     binding_cursor_=0;
     std::vector<ui::Control> result;
     result.reserve(64 + members.size());
@@ -597,7 +646,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const auto at=std::ranges::find(result,key,&ui::Control::key);
         if (at==result.end() || at->layout.height.rule!=ui_layout::SizeRule::fixed) {
             if (reject_ui_controls("Editor chrome bands require fixed heights for the dock host."))
-                return describe(session,size,frame,project);
+                return describe(session,size,frame,project,ui);
             throw std::runtime_error(std::string(ui_error()));
         }
         chrome_height+=at->layout.height.value;
@@ -736,30 +785,47 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         continue;
     }
     if (view.key==control::entities_tab) {
-        auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(members.size());
+        // Every member is flattened each frame; only rows near the viewport are described.
+        auto& tree=scene_tree_;
+        tree.nodes.clear();tree.objects.clear();
+        tree.nodes.push_back({ui::no_tree_node,tree.expanded(ObjectId{},true),L"World"});tree.objects.push_back({});
+        std::vector<std::uint32_t> path{0}; // Members are in composition preorder.
+        for (const auto& member:members) {
+            const auto parent=take(world::parent_entity(runtime,member.id()));
+            while (path.size()>1 && tree.objects[path.back()]!=parent) path.pop_back();
+            path.push_back(static_cast<std::uint32_t>(tree.nodes.size()));
+            tree.nodes.push_back({path[path.size()-2],tree.expanded(member.id(),false),
+                tree_query.empty()?std::wstring_view{}:session.name(member.id())});
+            tree.objects.push_back(member.id());
+        }
+        const auto* focused=ui?binding(ui->focused_control()):nullptr;
+        const std::array pinned{selected,focused && focused->kind==Binding::Kind::object?focused->object:selected,
+            row_rename && row_rename->object!=ObjectId{}?row_rename->object:selected};
+        auto window=window_tree(tree,selected,tree_query,ui?ui->tree_viewport(control::entity_tree):ui::TreeViewport{0,size.height,12},pinned);
+        // World stays when the filter matches nothing.
+        if (tree.rows.empty()) {tree.rows.push_back({0,ui::no_tree_node,0,false,false,{}});window={0};}
+        auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(window.size());
         Set<ObjectId> selected_entities;selected_entities.reserve(session.selected_entities().size());
         for(const auto entity:session.selected_entities()) selected_entities.add(entity);
-        std::unordered_map<ObjectId,ui::ControlKey> entity_keys;
-        for (const auto& member:members) {
-            const auto state=take(world::inspect_entity(runtime,member.id()));
-            const auto entity_key=bind(member.id());entity_keys.emplace(member.id(),entity_key);
-            const auto parent=take(world::parent_entity(runtime,member.id()));
-            const auto parent_key=parent==ObjectId{}?control::tree_world:entity_keys.at(parent);
-            auto title=std::wstring(session.name(member.id()));
+        ui_language::TreeRowBinding world_row;
+        for (const auto index:window) {
+            const auto& row=tree.rows[index];
+            const auto entity=tree.objects[row.node];
+            const ui_language::TreeRowBinding position{index,row.depth,row.branch,row.expanded,entity==selected,row.lines};
+            if (!row.node) {world_row=position;continue;}
+            const auto state=take(world::inspect_entity(runtime,entity));
+            const auto entity_key=bind(entity);
             const bool mesh_entity=take(runtime.is_a(state.type,session.types().static_mesh_entity));
-            const auto expansion=tree_expansion_.find(entity_key);
-            const bool retained=session.has_retained(member.id()) || std::ranges::any_of(take(world::components(runtime,member.id())),
+            const bool retained=session.has_retained(entity) || std::ranges::any_of(take(world::components(runtime,entity)),
                 [&](const auto& component){return session.has_retained(component.id());});
-            rows->push_back({entity_key,{std::move(title),
+            rows->push_back({entity_key,{std::wstring(session.name(entity)),
                 state.state==world::EntityState::attached_inactive || state.state==world::EntityState::active,
-                selected_entities.contains(member.id()),static_cast<double>(entity_icon(session,member.id())),
-                parent_key,expansion!=tree_expansion_.end() && expansion->second,
+                selected_entities.contains(entity),static_cast<double>(entity_icon(session,entity)),position,
                 std::wstring(mesh_entity?L"mesh-entity":L"entity")+(retained?L" retained":L"")+(tree_drop_row==entity_key?L" drop-target":L""),state.can_edit,entity_key}});
         }
-        const auto expansion=tree_expansion_.find(control::tree_world);
-        const std::array<ui_language::InputValue,11> inputs{ui_language::ItemList{std::move(rows)},
+        const std::array<ui_language::InputValue,12> inputs{ui_language::ItemList{std::move(rows)},static_cast<double>(tree.rows.size()),
             ui_language::TextEditBinding{control::tree_filter,tree_query},selected==ObjectId{},
-            expansion==tree_expansion_.end() || expansion->second,static_cast<double>(ui::ControlIcon::world),
+            world_row,static_cast<double>(ui::ControlIcon::world),
             ui_language::ActionBinding{control::entity_back,can_navigate(-1)},ui_language::ActionBinding{control::entity_forward,can_navigate(1)},
             double(ui::ControlIcon::back),double(ui::ControlIcon::forward),double(ui::ControlIcon::world),
             std::wstring(tree_drop_row==control::tree_world?L"drop-target":L"")};
@@ -782,28 +848,38 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         return short_type(object);
     };
     if(view.key==control::structure_tab) {
-        auto rows=std::make_shared<std::vector<ui_language::Item>>();
-        if(selected!=ObjectId{}) {
-            struct Pending {ObjectId entity;ui::ControlKey parent;};
-            std::vector<Pending> pending{{selected,{}}};
-            while(!pending.empty()) {
-                const auto entry=pending.back();pending.pop_back();
-                const auto entity_key=bind(entry.entity,{},Binding::Kind::structure);
-                const auto expansion=tree_expansion_.find(entity_key);
-                const auto state=take(world::inspect_entity(runtime,entry.entity));
-                rows->push_back({entity_key,{std::wstring(session.name(entry.entity)),state.can_edit,inspected==entry.entity,double(entity_icon(session,entry.entity)),
-                    entry.parent,expansion==tree_expansion_.end() || expansion->second,std::wstring(session.has_retained(entry.entity)?L"entity retained":L"entity"),false,ui::ControlKey{}}});
-                for(const auto& component:take(world::components(runtime,entry.entity))) {
-                    const auto key=bind(component.id(),{},Binding::Kind::structure);
-                    rows->push_back({key,{object_title(component.id()),state.can_edit,inspected==component.id(),double(ui::ControlIcon::component),
-                        entity_key,false,std::wstring(session.has_retained(component.id())?L"component retained":L"component"),false,ui::ControlKey{}}});
-                }
-                const auto children=take(world::children(runtime,entry.entity));
-                for(auto child=children.rbegin();child!=children.rend();++child) pending.push_back({child->id(),entity_key});
+        auto& tree=structure_tree_;
+        build_structure_tree(session,selected);
+        tree.texts.clear();
+        if(!structure_query.empty()) {
+            tree.texts.reserve(tree.objects.size());
+            for(const auto object:tree.objects) tree.texts.push_back(session.world().contains(object)?std::wstring(session.name(object)):object_title(object));
+            for(std::size_t i=0;i<tree.nodes.size();++i) tree.nodes[i].text=tree.texts[i];
+        }
+        const auto* focused=ui?binding(ui->focused_control()):nullptr;
+        const std::array pinned{inspected,focused && focused->kind==Binding::Kind::structure?focused->object:inspected};
+        const auto window=window_tree(tree,inspected,structure_query,
+            ui?ui->tree_viewport(control::structure_tree):ui::TreeViewport{0,size.height,12},pinned);
+        auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(window.size());
+        for(const auto index:window) {
+            const auto& row=tree.rows[index];
+            const auto object=tree.objects[row.node];
+            const ui_language::TreeRowBinding position{index,row.depth,row.branch,row.expanded,object==inspected,row.lines};
+            const auto key=bind(object,{},Binding::Kind::structure);
+            if(session.world().contains(object)) {
+                const auto state=take(world::inspect_entity(runtime,object));
+                rows->push_back({key,{std::wstring(session.name(object)),state.can_edit,inspected==object,double(entity_icon(session,object)),
+                    position,std::wstring(session.has_retained(object)?L"entity retained":L"entity"),false,ui::ControlKey{}}});
+            } else {
+                // A Component row's parent is its Entity.
+                const auto state=take(world::inspect_entity(runtime,tree.objects[tree.nodes[row.node].parent]));
+                rows->push_back({key,{object_title(object),state.can_edit,inspected==object,double(ui::ControlIcon::component),
+                    position,std::wstring(session.has_retained(object)?L"component retained":L"component"),false,ui::ControlKey{}}});
             }
         }
-        const std::array<ui_language::InputValue,8> inputs{selected==ObjectId{}?std::wstring(L"Entity Structure"):std::wstring(session.name(selected)),
-            ui_language::ItemList{std::move(rows)},ui_language::TextEditBinding{control::structure_filter,structure_query},selected!=ObjectId{},
+        const std::array<ui_language::InputValue,9> inputs{selected==ObjectId{}?std::wstring(L"Entity Structure"):std::wstring(session.name(selected)),
+            ui_language::ItemList{std::move(rows)},static_cast<double>(tree.rows.size()),
+            ui_language::TextEditBinding{control::structure_filter,structure_query},selected!=ObjectId{},
             selected!=ObjectId{} && entity_status.can_edit,control::add_component,
             ui_language::ActionBinding{control::remove_selected,command_enabled(Command::erase_selected,session)},double(ui::ControlIcon::close)};
         const std::array<ui_language::KeyBinding,2> keys{{{"tree",control::structure_tree},{"add",control::add_component}}};
@@ -1435,11 +1511,15 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         const std::array<ui_language::KeyBinding,1> keys{{{"menu",control::viewport_pie}}};
         static_cast<void>(ui_document_->append("ViewportPie",0,keys,inputs,result));
     }
+    if (row_rename && row_rename->object!=ObjectId{} && !live.contains(row_rename->object)) row_rename.reset();
     if (row_rename && frame) {
-        // Drawn over the accepted row geometry; a row that left the frame ends the rename.
+        // Drawn over the accepted row geometry. A row not presented yet keeps the rename
+        // pending (its host keeps it described); a table cell that left the frame ends it.
         const auto* table=row_rename->cell?frame->find_table(browser_control::results):nullptr;
         const auto cell=table?std::ranges::find(table->cells,row_rename->cell,&ui::TableCellGeometry::cell):std::vector<ui::TableCellGeometry>::const_iterator{};
-        const auto* row=row_rename->cell?nullptr:frame->find(row_rename->row);
+        const auto row_key=row_rename->cell?ui::ControlKey{}:object_control(row_rename->object);
+        const auto* row=row_key?frame->find(row_key):nullptr;
+        const auto geometry=row?std::ranges::find(frame->tree_rows,row_key,&ui::TreeRowGeometry::key):frame->tree_rows.end();
         if (row_rename->cell && (!table || cell==table->cells.end())) row_rename.reset();
         else if (row_rename->cell) {
             // Name cell: the icon leads by one row height; the field starts where the name text does.
@@ -1448,20 +1528,20 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             const std::array<ui_language::InputValue,5> inputs{ui_language::TextEditBinding{control::inline_rename,row_rename->text},
                 double(bounds.x/dpi+icon),double(bounds.y/dpi),double(std::max(48.f,bounds.width/dpi-icon-2)),double(bounds.height/dpi)};
             static_cast<void>(ui_document_->append("InlineRename",0,{},inputs,result));
-        } else if (!row || row->bounds.height<=0) row_rename.reset();
-        else {
+        } else if (row && (row->bounds.height<=0 || geometry==frame->tree_rows.end())) row_rename.reset();
+        else if (row) {
             const auto dpi=frame->drawing->dpi_scale;
             // Text origin as Session lays it out: depth indents plus the row icon's leading space.
-            std::size_t depth=0;
-            for(const auto* at=row;at && at->tree_parent;at=frame->find(at->tree_parent)) ++depth;
             const auto* tree=frame->find(row->parent);
             const auto step=tree && tree->style?tree->style->tree_indent:17.f;
-            const auto indent=row->style?row->style->padding.left+float(depth+1)*step+row->style->indicator_size+6-3:24.f;
+            const auto indent=row->style?row->style->padding.left+float(geometry->depth+1)*step+row->style->indicator_size+6-3:24.f;
             const auto padding=float(row->bounds.x)/dpi+indent;
             const std::array<ui_language::InputValue,5> inputs{ui_language::TextEditBinding{control::inline_rename,row_rename->text},
                 double(padding),double(row->bounds.y/dpi),double(std::max(48.f,row->bounds.width/dpi-indent-2)),double(row->bounds.height/dpi)};
             static_cast<void>(ui_document_->append("InlineRename",0,{},inputs,result));
-        }
+        } else if (!dock.visible(control::entities_tab) ||
+            std::ranges::none_of(scene_tree_.rows,[&](const auto& shown){return scene_tree_.objects[shown.node]==row_rename->object;}))
+            row_rename.reset();
     }
     if (color_edit && !pie_menu()) {
         // One popup per session; the colour editor is projected last, after every owner.
@@ -1489,7 +1569,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
     }
     if (ui_document_->candidate_failed()) {
         reject_ui_controls(std::string(ui_error()));
-        return describe(session,size,frame,project);
+        return describe(session,size,frame,project,ui);
     }
     property_help_.end();
     return result;

@@ -135,7 +135,7 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | `NumberRow` | 共享参数行；必填 EditBinding，0 个字段不产生控件，非空时接受 1–4 个数值字段 |
 | `TextField` | 共享单行编辑器；必填 TextEditBinding，实际控件 key 必须非零且在完整快照内唯一 |
 | `Tree` | 共享树容器；实际输出的直接子控件必须为 TreeItem，可通过组件或 Repeat 产生树行 |
-| `TreeItem` | 树行叶；层级用 tree_parent 表达，不通过嵌套 TreeItem 花括号表达 |
+| `TreeItem` | 树行叶；位置、深度和展开值由宿主的 `row` 输入给出，不通过嵌套 TreeItem 花括号表达 |
 | `Repeat` | 类型化动态子作用域；items 必填，必须直接引用 Items 输入；自身不额外生成容器 |
 | 用户定义的 `ui` 类型 | 命名组件调用；实例拥有独立 state；输出直接放入所属内容区 |
 
@@ -147,7 +147,7 @@ Slider 仍通过 NumberRow 的 EditBinding 提供，和数值字段共享同一�
 - `on activate` 用于 Foldout、Checkbox、Button、ChoiceButton、ToggleButton；Foldout/Checkbox/ToggleButton 的 `event.checked` 为 bool，Button/ChoiceButton 没有事件值。事件允许修改局部 state，支持 Source 的普通语句、辅助函数与循环。表达式不能直接访问 native context、创建业务对象或启动异步任务。
 - `Checkbox.action` 可接收 `ActionBinding`，发送带 bool 值的宿主动作，供真实属性事务使用；与 `on activate` 局部事件互斥，遵循同一接受帧换绑和取消合同。
 - `NumberRow.edit` 使用公共 `append_number_row`，保留 XYZ、默认值、菜单、拖调、文字草稿和原编辑事务。`TextField.edit` 使用已有文字编辑路由，保留 Unicode、IME、选区和历史。
-- `TreeItem.tree_parent` 表达逻辑关系，物理 parent 仍为 Tree。可用 `node.name` 引用声明拥有的具体节点 key。树行必须按父先子后的顺序提交；状态、过滤与可见范围绘制仍归 Session。
+- Tree 需要宿主提供展平后的行：`Tree.rows` 是宿主展平后的总行数，每个 `TreeItem.row` 直接引用一个 `TreeRowBinding` 输入（行号、深度、分支、展开、主行、连接线），物理 parent 仍为 Tree。宿主持有层级、展开与过滤，只描述窗口附近的行；Session 只排布这些行，展开请求以 `expand` 动作交给宿主。语言暂不提供展平函数，工程 UI 需要树时再开放。
 - 字体、颜色和边框继续使用 SS；UI 声明负责结构、数据绑定及布局组合。
 
 ### 属性参考
@@ -198,9 +198,8 @@ ui Tool(in Text title, in ActionBinding command) {
 | `padding_left/top/right/bottom` | 数值表达式；容器布局 | 所属容器的内容缩进；不同于 SS 的文字/绘制内距 |
 | `align_center` | bool；Row、Column、Tree | 设置流式布局的交叉轴对齐；Row 中可用于文字与编辑框垂直对齐 |
 | `icon` | 非负整数；例如 TreeItem | 使用当前 `ui::ControlIcon` 编号，不支持图标文件路径或 DSL 枚举名称 |
-| `tree_parent` | 直接 Key 输入或有效 node 引用；TreeItem | 逻辑父行；缺省为 0。父行必须在同一树中且先于子行输出 |
-| `initially_expanded` | bool；TreeItem | 行插入或父关系/种类变化时的初始展开值，不是持续覆盖 Session 展开状态的双向绑定 |
-| `filter` | 文字值；Tree | 原树过滤机制，保留匹配路径并临时展开 |
+| `row` | 直接 `TreeRowBinding` 输入；TreeItem | 宿主展平后的行：行号、深度、是否分支、展开值、是否主行和连接线。主行变为主行时滚动显露一次 |
+| `rows` | 非负整数，不超过 `ui::maximum_tree_rows`；Tree | 宿主展平后的总行数，决定滚动范围；描述的 TreeItem 行号必须小于它 |
 | `edit` | EditBinding / TextEditBinding | 分别用于 NumberRow / TextField；必填 |
 | `mounted` | bool；组件调用或 Repeat，缺省 true | false 在成功提交后移除子作用域；重新挂载建立新生命周期 |
 | `items` | 直接 Items 输入；Repeat | 条目顺序、稳定身份和各实例参数 |
@@ -269,7 +268,7 @@ Session 是 TableData 完整校验与交互的唯一入口。非法快照使同�
 
 ### 容量与失败提示
 
-文件最多 1 MiB、64 个组件类型；每个类型最多 1024 个输入、1024 个 state、1024 个声明节点，单个类型的语法嵌套最多 64 层。实例展开和最终控件容量还受前述 10000 限额约束，Tree 逻辑层级受 Session 的 128 层限制约束。
+文件最多 1 MiB、64 个组件类型；每个类型最多 1024 个输入、1024 个 state、1024 个声明节点，单个类型的语法嵌套最多 64 层。实例展开和最终控件容量还受前述 10000 限额约束，Tree 行深度受 Session 的 128 层限制约束。
 
 | 现象 | 优先检查 |
 | --- | --- |

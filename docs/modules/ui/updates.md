@@ -7,8 +7,8 @@
 ## 属性批次
 
 - 每项必须对应当前存在的非零key；不接受重复key，输入顺序无意义。未出现的控件保持原值。
-- 不接受改变`kind/parent/layout.kind`、`tree_parent/popup_owner/selection_group`、`context_target/context_group/edit_command/menu_branch`。这些定义种类、结构或命令目标；结构更新仍使用完整描述，业务重绑使用新key。
-- text、value、enabled、selected、modified、layout尺寸/对齐、classes、style和style_scope沿现有Control合同更新。`tree_initially_expanded`仍仅在插入或树行父关系改变时初始化。
+- 不接受改变`kind/parent/layout.kind`、`tree_row_count/tree_index/tree_depth/tree_branch/tree_expanded`、`popup_owner/selection_group`、`context_target/context_group/edit_command/menu_branch`。这些定义种类、结构或命令目标；结构更新仍使用完整描述，业务重绑使用新key。
+- text、value、enabled、selected、modified、`tree_lines`、`tree_primary`、layout尺寸/对齐、classes、style和style_scope沿现有Control合同更新。
 - 同值提交不推进描述版本、不计入更新次数。完整描述入口仍有全值比较的快速返回。
 - 一批先验证全部控件和相关引用，再准备发生变化的描述与新节点。非法批次不会应用前面的有效项。候选数据及清理effects准备失败时，恢复描述、交互与树状态，分配异常继续传播；不执行宿主回调。
 - 只有全部准备成功才推进`controls_revision`并返回有序Reply。宿主应在旧binding仍可查询时处理取消effects，再退役旧映射。

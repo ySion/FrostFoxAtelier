@@ -16,7 +16,7 @@
             if (state.incarnation!=box->incarnation || control.kind!=box->kind || control.parent!=box->parent ||
                 control.tooltip!=box->tooltip || control.action_target!=box->action_target ||
                 control.context_target!=box->context_target || control.context_group!=box->context_group ||
-                control.layout.collapsed || state.tree_hidden) return false;
+                control.layout.collapsed) return false;
             if (!box->parent) return true;
             box=frame.find(box->parent);
             if (!box) return false;

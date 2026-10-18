@@ -1,6 +1,7 @@
 #include "ui/controls.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 
 namespace atelier::ui {
@@ -70,5 +71,85 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
             slider.classes={"parameter-slider"}; controls.push_back(std::move(slider));
         }
     }
+}
+namespace {
+// Bits [0, depth).
+std::bitset<128> levels_below(std::uint32_t depth) { return ~std::bitset<128>{}>>(128-depth); }
+}
+void flatten_tree(std::span<const TreeNode> nodes,std::wstring_view filter,std::vector<TreeRow>& rows) {
+    rows.clear();
+    if (nodes.size()>=no_tree_node) throw std::invalid_argument("A tree has too many nodes.");
+    // Ancestor path of the current node: node and its row (no_tree_node when not shown).
+    std::array<std::uint32_t,128> path{},path_rows{};
+    std::uint32_t path_size{};
+    const auto descend=[&](std::uint32_t index) {
+        const auto parent=nodes[index].parent;
+        if (parent==no_tree_node) path_size=0;
+        else {
+            while (path_size && path[path_size-1]!=parent) --path_size;
+            if (!path_size) throw std::invalid_argument("Tree nodes must be in depth-first preorder.");
+        }
+        if (path_size==path.size()) throw std::invalid_argument("A tree exceeds 128 levels.");
+        return path_size;
+    };
+    const auto branch=[&](std::uint32_t index) { return index+1<nodes.size() && nodes[index+1].parent==index; };
+    // Filtering keeps matches, their subtrees (below) and their ancestors (above).
+    enum : std::uint8_t { match=1, below=2, above=4 };
+    std::vector<std::uint8_t> kept;
+    if (!filter.empty()) {
+        kept.resize(nodes.size());
+        const auto fold=[](wchar_t c) { return c>=L'A' && c<=L'Z'?static_cast<wchar_t>(c+L'a'-L'A'):c; };
+        for (std::uint32_t i=0;i<nodes.size();++i) {
+            const auto& text=nodes[i].text;
+            if (std::search(text.begin(),text.end(),filter.begin(),filter.end(),[&](wchar_t a,wchar_t b){return fold(a)==fold(b);})!=text.end())
+                kept[i]|=match;
+            if (const auto parent=nodes[i].parent;parent!=no_tree_node && parent<i && (kept[parent]&(match|below))) kept[i]|=below;
+        }
+        for (auto i=nodes.size();i-->0;)
+            if ((kept[i]&(match|above)) && nodes[i].parent<i) kept[nodes[i].parent]|=above;
+    }
+    for (std::uint32_t i=0;i<nodes.size();++i) {
+        const auto depth=descend(i);
+        const auto parent_row=depth?path_rows[depth-1]:no_tree_node;
+        const bool shown=filter.empty()?(!depth || (parent_row!=no_tree_node && nodes[path[depth-1]].expanded)):kept[i]!=0;
+        path[depth]=i;path_rows[depth]=shown?static_cast<std::uint32_t>(rows.size()):no_tree_node;path_size=depth+1;
+        if (!shown) continue;
+        if (rows.size()==maximum_tree_rows) throw std::invalid_argument("A tree shows more rows than Session accepts.");
+        const bool children=branch(i);
+        rows.push_back({i,parent_row,depth,children,children && (!filter.empty() || nodes[i].expanded),{}});
+    }
+    // A guide continues through a row while the ancestor at its level, or the
+    // row itself, has a later shown sibling. Bit 0 temporarily holds that fact.
+    std::bitset<128> later;
+    for (auto row=rows.rbegin();row!=rows.rend();++row) {
+        row->lines[0]=later[row->depth];
+        later.set(row->depth);later&=levels_below(row->depth+1);
+    }
+    std::bitset<128> guides;
+    for (auto& row:rows) {
+        guides&=levels_below(row.depth);
+        if (row.depth && row.lines[0]) guides.set(row.depth);
+        row.lines=guides;
+    }
+}
+std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows,TreeViewport viewport,std::span<const std::uint32_t> pinned) {
+    std::vector<std::uint32_t> result;
+    if (rows.empty()) return result;
+    const auto last=static_cast<std::uint32_t>(rows.size()-1);
+    const double row_height=std::max(1.f,viewport.row_height),height=std::max(0.f,viewport.height);
+    const auto row_at=[&](double y) { return static_cast<std::uint32_t>(std::clamp(std::floor(y/row_height),0.,static_cast<double>(last))); };
+    const auto begin=row_at(viewport.scroll-height),end=row_at(viewport.scroll+2*height);
+    result.reserve(end-begin+3+pinned.size()*4);
+    result.push_back(0);result.push_back(last);
+    for (auto i=begin;i<=end;++i) result.push_back(i);
+    for (const auto row:pinned) if (row<=last) {
+        if (row) result.push_back(row-1);
+        result.push_back(row);
+        if (row<last) result.push_back(row+1);
+        for (auto parent=rows[row].parent;parent!=no_tree_node;parent=rows[parent].parent) result.push_back(parent);
+    }
+    std::ranges::sort(result);
+    result.erase(std::unique(result.begin(),result.end()),result.end());
+    return result;
 }
 } // namespace atelier::ui

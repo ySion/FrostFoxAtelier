@@ -22,12 +22,6 @@
 #include <windows.h>
 #include <psapi.h>
 
-namespace atelier::editor {
-struct WorkspaceAcceptanceAccess {
-    static const auto& tree_expansion(const Workspace& workspace) {return workspace.tree_expansion_;}
-};
-}
-
 namespace {
 using namespace atelier;
 template<class T> T take(Result<T> result) {

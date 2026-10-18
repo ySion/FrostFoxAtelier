@@ -151,9 +151,13 @@ void verify_entity_composition() {
     changed(document.undo());changed(document.undo());
     require(take(world::spatial_parent(runtime,leaf))==child && take(world::read_transform(runtime,leaf)).position.x==3,
         "Space-reference Undo failed to restore default inheritance and local TRS.");
-    editor::Workspace workspace;take(document.select(group));const auto controls=workspace.describe(document,{1600,1000},nullptr);
+    editor::Workspace workspace;take(document.select(group));
+    take(workspace.set_tree_expanded(document,editor::Workspace::EntityTree::scene_tree,std::array{group},true));
+    const auto controls=workspace.describe(document,{1600,1000},nullptr);
+    const auto group_control=std::ranges::find(controls,workspace.object_control(group),&ui::Control::key);
     const auto child_control=std::ranges::find(controls,workspace.object_control(child),&ui::Control::key);
-    require(child_control!=controls.end() && child_control->tree_parent==workspace.object_control(group),"Scene Tree flattened recursive Entity composition.");
+    require(group_control!=controls.end() && child_control!=controls.end() && child_control->tree_depth==group_control->tree_depth+1 &&
+        child_control->tree_index==group_control->tree_index+1,"Scene Tree flattened recursive Entity composition.");
     const auto original=take(document.serialize());
     changed(document.duplicate_selected());const auto copy=document.selection().entity;
     require(copy!=group && take(document.world().members()).size()==6 && take(world::children(runtime,copy)).size()==1,

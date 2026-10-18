@@ -70,6 +70,7 @@ struct EditorAcceptanceAccess {
     static const ui::TableData& output(const Application& app) {return *app.workspace_.output;}
 
     static auto name_control(const Application& app,ObjectId entity) { return app.workspace_.name_control(entity); }
+    static ui::TreeViewport tree_viewport(const Application& app,ui::ControlKey tree) { return app.ui_.tree_viewport(tree); }
     static ui::ControlKey structure_control(const Application& app,ObjectId object) {
         if(app.presented()) for(const auto& row:app.presented()->tree_rows) {
             const auto* binding=app.workspace_.binding(row.key);

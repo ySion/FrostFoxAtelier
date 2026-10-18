@@ -140,7 +140,7 @@ ui Late() { Text label { text: "Late"; height: 17; } }
         require(live.revision()==revision && !live.diagnostic().empty() && !find(L"First").selected,
             "Late region rejection lost the old event or committed half a source revision.");
         invalid=source;invalid.insert(invalid.find("        TextField field"),
-            "        Tree tree { TreeItem early { tree_parent: node.later; } TreeItem later {} }\n");
+            "        Tree tree { rows: 2; TreeItem early {} TreeItem later {} }\n");
         for (unsigned i=0;i<3;++i) {
             stage(invalid+"\n// refusal "+std::to_string(i));draw();unchanged(5,2);
             require(live.revision()==revision && live.diagnostic()=="Refused patch topology" && !find(L"First").selected,

@@ -519,22 +519,26 @@ void verify_viewport_editing() {
         "Viewport chrome did not distinguish passive mode text from the interactive camera menu.");
     const auto expanded_height=ui.presented()->find(control::viewport)->bounds.height;
     const auto publish=[&](ui_layout::Size size={1200,800}) {
-        auto controls=workspace.describe(document,size,ui.presented().get());
+        auto controls=workspace.describe(document,size,ui.presented().get(),nullptr,&ui);
         require(bool(ui.set_controls(controls)),"Updated viewport chrome was refused.");
         const auto frame=ui.prepare();require(frame && ui.accept(*frame),"Updated viewport chrome did not lay out.");
         workspace.commit_ui_controls();return controls;
     };
     publish();
-    bool foreign_tree_row=false;
-    for(const auto& row:ui.presented()->tree_rows) {
-        const auto* binding=workspace.binding(row.key);
-        const bool owned=row.key==control::tree_world || (binding &&
-            (binding->kind==Workspace::Binding::Kind::object || binding->kind==Workspace::Binding::Kind::structure));
-        const auto& expansion=WorkspaceAcceptanceAccess::tree_expansion(workspace);
-        require(expansion.contains(row.key)==owned,"Workspace retained another view's tree state or lost its own row.");
-        foreign_tree_row|=!owned;
+    // Expansion requests address identities, apply atomically and stay out of history.
+    {
+        const auto history=document.undo_count();
+        take(workspace.set_tree_expanded(document,Workspace::EntityTree::scene_tree,std::array{ObjectId{}},false));publish();
+        require(!ui.presented()->find(workspace.object_control(first)) && !ui.presented()->find(workspace.object_control(second)),
+            "Collapsing World kept its Entity rows.");
+        const auto mesh_component=component(document,first,document.types().static_mesh_component);
+        require(!workspace.set_tree_expanded(document,Workspace::EntityTree::scene_tree,std::array{ObjectId{},mesh_component},true),
+            "Scene Tree expanded a Component identity.");
+        publish();require(!ui.presented()->find(workspace.object_control(first)),"A refused expansion request changed the tree.");
+        take(workspace.set_tree_expanded(document,Workspace::EntityTree::scene_tree,std::array{ObjectId{}},true));publish();
+        require(ui.presented()->find(workspace.object_control(first)) && document.undo_count()==history,
+            "Tree expansion did not restore its rows or entered scene history.");
     }
-    require(foreign_tree_row,"Tree ownership acceptance did not include the real Asset Browser directory rows.");
     const std::vector<ObjectId> previous_selection(document.selected_entities().begin(),document.selected_entities().end());
     const auto previous_active=document.selection().entity;
     const std::array projected_selection{first,second};
@@ -661,7 +665,7 @@ void verify_viewport_editing() {
         {
             publish(wide);
             const auto row_key=workspace.object_control(first);
-            workspace.row_rename=Workspace::RowRename{first,row_key,std::wstring(document.name(first))};publish(wide);
+            workspace.row_rename=Workspace::RowRename{first,std::wstring(document.name(first))};publish(wide);
             const auto& frame=*ui.presented();
             const auto* field=frame.find(control::inline_rename);const auto* row=frame.find(row_key);
             require(field && row && field->kind==ui::ControlKind::text_edit && std::abs(field->bounds.y-row->bounds.y)<1 &&

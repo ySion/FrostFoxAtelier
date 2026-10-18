@@ -38,11 +38,10 @@ void AssetBrowser::reset(bool has_project) {
     engine_=!has_project;has_project_=has_project;directory_=has_project?std::filesystem::path{L"Content"}:std::filesystem::path{};
     query_.clear();filter_=0;selected_.reset();targets_.clear();keys_.clear();row_indices_.clear();directories_.clear();project_root_.clear();
     table_data_.reset();active_column_=browser_control::name_column;
-    directory_items_.reset();directory_items_dirty_=true;
+    directory_items_.reset();directory_items_dirty_=true;directory_rows_=0;
     navigation_={{engine_,directory_}};navigation_cursor_=0;catalog_revision_=directory_revision_=0;
-    tree_expansion_.clear();tree_frame_=std::numeric_limits<std::uint64_t>::max();
-    directory_keys_={browser_control::project,browser_control::engine};
-    invalidate_items(); // Keys remain monotonic; the previous project's accepted tree snapshot is not reused.
+    expansion_.clear();
+    invalidate_items(); // Keys remain monotonic.
 }
 ui::ControlKey AssetBrowser::key_for(const std::string& value) {
     const auto [key,inserted]=keys_.try_emplace(StringView{value},next_key_);if (inserted) ++next_key_;return *key;
@@ -57,6 +56,10 @@ void AssetBrowser::visit(Location location,bool remember) {
     else {location.directory=location.directory.lexically_normal();if (location.directory==L".") location.directory.clear();}
     if (location==Location{engine_,directory_}) return;
     engine_=location.engine;directory_=location.directory;query_.clear();selected_.reset();directory_items_dirty_=true;
+    // The visited directory's row is shown: Project and every ancestor expand.
+    if (!engine_) for (auto ancestor=directory_;!ancestor.empty();) {
+        ancestor=ancestor.parent_path();expansion_[ancestor]=true;
+    }
     if (navigation_.empty()) {navigation_.push_back(location);navigation_cursor_=0;}
     else if (remember) {
         navigation_.resize(navigation_cursor_+1);navigation_.push_back(location);
@@ -71,13 +74,13 @@ void AssetBrowser::update_directories(const Project* project) {
     const auto revision=project?project->revision():0;
     if (root==project_root_ && revision==directory_revision_ && has_project_==(project!=nullptr)) return;
     has_project_=project!=nullptr;project_root_=root;directory_revision_=revision;directories_.clear();targets_.clear();directory_items_dirty_=true;
-    directory_keys_={browser_control::project,browser_control::engine};
     if (project) for (const auto& entry:project->entries()) if (entry.kind==AssetKind::folder) {
         directories_.push_back({entry.key,entry.path,entry.path.filename().wstring(),entry.kind,0});
-        const auto key=key_for("nav:"+utf8(entry.path.generic_wstring()));
-        directory_keys_.insert(key);targets_.push_back({key,directories_.back()});
+        targets_.push_back({key_for("nav:"+utf8(entry.path.generic_wstring())),directories_.back()});
     }
-    std::erase_if(tree_expansion_,[&](const auto& entry){return !directory_keys_.contains(entry.first);});
+    std::erase_if(expansion_,[&](const auto& entry) {
+        return !entry.first.empty() && std::ranges::none_of(directories_,[&](const auto& item){return item.path==entry.first;});
+    });
     const auto valid=[&](const Location& location) {
         return location.engine || (has_project_ && (location.directory.empty() ||
             std::ranges::any_of(directories_,[&](const auto& item){return item.path==location.directory;})));
@@ -94,22 +97,40 @@ void AssetBrowser::update_directories(const Project* project) {
 }
 const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::directory_items() {
     if (!directory_items_dirty_ && directory_items_) return directory_items_;
-    auto rows=std::make_shared<std::vector<ui_language::Item>>();rows->reserve(directories_.size()+2);
-    const auto row=[&](ui::ControlKey key,ui::ControlKey parent,std::wstring text,bool enabled,bool selected,
-        ui::ControlIcon icon,bool initially_expanded=true) {
-        const auto expansion=tree_expansion_.find(key);
-        rows->push_back({key,{std::move(text),enabled,selected,static_cast<double>(icon),parent,
-            expansion==tree_expansion_.end()?initially_expanded:expansion->second,std::wstring{},false,ui::ControlKey{}}});
+    // Project, its directories in path (preorder) order, then Engine. Few rows: all are described.
+    struct Node { ui::ControlKey key; std::wstring_view name; bool enabled, selected; ui::ControlIcon icon; };
+    std::vector<Node> labels;labels.reserve(directories_.size()+2);
+    std::vector<ui::TreeNode> nodes;nodes.reserve(directories_.size()+2);
+    const auto expanded=[&](const std::filesystem::path& path,bool initial) {
+        const auto at=expansion_.find(path);return at==expansion_.end()?initial:at->second;
     };
-    row(browser_control::project,0,L"Project",has_project_,!engine_ && directory_.empty(),ui::ControlIcon::folder);
+    labels.push_back({browser_control::project,L"Project",has_project_,!engine_ && directory_.empty(),ui::ControlIcon::folder});
+    nodes.push_back({ui::no_tree_node,expanded({},true),{}});
+    std::vector<std::pair<const std::filesystem::path*,std::uint32_t>> path{{nullptr,0}};
     for (const auto& entry:directories_) {
-        const auto relative=directory_.lexically_relative(entry.path);
-        const bool ancestor=!engine_ && !relative.empty() && *relative.begin()!=L"..";
-        row(directory_control(entry.path),directory_control(entry.path.parent_path()),entry.name,true,
-            !engine_ && entry.path==directory_,ui::ControlIcon::folder,ancestor);
+        const auto parent=entry.path.parent_path();
+        while (path.size()>1 && *path.back().first!=parent) path.pop_back();
+        labels.push_back({directory_control(entry.path),entry.name,true,!engine_ && entry.path==directory_,ui::ControlIcon::folder});
+        nodes.push_back({path.back().second,expanded(entry.path,false),{}});
+        path.emplace_back(&entry.path,static_cast<std::uint32_t>(nodes.size()-1));
     }
-    row(browser_control::engine,0,L"Engine",true,engine_,ui::ControlIcon::mesh);
-    directory_items_=std::move(rows);directory_items_dirty_=false;return directory_items_;
+    labels.push_back({browser_control::engine,L"Engine",true,engine_,ui::ControlIcon::mesh});
+    nodes.push_back({});
+    std::vector<ui::TreeRow> rows;ui::flatten_tree(nodes,{},rows);
+    auto items=std::make_shared<std::vector<ui_language::Item>>();items->reserve(rows.size());
+    for (std::uint32_t index=0;index<rows.size();++index) {
+        const auto& row=rows[index];const auto& label=labels[row.node];
+        items->push_back({label.key,{std::wstring(label.name),label.enabled,label.selected,static_cast<double>(label.icon),
+            ui_language::TreeRowBinding{index,row.depth,row.branch,row.expanded,label.selected,row.lines},std::wstring{},false,ui::ControlKey{}}});
+    }
+    directory_rows_=rows.size();directory_items_=std::move(items);directory_items_dirty_=false;return directory_items_;
+}
+Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> paths,bool expanded) {
+    for (const auto& path:paths)
+        if (path.empty()?!has_project_:std::ranges::none_of(directories_,[&](const auto& item){return item.path==path;}))
+            return std::unexpected(Error{ErrorCode::invalid_member,"The path is not a directory row of the Asset Browser."});
+    for (const auto& path:paths) expansion_[path]=expanded;
+    directory_items_dirty_=true;return {};
 }
 void AssetBrowser::sort_items() {
     std::sort(items_.begin(),items_.end(),[&](const auto& a,const auto& b) {
@@ -252,6 +273,15 @@ bool AssetBrowser::apply(const ui::Action& action) {
             return true;
         }
     }
+    if (action.kind==ui::ActionKind::expand) {
+        const auto* expanded=std::get_if<bool>(&action.value);
+        if (!expanded) return false;
+        if (action.key==project) {static_cast<void>(set_expanded(std::array{std::filesystem::path{}},*expanded));return true;}
+        for (const auto& target:targets_) if (target.key==action.key) {
+            static_cast<void>(set_expanded(std::span{&target.item.path,1},*expanded));return true;
+        }
+        return false;
+    }
     if (action.kind!=ui::ActionKind::activate && action.kind!=ui::ActionKind::select) return false;
     if (action.key==project) {if (has_project_) visit({false,{}});return true;}
     if (action.key==browser_control::engine) {visit({true,{}});return true;}
@@ -274,22 +304,14 @@ void AssetBrowser::append(std::vector<ui::Control>& controls,ui::ControlKey pare
     namespace id=browser_control;
     update_directories(project);can_create_=can_create;
     if (navigation_.empty()) navigation_.push_back({engine_,directory_});
-    if (frame && frame->drawing->id!=tree_frame_) {
-        if (tree_frame_!=std::numeric_limits<std::uint64_t>::max()) for (const auto& row:frame->tree_rows) {
-            if (!directory_keys_.contains(row.key)) continue;
-            const auto [at,inserted]=tree_expansion_.try_emplace(row.key,row.expanded);
-            if (inserted || at->second!=row.expanded) {at->second=row.expanded;directory_items_dirty_=true;}
-        }
-        tree_frame_=frame->drawing->id;
-    }
     update_items(project);
     const auto address=engine_?L"Engine":directory_.empty()?L"Project":L"Project / "+directory_.generic_wstring();
     const auto count=items_.empty()?(query_.empty() && !filter_?L"This folder is empty.":L"No matches."):
         std::to_wstring(items_.size())+(items_.size()==1?L" item":L" items");
     const auto* body=frame?frame->find(id::root+103):nullptr;
     const double directory_limit=body?std::max(96.,static_cast<double>(body->bounds.width/frame->drawing->dpi_scale)-69.):144.;
-    const std::array<ui_language::InputValue,17> inputs{
-        ui_language::ItemList{directory_items()},ui_language::TextEditBinding{id::search,query_},address,
+    const std::array<ui_language::InputValue,18> inputs{
+        ui_language::ItemList{directory_items()},static_cast<double>(directory_rows_),ui_language::TextEditBinding{id::search,query_},address,
         count+(selected_?L"  |  "+selected_->name:L""),
         ui_language::ActionBinding{id::back,navigation_cursor_!=0},ui_language::ActionBinding{id::up,!engine_ && !directory_.empty()},
         ui_language::ActionBinding{id::clear,!query_.empty() || filter_!=0},filter_!=0,

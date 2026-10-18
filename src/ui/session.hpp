@@ -6,6 +6,7 @@
 #include "ui/table.hpp"
 #include "ui/code_document.hpp"
 #include "ui_layout/layout.hpp"
+#include <bitset>
 #include <expected>
 #include <limits>
 #include <span>
@@ -31,6 +32,7 @@ struct Tooltip {
     std::wstring title, identity, description;
     bool operator==(const Tooltip&) const = default;
 };
+inline constexpr std::uint32_t maximum_tree_rows=1u<<18;
 
 struct Control {
     ControlKey key{}, parent{}; // Unique live keys; parent precedes child in the input.
@@ -54,15 +56,20 @@ struct Control {
     ControlKey context_target{}, context_group{}; // Context request target and optional group reset command.
     ControlKey selection_group{}; // Button group: arrow navigation; Tab visits the selected member.
     ControlKey action_target{}; // Button/table activation route; zero uses this control's key. Never a UI identity.
-    // Tree rows are direct layout children of a tree, in depth-first order.
-    // tree_parent references an earlier row in that same tree (zero for roots).
-    // Expansion belongs to Session; initialize on insertion or kind/parent changes.
-    // A host selected false-to-true transition expands logical ancestors and
-    // reveals the row once; stable selected input preserves manual collapse.
-    ControlKey tree_parent{};
-    bool tree_initially_expanded{true};
+    // The host flattens its hierarchy and owns expansion and filtering. A tree
+    // describes tree_row_count rows; its children are any subset of them, in
+    // increasing tree_index, and Session lays out only those rows. Hosts keep the
+    // focused row, its neighbours and ancestors, and the first and last rows described.
+    std::uint32_t tree_row_count{}; // tree only.
+    std::uint32_t tree_index{}, tree_depth{}; // tree_item only: flattened position and depth (< 128).
+    bool tree_branch{}, tree_expanded{}; // tree_item only; expanded requires branch.
+    // tree_item only: bit k (1..depth) draws the guide of the depth-k ancestor,
+    // or of this row at k == depth, because it has a later sibling.
+    std::bitset<128> tree_lines;
+    // tree_item only: the host's primary row. Becoming primary, including a new
+    // primary row, scrolls it into view once; hosts keep it described.
+    bool tree_primary{};
     bool tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
-    std::wstring tree_filter; // tree only: substring with ASCII case folding; retains matching ancestry.
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
@@ -92,7 +99,6 @@ struct ControlBox {
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
     std::shared_ptr<const ResolvedStyle> style;
     bool selected{}; // Accepted toggle value; activation requests its inverse.
-    ControlKey tree_parent{}; // Logical parent snapshot, independent of the layout parent.
     ControlKey action_target{}; // Accepted route; retargeting invalidates input against this frame.
     ButtonBehavior button_behavior{ButtonBehavior::command}; // Accepted activation semantics.
     MenuBehavior menu_behavior{MenuBehavior::command};
@@ -155,9 +161,16 @@ struct ValueLadderGeometry {
     double increment{.1};
 };
 struct TreeRowGeometry {
-    ControlKey key{}, parent{};
+    ControlKey key{};
+    std::uint32_t index{}, depth{}; // Accepted host row position.
     Rect disclosure; // Accepted physical hit area; empty on leaves.
-    bool expanded{}, filtering{}; // Retained expansion; filtering temporarily reveals matching descendants.
+    bool expanded{};
+};
+// Live tree scroll and the last laid-out viewport height, in DIP. Hosts choose
+// which rows to describe from it; before a first layout the height is the surface's.
+struct TreeViewport {
+    double scroll{};
+    float height{}, row_height{};
 };
 struct TableColumnGeometry {
     TableKey column{};
@@ -222,7 +235,8 @@ struct UiFrame {
     const CodeGeometry* find_code(ControlKey) const noexcept;
 };
 
-enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize };
+// expand: a tree row requests the bool expansion state; the host owns it.
+enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize, expand };
 struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; std::optional<TableSelection> table{}; }; // Accepted client pixels.
 struct DragPoint { float x{}, y{}; }; // Accepted-frame client pixels.
 struct SelectionModifiers { bool shift{}, control{}, double_click{}; }; // double_click: second click of a native double click.
@@ -289,7 +303,7 @@ struct Error {
 template<class T> using Result = std::expected<T, Error>;
 
 // Validate a producer's descriptor before publishing it. This does not inspect
-// tree references, table contents or solve layout; Session remains the complete batch boundary.
+// tree row order, table contents or solve layout; Session remains the complete batch boundary.
 Result<void> validate_control_properties(const Control&);
 enum class Capture { unchanged, acquire, release };
 enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan, crosshair, orbit, translate, rotate, scale };
@@ -355,7 +369,8 @@ public:
     // passive buffers instead follow the latest authoritative value.
     Result<Reply> set_controls(std::span<const Control>);
     // Sparse complete values for existing keys. Order is irrelevant; duplicate or
-    // missing keys and changes to kind/parent/structural references are rejected.
+    // missing keys and changes to kind/parent/structural references or tree
+    // rows (tree_row_count, tree_index, tree_depth, tree_branch, tree_expanded) are rejected.
     // Both description entries validate and prepare before changing live controls.
     // Layout dependencies are resolved by prepare; its failure retains the old
     // frame, not the previous descriptors or cancelled interaction.
@@ -365,6 +380,7 @@ public:
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
     // Topmost enabled target in the accepted frame; zero while input is suspended.
     ControlKey pointer_target(float x,float y) const;
+    TreeViewport tree_viewport(ControlKey tree) const noexcept;
     Reply input(const Event&);
     // Clear only passive help, including when an outer host consumes the input.
     void dismiss_tooltip() noexcept;

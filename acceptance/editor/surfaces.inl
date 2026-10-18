@@ -125,6 +125,36 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         require(!app.docking().dragging() && app.presented()->find(control::viewport)->bounds==before,
             "Cancelled divider committed a late release or retained its preview.");
     }
+    {
+        // Scene Tree describes rows around its last laid-out viewport. Growing the pane past that
+        // margin may miss rows for one frame; the next frame lays out every visible row again.
+        const auto selected=app.document().selection().entity;
+        constexpr unsigned created=160;
+        for(unsigned i=0;i<created;++i) require(bool(Access::command(app,editor::Command::create_entity)),"Scene Tree population failed.");
+        require(bool(Access::command(app,editor::Command::show_entities)),"Scene Tree did not open.");tick(app,2);
+        const auto missing=[&] {
+            const auto viewport=Access::tree_viewport(app,control::entity_tree);
+            std::size_t rows{};
+            for(const auto& row:app.presented()->tree_rows) if(const auto* box=app.presented()->find(row.key);box && box->parent==control::entity_tree)
+                rows=std::max<std::size_t>(rows,row.index+1); // The host always describes its last row.
+            require(rows>created,"Scene Tree lost its populated rows.");
+            const auto first=static_cast<std::size_t>(viewport.scroll/viewport.row_height);
+            const auto last=std::min(rows-1,static_cast<std::size_t>((viewport.scroll+viewport.height-1)/viewport.row_height));
+            std::size_t absent{};
+            for(auto index=first;index<=last;++index)
+                absent+=std::ranges::none_of(app.presented()->tree_rows,[&](const auto& row){
+                    const auto* box=app.presented()->find(row.key);return row.index==index && box && box->parent==control::entity_tree;});
+            return absent;
+        };
+        require(missing()==0,"Docked Scene Tree omitted a visible row.");
+        require(bool(Access::command(app,editor::Command::maximize_pane)),"Scene Tree did not maximize.");tick(app,1);
+        report<<"tree_rows_missing_first_grown_frame,"<<missing()<<'\n';report.flush();
+        tick(app,1);require(missing()==0,"Scene Tree did not complete its rows on the frame after growing.");
+        require(bool(Access::command(app,editor::Command::maximize_pane)),"Scene Tree did not restore.");tick(app,2);
+        require(missing()==0,"Restored Scene Tree omitted a visible row.");
+        for(unsigned i=0;i<created;++i) require(bool(Access::command(app,editor::Command::undo)),"Scene Tree population did not undo.");
+        tick(app,1);require(app.document().selection().entity==selected,"Undoing Scene Tree population lost the original selection.");
+    }
     namespace browser=editor::browser_control;
     const auto history=app.document().undo_count();
     const auto tree_width=[&] {const auto* tree=app.presented()->find(browser::directories);

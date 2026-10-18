@@ -9,9 +9,14 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
     };
     click(app,control::tree_world);
     require(app.document().selection().entity==atelier::ObjectId{},"Tree World row did not select the world context");
+    // A parent row is the nearest shallower row before the child.
+    const auto child_of=[&](ControlKey child,ControlKey parent) {
+        const auto c=row(child),p=row(parent);
+        return c.depth==p.depth+1 && c.index>p.index && std::none_of(app.presented()->tree_rows.begin(),app.presented()->tree_rows.end(),
+            [&](const auto& r){return r.index>p.index && r.index<c.index && r.depth<=p.depth;});
+    };
     click(app,entity_key);
-    require(std::none_of(app.presented()->tree_rows.begin(),app.presented()->tree_rows.end(),[&](const auto& r){return r.parent==entity_key;}),
-        "Scene Tree exposed component rows beneath an Entity");
+    require(row(entity_key).disclosure.width==0,"Scene Tree exposed component rows beneath an Entity");
     key(app,VK_RIGHT);
     require(app.document().selection()==atelier::editor::Selection{entity,entity},"Entity leaf navigation selected a component");
     // Rows show only the name (the icon carries the type), so the filter matches names.
@@ -31,7 +36,7 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
     const auto members=model(atelier::world::components(app.document().world().runtime(),entity)).size();
     click(app,static_cast<ControlKey>(atelier::editor::Command::show_structure));
     const auto structure_entity=Access::structure_control(app,entity),structure_root=Access::structure_control(app,root);
-    require(structure_entity && structure_root && row(structure_root).parent==structure_entity && app.presented()->find(control::add_component),
+    require(structure_entity && structure_root && child_of(structure_root,structure_entity) && app.presented()->find(control::add_component),
         "Entity Structure did not expose real component membership and its add command.");
     click(app,structure_root);
     require(app.document().selection()==atelier::editor::Selection{entity,root} && !app.presented()->find(control::position_fold),
@@ -57,7 +62,7 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
         !app.presented()->find(control::position_fold),
         "Structure Add did not inspect its new nonspatial component or invented a Transform.");
     const auto added_row=Access::structure_control(app,added);
-    require(added_row && row(added_row).parent==structure_entity,"Added Component lost its owning Entity row.");
+    require(added_row && child_of(added_row,structure_entity),"Added Component lost its owning Entity row.");
     click(app,added_row);key(app,VK_DELETE);
     require(contains(app,entity) && app.document().selection()==atelier::editor::Selection{entity,entity} &&
         model(atelier::world::components(app.document().world().runtime(),entity)).size()==members,
@@ -82,8 +87,7 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
         }
         return false;
     };
-    require(!in_scene_tree(control::add_component) &&
-        std::none_of(app.presented()->tree_rows.begin(),app.presented()->tree_rows.end(),[&](const auto& r){return r.parent==entity_key;}),
+    require(!in_scene_tree(control::add_component) && row(entity_key).disclosure.width==0,
         "Scene Tree acquired component structure or its add command from the independent Entity Structure pane.");
     click(app,control::reset_layout);
     require(app.document().selection().entity==entity && app.document().undo_count()==history,"Tree navigation/filtering polluted scene history");

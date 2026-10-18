@@ -127,15 +127,22 @@ struct Workspace {
         bool composition_failed{};
     };
     std::optional<ColorEdit> color_edit;
-    // Inline rename over a tree row: the renamed Entity and the row it covers.
+    // Inline rename over a tree row: the renamed Entity, drawn once its row is presented.
     // An Entity row (object set) or an Asset Browser cell (asset set); asset paths are project-relative.
-    struct RowRename { ObjectId object; ui::ControlKey row{}; std::wstring text; std::filesystem::path asset{}; ui::TableKey cell{}; };
+    struct RowRename { ObjectId object; std::wstring text; std::filesystem::path asset{}; ui::TableKey cell{}; };
     std::optional<RowRename> row_rename;
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab()==control::workbench; }
     bool can_navigate(int direction) const noexcept;
     Result<void> navigate(Session&,int direction);
-    Result<void> select_tree(Session&,ui::ControlKey,ui::SelectionModifiers = {},const ui::UiFrame* = nullptr);
+    Result<void> select_tree(Session&,ui::ControlKey,ui::SelectionModifiers = {});
+    // Tree row expansion is view state: not undoable, never changes the document
+    // or the selection. Scene Tree addresses its World row as ObjectId{}. If any
+    // identity is not a row of the tree, nothing changes.
+    enum class EntityTree { scene_tree, structure };
+    Result<void> set_tree_expanded(const Session&,EntityTree,std::span<const ObjectId>,bool expanded);
+    // Expands the Entity's Scene Tree ancestors; false when the tree filter hides its row.
+    Result<bool> reveal_in_tree(const Session&,ObjectId entity);
     bool command_enabled(Command,const Session&) const;
     Result<bool> apply_view(Session&,const ui::Action&,std::array<float,3> focus = {});
     void sync_world(const Session&);
@@ -183,7 +190,8 @@ struct Workspace {
     std::vector<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
     bool pie_menu() const noexcept { return menu && menu->source==control::viewport &&
         (menu->group==control::viewport_shading_pie || menu->group==control::viewport_axis_pie); }
-    std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*,const Project* = nullptr);
+    // ui supplies tree scroll and focus; trees describe only rows near their viewport.
+    std::vector<ui::Control> describe(const Session&, ui_layout::Size, const ui::UiFrame*,const Project* = nullptr,const ui::Session* ui = nullptr);
     void reset_document();
     const Binding* binding(ui::ControlKey) const noexcept;
     ui::ControlKey object_control(ObjectId) const noexcept;
@@ -197,7 +205,6 @@ struct Workspace {
     std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
-    friend struct WorkspaceAcceptanceAccess;
     std::unordered_map<std::string,ui::ControlKey> category_keys_;
     PropertyHelpCache property_help_;
     bool parameter_by_category_{};
@@ -213,8 +220,26 @@ private:
     std::array<ui::ControlKey,5> resource_properties_{};
     std::vector<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
     std::size_t navigation_cursor_{};
-    std::unordered_map<ui::ControlKey,bool> tree_expansion_; // Accepted view state survives docking/hiding, not object retirement.
-    std::uint64_t tree_frame_{}; // Consume each accepted snapshot once, including across hidden frames.
+    // A host-flattened entity tree. Expansion survives docking and hiding, not object retirement.
+    struct EntityTreeView {
+        std::unordered_map<ObjectId,bool> expansion; // Overrides of the tree's default.
+        std::vector<ui::TreeNode> nodes;
+        std::vector<ObjectId> objects; // Parallel to nodes.
+        std::vector<std::wstring> texts; // Filter text, parallel to nodes while filtering.
+        std::vector<ui::TreeRow> rows; // Last flattened rows.
+        std::optional<std::pair<ObjectId,ObjectId>> primary; // Last primary row and its parent.
+        bool expanded(ObjectId object,bool initial) const {
+            const auto at=expansion.find(object);return at==expansion.end()?initial:at->second;
+        }
+        std::uint32_t node(ObjectId object) const noexcept {
+            const auto at=std::ranges::find(objects,object);
+            return at==objects.end()?ui::no_tree_node:static_cast<std::uint32_t>(at-objects.begin());
+        }
+    };
+    EntityTreeView scene_tree_, structure_tree_;
+    void build_structure_tree(const Session&,ObjectId entity);
+    std::vector<std::uint32_t> window_tree(EntityTreeView&,ObjectId primary,std::wstring_view filter,
+        ui::TreeViewport,std::span<const ObjectId> pinned);
     ui::ControlKey next_output_{1};
     std::wstring repeated_line_;
     ui::ControlKey repeated_row_{};

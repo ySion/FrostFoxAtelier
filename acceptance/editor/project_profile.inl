@@ -53,7 +53,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         {"unique_geometries",unique.size()},{"adjacent_geometry_batches",batches},{"instance_triangles",triangles},
         {"unique_sampled_images",sampled_images},{"material_texture_table_entries",sampled_images+1},
         {"material_bindings",material_bindings},{"unique_bound_materials",materials.size()},
-        {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present, UI prepare or FPS estimate. Workspace includes DSL commit; no accepted UI frame is supplied."}};
+        {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."}};
     if(!camera_report.empty()) {
         // Consume the accepted product matrices, including its actual aspect.
         const auto reference=Json::parse(take(editor::read_file(camera_report)));
@@ -157,6 +157,23 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("workspace_maximized",describe);
     workspace.dock.maximize(editor::control::scene_tab);
     measure("workspace_docked",describe);
+    {
+        // The docked editor's UI step on a headless Session: description against the accepted frame, then layout.
+        const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
+        ui::Session surface(fonts);
+        const auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+        require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779,1154},1,1}),"CPU profile UI surface failed.");
+        std::size_t controls{},rows{};
+        measure("ui_docked",[&] {
+            const auto described=workspace.describe(*document,{1779,1154},surface.presented().get(),&project,&surface);
+            require(workspace.ui_error().empty() && surface.set_controls(described),"CPU profile UI description was refused.");
+            workspace.commit_ui_controls();
+            const auto frame=surface.prepare();require(frame && surface.accept(*frame),"CPU profile UI layout failed.");
+            controls=described.size();rows=(*frame)->tree_rows.size();
+        });
+        report["stages"]["ui_docked"]["controls"]=controls;report["stages"]["ui_docked"]["tree_rows"]=rows;
+        std::printf("Scene CPU ui_docked: %zu controls, %zu tree rows\n",controls,rows);
+    }
     {
         // Overhead estimate on the same clock and machine; never a pass condition.
         constexpr std::uint32_t scopes=10000;

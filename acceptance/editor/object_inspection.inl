@@ -72,7 +72,11 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         return ui::ControlKey{};
     };
     const auto entity_row=structure_key(entity),component_row=structure_key(stats);
-    require(entity_row && component_row && entity_row!=scene_key && surface.presented()->find(component_row)->tree_parent==entity_row &&
+    const auto& tree_rows=surface.presented()->tree_rows;
+    const auto entity_geometry=std::ranges::find(tree_rows,entity_row,&ui::TreeRowGeometry::key);
+    const auto component_geometry=std::ranges::find(tree_rows,component_row,&ui::TreeRowGeometry::key);
+    require(entity_row && component_row && entity_row!=scene_key && entity_geometry!=tree_rows.end() && component_geometry!=tree_rows.end() &&
+        component_geometry->depth==entity_geometry->depth+1 && component_geometry->index>entity_geometry->index &&
         surface.presented()->find(editor::control::add_component),"Entity Structure did not separate ownership, Scene Tree identity and structural commands.");
     click(entity_row);publish();
     require(document.selection()==editor::Selection{entity,entity} && surface.presented()->find(health_key) &&

@@ -95,7 +95,7 @@ ui Board(in bool visible, in Items<Card> rows) {
     auto invalid=updated;invalid.replace(invalid.find("height: 23"),10,"height: -1");save(invalid);
     require(live.revision()==2 && !live.diagnostic().empty() && surface.text_input()->token==edit_token,"Invalid candidate properties replaced a live draft.");
     auto topology=updated;topology.insert(topology.find("        Repeat entries"),
-        "        Tree invalid { TreeItem early { tree_parent: node.later; } TreeItem later {} }\n");save(topology);
+        "        Tree invalid { rows: 2; TreeItem early {} TreeItem later {} }\n");save(topology);
     require(live.revision()==2 && live.diagnostic()=="Session rejected candidate topology" && surface.text_input()->token==edit_token,
         "Session rejection did not preserve the active component owner and input.");
     save(updated+"\n// recovered\n");

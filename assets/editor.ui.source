@@ -113,7 +113,7 @@ ui PropertyGroup(in Text title, in double icon, in Items<PropertyRow> properties
 }
 
 ui EntityRow(in Text title, in bool enabled, in bool selected, in double icon,
-            in Key parent, in bool expanded, in Text style, in bool draggable, in Key menu) {
+            in TreeRowBinding row, in Text style, in bool draggable, in Key menu) {
     TreeItem row {
         draggable: input.draggable;
         context: input.menu;
@@ -121,25 +121,24 @@ ui EntityRow(in Text title, in bool enabled, in bool selected, in double icon,
         enabled: input.enabled;
         selected: input.selected;
         icon: input.icon;
-        tree_parent: input.parent;
-        initially_expanded: input.expanded;
+        row: input.row;
         classes: input.style;
     }
 }
 
-ui SceneTree(in Items<EntityRow> entities, in TextEditBinding filter,
-             in bool world_selected, in bool world_expanded, in double world_icon,
+ui SceneTree(in Items<EntityRow> entities, in double rows, in TextEditBinding filter,
+             in bool world_selected, in TreeRowBinding world_row, in double world_icon,
              in ActionBinding back, in ActionBinding forward, in double back_icon, in double forward_icon, in double path_icon,
              in Text world_style) {
     PanePath path { title: "World"; back: input.back; forward: input.forward; back_icon: input.back_icon; forward_icon: input.forward_icon; path_icon: input.path_icon; }
     Tree tree {
         expand_height: true;
-        filter: input.filter;
+        rows: input.rows;
         TreeItem world {
             text: "World";
             icon: input.world_icon;
             selected: input.world_selected;
-            initially_expanded: input.world_expanded;
+            row: input.world_row;
             classes: input.world_style;
         }
         Repeat rows { items: input.entities; }
@@ -245,7 +244,7 @@ ui PanePath(in Text title, in ActionBinding back, in ActionBinding forward,
     }
 }
 
-ui EntityStructure(in Text title, in Items<EntityRow> objects, in TextEditBinding filter, in bool has_entity,
+ui EntityStructure(in Text title, in Items<EntityRow> objects, in double rows, in TextEditBinding filter, in bool has_entity,
                   in bool editable, in Key add_component, in ActionBinding remove, in double remove_icon) {
     Row toolbar {
         height: 32; align_center: true; gap: 4; padding_left: 6; padding_right: 4; classes: "object-header";
@@ -253,7 +252,7 @@ ui EntityStructure(in Text title, in Items<EntityRow> objects, in TextEditBindin
         Combo add { text: "Add Component"; context: input.add_component; enabled: input.editable; height: 24; content_width: 0; classes: "parameter-menu"; }
         Button remove { icon: input.remove_icon; action: input.remove; width: 24; height: 24; classes: "browser-icon"; }
     }
-    Tree tree { expand_height: true; filter: input.filter; Repeat rows { items: input.objects; } }
+    Tree tree { expand_height: true; rows: input.rows; Repeat rows { items: input.objects; } }
     Text empty { text: "Select an Entity in Scene Tree."; collapsed: input.has_entity; single_line: true; caption: true; classes: "empty-state"; }
     Column filter_area { padding_left: 6; padding_right: 4; padding_top: 3; padding_bottom: 3;
         QueryRow query { edit: input.filter; label_width: 36; gap: 6; caption: false; }
@@ -392,7 +391,7 @@ ui MaterialParameters(in Text name, in bool dirty, in Items<PropertyGroup> group
         }
     }
 }
-ui AssetBrowserShell(in Items<EntityRow> directories, in TextEditBinding query,
+ui AssetBrowserShell(in Items<EntityRow> directories, in double directory_rows, in TextEditBinding query,
                      in Text path, in Text status,
                      in ActionBinding back, in ActionBinding up, in ActionBinding clear,
                      in bool filter_selected, in double view_icon,
@@ -477,6 +476,7 @@ ui AssetBrowserShell(in Items<EntityRow> directories, in TextEditBinding query,
             shrink_width: input.directory_width;
             min_width: 96;
             expand_height: true;
+            rows: input.directory_rows;
             Repeat directories { items: input.directories; }
         }
         Splitter divider {

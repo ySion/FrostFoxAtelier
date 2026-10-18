@@ -55,6 +55,7 @@ Input parse_input(Tokens& tokens) {
         else if (type.text=="TableBinding") value.kind=InputKind::table;
         else if (type.text=="CodeBinding") value.kind=InputKind::code;
         else if (type.text=="TooltipBinding") value.kind=InputKind::tooltip;
+        else if (type.text=="TreeRowBinding") value.kind=InputKind::tree_row;
         else if (type.text=="Key") value.kind=InputKind::key;
         else if (type.text=="Items") {
             value.kind=InputKind::items;tokens.expect("<");value.item_type=tokens.identifier().text;tokens.expect(">");
@@ -134,13 +135,13 @@ public:
             if (evaluation.property) {
                 const auto property=*evaluation.property;
                 const auto reference=reference_kind(evaluation.source);
-                const bool text=property==Property::text || property==Property::filter || property==Property::classes ||
+                const bool text=property==Property::text || property==Property::classes ||
                     property==Property::view || property==Property::empty_text || property==Property::menu_behavior ||
                     property==Property::tooltip_title || property==Property::tooltip_identity ||
                     (property==Property::tooltip && reference!=InputKind::tooltip) ||
                     (property==Property::argument && evaluation.kind==InputKind::text);
                 const bool numeric=property==Property::gap || property==Property::height || property==Property::width ||
-                    property==Property::padding_left || property==Property::icon ||
+                    property==Property::padding_left || property==Property::icon || property==Property::tree_rows ||
                     property==Property::padding_top || property==Property::padding_right || property==Property::padding_bottom ||
                     property==Property::content_width || property==Property::content_height || property==Property::min_width || property==Property::shrink_width ||
                     (property>=Property::row_height && property<=Property::item_gap) ||
@@ -156,7 +157,7 @@ public:
                 else if (property==Property::tooltip) sink="set_tooltip";
                 else if (property==Property::context) sink=reference==InputKind::text_edit?"set_context_from_edit":"set_context";
                 else if (property==Property::items) sink="set_items";
-                else if (property==Property::tree_parent) sink="set_tree_parent";
+                else if (property==Property::tree_row) sink="set_tree_row";
                 else if (property==Property::radio_group) sink="set_radio_group";
                 else if (property==Property::selection_group) sink="set_selection_group";
                 else sink=numeric?"set_number":"set_bool";
@@ -201,7 +202,7 @@ private:
         reject(token.position,"Component state requires bool or double.");
     }
     static std::string suffix(InputKind kind) {
-        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action","table","code","tooltip"};
+        constexpr std::string_view names[]{"bool","number","edit","text","text_edit","key","items","action","table","code","tooltip","tree_row"};
         return std::string(names[static_cast<std::size_t>(kind)]);
     }
     Fragment fragment(std::string_view terminator) {
@@ -271,7 +272,7 @@ private:
                 value=Property::argument;value_kind=at->kind;argument=static_cast<std::uint32_t>(at-child->inputs.begin());
             } else {
                 constexpr std::string_view names[]{"text","classes","gap","height","width","padding_left","enabled","selected","collapsed","caption","edit",
-                    "expand_height","icon","tree_parent","initially_expanded","filter","mounted","items",
+                    "expand_height","icon","row","rows","mounted","items",
                     "padding_top","padding_right","padding_bottom","align_center","single_line","action",
                     "selection_group","content_width","content_height","expand_width","min_width","wrap","panel","model","context","shrink_width",
                     "view","row_height","header_height","tile_width","tile_height","item_gap","empty_text",
@@ -314,8 +315,8 @@ private:
                     value!=Property::enabled && value!=Property::collapsed && value!=Property::modified &&
                     value!=Property::tooltip && value!=Property::tooltip_title && value!=Property::tooltip_identity)
                     reject(property.position,"ParameterRow owns its shared layout; put outer layout on its parent.");
-                if ((value==Property::tree_parent || value==Property::expanded || value==Property::draggable) && kind!=NodeKind::tree_item) reject(property.position,"Tree relation properties require TreeItem.");
-                if (value==Property::filter && kind!=NodeKind::tree) reject(property.position,"filter requires Tree.");
+                if ((value==Property::tree_row || value==Property::draggable) && kind!=NodeKind::tree_item) reject(property.position,"row and draggable require TreeItem.");
+                if (value==Property::tree_rows && kind!=NodeKind::tree) reject(property.position,"rows requires Tree.");
                 if (value==Property::mounted && kind!=NodeKind::component && kind!=NodeKind::repeat) reject(property.position,"mounted requires a component or Repeat scope.");
                 if (value==Property::items && kind!=NodeKind::repeat) reject(property.position,"items requires Repeat.");
             }
@@ -341,6 +342,8 @@ private:
             if ((value==Property::model || (value==Property::argument && value_kind==InputKind::table)) &&
                 reference_kind(expression)!=InputKind::table)
                 reject(expression.position,"Table models require a direct TableBinding input.");
+            if ((value==Property::tree_row || (value==Property::argument && value_kind==InputKind::tree_row)) && reference_kind(expression)!=InputKind::tree_row)
+                reject(expression.position,"Tree rows require a direct TreeRowBinding input.");
             if ((value==Property::document || (value==Property::argument && value_kind==InputKind::code)) && reference_kind(expression)!=InputKind::code)
                 reject(expression.position,"CodeEditor requires a direct CodeBinding input.");
             if (value==Property::argument && value_kind==InputKind::items) {
