@@ -133,7 +133,10 @@ struct EditorAcceptanceAccess {
     static Result<void> fps_setting(Application& app,bool enabled) {
         return app.action({ui::ActionKind::activate,editor::control::command_key(editor::Command::show_fps),enabled});
     }
-    static void scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {app.workspace_.view.lit=settings;}
+    static Result<void> scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {
+        auto view=app.workspace_.view;view.lit=settings;
+        return app.workspace_.set_view_settings(*app.document_,view,app.lighting_focus());
+    }
     static const auto& scene_snapshot(const Application& app) {return app.scene_;}
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}

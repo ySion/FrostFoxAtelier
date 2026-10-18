@@ -254,7 +254,7 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     require(Access::scene_lit_view(app).lit.probe_volume!=original_lighting.probe_volume,
         "World volume diagnostic did not apply its checkbox.");
     require(app.document().undo_count()==diagnostics_history,"World diagnostics entered scene history.");
-    Access::scene_lit_settings(app,original_lighting);tick(app,1);
+    model(Access::scene_lit_settings(app,original_lighting));tick(app,1);
     press_tab(editor::world_control::ddgi_tab);capture(app,output/"world-ddgi.png");
     const auto* slot_button=app.presented()->find(editor::world_control::slot);
     require(slot_button && slot_button->style->combo_indicator==ui::ComboIndicator::down &&
