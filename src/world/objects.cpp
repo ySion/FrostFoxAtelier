@@ -225,7 +225,7 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
         const auto* member = state.state_of(object);
         if (!member) return std::unexpected(state.inconsistent("World member index is inconsistent."));
         status.state = state.running && member->begun && *eligible ? EntityState::active : EntityState::attached_inactive;
-        status.can_edit = !state.running && !state.dispatch_depth;
+        status.can_edit = !state.dispatch_depth;
         status.can_present = std::ranges::any_of(member->components, [](const auto& item) { return item.presentation != 0; });
     }
     return status;

@@ -148,6 +148,20 @@ public:
     Result<void> collect_step();
     Result<std::string> serialize() const;
     Result<std::string> serialize_subtree(ObjectId) const;
+    // Makes this loaded document a Play copy: objects keep the editor's document
+    // identities, and this Session never assigns new ones.
+    void enter_play();
+    // Applies one editor change batch {"ops":[...]} to a Play copy at a host
+    // boundary, in order, with absolute values and without history. Returns one
+    // command diagnostic per item not fully applied: warning reference_dropped when
+    // the game already destroyed the target, warning command_rejected when Play
+    // cannot follow the edit, error command_rejected when Play diverged. See
+    // docs/modules/editor/projects.md for the batch format.
+    Result<std::vector<world::Diagnostic>> apply_live(std::string_view batch,Project&);
+    // Editor-side graphs for add and attach changes: identities are kept and
+    // references leaving the graph are written as document identities.
+    Result<std::string> serialize_live_subtree(ObjectId root) const;
+    Result<std::string> serialize_live_components(ObjectId entity,std::span<const ObjectId> components) const;
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
     Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
@@ -261,6 +275,10 @@ private:
     // Detached history objects retain their ID; IDs are never reused.
     mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
     mutable std::uint64_t next_local_id_{1};
+    bool play_{};
+    // Play copy: document identity to object, including objects the game destroyed.
+    std::unordered_map<std::uint64_t,ObjectId> live_objects_;
+    std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
     struct GraphCodec;
     std::uint64_t next_name_{1};
     struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};

@@ -175,7 +175,7 @@ Result<JPH::ShapeRefC> restore_shape(std::string_view bytes, const geometry::Mes
     if (hash_bytes(stored_source) != source_hash || hash_bytes(payload) != payload_hash)
         return failure(ErrorCode::invalid_storage, "Collision asset content digest is invalid.");
     if (stored_source != source || geometry_hash != mesh_hash(mesh, scale))
-        return failure(ErrorCode::invalid_storage, "Collision asset source or scale changed; recook required.");
+        return failure(ErrorCode::rebuild_required, "Collision asset source or scale changed; recook required.");
     std::istringstream input(std::string(payload), std::ios::binary);
     JPH::StreamInWrapper stream(input);
     JPH::Shape::IDToShapeMap shapes;
@@ -507,7 +507,8 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
     if (!subscribed) return std::unexpected(subscribed.error());
     result->subscription_ = *subscribed;
     auto simulation = world.add_simulation({[scene = result.get()](float elapsed) { return scene->step(elapsed); },
-        [scene = result.get()](ObjectId entity) { return scene->writes_pose(entity); }});
+        [scene = result.get()](ObjectId entity) { return scene->writes_pose(entity); },
+        [scene = result.get()](std::span<const ObjectId> entities) { return scene->relocate(entities); }});
     if (!simulation) return std::unexpected(simulation.error());
     result->simulation_ = *simulation;
     auto members = world.members();
@@ -700,6 +701,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         shape=new JPH::CapsuleShape(settings->capsule_half_height*size.x,settings->radius*size.x);
     else {
         auto built=settings->cooked_shape?restore_shape(*settings->cooked_shape,*mesh,scale,source):mesh_shape(*mesh,scale);
+        // A body rescaled at runtime outgrows its cooked shape; cook here rather than write the shared cache.
+        if (!built && built.error().code==ErrorCode::rebuild_required) {built=mesh_shape(*mesh,scale);++runtime_cooks_;}
         if (!built) return std::unexpected(built.error());
         shape=*built;
     }
@@ -801,7 +804,7 @@ Result<void> PhysicsScene::step(float elapsed) {
     reconciling.reset();
     constexpr float fixed = 1.f / 60.f;
     constexpr std::uint32_t maximum_steps = 8;
-    StepResult result{.completed_step = completed_step_};
+    StepResult result{.runtime_cooks = std::exchange(runtime_cooks_, 0), .completed_step = completed_step_};
     if (!paused_) {
         const float accumulated = remaining_ + elapsed;
         remaining_ = std::min(accumulated, fixed * maximum_steps);
@@ -992,6 +995,43 @@ bool PhysicsScene::writes_pose(ObjectId entity) const {
         }
     }
     return false;
+}
+// An authored pose replaces the simulated one at the next step; velocities are kept.
+// Everything is resolved first, so a refusal leaves the simulation untouched.
+Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
+    struct Target { ObjectId entity; std::optional<BodyHandle> body; world::Trs pose; };
+    std::vector<Target> targets;
+    targets.reserve(entities.size());
+    for (const auto entity : entities) {
+        if (impl_->ragdolls.contains(entity) || components_->bound_pose_writer(entity) != ObjectId{})
+            return failure(ErrorCode::unsupported_operation,
+                "A Ragdoll or Vehicle part follows its controller; an authored transform applies after a restart.");
+        auto matrix = world::world_matrix(world_.runtime(), entity);
+        if (!matrix) return std::unexpected(matrix.error());
+        // A degenerate space has no body; the next reconcile drops it.
+        auto relative = world::relative_transform(*matrix, world::transform_matrix({}));
+        if (!relative) continue;
+        auto pose = world::canonical_transform({relative->position, relative->rotation, {1, 1, 1}});
+        if (!pose) return std::unexpected(pose.error());
+        std::optional<BodyHandle> body;
+        if (!impl_->characters.contains(entity)) {
+            auto handle = body_handle(entity);
+            // A controller claimed before its first step has nothing to move yet.
+            if (!handle) continue;
+            body = *handle;
+        }
+        targets.push_back({entity, body, *pose});
+    }
+    for (const auto& target : targets) {
+        if (target.body) {
+            impl_->commands.push_back({Impl::CommandKind::teleport, *target.body, target.pose.position, target.pose.rotation, true});
+            continue;
+        }
+        auto& character = *impl_->characters.at(target.entity).character;
+        character.SetPosition(position(target.pose.position));
+        character.SetRotation(rotation(target.pose.rotation));
+    }
+    return {};
 }
 ObjectId PhysicsScene::pose_writer(ObjectId entity) const noexcept {
     if(auto body=impl_->entity_bodies.find(entity);body!=impl_->entity_bodies.end()) return body->second;

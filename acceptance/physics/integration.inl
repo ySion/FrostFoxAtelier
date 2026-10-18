@@ -219,7 +219,8 @@ void simulate_cooked_assets() {
     file.close();
     std::filesystem::remove(path);
     require(loaded == cooked, "offline collision asset round trips through disk");
-    const auto load = [&](std::string bytes, std::string_view source, atelier::math::Vector3 scale) {
+    // Returns the runtime cooks the first step reports, or nothing when the body cannot be built.
+    const auto load = [&](std::string bytes, std::string_view source, atelier::math::Vector3 scale) -> std::optional<std::uint32_t> {
         atelier::Runtime runtime;
         const auto world_types = take(w::register_types(runtime));
         const auto physics_types = take(p::register_types(runtime));
@@ -237,24 +238,30 @@ void simulate_cooked_assets() {
         committed(world.attach(ground.id()));
         committed(world.start());
         auto scene = p::PhysicsScene::create(world, physics_types);
-        if (!scene) return false;
+        if (!scene) return std::nullopt;
+        take(world.update(1.f / 60));
+        const auto cooks = (*scene)->last_step().runtime_cooks;
         const auto hit = take((*scene)->raycast({0, 4, 0}, {0, -4, 0}));
         require(!hit.hits.empty() && hit.hits.front().body.entity == ground.id(),
             "restored Jolt shape participates in World query");
+        // The cube is 1 m wide, so only an 8 m x scale reaches x = 3.
+        require(take((*scene)->raycast({3, 4, 0}, {3, -4, 0})).hits.empty() == (scale.x < 6),
+            "triangle shape does not follow the Entity's current scale");
         scene->reset();
         committed(world.stop());
-        return true;
+        return cooks;
     };
-    require(load(loaded, "builtin/cube", {8, 1, 8}), "cooked shape loads into World");
-    require(load(loaded, "builtin/cube", {8, 1, 8}), "cooked shape reloads into a new World");
+    require(load(loaded, "builtin/cube", {8, 1, 8}) == 0u, "cooked shape loads into World");
+    require(load(loaded, "builtin/cube", {8, 1, 8}) == 0u, "cooked shape reloads into a new World");
     auto corrupt = loaded;
     corrupt.back() ^= 1;
     require(!load(corrupt, "builtin/cube", {8, 1, 8}), "corrupt asset rejected");
     auto version = loaded;
     version[8] = 2;
     require(!load(version, "builtin/cube", {8, 1, 8}), "unsupported asset version rejected");
-    require(!load(loaded, "other/cube", {8, 1, 8}), "source identity mismatch rejected");
-    require(!load(loaded, "builtin/cube", {4, 1, 8}), "scale mismatch rejected");
+    require(!p::validate_cooked_triangle_mesh(loaded, mesh, {4, 1, 8}, "builtin/cube"), "scale mismatch passes cache validation");
+    require(load(loaded, "other/cube", {8, 1, 8}) == 1u, "source mismatch is not cooked at runtime");
+    require(load(loaded, "builtin/cube", {4, 1, 8}) == 1u, "scale mismatch is not cooked at runtime");
 }
 
 void simulate_special_systems() {

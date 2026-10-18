@@ -398,8 +398,7 @@ void attachment_space_and_authoring() {
     take(world.observe_lifecycle([&](w::World&,w::Lifecycle,ObjectId)->Result<void>{++lifecycle_events;return {};}));
     committed(world.start());
     require(space_reentry_rejected && !take(w::space_reference(runtime,child.id())),"Running origin change reentered a Begin callback.");
-    reject(world.set_transform(root.id(),{}),"Running member accepted Transform authoring.");
-    reject(world.remove_transform(root.id()),"Running member accepted spatial removal.");
+    take(world.set_transform(root.id(),take(w::read_transform(runtime,root.id()))));
     take(world.start_task(counter.id(),[later](Runtime&,ObjectId receiver){return later.start(receiver,{});}));
     take(world.update(0));
     const auto running_pose=take(w::world_matrix(runtime,child.id()));
@@ -421,7 +420,7 @@ void attachment_space_and_authoring() {
     require(world.activity().tasks==0 && std::get<float>(take(runtime.read(counter.id(),types.counter_value)))==50.f &&
         lifecycle_events==events_before && ends==ends_before && begins==begins_before,
         "Origin changes interrupted the suspended task's next execution or replayed lifecycle.");
-    reject(world.write(root.id(),types.position_fields[0],Scalar{5.f}),"Running member accepted scalar Transform authoring.");
+    take(world.write(root.id(),types.position_fields[0],take(runtime.read(root.id(),types.position_fields[0]))));
     auto prepared=take(w::create_entity(runtime));prepared_id=prepared.id();
     take(world.set_transform(prepared_id,{{1,0,0},{},{1,1,1}}));
     take(world.write(prepared_id,types.position_fields[0],Scalar{3.f}));
@@ -436,8 +435,7 @@ void attachment_space_and_authoring() {
     committed(world.attach_components(prepared_id,capabilities));
     take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),sky));
     committed(world.attach(prepared_id));
-    reject(world.set_material(mesh.id(),{}),"Running member accepted Material authoring.");
-    reject(world.set_light(light.id(),sky),"Running member accepted Light authoring.");
+    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),sky));
 
     auto a=take(w::create_entity(runtime)),b=take(w::create_entity(runtime));a_id=a.id();b_id=b.id();
     take(world.set_transform(a_id,{{2,0,0},{},{1,1,1}}));take(world.set_transform(b_id,{{5,0,0},{},{1,1,1}}));

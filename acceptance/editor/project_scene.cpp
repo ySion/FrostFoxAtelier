@@ -1,10 +1,12 @@
 #include "editor/session.hpp"
 #include "editor/project.hpp"
+#include "editor/material_format.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 #include "physics/physics.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <fstream>
 #include <cstdio>
 #include <stdexcept>
 
@@ -455,6 +457,192 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     damaged=scene;damaged["version"]=7;
     rejects(damaged,"A newer scene version was accepted.");
 }
+// Editor document A authors; its Play copy B follows A's changes while it runs.
+void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
+    acceptance_phase="Play change batches";
+    using enum world::DiagnosticKind;
+    editor::Session a(prepare(evidence));auto& ra=a.world().runtime();
+    const auto entity_type=take(ra.find_type("game.Entity")),move_type=take(ra.find_type("game.Move")),spatial_type=take(ra.find_type("game.Spatial"));
+    const auto added=[&](math::Vector3 position) {
+        changed(a.add_entity(entity_type));const auto entity=a.selection().entity;take(a.set_transform(entity,{position,{},{1,1,1}}));return entity;
+    };
+    const auto mover=added({});changed(a.add_component(move_type));const auto move=member(a,move_type);
+    const auto doomed=added({0,0,4});
+    const auto falling=added({0,5,0});
+    const auto body_type=take(ra.find_type("world.CollisionComponent"));changed(a.add_component(body_type));const auto body=member(a,body_type);
+    physics::BodySettings settings;settings.shape=physics::ShapeKind::sphere;settings.motion=physics::MotionKind::dynamic;settings.radius=.5f;
+    take(a.configure_body(body,settings));
+    const auto saved=Json::parse(take(a.serialize()));
+    const auto id=[&](ObjectId object){return std::to_string(*a.document_identity(object));};
+    require(find_entity(saved,id(falling))->at("components")[0]["properties"]["body"]["motion"]=="dynamic","Body motion is not saved by member name.");
+
+    auto play_project=take(editor::Project::open(project.root()));
+    auto b=take(editor::Session::deserialize(saved.dump(),play_project,prepare(evidence)));b->enter_play();
+    auto& rb=b->world().runtime();
+    const auto in_b=[&](ObjectId object){return take(b->local_object(*a.document_identity(object)));};
+    const auto apply=[&](Json ops){return take(b->apply_live(Json{{"ops",std::move(ops)}}.dump(),play_project));};
+    const auto applied=[&](Json ops){
+        const auto issues=apply(std::move(ops));if(!issues.empty()) throw std::runtime_error(issues.front().message);
+    };
+    const auto b_move_type=take(rb.find_type("game.Move"));
+    const world::FieldPath speed{take(rb.find_field(b_move_type,"speed"))},count{take(rb.find_field(b_move_type,"count"))};
+    const auto position=[&](ObjectId object){return take(world::read_transform(rb,object)).position;};
+    const auto step=[&]{take(b->update(1.f/60));};
+    require(!a.apply_live(R"({"ops":[]})",project),"An editor document accepted Play changes.");
+    require(!b->apply_live(R"({"ops":{}})",play_project),"A malformed change batch was accepted.");
+    changed(b->start());for(int frame=0;frame<10;++frame) step();
+
+    // A field edit replaces only its own leaf; the game's write to a sibling stays.
+    const auto b_move=in_b(move),b_mover=in_b(mover);
+    take(rb.write(b_move,count,Scalar{std::uint32_t{42}}));
+    applied({{{"op","set"},{"id",id(move)},{"properties",{{"speed",5.f}}},{"enabled",false}},{{"op","set"},{"id",id(mover)},{"name","Runner"}}});
+    require(std::get<float>(take(rb.read(b_move,speed)))==5 && std::get<std::uint32_t>(take(rb.read(b_move,count)))==42 && b->name(b_mover)==L"Runner",
+        "A Play field or name change was lost, or overwrote a runtime value.");
+    const auto paused=position(b_mover).x;step();
+    require(position(b_mover).x==paused,"A disabled component kept ticking.");
+    applied({{{"op","set"},{"id",id(move)},{"enabled",true}}});step();
+    require(std::abs(position(b_mover).x-paused-5.f/60)<1e-5f,"A re-enabled component did not tick with its new speed.");
+
+    // An authored pose replaces the simulated one, and body settings reach physics.
+    const auto b_falling=in_b(falling);
+    require(position(b_falling).y<5,"The dynamic body did not fall.");
+    applied({{{"op","set"},{"id",id(falling)},{"space",{{"position",{3,10,0}}}}}});step();
+    const auto teleported=position(b_falling);
+    require(std::abs(teleported.x-3)<1e-4f && teleported.y>9.5f && teleported.y<10,"A moved dynamic body snapped back to its simulated pose.");
+    applied({{{"op","set"},{"id",id(body)},{"properties",{{"body",{{"motion","stationary"}}}}}}});
+    step();const auto resting=position(b_falling);step();step();
+    require(position(b_falling)==resting,"A Play body setting did not reach physics.");
+
+    auto lighting=a.world().lighting_settings();lighting.exposure_ev=1.5f;lighting.bloom=false;take(a.set_world_lighting(lighting));
+    applied({{{"op","world"},{"world",Json::parse(take(a.serialize()))["world"]}}});
+    require(b->world().lighting_settings()==a.world().lighting_settings(),"World settings did not reach Play.");
+    const auto key=take(project.create_material("Content/Materials/Live.material"));
+    require(b->loaded_material(key)==ObjectId{},"Play loaded an unreferenced material.");
+    editor::MaterialAsset asset;asset.description.parameters.roughness=.25f;
+    applied({{{"op","resource"},{"key",key},{"material",editor::material_format::encode(asset)}}});
+    const auto loaded=b->loaded_material(key);
+    require(loaded!=ObjectId{} && take(material::read_material(rb,loaded)).description.parameters.roughness==.25f,"A new material asset did not reach Play.");
+    asset.description.parameters.roughness=.75f;
+    applied({{{"op","resource"},{"key",key},{"material",editor::material_format::encode(asset)}}});
+    require(b->loaded_material(key)==loaded && take(material::read_material(rb,loaded)).description.parameters.roughness==.75f,
+        "A material asset edit did not update the loaded material in place.");
+
+    // Added objects Begin once with their editor identity; removal Ends them and frees the identity.
+    const auto runner=added({0,0,8});changed(a.add_component(move_type));
+    const Json add={{"op","add"},{"parent",nullptr},{"index",nullptr},{"graph",Json::parse(take(a.serialize_live_subtree(runner)))}};
+    auto begins=evidence->begins;applied({add});
+    require(evidence->begins==begins+1,"An added Entity did not Begin exactly once.");
+    step();require(position(in_b(runner)).x>0,"An added Entity did not tick.");
+    const auto ends=evidence->ends;applied({{{"op","remove"},{"id",id(runner)}}});
+    require(evidence->ends==ends+1 && !b->local_object(*a.document_identity(runner)),"A removed Entity did not End or stayed alive.");
+    begins=evidence->begins;applied({add});
+    require(evidence->begins==begins+1 && b->local_object(*a.document_identity(runner)),"Restoring a removed identity failed.");
+    const auto members=take(b->world().members()).size();const auto rejected=apply({add});
+    require(rejected.size()==1 && rejected[0].severity==world::Severity::error && rejected[0].kind==command_rejected &&
+        take(b->world().members()).size()==members,"An add of an identity Play already has created a second object.");
+
+    take(a.select(mover));changed(a.add_component(spatial_type));const auto spatial=member(a,spatial_type);
+    edit(a,spatial,field(a,spatial_type,"offset"),Scalar{9.f},31);
+    applied({{{"op","attach"},{"entity",id(mover)},{"index",nullptr},{"graph",Json::parse(take(a.serialize_live_components(mover,std::array{spatial})))}}});
+    const auto b_spatial=in_b(spatial);
+    require(take(world::inspect_component(rb,b_spatial)).owner==b_mover &&
+        std::get<float>(take(rb.read(b_spatial,{take(rb.find_field(take(rb.find_type("game.Spatial")),"offset"))})))==9,"An attached component lost its owner or values.");
+    changed(a.reparent(runner,mover));
+    applied({{{"op","move"},{"id",id(runner)},{"parent",id(mover)},{"index",nullptr},
+        {"space",Json::parse(take(a.serialize_live_subtree(runner)))["entities"][0]["space"]}}});
+    require(take(world::parent_entity(rb,in_b(runner)))==b_mover && take(world::read_transform(rb,in_b(runner)))==take(world::read_transform(ra,runner)),
+        "A Play reparent did not keep the editor's parent and local transform.");
+
+    // An index is the final position in the destination list (roots for a null parent); Play clamps one past its own list.
+    const auto roots=[&]{
+        std::vector<ObjectId> result;
+        for(const auto& item:take(b->world().members())) if(take(world::parent_entity(rb,item.id()))==ObjectId{}) result.push_back(item.id());
+        return result;
+    };
+    const auto children_of=[&](ObjectId parent){std::vector<ObjectId> result;for(const auto& child:take(world::children(rb,parent))) result.push_back(child.id());return result;};
+    const auto placed=[&](Json parent,Json index){
+        const auto entity=added({});
+        applied({{{"op","add"},{"parent",parent},{"index",index},{"graph",Json::parse(take(a.serialize_live_subtree(entity)))}}});
+        return entity;
+    };
+    const auto b_doomed=in_b(doomed),b_runner=in_b(runner);
+    // Member position 1 is the mover's child, so a root ordinal read as a member position fails here.
+    const auto second=placed(nullptr,1),last=placed(nullptr,99),first_child=placed(id(mover),0),last_child=placed(id(mover),99);
+    require(roots()==std::vector{b_mover,in_b(second),b_doomed,b_falling,in_b(last)} && children_of(b_mover)==std::vector{in_b(first_child),b_runner,in_b(last_child)},
+        "An add index is not the final position in its destination list, or did not clamp.");
+    applied({{{"op","move"},{"id",id(last)},{"parent",nullptr},{"index",0},{"space",nullptr}},
+        {{"op","move"},{"id",id(second)},{"parent",nullptr},{"index",99},{"space",nullptr}},
+        {{"op","move"},{"id",id(first_child)},{"parent",id(mover)},{"index",99},{"space",nullptr}}});
+    require(roots()==std::vector{in_b(last),b_mover,b_doomed,b_falling,in_b(second)} && children_of(b_mover)==std::vector{b_runner,in_b(last_child),in_b(first_child)},
+        "A move index is not the final position in its destination list, or did not clamp.");
+
+    // A mesh imported after Play opened its own Project still resolves.
+    const auto obj=project.root().parent_path()/"Imported.obj";
+    {std::ofstream file(obj);file<<"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";}
+    changed(a.create_static_mesh(take(project.mesh(take(project.import_mesh(obj))))));const auto imported=a.selection().entity;
+    physics::BodySettings triangle;triangle.shape=physics::ShapeKind::triangle_mesh;
+    take(a.configure_body(member(a,take(ra.find_type("world.StaticMeshComponent"))),triangle));
+    applied({{{"op","add"},{"parent",nullptr},{"index",nullptr},{"graph",Json::parse(take(a.serialize_live_subtree(imported)))}}});
+    require(std::ranges::any_of(take(b->world().render_items()),[&](const auto& item){return item.entity==in_b(imported);}),
+        "A mesh imported during Play did not resolve in the Play copy.");
+    // A rescale outgrows the shape cooked at load; physics cooks the new scale once instead of dropping the body.
+    auto& simulation=*b->physics_scene();
+    applied({{{"op","set"},{"id",id(imported)},{"space",{{"position",{20,0,0}},{"rotation",{0,0,0,1}},{"scale",{2,2,2}}}}}});
+    step();const auto cooks=simulation.last_step().runtime_cooks;step();
+    const auto hit=take(simulation.raycast({21.5f,.2f,5},{21.5f,.2f,-5}));
+    require(cooks==1 && simulation.last_step().runtime_cooks==0 && !hit.hits.empty() && hit.hits.front().body.entity==in_b(imported),
+        "A rescaled triangle body was not rebuilt at its new scale, or was cooked more than once.");
+
+    // The game's own destruction skips that item only.
+    changed(world::destroy_entity(rb,in_b(doomed)));
+    const auto skipped=apply({{{"op","set"},{"id",id(doomed)},{"name","Gone"}},{{"op","set"},{"id",id(mover)},{"name","Still here"}}});
+    require(skipped.size()==1 && skipped[0].severity==world::Severity::warning && skipped[0].kind==reference_dropped && b->name(b_mover)==L"Still here",
+        "A change to an object the game destroyed was not skipped and reported alone.");
+    // A reference whose target the game destroyed is null; the rest of the object arrives.
+    const auto constraint_type=take(ra.find_type("physics.DistanceConstraintComponent"));
+    const auto tethered=added({0,0,12});changed(a.add_component(constraint_type));const auto constraint=member(a,constraint_type);
+    auto tether=Json::parse(take(a.serialize_live_subtree(tethered)));
+    auto& tether_properties=tether["entities"][0]["components"][0]["properties"];
+    tether_properties["target"]={{"$ref",id(doomed)}};tether_properties["minimum"]=2.f;tether_properties["maximum"]=3.f;
+    const auto dropped=apply({{{"op","add"},{"parent",nullptr},{"index",nullptr},{"graph",tether}}});
+    const auto b_constraint=in_b(constraint);const auto b_constraint_type=take(rb.find_type("physics.DistanceConstraintComponent"));
+    require(dropped.size()==1 && dropped[0].severity==world::Severity::warning && dropped[0].kind==reference_dropped &&
+        take(rb.read_reference(b_constraint,{take(rb.find_field(b_constraint_type,"target"))})).id()==ObjectId{} &&
+        std::get<float>(take(rb.read(b_constraint,{take(rb.find_field(b_constraint_type,"maximum"))})))==3,
+        "A reference to an object the game destroyed was not nulled and reported, or stopped the rest of the add.");
+
+    // A Play copy never assigns document identities, so they cannot collide with the editor's.
+    changed(b->stop());take(b->select(b_mover));
+    const auto identity_rejected=[](const auto& result,const char* message) {
+        if(result) throw std::runtime_error(message);
+        if(result.error().message.find("does not assign document identities")==std::string::npos) throw std::runtime_error(result.error().message);
+    };
+    identity_rejected(b->duplicate_selected(),"A Play copy duplicated with new document identities.");
+    identity_rejected(b->instantiate_subtree(take(a.serialize_subtree(mover)),play_project),"A Play copy imported with new document identities.");
+    std::unordered_set<std::string> ids;
+    const auto collect=[&](const Json& scene,auto&& visit) {
+        for(const auto& entity:scene["entities"]) {visit(entity["id"]);for(const auto& part:entity["components"]) visit(part["id"]);}
+    };
+    collect(Json::parse(take(a.serialize())),[&](const Json& value){ids.insert(value.get<std::string>());});
+    collect(Json::parse(take(b->serialize())),[&](const Json& value){
+        if(!ids.contains(value.get<std::string>())) throw std::runtime_error("A Play copy wrote an identity the editor never assigned.");
+    });
+    changed(b->close());changed(a.close());
+
+    // A Ragdoll follows its controller, so Play cannot follow an authored move of it.
+    const auto ragdoll_scene=take(editor::read_file(editor::asset_directory()/"examples/Examples/Physic/Scenes/Ragdoll.scene"));
+    std::string ragdoll;
+    for(const auto& entity:Json::parse(ragdoll_scene)["entities"])
+        for(const auto& part:entity["components"]) if(part["type"]=="physics.RagdollComponent") ragdoll=entity["id"];
+    auto ragdolls=take(editor::Session::deserialize(ragdoll_scene,play_project));ragdolls->enter_play();
+    const auto ragdoll_root=take(ragdolls->local_object(std::stoull(ragdoll)));
+    changed(ragdolls->start());for(int frame=0;frame<3;++frame) take(ragdolls->update(1.f/60));
+    const auto posed=take(world::read_transform(ragdolls->world().runtime(),ragdoll_root));
+    const auto refused=take(ragdolls->apply_live(Json{{"ops",{{{"op","set"},{"id",ragdoll},{"space",{{"position",{1,2,3}}}}}}}}.dump(),play_project));
+    require(refused.size()==1 && refused[0].severity==world::Severity::warning && refused[0].kind==command_rejected &&
+        take(world::read_transform(ragdolls->world().runtime(),ragdoll_root))==posed,"An authored move Play cannot follow was applied or reported as divergence.");
+    changed(ragdolls->close());
+}
 void run() {
     verify_stop_reentry();
     acceptance_phase="Source document fields and history";
@@ -497,6 +685,7 @@ void run() {
     require(!editor::Session::deserialize(bad.dump(),project,prepare(evidence),editor::LoadPolicy::strict),"Unsigned field silently wrapped a negative value.");
     require(take(document.serialize())==saved,"Failed candidate load changed the edit document.");
     verify_retained_data(project,saved_json,evidence);
+    verify_play_changes(project,evidence);
     acceptance_phase="Source play and stop lifecycle";
     const auto history=document.undo_count();
     for (int pass=0;pass<3;++pass) {
@@ -571,7 +760,7 @@ void run() {
     verify_query_source(project);
     verify_primitive_source(project);
     require(evidence->prepared==evidence->destroyed && evidence->live_runtime_on_release,"Prepared code leaked or outlived its Runtime.");
-    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, retained data, load cleanup, Source actions, repeated play/stop, Jolt ownership)");
+    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, retained data, load cleanup, Play change batches, Source actions, repeated play/stop, Jolt ownership)");
 }
 }
 int main() { try { run(); return 0; } catch (const std::exception& error) { std::fprintf(stderr,"Project Scene acceptance: FAIL [%s]: %s\n",acceptance_phase,error.what()); return 1; } }

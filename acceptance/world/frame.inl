@@ -23,8 +23,8 @@ void frame_phases() {
     committed(world.attach_components(c.id(), std::array{w::Attachment{k.id()}}));
     take(world.bind_behavior(types.entity, {.tick = record('P'), .end = ended, .post_physics_tick = record('Q'), .late_tick = record('L')}));
     take(world.bind_behavior(types.counter, {.tick = record('K')}));
-    take(world.add_simulation({[&](float dt) -> Result<void> { events.emplace_back('S', ObjectId{}, dt); return {}; },
-        [](ObjectId) { return false; }}));
+    take(world.add_simulation({.step = [&](float dt) -> Result<void> { events.emplace_back('S', ObjectId{}, dt); return {}; },
+        .writes_pose = [](ObjectId) { return false; }, .relocated = {}}));
     committed(world.start());
     take(world.update(.25f));
     const auto rank = [](const Event& e) {

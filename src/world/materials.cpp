@@ -27,7 +27,7 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
     auto data=detail::component_data(runtime,id);if(!data) return std::unexpected(data.error());
     if(data->owner!=ObjectId{}) {
         auto entity=detail::entity_data(runtime,data->owner);if(!entity) return std::unexpected(entity.error());
-        if(entity->transitioning || (entity->world && entity->world->running())) return error(ErrorCode::busy,"Stop the World before changing material slots.");
+        if(entity->transitioning) return error(ErrorCode::busy,"Entity is transitioning.");
         if(entity->world) if(auto ready=Access::state(*entity->world).admit();!ready) return ready;
     }
     return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<void> {

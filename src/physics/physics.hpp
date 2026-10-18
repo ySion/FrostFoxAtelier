@@ -234,6 +234,8 @@ private:
 };
 struct StepResult {
     std::uint32_t steps{}, rejected_commands{}, dropped_contact_notifications{};
+    // Triangle shapes cooked at runtime since the previous step because a cooked shape no longer matched its scale or mesh.
+    std::uint32_t runtime_cooks{};
     float remaining{}, dropped{};
     std::uint64_t completed_step{};
     bool contacts_incomplete{};
@@ -319,6 +321,7 @@ private:
     [[nodiscard]] Result<void> step(float elapsed);
     // Lookup failures answer true, so an unknown Entity is never translated.
     [[nodiscard]] bool writes_pose(ObjectId entity) const;
+    [[nodiscard]] Result<void> relocate(std::span<const ObjectId> entities);
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
     [[nodiscard]] Result<void> reconcile(ObjectId entity);
     [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component);
@@ -336,6 +339,7 @@ private:
     StepResult last_step_{};
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
+    std::uint32_t runtime_cooks_{};
     bool paused_{}, single_step_{};
 };
 

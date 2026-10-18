@@ -148,7 +148,7 @@ void lit_materials_and_lights() {
     committed(world.restore(removal));removal.root.reset();require(take(world.light_items())[0].component==rectangle_id,"Undo changed light identity/order.");
     committed(world.start());committed(world.start());
     require(begins==std::vector<ObjectId>{rectangle_id,point_id,directional_id},"Light inheritance bypassed ordered Begin.");
-    reject(world.set_light(point_id,point_settings),"Stopped-only light setter reentered a running World.");
+    take(world.set_light(point_id,point_settings));
     take(world.update(2));
     require(take(world.light_items())[0].settings.intensity==52 && take(world.light_items())[1].settings.intensity==22,
         "Source behavior could not access reflected LightSettings on a derived light.");

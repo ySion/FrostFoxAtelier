@@ -72,7 +72,7 @@ Begin 沿组合前序：Entity 自身、其组件组成顺序、子 Entity 子�
 
 每次 update 记为[帧阶段计时](../../foundation.md#帧阶段计时)的 `world.*` 阶段（标记见 [world/timing.hpp](../../../src/world/timing.hpp)）：`world.update` 下依次是 `world.pre_physics`、`world.simulation`、`world.post_physics` 和 `world.late`；每个 Tick 阶段各有自己的 `.tick`、`.commands`、`.flush` 子阶段，pre_physics 另有任务恢复子阶段 `world.pre_physics.tasks`。结构变化后的调度重建记为 `world.update` 下的 `world.schedule`，只在重建发生的阶段之前进入。停止的 World 不记录任何阶段；某阶段使 World 停止时，之后的阶段不再出现。模拟系统自己的阶段挂在 `world.simulation` 下。
 
-模拟系统用 `add_simulation(Simulation{step, writes_pose})` 登记；PhysicsScene 创建时登记，析构时注销。step 在行为分发之外的宿主边界执行，可以调用 World API；step 失败按 World 级处理：停止 World 并使该次 update 失败。World 停止时不调用 step，子系统经生命周期通知清理。`writes_pose(entity)` 声明该系统写入此 Entity 的位姿。
+模拟系统用 `add_simulation(Simulation{step, writes_pose})` 登记；PhysicsScene 创建时登记，析构时注销。step 在行为分发之外的宿主边界执行，可以调用 World API；step 失败按 World 级处理：停止 World 并使该次 update 失败。World 停止时不调用 step，子系统经生命周期通知清理。`writes_pose(entity)` 声明该系统写入此 Entity 的位姿。可选的 `relocated(entities)` 在运行中的 World 经 `set_transform`（含 Transform 标量写入）改变了位姿时，于宿主边界同步调用一次，参数是被编辑 Entity 及其空间后代中被该系统声明位姿的那些；系统据此让模拟跟上作者位姿。回调可以读取 World，但不能编辑它（返回 busy）；回调返回错误时 World 恢复原 TRS，该次编辑以这个错误失败。模拟系统自己的 `apply_simulation_transforms` 不触发它，World 停止时也不调用。
 
 失败按 World 的 `FailurePolicy` 处理，见下一节。stop、异常停机与 close 共用任务取消、逆序 End 和物理参与撤销入口。
 
@@ -100,7 +100,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 ## 编辑、呈现与资源
 
-已入场成员的作者字段、Transform 增删、材质与灯参数编辑要求 World 停止；组合归属和空间参考按结构操作的准入规则处理。同 Runtime 的 Detached 图可以在 World 运行时于宿主边界准备，完整校验后经同一入口原子发布。回调内重入及其他 World 的成员仍拒绝。Entity 和 Component 属性走同一 Runtime FieldPath 与 scalar 编辑事务；TRS 历史保存完整前后值，业务字段保留精确 Scalar。空 Entity 仍可选择编辑；成员资格、对象存活、运行激活和呈现登记分别判断。
+已入场成员的作者字段、Transform 增删、材质、材质槽与灯参数，以及 World 光照设置，都可以在宿主边界编辑，World 运行中也一样：新值从下一个执行的阶段起生效，不重发 Begin/End，不取消任务；夹值、类型规则、准入与失败恢复与停止时相同。行为分发内的重入、结构转换期间的编辑以及其他 World 的成员仍拒绝；`inspect_entity` 的 `can_edit` 表示当前不在行为分发内。失败策略属于 World 配置，仍只在停止时可改。组合归属和空间参考按结构操作的准入规则处理。同 Runtime 的 Detached 图可以在 World 运行时于宿主边界准备，完整校验后经同一入口原子发布。Entity 和 Component 属性走同一 Runtime FieldPath 与 scalar 编辑事务；TRS 历史保存完整前后值，业务字段保留精确 Scalar。空 Entity 仍可选择编辑；成员资格、对象存活、运行激活和呈现登记分别判断。
 
 `World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
 

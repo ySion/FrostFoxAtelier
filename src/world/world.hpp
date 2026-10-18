@@ -425,10 +425,14 @@ enum class TickPhase : std::uint8_t { pre_physics, post_physics, late };
 // A system that World::update advances after pre_physics. step runs at a host
 // boundary, outside behavior dispatch, so it may call World APIs; a failed step
 // is a World-level failure. writes_pose(entity) claims that Entity's pose, so
-// translate_owner commands for it are rejected.
+// translate_owner commands for it are rejected. relocated, when set, runs
+// synchronously at the host boundary after a transform edit of a running World
+// moved claimed Entities (the edited Entity and its spatial descendants). It may
+// read the World but not edit it; an error restores the edit, which fails with it.
 struct Simulation {
     std::function<Result<void>(float)> step;
     std::function<bool(ObjectId)> writes_pose;
+    std::function<Result<void>(std::span<const ObjectId>)> relocated;
 };
 // Opaque handle of a type registered for presentation in one World.
 struct PresentationId {
@@ -554,9 +558,10 @@ public:
     [[nodiscard]] Result<Commit> clear_faults();
 
     [[nodiscard]] Result<Scalar> read(ObjectId entity_or_component, std::span<const FieldId>) const;
-    // Authoring requires an open World at a host boundary. Current running
-    // members cannot be edited; same-context Detached objects may be prepared.
-    // Objects registered in another World are rejected.
+    // Authoring requires an open World at a host boundary, outside behavior
+    // dispatch. Running members take the new values from the next phase without
+    // a second Begin; same-context Detached objects may be prepared. Objects
+    // registered in another World are rejected.
     // Entity and Component properties use the same Runtime field paths. Transform
     // scalar writes preserve TRS validation. Other fields take Runtime::write's
     // hard-bound clamping; an edit that makes a valid object fail its type

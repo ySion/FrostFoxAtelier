@@ -434,6 +434,10 @@ struct Session::GraphCodec {
     struct Load {
         LoadPolicy policy{LoadPolicy::tolerant};
         bool document{}; // Loading a whole document, not importing into one.
+        // Applying an editor graph to a Play copy: references outside the graph
+        // name live objects, and targets the game destroyed are dropped.
+        bool live{};
+        std::vector<std::uint64_t> dropped;
         std::vector<world::Diagnostic> issues;
         std::unordered_map<ObjectId,Json> pending; // {"type","record","slots"} with file identities.
         std::unordered_map<ObjectId,ObjectId> owners;
@@ -487,6 +491,8 @@ struct Session::GraphCodec {
         std::vector<world::SpaceReference> spaces;
         std::vector<ObjectId> triangle_meshes;
         std::vector<ObjectRoot> resources;
+        // Live graphs only: new components of an existing Entity, attached on publication.
+        std::vector<std::pair<ObjectId,std::vector<world::Attachment>>> anchored;
         Project* project{};
         std::unordered_map<ObjectId,std::wstring> labels;
         std::unordered_set<std::string> material_keys,texture_keys;
@@ -502,7 +508,7 @@ struct Session::GraphCodec {
         Prepared& operator=(const Prepared&)=delete;
         Prepared(Prepared&& other) noexcept:session(std::exchange(other.session,nullptr)),objects(std::move(other.objects)),
             roots(std::move(other.roots)),spaces(std::move(other.spaces)),triangle_meshes(std::move(other.triangle_meshes)),resources(std::move(other.resources)),
-            project(other.project),labels(std::move(other.labels)),material_keys(std::move(other.material_keys)),texture_keys(std::move(other.texture_keys)),
+            anchored(std::move(other.anchored)),project(other.project),labels(std::move(other.labels)),material_keys(std::move(other.material_keys)),texture_keys(std::move(other.texture_keys)),
             identities_before(std::move(other.identities_before)),unavailable_before(std::move(other.unavailable_before)),
             next_before(other.next_before),published(other.published) {}
         ~Prepared() {
@@ -527,6 +533,8 @@ struct Session::GraphCodec {
     };
     static std::uint64_t identity(const Session& session,ObjectId object) {
         if(auto at=session.local_ids_.find(object);at!=session.local_ids_.end()) return at->second;
+        // The editor allocates every identity; Play objects without one use runtime handles.
+        if(session.play_) throw std::runtime_error("A Play copy does not assign document identities.");
         if(session.next_local_id_==std::numeric_limits<std::uint64_t>::max()) throw std::runtime_error("Document object identity space is exhausted.");
         const auto id=session.next_local_id_++;session.local_ids_.emplace(object,id);return id;
     }
@@ -579,7 +587,7 @@ struct Session::GraphCodec {
         }
         return candidate.lit;
     }
-    static Graph capture(const Session& session,std::span<const ObjectId> requested,bool persistent,bool document=false) {
+    static Graph capture(const Session& session,std::span<const ObjectId> requested,bool persistent,bool document=false,bool live=false) {
         struct IdentityRollback {
             const Session& session;
             std::unordered_map<ObjectId,std::uint64_t> before;
@@ -618,6 +626,7 @@ struct Session::GraphCodec {
         const auto reference=[&](ObjectId object)->Json {
             if(object==ObjectId{}) return nullptr;take(runtime.type_of(object));
             if(auto at=ids.find(object);at!=ids.end()) return ref_key(at->second);
+            if(live) return ref_key(identity(session,object));
             if(persistent) throw std::runtime_error("Object reference leaves the captured graph; supply an explicit binding or include its target.");
             const auto key=std::to_string(identity(session,object));
             if(!graph.external.contains(key)) graph.external.emplace(key,take(runtime.hold(object)));
@@ -748,6 +757,103 @@ struct Session::GraphCodec {
         return graph;
     }
 
+    using Resolve=std::function<std::optional<ObjectReference>(const Json&,TypeId,ValueForm)>;
+    using WriteScalar=std::function<Result<void>(ObjectId,std::span<const FieldId>,Scalar)>;
+    // Scene and Play changes decode a properties record leaf by leaf through this one path.
+    static void read_properties(Session& session,ObjectId object,const Json& record,Load& load,const Resolve& resolve,const WriteScalar& write) {
+        auto& runtime=session.runtime_;
+        const auto type=take(runtime.type_of(object));const auto schema=business_fields(runtime,session.types_,type);
+        const auto read=[&](auto&& self,const Json& value,const std::vector<std::string>& path)->void {
+            for(const auto& [name,item]:value.items()) {
+                auto next_path=path;next_path.push_back(name);
+                std::vector<std::string> at{"properties"};at.insert(at.end(),next_path.begin(),next_path.end());
+                const auto field=std::ranges::find_if(schema,[&](const auto& f){return f.names==next_path;});
+                if(field==schema.end()) {
+                    const bool prefix=std::ranges::any_of(schema,[&](const auto& f){return f.names.size()>next_path.size() && std::equal(next_path.begin(),next_path.end(),f.names.begin());});
+                    if(!prefix) load.keep(object,std::move(at),item,world::DiagnosticKind::unknown_field,"Unknown field kept from the saved scene.");
+                    else if(!item.is_object()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,"Expected a record. Defaults are used and the saved value is kept.");
+                    else self(self,item,next_path);
+                    continue;
+                }
+                bool converted{};std::string problem;std::optional<Scalar> clamped;
+                try {
+                    if(field->form==ValueForm::inline_value) {
+                        const auto scalar=decode_scalar(runtime,take(runtime.read(object,field->path)),item,&converted);
+                        auto stored=runtime.constrain(type,field->path,scalar);if(!stored) throw Mismatch(stored.error().message);
+                        if(*stored!=scalar) clamped=*stored;
+                        if(auto written=write(object,field->path,*stored);!written) throw Mismatch(written.error().message);
+                    } else if(field->form==ValueForm::strong_sequence) {
+                        if(!item.is_array() || item.size()>maximum_entities*maximum_components) throw Mismatch("Expected an object reference sequence.");
+                        std::vector<ObjectReference> refs;refs.reserve(item.size());
+                        for(const auto& ref:item) {
+                            auto resolved=resolve(ref,field->type,ValueForm::strong_reference);
+                            if(!resolved) throw Mismatch("A sequence element is not a reference of the field's type.");
+                            refs.push_back(std::move(*resolved));
+                        }
+                        const auto locator=take(runtime.reference_field(object,field->path));
+                        const ReferenceChange change=SequenceSplice{locator,0,take(runtime.sequence_size(locator)),refs};
+                        if(auto applied=runtime.apply_reference_changes({&change,1});!applied) throw Mismatch(applied.error().message);
+                    } else {
+                        auto resolved=resolve(item,field->type,field->form);
+                        if(!resolved) throw Mismatch("Expected a reference of the field's type.");
+                        if(auto written=runtime.write_reference(object,field->path,*resolved);!written) throw Mismatch(written.error().message);
+                    }
+                } catch(const Mismatch& error) {problem=error.what();}
+                if(!problem.empty()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,problem+" The default is used and the saved value is kept.");
+                else if(clamped) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,
+                    "Outside the field's hard bounds; "+encode_scalar(runtime,*clamped).dump()+" is used and the saved value is kept.");
+                else if(converted) load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
+            }
+        };
+        read(read,record,{});
+    }
+    // Scene material definition or inline binding entry to a material object.
+    static ObjectRoot restore_material(Session& session,Project* project,const Json& entry,std::vector<MissingResource>* missing=nullptr) {
+        auto& runtime=session.runtime_;
+        if(!project) throw std::runtime_error("Material restoration requires a Project.");
+        const auto source=entry.at("source").get<std::string>();
+        if(!source.empty() && entry.contains("inline")) throw std::runtime_error("Material binding has competing sources.");
+        if(entry.contains("parent")) {
+            if(!source.empty()) throw std::runtime_error("A material instance cannot own an asset identity.");
+            auto parent=take(session.material_resource(*project,entry.at("parent").get<std::string>(),missing));
+            auto state=take(material::read_material(runtime,parent.id()));state.source.clear();state.parent=parent;state.overrides=0;
+            state.description=material_format::decode(entry.at("inline")).description;
+            const auto& names=entry.at("overrides");
+            if(!names.is_array() || names.size()>material::parameter_names.size()) throw std::runtime_error("Invalid material overrides.");
+            for(const auto& name:names) {
+                const auto at=std::ranges::find(material::parameter_names,name.get<std::string>());
+                if(at==material::parameter_names.end()) throw std::runtime_error("Unknown material override.");
+                const auto bit=1u<<static_cast<unsigned>(at-material::parameter_names.begin());
+                if(state.overrides&bit) throw std::runtime_error("Duplicate material override.");state.overrides|=bit;
+            }
+            return take(material::create_material(runtime,state));
+        }
+        if(entry.contains("overrides")) throw std::runtime_error("Overrides require a parent material.");
+        return source.empty()?take(session.material_resource(*project,material_format::decode(entry.at("inline")),missing)):
+            take(session.material_resource(*project,source,missing));
+    }
+    // A Play copy's object for a document identity. Unknown identities mean Play
+    // diverged; identities whose object the game destroyed are skipped.
+    struct Gone:std::runtime_error {using std::runtime_error::runtime_error;};
+    static std::optional<ObjectId> live_object(const Session& session,std::uint64_t key) {
+        const auto at=session.live_objects_.find(key);
+        if(at==session.live_objects_.end()) return std::nullopt;
+        return session.runtime_.type_of(at->second)?std::optional(at->second):std::optional(ObjectId{});
+    }
+    static ObjectId live_target(const Session& session,const Json& id) {
+        const auto key=local_key(id);const auto object=live_object(session,key);
+        if(!object) throw std::runtime_error("Document identity #"+std::to_string(key)+" does not exist in Play.");
+        if(*object==ObjectId{}) throw Gone("#"+std::to_string(key)+" was destroyed by the game.");
+        return *object;
+    }
+    // A reference leaving a live graph; nullopt when the game destroyed its target.
+    static std::optional<ObjectId> live_reference(const Session& session,std::uint64_t key,Load& load) {
+        const auto object=live_object(session,key);
+        if(!object) throw std::runtime_error("Reference target #"+std::to_string(key)+" does not exist in Play.");
+        if(*object==ObjectId{}) {load.dropped.push_back(key);return std::nullopt;}
+        return *object;
+    }
+
     static Prepared construct(Session& session,const Graph& graph,Project* project,bool keep_ids,Load& load) {
         const auto& data=graph.data;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
@@ -771,6 +877,8 @@ struct Session::GraphCodec {
             if(!value.is_object()) throw std::runtime_error("Expected a JSON record.");
             const auto key=local_key(value.at("id"));
             if(ids.contains(key)) throw std::runtime_error("Duplicate graph object identity: "+std::to_string(key));
+            if(load.live) if(const auto live=live_object(session,key);live && *live!=ObjectId{})
+                throw std::runtime_error("Document identity #"+std::to_string(key)+" already exists in Play.");
             largest=std::max(largest,key);const auto name=value.at("type").get<std::string>();
             const auto base=entity?session.types_.entity:session.types_.component;
             const auto found=runtime.find_type(name);
@@ -805,9 +913,23 @@ struct Session::GraphCodec {
             if(entity) entity_ids.insert(key);
             return object;
         };
+        // A live record {"id","existing":true,"children":[],"components"} adds
+        // components to an Entity Play already has; the Entity itself is untouched.
+        std::unordered_set<std::uint64_t> anchors;
         for(const auto& entity:entities) {
-            const auto object=create(entity,true,{});
-            load.extra(object,entity,{"id","type","name","enabled","space","children","components","properties"});
+            ObjectId object;
+            if(load.live && entity.is_object() && entity.value("existing",false)) {
+                fields(entity,{"id","existing","children","components"});
+                const auto key=local_key(entity.at("id"));
+                if(ids.contains(key)) throw std::runtime_error("Duplicate graph object identity: "+std::to_string(key));
+                if(!entity.at("children").empty()) throw std::runtime_error("An existing Entity record cannot add children.");
+                object=live_target(session,entity.at("id"));largest=std::max(largest,key);anchors.insert(key);
+                ids.emplace(key,object);descriptors.emplace(key,&entity);records.emplace(object,&entity);
+                load.owners.emplace(object,object);load.types.emplace(object,type_name(runtime,take(runtime.type_of(object))));load.keys.emplace(object,key);
+            } else {
+                object=create(entity,true,{});
+                load.extra(object,entity,{"id","type","name","enabled","space","children","components","properties"});
+            }
             const auto& parts=entity.at("components");
             if(!parts.is_array() || parts.size()>maximum_components) throw std::runtime_error("Invalid Component count.");
             for(const auto& part:parts) {
@@ -817,29 +939,6 @@ struct Session::GraphCodec {
                 else load.extra(component,part,{"id","type","name","enabled","properties"});
             }
         }
-        const auto restore_material=[&](const Json& entry,std::vector<MissingResource>& missing)->ObjectRoot {
-            if(!project) throw std::runtime_error("Material restoration requires a Project.");
-            const auto source=entry.at("source").get<std::string>();
-            if(!source.empty() && entry.contains("inline")) throw std::runtime_error("Material binding has competing sources.");
-            if(entry.contains("parent")) {
-                if(!source.empty()) throw std::runtime_error("A material instance cannot own an asset identity.");
-                auto parent=take(session.material_resource(*project,entry.at("parent").get<std::string>(),&missing));
-                auto state=take(material::read_material(runtime,parent.id()));state.source.clear();state.parent=parent;state.overrides=0;
-                state.description=material_format::decode(entry.at("inline")).description;
-                const auto& names=entry.at("overrides");
-                if(!names.is_array() || names.size()>material::parameter_names.size()) throw std::runtime_error("Invalid material overrides.");
-                for(const auto& name:names) {
-                    const auto at=std::ranges::find(material::parameter_names,name.get<std::string>());
-                    if(at==material::parameter_names.end()) throw std::runtime_error("Unknown material override.");
-                    const auto bit=1u<<static_cast<unsigned>(at-material::parameter_names.begin());
-                    if(state.overrides&bit) throw std::runtime_error("Duplicate material override.");state.overrides|=bit;
-                }
-                return take(material::create_material(runtime,state));
-            }
-            if(entry.contains("overrides")) throw std::runtime_error("Overrides require a parent material.");
-            return source.empty()?take(session.material_resource(*project,material_format::decode(entry.at("inline")),&missing)):
-                take(session.material_resource(*project,source,&missing));
-        };
         // A stand-in keeps the key, so saving writes the reference unchanged.
         const auto report_missing=[&](ObjectId object,std::vector<std::string> base,const Json& entry,const std::vector<MissingResource>& missing) {
             for(const auto& item:missing) {
@@ -862,28 +961,36 @@ struct Session::GraphCodec {
             const auto key=local_key(definition.at("id"));
             if(ids.contains(key)) throw std::runtime_error("Duplicate graph object identity: "+std::to_string(key));
             largest=std::max(largest,key);ObjectRoot resource;std::vector<MissingResource> missing;
-            if(auto at=graph.materials.find(std::to_string(key));at!=graph.materials.end()) {
+            // Play keeps a material it already has; its value changes travel separately.
+            const auto live=load.live?live_object(session,key):std::nullopt;
+            const bool reused=live && *live!=ObjectId{};
+            if(reused) {
+                if(!session.is_material(*live)) throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
+                resource=take(runtime.hold(*live));
+            } else if(auto at=graph.materials.find(std::to_string(key));at!=graph.materials.end()) {
                 const auto state=take(material::read_material(runtime,at->second.id()));
                 resource=state.source.empty()?take(material::create_material(runtime,state)):at->second;
                 copied_materials.emplace(at->second.id(),resource);
                 copied_material_keys.emplace(at->second.id(),key);
-            } else resource=restore_material(definition,missing);
+            } else resource=restore_material(session,project,definition,&missing);
             if(!material_objects.insert(resource.id()).second) throw std::runtime_error("One material asset has multiple document identities.");
             ids.emplace(key,resource.id());material_ids.emplace(key,resource);result.resources.push_back(resource);
-            if(keep_ids) {
+            if(keep_ids && !reused) {
                 if(!session.local_ids_.emplace(resource.id(),key).second) throw std::runtime_error("One material asset has multiple document identities.");
-            } else (void)identity(session,resource.id());
+            } else if(!keep_ids) (void)identity(session,resource.id());
             load.types.emplace(resource.id(),"material.Material");load.keys.emplace(resource.id(),key);
             report_missing(resource.id(),{},definition,missing);
             load.extra(resource.id(),definition,{"id","source","inline","parent","overrides"});
         }
         if(next<=largest) throw std::runtime_error("next_id must exceed every document object identity.");
-        if(keep_ids) session.next_local_id_=next;
+        if(keep_ids && !load.live) session.next_local_id_=next;
         std::unordered_map<std::uint64_t,std::uint64_t> owners;
         for(const auto& entity:entities) {
             const auto key=local_key(entity.at("id"));const auto object=ids.at(key);std::vector<world::Attachment> parts;
             for(const auto& part:entity.at("components")) parts.push_back({ids.at(local_key(part.at("id")))});
-            if(!parts.empty()) committed(world.attach_components(object,parts));
+            // A running Entity begins new components on attachment, after they are restored.
+            if(anchors.contains(key)) result.anchored.emplace_back(object,std::move(parts));
+            else if(!parts.empty()) committed(world.attach_components(object,parts));
             if(const auto space=entity.find("space");space!=entity.end() && !space->is_null()) {
                 world::Trs trs;
                 if(!space->is_object()) load.keep(object,{"space"},*space,world::DiagnosticKind::mismatch,"Expected a space record. The identity transform is used and the saved value is kept.");
@@ -930,7 +1037,10 @@ struct Session::GraphCodec {
             ObjectId object;
             if(value.is_object() && value.contains("$ref")) {
                 fields(value,{"$ref"});const auto key=local_key(value.at("$ref"));
-                if(!ids.contains(key)) throw std::runtime_error("Reference target is outside this graph: "+std::to_string(key));object=ids.at(key);
+                if(ids.contains(key)) object=ids.at(key);
+                else if(!load.live) throw std::runtime_error("Reference target is outside this graph: "+std::to_string(key));
+                else if(const auto live=live_reference(session,key,load)) object=*live;
+                else return take(runtime.null_reference(target,form==ValueForm::weak_reference?form:ValueForm::strong_reference));
                 if(material_ids.contains(key)) used_materials.insert(key);
             } else if(value.is_object() && value.contains("$external")) {
                 fields(value,{"$external"});const auto key=value.at("$external").get<std::string>();const auto at=graph.external.find(key);
@@ -946,8 +1056,9 @@ struct Session::GraphCodec {
             if(space->is_object()) if(const auto origin=space->find("origin");origin!=space->end() && !origin->is_null()) {
                 if(origin->is_string()) {
                     const auto key=local_key(*origin,true);
-                    if(key && !entity_ids.contains(key)) throw std::runtime_error("Space reference must target an Entity in this graph.");
-                    target=key?ids.at(key):ObjectId{};
+                    if(!key || entity_ids.contains(key)) target=key?ids.at(key):ObjectId{};
+                    else if(!load.live) throw std::runtime_error("Space reference must target an Entity in this graph.");
+                    else target=live_reference(session,key,load);
                 } else {
                     const auto resolved=resolve(*origin,session.types_.entity,ValueForm::weak_reference);
                     if(!resolved) throw std::runtime_error("Space reference must target an Entity in this graph.");
@@ -957,51 +1068,9 @@ struct Session::GraphCodec {
             result.spaces.push_back({ids.at(local_key(entity.at("id"))),target});
         }
         const auto properties=[&](const Json& value,ObjectId object) {
-            const auto type=take(runtime.type_of(object));const auto schema=business_fields(runtime,session.types_,type);
-            const auto read=[&](auto&& self,const Json& record,const std::vector<std::string>& path)->void {
-                for(const auto& [name,item]:record.items()) {
-                    auto next_path=path;next_path.push_back(name);
-                    std::vector<std::string> at{"properties"};at.insert(at.end(),next_path.begin(),next_path.end());
-                    const auto field=std::ranges::find_if(schema,[&](const auto& f){return f.names==next_path;});
-                    if(field==schema.end()) {
-                        const bool prefix=std::ranges::any_of(schema,[&](const auto& f){return f.names.size()>next_path.size() && std::equal(next_path.begin(),next_path.end(),f.names.begin());});
-                        if(!prefix) load.keep(object,std::move(at),item,world::DiagnosticKind::unknown_field,"Unknown field kept from the saved scene.");
-                        else if(!item.is_object()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,"Expected a record. Defaults are used and the saved value is kept.");
-                        else self(self,item,next_path);
-                        continue;
-                    }
-                    bool converted{};std::string problem;std::optional<Scalar> clamped;
-                    try {
-                        if(field->form==ValueForm::inline_value) {
-                            const auto scalar=decode_scalar(runtime,take(runtime.read(object,field->path)),item,&converted);
-                            auto stored=runtime.constrain(type,field->path,scalar);if(!stored) throw Mismatch(stored.error().message);
-                            if(*stored!=scalar) clamped=*stored;
-                            if(auto written=runtime.write(object,field->path,*stored);!written) throw Mismatch(written.error().message);
-                        } else if(field->form==ValueForm::strong_sequence) {
-                            if(!item.is_array() || item.size()>maximum_entities*maximum_components) throw Mismatch("Expected an object reference sequence.");
-                            std::vector<ObjectReference> refs;refs.reserve(item.size());
-                            for(const auto& ref:item) {
-                                auto resolved=resolve(ref,field->type,ValueForm::strong_reference);
-                                if(!resolved) throw Mismatch("A sequence element is not a reference of the field's type.");
-                                refs.push_back(std::move(*resolved));
-                            }
-                            const auto locator=take(runtime.reference_field(object,field->path));
-                            const ReferenceChange change=SequenceSplice{locator,0,take(runtime.sequence_size(locator)),refs};
-                            if(auto applied=runtime.apply_reference_changes({&change,1});!applied) throw Mismatch(applied.error().message);
-                        } else {
-                            auto resolved=resolve(item,field->type,field->form);
-                            if(!resolved) throw Mismatch("Expected a reference of the field's type.");
-                            if(auto written=runtime.write_reference(object,field->path,*resolved);!written) throw Mismatch(written.error().message);
-                        }
-                    } catch(const Mismatch& error) {problem=error.what();}
-                    if(!problem.empty()) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,problem+" The default is used and the saved value is kept.");
-                    else if(clamped) load.keep(object,std::move(at),item,world::DiagnosticKind::mismatch,
-                        "Outside the field's hard bounds; "+encode_scalar(runtime,*clamped).dump()+" is used and the saved value is kept.");
-                    else if(converted) load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
-                }
-            };
+            const auto write=[&](ObjectId target,std::span<const FieldId> path,Scalar scalar){return runtime.write(target,path,scalar);};
             if(const auto at=value.find("properties");at!=value.end()) {
-                if(at->is_object()) read(read,*at,{});
+                if(at->is_object()) read_properties(session,object,*at,load,resolve,write);
                 else load.keep(object,{"properties"},*at,world::DiagnosticKind::mismatch,"Expected a property record. Defaults are used and the saved value is kept.");
             }
             bool enabled=true;
@@ -1046,7 +1115,7 @@ struct Session::GraphCodec {
             load.store(object,std::array{std::string("materials")},kept);
         };
         for(const auto& entity:entities) {
-            properties(entity,ids.at(local_key(entity.at("id"))));
+            if(const auto key=local_key(entity.at("id"));!anchors.contains(key)) properties(entity,ids.at(key));
             for(const auto& part:entity.at("components")) {
                 const auto object=ids.at(local_key(part.at("id")));const auto type=take(runtime.type_of(object));
                 const bool light=derives(runtime,type,session.types_.light_component),physical=physical_type(runtime,type);
@@ -1124,7 +1193,7 @@ struct Session::GraphCodec {
                                     if(at==material_ids.end()) throw std::runtime_error("Material binding references an unknown scene resource.");
                                     used_materials.insert(key);resource=at->second;
                                 } else {
-                                    std::vector<MissingResource> missing;resource=restore_material(entry,missing);
+                                    std::vector<MissingResource> missing;resource=restore_material(session,project,entry,&missing);
                                     report_missing(object,{"materials",slot},entry,missing);
                                 }
                                 bool overridden{};
@@ -1193,6 +1262,8 @@ struct Session::GraphCodec {
                     ObjectId target;
                     if(node.contains("$ref")) {
                         fields(node,{"$ref"});const auto key=local_key(node.at("$ref"));
+                        // A live graph's outward references already name document identities.
+                        if(!ids.contains(key) && load.live) return;
                         if(!ids.contains(key)) throw std::runtime_error("Reference target is outside this graph: "+std::to_string(key));
                         target=ids.at(key);if(material_ids.contains(key)) used_materials.insert(key);
                     } else {
@@ -1207,7 +1278,7 @@ struct Session::GraphCodec {
             if(auto at=load.materials.find(object);at!=load.materials.end()) kept.materials=std::move(at->second);
             load.retained.emplace(object,std::move(kept));
         }
-        for(const auto& [key,resource]:material_ids) if(!used_materials.contains(key)) {
+        for(const auto& [key,resource]:material_ids) if(!used_materials.contains(key) && !load.live) {
             if(load.document) {
                 load.report(world::Severity::warning,world::DiagnosticKind::unknown_key,resource.id(),{},nullptr,"The material definition is not referenced; it is kept for the next save.");
                 load.unreferenced.push_back(resource);
@@ -1227,13 +1298,18 @@ struct Session::GraphCodec {
     }
     static void prepare_cook(Session& session,Prepared& prepared,std::span<const world::EntityAttachment> attachments,Load& load) {
         if(prepared.triangle_meshes.empty()) return;
-        const auto matrices=take(session.world_.attachment_world_matrices(attachments,prepared.spaces));
-        std::unordered_map<ObjectId,math::Matrix4> worlds;worlds.reserve(matrices.size());
-        for(const auto& [object,matrix]:matrices) worlds.emplace(object,matrix);
+        std::unordered_map<ObjectId,math::Matrix4> worlds;
+        if(!attachments.empty()) for(const auto& [object,matrix]:take(session.world_.attachment_world_matrices(attachments,prepared.spaces))) worlds.emplace(object,matrix);
+        std::unordered_map<ObjectId,ObjectId> anchored;
+        for(const auto& [entity,parts]:prepared.anchored) for(const auto& part:parts) anchored.emplace(part.component,entity);
         for(const auto object:prepared.triangle_meshes) {
             const auto mesh=take(world::read_static_mesh(session.runtime_,object));
-            const auto owner=take(world::inspect_component(session.runtime_,object)).owner;
-            const auto trs=take(world::relative_transform(worlds.at(owner),world::transform_matrix({})));
+            const auto at=anchored.find(object);
+            const auto owner=at!=anchored.end()?at->second:take(world::inspect_component(session.runtime_,object)).owner;
+            // Components added to a live Entity take its current space.
+            const auto found=worlds.find(owner);
+            const auto matrix=found!=worlds.end()?found->second:take(world::world_matrix(session.runtime_,owner));
+            const auto trs=take(world::relative_transform(matrix,world::transform_matrix({})));
             auto settings=take(physics::read_settings(session.runtime_,object));
             if(prepared.project) {
                 auto cooked=prepared.project->collision(mesh.mesh.source,trs.scale);
@@ -1280,6 +1356,232 @@ struct Session::GraphCodec {
         }
         return result;
     }
+    // Play publication keeps document identities and records no history.
+    static world::Commit publish_live(Session& session,Prepared& prepared,ObjectId parent,std::size_t index,Load& load) {
+        std::vector<world::EntityAttachment> plans;
+        for(const auto root:prepared.roots) plans.push_back({root,parent,index});
+        prepare_cook(session,prepared,plans,load);
+        for(const auto& [object,label]:prepared.labels) session.names_.insert_or_assign(object,label);
+        world::Commit result;
+        if(!plans.empty()) result=take(session.world_.attach_batch(plans,prepared.spaces));
+        for(const auto& [entity,parts]:prepared.anchored) result=take(session.world_.attach_components(entity,parts,index));
+        prepared.published=true;
+        session.retained_.merge(load.retained);
+        for(const auto& object:prepared.objects) session.live_objects_.insert_or_assign(session.local_ids_.at(object.id()),object.id());
+        for(const auto& resource:prepared.resources) session.live_objects_.insert_or_assign(session.local_ids_.at(resource.id()),resource.id());
+        return result;
+    }
+    struct Unsupported:std::runtime_error {using std::runtime_error::runtime_error;};
+    // A simulation that cannot follow an authored pose leaves the edit unapplied.
+    static void relocated(Result<void> value) {
+        if(!value && value.error().code==ErrorCode::unsupported_operation) throw Unsupported(value.error().message);
+        take(std::move(value));
+    }
+    // A Play index is the final position among the destination's children, or its roots for a null parent.
+    // Game spawns and destructions legitimately change those lists, so a stale index clamps to the end.
+    // World attaches a new root before a member position, so an added root's ordinal is translated.
+    static std::size_t live_index(Session& session,const Json& value,ObjectId parent,std::optional<ObjectId> moved={}) {
+        if(value.is_null()) return world::append;
+        const auto wanted=json_format::identity(value);auto& runtime=session.runtime_;
+        if(parent!=ObjectId{}) {
+            const auto siblings=take(world::children(runtime,parent));
+            return std::min<std::size_t>(wanted,siblings.size()-std::ranges::count_if(siblings,[&](const auto& item){return item.id()==moved;}));
+        }
+        const auto members=take(session.world_.members());std::size_t ordinal{};
+        for(std::size_t i=0;i<members.size();++i) {
+            const auto id=members[i].id();
+            if(id==moved || take(world::parent_entity(runtime,id))!=ObjectId{}) continue;
+            if(ordinal==wanted) return moved?wanted:i;
+            ++ordinal;
+        }
+        return moved?ordinal:world::append;
+    }
+    static float live_number(const Json& value) {
+        if(!value.is_number()) throw std::runtime_error("Expected a number.");
+        const auto number=value.get<float>();if(!std::isfinite(number)) throw std::runtime_error("Numbers must be finite.");
+        return number;
+    }
+    // One op of a Play change batch; see Session::apply_live.
+    static void apply_change(Session& session,Project& project,const Json& op,std::size_t index,std::vector<world::Diagnostic>& out) {
+        auto& runtime=session.runtime_;auto& world=session.world_;
+        std::string subject="Play change "+std::to_string(index);ObjectId object;
+        const auto note=[&](world::Severity severity,world::DiagnosticKind kind,const std::string& detail) {
+            world::Diagnostic item;item.serial=out.size()+1;item.severity=severity;item.kind=kind;item.phase=world::DiagnosticPhase::command;
+            item.object=object;
+            if(const auto type=runtime.type_of(object)) {
+                item.type=type_name(runtime,*type);
+                if(derives(runtime,*type,session.types_.entity)) item.entity=object;
+                else if(const auto component=world::inspect_component(runtime,object)) item.entity=component->owner;
+            }
+            item.message=subject+": "+detail;out.push_back(std::move(item));
+        };
+        const auto target=[&](const Json& id) {
+            const auto key=local_key(id);subject+=" #"+std::to_string(key);
+            if(const auto at=session.live_objects_.find(key);at!=session.live_objects_.end()) object=at->second;
+            return live_target(session,id);
+        };
+        const auto commit=[&](Result<world::Commit> value) {
+            const auto result=take(std::move(value));
+            if(result.notification_error) note(world::Severity::warning,world::DiagnosticKind::observer_failed,result.notification_error->message);
+        };
+        Load load;load.live=true;
+        try {
+            if(!op.is_object()) throw std::runtime_error("Expected a change record.");
+            const auto kind=op.at("op").get<std::string>();
+            if(kind=="add" || kind=="attach") {
+                const bool add=kind=="add";
+                if(add) fields(op,{"op","parent","index","graph"});else fields(op,{"op","entity","index","graph"});
+                ObjectId parent;
+                if(add) {
+                    if(const auto& roots=op.at("graph").at("roots");roots.is_array() && roots.size()==1) subject+=" #"+std::to_string(local_key(roots[0]));
+                    if(!op.at("parent").is_null()) parent=live_target(session,op.at("parent"));
+                }
+                const auto entity=add?ObjectId{}:target(op.at("entity"));
+                Graph graph;graph.data=op.at("graph");
+                // A resource imported after Play opened its Project is not catalogued yet.
+                std::optional<Prepared> prepared;
+                for(bool refreshed=false;;refreshed=true) {
+                    load=Load{};load.live=true;
+                    prepared.emplace(construct(session,graph,&project,true,load));
+                    if(refreshed || std::ranges::none_of(load.issues,[](const auto& issue){return issue.kind==world::DiagnosticKind::missing_resource;})) break;
+                    prepared.reset();take(project.refresh());
+                }
+                if(add?prepared->roots.size()!=1 || !prepared->anchored.empty():!prepared->roots.empty() || prepared->anchored.size()!=1 || prepared->anchored.front().first!=entity)
+                    throw std::runtime_error(add?"An add carries exactly one root Entity.":"An attach carries only new components of its Entity.");
+                if(add) object=prepared->roots.front();
+                const auto& wanted=op.at("index");
+                const auto placed=add?live_index(session,wanted,parent):wanted.is_null()?world::append:std::min(json_format::identity(wanted),take(world::components(runtime,entity)).size());
+                commit(publish_live(session,*prepared,parent,placed,load));
+                // The document carries the same unresolved data; Play reports it without diverging.
+                for(auto issue:load.issues) if(issue.severity!=world::Severity::info) {
+                    issue.serial=out.size()+1;issue.phase=world::DiagnosticPhase::command;issue.message=subject+": "+issue.message;out.push_back(std::move(issue));
+                }
+            } else if(kind=="remove") {
+                fields(op,{"op","id"});const auto removed=target(op.at("id"));const auto type=take(runtime.type_of(removed));
+                if(derives(runtime,type,session.types_.entity)) commit(world::destroy_entity(runtime,removed));
+                else if(derives(runtime,type,session.types_.component)) commit(world::destroy_component(runtime,removed));
+                else throw std::runtime_error("Only an Entity or Component can be removed.");
+            } else if(kind=="set") {
+                fields(op,{"op","id","name","enabled","space","properties","base_color","roughness","metallic","emissive","materials"});
+                const auto edited=target(op.at("id"));const auto type=take(runtime.type_of(edited));
+                const bool entity=derives(runtime,type,session.types_.entity);
+                load.policy=LoadPolicy::strict;
+                if(const auto at=op.find("name");at!=op.end()) {
+                    auto label=wide(at->get<std::string>());
+                    if(entity || !label.empty()) take(validate_name(label));
+                    if(label.empty()) session.names_.erase(edited);else session.names_.insert_or_assign(edited,std::move(label));
+                }
+                if(const auto at=op.find("enabled");at!=op.end()) {
+                    if(!at->is_boolean()) throw std::runtime_error("Expected a boolean enabled flag.");
+                    commit(world.set_enabled(edited,at->get<bool>()));
+                }
+                if(const auto at=op.find("properties");at!=op.end()) {
+                    if(!at->is_object()) throw std::runtime_error("Expected a property record.");
+                    const Resolve resolve=[&](const Json& value,TypeId field_type,ValueForm form)->std::optional<ObjectReference> {
+                        const auto null=[&]{return take(runtime.null_reference(field_type,form==ValueForm::weak_reference?form:ValueForm::strong_reference));};
+                        if(value.is_null()) return null();
+                        if(!value.is_object() || !value.contains("$ref")) return std::nullopt;
+                        fields(value,{"$ref"});
+                        const auto live=live_reference(session,local_key(value.at("$ref")),load);if(!live) return null();
+                        auto held=runtime.hold(*live,field_type);if(!held) return std::nullopt;
+                        return form==ValueForm::weak_reference?take(runtime.observe(held->reference())):held->reference();
+                    };
+                    read_properties(session,edited,*at,load,resolve,[&](ObjectId written,std::span<const FieldId> path,Scalar scalar){return world.write(written,path,scalar);});
+                }
+                if(op.contains("base_color") || op.contains("roughness") || op.contains("metallic") || op.contains("emissive")) {
+                    auto material=take(world::read_static_mesh(runtime,edited)).material;
+                    if(const auto at=op.find("base_color");at!=op.end()) material.base_color=vector(*at);
+                    if(const auto at=op.find("roughness");at!=op.end()) material.roughness=live_number(*at);
+                    if(const auto at=op.find("metallic");at!=op.end()) material.metallic=live_number(*at);
+                    if(const auto at=op.find("emissive");at!=op.end()) material.emissive=vector(*at);
+                    take(world.set_material(edited,material));
+                }
+                if(const auto at=op.find("materials");at!=op.end()) {
+                    if(!at->is_array() || at->size()>1024) throw std::runtime_error("Expected a material binding table.");
+                    std::vector<world::MaterialBinding> bindings;
+                    for(const auto& entry:*at) {
+                        fields(entry,{"slot","resource","overridden"});
+                        const auto key=local_key(entry.at("resource"));const auto live=live_object(session,key);
+                        // Materials are document resources; the editor sends a missing one first.
+                        if(!live || *live==ObjectId{} || !session.is_material(*live)) throw std::runtime_error("Material #"+std::to_string(key)+" does not exist in Play.");
+                        bindings.push_back({entry.at("slot").get<std::string>(),take(runtime.hold(*live)),entry.at("overridden").get<bool>()});
+                    }
+                    take(world::set_material_bindings(runtime,edited,bindings));
+                }
+                if(const auto at=op.find("space");at!=op.end()) {
+                    if(!entity) throw std::runtime_error("Only an Entity has a space.");
+                    if(at->is_null()) take(world.remove_transform(edited));
+                    else {
+                        fields(*at,{"position","rotation","scale","origin"});
+                        const bool spatial=take(world::has_transform(runtime,edited));
+                        auto trs=spatial?take(world::read_transform(runtime,edited)):world::Trs{};
+                        if(const auto v=at->find("position");v!=at->end()) trs.position=vector(*v);
+                        if(const auto v=at->find("rotation");v!=at->end()) {const auto q=json_format::vector<4>(*v);trs.rotation={q[0],q[1],q[2],q[3]};}
+                        if(const auto v=at->find("scale");v!=at->end()) trs.scale=vector(*v);
+                        trs=take(world::canonical_transform(trs));
+                        if(const auto origin=at->find("origin");origin!=at->end()) {
+                            std::optional<ObjectId> reference;
+                            if(!origin->is_null()) {const auto key=local_key(*origin,true);reference=key?live_reference(session,key,load):std::optional(ObjectId{});}
+                            if(!spatial) relocated(world.set_transform(edited,trs));
+                            commit(world.set_space_reference(edited,reference,world::ReparentRule::keep_local));
+                        }
+                        relocated(world.set_transform(edited,trs));
+                    }
+                }
+            } else if(kind=="move") {
+                fields(op,{"op","id","parent","index","space"});
+                const auto moved=target(op.at("id"));
+                const auto parent=op.at("parent").is_null()?ObjectId{}:live_target(session,op.at("parent"));
+                commit(world.reparent(moved,parent,world::ReparentRule::keep_world,live_index(session,op.at("index"),parent,moved)));
+                if(const auto& space=op.at("space");!space.is_null()) {
+                    fields(space,{"position","rotation","scale","origin"});
+                    relocated(world.set_transform(moved,json_trs(space)));
+                }
+            } else if(kind=="world") {
+                fields(op,{"op","world"});load.policy=LoadPolicy::strict;
+                take(world.set_lighting_settings(load_world(Json{{"world",op.at("world")}},load)));
+            } else if(kind=="materials") {
+                fields(op,{"op","materials"});
+                const auto& definitions=op.at("materials");
+                if(!definitions.is_array()) throw std::runtime_error("Expected a material definition list.");
+                for(const auto& definition:definitions) {
+                    fields(definition,{"id","source","inline","parent","overrides"});
+                    const auto key=local_key(definition.at("id"));
+                    auto restored=restore_material(session,&project,definition);
+                    if(const auto live=live_object(session,key);live && *live!=ObjectId{}) {
+                        if(!session.is_material(*live)) throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
+                        if(restored.id()!=*live) take(material::update_material(runtime,*live,take(material::read_material(runtime,restored.id()))));
+                    } else {
+                        if(!session.local_ids_.emplace(restored.id(),key).second) throw std::runtime_error("One material asset has multiple document identities.");
+                        session.live_objects_.insert_or_assign(key,restored.id());session.live_materials_.push_back(std::move(restored));
+                    }
+                }
+            } else if(kind=="resource") {
+                fields(op,{"op","key","material"});
+                const auto key=op.at("key").get<std::string>();subject+=" "+key;
+                auto asset=material_format::decode(op.at("material"));asset.key=key;
+                const auto catalogued=[&](const std::string& texture){return std::ranges::find(project.entries(),texture,&ProjectEntry::key)!=project.entries().end();};
+                if(std::ranges::any_of(asset.textures,[&](const auto& texture){return !texture.empty() && !catalogued(texture);})) take(project.refresh());
+                if(const auto at=session.materials_.find(key);at!=session.materials_.end()) {
+                    material::State state;state.source=key;state.description=asset.description;
+                    for(std::size_t i=0;i<state.textures.size();++i) if(!asset.textures[i].empty()) {
+                        state.textures[i]=take(session.texture_resource(project,asset.textures[i]));
+                        state.description.textures[i].image=take(material::read_texture(runtime,state.textures[i].id())).image;
+                    }
+                    take(material::update_material(runtime,at->second.root.id(),state));
+                    session.unavailable_.erase(key);
+                } else take(session.material_resource(project,asset));
+            } else throw std::runtime_error("Unknown change: "+kind);
+            for(const auto key:load.dropped) note(world::Severity::warning,world::DiagnosticKind::reference_dropped,
+                "#"+std::to_string(key)+" was destroyed by the game; the reference is null.");
+        } catch(const Gone& error) {
+            note(world::Severity::warning,world::DiagnosticKind::reference_dropped,std::string(error.what())+" The change is skipped.");
+        } catch(const Unsupported& error) {
+            note(world::Severity::warning,world::DiagnosticKind::command_rejected,std::string(error.what())+" The change is skipped.");
+        } catch(const std::exception& error) {
+            note(world::Severity::error,world::DiagnosticKind::command_rejected,error.what());
+        }
+    }
 };
 
 Result<std::string> Session::serialize() const {
@@ -1296,6 +1598,52 @@ Result<std::string> Session::serialize_subtree(ObjectId root) const {
         if(editing()) throw std::runtime_error("Finish the active edit before saving a composition.");
         auto graph=GraphCodec::capture(*this,{&root,1},true);auto text=graph.data.dump(2)+"\n";
         if(text.size()>json_format::maximum_bytes) throw std::runtime_error("Composition exceeds the 16 MiB file limit.");return text;
+    } catch(const std::exception& error) {return failed(error);}
+}
+Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
+    try {
+        auto graph=GraphCodec::capture(*this,{&root,1},true,false,true);auto text=graph.data.dump();
+        if(text.size()>json_format::maximum_bytes) throw std::runtime_error("The Entity exceeds the 16 MiB change limit.");return text;
+    } catch(const std::exception& error) {return failed(error);}
+}
+Result<std::string> Session::serialize_live_components(ObjectId entity,std::span<const ObjectId> components) const {
+    try {
+        for(const auto component:components)
+            if(take(world::inspect_component(world_.runtime(),component)).owner!=entity) throw std::runtime_error("The Component does not belong to the Entity.");
+        auto graph=GraphCodec::capture(*this,{&entity,1},true,false,true);auto& data=graph.data;
+        std::unordered_set<std::string> wanted;
+        for(const auto component:components) wanted.insert(std::to_string(local_ids_.at(component)));
+        const auto key=std::to_string(local_ids_.at(entity));
+        const auto& records=data.at("entities");
+        const auto record=std::ranges::find_if(records,[&](const Json& value){return value.at("id")==key;});
+        Json parts=Json::array();std::unordered_set<std::string> used;
+        for(auto part:record->at("components")) if(wanted.contains(part.at("id").get<std::string>())) {
+            if(const auto at=part.find("materials");at!=part.end()) for(const auto& entry:*at) used.insert(entry.at("resource").get<std::string>());
+            auto references=part;each_reference(references,[&](Json& node){if(const auto at=node.find("$ref");at!=node.end()) used.insert(at->get<std::string>());});
+            parts.push_back(std::move(part));
+        }
+        if(parts.size()!=components.size()) throw std::runtime_error("Each listed Component must appear once on the Entity.");
+        Json materials=Json::array();
+        for(const auto& definition:data.at("materials")) if(used.contains(definition.at("id").get<std::string>())) materials.push_back(definition);
+        data["roots"]=Json::array();data["materials"]=std::move(materials);
+        data["entities"]=Json::array({Json{{"id",key},{"existing",true},{"children",Json::array()},{"components",std::move(parts)}}});
+        auto text=data.dump();
+        if(text.size()>json_format::maximum_bytes) throw std::runtime_error("The Components exceed the 16 MiB change limit.");return text;
+    } catch(const std::exception& error) {return failed(error);}
+}
+void Session::enter_play() {
+    play_=true;
+    for(const auto& [object,key]:local_ids_) if(runtime_.type_of(object)) live_objects_.insert_or_assign(key,object);
+}
+Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text,Project& project) {
+    try {
+        if(!play_) throw std::runtime_error("Editor changes apply only to a Play copy.");
+        if(world_.closed()) throw std::runtime_error("The Play World is closed.");
+        const auto batch=json_format::parse(text);fields(batch,{"ops"});
+        const auto& ops=batch.at("ops");if(!ops.is_array()) throw std::runtime_error("Expected a change list.");
+        std::vector<world::Diagnostic> result;
+        for(std::size_t i=0;i<ops.size();++i) GraphCodec::apply_change(*this,project,ops[i],i,result);
+        return result;
     } catch(const std::exception& error) {return failed(error);}
 }
 Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Project& project,Prepare prepare,LoadPolicy policy) {
