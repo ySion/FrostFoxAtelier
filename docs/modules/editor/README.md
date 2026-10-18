@@ -153,7 +153,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 - 场景身份、RT/视口范围或显示配置变化后清空窗口，并用当前域第一接受帧 ID 拒绝迟到的旧域样本。普通相机运动和选择变化继续统计；文档替换清空历史。此边界依赖正式 Application 单调分配的 UI 帧身份，不扩展成对任意低层 Frame 调用方的承诺。
 - 非 Scene Lit、视口无有效几何或尚无有效样本时显示 Unavailable / Waiting 和空值。mask 未启用的 scope 显示 Skipped；mask 表示进入计时范围，不保证内部存在非零工作。整个窗口均未启用的项不显示伪造的零成本。
 - Mean / P95 使用该窗口中同源的完成帧区间；p95 取最近秩。Measured total 对每个样本先累加八个主阶段，再计算统计量，不重复累加子阶段，也不累加各行 p95。子阶段比重也以主阶段合计为分母。
-- 表格共 23 行；Radiance resolve / filter 下展开 temporal resolve 与空间 filter step 1/2/4 四项，Direct lighting 下另有 Light list construction 和 Shadow atlas updates。参考模式或无光源时三个 filter 显示 Skipped，resolve 仍有真实区间。原始 GPU 掩码使用 bit 0～21，其中 bit 20 是局部灯列表构建，bit 21 是阴影 atlas 更新；表格另以 bit 22 表示计算出的合计。两者均为 Direct 的子项，不重复加进合计；bit 12 保留 shading 的含义。Renderer B 候选已接入；原生 1440p 地牢对照已完成，但其性能和 CSM 图像正确性仍未达到默认启用门槛，`direct_clustered` 保持默认 false。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
+- 表格共 23 行；Radiance resolve / filter 下展开 temporal resolve 与空间 filter step 1/2/4 四项，Direct lighting 下另有 Light list construction 和 Shadow atlas updates。参考模式或无光源时三个 filter 显示 Skipped，resolve 仍有真实区间。原始 GPU 掩码使用 bit 0～21，其中 bit 20 是局部灯列表构建，bit 21 是阴影 atlas 更新；表格另以 bit 22 表示计算出的合计。两者均为 Direct 的子项，不重复加进合计；bit 12 保留 shading 的含义。Renderer B（缓存阴影）候选已接入；原生 1440p 地牢对照已完成，但其性能和 CSM 图像正确性仍未达到默认启用门槛，`direct_shadow_cache` 保持默认 false。A 已成为默认路径（`direct_clustered` 默认 true）。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
 - 合计不含 UI、参考辅助线、探针显示叠层、Capture 或 CPU Present；父阶段可能包含传输、调度及计时边界开销，子阶段之和不保证等于父阶段。分组与原始计时范围见 [Scene Lit](../renderer/scene-lit.md)。
 
 统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。现有 `--acceptance-surfaces` 端到端入口同时验证真实 GPU 数据、Table 显示与列宽、禁用项、合计、概要读取和换域清理，并生成 `world-performance.png` 与 `performance.json`。
@@ -162,7 +162,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional L
 
 ### 真实工程的原生 1440p 渲染对照
 
-当前 `direct_clustered=true`、`direct_shadow_cache=false` 对应精确枚举与 RT 可见性 A；两者都 true 才启用缓存阴影 B，Reference 优先。两个开关均默认 false，仅为视口诊断；新开关复用统一 ViewOption/Control 元数据与 Performance configuration，不进入正式着色菜单或 Scene/Undo。下面原生性能入口显式关闭缓存阴影，其 `clustered` case 现在采 A；历史报告的 B 数据不能直接按同名 case 对比，必须同时核对报告中的 view 与构建版本。
+当前 `direct_clustered=true`、`direct_shadow_cache=false` 对应精确枚举与 RT 可见性 A；两者都 true 才启用缓存阴影 B，Reference 优先。`direct_clustered` 默认 true（A），`direct_shadow_cache` 默认 false；`direct_clustered=false` 回退 ReSTIR 与开启 B 都仅为视口诊断。两个开关复用统一 ViewOption/Control 元数据与 Performance configuration，不进入正式着色菜单或 Scene/Undo。下面原生性能入口显式关闭缓存阴影，其 `clustered` case 现在采 A；历史报告的 B 数据不能直接按同名 case 对比，必须同时核对报告中的 view 与构建版本。
 
 `atelier_editor --project <工程目录> --acceptance-render-performance <绝对输出目录>` 使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此验收模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
 

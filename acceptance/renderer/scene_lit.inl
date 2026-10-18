@@ -297,6 +297,8 @@ std::array<double,3> lighting_mean(Fixture& f,const char* name,Region region,uns
 }
 
 void benchmark(Fixture& f) {
+    // Every scope, including the reservoir passes, executes on the ReSTIR fallback.
+    f.frame.view.lit.direct_clustered=false;f.edited();
     for (unsigned frame = 0; frame < warmup_frames; ++frame) f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
     samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,di_initial_temporal_ms,di_spatial_ms,di_visibility_shading_ms,direct_resolve_filter_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,direct_temporal_resolve_ms,direct_filter_1_ms,direct_filter_2_ms,direct_filter_4_ms,completed_pass_mask\n";

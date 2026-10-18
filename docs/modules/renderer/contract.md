@@ -32,7 +32,7 @@ World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1�
 
 `LightFrame` 消费已验证的低层 Frame 与对应 MaterialFrame，在 CPU 派生统一光源快照及当前近源 proposal；它不持有 World 或创建 GPU 资源。Scene Lit 仍是上传、绑定、统计与退休的唯一拥有者。近源网格只改变抽样概率，候选批次按确定性近源/全局配额生成，并以实际整数配额组成的完整概率求权重；单候选或无有效局部域时全部使用全局 proposal，远源与溢出源保留全局支持。网格滚动不作为辐射变化清历史，也不要求第二份旧网格。当前编码帧的保留源数、非空 cell 数、逻辑字节及上传标记，与异步 GPU 完成统计分开，具体口径见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-直接光候选 `direct_clustered`、`direct_shadow_cache` 与可选 `direct_cluster_inspect` 同属视口诊断，默认关闭，不创建第二套 World 光源或作者配置入口。clustered 单独开启使用精确枚举＋RT；另启 shadow cache 才进入缓存阴影候选，reference 优先。精确保守灯列表和 `ShadowCache` 只消费既有 Frame、LightFrame、Geometry/Object 缓存；缓存阴影通过同一 RHI 的 D32 深度、矩形 clear、viewport/scissor 与延迟退休执行。缓存缺页不得默认为无阴影；完整场景投影者与屏幕接收需求分开。DDGI 仅复用几何与端点都未改变的精确屏幕 LOS，细节与当前限制见 [Scene Lit](scene-lit.md)。
+直接光路径 `direct_clustered` 是视口设置，默认 true，使用 A：保守灯列表＋精确枚举＋RT 可见性；false 回退 ReSTIR，仅作诊断对照。`direct_shadow_cache` 与可选 `direct_cluster_inspect` 是默认关闭的视口诊断。三者都不创建第二套 World 光源或作者配置入口。clustered 开启时另启 shadow cache 才进入缓存阴影候选，reference 优先。精确保守灯列表和 `ShadowCache` 只消费既有 Frame、LightFrame、Geometry/Object 缓存；缓存阴影通过同一 RHI 的 D32 深度、矩形 clear、viewport/scissor 与延迟退休执行。缓存缺页不得默认为无阴影；完整场景投影者与屏幕接收需求分开。DDGI 仅复用几何与端点都未改变的精确屏幕 LOS，细节与当前限制见 [Scene Lit](scene-lit.md)。
 
 探针检查的 `probe_inspect_source` 为视口诊断选项，`-1` 默认自动选择，非负值选择全局物理 probe 槽位。typed ViewOption 与低层 Frame 共同校验最大探针池范围；合法索引超过本帧驻留池时返回明确的无选择结果，不因此拒绝 Frame 或回退另一个探针。检查不改变调度、运输或 World 作者配置，异步样本保留请求与完成帧身份；字段语义见 [Scene Lit 探针检查](scene-lit.md#ddgi-探针场)。
 

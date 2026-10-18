@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| 默认直接光切到 A | 2026-10-18 rendering 工作树：`direct_clustered` 默认 true，ReSTIR 保留为诊断回退；切换前 Release 九个入口通过，Edit/Play 收敛 1.228/4，Play 宿主走 A；合并 main 后补跑其余入口，见[本批记录](#默认直接光切到-a2026-10-18) |
 | Renderer 验收入口盘点 | 2026-10-18 rendering 工作树：此前 `renderer_acceptance` 只运行无参数默认入口，14 个 `--scene-lit*` 入口都不在任何常规目标里；现在该目标依次运行默认入口和 9 个有独有检查的入口，删除 9 个完全被覆盖的子集入口，见[本批记录](#renderer-验收入口盘点2026-10-18) |
 | temporal isolation 参考配置 | 2026-10-18 rendering 工作树：`--scene-lit-temporal` 自 10-13 起一直失败（main 基线 `d2b6da2b` 同样失败），原因是参考配置从确定性 64 阴影样本换成逐帧独立的随机参考；改为比较两段 16 帧均值后为 1.032/3，通过，见[本批记录](#temporal-isolation-参考配置2026-10-18) |
 | DI 辐射响应窗口 | 2026-10-18 rendering 工作树：DI 降噪器按距最后一次辐射变化的帧数缩短支持，编辑后恢复的残留在 64 帧内回到基线（A 路径 R−B 从 +.70 降到 +.04）；持续动画光源的半影噪声不变；去掉窗口的变体使新验收失败，见[本批记录](#di-辐射响应窗口2026-10-18) |
@@ -32,6 +33,37 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## 默认直接光切到 A（2026-10-18）
+
+状态：基于 `f01139f1` 的单独本地提交，未推送、未并入 main。C 批第一步：`direct_clustered` 默认改为 true，ReSTIR 保留为诊断回退；回退只需把 `view_settings.hpp` 中这一项改回 `{}`。没有持久数据：该开关不在作者选项目录里，不写 Scene 或 Undo。Play 宿主（`project_runner.cpp`）默认构造 ViewSettings，也随之走 A。Frame/FrameStats 接口和 GPU scope 没有变化。
+
+改动：
+
+- `view_settings.hpp` 的默认值。
+- 断言 ReSTIR 行为的 renderer 验收显式设 `direct_clustered=false`：`--scene-lit-restir-suite` 的两个 ReSTIR 夹具（reservoir 统计与 MIS）、`quality_work_elision`（reservoir scope 与每接收点一条选中可见性射线）、`--scene-lit-benchmark`（CSV 要求所有 reservoir 子 scope 都执行）。其余验收不设置，即运行在 A 上。
+- 编辑器 `view_options.cpp` 的说明与编辑器文档（编辑器负责人审阅），renderer contract、Scene Lit 与 README。编辑器 Performance 基线仍显式 false，之后由编辑器负责人改为测默认路径。
+
+`renderer_acceptance` 的 10 个入口，RX 6800 XT，GPU validation，证据在 `out/accept-20261018/<配置>-<入口>-a1/`：
+
+| 入口 | Release | Dev |
+|---|---|---|
+| 无参数默认入口 | PASS | 合并 main 后补跑 |
+| `--scene-lit` | PASS：Edit/Play 收敛 1.228/4（阈值 3/8；ReSTIR 下为 2.262/8），temporal-stable .294/1 | 合并 main 后补跑 |
+| `--scene-lit-temporal` | PASS：direct-reference 1.032/3 | 合并 main 后补跑 |
+| `--scene-lit-quality` | PASS：辐射恢复红移 1–16 帧 +2.511、49–64 帧 +.050；动画光源半影 .462（静止 .194，单帧 3.559） | 合并 main 后补跑 |
+| `--scene-lit-stability` | PASS | 合并 main 后补跑 |
+| `--scene-lit-restir-suite` | PASS，夹具显式 ReSTIR | 合并 main 后补跑 |
+| `--scene-lit-benchmark` | 合并 main 后补跑 | 合并 main 后补跑 |
+| `--scene-lit-clustered` | PASS：单参考／最小范围／透视参考均为 0 | 合并 main 后补跑 |
+| `--scene-lit-shadows` | PASS：有限点光参考 .681/1，CSM 与移动太阳 ≤.106 | 合并 main 后补跑 |
+| `--scene-lit-cost` | PASS：五组确定性对照均为 0 | 合并 main 后补跑 |
+
+Edit/Play 收敛余量：A 下 p95 为 4，距阈值 8 有 4 级，mean 余量 1.77；ReSTIR 下 p95 等于阈值。
+
+Play：Release Play 宿主打开 Scene Lit Room，约 25 秒后用 PrintWindow 截取客户区，`out/accept-20261018/play-{before,after}-room/play.png` 分别为切换前（ReSTIR）与切换后（A）。两图构图与平均亮度一致（场景区 76.95／76.99），A 的后墙与地面没有 ReSTIR 的斑驳噪声。
+
+运动差异图的环纹（实测，`out/ab-20261018/room`，后墙与地面）：A 的 moving−settled 差值 98.4% 为 0 或 1 级，整体偏移 +.27；差 1 级的像素 51% 落在静止图的 1 级等照度线上，未变化的像素只有 3.8%；静止图 99.7% 的像素与相邻像素相差不超过 1 级。ReSTIR 的同一差值也有 +.3～+.65 的偏移，但逐像素噪声把等照度线打散。结论：环纹是两条路径共有的亚级运动过渡落在 8 位量化台阶上的显现，A 没有噪声所以显出来，不是 A 的结构误差。当前显示编码没有抖动。
 
 ## Edit/Play 收敛修复（2026-10-18）
 
@@ -796,6 +828,8 @@ Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文
 | 关灯初期 / 389 个接受帧后的平均显示亮度 | 123.362 / 2.47939 |
 
 指标取相同视口内有几何深度的像素，属于色调映射后的显示空间差异，包含其上的编辑辅助叠层；不是线性间接辐照度真值，也不是帧率测量。静态噪声对照的两次捕获之间推进 32 个预热帧及一次捕获帧；关灯后的最终捕获包含三段各 128 个预热帧和中间捕获。固定检查要求 DDGI 开关差大于 .5 且超过静态差两倍、移动后的再差分大于同一门槛、关灯末期亮度低于初期的 30% 或 2；没有随实测放宽阈值。
+
+2026-10-18 补注：上表是中性 .55 无贴图材质的值。自 `60edfab0` 把 DDGI/GTAO/SSSR/Bloom 改为 World 作者设置后，验收直接写视口设置，每帧被 World 值覆盖，开关从未到达渲染器，ec-2 门禁因此在开关差 .94、静态差 .64 上失败。编辑器验收改走 World 作者路径后（编辑器负责人的修复链），rendering 工作树（A 直接光）在贴图材质下实测：Dev／Release 开关差 3.686／3.684、静态差 .144／.141，移动后开关差 3.63、再差分 2.18。下降幅度是推断，没有做中性材质对照：有效反照率为组件 .55 乘贴图线性均值（建筑约 .20～.39，布料 .07～.14），相机所见间接光近似与接收面和反弹面反照率之积成比例，估计为 10-10 的 3%～9%，即 1.5～4.5。关灯消退原判据把编辑器叠层亮度（3.680）计入，现扣除同相机关灯且关 DDGI 的底数：Dev 初期 7.343、稳定 0.000，稳定帧与无光底数逐值相同。证据在 `out/accept-20261018/sponza-{dev-base,dev-fix,release-fix,dev-floor}/`。
 
 首次沿用基础显示的纯白实例色 1 时，DDGI 使画面偏亮；关灯初期 / 末期亮度为 218.154 / 107.381，未通过消退检查。最终默认改成 .55 是场景材质设定，本轮没有修正这个高反射率下的慢消退问题，不能将最终通过外推到所有材质。该轮 Scene Lit 尚不读取 Sponza 漫反射/opacity 图，植物与铁链按不透明处理；此历史限制已由 2026-10-11 的标准材质接入替代。
 

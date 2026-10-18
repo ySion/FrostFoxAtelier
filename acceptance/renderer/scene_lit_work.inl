@@ -57,7 +57,8 @@ void quality_work_elision(Fixture& f) {
     f.lights.assign(1,{});auto& light=f.lights.front();
     light.stable_key=100;light.position={0,0,.5f};light.range=30;light.casts_shadow=true;
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
-    auto& options=f.frame.view.lit;options={};
+    // Reservoir scopes and one selected visibility ray per receiver describe ReSTIR.
+    auto& options=f.frame.view.lit;options={};options.direct_clustered=false;
     options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
     options.shadows=true;options.antialiasing=render::Antialiasing::none;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
