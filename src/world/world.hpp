@@ -82,9 +82,9 @@ ASTRUCT(Name="world.PhysicsMaterial", DESC="控制接触面的摩擦和回弹。
 struct PhysicsMaterial {
     AGENERATED_BODY(PhysicsMaterial)
 public:
-    AFIELD(DESC="接触面的 Friction 系数，无单位。较大值使物体更难沿接触面滑动，必须非负。")
+    AFIELD(HardMin="0", DESC="接触面的 Friction 系数，无单位。较大值使物体更难沿接触面滑动，必须非负。")
     float friction{.2f};
-    AFIELD(DESC="接触后的回弹系数，范围 0–1。0 不产生恢复性反弹，较大值保留更多回弹速度。")
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="接触后的回弹系数，范围 0–1。0 不产生恢复性反弹，较大值保留更多回弹速度。")
     float restitution{};
     bool operator==(const PhysicsMaterial&) const = default;
 };
@@ -100,30 +100,34 @@ public:
     ShapeKind shape{ShapeKind::box};
     AFIELD(DESC="Stationary 固定不动；Kinematic 由程序移动；Dynamic 受物理模拟驱动。Triangle Mesh 只能使用 Stationary。")
     MotionKind motion{MotionKind::stationary};
-    AFIELD(DESC="Box 从中心到各面的局部半尺寸，单位 m。最终碰撞尺寸还会应用 Entity 的世界缩放；每个分量必须大于 0。")
+    AFIELD(HardMin="0", DESC="Box 从中心到各面的局部半尺寸，单位 m。最终碰撞尺寸还会应用 Entity 的世界缩放；每个分量必须大于 0。")
     math::Vector3 half_extents{.5f, .5f, .5f};
-    AFIELD(DESC="Sphere 或 Capsule 的局部半径，单位 m，必须大于 0。这两种形状要求 Entity 的世界缩放均匀。")
+    AFIELD(HardMin="0", DESC="Sphere 或 Capsule 的局部半径，单位 m，必须大于 0。这两种形状要求 Entity 的世界缩放均匀。")
     float radius{.5f};
-    AFIELD(DESC="Capsule 中段沿局部 Y 轴的一半长度，不含两端半球，单位 m。最终尺寸会应用均匀世界缩放。")
+    AFIELD(HardMin="0", DESC="Capsule 中段沿局部 Y 轴的一半长度，不含两端半球，单位 m。最终尺寸会应用均匀世界缩放。")
     float capsule_half_height{.5f};
-    AFIELD(DESC="此 body 的 Collision Category 编号，范围 0–15。其他 body 用此编号决定 Ignore、Overlap 或 Block。")
+    AFIELD(Min="0", Max="15", LockMin, LockMax, DESC="此 body 的 Collision Category 编号，范围 0–15。其他 body 用此编号决定 Ignore、Overlap 或 Block。")
     std::uint32_t category{};
     // Sixteen categories; disjoint masks encode Ignore/Overlap, otherwise Block.
-    AFIELD(DESC="按 bit 指定要忽略的 Collision Category；bit 0 对应类别 0。与 Overlap Categories 不能有共同位。")
+    AFIELD(HardMax="65535", DESC="按 bit 指定要忽略的 Collision Category；bit 0 对应类别 0。与 Overlap Categories 不能有共同位。")
     std::uint32_t ignore_categories{};
-    AFIELD(DESC="按 bit 指定只产生接触、不求解阻挡的 Collision Category。未出现在 Ignore 或 Overlap 中的类别按 Block 处理。")
+    AFIELD(HardMax="65535", DESC="按 bit 指定只产生接触、不求解阻挡的 Collision Category。未出现在 Ignore 或 Overlap 中的类别按 Block 处理。")
     std::uint32_t overlap_categories{};
     AFIELD(DESC="启用 Sensor 后只报告接触或重叠，不参与阻挡求解。它仍遵守 Collision Response 过滤。")
     bool sensor{};
     AFIELD(DESC="此 body 接触面的 Friction 和 Restitution。与用于显示的 Material 相互独立。")
     PhysicsMaterial material{};
     // Derived cache, rebuilt from the mesh resource; never archived as object state.
+    // The bytes carry their input key (format, Jolt version, mesh source and
+    // scaled geometry hash); physics checks it where it uses the shape, so
+    // edits never clear it.
     std::shared_ptr<const std::string> cooked_shape{};
     [[nodiscard]] Response response(std::uint32_t category) const noexcept;
     [[nodiscard]] Result<void> set_response(std::uint32_t category, Response);
     bool operator==(const BodySettings&) const = default;
 };
-[[nodiscard]] Result<void> validate_body_settings(const BodySettings&);
+// Each checks a value against its reflected type's hard bounds and validator.
+[[nodiscard]] Result<void> validate_body_settings(Runtime&, const BodySettings&);
 
 ACLASS(Name="world.PrimitiveComponent", DESC="具有碰撞和刚体配置的基础组件。空间由所属 Entity 提供，具体形状和运动方式在 Body 中设置。")
 class PrimitiveComponent : public Component {
@@ -146,13 +150,13 @@ ASTRUCT(Name="world.Material", DESC="网格组件的基础表面参数。已绑�
 struct Material {
     AGENERATED_BODY(Material)
 public:
-    AFIELD(DESC="表面的线性 RGB 基础色，每个分量在 0–1 之间。它是材质颜色，不是曝光后的屏幕颜色。")
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="表面的线性 RGB 基础色，每个分量在 0–1 之间。它是材质颜色，不是曝光后的屏幕颜色。")
     math::Vector3 base_color{.19f, .42f, .57f};
-    AFIELD(DESC="表面 Roughness，范围 0–1。较小值使反射更集中，较大值使高光更宽、更柔。")
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="表面 Roughness，范围 0–1。较小值使反射更集中，较大值使高光更宽、更柔。")
     float roughness{.65f};
-    AFIELD(DESC="表面 Metallic，范围 0–1。0 表示非金属，1 表示金属，影响基础色参与漫反射和镜面反射的方式。")
+    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="表面 Metallic，范围 0–1。0 表示非金属，1 表示金属，影响基础色参与漫反射和镜面反射的方式。")
     float metallic{};
-    AFIELD(DESC="表面自身发出的线性 HDR RGB 辐射。它可以大于 1，不是显示亮度；当前每通道上限为 65504。")
+    AFIELD(Min="0", Max="10", LockMin, HardMax="65504", DESC="表面自身发出的线性 HDR RGB 辐射。它可以大于 1，不是显示亮度；当前每通道上限为 65504。")
     math::Vector3 emissive{};
     bool operator==(const Material&) const = default;
 };
@@ -185,21 +189,21 @@ struct LightSettings {
 public:
     AFIELD(DESC="灯光种类，决定 Intensity 单位及哪些尺寸参数生效。一个 World 只能拥有一个 Sky Light，包括已停用的 Sky Light。")
     LightKind kind{LightKind::point};
-    AFIELD(DESC="非负线性 RGB，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
+    AFIELD(HardMin="0", DESC="非负线性 RGB，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 color{1.f,1.f,1.f};
     // Reference-white intensity: point cd, rectangle/sky cd/m^2, directional lux.
     // Sky is uniform incident radiance; spatial transform and emitter shape do not affect it.
-    AFIELD(DESC="参考白色的发光强度，再由 Color 调制。Point 使用 cd；Rectangle 和 Sky 使用 cd/m²；Directional 使用 lux。")
+    AFIELD(HardMin="0", DESC="参考白色的发光强度，再由 Color 调制。Point 使用 cd；Rectangle 和 Sky 使用 cd/m²；Directional 使用 lux。")
     float intensity{1.f};
-    AFIELD(DESC="Point 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 和 Sky 忽略此值；Entity 缩放不会改变它。")
+    AFIELD(HardMin="0", DESC="Point 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 和 Sky 忽略此值；Entity 缩放不会改变它。")
     float range{10.f};
     // Point: metres. Directional: angular radius in radians, below pi/2.
     // Rectangle emission size uses width/height instead.
-    AFIELD(DESC="Point 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 和 Sky 忽略此值。")
+    AFIELD(HardMin="0", DESC="Point 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 和 Sky 忽略此值。")
     float source_radius{};
-    AFIELD(DESC="Rectangle 沿局部 X 方向的发光宽度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
+    AFIELD(HardMin="0", DESC="Rectangle 沿局部 X 方向的发光宽度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
     float width{1.f};
-    AFIELD(DESC="Rectangle 沿局部 Y 方向的发光高度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
+    AFIELD(HardMin="0", DESC="Rectangle 沿局部 Y 方向的发光高度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
     float height{1.f};
     AFIELD(DESC="让 Rectangle 的两面都按同样的 Intensity 发光，不把每面的强度减半。其他灯光种类不使用此项。")
     bool two_sided{};
@@ -216,8 +220,8 @@ public:
     LightSettings settings;
 };
 
-[[nodiscard]] Result<void> validate_material(const Material&);
-[[nodiscard]] Result<void> validate_light(const LightSettings&);
+[[nodiscard]] Result<void> validate_material(Runtime&, const Material&);
+[[nodiscard]] Result<void> validate_light(Runtime&, const LightSettings&);
 // Reads authored settings, including detached/disabled objects. Does not root them.
 [[nodiscard]] Result<LightSettings> read_light(Runtime&, ObjectId light_component);
 
@@ -441,11 +445,16 @@ struct PresentedComponent {
 // and fail the call under every policy, as does any failure after the World
 // found its own index inconsistent.
 [[nodiscard]] bool isolatable(const Error&) noexcept;
+// The invalid_value Diagnostic for a type-rule failure. `record` is the path of
+// the checked value inside `object`, empty when the object itself was checked.
+[[nodiscard]] Diagnostic validation_diagnostic(const ValidationFailure&, DiagnosticPhase,
+    ObjectId object, ObjectId entity, std::vector<std::string> record = {});
 
 // Same Runtime thread. Runtime outlives World, its detached objects and tasks.
 // The World owns only member roots and execution/registration state. Entity's
 // private member_world relation is authoritative; directories are indexes.
 class World final {
+    struct Impl;
 public:
     struct Behavior {
         std::function<Result<void>(Runtime&, ObjectId)> begin{};
@@ -549,11 +558,14 @@ public:
     // members cannot be edited; same-context Detached objects may be prepared.
     // Objects registered in another World are rejected.
     // Entity and Component properties use the same Runtime field paths. Transform
-    // scalar writes preserve TRS validation; material color writes remain [0,1].
+    // scalar writes preserve TRS validation. Other fields take Runtime::write's
+    // hard-bound clamping; an edit that makes a valid object fail its type
+    // rules (Runtime::validate) or an admission is restored and rejected.
     [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldId>, Scalar);
     [[nodiscard]] Result<void> set_transform(ObjectId entity, Trs);
     [[nodiscard]] Result<void> remove_transform(ObjectId entity);
-    // Validated whole-value authoring. Shares set_transform's edit eligibility.
+    // Whole-value authoring, rejected (not clamped) when the value fails its
+    // type rules. Shares set_transform's edit eligibility.
     [[nodiscard]] Result<void> set_material(ObjectId static_mesh_component, Material);
     [[nodiscard]] Result<void> set_light(ObjectId light_component, LightSettings);
     // Writes Entity world poses between dispatch phases. The batch is validated
@@ -572,6 +584,40 @@ public:
     [[nodiscard]] Result<std::span<const PresentedComponent>> presented(PresentationId) const;
     // Re-evaluates presentation predicates after a member component's data changed.
     [[nodiscard]] Result<void> reevaluate_presentation(ObjectId component);
+    // A rule over the components of one registered type (or derived) that may
+    // become or stay members. Attach runs it on the incoming components before
+    // publishing. Author edits (write, set_material, set_light) of a member
+    // component run it on that component after writing and restore the previous
+    // value when it fails. Runtime writes outside World are not admitted.
+    using Admission = std::function<Result<void>(const World&, std::span<const ObjectId> candidates)>;
+    [[nodiscard]] Result<void> add_admission(TypeId component_type, Admission);
+
+    // Rotation of a space with scale magnitudes dropped and signs kept: each
+    // level contributes R*diag(sign(scale)), a zero axis counting as positive.
+    // An odd sign total is -1 times a proper rotation, so the frame is
+    // `mirrored ? -rotation : rotation`.
+    struct Orientation { math::Quaterniond rotation; bool mirrored{}; };
+    // One extraction pass over the members' shared space cache. Starting it
+    // begins a diagnostic pass of its phase (see take_diagnostics); it ends
+    // when the next pass starts.
+    class SpatialPass {
+    public:
+        // World matrix of a member Entity. An unusable space is reported on
+        // the failing Entity and yields nullopt; an error means the caller
+        // fails (halt policy or a World-level failure, see contain).
+        [[nodiscard]] Result<std::optional<math::Matrix4>> matrix(ObjectId entity);
+        // True when `world`, this pass's matrix of `entity`, is singular; one
+        // warning names the topmost zero-scale node of the chain. Degenerate
+        // spaces are not object failures under any policy.
+        [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string message);
+        [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
+    private:
+        friend class World;
+        SpatialPass(Impl& impl, DiagnosticPhase phase) noexcept : impl_(&impl), phase_(phase) {}
+        Impl* impl_;
+        DiagnosticPhase phase_;
+    };
+    [[nodiscard]] Result<SpatialPass> spatial_pass(DiagnosticPhase) const;
 
     // Scheduling configuration keyed by the Runtime's existing type identity.
     // The nearest ancestor binding is inherited as a whole. Allowed at host
@@ -615,7 +661,6 @@ public:
 
 private:
     friend struct detail::Access;
-    struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 

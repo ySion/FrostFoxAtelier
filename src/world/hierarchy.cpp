@@ -832,7 +832,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world,
     for (const auto& root : result.incoming)
         if (result.space.nodes.at(root.id()).spatial)
             if (auto valid = result.space.matrix(root.id()); !valid) return std::unexpected(valid.error());
-    if (auto sky = state.validate_sky_light(result.capabilities); !sky) return std::unexpected(sky.error());
+    if (auto admitted = state.check_admissions(result.capabilities); !admitted) return std::unexpected(admitted.error());
     return result;
 }
 }

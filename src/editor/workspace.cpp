@@ -872,7 +872,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                         else return double(v);
                     },field.value);
                     const double limit=parent->math.precision==math::Precision::f32?double(std::numeric_limits<float>::max()):std::numeric_limits<double>::max();
-                    const double minimum=color?0:spatial_position?session.parameters()[lane].minimum:spatial_scale?Session::minimum_scale:spatial_rotation?-360000:-limit;
+                    const double minimum=color?0:spatial_position?session.parameters()[lane].minimum:spatial_scale?-Session::maximum_scale:spatial_rotation?-360000:-limit;
                     const double maximum=base_color?1:emission?65504:spatial_position?session.parameters()[lane].maximum:spatial_scale?Session::maximum_scale:spatial_rotation?360000:limit;
                     const auto key=property_key(field.path,spatial_rotation?Binding::Kind::rotation:Binding::Kind::field);
                     tuple.push_back({key,std::wstring(1,(color?L"RGBW":L"XYZW")[lane]),value,spatial_position || spatial_rotation?0:spatial_scale?1:value,
@@ -1051,7 +1051,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
         scale_edit={bind(*transform,{},Binding::Kind::scale_default),entity_status.can_edit,trs.scale!=math::Vector3{1,1,1}, {}};
         for(std::size_t axis=0;axis<3;++axis) {
             rotation_edit.fields.push_back({bind(*transform,session.types().rotation_fields[axis],Binding::Kind::rotation),names[axis],angles[axis],0,-360000,360000,1,.1,static_cast<ui::VectorAxis>(axis+1)});
-            scale_edit.fields.push_back({bind(*transform,session.types().scale_fields[axis]),names[axis],trs.scale[axis],1,Session::minimum_scale,Session::maximum_scale,.01,.001,static_cast<ui::VectorAxis>(axis+1)});
+            scale_edit.fields.push_back({bind(*transform,session.types().scale_fields[axis]),names[axis],trs.scale[axis],1,-Session::maximum_scale,Session::maximum_scale,.01,.001,static_cast<ui::VectorAxis>(axis+1)});
             rotation_edit.fields.back().single_precision=scale_edit.fields.back().single_precision=true;
         }
     }

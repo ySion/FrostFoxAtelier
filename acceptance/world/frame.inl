@@ -128,6 +128,37 @@ void frame_phases() {
     require(items.size() == 2 && items[0].component == lit.id() && !items[0].active && items[1].component == dark.id() && items[1].active,
         "A presentation bucket lost composition order, an inactive member or a re-evaluated component.");
     reject(shown.register_presentation(types.entity), "An Entity type was registered for presentation.");
+
+    // Admissions see attach candidates and edited values; a rejected edit is restored.
+    std::vector<ObjectId> admitted;
+    take(shown.add_admission(types.counter, [&](const w::World& world, std::span<const ObjectId> candidates) -> Result<void> {
+        admitted.assign(candidates.begin(), candidates.end());
+        for (const auto id : candidates) {
+            auto value = world.runtime().read(id, types.counter_value);
+            if (!value) return std::unexpected(value.error());
+            if (std::get<float>(*value) > 10.f) return std::unexpected(Error{ErrorCode::argument_mismatch, "Counter exceeds 10."});
+        }
+        return {};
+    }));
+    reject(shown.add_admission(types.entity, [](const w::World&, std::span<const ObjectId>) -> Result<void> { return {}; }),
+        "An Entity type was registered for admission.");
+    auto loud = take(w::create_component(runtime, types.counter));
+    take(runtime.write(loud.id(), types.counter_value, Scalar{11.f}));
+    reject(shown.attach_components(owner.id(), std::array{w::Attachment{loud.id()}}), "An admission did not reject an attached component.");
+    require(admitted == std::vector{loud.id()} && take(w::components(runtime, owner.id())).size() == 2,
+        "A rejected component attach saw other candidates or was published.");
+    auto guest = take(w::create_entity(runtime));
+    admitted.clear();
+    committed(shown.attach_components(guest.id(), std::array{w::Attachment{loud.id()}}));
+    require(admitted.empty(), "Detached composition ran an admission.");
+    reject(shown.attach(guest.id()), "An admission did not reject an Entity attach.");
+    require(!shown.contains(guest.id()) && admitted == std::vector{loud.id()}, "A rejected Entity attach was published.");
+    admitted.clear();
+    reject(shown.write(dark.id(), std::array{types.counter_value}, Scalar{12.f}), "An admission did not reject an author edit.");
+    require(admitted == std::vector{dark.id()} && std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 2.f,
+        "A rejected author edit was not checked on its written value or not restored.");
+    take(shown.write(dark.id(), std::array{types.counter_value}, Scalar{5.f}));
+    require(std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 5.f, "An admitted author edit was not kept.");
     committed(shown.close());
-    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, presentation buckets");
+    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, presentation buckets, admissions");
 }

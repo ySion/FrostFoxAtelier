@@ -51,6 +51,8 @@ TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每�
 
 StaticMeshComponent 保存网格与材质，LightComponent 保存灯参数，PrimitiveComponent 保存 body 作者配置；绘制、灯光与物理都查询 owner Entity 的空间。需要独立空间时创建子 Entity，将能力组件放到该子实体。
 
+PrimitiveComponent、CollisionComponent、BodySettings 与 PhysicsMaterial 留在 world 库，是呈现与物理共用的基元层：类型定义放在这里供两侧引用，规则不归 World 核心。字段规则迁入 Runtime 类型校验器之后，World 核心不再对这些类型做任何判断；具体能力由登记的呈现、准入与模拟系统负责。
+
 ## 生命周期与执行顺序
 
 `bind_behavior(TypeId, Behavior{begin,tick,end,post_physics_tick,late_tick})` 给真实 Entity 或 Component 配置可选执行入口，派生类型沿 Runtime 基类链选择最近完整登记；显式空登记关闭继承行为。原生与 Source 回调在 native borrow 外执行，接收者受普通根和 ExecutionScope 保护。Source 的生命周期方法名为 `begin / tick / end / post_physics_tick / late_tick`。运行中也可以在宿主边界重新绑定（行为分发内返回 busy）：已开始的对象从下一个执行的阶段起使用新的 Tick，不补发 Begin；End 使用退出时的当前绑定；`clear_faults()` 仍按原规则重新 Begin。
@@ -98,11 +100,17 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 已入场成员的作者字段、Transform 增删、材质与灯参数编辑要求 World 停止；组合归属和空间参考按结构操作的准入规则处理。同 Runtime 的 Detached 图可以在 World 运行时于宿主边界准备，完整校验后经同一入口原子发布。回调内重入及其他 World 的成员仍拒绝。Entity 和 Component 属性走同一 Runtime FieldPath 与 scalar 编辑事务；TRS 历史保存完整前后值，业务字段保留精确 Scalar。空 Entity 仍可选择编辑；成员资格、对象存活、运行激活和呈现登记分别判断。
 
+`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
+
 `destroy_entity / destroy_component` 是游戏对象终结入口：先退出 World，再清理组成并调用 Runtime；可信宿主不得绕过它直接销毁活跃成员。detach 保留对象图；历史裁剪只释放根，不隐式 destroy。close 退出所有子树、释放成员根后不可重启，重复 close 无副作用。
 
 `set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照。具体合同见 [Lit 数据](lighting.md)和[项目场景](project-scenes.md)。
 
 呈现能力按类型登记：`register_presentation(component_type, predicate)` 返回不透明的 `PresentationId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出），由 `presented(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_presentation(component)` 重新求值谓词。每个 World 最多 32 个登记。目前 world 库自己登记网格（需要有几何）与灯光，`render_items / light_items` 只遍历这两个桶。
+
+跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write`、`set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 用写入前读出的 Scalar 经 Runtime::write 恢复，原值若由可信路径写成越过硬边界，恢复时按硬边界夹值；这样的原值本身已违反字段不变量，`Runtime::validate` 会报告它。`set_material / set_light` 按整值精确恢复。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。world 库目前登记两条：每个 World 至多一个 Sky Light；非 Sky 灯光的成员 owner 必须有 Transform（attach 时由空间需求检查覆盖，这条用于编辑改变灯光种类）。
+
+`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对奇异矩阵在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](lighting.md)）。`render_items / light_items` 只经这三个入口读取空间。
 
 `render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。成员的世界矩阵来自 World 持有的一份空间缓存，`render_items`、`light_items`、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。Detached 对象和候选图仍使用临时求值。
 

@@ -49,12 +49,14 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
     definitions.push_back(reflection::Definition<LightKind>::build(runtime));
     definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
+    definitions.back().validate = [](const void* value) { return detail::light_rules(*static_cast<const LightSettings*>(value)); };
     definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
     definitions.push_back(reflection::Definition<ShapeKind>::build(runtime));
     definitions.push_back(reflection::Definition<MotionKind>::build(runtime));
     definitions.push_back(reflection::Definition<Response>::build(runtime));
     definitions.push_back(reflection::Definition<PhysicsMaterial>::build(runtime));
     definitions.push_back(reflection::Definition<BodySettings>::build(runtime));
+    definitions.back().validate = [](const void* value) { return detail::body_rules(*static_cast<const BodySettings*>(value)); };
     definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
     definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
     if (!runtime.find_type("core.String")) definitions.push_back(string_definition(runtime));
@@ -96,24 +98,21 @@ Result<void> BodySettings::set_response(std::uint32_t channel, Response value) {
     overlap_categories=(overlap_categories&~bit)|(value==Response::overlap?bit:0);
     return {};
 }
-Result<void> validate_body_settings(const BodySettings& value) {
+// Single-field bounds are AFIELD hard bounds, checked before this runs.
+Result<void> detail::body_rules(const BodySettings& value) {
     if (value.shape!=ShapeKind::box && value.shape!=ShapeKind::sphere && value.shape!=ShapeKind::triangle_mesh && value.shape!=ShapeKind::capsule)
         return error(ErrorCode::argument_mismatch,"Unknown collision shape.");
     if (value.motion!=MotionKind::stationary && value.motion!=MotionKind::kinematic && value.motion!=MotionKind::dynamic)
         return error(ErrorCode::argument_mismatch,"Unknown body motion type.");
-    if (!math::is_finite(value.half_extents) || value.half_extents.x<=0 || value.half_extents.y<=0 || value.half_extents.z<=0 ||
-        !std::isfinite(value.radius) || value.radius<=0 || !std::isfinite(value.capsule_half_height) || value.capsule_half_height<=0)
-        return error(ErrorCode::argument_mismatch,"Collision dimensions must be finite and positive.");
-    if (value.category>=16 || (value.ignore_categories|value.overlap_categories)>0xffff ||
-        (value.ignore_categories&value.overlap_categories)!=0 || !std::isfinite(value.material.friction) || value.material.friction<0 ||
-        !std::isfinite(value.material.restitution) || value.material.restitution<0 || value.material.restitution>1)
-        return error(ErrorCode::argument_mismatch,"Invalid collision category, response masks or physical material.");
+    if (value.half_extents.x==0 || value.half_extents.y==0 || value.half_extents.z==0 || value.radius==0 || value.capsule_half_height==0)
+        return error(ErrorCode::argument_mismatch,"Collision dimensions must be positive.");
+    if ((value.ignore_categories&value.overlap_categories)!=0)
+        return error(ErrorCode::argument_mismatch,"A collision category cannot be both ignored and overlapping.");
     if (value.shape==ShapeKind::triangle_mesh && value.motion!=MotionKind::stationary)
         return error(ErrorCode::argument_mismatch,"Triangle mesh collision requires a stationary body.");
-    if (value.cooked_shape && value.shape!=ShapeKind::triangle_mesh)
-        return error(ErrorCode::argument_mismatch,"Cooked collision requires a triangle mesh body.");
     return {};
 }
+Result<void> validate_body_settings(Runtime& runtime, const BodySettings& value) { return detail::check_value(runtime, value); }
 
 namespace detail {
 Result<EntityData> entity_data(Runtime& runtime, ObjectId object) {
@@ -164,7 +163,7 @@ Result<ObjectRoot> create_static_mesh_entity(World& world, const StaticMeshEntit
     if (auto ready = Access::state(world).admit(); !ready) return std::unexpected(ready.error());
     auto transform = canonical_transform(description.transform);
     if (!transform) return std::unexpected(transform.error());
-    if (auto valid = validate_material(description.material); !valid) return std::unexpected(valid.error());
+    if (auto valid = validate_material(world.runtime(), description.material); !valid) return std::unexpected(valid.error());
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;

@@ -223,8 +223,10 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     };
     auto data=nlohmann::json::parse(text);data["entities"][0]["components"][0]["roughness"]=2;
     kept_invalid(data,nlohmann::json::json_pointer("/entities/0/components/0/roughness"),"Invalid saved roughness bypassed World validation.");
+    data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["range"]=0;
+    kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/range"),"Invalid saved light range bypassed World validation.");
     data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["intensity"]=-1;
-    kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/intensity"),"Invalid saved light intensity bypassed World validation.");
+    kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/intensity"),"A saved light intensity outside its hard bound loaded without a diagnostic.");
     data=nlohmann::json::parse(text);auto& old_material=data["entities"][0]["components"][0];
     old_material.erase("roughness");old_material.erase("metallic");old_material.erase("emissive");
     auto old=take(Session::deserialize(data.dump(),project));const auto old_items=take(old->world().render_items());

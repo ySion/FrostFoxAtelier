@@ -6,12 +6,12 @@
 
 | 字段 | 默认值 | 合同 |
 | --- | --- | --- |
-| base_color | (0.19, 0.42, 0.57) | 线性 RGB，有限且每通道在 [0,1] |
-| roughness | 0.65 | 有限，[0,1]；0 保留为作者输入，着色器数值处理由 Renderer 负责 |
-| metallic | 0 | 有限，[0,1] |
-| emissive | (0,0,0) | 线性 HDR RGB，每通道有限且在 [0,65504]，与不可变 Surface 的 GBuffer 表达范围一致 |
+| base_color | (0.19, 0.42, 0.57) | 线性 RGB，每通道硬边界 [0,1] |
+| roughness | 0.65 | 硬边界 [0,1]；0 保留为作者输入，着色器数值处理由 Renderer 负责 |
+| metallic | 0 | 硬边界 [0,1] |
+| emissive | (0,0,0) | 线性 HDR RGB，每通道硬边界 [0,65504]（UI 范围 0–10），与不可变 Surface 的 GBuffer 表达范围一致 |
 
-`validate_material` 是公开的纯验证入口。`World::set_material` 按完整值验证后写入；`World::write` 对上述原生字段修改拥有式候选，再走同一验证和整值入口。两者使用停止状态、宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂及 render_items 也验证完整 Material。可信原生/Source 直接写入仍可能绕过 authoring setter，提取不会把无效数据交给 Renderer。
+Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMin / LockMax / HardMax`），没有跨字段校验器。Runtime 写入越界时夹到边界，NaN/Inf 拒绝；`validate_material(Runtime&, Material)` 用 Runtime 检查一个完整值。`World::set_material` 按完整值检查，失败即拒绝、不夹值；`World::write` 与其他字段相同，见 [World 编辑](README.md#编辑呈现与资源)。两者使用停止状态、宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂也检查完整 Material。可信原生直接写入不经硬边界，`render_items` 提取时用 Runtime 校验 material，越界项按对象诊断（field 为 `material.<字段>`，value 为越界值）并跳过，不会把无效数据交给 Renderer。
 
 ## 灯类型与参数
 
@@ -21,24 +21,24 @@
 
 | 字段 | 默认值 | 合同 |
 | --- | --- | --- |
-| kind | point | 只能取已声明种类 |
-| color | (1,1,1) | 有限、非负线性 RGB，可大于 1，作为强度的 RGB 乘数 |
-| intensity | 1 | 有限、非负；point 为 cd，rectangle / sky 为 cd/m²，directional 为 lux；编辑器创建 Sky Light 时初始化为 .03 |
-| range | 10 | 世界米；局部灯必须 >0，directional / sky 忽略且允许 0；不得为负或非有限 |
-| source_radius | 0 | point 为世界米；directional 为角半径，单位弧度且 <π/2；均非负有限；rectangle / sky 忽略 |
-| width / height | 1 / 1 | 世界米；rectangle 必须 >0，其余种类未使用但仍要求非负有限 |
+| kind | point | 只能取已声明种类（校验器） |
+| color | (1,1,1) | 非负线性 RGB（硬下限 0），可大于 1，作为强度的 RGB 乘数 |
+| intensity | 1 | 硬下限 0；point 为 cd，rectangle / sky 为 cd/m²，directional 为 lux；编辑器创建 Sky Light 时初始化为 .03 |
+| range | 10 | 世界米，硬下限 0；局部灯必须 >0（校验器），directional / sky 忽略且允许 0 |
+| source_radius | 0 | 硬下限 0；point 为世界米；directional 为角半径，单位弧度且 <π/2（校验器）；rectangle / sky 忽略 |
+| width / height | 1 / 1 | 世界米，硬下限 0；rectangle 必须 >0（校验器），其余种类未使用 |
 | two_sided | false | 矩形两面按同一 luminance 出光，不将每面强度减半 |
 | casts_shadow | true | 直接灯的投影意图；实际支持和预算由 Renderer 决定；sky 忽略 |
 
 单位按参考白色定义，color 再逐通道调制。这里保存作者数据，不在 World 引入曝光、色调映射、光通量换算或阴影资源管理。
 
-点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
+点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。这条乘积规则在 LightSettings 的类型校验器中，World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
 
-同一 World 最多有一个 Sky Light，停用的组件也占该位置。Entity 入场、向已入场 Entity 添加组件以及 Light Type 修改，在发布前检查唯一性；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段造成重复天光时，`light_items()` 按组合前序保留第一个，之后的天光以 `conflict` 诊断跳过（halt 策略下整次提取失败），不进行相加。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
+同一 World 最多有一个 Sky Light，停用的组件也占该位置。这条规则是 world 库登记的准入（`add_admission`，见 [World](README.md#编辑呈现与资源)）：Entity 入场、向已入场 Entity 添加组件在发布前检查唯一性；Light Type 修改先写入、再检查，冲突时恢复原值并拒绝；场景加载使用相同组成入口，重复天光被拒绝。删除后可创建新天光；撤销恢复也执行同一检查。可信代码直接改写原生字段造成重复天光时，`light_items()` 按组合前序保留第一个，之后的天光以 `conflict` 诊断跳过（halt 策略下整次提取失败），不进行相加。Sky Light 每通道 `color × intensity` 不得超过当前 HDR 表达上限 65504。
 
 首版 Sky Light 提供均匀天空入射辐射；位置、旋转、缩放、range、发光面尺寸和直接灯阴影开关不影响它。空间字段只保留统一组件组成能力。没有启用的天光组件时环境辐射为零；没有可见天空、HDRI 或方向性天空分布的隐式资源。
 
-`validate_light(LightSettings)`、`read_light(Runtime&, ObjectId)`、`World::set_light(ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 与 World 标量属性编辑使用同一整组验证，未知枚举、错误 Scalar 类型、NaN/Inf 或范围错误不会部分改写原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
+单字段规则是反射硬边界，跨字段规则（种类、局部灯 range、矩形尺寸、方向光角半径、天光与解析光乘积）是 LightSettings 登记的类型校验器，二者都由 Runtime 执行。`validate_light(Runtime&, LightSettings)`、`read_light(Runtime&, ObjectId)`、`World::set_light(ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 按完整值检查，失败即拒绝、不部分改写原值。World 标量属性编辑先经 Runtime 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再检查类型规则与准入，失败时恢复原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
 
 ## 提取与坐标
 

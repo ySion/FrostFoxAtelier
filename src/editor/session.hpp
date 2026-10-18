@@ -80,7 +80,8 @@ public:
     // Euler fields). Preview writes complete transforms in the same order;
     // commit_edit records one history entry, cancel_edit restores all.
     Result<void> begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session, bool amend_creation = false);
-    static constexpr float minimum_scale=.0001f, maximum_scale=10000.f;
+    // Bounds |scale|: negative axes mirror and zero is stored, as World accepts them.
+    static constexpr float maximum_scale=10000.f;
     // Stable gesture origin; previews never feed their converted values back into the next preview.
     Result<world::Trs> original_transform(std::uint64_t control_session, ObjectId component) const;
     Result<void> preview_transform(std::uint64_t control_session, std::span<const world::Trs>);
