@@ -14,6 +14,8 @@ Box、Sphere、Capsule 支持静态、运动学和动态体。世界缩放先按
 
 PhysicsScene 创建时向 World 登记为模拟系统，析构时注销；`World::update(dt)` 在 pre_physics 阶段之后调用它的 step。step 只协调可能参与物理的 Entity（Primitive 的 body 已启用、已有刚体或专用后端、拥有物理控制器组件），其余成员不进入逐帧检查；随后按 60 Hz 最多推进 8 个固定子步，超出上限的时间丢弃。`last_step()` 返回最近一次 step 的 `StepResult`：完成步号、子步数、剩余/丢弃时间、失效命令和接触通知溢出。登记的 `writes_pose` 声明物理写入位姿的 Entity：已有 body、角色、布娃娃或绑定目标的 Entity，以及带有启用的 Character / Ragdoll 组件的 Entity（控制器在下一次 step 创建之前即已声明）；`translate_owner` 对它们逐条拒绝。启用但被隔离拒绝的控制器（例如镜像 Entity 上的 Character、同一 Entity 上的双控制器）同样声明位姿：作者配置了控制器，位姿就归物理，该 Entity 的平移命令持续被拒绝，控制器修好后也不会出现位姿跳变。`set_paused`、`step_once` 控制子步；`on_before_step` 在消费命令前调用，`on_after_step` 在求解、位姿回写与接触收集后调用。运动学目标保留到被下一目标或传送替换，每个子步重新计算速度，到达后停止。位姿以物理体世界状态为准；场景先缓存全部刚体求解结果，再按 Entity 空间依赖顺序整批回写 Entity，保留局部缩放。移动使用力、冲量、运动学目标或显式传送；直接改写作者变换不替代这些物理命令。
 
+step 的 CPU 墙钟记为[帧阶段计时](../../foundation.md#帧阶段计时)的 `physics.*` 阶段（标记见 [physics/timing.hpp](../../../src/physics/timing.hpp)），挂在 World 的 `world.simulation` 下：`physics.step` 包含逐帧协调 `physics.reconcile`（成员 body 协调与组件协调）、每个固定子步一次的 `physics.substep`，以及子步全部完成后的接触通知分发 `physics.events`。子步内 `physics.solve` 是 Jolt 更新的墙钟，`physics.write_back` 覆盖位姿读出与 Entity 回写。
+
 暂停下重复 `step_once` 合并为一次请求，由完成的求解消耗。step 内任何失败（包括前/后回调）都停止 World，已完成的求解保留步号，World 停止丢弃待处理的单步请求与命令。当前使用单宿主同步推进，求解期间不开放外部 World/Runtime 访问或并发查询；Jolt 接触回调只收集值数据，业务通知在求解结束后交付。World 的 Tick 阶段每显示帧各执行一次（pre_physics 在全部子步之前，post_physics 与 late 在之后），每个固定子步的业务工作通过场景前/后回调接入。`on_before_step`、`on_after_step`、`on_contact` 是宿主 C++ 回调，失败按 World 级停机；将来向 Source 开放接触事件时，必须经 World 的逐对象隔离分发，不能直接走这几个回调。
 
 物理失败遵循 World 的[失败策略](../world/README.md#失败策略与诊断)，诊断以 physics 阶段写入同一 World 日志。isolate 下，普通 body 协调失败的 Entity 不保留普通 body，其余 Entity 照常模拟；位姿写入者冲突时拒绝普通 body，保留控制器组件；同一 Entity 上有多个位姿控制器（Character、Ragdoll 任意组合或同类重复）时，该 Entity 上写入位姿或依赖 body 的控制器组件（Character、Ragdoll、Vehicle、Force、KinematicMotion、DistanceConstraint）全部拒绝，与创建先后无关，只读 owner 空间的 Scene Query 照常工作；控制器组件逐项创建、采样与回写，失败项不创建或跳过该步，下一步重新采样；被拒绝的位姿不回写。halt 保持原行为：首个失败使该次 `World::update` 或生命周期调用失败。
@@ -30,7 +32,7 @@ PhysicsScene 创建时向 World 登记为模拟系统，析构时注销；`World
 
 ## 资源、编辑与场景保存
 
-`cook_triangle_mesh` 将静态网格生成带格式版本、Jolt 版本、源身份、缩放和摘要的二进制形状；读取时验证原始网格与 Cook 数据一致。这段头部就是 `BodySettings.cooked_shape` 的输入键：物理在建三角网格刚体时校验，形状不是 Triangle Mesh 时忽略该缓存，因此编辑 body 字段不清除它。`Project::cook_collision` 将工程 OBJ 的形状写入 `Cache/Physics`，`Project::collision` 校验并读取。编辑器场景文件持久化组件配置及网格来源，工程网格加载需要对应的有效 Cook 缓存，缺失、损坏或上游 Jolt 版本变化须重新 Cook。内置网格可直接从 CPU 网格创建三角形状，不生成工程缓存。场景加载先恢复网格、局部 TRS 与空间关系，再按 Primitive owner Entity 世界缩放配置物理。
+`cook_triangle_mesh` 将静态网格生成带格式版本、Jolt 版本、源身份、缩放和摘要的二进制形状；读取时验证原始网格与 Cook 数据一致。这段头部就是 `BodySettings.cooked_shape` 的输入键：物理在建三角网格刚体时校验，形状不是 Triangle Mesh 时忽略该缓存，因此编辑 body 字段不清除它。`Project::cook_collision` 将工程 OBJ 的形状写入 `Cache/Physics`；`Project::collision` 校验并读取，缓存缺失或不一致（源网格、缩放或上游 Jolt 版本变化）时从源网格重新 Cook 并写回。编辑器场景文件持久化组件配置及网格来源，加载不要求缓存预先存在。内置网格可直接从 CPU 网格创建三角形状，不生成工程缓存。场景加载先恢复网格、局部 TRS 与空间关系，再按 Primitive owner Entity 世界缩放配置物理。
 
 编辑器沿 Entity Structure 的统一入口添加 `CollisionComponent`；网格已有物理能力，可直接编辑 Parameters 中的 `body.enabled`、形状、运动模式、尺寸、碰撞类别/掩码及材料。`BodySettings` 和 `PhysicsMaterial` 由头文件反射生成，Source/JIT 直接访问同一字段。单字段规则是反射硬边界（尺寸、摩擦非负，恢复系数 [0,1]，类别 [0,15]，掩码不超过 16 位），写入越界时夹到边界；跨字段规则是 BodySettings 的类型校验器：形状与运动类型必须是已声明值，尺寸为正，Ignore 与 Overlap 掩码不相交，Triangle Mesh 只能 Stationary。`configure`、逐步协调与场景加载经 Runtime 检查同一规则。Scene v6 沿通用 `properties.body` 保存配置，没有第二份物理配置记录；`Session::configure_body` 仍提供完整配置事务。旧 v1–v5 只在严格导入时恢复到 Entity + 能力组件图，旧独立 Body 配置合并到对应 Primitive，保存即采用 Scene v6；不保留旧运行组件。不能无损迁移的自定义非 Primitive 根或多 Body 旧文档明确报错。碰撞可视化及 Cook 管理页尚未实现。
 

@@ -966,15 +966,29 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             row.help=property_help_.get(key,row.title,L"Resource binding",description);
             properties->push_back(std::move(row).item());
         };
+        const auto unavailable=[&](std::string_view key)->std::wstring {
+            const auto* item=session.unavailable(key);if(!item) return {};
+            return item->kind==world::DiagnosticKind::unreadable_resource?L"(unreadable) ":L"(missing) ";
+        };
         if(resource && !instance) {
             const auto asset=take(session.material_asset(object));
             constexpr std::array names{L"Base Color Texture",L"Roughness Texture",L"Metallic Texture",L"Normal Texture",L"Emissive Texture",L"Opacity Texture"};
             for(std::size_t i=0;i<names.size();++i) {
                 auto name=asset.textures[i].empty()?std::wstring(L"None"):wide(asset.textures[i]);
                 if(project) for(const auto& entry:project->entries()) if(entry.key==asset.textures[i]) {name=entry.path.stem().wstring();break;}
+                name=unavailable(asset.textures[i])+name;
                 selector(bind_material(object,{},Binding::Kind::material_texture,{}, {},i),names[i],std::move(name),"选择材质输入使用的 Texture 资源。None 清除该输入的贴图；修改参与材质撤销与保存。");
             }
         } else if(!resource && material_bindings) {
+            if(!mesh->mesh.resolved && !mesh->mesh.source.empty() &&
+                (group_matches || lowercase(L"Mesh "+wide(mesh->mesh.source)).find(folded)!=std::wstring::npos)) {
+                PropertyRow row;
+                row.key=bind_material(object,{},Binding::Kind::saved_data,{},"mesh");row.title=L"Mesh";row.kind=PropertyRow::Kind::enumeration;
+                row.enabled=false;row.change={row.key,false};row.choice=unavailable(mesh->mesh.source)+wide(mesh->mesh.source);row.target=row.key;
+                row.help=property_help_.get(row.key,row.title,L"Unavailable resource",
+                    "网格资源缺失或无法读取：组件不绘制，原引用和材质绑定原样保存。恢复资源后重新打开场景即可使用。");
+                properties->push_back(std::move(row).item());
+            }
             if(mesh->mesh.resolved) for(std::size_t i=0;i<mesh->mesh.resolved->materials().size();++i) {
                 const auto slot_name=world::material_slot_name(*mesh->mesh.resolved,i);std::wstring choice=L"Mesh Default";
                 const auto at=std::ranges::find(*material_bindings,slot_name,&world::MaterialBinding::slot);
@@ -983,6 +997,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     if(state.parent.registered()) state=take(material::read_material(runtime,state.parent.id()));
                     choice=wide(state.source);
                     if(project) for(const auto& entry:project->entries()) if(entry.key==state.source) {choice=entry.path.stem().wstring();break;}
+                    choice=unavailable(state.source)+choice;
                 }
                 selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+wide(slot_name),std::move(choice),"为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
             }
@@ -1001,6 +1016,8 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             row.key=bind_material(object,{},Binding::Kind::saved_data,{},path);row.title=caption;row.kind=PropertyRow::Kind::enumeration;
             row.enabled=false;row.change={row.key,false};row.choice=wide(entry.value);row.target=row.key;
             row.help=property_help_.get(row.key,row.title,L"Saved data · "+wide(world::name(entry.kind)),
+                entry.kind==world::DiagnosticKind::missing_resource || entry.kind==world::DiagnosticKind::unreadable_resource?
+                "依赖的资源缺失或无法读取，这些数据无法应用，会原样写回文件。恢复资源后重新打开场景即可应用；Edit > Discard Saved Data 可丢弃。":
                 "保存的场景数据无法应用到当前类型。它会原样写回文件；编辑对应字段或使用 Edit > Discard Saved Data 可丢弃。");
             saved_rows->push_back(std::move(row).item());
         }

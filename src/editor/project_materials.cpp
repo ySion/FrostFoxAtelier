@@ -35,10 +35,7 @@ Result<MaterialAsset> Project::material(std::string_view key) {
     try {
         const auto& item=entry(*this,key,AssetKind::material);
         auto asset=material_format::decode(json_format::parse(take(read_file(take(resolve(item.path))))));
-        asset.key=item.key;asset.name=item.path.stem().wstring();
-        for(std::size_t i=0;i<asset.textures.size();++i) if(!asset.textures[i].empty())
-            asset.description.textures[i].image=take(texture(asset.textures[i])).image;
-        static_cast<void>(material::Surface(asset.description));return asset;
+        asset.key=item.key;asset.name=item.path.stem().wstring();return asset;
     } catch(const std::exception& error) {return failure(error);}
 }
 Result<std::string> Project::import_texture(const std::filesystem::path& source) {
@@ -80,7 +77,9 @@ Result<void> Project::save_material(const MaterialAsset& asset) {
     try {
         const auto& item=entry(*this,asset.key,AssetKind::material);
         static_cast<void>(material::Surface(asset.description));
-        for(const auto& key:asset.textures) if(!key.empty()) static_cast<void>(take(texture(key)));
+        // A key the catalog no longer lists is a missing texture; saving keeps the reference.
+        for(const auto& key:asset.textures)
+            if(!key.empty() && std::ranges::find(entries_,key,&ProjectEntry::key)!=entries_.end()) static_cast<void>(take(texture(key)));
         take(write_file(take(resolve(item.path)),material_format::encode(asset).dump(2)+"\n"));
         return {}; // The caller records the successful save before refreshing the catalog.
     } catch(const std::exception& error) {return failure(error);}

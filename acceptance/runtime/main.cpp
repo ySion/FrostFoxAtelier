@@ -2113,6 +2113,7 @@ void verify_runtime_inheritance();
 void verify_reference_sequences();
 void verify_field_ranges();
 void verify_type_validation();
+void verify_array_elements();
 
 int main() {
     try {
@@ -2141,6 +2142,7 @@ int main() {
         verify_reference_sequences();
         verify_field_ranges();
         verify_type_validation();
+        verify_array_elements();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {

@@ -77,7 +77,7 @@ Result<void> register_types(Runtime& runtime) {
 Result<ObjectRoot> create_texture(Runtime& runtime,std::string_view source,ImageRef image) {
     if(auto ready=runtime.check_code_publication();!ready) return std::unexpected(ready.error());
     if(auto valid=validate_source(source);!valid) return std::unexpected(valid.error());
-    if(!image) return failure("A texture resource requires image content.");
+    if(!image && source.empty()) return failure("A texture without image content requires the persistent source it stands in for.");
     auto type=runtime.native_type<TextureResource>();if(!type) return std::unexpected(type.error());
     auto root=runtime.create(*type);if(!root) return std::unexpected(root.error());
     auto written=runtime.with_native<TextureResource>(root->id(),[&](auto& value)->Result<void> {

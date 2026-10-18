@@ -212,3 +212,137 @@ void verify_material_resources() {
     std::ofstream(evidence/"acceptance.txt")<<"Material resources acceptance: PASS\nRuntime identity, reflection, texture import, shared edits, explicit inheritance, cancel, Undo/Redo, save/reopen, duplicate, clear mesh, DSL, snapshot lifetime.\n";
     std::puts("Material resources acceptance: PASS");
 }
+// Deleted project resources: strict loading rejects the scene; tolerant loading keeps
+// every reference and the rest of the saved data, and saves the scene unchanged.
+void verify_missing_resources() {
+    namespace fs=std::filesystem;
+    const auto evidence=fs::absolute("out/missing-resources-"+std::to_string(GetCurrentProcessId())+"-"+
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto project=take(editor::Project::create(evidence/"Project"));const auto root=project.root();
+    std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
+    for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
+    take(editor::write_file(evidence/"Red.bmp",bmp));
+    take(editor::write_file(evidence/"Wall.mtl","newmtl wall\nKd 1 1 1\n"));
+    take(editor::write_file(evidence/"Wall.obj","mtllib Wall.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl wall\nf 1 2 3\n"));
+    const auto texture=take(project.import_texture(evidence/"Red.bmp"));
+    const auto stone=take(project.create_material("Content/Materials/Stone.material"));
+    const auto brick=take(project.create_material("Content/Materials/Brick.material"));
+    const auto moss=take(project.create_material("Content/Materials/Moss.material")); // Named only by the mesh that goes missing.
+    const auto wall=take(project.mesh(take(project.import_mesh(evidence/"Wall.obj"))));
+    const auto wall_slot=world::material_slot_name(*wall.mesh,wall.mesh->parts().front().material);
+    editor::Session document;auto& runtime=document.world().runtime();
+    const auto stone_resource=take(document.material_resource(project,stone));
+    const auto roughness=[&] {
+        const auto properties=take(document.properties(stone_resource.id()));
+        return std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name)->path;
+    }();
+    take(document.set_material_texture(project,stone_resource.id(),material::Input::base_color,texture));
+    take(document.set_property(stone_resource.id(),roughness,Scalar{.4f},201));take(document.save_material(project,stone));
+    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
+    const auto textured=component(document,document.selection().entity,document.types().static_mesh_component);
+    take(document.assign_material(project,textured,"slot/0",stone));
+    changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));
+    const auto instanced=component(document,document.selection().entity,document.types().static_mesh_component);
+    take(document.assign_material(project,instanced,"slot/0",brick));take(document.set_material_override(instanced,"slot/0",roughness,true));
+    take(document.set_property(take(world::read_material_bindings(runtime,instanced)).front().resource.id(),roughness,Scalar{.8f},202));
+    changed(document.create_static_mesh(wall,{4,0,0}));
+    const auto walled=component(document,document.selection().entity,document.types().static_mesh_component);
+    take(document.assign_material(project,walled,wall_slot,moss));
+    physics::BodySettings body;body.shape=physics::ShapeKind::triangle_mesh;take(document.configure_body(walled,body));
+    const auto saved=take(document.serialize());take(editor::write_file(root/"Content/Scenes/Main.scene",saved));
+
+    // Move each resource and its metadata aside; a fresh Project has no cached copy.
+    const auto backup=evidence/"Backup";fs::create_directory(backup);
+    std::vector<std::pair<fs::path,fs::path>> moved;
+    for(const auto& key:{texture,brick,wall.key}) {
+        const auto relative=std::ranges::find(project.entries(),key,&editor::ProjectEntry::key)->path;
+        auto metadata=relative;metadata+=L".asset.json";
+        for(const auto& file:{relative,metadata}) {moved.emplace_back(root/file,backup/file.filename());fs::rename(root/file,backup/file.filename());}
+    }
+    auto damaged=take(editor::Project::open(root));
+    require(!editor::Session::deserialize(saved,damaged,{},editor::LoadPolicy::strict),"Strict loading accepted a scene with missing resources.");
+    auto kept=take(editor::Session::deserialize(saved,damaged));auto& kept_runtime=kept->world().runtime();
+    require(take(kept->serialize())==saved,"Tolerant loading did not save the references to missing resources verbatim.");
+    const auto issue=[&](std::initializer_list<std::string> field) {
+        return std::ranges::count_if(kept->load_issues(),[&](const auto& item) {
+            return item.kind==world::DiagnosticKind::missing_resource && std::ranges::equal(item.field,field);
+        });
+    };
+    require(kept->load_issues().size()==4 && issue({"textures","base_color"})==1 && issue({"parent"})==1 && issue({"mesh"})==1 &&
+        issue({"properties","body","shape"})==1,"Missing texture, parent material, mesh and collision were not each reported once.");
+    const auto entities=take(kept->world().members());
+    const auto part=[&](std::size_t index){return component(*kept,entities[index].id(),kept->types().static_mesh_component);};
+    const auto shared=take(world::read_material_bindings(kept_runtime,part(0))).front().resource;
+    const auto shared_state=take(material::read_material(kept_runtime,shared.id()));
+    const auto missing_texture=take(material::read_texture(kept_runtime,shared_state.textures[0].id()));
+    require(shared_state.source==stone && shared_state.description.parameters.roughness==.4f && missing_texture.source==texture &&
+        !missing_texture.image && kept->unavailable(texture) && !kept->unavailable(stone),
+        "A missing texture replaced its material or lost the material's other parameters.");
+    const auto instance=take(world::read_material_bindings(kept_runtime,part(1))).front().resource;
+    const auto instance_state=take(material::read_material(kept_runtime,instance.id()));
+    const auto stand_in=instance_state.parent;
+    require(take(material::capture(kept_runtime,instance.id()))->description().parameters.roughness==.8f &&
+        take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(brick),
+        "A missing parent material lost its instance's overrides or reference.");
+    const auto mesh=take(world::read_static_mesh(kept_runtime,part(2))).mesh;
+    const auto retained=take(kept->retained(part(2)));
+    require(mesh.source==wall.key && !mesh.resolved && take(world::read_material_bindings(kept_runtime,part(2))).empty() &&
+        retained.entries.size()==1 && retained.entries[0].path==std::vector<std::string>{"materials"} &&
+        retained.entries[0].kind==world::DiagnosticKind::missing_resource &&
+        !take(physics::read_settings(kept_runtime,part(2))).cooked_shape,
+        "A missing mesh did not keep its binding table and skip its collision cook.");
+    require(!kept->begin_material_edit(stand_in.id(),203) && !kept->save_material(damaged,brick) &&
+        !kept->assign_material(damaged,part(0),"slot/0",brick) &&
+        !kept->set_material_texture(damaged,shared.id(),material::Input::base_color,texture) &&
+        std::ranges::none_of(take(kept->material_assets()),[&](const auto& asset){return asset.key==brick;}),
+        "A stand-in became editable, saveable or assignable as a project asset.");
+    const auto kept_properties=take(kept->properties(shared.id()));
+    const auto kept_roughness=std::ranges::find(kept_properties,std::string("parameters.roughness"),&editor::Property::name)->path;
+    take(kept->set_property(shared.id(),kept_roughness,Scalar{.5f},204));take(kept->save_material(damaged,stone));
+    const auto stone_file=root/std::ranges::find(damaged.entries(),stone,&editor::ProjectEntry::key)->path;
+    require(editor::material_format::decode(editor::json_format::parse(take(editor::read_file(stone_file)))).textures[0]==texture,
+        "Saving a material dropped the key of its missing texture.");
+    application::SceneSnapshot snapshot;take(snapshot.refresh(*kept));
+    take(kept->discard_retained(part(2)));
+    require(nlohmann::json::parse(take(kept->serialize()))["entities"][2]["components"][0]["materials"].empty(),"Discarding saved data kept the binding table.");
+    changed(kept->undo());require(take(kept->serialize())==saved,"Undoing the discard did not restore the binding table.");
+    take(kept->select(entities[2].id()));changed(kept->duplicate_selected());
+    const auto copied=nlohmann::json::parse(take(kept->serialize()));
+    require(copied["entities"][3]["components"][0]["materials"]==copied["entities"][2]["components"][0]["materials"],
+        "Duplicating a component without its mesh lost the kept binding table.");
+    take(editor::Session::deserialize(copied.dump(),damaged,{},editor::LoadPolicy::tolerant));
+
+    for(const auto& [original,aside]:moved) fs::rename(aside,original);
+    auto repaired=take(editor::Project::open(root)); // Cache/Physics has no entry for the wall; loading cooks it.
+    auto restored=take(editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict));
+    const auto restored_entities=take(restored->world().members());
+    const auto restored_part=[&](std::size_t index){return component(*restored,restored_entities[index].id(),restored->types().static_mesh_component);};
+    const auto restored_shared=take(world::read_material_bindings(restored->world().runtime(),restored_part(0))).front().resource;
+    require(take(material::capture(restored->world().runtime(),restored_shared.id()))->description().textures[0].image &&
+        take(world::read_material_bindings(restored->world().runtime(),restored_part(2))).size()==1 &&
+        take(physics::read_settings(restored->world().runtime(),restored_part(2))).cooked_shape,
+        "Restored resources did not resolve through the preserved references or rebuild the missing Cook cache.");
+    const auto moss_file=root/std::ranges::find(repaired.entries(),moss,&editor::ProjectEntry::key)->path;
+    take(editor::write_file(moss_file,"{"));
+    require(!editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict),"Strict loading accepted an unreadable material.");
+    auto unreadable=take(editor::Session::deserialize(saved,repaired));const auto& unreadable_issues=unreadable->load_issues();
+    take(editor::write_file(root/"Content/Scenes/Main.scene",take(unreadable->serialize())));
+    require(unreadable_issues.size()==1 && unreadable_issues[0].kind==world::DiagnosticKind::unreadable_resource &&
+        unreadable_issues[0].field==std::vector<std::string>{"source"} && !unreadable->open_material(repaired,moss) &&
+        take(unreadable->serialize())==saved && take(editor::read_file(moss_file))=="{",
+        "An unreadable material did not stand in with its own diagnostic, opened as an asset, or changed when the scene was saved.");
+    const auto wall_file=root/std::ranges::find(repaired.entries(),wall.key,&editor::ProjectEntry::key)->path;
+    take(editor::write_file(wall_file,"f 1 2 3\n"));
+    auto reloaded=take(editor::Project::open(root));auto broken=take(editor::Session::deserialize(saved,reloaded));
+    const auto unreadable_at=[&](std::initializer_list<std::string> field) {
+        return std::ranges::count_if(broken->load_issues(),[&](const auto& item) {
+            return item.kind==world::DiagnosticKind::unreadable_resource && std::ranges::equal(item.field,field);
+        });
+    };
+    const auto broken_wall=component(*broken,take(broken->world().members())[2].id(),broken->types().static_mesh_component);
+    require(unreadable_at({"mesh"})==1 && unreadable_at({"properties","body","shape"})==1 &&
+        take(broken->retained(broken_wall)).entries.at(0).kind==world::DiagnosticKind::unreadable_resource && take(broken->serialize())==saved,
+        "An unreadable mesh did not stand in with unreadable_resource diagnostics and saved data.");
+    std::ofstream(evidence/"acceptance.txt")<<"Missing resources acceptance: PASS\nStrict rejection, verbatim save, texture/material/mesh stand-ins, kept bindings, skipped collision cook, discard/undo, duplicate, restore, Cook rebuild, unreadable asset.\n";
+    std::puts("Missing resources acceptance: PASS");
+}

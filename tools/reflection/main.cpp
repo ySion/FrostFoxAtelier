@@ -406,8 +406,17 @@ std::optional<std::string> math_value(QualType type, ASTContext& context) {
     return TypeName::getFullyQualifiedName(type.getCanonicalType(), context, context.getPrintingPolicy(), true);
 }
 
-// Range bounds use the exact leaf scalar; math vectors apply them per component.
+const ClassTemplateSpecializationDecl* array_specialization(QualType type) {
+    const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
+    const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(record);
+    return specialization && specialization->getSpecializedTemplate()->getQualifiedNameAsString() == "atelier::Array"
+        ? specialization : nullptr;
+}
+
+// Range bounds use the exact leaf scalar; math vectors apply them per component and
+// Arrays of scalars or vectors per element.
 std::optional<std::string> range_leaf(QualType type, ASTContext& context) {
+    if (const auto* array = array_specialization(type)) type = array->getTemplateArgs()[0].getAsType();
     type = type.getCanonicalType();
     if (const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(type->getAsCXXRecordDecl())) {
         if (!math_value(type, context) || specialization->getSpecializedTemplate()->getQualifiedNameAsString() != "atelier::math::BasicVector")
@@ -436,13 +445,6 @@ template<class T> std::optional<std::string> range_bound(const std::string& text
         return std::string("Scalar{") + (std::is_same_v<T, std::int32_t> ? "std::int32_t{" : "std::uint32_t{") +
             std::to_string(value) + (std::is_same_v<T, std::int32_t> ? "}}" : "u}}");
     }
-}
-
-const ClassTemplateSpecializationDecl* array_specialization(QualType type) {
-    const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
-    const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(record);
-    return specialization && specialization->getSpecializedTemplate()->getQualifiedNameAsString() == "atelier::Array"
-        ? specialization : nullptr;
 }
 
 bool contains_reference_storage(QualType type, ASTContext& context, std::set<const CXXRecordDecl*>& visited) {
@@ -564,7 +566,7 @@ void members(State& state, Type& type, ASTContext& context) {
                 [&](const char* name) { return options->contains(name); })) {
             const auto leaf = range_leaf(field->getType(), context);
             if (!leaf) {
-                state.error(field->getLocation(), "Field ranges require a float, double, int32, uint32 or math vector field."); continue;
+                state.error(field->getLocation(), "Field ranges require a float, double, int32, uint32 or math vector field, or an Array of them."); continue;
             }
             bool valid = true;
             for (const std::string side : {"Min", "Max"})

@@ -98,7 +98,7 @@ Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Applic
 
 `FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-CPU 墙钟分段同样沿该快照返回：`cpu_prepare_us` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`cpu_encode_us` 覆盖显示模式失效处理及场景/UI 绘制命令录制。`cpu_frame` 透传本次 `Context::frame` 的提交、Present、帧槽等待和回收分段，字段定义以 [RHI 合同](../rhi/contract.md) 为准。它们在每次 render 开始清零，不复用上一帧；提前 skipped 时没有提交序号。CPU 的 `frame_sequence` 属于本次提交，不能与读取时可能更早的 Scene Lit 完成 GPU 样本混为同帧。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加；总 Application 步进时间应由宿主独立测量。
+CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制；`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
 
 | 字段 | 统计边界 |
 | --- | --- |

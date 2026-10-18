@@ -49,6 +49,18 @@ void verify_ranges(Runtime& runtime) {
     require(take(runtime.read(probe.id(), emissive_path)) == Scalar{100.0f}, "An unlocked UI maximum constrained a generated field.");
     take(runtime.write(probe.id(), emissive_path, Scalar{1e6f}));
     require(take(runtime.read(probe.id(), emissive_path)) == Scalar{65504.0f}, "A generated hard maximum was not enforced.");
+
+    // An Array<double> range bounds each element on insertion and on element writes.
+    const auto weights = take(runtime.find_field(type, "weights"));
+    require(field_info(runtime, type, "weights").range == FieldRange{std::nullopt, Scalar{0.5}, Scalar{0.0}, Scalar{1.0}},
+        "A generated Array range lost its element bounds.");
+    const std::array weights_path{weights};
+    const double heavy = 4.0;
+    take(runtime.insert_element(probe.id(), weights_path, 0, {take(runtime.native_type<double>()), &heavy}));
+    const std::array first{weights, take(runtime.element(take(runtime.native_type<Array<double>>()), 0))};
+    require(take(runtime.read(probe.id(), first)) == Scalar{1.0}, "An inserted Array element escaped its generated hard bound.");
+    take(runtime.write(probe.id(), first, Scalar{-3.0}));
+    require(take(runtime.read(probe.id(), first)) == Scalar{0.0}, "An Array element write escaped its generated hard bound.");
 }
 void verify_field_presentation(Runtime& runtime) {
     const auto sample_type = take(runtime.native_type<Sample>());

@@ -141,11 +141,9 @@ void verify_project_document() {
     require(fs::is_regular_file(collision_file) && !collision_bytes->empty(),
         "Imported mesh collision was not cooked into the project cache.");
     take(editor::write_file(collision_file,"broken"));
-    require(!project.collision(resource,collision_scale),"Corrupt collision cache was accepted.");
-    take(project.cook_collision(resource,collision_scale));
-    require(*take(project.collision(resource,collision_scale))==*collision_bytes,
-        "Re-cooking did not restore the project collision asset.");
-    require(!project.collision(resource,{1,1,1}),"Collision cache accepted a different scale.");
+    require(*take(project.collision(resource,collision_scale))==*collision_bytes && take(editor::read_file(collision_file))==*collision_bytes,
+        "A corrupt collision cache was not rebuilt from its source mesh and written back.");
+    require(*take(project.collision(resource,{1,1,1}))!=*collision_bytes,"Collision cache served a different scale.");
     {
         // Asset rename keeps the stable resource key (its sidecar moves with it), refuses
         // collisions, bad names and configured paths, and leaves the original on failure.
@@ -228,7 +226,7 @@ void verify_project_document() {
         {
             editor::Session imported;changed(imported.add_entity());const auto parent=imported.selection().entity;
             take(imported.set_transform(parent,{{10,0,0},{},{2,2,2}}));
-            const math::Vector3 final_scale{4,6,8};take(project.cook_collision(resource,final_scale));
+            const math::Vector3 final_scale{4,6,8}; // Not cooked yet: the import cooks it.
             changed(imported.instantiate_subtree(physical_scene,project,parent));const auto child=imported.selection().entity;
             const auto primitive=component(imported,child,imported.types().static_mesh_component);
             require(take(world::parent_entity(imported.world().runtime(),child))==parent &&
@@ -238,14 +236,6 @@ void verify_project_document() {
             require(imported.physics_scene()->body_count()==1,"Prospective Cook data did not create an actual triangle body.");changed(imported.stop());
             changed(imported.undo());require(take(imported.world().members()).size()==1,"Imported physical subtree Undo left published children.");
             changed(imported.redo());require(imported.selection().entity==child,"Imported physical subtree Redo changed identity.");
-        }
-        {
-            editor::Session imported;changed(imported.add_entity());const auto parent=imported.selection().entity;
-            take(imported.set_transform(parent,{{0,0,0},{},{3,3,3}}));const auto before=take(imported.serialize());
-            const auto cursor=imported.undo_count();
-            require(!imported.instantiate_subtree(physical_scene,project,parent) && take(imported.serialize())==before &&
-                imported.undo_count()==cursor && imported.selection().entity==parent,
-                "Missing prospective-scale Cook data partially published a composition or changed document identities/history.");
         }
         auto restored_physics=take(editor::Session::deserialize(physical_scene,project));
         require(take(restored_physics->serialize())==physical_scene,
@@ -258,9 +248,11 @@ void verify_project_document() {
         changed(simulation.stop());
         physics_scene.reset();
         take(editor::write_file(collision_file,"invalid"));
-        require(!editor::Session::deserialize(physical_scene,project),
-            "Scene accepted a corrupt cooked collision asset.");
-        take(project.cook_collision(resource,collision_scale));
+        auto rebuilt=take(editor::Session::deserialize(physical_scene,project,{},editor::LoadPolicy::strict));
+        const auto rebuilt_body=component(*rebuilt,take(rebuilt->world().members()).front().id(),rebuilt->types().static_mesh_component);
+        require(*take(physics::read_settings(rebuilt->world().runtime(),rebuilt_body)).cooked_shape==*collision_bytes &&
+            take(editor::read_file(collision_file))==*collision_bytes,
+            "A corrupt Cook cache rejected the scene instead of being rebuilt from its source mesh.");
     }
     require(!editor::Session::deserialize("{\"version\":999,\"entities\":[]}",project),"Unknown scene version was accepted.");
     require(!editor::Session::deserialize("{broken",project),"Broken scene was accepted.");
@@ -347,20 +339,25 @@ void verify_project_document() {
     const auto updated_mesh=take(project.mesh(resource)).mesh;
     require(updated_mesh!=original_mesh && updated_mesh->vertices()[1].position[0]==4 && original_mesh->vertices()[1].position[0]==1,
         "Changed mesh did not create a new resource version while preserving old live geometry.");
-    require(!project.collision(resource,collision_scale),"Collision cache accepted changed source geometry.");
-    take(project.cook_collision(resource,collision_scale));
     require(*take(project.collision(resource,collision_scale))!=*collision_bytes,
-        "Changed geometry produced the old cooked shape.");
+        "Changed geometry was served the stale cooked shape.");
     fs::remove_all(folder/"Cache"); // Rebuildable data cannot be required to open the project.
     const auto moved=evidence/L"搬移后";fs::rename(folder,moved);
     auto reopened=take(editor::Project::open(moved));
-    require(!reopened.collision(resource,collision_scale),"Removed collision cache was silently reused.");
-    take(reopened.cook_collision(resource,collision_scale));
-    require(bool(reopened.collision(resource,collision_scale)),"Reopened project could not rebuild collision cache.");
     auto restored=take(editor::Session::deserialize(take(editor::read_file(take(reopened.resolve(reopened.startup_scene())))),reopened));
     require(take(restored->serialize())==saved,"Moving a project or removing Cache broke the scene.");
     fs::rename(moved/"Content/Meshes/Renamed.obj",moved/"Content/Meshes/Renamed.missing");
-    take(reopened.refresh());require(!editor::Session::deserialize(saved,reopened),"A missing resource was silently replaced.");
+    take(reopened.refresh());require(!editor::Session::deserialize(saved,reopened,{},editor::LoadPolicy::strict),"A missing resource was silently replaced.");
+    {
+        auto meshless=take(editor::Session::deserialize(saved,reopened));
+        const auto issues=meshless->load_issues();
+        const auto mesh_issue=std::ranges::find(issues,world::DiagnosticKind::missing_resource,&world::Diagnostic::kind);
+        const auto restored=component(*meshless,take(meshless->world().members()).front().id(),meshless->types().static_mesh_component);
+        const auto binding=take(world::read_static_mesh(meshless->world().runtime(),restored)).mesh;
+        require(issues.size()==1 && mesh_issue!=issues.end() && mesh_issue->field==std::vector<std::string>{"mesh"} && mesh_issue->object==restored &&
+            binding.source==resource && !binding.resolved && take(meshless->serialize())==saved,
+            "Tolerant loading did not keep a missing mesh reference verbatim with one diagnostic.");
+    }
     require(take(document.serialize())==saved,"Failed loading changed the original document.");
     const auto material=take(world::read_static_mesh(document.world().runtime(),mesh)).material;
     take(document.world().runtime().with_native<world::StaticMeshComponent>(mesh,[](auto& value)->Result<void>{value.material.base_color.x=2;return {};}));

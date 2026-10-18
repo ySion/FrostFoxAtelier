@@ -1,5 +1,6 @@
 #include "physics/physics.hpp"
 #include "physics/components.hpp"
+#include "physics/timing.hpp"
 #include "runtime/native.hpp"
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
@@ -757,6 +758,8 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     return state->owner == ObjectId{} ? Result<void>{} : reconcile(state->owner);
 }
 Result<void> PhysicsScene::step(float elapsed) {
+    timing::Scope timed{phases::step};
+    std::optional<timing::Scope> reconciling{std::in_place, phases::reconcile};
     // Body settings are sampled every frame, including direct field writes.
     // Other members hold no body or pose driver, so reconcile is a no-op for them.
     auto& runtime = world_.runtime();
@@ -795,6 +798,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         }
     }
     if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
+    reconciling.reset();
     constexpr float fixed = 1.f / 60.f;
     constexpr std::uint32_t maximum_steps = 8;
     StepResult result{.completed_step = completed_step_};
@@ -808,6 +812,7 @@ Result<void> PhysicsScene::step(float elapsed) {
     if (!paused_) single_step_ = false;
     while (((stepping_once && result.steps == 0) ||
         (!paused_ && remaining_ + 1e-7f >= fixed)) && result.steps < maximum_steps) {
+        timing::Scope substep{phases::substep};
         if (before_step_) {
             try {
                 auto called = before_step_(completed_step_ + 1, fixed);
@@ -875,8 +880,12 @@ Result<void> PhysicsScene::step(float elapsed) {
                 impl_->system.GetDefaultBroadPhaseLayerFilter(Impl::moving_layer),
                 impl_->system.GetDefaultLayerFilter(Impl::moving_layer), {}, {}, impl_->temporary);
         }
-        if (impl_->system.Update(fixed, 1, &impl_->temporary, &impl_->jobs) != JPH::EPhysicsUpdateError::None)
-            return failure(ErrorCode::invocation_failed, "Jolt physics step failed.");
+        {
+            timing::Scope solving{phases::solve};
+            if (impl_->system.Update(fixed, 1, &impl_->temporary, &impl_->jobs) != JPH::EPhysicsUpdateError::None)
+                return failure(ErrorCode::invocation_failed, "Jolt physics step failed.");
+        }
+        std::optional<timing::Scope> writing{std::in_place, phases::write_back};
         auto& poses=impl_->poses;
         poses.clear();poses.reserve(impl_->bodies.size()+impl_->characters.size());
         for(const auto& [component,body]:impl_->bodies) {
@@ -894,6 +903,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         }
         if(auto children=components_->append_poses(poses);!children) return std::unexpected(children.error());
         if(auto written=world_.apply_simulation_transforms(poses);!written) return std::unexpected(written.error());
+        writing.reset();
         if (!stepping_once) remaining_ = std::max(0.f, remaining_ - fixed);
         else single_step_ = false;
         ++result.steps;
@@ -912,6 +922,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         }
     }
     result.remaining = remaining_;
+    timing::Scope dispatching{phases::events};
     std::vector<ContactEvent> events;
     events.swap(impl_->ready_events);
     for (const auto& event : events) {

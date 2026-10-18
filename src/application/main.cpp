@@ -18,7 +18,7 @@ int verify_editor_source(atelier::application::Application&, const char* output_
 int verify_editor_edit_mode(atelier::application::Application&, const char* output_directory);
 int verify_editor_shortcuts(atelier::application::Application&, const char* output_directory);
 int verify_editor_surfaces(atelier::application::Application&, const char* output_directory);
-int verify_editor_render_performance(atelier::application::Application&, const char* output_directory);
+int profile_editor_render_performance(atelier::application::Application&, const char* output_directory);
 int verify_editor_tooltips(atelier::application::Application&, const char* output_directory);
 int verify_editor_dialogs(atelier::application::Application&, const char* output_directory);
 int capture_editor_snapshot(atelier::application::Application&, const char* output_directory);
@@ -51,9 +51,9 @@ int wmain(int argc, wchar_t** argv) {
             if(option==L"--no-control") no_control=true;
             else if(option==L"--no-activate") no_activate=true;
             else if(option==L"--gpu-validation") gpu_validation=true;
-            else if(option==L"--acceptance-render-performance") {
+            else if(option==L"--profile-render-performance") {
                 if(render_performance_output || ++i==argc)
-                    throw std::runtime_error("--acceptance-render-performance requires one absolute output directory.");
+                    throw std::runtime_error("--profile-render-performance requires one absolute output directory.");
                 render_performance_output=std::filesystem::path(argv[i]);
                 if(!render_performance_output->is_absolute())
                     throw std::runtime_error("Render performance output directory must be absolute.");
@@ -97,10 +97,10 @@ int wmain(int argc, wchar_t** argv) {
         const bool project=(argc==3 || preview) && std::wstring_view(argv[1])==L"--project";
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
         if(render_performance_output && !project)
-            throw std::runtime_error("--acceptance-render-performance requires --project, optionally followed by the existing --scene and camera arguments.");
+            throw std::runtime_error("--profile-render-performance requires --project, optionally followed by the existing --scene and camera arguments.");
         if (argc != 1 && !dungeons && !dungeons_acceptance && !physic && !physics_examples && !examples && !sponza && !preview && !((acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || viewport || project || create) && argc == 3) &&
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
-            std::fprintf(stderr, "Usage: atelier_editor [--acceptance-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version|--physic|--dungeons] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-tooltips|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
+            std::fprintf(stderr, "Usage: atelier_editor [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version|--physic|--dungeons] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-viewport|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-tooltips|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
         auto example_workspace=examples||physics_examples||dungeons_acceptance?std::filesystem::absolute(argv[2])/"Workspace":std::filesystem::path{};
         // Each dedicated example run must consume current templates. Product workspaces
@@ -125,7 +125,7 @@ int wmain(int argc, wchar_t** argv) {
             if(!view) throw std::runtime_error(view.error().message);
         }
         if(render_performance_output)
-            return verify_editor_render_performance(app,atelier::editor::utf8(render_performance_output->wstring()).c_str());
+            return profile_editor_render_performance(app,atelier::editor::utf8(render_performance_output->wstring()).c_str());
         if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());
         if(physics_examples) return verify_physics_examples_window(app,atelier::editor::utf8(argv[2]).c_str());
         if(dungeons_acceptance) return verify_dungeons_window(app,atelier::editor::utf8(argv[2]).c_str());

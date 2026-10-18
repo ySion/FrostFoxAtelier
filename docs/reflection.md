@@ -75,7 +75,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 - `Min / Max` 是 UI 范围，供滑条和数值阶梯使用；单独出现时不约束写入，编辑器允许输入范围外的值。
 - `LockMin / LockMax` 把同侧 UI 边界同时作为硬边界（Houdini strict range），需要同侧的 `Min / Max`。
 - `HardMin / HardMax` 单独指定同侧硬边界并隐含锁定，用于 UI 范围远小于合法范围的字段；同侧不能再写 `LockX`。只有硬边界、没有 UI 边界的一侧合法，滑条范围由 UI 自行决定。
-- 适用于 float、double、int32、uint32 字段及 float/double 数学向量；向量的范围逐分量生效。bool、枚举、四元数、矩阵、记录和引用字段报错。值按字段叶标量的精确类型解析：浮点接受有限的十进制写法，整数拒绝小数、负 uint 和溢出。生成代码用十六进制浮点保持位精确。
+- 适用于 float、double、int32、uint32 字段、float/double 数学向量以及这些类型的 `Array<T>`；向量的范围逐分量生效，数组的范围逐元素生效。bool、枚举、四元数、矩阵、记录和引用字段报错。值按字段叶标量的精确类型解析：浮点接受有限的十进制写法，整数拒绝小数、负 uint 和溢出。生成代码用十六进制浮点保持位精确。
 - 大小顺序、UI 边界须落在硬边界内、描述型默认值须满足硬边界等语义检查由 Runtime 发布统一执行，规则见[字段范围与写入约束](runtime-model.md#字段范围与写入约束)。
 
 生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义；`.source` 类字段暂不能声明范围，建议语法见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
