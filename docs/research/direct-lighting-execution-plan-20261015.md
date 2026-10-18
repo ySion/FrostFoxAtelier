@@ -1,6 +1,10 @@
 # 直接光、缓存阴影与 1440p 性能执行计划
 
-状态：2026-10-17 主目录基础链路与精确工作复用已完成本批 GPU 端到端和地牢实测，候选尚未替换默认路径；配置与实际通过范围以[验收记录](../modules/renderer/acceptance.md#基础链路与精确工作复用2026-10-17)为准。原生 1440p、无 VSync、静止相机的默认 Lit 为 40.81 接受帧/秒，A 精确选灯＋RT 为 46.32；DI 仍约 13.04 / 10.30 ms，DDGI 降至 3.43 / 3.18 ms。B 缓存阴影已知成本和地砖自阴影暗楔尚未解决。C 默认迁移/旧实现退役与动态 90 FPS 目标均未完成。规划时主目录为 `5e5d73c8`，包含阶段集成 `1076af8d`；不回退随后进入的编辑器改动。
+状态：2026-10-18 rendering 工作树的 Lit 帧率批次已在本地分支提交，配置与通过范围以[验收记录](../modules/renderer/acceptance.md#lit-帧率批次2026-10-18)为准。原生 1440p、无 VSync 的静止 A 为 61.50 接受帧/秒（八主 GPU scope 15.88 ms），相机持续环绕为 53.77（18.23 ms）；默认 ReSTIR 为 44.70（22.03 ms）。距 90 FPS / 11.1 ms 目标，A 静止仍差约 4.8 ms。C 默认迁移/旧实现退役仍未完成；B 缓存阴影的已知问题不变。
+
+下一批候选（尚未实测，均为推断）：其一，直接光可见性 3.04 ms，shadow 总计数约 738 万条/帧（含 DDGI 探针命中的可见性，不全属直接光），可参考 [MegaLights](https://dev.epicgames.com/documentation/en-us/unreal-engine/megalights-in-unreal-engine) 的固定逐像素射线预算与时间复用。其二，A 的 temporal resolve 1.82 ms 只对列出的半影 tile 做完整重建；默认路径的 resolve 结构开销 .25 ms 需要消除。其三，环绕时 DDGI gather 3.14 ms，可按世界位置重投影代表点的 LOS 缓存，而不是整帧失效。其四，GTAO 1.87 ms 可在验证质量后改为半分辨率，可参考 [XeGTAO](https://github.com/GameTechDev/XeGTAO) 与 [Jimenez 2016](https://www.activision.com/cdn/research/PracticalRealtimeStrategiesTRfinal.pdf)。其五，SSSR 1.58 ms。紧凑光源的代表点镜面依据 [Karis 2013](https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf)。另外，`--scene-lit` 的 Edit/Play 收敛检查在 `d2b6da2b` 基线上已经失败，并挡住后续检查，应先查清根因。
+
+2026-10-17 状态：主目录基础链路与精确工作复用已完成本批 GPU 端到端和地牢实测，候选尚未替换默认路径；配置与实际通过范围以[验收记录](../modules/renderer/acceptance.md#基础链路与精确工作复用2026-10-17)为准。原生 1440p、无 VSync、静止相机的默认 Lit 为 40.81 接受帧/秒，A 精确选灯＋RT 为 46.32；DI 仍约 13.04 / 10.30 ms，DDGI 降至 3.43 / 3.18 ms。B 缓存阴影已知成本和地砖自阴影暗楔尚未解决。C 默认迁移/旧实现退役与动态 90 FPS 目标均未完成。规划时主目录为 `5e5d73c8`，包含阶段集成 `1076af8d`；不回退随后进入的编辑器改动。
 
 2026-10-16 用户调整优先级：用户反馈非 Lit 模式同样缓慢，要求暂缓光照路径优化，先排查并优化完整编辑器链路。以同地牢、同相机、原生 1440p 的 Smooth / MatCap 建立无 VSync 基线，分别记录 Application 控件、场景快照、Renderer 命令录制与 RHI 提交/Present/帧槽等待；最大化视口的结果不替代正常停靠布局。应用与编辑器、Renderer、RHI 各自修复实际热点，GPU 验收由渲染负责人串行调度。此前出现游戏竞争负载后的延期已经结束；受竞争影响的旧 FPS 继续排除，10 月 17 日的新测量及桌面后台条件单独记录。
 

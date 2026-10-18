@@ -17,6 +17,17 @@ Texture2D<float> lit_ao_raw;
 Texture2D<float2> lit_ao_previous; // AO visibility, effective history length.
 RWTexture2D<float2> lit_ao_history_output;
 RWTexture2D<float> lit_ao_resolved_output;
+// GTAO working depth: view-space z and four reduced levels. Window
+// pixels without a surface inside the viewport hold LIT_AO_EMPTY.
+RWTexture2D<float> lit_ao_depth_output0;
+RWTexture2D<float> lit_ao_depth_output1;
+RWTexture2D<float> lit_ao_depth_output2;
+RWTexture2D<float> lit_ao_depth_output3;
+RWTexture2D<float> lit_ao_depth_output4;
+Texture2D<float> lit_ao_depth;
+float4 lit_ao_view_x, lit_ao_view_y; // view x = ndc.x*(z*a+b)+(z*c+d); jittered projection, no skew
+float4 lit_ao_view_z; // P22,P32,P23,P33 of the row-vector projection
+static const float LIT_AO_EMPTY = 3e38;
 
 Texture2D<float2> lit_brdf_lut;
 RWTexture2D<float2> lit_brdf_output;
@@ -110,21 +121,93 @@ float lit_gtao_arc(float angle, float normal_angle) {
     return .25 * (-cos(2 * angle - normal_angle) + cos(normal_angle) +
                    2 * angle * sin(normal_angle));
 }
+float lit_ao_window_depth(uint2 q) {
+    if (any(q >= lit_size_frame.xy) || !lit_inside(q)) return LIT_AO_EMPTY;
+    float device = lit_depth.Load(int3(q, 0));
+    if (lit_is_background_depth(device)) return LIT_AO_EMPTY;
+    return (lit_ao_view_z.y - device * lit_ao_view_z.w) / (device * lit_ao_view_z.z - lit_ao_view_z.x);
+}
+// A reduced texel averages the surfaces near the farthest one in its footprint
+// (the XeGTAO depth-MIP idea): a thin foreground edge must not stand in for
+// the wider background at distant taps. Empty texels never become occluders.
+float lit_ao_reduce(float4 z) {
+    float farthest = -LIT_AO_EMPTY;
+    [unroll] for (uint i = 0; i < 4; ++i) if (z[i] < LIT_AO_EMPTY) farthest = max(farthest, z[i]);
+    if (farthest == -LIT_AO_EMPTY) return LIT_AO_EMPTY;
+    float range = .75 * lit_controls.z, from = range * (1 - .615), falloff = max(range * .615, 1e-6);
+    float sum = 0, weight = 0;
+    [unroll] for (uint j = 0; j < 4; ++j) if (z[j] < LIT_AO_EMPTY) {
+        float w = saturate(1 - max(0, farthest - z[j] - from) / falloff);
+        sum += w * z[j]; weight += w;
+    }
+    return sum / weight;
+}
+uint2 lit_ao_level_size(uint level) { return max(lit_size_frame.xy >> level, 1); }
+groupshared float lit_ao_depth_tile[64];
+// One 8x8 group owns a 16x16 window block and writes all five levels of it.
+[numthreads(8, 8, 1)]
+void lit_gtao_depth_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex) {
+    uint2 base = group.xy * 16 + local.xy * 2;
+    float4 z = float4(lit_ao_window_depth(base), lit_ao_window_depth(base + uint2(1, 0)),
+                      lit_ao_window_depth(base + uint2(0, 1)), lit_ao_window_depth(base + uint2(1, 1)));
+    [unroll] for (uint i = 0; i < 4; ++i) {
+        uint2 q = base + uint2(i & 1, i >> 1);
+        if (all(q < lit_size_frame.xy)) lit_ao_depth_output0[q] = z[i];
+    }
+    float reduced = lit_ao_reduce(z);
+    uint2 q1 = group.xy * 8 + local.xy;
+    if (all(q1 < lit_ao_level_size(1))) lit_ao_depth_output1[q1] = reduced;
+    lit_ao_depth_tile[lane] = reduced;
+    GroupMemoryBarrierWithGroupSync();
+    if (all(local.xy % 2 == 0)) {
+        reduced = lit_ao_reduce(float4(lit_ao_depth_tile[lane], lit_ao_depth_tile[lane + 1], lit_ao_depth_tile[lane + 8], lit_ao_depth_tile[lane + 9]));
+        uint2 q2 = group.xy * 4 + local.xy / 2;
+        if (all(q2 < lit_ao_level_size(2))) lit_ao_depth_output2[q2] = reduced;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (all(local.xy % 2 == 0)) lit_ao_depth_tile[lane] = reduced;
+    GroupMemoryBarrierWithGroupSync();
+    if (all(local.xy % 4 == 0)) {
+        reduced = lit_ao_reduce(float4(lit_ao_depth_tile[lane], lit_ao_depth_tile[lane + 2], lit_ao_depth_tile[lane + 16], lit_ao_depth_tile[lane + 18]));
+        uint2 q3 = group.xy * 2 + local.xy / 4;
+        if (all(q3 < lit_ao_level_size(3))) lit_ao_depth_output3[q3] = reduced;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (all(local.xy % 4 == 0)) lit_ao_depth_tile[lane] = reduced;
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0) {
+        reduced = lit_ao_reduce(float4(lit_ao_depth_tile[0], lit_ao_depth_tile[4], lit_ao_depth_tile[32], lit_ao_depth_tile[36]));
+        if (all(group.xy < lit_ao_level_size(4))) lit_ao_depth_output4[group.xy] = reduced;
+    }
+}
+float2 lit_ao_ndc(float2 uv) {
+    return ((uv * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw) * float2(2, -2) + float2(-1, 1);
+}
+float3 lit_ao_view(float2 uv, float z) {
+    float2 ndc = lit_ao_ndc(uv);
+    return float3(ndc.x * (z * lit_ao_view_x.x + lit_ao_view_x.y) + z * lit_ao_view_x.z + lit_ao_view_x.w,
+                  ndc.y * (z * lit_ao_view_y.x + lit_ao_view_y.y) + z * lit_ao_view_y.z + lit_ao_view_y.w, z);
+}
+// Same integration as before, in view space: every tap is one point load from
+// the level matching its distance plus a few multiply-adds, not a matrix inverse.
 [numthreads(8, 8, 1)]
 void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
     uint2 p;
     if (!lit_screen_pixel(id.xy, p)) return;
     if (!lit_post_surface(p) || lit_controls.z <= 0 || (lit_effect_flags & 4) == 0) { lit_ao_output[p] = 1; return; }
     float2 uv = lit_post_uv(p);
-    float depth = lit_depth.Load(int3(p, 0));
-    float3 center = lit_world(uv, depth);
-    float3 view_direction = lit_view_direction(uv);
-    float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(p, 0)).xyz);
+    float z = lit_ao_depth.Load(int3(p, 0));
+    float2 ndc = lit_ao_ndc(uv);
+    // Toward the camera along this pixel's ray, for perspective and orthographic projections.
+    float3 view_direction = -normalize(float3(ndc.x * lit_ao_view_x.x + lit_ao_view_x.z, ndc.y * lit_ao_view_y.x + lit_ao_view_y.z, 1));
+    float3 normal = lit_safe_normal(mul(float4(lit_safe_normal(lit_normal_roughness.Load(int3(p, 0)).xyz), 0), lit_camera_view).xyz);
     float radius = lit_controls.z;
-    float pixel_size = max(lit_post_pixel_world_size(uv, depth), 1e-6);
+    float2 pixel_axes = abs(float2(z * lit_ao_view_x.x + lit_ao_view_x.y, z * lit_ao_view_y.x + lit_ao_view_y.y)) * 2 / lit_viewport.zw;
+    float pixel_size = max(max(pixel_axes.x, pixel_axes.y), 1e-6);
     float pixel_radius = clamp(radius / pixel_size, 1, 64);
+    float3 surface = lit_ao_view(uv, z);
     // Bias only the horizon origin; stored low-poly surface normals stay intact.
-    center += view_direction * pixel_size * .05;
+    float3 center = surface + view_direction * pixel_size * .05;
     uint seed = lit_hash(p.x + p.y * lit_size_frame.x);
     float rotation = frac(lit_random(seed) + (lit_size_frame.z % 1024) * .618033989);
     float step_noise = frac(lit_random(seed) + (lit_size_frame.z % 1024) * .754877666);
@@ -132,8 +215,7 @@ void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
     [unroll] for (uint slice = 0; slice < 3; ++slice) {
         float phi = (slice + rotation) * (LIT_PI / 3);
         float2 screen_direction = float2(cos(phi), sin(phi));
-        float2 tangent_uv = uv + screen_direction / lit_size_frame.xy;
-        float3 tangent = lit_world(tangent_uv, depth) - lit_world(uv, depth);
+        float3 tangent = lit_ao_view(uv + screen_direction / lit_size_frame.xy, z) - surface;
         tangent = lit_safe_normal(tangent - view_direction * dot(tangent, view_direction));
         float3 slice_axis = lit_safe_normal(cross(tangent, view_direction));
         float3 projected_normal = normal - slice_axis * dot(normal, slice_axis);
@@ -147,14 +229,17 @@ void lit_gtao_cs(uint3 id : SV_DispatchThreadID) {
         [unroll] for (uint step = 0; step < 4; ++step) {
             float fraction = (step + .5 + .5 * frac(step_noise + slice * .618033989)) / 4;
             float offset = max(1.25, fraction * fraction * pixel_radius);
+            // XeGTAO's level choice: full resolution up to ~14 px, then one
+            // level per octave of tap distance.
+            uint level = uint(clamp(round(log2(offset) - 3.3), 0, 4));
             [unroll] for (uint side = 0; side < 2; ++side) {
                 float sign_direction = side == 0 ? -1 : 1;
                 float2 sample_uv = uv + sign_direction * screen_direction * offset / lit_size_frame.xy;
                 if (!lit_post_inside_uv(sample_uv)) continue;
-                int2 sample_pixel = lit_post_pixel(sample_uv);
-                float sample_depth = lit_depth.Load(int3(sample_pixel, 0));
-                if (lit_is_background_depth(sample_depth)) continue;
-                float3 delta = lit_world(lit_post_uv(sample_pixel), sample_depth) - center;
+                uint2 sample_pixel = uint2(lit_post_pixel(sample_uv));
+                float sample_z = lit_ao_depth.Load(int3(min(sample_pixel >> level, lit_ao_level_size(level) - 1), level));
+                if (sample_z >= LIT_AO_EMPTY) continue;
+                float3 delta = lit_ao_view(lit_post_uv(sample_pixel), sample_z) - center;
                 float distance = length(delta);
                 if (distance < 1e-6 || distance >= radius) continue;
                 float horizon_cos = clamp(dot(delta / distance, view_direction), -1, 1);
@@ -568,30 +653,47 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
     current_hit = lit_window_uv(clip);
     return true;
 }
+// Each 8x8 group reconstructs its 12x12 neighborhood once; the 5x5 support
+// then reads world positions, normals and raw AO from LDS with unchanged math.
+groupshared float4 lit_ao_tile_position[144]; // world xyz, raw AO; w < 0 marks a non-surface
+groupshared float3 lit_ao_tile_normal[144];
 [numthreads(8, 8, 1)]
-void lit_gtao_resolve_cs(uint3 id : SV_DispatchThreadID) {
+void lit_gtao_resolve_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex) {
+    int2 tile_origin = int2(lit_screen_dispatch.xy + group.xy * 8) - 2;
+    [unroll] for (uint i = 0; i < 3; ++i) {
+        uint index = lane + i * 64;
+        if (index < 144) {
+            int2 q = tile_origin + int2(index % 12, index / 12);
+            bool surface = all(q >= 0) && all(q < int2(lit_size_frame.xy)) && lit_post_surface(uint2(q));
+            lit_ao_tile_position[index] = surface ? float4(lit_post_world(uint2(q)), saturate(lit_ao_raw.Load(int3(q, 0)))) : float4(0, 0, 0, -1);
+            lit_ao_tile_normal[index] = surface ? lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz) : 0;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
     uint2 p;
-    if (!lit_screen_pixel(id.xy, p)) return;
+    if (!lit_screen_pixel(group.xy * 8 + local.xy, p)) return;
     if (!lit_post_surface(p) || (lit_effect_flags & 4) == 0 || lit_controls.z <= 0) {
         lit_ao_resolved_output[p] = 1; lit_ao_history_output[p] = float2(1, 0); return;
     }
     float2 uv = lit_post_uv(p);
-    float3 position = lit_post_world(p);
-    float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(p, 0)).xyz);
+    uint center = (local.x + 2) + (local.y + 2) * 12;
+    float3 position = lit_ao_tile_position[center].xyz;
+    float3 normal = lit_ao_tile_normal[center];
+    float3 geometric = lit_geometry_normal_at(p);
     float pixel_world = max(lit_post_pixel_world_size(uv, lit_depth.Load(int3(p, 0))), .001);
     float sum = 0, second = 0, weight_sum = 0;
     [unroll] for (int y = -2; y <= 2; ++y) [unroll] for (int x = -2; x <= 2; ++x) {
-        int2 q = int2(p) + int2(x, y);
-        if (any(q < 0) || any(q >= int2(lit_size_frame.xy)) || !lit_post_surface(q)) continue;
-        float3 q_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
-        float normal_dot = dot(normal, q_normal);
-        float plane_distance = abs(dot(lit_post_world(q)-position,lit_geometry_normal_at(p)));
+        uint index = center + x + y * 12;
+        float4 q_position = lit_ao_tile_position[index];
+        if (q_position.w < 0) continue;
+        float normal_dot = dot(normal, lit_ao_tile_normal[index]);
+        float plane_distance = abs(dot(q_position.xyz - position, geometric));
         if (normal_dot < .95 || plane_distance > max(.005, pixel_world * .5)) continue;
         float weight = pow(saturate(normal_dot), 32) * exp(-.35 * (x * x + y * y));
-        float value = saturate(lit_ao_raw.Load(int3(q, 0)));
+        float value = q_position.w;
         sum += value * weight; second += value * value * weight; weight_sum += weight;
     }
-    float current = weight_sum > 0 ? sum / weight_sum : saturate(lit_ao_raw.Load(int3(p, 0)));
+    float current = weight_sum > 0 ? sum / weight_sum : lit_ao_tile_position[center].w;
     float sigma = sqrt(max(0, second / max(weight_sum, 1e-6) - current * current));
     float4 motion = lit_motion.Load(int3(p, 0));
     float2 previous_uv = uv + motion.xy;

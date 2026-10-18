@@ -70,7 +70,7 @@ struct SceneLit::State {
     rhi::Pipeline gbuffer,di_initial,di_spatial,direct,direct_resolve,compose;
     rhi::Pipeline cluster_build,cluster_shade,cluster_inspect,cluster_points,cluster_sun,cluster_residual,shadow_depth;
     std::array<rhi::Pipeline,3> direct_filter;
-    rhi::Pipeline probe_copy,probe_trace,probe_update,probe_present,probe_resolve,ao,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
+    rhi::Pipeline probe_copy,probe_trace,probe_update,probe_present,probe_resolve,probe_upsample,probe_exact,ao,ao_depth_reduce,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
     rhi::Pipeline reflection_resolve,reflection_filter,brdf,taa,bloom_downsample,bloom_blur,tone_map,tone;
     rhi::Pipeline smaa_edges_pass,smaa_weights_pass,smaa_neighborhood,smaa_resolve;
     rhi::Pipeline ssil_trace,ssil_resolve,probe_debug_surface,probe_debug_geometry;
@@ -80,9 +80,17 @@ struct SceneLit::State {
     GfxSamplerState sampler;
     ui::PixelExtent extent{};
     std::array<GfxTexture,7> gbuffer_textures{};
+    GfxTexture indirect_half; // DDGI receiver irradiance at one representative per 2x2 block.
+    GfxBuffer probe_fallback,probe_fallback_arguments; // Receivers without a matching representative: count, packed pixels; indirect dispatch.
+    std::uint32_t probe_fallback_capacity{};
     GfxTexture hdr,indirect,ao_texture,ao_raw,reflection_trace,reflection_hit_trace,brdf_lut;
+    GfxTexture ao_depth; // GTAO view depth with four reduced levels for distant horizon taps.
+    std::array<float,4> ao_view_x{},ao_view_y{},ao_view_z{}; // Jittered projection terms for view-space reconstruction.
     struct DirectSignal { GfxTexture raw; std::array<GfxTexture,2> history{},moments{},scratch{}; };
     std::array<DirectSignal,2> direct_signals{}; // Diffuse/specular radiance with separate reconstruction support.
+    GfxTexture direct_visibility; // Per-receiver soft-visibility outcomes for reconstruction classification.
+    std::array<GfxTexture,2> direct_penumbra{}; // Frames since the last nearby soft-visibility disagreement.
+    GfxBuffer direct_tiles,direct_tile_arguments; // Tiles needing spatial filtering and their indirect dispatch.
     std::array<GfxTexture,2> history_depth{},history_normal{},history_geometry_normal{},taa_history{},reflection_history{},reflection_hit_history{},reflection_moments{},reflection_scratch{},ao_history{},bloom{};
     GfxTexture tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search;
     std::array<GfxTexture,2> smaa_spatial{},history_base_metallic{},history_surface_id{};
@@ -113,7 +121,7 @@ struct SceneLit::State {
     GfxTexture probe_presentation{}; // Display-only cache; never a transport feedback input.
     GfxTexture probe_response; // Per directional texel: author-change epoch and effective response visits.
     GfxBuffer probe_ray_hits;
-    GfxBuffer probe_visibility_cache; // Per receiver: 32 LOS bits and 32 validity bits.
+    GfxBuffer probe_visibility_cache; // Per receiver block: 32 LOS bits and 32 validity bits.
     bool probe_visibility_valid{};
     ProbeField probe_field;
     std::array<ProbeVolumeSettings,probe_volume_limit> previous_probe_settings{};
@@ -184,7 +192,8 @@ struct SceneLit::State {
     bool spatial_uploaded{};
     std::array<std::uint32_t,4> screen_dispatch{};
     std::array<float,4> raster_transform{1,1,0,0};
-    std::uint32_t effect_flags{},di_history_valid{},direct_stochastic{};
+    std::uint32_t effect_flags{},di_history_valid{},direct_stochastic{},direct_radiance_age{};
+    float direct_response{};
     std::uint64_t scene_identity{},scene_revision{},reset_events{},sequence{};
     std::uint32_t parity{},probe_parity{},probe_response_epoch{},probe_geometry_pending{},probe_sequence{};
     std::uint32_t probe_history_mode{};
@@ -245,7 +254,10 @@ struct SceneLit::State {
         prepare(probe_update,shaders::lit_ddgi,"DDGIUpdate","DDGI hit lighting and convolution");
         prepare(probe_present,shaders::lit_ddgi,"DDGIPresent","DDGI presentation smoothing");
         prepare(probe_resolve,shaders::lit_ddgi,"DDGIResolve","DDGI irradiance gather");
+        prepare(probe_upsample,shaders::lit_ddgi,"DDGIUpsample","DDGI irradiance upsampling");
+        prepare(probe_exact,shaders::lit_ddgi,"DDGIExact","DDGI exact receiver gather");
         prepare(ao,shaders::lit_post,"lit_gtao_cs","Scene Lit GTAO");
+        prepare(ao_depth_reduce,shaders::lit_post,"lit_gtao_depth_cs","GTAO view depth levels");
         prepare(ao_resolve,shaders::lit_post,"lit_gtao_resolve_cs","GTAO signal reconstruction");
         prepare(depth_first,shaders::lit_post,"lit_depth_first_cs","Scene Lit first depth reduction");
         prepare(depth_pyramid,shaders::lit_post,"lit_depth_pyramid_cs","Scene Lit depth hierarchy");
@@ -286,11 +298,12 @@ struct SceneLit::State {
     void retire_targets() {
         retire(probe_visibility_cache);probe_visibility_valid=false;
         for(auto& t:gbuffer_textures)retire(t);
-        for(auto* t:{&hdr,&indirect,&ao_texture,&ao_raw,&reflection_trace,&reflection_hit_trace,&tone_color,&smaa_edges,&smaa_weights,&smaa_output,&ssil_raw,&ssil_irradiance})retire(*t);
+        for(auto* t:{&indirect_half,&hdr,&indirect,&ao_texture,&ao_raw,&ao_depth,&reflection_trace,&reflection_hit_trace,&tone_color,&smaa_edges,&smaa_weights,&smaa_output,&ssil_raw,&ssil_irradiance})retire(*t);
         for(auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&bloom,&smaa_spatial,&ssil_history,&history_base_metallic,&history_surface_id})for(auto& t:*pair)retire(t);
         for(auto& signal:direct_signals){retire(signal.raw);for(auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto& t:*pair)retire(t);}
+        retire(direct_visibility);for(auto& t:direct_penumbra)retire(t);
         for(auto& t:pyramid)retire(t);
-        for(auto* b:{&di_scratch,&di_reservoirs[0],&di_reservoirs[1],&cluster_depth,&cluster_count,&cluster_source,&reflection_work,&reflection_counter,&reflection_arguments})retire(*b);
+        for(auto* b:{&di_scratch,&di_reservoirs[0],&di_reservoirs[1],&cluster_depth,&cluster_count,&cluster_source,&reflection_work,&reflection_counter,&reflection_arguments,&direct_tiles,&direct_tile_arguments,&probe_fallback,&probe_fallback_arguments})retire(*b);
     }
     void clusters() {
         cluster_tiles={(screen_dispatch[2]-screen_dispatch[0]+15)/16,(screen_dispatch[3]-screen_dispatch[1]+15)/16};
@@ -378,9 +391,16 @@ struct SceneLit::State {
         const auto w=next.width,h=next.height;
         for(std::size_t i=0;i<gbuffer_textures.size();++i)gbuffer_textures[i]=texture(w,h,i==4?DXGI_FORMAT_R32_FLOAT:(i==5?DXGI_FORMAT_R16G16_FLOAT:(i==6?DXGI_FORMAT_R32G32_UINT:DXGI_FORMAT_R16G16B16A16_FLOAT)),i>=4?4:8);
         for(auto* t:{&hdr,&indirect,&reflection_trace,&tone_color,&smaa_output})*t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
+        indirect_half=texture((w+1)/2,(h+1)/2,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
+        // Overflow beyond a quarter of the receivers gathers inline in the upsampling pass.
+        probe_fallback_capacity=std::uint32_t((std::uint64_t(w)*h+3)/4);
+        probe_fallback=gfxCreateBuffer<std::uint32_t>(gfx,std::uint64_t(probe_fallback_capacity)+1);
+        probe_fallback_arguments=gfxCreateBuffer<std::uint32_t>(gfx,3);
+        allocation(bool(probe_fallback)&&bool(probe_fallback_arguments));
         reflection_hit_trace=texture(w,h,DXGI_FORMAT_R32G32_UINT,8);
         ao_texture=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
         ao_raw=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
+        ao_depth=gfxCreateTexture2D(gfx,w,h,DXGI_FORMAT_R32_FLOAT,5);allocation(bool(ao_depth));
         for(auto* pair:{&history_normal,&taa_history,&reflection_history,&reflection_scratch,&smaa_spatial,&history_base_metallic})for(auto& t:*pair)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         for(auto& t:reflection_hit_history)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
         for(auto& t:reflection_moments)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
@@ -393,6 +413,11 @@ struct SceneLit::State {
             for(auto* pair:{&signal.history,&signal.scratch})for(auto& t:*pair)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
             for(auto& t:signal.moments)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
         }
+        direct_visibility=texture(w,h,DXGI_FORMAT_R32_UINT,4);
+        for(auto& t:direct_penumbra)t=texture(w,h,DXGI_FORMAT_R8_UINT,1);
+        direct_tiles=gfxCreateBuffer<std::uint32_t>(gfx,std::uint64_t((w+7)/8)*((h+7)/8));
+        direct_tile_arguments=gfxCreateBuffer<std::uint32_t>(gfx,3);
+        allocation(bool(direct_tiles)&&bool(direct_tile_arguments));
         for(auto& t:history_depth)t=texture(w,h,DXGI_FORMAT_R32_FLOAT,4);
         for(auto& t:bloom)t=texture((w+3)/4,(h+3)/4,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         // Logical level zero is the existing FP32 primary depth, not a (z,z) copy.
@@ -463,7 +488,7 @@ struct SceneLit::State {
         bind(p,"lit_environment",environment);bind(p,"lit_controls",controls);
         bind(p,"lit_temporal",temporal);bind(p,"lit_jitter",jitter);bind(p,"lit_effect_flags",effect_flags);
         bind(p,"lit_source_counts",source_counts);bind(p,"lit_di_settings",di_settings);bind(p,"lit_di_history_valid",di_history_valid);
-        bind(p,"lit_direct_stochastic",direct_stochastic);
+        bind(p,"lit_direct_stochastic",direct_stochastic);bind(p,"lit_direct_response",direct_response);
         bind(p,"lit_history_invalid",history_invalid);
         bind(p,"lit_instances",gpu_instances);bind(p,"lit_rt_triangles",rt_triangles);bind(p,"lit_closed_slots",rt_closed_slots);
         bind(p,"lit_sources",gpu_sources);bind(p,"lit_previous_sources",gpu_previous_sources);bind(p,"lit_light_proposals",gpu_proposals);
@@ -631,16 +656,18 @@ struct SceneLit::State {
         const auto add_texture=[&](GfxTexture t){if(!t)return;std::uint32_t bytes=8;
             if(t.getFormat()==DXGI_FORMAT_R32G32B32A32_FLOAT)bytes=16;
             else if(t.getFormat()==DXGI_FORMAT_R16_FLOAT)bytes=2;
-            else if(t.getFormat()==DXGI_FORMAT_R8_UNORM)bytes=1;
+            else if(t.getFormat()==DXGI_FORMAT_R8_UNORM||t.getFormat()==DXGI_FORMAT_R8_UINT)bytes=1;
             else if(t.getFormat()==DXGI_FORMAT_R8G8_UNORM)bytes=2;
             else if(t.getFormat()==DXGI_FORMAT_R32_FLOAT||t.getFormat()==DXGI_FORMAT_R32_UINT||t.getFormat()==DXGI_FORMAT_D32_FLOAT||t.getFormat()==DXGI_FORMAT_R16G16_FLOAT||t.getFormat()==DXGI_FORMAT_R8G8B8A8_UNORM)bytes=4;
-            result+=std::uint64_t(t.getWidth())*t.getHeight()*t.getDepth()*bytes;};
+            for(std::uint32_t level=0;level<t.getMipLevels();++level)
+                result+=std::uint64_t(std::max(t.getWidth()>>level,1u))*std::max(t.getHeight()>>level,1u)*t.getDepth()*bytes;};
         for(auto t:gbuffer_textures)add_texture(t);
-        for(auto t:{hdr,indirect,ao_texture,ao_raw,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,ssil_raw,ssil_irradiance,probe_presentation,probe_response,probe_age,probe_sample_cursor,probe_debug_depth,shadow_static,shadow_dynamic})add_texture(t);
+        for(auto t:{indirect_half,hdr,indirect,ao_texture,ao_raw,ao_depth,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,ssil_raw,ssil_irradiance,probe_presentation,probe_response,probe_age,probe_sample_cursor,probe_debug_depth,shadow_static,shadow_dynamic})add_texture(t);
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&ssil_history,&bloom,&history_base_metallic,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(const auto& signal:direct_signals){add_texture(signal.raw);for(const auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto t:*pair)add_texture(t);}
+        add_texture(direct_visibility);for(auto t:direct_penumbra)add_texture(t);
         for(auto t:pyramid)add_texture(t);
-        for(auto b:{gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots,gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current,di_scratch,di_reservoirs[0],di_reservoirs[1],cluster_depth,cluster_count,cluster_source,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters})result+=b.getSize();
+        for(auto b:{gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots,gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current,di_scratch,di_reservoirs[0],di_reservoirs[1],cluster_depth,cluster_count,cluster_source,direct_tiles,direct_tile_arguments,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
         for(const auto& batch:shadow_batches)result+=batch.faces.getSize()+batch.lights.getSize()+batch.instances.getSize();
         if(inspection) {result+=inspection->output.getSize()+inspection->rays.getSize();for(auto b:inspection->readback)result+=b.getSize();for(auto b:inspection->ray_readback)result+=b.getSize();}
@@ -916,6 +943,12 @@ struct SceneLit::State {
         const bool visibility_changed=transform_changed||coverage_changed;
         const std::array<float,4> next_environment{frame.environment[0],frame.environment[1],frame.environment[2],1};
         const bool radiance_changed=light_changed||material_changed||emitter_changed||next_environment!=environment;
+        // DI keeps 11/12 of its history per frame under the shortened diffuse
+        // support, so 48 frames after the last radiance change older radiance
+        // is below 1/64. Continuous animation keeps the window open.
+        constexpr std::uint32_t direct_response_frames=48;
+        direct_radiance_age=radiance_changed?0u:std::min(direct_radiance_age+1,direct_response_frames);
+        direct_response=direct_radiance_age<direct_response_frames?1.f:0.f;
         // The epoch describes an authored change, never stochastic radiance.
         // GPU directions keep their own progress even when sparsely scheduled.
         if(radiance_changed||transform_changed||shadow_bias_changed)
@@ -929,6 +962,12 @@ struct SceneLit::State {
         for(std::size_t row=0;row<4;row++){projection.elements[row*4]+=2*jx/frame.scene_viewport.width*projection.elements[row*4+3];
             projection.elements[row*4+1]-=2*jy/frame.scene_viewport.height*projection.elements[row*4+3];}
         camera_view=frame.camera.view;
+        {   // Row-vector projection without skew: view x = ndc.x*(z*a+b)+(z*c+d), likewise y; z from device depth.
+            const auto& e=projection.elements;
+            ao_view_x={float(e[11]/e[0]),float(e[15]/e[0]),float(-e[8]/e[0]),float(-e[12]/e[0])};
+            ao_view_y={float(e[11]/e[5]),float(e[15]/e[5]),float(-e[9]/e[5]),float(-e[13]/e[5])};
+            ao_view_z={float(e[10]),float(e[14]),float(e[11]),float(e[15])};
+        }
         const auto vp=matrix(camera_view)*projection;view_projection=floats(vp);inverse_view_projection=floats(*math::try_inverse(vp));
         if(!history_valid){previous_view_projection=view_projection;previous_inverse_view_projection=inverse_view_projection;}
         size_frame={next.width,next.height,static_cast<std::uint32_t>(sequence),history_valid?1u:0u};
@@ -1000,6 +1039,9 @@ struct SceneLit::State {
             filter_inputs{"lit_direct_diffuse_filter_input","lit_direct_specular_filter_input"},
             filter_outputs{"lit_direct_diffuse_filter_output","lit_direct_specular_filter_output"},
             filter_moments{"lit_direct_diffuse_moments","lit_direct_specular_moments"};
+        const std::array<std::array<const char*,2>,2> scratch_outputs{{
+            {"lit_direct_diffuse_scratch0_output","lit_direct_diffuse_scratch1_output"},
+            {"lit_direct_specular_scratch0_output","lit_direct_specular_scratch1_output"}}};
         for(std::size_t i=0;i<2;++i)bind(shading.program(),raw_outputs[i],direct_signals[i].raw);
         if(shadows_cached) {
             // Fixed scope 12 supplies the completed-frame anchor; its duration
@@ -1057,23 +1099,31 @@ struct SceneLit::State {
                 require(gfxCommandDispatch(gfx,(right-x+7)/8,(bottom-y+7)/8,1),"Dispatch direct reference tile");
             }
         } else {
-            if(clustered){bind_shadows(shading.program(),nullptr,true);bind(shading.program(),"lit_cluster_accumulate",0u);}
+            if(clustered){bind_shadows(shading.program(),nullptr,true);bind(shading.program(),"lit_cluster_accumulate",0u);
+                bind(shading.program(),"lit_direct_visibility_output",direct_visibility);}
             dispatch_screen(shading,depth);
         }
         if(!shadows_cached)end(12);begin(13);begin(16);
-        for(std::size_t i=0;i<2;++i){const auto& signal=direct_signals[i];const auto p=direct_resolve.program();
-            bind(p,raw_inputs[i],signal.raw);bind(p,previous_inputs[i],signal.history[1-parity]);bind(p,moments_previous[i],signal.moments[1-parity]);
-            bind(p,history_outputs[i],signal.history[parity]);bind(p,moments_outputs[i],signal.moments[parity]);}
+        require(gfxCommandClearBuffer(gfx,direct_tile_arguments),"Reset direct reconstruction tiles");
+        {const auto p=direct_resolve.program();
+            bind(p,"lit_direct_classified",clustered&&!shadows_cached?1u:0u);bind(p,"lit_direct_visibility",direct_visibility);
+            bind(p,"lit_direct_penumbra_previous",direct_penumbra[1-parity]);bind(p,"lit_direct_penumbra_output",direct_penumbra[parity]);
+            bind(p,"lit_direct_tile_arguments",direct_tile_arguments);bind(p,"lit_direct_tiles_output",direct_tiles);
+            for(std::size_t i=0;i<2;++i){const auto& signal=direct_signals[i];
+                bind(p,raw_inputs[i],signal.raw);bind(p,previous_inputs[i],signal.history[1-parity]);bind(p,moments_previous[i],signal.moments[1-parity]);
+                bind(p,history_outputs[i],signal.history[parity]);bind(p,moments_outputs[i],signal.moments[parity]);
+                bind(p,scratch_outputs[i][0],signal.scratch[0]);bind(p,scratch_outputs[i][1],signal.scratch[1]);}}
         dispatch_screen(direct_resolve,depth);end(16);
         const bool filter_direct=!settings.direct_reference&&!light_frame.sources.empty();
         for(std::uint32_t step=0;step<3;++step) {
             begin(17+step,filter_direct);
             if(filter_direct) {
-                const auto p=direct_filter[step].program();
+                const auto p=direct_filter[step].program();bind(p,"lit_direct_tiles",direct_tiles);
                 for(std::size_t i=0;i<2;++i){const auto& signal=direct_signals[i];
                     bind(p,filter_inputs[i],step==0?signal.history[parity]:signal.scratch[(step-1)%2]);
                     bind(p,filter_outputs[i],signal.scratch[step%2]);bind(p,filter_moments[i],signal.moments[parity]);}
-                dispatch_screen(direct_filter[step],depth);
+                common(p,depth);require(gfxCommandBindKernel(gfx,direct_filter[step].kernel()),"Bind direct reconstruction filter");
+                require(gfxCommandDispatchIndirect(gfx,direct_tile_arguments),"Dispatch listed direct reconstruction tiles");
             }
             end(17+step);
         }
@@ -1116,7 +1166,7 @@ struct SceneLit::State {
             // Jitter changes every receiver endpoint each frame. Do not pay a
             // full-screen cache allocation/write for a mode that cannot reuse it.
             const bool cache_visibility=!taa_enabled&&!smaa_temporal;
-            const auto cache_count=cache_visibility?std::uint64_t(next.width)*next.height:1u;
+            const auto cache_count=cache_visibility?std::uint64_t((next.width+1)/2)*((next.height+1)/2):1u;
             if(probe_visibility_cache.getSize()<cache_count*2*sizeof(std::uint32_t)) {
                 retire(probe_visibility_cache);
                 probe_visibility_cache=gfxCreateBuffer<std::array<std::uint32_t,2>>(gfx,cache_count);
@@ -1129,11 +1179,25 @@ struct SceneLit::State {
                 view_projection==previous_view_projection&&inverse_view_projection==previous_inverse_view_projection&&
                 std::memcmp(probe_field.current.data(),probe_field.previous.data(),sizeof(probe_field.current))==0;
             const auto resolve=probe_resolve.program();
-            bind_probes(resolve,true,true);bind(resolve,"lit_indirect",indirect);
+            bind_probes(resolve,true,true);bind(resolve,"lit_indirect_half_output",indirect_half);
             bind(resolve,"lit_probe_visibility_cache",probe_visibility_cache);
             bind(resolve,"lit_probe_visibility_cache_mode",cache_visibility?(reuse_visibility?2u:1u):0u);
             bind(resolve,"lit_probe_visibility_offsets",probe_offsets[1-probe_parity]);
-            dispatch_screen(probe_resolve,depth,3);end(9);
+            const auto blocks_x=(screen_dispatch[2]-screen_dispatch[0]+1)/2,blocks_y=(screen_dispatch[3]-screen_dispatch[1]+1)/2;
+            if(blocks_x&&blocks_y)dispatch(probe_resolve,depth,(blocks_x+7)/8,(blocks_y+7)/8,1,3);
+            require(gfxCommandClearBuffer(gfx,probe_fallback),"Reset DDGI exact receiver list");
+            require(gfxCommandClearBuffer(gfx,probe_fallback_arguments),"Reset DDGI exact receiver dispatch");
+            const auto upsample=probe_upsample.program();
+            bind_probes(upsample,true,true);bind(upsample,"lit_indirect_half",indirect_half);bind(upsample,"lit_indirect",indirect);
+            bind(upsample,"lit_probe_fallback_output",probe_fallback);bind(upsample,"lit_probe_fallback_arguments",probe_fallback_arguments);
+            bind(upsample,"lit_probe_fallback_capacity",probe_fallback_capacity);
+            dispatch_screen(probe_upsample,depth,3);
+            const auto exact=probe_exact.program();
+            bind_probes(exact,true,true);bind(exact,"lit_indirect",indirect);
+            bind(exact,"lit_probe_fallback",probe_fallback);bind(exact,"lit_probe_fallback_capacity",probe_fallback_capacity);
+            common(exact,depth,3);require(gfxCommandBindKernel(gfx,probe_exact.kernel()),"Bind DDGI exact receiver gather");
+            require(gfxCommandDispatchIndirect(gfx,probe_fallback_arguments),"Dispatch listed DDGI exact receivers");
+            end(9);
             inspect_probe(frame,depth,stats);
             probe_field.commit(settings);probe_parity=1-probe_parity;
             // Warmup may repeatedly visit new slices. Only global traversal
@@ -1141,7 +1205,14 @@ struct SceneLit::State {
             probe_geometry_pending-=std::min(probe_geometry_pending,probe_field.round_robin_progress);
             ++probe_sequence;
         } else {begin(14,false);end(14);begin(15,false);end(15);end(8);begin(9,false);end(9);}
-        end(3);begin(4,settings.gtao||settings.ssil);if(settings.gtao&&!settings.ssil){bind(ao.program(),"lit_ao_output",ao_raw);dispatch_screen(ao,depth);
+        end(3);begin(4,settings.gtao||settings.ssil);if(settings.gtao&&!settings.ssil){
+            const auto reduce=ao_depth_reduce.program();
+            constexpr std::array levels{"lit_ao_depth_output0","lit_ao_depth_output1","lit_ao_depth_output2","lit_ao_depth_output3","lit_ao_depth_output4"};
+            for(std::uint32_t level=0;level<levels.size();++level)
+                require(gfxProgramSetTexture(gfx,reduce,levels[level],ao_depth,level),"Bind GTAO view depth level");
+            for(const auto& p:{reduce,ao.program()}){bind(p,"lit_ao_view_x",ao_view_x);bind(p,"lit_ao_view_y",ao_view_y);bind(p,"lit_ao_view_z",ao_view_z);}
+            dispatch(ao_depth_reduce,depth,(next.width+15)/16,(next.height+15)/16);
+            bind(ao.program(),"lit_ao_depth",ao_depth);bind(ao.program(),"lit_ao_output",ao_raw);dispatch_screen(ao,depth);
             bind(ao_resolve.program(),"lit_ao_raw",ao_raw);bind(ao_resolve.program(),"lit_ao_previous",ao_history[1-parity]);
             bind(ao_resolve.program(),"lit_ao_history_output",ao_history[parity]);bind(ao_resolve.program(),"lit_ao_resolved_output",ao_texture);dispatch_screen(ao_resolve,depth);}
         if(settings.ssil) {
@@ -1323,8 +1394,8 @@ struct SceneLit::State {
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
         if(sampler)require(gfxDestroySamplerState(gfx,std::exchange(sampler,{})),"Retire Scene Lit sampler");
         for(auto& pipeline:direct_filter)pipeline={};
-        for(auto* p:{&gbuffer,&di_initial,&di_spatial,&direct,&cluster_build,&cluster_shade,&cluster_inspect,&cluster_points,&cluster_sun,&cluster_residual,&shadow_depth,&direct_resolve,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,
-                    &ao,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
+        for(auto* p:{&gbuffer,&di_initial,&di_spatial,&direct,&cluster_build,&cluster_shade,&cluster_inspect,&cluster_points,&cluster_sun,&cluster_residual,&shadow_depth,&direct_resolve,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
+                    &ao,&ao_depth_reduce,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
                     &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&ssil_trace,&ssil_resolve,&probe_debug_surface,&probe_debug_geometry})*p={};
     }
 };

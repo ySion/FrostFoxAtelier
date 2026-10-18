@@ -374,18 +374,29 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         };
         report["viewport"]=viewport_json();report["original_view"]=settings_json(original_view);report["camera"]=camera_json();
         report["layouts"][layout]={{"viewport",viewport_json()},{"camera",camera_json()},{"active_panes",active_panes()}};
+        bool camera_fixed=true;
         const auto invariant=[&] {
             require(Access::accepted_view(app) && Access::accepted_view(app)->bounds==bounds &&
-                app.presented()->drawing->extent==extent && app.presented()->drawing->dpi_scale==dpi && Access::camera_state(app)==camera,
+                app.presented()->drawing->extent==extent && app.presented()->drawing->dpi_scale==dpi &&
+                (!camera_fixed || Access::camera_state(app)==camera),
                 "Viewport, render target, DPI or camera changed during the performance comparison.");
             const auto range=renderer::detail::raster_viewport(Access::accepted_view(app)->bounds).scissor;
             require(range.right-range.left==2560 && range.bottom-range.top==1440,
                 "Actual receiver dispatch pixel coverage changed from native 1440p.");
             require(Access::scene_lit_view(app)==view,"View or World settings changed during the performance comparison.");
         };
+        // The orbit case moves continuously: a triangle wave of .2 degrees of
+        // yaw per accepted frame within +-12 degrees, without camera cuts.
+        unsigned orbit_frame=0;
+        const auto orbit_step=[&] {
+            if(camera_fixed) return;
+            const auto phase=orbit_frame++%240;
+            auto state=camera;state.yaw+=(phase<120?float(phase)-60.f:180.f-float(phase))*.2f*.0174532925f;
+            require(Access::move_camera(app,state),"The orbit camera state was rejected.");
+        };
         const auto warmup=[&](unsigned frames) {
             const auto deadline=Clock::now()+std::chrono::minutes(10);
-            for(unsigned i=0;i<frames;++i) {next_frame(deadline);invariant();}
+            for(unsigned i=0;i<frames;++i) {orbit_step();next_frame(deadline);invariant();}
             return app.presented()->drawing->id;
         };
         // Finish cold uploads and obtain a real completed sample before the two
@@ -479,8 +490,8 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             for(std::size_t i=0;i<markers.size();++i) result["stages"][std::string(markers[i]->key())]=distribution(std::move(stages[keys.size()+i]));
             return result;
         };
-        for(const bool clustered:{false,true}) {
-            view.lit.direct_clustered=clustered;apply_view(view);
+        for(const auto [clustered,orbit]:{std::pair{false,false},std::pair{true,false},std::pair{true,true}}) {
+            view.lit.direct_clustered=clustered;apply_view(view);camera_fixed=!orbit;
             const auto fence=warmup(192);
             std::vector<Sample> samples;samples.reserve(240);
             std::vector<double> wall;wall.reserve(512);
@@ -488,7 +499,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             std::uint64_t sequence=0;unsigned accepted=0;
             auto previous=frame_end(recorder.last());const auto measurement_start=previous,deadline=Clock::now()+std::chrono::minutes(10);
             while(samples.size()<240) {
-                const auto presented=next_frame(deadline);invariant();
+                orbit_step();const auto presented=next_frame(deadline);invariant();
                 wall.push_back(std::chrono::duration<double,std::milli>(presented-previous).count());previous=presented;++accepted;
                 collect_cpu(cpu);
                 const auto& s=app.frame_statistics();const auto observed=app.presented()->drawing->id;
@@ -516,7 +527,8 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 samples.push_back(sample);sequence=sample.sequence;
             }
             const auto elapsed=std::chrono::duration<double,std::milli>(previous-measurement_start).count();
-            Json result{{"name",clustered?"clustered":"legacy"},{"layout",layout},{"view",settings_json(view)},{"viewport",viewport_json()},
+            const std::string name=orbit?"clustered_orbit":(clustered?"clustered":"legacy");
+            Json result{{"name",name},{"layout",layout},{"camera_motion",orbit?Json{{"yaw_degrees_per_frame",.2},{"yaw_amplitude_degrees",12},{"camera_cut",false}}:Json(nullptr)},{"view",settings_json(view)},{"viewport",viewport_json()},
                 {"camera",camera_json()},{"warmup_last_frame",fence},{"accepted_frames",accepted},{"elapsed_ms",elapsed},
                 {"accepted_steps_per_second",double(accepted)*1000./elapsed},{"gpu_sample_state","completed"},{"cpu",cpu_json(cpu)},
                 {"wall_present_interval_ms",distribution(wall)},{"wall_present_intervals_ms",wall},{"gpu_passes",Json::object()},
@@ -544,8 +556,9 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             }
             result["measured_main_total_ms"]=distribution(std::move(totals));
             unchanged_scene();report["cases"].push_back(std::move(result));report["status"]="sampling";write_report();
-            capture(app,output/(clustered?"clustered.png":"legacy.png"));
+            capture(app,output/(name+".png"));
         }
+        camera_fixed=true;require(Access::move_camera(app,camera),"The comparison camera could not be restored.");
         const auto non_lit_case=[&](renderer::Shading shading,std::string_view name) {
             view.shading=shading;view.lit.direct_clustered=false;apply_view(view);
             const auto fence=warmup(192);

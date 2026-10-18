@@ -108,11 +108,12 @@ LitLightSample lit_prepare_light_sample(LitLightSource light, float2 sample_uv) 
     }
     return prepared;
 }
-LitLightEvaluation lit_evaluate_light_sample(LitLightSample prepared, LitLightingSurface surface,
-                                            bool include_emitter_specular) {
-    LitLightEvaluation result=(LitLightEvaluation)0;
-    if(prepared.kind==~0u)return result;
-    float3 incoming=prepared.radiance;
+// Receiver geometry and attenuated incoming radiance of a prepared endpoint.
+// False leaves zero response; target/direction keep the values reached so far.
+bool lit_light_incoming(LitLightSample prepared, LitLightingSurface surface,
+                        inout LitLightEvaluation result, out float3 incoming) {
+    incoming=prepared.radiance;
+    if(prepared.kind==~0u)return false;
     if(prepared.kind==2) {
         result.direction=prepared.position;
         result.distance=1e5;
@@ -121,7 +122,7 @@ LitLightEvaluation lit_evaluate_light_sample(LitLightSample prepared, LitLightin
         result.target=prepared.position;
         float3 delta=result.target-surface.position;
         float distance_squared=dot(delta,delta);
-        if(distance_squared<=0||!isfinite(distance_squared))return result;
+        if(distance_squared<=0||!isfinite(distance_squared))return false;
         result.distance=sqrt(distance_squared);
         result.direction=delta/result.distance;
         float attenuation;
@@ -141,12 +142,77 @@ LitLightEvaluation lit_evaluate_light_sample(LitLightSample prepared, LitLightin
         }
         incoming*=attenuation;
     }
-    if(dot(surface.normal,result.direction)<=0||dot(surface.geometric_normal,result.direction)<=0||!any(incoming>0))return result;
+    return dot(surface.normal,result.direction)>0&&dot(surface.geometric_normal,result.direction)>0&&any(incoming>0);
+}
+LitLightEvaluation lit_evaluate_light_sample(LitLightSample prepared, LitLightingSurface surface,
+                                            bool include_emitter_specular) {
+    LitLightEvaluation result=(LitLightEvaluation)0;
+    float3 incoming;
+    if(!lit_light_incoming(prepared,surface,result,incoming))return result;
     lit_brdf_components(surface.base,surface.roughness,surface.metallic,surface.normal,surface.view,
         result.direction,result.diffuse,result.specular);
     result.diffuse*=incoming;
     result.specular=(prepared.kind!=3||include_emitter_specular)?result.specular*incoming:0;
     return result;
+}
+// Deterministic response of a compact sphere (meta.x 0) or sun disc (meta.x 2):
+// diffuse from the center, GGX specular from the representative point closest
+// to the reflection ray with the (a/a')^2, a'=saturate(a+sin/3) normalization
+// of Karis 2013, "Real Shading in Unreal Engine 4". Visibility is separate.
+LitLightEvaluation lit_evaluate_compact_light(LitLightSource light, LitLightingSurface surface) {
+    float radius=light.direction_radius.w;
+    light.direction_radius.w=0;
+    LitLightEvaluation result=(LitLightEvaluation)0;
+    float3 incoming;
+    if(!lit_light_incoming(lit_prepare_light_sample(light,0),surface,result,incoming))return result;
+    lit_brdf_components(surface.base,surface.roughness,surface.metallic,surface.normal,surface.view,
+        result.direction,result.diffuse,result.specular);
+    if(radius>0) {
+        float3 reflected=reflect(-surface.view,surface.normal),closest;
+        float sine;
+        if(light.meta.x==2) {
+            sine=sin(radius);
+            float alignment=dot(reflected,result.direction);
+            float3 side=reflected-alignment*result.direction;
+            float side_length=length(side);
+            closest=alignment>=cos(radius)?reflected:
+                (side_length>1e-6?cos(radius)*result.direction+sine*(side/side_length):result.direction);
+        } else {
+            float3 delta=result.direction*result.distance;
+            float3 to_ray=dot(delta,reflected)*reflected-delta;
+            closest=lit_safe_normal(delta+to_ray*saturate(radius/max(length(to_ray),1e-8)));
+            sine=saturate(radius/result.distance);
+        }
+        float3 unused;
+        lit_brdf_components(surface.base,surface.roughness,surface.metallic,surface.normal,surface.view,
+            closest,unused,result.specular);
+        float a=max(surface.roughness*surface.roughness,.0025),ratio=a/saturate(a+sine/3);
+        result.specular*=ratio*ratio;
+    }
+    result.diffuse*=incoming;result.specular*=incoming;
+    return result;
+}
+// A finite source's soft-shadow endpoint: uniform on its disc as seen from the
+// receiver. Directions below the geometric horizon reuse the center ray.
+LitLightEvaluation lit_light_shadow_endpoint(LitLightSource light, LitLightingSurface surface,
+                                             LitLightEvaluation center, float2 sample_uv) {
+    float radius=light.direction_radius.w;
+    if(radius<=0)return center;
+    float3 tangent,bitangent;lit_basis(center.direction,tangent,bitangent);
+    float phi=2*LIT_PI*sample_uv.y;
+    float2 disc=sqrt(sample_uv.x)*float2(cos(phi),sin(phi));
+    float3 offset=disc.x*tangent+disc.y*bitangent;
+    LitLightEvaluation endpoint=center;
+    if(light.meta.x==2) {
+        float3 direction=normalize(center.direction+tan(radius)*offset);
+        if(dot(direction,surface.geometric_normal)<=0)return center;
+        endpoint.direction=direction;endpoint.target=surface.position+direction*center.distance;
+    } else {
+        float3 target=center.target+radius*offset;
+        if(dot(target-surface.position,surface.geometric_normal)<=0)return center;
+        endpoint.target=target;
+    }
+    return endpoint;
 }
 LitLightEvaluation lit_evaluate_light_source(LitLightSource light, LitLightingSurface surface,
                                             float2 sample_uv, bool include_emitter_specular) {

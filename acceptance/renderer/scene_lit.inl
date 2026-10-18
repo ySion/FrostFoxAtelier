@@ -3,6 +3,9 @@
 namespace scene_lit_e2e {
 using Vec3 = std::array<float, 3>;
 constexpr unsigned warmup_frames = 96;
+// Temporal filters (DI history, DDGI transport) keep estimator noise correlated
+// over tens of frames, so converged appearances compare means of this window.
+constexpr unsigned convergence_frames = 64;
 
 void png(const render::Capture& image, const std::filesystem::path& path) {
     // PNG's uncompressed DEFLATE blocks keep evidence dependency-free. Encoding
@@ -252,6 +255,21 @@ struct Fixture {
         png(result, output / (std::string(name) + ".png"));
         return result;
     }
+    // The last `frames` of `settle` accepted images, averaged per channel:
+    // per-frame estimator noise averages out, the converged signal remains.
+    render::Capture average(const char* name, unsigned settle, unsigned frames) {
+        for (unsigned index = frames; index < settle; ++index) step();
+        render::Capture result;
+        std::vector<unsigned> sum;
+        for (unsigned index = 0; index < frames; ++index) {
+            step(&result);
+            sum.resize(result.rgba.size());
+            for (std::size_t i = 0; i < sum.size(); ++i) sum[i] += result.rgba[i];
+        }
+        for (std::size_t i = 0; i < sum.size(); ++i) result.rgba[i] = static_cast<std::uint8_t>((sum[i] + frames / 2) / frames);
+        png(result, output / (std::string(name) + ".png"));
+        return result;
+    }
     Difference compare(const char* name, const render::Capture& a, const render::Capture& b) {
         const auto delta = difference(a, b);
         metrics << name << ',' << delta.mean << ',' << delta.p95 << ',' << delta.changed << ',' << delta.darker << '\n';
@@ -279,6 +297,8 @@ std::array<double,3> lighting_mean(Fixture& f,const char* name,Region region,uns
 }
 
 void benchmark(Fixture& f) {
+    // Every scope, including the reservoir passes, executes on the ReSTIR fallback.
+    f.frame.view.lit.direct_clustered=false;f.edited();
     for (unsigned frame = 0; frame < warmup_frames; ++frame) f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
     samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,di_initial_temporal_ms,di_spatial_ms,di_visibility_shading_ms,direct_resolve_filter_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,direct_temporal_resolve_ms,direct_filter_1_ms,direct_filter_2_ms,direct_filter_4_ms,completed_pass_mask\n";
@@ -582,6 +602,7 @@ void image_cases(Fixture& f) {
     const auto stable_delta = f.compare("temporal-stable",stable0,stable1);
     check(stable_delta.mean <= 3 && stable_delta.p95 <= 8,
           "converged combined SceneLit remains stable in real geometry pixels");
+    const auto converged_edit = f.average("10-converged-edit", convergence_frames, convergence_frames);
     f.frame.camera_cut = true;
     render::Capture cut; const auto cut_result = f.step(&cut); png(cut,f.output/"10-camera-cut.png");
     check(cut_result.stats.scene_lit_history_resets > 0,
@@ -592,8 +613,8 @@ void image_cases(Fixture& f) {
     const auto replaced = f.step();
     check(replaced.stats.scene_lit_history_resets > 0,
           "replacement scene/Edit-Play execution domain cannot reuse another world's histories");
-    const auto simulation = f.capture("10-simulation-independent",warmup_frames);
-    const auto simulation_delta = f.compare("scene-lit-simulation-independent",stable1,simulation);
+    const auto simulation = f.average("10-simulation-independent",warmup_frames+convergence_frames,convergence_frames);
+    const auto simulation_delta = f.compare("scene-lit-simulation-independent",converged_edit,simulation);
     check(simulation_delta.mean <= 3 && simulation_delta.p95 <= 8,
           "identical Edit and Play snapshots converge to the same SceneLit appearance");
     f.lights.clear(); f.edited();
@@ -666,8 +687,14 @@ void temporal_isolation(Fixture& f) {
         if(mode>=2) f.frame.view.lit.ddgi=false;
         if(mode==4) f.frame.view.lit.direct_reference=true;
         f.edited();
-        const auto first=f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
-        const auto second=f.capture((std::string(names[mode])+"-1").c_str(),8);
+        // The reference redraws 64 independent estimates every frame without
+        // denoising, so its stability is that of the converged signal: compare
+        // means of independent frames. Denoised modes compare displayed frames.
+        const bool reference=mode==4;
+        const auto first=reference?f.average((std::string(names[mode])+"-0").c_str(),warmup_frames,16):
+            f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
+        const auto second=reference?f.average((std::string(names[mode])+"-1").c_str(),16,16):
+            f.capture((std::string(names[mode])+"-1").c_str(),8);
         const auto delta=f.compare(names[mode],first,second);
         stable&=delta.mean<=3 && delta.p95<=8;
         check(f.step().stats.scene_lit_history_resets==0,"static temporal isolation retains scene histories");
@@ -1243,41 +1270,19 @@ void quality_cases(Fixture& f) {
         check(std::abs(distinct_mean[channel]-reference[channel])<=3,
               "legacy fallback and authored uint64 keys preserve the reference lighting mean");
     f.room.meshes[4].stable_key=central_key;f.room.meshes[5].stable_key=metal_key;f.edited();
+    quality_direct_radiance_response(f,penumbra);
     quality_ssil(f);
     quality_depth(f);
     quality_ddgi(f);
     quality_contracts(f);
     check(f.metrics.good() && trajectory.good(),"SceneLit quality evidence and accepted-frame trajectory written");
-    std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, direct64, bounded SSIL, geometry/camera recovery, reversed depth, emissive DDGI wall continuity/motion/divider)");
+    std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, direct64, bounded direct radiance response, bounded SSIL, geometry/camera recovery, reversed depth, emissive DDGI wall continuity/motion/divider)");
 }
 } // namespace scene_lit_e2e
 
-int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only=false, bool quality_only=false, bool ddgi_only=false, bool contracts_only=false, bool debug_only=false, bool volumes_only=false, bool restir_only=false) {
-    scene_lit_e2e::Fixture fixture(benchmark_mode,output,ddgi_only?atelier::rhi::Validation::debug_layer:atelier::rhi::Validation::gpu);
+int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only, bool quality_only) {
+    scene_lit_e2e::Fixture fixture(benchmark_mode,output);
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
-    else if(restir_only) scene_lit_e2e::restir_cases(fixture);
-    else if(volumes_only) {
-        // Reuse the prepared renderer for the related real-GPU regressions;
-        // shader preparation is not repeated for each independent scene.
-        const auto initial_view=fixture.frame.view;
-        const auto initial_camera=fixture.frame.camera;
-        const auto initial_environment=fixture.frame.environment;
-        const auto restore=[&] {
-            fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
-            fixture.frame.view=initial_view;fixture.frame.camera=initial_camera;
-            fixture.frame.environment=initial_environment;fixture.frame.lighting_focus={};
-            ++fixture.frame.scene_identity;fixture.edited();
-        };
-        scene_lit_e2e::probe_volume_cases(fixture);
-        restore();scene_lit_e2e::quality_ddgi(fixture);
-        restore();scene_lit_e2e::probe_debug_cases(fixture);
-    }
-    else if(debug_only) scene_lit_e2e::probe_debug_cases(fixture);
-    else if(contracts_only) {
-        scene_lit_e2e::quality_audit(fixture);
-        scene_lit_e2e::quality_contracts(fixture);
-    }
-    else if(ddgi_only) scene_lit_e2e::quality_ddgi(fixture);
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);
     else if(temporal_only) scene_lit_e2e::temporal_isolation(fixture);
     else {scene_lit_e2e::environment_cases(fixture);scene_lit_e2e::image_cases(fixture);}

@@ -32,7 +32,7 @@ struct CavitySettings {
 struct SceneLitSettings : rendering::SceneLightingSettings {
     bool operator==(const SceneLitSettings&) const = default;
     bool direct_reference{}; // Diagnostic: average 64 independent RIS estimates without reuse or denoising.
-    bool direct_clustered{}; // Migration diagnostic: enumerate conservative analytic light lists; reference takes precedence.
+    bool direct_clustered{true}; // Conservative analytic light lists with exact enumeration; false is the ReSTIR diagnostic fallback. Reference takes precedence.
     bool direct_shadow_cache{}; // Clustered candidate B only; A keeps exact endpoint RT visibility.
     bool direct_cluster_inspect{}; // Optional receiver-support histogram; excluded from performance sampling.
     bool spatial_light_sampling{true}; // DI/DDGI proposal diagnostic; never persisted in World.

@@ -3,6 +3,32 @@ RWTexture2D<float4> lit_direct_specular_raw_output;
 // Raw alpha describes stochastic support, not RGB validity. A deterministic
 // receiver keeps its current radiance with zero reconstructable history count.
 uint lit_direct_stochastic;
+// One during a bounded window after any light, material, emitter or
+// environment radiance change, zero once older radiance has decayed.
+float lit_direct_response;
+// Per-receiver soft-visibility outcomes of compact sources: bit source%15 was
+// seen visible, bit 16+source%15 occluded. Bits 15/31 mark an estimator that
+// is random regardless of visibility. Unclassified shading forces every pixel.
+RWTexture2D<uint> lit_direct_visibility_output;
+Texture2D<uint> lit_direct_visibility;
+uint lit_direct_classified;
+static const uint LIT_DIRECT_FORCED = 0x80008000u;
+uint lit_direct_visibility_bit(uint source, bool visible) { return 1u << (source % 15u + (visible ? 0u : 16u)); }
+// Frames a receiver stays on the stochastic path after its last nearby
+// disagreement. Fringe outcomes rarer than about one in 25x8 rays converge in
+// history instead of alternating with the unshadowed or occluded value.
+static const uint LIT_DIRECT_PENUMBRA_FRAMES = 8;
+Texture2D<uint> lit_direct_penumbra_previous;
+RWTexture2D<uint> lit_direct_penumbra_output;
+// Resolve lists the 8x8 tiles that need spatial filtering as indirect work and
+// writes final values for every other tile into both filter scratch targets.
+RWStructuredBuffer<uint> lit_direct_tile_arguments;
+RWStructuredBuffer<uint> lit_direct_tiles_output;
+StructuredBuffer<uint> lit_direct_tiles;
+RWTexture2D<float4> lit_direct_diffuse_scratch0_output;
+RWTexture2D<float4> lit_direct_diffuse_scratch1_output;
+RWTexture2D<float4> lit_direct_specular_scratch0_output;
+RWTexture2D<float4> lit_direct_specular_scratch1_output;
 Texture2D<float4> lit_direct_diffuse_raw;
 Texture2D<float4> lit_direct_specular_raw;
 Texture2D<float4> lit_direct_diffuse_previous;
@@ -271,9 +297,11 @@ void lit_direct_resolve_signal(float3 current, bool specular, float roughness, f
     if (valid) {
         float motion_pixels = length(motion.xy * lit_size_frame.xy);
         float maximum_count = specular ? lerp(15, 47, saturate(roughness)) : 47;
-        // Known light edits shorten support gently. They never globally turn
-        // history off; geometry validity remains an independent hard gate.
-        maximum_count = lerp(maximum_count, specular ? 7 : 11, saturate(lit_temporal.z));
+        // Radiance changes shorten support for a whole window, so old radiance
+        // decays geometrically whether or not the latest change was an edit
+        // frame. They never globally turn history off; geometry validity
+        // remains an independent hard gate.
+        maximum_count = lerp(maximum_count, specular ? 7 : 11, lit_direct_response);
         // A moving occluder changes illumination on stationary receivers too.
         // Preserve their history, but let new visibility replace old shadows.
         // Unlike an authored light/color edit, this is not proof that a random
@@ -284,7 +312,7 @@ void lit_direct_resolve_signal(float3 current, bool specular, float roughness, f
         // evidence of a new signal, independently of the old signal variance.
         // Clip color as well as luminance so a removed colored lamp cannot
         // leave a long chromatic tail. Noisy neighborhoods keep wider bounds.
-        if (lit_temporal.z > 0) {
+        if (lit_direct_response > 0) {
             float response_range = 3 * sqrt(max(local.y, 0)) + .1 * local.x + .001;
             history.rgb = clamp(history.rgb, max(0, average - response_range), average + response_range);
         }
@@ -315,12 +343,12 @@ void lit_direct_resolve_signal(float3 current, bool specular, float roughness, f
     result = float4(lit_direct_finite(current), count);
 }
 
-[numthreads(8,8,1)]
-void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p; if (!lit_screen_pixel(id.xy, p)) return;
-    lit_direct_diffuse_history_output[p] = 0; lit_direct_specular_history_output[p] = 0;
-    lit_direct_diffuse_moments_output[p] = 0; lit_direct_specular_moments_output[p] = 0;
-    if (!lit_direct_surface(int2(p))) return;
+// Returns whether this receiver took the stochastic temporal path and may need
+// spatial filtering. Every surface and background pixel receives outputs.
+bool lit_direct_resolve_pixel(uint2 p, bool disagreement, out float4 diffuse, out float4 specular,
+                              out float2 diffuse_moments, out float2 specular_moments, out uint age) {
+    diffuse = 0; specular = 0; diffuse_moments = 0; specular_moments = 0; age = 0;
+    if (!lit_direct_surface(int2(p))) return false;
     float4 diffuse_raw = lit_direct_diffuse_raw.Load(int3(p, 0));
     float4 specular_raw = lit_direct_specular_raw.Load(int3(p, 0));
     float3 diffuse_current = lit_direct_finite(diffuse_raw.rgb);
@@ -328,26 +356,36 @@ void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
     // The independent reference integrates the same fLV samples without
     // reconstruction bias. No-light frames must never retain a removed lamp.
     if (lit_di_settings.z != 0 || (lit_source_counts.x == 0 && lit_source_counts.y == 0)) {
-        lit_direct_diffuse_history_output[p] = float4(diffuse_current, 1);
-        lit_direct_specular_history_output[p] = float4(specular_current, 1);
-        lit_direct_diffuse_moments_output[p] = float2(lit_direct_luminance(diffuse_current), 0);
-        lit_direct_specular_moments_output[p] = float2(lit_direct_luminance(specular_current), 0);
-        return;
+        diffuse = float4(diffuse_current, 1); specular = float4(specular_current, 1);
+        diffuse_moments = float2(lit_direct_luminance(diffuse_current), 0);
+        specular_moments = float2(lit_direct_luminance(specular_current), 0);
+        return false;
     }
-    if (diffuse_raw.a == 0 && specular_raw.a == 0) {
+    bool deterministic = diffuse_raw.a == 0 && specular_raw.a == 0;
+    float4 motion = lit_motion.Load(int3(p, 0));
+    if (!deterministic) {
+        if (disagreement) age = LIT_DIRECT_PENUMBRA_FRAMES;
+        else if ((lit_history_invalid & 1) == 0 && lit_size_frame.w != 0 && motion.w > .5) {
+            int2 q = int2(floor((lit_direct_uv(int2(p)) + motion.xy) * lit_size_frame.xy));
+            if (all(q >= 0) && all(q < int2(lit_size_frame.xy)))
+                age = max(lit_direct_penumbra_previous.Load(int3(q, 0)), 1u) - 1;
+        }
+    }
+    if (deterministic || age == 0) {
         // No random estimator contributes here. Moving a hard-shadow caster or
         // editing a delta light changes the current answer immediately, rather
-        // than accumulating yesterday's deterministic illumination.
-        lit_direct_diffuse_history_output[p] = float4(diffuse_current, 0);
-        lit_direct_specular_history_output[p] = float4(specular_current, 0);
-        lit_direct_diffuse_moments_output[p] = float2(lit_direct_luminance(diffuse_current), 0);
-        lit_direct_specular_moments_output[p] = float2(lit_direct_luminance(specular_current), 0);
-        return;
+        // than accumulating yesterday's deterministic illumination. Receivers
+        // whose nearby soft-visibility rays have agreed for several frames are
+        // likewise current; a unit count lets penumbra neighbors reuse them.
+        float count = deterministic ? 0 : 1;
+        diffuse = float4(diffuse_current, count); specular = float4(specular_current, count);
+        diffuse_moments = float2(lit_direct_luminance(diffuse_current), 0);
+        specular_moments = float2(lit_direct_luminance(specular_current), 0);
+        return false;
     }
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
     float3 normal = lit_safe_normal(nr.xyz), position = lit_direct_world(int2(p));
     float pixel_size = lit_direct_pixel_size(p);
-    float4 motion = lit_motion.Load(int3(p, 0));
     float expected_depth = lit_previous_device_depth(p, motion), tolerance;
     float2 gradient; lit_direct_previous_plane(p, position, lit_geometry_normal_at(p), pixel_size, expected_depth, tolerance, gradient);
     float3 diffuse_average, specular_average; float2 diffuse_local, specular_local;
@@ -359,13 +397,53 @@ void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID) {
     if ((lit_history_invalid & 1) == 0 && motion.w > .5)
         valid = lit_direct_history(p, motion.xy + lit_direct_uv(int2(p)), expected_depth, normal, nr.w, tolerance, gradient,
             diffuse_history, diffuse_history_moments, specular_history, specular_history_moments, support);
-    float4 diffuse, specular; float2 diffuse_moments, specular_moments;
     lit_direct_resolve_signal(diffuse_current, false, nr.w, motion, diffuse_average, diffuse_local, valid.x,
         diffuse_history, diffuse_history_moments, support.x, diffuse, diffuse_moments);
     lit_direct_resolve_signal(specular_current, true, nr.w, motion, specular_average, specular_local, valid.y,
         specular_history, specular_history_moments, support.y, specular, specular_moments);
-    lit_direct_diffuse_history_output[p] = diffuse; lit_direct_specular_history_output[p] = specular;
-    lit_direct_diffuse_moments_output[p] = diffuse_moments; lit_direct_specular_moments_output[p] = specular_moments;
+    return true;
+}
+
+groupshared uint lit_direct_masks[144];
+groupshared uint lit_direct_group_work;
+[numthreads(8,8,1)]
+void lit_direct_resolve_cs(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
+                           uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex) {
+    if (lane == 0) lit_direct_group_work = 0;
+    int2 origin = int2(lit_screen_dispatch.xy + group.xy * 8) - 2;
+    for (uint i = lane; i < 144; i += 64) {
+        int2 q = origin + int2(i % 12, i / 12);
+        bool shaded = all(q >= int2(lit_screen_dispatch.xy)) && all(q < int2(lit_screen_dispatch.zw));
+        lit_direct_masks[i] = lit_direct_classified == 0 ? LIT_DIRECT_FORCED :
+            (shaded ? lit_direct_visibility.Load(int3(q, 0)) : 0);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    // A source seen both visible and occluded within 5x5 marks a penumbra.
+    // Elsewhere the deterministic radiance times agreeing visibility is final.
+    uint window = 0;
+    [unroll] for (uint y = 0; y < 5; ++y) [unroll] for (uint x = 0; x < 5; ++x)
+        window |= lit_direct_masks[(local.y + y) * 12 + local.x + x];
+    bool disagreement = (window & 0x8000u) != 0 || (window & (window >> 16) & 0x7fffu) != 0;
+    uint2 p; bool inside = lit_screen_pixel(id.xy, p);
+    float4 diffuse = 0, specular = 0; float2 diffuse_moments = 0, specular_moments = 0; uint age = 0;
+    if (inside && lit_direct_resolve_pixel(p, disagreement, diffuse, specular, diffuse_moments, specular_moments, age))
+        InterlockedOr(lit_direct_group_work, 1u);
+    GroupMemoryBarrierWithGroupSync();
+    bool listed = lit_direct_group_work != 0;
+    if (inside) {
+        lit_direct_diffuse_history_output[p] = diffuse; lit_direct_specular_history_output[p] = specular;
+        lit_direct_diffuse_moments_output[p] = diffuse_moments; lit_direct_specular_moments_output[p] = specular_moments;
+        lit_direct_penumbra_output[p] = age;
+        if (!listed) {
+            lit_direct_diffuse_scratch0_output[p] = diffuse; lit_direct_diffuse_scratch1_output[p] = diffuse;
+            lit_direct_specular_scratch0_output[p] = specular; lit_direct_specular_scratch1_output[p] = specular;
+        }
+    }
+    if (lane == 0 && listed) {
+        uint index; InterlockedAdd(lit_direct_tile_arguments[0], 1u, index);
+        lit_direct_tile_arguments[1] = 1; lit_direct_tile_arguments[2] = 1;
+        lit_direct_tiles_output[index] = group.x | (group.y << 16);
+    }
 }
 
 struct LitDirectFilter {
@@ -445,15 +523,25 @@ void lit_direct_filter(uint3 id, uint step) {
     lit_direct_specular_filter_output[p] = lit_direct_filter_end(specular);
 }
 
+// Filters run only over listed tiles; each group recovers its tile origin.
+uint3 lit_direct_tile_thread(uint tile, uint3 local) {
+    uint packed = lit_direct_tiles[tile];
+    return uint3(uint2(packed & 0xffffu, packed >> 16) * 8 + local.xy, 0);
+}
 [numthreads(8,8,1)]
-void lit_direct_filter1_cs(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex) {
-    lit_direct_cache_guides(group.xy, lane);
+void lit_direct_filter1_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex) {
+    uint3 id = lit_direct_tile_thread(group.x, local);
+    lit_direct_cache_guides(id.xy / 8, lane);
     lit_direct_filter(id, 1);
 }
 [numthreads(8,8,1)]
-void lit_direct_filter2_cs(uint3 id : SV_DispatchThreadID) { lit_direct_filter(id, 2); }
+void lit_direct_filter2_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID) {
+    lit_direct_filter(lit_direct_tile_thread(group.x, local), 2);
+}
 [numthreads(8,8,1)]
-void lit_direct_filter4_cs(uint3 id : SV_DispatchThreadID) { lit_direct_filter(id, 4); }
+void lit_direct_filter4_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID) {
+    lit_direct_filter(lit_direct_tile_thread(group.x, local), 4);
+}
 
 [numthreads(8,8,1)]
 void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {

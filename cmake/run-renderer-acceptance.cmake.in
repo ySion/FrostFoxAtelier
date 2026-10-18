@@ -1,10 +1,22 @@
-# The full GPU suite includes first-use textured Lit pipeline compilation under GBV.
-execute_process(COMMAND "$<TARGET_FILE:atelier_renderer_acceptance>"
-    WORKING_DIRECTORY "$<TARGET_FILE_DIR:atelier_renderer_acceptance>" TIMEOUT 600
-    RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
-file(WRITE "$<TARGET_FILE_DIR:atelier_renderer_acceptance>/renderer-acceptance.log"
-    "${_out}\n${_err}\nexit=${_result}\n")
-message("${_out}${_err}")
-if(NOT "${_result}" STREQUAL "0" OR NOT _out MATCHES "Renderer acceptance: PASS")
-    message(FATAL_ERROR "Renderer acceptance failed: ${_result}")
-endif()
+# Each renderer acceptance entry runs in its own process and window, in order.
+# The default entry includes first-use textured Lit pipeline compilation under GBV.
+set(_exe "$<TARGET_FILE:atelier_renderer_acceptance>")
+set(_directory "$<TARGET_FILE_DIR:atelier_renderer_acceptance>")
+set(_evidence "${_directory}/renderer-evidence")
+foreach(_mode default scene-lit scene-lit-benchmark scene-lit-temporal scene-lit-quality scene-lit-stability
+        scene-lit-restir-suite scene-lit-clustered scene-lit-shadows scene-lit-cost)
+    if(_mode STREQUAL "default")
+        set(_arguments)
+    else()
+        file(MAKE_DIRECTORY "${_evidence}/${_mode}")
+        set(_arguments "--${_mode}" --output "${_evidence}/${_mode}")
+    endif()
+    execute_process(COMMAND "${_exe}" ${_arguments}
+        WORKING_DIRECTORY "${_directory}" TIMEOUT 1800
+        RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+    file(WRITE "${_directory}/renderer-acceptance-${_mode}.log" "${_out}\n${_err}\nexit=${_result}\n")
+    message("${_out}${_err}")
+    if(NOT "${_result}" STREQUAL "0" OR (_mode STREQUAL "default" AND NOT _out MATCHES "Renderer acceptance: PASS"))
+        message(FATAL_ERROR "Renderer acceptance ${_mode} failed: ${_result}")
+    endif()
+endforeach()

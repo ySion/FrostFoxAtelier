@@ -6,6 +6,12 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| 默认直接光切到 A | 2026-10-18 rendering 工作树：`direct_clustered` 默认 true，ReSTIR 保留为诊断回退；切换前 Release 九个入口通过，Edit/Play 收敛 1.228/4，Play 宿主走 A；合并 main 后补跑其余入口，见[本批记录](#默认直接光切到-a2026-10-18) |
+| Renderer 验收入口盘点 | 2026-10-18 rendering 工作树：此前 `renderer_acceptance` 只运行无参数默认入口，14 个 `--scene-lit*` 入口都不在任何常规目标里；现在该目标依次运行默认入口和 9 个有独有检查的入口，删除 9 个完全被覆盖的子集入口，见[本批记录](#renderer-验收入口盘点2026-10-18) |
+| temporal isolation 参考配置 | 2026-10-18 rendering 工作树：`--scene-lit-temporal` 自 10-13 起一直失败（main 基线 `d2b6da2b` 同样失败），原因是参考配置从确定性 64 阴影样本换成逐帧独立的随机参考；改为比较两段 16 帧均值后为 1.032/3，通过，见[本批记录](#temporal-isolation-参考配置2026-10-18) |
+| DI 辐射响应窗口 | 2026-10-18 rendering 工作树：DI 降噪器按距最后一次辐射变化的帧数缩短支持，编辑后恢复的残留在 64 帧内回到基线（A 路径 R−B 从 +.70 降到 +.04）；持续动画光源的半影噪声不变；去掉窗口的变体使新验收失败，见[本批记录](#di-辐射响应窗口2026-10-18) |
+| Edit/Play 收敛修复 | 2026-10-18 rendering 工作树：DDGI 命中点改为完全粗糙求值；`--scene-lit` 的 Edit/Play 收敛检查从 mean 4.212、p95 14 降到 2.659、8，通过；随后改为比较两域各 64 帧的平均，为 2.224、7，见[本批记录](#editplay-收敛修复2026-10-18) |
+| Lit 帧率批次 | 2026-10-18 rendering 工作树：原生 1440p 静止 A 路径 61.50 接受帧/秒（GPU 15.88 ms），默认 ReSTIR 44.70；相机持续环绕 53.77。半分辨率 DDGI、GTAO 深度层级、A 路径半影分类；Edit/Play 收敛检查在基线上同样失败，见[本批记录](#lit-帧率批次2026-10-18) |
 | 基础链路与精确工作复用 | 2026-10-17：CPU、三项正式 GPU 专项与地牢原生 1440p 采样通过；默认 Lit 40.81、A 路径 46.32 接受帧/秒，静止 DDGI gather 约 2.48 ms；正常停靠布局仍有 CPU 瓶颈，见[本批记录](#基础链路与精确工作复用2026-10-17) |
 | 编辑器整帧诊断 | 2026-10-16：空闲、无 VSync、原生 1440p 最大化视口的 App/UI 对照已完成，非 Lit 提速且画面一致；关闭 DDGI 的默认 Lit 约 45 接受帧/秒。正常停靠布局与 RHI 候选性能仍待验，见[本批记录](#编辑器整帧诊断2026-10-16) |
 | 精确局部光照与缓存阴影候选 | 2026-10-16 主目录工作区：小 ROI 通过；原生 1440p 实测 A 精确枚举＋RT 的 DI 下降约 20.5%，B 缓存阴影成本及真实地砖质量未过默认迁移门槛，见[本批记录](#精确局部光照与缓存阴影候选2026-10-16) |
@@ -27,6 +33,196 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## 默认直接光切到 A（2026-10-18）
+
+状态：基于 `f01139f1` 的单独本地提交，未推送、未并入 main。C 批第一步：`direct_clustered` 默认改为 true，ReSTIR 保留为诊断回退；回退只需把 `view_settings.hpp` 中这一项改回 `{}`。没有持久数据：该开关不在作者选项目录里，不写 Scene 或 Undo。Play 宿主（`project_runner.cpp`）默认构造 ViewSettings，也随之走 A。Frame/FrameStats 接口和 GPU scope 没有变化。
+
+改动：
+
+- `view_settings.hpp` 的默认值。
+- 断言 ReSTIR 行为的 renderer 验收显式设 `direct_clustered=false`：`--scene-lit-restir-suite` 的两个 ReSTIR 夹具（reservoir 统计与 MIS）、`quality_work_elision`（reservoir scope 与每接收点一条选中可见性射线）、`--scene-lit-benchmark`（CSV 要求所有 reservoir 子 scope 都执行）。其余验收不设置，即运行在 A 上。
+- 编辑器 `view_options.cpp` 的说明与编辑器文档（编辑器负责人审阅），renderer contract、Scene Lit 与 README。编辑器 Performance 基线仍显式 false，之后由编辑器负责人改为测默认路径。
+
+`renderer_acceptance` 的 10 个入口，RX 6800 XT，GPU validation，证据在 `out/accept-20261018/<配置>-<入口>-a1/`：
+
+| 入口 | Release | Dev |
+|---|---|---|
+| 无参数默认入口 | PASS | 合并 main 后补跑 |
+| `--scene-lit` | PASS：Edit/Play 收敛 1.228/4（阈值 3/8；ReSTIR 下为 2.262/8），temporal-stable .294/1 | 合并 main 后补跑 |
+| `--scene-lit-temporal` | PASS：direct-reference 1.032/3 | 合并 main 后补跑 |
+| `--scene-lit-quality` | PASS：辐射恢复红移 1–16 帧 +2.511、49–64 帧 +.050；动画光源半影 .462（静止 .194，单帧 3.559） | 合并 main 后补跑 |
+| `--scene-lit-stability` | PASS | 合并 main 后补跑 |
+| `--scene-lit-restir-suite` | PASS，夹具显式 ReSTIR | 合并 main 后补跑 |
+| `--scene-lit-benchmark` | 合并 main 后补跑 | 合并 main 后补跑 |
+| `--scene-lit-clustered` | PASS：单参考／最小范围／透视参考均为 0 | 合并 main 后补跑 |
+| `--scene-lit-shadows` | PASS：有限点光参考 .681/1，CSM 与移动太阳 ≤.106 | 合并 main 后补跑 |
+| `--scene-lit-cost` | PASS：五组确定性对照均为 0 | 合并 main 后补跑 |
+
+Edit/Play 收敛余量：A 下 p95 为 4，距阈值 8 有 4 级，mean 余量 1.77；ReSTIR 下 p95 等于阈值。
+
+Play：Release Play 宿主打开 Scene Lit Room，约 25 秒后用 PrintWindow 截取客户区，`out/accept-20261018/play-{before,after}-room/play.png` 分别为切换前（ReSTIR）与切换后（A）。两图构图与平均亮度一致（场景区 76.95／76.99），A 的后墙与地面没有 ReSTIR 的斑驳噪声。
+
+运动差异图的环纹（实测，`out/ab-20261018/room`，后墙与地面）：A 的 moving−settled 差值 98.4% 为 0 或 1 级，整体偏移 +.27；差 1 级的像素 51% 落在静止图的 1 级等照度线上，未变化的像素只有 3.8%；静止图 99.7% 的像素与相邻像素相差不超过 1 级。ReSTIR 的同一差值也有 +.3～+.65 的偏移，但逐像素噪声把等照度线打散。结论：环纹是两条路径共有的亚级运动过渡落在 8 位量化台阶上的显现，A 没有噪声所以显出来，不是 A 的结构误差。当前显示编码没有抖动。
+
+## Edit/Play 收敛修复（2026-10-18）
+
+状态：基于 `f8202f25` 的单独本地提交，未推送、未并入 main。只改 DDGI 命中着色；renderer contract、Frame/FrameStats 接口和 GPU scope 都没有变化。
+
+失败的检查是 `--scene-lit` 的 “identical Edit and Play snapshots converge”。夹具把旧执行域（一串编辑之后约 104 帧）与只递增 `scene_identity` 的新域（96 帧）比较，两边提交的 Frame 除身份外完全相同，所以差异来自渲染器内部，与编辑器或 World 交出的快照无关。
+
+根因（实测）：新域的 DDGI 运输场按域确定，种子随 `probe_sequence` 一起重置，每个新域都重放同一组样本。立柱接收点几乎只依赖一个探针（空间权重 .43，主导度约 1）。临时逐射线检查显示，该探针的 64 条射线中，典型辐射约 0.3～2.5，个别射线落在粗糙度 0.18 的光泽面上，并恰好对准光源的镜面方向，GGX 镜面项达到 23～73。新场前 12 次更新的历史权重只有 .5～.8（成熟后 .93），这三条样本出现在第 7、9、10 次更新，各以约 20% 的权重进入（成熟场为 7%），使该探针在第 96 帧附近约为成熟值的 1.6 倍，约百帧后才回落。旧域已成熟，于是两张图在立柱、墙面和地面上出现大片低频差异。同一二进制重复运行结果完全一致（4.212/14），所以这不是偶发噪声。
+
+修复：探针命中点按完全粗糙（roughness 1）求值材质，颜色、金属度和 F0 不变，详见 [Scene Lit](scene-lit.md#ddgi-探针场)。这是路径正则化，与 Lumen 表面缓存的 fully rough 折算、RTXGI 和 Flax 的纯漫反射命中属同类取舍。另外两个候选没有采用：限幅单条射线会丢失能量，而且原注释已明确拒绝；新场改用纯运行平均，会与多次反弹预热的非平稳反馈冲突。阈值未改。
+
+测量（Release，同一 `--scene-lit` 序列）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---:|---:|
+| Edit/Play 收敛 mean / p95（阈值 3 / 8） | 4.212 / 14 | 2.659 / 8 |
+| temporal-stable mean / p95 | .800 / 3 | .579 / 2 |
+| 主导探针单次更新射线均值（12 次） | .26～2.05 | .29～.36 |
+| 主导探针 200 帧内读数 | .33 → 1.48 → 回落 | .37～.46 平稳 |
+
+代价（实测）：成熟画面（`temporal-stable-1`）修复前后对比 mean 3.40、p95 14，有符号 −2.42，整体约暗 1.6%，主要分布在后墙、立柱和右墙，并排观察看不出差别。原因是光泽地面朝立柱的集中镜面反射被摊平，该立柱探针的成熟读数从约 .88 降到约 .38。材质、金属、发光和 SSSR 截图逐像素不变，颜色反弹图 mean .80。
+
+余量：p95 正好等于阈值 8。剩余差异主要来自屏幕随机序列：屏幕 RNG 使用全局 `sequence` 且从不重置，同龄的两个新域相互比较也有 mean 1.6、p95 6。比较方法的调整见[下节](#改为比较收敛信号第二个单独提交)。
+
+另记：DI 降噪器只在编辑帧置 `radiance_changed`，颜色或材质编辑后再恢复，会残留偏色，约 200 帧才消失。本检查路径中 DI 历史被 `direct_reference` 切换重置，所以它不是这次失败的原因。该问题已由 [DI 辐射响应窗口](#di-辐射响应窗口2026-10-18) 修复。
+
+验收：Release 与 Dev 各自全量构建 acceptance 后，持锁串行运行 `--scene-lit`、`--scene-lit-stability`、`--scene-lit-quality`、`--scene-lit-ddgi`、`--scene-lit-cost`，均为默认 GPU validation，十次全部退出 0，stderr 为空（`out/accept-20261018/{release,dev}-*-ep1`）。两配置的收敛指标一致（2.659/8），`--scene-lit` 中该检查之后的删光、正交、MatCap 独立性和 resize 检查也全部通过。cost 的五组 DI 图像对差异仍为零。
+
+证据：`out/accept-20261018/editplay-diag-06`（修复前逐射线）、`editplay-fix-01`（修复后逐射线）及各验收目录。
+
+### 改为比较收敛信号（第二个单独提交）
+
+总负责人决定：检查名为“收敛”，就比较收敛后的信号，阈值 3/8 不变。现在两个域各取 64 帧逐像素平均再比较：旧域取 `temporal-stable` 之后的连续 64 帧，新域预热 96 帧后再取 64 帧（域龄约 97–160）。
+
+K 的选择（Release 实测，`editplay-k-01`、`editplay-age-01`）：
+
+- 只把一边换成 K≤32 帧平均没有用。新域单帧对旧域 K 帧平均，K 从 1 到 32 时 mean 从 2.507 变为 2.657，p95 始终为 8。剩余差异不是逐帧白噪声：DI 历史最长 47 帧，DDGI 历史权重 .93 且每个探针约每 8 帧才更新一次，估计噪声在几十到上百帧内相关。
+- 新域还有缓慢的系统性多次反弹预热亏量。相对旧域 64 帧平均的有符号差，域龄 96 的单帧为 −.50，域龄 705–768 的 64 帧平均为 −.18。
+- 原单帧比较很脆弱：只让旧域在相机切换前多跑 64 帧，单帧结果就变成 2.697/9，检查失败。通过与否取决于两域恰好落在相关噪声的哪个相位。
+- 两边各取 64 帧平均：同一序列下为 2.224/7。域龄 193–256、321–384、705–768 的 64 帧平均分别为 2.096/7、1.797/5、2.060/7，延长预热不再稳定改善。
+
+结果：Release 与 Dev（`{release,dev}-scene-lit-avg1`）均为 2.224/7，`--scene-lit` 全部通过，stderr 为空。p95 余量从 0 级增加到 1 级，mean 余量为 .78。剩余差异由两部分组成：几十到上百帧内相关的估计噪声，64 帧平均只能削弱、不能消除；以及新域缓慢的多次反弹预热亏量（域龄 96 为 −.50，705–768 为 −.18）。后者是 DDGI 多次反弹反馈的预热速率，属于渲染器性质，不是测试假象。余量增幅不大，所以没有收紧阈值。代价是该用例多渲染 128 帧。
+
+## Renderer 验收入口盘点（2026-10-18）
+
+状态：基于 `4be48d33` 的单独本地提交，未推送。只改验收入口、`renderer_acceptance` 的运行脚本和文档，渲染代码不变。
+
+盘点前：`renderer_acceptance` 目标只以无参数方式运行 `atelier_renderer_acceptance` 一次；顶层 `acceptance` 目标不依赖 `renderer_acceptance`。所有 `--scene-lit*` 入口都只能手动运行，`--scene-lit-temporal` 因此从 10-13 起失败而无人发现。
+
+| 入口 | 盘点前在常规目标中 | 独有检查 | 处理 |
+|---|---|---|---|
+| 无参数默认入口 | `renderer_acceptance` | cavity、材质、UI、变换、网格、可见性、选中、视口、参考辅助、关闭 | 保留 |
+| `--materials`、`--cavity`、`--selection`、`--visibility` | 否 | 无，均为默认入口的子集 | 删除 |
+| `--scene-lit` | 否 | 环境与逐项图像 | 并入 |
+| `--scene-lit-benchmark` | 否 | 原生 2560×1440 完成样本与 GPU 分段计时合同 | 并入 |
+| `--scene-lit-temporal` | 否 | 信号编辑、移动历史、时间隔离 | 并入 |
+| `--scene-lit-quality` | 否 | 四种 AA、收敛、direct64、DI 辐射响应、SSIL、深度 | 并入 |
+| `--scene-lit-stability` | 否 | 稳定性 | 并入 |
+| `--scene-lit-restir-suite` | 否 | ReSTIR、probe debug、audit | 并入 |
+| `--scene-lit-clustered`、`--scene-lit-shadows`、`--scene-lit-cost` | 否 | A 路径、缓存阴影 B、DI 成本 | 并入 |
+| `--scene-lit-restir` | 否 | 无，`restir-suite` 已含 | 删除 |
+| `--scene-lit-volumes`、`--scene-lit-debug` | 否 | 无，`restir-suite` 已含多体积、DDGI 质量与 probe debug | 删除 |
+| `--scene-lit-contracts` | 否 | 无，`quality` 与 `restir-suite` 已含 audit/contracts | 删除 |
+| `--scene-lit-ddgi` | 否 | 无，`quality`、`stability`、`restir-suite` 已含 | 删除 |
+
+现在 `renderer_acceptance` 在各自的进程中依次运行默认入口和 9 个保留的 `--scene-lit*` 入口，每个入口限时 1800 秒，任一失败即整体失败；日志为 `renderer-acceptance-<入口>.log`，证据在构建目录的 `renderer-evidence/<入口>`。入口清单维护在 [Scene Lit](scene-lit.md#诊断与性能边界)。
+
+验证（Release 与 Dev，持锁串行）：
+- 运行脚本：只保留默认入口和 `--scene-lit-shadows` 的脚本副本退出 0，两个入口的日志都写出（`{release,dev}-runner-inv1`）；不存在的入口名使脚本以 FATAL_ERROR 退出 1，并写出该入口的日志。
+- 此前没有近期结果的入口：默认入口、`--scene-lit-shadows`、`--scene-lit-benchmark`、`--scene-lit-restir-suite` 均退出 0，stderr 为空（`{release,dev}-scene-lit-{benchmark,restir-suite}-inv1`）。
+- 其余入口在本提交前一轮已通过：`--scene-lit`、`--scene-lit-quality`、`--scene-lit-stability`、`--scene-lit-clustered`、`--scene-lit-cost`（`*-rb1`），`--scene-lit-temporal`（`*-tf1`）。本提交只删除分派分支，没有改变这些入口执行的用例。
+- 为缩短单次持锁时间，没有一次性运行完整目标；完整目标在 Release 下约需一小时。
+
+## temporal isolation 参考配置（2026-10-18）
+
+状态：基于 `53f20601` 的单独本地提交，未推送。只改 `--scene-lit-temporal` 的 temporal isolation 检查，渲染代码不变，阈值 3/8 不变。
+
+现象：`--scene-lit-temporal` 在 “all SceneLit temporal isolation configurations meet the unchanged stability bounds” 失败。五种配置中只有 `direct-reference` 越界，相隔 8 帧的两帧 mean 3.729、p95 11。main 基线 `d2b6da2b`（`temporal-d2b`）、`53f20601` 去掉 B 的构建和 `53f20601` 本身数值都相同。
+
+根因（代码历史）：该检查写于 `fbd2cad7`（10-09），第五种配置当时是 `shadow_samples=64`，即确定性的 64 次阴影采样参考，逐帧稳定。`c868ef99`（10-13，引入 ReSTIR）把它机械替换为 `direct_reference=true`。后者每帧重新抽取 64 次独立 RIS 估计，没有降噪，逐帧差异就是估计量的白噪声；差异图在所有受光面上都是均匀的空间白噪声。文档中最后一次 `--scene-lit-temporal` 通过记录是 10-11，此后各批验收都没有运行这个入口，所以失败一直没有被发现。
+
+修复：参考配置的稳定性按收敛信号比较，即两段相邻 16 帧均值之间的差异；四种降噪配置仍比较实际显示的单帧，因为闪烁正是用户能看到的。参考帧之间相互独立，16 帧均值应把噪声降到约 1/4。
+
+结果：`direct-reference` 为 mean 1.032、p95 3，与 3.729/11 按 √16 缩小的预测（约 .93/3）一致；其余四种配置不变（all .617/2，no-sssr .542/2，no-ddgi .616/2，direct-only .591/2）。Release 与 Dev 的 `--scene-lit-temporal` 均退出 0，stderr 为空（`{release,dev}-scene-lit-temporal-tf1`）。
+
+## DI 辐射响应窗口（2026-10-18）
+
+状态：基于 `35b07c17` 的单独本地提交，未推送、未并入 main。改动 `lit_direct.hlsl`、`scene_lit.cpp` 与 quality 验收；renderer contract、Frame/FrameStats 接口和 GPU scope 都没有变化。新增的 `lit_direct_response` 只是内部 shader 常量。
+
+问题：DI 降噪器只在辐射变化那一帧（`lit_temporal.z`）把漫反射/镜面的历史支持上限压到 11/7 帧并夹取颜色。此后计数每帧加一，旧内容按调和级数衰减，第 k 帧仍保留约 12/(12+k)。所以颜色或材质编辑后再恢复，会留下偏色，约 200 帧才消失。
+
+修复（总负责人选定方案 B）：CPU 记录距最后一次辐射变化的帧数。判定沿用原 `radiance_changed`，即灯光、材质、发光体或环境变化。48 帧窗口内 `lit_direct_response=1`，支持上限保持 11/7 帧，并持续按当前邻域夹取颜色。旧辐射每帧保留 11/12，48 帧后为 (11/12)^48≈1/65。持续变化会让窗口一直打开。改动只作用于 DI 历史：不全局重置，`history_invalid` 不变，SSIL 与最终颜色仍使用单帧的 `temporal.z`。
+
+新增验收 `quality_direct_radiance_response`（`--scene-lit-quality`）：
+
+- 场景：只开直接光，AA 关闭。矩形面光（光源 3）改为橙色、强度 ×4，中央遮挡体改为红色，8 帧后恢复。比较恢复后各 16 帧平均与编辑前 32 帧平均之间的 R−B 有符号均值。编辑是有色的，所以残留表现为偏红，而中性光照的估计噪声在 R−B 中大体抵消。
+- 门限：恢复后第 1–16 帧 R−B ≥ 1，证明编辑确实进入了历史；第 49–64 帧 |R−B| ≤ 第 1–16 帧的 10%。动画用 0.1% 的交替强度，使每帧都标记辐射变化，半影 ROI 的帧间差不得超过单帧估计（每帧 camera cut）的 25%。
+- 使用 A 路径（`direct_clustered=true`）：两条路径共用被测的 resolve，而 ReSTIR 的时空复用会留下低频斑驳，两次 32 帧平均之间的 R−B 噪声底为 −.35～−.39，波动约 ±.5，与残留同量级；A 路径的噪声底约 ±.02。
+
+恢复轨迹（R−B 有符号均值，每格为 16 帧平均；修复前为 Release `item3-base-02`，修复后为 Dev `item3-b-01`，诊断构建）：
+
+| 恢复后帧 | A 修复前 | A 修复后 | ReSTIR 修复前 | ReSTIR 修复后 |
+|---|---:|---:|---:|---:|
+| 1–16 | +2.807 | +2.521 | +3.131 | +2.911 |
+| 17–32 | +1.479 | +.548 | +1.881 | +1.117 |
+| 33–48 | +.998 | +.120 | +1.386 | +.855 |
+| 49–64 | +.699 | +.043 | +1.034 | +.554 |
+| 81–96 | +.355 | +.017 | +.725 | +.407 |
+| 113–128 | +.188 | −.003 | +.359 | +.166 |
+| 177–192 | +.064 | −.014 | −.127 | −.211 |
+| 241–256 | +.030 | −.014 | −.080 | −.132 |
+| 噪声底（编辑前两次 32 帧平均） | −.012 | −.020 | −.350 | −.391 |
+
+N 的实测：A 路径修复后在 64 帧内回到基线（第 49–64 帧 +.043，噪声底约 ±.02）；修复前到第 241–256 帧才降到 +.03。ReSTIR 路径修复后在第 49–128 帧的残留约为修复前的一半，但剩余部分与它的噪声底同量级，这一测量无法区分剩余是相关噪声还是另一来源。ReSTIR 的时间 reservoir 复用按前帧光源快照求前域目标（`lit_restir.hlsl` 的 GRIS MIS），按设计不携带旧辐射；该推断没有单独验证。
+
+持续动画（半影 ROI 平均帧间差，32 帧）：A 路径静止 .209、动画 .425、单帧 3.744；ReSTIR 路径静止 .461、动画 1.474、单帧 12.245。修复前后数值相同：每帧都变化时，旧代码同样每帧压低上限，B 不改变这一情形。
+
+变异检查：只把共享 resolve 的两处 `lit_direct_response` 改回 `lit_temporal.z`，CPU 窗口保留，用 Release 运行最终验收（`item3-mut-01`）。结果在 “restored direct radiance returns to its baseline within 64 frames” 处失败：第 1–16 帧 +2.785，第 49–64 帧 +.692，门限 .279。可见该验收确实覆盖共享代码。
+
+代价：每次辐射变化后的 48 帧内，随机直接光像素的历史支持为 11/7 帧而不是最多 47 帧，噪声略高。持续动画的情形与修复前相同。
+
+验收：Release 与 Dev 各自全量构建后，持锁串行运行 `--scene-lit`、`--scene-lit-quality`、`--scene-lit-stability`、`--scene-lit-temporal`、`--scene-lit-clustered`、`--scene-lit-ddgi`、`--scene-lit-cost`，结果在 `out/accept-20261018/{release,dev}-*-rb1`。除 temporal 外全部退出 0，stderr 为空。新检查在两种配置下数值相同：恢复后第 1–16 帧 +2.511、第 49–64 帧 +.050；动画 .462，单帧 3.559。默认路径仍是 ReSTIR，所以 quality、stability 及其余用例原样通过，即构成回退路径的无回归检查。
+
+Edit/Play 收敛检查在两种配置下为 2.262/8（本提交前为 2.224/7），仍通过，但 p95 又回到阈值。B 只在辐射变化后 48 帧内改变 DI 历史，两域的平均窗口都在此之后；差异来自该序列开头恢复场景时旧域历史的衰减方式不同，改变了相关噪声的实现。默认切到 A 后噪声结构会明显改变，届时重新评估这一余量。
+
+`--scene-lit-temporal` 在两种配置下都在 “all SceneLit temporal isolation configurations meet the unchanged stability bounds” 失败。`direct-reference` 配置相隔 8 帧的两帧为 mean 3.729、p95 11，阈值 3/8。同一提交点去掉本提交渲染改动的构建（`release-temporal-base`）数值完全相同，且参考模式本身不经过 DI 历史，所以这是既有失败，与本提交无关，根因与修复见 [temporal isolation 参考配置](#temporal-isolation-参考配置2026-10-18)。同一入口中的信号编辑、移动历史及其余四种配置均通过。
+
+## Lit 帧率批次（2026-10-18）
+
+状态：rendering 工作树基于 `d2b6da2b`，只提交到本地分支，未推送、未并入 main。默认 ReSTIR 路径和 `direct_clustered` 的默认值不变。最大收益在 A 路径（`direct_clustered=true`）；切换默认路径仍属[直接光计划](../../research/direct-lighting-execution-plan-20261015.md)的 C 批。renderer contract、Frame/FrameStats 接口和 GPU scope 索引都没有改动。DDGI receiver gather 区间现在包含代表点 gather、上采样和回退精确 gather，见 [Scene Lit](scene-lit.md#诊断与性能边界)。
+
+- A 路径：紧凑光源（距离不小于四倍半径的有限点光，以及全部太阳）的辐射改为确定求值。软阴影可见性写入逐像素掩码，5×5 邻域判定半影，并保持 8 帧迟滞。空间滤波只间接派发含半影的 8×8 tile。
+- DDGI：每个 2×2 块只对一个代表点执行完整 gather，再做联合双边上采样。找不到匹配代表点的像素进入回退列表，做精确 gather。LOS 缓存改为按块存储，1440p 下从 28.125 MiB 降到 7.03 MiB。
+- GTAO：一次派发写出 R32F 视空间深度和四级缩减层；缩减偏向最远深度（XeGTAO 思路），远处 tap 按距离选层。resolve 用组共享内存载入 12×12 邻域。
+- 编辑器性能入口新增 `clustered_orbit`：每帧 yaw 改变 .2°，在 ±12° 内往返，测相机持续运动时缓存失效的成本，见[编辑器说明](../editor/README.md)。
+- 验收中发现并修复一个问题：半分辨率代表点 gather 漏掉了零漫反射材质的工作剔除，导致 `work-ddgi-metal` 出现非零 receiver 查询。修复后，2×2 块内没有漫反射消费者时跳过 gather。代表点仍只按几何选择，保证 LOS 缓存仍然有效。修复前后，地牢三组截图 changed>4 均为 0.00%。
+
+测量条件与 10 月 17 日一致：RX 6800 XT；同一 Dungeon 场景（SHA-256 `c3360e5f…`）与相机；最大化视口原生 2560×1440；Release，无 GPU validation，关闭 VSync；SMAA、GTAO、SSSR、Bloom 开启；单个 8³ DDGI，256 updates，128 rays。每个 case 预热 192 帧，采集 240 个已完成样本；FPS 为接受帧数除以墙钟时间。`final-01` 在 GPU 锁内运行。`baseline-01` 运行于锁规则出台之前，可能有桌面并发负载，FPS 受影响比 GPU 毫秒大。
+
+| 证据 | 路径 | 接受帧/秒 | 八主 GPU scope 均值 | DI | DDGI gather | GTAO |
+|---|---|---:|---:|---:|---:|---:|
+| `baseline-01`（`d2b6da2b`） | 默认 ReSTIR | 41.05 | 23.98 ms | 12.93 ms | 2.46 ms | 3.07 ms |
+| 同上 | A | 46.57 | 21.12 ms | 10.22 ms | 2.53 ms | 3.14 ms |
+| `final-01`（本批） | 默认 ReSTIR | 44.70 | 22.03 ms | 13.43 ms | 1.82 ms | 1.90 ms |
+| 同上 | A | 61.50 | 15.88 ms | 7.29 ms | 1.63 ms | 1.87 ms |
+| 同上 | A 持续环绕 | 53.77 | 18.23 ms | 8.29 ms | 3.14 ms | 1.90 ms |
+
+- A 静止：直接光重建从 6.59 降到 3.91 ms。filter 1/2/4 从 2.08/1.58/.53 降到 1.14/.78/.17 ms，temporal resolve 从 2.39 降到 1.82 ms；可见性从 3.29 降到 3.04 ms。
+- 环绕：中间版本 `phase1-03` 只有 A 分类，DDGI 仍为全分辨率，环绕 gather 8.17 ms、总计 24.97 ms、39.34 帧/秒。本批 gather 为 3.14 ms；环绕时 receiver LOS 从 2,776 万条/帧降到 714 万条/帧。静止画面的 receiver LOS 从约 120 条/帧升到约 20.1 万条/帧，因为回退精确 gather 不读写缓存；静止 gather 仍从 2.53 降到 1.63 ms。
+- 默认 ReSTIR：AO 和 DDGI 合计省下 1.95 ms，但 direct temporal resolve 从 2.31 升到 2.56 ms（本批三次采样都在 2.56 左右）。新的分类与列表结构在不分类路径上约多花 .25 ms。推断原因是组共享掩码载入和额外的组同步，尚未优化。
+- 图像：`final-01` 对比 `baseline-01`，默认路径 changed>4 为 0.81%（mean .205，max 81）；A 为 0.89%（mean .696，max 122），平均亮度 66.08→66.28，来自紧凑光源的确定求值。差异集中在几何边缘和接触处的 1 像素线，来自半分辨率 DDGI 上采样，没有大片色块。同一二进制两次运行的噪声为 0。
+
+Renderer GPU 验收逐项持锁串行，均为默认 GPU validation：
+
+- Release `--scene-lit-quality`：修复前在 `work-ddgi-metal` 失败，修复后 `release-scene-lit-quality-03` 通过。`--scene-lit-ddgi`（`-03`）、`--scene-lit-cost`（`-03`）在修复后通过；cost 的五组 DI 图像对差异为零，DDGI 缓存生命周期与重追踪图像对通过。`--scene-lit-clustered`（`-02`）在修复前的构建上通过，该修复只涉及 DDGI receiver gather。
+- Release `--scene-lit`（`-02`）只在“identical Edit and Play snapshots converge…”处失败，mean 4.212、p95 14，阈值为 3/8。同机 `d2b6da2b` 基线（`lit-baseline`）同样失败，mean 4.222、p95 14；此前各项指标与基线的 mean 差都不超过 .03。因此这是既有缺陷，不由本批引入。差异是墙面和地面上大片低频斑驳；推断是两套独立收敛的随机历史在预热帧数内未达到阈值，根因与修复见 [Edit/Play 收敛修复](#editplay-收敛修复2026-10-18)。该检查之后的删光、正交、MatCap 独立性、resize 等检查在基线和本批都被它挡住。为覆盖这些检查，用临时构建只跳过这一项断言（指标照常输出，未提交），Release 与 Dev 的 `--scene-lit` 其余检查全部通过（`{release,dev}-scene-lit-coverage`），跳过项仍为 mean 4.212、p95 14。
+- Dev（`out/dev` 全量构建）：`--scene-lit-cost`、`--scene-lit-clustered`、`--scene-lit-ddgi`、`--scene-lit-quality`（均为 `dev-*-03`）在修复后的构建上全部通过，stderr 为空。
+
+证据：性能、图像与场景哈希见 `out/perf-20261018/{baseline-01,phase1-03,final-01}/`；验收输出见 `out/accept-20261018/` 下各同名目录。
 
 ## 基础链路与精确工作复用（2026-10-17）
 
@@ -632,6 +828,8 @@ Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文
 | 关灯初期 / 389 个接受帧后的平均显示亮度 | 123.362 / 2.47939 |
 
 指标取相同视口内有几何深度的像素，属于色调映射后的显示空间差异，包含其上的编辑辅助叠层；不是线性间接辐照度真值，也不是帧率测量。静态噪声对照的两次捕获之间推进 32 个预热帧及一次捕获帧；关灯后的最终捕获包含三段各 128 个预热帧和中间捕获。固定检查要求 DDGI 开关差大于 .5 且超过静态差两倍、移动后的再差分大于同一门槛、关灯末期亮度低于初期的 30% 或 2；没有随实测放宽阈值。
+
+2026-10-18 补注：上表是中性 .55 无贴图材质的值。自 `60edfab0` 把 DDGI/GTAO/SSSR/Bloom 改为 World 作者设置后，验收直接写视口设置，每帧被 World 值覆盖，开关从未到达渲染器，ec-2 门禁因此在开关差 .94、静态差 .64 上失败。编辑器验收改走 World 作者路径后（编辑器负责人的修复链），rendering 工作树（A 直接光）在贴图材质下实测：Dev／Release 开关差 3.686／3.684、静态差 .144／.141，移动后开关差 3.63、再差分 2.18。下降幅度是推断，没有做中性材质对照：有效反照率为组件 .55 乘贴图线性均值（建筑约 .20～.39，布料 .07～.14），相机所见间接光近似与接收面和反弹面反照率之积成比例，估计为 10-10 的 3%～9%，即 1.5～4.5。关灯消退原判据把编辑器叠层亮度（3.680）计入，现扣除同相机关灯且关 DDGI 的底数：Dev 初期 7.343、稳定 0.000，稳定帧与无光底数逐值相同。证据在 `out/accept-20261018/sponza-{dev-base,dev-fix,release-fix,dev-floor}/`。
 
 首次沿用基础显示的纯白实例色 1 时，DDGI 使画面偏亮；关灯初期 / 末期亮度为 218.154 / 107.381，未通过消退检查。最终默认改成 .55 是场景材质设定，本轮没有修正这个高反射率下的慢消退问题，不能将最终通过外推到所有材质。该轮 Scene Lit 尚不读取 Sponza 漫反射/opacity 图，植物与铁链按不透明处理；此历史限制已由 2026-10-11 的标准材质接入替代。
 
