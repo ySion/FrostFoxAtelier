@@ -3,7 +3,7 @@ constinit timing::Marker profile_calibration{"profile.calibration","Scope cost c
 constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
 
 // Loads the real project through Session and measures existing CPU consumers.
-// No window, graphics device, author edits or alternate World are constructed.
+// No window, graphics device or author edits; only the Play stages use a second World.
 void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output,
                        const std::filesystem::path& camera_report) {
     using Json=nlohmann::json;
@@ -121,7 +121,9 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             report["stages"][name]={{"single_ms",elapsed}};
             std::printf("Scene CPU %.*s: %.3f ms single\n",static_cast<int>(name.size()),name.data(),elapsed);
         };
-        once("play_start",[&]{changed(document->start());});
+        // Like the Play process, Play runs on its own copy of the source, so dynamic bodies leave the document unchanged.
+        auto play=take(editor::Session::deserialize(source,project));
+        once("play_start",[&]{changed(play->start());});
         // Structure is checked on every sample; phase durations are diagnostics only.
         const std::array per_update{&world::phases::update,&world::phases::pre_physics,&world::phases::pre_physics_tick,&world::phases::pre_physics_tasks,
             &world::phases::pre_physics_commands,&world::phases::pre_physics_flush,&world::phases::simulation,&world::phases::post_physics,
@@ -129,8 +131,8 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             &world::phases::late_tick,&world::phases::late_commands,&world::phases::late_flush,&physics::phases::step,
             &physics::phases::reconcile,&physics::phases::events};
         std::vector<std::vector<double>> phases(timing::catalog().size());
-        measure("play_update",[&]{take(document->update(1.f/60));},[&](const timing::FrameRecord& record) {
-            const auto steps=document->physics_scene()->last_step().steps;
+        measure("play_update",[&]{take(play->update(1.f/60));},[&](const timing::FrameRecord& record) {
+            const auto steps=play->physics_scene()->last_step().steps;
             require(std::ranges::all_of(per_update,[&](const auto* marker){return record.count(*marker)==1;}) &&
                 record.count(world::phases::schedule)<=1 && record.count(physics::phases::substep)==steps &&
                 record.count(physics::phases::solve)==steps && record.count(physics::phases::write_back)==steps,
@@ -142,7 +144,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             auto& values=phases[marker->index()];values.erase(values.begin(),values.begin()+20);std::ranges::sort(values);
             report["stages"]["play_update"]["phases"][std::string(marker->key())]={{"median_ms",values[60]},{"p95_ms",values[114]}};
         }
-        once("play_stop",[&]{changed(document->stop());});
+        once("play_stop",[&]{changed(play->stop());});
     }
     editor::Workspace workspace;
     workspace.project_open=true;
