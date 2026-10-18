@@ -44,13 +44,20 @@ struct CodeBinding {
 // Optional immutable help shared with native controls. It owns text only, never
 // an Entity or borrowed reflection metadata. Null means no local help.
 using TooltipBinding=std::shared_ptr<const ui::Tooltip>;
+// One flattened host row (see ui::flatten_tree); TreeItem copies it into its descriptor.
+struct TreeRowBinding {
+    std::uint32_t index{}, depth{};
+    bool branch{}, expanded{}, primary{};
+    std::bitset<128> lines;
+    bool operator==(const TreeRowBinding&) const = default;
+};
 struct Item;
 struct ItemList {
     // An immutable snapshot: relinquish all mutable aliases before update().
     std::shared_ptr<const std::vector<Item>> values;
     bool operator==(const ItemList&) const;
 };
-using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding,CodeBinding,TooltipBinding>;
+using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding,CodeBinding,TooltipBinding,TreeRowBinding>;
 struct KeyBinding {
     // A node in this component, or a dotted path through named static component
     // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.

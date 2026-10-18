@@ -53,4 +53,27 @@ struct MenuItem {
     std::wstring heading{}; // Optional group caption drawn above this item (Blender popover sections).
     bool operator==(const MenuItem&) const = default;
 };
+
+// Tree hosts flatten their own hierarchy; Session lays out only described rows.
+inline constexpr std::uint32_t no_tree_node=std::numeric_limits<std::uint32_t>::max();
+// Host nodes in depth-first preorder: a parent precedes its subtree. text is read only while filtering.
+struct TreeNode {
+    std::uint32_t parent{no_tree_node};
+    bool expanded{};
+    std::wstring_view text;
+};
+struct TreeRow {
+    std::uint32_t node{}, parent{no_tree_node}; // parent: index of the parent row.
+    std::uint32_t depth{};
+    bool branch{}, expanded{};
+    std::bitset<128> lines; // Control::tree_lines.
+};
+// Visible rows of nodes, replacing rows. A nonempty filter (ASCII case folding)
+// keeps matching nodes with their ancestors and subtrees, all expanded. Throws
+// std::invalid_argument for a node outside preorder, deeper than 127 levels, or
+// beyond maximum_tree_rows.
+void flatten_tree(std::span<const TreeNode>, std::wstring_view filter, std::vector<TreeRow>& rows);
+// Ascending row indices to describe: the viewport and one screen beyond either
+// edge, the first and last rows, and each pinned row with its neighbours and ancestors.
+std::vector<std::uint32_t> tree_window(std::span<const TreeRow>, TreeViewport, std::span<const std::uint32_t> pinned);
 } // namespace atelier::ui

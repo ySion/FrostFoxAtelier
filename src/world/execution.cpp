@@ -492,6 +492,7 @@ Result<void> World::update(float amount) {
         return std::unexpected(std::move(failure));
     };
     if (auto failure = state.run_phase(TickPhase::pre_physics, amount)) return fail(std::move(*failure));
+    if (!state.running) return {};
     std::optional<timing::Scope> simulating{std::in_place, phases::simulation};
     std::vector<std::shared_ptr<const Simulation>> systems;
     for (const auto& entry : state.simulations) if (entry.simulation) systems.push_back(entry.simulation);

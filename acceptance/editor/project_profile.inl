@@ -3,7 +3,7 @@ constinit timing::Marker profile_calibration{"profile.calibration","Scope cost c
 constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
 
 // Loads the real project through Session and measures existing CPU consumers.
-// No window, graphics device, author edits or alternate World are constructed.
+// No window, graphics device or author edits; only the Play stages use a second World.
 void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output,
                        const std::filesystem::path& camera_report) {
     using Json=nlohmann::json;
@@ -53,7 +53,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         {"unique_geometries",unique.size()},{"adjacent_geometry_batches",batches},{"instance_triangles",triangles},
         {"unique_sampled_images",sampled_images},{"material_texture_table_entries",sampled_images+1},
         {"material_bindings",material_bindings},{"unique_bound_materials",materials.size()},
-        {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present, UI prepare or FPS estimate. Workspace includes DSL commit; no accepted UI frame is supplied."}};
+        {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."}};
     if(!camera_report.empty()) {
         // Consume the accepted product matrices, including its actual aspect.
         const auto reference=Json::parse(take(editor::read_file(camera_report)));
@@ -121,7 +121,9 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             report["stages"][name]={{"single_ms",elapsed}};
             std::printf("Scene CPU %.*s: %.3f ms single\n",static_cast<int>(name.size()),name.data(),elapsed);
         };
-        once("play_start",[&]{changed(document->start());});
+        // Like the Play process, Play runs on its own copy of the source, so dynamic bodies leave the document unchanged.
+        auto play=take(editor::Session::deserialize(source,project));
+        once("play_start",[&]{changed(play->start());});
         // Structure is checked on every sample; phase durations are diagnostics only.
         const std::array per_update{&world::phases::update,&world::phases::pre_physics,&world::phases::pre_physics_tick,&world::phases::pre_physics_tasks,
             &world::phases::pre_physics_commands,&world::phases::pre_physics_flush,&world::phases::simulation,&world::phases::post_physics,
@@ -129,10 +131,10 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             &world::phases::late_tick,&world::phases::late_commands,&world::phases::late_flush,&physics::phases::step,
             &physics::phases::reconcile,&physics::phases::events};
         std::vector<std::vector<double>> phases(timing::catalog().size());
-        measure("play_update",[&]{take(document->update(1.f/60));},[&](const timing::FrameRecord& record) {
-            const auto steps=document->physics_scene()->last_step().steps;
+        measure("play_update",[&]{take(play->update(1.f/60));},[&](const timing::FrameRecord& record) {
+            const auto steps=play->physics_scene()->last_step().steps;
             require(std::ranges::all_of(per_update,[&](const auto* marker){return record.count(*marker)==1;}) &&
-                record.count(world::phases::schedule)<=1 && record.count(physics::phases::substep)==steps &&
+                record.count(physics::phases::substep)==steps &&
                 record.count(physics::phases::solve)==steps && record.count(physics::phases::write_back)==steps,
                 "play_update did not record each World and physics phase once per frame.");
             for(const auto* marker:timing::catalog()) phases[marker->index()].push_back(milliseconds(record.time(*marker)));
@@ -142,7 +144,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             auto& values=phases[marker->index()];values.erase(values.begin(),values.begin()+20);std::ranges::sort(values);
             report["stages"]["play_update"]["phases"][std::string(marker->key())]={{"median_ms",values[60]},{"p95_ms",values[114]}};
         }
-        once("play_stop",[&]{changed(document->stop());});
+        once("play_stop",[&]{changed(play->stop());});
     }
     editor::Workspace workspace;
     workspace.project_open=true;
@@ -155,6 +157,23 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("workspace_maximized",describe);
     workspace.dock.maximize(editor::control::scene_tab);
     measure("workspace_docked",describe);
+    {
+        // The docked editor's UI step on a headless Session: description against the accepted frame, then layout.
+        const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
+        ui::Session surface(fonts);
+        const auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+        require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779,1154},1,1}),"CPU profile UI surface failed.");
+        std::size_t controls{},rows{};
+        measure("ui_docked",[&] {
+            const auto described=workspace.describe(*document,{1779,1154},surface.presented().get(),&project,&surface);
+            require(workspace.ui_error().empty() && surface.set_controls(described),"CPU profile UI description was refused.");
+            workspace.commit_ui_controls();
+            const auto frame=surface.prepare();require(frame && surface.accept(*frame),"CPU profile UI layout failed.");
+            controls=described.size();rows=(*frame)->tree_rows.size();
+        });
+        report["stages"]["ui_docked"]["controls"]=controls;report["stages"]["ui_docked"]["tree_rows"]=rows;
+        std::printf("Scene CPU ui_docked: %zu controls, %zu tree rows\n",controls,rows);
+    }
     {
         // Overhead estimate on the same clock and machine; never a pass condition.
         constexpr std::uint32_t scopes=10000;

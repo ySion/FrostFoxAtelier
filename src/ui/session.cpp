@@ -118,8 +118,13 @@ Result<void> validate_control_properties(const Control& control) {
         ((control.menu_behavior==MenuBehavior::radio)!=(control.radio_group!=0)) ||
         (control.kind==ControlKind::slider && (control.minimum>=control.maximum || !std::isfinite(control.maximum-control.minimum))))
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-    if ((!control.tree_filter.empty() && control.kind!=ControlKind::tree) || control.tree_filter.size()>4096 ||
-        !detail::valid_text(control.tree_filter,false) || !detail::valid_text(control.text,control.kind==ControlKind::text_edit))
+    if (!detail::valid_text(control.text,control.kind==ControlKind::text_edit))
+        return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+    if ((control.kind!=ControlKind::tree && control.tree_row_count) || control.tree_row_count>maximum_tree_rows ||
+        (control.kind!=ControlKind::tree_item && (control.tree_index || control.tree_depth || control.tree_branch ||
+            control.tree_expanded || control.tree_lines.any() || control.tree_primary)) ||
+        control.tree_depth>=128 || (control.tree_expanded && !control.tree_branch) ||
+        control.tree_lines[0] || (control.tree_lines>>(control.tree_depth+1)).any())
         return std::unexpected(Error{ErrorCode::invalid_control,control.key});
     if (control.tooltip) {
         const auto& help=*control.tooltip;
@@ -159,18 +164,14 @@ const CodeGeometry* UiFrame::find_code(ControlKey key) const noexcept {
 
 struct Session::Impl {
     using TableIndex=std::unordered_map<TableKey,std::size_t>;
-    struct TreeState {
-        bool tree_expanded{true}, tree_branch{}, tree_hidden{}, tree_match{}, tree_enabled{true}, tree_reveal{};
-        unsigned tree_depth{};
-        ControlKey tree_next{};
-    };
-    struct State : TreeState {
+    struct State {
         Control control;
         ui_layout::LayoutNodeId node;
         std::uint64_t incarnation{};
         double scroll{}, scroll_limit{};
         double scroll_x{}, scroll_x_limit{};
-        bool table_reveal{true};
+        float viewport_height{}; // Scrolling kinds: last laid-out content height, in DIP.
+        bool table_reveal{true}, tree_reveal{};
         std::uint64_t code_selection_revision{},code_revision{};
         float code_width{};
         std::vector<detail::TextKey> table_text; // Visible cells only; old frames retain their own coverage.
@@ -180,7 +181,7 @@ struct Session::Impl {
         std::size_t frame_index{std::numeric_limits<std::size_t>::max()};
         std::size_t layout_position{}; // Temporary index in a complete-tree input batch.
         bool style_dirty{true};
-        bool layout_dirty{true}, layout_tree_hidden{};
+        bool layout_dirty{true};
         ui_layout::Insets layout_padding{};
         float layout_tree_height{};
         std::uint64_t display_revision{};
@@ -255,7 +256,7 @@ struct Session::Impl {
     ui_layout::LayoutDocument layout{detail::TextStore::measure, &text, {10001, 128}};
     std::map<ControlKey, State> states;
     std::vector<ControlKey> order;
-    bool structure_dirty{true}, trees_dirty{true};
+    bool structure_dirty{true};
     std::shared_ptr<const UiFrame> published;
     std::optional<Press> press;
     std::optional<Edit> edit;
@@ -299,11 +300,8 @@ struct Session::Impl {
             found->second.control.context_target!=box.context_target || found->second.control.context_group!=box.context_group ||
             found->second.control.button_behavior!=box.button_behavior || found->second.control.menu_behavior!=box.menu_behavior ||
             found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table ||
-            found->second.control.table_layout!=box.table_layout || found->second.control.code!=box.code || !box.enabled) return false;
-        if (box.kind==ControlKind::tree_item) {
-            if (found->second.tree_hidden || !found->second.tree_enabled) return false;
-            if (box.tree_parent!=found->second.control.tree_parent || box.parent!=found->second.control.parent) return false;
-        }
+            found->second.control.table_layout!=box.table_layout || found->second.control.code!=box.code || !box.enabled ||
+            (box.kind==ControlKind::tree_item && box.parent!=found->second.control.parent)) return false;
         auto key = box.key;
         while (key) {
             const auto& control = states.at(key).control;
@@ -338,7 +336,7 @@ struct Session::Impl {
     void resolve(State& state) {
         const auto& control=state.control;
         const auto* parent=control.parent?&states.at(control.parent):nullptr;
-        const bool enabled=control.enabled && (control.kind!=ControlKind::tree_item || state.tree_enabled) && (!parent || parent->visual.enabled);
+        const bool enabled=control.enabled && (!parent || parent->visual.enabled);
         const VisualState visual{enabled,enabled && hover==control.key,
             enabled && ((press && press->key==control.key) || keyboard_pressed==control.key),
             enabled && focus==control.key,control.selected,
@@ -369,8 +367,17 @@ struct Session::Impl {
         const auto& appearance=*state.resolved;
         input.padding = padding;
         if (state.control.kind==ControlKind::tree_item) {
-            input.collapsed=state.tree_hidden;
-            input.height=ui_layout::Axis::fixed(states.at(state.control.parent).resolved->tree_row_height);
+            // A described row sits at its host row index; rows outside the window have no node.
+            const auto row_height=states.at(state.control.parent).resolved->tree_row_height;
+            input.out_of_flow=true;
+            input.anchor_x=input.anchor_y=input.pivot_x=input.pivot_y=input.offset_x=0;
+            input.offset_y=static_cast<float>(static_cast<double>(state.control.tree_index)*row_height);
+            input.height=ui_layout::Axis::fixed(row_height);
+        } else if (state.control.kind==ControlKind::tree && input.height.rule==ui_layout::SizeRule::content) {
+            // Content height covers every host row, up to the tree's own maximum; scrolling covers the rest.
+            auto rows=static_cast<float>(static_cast<double>(state.control.tree_row_count)*appearance.tree_row_height+padding.top+padding.bottom);
+            if (input.height.maximum) rows=std::min(rows,*input.height.maximum);
+            input.height.minimum=std::max(input.height.minimum,rows);
         }
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
@@ -397,7 +404,6 @@ struct Session::Impl {
             if (!result) return std::unexpected(Error{ErrorCode::layout_failed,key,result.error().provider_code});
             return {};
         };
-        update_trees();
         std::vector<ui_layout::TreeNodeInput> tree;
         if (structure_dirty) tree.reserve(order.size());
         for (auto key : order) {
@@ -415,14 +421,14 @@ struct Session::Impl {
             auto padding=padding_for(state);
             if (scrolling(state.control.kind) && appearance.scrollbar_gutter==ScrollbarGutter::stable)
                 padding.right+=appearance.scrollbar_width+appearance.scrollbar_inset*2;
-            const auto row_height=state.control.kind==ControlKind::tree_item?owner->resolved->tree_row_height:0.f;
+            const auto row_height=state.control.kind==ControlKind::tree_item?owner->resolved->tree_row_height:
+                state.control.kind==ControlKind::tree?appearance.tree_row_height:0.f;
             const auto display_version=edit && edit->key==key?
                 (edit->composition?edit->composition->revision:edit->token.revision):0;
             state.layout_dirty|=!previous || (text_kind(state.control.kind) &&
                 (previous->font!=appearance.font || previous->text_align!=appearance.text_align)) ||
                 padding!=state.layout_padding || row_height!=state.layout_tree_height ||
-                state.display_revision!=display_version ||
-                (state.control.kind==ControlKind::tree_item && state.tree_hidden!=state.layout_tree_hidden);
+                state.display_revision!=display_version;
             if (!structure_dirty && !state.layout_dirty) continue;
             ++layout_syncs;
             auto input = input_for(state,padding);
@@ -437,7 +443,7 @@ struct Session::Impl {
             // These are preparation caches. A failed tree batch keeps structure_dirty
             // and all pending layout dirty flags, so retry regenerates every entry.
             state.layout_padding=padding; state.layout_tree_height=row_height;
-            state.layout_tree_hidden=state.tree_hidden; state.display_revision=display_version;
+            state.display_revision=display_version;
         }
         if (structure_dirty) {
             const auto result = layout.set_tree(tree);
@@ -512,6 +518,15 @@ Result<Reply> Session::set_controls(std::span<const Control> controls) {
 ControlKey Session::pointer_target(float x,float y) const {
     const auto* hit=impl_->hit(x,y);return hit?hit->key:0;
 }
+TreeViewport Session::tree_viewport(ControlKey key) const noexcept {
+    const auto& self=*impl_;
+    const auto surface_height=static_cast<float>(self.surface.extent.height)/self.surface.dpi_scale;
+    const auto found=self.states.find(key);
+    // An unresolved tree uses the smallest legal row height so a host window covers the surface.
+    if (found==self.states.end() || found->second.control.kind!=ControlKind::tree || !found->second.resolved) return {0,surface_height,12};
+    const auto& state=found->second;
+    return {state.scroll,state.node && state.viewport_height>0?state.viewport_height:surface_height,state.resolved->tree_row_height};
+}
 Result<Reply> Session::update_controls(std::span<const Control> controls) {
     return impl_->apply_controls(controls,true);
 }
@@ -557,6 +572,11 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (scrolling(state.control.kind))
                 if (const auto* box = geometry->find(state.node)) {
                     const auto padding=effective_padding(state.control,*state.resolved);
+                    // Trees scroll over every host row, described or not.
+                    if (state.control.kind==ControlKind::tree)
+                        state.content_bottom=std::max(state.content_bottom,static_cast<float>(
+                            padding.top+static_cast<double>(state.control.tree_row_count)*state.resolved->tree_row_height));
+                    state.viewport_height=std::max(0.f,box->height-padding.top-padding.bottom);
                     const auto content_end=state.content_bottom+padding.bottom;
                     const auto overflow=content_end-box->height;
                     // Measurement and placement can accumulate fractional rows in
@@ -568,7 +588,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
         }
         for (auto key:self.order) {
             auto& state=self.states.at(key);
-            if (state.control.kind!=ControlKind::tree_item || !state.tree_reveal || state.tree_hidden) continue;
+            if (state.control.kind!=ControlKind::tree_item || !state.tree_reveal) continue;
             auto& tree=self.states.at(state.control.parent);
             const auto* row=geometry->find(state.node); const auto* owner=geometry->find(tree.node);
             if (!row || !owner || owner->height<=0) continue;
@@ -663,7 +683,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!box) continue;
             Rect bounds{box->x*scale,box->y*scale,box->width*scale,box->height*scale};
             Clip clip = target;
-            bool enabled = state.control.enabled && (state.control.kind!=ControlKind::tree_item || state.tree_enabled);
+            bool enabled = state.control.enabled;
             if (state.control.parent) {
                 const auto& parent_state = self.states.at(state.control.parent);
                 if (parent_state.frame_index == std::numeric_limits<std::size_t>::max()) continue;
@@ -689,13 +709,13 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.tree_parent,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code,state.control.tooltip});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code,state.control.tooltip});
             const auto kind = state.control.kind;
             if (kind==ControlKind::tree_item) {
                 const auto indent=self.states.at(state.control.parent).resolved->tree_indent*scale;
-                const auto x=bounds.x+(state.control.layout.padding.left+state.resolved->padding.left)*scale+state.tree_depth*indent;
-                output->tree_rows.push_back({key,state.control.tree_parent,state.tree_branch?Rect{x,bounds.y,indent,bounds.height}:Rect{},
-                    state.tree_expanded,!self.states.at(state.control.parent).control.tree_filter.empty()});
+                const auto x=bounds.x+(state.control.layout.padding.left+state.resolved->padding.left)*scale+state.control.tree_depth*indent;
+                output->tree_rows.push_back({key,state.control.tree_index,state.control.tree_depth,
+                    state.control.tree_branch?Rect{x,bounds.y,indent,bounds.height}:Rect{},state.control.tree_expanded});
             }
             // Keep every arranged box and its parent transform. Only painting is culled.
             if (!visible(bounds,clip)) {
@@ -725,23 +745,19 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 const auto& tree_style=*self.states.at(state.control.parent).resolved;
                 const auto indent=tree_style.tree_indent*scale;
                 const auto start=bounds.x+(state.control.layout.padding.left+appearance.padding.left)*scale;
-                const auto cx=std::round(start+(state.tree_depth+.5f)*indent),cy=std::round(bounds.y+bounds.height*.5f);
+                const auto depth=state.control.tree_depth;
+                const auto cx=std::round(start+(depth+.5f)*indent),cy=std::round(bounds.y+bounds.height*.5f);
                 const auto tree_clip=intersect(clip,clip_rect(bounds));
                 const auto stroke=std::max(1.f,std::round(scale*.667f));
-                if (state.tree_depth) {
+                if (depth) {
                     const auto px=std::round(cx-indent);
-                    quad({px,bounds.y,stroke,(state.tree_next?bounds.height:cy-bounds.y)},tree_clip,tree_style.tree_line);
-                    quad({px,cy,indent+(state.tree_branch?0:indent*.5f),stroke},tree_clip,tree_style.tree_line);
-                    auto ancestor=state.control.tree_parent;
-                    while (ancestor) {
-                        const auto& branch=self.states.at(ancestor);
-                        if (branch.tree_depth && branch.tree_next)
-                            quad({std::round(start+(branch.tree_depth-.5f)*indent),bounds.y,stroke,bounds.height},tree_clip,tree_style.tree_line);
-                        ancestor=branch.control.tree_parent;
-                    }
+                    quad({px,bounds.y,stroke,(state.control.tree_lines[depth]?bounds.height:cy-bounds.y)},tree_clip,tree_style.tree_line);
+                    quad({px,cy,indent+(state.control.tree_branch?0:indent*.5f),stroke},tree_clip,tree_style.tree_line);
+                    for (std::uint32_t level=1;level<depth;++level) if (state.control.tree_lines[level])
+                        quad({std::round(start+(level-.5f)*indent),bounds.y,stroke,bounds.height},tree_clip,tree_style.tree_line);
                 }
-                if (state.tree_branch) {
-                    const bool expanded=output->tree_rows.back().expanded || output->tree_rows.back().filtering;
+                if (state.control.tree_branch) {
+                    const bool expanded=state.control.tree_expanded;
                     if (expanded) quad({cx,cy,stroke,bounds.y+bounds.height-cy},tree_clip,tree_style.tree_line);
                     const auto diameter=std::min(9*scale,indent-2*scale),radius=diameter*.5f;
                     paint_box({cx-radius,cy-radius,diameter,diameter},tree_clip,appearance.indicator_background,{},

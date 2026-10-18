@@ -3,9 +3,9 @@
 #include "foundation/map.hpp"
 #include "ui/controls.hpp"
 #include <array>
+#include <map>
 #include <memory>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace atelier::ui_language {class LiveDocument;struct Item;}
 
@@ -37,6 +37,9 @@ public:
         const auto key="item:"+std::string(resource);
         const auto* found=keys_.find(StringView{key});return found?*found:0;
     }
+    // Directory rows' expansion is view state. The empty path is Project; every
+    // path must be a project directory row, otherwise nothing changes.
+    Result<void> set_expanded(std::span<const std::filesystem::path>, bool expanded);
 private:
     View view_{View::details};
     bool engine_{true}, has_project_{}, can_create_{};
@@ -63,11 +66,11 @@ private:
     bool table_dirty_{true};
     std::vector<Item> directories_;
     std::shared_ptr<const std::vector<ui_language::Item>> directory_items_;
+    std::size_t directory_rows_{};
     bool directory_items_dirty_{true};
     std::filesystem::path project_root_;
-    std::uint64_t directory_revision_{},tree_frame_{};
-    std::unordered_map<ui::ControlKey,bool> tree_expansion_;
-    std::unordered_set<ui::ControlKey> directory_keys_{browser_control::project,browser_control::engine};
+    std::uint64_t directory_revision_{};
+    std::map<std::filesystem::path,bool> expansion_; // Overrides; Project starts expanded, directories collapsed unless they first appear holding the current directory.
     std::uint64_t catalog_revision_{};
     bool items_dirty_{true};
     ui::ControlKey key_for(const std::string&);

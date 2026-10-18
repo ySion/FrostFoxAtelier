@@ -36,6 +36,7 @@ struct ActionReference { std::uint32_t slot; };
 struct TableReference { std::uint32_t slot; };
 struct CodeReference { std::uint32_t slot; };
 struct TooltipReference { std::uint32_t slot; };
+struct TreeRowReference { std::uint32_t slot; };
 InputValue initial(InputKind kind) {
     switch (kind) {
     case InputKind::boolean:return false;
@@ -49,6 +50,7 @@ InputValue initial(InputKind kind) {
     case InputKind::table:return TableBinding{};
     case InputKind::code:return CodeBinding{};
     case InputKind::tooltip:return TooltipBinding{};
+    case InputKind::tree_row:return TreeRowBinding{};
     }
     throw std::logic_error("Unknown UI input kind.");
 }
@@ -149,6 +151,7 @@ struct Context {
     TableReference read_table(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<TableBinding>(d.inputs.at(index)));return {index}; }
     CodeReference read_code(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<CodeBinding>(d.inputs.at(index)));return {index}; }
     TooltipReference read_tooltip(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<TooltipBinding>(d.inputs.at(index)));return {index}; }
+    TreeRowReference read_tree_row(std::uint32_t index) const { auto& d=data();d.read(index);static_cast<void>(std::get<TreeRowBinding>(d.inputs.at(index)));return {index}; }
     KeyReference node_key(std::uint32_t slot) const {
         auto& d=data();static_cast<void>(d.nodes.at(slot));return {static_cast<std::uint32_t>(d.inputs.size()+slot)};
     }
@@ -201,7 +204,6 @@ struct Context {
     }
     static void text(ui::Control& node,std::uint32_t property,std::wstring value) {
         if (static_cast<Property>(property)==Property::text || static_cast<Property>(property)==Property::empty_text) node.text=std::move(value);
-        else if (static_cast<Property>(property)==Property::filter) node.tree_filter=std::move(value);
         else if (const auto kind=static_cast<Property>(property);kind==Property::tooltip || kind==Property::tooltip_title || kind==Property::tooltip_identity) {
             const auto member=kind==Property::tooltip?&ui::Tooltip::description:
                 kind==Property::tooltip_title?&ui::Tooltip::title:&ui::Tooltip::identity;
@@ -248,7 +250,12 @@ struct Context {
     void set_text_edit(std::uint32_t slot,std::uint32_t,TextEditReference reference) {
         auto& d=data();target(slot).text_edit=std::get<TextEditBinding>(d.inputs.at(reference.slot));
     }
-    void set_tree_parent(std::uint32_t slot,std::uint32_t,KeyReference reference) { target(slot).control.tree_parent=key(reference); }
+    void set_tree_row(std::uint32_t slot,std::uint32_t,TreeRowReference reference) {
+        const auto& row=std::get<TreeRowBinding>(data().inputs.at(reference.slot));
+        auto& node=target(slot).control;
+        node.tree_index=row.index;node.tree_depth=row.depth;node.tree_branch=row.branch;
+        node.tree_expanded=row.expanded;node.tree_primary=row.primary;node.tree_lines=row.lines;
+    }
     void set_radio_group(std::uint32_t slot,std::uint32_t,KeyReference reference) { target(slot).control.radio_group=key(reference); }
     void set_context(std::uint32_t slot,std::uint32_t,KeyReference reference) { target(slot).control.context_target=key(reference); }
     void set_context_from_edit(std::uint32_t slot,std::uint32_t,TextEditReference reference) {
@@ -264,6 +271,10 @@ struct Context {
     }
     void set_number(std::uint32_t slot,std::uint32_t property,double value) {
         const auto p=static_cast<Property>(property);
+        if (p==Property::tree_rows) {
+            if (!(value>=0 && value<=ui::maximum_tree_rows) || std::floor(value)!=value) throw std::runtime_error("Tree rows require a count within the supported range.");
+            target(slot).control.tree_row_count=static_cast<std::uint32_t>(value);return;
+        }
         const bool signed_value=p==Property::offset_x || p==Property::offset_y;
         if (!std::isfinite(value) || value<(signed_value?-32768:0) || value>32768) throw std::runtime_error("UI layout value is outside its supported range.");
         auto& state=target(slot);auto& node=state.control;
@@ -326,7 +337,6 @@ struct Context {
         case Property::panel:node.role=value?ui::Role::panel:ui::Role::normal;break;
         case Property::expand_height:node.layout.height=value?ui_layout::Axis::expand():ui_layout::Axis::content();break;
         case Property::expand_width:node.layout.width=value?ui_layout::Axis::expand():ui_layout::Axis::content();break;
-        case Property::expanded:node.tree_initially_expanded=value;break;
         case Property::draggable:node.tree_draggable=value;break;
         case Property::mounted:state.mounted=value;break;
         case Property::align_center:
@@ -361,6 +371,7 @@ struct Context {
     }
     void set_argument_code(std::uint32_t slot,std::uint32_t index,CodeReference value) { argument(slot,index,std::get<CodeBinding>(data().inputs.at(value.slot))); }
     void set_argument_tooltip(std::uint32_t slot,std::uint32_t index,TooltipReference value) { argument(slot,index,std::get<TooltipBinding>(data().inputs.at(value.slot))); }
+    void set_argument_tree_row(std::uint32_t slot,std::uint32_t index,TreeRowReference value) { argument(slot,index,std::get<TreeRowBinding>(data().inputs.at(value.slot))); }
     void argument(std::uint32_t slot,std::uint32_t index,InputValue value) {
         target(slot).arguments.at(index)=std::move(value);
     }
@@ -412,6 +423,8 @@ Result<TypeId> register_types(Runtime& runtime) {
         .field<&CodeReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(CodeReference,slot)).build());
     definitions.push_back(NativeRegistration<TooltipReference>(runtime,"ui.TooltipReference",TypeKind::record)
         .field<&TooltipReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(TooltipReference,slot)).build());
+    definitions.push_back(NativeRegistration<TreeRowReference>(runtime,"ui.TreeRowReference",TypeKind::record)
+        .field<&TreeRowReference::slot>("slot",{TypeReference::native<std::uint32_t>()},offsetof(TreeRowReference,slot)).build());
     using C=detail::Context;
     definitions.push_back(NativeRegistration<C>(runtime,"ui.ComponentContext",TypeKind::object)
         .method<&C::read_bool>("read_bool",true).method<&C::read_number>("read_number",true).method<&C::read_edit>("read_edit",true)
@@ -432,11 +445,13 @@ Result<TypeId> register_types(Runtime& runtime) {
         .method<&C::read_tooltip>("read_tooltip",true)
         .method<&C::set_tooltip>("set_tooltip",true)
         .method<&C::set_argument_tooltip>("set_argument_tooltip",true)
+        .method<&C::read_tree_row>("read_tree_row",true)
+        .method<&C::set_tree_row>("set_tree_row",true)
+        .method<&C::set_argument_tree_row>("set_argument_tree_row",true)
         .method<&C::node_key>("node_key",true)
         .method<&C::set_text_reference>("set_text_reference",true)
         .method<&C::set_text_from_edit>("set_text_from_edit",true)
         .method<&C::set_text_edit>("set_text_edit",true)
-        .method<&C::set_tree_parent>("set_tree_parent",true)
         .method<&C::set_context>("set_context",true)
         .method<&C::set_context_from_edit>("set_context_from_edit",true)
         .method<&C::set_radio_group>("set_radio_group",true)

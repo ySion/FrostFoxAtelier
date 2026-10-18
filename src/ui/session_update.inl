@@ -1,4 +1,4 @@
-    // Producers share property validation; Session also validates tree references.
+    // Producers share property validation; Session also validates references and tree row order.
     template<class Lookup> static Result<void> validate_control(const Control& control, Lookup lookup) {
         if (auto valid=validate_control_properties(control);!valid) return valid;
         const auto* parent=lookup(control.parent);
@@ -6,12 +6,8 @@
         if (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent ||
             !parent || parent->kind!=ControlKind::container))
             return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        if (control.kind==ControlKind::tree_item) {
-            const auto* branch=lookup(control.tree_parent);
-            if (!parent || parent->kind!=ControlKind::tree || (control.tree_parent &&
-                (!branch || branch->kind!=ControlKind::tree_item || branch->parent!=control.parent)))
-                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-        } else if (control.tree_parent) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        if (control.kind==ControlKind::tree_item && (!parent || parent->kind!=ControlKind::tree || control.tree_index>=parent->tree_row_count))
+            return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.kind==ControlKind::popup) {
             if (control.parent || (control.popup_owner && !lookup(control.popup_owner)))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
@@ -32,7 +28,9 @@
     }
     static bool same_structure(const Control& a,const Control& b) {
         return a.kind==b.kind && a.parent==b.parent && a.layout.kind==b.layout.kind &&
-            a.tree_parent==b.tree_parent && a.popup_owner==b.popup_owner && a.selection_group==b.selection_group &&
+            a.tree_row_count==b.tree_row_count && a.tree_index==b.tree_index && a.tree_depth==b.tree_depth &&
+            a.tree_branch==b.tree_branch && a.tree_expanded==b.tree_expanded &&
+            a.popup_owner==b.popup_owner && a.selection_group==b.selection_group &&
             a.context_target==b.context_target && a.context_group==b.context_group && a.edit_command==b.edit_command &&
             a.menu_branch==b.menu_branch;
     }
@@ -58,8 +56,8 @@
         std::vector<ControlKey> next_order;
         std::map<ControlKey,TableIndex> table_indices;
         std::map<ControlKey,const Control*> preceding;
-        std::vector<ControlKey> tree_path;
-        ControlKey next_popup=sparse?popup:0,tree_owner{};
+        std::map<ControlKey,const Control*> previous_rows; // Per tree: the last described row.
+        ControlKey next_popup=sparse?popup:0;
         bool check_commands=false,check_radio=false;
         if (!sparse) next_order.reserve(controls.size());
         for (const auto& control:controls) {
@@ -88,11 +86,13 @@
                 (control.edit_command && !preceding.contains(control.edit_command->target)))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             if (control.kind==ControlKind::tree_item) {
-                if (tree_owner!=control.parent) { tree_path.clear(); tree_owner=control.parent; }
-                while (!tree_path.empty() && tree_path.back()!=control.tree_parent) tree_path.pop_back();
-                if ((control.tree_parent && tree_path.empty()) || tree_path.size()>=128)
+                // Rows ascend; an adjacent row is at most one level deeper, under an expanded branch.
+                auto& previous=previous_rows[control.parent];
+                if ((!control.tree_index && control.tree_depth) || (previous && (control.tree_index<=previous->tree_index ||
+                    (control.tree_index==previous->tree_index+1 && (control.tree_depth>previous->tree_depth+1 ||
+                        (control.tree_depth==previous->tree_depth+1 && !previous->tree_expanded))))))
                     return std::unexpected(Error{ErrorCode::invalid_control,control.key});
-                tree_path.push_back(control.key);
+                previous=&control;
             }
             if (control.kind==ControlKind::popup) {
                 if (next_popup) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
@@ -122,28 +122,19 @@
         std::vector<Change> changes;
         std::map<ControlKey,State> additions,removed;
         std::vector<ControlKey> added_keys,removed_keys;
-        std::vector<ControlKey> tree_selections;
+        std::vector<ControlKey> tree_reveals; // Rows that became the host's primary row.
         bool structural=!sparse && next_order!=order;
-        bool tree_change=trees_dirty || structural;
         for (const auto& control:controls) {
             if (auto* previous=live(control.key)) {
                 if (previous->control==control) continue;
                 changes.push_back({previous,control});
-                if (control.kind==ControlKind::tree_item && control.selected &&
-                    (previous->control.kind!=ControlKind::tree_item || !previous->control.selected)) tree_selections.push_back(control.key);
-                tree_change|=control.kind==ControlKind::tree_item && previous->control.selected!=control.selected;
+                if (control.kind==ControlKind::tree_item && control.tree_primary &&
+                    (previous->control.kind!=ControlKind::tree_item || !previous->control.tree_primary)) tree_reveals.push_back(control.key);
                 structural|=previous->control.parent!=control.parent || previous->control.kind!=control.kind;
-                const auto& before=previous->control;
-                tree_change|=(before.kind!=control.kind && (before.kind==ControlKind::tree || before.kind==ControlKind::tree_item ||
-                        control.kind==ControlKind::tree || control.kind==ControlKind::tree_item)) ||
-                    (control.kind==ControlKind::tree && before.tree_filter!=control.tree_filter) ||
-                    (control.kind==ControlKind::tree_item && (before.parent!=control.parent || before.tree_parent!=control.tree_parent ||
-                        before.text!=control.text || before.enabled!=control.enabled || before.layout.collapsed!=control.layout.collapsed));
             } else {
                 auto& value=additions[control.key];
                 value.control=control; value.incarnation=detail::new_identity();
-                if (control.kind==ControlKind::tree_item && control.selected) tree_selections.push_back(control.key);
-                value.tree_expanded=control.tree_initially_expanded;
+                if (control.kind==ControlKind::tree_item && control.tree_primary) tree_reveals.push_back(control.key);
                 added_keys.push_back(control.key);
             }
         }
@@ -159,7 +150,7 @@
                      future->context_target!=previous->control.context_target || future->context_group!=previous->control.context_group ||
                      future->button_behavior!=previous->control.button_behavior || future->menu_behavior!=previous->control.menu_behavior ||
                      future->radio_group!=previous->control.radio_group || (future->kind==ControlKind::tree_item &&
-                     (future->tree_parent!=previous->control.tree_parent || future->parent!=previous->control.parent))))) return true;
+                     future->parent!=previous->control.parent)))) return true;
                 key=future->parent;
             }
             return false;
@@ -179,7 +170,7 @@
         const bool refresh_edit=edit && !edit->document && future_edit && !edit->buffer().active() && !edit->composition &&
             (future_edit->kind==ControlKind::number?edit->original_value!=future_edit->value:edit->buffer().original()!=future_edit->text);
         const bool popup_invalid=next_popup && absent(lookup(next_popup)->popup_owner);
-        const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit || tree_change ||
+        const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit ||
             next_popup!=popup || popup_invalid;
         auto old_press=interaction_changes?press:std::optional<Press>{};
         auto old_edit=interaction_changes?edit:std::optional<Edit>{};
@@ -187,51 +178,25 @@
         const auto old_tooltip=tooltip_hover;
         const auto old_keyboard_key=keyboard_key,old_terminal=terminal_key;
         const auto old_popup=popup,old_popup_focus=popup_return_focus;
-        const bool old_dismissed=popup_dismissed,old_trees_dirty=trees_dirty;
-        struct TreeBackup { State* state; TreeState value; };
-        std::vector<TreeBackup> tree_backup;
-        if (tree_change) {
-            tree_backup.reserve(states.size());
-            for (auto& [key,state]:states) tree_backup.push_back({&state,static_cast<const TreeState&>(state)});
-        }
+        const bool old_dismissed=popup_dismissed;
         Reply reply;
         std::size_t applied{};
         bool inserted=false,reordered=false;
         try {
-            // Cleanup can allocate owned effects/history. Retain descriptors,
-            // interaction and tree metadata until those fallible steps finish.
+            // Cleanup can allocate owned effects/history. Retain descriptors and
+            // interaction until those fallible steps finish.
             if (cancelling) { reply=cancel(); edit.reset(); }
             if (clear_focus) set_focus(reply,0);
             if (clear_keyboard) retire_keyboard(reply);
             for (auto key:removed_keys) removed.insert(states.extract(key));
             states.merge(additions); inserted=true;
             static_assert(std::is_nothrow_swappable_v<Control>);
-            for (auto& change:changes) {
-                std::swap(change.state->control,change.value); ++applied;
-                const auto& control=change.state->control;
-                if (control.kind==ControlKind::tree_item && !control.selected) change.state->tree_reveal=false;
-                if (control.kind==ControlKind::tree_item && (change.value.kind!=control.kind ||
-                    change.value.parent!=control.parent || change.value.tree_parent!=control.tree_parent))
-                    change.state->tree_expanded=control.tree_initially_expanded;
-            }
+            for (auto& change:changes) { std::swap(change.state->control,change.value); ++applied; }
             if (!sparse && next_order!=order) { order.swap(next_order); reordered=true; }
             if (refresh_edit && edit) {
                 const auto caret=edit->buffer().current().caret,anchor=edit->buffer().current().anchor;
                 const auto key=edit->key; const bool mode=edit->text_mode;
                 begin_edit(key,mode); edit->buffer().select(anchor,false); edit->buffer().select(caret,true);
-            }
-            for (auto key:tree_selections) {
-                auto& selected=states.at(key); selected.tree_reveal=true;
-                for (auto parent=selected.control.tree_parent;parent;parent=states.at(parent).control.tree_parent)
-                    states.at(parent).tree_expanded=true;
-            }
-            trees_dirty|=tree_change || !tree_selections.empty();
-            update_trees();
-            if (press && (states.at(press->key).tree_hidden || !states.at(press->key).tree_enabled)) reply=cancel();
-            if (const auto* focused=live(focus);focused && (focused->tree_hidden || !focused->tree_enabled)) {
-                while (focused && (focused->tree_hidden || !focused->tree_enabled)) {
-                    set_focus(reply,focused->control.tree_parent); focused=live(focus);
-                }
             }
             update_popup(next_popup,reply);
             if (popup && popup_invalid) dismiss_popup(reply);
@@ -241,8 +206,6 @@
             for (std::size_t i=0;i<applied;++i) std::swap(changes[i].state->control,changes[i].value);
             if (inserted) for (auto key:added_keys) states.erase(key);
             states.merge(removed);
-            for (const auto& saved:tree_backup) static_cast<TreeState&>(*saved.state)=saved.value;
-            trees_dirty=old_trees_dirty;
             tooltip_hover=old_tooltip;
             if (interaction_changes) {
                 press=std::move(old_press); edit=std::move(old_edit);
@@ -279,9 +242,11 @@
             state.style_dirty|=before.parent!=after.parent || before.kind!=after.kind || before.role!=after.role ||
                 before.classes!=after.classes || before.style!=after.style || before.style_scope!=after.style_scope;
             state.layout_dirty|=before.kind!=after.kind || before.layout!=after.layout || before.text!=after.text ||
-                before.single_line!=after.single_line ||
-                (text_field(after.kind) && before.value!=after.value);
+                before.single_line!=after.single_line || before.tree_index!=after.tree_index ||
+                before.tree_row_count!=after.tree_row_count || (text_field(after.kind) && before.value!=after.value);
+            if (!after.tree_primary) state.tree_reveal=false;
         }
+        for (auto key:tree_reveals) states.find(key)->second.tree_reveal=true;
         structure_dirty|=structural;
         controls_revision=revision; ++control_batches;
         if (published) validate_tooltip(*published);

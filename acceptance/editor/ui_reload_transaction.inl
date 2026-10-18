@@ -13,14 +13,14 @@ ui Stateful() {
         }
     }
 }
-ui Transaction(in bool visible, in TextEditBinding edit, in Key branch) {
+ui Transaction(in bool visible, in TextEditBinding edit, in double rows) {
     Column root {
         Stateful child { mounted: input.visible; }
         TextField later { edit: input.edit; }
-        Tree tree { TreeItem item { text: "Item"; tree_parent: input.branch; } }
+        Tree tree { rows: input.rows; TreeItem item { text: "Item"; } }
     }
 }
-ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; } } }
+ui Late(in double rows) { Tree tree { rows: input.rows; TreeItem item {} } }
 )";
     const auto folder=std::filesystem::temp_directory_path()/
         ("atelier-ui-transaction-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -33,8 +33,9 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
     require(surface.set_surface({{640,480},1,1}).has_value(),"Transaction surface failed.");
-    const auto inputs=[](bool visible,ui::ControlKey edit=7001,ui::ControlKey branch=0) {
-        return std::array<language::InputValue,3>{visible,language::TextEditBinding{edit,L"Draft"},branch};
+    // A row outside its tree's row count is Session-invalid topology.
+    const auto inputs=[](bool visible,ui::ControlKey edit=7001,double rows=1) {
+        return std::array<language::InputValue,3>{visible,language::TextEditBinding{edit,L"Draft"},rows};
     };
     std::vector<ui::Control> controls;
     const auto route=[&](const ui::Reply& reply) {
@@ -46,8 +47,8 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
         route(*reply);live.commit_controls();
         auto frame=surface.prepare();require(frame.has_value() && surface.accept(*frame),"Transaction frame failed.");
     };
-    const auto append=[&](bool visible,ui::ControlKey edit=7001,ui::ControlKey branch=0) {
-        controls.clear();return live.append("Transaction",0,{},inputs(visible,edit,branch),controls);
+    const auto append=[&](bool visible,ui::ControlKey edit=7001,double rows=1) {
+        controls.clear();return live.append("Transaction",0,{},inputs(visible,edit,rows),controls);
     };
     const auto toggle=[&] {
         const auto at=std::ranges::find_if(controls,[](const auto& control){return control.kind==ui::ControlKind::foldout;});
@@ -82,11 +83,11 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
 
     const auto live_accepted=controls;
     const auto live_key=toggle().key;
-    take(append(false,7001,999999));
+    take(append(false,7001,0));
     require(!surface.set_controls(controls) && live.reject_controls("Invalid dynamic topology"),"LiveDocument did not reject an ordinary prepared update.");
     require(!live.reject_controls("Repeated rejection"),"Live rejection was not idempotent.");
     for (unsigned attempt=0;attempt<3;++attempt) {
-        take(append(false,7001,999999));draw();
+        take(append(false,7001,0));draw();
         require(std::ranges::equal(controls,live_accepted) && !live.diagnostic().empty(),"Rejected inputs were retried or their diagnostic was lost.");
     }
     take(append(true));draw();
@@ -95,7 +96,7 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
     require(!live.append("Transaction",0,std::span{&different_alias,1},inputs(true),controls) &&
         std::ranges::equal(controls,live_accepted),"A live region silently changed its key aliases.");
     take(append(true));draw();require(live.diagnostic().empty(),"Restored aliases did not clear the region diagnostic.");
-    const std::array<language::InputValue,1> invalid_late{ui::ControlKey{999999}},valid_late{ui::ControlKey{0}};
+    const std::array<language::InputValue,1> invalid_late{0.0},valid_late{1.0};
     take(append(true));take(live.append("Late",0,{},invalid_late,controls));
     require(!surface.set_controls(controls) && live.reject_controls("Refused first mount"),"An invalid first mount was not rejected.");
     for (unsigned attempt=0;attempt<3;++attempt) {
@@ -120,7 +121,7 @@ ui Late(in Key branch) { Tree tree { TreeItem item { tree_parent: input.branch; 
     take(instance->update());require(surface.set_controls(instance->controls()).has_value(),"Direct transaction snapshot rejected.");instance->commit_controls();
     const std::vector<ui::Control> direct_accepted(instance->controls().begin(),instance->controls().end());
     for (unsigned attempt=0;attempt<3;++attempt) {
-        take(instance->update(inputs(false,7001,999999)));
+        take(instance->update(inputs(false,7001,0)));
         require(!surface.set_controls(instance->controls()),"Invalid tree topology was accepted.");
         instance->reject_controls();instance->reject_controls();instance->commit_controls();
         require(std::ranges::equal(instance->controls(),direct_accepted),"Session refusal changed accepted scopes or controls.");
