@@ -30,6 +30,7 @@ Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字�
 - 未注册类型（`unknown_type`）：按原生基类创建占位对象——Entity 用 `world.Entity`，带 `mesh` 的组件用 `world.StaticMeshComponent`，其余用 `world.Component`。占位对象记录原类型名和全部数据，没有行为绑定，原生部分照常参与；保存按原类型写回。
 - 未知已保存字段或键（`unknown_field` / `unknown_key`）：原值保留并写回。
 - 类型不符（`mismatch`）：引用目标存在但类型不符、未通过共享 canonical TRS 检查的空间值、World 或组件校验拒绝的设置等，字段使用类型默认值，原值保留并写回。越过字段硬边界的值同样报告 `mismatch`，字段采用 `Runtime::constrain` 夹到边界后的值，原值保留并写回。整数字段中可无损转换的浮点值（如 `3.0`）直接应用并报告 `converted`。
+- 缺失或无法读取的资源（`missing_resource` / `unreadable_resource`）：工程目录中已不存在的 Mesh、Material、Texture 报告 `missing_resource`；目录中仍列出但读不出来（文件损坏、类型不符）的报告 `unreadable_resource`，消息带读取错误。两者都由占位资源代替，引用键原样写回，资源文件本身不被改写。缺失 Texture 只让该输入没有贴图，材质的其他参数照常；缺失 Material（含实例的父材质）用默认参数代替，实例覆盖照常；缺失 Mesh 的组件不绘制、没有材质槽，`materials` 绑定表作为保留数据原样写回，表中引用的场景材质随之保活。缺失 Mesh 的三角形碰撞跳过 Cook 并另报一条诊断，运行时该刚体按 World 失败策略处理。占位资源不能作为工程资产编辑、保存或指派；在 Asset Browser 或 Control 中直接打开无法读取的资产仍然报错。恢复文件后重新打开场景生效。
 - 保留数据中的引用与活引用规则相同：子树导出拒绝图外目标，同一 Session 内复制继续指向原目标；目标在文档中被删除时写为 null 并报告 `reference_dropped`，撤销删除后恢复。
 - 编辑某字段会释放它的保留值；`Session::discard_retained` 丢弃一个对象的全部保留值，占位对象仍保留原类型。两者都进入 Undo/Redo。
 
@@ -37,7 +38,7 @@ Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字�
 
 StaticMeshComponent 的 mesh、base_color、roughness、metallic、emissive 和 materials 使用专有资源验证；命名材质槽保存资源身份与显式覆盖意图。相同匿名材质被多个槽或对象引用时，往返仍恢复为同一个实例。场景内联实例随 Entity 子树复制，共享资产、父材质与 Texture 保持共享。早期 v6 的逐槽内联 payload 仍可读取，重新保存使用统一资源目录。导入失败撤销本次新增的 Session 资源缓存与文档身份，保留既有资源及其编辑状态。
 
-灯通过 LightComponent 的 `properties.settings` 保存，空间来自 owner Entity。Primitive 的 `properties.body` 保存 BodySettings 与 PhysicsMaterial，Cook 数据是派生缓存。加载按待发布图中的 owner 世界尺度读取有效工程 Cook 缓存，包含导入目标 parent 与所有 origin；内置网格消费 CPU 几何。缓存准备在 World 发布与 Begin 之前完成。
+灯通过 LightComponent 的 `properties.settings` 保存，空间来自 owner Entity。Primitive 的 `properties.body` 保存 BodySettings 与 PhysicsMaterial，Cook 数据是派生缓存。加载按待发布图中的 owner 世界尺度读取工程 Cook 缓存，包含导入目标 parent 与所有 origin；缓存缺失或校验不通过时从源网格重新 Cook 并写回，不产生诊断；内置网格消费 CPU 几何；Mesh 不可用时跳过。源网格可读但无法 Cook 时报告 `unreadable_resource` 并跳过该刚体。缓存准备在 World 发布与 Begin 之前完成。
 
 RagdollComponent.parts 与 VehicleComponent.wheels 是显式持有 Entity 引用序列，约束目标是 `properties.target` 观察引用。独立空间部件保留其真实 metadata 组件，网格由同 Entity 的 StaticMeshComponent 提供。
 

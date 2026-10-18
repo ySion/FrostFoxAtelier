@@ -864,7 +864,7 @@ Result<world::Commit> Session::close() {
     if (!closed) return closed;
     physics_.reset();
     history_.clear(); names_.clear(); retained_.clear(); retained_document_={}; cursor_ = 0; set_selection({});
-    materials_.clear();textures_.clear();
+    materials_.clear();textures_.clear();unavailable_.clear();
     prepared_.reset();
     return closed;
 }

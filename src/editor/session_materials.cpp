@@ -4,28 +4,67 @@
 namespace atelier::editor {
 namespace {
 auto failure(std::string text) {return std::unexpected(Error{ErrorCode::invalid_definition,std::move(text)});}
+auto stand_in(const MissingResource& item) {
+    return failure("Resource "+item.key+" was unavailable when the scene opened ("+item.reason+"); restore it and reopen the scene.");
+}
 bool same(const material::State& a,const material::State& b) {
     if(a.source!=b.source || a.description!=b.description || a.parent.reference()!=b.parent.reference() || a.overrides!=b.overrides) return false;
     for(std::size_t i=0;i<a.textures.size();++i) if(a.textures[i].reference()!=b.textures[i].reference()) return false;
     return true;
 }
 }
-Result<ObjectRoot> Session::texture_resource(Project& project,std::string_view key) {
-    if(const auto at=textures_.find(std::string(key));at!=textures_.end()) return at->second;
-    auto asset=project.texture(key);if(!asset) return std::unexpected(asset.error());
-    auto root=material::create_texture(runtime_,key,asset->image);if(!root) return std::unexpected(root.error());
-    textures_.emplace(std::string(key),*root);return std::move(*root);
+const MissingResource& Session::remember_unavailable(const Project& project,std::string_view key,const Error& error) {
+    const bool listed=std::ranges::find(project.entries(),key,&ProjectEntry::key)!=project.entries().end();
+    return unavailable_.insert_or_assign(std::string(key),MissingResource{std::string(key),(listed?"The file cannot be read: ":"")+error.message,std::nullopt,
+        listed?world::DiagnosticKind::unreadable_resource:world::DiagnosticKind::missing_resource}).first->second;
 }
-Result<ObjectRoot> Session::material_resource(Project& project,std::string_view key) {
-    if(const auto at=materials_.find(std::string(key));at!=materials_.end()) return at->second.root;
+const MissingResource* Session::unavailable(std::string_view key) const {
+    const auto at=unavailable_.find(std::string(key));return at==unavailable_.end()?nullptr:&at->second;
+}
+Result<ObjectRoot> Session::texture_resource(Project& project,std::string_view key,std::vector<MissingResource>* missing,std::size_t input) {
+    if(const auto at=textures_.find(std::string(key));at!=textures_.end()) {
+        if(const auto* item=unavailable(key)) {
+            if(!missing) return stand_in(*item);
+            missing->push_back(*item);missing->back().input=input;
+        }
+        return at->second;
+    }
+    auto asset=project.texture(key);
+    if(!asset && !missing) return std::unexpected(asset.error());
+    auto root=material::create_texture(runtime_,key,asset?asset->image:material::ImageRef{});if(!root) return std::unexpected(root.error());
+    textures_.emplace(std::string(key),*root);
+    if(!asset) {missing->push_back(remember_unavailable(project,key,asset.error()));missing->back().input=input;}
+    return std::move(*root);
+}
+Result<ObjectRoot> Session::material_resource(Project& project,std::string_view key,std::vector<MissingResource>* missing) {
+    if(const auto at=materials_.find(std::string(key));at!=materials_.end()) {
+        if(const auto* item=unavailable(key)) {
+            if(!missing) return stand_in(*item);
+            missing->push_back(*item);
+        }
+        return at->second.root;
+    }
+    auto asset=project.material(key);
+    if(asset) return material_resource(project,*asset,missing);
+    if(!missing) return std::unexpected(asset.error());
+    // Default parameters stand in; the persistent source keeps the reference.
+    material::State state;state.source=key;
+    auto root=material::create_material(runtime_,state);if(!root) return std::unexpected(root.error());
+    materials_.emplace(std::string(key),MaterialDocument{*root,state,{state},0});
+    missing->push_back(remember_unavailable(project,key,asset.error()));
+    return std::move(*root);
+}
+Result<ObjectRoot> Session::open_material(Project& project,std::string_view key) {
+    if(const auto at=materials_.find(std::string(key));at!=materials_.end() && !unavailable(key)) return at->second.root;
     auto asset=project.material(key);if(!asset) return std::unexpected(asset.error());
-    return material_resource(project,*asset);
+    if(const auto* item=unavailable(key)) return stand_in(*item);
+    std::vector<MissingResource> textures;return material_resource(project,*asset,&textures);
 }
-Result<ObjectRoot> Session::material_resource(Project& project,const MaterialAsset& asset) {
+Result<ObjectRoot> Session::material_resource(Project& project,const MaterialAsset& asset,std::vector<MissingResource>* missing) {
     if(!asset.key.empty()) if(const auto at=materials_.find(asset.key);at!=materials_.end()) return at->second.root;
     material::State state;state.source=asset.key;state.description=asset.description;
     for(std::size_t i=0;i<state.textures.size();++i) if(!asset.textures[i].empty()) {
-        auto texture=texture_resource(project,asset.textures[i]);if(!texture) return std::unexpected(texture.error());
+        auto texture=texture_resource(project,asset.textures[i],missing,i);if(!texture) return std::unexpected(texture.error());
         state.textures[i]=std::move(*texture);auto captured=material::read_texture(runtime_,state.textures[i].id());
         if(!captured) return std::unexpected(captured.error());state.description.textures[i].image=captured->image;
     }
@@ -45,7 +84,10 @@ Result<MaterialAsset> Session::material_asset(ObjectId object) const {
 }
 Result<std::vector<MaterialAsset>> Session::material_assets() const {
     std::vector<MaterialAsset> result;result.reserve(materials_.size());
-    for(const auto& [key,document]:materials_) {static_cast<void>(key);auto asset=material_asset(document.root.id());if(!asset) return std::unexpected(asset.error());result.push_back(std::move(*asset));}
+    for(const auto& [key,document]:materials_) {
+        static_cast<void>(key);if(unavailable(key)) continue;
+        auto asset=material_asset(document.root.id());if(!asset) return std::unexpected(asset.error());result.push_back(std::move(*asset));
+    }
     return result;
 }
 std::vector<ObjectId> Session::material_objects() const {
@@ -77,6 +119,7 @@ Result<void> Session::begin_material_edit(ObjectId object,std::uint64_t control)
     }
     const auto at=materials_.find(state->source);
     if(at==materials_.end() || at->second.root.id()!=object) return failure("Open the persistent material asset before editing it.");
+    if(const auto* item=unavailable(state->source)) return stand_in(*item);
     material_edit_=MaterialEdit{at->second.root,std::move(*state),control,{},{},{}};return {};
 }
 Result<void> Session::preview_material(std::uint64_t control,const material::State& state) {
@@ -138,6 +181,7 @@ Result<void> Session::material_undo(std::string_view key,bool redo) {
 Result<void> Session::save_material(Project& project,std::string_view key) {
     if(material_edit_) return failure("Finish the active material edit before saving.");
     const auto at=materials_.find(std::string(key));if(at==materials_.end()) return failure("Material asset is not open.");
+    if(const auto* item=unavailable(key)) return stand_in(*item);
     auto asset=material_asset(at->second.root.id());if(!asset) return std::unexpected(asset.error());
     auto state=material::read_material(runtime_,at->second.root.id());if(!state) return std::unexpected(state.error());
     auto saved=project.save_material(*asset);if(!saved) return saved;
