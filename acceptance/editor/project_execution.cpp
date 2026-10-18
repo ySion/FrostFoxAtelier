@@ -108,6 +108,27 @@ void run(const std::filesystem::path& root) {
     require(workspace.source_editor.active()->path==std::filesystem::canonical(helper),"Diagnostic opened the wrong file.");
 
     take(editor::write_file(helper,helpers));take(playing.code->poll(project,true));
+    const auto fail_second_tick=[](std::string source) {
+        source.insert(source.find("        if (self.moving)"),"        if (self.ticks == 1) { self.ticks = 10 / (self.ticks - 1); }\n");
+        return source;
+    };
+    {
+        // A Source fault stays with its object and Play continues; a compatible fix clears it and Tick resumes.
+        take(editor::write_file(component,fail_second_tick(declaration)));
+        auto faulty=editor::load_project_scene(project,original);require(faulty.session!=nullptr,"Faulting Source scene failed to load.");
+        auto& run=*faulty.session;const auto mover=entity(run);
+        complete(run.start());take(run.update(.5f));take(run.update(.5f));take(run.update(.5f));check_position(position(run,mover),1);
+        const auto faults=run.take_diagnostics();
+        require(faults.size()==1 && faults[0].kind==world::DiagnosticKind::behavior_failed && faults[0].phase==world::DiagnosticPhase::tick &&
+            faults[0].entity==mover && faults[0].type=="project.Move","A Source Tick fault was not isolated to one diagnostic on its object.");
+        const auto line=editor::describe_diagnostic(run,faults[0]);
+        require(line.starts_with(L"Diagnostic [error] behavior_failed in tick") && line.find(L"(project.Move)")!=std::wstring::npos &&
+            line.find(editor::wide(faults[0].message))!=std::wstring::npos,"The Project Output line lost the fault's kind, type or message.");
+        take(editor::write_file(component,declaration));take(faulty.code->poll(project,true));
+        take(run.update(.5f));check_position(position(run,mover),2);
+        require(run.take_diagnostics().empty(),"A fixed object did not resume Tick after its code was published.");
+        complete(run.stop());
+    }
     auto extended=declaration;extended.insert(extended.find("    void tick"),"    float extra = 7.0f;\n");take(editor::write_file(component,extended));
     const auto changed=playing.code->poll(project,true);require(!changed && changed.error().code==ErrorCode::rebuild_required,"A schema change did not request context rebuilding.");
     auto rebuilt=editor::load_project_scene(project,original);require(rebuilt.session!=nullptr,"Could not rebuild source types from the saved scene.");
@@ -170,6 +191,24 @@ void run(const std::filesystem::path& root) {
         require(process.exit_code()==0 && run_output.find("1 placeholder object(s)")!=std::string::npos,
             "Play did not run with a missing type or did not report its placeholder summary.");
         take(editor::write_file(snapshot,original));
+        // The real runner reports an isolated fault once in its output and keeps running;
+        // --halt-on-fault reports the same fault and stops.
+        take(editor::write_file(component,fail_second_tick(extended)));
+        for(const bool halt:{false,true}) {
+            take(process.start(root,snapshot,true,20,halt?std::filesystem::path{}:report,false,halt));wait(process,std::chrono::seconds(45));
+            const auto faulted=process.take_output();std::fwrite(faulted.data(),1,faulted.size(),stdout);
+            const auto at=faulted.find("Diagnostic [error] behavior_failed in tick");
+            require(at!=std::string::npos && faulted.find("(project.Move)",at)!=std::string::npos && faulted.find("Diagnostic [",at+1)==std::string::npos,
+                "Play did not report the Source fault exactly once.");
+            if(halt) require(process.exit_code()!=0 && faulted.find("Project stopped")==std::string::npos,"--halt-on-fault kept running after the first fault.");
+            else {
+                require(process.exit_code()==0 && faulted.find("Project stopped: 20 frames")!=std::string::npos,"An isolated Source fault stopped Play.");
+                auto finished=editor::load_project_scene(project,take(editor::read_file(report)));
+                require(finished.session!=nullptr,"The faulted run's report did not load.");
+                check_position(position(*finished.session,entity(*finished.session)),2.f/60);
+            }
+        }
+        take(editor::write_file(component,extended));
     }
 
     const std::string infinite="class project.Move : world.Component { float speed=2.0f; bool moving=true; uint ticks=0; float extra=7.0f; void tick(float dt) { while (true) {} } }";

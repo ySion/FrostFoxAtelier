@@ -67,6 +67,7 @@ struct EditorAcceptanceAccess {
         for(const auto& row:app.workspace_.output->rows) if(row.cells.front().text.find(text)!=std::wstring::npos) return true;
         return false;
     }
+    static const ui::TableData& output(const Application& app) {return *app.workspace_.output;}
 
     static auto name_control(const Application& app,ObjectId entity) { return app.workspace_.name_control(entity); }
     static ui::ControlKey structure_control(const Application& app,ObjectId object) {
@@ -1175,6 +1176,25 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     require(app.document().world().members()->size()==1,"Ctrl+Z did not undo the entire duplicate gesture.");
     key('Z',ui::Key::z,true,true);tick(app);
     require(app.document().world().members()->size()==2,"Redo did not restore the duplicate.");
+    {
+        // Zero scale is legal but degenerate: Project Output shows one line, counted in place when it recurs.
+        auto& document=Access::physics_document(app);const auto copy=document.selection().entity;
+        const auto original=*world::read_transform(document.world().runtime(),copy);auto flat=original;flat.scale={0,1,1};
+        const auto degenerate=[&] {
+            std::vector<std::wstring> lines;
+            for(const auto& row:Access::output(app).rows)
+                if(row.cells.front().text.find(L"degenerate_value")!=std::wstring::npos) lines.push_back(row.cells.front().text);
+            return lines;
+        };
+        const auto flatten=[&](const world::Trs& value) {require(bool(document.set_transform(copy,value)),"A zero or restored scale was rejected.");tick(app);};
+        flatten(flat);
+        auto lines=degenerate();
+        require(lines.size()==1 && lines[0].starts_with(L"Diagnostic [warning] degenerate_value in presentation") &&
+            lines[0].find(L" scale: ")!=std::wstring::npos && lines[0].find(L"(×")==std::wstring::npos,"Zero scale did not report one degenerate warning.");
+        flatten(original);flatten(flat);lines=degenerate();
+        require(lines.size()==1 && lines[0].ends_with(L" (×2)"),"A recurring zero scale was not counted on its existing Project Output line.");
+        flatten(original);
+    }
     move(x,y);key('X');tick(app);
     require(app.menu_frame() && app.menu_frame()->find(static_cast<ui::ControlKey>(editor::Command::erase_entities)),"X did not open its confirmation menu.");
     RECT popup{};GetWindowRect(app.menu_window(),&popup);POINT client{static_cast<LONG>(x),static_cast<LONG>(y)};ClientToScreen(app.window(),&client);

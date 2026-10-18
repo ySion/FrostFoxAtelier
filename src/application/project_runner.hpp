@@ -9,6 +9,8 @@ struct RunOptions {
     std::filesystem::path project,scene_snapshot,report;
     HANDLE stop_event{}; // Inherited event; this process closes its own handle.
     bool headless{},preview_ui{};
+    // Stops the World at the first object failure (acceptance and CI) instead of isolating it.
+    bool halt{};
     std::uint64_t frames{};
 };
 int run_project(const RunOptions&);

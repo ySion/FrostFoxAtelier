@@ -55,6 +55,15 @@ void Workspace::log(std::wstring text) {
     messages->columns.front().width=width;
     output=std::move(messages);
 }
+void Workspace::log_repeated(std::wstring line) {
+    if(line==repeated_line_ && !output->rows.empty() && output->rows.back().key==repeated_row_) {
+        auto messages=std::make_shared<ui::TableData>(*output);
+        messages->rows.back().cells.front().text=line+L" (×"+std::to_wstring(++repeated_count_)+L")";
+        output=std::move(messages);return;
+    }
+    log(line);
+    repeated_line_=std::move(line);repeated_row_=output->rows.back().key;repeated_count_=1;
+}
 void Workspace::reset_layout() {
     lighting.cancel();
     dock.reset();

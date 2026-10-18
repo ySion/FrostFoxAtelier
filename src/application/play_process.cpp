@@ -24,7 +24,7 @@ struct Handle {
 }
 PlayProcess::~PlayProcess(){close();}
 Result<void> PlayProcess::start(const std::filesystem::path& project,const std::filesystem::path& scene,
-    bool headless,std::uint64_t frames,const std::filesystem::path& report,bool preview_ui) {
+    bool headless,std::uint64_t frames,const std::filesystem::path& report,bool preview_ui,bool halt) {
     if (running()) return failure("A project is already running",ERROR_BUSY);
     exit_code_.reset();stopping_=forced_=false;pending_output_.clear();
     SECURITY_ATTRIBUTES security{sizeof(security),nullptr,TRUE};
@@ -46,6 +46,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project,const std::
     if (!scene.empty()) command+=L" --scene-snapshot "+argument(scene.wstring());
     if (preview_ui) command+=L" --preview-ui";
     if (headless) command+=L" --headless";
+    if (halt) command+=L" --halt-on-fault";
     if (frames) command+=L" --frames "+std::to_wstring(frames);
     if (!report.empty()) command+=L" --report "+argument(report.wstring());
     SIZE_T bytes{};InitializeProcThreadAttributeList(nullptr,1,0,&bytes);

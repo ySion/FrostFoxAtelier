@@ -1337,6 +1337,7 @@ bool Application::step(renderer::Capture* capture) try {
     const auto scene_start = sample ? Clock::now() : Clock::time_point{};
     if(viewport) take(scene_.refresh(*document_));
     const auto scene_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - scene_start).count() : 0;
+    for(const auto& item:document_->take_diagnostics()) workspace_.log_repeated(editor::describe_diagnostic(*document_,item));
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
     const auto viewport_view=editor::ViewportView::make(camera_,scene_bounds,window_.dpi_scale());
     overlay_.clear();
