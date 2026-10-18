@@ -15,6 +15,8 @@ UI 作者层已将 Parameters 的查询、Position、属性组、Entity Structur
 
 [Editor Control](control.md) 是指令化操作与调试的标准入口，供 UI、快捷键、CLI、自动化、验收和 LLM 共用。现有外部指令支持实例发现、场景操作、内存快照导出和渲染对照；UI 直接调用业务层，本机管道与 CLI 适配到相同的 Application/Session 入口。正常编辑器默认启用外部接入，`--no-control` 可关闭；源码调试面板和 `debug.*` 仍待接入。
 
+编辑器操作统一为可经接口调用的操作符（菜单、快捷键、Control 和以后的自有语言共用同一入口），设计已定稿、尚未实现，见[操作符设计稿](operators.md)。
+
 工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ 几何导入；Source 文件已接入编辑器内创建、跨文件编译、真实组件类型、属性持久化、独立运行与兼容热更；项目 UI 采用同一工程配置并支持独立预览。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
 
 ## 源码编辑
