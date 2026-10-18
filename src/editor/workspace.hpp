@@ -83,7 +83,7 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 }
 struct Workspace {
     struct Binding {
-        enum class Kind { object, structure, property_group, field, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
+        enum class Kind { object, structure, property_group, field, slider, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
             material_slot, material_texture, material_override, color_pick, saved_data };
         ui::ControlKey key{};
         ObjectId object;

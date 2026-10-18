@@ -10,6 +10,8 @@ struct ScalarField {
     TypeId type;
     std::string label,category,description;
     ValueForm form{ValueForm::inline_value};
+    // The declared range of the leaf, or of its math vector for a lane.
+    FieldRange range{};
 };
 inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
     std::vector<ScalarField> result;
@@ -33,6 +35,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
                 if(!field.description.empty()) child.description=field.description;
             }
             if(!field.category.empty()) child.category=field.category;
+            if(field.range!=FieldRange{}) child.range=field.range;
             if(field.value.form != ValueForm::inline_value) {
                 child.type=field.value.type;child.form=field.value.form;
                 result.push_back(std::move(child));continue;

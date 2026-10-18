@@ -17,7 +17,7 @@ struct Parameter {
     float default_value{};
 };
 struct ComponentType { TypeId type; std::string name; };
-struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category,description; };
+struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category,description; FieldRange range{}; };
 struct Selection {
     ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;

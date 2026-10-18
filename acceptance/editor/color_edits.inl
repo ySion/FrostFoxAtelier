@@ -18,6 +18,8 @@ void verify_color_edits() {
     };
     const std::array first{Scalar{.2f},Scalar{.4f},Scalar{.6f}},last{Scalar{.7f},Scalar{.3f},Scalar{.5f}};
     const std::array invalid_type{Scalar{.8f},Scalar{.9},Scalar{.1f}},invalid_range{Scalar{.8f},Scalar{1e30f},Scalar{.1f}};
+    // Material colors are bounded 0–1, so only a non-finite channel is rejected; 1e30 clamps.
+    const std::array non_finite{Scalar{.8f},Scalar{std::nanf("")},Scalar{.1f}},clamped_range{Scalar{.8f},Scalar{1.f},Scalar{.1f}};
 
     changed(document.create_light(world::LightKind::point,{0,2,0}));
     const auto light=take(world::components(runtime,document.selection().entity)).front().id();
@@ -48,8 +50,11 @@ void verify_color_edits() {
     take(document.begin_group_edit(material.id(),material_paths,9010));
     require(document.material_dirty(key) && !document.dirty(),"Asset color edited the scene's dirty state.");
     take(document.preview_group_edit(9010,first));
-    require(!document.preview_group_edit(9010,invalid_range) && read(material.id(),material_paths)==std::vector<Scalar>(first.begin(),first.end()),
+    require(!document.preview_group_edit(9010,non_finite) && read(material.id(),material_paths)==std::vector<Scalar>(first.begin(),first.end()),
         "Rejected material color left a partial preview.");
+    take(document.preview_group_edit(9010,invalid_range));
+    require(read(material.id(),material_paths)==std::vector<Scalar>(clamped_range.begin(),clamped_range.end()),
+        "A material color channel above its hard maximum did not clamp to it.");
     take(document.preview_group_edit(9010,last));take(document.commit_edit(9010));
     require(document.undo_count()==scene_history && !document.dirty(),"Asset color created scene history.");
     take(document.material_undo(key));
@@ -71,7 +76,7 @@ void verify_color_edits() {
     const auto before=take(material::read_material(runtime,instance.id()));
     const auto instance_history=document.undo_count();document.mark_saved();
     take(document.begin_group_edit(instance.id(),material_paths,9020));
-    require(!document.preview_group_edit(9020,invalid_range),"An instance accepted an invalid color channel.");
+    require(!document.preview_group_edit(9020,non_finite),"An instance accepted an invalid color channel.");
     auto state=take(material::read_material(runtime,instance.id()));
     require(state.overrides==before.overrides && state.description==before.description,
         "Rejected instance preview retained a color override or partial channels.");

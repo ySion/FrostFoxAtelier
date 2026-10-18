@@ -647,7 +647,7 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     const auto edge=app.presented()->find(field)->style->border;
     require(edge.r==edge.g && edge.g==edge.b,"Editing focus did not use a neutral field edge.");
     capture(app, output / "s1-focused.png");
-    type(app, L"10001");
+    type(app, L"1000e");
     require(solid_colors(*app.presented(), field) != focused, "Invalid draft did not change the shared field state.");
     capture(app, output / "s1-invalid.png");
     key(app, VK_ESCAPE);
@@ -1515,7 +1515,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     key(app, VK_ESCAPE);
     click(app, field); type(app, L"-2.5"); key(app, VK_RETURN);
     require(std::abs(x(app, object) + 2.5f) < .0001f, "Numeric text commit did not update the Runtime field.");
-    click(app, field); type(app, L"10001");
+    click(app, field); type(app, L"1000e");
     const auto last_valid_preview = x(app, object);
     const auto invalid_history = app.document().undo_count();
     key(app, VK_RETURN);

@@ -91,9 +91,49 @@ void verify_property_tooltips() {
         "Switching inspected objects retained or accepted an old tooltip frame.");
     const auto color_help=help_for(label(L"Color"));
     const auto* light_type=take(runtime.describe(take(runtime.type_of(light))));
-    require(color_help->description==editor::wide(color.description) &&
+    require(color_help->description==editor::wide(color.description)+L"\n硬下限 0" &&
         color_help->identity==editor::wide(light_type->name)+L".settings.color : "+editor::wide(take(runtime.describe(color.value.type))->name),
-        "Light Color help used a scalar lane identity or lost its aggregate description.");
+        "Light Color help used a scalar lane identity or lost its aggregate description and hard-bound note.");
+
+    // Declared field ranges: the number's legal range is the hard bounds, a float with a UI range
+    // gains a slider over it, and the help states both. Vector lanes keep the ladder without a slider.
+    const auto mesh_component=component(document,mesh,document.types().static_mesh_component);
+    take(document.select(mesh_component));publish();
+    const auto& surface_field=field(take(runtime.type_of(mesh_component)),"material");
+    const auto& roughness=field(document.types().material,"roughness");
+    const auto& emissive=field(document.types().material,"emissive");
+    const auto number_at=[&](world::FieldPath path)->const ui::Control& {
+        const auto key=workspace.field_control(mesh_component,path);
+        const auto at=std::ranges::find(controls,key,&ui::Control::key);
+        require(key!=0 && at!=controls.end() && at->kind==ui::ControlKind::number,"A ranged material field has no number control.");
+        return *at;
+    };
+    const auto sliders_beside=[&](const ui::Control& number) {
+        return std::ranges::count_if(controls,[&](const auto& control){return control.kind==ui::ControlKind::slider && control.parent==number.parent;});
+    };
+    const auto& roughness_number=number_at({surface_field.id,roughness.id});
+    const auto roughness_slider=std::ranges::find_if(controls,[&](const auto& control) {
+        return control.kind==ui::ControlKind::slider && control.parent==roughness_number.parent;
+    });
+    require(roughness_number.minimum==0 && roughness_number.maximum==1 && sliders_beside(roughness_number)==1 &&
+        roughness_slider->minimum==0 && roughness_slider->maximum==1 && roughness_slider->value==roughness_number.value,
+        "Roughness did not take its locked 0–1 range as both legal range and slider.");
+    const auto help_of=[&](std::wstring_view field)->std::shared_ptr<const ui::Tooltip> {
+        for(const auto& control:surface.presented()->controls)
+            if(control.tooltip && control.tooltip->identity.find(field)!=std::wstring::npos) return control.tooltip;
+        throw std::runtime_error("A ranged material row has no help.");
+    };
+    require(help_of(L".material.roughness : ")->description==editor::wide(roughness.description)+L"\n范围 0 – 1，上下限锁定",
+        "Roughness help does not state its locked range.");
+    const auto* lanes=take(runtime.describe(document.types().vector3));
+    for(const auto& lane:lanes->fields) {
+        const auto& number=number_at({surface_field.id,emissive.id,lane.id});
+        require(number.minimum==0 && number.maximum==65504 && sliders_beside(number)==0,
+            "Emissive lanes did not take the hard bounds 0–65504 without a slider.");
+    }
+    require(help_of(L".material.emissive : ")->description==
+        editor::wide(emissive.description)+L"\n范围 0 – 10，下限锁定，硬上限 65504",
+        "Emissive help does not distinguish its UI range from the hard maximum.");
     take(document.select(ObjectId{}));publish();
     require(!surface.presented()->tooltip && !surface.accept(position_frame) &&
         std::ranges::none_of(surface.presented()->controls,[&](const auto& control) {

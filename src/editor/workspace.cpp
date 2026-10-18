@@ -382,6 +382,51 @@ Result<void> Workspace::set_view_settings(Session& session,const renderer::ViewS
     return {};
 }
 namespace {
+double scalar_number(const Scalar& value) {
+    return std::visit([](const auto& scalar)->double {
+        if constexpr(std::same_as<std::decay_t<decltype(scalar)>,EnumValue>) return scalar.bits;
+        else return static_cast<double>(scalar);
+    },value);
+}
+// Typed and dragged values stay within the hard bounds, as Runtime writes clamp to them.
+// A stored value outside them (a trusted native write) widens the range so it still displays.
+std::pair<double,double> legal_range(const Scalar& value,const FieldRange& range) {
+    auto limits=std::visit([](const auto& scalar)->std::pair<double,double> {
+        using T=std::decay_t<decltype(scalar)>;
+        if constexpr(std::same_as<T,EnumValue> || std::same_as<T,bool>) return {-std::numeric_limits<double>::max(),std::numeric_limits<double>::max()};
+        else return {double(std::numeric_limits<T>::lowest()),double(std::numeric_limits<T>::max())};
+    },value);
+    if(range.hard_min) limits.first=scalar_number(*range.hard_min);
+    if(range.hard_max) limits.second=scalar_number(*range.hard_max);
+    const auto current=scalar_number(value);
+    return {std::min(limits.first,current),std::max(limits.second,current)};
+}
+// Slider endpoints are the UI range; a side with only a hard bound uses it.
+std::optional<std::pair<double,double>> slider_range(const FieldRange& range) {
+    const auto& low=range.ui_min?range.ui_min:range.hard_min;const auto& high=range.ui_max?range.ui_max:range.hard_max;
+    if(!low || !high || !(scalar_number(*low)<scalar_number(*high))) return std::nullopt;
+    return std::pair{scalar_number(*low),scalar_number(*high)};
+}
+std::string range_note(const FieldRange& range) {
+    const auto text=[](const Scalar& value) {
+        char buffer[32];const auto written=std::to_chars(buffer,buffer+sizeof(buffer),scalar_number(value));
+        return std::string(buffer,written.ptr);
+    };
+    std::string note;
+    const auto add=[&](const std::string& part){note+=(note.empty()?"":"，")+part;};
+    if(range.ui_min || range.ui_max) add("范围 "+(range.ui_min?text(*range.ui_min):"-∞")+" – "+(range.ui_max?text(*range.ui_max):"∞"));
+    const bool lock_min=range.hard_min && range.hard_min==range.ui_min,lock_max=range.hard_max && range.hard_max==range.ui_max;
+    if(lock_min && lock_max) add("上下限锁定");
+    else if(lock_min) add("下限锁定");
+    else if(lock_max) add("上限锁定");
+    if(range.hard_min && !lock_min) add("硬下限 "+text(*range.hard_min));
+    if(range.hard_max && !lock_max) add("硬上限 "+text(*range.hard_max));
+    return note;
+}
+std::string described(std::string description,const FieldRange& range) {
+    if(auto note=range_note(range);!note.empty()) description+=(description.empty()?"":"\n")+note;
+    return description;
+}
 // Houdini-style parameter label from a reflected field path: "material.base_color"
 // becomes "Base Color". The path still identifies the field; only the caption changes.
 ui::ControlIcon light_icon(world::LightKind kind) {
@@ -880,9 +925,9 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                         if constexpr(std::same_as<std::decay_t<decltype(v)>,EnumValue>) return v.bits;
                         else return double(v);
                     },field.value);
-                    const double limit=parent->math.precision==math::Precision::f32?double(std::numeric_limits<float>::max()):std::numeric_limits<double>::max();
-                    const double minimum=color?0:spatial_position?session.parameters()[lane].minimum:spatial_scale?-Session::maximum_scale:spatial_rotation?-360000:-limit;
-                    const double maximum=base_color?1:emission?65504:spatial_position?session.parameters()[lane].maximum:spatial_scale?Session::maximum_scale:spatial_rotation?360000:limit;
+                    const auto [field_minimum,field_maximum]=legal_range(field.value,field.range);
+                    const double minimum=spatial_position?session.parameters()[lane].minimum:spatial_scale?-Session::maximum_scale:spatial_rotation?-360000:field_minimum;
+                    const double maximum=spatial_position?session.parameters()[lane].maximum:spatial_scale?Session::maximum_scale:spatial_rotation?360000:field_maximum;
                     const auto key=property_key(field.path,spatial_rotation?Binding::Kind::rotation:Binding::Kind::field);
                     tuple.push_back({key,std::wstring(1,(color?L"RGBW":L"XYZW")[lane]),value,spatial_position || spatial_rotation?0:spatial_scale?1:value,
                         minimum,maximum,spatial_rotation?1:.01,spatial_rotation?.1:.001,static_cast<ui::VectorAxis>(lane+1)});
@@ -905,7 +950,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
                     }
                     row.override_available=override_available; row.overridden=overridden;
                     row.inherit={instance?override_key:field_key,override_available && !session.world().running()};
-                    row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(name)+L" : "+wide(parent->name)+(spatial_rotation?L" · Euler (°)":L""),property.description);
+                    row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(name)+L" : "+wide(parent->name)+(spatial_rotation?L" · Euler (°)":L""),described(property.description,property.range));
                     properties->push_back(std::move(row).item());
                 }
                 continue;
@@ -934,25 +979,13 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             const bool boolean=std::holds_alternative<bool>(property.value);
             const auto* enumeration=std::get_if<EnumValue>(&property.value);
             const bool integral=std::holds_alternative<std::int32_t>(property.value) || std::holds_alternative<std::uint32_t>(property.value);
-            const auto number=[](const Scalar& value) {return std::visit([](const auto& scalar)->double {
-                if constexpr(std::same_as<std::decay_t<decltype(scalar)>,EnumValue>) return scalar.bits;
-                else return static_cast<double>(scalar);
-            },value);};
-            double minimum=-std::numeric_limits<double>::max(),maximum=std::numeric_limits<double>::max();
-            if(std::holds_alternative<float>(property.value)) {minimum=-std::numeric_limits<float>::max();maximum=std::numeric_limits<float>::max();}
-            if(integral) {minimum=std::holds_alternative<std::int32_t>(property.value)?std::numeric_limits<std::int32_t>::lowest():0;
-                maximum=std::holds_alternative<std::int32_t>(property.value)?std::numeric_limits<std::int32_t>::max():std::numeric_limits<std::uint32_t>::max();}
-            if(parent_type==session.types().material && (property.name=="material.roughness" || property.name=="material.metallic")) {minimum=0;maximum=1;}
-            if(resource && (property.name=="parameters.opacity" || property.name=="parameters.roughness" || property.name=="parameters.metallic" || property.name=="parameters.alpha_cutoff")) {minimum=0;maximum=1;}
-            if(resource && property.name=="parameters.normal_scale") {minimum=0;maximum=16;}
-            if(light && parent_type==session.types().light_settings && !boolean && !enumeration) {
-                minimum=property.name=="settings.range" || property.name=="settings.width" || property.name=="settings.height"?
-                    double(std::numeric_limits<float>::denorm_min()):0;
-                if(property.name=="settings.source_radius" && light->kind==world::LightKind::directional) maximum=double(1.5707963267948966f);
-            }
-            const auto key=property_key(property.path);const double value=number(property.value),initial=default_value?number(*default_value):value;
+            const auto [minimum,maximum]=legal_range(property.value,property.range);
+            const auto key=property_key(property.path);const double value=scalar_number(property.value),initial=default_value?scalar_number(*default_value):value;
             ui_language::EditBinding edit{0,editable,value!=initial,{{key,L"",value,initial,minimum,maximum,integral?1:.01,integral?1:.001}}};
             edit.fields.front().single_precision=std::holds_alternative<float>(property.value);
+            // Integral fields commit whole numbers only, so they keep the ladder without a slider.
+            if(const auto slider=slider_range(property.range);slider && !integral && !boolean && !enumeration)
+                edit.fields.front().slider=ui::SliderRange{property_key(property.path,Binding::Kind::slider),slider->first,slider->second};
             std::wstring choice;
             if(enumeration) for(const auto& member:take(runtime.describe(enumeration->type))->enumeration->values)
                 if(member.second==enumeration->bits) {choice=parameter_label(member.first);break;}
@@ -962,7 +995,7 @@ std::vector<ui::Control> Workspace::describe(const Session& session, ui_layout::
             row.checked=boolean && std::get<bool>(property.value);row.enabled=editable;row.change={key,editable};
             row.choice=std::move(choice);row.target=key;row.override_available=override_available;row.overridden=overridden;
             row.inherit={instance?override_key:key,override_available && !session.world().running()};
-            row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(property.name)+L" : "+wide(take(runtime.describe(property.type))->name),property.description);
+            row.help=property_help_.get(row.key,row.title,wide(take(runtime.describe(type))->name)+L"."+wide(property.name)+L" : "+wide(take(runtime.describe(property.type))->name),described(property.description,property.range));
             properties->push_back(std::move(row).item());
         }
         properties=parameter_by_category_ && material_object==ObjectId{} && material_bindings?

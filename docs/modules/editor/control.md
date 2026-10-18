@@ -74,7 +74,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。组件目录保留反射参数与材质，组件记录不含 TRS。创建子实体复用 scene.create 和 scene.reparent；没有第二套 create_child 工厂或对象身份。
 
-`editor.inspect` 的对象记录与 `material.inspect` 共享 `type_description` 和 `properties` 输出。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；说明不包含可执行入口，查询不改变场景状态或历史。
+`editor.inspect` 的对象记录与 `material.inspect` 共享 `type_description` 和 `properties` 输出。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。说明不包含可执行入口，查询不改变场景状态或历史。
 
 ### 大场景对象查询
 
