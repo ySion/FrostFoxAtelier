@@ -85,6 +85,7 @@ inline constexpr std::array parameter_names{"base_color","opacity","roughness","
     "normal_scale","normal_y_sign","mask","alpha_cutoff","double_sided","emission_two_sided"};
 inline constexpr std::uint32_t parameter_mask=(1u<<parameter_names.size())-1;
 Result<void> register_types(Runtime&);
+// A null image stands in for a missing source file; the input samples as absent.
 Result<ObjectRoot> create_texture(Runtime&,std::string_view source,ImageRef);
 Result<TextureState> read_texture(Runtime&,ObjectId);
 Result<ObjectRoot> create_material(Runtime&,const State&);

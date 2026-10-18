@@ -3,6 +3,7 @@
 #include "editor/examples.hpp"
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
+#include "editor/material_format.hpp"
 #include "application/scene_snapshot.hpp"
 #include "renderer/scene_visibility.hpp"
 #include "application/recovery.hpp"
@@ -80,7 +81,7 @@ int main(int argc, char** argv) {
     try {
         if(argc==2 && std::string_view(argv[1])=="--tooltips") {verify_tooltip_dsl();verify_property_tooltips();verify_declarative_parameters();verify_object_inspection();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--recovery") {verify_scene_recovery();return 0;}
-        if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();verify_color_edits();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();verify_missing_resources();verify_color_edits();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--color-edits") {verify_color_edits();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}

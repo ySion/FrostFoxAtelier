@@ -439,6 +439,7 @@ struct Session::GraphCodec {
         std::unordered_map<ObjectId,std::uint64_t> keys;
         Json top=Json::object();
         std::vector<ObjectRoot> unreferenced;
+        std::unordered_map<ObjectId,std::vector<ObjectRoot>> materials; // Named by a kept binding table.
         std::unordered_map<ObjectId,Retained> retained;
         std::string subject(ObjectId object) const {
             if(object==ObjectId{}) return "Scene";
@@ -644,6 +645,7 @@ struct Session::GraphCodec {
         const auto merge_retained=[&](Json& value,ObjectId object) {
             const auto at=session.retained_.find(object);if(at==session.retained_.end()) return;
             const auto& kept=at->second;
+            for(const auto& material:kept.materials) if(runtime.type_of(material.id())) static_cast<void>(archive_material(material.id()));
             if(!kept.type.empty()) value["type"]=kept.type;
             if(!kept.record.empty()) overlay(value,restore_references(Json::parse(kept.record)));
             if(const auto entries=value.find("materials");!kept.slots.empty() && entries!=value.end() && entries->is_array()) {
@@ -811,13 +813,13 @@ struct Session::GraphCodec {
                 else load.extra(component,part,{"id","type","name","enabled","properties"});
             }
         }
-        const auto restore_material=[&](const Json& entry)->ObjectRoot {
+        const auto restore_material=[&](const Json& entry,std::vector<MissingResource>& missing)->ObjectRoot {
             if(!project) throw std::runtime_error("Material restoration requires a Project.");
             const auto source=entry.at("source").get<std::string>();
             if(!source.empty() && entry.contains("inline")) throw std::runtime_error("Material binding has competing sources.");
             if(entry.contains("parent")) {
                 if(!source.empty()) throw std::runtime_error("A material instance cannot own an asset identity.");
-                auto parent=take(session.material_resource(*project,entry.at("parent").get<std::string>()));
+                auto parent=take(session.material_resource(*project,entry.at("parent").get<std::string>(),&missing));
                 auto state=take(material::read_material(runtime,parent.id()));state.source.clear();state.parent=parent;state.overrides=0;
                 state.description=material_format::decode(entry.at("inline")).description;
                 const auto& names=entry.at("overrides");
@@ -831,8 +833,18 @@ struct Session::GraphCodec {
                 return take(material::create_material(runtime,state));
             }
             if(entry.contains("overrides")) throw std::runtime_error("Overrides require a parent material.");
-            return source.empty()?take(session.material_resource(*project,material_format::decode(entry.at("inline")))):
-                take(session.material_resource(*project,source));
+            return source.empty()?take(session.material_resource(*project,material_format::decode(entry.at("inline")),&missing)):
+                take(session.material_resource(*project,source,&missing));
+        };
+        // A stand-in keeps the key, so saving writes the reference unchanged.
+        const auto report_missing=[&](ObjectId object,std::vector<std::string> base,const Json& entry,const std::vector<MissingResource>& missing) {
+            for(const auto& item:missing) {
+                auto at=base;const Json value=item.key;
+                if(item.input) {at.push_back("textures");at.emplace_back(material_format::names[*item.input]);}
+                else at.emplace_back(entry.contains("parent")?"parent":"source");
+                load.report(world::Severity::warning,world::DiagnosticKind::missing_resource,object,std::move(at),&value,item.reason+
+                    (item.input?" The input has no texture":" A default material stands in")+"; the reference is saved unchanged.");
+            }
         };
         std::unordered_map<std::uint64_t,ObjectRoot> material_ids;
         std::unordered_set<ObjectId> material_objects;
@@ -845,19 +857,20 @@ struct Session::GraphCodec {
             if(!definition.is_object()) throw std::runtime_error("Expected a JSON record.");
             const auto key=local_key(definition.at("id"));
             if(ids.contains(key)) throw std::runtime_error("Duplicate graph object identity: "+std::to_string(key));
-            largest=std::max(largest,key);ObjectRoot resource;
+            largest=std::max(largest,key);ObjectRoot resource;std::vector<MissingResource> missing;
             if(auto at=graph.materials.find(std::to_string(key));at!=graph.materials.end()) {
                 const auto state=take(material::read_material(runtime,at->second.id()));
                 resource=state.source.empty()?take(material::create_material(runtime,state)):at->second;
                 copied_materials.emplace(at->second.id(),resource);
                 copied_material_keys.emplace(at->second.id(),key);
-            } else resource=restore_material(definition);
+            } else resource=restore_material(definition,missing);
             if(!material_objects.insert(resource.id()).second) throw std::runtime_error("One material asset has multiple document identities.");
             ids.emplace(key,resource.id());material_ids.emplace(key,resource);result.resources.push_back(resource);
             if(keep_ids) {
                 if(!session.local_ids_.emplace(resource.id(),key).second) throw std::runtime_error("One material asset has multiple document identities.");
             } else (void)identity(session,resource.id());
             load.types.emplace(resource.id(),"material.Material");load.keys.emplace(resource.id(),key);
+            report_missing(resource.id(),{},definition,missing);
             load.extra(resource.id(),definition,{"id","source","inline","parent","overrides"});
         }
         if(next<=largest) throw std::runtime_error("next_id must exceed every document object identity.");
@@ -1009,6 +1022,21 @@ struct Session::GraphCodec {
             else load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"properties",name},nullptr,problem+" Defaults are used.");
             for(const auto& [path,value]:defaults) take(runtime.write(object,path,value));
         };
+        // Without its mesh a component has no slots. Its binding table is kept verbatim,
+        // with scene material references renamed to document identities kept alive by it.
+        const auto keep_bindings=[&](ObjectId object,const Json& entries) {
+            if(entries.empty()) return;
+            if(entries.size()>1024) throw std::runtime_error("Invalid material binding table.");
+            auto kept=entries;auto& held=load.materials[object];
+            for(auto& entry:kept) {
+                if(!entry.is_object()) throw std::runtime_error("Expected a JSON record.");
+                const auto at=entry.find("resource");if(at==entry.end()) continue;
+                const auto key=local_key(*at);const auto found=material_ids.find(key);
+                if(found==material_ids.end()) throw std::runtime_error("Material binding references an unknown scene resource.");
+                used_materials.insert(key);held.push_back(found->second);*at=std::to_string(identity(session,found->second.id()));
+            }
+            load.store(object,std::array{std::string("materials")},kept);
+        };
         for(const auto& entity:entities) {
             properties(entity,ids.at(local_key(entity.at("id"))));
             for(const auto& part:entity.at("components")) {
@@ -1027,6 +1055,8 @@ struct Session::GraphCodec {
                             binding.resource=copied_materials.at(binding.resource.id());
                         }
                         take(world::set_material_bindings(runtime,object,bindings));
+                        if(const auto entries=part.find("materials");!copy.state.mesh.resolved && !copy.state.mesh.source.empty() &&
+                            entries!=part.end() && entries->is_array()) keep_bindings(object,*entries);
                     } else {
                         if(!project) throw std::runtime_error("Material and mesh restoration requires a Project.");
                         std::string source;
@@ -1035,7 +1065,17 @@ struct Session::GraphCodec {
                         else if(!mesh_at->is_string()) load.keep(object,{"mesh"},*mesh_at,world::DiagnosticKind::mismatch,"Expected a mesh source key. The component has no mesh and the saved value is kept.");
                         else source=mesh_at->get<std::string>();
                         geometry::MeshRef mesh;
-                        if(!source.empty()) mesh=take(project->mesh(source)).mesh;
+                        if(!source.empty()) {
+                            if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
+                            else if(std::ranges::find(project->entries(),source,&ProjectEntry::key)!=project->entries().end())
+                                throw std::runtime_error(loaded.error().message); // Listed but unreadable is damage, not a missing resource.
+                            else {
+                                const Json value=source;
+                                load.report(world::Severity::warning,world::DiagnosticKind::missing_resource,object,{"mesh"},&value,loaded.error().message+
+                                    " The component draws nothing; the reference and its material bindings are saved unchanged.");
+                            }
+                        }
+                        const bool unresolved=!source.empty() && !mesh;
                         take(world::set_mesh_binding(runtime,object,{source,std::move(mesh)}));
                         world::Material material;std::vector<std::string> applied;
                         const auto vector_value=[&](const char* name,math::Vector3& target) {
@@ -1060,6 +1100,7 @@ struct Session::GraphCodec {
                         std::vector<world::MaterialBinding> bindings;
                         if(const auto entries=part.find("materials");entries!=part.end() && !entries->is_array())
                             load.keep(object,{"materials"},*entries,world::DiagnosticKind::mismatch,"Expected a material binding table. Bindings are empty and the saved value is kept.");
+                        else if(entries!=part.end() && unresolved) keep_bindings(object,*entries);
                         else if(entries!=part.end()) {
                             if(entries->size()>1024) throw std::runtime_error("Invalid material binding table.");
                             for(const auto& entry:*entries) {
@@ -1076,7 +1117,10 @@ struct Session::GraphCodec {
                                     const auto at=material_ids.find(key);
                                     if(at==material_ids.end()) throw std::runtime_error("Material binding references an unknown scene resource.");
                                     used_materials.insert(key);resource=at->second;
-                                } else resource=restore_material(entry);
+                                } else {
+                                    std::vector<MissingResource> missing;resource=restore_material(entry,missing);
+                                    report_missing(object,{"materials",slot},entry,missing);
+                                }
                                 bool overridden{};
                                 if(const auto flag=entry.find("overridden");flag==entry.end())
                                     load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"materials",slot,"overridden"},nullptr,"The override flag is missing; the slot is not overridden.");
@@ -1103,7 +1147,10 @@ struct Session::GraphCodec {
                         settings.cooked_shape=at->second.cooked_shape;
                     if(settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh) {
                         const auto mesh=take(world::read_static_mesh(runtime,object));
-                        if(mesh.mesh.source.starts_with("project/")) result.triangle_meshes.push_back(object);
+                        if(!mesh.mesh.resolved && !mesh.mesh.source.empty())
+                            load.report(world::Severity::warning,world::DiagnosticKind::missing_resource,object,{"properties","body","shape"},nullptr,
+                                "Triangle collision has no mesh to cook; Play cannot create this body until the mesh is restored.");
+                        else if(mesh.mesh.source.starts_with("project/")) result.triangle_meshes.push_back(object);
                     }
                     if(auto configured=physics::configure(runtime,object,settings);!configured) {
                         invalid_record(object,"body",body_defaults,configured.error().message);std::erase(result.triangle_meshes,object);
@@ -1150,6 +1197,7 @@ struct Session::GraphCodec {
                 });
                 (std::string_view(name)=="record"?kept.record:kept.slots)=dump_retained(*at);
             }
+            if(auto at=load.materials.find(object);at!=load.materials.end()) kept.materials=std::move(at->second);
             load.retained.emplace(object,std::move(kept));
         }
         for(const auto& [key,resource]:material_ids) if(!used_materials.contains(key)) {
@@ -1383,6 +1431,9 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         const bool document=object==ObjectId{},material=!document && is_material(object);
         std::vector<detail::ScalarField> schema;
         if(!document && !material) schema=business_fields(world_.runtime(),types_,take(runtime_.type_of(object)));
+        bool meshless{};
+        if(!document && !material) if(const auto mesh=world::read_static_mesh(world_.runtime(),object))
+            meshless=!mesh->mesh.resolved && !mesh->mesh.source.empty();
         // Descends into records the current schema still declares; anything else is one entry.
         const auto classify=[&](std::span<const std::string> path)->std::pair<bool,world::DiagnosticKind> {
             using enum world::DiagnosticKind;
@@ -1406,6 +1457,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                 if(path.size()==1) return {true,mismatch};
                 return {false,path[1]=="position" || path[1]=="rotation" || path[1]=="scale" || path[1]=="origin"?mismatch:unknown_key};
             }
+            if(path.front()=="materials" && meshless) return {false,missing_resource};
             constexpr std::array known{"name","enabled","mesh","base_color","roughness","metallic","emissive","materials"};
             return {false,std::ranges::find(known,path.front())!=known.end()?mismatch:unknown_key};
         };
@@ -1423,7 +1475,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         if(!entry->slots.empty()) for(const auto& [slot,keys]:Json::parse(entry->slots).items())
             for(const auto& [key,value]:keys.items())
                 view.entries.push_back({{"materials",slot,key},preview(value),key=="overridden"?world::DiagnosticKind::mismatch:world::DiagnosticKind::unknown_key});
-        for(const auto& resource:entry->materials) if(runtime_.type_of(resource.id())) {
+        if(document) for(const auto& resource:entry->materials) if(runtime_.type_of(resource.id())) {
             const auto key=document_identity(resource.id());
             view.entries.push_back({{"materials",key?std::to_string(*key):std::string("?")},
                 preview(take(material::read_material(world_.runtime(),resource.id())).source),world::DiagnosticKind::unknown_key});
@@ -1454,7 +1506,8 @@ std::vector<world::Diagnostic> Session::issues() const {
         if(!entry.type.empty()) add(object,type,world::DiagnosticKind::unknown_type,{},{},"The type is not registered; a placeholder keeps its saved data.");
         const auto view=retained(object);if(!view) return;
         for(const auto& item:view->entries) add(object,type,item.kind,item.path,item.value,
-            item.kind==world::DiagnosticKind::mismatch?"The saved value does not fit the current type; it is kept until edited or discarded.":"Saved data kept for the next save.");
+            item.kind==world::DiagnosticKind::mismatch?"The saved value does not fit the current type; it is kept until edited or discarded.":
+            item.kind==world::DiagnosticKind::missing_resource?"The resource it needs is missing; the saved value is kept unchanged.":"Saved data kept for the next save.");
         for(const auto* text:{&entry.record,&entry.slots}) if(!text->empty()) {
             auto value=Json::parse(*text);
             each_reference(value,[&](Json& node) {

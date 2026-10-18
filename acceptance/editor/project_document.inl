@@ -360,7 +360,17 @@ void verify_project_document() {
     auto restored=take(editor::Session::deserialize(take(editor::read_file(take(reopened.resolve(reopened.startup_scene())))),reopened));
     require(take(restored->serialize())==saved,"Moving a project or removing Cache broke the scene.");
     fs::rename(moved/"Content/Meshes/Renamed.obj",moved/"Content/Meshes/Renamed.missing");
-    take(reopened.refresh());require(!editor::Session::deserialize(saved,reopened),"A missing resource was silently replaced.");
+    take(reopened.refresh());require(!editor::Session::deserialize(saved,reopened,{},editor::LoadPolicy::strict),"A missing resource was silently replaced.");
+    {
+        auto meshless=take(editor::Session::deserialize(saved,reopened));
+        const auto issues=meshless->load_issues();
+        const auto mesh_issue=std::ranges::find(issues,world::DiagnosticKind::missing_resource,&world::Diagnostic::kind);
+        const auto restored=component(*meshless,take(meshless->world().members()).front().id(),meshless->types().static_mesh_component);
+        const auto binding=take(world::read_static_mesh(meshless->world().runtime(),restored)).mesh;
+        require(issues.size()==1 && mesh_issue!=issues.end() && mesh_issue->field==std::vector<std::string>{"mesh"} && mesh_issue->object==restored &&
+            binding.source==resource && !binding.resolved && take(meshless->serialize())==saved,
+            "Tolerant loading did not keep a missing mesh reference verbatim with one diagnostic.");
+    }
     require(take(document.serialize())==saved,"Failed loading changed the original document.");
     const auto material=take(world::read_static_mesh(document.world().runtime(),mesh)).material;
     take(document.world().runtime().with_native<world::StaticMeshComponent>(mesh,[](auto& value)->Result<void>{value.material.base_color.x=2;return {};}));
