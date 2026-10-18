@@ -51,6 +51,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/viewport.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/presentation.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/play_process.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/play_link.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/project_runner.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/application.cpp"

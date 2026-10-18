@@ -523,7 +523,7 @@ ui MenuTitle(in Text title, in bool selected, in Key target) {
 }
 ui EditorShell(in bool menu_collapsed, in Items<MenuTitle> menus, in Text status,
                in ActionBinding toggle, in double rail_width, in double closed_height, in double arrow_height,
-               in double up_icon, in double down_icon, in Text facts) {
+               in double up_icon, in double down_icon, in Text facts, in bool play_diverged, in ActionBinding restart_play) {
     Column root {
         expand_height: true;
         Row menubar {
@@ -545,6 +545,7 @@ ui EditorShell(in bool menu_collapsed, in Items<MenuTitle> menus, in Text status
         Row footer {
             height: 23; padding_left: 8; padding_right: 8; align_center: true; gap: 18; classes: "status-bar";
             Text status { text: input.status; single_line: true; caption: true; content_width: 0; classes: "status-text"; }
+            Button restart { text: "Restart Play"; action: input.restart_play; collapsed: !input.play_diverged; height: 19; content_width: 0; min_width: 88; }
             Column spacer { expand_width: true; height: 1; }
             Text facts { text: input.facts; single_line: true; caption: true; content_width: 0; classes: "status-text status-facts"; }
         }

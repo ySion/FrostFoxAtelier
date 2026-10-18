@@ -1,3 +1,4 @@
+#include "editor/json_format.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "editor/workspace.hpp"
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cmath>
+#include <deque>
 
 using namespace atelier;
 namespace {
@@ -43,6 +45,7 @@ void wait(application::PlayProcess& process,std::chrono::seconds timeout) {
     if(process.running()){process.close();throw std::runtime_error("Project runner did not finish.");}
 }
 #include "project_ui_reload.inl"
+#include "play_link.inl"
 void run(const std::filesystem::path& root) {
     auto project=take(editor::Project::create(root));
     const auto helper=root/"Source/Math.source",component=root/"Source/Move.source";
@@ -172,6 +175,7 @@ void run(const std::filesystem::path& root) {
         auto served=editor::load_project_scene(project,take(editor::read_file(report)));require(served.session!=nullptr,"The served run's report did not load.");
         check_position(position(*served.session,entity(*served.session)),4.f/3);
     }
+    verify_link_protocol(root);verify_play_link(root,project,original,snapshot);
     {
         auto& source=*rebuilt.session;auto& runtime=source.world().runtime();
         const auto move=behavior(source);const std::array speed{take(runtime.find_field(take(runtime.type_of(move)),"speed"))};

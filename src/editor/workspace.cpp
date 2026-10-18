@@ -311,6 +311,7 @@ bool Workspace::command_enabled(Command command,Session& session,Project* projec
     case Command::rebuild_project:return project_open && !project_running;
     case Command::run_project:return project_open && scene_available && !project_running && project_build && project_build->state==BuildState::ready;
     case Command::stop_project:return project_running && !project_stopping;
+    case Command::restart_project:return project_running && !project_stopping && play_pending;
     case Command::edit_project_ui:return project_open && project_ui_configured;
     case Command::show_project_ui:return project_open && project_ui_configured && !project_running;
     case Command::save_scene: case Command::save_scene_as:return project_open && scene_available;
@@ -619,11 +620,13 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     for (const auto& group:command_groups)
         menus->push_back({group.key,{std::wstring(group.title),menu && menu->source==group.key,group.key}});
     // Houdini status line: the message, then muted scene facts separated by space, not a rule.
-    const std::array<ui_language::InputValue,10> shell_inputs{menu_bar_collapsed,ui_language::ItemList{std::move(menus)},
+    auto facts=std::to_wstring(members.size())+(members.size()==1?L" Entity":L" Entities");
+    if(play_pending) facts+=play_diverged?L"   Play diverged":*play_pending?L"   Play: "+std::to_wstring(*play_pending)+L" pending":std::wstring(L"   Play in sync");
+    const std::array<ui_language::InputValue,12> shell_inputs{menu_bar_collapsed,ui_language::ItemList{std::move(menus)},
         status_text,ui_language::ActionBinding{control::menu_bar_handle},
         double(ui::stow_rail_width),double(ui::stow_collapsed_height),double(ui::stow_arrow_region_height),
         double(ui::ControlIcon::up),double(ui::ControlIcon::down),
-        std::to_wstring(members.size())+(members.size()==1?L" Entity":L" Entities")};
+        std::move(facts),play_diverged,ui_language::ActionBinding{control::command_key(Command::restart_project),command_enabled(Command::restart_project,session,project)}};
     const std::array<ui_language::KeyBinding,8> shell_keys{{{"root",1},{"menubar",2},{"stow",control::menu_bar_handle},
         {"menu_body",control::menu_bar_body},{"shelf_slot",3},{"workspace",20},{"footer",100},{"status",101}}};
     static_cast<void>(ui_document_->append("EditorShell",0,shell_keys,shell_inputs,result));

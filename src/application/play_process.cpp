@@ -26,7 +26,7 @@ struct Handle {
 PlayProcess::~PlayProcess(){close();}
 Result<void> PlayProcess::start(const std::filesystem::path& project,const std::filesystem::path& scene,
     bool headless,std::uint64_t frames,const std::filesystem::path& report,bool preview_ui,bool halt,
-    const std::optional<editor::CameraState>& camera) {
+    const std::optional<editor::CameraState>& camera,std::unique_ptr<LiveLink>* live) {
     if (running()) return failure("A project is already running",ERROR_BUSY);
     exit_code_.reset();stopping_=forced_=false;pending_output_.clear();
     SECURITY_ATTRIBUTES security{sizeof(security),nullptr,TRUE};
@@ -36,6 +36,10 @@ Result<void> PlayProcess::start(const std::filesystem::path& project,const std::
         return failure("Cannot create the run output channel");
     Handle input{CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&security,OPEN_EXISTING,0,nullptr)};
     if (input.value==INVALID_HANDLE_VALUE) return failure("Cannot open run input");
+    Handle to_play,from_editor,from_play,to_editor; // Change link: editor->Play pipe, then Play->editor.
+    if (live && (!CreatePipe(&from_editor.value,&to_play.value,&security,1<<20) || !SetHandleInformation(to_play.value,HANDLE_FLAG_INHERIT,0) ||
+        !CreatePipe(&from_play.value,&to_editor.value,&security,1<<20) || !SetHandleInformation(from_play.value,HANDLE_FLAG_INHERIT,0)))
+        return failure("Cannot create the Play change link");
     Handle job{CreateJobObjectW(nullptr,nullptr)};if (!job.value) return failure("Cannot create the run process group");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!SetInformationJobObject(job.value,JobObjectExtendedLimitInformation,&limits,sizeof(limits))) return failure("Cannot configure the run process group");
@@ -51,6 +55,8 @@ Result<void> PlayProcess::start(const std::filesystem::path& project,const std::
     if (halt) command+=L" --halt-on-fault";
     if (frames) command+=L" --frames "+std::to_wstring(frames);
     if (!report.empty()) command+=L" --report "+argument(report.wstring());
+    if (live) command+=L" --live-channel "+std::to_wstring(reinterpret_cast<std::uintptr_t>(from_editor.value))+
+        L" "+std::to_wstring(reinterpret_cast<std::uintptr_t>(to_editor.value));
     if (camera) {
         command+=L" --camera "+std::to_wstring(static_cast<unsigned>(camera->view));
         for (const float value:{camera->target.x,camera->target.y,camera->target.z,camera->yaw,camera->pitch,camera->distance}) {
@@ -62,8 +68,9 @@ Result<void> PlayProcess::start(const std::filesystem::path& project,const std::
     std::vector<std::byte> attributes(bytes);auto* list=reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     if (!InitializeProcThreadAttributeList(list,1,0,&bytes)) return failure("Cannot initialize run handle inheritance");
     struct Attributes {PPROC_THREAD_ATTRIBUTE_LIST value;~Attributes(){DeleteProcThreadAttributeList(value);}} owner{list};
-    std::array handles{write.value,stop.value,input.value};
-    if (!UpdateProcThreadAttribute(list,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,handles.data(),sizeof(handles),nullptr,nullptr))
+    std::vector<HANDLE> handles{write.value,stop.value,input.value};
+    if (live) handles.insert(handles.end(),{from_editor.value,to_editor.value});
+    if (!UpdateProcThreadAttribute(list,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,handles.data(),handles.size()*sizeof(HANDLE),nullptr,nullptr))
         return failure("Cannot restrict run handle inheritance");
     STARTUPINFOEXW startup{};startup.StartupInfo.cb=sizeof(startup);startup.lpAttributeList=list;
     startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
@@ -82,7 +89,9 @@ Result<void> PlayProcess::start(const std::filesystem::path& project,const std::
         return failure("Cannot resume the project runner",error);
     }
     process_=std::exchange(child.value,nullptr);job_=std::exchange(job.value,nullptr);
-    stop_=std::exchange(stop.value,nullptr);output_=std::exchange(read.value,nullptr);return {};
+    stop_=std::exchange(stop.value,nullptr);output_=std::exchange(read.value,nullptr);
+    if (live) *live=std::make_unique<LiveLink>(std::exchange(from_play.value,nullptr),std::exchange(to_play.value,nullptr));
+    return {};
 }
 void PlayProcess::stop() noexcept {
     if (!process_ || stopping_) return;

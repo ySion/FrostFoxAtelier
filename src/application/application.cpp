@@ -680,7 +680,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case open_source: case edit_ui_source: case save_document: case close_source: case reload_source: case save_all:
     case new_source: case new_project_ui: case edit_project_ui:
         return source_command(command,asset_key);
-    case build_project:case rebuild_project:case run_project:case stop_project:case show_project_ui:case show_output:
+    case build_project:case rebuild_project:case run_project:case stop_project:case restart_project:case show_project_ui:case show_output:
         return execution_command(command);
     case show_code: workspace_.dock.select(editor::source_control::tab);break;
     case new_project: case open_project: case save_scene: case save_scene_as: case open_scene: case import_mesh:case import_texture:case create_material: case refresh_assets:
@@ -1230,6 +1230,8 @@ bool Application::step(renderer::Capture* capture) try {
     } step_timing{frame_timing_,sample,step_start};
     frame_statistics_ = {};
     if (closed_) return false;
+    // Everything this step changed reaches Play as one batch, whichever way the step ends.
+    struct ForwardLive {Application& app;~ForwardLive(){app.forward_live();}} forward_live{*this};
     window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
     if (window_.closing()) {
         if (confirm_discard()) {close();return false;}
@@ -1436,7 +1438,7 @@ void Application::close() {
     finish_camera_fly(false);
     closed_ = true;
     control_.reset();
-    play_.close();
+    play_.close();static_cast<void>(live_.close());
     if(!play_snapshot_.empty()) {std::error_code ignored;std::filesystem::remove(play_snapshot_,ignored);play_snapshot_.clear();}
     close_menu(false);
     for (auto& submenu:submenus_) submenu->close();

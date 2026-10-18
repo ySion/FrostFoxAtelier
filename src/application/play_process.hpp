@@ -1,4 +1,5 @@
 #pragma once
+#include "application/play_link.hpp"
 #include "editor/camera.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
@@ -9,7 +10,8 @@
 
 namespace atelier::application {
 // Owns one project run and its descendants. Runtime identities and GPU objects
-// remain in that process; only scene values, a stop event and text cross here.
+// remain in that process; only scene values, a stop event, text and change
+// messages cross here. With live, the run gets a change link and *live its editor end.
 class PlayProcess final {
 public:
     PlayProcess()=default;
@@ -18,7 +20,7 @@ public:
     PlayProcess& operator=(const PlayProcess&)=delete;
     Result<void> start(const std::filesystem::path& project,const std::filesystem::path& scene,
         bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false,bool halt=false,
-        const std::optional<editor::CameraState>& camera={});
+        const std::optional<editor::CameraState>& camera={},std::unique_ptr<LiveLink>* live=nullptr);
     void stop() noexcept;
     void poll();
     void close() noexcept;

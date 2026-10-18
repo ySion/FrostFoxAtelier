@@ -221,7 +221,7 @@ Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路�
 
 Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有者。退出顺序保证 End 能访问行为代码，World 先于代码释放，Runtime 最后销毁。PhysicsScene 是 World 登记的模拟系统，Session::update 只调用 `World::update`，物理子步在其中推进。编辑器 UI Runtime 由 Workspace 独立拥有，场景替换不会让 UI 借用失效的运行时。
 
-项目 Play 和 UI Preview 共用一个进程宿主。父进程只传入工程位置、场景快照、停止事件和当前视口相机，并读取输出。编辑器启动的 Play 从当前视口相机开始；命令行独立运行没有相机参数，对准各网格位置的中心，避免大面积碰撞地面把运动物体缩得很小。Stop 先请求正常退出；2 秒未响应后结束该运行进程组。关闭编辑器或切换工程也回收它。运行中的对象身份、GPU 资源和 JIT 地址不会跨进程传递。停止后保留编辑场景、选择和撤销历史；运行结果不会自动写回。
+项目 Play 和 UI Preview 共用一个进程宿主。父进程传入工程位置、场景快照、停止事件和当前视口相机，读取输出，并经变更链路转发文档修改（见下节）。编辑器启动的 Play 从当前视口相机开始；命令行独立运行没有相机参数，对准各网格位置的中心，避免大面积碰撞地面把运动物体缩得很小。Stop 先请求正常退出；2 秒未响应后结束该运行进程组。关闭编辑器或切换工程也回收它。运行中的对象身份、GPU 资源和 JIT 地址不会跨进程传递。停止后保留编辑场景、选择和撤销历史；运行结果不会自动写回。
 
 ### Play 副本与变更批次
 
@@ -255,7 +255,16 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 
 编辑器文档一侧由 `Session::set_live_forwarding(true)` 开始记录：每次提交、撤销和重做之后，按修改留下的当前值生成上表的 op，顺序与修改一致；新增或撤销删除的多个根按（父级，序号）升序生成 `add`，绑定新材质前先生成它的 `materials` 定义。预览和取消也生成 op，同一目标（Entity 的一个 TRS 叶、一组字段、一个材质或资源键）较新的预览替换队列中较早的一项；预览过的 TRS 叶在提交或取消时都会再发送一次，即使它回到了起始值。Body 设置作为整个 `properties.body` 记录发送。选择、相机和视口设置不转发。`take_live_ops()` 取走队列中的 op。某项修改无法描述时（例如没有持久来源的程序网格），记录停止，之后的调用一直失败，直到重新设置转发：这时 Play 已经与文档分歧。
 
-Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除外。`RunOptions::channel` 可以挂一个 `PlayChannel`（不持有），帧循环每帧在宿主边界调用一次它的 `service(Session&, Project&, Report)`：首帧在 start 之前，之后每次都在 update 之前。批次的取得、应用、回执都在 service 内完成，service 不阻塞也不抛出；`Report` 与 World 诊断走同一条输出（`describe_diagnostic` 逐行写入 Project Output）。独立运行的 `--run-project` 没有 channel，编辑器到 Play 的传输随 P1 接入。
+Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除外。`RunOptions::channel` 可以挂一个 `PlayChannel`（不持有），帧循环每帧在宿主边界调用一次它的 `service(Session&, Project&, Report)`：首帧在 start 之前，之后每次都在 update 之前。批次的取得、应用、回执都在 service 内完成，service 不阻塞也不抛出；`Report` 与 World 诊断走同一条输出（`describe_diagnostic` 逐行写入 Project Output）。编辑器启动的 Play 经 `--live-channel` 挂上链路的 Play 端；独立运行的 `--run-project` 没有 channel。
+
+编辑器启动的 Play 由变更链路（[play_link.hpp](../../../src/application/play_link.hpp)）跟随文档：
+
+- 传输：每次 Run 新建两条匿名管道，子进程一端的句柄只经 handle list 继承，以 `--live-channel <读> <写>` 传入。每条消息是 uint32 小端字节数加 UTF-8 JSON，单条上限 4 MiB。两端各有一个读线程和一个写线程，只搬运文本；编辑器 UI 线程和 Play 帧循环只轮询队列，不等待对方。
+- 发送：Run 在序列化快照的同一步开始转发，快照与转发之间没有空隙。Play 还在加载时，批次留在管道中，在首帧 start 之前应用。编辑器每一步结束时（无论这一步从哪里返回）取走 `take_live_ops()`，作为一批发出：`{"type":"batch","seq":n,"ops":[...]}`，seq 从 1 递增。超过一条消息的批次写入本次运行的私有目录 `Cache/Play/<运行>/batch-<seq>.json`，文件内容正好是交给 `apply_live` 的 `{"ops":[...]}`，消息只带 `{"type":"batch","seq":n,"file":路径}`，Play 读完即删除。超过 16 MiB 的批次在 op 边界拆成连续的几批；单个 op 超过 16 MiB 算作无法生成。Play 结束后编辑器删除该目录。
+- 回执：Play 按顺序对每一批回复 `{"type":"ack","seq":n,"diagnostics":[{"severity","kind","message"}]}`，诊断同时写入 Project Output。seq 不连续时回复 error 诊断 `sequence gap: expected batch k, received n`，之后的批次一律不应用；无法解析的消息回复 `{"type":"error","message":…}`。
+- 分歧：以下任一情况表示 Play 不再跟随文档——回执带 error；回执乱序或无法解析；`take_live_ops()` 失败或 op 超限；未回执的批次超过 256 批或 64 MiB；Play 仍在运行而链路已关闭超过 2 秒（子进程退出时先关闭句柄，2 秒宽限避免把正常退出当成分歧）。分歧后停止转发，状态栏显示原因和 Restart Play 按钮（与 Project → Restart Project 相同：先 Stop，结束后重新 Run），Project Output 记一行。正常 Stop、Play 自行退出和 warning 回执都不算分歧；链路没有超时规则。
+- 运行期间状态栏显示 `Play in sync`、`Play: n pending`（未回执的批次数）或 `Play diverged`。
+- `{"type":"inspect","id":r,"object":身份}` 让 Play 回复 `{"type":"inspect","id":r,"graph":…}`（`serialize_live_subtree` 的文本）或 `error`。它只供验收使用，属于内部、不稳定的消息。
 
 已知限制：`--report`（验收用）在停止后按文档身份序列化 Play 副本，而 Play 副本不给运行中生成的对象分配文档身份。停止时只要还有运行中生成的对象，`--report` 就显式失败，进程返回 1。P2 的运行时树改为按运行时句柄寻址时，与 `inspect` 一起解决。
 
@@ -299,7 +308,7 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、运行中 Source 故障的对象隔离与修复后恢复、子进程诊断输出与 `--halt-on-fault`、进程内运行时 Play 通道在 start 之前及每次 update 之前得到服务且批次在首帧生效、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、根与子级的序号及越界夹值、三角网格碰撞体运行中缩放后按新缩放重建、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
+`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、运行中 Source 故障的对象隔离与修复后恢复、子进程诊断输出与 `--halt-on-fault`、进程内运行时 Play 通道在 start 之前及每次 update 之前得到服务且批次在首帧生效、编辑器到 Play 的变更链路（批次编号与回执、超限批次落盘与按 op 拆分、error 回执、乱序回执、积压上限、链路关闭的宽限与分歧；真实 headless Play 中加载期间的修改在开始前生效，创建、撤销、重做、字段预览与取消跟随文档，Play 端读取并删除落盘批次、拒绝序号空缺且之后不再应用、对无法解析的消息报错，Stop 后清理运行目录）、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、根与子级的序号及越界夹值、三角网格碰撞体运行中缩放后按新缩放重建、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 

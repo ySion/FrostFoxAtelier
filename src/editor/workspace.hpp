@@ -182,6 +182,9 @@ struct Workspace {
     bool source_history() const noexcept {return dock.focused_tab()==source_control::tab;}
     bool project_open{};
     bool scene_available{true},project_running{},project_stopping{},project_ui_configured{};
+    // While a Play run follows the document: change batches it has not acknowledged yet.
+    std::optional<std::size_t> play_pending;
+    bool play_diverged{}; // Play stopped following the document until it restarts.
     bool menu_bar_collapsed{}, shelf_collapsed{};
     bool parameter_search_visible{};
     ControlWorkbench workbench;

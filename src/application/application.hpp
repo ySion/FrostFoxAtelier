@@ -89,6 +89,9 @@ private:
     std::filesystem::path examples_workspace_; // Empty selects the current user's local application data.
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.
     PlayProcess play_;
+    PlayLink live_; // The running Play's change link; the document forwards while it is active.
+    bool restart_play_{};
+    void forward_live() noexcept;
     std::string pending_scene_;
     std::filesystem::path play_snapshot_;
     std::string play_output_;

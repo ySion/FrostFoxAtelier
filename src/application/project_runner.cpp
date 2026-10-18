@@ -1,4 +1,5 @@
 #include "application/project_runner.hpp"
+#include "application/play_link.hpp"
 #include "application/render_clock.hpp"
 #include "application/window.hpp"
 #include "application/presentation.hpp"
@@ -62,18 +63,31 @@ int run_project_command(std::span<wchar_t*> arguments) {
     try {
         if(arguments.empty()) throw std::runtime_error("--run-project requires a project folder.");
         RunOptions options;options.project=arguments.front();
+        HANDLE live_read{},live_write{};
         for(std::size_t i=1;i<arguments.size();++i) {
             const std::wstring_view option=arguments[i];
             if(option==L"--headless") {options.headless=true;continue;}
             if(option==L"--preview-ui") {options.preview_ui=true;continue;}
             if(option==L"--halt-on-fault") {options.halt=true;continue;}
             if(++i==arguments.size()) throw std::runtime_error("Missing run option value.");
+            if(option==L"--live-channel") {
+                live_read=reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));
+                if(++i==arguments.size()) throw std::runtime_error("Missing run option value.");
+                live_write=reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));continue;
+            }
             if(option==L"--scene-snapshot") options.scene_snapshot=arguments[i];
             else if(option==L"--report") options.report=arguments[i];
             else if(option==L"--frames") options.frames=number(arguments[i]);
             else if(option==L"--camera") options.camera=camera_state(arguments[i]);
             else if(option==L"--stop-event") options.stop_event=reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));
             else throw std::runtime_error("Unknown project run option.");
+        }
+        // Inherited from the editor: changes arrive on the first pipe, acknowledgements leave on the second.
+        std::optional<PlayEnd> live;
+        if(live_read || live_write) {
+            DWORD flags{};
+            if(!GetHandleInformation(live_read,&flags) || !GetHandleInformation(live_write,&flags)) throw std::runtime_error("Invalid inherited Play change link.");
+            live.emplace(std::make_unique<LiveLink>(live_read,live_write));options.channel=&*live;
         }
         return run_project(options);
     }catch(const std::exception& error){std::fprintf(stderr,"Project run: %s\n",error.what());return 2;}

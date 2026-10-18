@@ -87,8 +87,12 @@ Result<void> Application::run_project() {
         std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(++serial)+L".scene");
     const auto path=project_->resolve(relative);if(!path) return std::unexpected(path.error());
     auto saved=editor::write_file(*path,*source,editor::WriteMode::create);if(!saved) return saved;
-    auto started=play_.start(project_->root(),*path,false,0,{},false,false,camera_.state());
+    std::unique_ptr<LiveLink> link;
+    auto started=play_.start(project_->root(),*path,false,0,{},false,false,camera_.state(),&link);
     if(!started) {std::error_code ignored;std::filesystem::remove(*path,ignored);return started;}
+    // Forwarding starts with the snapshot just serialized, so no change falls between them;
+    // the pipe holds batches until Play has loaded.
+    auto spill=*path;spill.replace_extension();live_.open(std::move(link),std::move(spill));document_->set_live_forwarding(true);
     play_snapshot_=*path;workspace_.project_running=true;workspace_.project_stopping=false;
     workspace_.log(L"Running "+project_->name());return {};
 }
@@ -103,6 +107,7 @@ Result<void> Application::execution_command(editor::Command command) {
     using enum editor::Command;
     close_menu(false);
     if(command==stop_project) {this->stop_project();return {};}
+    if(command==restart_project) {restart_play_=true;this->stop_project();return {};}
     if(command==show_output) {workspace_.dock.select(editor::control::output_tab);return {};}
     if(command==rebuild_project) {
         if((document_->undo_count() || document_->redo_count()) && MessageBoxW(window(),L"Rebuild the scene with the new types?\n\nCurrent scene values and source documents will be kept. Scene Undo/Redo history will be cleared.",
@@ -131,14 +136,28 @@ void Application::poll_project() {
         if(play_output_.size()>65536) play_output_.clear();
     }
     workspace_.project_running=play_.running();workspace_.project_stopping=play_.stopping();
+    live_.poll(play_.running(),play_.stopping());
+    if(!live_.divergence().empty() && !workspace_.play_diverged) {
+        workspace_.play_diverged=true;document_->set_live_forwarding(false);
+        workspace_.status=L"Play no longer follows the scene: "+editor::wide(live_.divergence());workspace_.log(workspace_.status+L" Restart Play to continue.");
+    }
     if(was_running && !play_.running()) {
         workspace_.status=play_.forced()?L"Project stopped: run did not respond to Stop":play_.exit_code().value_or(1)==0?L"Project stopped":L"Project exited with an error; see Project Output";
         workspace_.log(workspace_.status);
     }
+    if(!play_.running() && live_.active()) {
+        document_->set_live_forwarding(false);
+        if(const auto error=live_.close()) workspace_.log(L"Cannot remove the run's change files: "+editor::wide(error.message()));
+    }
+    workspace_.play_pending=live_.active()?std::optional(live_.unacknowledged()):std::nullopt;workspace_.play_diverged=!live_.divergence().empty();
     if(!play_.running() && !play_snapshot_.empty()) {
         std::error_code error;std::filesystem::remove(play_snapshot_,error);
         if(error) workspace_.log(L"Cannot remove the run snapshot: "+editor::wide(error.message()));
         play_snapshot_.clear();
+    }
+    if(restart_play_ && !play_.running()) {
+        restart_play_=false;
+        if(auto restarted=run_project();!restarted) {workspace_.status=L"Cannot restart Play: "+editor::wide(restarted.error().message);workspace_.log(workspace_.status);}
     }
     if(!project_) return;
     if(project_code_) {
@@ -154,5 +173,12 @@ void Application::poll_project() {
             ((*ui_source)->path!=report->ui_source->path || (*ui_source)->source!=report->ui_source->source)))))
             static_cast<void>(build_project());
     }
+}
+void Application::forward_live() noexcept {
+    if(!live_.active()) return;
+    try {
+        auto ops=document_->take_live_ops();
+        if(!ops) live_.fail(ops.error().message);else live_.forward(*ops);
+    } catch(const std::exception& error) {live_.fail(error.what());}
 }
 }
