@@ -321,8 +321,16 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
     const auto project=root/"Project";
     const auto directory=deep_control?root/"Control"/std::wstring(100,L'x'):root/"Control";
     project_fixture(project);
-    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+".scene");
-    std::filesystem::rename(project/"Content/Scenes/Main.scene",project/scene);
+    // The frozen copy is always named Control-<id>.scene. With a short control directory the
+    // long-name source scene is what crosses MAX_PATH ("Project/Content/Scenes/" plus 247
+    // characters); with the deep control directory the frozen copy itself does.
+    const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+(deep_control?"":"-"+std::string(200,'n'))+".scene");
+    std::filesystem::rename(atelier::platform::windows_file_path(project/"Content/Scenes/Main.scene"),atelier::platform::windows_file_path(project/scene));
+    const auto bytes=[](const std::filesystem::path& path) {
+        std::ifstream stream(atelier::platform::windows_file_path(path),std::ios::binary);require(bool(stream),"Cannot read E2E artifact: "+utf8(path.wstring()));
+        return std::string(std::istreambuf_iterator<char>(stream),{});
+    };
+    const auto source_scene=bytes(project/scene);
     auto config=read(project/"Config/Project.json");config["startup_scene"]=utf8(scene.generic_wstring());
     write(project/"Config/Project.json",config.dump());
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
@@ -341,7 +349,12 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
         const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
         repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto manifest=read(repro/"manifest.json");const auto frozen=repro/"Project"/wide(manifest.at("scene").get<std::string>());
-        require(frozen.wstring().size()>260 && read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
+        if(deep_control) require(frozen.wstring().size()>260,"Deep-control export did not place the frozen scene past MAX_PATH");
+        else {
+            const auto copied=repro/"Project"/scene;
+            require(copied.wstring().size()>260 && bytes(copied)==source_scene,"Short-control export did not copy the long-name scene unchanged");
+        }
+        require(read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
         if(pass==0) require(std::filesystem::exists(atelier::platform::windows_file_path(repro/"unpublished"/unpublished)),"Deep-path source archive is missing");
         if(pass==0) d.ok("scene.undo");
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});

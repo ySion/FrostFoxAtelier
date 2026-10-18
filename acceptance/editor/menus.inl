@@ -41,7 +41,7 @@ void verify_about(Application& app,std::wstring_view expected_project) {
             Sleep(10);
         }
     });
-    click(app,static_cast<ControlKey>(atelier::editor::Command::about));
+    {const ExpectedNativeDialogs expected;click(app,static_cast<ControlKey>(atelier::editor::Command::about));}
     dismiss.request_stop();dismiss.join();tick(app);
     const bool valid=lookup.found && !IsWindow(lookup.found) && title==L"About FrostFox Atelier" &&
         content.contains(atelier::editor::wide(atelier::build_info::revision)) &&

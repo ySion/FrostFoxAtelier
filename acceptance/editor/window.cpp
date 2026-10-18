@@ -133,7 +133,10 @@ struct EditorAcceptanceAccess {
     static Result<void> fps_setting(Application& app,bool enabled) {
         return app.action({ui::ActionKind::activate,editor::control::command_key(editor::Command::show_fps),enabled});
     }
-    static void scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {app.workspace_.view.lit=settings;}
+    static Result<void> scene_lit_settings(Application& app,const renderer::SceneLitSettings& settings) {
+        auto view=app.workspace_.view;view.lit=settings;
+        return app.workspace_.set_view_settings(*app.document_,view,app.lighting_focus());
+    }
     static const auto& scene_snapshot(const Application& app) {return app.scene_;}
     static const auto& render_notice(const Application& app) {return app.workspace_.render_notice;}
     static void set_tool(Application& app,editor::TransformTool tool) {app.workspace_.viewport_settings.tool=tool;}
@@ -260,6 +263,26 @@ struct KeyStateScope {
     }
     ~KeyStateScope() { SetKeyboardState(original); }
 };
+// Unattended runs cannot wait for a person: any top-level dialog outside an expected scope ends the run.
+int expected_native_dialogs{};
+struct ExpectedNativeDialogs {
+    ExpectedNativeDialogs() { ++expected_native_dialogs; }
+    ~ExpectedNativeDialogs() { --expected_native_dialogs; }
+};
+LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) {
+    if (code == HCBT_CREATEWND && !expected_native_dialogs) {
+        const auto& created = *reinterpret_cast<const CBT_CREATEWNDW*>(parameter)->lpcs;
+        const bool dialog = IS_INTRESOURCE(created.lpszClass) ? reinterpret_cast<ULONG_PTR>(created.lpszClass) == 0x8002
+                                                              : std::wstring_view(created.lpszClass) == L"#32770";
+        if (dialog && !(created.style & WS_CHILD)) {
+            const std::wstring_view title = created.lpszName && !IS_INTRESOURCE(created.lpszName) ? created.lpszName : L"";
+            std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", atelier::editor::utf8(title).c_str());
+            std::fflush(stderr);
+            TerminateProcess(GetCurrentProcess(), 1);
+        }
+    }
+    return CallNextHookEx(nullptr, code, window, parameter);
+}
 void require_input_focus(Application& app) {
     require(GetFocus() == app.window() && GetForegroundWindow() == app.window(),
         "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
@@ -1029,6 +1052,11 @@ RECT await_acceptance_activation(Application& app,const std::filesystem::path& o
 #include "viewport.inl"
 #include "viewport_edit_window.inl"
 #include "scene_lit_window.inl"
+}
+
+void guard_acceptance_native_dialogs() {
+    if (!SetWindowsHookExW(WH_CBT, native_dialog_guard, nullptr, GetCurrentThreadId()))
+        throw std::runtime_error("Cannot install the acceptance native dialog guard.");
 }
 
 int verify_editor_scene_lit(Application& app,const char* output_directory,const wchar_t* source_project) {

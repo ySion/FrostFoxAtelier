@@ -195,7 +195,11 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
     workspace_.sync_world(*document_);
     auto candidate=workspace_.view;
-    if(fit_ddgi_volume) {
+    // Fitting fills a probe volume the scene did not save. It belongs to loading,
+    // not authoring: no history, the document stays clean and the next save writes
+    // it. A saved volume is the author's and stays.
+    const bool fit=fit_ddgi_volume && document_->world().lighting_settings().probe_volumes==rendering::SceneLightingSettings{}.probe_volumes;
+    if(fit) {
         auto fitted=fitted_probe_view(false);if(!fitted) return std::unexpected(fitted.error());candidate=*fitted;
         const auto& counts=candidate.lit.probe_volumes[0].counts;
         candidate.lit.probe_update_budget=(counts[0]*counts[1]*counts[2]+3)/4;
@@ -203,6 +207,7 @@ Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,
     auto camera=camera_;
     if(shading>renderer::Shading::scene_lit || !camera.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
+    if(fit) if(auto initialized=document_->initialize_world_lighting(candidate.lit);!initialized) return initialized;
     candidate.shading=shading;if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
     camera_=camera;camera_cut_=true;invalidate_surface();return {};
 }

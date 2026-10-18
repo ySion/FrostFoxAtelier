@@ -25,6 +25,7 @@ int capture_editor_snapshot(atelier::application::Application&, const char* outp
 int verify_editor_ime(atelier::application::Application&, const char* output_directory);
 int verify_editor_project(atelier::application::Application&, const char* output_directory,const wchar_t* source_project);
 int verify_editor_scene_lit(atelier::application::Application&, const char* output_directory,const wchar_t* source_project);
+void guard_acceptance_native_dialogs();
 
 int wmain(int argc, wchar_t** argv) {
     try {
@@ -106,6 +107,8 @@ int wmain(int argc, wchar_t** argv) {
         // Each dedicated example run must consume current templates. Product workspaces
         // intentionally preserve existing folders and must not be refreshed here.
         if(physics_examples||dungeons_acceptance) example_workspace/=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        if(acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || viewport || project_acceptance || scene_lit ||
+            sponza || physics_examples || dungeons_acceptance || examples) guard_acceptance_native_dialogs();
         atelier::application::Application app(gpu_validation || acceptance || source || edit || ime || viewport || project_acceptance || scene_lit || sponza || physics_examples || (examples && !examples_snapshot),!snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !examples_snapshot && !render_performance_output,
             example_workspace,initial_client,!render_performance_output);
         if(argc==1 || examples || physic || dungeons) {

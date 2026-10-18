@@ -54,11 +54,19 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
     const auto transformed=model(atelier::world::read_transform(app.document().world().runtime(),root));
     require(std::abs(atelier::editor::euler_degrees(transformed.rotation).x-45)<.001f,
         "Angle field edited quaternion X instead of the complete rotation.");
-    const auto color=std::ranges::find_if(app.presented()->text_geometry,[](const auto& text){return text.paragraph->matches(L"0.19");});
-    require(color!=app.presented()->text_geometry.end(),"Float parameter leaked binary conversion digits.");
-    const auto color_key=color->key;const auto color_history=app.document().undo_count();
+    // Body rows precede the Material group, so reach Base Color X by its binding and the panel's own scrolling.
+    auto& runtime=app.document().world().runtime();
+    const auto mesh_component=component(app,root,app.document().types().static_mesh_component);
+    const std::array base_color_x{model(runtime.find_field(model(runtime.type_of(mesh_component)),"material")),
+        model(runtime.find_field(app.document().types().material,"base_color")),
+        model(runtime.describe(app.document().types().vector3))->fields.front().id};
+    const auto color_key=app.field_control(mesh_component,base_color_x);
+    require(color_key!=0,"Static Mesh Base Color X has no parameter field.");
+    const auto color_history=app.document().undo_count();
     click(app,color_key);key(app,VK_RETURN);
     require(app.document().undo_count()==color_history,"Unchanged float input created an edit history entry.");
+    require(std::ranges::any_of(app.presented()->text_geometry,[&](const auto& text){return text.key==color_key && text.paragraph->matches(L"0.19");}),
+        "Float parameter leaked binary conversion digits.");
     const auto rotation_y=app.field_control(root,app.document().types().rotation_fields[1]);
     click(app,rotation_y);type(app,L"120");key(app,VK_RETURN);
     const auto rotated=model(atelier::world::read_transform(app.document().world().runtime(),root)).rotation;
