@@ -172,7 +172,7 @@ struct World::Impl {
     Types types;
     World& world;
     std::shared_ptr<detail::WorldLifetime> lifetime{std::make_shared<detail::WorldLifetime>()};
-    bool running{}, closing{}, closed{}, transitioning{}, flushing{}, updating{};
+    bool running{}, closing{}, closed{}, transitioning{}, flushing{}, updating{}, relocating{};
     std::size_t dispatch_depth{};
     // Composition preorder: every member's subtree is one contiguous range.
     std::vector<Member> members;
@@ -249,6 +249,8 @@ struct World::Impl {
     Impl(Runtime& r, const Types& t, World& w) : runtime(r), types(t), world(w), space(r) {}
     Result<void> admit(bool mutation = true) const;
     Result<void> admit_edit(ObjectId) const;
+    // Tells simulations that a transform edit of a running World moved their Entities.
+    Result<void> relocate(ObjectId edited);
     Result<std::size_t> member(ObjectId) const;
     Result<ObjectId> component_owner(ObjectId) const;
     // Admits same-context detached composition as well as this World's members.

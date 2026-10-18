@@ -100,7 +100,7 @@ void World::Impl::fault_tick(ObjectId object, ObjectId entity) noexcept {
 
 Result<void> World::Impl::admit(bool mutation) const {
     if (closed || (closing && mutation)) return error(ErrorCode::unsupported_operation, closing ? "World is closing." : "World is closed.");
-    if (transitioning || (mutation && dispatch_depth)) return error(ErrorCode::busy, "World operation cannot reenter this phase.");
+    if (transitioning || (mutation && (dispatch_depth || relocating))) return error(ErrorCode::busy, "World operation cannot reenter this phase.");
     if (mutation) return runtime.check_code_publication();
     return {};
 }
@@ -141,21 +141,35 @@ Result<void> World::Impl::admit_edit(ObjectId object) const {
     if (auto ready = admit(); !ready) return ready;
     auto entity = detail::is(runtime, object, types.entity);
     if (!entity) return std::unexpected(entity.error());
-    World* owner{};
     if (*entity) {
         auto data = composition_entity(object);
         if (!data) return std::unexpected(data.error());
-        owner = data->world;
     } else {
         auto data = composition_component(object);
         if (!data) return std::unexpected(data.error());
-        if (data->owner != ObjectId{}) {
-            auto parent = composition_entity(data->owner);
-            if (!parent) return std::unexpected(parent.error());
-            owner = parent->world;
-        }
     }
-    if (running && owner) return error(ErrorCode::busy, "Stop the World before editing its members.");
+    return {};
+}
+Result<void> World::Impl::relocate(ObjectId edited) {
+    const auto systems = simulations;
+    for (const auto& entry : systems) {
+        if (!entry.simulation || !entry.simulation->relocated) continue;
+        std::vector<ObjectId> moved;
+        for (const auto& member : members) {
+            if (!entry.simulation->writes_pose(member.id())) continue;
+            for (auto node = member.id(); node != ObjectId{};) {
+                if (node == edited) { moved.push_back(member.id()); break; }
+                auto parent = spatial_parent(runtime, node);
+                if (!parent) return std::unexpected(parent.error());
+                node = *parent;
+            }
+        }
+        if (moved.empty()) continue;
+        relocating = true;
+        auto relocated = entry.simulation->relocated(moved);
+        relocating = false;
+        if (!relocated) return relocated;
+    }
     return {};
 }
 void World::Impl::changed(bool spatial) noexcept {
@@ -422,7 +436,6 @@ Runtime& World::runtime() const noexcept { return impl_->runtime; }
 const rendering::SceneLightingSettings& World::lighting_settings() const noexcept { return impl_->lighting; }
 Result<void> World::set_lighting_settings(const rendering::SceneLightingSettings& candidate) {
     if(auto ready=impl_->admit();!ready) return ready;
-    if(impl_->running) return error(ErrorCode::unsupported_operation,"World lighting is editable only while stopped.");
     if(const auto* message=rendering::scene_lighting_error(candidate)) return error(ErrorCode::invalid_definition,message);
     impl_->lighting=candidate;return {};
 }

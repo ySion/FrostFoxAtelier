@@ -319,6 +319,7 @@ private:
     [[nodiscard]] Result<void> step(float elapsed);
     // Lookup failures answer true, so an unknown Entity is never translated.
     [[nodiscard]] bool writes_pose(ObjectId entity) const;
+    [[nodiscard]] Result<void> relocate(std::span<const ObjectId> entities);
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
     [[nodiscard]] Result<void> reconcile(ObjectId entity);
     [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component);

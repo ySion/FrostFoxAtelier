@@ -446,13 +446,25 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
     if (!node) return std::unexpected(node.error());
     (*node)->spatial = true; (*node)->local = *canonical;
     if (auto valid = graph.matrix(object); !valid) return std::unexpected(valid.error());
-    return runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
-        entity.position = canonical->position; entity.rotation = canonical->rotation; entity.scale = canonical->scale;
-        // Gaining space changes resolved parents below it; TRS values alone are revalidated per pass.
-        if (!Access::spatial(entity)) impl_->changed();
-        Access::spatial(entity) = true;
-        return {};
-    });
+    Trs previous;
+    bool was_spatial{};
+    const auto assign = [&](const Trs& trs, bool spatial) {
+        return runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
+            previous = {entity.position, entity.rotation, entity.scale};
+            was_spatial = Access::spatial(entity);
+            entity.position = trs.position; entity.rotation = trs.rotation; entity.scale = trs.scale;
+            // Gaining or losing space changes resolved parents below it; TRS values alone are revalidated per pass.
+            if (Access::spatial(entity) != spatial) impl_->changed();
+            Access::spatial(entity) = spatial;
+            return {};
+        });
+    };
+    if (auto written = assign(*canonical, true); !written || !impl_->running) return written;
+    const auto before = previous;
+    const bool spatial = was_spatial;
+    auto relocated = impl_->relocate(object);
+    if (!relocated) static_cast<void>(assign(before, spatial));
+    return relocated;
 }
 Result<void> World::remove_transform(ObjectId object) {
     if (auto ready = impl_->admit_edit(object); !ready) return ready;

@@ -472,7 +472,15 @@ void isolated_failures() {
     const auto a_id = a.id(), b_id = b.id(), c_id = c.id(), d_id = d.id(), m_id = m.id();
     take(world.set_transform(f.id(), {})); take(world.set_transform(g.id(), {}));
     // A registered simulation owns g's pose, as PhysicsScene does for bodies.
-    take(world.add_simulation({[](float) -> Result<void> { return {}; }, [g = g.id()](ObjectId entity) { return entity == g; }}));
+    std::vector<ObjectId> relocations;
+    bool refuse_relocation{}, relocation_reentry_rejected{};
+    take(world.add_simulation({.step = [](float) -> Result<void> { return {}; }, .writes_pose = [g = g.id()](ObjectId entity) { return entity == g; },
+        .relocated = [&](std::span<const ObjectId> moved) -> Result<void> {
+            relocation_reentry_rejected = !world.set_transform(f.id(), {});
+            if (refuse_relocation) return std::unexpected(Error{ErrorCode::unsupported_operation, "Intentional relocation refusal."});
+            relocations.assign(moved.begin(), moved.end());
+            return {};
+        }}));
     const std::array e_group{w::Attachment{a_id}, w::Attachment{b_id}, w::Attachment{c_id}};
     const std::array f_group{w::Attachment{d_id}};
     const std::array g_group{w::Attachment{m_id}};
@@ -559,6 +567,20 @@ void isolated_failures() {
     events.clear(); take(world.update(1));
     require(events == std::vector<Event>{{'T',a_id},{'T',b_id},{'T',c_id},{'T',d_id},{'T',m_id}} && world.take_diagnostics().empty(),
         "Cleared objects did not resume Tick or a persisting rejection was reported again.");
+    // Running members are edited at the host boundary. A transform edit reaches
+    // the simulation claiming the moved Entity, which may not edit the World;
+    // its refusal restores the edit.
+    take(world.write(b_id, std::array{steps}, Scalar{std::uint32_t{2}}));
+    require(take(runtime.read(b_id, steps)) == Scalar{std::uint32_t{2}}, "A running member rejected a host-boundary field edit.");
+    take(world.set_transform(f.id(), {{0, 1, 0}, {}, {1, 1, 1}}));
+    require(relocations.empty(), "An Entity no simulation claims was relocated.");
+    take(world.set_transform(g.id(), {{0, 5, 0}, {}, {1, 1, 1}}));
+    require(relocations == std::vector<ObjectId>{g.id()} && relocation_reentry_rejected,
+        "A claimed Entity's transform edit did not reach its simulation, or the simulation edited the World.");
+    refuse_relocation = true;
+    reject(world.set_transform(g.id(), {{0, 9, 0}, {}, {1, 1, 1}}), "A refused relocation kept the edit.");
+    require(near(take(w::read_transform(runtime, g.id())).position.y, 5), "A refused relocation did not restore the transform.");
+    refuse_relocation = false;
     events.clear(); committed(world.stop());
     require(events == std::vector<Event>{{'E',m_id},{'E',d_id},{'E',c_id},{'E',b_id},{'E',a_id}}, "Isolation broke End pairing or reverse order.");
     fail_begin = d_id; committed(world.start());
