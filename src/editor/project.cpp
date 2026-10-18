@@ -340,10 +340,13 @@ Result<std::shared_ptr<const std::string>> Project::collision(std::string_view k
     if (!asset) return std::unexpected(asset.error());
     auto path = resolve(collision_path(key, scale));
     if (!path) return std::unexpected(path.error());
-    auto bytes = read_file(*path, 128ull * 1024 * 1024 + 8192);
-    if (!bytes) return std::unexpected(bytes.error());
-    auto valid = physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, key);
-    if (!valid) return std::unexpected(valid.error());
-    return std::make_shared<const std::string>(std::move(*bytes));
+    if (auto bytes = read_file(*path, 128ull * 1024 * 1024 + 8192);
+        bytes && physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, key))
+        return std::make_shared<const std::string>(std::move(*bytes));
+    // The cache is derived data: a missing or stale entry is rebuilt from the source mesh.
+    auto cooked = physics::cook_triangle_mesh(asset->mesh, scale, key);
+    if (!cooked) return std::unexpected(cooked.error());
+    static_cast<void>(write_file(*path, *cooked)); // A failed write only costs the next load another Cook.
+    return std::make_shared<const std::string>(std::move(*cooked));
 }
 }

@@ -96,7 +96,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后仍使用 `scene.set_property` 和 `scene.undo` 等原有编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
 
-宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing}`，`materials` 每项带 `missing`；`missing` 为 true 表示工程资源缺失、当前由占位资源代替（实例按父材质判断），保存仍写回原引用。
+宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing}`，`materials` 每项带 `missing`；`missing` 为 true 表示工程资源缺失或无法读取、当前由占位资源代替（实例按父材质判断），保存仍写回原引用。
 
 现有真实进程验收 `atelier_editor_control_acceptance editor.exe <输出目录> --descriptions` 同时覆盖空目录、单项分页、名称/类型过滤、详情一致性、非法参数、游标失效、对象删除、占位对象的 `saved_type` / `saved_data` 及查询不改变文档。
 
@@ -122,7 +122,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 当前不包括布局编辑、Source 文本编辑、Play 命令、鼠标回放或任意 C++/JIT 调用。后续能力按业务名称接入现有权威模块。
 
-`material.inspect` 接受 `asset` 或 `object` 二选一；后者使用组件材质槽返回的对象句柄，可读取实例已解析的属性、父资产和显式覆盖位。实例修改由 `scene.save` 保存，共享资产由 `material.save` 保存。按 `asset` 打开时容忍缺失贴图，目录中不存在的材质键仍返回错误；结果的 `missing` 表示材质本身是占位资源，`missing_textures` 列出缺失贴图的键，保存材质时这些键原样保留。
+`material.inspect` 接受 `asset` 或 `object` 二选一；后者使用组件材质槽返回的对象句柄，可读取实例已解析的属性、父资产和显式覆盖位。实例修改由 `scene.save` 保存，共享资产由 `material.save` 保存。按 `asset` 打开时材质本身必须可读，缺失或无法读取的贴图由占位资源代替；按 `object` 查看场景中的占位材质时，结果的 `missing` 为 true，`missing_textures` 列出不可用贴图的键，保存材质时这些键原样保留。
 
 ## 协议、身份和重试
 

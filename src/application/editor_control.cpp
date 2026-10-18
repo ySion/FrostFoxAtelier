@@ -454,10 +454,10 @@ struct EditorControl::Impl {
             result["materials"]=Json::array();
             for(const auto& binding:*bindings) {
                 const auto state=take(material::read_material(runtime,binding.resource.id()));
+                const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
                 result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
-                    {"parent",state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:""},
-                    {"parameter_mask",state.overrides},{"assignment_override",binding.overridden},
-                    {"missing",app.document_->resource_missing(binding.resource.id())}});
+                    {"parent",parent},{"parameter_mask",state.overrides},{"assignment_override",binding.overridden},
+                    {"missing",app.document_->unavailable(parent.empty()?state.source:parent)!=nullptr}});
             }
         }
         return result;
@@ -630,18 +630,15 @@ struct EditorControl::Impl {
         if(op=="material.inspect") {
             if(!app.project_) throw Failure("not_ready","No project is open");
             if(args.contains("asset")==args.contains("object")) throw Failure("invalid_request","Specify exactly one material asset or object");
-            std::vector<editor::MissingResource> missing;
-            const auto key=args.contains("asset")?text(args.at("asset")):std::string{};
-            const bool listed=std::ranges::find(app.project_->entries(),key,&editor::ProjectEntry::key)!=app.project_->entries().end();
-            const auto target=args.contains("asset")?take(doc.material_resource(*app.project_,key,listed?&missing:nullptr)).id():object(args.at("object"));
+            const auto target=args.contains("asset")?take(doc.open_material(*app.project_,text(args.at("asset")))).id():object(args.at("object"));
             if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
             const auto state=take(material::read_material(runtime,target));
-            auto result=object_json(target);result["asset"]=state.source;
-            result["parent"]=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:"";
-            result["parameter_mask"]=state.overrides;result["missing"]=doc.resource_missing(target);
+            const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
+            auto result=object_json(target);result["asset"]=state.source;result["parent"]=parent;
+            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(parent.empty()?state.source:parent)!=nullptr;
             auto& textures=result["missing_textures"]=Json::array();
-            for(const auto& texture:state.textures) if(texture.registered() && doc.resource_missing(texture.id()))
-                textures.push_back(take(material::read_texture(runtime,texture.id())).source);
+            for(const auto& texture:state.textures) if(texture.registered())
+                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(source)) textures.push_back(std::move(source));
             result["dirty"]=state.source.empty()?doc.dirty():doc.material_dirty(state.source);return result;
         }
         if(op=="job.status" || op=="job.cancel") {

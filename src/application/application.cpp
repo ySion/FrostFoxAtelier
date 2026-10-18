@@ -291,7 +291,7 @@ Result<void> Application::action(const ui::Action& source) {
         if(choice->kind==Kind::assign) return document_->assign_material(*project_,choice->object,choice->slot,choice->key);
         if(choice->kind==Kind::clear) return document_->clear_material(choice->object,choice->slot);
         if(choice->kind==Kind::texture) return document_->set_material_texture(*project_,choice->object,static_cast<material::Input>(choice->index),choice->key);
-        std::vector<editor::MissingResource> missing;auto root=document_->material_resource(*project_,choice->key,&missing);if(!root) return std::unexpected(root.error());
+        auto root=document_->open_material(*project_,choice->key);if(!root) return std::unexpected(root.error());
         workspace_.material_inspection=choice->key;workspace_.inspecting_asset=true;return {};
     }
     if (workspace_.workbench.apply(event)) return {};
@@ -301,7 +301,7 @@ Result<void> Application::action(const ui::Action& source) {
             workspace_.inspecting_asset=true;workspace_.material_inspection.clear();
             const auto& selected=workspace_.assets.selected();
             if(selected && selected->kind==editor::AssetKind::material && project_) {
-                std::vector<editor::MissingResource> missing;auto root=document_->material_resource(*project_,selected->key,&missing);if(!root) return std::unexpected(root.error());
+                auto root=document_->open_material(*project_,selected->key);if(!root) return std::unexpected(root.error());
                 workspace_.material_inspection=selected->key;
             }
         }
@@ -325,7 +325,7 @@ Result<void> Application::action(const ui::Action& source) {
             return execute(editor::Command::create_static_mesh,selected->key);
         if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
         else if(selected->kind==editor::AssetKind::material && project_) {
-            std::vector<editor::MissingResource> missing;auto root=document_->material_resource(*project_,selected->key,&missing);if(!root) return std::unexpected(root.error());
+            auto root=document_->open_material(*project_,selected->key);if(!root) return std::unexpected(root.error());
             workspace_.material_inspection=selected->key;workspace_.inspecting_asset=true;workspace_.dock.select(editor::control::parameters_tab);
         }
         else if (selected->kind==editor::AssetKind::scene) return open_scene(selected->path);

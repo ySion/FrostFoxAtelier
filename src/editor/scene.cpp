@@ -489,9 +489,10 @@ struct Session::GraphCodec {
         std::unordered_map<ObjectId,std::wstring> labels;
         std::unordered_set<std::string> material_keys,texture_keys;
         std::unordered_map<ObjectId,std::uint64_t> identities_before;
+        std::unordered_map<std::string,MissingResource> unavailable_before;
         std::uint64_t next_before{};
         bool published{};
-        explicit Prepared(Session& owner):session(&owner),identities_before(owner.local_ids_),next_before(owner.next_local_id_) {
+        explicit Prepared(Session& owner):session(&owner),identities_before(owner.local_ids_),unavailable_before(owner.unavailable_),next_before(owner.next_local_id_) {
             for(const auto& [key,value]:owner.materials_) {static_cast<void>(value);material_keys.insert(key);}
             for(const auto& [key,value]:owner.textures_) {static_cast<void>(value);texture_keys.insert(key);}
         }
@@ -500,7 +501,7 @@ struct Session::GraphCodec {
         Prepared(Prepared&& other) noexcept:session(std::exchange(other.session,nullptr)),objects(std::move(other.objects)),
             roots(std::move(other.roots)),spaces(std::move(other.spaces)),triangle_meshes(std::move(other.triangle_meshes)),resources(std::move(other.resources)),
             project(other.project),labels(std::move(other.labels)),material_keys(std::move(other.material_keys)),texture_keys(std::move(other.texture_keys)),
-            identities_before(std::move(other.identities_before)),
+            identities_before(std::move(other.identities_before)),unavailable_before(std::move(other.unavailable_before)),
             next_before(other.next_before),published(other.published) {}
         ~Prepared() {
             if(!session || published) return;
@@ -515,6 +516,7 @@ struct Session::GraphCodec {
             }
             std::erase_if(session->materials_,[&](const auto& entry){return !material_keys.contains(entry.first);});
             std::erase_if(session->textures_,[&](const auto& entry){return !texture_keys.contains(entry.first);});
+            session->unavailable_.swap(unavailable_before);
             // Unpublished objects never acquired a document identity visible to
             // history or authoring. Failed construction must leave metadata intact.
             session->next_local_id_=next_before;
@@ -842,7 +844,7 @@ struct Session::GraphCodec {
                 auto at=base;const Json value=item.key;
                 if(item.input) {at.push_back("textures");at.emplace_back(material_format::names[*item.input]);}
                 else at.emplace_back(entry.contains("parent")?"parent":"source");
-                load.report(world::Severity::warning,world::DiagnosticKind::missing_resource,object,std::move(at),&value,item.reason+
+                load.report(world::Severity::warning,item.kind,object,std::move(at),&value,item.reason+
                     (item.input?" The input has no texture":" A default material stands in")+"; the reference is saved unchanged.");
             }
         };
@@ -1067,11 +1069,9 @@ struct Session::GraphCodec {
                         geometry::MeshRef mesh;
                         if(!source.empty()) {
                             if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
-                            else if(std::ranges::find(project->entries(),source,&ProjectEntry::key)!=project->entries().end())
-                                throw std::runtime_error(loaded.error().message); // Listed but unreadable is damage, not a missing resource.
                             else {
-                                const Json value=source;
-                                load.report(world::Severity::warning,world::DiagnosticKind::missing_resource,object,{"mesh"},&value,loaded.error().message+
+                                const auto& item=session.remember_unavailable(*project,source,loaded.error());const Json value=source;
+                                load.report(world::Severity::warning,item.kind,object,{"mesh"},&value,item.reason+
                                     " The component draws nothing; the reference and its material bindings are saved unchanged.");
                             }
                         }
@@ -1147,10 +1147,11 @@ struct Session::GraphCodec {
                         settings.cooked_shape=at->second.cooked_shape;
                     if(settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh) {
                         const auto mesh=take(world::read_static_mesh(runtime,object));
-                        if(!mesh.mesh.resolved && !mesh.mesh.source.empty())
-                            load.report(world::Severity::warning,world::DiagnosticKind::missing_resource,object,{"properties","body","shape"},nullptr,
+                        if(!mesh.mesh.resolved && !mesh.mesh.source.empty()) {
+                            const auto* item=session.unavailable(mesh.mesh.source);
+                            load.report(world::Severity::warning,item?item->kind:world::DiagnosticKind::missing_resource,object,{"properties","body","shape"},nullptr,
                                 "Triangle collision has no mesh to cook; Play cannot create this body until the mesh is restored.");
-                        else if(mesh.mesh.source.starts_with("project/")) result.triangle_meshes.push_back(object);
+                        } else if(mesh.mesh.source.starts_with("project/")) result.triangle_meshes.push_back(object);
                     }
                     if(auto configured=physics::configure(runtime,object,settings);!configured) {
                         invalid_record(object,"body",body_defaults,configured.error().message);std::erase(result.triangle_meshes,object);
@@ -1218,7 +1219,7 @@ struct Session::GraphCodec {
         }
         return attachments;
     }
-    static void prepare_cook(Session& session,Prepared& prepared,std::span<const world::EntityAttachment> attachments) {
+    static void prepare_cook(Session& session,Prepared& prepared,std::span<const world::EntityAttachment> attachments,Load& load) {
         if(prepared.triangle_meshes.empty()) return;
         const auto matrices=take(session.world_.attachment_world_matrices(attachments,prepared.spaces));
         std::unordered_map<ObjectId,math::Matrix4> worlds;worlds.reserve(matrices.size());
@@ -1228,15 +1229,22 @@ struct Session::GraphCodec {
             const auto owner=take(world::inspect_component(session.runtime_,object)).owner;
             const auto trs=take(world::relative_transform(worlds.at(owner),world::transform_matrix({})));
             auto settings=take(physics::read_settings(session.runtime_,object));
-            if(prepared.project) settings.cooked_shape=take(prepared.project->collision(mesh.mesh.source,trs.scale));
-            else if(settings.cooked_shape) take(physics::validate_cooked_triangle_mesh(*settings.cooked_shape,mesh.mesh.resolved,trs.scale,mesh.mesh.source));
+            if(prepared.project) {
+                auto cooked=prepared.project->collision(mesh.mesh.source,trs.scale);
+                if(!cooked) {
+                    load.report(world::Severity::warning,world::DiagnosticKind::unreadable_resource,object,{"properties","body","shape"},nullptr,
+                        cooked.error().message+" Play cannot create this body until its mesh can be cooked.");
+                    continue;
+                }
+                settings.cooked_shape=std::move(*cooked);
+            } else if(settings.cooked_shape) take(physics::validate_cooked_triangle_mesh(*settings.cooked_shape,mesh.mesh.resolved,trs.scale,mesh.mesh.source));
             take(physics::configure(session.runtime_,object,std::move(settings)));
         }
     }
     static world::Commit publish(Session& session,Prepared& prepared,const Graph& graph,ObjectId parent,bool duplicate,Load& load) {
         EntityChange history;history.added=true;history.removals.reserve(prepared.roots.size());
         for(auto root:prepared.roots) {world::EntityRemoval removal;removal.root=take(session.runtime_.hold(root));history.removals.push_back(std::move(removal));}
-        auto plans=attachments(prepared,graph,parent,duplicate);prepare_cook(session,prepared,plans);
+        auto plans=attachments(prepared,graph,parent,duplicate);prepare_cook(session,prepared,plans,load);
         auto selection=prepared.roots;
         session.history_.reserve(session.history_.size()+1);
         session.retained_.reserve(session.retained_.size()+load.retained.size());
@@ -1292,7 +1300,7 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
         auto prepared=GraphCodec::construct(*session,graph,&project,true,load);
         for(const auto& [object,label]:prepared.labels) session->names_.emplace(object,label);
         if(!prepared.roots.empty()) {
-            const auto plans=GraphCodec::attachments(prepared,graph,{},false);GraphCodec::prepare_cook(*session,prepared,plans);
+            const auto plans=GraphCodec::attachments(prepared,graph,{},false);GraphCodec::prepare_cook(*session,prepared,plans,load);
             const auto commit=take(session->world_.attach_batch(plans,prepared.spaces));prepared.published=commit.changed;
             if(commit.notification_error) throw std::runtime_error(commit.notification_error->message);
         }
@@ -1431,9 +1439,9 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         const bool document=object==ObjectId{},material=!document && is_material(object);
         std::vector<detail::ScalarField> schema;
         if(!document && !material) schema=business_fields(world_.runtime(),types_,take(runtime_.type_of(object)));
-        bool meshless{};
-        if(!document && !material) if(const auto mesh=world::read_static_mesh(world_.runtime(),object))
-            meshless=!mesh->mesh.resolved && !mesh->mesh.source.empty();
+        const MissingResource* mesh_unavailable{};
+        if(!document && !material) if(const auto mesh=world::read_static_mesh(world_.runtime(),object); mesh && !mesh->mesh.resolved)
+            mesh_unavailable=unavailable(mesh->mesh.source);
         // Descends into records the current schema still declares; anything else is one entry.
         const auto classify=[&](std::span<const std::string> path)->std::pair<bool,world::DiagnosticKind> {
             using enum world::DiagnosticKind;
@@ -1457,7 +1465,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                 if(path.size()==1) return {true,mismatch};
                 return {false,path[1]=="position" || path[1]=="rotation" || path[1]=="scale" || path[1]=="origin"?mismatch:unknown_key};
             }
-            if(path.front()=="materials" && meshless) return {false,missing_resource};
+            if(path.front()=="materials" && mesh_unavailable) return {false,mesh_unavailable->kind};
             constexpr std::array known{"name","enabled","mesh","base_color","roughness","metallic","emissive","materials"};
             return {false,std::ranges::find(known,path.front())!=known.end()?mismatch:unknown_key};
         };
@@ -1507,7 +1515,8 @@ std::vector<world::Diagnostic> Session::issues() const {
         const auto view=retained(object);if(!view) return;
         for(const auto& item:view->entries) add(object,type,item.kind,item.path,item.value,
             item.kind==world::DiagnosticKind::mismatch?"The saved value does not fit the current type; it is kept until edited or discarded.":
-            item.kind==world::DiagnosticKind::missing_resource?"The resource it needs is missing; the saved value is kept unchanged.":"Saved data kept for the next save.");
+            item.kind==world::DiagnosticKind::missing_resource || item.kind==world::DiagnosticKind::unreadable_resource?
+            "The resource it needs is unavailable; the saved value is kept unchanged.":"Saved data kept for the next save.");
         for(const auto* text:{&entry.record,&entry.slots}) if(!text->empty()) {
             auto value=Json::parse(*text);
             each_reference(value,[&](Json& node) {
