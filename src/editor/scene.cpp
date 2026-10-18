@@ -784,20 +784,10 @@ struct Session::GraphCodec {
         };
         archive_material=[&](ObjectId object)->std::uint64_t {
             if(auto at=ids.find(object);at!=ids.end()) return at->second;
-            const auto state=take(material::read_material(runtime,object));
+            take(material::read_material(runtime,object));
             const auto key=identity(session,object);ids.emplace(object,key);
             graph.materials.emplace(std::to_string(key),take(runtime.hold(object)));
-            Json value={{"id",std::to_string(key)},{"source",state.source}};
-            if(state.source.empty() && persistent) {
-                value["inline"]=material_format::encode(take(session.material_asset(object)));
-                if(state.parent.registered()) {
-                    const auto parent_source=take(material::read_material(runtime,state.parent.id())).source;
-                    if(parent_source.empty()) throw std::runtime_error("Save the parent material asset before archiving its instance.");
-                    value["parent"]=parent_source;auto overrides=Json::array();
-                    for(std::size_t i=0;i<material::parameter_names.size();++i) if(state.overrides&(1u<<i)) overrides.push_back(material::parameter_names[i]);
-                    value["overrides"]=std::move(overrides);
-                }
-            }
+            Json value=material_definition(session,object,key,persistent);
             merge_retained(value,object);
             material_values.push_back(std::move(value));return key;
         };
@@ -871,6 +861,123 @@ struct Session::GraphCodec {
             overlay(graph.data,restore_references(Json::parse(session.retained_document_.record)));
         identities.complete=true;
         return graph;
+    }
+
+    // A scene material definition without retained data.
+    static Json material_definition(const Session& session,ObjectId object,std::uint64_t key,bool persistent) {
+        auto& runtime=session.world_.runtime();const auto state=take(material::read_material(runtime,object));
+        Json value={{"id",std::to_string(key)},{"source",state.source}};
+        if(state.source.empty() && persistent) {
+            value["inline"]=material_format::encode(take(session.material_asset(object)));
+            if(state.parent.registered()) {
+                const auto parent_source=take(material::read_material(runtime,state.parent.id())).source;
+                if(parent_source.empty()) throw std::runtime_error("Save the parent material asset before archiving its instance.");
+                value["parent"]=parent_source;auto overrides=Json::array();
+                for(std::size_t i=0;i<material::parameter_names.size();++i) if(state.overrides&(1u<<i)) overrides.push_back(material::parameter_names[i]);
+                value["overrides"]=std::move(overrides);
+            }
+        }
+        return value;
+    }
+    // The graph of an attach change: the Entity record lists only these components.
+    static Json live_components(const Session& session,ObjectId entity,std::span<const ObjectId> components) {
+        for(const auto component:components)
+            if(take(world::inspect_component(session.world_.runtime(),component)).owner!=entity) throw std::runtime_error("The Component does not belong to the Entity.");
+        auto graph=capture(session,{&entity,1},true,false,true);auto& data=graph.data;
+        std::unordered_set<std::string> wanted;
+        for(const auto component:components) wanted.insert(std::to_string(session.local_ids_.at(component)));
+        const auto key=std::to_string(session.local_ids_.at(entity));
+        const auto& records=data.at("entities");
+        const auto record=std::ranges::find_if(records,[&](const Json& value){return value.at("id")==key;});
+        Json parts=Json::array();std::unordered_set<std::string> used;
+        for(auto part:record->at("components")) if(wanted.contains(part.at("id").get<std::string>())) {
+            if(const auto at=part.find("materials");at!=part.end()) for(const auto& entry:*at) used.insert(entry.at("resource").get<std::string>());
+            auto references=part;each_reference(references,[&](Json& node){if(const auto at=node.find("$ref");at!=node.end()) used.insert(at->get<std::string>());});
+            parts.push_back(std::move(part));
+        }
+        if(parts.size()!=components.size()) throw std::runtime_error("Each listed Component must appear once on the Entity.");
+        Json materials=Json::array();
+        for(const auto& definition:data.at("materials")) if(used.contains(definition.at("id").get<std::string>())) materials.push_back(definition);
+        data["roots"]=Json::array();data["materials"]=std::move(materials);
+        data["entities"]=Json::array({Json{{"id",key},{"existing",true},{"children",Json::array()},{"components",std::move(parts)}}});
+        return std::move(data);
+    }
+    // Play forwarding. A keyed op replaces the pending op with the same key.
+    static void live_push(Session& session,std::string key,const Json& op) {
+        auto text=op.dump();
+        if(text.size()>json_format::maximum_bytes) throw std::runtime_error("A Play change exceeds the 16 MiB limit.");
+        if(!key.empty()) std::erase_if(session.live_ops_,[&](const LiveOp& item){return item.key==key;});
+        session.live_ops_.push_back({std::move(key),std::move(text)});
+    }
+    static std::string live_id(const Session& session,ObjectId object) {return std::to_string(identity(session,object));}
+    // The final position among the parent's children, or among the roots.
+    static std::size_t live_position(Session& session,ObjectId object,ObjectId parent) {
+        std::size_t result{};
+        if(parent!=ObjectId{}) {
+            for(const auto& child:take(world::children(session.runtime_,parent))) {if(child.id()==object) return result;++result;}
+        } else for(const auto& member:take(session.world_.members())) if(take(world::parent_entity(session.runtime_,member.id()))==ObjectId{}) {
+            if(member.id()==object) return result;++result;
+        }
+        throw std::runtime_error("The Entity is missing from its parent's list.");
+    }
+    static Json live_origin(Session& session,ObjectId entity) {
+        const auto origin=take(world::space_reference(session.runtime_,entity));
+        if(!origin) return nullptr;
+        return *origin==ObjectId{}?Json("0"):Json(live_id(session,*origin));
+    }
+    static Json live_space(Session& session,ObjectId entity) {
+        if(!take(world::has_transform(session.runtime_,entity))) return nullptr;
+        auto space=trs_json(take(world::read_transform(session.runtime_,entity)));space["origin"]=live_origin(session,entity);return space;
+    }
+    // TRS leaves as bits: 1 position, 2 rotation, 4 scale.
+    static unsigned leaf_mask(const world::Trs& a,const world::Trs& b) {
+        return (a.position!=b.position?1u:0u)|(a.rotation!=b.rotation?2u:0u)|(a.scale!=b.scale?4u:0u);
+    }
+    static Json space_leaves(const world::Trs& value,unsigned mask) {
+        auto result=trs_json(value);result.erase("origin");
+        if(!(mask&1)) result.erase("position");
+        if(!(mask&2)) result.erase("rotation");
+        if(!(mask&4)) result.erase("scale");
+        return result;
+    }
+    // A set of these fields' current values; `key` names the object and fields.
+    static Json live_properties(Session& session,ObjectId object,std::span<const world::FieldPath> paths,std::string* key=nullptr) {
+        auto& runtime=session.runtime_;const auto type=take(runtime.type_of(object));
+        const auto fields=take(detail::author_fields(runtime,type));
+        const auto material_field=derives(runtime,type,session.types_.static_mesh_component)?
+            std::optional(take(runtime.find_field(session.types_.static_mesh_component,"material"))):std::nullopt;
+        Json op={{"op","set"},{"id",live_id(session,object)}},properties=Json::object();
+        if(key) *key="field "+op.at("id").get<std::string>();
+        std::optional<world::Material> material;
+        for(const auto& path:paths) {
+            const auto field=std::ranges::find_if(fields,[&](const auto& item){return std::ranges::equal(item.path,path);});
+            if(field==fields.end()) throw std::runtime_error("A changed field is not a scene property.");
+            if(key) *key+=" "+dotted(field->names);
+            // The mesh material is a component record; its fields travel as top-level set keys.
+            if(material_field && path.front()==*material_field) {
+                if(!material) material=take(world::read_static_mesh(runtime,object)).material;
+                const auto& name=field->names.at(1);
+                if(name=="base_color") op[name]=vector(material->base_color);
+                else if(name=="emissive") op[name]=vector(material->emissive);
+                else if(name=="roughness") op[name]=material->roughness;
+                else if(name=="metallic") op[name]=material->metallic;
+                else throw std::runtime_error("Play cannot follow the field "+dotted(field->names)+".");
+                continue;
+            }
+            Json* at=&properties;for(const auto& name:field->names) at=&(*at)[name];
+            *at=encode_scalar(runtime,take(runtime.read(object,path)));
+        }
+        if(!properties.empty()) op["properties"]=std::move(properties);
+        return op;
+    }
+    static Json live_body(Session& session,ObjectId component) {
+        auto& runtime=session.runtime_;Json body=Json::object();
+        for(const auto& field:business_fields(runtime,session.types_,take(runtime.type_of(component))))
+            if(field.form==ValueForm::inline_value && field.names.size()>1 && field.names.front()=="body") {
+                Json* at=&body;for(auto name=field.names.begin()+1;name!=field.names.end();++name) at=&(*at)[*name];
+                *at=encode_scalar(runtime,take(runtime.read(component,field.path)));
+            }
+        return {{"op","set"},{"id",live_id(session,component)},{"properties",Json::object({{"body",std::move(body)}})}};
     }
 
     // Scene and Play changes decode a properties record leaf by leaf through the shared decoder.
@@ -1701,28 +1808,126 @@ Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
 }
 Result<std::string> Session::serialize_live_components(ObjectId entity,std::span<const ObjectId> components) const {
     try {
-        for(const auto component:components)
-            if(take(world::inspect_component(world_.runtime(),component)).owner!=entity) throw std::runtime_error("The Component does not belong to the Entity.");
-        auto graph=GraphCodec::capture(*this,{&entity,1},true,false,true);auto& data=graph.data;
-        std::unordered_set<std::string> wanted;
-        for(const auto component:components) wanted.insert(std::to_string(local_ids_.at(component)));
-        const auto key=std::to_string(local_ids_.at(entity));
-        const auto& records=data.at("entities");
-        const auto record=std::ranges::find_if(records,[&](const Json& value){return value.at("id")==key;});
-        Json parts=Json::array();std::unordered_set<std::string> used;
-        for(auto part:record->at("components")) if(wanted.contains(part.at("id").get<std::string>())) {
-            if(const auto at=part.find("materials");at!=part.end()) for(const auto& entry:*at) used.insert(entry.at("resource").get<std::string>());
-            auto references=part;each_reference(references,[&](Json& node){if(const auto at=node.find("$ref");at!=node.end()) used.insert(at->get<std::string>());});
-            parts.push_back(std::move(part));
-        }
-        if(parts.size()!=components.size()) throw std::runtime_error("Each listed Component must appear once on the Entity.");
-        Json materials=Json::array();
-        for(const auto& definition:data.at("materials")) if(used.contains(definition.at("id").get<std::string>())) materials.push_back(definition);
-        data["roots"]=Json::array();data["materials"]=std::move(materials);
-        data["entities"]=Json::array({Json{{"id",key},{"existing",true},{"children",Json::array()},{"components",std::move(parts)}}});
-        auto text=data.dump();
+        auto text=GraphCodec::live_components(*this,entity,components).dump();
         if(text.size()>json_format::maximum_bytes) throw std::runtime_error("The Components exceed the 16 MiB change limit.");return text;
     } catch(const std::exception& error) {return failed(error);}
+}
+void Session::set_live_forwarding(bool enabled) {
+    forwarding_=enabled;live_ops_.clear();live_failure_.reset();live_leaves_.clear();
+}
+Result<std::vector<std::string>> Session::take_live_ops() {
+    if(live_failure_) return std::unexpected(*live_failure_);
+    std::vector<std::string> result;result.reserve(live_ops_.size());
+    for(auto& op:live_ops_) result.push_back(std::move(op.text));
+    live_ops_.clear();return result;
+}
+void Session::forward_change(const Change& change,bool forward) {
+    if(!forwarding_ || live_failure_) return;
+    using C=GraphCodec;
+    const auto push=[&](const Json& op,std::string key={}){C::live_push(*this,std::move(key),op);};
+    const auto set=[&](ObjectId object,const char* name,Json value){return Json{{"op","set"},{"id",C::live_id(*this,object)},{name,std::move(value)}};};
+    // A commit also sends every leaf its previews sent, including leaves that returned to their start.
+    const auto leaves=[&](ObjectId entity,const world::Trs& before,const world::Trs& after) {
+        auto mask=C::leaf_mask(before,after);
+        if(const auto at=live_leaves_.find(entity);at!=live_leaves_.end()) {mask|=at->second;live_leaves_.erase(at);}
+        if(mask) push(set(entity,"space",C::space_leaves(take(world::read_transform(runtime_,entity)),mask)));
+    };
+    try {
+        std::visit([&](const auto& item) {
+            using T=std::decay_t<decltype(item)>;
+            if constexpr(std::is_same_v<T,LightingChange>) push({{"op","world"},{"world",world_settings(world_.lighting_settings())}},"world");
+            else if constexpr(std::is_same_v<T,EntityChange>) {
+                if(item.added!=forward) {for(const auto& removal:item.removals) push({{"op","remove"},{"id",C::live_id(*this,removal.id())}});return;}
+                struct Add {std::uint64_t parent;std::size_t index;Json op;};std::vector<Add> adds;
+                for(const auto& removal:item.removals) {
+                    const auto root=removal.id(),parent=take(world::parent_entity(runtime_,root));const auto index=C::live_position(*this,root,parent);
+                    adds.push_back({parent==ObjectId{}?0:C::identity(*this,parent),index,{{"op","add"},
+                        {"parent",parent==ObjectId{}?Json(nullptr):Json(C::live_id(*this,parent))},{"index",index},{"graph",C::capture(*this,{&root,1},true,false,true).data}}});
+                }
+                std::ranges::sort(adds,{},[](const Add& add){return std::pair{add.parent,add.index};});
+                for(const auto& add:adds) push(add.op);
+            } else if constexpr(std::is_same_v<T,ComponentChange>) {
+                const auto owner=item.removal.owner,component=item.removal.id();
+                if(item.added==forward) {
+                    if(item.created_transform) push(set(owner,"space",C::live_space(*this,owner)));
+                    std::size_t index{};
+                    for(const auto& part:take(world::components(runtime_,owner))) {if(part.id()==component) break;++index;}
+                    push({{"op","attach"},{"entity",C::live_id(*this,owner)},{"index",index},{"graph",C::live_components(*this,owner,{&component,1})}});
+                } else {
+                    push({{"op","remove"},{"id",C::live_id(*this,component)}});
+                    if(item.created_transform) push(set(owner,"space",nullptr));
+                }
+            } else if constexpr(std::is_same_v<T,FieldChange>) {
+                if(const auto* after=std::get_if<world::Trs>(&item.after)) leaves(item.root.id(),std::get<world::Trs>(item.before),*after);
+                else push(C::live_properties(*this,item.root.id(),{&item.path,1}));
+            } else if constexpr(std::is_same_v<T,FieldGroupChange>) push(C::live_properties(*this,item.root.id(),item.paths));
+            else if constexpr(std::is_same_v<T,TransformChange>) {for(const auto& entry:item.entries) leaves(entry.root.id(),entry.before,entry.after);}
+            else if constexpr(std::is_same_v<T,NameChange>) push(set(item.root.id(),"name",utf8(name(item.root.id()))));
+            else if constexpr(std::is_same_v<T,BodyChange>) push(C::live_body(*this,item.root.id()));
+            else if constexpr(std::is_same_v<T,TransformPresenceChange>) push(set(item.root.id(),"space",C::live_space(*this,item.root.id())));
+            else if constexpr(std::is_same_v<T,SpaceReferenceChange>) {
+                const auto entity=item.root.id();
+                auto space=item.spatial?C::space_leaves(take(world::read_transform(runtime_,entity)),C::leaf_mask(item.before,item.after)):Json::object();
+                space["origin"]=C::live_origin(*this,entity);push(set(entity,"space",std::move(space)));
+            } else if constexpr(std::is_same_v<T,ReparentChange>) {
+                const auto root=item.root.id(),parent=take(world::parent_entity(runtime_,root));
+                const auto spatial=take(world::has_transform(runtime_,root));
+                push({{"op","move"},{"id",C::live_id(*this,root)},{"parent",parent==ObjectId{}?Json(nullptr):Json(C::live_id(*this,parent))},
+                    {"index",C::live_position(*this,root,parent)},{"space",spatial?C::space_leaves(take(world::read_transform(runtime_,root)),7):Json(nullptr)}});
+                for(const auto& entry:item.transforms) if(entry.root.id()!=root)
+                    push(set(entry.root.id(),"space",C::space_leaves(take(world::read_transform(runtime_,entry.root.id())),C::leaf_mask(entry.before,entry.after))));
+            } else if constexpr(std::is_same_v<T,MaterialBindingChange>) {
+                // Play resolves a binding only to a material it already has, so definitions go first.
+                const auto component=item.root.id();const auto bindings=take(world::read_material_bindings(runtime_,component));
+                Json definitions=Json::array(),table=Json::array();std::unordered_set<ObjectId> defined;
+                for(const auto& binding:bindings) {
+                    const auto resource=binding.resource.id();
+                    if(defined.insert(resource).second) definitions.push_back(C::material_definition(*this,resource,C::identity(*this,resource),true));
+                    table.push_back({{"slot",binding.slot},{"resource",C::live_id(*this,resource)},{"overridden",binding.overridden}});
+                }
+                if(!definitions.empty()) push({{"op","materials"},{"materials",std::move(definitions)}});
+                push(set(component,"materials",std::move(table)));
+            } else if constexpr(std::is_same_v<T,MaterialValueChange>) forward_material(item.root.id());
+            else static_assert(std::is_same_v<T,RetainedChange>,"Every change kind is forwarded to Play or explicitly not.");
+        },change);
+    } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
+}
+void Session::forward_material(ObjectId object) {
+    if(!forwarding_ || live_failure_) return;
+    try {
+        const auto state=take(material::read_material(runtime_,object));
+        if(!state.parent.registered() && !state.source.empty())
+            GraphCodec::live_push(*this,"resource "+state.source,{{"op","resource"},{"key",state.source},{"material",material_format::encode(take(material_asset(object)))}});
+        else {
+            const auto key=GraphCodec::identity(*this,object);
+            GraphCodec::live_push(*this,"material "+std::to_string(key),
+                {{"op","materials"},{"materials",Json::array({GraphCodec::material_definition(*this,object,key,true)})}});
+        }
+    } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
+}
+void Session::forward_edit() {
+    if(!forwarding_ || live_failure_) return;
+    using C=GraphCodec;
+    // One op per TRS leaf, so a later preview never drops a leaf an earlier op carried.
+    const auto space=[&](ObjectId entity,const world::Trs& before) {
+        const auto current=take(world::read_transform(runtime_,entity));
+        auto& sent=live_leaves_[entity];sent|=C::leaf_mask(before,current);
+        const auto id=C::live_id(*this,entity);
+        for(const unsigned leaf:{1u,2u,4u}) if(sent&leaf)
+            C::live_push(*this,"space "+id+" "+std::to_string(leaf),{{"op","set"},{"id",id},{"space",C::space_leaves(current,leaf)}});
+    };
+    const auto fields=[&](ObjectId object,std::span<const world::FieldPath> paths) {
+        std::string key;auto op=C::live_properties(*this,object,paths,&key);C::live_push(*this,std::move(key),op);
+    };
+    try {
+        if(material_edit_) forward_material(material_edit_->root.id());
+        if(group_) fields(group_->root.id(),group_->paths);
+        if(transform_) for(const auto& entry:transform_->entries) space(entry.root.id(),entry.before);
+        if(active_) {
+            if(const auto* before=std::get_if<world::Trs>(&active_->before)) space(active_->root.id(),*before);
+            else fields(active_->root.id(),{&active_->path,1});
+        }
+    } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
 }
 void Session::enter_play() {
     play_=true;

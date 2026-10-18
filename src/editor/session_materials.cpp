@@ -125,7 +125,7 @@ Result<void> Session::begin_material_edit(ObjectId object,std::uint64_t control)
 Result<void> Session::preview_material(std::uint64_t control,const material::State& state) {
     if(!material_edit_ || material_edit_->control!=control) return failure("No matching material edit.");
     if(state.source!=material_edit_->before.source) return failure("A material edit cannot replace its identity.");
-    auto result=material::update_material(runtime_,material_edit_->root.id(),state);if(result) ++revision_;return result;
+    auto result=material::update_material(runtime_,material_edit_->root.id(),state);if(result) {++revision_;forward_edit();}return result;
 }
 Result<void> Session::commit_material_edit(std::uint64_t control) {
     if(!material_edit_ || material_edit_->control!=control) return failure("No matching material edit.");
@@ -147,7 +147,7 @@ Result<void> Session::commit_material_edit(std::uint64_t control) {
 Result<void> Session::cancel_material_edit() {
     if(!material_edit_) return {};
     auto restored=material::update_material(runtime_,material_edit_->root.id(),material_edit_->before);
-    if(!restored) return restored;material_edit_.reset();++revision_;return {};
+    if(!restored) return restored;forward_edit();material_edit_.reset();++revision_;return {};
 }
 bool Session::material_editing(std::uint64_t control) const noexcept {return material_edit_ && material_edit_->control==control;}
 bool Session::is_material(ObjectId object) const {
@@ -176,7 +176,7 @@ Result<void> Session::material_undo(std::string_view key,bool redo) {
     auto& doc=at->second;
     if((!redo && !doc.cursor) || (redo && doc.cursor+1==doc.history.size())) return {};
     const auto next=redo?doc.cursor+1:doc.cursor-1;
-    auto result=material::update_material(runtime_,doc.root.id(),doc.history[next]);if(result) {doc.cursor=next;++revision_;}return result;
+    auto result=material::update_material(runtime_,doc.root.id(),doc.history[next]);if(result) {doc.cursor=next;++revision_;forward_material(doc.root.id());}return result;
 }
 Result<void> Session::save_material(Project& project,std::string_view key) {
     if(material_edit_) return failure("Finish the active material edit before saving.");

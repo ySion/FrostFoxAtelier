@@ -32,6 +32,7 @@ Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))
 }
 Session::~Session() { (void)world_.close(); }
 void Session::remember(Change change) {
+    forward_change(change,true);
     ++revision_;
     if (saved_cursor_ && *saved_cursor_>cursor_) saved_cursor_.reset();
     history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_), history_.end());
@@ -455,14 +456,14 @@ Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::Fi
 Result<void> Session::preview_group_edit(std::uint64_t control_session,std::span<const Scalar> values) {
     if(material_editing(control_session)) {
         auto written=write_group(material_edit_->root.id(),material_edit_->paths,values);
-        if(written) ++revision_;return written;
+        if(written) {++revision_;forward_edit();}return written;
     }
     if (!group_ || group_->control_session!=control_session) return invalid("No matching group edit.");
     if (values.size()!=group_->paths.size()) return invalid("A group edit needs one value per field.");
     auto entity=admit_property_edit(group_->root.id()); if (!entity) return std::unexpected(entity.error());
     if (*entity!=group_->entity) return invalid("The property's owning Entity changed.");
     if(auto written=write_group(group_->root.id(),group_->paths,values);!written) return written;
-    ++revision_;return {};
+    ++revision_;forward_edit();return {};
 }
 Result<void> Session::write_group(ObjectId object,std::span<const world::FieldPath> paths,std::span<const Scalar> values) {
     if(paths.empty() || values.size()!=paths.size()) return invalid("A group edit needs one value per field.");
@@ -540,7 +541,7 @@ Result<void> Session::preview_transform(std::uint64_t control_session, std::span
         if(value.position[axis]<parameters_[axis].minimum || value.position[axis]>parameters_[axis].maximum ||
             std::abs(value.scale[axis])>maximum_scale)
             return invalid("Transform value is outside the editor range.");
-    return write_transforms(*transform_,values);
+    auto written=write_transforms(*transform_,values);if(written) forward_edit();return written;
 }
 Result<void> Session::write_transforms(const TransformChange& change,std::span<const world::Trs> values) {
     if (values.size()!=change.entries.size()) return invalid("Transform preview does not match its targets.");
@@ -582,7 +583,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
         if(material_edit_->paths.size()!=1) return invalid("No single material field is being edited.");
         if(!detail::finite_scalar(value)) return invalid("Material fields must be finite.");
         auto changed=material::write_property(runtime_,material_edit_->root.id(),material_edit_->paths.front(),std::move(value));
-        if(changed) ++revision_;return changed;
+        if(changed) {++revision_;forward_edit();}return changed;
     }
     if (!active_ || active_->control_session!=control_session) return invalid("No matching field edit.");
     auto entity=admit_property_edit(active_->root.id());
@@ -611,6 +612,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
     if(!before) return std::unexpected(before.error());
     auto result=world_.write(active_->root.id(),active_->path,value);
     if(result && *before!=value) ++revision_;
+    if(result) forward_edit();
     return result;
 }
 Result<void> Session::commit_edit(std::uint64_t control_session) {
@@ -632,7 +634,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
             entry.after=*value; changed|=entry.after!=entry.before;
         }
         if (changed && !transform_->amend_creation) remember(std::move(*transform_));
-        transform_.reset(); return {};
+        transform_.reset(); live_leaves_.clear(); return {};
     }
     auto entity=admit_property_edit(active_->root.id());
     if (!entity) return std::unexpected(entity.error());
@@ -647,7 +649,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
         active_->after=*value;
     }
     if (active_->before!=active_->after) remember(std::move(*active_));
-    active_.reset(); return {};
+    active_.reset(); live_leaves_.clear(); return {};
 }
 Result<void> Session::apply_field(const FieldChange& change,bool forward) {
     auto entity=admit_property_edit(change.root.id());
@@ -661,7 +663,7 @@ Result<void> Session::cancel_edit() {
     if(auto cancelled=cancel_material_edit();!cancelled) return cancelled;
     if (group_) {
         auto restored=apply_group(*group_,false); if (!restored) return restored;
-        ++revision_; group_.reset();
+        ++revision_; forward_edit(); group_.reset();
     }
     if (transform_) {
         // Restore every target even if one fails; report the first failure.
@@ -674,7 +676,7 @@ Result<void> Session::cancel_edit() {
             if (!restored && first) first=restored;
         }
         if (!first) return first;
-        transform_.reset();
+        forward_edit(); transform_.reset(); live_leaves_.clear();
     }
     if (!active_) return {};
     bool changed{};
@@ -689,7 +691,7 @@ Result<void> Session::cancel_edit() {
     }
     auto restored=apply_field(*active_,false); if (!restored) return restored;
     if (changed) ++revision_;
-    active_.reset(); return {};
+    forward_edit(); active_.reset(); live_leaves_.clear(); return {};
 }
 Result<void> Session::reset_position(ObjectId component) {
     auto cancelled=cancel_edit();
@@ -851,7 +853,7 @@ Result<world::Commit> Session::undo() {
     if (!cancelled) return std::unexpected(cancelled.error());
     if (!cursor_) return world::Commit{};
     auto result = replay(history_[cursor_ - 1].change, false);
-    if (result) {restore(history_[cursor_ - 1].retained,false);--cursor_;}
+    if (result) {restore(history_[cursor_ - 1].retained,false);--cursor_;forward_change(history_[cursor_].change,false);}
     return result;
 }
 Result<world::Commit> Session::redo() {
@@ -860,7 +862,7 @@ Result<world::Commit> Session::redo() {
     if (!cancelled) return std::unexpected(cancelled.error());
     if (cursor_ == history_.size()) return world::Commit{};
     auto result = replay(history_[cursor_].change, true);
-    if (result) {restore(history_[cursor_].retained,true);++cursor_;}
+    if (result) {restore(history_[cursor_].retained,true);++cursor_;forward_change(history_[cursor_-1].change,true);}
     return result;
 }
 Result<world::Commit> Session::close() {

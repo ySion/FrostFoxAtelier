@@ -253,6 +253,8 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 
 批次格式错误，或对编辑文档调用时，整次调用返回错误。
 
+编辑器文档一侧由 `Session::set_live_forwarding(true)` 开始记录：每次提交、撤销和重做之后，按修改留下的当前值生成上表的 op，顺序与修改一致；新增或撤销删除的多个根按（父级，序号）升序生成 `add`，绑定新材质前先生成它的 `materials` 定义。预览和取消也生成 op，同一目标（Entity 的一个 TRS 叶、一组字段、一个材质或资源键）较新的预览替换队列中较早的一项；预览过的 TRS 叶在提交或取消时都会再发送一次，即使它回到了起始值。Body 设置作为整个 `properties.body` 记录发送。选择、相机和视口设置不转发。`take_live_ops()` 取走队列中的 op。某项修改无法描述时（例如没有持久来源的程序网格），记录停止，之后的调用一直失败，直到重新设置转发：这时 Play 已经与文档分歧。
+
 Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除外。`RunOptions::channel` 可以挂一个 `PlayChannel`（不持有），帧循环每帧在宿主边界调用一次它的 `service(Session&, Project&, Report)`：首帧在 start 之前，之后每次都在 update 之前。批次的取得、应用、回执都在 service 内完成，service 不阻塞也不抛出；`Report` 与 World 诊断走同一条输出（`describe_diagnostic` 逐行写入 Project Output）。独立运行的 `--run-project` 没有 channel，编辑器到 Play 的传输随 P1 接入。
 
 已知限制：`--report`（验收用）在停止后按文档身份序列化 Play 副本，而 Play 副本不给运行中生成的对象分配文档身份。停止时只要还有运行中生成的对象，`--report` 就显式失败，进程返回 1。P2 的运行时树改为按运行时句柄寻址时，与 `inspect` 一起解决。

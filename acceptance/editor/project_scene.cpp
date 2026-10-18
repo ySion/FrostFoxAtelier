@@ -769,6 +769,105 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
         take(world::read_transform(ragdolls->world().runtime(),ragdoll_root))==posed,"An authored move Play cannot follow was applied or reported as divergence.");
     changed(ragdolls->close());
 }
+// Editor document A forwards its own changes; applying each batch to its Play copy B keeps B equal to A.
+void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
+    acceptance_phase="Play change forwarding";
+    const auto material_key=take(project.create_material("Content/Materials/Forwarded.material"));
+    editor::Session a(prepare(evidence));auto& ra=a.world().runtime();
+    const auto entity_type=take(ra.find_type("game.Entity")),move_type=take(ra.find_type("game.Move")),spatial_type=take(ra.find_type("game.Spatial"));
+    const auto added=[&](math::Vector3 position) {
+        changed(a.add_entity(entity_type));const auto entity=a.selection().entity;take(a.set_transform(entity,{position,{},{1,1,1}}));return entity;
+    };
+    const auto first=added({1,2,3});changed(a.add_component(move_type));const auto move=member(a,move_type);
+    const auto second=added({0,0,4});
+    changed(a.create_static_mesh(take(project.mesh("builtin/cube")),{0,1,0}));const auto mesh=member(a,a.types().static_mesh_component);
+    take(a.assign_material(project,mesh,"slot/0",material_key));
+    const auto property=[&](ObjectId object,std::string_view name) {
+        const auto properties=take(a.properties(object));const auto at=std::ranges::find(properties,name,&editor::Property::name);
+        require(at!=properties.end(),"A forwarded property is missing.");return at->path;
+    };
+    const auto shared=take(world::read_material_bindings(ra,mesh)).front().resource.id();
+    const auto roughness=property(shared,"parameters.roughness"),mesh_roughness=property(mesh,"material.roughness");
+    const auto speed=field(a,move_type,"speed"),mass=field(a,move_type,"mass");
+
+    auto play_project=take(editor::Project::open(project.root()));
+    auto b=take(editor::Session::deserialize(take(a.serialize()),play_project,prepare(evidence)));b->enter_play();
+    auto& rb=b->world().runtime();
+    const auto in_b=[&](ObjectId object){return take(b->local_object(*a.document_identity(object)));};
+    require(take(a.take_live_ops()).empty(),"A document recorded Play changes before forwarding started.");
+    a.set_live_forwarding(true);
+    const auto scene=[](const editor::Session& session){auto value=Json::parse(take(session.serialize()));value.erase("next_id");return value;};
+    const auto sync=[&](const std::string& step,bool compare=true) {
+        Json ops=Json::array();for(const auto& op:take(a.take_live_ops())) ops.push_back(Json::parse(op));
+        const auto issues=take(b->apply_live(Json{{"ops",ops}}.dump(),play_project));
+        if(!issues.empty()) throw std::runtime_error(step+": "+issues.front().message);
+        if(compare && scene(a)!=scene(*b)) throw std::runtime_error(step+": the Play copy differs from the document.");
+        return ops.size();
+    };
+    const auto each=[&](const std::string& step,auto&& change) {
+        change();if(!sync(step)) throw std::runtime_error(step+": the change sent nothing.");
+        changed(a.undo());sync(step+" undo");changed(a.redo());sync(step+" redo");
+    };
+    auto lighting=a.world().lighting_settings();lighting.exposure_ev=1.5f;
+    each("World settings",[&]{take(a.set_world_lighting(lighting));});
+    each("Name",[&]{take(a.rename(first,L"Runner"));});
+    each("Field",[&]{edit(a,move,speed,Scalar{5.f},201);});
+    each("Field group",[&]{
+        take(a.begin_group_edit(move,std::array{speed,mass},202));take(a.preview_group_edit(202,std::array{Scalar{6.f},Scalar{4.5}}));take(a.commit_edit(202));
+    });
+    each("Transform field",[&]{const auto& x=a.types().position_fields[0];edit(a,first,world::FieldPath{x.begin(),x.end()},Scalar{7.f},203);});
+    each("Transform",[&]{
+        take(a.begin_transform(std::array{first,second},204));
+        take(a.preview_transform(204,std::array{world::Trs{{1,1,1},{},{2,2,2}},world::Trs{{0,0,5},{},{1,1,1}}}));take(a.commit_edit(204));
+    });
+    each("Transform removal",[&]{take(a.remove_transform(second));});
+    each("Transform addition",[&]{take(a.set_transform(second,{{0,3,0},{},{1,1,1}}));});
+    each("Space reference",[&]{changed(a.set_space_reference(second,ObjectId{}));});
+    each("Reparent",[&]{changed(a.reparent(second,first));});
+    ObjectId plain;each("Entity",[&]{changed(a.add_entity(entity_type));plain=a.selection().entity;});
+    each("Duplicate",[&]{take(a.select(first));changed(a.duplicate_selected());});
+    each("Deletion",[&]{take(a.select(second));changed(a.erase_selected());});
+    each("Component",[&]{take(a.select(plain));changed(a.add_component(spatial_type));});
+    const auto body_type=take(ra.find_type("world.CollisionComponent"));ObjectId body;
+    each("Component with a Transform",[&]{take(a.select(plain));changed(a.add_component(body_type));body=member(a,body_type);});
+    physics::BodySettings settings;settings.shape=physics::ShapeKind::sphere;settings.radius=.75f;
+    each("Body",[&]{take(a.configure_body(body,settings));});
+    each("Mesh material field",[&]{take(a.set_property(mesh,mesh_roughness,Scalar{.3f},205));});
+    each("Material override",[&]{take(a.set_material_override(mesh,"slot/0",roughness,true));});
+    const auto instance=take(world::read_material_bindings(ra,mesh)).front().resource.id();
+    require(instance!=shared,"The override did not create a material instance.");
+    each("Material instance",[&]{take(a.set_property(instance,roughness,Scalar{.8f},206));});
+    const auto shared_roughness=[&](editor::Session& session) {
+        return take(material::read_material(session.world().runtime(),session.loaded_material(material_key))).description.parameters.roughness;
+    };
+    take(a.set_property(shared,roughness,Scalar{.6f},207));sync("Material asset");
+    require(shared_roughness(*b)==.6f,"A material asset edit did not reach Play.");
+    take(a.material_undo(material_key));sync("Material asset undo");
+    require(shared_roughness(*b)==shared_roughness(a) && shared_roughness(a)!=.6f,"A material asset undo did not reach Play.");
+
+    acceptance_phase="Play preview forwarding";
+    const auto pose=[&](const editor::Session& session,ObjectId entity){return take(world::read_transform(session.world().runtime(),entity));};
+    // A leaf a preview returns to its start is still sent: Play saw the earlier preview.
+    take(a.begin_transform(std::array{first},208));const auto start=pose(a,first);
+    auto stretched=start;stretched.scale={5,5,5};take(a.preview_transform(208,std::array{stretched}));sync("Scale preview",false);
+    auto moved=start;moved.position.x+=3;take(a.preview_transform(208,std::array{moved}));
+    moved.position.x+=1;take(a.preview_transform(208,std::array{moved}));sync("Move preview",false);
+    require(pose(*b,in_b(first))==pose(a,first),"A preview that returned a leaf to its start left Play at the earlier preview.");
+    moved.position.y+=1;take(a.preview_transform(208,std::array{moved}));moved.position.y+=1;take(a.preview_transform(208,std::array{moved}));
+    require(take(a.take_live_ops()).size()==2,"Previews of one leaf did not keep only the latest value.");
+    take(a.commit_edit(208));sync("Preview commit");
+    take(a.begin_edit(move,speed,209));take(a.preview_edit(209,Scalar{9.f}));sync("Field preview",false);
+    require(std::get<float>(take(rb.read(in_b(move),field(*b,take(rb.find_type("game.Move")),"speed"))))==9,"A field preview did not reach Play.");
+    take(a.cancel_edit());sync("Field cancel");
+    each("Component removal",[&]{take(a.select(first));changed(a.remove_component(move));});
+
+    acceptance_phase="Play forwarding failure";
+    auto procedural=take(project.mesh("builtin/cube"));procedural.key.clear();
+    changed(a.create_static_mesh(procedural));
+    require(!a.take_live_ops() && !a.take_live_ops(),"A change Play cannot follow did not stop forwarding.");
+    a.set_live_forwarding(false);require(take(a.take_live_ops()).empty(),"Stopping forwarding kept its failure.");
+    std::puts("Play change forwarding: PASS (every change kind, undo and redo, previews, cancel, material assets, failure)");
+}
 void run() {
     verify_stop_reentry();
     acceptance_phase="Source document fields and history";
@@ -813,6 +912,7 @@ void run() {
     verify_retained_data(project,saved_json,evidence);
     verify_play_changes(project,evidence);
     verify_string_properties(project,evidence);
+    verify_live_forwarding(project,evidence);
     acceptance_phase="Source play and stop lifecycle";
     const auto history=document.undo_count();
     for (int pass=0;pass<3;++pass) {

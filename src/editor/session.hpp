@@ -170,6 +170,14 @@ public:
     // references leaving the graph are written as document identities.
     Result<std::string> serialize_live_subtree(ObjectId root) const;
     Result<std::string> serialize_live_components(ObjectId entity,std::span<const ObjectId> components) const;
+    // While forwarding, each applied change, undo and redo of this document is also
+    // recorded as Play change ops with the values it left. Previews and cancels are
+    // recorded too; a later preview of the same target replaces the earlier op.
+    void set_live_forwarding(bool);
+    // The ops recorded since the last call, in order, each one JSON text. A change
+    // that cannot be described stops recording, and every later call fails until
+    // forwarding is set again: Play no longer follows the document.
+    Result<std::vector<std::string>> take_live_ops();
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
     Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
@@ -290,6 +298,13 @@ private:
     // Play copy: document identity to object, including objects the game destroyed.
     std::unordered_map<std::uint64_t,ObjectId> live_objects_;
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
+    // Document side of Play: pending ops; a keyed op is a preview its next preview replaces.
+    struct LiveOp {std::string key,text;};
+    bool forwarding_{};
+    std::vector<LiveOp> live_ops_;
+    std::optional<Error> live_failure_;
+    // TRS leaves (1 position, 2 rotation, 4 scale) the active edit's previews sent, per Entity.
+    std::unordered_map<ObjectId,unsigned> live_leaves_;
     struct GraphCodec;
     std::uint64_t next_name_{1};
     struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};
@@ -311,6 +326,12 @@ private:
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
     void forget_entity(ObjectId) noexcept;
+    // Record the values a change left in the World (forward: after it is applied or redone).
+    void forward_change(const Change&,bool forward);
+    // Record the current values of the active edit's targets as replaceable ops.
+    void forward_edit();
+    // A material asset as a resource op, or a scene material as its definition.
+    void forward_material(ObjectId);
     void remember(Change);
     // Releases retained data at the paths a committed change wrote.
     std::vector<RetainedSwap> release(const Change&);
