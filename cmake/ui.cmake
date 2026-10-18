@@ -22,7 +22,7 @@ function(atelier_add_ui)
     add_executable(atelier_ui_acceptance "${_root}/acceptance/ui/main.cpp")
     target_link_libraries(atelier_ui_acceptance PRIVATE atelier_ui)
     atelier_target(atelier_ui_acceptance)
-    add_custom_target(ui_acceptance
+    atelier_headless_acceptance(ui_acceptance
         COMMAND $<TARGET_FILE:atelier_ui_acceptance>
-        DEPENDS atelier_ui_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_ui_acceptance)
 endfunction()

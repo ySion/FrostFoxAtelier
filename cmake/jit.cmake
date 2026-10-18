@@ -104,9 +104,9 @@ function(atelier_add_source)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
-    add_custom_target(source_acceptance
+    atelier_headless_acceptance(source_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal>
-        DEPENDS atelier_source_minimal USES_TERMINAL VERBATIM)
+        DEPENDS atelier_source_minimal)
 
     # Standalone performance sweeps; the session acceptance records only its bounded observations.
     add_executable(atelier_source_measure EXCLUDE_FROM_ALL acceptance/source/measure.cpp)
@@ -132,9 +132,8 @@ function(atelier_add_source)
         target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
         target_link_libraries(atelier_jit_acceptance PRIVATE
             atelier_source atelier_source_backend atelier_jit_probe atelier_jit_native_client)
-        add_custom_target(jit_acceptance
-            COMMAND $<TARGET_FILE:atelier_source_minimal>
+        atelier_headless_acceptance(jit_acceptance
             COMMAND $<TARGET_FILE:atelier_jit_acceptance>
-            DEPENDS atelier_source_minimal atelier_jit_acceptance USES_TERMINAL VERBATIM)
+            DEPENDS source_acceptance atelier_jit_acceptance)
     endif()
 endfunction()

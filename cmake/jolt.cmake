@@ -48,7 +48,7 @@ function(atelier_add_jolt)
     add_executable(atelier_physics_acceptance "${PROJECT_SOURCE_DIR}/acceptance/physics/main.cpp")
     atelier_target(atelier_physics_acceptance)
     target_link_libraries(atelier_physics_acceptance PRIVATE atelier_physics)
-    add_custom_target(physics_acceptance
+    atelier_headless_acceptance(physics_acceptance
         COMMAND $<TARGET_FILE:atelier_physics_acceptance>
-        DEPENDS atelier_physics_acceptance USES_TERMINAL VERBATIM)
+        DEPENDS atelier_physics_acceptance)
 endfunction()

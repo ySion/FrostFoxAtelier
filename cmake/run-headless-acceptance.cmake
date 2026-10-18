@@ -1,0 +1,23 @@
+file(MAKE_DIRECTORY "${_directory}/temp")
+set(ENV{TEMP} "${_directory}/temp")
+set(ENV{TMP} "${_directory}/temp")
+file(WRITE "${_directory}/output.log" "")
+file(REMOVE "${_directory}/result.csv")
+string(TIMESTAMP _started "%s" UTC)
+
+function(atelier_finish result)
+    string(TIMESTAMP _ended "%s" UTC)
+    math(EXPR _seconds "${_ended} - ${_started}")
+    file(WRITE "${_directory}/result.csv" "Result,Seconds\n${result},${_seconds}\n")
+endfunction()
+
+function(atelier_run)
+    execute_process(COMMAND ${ARGV} RESULT_VARIABLE _result
+        OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+    file(APPEND "${_directory}/output.log" "${_out}${_err}\nexit=${_result}\n")
+    message("${_out}${_err}")
+    if(NOT "${_result}" STREQUAL "0")
+        atelier_finish(FAIL)
+        message(FATAL_ERROR "Headless acceptance failed: ${_result}; see ${_directory}/output.log")
+    endif()
+endfunction()

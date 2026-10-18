@@ -83,11 +83,11 @@ atelier_reflect(atelier_reflection_acceptance SOURCE acceptance/reflection/main.
 atelier_reflect(atelier_source_minimal SOURCE acceptance/source/native_values.cpp
     BASE_DIR "${PROJECT_SOURCE_DIR}/acceptance" HEADERS acceptance/source/native_values.hpp)
 find_program(_reflection_powershell NAMES pwsh powershell REQUIRED)
-add_custom_target(reflection_acceptance
+atelier_headless_acceptance(reflection_acceptance
     COMMAND $<TARGET_FILE:atelier_reflection_acceptance>
     COMMAND "${_reflection_powershell}" -NoProfile -ExecutionPolicy Bypass
         -File "${PROJECT_SOURCE_DIR}/acceptance/reflection/cli.ps1"
         -Generator $<TARGET_FILE:atelier_reflect> -BuildDirectory "${CMAKE_BINARY_DIR}"
         -Source "${PROJECT_SOURCE_DIR}/acceptance/reflection/main.cpp"
         -OutputDirectory "${CMAKE_BINARY_DIR}/reflection-cli-evidence"
-    DEPENDS atelier_reflection_acceptance atelier_reflect USES_TERMINAL VERBATIM)
+    DEPENDS atelier_reflection_acceptance atelier_reflect)

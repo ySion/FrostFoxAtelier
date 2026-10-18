@@ -6,9 +6,9 @@ target_include_directories(atelier_foundation_acceptance PRIVATE "${PROJECT_SOUR
 atelier_reflect(atelier_foundation_acceptance
     SOURCE acceptance/foundation/main.cpp BASE_DIR acceptance
     HEADERS acceptance/foundation/fixture.hpp)
-add_custom_target(foundation_acceptance
+atelier_headless_acceptance(foundation_acceptance
     COMMAND $<TARGET_FILE:atelier_foundation_acceptance>
-    DEPENDS atelier_foundation_acceptance USES_TERMINAL VERBATIM)
+    DEPENDS atelier_foundation_acceptance)
 
 # Explicit performance sampling; the ordinary acceptance target remains focused
 # on the shared value/lifetime consumer rather than timing-dependent thresholds.
