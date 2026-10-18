@@ -251,15 +251,33 @@ void lit_cluster_sun_cs(uint3 dispatch:SV_DispatchThreadID) {
     lit_cluster_store(receiver,diffuse,specular);
 }
 
+// Radiance is deterministic; only a finite source's soft visibility is random,
+// and each such ray records its outcome for the resolve classification.
+bool lit_cluster_compact(LitClusterReceiver receiver,LitLightSource light,uint source,
+                         inout uint visibility,inout bool stochastic,out LitLightEvaluation value) {
+    value=lit_evaluate_compact_light(light,receiver.surface);
+    if(lit_light_target(value)<=0)return false;
+    if(!receiver.shadows||(light.meta.y&2u)==0)return true;
+    uint seed=lit_cluster_source_seed(receiver,source);
+    bool visible=lit_light_sample_visible(light,receiver.surface,
+        lit_light_shadow_endpoint(light,receiver.surface,value,lit_light_random_uv(seed)),true);
+    if(light.direction_radius.w>0){stochastic=true;visibility|=lit_direct_visibility_bit(source,visible);}
+    return visible;
+}
 // Both callers specialize this constant at compile time. Neither path reaches
-// PCSS; the uncached A entry also has no dependency on shadow metadata.
+// PCSS; the uncached A entry also has no dependency on shadow metadata. A
+// shades points outside four radii and suns as compact sources; nearer or
+// rectangle endpoints keep source RIS and force reconstruction.
 void lit_cluster_rt(uint2 dispatch,bool residual) {
+    uint2 pixel;
+    if(!residual&&lit_screen_pixel(dispatch,pixel))lit_direct_visibility_output[pixel]=0;
     LitClusterReceiver receiver;if(!lit_cluster_receiver(dispatch,receiver))return;
     float3 diffuse=0,specular=0;
     // Classify support before sampling or visibility rejection: a random zero
     // observation must never disable the estimator's reconstruction. Cached
     // shadow batches conservatively retain reconstruction in this candidate.
     bool stochastic=residual || lit_source_counts.z!=0;
+    uint visibility=stochastic?LIT_DIRECT_FORCED:0;
     [loop] for(uint i=0;i<receiver.count;++i) {
         uint source=lit_cluster_source_at(receiver,i);
         if(residual&&!lit_shadow_batch_contains(source))continue;
@@ -268,7 +286,15 @@ void lit_cluster_rt(uint2 dispatch,bool residual) {
         bool endpoint=light.meta.x==0&&lit_cluster_point_endpoint(light,receiver.surface,receiver.shadows);
         if(residual&&light.meta.x==0&&!endpoint)continue;
         if(!lit_cluster_intersects(light,receiver.surface.position,receiver.surface.position))continue;
-        stochastic=stochastic || light.meta.x==1 || light.direction_radius.w>0;
+        float3 offset=receiver.surface.position-light.origin_range.xyz;
+        float radius=light.direction_radius.w;
+        if(!residual&&light.meta.x==0&&16*radius*radius<=dot(offset,offset)) {
+            LitLightEvaluation value;
+            if(lit_cluster_compact(receiver,light,source,visibility,stochastic,value)){diffuse+=value.diffuse;specular+=value.specular;}
+            continue;
+        }
+        stochastic=stochastic || light.meta.x==1 || radius>0;
+        if(light.meta.x==1||radius>0)visibility|=LIT_DIRECT_FORCED;
         uint seed=lit_cluster_source_seed(receiver,source);
         LitLightEvaluation value;float weight=lit_cluster_analytic_sample(light,receiver.surface,seed,value);
         if(weight<=0)continue;
@@ -287,13 +313,10 @@ void lit_cluster_rt(uint2 dispatch,bool residual) {
         [loop] for(uint i=0;i<lit_source_counts.y;++i) {
             uint source=lit_source_counts.x+i;
             LitLightSource light=lit_sources[source];light.meta.x=2;
-            stochastic=stochastic || light.direction_radius.w>0;
-            uint seed=lit_cluster_source_seed(receiver,source);
-            float2 uv=light.direction_radius.w>0?lit_light_random_uv(seed):0;
-            LitLightEvaluation value=lit_evaluate_light_source(light,receiver.surface,uv,true);
-            if(lit_light_target(value)<=0||!lit_light_sample_visible(light,receiver.surface,value,receiver.shadows))continue;
-            diffuse+=value.diffuse;specular+=value.specular;
+            LitLightEvaluation value;
+            if(lit_cluster_compact(receiver,light,source,visibility,stochastic,value)){diffuse+=value.diffuse;specular+=value.specular;}
         }
+        lit_direct_visibility_output[receiver.pixel]=visibility;
     }
     lit_cluster_store(receiver,diffuse,specular,stochastic);
 }

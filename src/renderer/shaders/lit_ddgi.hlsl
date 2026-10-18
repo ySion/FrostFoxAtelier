@@ -423,36 +423,125 @@ void DDGIInspect() {
 RWStructuredBuffer<uint2> lit_probe_visibility_cache;
 uint lit_probe_visibility_cache_mode; // 0 disabled (jitter), 1 populate, 2 exact reuse.
 Texture2D<float> lit_history_depth;
+// Receivers gather once per 2x2 block of the dispatch rectangle, at its first
+// surface pixel in a fixed order; the LOS rays and probe fetches dominate the
+// cost while the irradiance is low frequency. Alpha is that sub-pixel index
+// plus one, or zero for a block without receivers.
+RWTexture2D<float4> lit_indirect_half_output;
+Texture2D<float4> lit_indirect_half;
+// Element 0 counts listed receivers; packed pixels follow. Arguments are the
+// indirect dispatch for DDGIExact, which reads the count from the list itself.
+RWStructuredBuffer<uint> lit_probe_fallback_output;
+RWStructuredBuffer<uint> lit_probe_fallback_arguments;
+StructuredBuffer<uint> lit_probe_fallback;
+uint lit_probe_fallback_capacity;
+static const uint2 ddgi_block_order[4]={uint2(0,0),uint2(1,1),uint2(1,0),uint2(0,1)};
+bool ddgi_receiver(uint2 pixel) {
+    return all(pixel<lit_screen_dispatch.zw) && lit_inside(pixel) && !lit_is_background_depth(lit_depth.Load(int3(pixel,0)));
+}
+// Compose cannot consume diffuse irradiance at exactly zero material
+// response. Local GI retains its full input; debug gathers separately.
+bool ddgi_diffuse_consumer(uint2 pixel) {
+    if ((lit_effect_flags & 64) != 0) return true;
+    float4 material = lit_base_metallic.Load(int3(pixel, 0));
+    return any(material.rgb * (1 - material.w) != 0);
+}
 [numthreads(8, 8, 1)]
 void DDGIResolve(uint3 dispatch_id : SV_DispatchThreadID) {
-    uint2 pixel;
-    if (!lit_screen_pixel(dispatch_id.xy, pixel)) return;
-    uint index=pixel.x+pixel.y*lit_size_frame.x;
+    uint2 block=dispatch_id.xy,origin=lit_screen_dispatch.xy+block*2;
+    if(any(origin>=lit_screen_dispatch.zw))return;
+    uint index=block.x+block.y*((lit_size_frame.x+1)/2);
+    // The representative depends on geometry only, which the cache validates;
+    // material decides solely whether any receiver of the block consumes it.
+    uint chosen=0;uint2 pixel=origin;bool consumed=false;
+    [unroll] for(uint i=0;i<4;++i){
+        uint2 q=origin+ddgi_block_order[i];
+        if(!ddgi_receiver(q))continue;
+        if(chosen==0){chosen=i+1;pixel=q;}
+        consumed=consumed||ddgi_diffuse_consumer(q);
+    }
     DDGIVisibilityCache cache=(DDGIVisibilityCache)0;
     cache.enabled=lit_probe_visibility_cache_mode!=0;
     float depth = lit_depth.Load(int3(pixel, 0));
-    if(lit_probe_visibility_cache_mode==2 &&
+    // Reuse is allowed only for an unchanged view and scene, where the block
+    // keeps its representative; the receiver itself is still compared exactly.
+    if(chosen!=0 && lit_probe_visibility_cache_mode==2 &&
        asuint(depth)==asuint(lit_history_depth.Load(int3(pixel,0))) &&
        all(lit_surface_id.Load(int3(pixel,0))==lit_history_surface_id.Load(int3(pixel,0))) &&
        all(lit_geometry_normal.Load(int3(pixel,0))==lit_history_geometry_normal.Load(int3(pixel,0))))
         cache.previous=lit_probe_visibility_cache[index];
-    // Every dispatched pixel owns its record, including early returns. There
+    // Every dispatched block owns its record, including early returns. There
     // is no reprojection, neighbor read, or radiance stored in this cache.
     if(cache.enabled)lit_probe_visibility_cache[index]=0;
-    if (!lit_inside(pixel) || lit_is_background_depth(depth)) { lit_indirect[pixel] = 0; return; }
-    if ((lit_effect_flags & 64) == 0) {
-        float4 material = lit_base_metallic.Load(int3(pixel, 0));
-        // Compose cannot consume diffuse irradiance at exactly zero material
-        // response. Local GI retains its full input; debug gathers separately.
-        if (all(material.rgb * (1 - material.w) == 0)) {
-            lit_indirect[pixel] = float4(0, 0, 0, 1);
-            return;
-        }
-    }
+    if(chosen==0||!consumed){lit_indirect_half_output[block]=0;return;}
     float2 uv = (float2(pixel) + .5) / lit_size_frame.xy;
     float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(pixel, 0)).xyz);
     float3 position = lit_world(uv, depth);
     DDGIResult gathered=ddgi_gather(position,normal,lit_geometry_normal_at(pixel),true,true,false,cache);
-    lit_indirect[pixel] = float4(gathered.irradiance, 1);
+    lit_indirect_half_output[block] = float4(gathered.irradiance, chosen);
     if(cache.enabled)lit_probe_visibility_cache[index]=cache.current;
+}
+// Joint bilateral upsampling over the four nearest block representatives. A
+// receiver without a coplanar, similarly oriented representative (thin or
+// isolated geometry) gathers exactly, so no surface borrows another's probes.
+[numthreads(8, 8, 1)]
+void DDGIUpsample(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint2 pixel;
+    if (!lit_screen_pixel(dispatch_id.xy, pixel)) return;
+    float depth = lit_depth.Load(int3(pixel, 0));
+    if (!lit_inside(pixel) || lit_is_background_depth(depth)) { lit_indirect[pixel] = 0; return; }
+    if (!ddgi_diffuse_consumer(pixel)) { lit_indirect[pixel] = float4(0, 0, 0, 1); return; }
+    float2 uv = (float2(pixel) + .5) / lit_size_frame.xy;
+    float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(pixel, 0)).xyz);
+    float3 geometric = lit_geometry_normal_at(pixel);
+    float3 position = lit_world(uv, depth);
+    float pixel_size = max(1e-6, length(lit_world(uv + float2(1.0 / lit_size_frame.x, 0), depth) - position));
+    uint2 local = pixel - lit_screen_dispatch.xy, block = local / 2;
+    int2 away = int2(local % 2) * 2 - 1;
+    uint2 blocks = (lit_screen_dispatch.zw - lit_screen_dispatch.xy + 1) / 2;
+    float3 sum = 0; float weight_sum = 0;
+    [unroll] for (uint i = 0; i < 4; ++i) {
+        int2 candidate = int2(block) + int2(i & 1, i >> 1) * away;
+        if (any(candidate < 0) || any(candidate >= int2(blocks))) continue;
+        float4 sample = lit_indirect_half.Load(int3(candidate, 0));
+        if (sample.a < .5) continue;
+        uint2 q = lit_screen_dispatch.xy + uint2(candidate) * 2 + ddgi_block_order[uint(sample.a) - 1];
+        float q_depth = lit_depth.Load(int3(q, 0));
+        float3 q_position = lit_world((float2(q) + .5) / lit_size_frame.xy, q_depth);
+        float plane = abs(dot(q_position - position, geometric));
+        float facing = dot(geometric, lit_geometry_normal_at(q));
+        if (plane > pixel_size * 2 + 1e-4 || facing < .9) continue;
+        float2 offset = float2(int2(q) - int2(pixel));
+        float similarity = pow(saturate(dot(normal, lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz))), 8);
+        float weight = exp(-.25 * dot(offset, offset)) * (1 - .5 * plane / (pixel_size * 2 + 1e-4)) * max(similarity, 1e-3);
+        sum += max(sample.rgb, 0) * weight; weight_sum += weight;
+    }
+    bool fallback = weight_sum <= 1e-4;
+    if (!fallback) lit_indirect[pixel] = float4(sum / weight_sum, 1);
+    // Exact gathers are sparse and edge-aligned; inline they stall nearly every
+    // wave. Listing them runs each in a coherent wave of DDGIExact.
+    uint lanes = WaveActiveCountBits(fallback), prefix = WavePrefixCountBits(fallback), base = 0;
+    if (lanes != 0) {
+        if (WaveIsFirstLane()) {
+            InterlockedAdd(lit_probe_fallback_output[0], lanes, base);
+            InterlockedMax(lit_probe_fallback_arguments[0], (min(base + lanes, lit_probe_fallback_capacity) + 63) / 64);
+            lit_probe_fallback_arguments[1] = 1; lit_probe_fallback_arguments[2] = 1;
+        }
+        base = WaveReadLaneFirst(base);
+    }
+    if (!fallback) return;
+    if (base + prefix < lit_probe_fallback_capacity) { lit_probe_fallback_output[1 + base + prefix] = pixel.x | (pixel.y << 16); return; }
+    DDGIResult gathered=ddgi_gather(position,normal,geometric,true,true);
+    lit_indirect[pixel] = float4(gathered.irradiance, 1);
+}
+[numthreads(64, 1, 1)]
+void DDGIExact(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x >= min(lit_probe_fallback[0], lit_probe_fallback_capacity)) return;
+    uint packed = lit_probe_fallback[1 + dispatch_id.x];
+    uint2 pixel = uint2(packed & 0xffffu, packed >> 16);
+    float depth = lit_depth.Load(int3(pixel, 0));
+    float3 position = lit_world((float2(pixel) + .5) / lit_size_frame.xy, depth);
+    float3 normal = lit_safe_normal(lit_normal_roughness.Load(int3(pixel, 0)).xyz);
+    DDGIResult gathered=ddgi_gather(position,normal,lit_geometry_normal_at(pixel),true,true);
+    lit_indirect[pixel] = float4(gathered.irradiance, 1);
 }

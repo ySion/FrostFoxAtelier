@@ -92,6 +92,9 @@ struct EditorAcceptanceAccess {
     static auto camera_mode(const Application& app) {return app.camera_.view();}
     static auto camera_eye(const Application& app) {return app.camera_.eye();}
     static auto camera_state(const Application& app) {return app.camera_.state();}
+    static bool move_camera(Application& app,const editor::CameraState& state) {
+        auto camera=app.camera_;return camera.set_state(state) && app.set_camera(camera,false).has_value();
+    }
     static const auto& accepted_view(const Application& app) {return app.accepted_view_;}
     static bool gpu_validation(const Application& app) {return app.gpu_validation_;}
     static bool vsync(const Application& app) {return app.vsync_;}
