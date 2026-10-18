@@ -10,6 +10,7 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
     const auto owner=app.window();
     const auto thread=GetWindowThreadProcessId(owner,nullptr);
     std::ofstream report(output/"dialogs.txt");
+    const ExpectedNativeDialogs expected;
     for(const auto command:{editor::Command::about,editor::Command::open_source,editor::Command::open_project,editor::Command::example_sponza}) {
         if(command==editor::Command::example_sponza) {
             require(bool(Access::command(app,editor::Command::create_entity)),"Unsaved dialog scene creation failed.");tick(app);

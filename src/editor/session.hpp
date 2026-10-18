@@ -63,6 +63,9 @@ public:
     bool is_selected(ObjectId entity) const noexcept { return std::ranges::find(selected_entities_,entity)!=selected_entities_.end(); }
     std::wstring_view name(ObjectId) const noexcept;
     Result<void> set_world_lighting(const rendering::SceneLightingSettings&);
+    // Load initialization of a freshly opened document, before any history: writes
+    // World settings without an undo entry or a modified mark. The next save writes them.
+    Result<void> initialize_world_lighting(const rendering::SceneLightingSettings&);
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);

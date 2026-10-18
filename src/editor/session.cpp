@@ -77,6 +77,11 @@ Result<void> Session::set_world_lighting(const rendering::SceneLightingSettings&
     if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
     remember(LightingChange{before,settings});return {};
 }
+Result<void> Session::initialize_world_lighting(const rendering::SceneLightingSettings& settings) {
+    if(undo_count() || redo_count() || editing()) return invalid("World settings initialize only a freshly opened document.");
+    if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
+    ++revision_;return {};
+}
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     if (auto valid=validate_name(name);!valid) return valid;
     if (auto ready = admit_entity_edit(entity); !ready) return ready;
