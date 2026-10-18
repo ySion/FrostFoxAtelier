@@ -553,13 +553,45 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     require(take(world::parent_entity(rb,in_b(runner)))==b_mover && take(world::read_transform(rb,in_b(runner)))==take(world::read_transform(ra,runner)),
         "A Play reparent did not keep the editor's parent and local transform.");
 
+    // An index is the final position in the destination list (roots for a null parent); Play clamps one past its own list.
+    const auto roots=[&]{
+        std::vector<ObjectId> result;
+        for(const auto& item:take(b->world().members())) if(take(world::parent_entity(rb,item.id()))==ObjectId{}) result.push_back(item.id());
+        return result;
+    };
+    const auto children_of=[&](ObjectId parent){std::vector<ObjectId> result;for(const auto& child:take(world::children(rb,parent))) result.push_back(child.id());return result;};
+    const auto placed=[&](Json parent,Json index){
+        const auto entity=added({});
+        applied({{{"op","add"},{"parent",parent},{"index",index},{"graph",Json::parse(take(a.serialize_live_subtree(entity)))}}});
+        return entity;
+    };
+    const auto b_doomed=in_b(doomed),b_runner=in_b(runner);
+    // Member position 1 is the mover's child, so a root ordinal read as a member position fails here.
+    const auto second=placed(nullptr,1),last=placed(nullptr,99),first_child=placed(id(mover),0),last_child=placed(id(mover),99);
+    require(roots()==std::vector{b_mover,in_b(second),b_doomed,b_falling,in_b(last)} && children_of(b_mover)==std::vector{in_b(first_child),b_runner,in_b(last_child)},
+        "An add index is not the final position in its destination list, or did not clamp.");
+    applied({{{"op","move"},{"id",id(last)},{"parent",nullptr},{"index",0},{"space",nullptr}},
+        {{"op","move"},{"id",id(second)},{"parent",nullptr},{"index",99},{"space",nullptr}},
+        {{"op","move"},{"id",id(first_child)},{"parent",id(mover)},{"index",99},{"space",nullptr}}});
+    require(roots()==std::vector{in_b(last),b_mover,b_doomed,b_falling,in_b(second)} && children_of(b_mover)==std::vector{b_runner,in_b(last_child),in_b(first_child)},
+        "A move index is not the final position in its destination list, or did not clamp.");
+
     // A mesh imported after Play opened its own Project still resolves.
     const auto obj=project.root().parent_path()/"Imported.obj";
     {std::ofstream file(obj);file<<"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";}
     changed(a.create_static_mesh(take(project.mesh(take(project.import_mesh(obj))))));const auto imported=a.selection().entity;
+    physics::BodySettings triangle;triangle.shape=physics::ShapeKind::triangle_mesh;
+    take(a.configure_body(member(a,take(ra.find_type("world.StaticMeshComponent"))),triangle));
     applied({{{"op","add"},{"parent",nullptr},{"index",nullptr},{"graph",Json::parse(take(a.serialize_live_subtree(imported)))}}});
     require(std::ranges::any_of(take(b->world().render_items()),[&](const auto& item){return item.entity==in_b(imported);}),
         "A mesh imported during Play did not resolve in the Play copy.");
+    // A rescale outgrows the shape cooked at load; physics cooks the new scale once instead of dropping the body.
+    auto& simulation=*b->physics_scene();
+    applied({{{"op","set"},{"id",id(imported)},{"space",{{"position",{20,0,0}},{"rotation",{0,0,0,1}},{"scale",{2,2,2}}}}}});
+    step();const auto cooks=simulation.last_step().runtime_cooks;step();
+    const auto hit=take(simulation.raycast({21.5f,.2f,5},{21.5f,.2f,-5}));
+    require(cooks==1 && simulation.last_step().runtime_cooks==0 && !hit.hits.empty() && hit.hits.front().body.entity==in_b(imported),
+        "A rescaled triangle body was not rebuilt at its new scale, or was cooked more than once.");
 
     // The game's own destruction skips that item only.
     changed(world::destroy_entity(rb,in_b(doomed)));

@@ -175,7 +175,7 @@ Result<JPH::ShapeRefC> restore_shape(std::string_view bytes, const geometry::Mes
     if (hash_bytes(stored_source) != source_hash || hash_bytes(payload) != payload_hash)
         return failure(ErrorCode::invalid_storage, "Collision asset content digest is invalid.");
     if (stored_source != source || geometry_hash != mesh_hash(mesh, scale))
-        return failure(ErrorCode::invalid_storage, "Collision asset source or scale changed; recook required.");
+        return failure(ErrorCode::rebuild_required, "Collision asset source or scale changed; recook required.");
     std::istringstream input(std::string(payload), std::ios::binary);
     JPH::StreamInWrapper stream(input);
     JPH::Shape::IDToShapeMap shapes;
@@ -701,6 +701,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         shape=new JPH::CapsuleShape(settings->capsule_half_height*size.x,settings->radius*size.x);
     else {
         auto built=settings->cooked_shape?restore_shape(*settings->cooked_shape,*mesh,scale,source):mesh_shape(*mesh,scale);
+        // A body rescaled at runtime outgrows its cooked shape; cook here rather than write the shared cache.
+        if (!built && built.error().code==ErrorCode::rebuild_required) {built=mesh_shape(*mesh,scale);++runtime_cooks_;}
         if (!built) return std::unexpected(built.error());
         shape=*built;
     }
@@ -802,7 +804,7 @@ Result<void> PhysicsScene::step(float elapsed) {
     reconciling.reset();
     constexpr float fixed = 1.f / 60.f;
     constexpr std::uint32_t maximum_steps = 8;
-    StepResult result{.completed_step = completed_step_};
+    StepResult result{.runtime_cooks = std::exchange(runtime_cooks_, 0), .completed_step = completed_step_};
     if (!paused_) {
         const float accumulated = remaining_ + elapsed;
         remaining_ = std::min(accumulated, fixed * maximum_steps);

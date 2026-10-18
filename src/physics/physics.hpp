@@ -234,6 +234,8 @@ private:
 };
 struct StepResult {
     std::uint32_t steps{}, rejected_commands{}, dropped_contact_notifications{};
+    // Triangle shapes cooked at runtime since the previous step because a cooked shape no longer matched its scale or mesh.
+    std::uint32_t runtime_cooks{};
     float remaining{}, dropped{};
     std::uint64_t completed_step{};
     bool contacts_incomplete{};
@@ -337,6 +339,7 @@ private:
     StepResult last_step_{};
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
+    std::uint32_t runtime_cooks_{};
     bool paused_{}, single_step_{};
 };
 

@@ -1377,7 +1377,25 @@ struct Session::GraphCodec {
         if(!value && value.error().code==ErrorCode::unsupported_operation) throw Unsupported(value.error().message);
         take(std::move(value));
     }
-    static std::size_t live_index(const Json& value) {return value.is_null()?world::append:json_format::identity(value);}
+    // A Play index is the final position among the destination's children, or its roots for a null parent.
+    // Game spawns and destructions legitimately change those lists, so a stale index clamps to the end.
+    // World attaches a new root before a member position, so an added root's ordinal is translated.
+    static std::size_t live_index(Session& session,const Json& value,ObjectId parent,std::optional<ObjectId> moved={}) {
+        if(value.is_null()) return world::append;
+        const auto wanted=json_format::identity(value);auto& runtime=session.runtime_;
+        if(parent!=ObjectId{}) {
+            const auto siblings=take(world::children(runtime,parent));
+            return std::min<std::size_t>(wanted,siblings.size()-std::ranges::count_if(siblings,[&](const auto& item){return item.id()==moved;}));
+        }
+        const auto members=take(session.world_.members());std::size_t ordinal{};
+        for(std::size_t i=0;i<members.size();++i) {
+            const auto id=members[i].id();
+            if(id==moved || take(world::parent_entity(runtime,id))!=ObjectId{}) continue;
+            if(ordinal==wanted) return moved?wanted:i;
+            ++ordinal;
+        }
+        return moved?ordinal:world::append;
+    }
     static float live_number(const Json& value) {
         if(!value.is_number()) throw std::runtime_error("Expected a number.");
         const auto number=value.get<float>();if(!std::isfinite(number)) throw std::runtime_error("Numbers must be finite.");
@@ -1431,7 +1449,9 @@ struct Session::GraphCodec {
                 if(add?prepared->roots.size()!=1 || !prepared->anchored.empty():!prepared->roots.empty() || prepared->anchored.size()!=1 || prepared->anchored.front().first!=entity)
                     throw std::runtime_error(add?"An add carries exactly one root Entity.":"An attach carries only new components of its Entity.");
                 if(add) object=prepared->roots.front();
-                commit(publish_live(session,*prepared,parent,live_index(op.at("index")),load));
+                const auto& wanted=op.at("index");
+                const auto placed=add?live_index(session,wanted,parent):wanted.is_null()?world::append:std::min(json_format::identity(wanted),take(world::components(runtime,entity)).size());
+                commit(publish_live(session,*prepared,parent,placed,load));
                 // The document carries the same unresolved data; Play reports it without diverging.
                 for(auto issue:load.issues) if(issue.severity!=world::Severity::info) {
                     issue.serial=out.size()+1;issue.phase=world::DiagnosticPhase::command;issue.message=subject+": "+issue.message;out.push_back(std::move(issue));
@@ -1512,7 +1532,7 @@ struct Session::GraphCodec {
                 fields(op,{"op","id","parent","index","space"});
                 const auto moved=target(op.at("id"));
                 const auto parent=op.at("parent").is_null()?ObjectId{}:live_target(session,op.at("parent"));
-                commit(world.reparent(moved,parent,world::ReparentRule::keep_world,live_index(op.at("index"))));
+                commit(world.reparent(moved,parent,world::ReparentRule::keep_world,live_index(session,op.at("index"),parent,moved)));
                 if(const auto& space=op.at("space");!space.is_null()) {
                     fields(space,{"position","rotation","scale","origin"});
                     relocated(world.set_transform(moved,json_trs(space)));

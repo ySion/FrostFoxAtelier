@@ -229,7 +229,7 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 
 | op | 字段 | 语义 |
 | --- | --- | --- |
-| `add` | `parent`（身份或 null）、`index`（null 为末尾）、`graph` | 一个根 Entity 及其子树，graph 由 `serialize_live_subtree` 生成：保留身份，graph 外的引用写作 `{"$ref":身份}`。新对象按运行中插入的规则立即 Begin。 |
+| `add` | `parent`（身份或 null）、`index`、`graph` | 一个根 Entity 及其子树，graph 由 `serialize_live_subtree` 生成：保留身份，graph 外的引用写作 `{"$ref":身份}`。新对象按运行中插入的规则立即 Begin。 |
 | `attach` | `entity`、`index`、`graph` | 给已有 Entity 增加组件。graph 中该 Entity 的记录为 `{"id","existing":true,"children":[],"components":[...]}`，由 `serialize_live_components` 生成。 |
 | `remove` | `id` | 经 World 退出链销毁 Entity（连同子树）或 Component，End 照常执行；之后可以用同一身份再次 `add`（撤销删除）。 |
 | `set` | `id`，可选 `name`、`enabled`、`space`、`properties`、`base_color`/`roughness`/`metallic`/`emissive`、`materials` | `properties` 是稀疏记录，只写出现的叶，游戏写过的其他字段不受影响；字段写入经过 `World::write` 的夹值、校验和准入。`space` 为 null 时移除空间；记录中缺省的叶保持当前值，`origin` 取 `"0"`（世界）、null（继承）或身份。物理接管的 Entity 改位姿时由模拟系统瞬移。`materials` 是完整绑定表。 |
@@ -237,6 +237,8 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 | `world` | `world`（Scene 的 world 记录） | 整体替换 World 设置。 |
 | `materials` | `materials`（Scene 材质定义列表） | 已有身份按定义更新值；新身份创建后登记。绑定新材质前先发送它的定义。 |
 | `resource` | `key`、`material`（`.material` 资产内容） | Play 已加载的同键材质原地更新，引用它的实例随之变化；未加载的键只登记，供之后的 `add` 使用。新导入的 Mesh / Texture 由 `add` 按需从磁盘读取。 |
+
+`index` 是对象在目标列表中的最终序号，null 表示末尾。`add`/`move` 的目标列表是父级的子级，`parent` 为 null 时是根列表；`attach` 的目标列表是该 Entity 的组件列表；`move` 计数时不含被移动的对象本身。游戏生成或销毁对象会让 Play 的列表合法地不同于文档，所以超出范围的序号夹到末尾，不报诊断。同一批中的多个 `add` 按（父级，序号）升序发送；Play 的列表与文档相同时，顺序与文档一致。
 
 数组字段按整个数组传输：经过元素路径的修改和数组的增删、移动，都扩大为对该数组字段的一次 `set`，携带完整数组（随 Scene 的数组编码一起实现）。
 
@@ -287,7 +289,7 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
+`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、根与子级的序号及越界夹值、三角网格碰撞体运行中缩放后按新缩放重建、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 
