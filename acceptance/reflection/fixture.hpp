@@ -44,6 +44,7 @@ struct RangeProbe {
     AFIELD(Min = "0.1", Max = "1", LockMax) math::Vector3d tint{0.5, 0.5, 0.5};
     AFIELD(HardMin = "-5", HardMax = "5") int offset{};
     AFIELD(Min = "1", Max = "64") std::uint32_t samples{8};
+    AFIELD(Max = "0.5", HardMin = "0", HardMax = "1") Array<double> weights;
 };
 
 AENUM(Name = "reflection.Mode", DESC = "Mode 工作状态。\nidle 表示空闲。")

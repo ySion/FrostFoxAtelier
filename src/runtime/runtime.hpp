@@ -77,6 +77,9 @@ private:
     std::uint64_t generation_{};
 };
 
+// Member selector: the index-th member of its owner type. Records and objects
+// select fields; Array types select elements. An element selector is positional
+// and only valid while the array keeps at least index + 1 elements.
 class FieldId {
 public:
     FieldId() = default;
@@ -445,9 +448,9 @@ struct NativeLayout {
 };
 
 // Bounds use the field's exact leaf scalar type; math vectors apply them to each
-// component. UI bounds only guide editors. Hard bounds are enforced by every Runtime
-// write: values clamp to the closed range, and NaN/Inf are rejected before any byte
-// changes. Allowed on f32/f64/i32/u32 and math vector fields only.
+// component and Arrays of scalars or vectors to each element. UI bounds only guide
+// editors. Hard bounds are enforced by every Runtime write: values clamp to the closed
+// range, and NaN/Inf are rejected before any byte changes.
 struct FieldRange {
     std::optional<Scalar> ui_min{}, ui_max{}, hard_min{}, hard_max{};
     [[nodiscard]] bool constrains() const noexcept { return hard_min || hard_max; }
@@ -708,10 +711,10 @@ public:
     [[nodiscard]] bool belongs_to_context(ObjectId object) const noexcept;
     [[nodiscard]] Result<TypeId> type_of(ObjectId object) const;
 
-    // A field path traverses inline records. Scalar and plain record
+    // A field path traverses inline records and Array elements. Scalar and plain record
     // fields share the same path resolution and exact-type checks.
-    // Writes apply FieldRange hard bounds, including to a math vector's components
-    // and to constrained leaves inside a written record.
+    // Writes apply FieldRange hard bounds, including to a math vector's components,
+    // to the elements of a ranged Array, and to constrained leaves inside a written record.
     [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);
     [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
@@ -724,6 +727,20 @@ public:
     // failure; the outer error only means the object, type or storage is invalid.
     [[nodiscard]] Result<std::optional<ValidationFailure>> validate(ObjectId object) const;
     [[nodiscard]] Result<std::optional<ValidationFailure>> validate_value(TypeId type, std::span<const std::byte> storage) const;
+    // Selects element `index` of an Array type. Out-of-range selectors fail when resolved.
+    [[nodiscard]] Result<FieldId> element(TypeId array, std::uint32_t index) const;
+    // The index of an element selector; empty for a field selector or unknown owner.
+    [[nodiscard]] std::optional<std::uint32_t> element_index(FieldId member) const;
+    // Structural changes to an inline Array field. Every check precedes the change and a
+    // failure leaves the array unchanged. Busy during callbacks, native borrows and traversal,
+    // so no borrowed element address outlives a change. Inserted copies are clamped to hard
+    // bounds; a null ValueInput default-constructs the element.
+    [[nodiscard]] Result<std::size_t> element_count(ObjectId object, std::span<const FieldId> array) const;
+    [[nodiscard]] Result<void> insert_element(ObjectId object, std::span<const FieldId> array, std::size_t index,
+                                              ValueInput value = {});
+    [[nodiscard]] Result<void> remove_elements(ObjectId object, std::span<const FieldId> array, std::size_t first,
+                                               std::size_t count = 1);
+    [[nodiscard]] Result<void> move_element(ObjectId object, std::span<const FieldId> array, std::size_t from, std::size_t to);
     [[nodiscard]] Result<Scalar> read(ObjectId object, FieldId field) const {
         return read(object, {&field, 1});
     }
@@ -825,6 +842,9 @@ private:
     [[nodiscard]] Result<TypeId> find_representation(const void* representation) const;
     [[nodiscard]] Result<std::uint32_t> resolve_object(ObjectId object) const;
     [[nodiscard]] Result<Address> resolve_field(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_array(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<void> mutate_elements(ObjectId object, std::span<const FieldId> path, SequenceMutation operation,
+                                               std::size_t position, std::size_t operand, ValueInput value);
     [[nodiscard]] Result<Address> resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> validate_reference(const ObjectReference& reference) const;
     [[nodiscard]] Result<ObjectReference> read_reference_at(Address address) const;

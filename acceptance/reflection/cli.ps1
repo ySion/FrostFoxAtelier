@@ -133,6 +133,8 @@ $cases = @(
     @{name='range-flag-value'; text=$valid.Replace('AFIELD()', 'AFIELD(Min="0", LockMin="1")'); error='LockMin is a flag'},
     @{name='range-bool'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Max="1") bool flag{};'); error='Field ranges require a float, double, int32, uint32 or math vector field'},
     @{name='range-quaternion'; text=('#include "math/math.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Max="1") atelier::math::Quaternion rotation;')); error='Field ranges require a float, double, int32, uint32 or math vector field'},
+    @{name='range-array-bool'; text=('#include "foundation/array.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(Max="1") atelier::Array<bool> flags;')); error='Field ranges require a float, double, int32, uint32 or math vector field, or an Array of them'},
+    @{name='range-array-fraction'; text=('#include "foundation/array.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(HardMax="0.5") atelier::Array<int> counts;')); error='HardMax requires a finite decimal std::int32_t value'},
     @{name='range-fraction'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(HardMax="1.5") int count{};'); error='HardMax requires a finite decimal std::int32_t value'},
     @{name='range-negative-uint'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD(HardMin="-1") unsigned count{};'); error='HardMin requires a finite decimal std::uint32_t value'},
     @{name='range-nan'; text=$valid.Replace('AFIELD()', 'AFIELD(Max="nan")'); error='Max requires a finite decimal float value'},
