@@ -42,12 +42,23 @@ struct Fragile {
     }
     Fragile& operator=(const Fragile&) = default;
 };
+// Moves cannot throw but swaps can, and Array::insert/move rotate elements with swap.
+struct Swapper {
+    std::int32_t value{};
+    static inline bool fail{};
+    friend void swap(Swapper& first, Swapper& second) {
+        std::swap(first.value, second.value);
+        if (fail) throw std::runtime_error("swap refused");
+    }
+};
+static_assert(std::is_nothrow_move_constructible_v<Swapper> && !std::is_nothrow_swappable_v<Swapper>);
 struct Owner {
     Array<Probe> probes;
     Array<float> weights;
     Array<math::Vector3> points;
     Array<Fragile> fragile;
     Array<Array<Probe>> layers;
+    Array<Swapper> swappers;
     void touch(Array<Probe>& values) { values.clear(); }
     float total(const Array<Probe>& values) const {
         float sum = 0.0f;
@@ -70,15 +81,17 @@ void verify_array_elements() {
         array_definition<math::Vector3>(runtime, "arrays.PointArray"),
         array_definition<Fragile>(runtime, "arrays.FragileArray"),
         array_definition<Array<Probe>>(runtime, "arrays.LayerArray"),
+        NativeRegistration<Swapper>{runtime, "arrays.Swapper", TypeKind::record}.field<&Swapper::value>("value").build(),
+        array_definition<Swapper>(runtime, "arrays.SwapperArray"),
         NativeRegistration<Owner>{runtime, "arrays.Owner", TypeKind::object}
             .field<&Owner::probes>("probes")
             .field<&Owner::weights>("weights").range(hard(0.0f, 1.0f))
             .field<&Owner::points>("points").range(hard(-1.0f, 1.0f))
-            .field<&Owner::fragile>("fragile").field<&Owner::layers>("layers")
+            .field<&Owner::fragile>("fragile").field<&Owner::layers>("layers").field<&Owner::swappers>("swappers")
             .method<&Owner::touch>("touch").method<&Owner::total>("total").validate<&valid_owner>().build(),
     }));
     const auto probe_type = types[0], fragile_type = types[1], probe_array = types[2], float_array = types[3];
-    const auto point_array = types[4], owner_type = types[7];
+    const auto point_array = types[4], swapper_type = types[7], swapper_array = types[8], owner_type = types[9];
     const auto f32 = take(runtime.native_type<float>()), vector3 = take(runtime.native_type<math::Vector3>());
     const auto field = [&](TypeId type, const char* name) { return take(runtime.find_field(type, name)); };
     const auto probes = field(owner_type, "probes"), weights = field(owner_type, "weights"), points = field(owner_type, "points");
@@ -176,6 +189,25 @@ void verify_array_elements() {
         "A throwing element copy was not reported.");
     require(count(fragile_path) == 2 && take(runtime.read(id, std::array{fragile, at(types[5], 1), value})) == Scalar{2.0f},
         "A failed insertion changed the Array.");
+    // A rotation that throws midway must not leave the Array reordered.
+    const std::array swappers_path{field(owner_type, "swappers")};
+    const auto swapped = field(swapper_type, "value");
+    for (const std::int32_t number : {11, 22}) {
+        const Swapper item{number};
+        take(runtime.insert_element(id, swappers_path, count(swappers_path), {swapper_type, &item}));
+    }
+    const auto order = [&] {
+        std::string text;
+        for (std::uint32_t i = 0; i != count(swappers_path); ++i)
+            text += std::to_string(std::get<std::int32_t>(take(runtime.read(id, std::array{swappers_path[0], at(swapper_array, i), swapped})))) + ",";
+        return text;
+    };
+    Swapper::fail = true;
+    reject(runtime.insert_element(id, swappers_path, 0), ErrorCode::invocation_failed, "A throwing element swap was not reported.");
+    const auto inserted = order();
+    reject(runtime.move_element(id, swappers_path, 0, 1), ErrorCode::invocation_failed, "A throwing element swap was not reported.");
+    Swapper::fail = false;
+    require(inserted == "11,22," && order() == "11,22,", "A failed insertion or move left the Array reordered.");
 
     // Borrowed element addresses cannot outlive a structural change.
     const auto busy = runtime.with_native<Owner>(id, [&](Owner&) -> Result<void> {

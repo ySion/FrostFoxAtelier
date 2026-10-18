@@ -42,9 +42,11 @@ TypeDefinition array_definition(Runtime& runtime, std::string name) {
     definition.native.value_operations_preserve_borrows = true; // composed with element capabilities at publication
     definition.native.sequence_mutate = [](SequenceMutation operation, void* target, const void* source, std::size_t count) {
         auto& array = *static_cast<Array<T>*>(target);
-        // Element moves that can throw would leave a partial shift; edit a copy instead.
+        // Element moves or swaps (std::rotate in Array::insert/move) that can throw would leave a
+        // partial shift; edit a copy instead.
         const auto atomically = [&](auto change) {
-            if constexpr (std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T>) change(array);
+            if constexpr (std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T> &&
+                          std::is_nothrow_swappable_v<T>) change(array);
             else { Array<T> copy{array}; change(copy); array.swap(copy); }
         };
         switch (operation) {
