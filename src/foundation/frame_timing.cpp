@@ -17,18 +17,19 @@ void install(std::initializer_list<std::span<Marker* const>> modules) {
     if (frozen) throw std::logic_error("The frame timing catalog is already installed.");
     std::array<Marker*, capacity> order{};
     std::size_t size{};
-    const auto reject = [&](std::string message) {
+    // Roll back before building the message, which can throw.
+    const auto reject = [&](std::string_view reason, std::string_view key = {}) {
         for (std::size_t i = 0; i < size; ++i) order[i]->index_ = order[i]->parent_index_ = unregistered;
-        throw std::invalid_argument(std::move(message));
+        throw std::invalid_argument(std::string(reason).append(key));
     };
     const auto add = [&](Marker* marker) {
         if (!marker) reject("A frame timing marker is null.");
         if (size == capacity) reject("The frame timing catalog exceeds its capacity.");
-        if (marker->index_ != unregistered) reject("Frame timing marker is registered twice: " + std::string(marker->key_));
+        if (marker->index_ != unregistered) reject("Frame timing marker is registered twice: ", marker->key_);
         for (std::size_t i = 0; i < size; ++i)
-            if (order[i]->key_ == marker->key_) reject("Frame timing key is not unique: " + std::string(marker->key_));
+            if (order[i]->key_ == marker->key_) reject("Frame timing key is not unique: ", marker->key_);
         if (marker != &frame && (!marker->parent_ || marker->parent_->index_ == unregistered))
-            reject("Frame timing parent must be registered before " + std::string(marker->key_));
+            reject("Frame timing parent must be registered before ", marker->key_);
         marker->index_ = static_cast<std::uint8_t>(size);
         marker->parent_index_ = marker->parent_ ? marker->parent_->index_ : unregistered;
         order[size++] = marker;

@@ -186,6 +186,11 @@ void frame_timing() {
         require(steps >= 2 && record.count(pp::substep) == steps && record.count(pp::solve) == steps &&
             record.count(pp::write_back) == steps, "substep phases run once per fixed step");
     }
+    take(f.world.request({w::RequestKind::stop}));
+    const auto halted = frame(fixed_delta);
+    require(halted.structure_errors == 0 && halted.count(wp::pre_physics) == 1 && halted.count(wp::simulation) == 0 &&
+        halted.count(pp::step) == 0 && halted.count(wp::post_physics) == 0 && !f.world.running(),
+        "a World stopped in pre_physics records no simulation");
 }
 
 void fixed_step() {

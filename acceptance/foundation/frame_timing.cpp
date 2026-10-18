@@ -77,4 +77,12 @@ void verify_frame_timing() {
     }
     require(recorder.last().sequence == 3 && recorder.last().structure_errors == 1 && recorder.last().first_error == &timing::frame &&
         recorder.last().count(outer) == 0, "A nested host frame was not reported, or a previous frame leaked into the next.");
+
+    {
+        timing::Recorder::Frame first{recorder};
+        { timing::Suspend suspend; first.finish(); }
+        timing::Recorder::Frame next{recorder};
+        require(&next.finish() == &recorder.last() && recorder.last().sequence == 5 && recorder.last().structure_errors == 0,
+            "Ending a Suspend rebound a frame that finished inside it.");
+    }
 }

@@ -106,6 +106,7 @@ public:
 
 private:
     friend class Scope;
+    friend class Suspend;
     friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
     void fail(const Marker& marker) noexcept {
         ++record_.structure_errors;
@@ -156,7 +157,8 @@ void record(const Marker&, std::chrono::nanoseconds) noexcept;
 class Suspend {
 public:
     Suspend() noexcept : saved_(detail::bound) { detail::bound = nullptr; }
-    ~Suspend() { detail::bound = saved_; }
+    // A frame finished while suspended stays unbound.
+    ~Suspend() { detail::bound = saved_ && saved_->open_ ? saved_ : nullptr; }
     Suspend(const Suspend&) = delete;
     Suspend& operator=(const Suspend&) = delete;
 

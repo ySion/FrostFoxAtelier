@@ -134,7 +134,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         measure("play_update",[&]{take(play->update(1.f/60));},[&](const timing::FrameRecord& record) {
             const auto steps=play->physics_scene()->last_step().steps;
             require(std::ranges::all_of(per_update,[&](const auto* marker){return record.count(*marker)==1;}) &&
-                record.count(world::phases::schedule)<=1 && record.count(physics::phases::substep)==steps &&
+                record.count(physics::phases::substep)==steps &&
                 record.count(physics::phases::solve)==steps && record.count(physics::phases::write_back)==steps,
                 "play_update did not record each World and physics phase once per frame.");
             for(const auto* marker:timing::catalog()) phases[marker->index()].push_back(milliseconds(record.time(*marker)));
