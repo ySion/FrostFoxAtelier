@@ -1098,9 +1098,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             row.help=property_help_.get(key,row.title,L"Resource binding",description);
             properties->push_back(std::move(row).item());
         };
-        const auto unavailable=[&](AssetKind kind,std::string_view key)->std::wstring {
-            const auto* item=session.unavailable(kind,key);if(!item) return {};
-            return item->kind==world::DiagnosticKind::unreadable_resource?L"(unreadable) ":L"(missing) ";
+        const auto mark_unavailable=[&](AssetKind kind,std::string_view key,std::wstring& name) {
+            if(const auto* item=session.unavailable(kind,key)) name.insert(0,item->kind==world::DiagnosticKind::unreadable_resource?L"(unreadable) ":L"(missing) ");
         };
         if(resource && !instance) {
             const auto asset=take(session.material_asset(object));
@@ -1108,7 +1107,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             for(std::size_t i=0;i<names.size();++i) {
                 auto name=asset.textures[i].empty()?std::wstring(L"None"):wide(asset.textures[i]);
                 if(project) for(const auto& entry:project->entries()) if(entry.key==asset.textures[i]) {name=entry.path.stem().wstring();break;}
-                name=unavailable(AssetKind::texture,asset.textures[i])+name;
+                mark_unavailable(AssetKind::texture,asset.textures[i],name);
                 selector(bind_material(object,{},Binding::Kind::material_texture,{}, {},i),names[i],std::move(name),"选择材质输入使用的 Texture 资源。None 清除该输入的贴图；修改参与材质撤销与保存。");
             }
         } else if(!resource && material_bindings) {
@@ -1116,7 +1115,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 (group_matches || lowercase(L"Mesh "+wide(mesh->mesh.source)).find(folded)!=std::wstring::npos)) {
                 PropertyRow row;
                 row.key=bind_material(object,{},Binding::Kind::saved_data,{},"mesh");row.title=L"Mesh";row.kind=PropertyRow::Kind::enumeration;
-                row.enabled=false;row.change={row.key,false};row.choice=unavailable(AssetKind::mesh,mesh->mesh.source)+wide(mesh->mesh.source);row.target=row.key;
+                row.enabled=false;row.change={row.key,false};row.choice=wide(mesh->mesh.source);mark_unavailable(AssetKind::mesh,mesh->mesh.source,row.choice);row.target=row.key;
                 row.help=property_help_.get(row.key,row.title,L"Unavailable resource",
                     "网格资源缺失或无法读取：组件不绘制，原引用和材质绑定原样保存。恢复资源后重新打开场景即可使用。");
                 properties->push_back(std::move(row).item());
@@ -1129,7 +1128,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     if(state.parent.registered()) state=take(material::read_material(runtime,state.parent.id()));
                     choice=wide(state.source);
                     if(project) for(const auto& entry:project->entries()) if(entry.key==state.source) {choice=entry.path.stem().wstring();break;}
-                    choice=unavailable(AssetKind::material,state.source)+choice;
+                    mark_unavailable(AssetKind::material,state.source,choice);
                 }
                 selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+wide(slot_name),std::move(choice),"为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
             }

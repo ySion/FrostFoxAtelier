@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <unordered_set>
 
 namespace atelier::editor {
@@ -1222,10 +1223,15 @@ struct Session::GraphCodec {
                         else source=mesh_at->get<std::string>();
                         geometry::MeshRef mesh;
                         if(!source.empty()) {
-                            if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
-                            else {
-                                const auto& item=session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());const Json value=source;
-                                load.report(world::Severity::warning,item.kind,object,{"mesh"},&value,item.reason+
+                            // A source that already failed is not read again for each component that uses it.
+                            const auto* item=session.unavailable(AssetKind::mesh,source);
+                            if(!item) {
+                                if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
+                                else item=&session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());
+                            }
+                            if(item) {
+                                const Json value=source;
+                                load.report(world::Severity::warning,item->kind,object,{"mesh"},&value,item->reason+
                                     " The component draws nothing; the reference and its material bindings are saved unchanged.");
                             }
                         }
@@ -1381,6 +1387,8 @@ struct Session::GraphCodec {
         if(!attachments.empty()) for(const auto& [object,matrix]:take(session.world_.attachment_world_matrices(attachments,prepared.spaces))) worlds.emplace(object,matrix);
         std::unordered_map<ObjectId,ObjectId> anchored;
         for(const auto& [entity,parts]:prepared.anchored) for(const auto& part:parts) anchored.emplace(part.component,entity);
+        // Bodies sharing a mesh and world scale share one cooked shape for this load.
+        std::map<std::pair<std::string,std::array<float,3>>,Result<std::shared_ptr<const std::string>>> cooks;
         for(const auto object:prepared.triangle_meshes) {
             const auto mesh=take(world::read_static_mesh(session.runtime_,object));
             const auto at=anchored.find(object);
@@ -1391,13 +1399,16 @@ struct Session::GraphCodec {
             const auto trs=take(world::relative_transform(matrix,world::transform_matrix({})));
             auto settings=take(physics::read_settings(session.runtime_,object));
             if(prepared.project) {
-                auto cooked=prepared.project->collision(mesh.mesh.source,trs.scale);
+                const auto key=std::pair{mesh.mesh.source,std::array{trs.scale.x,trs.scale.y,trs.scale.z}};
+                auto cached=cooks.find(key);
+                if(cached==cooks.end()) cached=cooks.emplace(key,prepared.project->collision(mesh.mesh.source,trs.scale)).first;
+                const auto& cooked=cached->second;
                 if(!cooked) {
                     load.report(world::Severity::warning,world::DiagnosticKind::unreadable_resource,object,{"properties","body","shape"},nullptr,
                         cooked.error().message+" Play cannot create this body until its mesh can be cooked.");
                     continue;
                 }
-                settings.cooked_shape=std::move(*cooked);
+                settings.cooked_shape=*cooked;
             } else if(settings.cooked_shape) take(physics::validate_cooked_triangle_mesh(*settings.cooked_shape,mesh.mesh.resolved,trs.scale,mesh.mesh.source));
             take(physics::configure(session.runtime_,object,std::move(settings)));
         }
