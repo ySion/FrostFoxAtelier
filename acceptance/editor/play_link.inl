@@ -147,6 +147,14 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     take(document.begin_edit(move,speed,880001));take(document.preview_edit(880001,9.f));forward();
     require(speed_of()==9,"A field preview did not reach Play.");
     take(document.cancel_edit());forward();require(speed_of()==2,"Cancelling a preview did not restore Play.");
+    // Scene commands stay available while Play follows the document; their changes are forwarded.
+    {
+        editor::Workspace workspace;workspace.project_open=true;workspace.project_running=true;workspace.play_pending=0;
+        take(document.select_entities(std::array{mover},mover));
+        for(const auto command:{editor::Command::erase_entities,editor::Command::rename_selected,editor::Command::duplicate_selected,
+            editor::Command::clear_location,editor::Command::select_all,editor::Command::remove_transform,editor::Command::restart_project})
+            require(workspace.command_enabled(command,document,&project),"A scene command is unavailable while Play runs.");
+    }
     process.stop();
     for(const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(10);process.running() && std::chrono::steady_clock::now()<until;Sleep(5))
         {process.poll();output+=process.take_output();link.poll(process.running(),process.stopping());}

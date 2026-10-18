@@ -104,7 +104,7 @@ struct Context {
     std::optional<ViewportContext> viewport;        // 仅当 region 为 viewport
     std::string asset;                              // 资源浏览器的活动资产或被检视的材质资产键
     std::filesystem::path source;                   // 代码页的活动文档
-    bool scene_available{true}, playing{};          // 工程场景是否可用；Play 运行时 World 归运行进程
+    bool scene_available{true};                     // 工程场景是否可用；Play 运行期间的修改照常进入文档并转发给 Play
     bool interactive{};                             // UI/keymap 调用为 true；Control 与语言为 false
 };
 ```

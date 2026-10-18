@@ -70,7 +70,7 @@ Context Workspace::operator_context(Session& session,Project* project,bool inter
     return {session,project,
         {session.selection().entity,session.selection().object,{session.selected_entities().begin(),session.selected_entities().end()}},
         region_of(dock.focused_tab()),inspecting_asset?material_inspection:std::string{},
-        source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,project_running,interactive};
+        source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,interactive};
 }
 void Workspace::log(std::wstring text) {
     auto messages=std::make_shared<ui::TableData>(*output);
@@ -288,12 +288,12 @@ bool Workspace::command_enabled(Command command,Session& session,Project* projec
         return info && info->poll(operator_context(session,project,true)).has_value();
     }
     switch (command) {
-    case Command::erase_entities: return scene_available && !project_running && !session.selected_entities().empty();
-    case Command::select_all: case Command::select_invert: case Command::select_box: return scene_available && !project_running;
-    case Command::select_none: return scene_available && !project_running && !session.selected_entities().empty();
-    case Command::rename_selected: return scene_available && !project_running && session.selection().entity!=ObjectId{};
+    case Command::erase_entities: return scene_available && !session.selected_entities().empty();
+    case Command::select_all: case Command::select_invert: case Command::select_box: return scene_available;
+    case Command::select_none: return scene_available && !session.selected_entities().empty();
+    case Command::rename_selected: return scene_available && session.selection().entity!=ObjectId{};
     case Command::unparent_selected: {
-        if(!scene_available || project_running) return false;
+        if(!scene_available) return false;
         for(const auto entity:session.selected_entities()) {
             const auto parent=world::parent_entity(session.world().runtime(),entity);
             if(parent && *parent!=ObjectId{}) return true;
@@ -301,10 +301,10 @@ bool Workspace::command_enabled(Command command,Session& session,Project* projec
         return false;
     }
     case Command::clear_location: case Command::clear_rotation: case Command::clear_scale:
-        return scene_available && !project_running && !session.selected_entities().empty();
+        return scene_available && !session.selected_entities().empty();
     case Command::duplicate_selected: {
         const auto members=session.world().members();
-        return scene_available && !project_running && !session.selected_entities().empty() && members &&
+        return scene_available && !session.selected_entities().empty() && members &&
             members->size()+session.selected_entities().size()<=Session::maximum_entities;
     }
     case Command::new_source: case Command::new_project_ui: case Command::build_project: return project_open;

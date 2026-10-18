@@ -180,7 +180,7 @@ JSON 当前位于打开、保存和显式目录刷新路径；帧绘制不解析
 1. 打开工程，在 Project → New Component Source 创建 `Source/Move.source`。创建使用独占写入，已有文件不会被覆盖。Code 面板的 New 使用同一入口。
 2. 编辑后 Ctrl+S。F6 或 Project → Build 编译所有工程 Source；外部保存由 500 ms 文件检查发现。新增类、方法、全局函数或 struct/enum 直接兼容发布。生命周期方法为 begin、tick（pre_physics）、post_physics_tick、late_tick、end，新增后在发布的同时绑定，Play 中也在帧间生效：已开始的对象从下一个阶段起执行新方法，不补发 Begin。修改已有类型的字段或默认值，或删除、改名、改变公开函数签名后，停止运行并选择 Rebuild Types。
 3. 选择一个 Entity，打开 Window → Entity Structure，通过 Add Component 选择 `project.Move`。添加后自动检查该组件。Parameters 中公开数值使用单行参数编辑器，bool 使用 Checkbox，枚举使用命名选项菜单；结构页负责删除，属性修改与结构变化都进入场景文档。
-4. 保存场景。F8 或 Run 启动独立游戏窗口；Shift+F8 或 Stop 停止。Project Output 显示构建、运行与退出信息。
+4. 保存场景。F8 或 Run 启动独立游戏窗口；Shift+F8 或 Stop 停止。运行期间场景照常可编辑（创建、删除、改名、改父级、复制、字段与变换），修改即时转发给游戏窗口；它们是普通的文档修改，停止后仍在并且可以撤销。Project Output 显示构建、运行与退出信息。
    运行中单个对象的失败（Begin/Tick/End、任务、提取或命令被拒）只隔离该对象，Play 继续运行；每个失败写一行 `Diagnostic [严重度] kind in phase "Entity 名" (类型) 字段: 消息`，有源码位置时附 `at 文件:行:列`，持续中的同一失败不重复输出。修好代码并兼容发布后，故障对象在下个安全点恢复，不重发 Begin。
    编辑器自身的场景提取诊断（例如零缩放使网格不绘制）也写入 Project Output；同一行在消失后再次出现时，原行后面计数 `(×N)`，不新增行。
 5. 运行时修改方法体并保存，兼容版本在下个安全点发布。语法或类型错误保留原代码；Code 的诊断可打开实际出错文件并定位行列。

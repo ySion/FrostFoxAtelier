@@ -47,7 +47,7 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
 }
 // Something in a selected subtree must have a Transform to frame.
 Result<void> frame_selected_poll(const Context& context) {
-    if (!context.scene_available || context.playing) return unavailable("Stop the project and load a scene before framing the selection.");
+    if (!context.scene_available) return unavailable("Load a scene before framing the selection.");
     if (context.selection.entities.empty()) return unavailable("Select an Entity with a Transform to frame.");
     auto& runtime = context.document.world().runtime();
     std::vector<ObjectId> pending = context.selection.entities;
@@ -86,7 +86,7 @@ OperatorInfo history(bool redo) {
 }
 // Scene edits address the context's active Entity.
 Result<void> editable_entity(const Context& context) {
-    if (!context.scene_available || context.playing) return unavailable("Stop the project and load a scene before editing it.");
+    if (!context.scene_available) return unavailable("Load a scene before editing it.");
     if (context.selection.active == ObjectId{}) return unavailable("Select an Entity.");
     const auto state = world::inspect_entity(context.document.world().runtime(), context.selection.active);
     if (!state || !state->can_edit) return unavailable("The selected Entity cannot be edited.");
@@ -131,7 +131,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"scene.discard_saved_data", L"Discard Saved Data", "Drop the saved data kept for the inspected object's missing type, fields or resources",
         OperatorFlag::undo,
         [](const Context& context) -> Result<void> {
-            if (!context.scene_available || context.playing) return unavailable("Stop the project and load a scene before editing it.");
+            if (!context.scene_available) return unavailable("Load a scene before editing it.");
             const auto object = context.selection.object;
             if (object == ObjectId{} || !context.document.has_retained(object)) return unavailable("The inspected object has no saved data.");
             return {};

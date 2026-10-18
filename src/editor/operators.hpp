@@ -44,7 +44,6 @@ struct Context {
     HistoryState source_history;    // The Code page's active document; both false without one.
     HistoryState workbench_history; // The Controls page samples.
     bool scene_available{true}; // False while a project has no loadable scene.
-    bool playing{};             // A project run owns the World; scene edits wait for Stop.
     bool interactive{};
 };
 // Control replaces fields for one call; the document selection does not change.
