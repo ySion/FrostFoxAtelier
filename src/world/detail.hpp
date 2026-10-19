@@ -135,15 +135,19 @@ struct SpaceCache {
         // A zero scale axis on this node or an ancestor; FP32 rounding can leave
         // the composed matrix of such a space with a tiny nonzero determinant.
         bool flat{};
+        // Pass in which this chain failed to compose at `cause`, whose error is in `failures`.
+        std::uint64_t failed{};
+        ObjectId cause;
     };
     Map<ObjectId, Entry> entries;
+    Map<ObjectId, Error> failures;
     SpaceGraph relations;
     std::vector<ObjectId> path;
-    std::uint64_t pass{};
+    std::uint64_t pass{1};         // Above every fresh entry's `checked` and `failed`.
     ObjectId failed;               // The Entity whose relation or TRS failed the latest matrix().
     explicit SpaceCache(Runtime& runtime) : relations(runtime) {}
     void clear() noexcept;
-    void begin_pass() noexcept { ++pass; }
+    void begin_pass() noexcept { ++pass; failures.clear(); }
     Result<math::Matrix4> matrix(ObjectId);
     Result<ObjectId> parent(ObjectId);
     // The visited chain of the latest matrix() call in this pass.

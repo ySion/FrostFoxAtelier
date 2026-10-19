@@ -170,6 +170,7 @@ bool same_bits(const Trs& left, const Trs& right) noexcept {
 }
 void SpaceCache::clear() noexcept {
     entries.clear();
+    failures.clear();
     relations.nodes.clear();
     relations.matrices.clear();
 }
@@ -209,6 +210,11 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
         if (!entry) return std::unexpected(entry.error());
         if (!(*entry)->spatial) return error(ErrorCode::invalid_member, "Entity has no Transform.");
         if ((*entry)->checked == pass && (*entry)->composed) { composed = id; break; }
+        if ((*entry)->failed == pass) {
+            failed = (*entry)->cause;
+            for (const auto below : path) { auto* walked = entries.find(below); walked->failed = pass; walked->cause = failed; }
+            return std::unexpected(*failures.find(failed));
+        }
         path.push_back(id);
         if (path.size() > relations.nodes.size()) return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
         if ((*entry)->parent == ObjectId{}) break;
@@ -221,19 +227,29 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
         const auto* entry = entries.find(composed);
         parent_world = entry->world; parent_version = entry->version; parent_flat = entry->flat;
     }
+    // A failure is recorded on the failing node and every visited node below it,
+    // so later queries under it in this pass stop there instead of re-walking.
+    const auto fail = [&](auto at, Error failure) -> Result<math::Matrix4> {
+        failures.insert_or_assign(*at, failure);
+        for (const auto cause = *at; at != path.rend(); ++at) {
+            auto* entry = entries.find(*at);
+            entry->failed = pass; entry->cause = cause;
+        }
+        return std::unexpected(std::move(failure));
+    };
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
         failed = *it;
         auto local = relations.runtime.with_native<Entity>(*it, [](Entity& entity) -> Result<Trs> {
             return Trs{entity.position, entity.rotation, entity.scale};
         });
-        if (!local) return std::unexpected(local.error());
+        if (!local) return fail(it, std::move(local.error()));
         auto* entry = entries.find(*it);
         if (!entry->composed || entry->parent_version != parent_version || !same_bits(*local, entry->local)) {
             entry->composed = false;
             auto canonical = canonical_transform(*local);
-            if (!canonical) return std::unexpected(canonical.error());
+            if (!canonical) return fail(it, std::move(canonical.error()));
             auto world = multiply(transform_matrix(*canonical), parent_world);
-            if (!world) return std::unexpected(world.error());
+            if (!world) return fail(it, std::move(world.error()));
             entry->local = *local; entry->world = *world; entry->parent_version = parent_version;
             entry->flat = parent_flat || local->scale.x == 0 || local->scale.y == 0 || local->scale.z == 0;
             ++entry->version; entry->composed = true;
@@ -456,7 +472,7 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
             was_spatial = Access::spatial(entity);
             entity.position = trs.position; entity.rotation = trs.rotation; entity.scale = trs.scale;
             // Gaining or losing space changes resolved parents below it; TRS values alone are revalidated per pass.
-            if (Access::spatial(entity) != spatial) impl_->changed();
+            if (Access::spatial(entity) != spatial && data->world) impl_->changed();
             Access::spatial(entity) = spatial;
             return {};
         });
@@ -521,7 +537,7 @@ Result<void> World::remove_transform(ObjectId object) {
         Access::world_origin(entity) = false;
         Access::spatial(entity) = false;
         if (auto* member = data->world ? impl_->state_of(object) : nullptr) member->origin = {};
-        impl_->changed();
+        if (data->world) impl_->changed();
         return {};
     });
 }
@@ -567,7 +583,7 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
         Access::explicit_origin(entity) = origin.has_value();
         Access::world_origin(entity) = origin && *origin == ObjectId{};
         if (auto* member = data->world ? impl_->state_of(object) : nullptr) member->origin = origin.value_or(ObjectId{});
-        impl_->changed();
+        if (data->world) impl_->changed();
         return {};
     });
     if (!published) return std::unexpected(published.error());

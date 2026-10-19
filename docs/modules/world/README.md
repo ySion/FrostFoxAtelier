@@ -114,7 +114,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 `spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对链上有零缩放轴或矩阵奇异的空间，在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](lighting.md)）。`render_items / light_items` 只经这三个入口读取空间。
 
-`render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。成员的世界矩阵来自 World 持有的一份空间缓存，`render_items`、`light_items`、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。Detached 对象和候选图仍使用临时求值。
+`render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。成员的世界矩阵来自 World 持有的一份空间缓存，`render_items`、`light_items`、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。只有 World 成员的 Transform 增删与空间参考变化会使缓存失效。Detached 对象和候选图仍使用临时求值。
 
 材质与灯参数的校验结果按桶位置缓存：某个位置上的当前值与上次在该位置通过校验的值逐字节相同时，跳过 `validate_value`，其余照常执行。这样做成立，是因为类型校验器是对值字节的纯检查，已发布的类型规则也不再改变，所以不需要按对象身份核对，也不依赖写入通知。Runtime 直接写入和生成代码写入的值，下一次提取时同样会被校验；未通过的值不进入缓存，每次提取都会重新校验并报告。每个网格每次提取只借用一次组件。
 
