@@ -892,8 +892,19 @@ struct Runtime::Impl {
         return {};
     }
 
+    // Valid values, the common case, pass once without paths or allocation; a failure reruns
+    // with paths to report it, so its validators run twice.
     std::optional<ValidationFailure> check_rules(const Type& root, void* storage) {
         CallbackScope scope{callbacks};
+        auto within = [](const FieldRange& range, void* data) { Scalar value; return bound_violation(range, data, value).empty(); };
+        auto passes = [](Result<void> (*validate)(const void*), const void* data) {
+            try {
+                return validate(data).has_value();
+            } catch (...) {
+                return false;
+            }
+        };
+        if (each_bounded(root, storage, nullptr, within) && each_validator(root, storage, nullptr, passes)) return std::nullopt;
         std::vector<FieldId> field;
         std::optional<ValidationFailure> found;
         const auto fail = [&](std::optional<Scalar> value, ErrorCode code, std::string reason) {
