@@ -727,33 +727,34 @@ struct Runtime::Impl {
         return {static_cast<std::byte*>(const_cast<void*>(data)), count};
     }
 
+    // Element selectors hold 32-bit indices; walks name elements of a larger Array by the Array.
+    static constexpr std::size_t selectable_elements = std::size_t{std::numeric_limits<std::uint32_t>::max()} + 1;
+
     // Visits every hard-bounded scalar leaf with its range, expanding Array entries per
     // element, until `visit` returns false. A non-null `field` then holds that leaf's path.
     template<class Visit>
     bool each_bounded(const Type& type, void* storage, std::vector<FieldId>* field, Visit& visit) const {
-        const auto enter = [&](auto first, auto last) { if (field) field->insert(field->end(), first, last); };
-        const auto push = [&](FieldId member) { if (field) field->push_back(member); };
-        const auto pop = [&] { if (field) field->pop_back(); };
         for (const auto& leaf : type.constrained_leaves) {
             auto* data = static_cast<std::byte*>(leaf_storage(type, storage, leaf.path));
             const auto depth = field ? field->size() : 0;
-            enter(leaf.field.begin(), leaf.field.end());
+            if (field) field->insert(field->end(), leaf.field.begin(), leaf.field.end());
             bool proceed = true;
             if (!leaf.array) proceed = visit(*leaf.range, static_cast<void*>(data));
             else {
                 const auto& element = *lookup(*leaf.array->info.element);
                 const auto [items, count] = elements(*leaf.array, data);
+                auto* named = count > selectable_elements ? nullptr : field;
                 for (std::size_t i = 0; proceed && i != count; ++i) {
                     auto* item = items + i * element.info.size;
-                    push(FieldId{leaf.array->info.id, static_cast<std::uint32_t>(i)});
-                    if (!leaf.range) proceed = each_bounded(element, item, field, visit);
+                    if (named) named->push_back(FieldId{leaf.array->info.id, static_cast<std::uint32_t>(i)});
+                    if (!leaf.range) proceed = each_bounded(element, item, named, visit);
                     else if (element.info.kind == TypeKind::scalar) proceed = visit(*leaf.range, static_cast<void*>(item));
                     else for (std::uint32_t component = 0; proceed && component != element.info.math.components(); ++component) {
-                        push(FieldId{element.info.id, component});
+                        if (named) named->push_back(FieldId{element.info.id, component});
                         proceed = visit(*leaf.range, static_cast<void*>(item + component * element.info.math.scalar_size()));
-                        if (proceed) pop();
+                        if (proceed && named) named->pop_back();
                     }
-                    if (proceed) pop();
+                    if (proceed && named) named->pop_back();
                 }
             }
             if (!proceed) return false;
@@ -763,26 +764,27 @@ struct Runtime::Impl {
     }
 
     // Runs validators in post-order, expanding Array entries per element, until `visit`
-    // returns false; `field` then holds the failing value's path.
+    // returns false; a non-null `field` then holds the failing value's path.
     template<class Visit>
-    bool each_validator(const Type& type, void* storage, std::vector<FieldId>& field, Visit& visit) const {
+    bool each_validator(const Type& type, void* storage, std::vector<FieldId>* field, Visit& visit) const {
         for (const auto& step : type.validators) {
             auto* data = leaf_storage(type, storage, step.path);
-            const auto depth = field.size();
-            field.insert(field.end(), step.field.begin(), step.field.end());
+            const auto depth = field ? field->size() : 0;
+            if (field) field->insert(field->end(), step.field.begin(), step.field.end());
             bool proceed = true;
             if (!step.array) proceed = visit(step.validate, data);
             else {
                 const auto& element = *lookup(*step.array->info.element);
                 const auto [items, count] = elements(*step.array, data);
+                auto* named = count > selectable_elements ? nullptr : field;
                 for (std::size_t i = 0; proceed && i != count; ++i) {
-                    field.push_back(FieldId{step.array->info.id, static_cast<std::uint32_t>(i)});
-                    proceed = each_validator(element, items + i * element.info.size, field, visit);
-                    if (proceed) field.pop_back();
+                    if (named) named->push_back(FieldId{step.array->info.id, static_cast<std::uint32_t>(i)});
+                    proceed = each_validator(element, items + i * element.info.size, named, visit);
+                    if (proceed && named) named->pop_back();
                 }
             }
             if (!proceed) return false;
-            field.resize(depth);
+            if (field) field->resize(depth);
         }
         return true;
     }
@@ -818,9 +820,11 @@ struct Runtime::Impl {
             for (std::size_t i = 0; i != count; ++i) {
                 auto* item = items + i * element.info.size;
                 if (constrain_value(element, range, item, false)) continue;
-                field.push_back(FieldId{type.info.id, static_cast<std::uint32_t>(i)});
-                const auto below = rejected_leaf(element, range, item);
-                field.insert(field.end(), below.begin(), below.end());
+                if (i < selectable_elements) {
+                    field.push_back(FieldId{type.info.id, static_cast<std::uint32_t>(i)});
+                    const auto below = rejected_leaf(element, range, item);
+                    field.insert(field.end(), below.begin(), below.end());
+                }
                 break;
             }
         } else if (range) {
@@ -915,7 +919,7 @@ struct Runtime::Impl {
             }
             return checked || fail({}, ErrorCode::argument_mismatch, std::move(checked.error().message));
         };
-        if (each_bounded(root, storage, &field, bound)) each_validator(root, storage, field, rule);
+        if (each_bounded(root, storage, &field, bound)) each_validator(root, storage, &field, rule);
         return found;
     }
 
@@ -2825,8 +2829,11 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
         return failure(ErrorCode::invalid_storage, "Inserted value storage is null or misaligned.");
     CallbackScope scope{impl_->callbacks};
     if (copy && !impl_->constrain_value(element, address->range, const_cast<void*>(value.data), false)) {
-        auto leaf = impl_->rejected_leaf(element, address->range, const_cast<void*>(value.data));
-        leaf.insert(leaf.begin(), FieldId{array.info.id, static_cast<std::uint32_t>(position)});
+        std::vector<FieldId> leaf;
+        if (position < Impl::selectable_elements) {
+            leaf = impl_->rejected_leaf(element, address->range, const_cast<void*>(value.data));
+            leaf.insert(leaf.begin(), FieldId{array.info.id, static_cast<std::uint32_t>(position)});
+        }
         return impl_->located(ErrorCode::argument_mismatch, address->root, path, leaf, "Hard-bounded fields reject NaN and infinity.");
     }
     try {
