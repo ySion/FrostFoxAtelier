@@ -2912,6 +2912,30 @@ Result<void> Runtime::write_at(const Address& address, ValueInput value, bool ob
     return impl_->replace_value(*type, constrained ? &address : nullptr, address.data, value.data);
 }
 
+Result<void> Runtime::restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous) {
+    if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
+    const auto address = resolve_field(object, path);
+    if (!address) return std::unexpected(address.error());
+    const auto* type = impl_->lookup(address->value.type);
+    if (address->value.form != ValueForm::inline_value || !whole_value(type->info) || previous.type != type->info.id)
+        return failure(ErrorCode::type_mismatch, "Restore requires the field's exact Runtime type, without GC references.");
+    if (!previous.data || reinterpret_cast<std::uintptr_t>(previous.data) % type->info.alignment != 0)
+        return failure(ErrorCode::invalid_storage, "Restored value storage is null or misaligned.");
+    auto* field = static_cast<std::byte*>(address->data);
+    auto* value = static_cast<std::byte*>(previous.data);
+    if (type->info.plain_value) {
+        std::swap_ranges(field, field + type->info.size, value);
+        return {};
+    }
+    if (type->swap_parts.empty())
+        return failure(ErrorCode::unsupported_operation, "Restore requires a value type with a non-throwing swap.");
+    if (impl_->callbacks != 0)
+        return failure(ErrorCode::busy, "Non-plain field values cannot be replaced during callbacks or native borrows.");
+    CallbackScope scope{impl_->callbacks};
+    Impl::swap_value(*type, field, value);
+    return {};
+}
+
 Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
     PreparedArguments& prepared) const {
     return prepare_arguments(signature, arguments, prepared, false);

@@ -139,6 +139,7 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 - plain 值整块复制。其他值先复制构造到临时值，在临时值上完成硬边界夹值，再与目标做 noexcept 交换：复制、分配或夹值前的 NaN 检查失败时，字段保持原值。读出时同样先复制再交换，失败时输出保持原值。交换来自 `NativeLayout::swap`（`NativeRegistration` 在类型 nothrow 可交换时自动提供），描述型记录由字段的字节交换和原生交换组合而成。没有 noexcept 交换的类型退回复制赋值，只有基本保证。
 - 对象目标上替换非 plain 值会释放旧缓冲，所以在回调、原生借用和引用遍历期间返回 `busy`；plain 值和标量写入不受影响。
 - `read/write(TypeId, storage, path, Scalar)` 与 `read/write(TypeId, storage, path, ValueOutput/ValueInput)` 对调用方持有的活值做同样的访问，与 `read_reference/write_reference(TypeId, storage, path)` 对称。存储规则与[值操作入口](#已实现的值操作入口)相同：调用方提供已构造的活值，Runtime 检查类型、容量与对齐。路径解析、精确类型、硬边界和元素选择子与对象目标共用同一份实现；写入只在引用遍历或批量引用准备期间返回 `busy`，因为存储归调用方所有。
+- `restore(object, path, ValueOutput previous)` 撤销调用方自己刚做的写入。前提由调用方保证，Runtime 无法检查：`previous` 是调用方在本次操作中、写入之前从同一字段读出的值。它把字段与 `previous` 交换，不复制、不分配；之后 `previous` 里是被替换掉的值，由调用方销毁。它跳过硬边界、有限性检查和类型校验器，所以被 `with_native` 或生成代码写成越界值或 NaN 的旧值按位放回。路径（包括数学向量分量和数组元素选择子）、精确类型、对象存活和 `busy` 规则与整值写入相同，标量叶用叶的原生类型。含 GC 引用的值返回 `type_mismatch`；非 plain 且没有 noexcept 交换的类型返回 `unsupported_operation`，因为退回赋值就不能保证不失败。任何失败都不改动字段和 `previous`。Runtime 目前没有字段版本号、变更通知或脏标记；以后加上时，`restore` 按一次写入处理，与 `write` 的观察者语义一致。
 
 ## 正式对象单继承
 
