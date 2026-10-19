@@ -4,7 +4,9 @@
 #include <mimalloc.h>
 #include <mimalloc-stats.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <stdexcept>
 #include <tuple>

@@ -905,7 +905,16 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
     if (!previous) return std::unexpected(previous.error());
     return impl_->checked_write(object, *transform,
         [&] { return runtime().write(object, path, value); },
-        [&] { return runtime().write(object, path, *previous); });
+        [&] {
+            return std::visit([&]<class T>(T& old) -> Result<void> {
+                if constexpr (std::is_same_v<T, EnumValue>) return runtime().restore(object, path, ValueOutput{old.type, &old.bits});
+                else {
+                    auto type = runtime().native_type<T>();
+                    if (!type) return std::unexpected(type.error());
+                    return runtime().restore(object, path, ValueOutput{*type, &old});
+                }
+            }, *previous);
+        });
 }
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
     if (auto ready = impl_->admit_edit(object); !ready) return ready;
@@ -931,7 +940,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
     if (auto read = runtime().read(object, path, ValueOutput{value.type, previous.storage.data()}); !read) return read;
     return impl_->checked_write(object, *entity,
         [&] { return runtime().write(object, path, value); },
-        [&] { return runtime().write(object, path, ValueInput{value.type, previous.storage.data()}); });
+        [&] { return runtime().restore(object, path, ValueOutput{value.type, previous.storage.data()}); });
 }
 Result<std::vector<RenderItem>> World::render_items() const {
     auto pass = spatial_pass(DiagnosticPhase::presentation);
