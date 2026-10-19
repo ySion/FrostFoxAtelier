@@ -43,11 +43,17 @@ TypeDefinition array_definition(Runtime& runtime, std::string name) {
     definition.native.sequence_mutate = [](SequenceMutation operation, void* target, const void* source, std::size_t count) {
         auto& array = *static_cast<Array<T>*>(target);
         // Element moves or swaps (std::rotate in Array::insert/move) that can throw would leave a
-        // partial shift; edit a copy instead.
-        const auto atomically = [&](auto change) {
+        // partial shift; edit a copy instead, sized for `extra` elements so the edit does not regrow it.
+        const auto atomically = [&](std::size_t extra, auto change) {
             if constexpr (std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T> &&
                           std::is_nothrow_swappable_v<T>) change(array);
-            else { Array<T> copy{array}; change(copy); array.swap(copy); }
+            else {
+                Array<T> copy;
+                copy.reserve(array.size() + extra);
+                copy.append(array.view());
+                change(copy);
+                array.swap(copy);
+            }
         };
         switch (operation) {
         case SequenceMutation::reserve: array.reserve(count); break;
@@ -62,13 +68,15 @@ TypeDefinition array_definition(Runtime& runtime, std::string name) {
         case SequenceMutation::remove:
         case SequenceMutation::move:
             if constexpr (std::is_move_assignable_v<T>) {
+                // The Runtime checks positions first, so removing nothing or moving in place changes nothing.
                 if (operation != SequenceMutation::insert) {
                     const auto second = *static_cast<const std::size_t*>(source);
-                    if (operation == SequenceMutation::remove) atomically([&](Array<T>& values) { values.remove_at(count, second); });
-                    else atomically([&](Array<T>& values) { values.move(count, second); });
+                    if (operation == SequenceMutation::remove) {
+                        if (second) atomically(0, [&](Array<T>& values) { values.remove_at(count, second); });
+                    } else if (count != second) atomically(0, [&](Array<T>& values) { values.move(count, second); });
                 }
-                else if (source) atomically([&](Array<T>& values) { values.insert(count, *static_cast<const T*>(source)); });
-                else if constexpr (std::default_initializable<T>) atomically([&](Array<T>& values) { values.insert(count); });
+                else if (source) atomically(1, [&](Array<T>& values) { values.insert(count, *static_cast<const T*>(source)); });
+                else if constexpr (std::default_initializable<T>) atomically(1, [&](Array<T>& values) { values.insert(count); });
                 else throw std::invalid_argument("Array element is not default constructible.");
             } else throw std::invalid_argument("Array element is not move assignable.");
             break;
