@@ -8,6 +8,10 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
         const auto* table=row_table(app,key);return table && table->selection.row==key;
     };
     const auto folder=std::filesystem::absolute(output/L"项目");
+    const auto moved=std::filesystem::absolute(output/L"工程搬移");
+    // --acceptance reuses its output folder; fixtures left by an earlier run must not decide this one.
+    if(!existing) std::filesystem::remove_all(folder);
+    std::filesystem::remove_all(moved);
     access::EditorAcceptanceAccess::mark_saved(app);
     model(access::EditorAcceptanceAccess::command(app,existing?Command::open_project:Command::new_project,atelier::editor::utf8(folder.wstring())));tick(app,4);
     const auto initial_count=entities(app).size();
@@ -207,7 +211,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     std::filesystem::create_directories(folder/"Cache");
     model(atelier::editor::write_file(folder/"Cache/disposable.txt","Derived data only"));
     std::filesystem::remove(folder/"Cache/disposable.txt");std::filesystem::remove(folder/"Cache");
-    const auto moved=std::filesystem::absolute(output/L"工程搬移");std::filesystem::rename(folder,moved);
+    std::filesystem::rename(folder,moved);
     model(app.open_project(moved));tick(app,4);
     require(model(app.document().serialize())==*saved,"Moved project depended on its old root or Cache.");
     verify_about(app,moved.wstring());
