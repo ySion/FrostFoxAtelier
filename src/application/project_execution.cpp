@@ -158,6 +158,7 @@ void Application::poll_project() {
     if(restart_play_ && !play_.running()) {
         restart_play_=false;
         if(auto restarted=run_project();!restarted) {workspace_.status=L"Cannot restart Play: "+editor::wide(restarted.error().message);workspace_.log(workspace_.status);}
+        else workspace_.status=L"Play restarted";
     }
     if(!project_) return;
     if(project_code_) {
