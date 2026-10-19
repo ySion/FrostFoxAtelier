@@ -701,6 +701,25 @@ struct Runtime::Impl {
         return owner.member_names[member.index_ - (owner.base && owner.base->info.id != object ? 1 : 0)];
     }
 
+    void append_path(std::string& text, std::span<const FieldId> path) const {
+        for (const auto id : path) {
+            auto name = member_name(id);
+            if (name.front() != '[') text += '.';
+            text += name;
+        }
+    }
+
+    // Names the value as validation failures do: "Type.field[i].leaf: reason".
+    auto located(ErrorCode code, TypeId root, std::span<const FieldId> path, std::span<const FieldId> below,
+        std::string_view reason) const {
+        std::string text = lookup(root)->info.name;
+        append_path(text, path);
+        append_path(text, below);
+        text += ": ";
+        text += reason;
+        return failure(code, std::move(text));
+    }
+
     static std::pair<std::byte*, std::size_t> elements(const Type& array, void* storage) noexcept {
         const void* data{};
         std::size_t count{};
@@ -789,6 +808,35 @@ struct Runtime::Impl {
         return each_bounded(type, storage, nullptr, leaf);
     }
 
+    // After constrain_value rejected a value: the selectors from `type` down to its first NaN
+    // or infinite leaf. Only failures pay for the path.
+    std::vector<FieldId> rejected_leaf(const Type& type, const FieldRange* range, void* storage) const {
+        std::vector<FieldId> field;
+        if (range && type.info.kind == TypeKind::array) {
+            const auto& element = *lookup(*type.info.element);
+            const auto [items, count] = elements(type, storage);
+            for (std::size_t i = 0; i != count; ++i) {
+                auto* item = items + i * element.info.size;
+                if (constrain_value(element, range, item, false)) continue;
+                field.push_back(FieldId{type.info.id, static_cast<std::uint32_t>(i)});
+                const auto below = rejected_leaf(element, range, item);
+                field.insert(field.end(), below.begin(), below.end());
+                break;
+            }
+        } else if (range) {
+            if (type.info.kind != TypeKind::scalar)
+                for (std::uint32_t component = 0; component != type.info.math.components(); ++component)
+                    if (!constrain_storage(*range, static_cast<std::byte*>(storage) + component * type.info.math.scalar_size(), false)) {
+                        field.push_back(FieldId{type.info.id, component});
+                        break;
+                    }
+        } else {
+            auto leaf = [](const FieldRange& bounds, void* data) { return constrain_storage(bounds, data, false); };
+            each_bounded(type, storage, &field, leaf);
+        }
+        return field;
+    }
+
     static void swap_value(const Type& type, void* first, void* second) noexcept {
         for (const auto& part : type.swap_parts) {
             auto* a = static_cast<std::byte*>(first) + part.offset;
@@ -798,14 +846,17 @@ struct Runtime::Impl {
         }
     }
 
-    // Copies `source` over the live value at `destination`, rejecting NaN/Inf under hard bounds
-    // before any change and clamping afterwards when `constrained`. Non-trivial values are copied
+    // Copies `source` over the live value at `destination`. With a `bounded` field address, hard
+    // bounds reject NaN/Inf before any change and clamp afterwards. Non-trivial values are copied
     // and clamped in a temporary, then swapped in, so a failure leaves `destination` unchanged;
     // types without a noexcept swap fall back to copy assignment (basic guarantee).
-    Result<void> replace_value(const Type& type, const FieldRange* range, bool constrained, void* destination, const void* source) {
+    Result<void> replace_value(const Type& type, const Address* bounded, void* destination, const void* source) {
         CallbackScope scope{callbacks};
+        const auto* range = bounded ? bounded->range : nullptr;
+        const bool constrained = bounded;
         if (constrained && !constrain_value(type, range, const_cast<void*>(source), false))
-            return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
+            return located(ErrorCode::argument_mismatch, bounded->root, bounded->path,
+                rejected_leaf(type, range, const_cast<void*>(source)), "Hard-bounded fields reject NaN and infinity.");
         if (type.info.plain_value || type.info.kind == TypeKind::scalar) {
             std::memmove(destination, source, type.info.size);
             if (constrained) constrain_value(type, range, destination, true);
@@ -843,11 +894,8 @@ struct Runtime::Impl {
         std::optional<ValidationFailure> found;
         const auto fail = [&](std::optional<Scalar> value, ErrorCode code, std::string reason) {
             found = ValidationFailure{field, {}, std::move(value), {code, root.info.name}};
-            for (const auto id : field) {
-                found->names.push_back(member_name(id));
-                if (found->names.back().front() != '[') found->error.message += '.';
-                found->error.message += found->names.back();
-            }
+            for (const auto id : field) found->names.push_back(member_name(id));
+            append_path(found->error.message, field);
             found->error.message += ": " + reason;
             return false;
         };
@@ -2504,8 +2552,9 @@ Result<Runtime::Address> Runtime::resolve_field(ObjectId object, std::span<const
 Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const {
     if (path.empty()) return failure(ErrorCode::invalid_member, "Field path must not be empty.");
     CallbackScope scope{impl_->callbacks};
-    Address result{storage, {type}};
-    for (const auto field : path) {
+    Address result{storage, {type}, nullptr, type, path};
+    for (std::size_t depth = 0; depth != path.size(); ++depth) {
+        const auto field = path[depth];
         if (result.value.form != ValueForm::inline_value) {
             return failure(ErrorCode::invalid_member, "Field paths cannot traverse object references.");
         }
@@ -2517,7 +2566,8 @@ Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::
             const auto& element = *impl_->lookup(*actual->info.element);
             if (result.data) {
                 const auto [items, count] = Impl::elements(*actual, result.data);
-                if (field.index_ >= count) return failure(ErrorCode::invalid_member, "Array element index is out of range.");
+                if (field.index_ >= count) return impl_->located(ErrorCode::invalid_member, type, path.first(depth + 1), {},
+                    "Array element index " + std::to_string(field.index_) + " is out of range of " + std::to_string(count) + " elements.");
                 result.data = items + std::size_t{field.index_} * element.info.size;
             }
             // A ranged Array bounds each scalar or vector element; the range carries forward.
@@ -2667,7 +2717,7 @@ Result<void> Runtime::write_at(const Address& address, Scalar value) {
     if (std::holds_alternative<EnumValue>(value) && impl_->lookup(address.value.type)->info.kind != TypeKind::enumeration)
         return failure(ErrorCode::type_mismatch, "Enum value cannot masquerade as a scalar.");
     if (address.range && !constrain_scalar(*address.range, value))
-        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
+        return impl_->located(ErrorCode::argument_mismatch, address.root, address.path, {}, "Hard-bounded fields reject NaN and infinity.");
     if (address.value.type == impl_->f32) *static_cast<float*>(address.data) = std::get<float>(value);
     else if (address.value.type == impl_->f64) *static_cast<double*>(address.data) = std::get<double>(value);
     else if (address.value.type == impl_->u32) *static_cast<std::uint32_t*>(address.data) = std::get<std::uint32_t>(value);
@@ -2690,7 +2740,7 @@ Result<Scalar> Runtime::constrain(TypeId type, std::span<const FieldId> path, Sc
         (std::holds_alternative<EnumValue>(value) && impl_->lookup(address->value.type)->info.kind != TypeKind::enumeration))
         return failure(ErrorCode::type_mismatch, "Value type does not match the field.");
     if (address->range && !constrain_scalar(*address->range, value))
-        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
+        return impl_->located(ErrorCode::argument_mismatch, type, path, {}, "Hard-bounded fields reject NaN and infinity.");
     return value;
 }
 
@@ -2764,14 +2814,21 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
     if (operation == SequenceMutation::insert ? position > size
         : operation == SequenceMutation::remove ? position > size || operand > size - position
         : position >= size || operand >= size)
-        return failure(ErrorCode::argument_mismatch, "Array element position is out of range.");
+        return impl_->located(ErrorCode::argument_mismatch, address->root, path, {},
+            (operation == SequenceMutation::insert ? "Insertion at " + std::to_string(position)
+                : operation == SequenceMutation::remove ? "Removal of " + std::to_string(operand) + " at " + std::to_string(position)
+                : "Move from " + std::to_string(position) + " to " + std::to_string(operand)) +
+            " is out of range of " + std::to_string(size) + " elements.");
     if (copy && value.type != element.info.id)
         return failure(ErrorCode::type_mismatch, "Inserted value must have the Array's element type.");
     if (copy && (!value.data || reinterpret_cast<std::uintptr_t>(value.data) % element.info.alignment != 0))
         return failure(ErrorCode::invalid_storage, "Inserted value storage is null or misaligned.");
     CallbackScope scope{impl_->callbacks};
-    if (copy && !impl_->constrain_value(element, address->range, const_cast<void*>(value.data), false))
-        return failure(ErrorCode::argument_mismatch, "Hard-bounded fields reject NaN and infinity.");
+    if (copy && !impl_->constrain_value(element, address->range, const_cast<void*>(value.data), false)) {
+        auto leaf = impl_->rejected_leaf(element, address->range, const_cast<void*>(value.data));
+        leaf.insert(leaf.begin(), FieldId{array.info.id, static_cast<std::uint32_t>(position)});
+        return impl_->located(ErrorCode::argument_mismatch, address->root, path, leaf, "Hard-bounded fields reject NaN and infinity.");
+    }
     try {
         array.info.sequence_mutate(operation, address->data, operation == SequenceMutation::insert ? value.data : &operand, position);
     } catch (const std::exception& error) {
@@ -2828,7 +2885,7 @@ Result<void> Runtime::read_at(const Address& address, ValueOutput output) const 
         std::memmove(output.data, address.data, type->info.size);
         return {};
     }
-    return impl_->replace_value(*type, nullptr, false, output.data, address.data);
+    return impl_->replace_value(*type, nullptr, output.data, address.data);
 }
 
 Result<void> Runtime::write_at(const Address& address, ValueInput value, bool object) {
@@ -2845,7 +2902,7 @@ Result<void> Runtime::write_at(const Address& address, ValueInput value, bool ob
     // Replacing a buffer would leave borrowed addresses into the old one dangling.
     if (!type->info.plain_value && object && impl_->callbacks != 0)
         return failure(ErrorCode::busy, "Non-plain field values cannot be replaced during callbacks or native borrows.");
-    return impl_->replace_value(*type, address.range, constrained, address.data, value.data);
+    return impl_->replace_value(*type, constrained ? &address : nullptr, address.data, value.data);
 }
 
 Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,

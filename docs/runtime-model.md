@@ -217,6 +217,7 @@ C++ 生产者使用 `AFIELD(Label = "Position", Category = "Transform")`，规�
 - 元素选择子是位置性的，只在数组至少有 index + 1 个元素时有效。插入、删除或移动后，指向受影响位置的路径会指向别的元素或失效。编辑器撤销按逆操作的相反顺序执行即可还原：添加对应删除，删除对应带值插入，移动对应反向移动。
 - 结构操作：`element_count`、`insert_element(object, path, index, ValueInput)`、`remove_elements(object, path, first, count)` 和 `move_element(object, path, from, to)`。所有检查先于改动，失败时数组不变，包括元素复制抛出异常的情况；元素的移动或交换可能抛出时，操作在副本上完成后再交换。插入值用元素类型的复制构造，不要求 plain；空 `ValueInput` 默认构造元素，默认构造视同原生构造，不夹值。插入的副本按硬边界夹值，NaN/±Inf 在改动前拒绝。回调、原生借用和引用遍历期间返回 `busy`，借用中的元素地址因此不会因结构变化而悬空。
 - 源码前端不绑定对象的数组字段，元素路径不进入源码绑定目录，也不影响生成代码 ABI。
+- 按路径写入和元素操作的失败消息与校验失败一样以“类型名.路径: 原因”命名所在值：越界下标写出下标和元素数，结构操作越界写出操作、位置和元素数，硬边界拒绝 NaN/±Inf 时指向输入里第一个违规叶，例如 `arrays.Owner.points[1].y`。只有失败才构造路径，成功路径不分配。
 - Array 类型发布时必须提供元素投影 `sequence_view`（`array_definition` 已提供）；缺少 `sequence_mutate` 的数组可以按元素读写，结构操作返回 `unsupported_operation`。
 
 ### 字段范围与写入约束

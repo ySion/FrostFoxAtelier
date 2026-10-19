@@ -837,8 +837,9 @@ private:
     [[nodiscard]] Result<void> enter_execution_inspection();
     void leave_execution_inspection() noexcept;
     struct Impl;
-    // `range` is set when hard bounds apply to the addressed value or its components.
-    struct Address { void* data; ValueDescription value; const FieldRange* range{}; };
+    // `range` is set when hard bounds apply to the addressed value or its components. `root` and
+    // `path` name the field in diagnostics; `path` borrows the caller's span for the call.
+    struct Address { void* data; ValueDescription value; const FieldRange* range{}; TypeId root{}; std::span<const FieldId> path{}; };
     struct NativeBorrow {
         Runtime* runtime;
         void* storage;
