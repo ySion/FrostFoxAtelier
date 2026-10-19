@@ -6,7 +6,8 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
-| 默认直接光切到 A | 2026-10-18 rendering 工作树：`direct_clustered` 默认 true，ReSTIR 保留为诊断回退；切换前 Release 九个入口通过，Edit/Play 收敛 1.228/4，Play 宿主走 A；合并 main 后补跑其余入口，见[本批记录](#默认直接光切到-a2026-10-18) |
+| 异步准备与 GBV 预热 | 2026-10-19 rendering 工作树，基线 `80de8156`：Scene Lit 管线按组在 RHI 工作线程上准备，首帧 2.0 ms 返回 not_ready；GBV 下基础组 141 s 就绪。Release 全部 10 个入口通过；与 ec-3 门禁相比，9 个 `--scene-lit*` 入口的整进程时长合计从 59.7 min 降到 34.9 min，见[本批记录](#异步准备与-gbv-预热2026-10-19) |
+| 默认直接光切到 A | 2026-10-18 rendering 工作树：`direct_clustered` 默认 true，ReSTIR 保留为诊断回退；切换前 Release 九个入口通过，Edit/Play 收敛 1.228/4，Play 宿主走 A；合并后 ec-3 门禁（`5911be69`）在 Dev 和 Release 下跑完全部入口并通过，见[本批记录](#默认直接光切到-a2026-10-18) |
 | Renderer 验收入口盘点 | 2026-10-18 rendering 工作树：此前 `renderer_acceptance` 只运行无参数默认入口，14 个 `--scene-lit*` 入口都不在任何常规目标里；现在该目标依次运行默认入口和 9 个有独有检查的入口，删除 9 个完全被覆盖的子集入口，见[本批记录](#renderer-验收入口盘点2026-10-18) |
 | temporal isolation 参考配置 | 2026-10-18 rendering 工作树：`--scene-lit-temporal` 自 10-13 起一直失败（main 基线 `d2b6da2b` 同样失败），原因是参考配置从确定性 64 阴影样本换成逐帧独立的随机参考；改为比较两段 16 帧均值后为 1.032/3，通过，见[本批记录](#temporal-isolation-参考配置2026-10-18) |
 | DI 辐射响应窗口 | 2026-10-18 rendering 工作树：DI 降噪器按距最后一次辐射变化的帧数缩短支持，编辑后恢复的残留在 64 帧内回到基线（A 路径 R−B 从 +.70 降到 +.04）；持续动画光源的半影噪声不变；去掉窗口的变体使新验收失败，见[本批记录](#di-辐射响应窗口2026-10-18) |
@@ -34,6 +35,45 @@
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
 
+## 异步准备与 GBV 预热（2026-10-19）
+
+状态：rendering 分支，基线 integration/ec-4 `80de8156`，本地提交，未推送。合同见 [Renderer 合同](contract.md#场景和-ui) 与 [RHI 异步准备](../rhi/contract.md#异步准备与-dxil-磁盘缓存)。编辑器的 Smooth 回退、进度显示和验收中的就绪等待由编辑器负责人另行提交，两者同轮集成；单独合入本提交时，编辑器窗口验收切到 Lit 后会超时。
+
+改动：Scene Lit 的 50 条管线分为基础组（38 条）和 7 个按设置启用的组，在 RHI Context 的工作线程上编译、创建 PSO，并在 GBV 下预热。`render` 遇到所需组未就绪的 Lit 帧返回 not_ready，不录制、不 Present。draw 内的懒建管线全部去掉。Renderer 验收中除契约用例外，所有 render 调用先等该帧视图所需的组就绪，因此使用 ReSTIR、B 缓存阴影、inspect、DDGI 诊断的入口各自等到自己的组。
+
+Release `renderer_acceptance` 的 10 个入口，RX 6800 XT，验证方式与以前相同（benchmark 不开验证，stability 只开 debug layer，其余为 GPU-based validation），每个入口一个进程，退出码均为 0，证据在 `out/release/renderer-evidence/<入口>/`。
+
+默认入口新增的契约用例（GBV）：
+
+- 首次 render 返回 not_ready，用时 2.0 ms，活动计数为 0，capture 未被改写；此时进度 0/38。
+- 准备期间同一窗口的 Smooth 帧照常 accepted。
+- 基础组 141.1 s 后就绪（10-19 预热试验为 134.4 s），之后 Lit 帧 accepted。
+- 打开 `probe_debug` 后进度变为 38/39，render 重新返回 not_ready；新组就绪后 accepted。
+
+整进程时长（实测；本批为取锁到进程退出，含约 1 s 的启动开销；ec-3 为同一台机器上该门禁的逐进程记录，基线 `5911be69`）：
+
+| 入口 | 验证 | ec-3 门禁 Release | 本批 Release |
+|---|---|---|---|
+| 无参数默认入口 | GBV | 未单独计时 | 183 s |
+| `--scene-lit` | GBV | 565 s | 270 s |
+| `--scene-lit-benchmark` | 无 | 11 s | 5 s |
+| `--scene-lit-temporal` | GBV | 516 s | 270 s |
+| `--scene-lit-quality` | GBV | 641 s | 351 s |
+| `--scene-lit-stability` | debug layer | 47 s | 37 s |
+| `--scene-lit-restir-suite` | GBV | 667 s | 353 s |
+| `--scene-lit-clustered` | GBV | 297 s | 220 s |
+| `--scene-lit-shadows` | GBV | 347 s | 249 s |
+| `--scene-lit-cost` | GBV | 492 s | 341 s |
+| 9 个 `--scene-lit*` 合计 | | 3583 s（59.7 min） | 2096 s（34.9 min） |
+
+推断（未单独拆分测量）：
+
+- 节省主要来自 GBV 首次使用补丁从所属线程的第一次录制移到 8 个工作线程上并行完成（单进程约 297 s → 约 135～141 s），其次是 DXC 并行编译；不开验证的 benchmark 少的 6 s 与 10-19 离线测得的 DXC 串行 7 s→8 线程约 1.8 s 一致。
+- 按需分组让默认 A 路径不再为 ReSTIR、B 缓存阴影和诊断管线付预热成本；用到它们的入口在第一次打开设置时另付该组的成本。
+- 验收没有设置 `shader_cache`，每个进程都重新编译；缓存对门禁的收益约为每进程 1～2 s，不影响上述结论。
+
+未覆盖：Dev 的 rhi/renderer 由下一轮集成门禁带 Dev 窗口层运行；编辑器窗口验收和 Control 的预热前后对比等编辑器改动合入后，在正常窗口时段测量。
+
 ## 默认直接光切到 A（2026-10-18）
 
 状态：基于 `f01139f1` 的单独本地提交，未推送、未并入 main。C 批第一步：`direct_clustered` 默认改为 true，ReSTIR 保留为诊断回退；回退只需把 `view_settings.hpp` 中这一项改回 `{}`。没有持久数据：该开关不在作者选项目录里，不写 Scene 或 Undo。Play 宿主（`project_runner.cpp`）默认构造 ViewSettings，也随之走 A。Frame/FrameStats 接口和 GPU scope 没有变化。
@@ -48,16 +88,18 @@
 
 | 入口 | Release | Dev |
 |---|---|---|
-| 无参数默认入口 | PASS | 合并 main 后补跑 |
-| `--scene-lit` | PASS：Edit/Play 收敛 1.228/4（阈值 3/8；ReSTIR 下为 2.262/8），temporal-stable .294/1 | 合并 main 后补跑 |
-| `--scene-lit-temporal` | PASS：direct-reference 1.032/3 | 合并 main 后补跑 |
-| `--scene-lit-quality` | PASS：辐射恢复红移 1–16 帧 +2.511、49–64 帧 +.050；动画光源半影 .462（静止 .194，单帧 3.559） | 合并 main 后补跑 |
-| `--scene-lit-stability` | PASS | 合并 main 后补跑 |
-| `--scene-lit-restir-suite` | PASS，夹具显式 ReSTIR | 合并 main 后补跑 |
-| `--scene-lit-benchmark` | 合并 main 后补跑 | 合并 main 后补跑 |
-| `--scene-lit-clustered` | PASS：单参考／最小范围／透视参考均为 0 | 合并 main 后补跑 |
-| `--scene-lit-shadows` | PASS：有限点光参考 .681/1，CSM 与移动太阳 ≤.106 | 合并 main 后补跑 |
-| `--scene-lit-cost` | PASS：五组确定性对照均为 0 | 合并 main 后补跑 |
+| 无参数默认入口 | PASS | ec-3 门禁 PASS |
+| `--scene-lit` | PASS：Edit/Play 收敛 1.228/4（阈值 3/8；ReSTIR 下为 2.262/8），temporal-stable .294/1 | ec-3 门禁 PASS |
+| `--scene-lit-temporal` | PASS：direct-reference 1.032/3 | ec-3 门禁 PASS |
+| `--scene-lit-quality` | PASS：辐射恢复红移 1–16 帧 +2.511、49–64 帧 +.050；动画光源半影 .462（静止 .194，单帧 3.559） | ec-3 门禁 PASS |
+| `--scene-lit-stability` | PASS | ec-3 门禁 PASS |
+| `--scene-lit-restir-suite` | PASS，夹具显式 ReSTIR | ec-3 门禁 PASS |
+| `--scene-lit-benchmark` | ec-3 门禁 PASS | ec-3 门禁 PASS |
+| `--scene-lit-clustered` | PASS：单参考／最小范围／透视参考均为 0 | ec-3 门禁 PASS |
+| `--scene-lit-shadows` | PASS：有限点光参考 .681/1，CSM 与移动太阳 ≤.106 | ec-3 门禁 PASS |
+| `--scene-lit-cost` | PASS：五组确定性对照均为 0 | ec-3 门禁 PASS |
+
+Dev 列与 Release 的 benchmark 由合并 main 之后的 ec-3 集成门禁（`5911be69`）运行，各入口退出码为 0；数值没有逐项摘录。
 
 Edit/Play 收敛余量：A 下 p95 为 4，距阈值 8 有 4 级，mean 余量 1.77；ReSTIR 下 p95 等于阈值。
 

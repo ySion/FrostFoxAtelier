@@ -42,7 +42,7 @@ gfx 源码按锁定修订号放在 `out/<preset>/_deps/gfx-<revision>-src`，补
 
 ## 当前边界
 
-验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
+验证过的业务执行模式是 Windows x64、硬件 D3D12、一个 owner 线程串行驱动 owned context。gfx 内部仍有异步 GPU 工作和多帧槽，不代表并行录制或多 queue。管线准备作业在 Context 内部工作线程上编译并创建 PSO，不录制、不提交。RHI 不链接业务 Runtime/JIT/语言/UI；顶层工程仍配置 JIT，不能据此声称配置工程无需 LLVM。
 
 现有 Renderer 已接入 Present/resize、显式尺寸深度与最终帧结果，并通过 dev/release 的[renderer验收](../renderer/acceptance.md)及[编辑器窗口链](../editor/README.md)。主窗口与原生弹出窗口分别持有自己的 Renderer/Context；现行呈现和失败语义见[renderer合同](../renderer/contract.md)。
 未交付或未验证的能力集中列于[验收边界](acceptance.md#未覆盖范围)，包括通用 RDG、业务 Texture 语言接线、并发录制、多 queue、设备恢复和不同 GPU 的支持矩阵。

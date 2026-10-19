@@ -23,7 +23,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     meshes[0].geometry=std::make_shared<const geometry::Mesh>(vertices,std::vector<std::uint8_t>{},std::move(materials),
         std::vector<geometry::MeshPart>{{0,6,0},{6,6,1}});image.reset();
     render::Frame frame{ui_frame,{}, {0,0,float(ui_frame.extent.width),float(ui_frame.extent.height)},meshes};render::Capture capture;
-    auto result=take(renderer.render(frame,&capture));
+    auto result=take(prepared_render(renderer,frame,&capture));
     const auto x=ui_frame.extent.width/4,y=ui_frame.extent.height/4;
     check(result.stats.scene_draw_calls==2 && result.stats.material_upload_count>0,"material parts bind distinct surfaces");
     for(const auto& point:std::array{std::array{x,y},std::array{x*3,y},std::array{x,y*3},std::array{x*3,y*3}}) {
@@ -36,12 +36,12 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         "negative UVs repeat with correct top-left image orientation and sRGB color");
     check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.4f)<1e-5f,
         "alpha cutout exposes background color and depth");
-    ++ui_frame.id;result=take(renderer.render(frame,&capture));check(result.stats.material_upload_count==0,"unchanged material images upload only once");
+    ++ui_frame.id;result=take(prepared_render(renderer,frame,&capture));check(result.stats.material_upload_count==0,"unchanged material images upload only once");
     frame.view.wireframe=render::Wireframe::only;
-    ++ui_frame.id;take(renderer.render(frame,&capture));
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only depth pass respects material opacity");
     frame.view.shading=render::Shading::matcap;
-    ++ui_frame.id;take(renderer.render(frame,&capture));check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"MatCap respects cutout silhouettes");
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"MatCap respects cutout silhouettes");
     auto opaque=std::make_shared<const material::Image>(2,2,std::vector<std::uint8_t>{255,0,0,255, 255,255,255,255, 0,0,255,255, 255,255,0,255});
     auto opacity=std::make_shared<const material::Image>(2,2,std::vector<std::uint8_t>{255,255,255,255, 0,0,0,255, 160,160,160,255, 255,255,255,255});
     std::weak_ptr<const material::Image> opacity_observer=opacity;
@@ -49,17 +49,17 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     meshes[0].geometry=std::make_shared<const geometry::Mesh>(vertices,std::vector<std::uint8_t>{},std::move(materials),
         std::vector<geometry::MeshPart>{{0,6,0},{6,6,1}});opaque.reset();opacity.reset();
     frame.view.shading=render::Shading::smooth;frame.view.wireframe=render::Wireframe::off;
-    ++ui_frame.id;take(renderer.render(frame,&capture));
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(observer.expired(),"replaced material image retires after its last frame");
     check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.4f)<1e-5f,
         "independent opacity map cuts out opaque diffuse pixels");
     check(pixel(capture,x,y*3)[2]>150 && std::abs(depth(capture,x,y*3)-.8f)<1e-5f,
         "opacity map is linear, retaining a value above the alpha threshold");
     frame.view.wireframe=render::Wireframe::only;frame.view.shading=render::Shading::matcap;
-    ++ui_frame.id;take(renderer.render(frame,&capture));
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only MatCap depth respects independent opacity maps");
     frame.view.shading=render::Shading::scene_lit;
-    ++ui_frame.id;take(renderer.render(frame,&capture));
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only mode retains alpha coverage with Scene Lit selected");
     // A complete material table must also drive Lit coverage and shading,
     // including the unjittered editing-depth pass used by temporal AA.
@@ -74,10 +74,10 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         // Compare the same fresh lighting observation on both sides of the
         // studio-only toggle; ordinary consecutive frames have temporal state.
         frame.camera_cut=aa==render::Antialiasing::none;
-        ++ui_frame.id;const auto lit_result=take(renderer.render(frame,&capture));
+        ++ui_frame.id;const auto lit_result=take(prepared_render(renderer,frame,&capture));
         if(aa==render::Antialiasing::none) {
             const auto enabled=capture;frame.view.cavity.enabled=false;
-            ++ui_frame.id;const auto disabled=take(renderer.render(frame,&capture));
+            ++ui_frame.id;const auto disabled=take(prepared_render(renderer,frame,&capture));
             if(capture.rgba!=enabled.rgba||capture.depth!=enabled.depth||disabled.stats.viewport_draw_calls!=lit_result.stats.viewport_draw_calls) {
                 unsigned maximum{};for(std::size_t i=0;i<capture.rgba.size();++i)maximum=std::max(maximum,unsigned(std::abs(int(capture.rgba[i])-enabled.rgba[i])));
                 std::printf("Lit cavity toggle mismatch max=%u depth_equal=%u passes=%llu/%llu\n",maximum,capture.depth==enabled.depth,
@@ -98,12 +98,12 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     frame.view.lit.antialiasing=render::Antialiasing::none;
     frame.environment={};frame.view.lit.direct_reference=true;
     sunlight[0].direction={.89442719f,0,.4472136f};sunlight[0].casts_shadow=true;
-    ++ui_frame.id;take(renderer.render(frame,&capture));const auto unshadowed=pixel(capture,x*3,y)[1];
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));const auto unshadowed=pixel(capture,x*3,y)[1];
     frame.view.lit.shadows=true;
-    ++ui_frame.id;take(renderer.render(frame,&capture));const auto blocked=pixel(capture,x*3,y)[1];
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));const auto blocked=pixel(capture,x*3,y)[1];
     check(blocked<unshadowed*.3f,"ray-query shadow commits opaque texels of a cutout surface");
     sunlight[0].direction={0,0,1};
-    ++ui_frame.id;take(renderer.render(frame,&capture));
+    ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"ray-query shadow traverses transparent texels visible to the camera");
     scene_lit_e2e::png(capture,output/"material-mask-shadow.png");
     {
@@ -118,15 +118,15 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         }
         siblings[1].surfaces=opaque_surfaces;frame.meshes=siblings;
         for(unsigned order=0;order<2;++order) {
-            ++ui_frame.id;take(renderer.render(frame,&capture));
+            ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
             check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f&&pixel(capture,x*3,y)[1]>unshadowed*.7f,
                   "shared Mask/Opaque geometry preserves cutout raster and shadow coverage in either instance order");
             std::swap(siblings[0],siblings[1]);
         }
         siblings[1].world[12]=0;frame.meshes=std::span(siblings).subspan(1);
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(std::abs(depth(capture,x*3,y)-.8f)<1e-5f,"removing the Mask instance restores the opaque sibling's full surface");
-        frame.meshes=meshes;++ui_frame.id;take(renderer.render(frame,&capture));
+        frame.meshes=meshes;++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f&&pixel(capture,x*3,y)[1]>unshadowed*.7f,
               "restoring Mask after opaque-only geometry restores transparent ray traversal");
     }
@@ -138,13 +138,13 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         resolved->push_back(std::make_shared<const material::Surface>(d));
         resolved->push_back(meshes[0].geometry->materials()[1].surface);
         meshes[0].surfaces=resolved;frame.environment={};frame.lights={};
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(pixel(capture,x,y)[0]>150&&pixel(capture,x,y)[1]<30,"emissive texture, not a constant color, supplies visible radiance");
         // A surface-only replacement keeps the exact geometry and stable object.
         d.texture(material::Input::emissive).image=std::make_shared<const material::Image>(1,1,std::vector<std::uint8_t>{0,0,255,255});
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);
         (*resolved)[0]=std::make_shared<const material::Surface>(d);meshes[0].surfaces=resolved;
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(pixel(capture,x,y)[2]>150&&pixel(capture,x,y)[0]<30,"surface-only content replacement does not reuse old material radiance");
         scene_lit_e2e::png(capture,output/"material-emission-replacement.png");
         const auto front_geometry=meshes[0].geometry;
@@ -156,12 +156,12 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         d.parameters.emission_two_sided=false;
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);
         (*resolved)[0]=std::make_shared<const material::Surface>(d);meshes[0].surfaces=resolved;
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(pixel(capture,x,y)[2]<5,"visible emission respects a single-sided material even when the surface is double-sided");
         d.parameters.emission_two_sided=true;
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);
         (*resolved)[0]=std::make_shared<const material::Surface>(d);meshes[0].surfaces=resolved;
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(pixel(capture,x,y)[2]>150,"double-sided emission restores the visible backface");
         meshes[0].geometry=front_geometry;
         frame.view.shading=render::Shading::smooth;
@@ -170,32 +170,32 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         d.parameters.coverage=material::Coverage::opaque;
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);meshes[0].surfaces=resolved;
         (*resolved)[0]=std::make_shared<const material::Surface>(d);
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         const auto flat=pixel(capture,x,y)[0];
         d.texture(material::Input::normal).image=std::make_shared<const material::Image>(1,1,std::vector<std::uint8_t>{128,255,128,255});
         // Publish a new owning snapshot; never mutate a captured surface vector.
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);
         (*resolved)[0]=std::make_shared<const material::Surface>(d);meshes[0].surfaces=resolved;
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(std::abs(int(pixel(capture,x,y)[0])-int(flat))>20,"normal texture changes lighting through the generated tangent frame");
         scene_lit_e2e::png(capture,output/"material-normal.png");
         d.texture(material::Input::normal).image.reset();
         d.parameters.base_color={.25f,.25f,.25f,1};d.parameters.roughness=.8f;d.parameters.metallic=1;
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);(*resolved)[0]=std::make_shared<const material::Surface>(d);meshes[0].surfaces=resolved;
         frame.view.shading=render::Shading::scene_lit;frame.lights=sunlight;
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         const std::array constant{pixel(capture,x,y)[0],pixel(capture,x,y)[1],pixel(capture,x,y)[2]};
         auto packed=std::make_shared<const material::Image>(1,1,std::vector<std::uint8_t>{0,204,255,255});
         d.parameters.roughness=1;d.texture(material::Input::roughness).image=packed;d.texture(material::Input::roughness).channel=1;
         d.texture(material::Input::metallic).image=packed;d.texture(material::Input::metallic).channel=2;
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);(*resolved)[0]=std::make_shared<const material::Surface>(d);meshes[0].surfaces=resolved;
-        ++ui_frame.id;take(renderer.render(frame,&capture));
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         for(std::size_t c=0;c<3;++c)check(std::abs(int(constant[c])-int(pixel(capture,x,y)[c]))<=1,
             "packed linear roughness/metallic channels match constant PBR parameters");
 
     }
     meshes[0].surfaces.reset();
-    frame.meshes={};meshes[0].geometry.reset();++ui_frame.id;result=take(renderer.render(frame));
+    frame.meshes={};meshes[0].geometry.reset();++ui_frame.id;result=take(prepared_render(renderer,frame));
     check(opacity_observer.expired() && result.stats.cached_material_images==0,"unused geometry and material images retire together");
     std::puts("Material renderer acceptance: PASS (parts, UV wrap, sRGB, diffuse alpha/linear opacity/depth, MatCap/Lit, all AA coverage, emission replacement, normal map, cache/lifetime)");
 }
@@ -228,7 +228,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
         // without DDGI has no history to settle. Each captured frame still
         // integrates 64 independent estimates; discarded frames add no evidence.
         const unsigned frames=options.direct_reference&&!options.ddgi?1u:warmup_frames;
-        for(unsigned i=0;i<frames;++i) {pump();++drawing.id;take(renderer.render(frame,i+1==frames?&result:nullptr));}
+        for(unsigned i=0;i<frames;++i) {pump();++drawing.id;take(prepared_render(renderer,frame,i+1==frames?&result:nullptr));}
         png(result,output/name);return result;
     };
     const auto left=project_region(frame.camera,frame.scene_viewport,drawing.extent,{-3.15f,.01f,1.f});
@@ -283,6 +283,6 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     emitter.parameters.coverage=material::Coverage::mask;emitter.parameters.base_color[3]=0;publish_emitter();
     const auto masked=mean_rgb(capture("material-masked-emission.png"),left);
     check(masked[0]<2&&masked[1]<2&&masked[2]<2,"discarded emitter texels cannot contribute light");
-    frame.meshes={};frame.lights={};++drawing.id;take(renderer.render(frame));
+    frame.meshes={};frame.lights={};++drawing.id;take(prepared_render(renderer,frame));
     std::puts("Material transport acceptance: PASS (textured DDGI, material edits, disconnected Mask/opaque closure, offscreen textured NEE, emission sides/Mask)");
 }

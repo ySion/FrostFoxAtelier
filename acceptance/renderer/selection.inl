@@ -16,7 +16,7 @@ void selection_depth_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     frame.view.lit.sssr=frame.view.lit.ssil=frame.view.lit.bloom=false;
     const auto yellow=[](const std::uint8_t* p){return p[0]>225 && p[1]>150 && p[2]<80;};
     render::Capture capture;
-    const auto draw=[&] {++drawing.id;check(take(renderer.render(frame,&capture)).status==render::FrameStatus::accepted,"selection depth frame accepted");};
+    const auto draw=[&] {++drawing.id;check(take(prepared_render(renderer,frame,&capture)).status==render::FrameStatus::accepted,"selection depth frame accepted");};
     bool continuous=true;
     for(unsigned pose=0;pose<8;++pose) {
         const float angle=.317f+pose*.027f,c=std::cos(angle),s=std::sin(angle);
@@ -94,7 +94,7 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
     render::Capture capture;
     const auto draw=[&] {
         ++drawing.id;
-        check(take(renderer.render(frame,&capture)).status==render::FrameStatus::accepted,
+        check(take(prepared_render(renderer,frame,&capture)).status==render::FrameStatus::accepted,
               "selection clipping frame is accepted");
     };
     bool interiors_preserved=true;

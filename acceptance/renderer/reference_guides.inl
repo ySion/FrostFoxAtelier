@@ -9,7 +9,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     render::Capture capture;
     const auto draw=[&] {
         ++drawing.id;
-        const auto result=take(renderer.render(frame,&capture));
+        const auto result=take(prepared_render(renderer,frame,&capture));
         check(result.status==render::FrameStatus::accepted && capture.frame_id==drawing.id,
               "reference guides retain accepted frame identity");
         check(pixel(capture,8,8)[1]==255 && depth(capture,8,8)==0 && pixel(capture,20,20)[0]==0,
@@ -112,7 +112,7 @@ void reference_guide_cases(render::Renderer& renderer, ui::PixelExtent extent) {
           capture.depth==background.depth,"zero viewport suppresses all auxiliary draws");
     frame.view.background=static_cast<render::Background>(999);
     const auto previous=capture.frame_id;
-    const auto invalid=renderer.render(frame,&capture);
+    const auto invalid=prepared_render(renderer,frame,&capture);
     check(!invalid && !invalid.error().terminal && capture.frame_id==previous,"invalid background is rejected before encoding");
     frame.view.background=render::Background::none; draw();
     std::puts("Renderer reference guides: PASS (empty world, gradient, grid, axes, occlusion, wire modes, depth, camera, retirement)");

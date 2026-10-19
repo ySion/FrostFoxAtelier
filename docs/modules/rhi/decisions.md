@@ -12,6 +12,9 @@
 | Vertex、Mesh、Compute 共用主体 | 实际离屏消费者覆盖三类管线和 GPU 生成的间接参数；Mesh Shader 是硬件门槛 | [正式消费者](../../../acceptance/rhi/main.cpp) |
 | 完整候选成功后移动替换 | 失败保留旧 Pipeline；新 Program 的参数由消费者绑定，不建第二份发布/绑定表 | [准备与替换](contract.md#管线准备与替换) |
 | 编译、反射、主字节码及 PSO 都参与成功判断 | 有效 handle 或某一阶段生成 PSO 不足以证明所请求管线完整可用 | [生产实现](../../../src/rhi/rhi.cpp) |
+| 准备在 Context 工作线程，登记在 owner 线程 | 编辑器 UI 线程不等待编译、PSO 创建或 GBV 首次使用补丁；gfx context 仍只由 owner 线程改动。同步 `prepare` 内联同一作业，不维护两份准备代码 | [异步准备](contract.md#异步准备与-dxil-磁盘缓存) |
+| GBV 补丁靠不执行的预热录制提前 | 2026-10-19 实测：创建 PSO 时就打补丁让 SDK Layers 1.619.1.0 崩溃；工作线程只录 `SetPipelineState` 可以吸收首次使用成本，执行时校验不变 | [Renderer 验收](../renderer/acceptance.md) |
+| 引擎自有 DXIL 缓存 | 异步准备不经过 gfx 的编译函数，gfx 自带的 `EnableShaderCache` 覆盖不到它；自有格式把编译器身份、全部参数放进键，条目带校验和，损坏即重编 | [缓存契约](contract.md#异步准备与-dxil-磁盘缓存) |
 | 保留提交事实和失败终态 | Execute 后的 Signal 等失败不能被当成未提交，清理必须区别排空与重新执行 | [失败与关停](contract.md#失败与有界关停) |
 | 普通借用限定为资源、参数和录制 | 窗口同步、frame/finish/close 与执行域由 Context 管理；原生 interop 只在专门回归中使用 | [借用范围](contract.md#借用-gfx-的许可范围) |
 | 显式同步绘制前窗口尺寸 | 隐藏弹窗可准备正确画布；复用现有排空、退休与 resize，消除为旧尺寸额外绘制和 Present 的需要 | [窗口合同](contract.md#窗口与读回) |
@@ -27,7 +30,7 @@
 
 ## 补丁与依赖维护
 
-补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`，覆盖资源状态、管线失败传播、有限执行与关停、根参数预算、AS 屏障、原始时间戳及绘制前窗口同步。补丁从锁定原始归档生成；配置先还原 pristine 副本再重放，不在旧修改上叠加。按 gfx 修订号隔离源码根，避免升级时替换父目录却保留嵌套 SDK 的旧下载记录；具体路径见[构建说明](README.md#构建与运行)。
+补丁修改 `gfx.cpp`、`gfx.h`、`gfx_core.h`、`gfx_core.cpp`，覆盖资源状态、管线失败传播、有限执行与关停、根参数预算、AS 屏障、原始时间戳、绘制前窗口同步，以及分步构建 kernel（`GfxKernelBuild`：任意线程用已编译的阶段创建 root signature 与 PSO，owner 线程登记）。补丁从锁定原始归档生成；配置先还原 pristine 副本再重放，不在旧修改上叠加。按 gfx 修订号隔离源码根，避免升级时替换父目录却保留嵌套 SDK 的旧下载记录；具体路径见[构建说明](README.md#构建与运行)。
 
 已修正的问题继续由同一宿主和补丁维护：内部缓冲表变化后重新按句柄取 Buffer、纹理复制计入 range 偏移、DXGI 与参数数组配平、原生拥有数组初始化、完成后常量池复用，以及 Mesh 候选筛选、输入边界和公开 C++23 要求。对应运行与历史观察见[验收记录](acceptance.md)。
 

@@ -15,6 +15,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry；Scene Lit 还消费粗糙度、金属度、HDR 自发光及稳定组件键。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。全部表面路径消费同一标准材质和 Opaque/Mask 覆盖；具体范围见[材质系统](materials.md)和 [Scene Lit](scene-lit.md)。
 - 主视图采用不可变 Mesh 构造时计算的局部包围盒，按当前 world/view/projection 做保守齐次视锥剔除。六个裁剪面包含浮点误差余量，XY 另留一个像素覆盖时间抖动与小数视口；不作透视除法，跨眼点/近平面、镜像和非均匀变换仍按包围盒支持范围处理。可见实例只拆为原批次内的连续区间，不重排或压缩 Frame 索引；GBuffer、工作室、深度和选中边线共用可见性。完整 Frame、材质表、TLAS、发光域、DDGI 与阴影投影者仍保留屏幕外物体，缓存也不随相机进出逐帧退休。不可表示的浮点裁剪范围保守保留；非法 world 变换仍在剔除前拒绝整帧。当前尚无物体遮挡剔除、LOD 或网格簇剔除。
 - 场景管线和深度纹理在首次绘制非空场景且 viewport 非零时创建；后续按原生命周期复用，深度尺寸在实际场景绘制时跟随目标更新。纯 UI 窗口仍使用同一 Renderer/Context，无场景管线创建、深度分配或清除。UI 管线在 `open` 时准备，应用可提前创建并保留隐藏的弹出窗口以移出首次点击的初始化成本。
+- Scene Lit 管线按使用条件分组，在 RHI Context 的工作线程上准备；Renderer 的 owner 线程从不等待编译、PSO 创建或 GBV 预热。基础组 38 条，任何 Lit 视图都需要；其余组只在视图设置用到时提交：直接光参考或非 clustered 路径的 RT 着色 1 条、ReSTIR 复用 2 条、B 缓存阴影 4 条、clustered 接收面统计 1 条、DDGI 检视 2 条、DDGI 覆盖诊断 1 条、探针叠层 1 条。`preparation(view)` 启动该视图缺少的组，收集已完成的管线，并按该视图所需的组报告 done/total；不画 Lit 的视图总是 ready。done/total 只描述当前视图：设置改变后需要新的组时，total 随之变大，已经 ready 的进度会回到未就绪，直到新组完成。进度显示和作业状态不能假设 total 固定不变。`render` 对画 Lit 的帧做同样的检查。准备失败（例如编译错误）不是终止错误，之后的 Lit 视图都返回同一错误，工作室着色不受影响。`Options::shader_cache` 是交给 RHI 的 DXIL 缓存目录，空路径表示不用缓存，见 [RHI 合同](../rhi/contract.md#异步准备与-dxil-磁盘缓存)。
 - 相机为左手系，+Y 向上，使用有限 Reversed-Z：D3D 深度近端为 1、远端为 0，背景清除值为 0。矩阵为 row-major，行向量按 `p * world * view * projection` 执行；透视和正交都遵循同一深度约定。renderer 不维护相机控制状态。
 - `Frame::lighting_focus` 由宿主提供光照关注点，默认世界原点，与相机眼点及 Edit/Play 独立；编辑器使用观察 target，游戏可提供其接收区域关注点。DDGI 跟随体积与有界近源选灯网格消费该点，分别维护自己的布局。宿主发布 camera/view 前共用 `probe_focus_error` 校验实际世界精度；Renderer 编码前再次校验。近源网格无法保持 8 米格边精度时退回全局 proposal，不为这个可选采样加速结构额外收紧合法 Frame；原有 DDGI 体积、focus 与 World 作者值校验继续适用。体积组织、历史与预算合同见 [Scene Lit](scene-lit.md#ddgi-探针场)。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
@@ -84,6 +85,7 @@ Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Applic
 `Frame::render_delta_seconds` 为独立于模拟的活跃渲染间隔，有限 `[0,.1]` 秒，默认固定步进 `1/60`。零表示重建时间基线，不冻结几何失效。它只控制 DDGI 呈现低通，不改变射线预算或运输观测权重；动态宿主须按匹配 accepted 的相邻渲染开始时间产生，不能使用 Play delta 或帧内 CPU 耗时。编辑器与 Project Run 共用 `application::RenderClock`；连续慢帧限幅推进，已知停用/跳过后重建。
 
 - 隐藏、最小化、零 client 尺寸或输入 extent 与实际 target 不符：编码前返回 skipped，capture 不变。空 scissor 不会落入 gfx 的“零尺寸代表整个目标”惯例。
+- 画 Lit 的帧（Lit 着色、不是纯线框、有网格或探针叠层、viewport 非零）所需的管线组未就绪：通过 CPU 校验后、编码前返回 not_ready。不录制、不 Present，capture 和 Lit 历史不变。它不是错误，宿主可以重试，也可以改用工作室着色绘制同一帧。
 - 完整 `Context::frame` 成功且 Present 未返回 `DXGI_STATUS_OCCLUDED`：accepted。`accepted_extent` 是编码前捕获的实际尺寸；gfx 在旧目标 Present 后 resize，`next_extent` 只适用于下一帧。accepted 不承诺已经完成扫描显示。
 - CPU 校验和编码前 CPU 分配失败：`Error::terminal=false`，可重新准备帧。开始 GPU 创建、上传或录制后失败：terminal，后续只可关闭，不宣称回滚或继续使用上一 GPU 帧。
 - 模式退出引起的 Scene Lit 历史失效也在 CPU 准备成功后执行；被拒绝的候选帧不改变有效 Lit 历史。接受空场景沿原 Context 退休旧场景的光栅与射线资源，可复用的 Scene Lit 目标仍由 Renderer 持有并报告逻辑字节。
@@ -98,7 +100,7 @@ Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Applic
 
 `FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制；`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
+CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制；`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
 
 | 字段 | 统计边界 |
 | --- | --- |
@@ -114,7 +116,7 @@ CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation
 | `cached_coverage_texel_bytes` | 缓存项宽×高的逻辑 R8 字节总量，不是物理显存占用 |
 | `cached_coverage_cpu_bytes` | 缓存持有的 Coverage 的 `pixels.size()` 总量，包含 CPU 行 padding；不是 vector capacity 或整个 UI 的 CPU 内存 |
 
-编码前 skipped 的活动计数为 0，缓存计数反映仍被持有的资源。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存量不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧计数重置，缓存总量随现有插入/退休动作更新，未改变淘汰策略。
+编码前 skipped 与 not_ready 的活动计数为 0，缓存计数反映仍被持有的资源。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存量不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧计数重置，缓存总量随现有插入/退休动作更新，未改变淘汰策略。
 
 应用可在正式交互中测量 prepare/render 的 CPU 墙钟时间；render 时间包含 Present 或必要等待，不能称为 GPU 时长。使用同一 `FrameResult` 关联活动计数，显式 Capture 另行记录，避免把它的同步成本混入普通交互样本。
 

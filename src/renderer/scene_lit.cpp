@@ -10,12 +10,14 @@
 #include "math/math.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <map>
@@ -73,7 +75,7 @@ struct SceneLit::State {
     rhi::Pipeline probe_copy,probe_trace,probe_update,probe_present,probe_resolve,probe_upsample,probe_exact,ao,ao_depth_reduce,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
     rhi::Pipeline reflection_resolve,reflection_filter,brdf,taa,bloom_downsample,bloom_blur,tone_map,tone;
     rhi::Pipeline smaa_edges_pass,smaa_weights_pass,smaa_neighborhood,smaa_resolve;
-    rhi::Pipeline ssil_trace,ssil_resolve,probe_debug_surface,probe_debug_geometry;
+    rhi::Pipeline ssil_trace,ssil_resolve,probe_debug_surface,probe_debug_geometry,inspect_pass,inspect_update;
     GfxTexture probe_age,probe_sample_cursor,probe_debug_depth;
     std::array<GfxTimestampQuery,22> queries{}; // Existing scopes 0..19, lists, shadow updates.
     std::uint32_t encoded_pass_mask{};
@@ -136,7 +138,6 @@ struct SceneLit::State {
     std::array<std::uint32_t,readback_count> readback_pass_masks{};
     std::array<ShadowSample,readback_count> readback_shadows{};
     struct InspectionState {
-        rhi::Pipeline pass,update;
         GfxBuffer output,rays;
         std::array<GfxBuffer,readback_count> readback{},ray_readback{};
         std::array<ProbeInspection,readback_count> metadata{};
@@ -217,74 +218,168 @@ struct SceneLit::State {
         auto result=gfxCreateTexture2D(gfx,width,height,format);allocation(bool(result));
         return result;
     }
-    void prepare(rhi::Pipeline& output,const char* source,const char* entry,const char* name) {
-        rhi::PipelineDesc desc;desc.source.cs=source;desc.entry_point=entry;desc.name=name;
-        auto result=context.prepare(desc);if(!result)throw Error{result.error(),true};output=std::move(*result);
+    // Pipeline groups by the settings that bind them. draw() runs only after
+    // the frame's groups are ready, so it never prepares or waits.
+    enum Group : std::uint32_t {
+        group_base=1,group_direct_rays=2,group_restir=4,group_shadow_cache=8,group_cluster_inspect=16,group_probe_inspection=32,group_probe_coverage=64,group_probe_overlay=128,group_end=256
+    };
+    struct PendingPipeline { rhi::Pipeline* output; rhi::PipelineJob job; Group group; };
+    std::vector<PendingPipeline> pending;
+    std::array<std::uint32_t,8> group_sizes{};
+    std::uint32_t submitted{};
+    std::optional<Error> preparation_failure;
+    static std::uint32_t groups(const ViewSettings& view) {
+        const auto& s=view.lit;
+        const bool clustered=s.direct_clustered&&!s.direct_reference;
+        return group_base|(clustered?0u:group_direct_rays)|(!clustered&&!s.direct_reference?group_restir:0u)|
+            (clustered&&s.direct_shadow_cache&&s.shadows?group_shadow_cache:0u)|(clustered&&s.direct_cluster_inspect?group_cluster_inspect:0u)|
+            (s.ddgi&&s.probe_inspect?group_probe_inspection:0u)|(s.probe_debug?group_probe_coverage:0u)|
+            (view.wireframe!=Wireframe::only&&s.probe_overlay()?group_probe_overlay:0u);
     }
-    void pipelines() {
-        if(gbuffer)return;
+    void submit(Group group,rhi::Pipeline& output,const rhi::PipelineDesc& desc) {
+        auto job=context.submit(desc);if(!job)throw Error{job.error(),false};
+        pending.push_back({&output,std::move(*job),group});++group_sizes[std::countr_zero(std::uint32_t(group))];
+    }
+    void submit(Group group,rhi::Pipeline& output,const char* source,const char* entry,const char* name) {
+        rhi::PipelineDesc desc;desc.source.cs=source;desc.entry_point=entry;desc.name=name;submit(group,output,desc);
+    }
+    void submit_probe_debug(Group group,rhi::Pipeline& pipeline,bool geometry) {
+        const std::string source=std::string(shaders::lit_ddgi_debug);
+        const std::string vs=source+"\nDDGIDebugVertex main(uint v:SV_VertexID,uint i:SV_InstanceID){return ddgi_debug_vs(v,i);}";
+        const std::string ps=source+(geometry?"\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}":
+            "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}");
+        rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=geometry?vs.c_str():shaders::viewport_vs;
+        desc.source.ps=ps.c_str();desc.name=geometry?"DDGI spatial diagnostics":"DDGI receiver coverage";
+        require(gfxDrawStateSetColorTarget(desc.draw_state,0,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),"Set DDGI debug color format");
+        require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set DDGI debug culling");
+        if(geometry) {
+            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set DDGI debug depth format");
+            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER_EQUAL),"Set DDGI debug reversed depth");
+        } else require(gfxDrawStateSetDepthWriteMask(desc.draw_state,D3D12_DEPTH_WRITE_MASK_ZERO),"Disable diagnostic surface depth writes");
+        submit(group,pipeline,desc);
+    }
+    // Workers start jobs in submission order. Under GPU-based validation each
+    // job also pays its pipeline's first-use patching, so the costliest
+    // measured pipelines go first.
+    void submit_group(Group group) {
+        switch(group) {
+        case group_base: {
+            submit(group,probe_update,shaders::lit_ddgi,"DDGIUpdate","DDGI hit lighting and convolution");
+            submit(group,cluster_shade,shaders::lit_clustered,"lit_cluster_shade_cs","Clustered analytic direct lighting");
+            submit(group,ssil_resolve,shaders::lit_ssil,"lit_ssil_resolve_cs","Local indirect light reconstruction");
+            submit(group,probe_trace,shaders::lit_ddgi,"DDGITrace","DDGI RT primary trace");
+            submit(group,reflection_resolve,shaders::lit_post,"lit_reflection_resolve_cs","SSSR temporal resolve");
+            submit(group,direct_resolve,shaders::lit_direct,"lit_direct_resolve_cs","Direct radiance temporal reconstruction");
+            const std::string vs=std::string(shaders::lit_gbuffer)+"\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
+            const std::string ps=std::string(shaders::lit_gbuffer)+"\nLitGBuffer main(LitRaster i){return lit_gbuffer_ps(i);}";
+            rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Scene Lit GBuffer";
+            for(std::uint32_t i=0;i<4;i++)require(gfxDrawStateSetColorTarget(desc.draw_state,i,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set GBuffer format");
+            require(gfxDrawStateSetColorTarget(desc.draw_state,4,DXGI_FORMAT_R32_FLOAT),"Set previous surface depth format");
+            require(gfxDrawStateSetColorTarget(desc.draw_state,5,DXGI_FORMAT_R16G16_FLOAT),"Set geometric normal format");
+            require(gfxDrawStateSetColorTarget(desc.draw_state,6,DXGI_FORMAT_R32G32_UINT),"Set stable surface identity format");
+            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set GBuffer depth");
+            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set GBuffer reversed depth");
+            require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set GBuffer culling");
+            submit(group,gbuffer,desc);
+            submit(group,cluster_build,shaders::lit_clustered,"lit_cluster_build_cs","Conservative local light lists");
+            constexpr std::array filter_entries{"lit_direct_filter1_cs","lit_direct_filter2_cs","lit_direct_filter4_cs"};
+            for(std::size_t i=0;i<direct_filter.size();++i)
+                submit(group,direct_filter[i],shaders::lit_direct,filter_entries[i],"Direct radiance spatial reconstruction");
+            submit(group,compose,shaders::lit_direct,"lit_compose_cs","Scene Lit HDR composition");
+            submit(group,probe_copy,shaders::lit_ddgi,"DDGICopy","DDGI history transfer");
+            submit(group,probe_present,shaders::lit_ddgi,"DDGIPresent","DDGI presentation smoothing");
+            submit(group,probe_resolve,shaders::lit_ddgi,"DDGIResolve","DDGI irradiance gather");
+            submit(group,probe_upsample,shaders::lit_ddgi,"DDGIUpsample","DDGI irradiance upsampling");
+            submit(group,probe_exact,shaders::lit_ddgi,"DDGIExact","DDGI exact receiver gather");
+            submit(group,ao,shaders::lit_post,"lit_gtao_cs","Scene Lit GTAO");
+            submit(group,ao_depth_reduce,shaders::lit_post,"lit_gtao_depth_cs","GTAO view depth levels");
+            submit(group,ao_resolve,shaders::lit_post,"lit_gtao_resolve_cs","GTAO signal reconstruction");
+            submit(group,depth_first,shaders::lit_post,"lit_depth_first_cs","Scene Lit first depth reduction");
+            submit(group,depth_pyramid,shaders::lit_post,"lit_depth_pyramid_cs","Scene Lit depth hierarchy");
+            submit(group,ssr_reset,shaders::lit_post,"lit_ssr_reset_cs","SSSR work reset");
+            submit(group,ssr_classify,shaders::lit_post,"lit_ssr_classify_cs","SSSR classify");
+            submit(group,ssr_prepare,shaders::lit_post,"lit_ssr_prepare_cs","SSSR indirect work");
+            submit(group,ssr_trace,shaders::lit_post,"lit_ssr_trace_cs","SSSR hierarchy traversal");
+            submit(group,reflection_filter,shaders::lit_post,"lit_reflection_filter_cs","SSSR spatial reconstruction");
+            submit(group,brdf,shaders::lit_post,"lit_brdf_lut_cs","Split sum BRDF integration");
+            submit(group,taa,shaders::lit_post,"lit_taa_cs","Scene Lit temporal antialiasing");
+            submit(group,bloom_downsample,shaders::lit_post,"lit_bloom_downsample_cs","Scene Lit bloom downsample");
+            submit(group,bloom_blur,shaders::lit_post,"lit_bloom_blur_cs","Scene Lit bloom filter");
+            submit(group,tone_map,shaders::lit_post,"lit_tonemap_cs","Scene Lit SDR scene resolve");
+            submit(group,smaa_edges_pass,shaders::lit_smaa,"lit_smaa_edges_cs","SMAA edges");
+            submit(group,smaa_weights_pass,shaders::lit_smaa,"lit_smaa_weights_cs","SMAA coverage weights");
+            submit(group,smaa_neighborhood,shaders::lit_smaa,"lit_smaa_neighborhood_cs","SMAA spatial reconstruction");
+            submit(group,smaa_resolve,shaders::lit_smaa,"lit_smaa_resolve_cs","SMAA two-frame reconstruction");
+            submit(group,ssil_trace,shaders::lit_ssil,"lit_ssil_trace_cs","Local indirect light sampling");
+            const std::string tone_source=std::string(shaders::lit_post)+"\nfloat4 main(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target{return lit_display_ps(p,uv);}";
+            rhi::PipelineDesc tone_desc;tone_desc.kind=rhi::PipelineKind::vertex;tone_desc.source.vs=shaders::viewport_vs;
+            tone_desc.source.ps=tone_source.c_str();tone_desc.name="Scene Lit display tone";
+            require(gfxDrawStateSetColorTarget(tone_desc.draw_state,0,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),"Set Scene Lit display format");
+            require(gfxDrawStateSetCullMode(tone_desc.draw_state,D3D12_CULL_MODE_NONE),"Set Scene Lit display culling");
+            require(gfxDrawStateSetDepthWriteMask(tone_desc.draw_state,D3D12_DEPTH_WRITE_MASK_ZERO),"Disable tone depth writes");
+            submit(group,tone,tone_desc);
+            break;
+        }
+        case group_direct_rays: submit(group,direct,shaders::lit_restir,"lit_restir_shade_cs","ReSTIR DI current-frame visibility");break;
+        case group_restir:
+            submit(group,di_initial,shaders::lit_restir,"lit_restir_initial_cs","ReSTIR DI initial and temporal sampling");
+            submit(group,di_spatial,shaders::lit_restir,"lit_restir_spatial_cs","ReSTIR DI spatial reuse");
+            break;
+        case group_shadow_cache: {
+            submit(group,cluster_points,shaders::lit_clustered,"lit_cluster_points_cs","Cached point direct lighting");
+            submit(group,cluster_sun,shaders::lit_clustered,"lit_cluster_sun_cs","Cached directional direct lighting");
+            submit(group,cluster_residual,shaders::lit_clustered,"lit_cluster_residual_cs","Endpoint direct lighting visibility");
+            const std::string vs=std::string(shaders::lit_shadow)+"\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}";
+            const std::string ps=std::string(shaders::lit_shadow)+"\nvoid main(LitShadowRaster i){lit_shadow_ps(i);}";
+            rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Cached shadow depth";
+            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set cached shadow precision");
+            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set shadow reversed depth");
+            require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set two-sided shadow coverage");
+            submit(group,shadow_depth,desc);
+            break;
+        }
+        case group_cluster_inspect: submit(group,cluster_inspect,shaders::lit_clustered,"lit_cluster_inspect_cs","Direct receiver support inspection");break;
+        case group_probe_inspection:
+            submit(group,inspect_update,shaders::lit_ddgi,"DDGIUpdateInspect","DDGI sampled-hit inspection");
+            submit(group,inspect_pass,shaders::lit_ddgi,"DDGIInspect","DDGI receiver inspection");
+            break;
+        case group_probe_coverage: submit_probe_debug(group,probe_debug_surface,false);break;
+        case group_probe_overlay: submit_probe_debug(group,probe_debug_geometry,true);break;
+        case group_end: break;
+        }
+        submitted|=group;
+    }
+    Result<Preparation> preparation(const ViewSettings& view) {
+        if(preparation_failure)return std::unexpected(*preparation_failure);
+        const auto wanted=groups(view);
+        try {
+            for(std::uint32_t group=group_base;group!=group_end;group<<=1)
+                if((wanted&group)&&!(submitted&group))submit_group(static_cast<Group>(group));
+            for(auto it=pending.begin();it!=pending.end();) {
+                auto taken=context.take(it->job);
+                if(!taken){++it;continue;}
+                if(!*taken)throw Error{taken->error(),false};
+                *it->output=std::move(**taken);it=pending.erase(it);
+            }
+        } catch(const Error& error) {
+            // Built-in sources do not change within a process; retrying cannot succeed.
+            pending.clear();preparation_failure=error;preparation_failure->terminal=false;
+            return std::unexpected(*preparation_failure);
+        }
+        Preparation result;
+        for(std::uint32_t i=0;i<group_sizes.size();++i)if(wanted&(1u<<i))result.total+=group_sizes[i];
+        result.done=result.total-static_cast<std::uint32_t>(std::ranges::count_if(pending,[&](const PendingPipeline& item){return (wanted&item.group)!=0;}));
+        result.ready=result.done==result.total;
+        return result;
+    }
+    // Owner-thread resources shared by every Lit frame, created at the first encoded frame.
+    void resources() {
+        if(sampler)return;
         sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_MIN_MAG_MIP_LINEAR);allocation(bool(sampler));
         for(auto& query:queries){query=gfxCreateTimestampQuery(gfx);allocation(bool(query));}
         // Rays[0..7], cluster statistics[8..10], optional histogram[11..77], shadow diagnostics[78..81].
         ray_counters=gfxCreateBuffer<std::uint32_t>(gfx,82);allocation(bool(ray_counters));
         for(auto& readback:ray_readback){readback=gfxCreateBuffer(gfx,82*sizeof(std::uint32_t),nullptr,kGfxCpuAccess_Read);allocation(bool(readback));}
-        const std::string vs=std::string(shaders::lit_gbuffer)+"\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
-        const std::string ps=std::string(shaders::lit_gbuffer)+"\nLitGBuffer main(LitRaster i){return lit_gbuffer_ps(i);}";
-        rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Scene Lit GBuffer";
-        for(std::uint32_t i=0;i<4;i++)require(gfxDrawStateSetColorTarget(desc.draw_state,i,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set GBuffer format");
-        require(gfxDrawStateSetColorTarget(desc.draw_state,4,DXGI_FORMAT_R32_FLOAT),"Set previous surface depth format");
-        require(gfxDrawStateSetColorTarget(desc.draw_state,5,DXGI_FORMAT_R16G16_FLOAT),"Set geometric normal format");
-        require(gfxDrawStateSetColorTarget(desc.draw_state,6,DXGI_FORMAT_R32G32_UINT),"Set stable surface identity format");
-        require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set GBuffer depth");
-        require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set GBuffer reversed depth");
-        require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set GBuffer culling");
-        auto result=context.prepare(desc);if(!result)throw Error{result.error(),true};gbuffer=std::move(*result);
-        prepare(di_initial,shaders::lit_restir,"lit_restir_initial_cs","ReSTIR DI initial and temporal sampling");
-        prepare(di_spatial,shaders::lit_restir,"lit_restir_spatial_cs","ReSTIR DI spatial reuse");
-        prepare(direct,shaders::lit_restir,"lit_restir_shade_cs","ReSTIR DI current-frame visibility");
-        prepare(cluster_build,shaders::lit_clustered,"lit_cluster_build_cs","Conservative local light lists");
-        prepare(cluster_shade,shaders::lit_clustered,"lit_cluster_shade_cs","Clustered analytic direct lighting");
-        prepare(direct_resolve,shaders::lit_direct,"lit_direct_resolve_cs","Direct radiance temporal reconstruction");
-        constexpr std::array filter_entries{"lit_direct_filter1_cs","lit_direct_filter2_cs","lit_direct_filter4_cs"};
-        for(std::size_t i=0;i<direct_filter.size();++i)
-            prepare(direct_filter[i],shaders::lit_direct,filter_entries[i],"Direct radiance spatial reconstruction");
-        prepare(compose,shaders::lit_direct,"lit_compose_cs","Scene Lit HDR composition");
-        prepare(probe_copy,shaders::lit_ddgi,"DDGICopy","DDGI history transfer");
-        prepare(probe_trace,shaders::lit_ddgi,"DDGITrace","DDGI RT primary trace");
-        prepare(probe_update,shaders::lit_ddgi,"DDGIUpdate","DDGI hit lighting and convolution");
-        prepare(probe_present,shaders::lit_ddgi,"DDGIPresent","DDGI presentation smoothing");
-        prepare(probe_resolve,shaders::lit_ddgi,"DDGIResolve","DDGI irradiance gather");
-        prepare(probe_upsample,shaders::lit_ddgi,"DDGIUpsample","DDGI irradiance upsampling");
-        prepare(probe_exact,shaders::lit_ddgi,"DDGIExact","DDGI exact receiver gather");
-        prepare(ao,shaders::lit_post,"lit_gtao_cs","Scene Lit GTAO");
-        prepare(ao_depth_reduce,shaders::lit_post,"lit_gtao_depth_cs","GTAO view depth levels");
-        prepare(ao_resolve,shaders::lit_post,"lit_gtao_resolve_cs","GTAO signal reconstruction");
-        prepare(depth_first,shaders::lit_post,"lit_depth_first_cs","Scene Lit first depth reduction");
-        prepare(depth_pyramid,shaders::lit_post,"lit_depth_pyramid_cs","Scene Lit depth hierarchy");
-        prepare(ssr_reset,shaders::lit_post,"lit_ssr_reset_cs","SSSR work reset");
-        prepare(ssr_classify,shaders::lit_post,"lit_ssr_classify_cs","SSSR classify");
-        prepare(ssr_prepare,shaders::lit_post,"lit_ssr_prepare_cs","SSSR indirect work");
-        prepare(ssr_trace,shaders::lit_post,"lit_ssr_trace_cs","SSSR hierarchy traversal");
-        prepare(reflection_resolve,shaders::lit_post,"lit_reflection_resolve_cs","SSSR temporal resolve");
-        prepare(reflection_filter,shaders::lit_post,"lit_reflection_filter_cs","SSSR spatial reconstruction");
-        prepare(brdf,shaders::lit_post,"lit_brdf_lut_cs","Split sum BRDF integration");
-        prepare(taa,shaders::lit_post,"lit_taa_cs","Scene Lit temporal antialiasing");
-        prepare(bloom_downsample,shaders::lit_post,"lit_bloom_downsample_cs","Scene Lit bloom downsample");
-        prepare(bloom_blur,shaders::lit_post,"lit_bloom_blur_cs","Scene Lit bloom filter");
-        prepare(tone_map,shaders::lit_post,"lit_tonemap_cs","Scene Lit SDR scene resolve");
-        prepare(smaa_edges_pass,shaders::lit_smaa,"lit_smaa_edges_cs","SMAA edges");
-        prepare(smaa_weights_pass,shaders::lit_smaa,"lit_smaa_weights_cs","SMAA coverage weights");
-        prepare(smaa_neighborhood,shaders::lit_smaa,"lit_smaa_neighborhood_cs","SMAA spatial reconstruction");
-        prepare(smaa_resolve,shaders::lit_smaa,"lit_smaa_resolve_cs","SMAA two-frame reconstruction");
-        prepare(ssil_trace,shaders::lit_ssil,"lit_ssil_trace_cs","Local indirect light sampling");
-        prepare(ssil_resolve,shaders::lit_ssil,"lit_ssil_resolve_cs","Local indirect light reconstruction");
-        const std::string tone_source=std::string(shaders::lit_post)+"\nfloat4 main(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target{return lit_display_ps(p,uv);}";
-        rhi::PipelineDesc tone_desc;tone_desc.kind=rhi::PipelineKind::vertex;tone_desc.source.vs=shaders::viewport_vs;
-        tone_desc.source.ps=tone_source.c_str();tone_desc.name="Scene Lit display tone";
-        require(gfxDrawStateSetColorTarget(tone_desc.draw_state,0,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),"Set Scene Lit display format");
-        require(gfxDrawStateSetCullMode(tone_desc.draw_state,D3D12_CULL_MODE_NONE),"Set Scene Lit display culling");
-        require(gfxDrawStateSetDepthWriteMask(tone_desc.draw_state,D3D12_DEPTH_WRITE_MASK_ZERO),"Disable tone depth writes");
-        result=context.prepare(tone_desc);if(!result)throw Error{result.error(),true};tone=std::move(*result);
         brdf_lut=texture(64,64,DXGI_FORMAT_R16G16_FLOAT,4);
         const auto upload_lut=[&](GfxTexture& target,std::uint32_t width,std::uint32_t height,DXGI_FORMAT format,std::span<const unsigned char> bytes) {
             target=texture(width,height,format,0);
@@ -323,18 +418,6 @@ struct SceneLit::State {
         previous=values;
     }
     void prepare_shadows() {
-        if(!cluster_points)prepare(cluster_points,shaders::lit_clustered,"lit_cluster_points_cs","Cached point direct lighting");
-        if(!cluster_sun)prepare(cluster_sun,shaders::lit_clustered,"lit_cluster_sun_cs","Cached directional direct lighting");
-        if(!cluster_residual)prepare(cluster_residual,shaders::lit_clustered,"lit_cluster_residual_cs","Endpoint direct lighting visibility");
-        if(!shadow_depth) {
-            const std::string vs=std::string(shaders::lit_shadow)+"\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}";
-            const std::string ps=std::string(shaders::lit_shadow)+"\nvoid main(LitShadowRaster i){lit_shadow_ps(i);}";
-            rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Cached shadow depth";
-            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set cached shadow precision");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set shadow reversed depth");
-            require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set two-sided shadow coverage");
-            auto result=context.prepare(desc);if(!result)throw Error{result.error(),true};shadow_depth=std::move(*result);
-        }
         if(!shadow_static||!shadow_dynamic) {
             shadow_cache.invalidate();
             constexpr float clear[4]{};
@@ -605,8 +688,6 @@ struct SceneLit::State {
         if(!settings.probe_inspect || !settings.ddgi || !probe_field.total)return;
         if(!inspection) {
             inspection=std::make_unique<InspectionState>();
-            prepare(inspection->pass,shaders::lit_ddgi,"DDGIInspect","DDGI receiver inspection");
-            prepare(inspection->update,shaders::lit_ddgi,"DDGIUpdateInspect","DDGI sampled-hit inspection");
             constexpr auto bytes=sizeof(ProbeContribution)*(probe_volume_limit*8+1);
             inspection->output=gfxCreateBuffer<ProbeContribution>(gfx,probe_volume_limit*8+1);allocation(bool(inspection->output));
             for(auto& buffer:inspection->readback) {
@@ -636,11 +717,11 @@ struct SceneLit::State {
         auto& state=*inspection;
         // An unavailable slot drops this diagnostic sample; never wait for it.
         if(state.metadata[slot].sequence>completed_sequence)return;
-        const auto p=state.pass.program();bind_probes(p,true,true);
+        const auto p=inspect_pass.program();bind_probes(p,true,true);
         bind(p,"lit_probe_transport",probe_irradiance[probe_parity]);
         bind(p,"lit_probe_age",probe_age);bind(p,"lit_probe_inspect_pixel",settings.probe_inspect_pixel);
         bind(p,"lit_probe_inspection",state.output);
-        dispatch(state.pass,depth,1,1,1,3);
+        dispatch(inspect_pass,depth,1,1,1,3);
         require(gfxCommandCopyBuffer(gfx,state.readback[slot],state.output),"Publish DDGI inspection asynchronously");
         require(gfxCommandCopyBuffer(gfx,state.ray_readback[slot],state.rays),"Publish DDGI hit samples asynchronously");
         auto& metadata=state.metadata[slot];metadata={};
@@ -892,7 +973,7 @@ struct SceneLit::State {
     }
     void draw(const Frame& frame,ui::PixelExtent next,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats) {
         material_frame=&materials;
-        pipelines();publish_gpu_sample(stats);encoded_pass_mask=0;begin(1);const auto& settings=frame.view.lit;targets(next);
+        resources();publish_gpu_sample(stats);encoded_pass_mask=0;begin(1);const auto& settings=frame.view.lit;targets(next);
         if(!settings.probe_inspect || !settings.ddgi || (stats.scene_lit_probe_inspection &&
             (stats.scene_lit_probe_inspection->scene_identity!=frame.scene_identity ||
              stats.scene_lit_probe_inspection->pixel!=settings.probe_inspect_pixel ||
@@ -979,11 +1060,7 @@ struct SceneLit::State {
         // dispatch share one pixel-center range, including fractional edges.
         screen_dispatch={static_cast<std::uint32_t>(raster.scissor.left),static_cast<std::uint32_t>(raster.scissor.top),
             static_cast<std::uint32_t>(raster.scissor.right),static_cast<std::uint32_t>(raster.scissor.bottom)};
-        if(clustered) {
-            clusters();
-            if(settings.direct_cluster_inspect&&!cluster_inspect)
-                prepare(cluster_inspect,shaders::lit_clustered,"lit_cluster_inspect_cs","Direct receiver support inspection");
-        }
+        if(clustered)clusters();
         environment=next_environment;
         controls={std::exp2(settings.exposure_ev),settings.shadow_bias,settings.ao_radius,settings.reflection_distance};
         effect_flags=flags;di_settings={settings.direct_candidates,20u,settings.direct_reference?1u:0u,64u};
@@ -1151,7 +1228,7 @@ struct SceneLit::State {
             }
             end(14);begin(15,total&&budget);
             if(total&&budget) {
-                const auto& update=settings.probe_inspect?inspection->update:probe_update;
+                const auto& update=settings.probe_inspect?inspect_update:probe_update;
                 const auto p=update.program();
                 bind_probes(p,false);bind(p,"lit_probe_work",probe_field.work);
                 if(settings.probe_inspect){bind(p,"lit_probe_inspect_source",inspection->traced_probe);bind(p,"lit_probe_inspected_rays",inspection->rays);}
@@ -1300,22 +1377,6 @@ struct SceneLit::State {
         probe_visibility_valid=settings.ddgi&&!taa_enabled&&!smaa_temporal;
         stats.scene_lit_history_resets=reset_events;reset_events=0;previous_view_projection=view_projection;previous_inverse_view_projection=inverse_view_projection;history_valid=true;sequence++;parity=1-parity;
     }
-    void prepare_probe_debug(rhi::Pipeline& pipeline,bool geometry) {
-        if(pipeline)return;
-        const std::string source=std::string(shaders::lit_ddgi_debug);
-        const std::string vs=source+"\nDDGIDebugVertex main(uint v:SV_VertexID,uint i:SV_InstanceID){return ddgi_debug_vs(v,i);}";
-        const std::string ps=source+(geometry?"\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}":
-            "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}");
-        rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=geometry?vs.c_str():shaders::viewport_vs;
-        desc.source.ps=ps.c_str();desc.name=geometry?"DDGI spatial diagnostics":"DDGI receiver coverage";
-        require(gfxDrawStateSetColorTarget(desc.draw_state,0,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),"Set DDGI debug color format");
-        require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set DDGI debug culling");
-        if(geometry) {
-            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set DDGI debug depth format");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER_EQUAL),"Set DDGI debug reversed depth");
-        } else require(gfxDrawStateSetDepthWriteMask(desc.draw_state,D3D12_DEPTH_WRITE_MASK_ZERO),"Disable diagnostic surface depth writes");
-        auto result=context.prepare(desc);if(!result)throw Error{result.error(),true};pipeline=std::move(*result);
-    }
     void bind_probe_debug(GfxProgram p) {
         const auto read=1-probe_parity;
         bind(p,"lit_probe_irradiance_previous",probe_presentation);bind(p,"lit_probe_distance_previous",probe_distance[read]);
@@ -1324,7 +1385,6 @@ struct SceneLit::State {
         bind(p,"lit_probe_pool",std::array<std::uint32_t,4>{probe_field.width,probe_field.total,0,probe_field.valid?1u:0u});
     }
     void draw_coverage(GfxTexture depth,const SceneLitSettings& settings,FrameStats& stats) {
-        prepare_probe_debug(probe_debug_surface,false);
         const auto p=probe_debug_surface.program();common(p,depth);bind_probe_debug(p);
         bind(p,"lit_probe_debug_options",std::array<std::uint32_t,4>{(effect_flags&2u)&&probe_field.valid?1u:0u,
             static_cast<std::uint32_t>(settings.probe_coverage),0,0});
@@ -1334,7 +1394,6 @@ struct SceneLit::State {
     void draw_debug(const Frame& frame,ui::PixelExtent size,GfxTexture depth,FrameStats& stats) {
         const auto& settings=frame.view.lit;
         if(frame.view.shading!=Shading::scene_lit||frame.view.wireframe==Wireframe::only||!settings.probe_overlay()) {retire(probe_debug_depth);stats.scene_lit_resource_bytes=resource_bytes();return;}
-        prepare_probe_debug(probe_debug_geometry,true);
         if(probe_debug_depth.getWidth()!=size.width||probe_debug_depth.getHeight()!=size.height) {
             retire(probe_debug_depth);constexpr float clear[4]{};
             probe_debug_depth=gfxCreateTexture2D(gfx,size.width,size.height,DXGI_FORMAT_D32_FLOAT,1,clear);allocation(bool(probe_debug_depth));
@@ -1387,7 +1446,8 @@ struct SceneLit::State {
         tlas_built=false;
     }
     void close() {
-        if(inspection){retire(inspection->output);retire(inspection->rays);for(auto& buffer:inspection->readback)retire(buffer);for(auto& buffer:inspection->ray_readback)retire(buffer);inspection->pass={};inspection->update={};inspection.reset();}
+        pending.clear();
+        if(inspection){retire(inspection->output);retire(inspection->rays);for(auto& buffer:inspection->readback)retire(buffer);for(auto& buffer:inspection->ray_readback)retire(buffer);inspection.reset();}
         retire_targets();for(auto* pair:{&probe_irradiance,&probe_distance,&probe_offsets})for(auto& t:*pair)retire(t);retire(probe_presentation);retire(probe_response);retire(brdf_lut);retire(smaa_area);retire(smaa_search);retire(probe_age);retire(probe_sample_cursor);retire(probe_debug_depth);
         retire_scene();retire(ray_counters);
         for(auto& readback:ray_readback)retire(readback);
@@ -1396,7 +1456,7 @@ struct SceneLit::State {
         for(auto& pipeline:direct_filter)pipeline={};
         for(auto* p:{&gbuffer,&di_initial,&di_spatial,&direct,&cluster_build,&cluster_shade,&cluster_inspect,&cluster_points,&cluster_sun,&cluster_residual,&shadow_depth,&direct_resolve,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
                     &ao,&ao_depth_reduce,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
-                    &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&ssil_trace,&ssil_resolve,&probe_debug_surface,&probe_debug_geometry})*p={};
+                    &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&ssil_trace,&ssil_resolve,&probe_debug_surface,&probe_debug_geometry,&inspect_pass,&inspect_update})*p={};
     }
 };
 
@@ -1432,6 +1492,7 @@ void SceneLit::validate(const Frame& frame) const {
         if(l.kind==LightKind::directional)invalid(double(l.source_radius)<std::numbers::pi_v<double>/2,"Directional source angular radius is too large");if(l.stable_key)invalid(light_keys.insert(l.stable_key).second,"Duplicate stable light identity");}
 }
 void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats){state_->draw(frame,extent,depth,draws,materials,stats);}
+Result<Preparation> SceneLit::preparation(const ViewSettings& view){return state_->preparation(view);}
 void SceneLit::draw_debug(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,FrameStats& stats){state_->draw_debug(frame,extent,depth,stats);}
 void SceneLit::invalidate(bool empty_scene,FrameStats& stats) {
     state_->enabled=false;state_->reset();if(!empty_scene)state_->retire(state_->probe_debug_depth);if(empty_scene)state_->retire_scene();

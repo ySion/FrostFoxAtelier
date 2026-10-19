@@ -1,6 +1,7 @@
 #include "renderer/renderer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -25,7 +26,7 @@ template <class T> T take(render::Result<T> result) {
         throw std::runtime_error("Renderer error: " + result.error().cause.message +
             " (terminal=" + std::to_string(result.error().terminal) + ")");
     }
-    return std::move(*result);
+    if constexpr (!std::is_void_v<T>) return std::move(*result);
 }
 void pump() {
     MSG m;
@@ -33,6 +34,24 @@ void pump() {
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
+}
+render::Result<void> wait_preparation(render::Renderer& renderer, const render::ViewSettings& view) {
+    // GPU-based validation keeps the first preparation busy for minutes.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
+    for (;;) {
+        const auto preparation = renderer.preparation(view);
+        if (!preparation) return std::unexpected(preparation.error());
+        if (preparation->ready) return {};
+        check(std::chrono::steady_clock::now() < deadline, "Scene Lit preparation finished within 20 minutes");
+        pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+// Cases check rendering, not preparation: Lit views wait for their pipelines first.
+render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, const render::Frame& frame,
+                                                    render::Capture* capture = nullptr) {
+    if (const auto ready = wait_preparation(renderer, frame.view); !ready) return std::unexpected(ready.error());
+    return renderer.render(frame, capture);
 }
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(window, message, wparam, lparam);
@@ -97,19 +116,72 @@ void snapshot(const render::Capture &c, const char* path = "renderer-acceptance.
         out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
     check(out.good(), "write capture evidence");
 }
+void lit_preparation_case(render::Renderer &renderer) {
+    const auto extent = take(renderer.target()).extent;
+    ui::Frame drawing{.id = 900, .extent = extent, .draws = {}};
+    drawing.draws.push_back({{4, 4, 16, 16}, {4, 4, 20, 20}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
+    std::array<render::MeshInstance, 1> cube{{{translation(0, 0, 3), {1, 1, 1, 1}, false, atelier::geometry::cube_mesh()}}};
+    render::Camera camera;
+    camera.projection[10] = -.1f;
+    render::Frame frame{drawing, camera, {40, 40, float(extent.width) - 80, float(extent.height) - 80}, cube};
+    frame.view.shading = render::Shading::scene_lit;
+    frame.scene_identity = 900;
+    render::Capture capture;
+    capture.frame_id = 7;
+    const auto started = std::chrono::steady_clock::now();
+    const auto first = take(renderer.render(frame, &capture));
+    const auto first_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    check(first.status == render::FrameStatus::not_ready && first.accepted_id == 0 && first.accepted_extent == ui::PixelExtent{} &&
+              first.stats.ui_draw_calls == 0 && first.stats.scene_draw_calls == 0 && first.stats.viewport_draw_calls == 0 &&
+              capture.frame_id == 7,
+          "an unprepared Lit frame returns not_ready without encoding, presenting or capturing");
+    check(first_ms < 2000, "starting Lit preparation does not wait for compilation");
+    const auto progress = take(renderer.preparation(frame.view));
+    check(!progress.ready && progress.total == 38 && progress.done < progress.total,
+          "the default Lit view reports its own pipeline groups while they prepare");
+    auto reference = frame.view;
+    reference.lit.direct_reference = true;
+    check(take(renderer.preparation(reference)).total == 39, "the direct reference adds only its ray-traced shading pipeline");
+    frame.view.shading = render::Shading::smooth;
+    ++drawing.id;
+    const auto studio = take(renderer.render(frame, &capture));
+    check(studio.status == render::FrameStatus::accepted && capture.frame_id == drawing.id,
+          "a studio view renders while Lit pipelines prepare");
+    frame.view.shading = render::Shading::scene_lit;
+    take(wait_preparation(renderer, frame.view));
+    const auto ready_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    ++drawing.id;
+    const auto lit = take(renderer.render(frame, &capture));
+    check(lit.status == render::FrameStatus::accepted && capture.frame_id == drawing.id && lit.stats.scene_draw_calls == 1,
+          "the prepared Lit view renders normally");
+    frame.view.lit.probe_debug = true;
+    const auto grown = take(renderer.preparation(frame.view));
+    ++drawing.id;
+    const auto pending = take(renderer.render(frame, &capture));
+    check(!grown.ready && grown.total == 39 && grown.done == 38 && pending.status == render::FrameStatus::not_ready &&
+              capture.frame_id == drawing.id - 1,
+          "a setting that needs a new group raises total and returns the ready view to not_ready");
+    take(wait_preparation(renderer, frame.view));
+    ++drawing.id;
+    check(take(renderer.render(frame, &capture)).status == render::FrameStatus::accepted && capture.frame_id == drawing.id,
+          "the view renders once its new group is ready");
+    std::printf("Renderer Lit preparation: first-render=not_ready %.1f ms progress=%u/%u studio-while-preparing=accepted ready=%.1f s "
+                "new-group=%u/%u not_ready PASS\n",
+                first_ms, progress.done, progress.total, ready_s, grown.done, grown.total);
+}
 void ui_only_cases(render::Renderer &renderer, Window &window) {
     const auto initial_extent = take(renderer.target()).extent;
     ui::Frame ui_frame{.id = 3000, .extent = initial_extent, .draws = {}};
     ui_frame.draws.push_back({{0, 0, 24, 24}, {0, 0, 24, 24}, {1, 0, 0, 1}, {0, 0, 1, 1}, {}});
     render::Frame frame{ui_frame, {}, {}, {}};
-    auto result = take(renderer.render(frame));
+    auto result = take(prepared_render(renderer,frame));
     check(result.status == render::FrameStatus::accepted && result.stats.scene_draw_calls == 0 &&
               result.stats.ui_draw_calls == 1,
           "cold renderer accepts an ordinary UI-only frame");
     render::Capture capture;
     auto capture_ui = [&] {
         ++ui_frame.id;
-        const auto captured = take(renderer.render(frame, &capture));
+        const auto captured = take(prepared_render(renderer,frame, &capture));
         check(captured.status == render::FrameStatus::accepted && captured.accepted_id == ui_frame.id &&
                   capture.frame_id == ui_frame.id && capture.extent == ui_frame.extent &&
                   captured.stats.scene_draw_calls == 0 && captured.stats.ui_draw_calls == 1,
@@ -128,12 +200,12 @@ void ui_only_cases(render::Renderer &renderer, Window &window) {
     for (const auto extent : {ui::PixelExtent{503, 317}, initial_extent}) {
         window.resize(static_cast<int>(extent.width), static_cast<int>(extent.height));
         ++ui_frame.id;
-        result = take(renderer.render(frame, &capture));
+        result = take(prepared_render(renderer,frame, &capture));
         check(result.status == render::FrameStatus::accepted && result.accepted_extent == ui_frame.extent &&
                   capture.extent == ui_frame.extent && result.next_extent == extent,
               "UI-only resize captures the rendered target before advancing its extent");
         const auto captured_id = capture.frame_id;
-        result = take(renderer.render(frame, &capture));
+        result = take(prepared_render(renderer,frame, &capture));
         check(result.status == render::FrameStatus::skipped && capture.frame_id == captured_id,
               "UI-only extent mismatch retains the previous capture");
         ui_frame.extent = extent;
@@ -153,7 +225,7 @@ void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
     render::Capture capture;
     auto render_capture = [&] {
         ++ui_frame.id;
-        const auto result = take(renderer.render(frame, &capture));
+        const auto result = take(prepared_render(renderer,frame, &capture));
         check(result.status == render::FrameStatus::accepted && capture.frame_id == ui_frame.id &&
                   result.stats.scene_draw_calls == 1 && result.stats.ui_draw_calls == 0,
               "transformed scene accepted through the same instanced draw path");
@@ -224,7 +296,7 @@ void transform_cases(render::Renderer &renderer, ui::PixelExtent extent) {
     for (const auto &matrix : invalid) {
         cubes[1].world = matrix;
         ++ui_frame.id;
-        const auto rejected = renderer.render(frame, &capture);
+        const auto rejected = prepared_render(renderer,frame, &capture);
         check(!rejected && !rejected.error().terminal &&
                   rejected.error().cause.code == atelier::rhi::ErrorCode::invalid_argument &&
                   capture.frame_id == previous_id,
@@ -249,7 +321,7 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     render::Camera camera; camera.projection[10]=-.1f;
     render::Frame frame{ui_frame,camera,{120,40,480,320},meshes};
     render::Capture capture;
-    const auto result=take(renderer.render(frame,&capture));
+    const auto result=take(prepared_render(renderer,frame,&capture));
     check(result.status==render::FrameStatus::accepted && result.stats.scene_draw_calls==1 &&
         result.stats.scene_instances==3 && result.stats.scene_culled_instances==2,
         "only the visible mesh is submitted while off-camera geometry retains scene membership");
@@ -264,17 +336,17 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     std::weak_ptr<const atelier::geometry::Mesh> replacement_observer=replacement;
     meshes[0].geometry=replacement; meshes[1].geometry=replacement;
     meshes[0].world[14]=2.5f; geometry.reset(); ++ui_frame.id;
-    const auto replaced=take(renderer.render(frame,&capture));
+    const auto replaced=take(prepared_render(renderer,frame,&capture));
     check(replaced.status==render::FrameStatus::accepted && replaced.stats.scene_draw_calls==1 &&
         std::abs(depth(capture,500,240)-.75f)<.00001f && observed.expired(),
         "new immutable mesh version changes silhouette/depth and retires its old CPU owner");
     const auto accepted_id=capture.frame_id;
     meshes[0].geometry.reset(); ++ui_frame.id;
-    auto invalid=renderer.render(frame,&capture);
+    auto invalid=prepared_render(renderer,frame,&capture);
     check(!invalid && !invalid.error().terminal && capture.frame_id==accepted_id,
         "missing mesh resource rejects the entire candidate before encoding");
     frame.meshes={}; meshes[1].geometry.reset(); replacement.reset(); ++ui_frame.id;
-    const auto empty=take(renderer.render(frame));
+    const auto empty=take(prepared_render(renderer,frame));
     check(empty.stats.scene_draw_calls==0 && replacement_observer.expired(), "unused geometry CPU/GPU cache ownership retires");
     std::puts("Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
 }
@@ -289,7 +361,7 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     render::Frame frame{drawing,camera,{12.25f,20.75f,480.5f,320.25f},meshes};
     frame.view.cavity.enabled=false;
     render::Capture image;
-    const auto capture=[&] {++drawing.id;return take(renderer.render(frame,&image)).stats;};
+    const auto capture=[&] {++drawing.id;return take(prepared_render(renderer,frame,&image)).stats;};
     auto stats=capture();const auto reference=image;
     check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==2,
         "a visibility gap splits an instance batch while preserving original indices");
@@ -302,7 +374,7 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     check(stats.scene_culled_instances==0 && stats.scene_draw_calls==1 && image.depth!=reference.depth,
         "an object reentering the view is drawn immediately in its original snapshot position");
     meshes[1].world=translation(8,0,2);meshes[1].world[0]=0;
-    ++drawing.id;const auto invalid=renderer.render(frame);
+    ++drawing.id;const auto invalid=prepared_render(renderer,frame);
     check(!invalid && !invalid.error().terminal,
         "off-camera singular transforms still reject the complete frame before encoding");
     std::array<render::MeshInstance,6> outside{};
@@ -430,6 +502,7 @@ int main(int argc, char** argv) try {
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
+    lit_preparation_case(renderer);
     cavity_cases(renderer,window);
     material_cases(renderer);
     material_transport_cases(renderer);
@@ -456,7 +529,7 @@ int main(int argc, char** argv) try {
     camera.projection[10] = -.1f;
     render::Frame frame{ui_frame, camera, {120, 40, 480, 320}, cubes};
     render::Capture capture;
-    auto result = take(renderer.render(frame, &capture));
+    auto result = take(prepared_render(renderer,frame, &capture));
     check(result.status == render::FrameStatus::accepted && result.accepted_id == 1 &&
               result.accepted_extent == target.extent,
           "accepted metadata");
@@ -479,7 +552,7 @@ int main(int argc, char** argv) try {
     const auto initial = capture;
     cubes[0].selected = true;
     ui_frame.id++;
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(pixel(capture, 240, 200)[1] > pixel(initial, 240, 200)[1] + 60 &&
           pixel(capture, 360, 200)[1] == pixel(initial, 360, 200)[1],
           "selection highlights polygon edges while preserving the surface");
@@ -490,11 +563,11 @@ int main(int argc, char** argv) try {
           "unchanged coverage reuses cache without accumulating per-frame activity");
     ui_frame.draws.push_back({{350, 190, 20, 20}, full, {1, 1, 1, .5f}, {0, 0, 1, 1}, {}});
     ui_frame.id++;
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(pixel(capture, 360, 200)[2] > 100 && std::abs(depth(capture, 360, 200) - .85f) < .0001f,
           "UI overlays scene without changing depth");
     frame.camera.view[0] = std::numeric_limits<float>::quiet_NaN();
-    auto invalid = renderer.render(frame);
+    auto invalid = prepared_render(renderer,frame);
     check(!invalid && !invalid.error().terminal, "invalid CPU frame is recoverable before encoding");
     frame.camera = camera;
     bool wrong_thread = false;
@@ -517,7 +590,7 @@ int main(int argc, char** argv) try {
     replacement.reset();
     for (int i = 0; i < 12; ++i) {
         ++ui_frame.id;
-        result = take(renderer.render(frame));
+        result = take(prepared_render(renderer,frame));
         check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
                   result.stats.coverage_upload_count == (i == 0 ? 1u : 0u) &&
                   result.stats.coverage_upload_bytes == (i == 0 ? 6u : 0u) &&
@@ -527,25 +600,25 @@ int main(int argc, char** argv) try {
     }
     check(old_coverage.expired(), "unused coverage owner released");
     ++ui_frame.id;
-    take(renderer.render(frame, &capture));
+    take(prepared_render(renderer,frame, &capture));
     check(pixel(capture, 20, 120)[0] < 20 && pixel(capture, 60, 120)[0] > 245,
           "revision upload replaces cached pixels");
     auto hidden = std::make_shared<ui::Coverage>(*ui_frame.draws[2].coverage);
     hidden->identity = 2;
     ui_frame.draws.push_back({{0, 0, 30, 20}, {}, {1, 1, 1, 1}, {0, 0, 1, 1}, hidden});
     ++ui_frame.id;
-    result = take(renderer.render(frame));
+    result = take(prepared_render(renderer,frame));
     check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 1,
           "empty-clipped input is not counted as a draw or upload");
     window.resize(703, 427);
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(result.accepted_extent == ui::PixelExtent{641, 385} && capture.extent == result.accepted_extent &&
               result.next_extent == ui::PixelExtent{703, 427},
           "resize accepts old target and reports next target separately");
     const auto accepted = capture.frame_id;
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(result.status == render::FrameStatus::skipped && capture.frame_id == accepted,
           "stale extent skips without publishing capture");
     check(result.stats.ui_draw_calls == 0 && result.stats.scene_draw_calls == 0 &&
@@ -555,21 +628,21 @@ int main(int argc, char** argv) try {
           "pre-encoding skip reports zero activity and unchanged current cache ownership");
     ui_frame.extent = result.next_extent;
     ++ui_frame.id;
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(result.status == render::FrameStatus::accepted && capture.extent == ui_frame.extent,
           "rebuild depth for resized target");
     ShowWindow(window.hwnd, SW_MINIMIZE);
     pump();
     check(!take(renderer.target()).drawable, "minimized target not drawable");
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(result.status == render::FrameStatus::skipped, "minimized frame not accepted");
     ShowWindow(window.hwnd, SW_RESTORE);
     pump();
     ++ui_frame.id;
-    check(take(renderer.render(frame)).status == render::FrameStatus::accepted, "restore rendering");
+    check(take(prepared_render(renderer,frame)).status == render::FrameStatus::accepted, "restore rendering");
     ShowWindow(window.hwnd, SW_HIDE);
     pump();
-    check(take(renderer.render(frame)).status == render::FrameStatus::skipped, "hidden target skips");
+    check(take(prepared_render(renderer,frame)).status == render::FrameStatus::skipped, "hidden target skips");
     ShowWindow(window.hwnd, SW_SHOW);
     pump();
     // Non-diagonal view/projection values verify the public row-vector LH ABI.
@@ -579,13 +652,13 @@ int main(int argc, char** argv) try {
                                0, 0, 1.0f / 9.9f, 0};
     cubes[0].world = translation(0, 0, 0);
     ++ui_frame.id;
-    take(renderer.render(frame, &capture));
+    take(prepared_render(renderer,frame, &capture));
     check(std::abs(depth(capture, 360, 200) - (1.0f / (9.9f * 3.5f) - .1f / 9.9f)) < .0001f,
           "left-handed row-major view and perspective projection");
     ui_frame.draws.erase(ui_frame.draws.begin() + 2);
     frame.meshes = {};
     ++ui_frame.id;
-    result = take(renderer.render(frame, &capture));
+    result = take(prepared_render(renderer,frame, &capture));
     check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 0 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&

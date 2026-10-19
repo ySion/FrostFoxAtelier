@@ -9,7 +9,7 @@ void audit_numeric_inputs(Fixture& f) {
         invalid_light.kind=static_cast<render::LightKind>(kind);
         invalid_light.width=invalid_light.height=2;
         f.lights={invalid_light};f.edited();++f.drawing.id;
-        const auto rejected=f.renderer.render(f.frame,&accepted);
+        const auto rejected=prepared_render(f.renderer,f.frame,&accepted);
         check(!rejected&&!rejected.error().terminal&&accepted.frame_id==accepted_id,
               "overflowing finite analytic light is rejected before GPU encoding without replacing accepted output");
     }
@@ -17,7 +17,7 @@ void audit_numeric_inputs(Fixture& f) {
     invalid_light.intensity=static_cast<float>(atelier::rendering::analytic_light_radiance_limit/4);
     invalid_light.width=std::nextafter(2.f,std::numeric_limits<float>::infinity());
     f.lights={invalid_light};f.edited();++f.drawing.id;
-    const auto rejected=f.renderer.render(f.frame,&accepted);
+    const auto rejected=prepared_render(f.renderer,f.frame,&accepted);
     check(!rejected&&!rejected.error().terminal&&accepted.frame_id==accepted_id,
           "rectangle product overflow uses the same recoverable boundary as World authoring");
     f.lights=lights;f.edited();

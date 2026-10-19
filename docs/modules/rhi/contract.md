@@ -7,7 +7,7 @@
 - `Context::open` 按高性能顺序筛选同时支持 FL12_1 与 Mesh Shader 的硬件 adapter，跳过不合格候选；无合格硬件返回 unsupported，没有 WARP 回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
 - 一个 Context 对应一个 owned gfx context、一个 owner 线程、一条 DIRECT queue。`frame` 异步推进 gfx 帧槽；`finish` 提交当前工作并等待完成。
 - `Context`、`Pipeline` 不可复制，可移动。Pipeline 持有 Program/Kernel 和执行域；Context 外壳消失不提前销毁仍被 Pipeline 持有的执行域。最后一个所有者负责有限排空与释放。
-- 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。
+- 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
 - 验证设置涉及进程级 D3D12 debug 配置，应在创建图形设备的初始化阶段确定；不支持并发切换验证配置。
 - `Validation::gpu` 映射到上游明确的 `EnableGPUBasedValidation` 标志，保留宿主在设备创建前的能力检查。上游创建标志位值会随升级变化，调用方使用具名常量并随依赖一起重编译，不持久化裸位值。项目扩展的 `ForceRGBA8SwapChain` 使用不与上游标志冲突的位；DRED 保留上游实现，当前 Context 不默认开启额外设备移除诊断。
 
@@ -23,6 +23,26 @@
 - 全局根签名在收集所有 shader stage 后统一计算 [64 DWORD 预算](https://learn.microsoft.com/en-us/windows/win32/direct3d12/root-signature-limits)：根常量按实际 DWORD 数计费，当前反射路径的每个资源描述符表计 1。超限时优先把最大的可回退 `$Globals` 块转为现有 CBV 描述符表，保留阶段可见性、寄存器和各变量的反射偏移；参数设置仍走同一 `gfxProgramSetParameter`，常量数据使用既有常量池及帧槽寿命。预算回退不迁移含 `gfx_DispatchID` 的根常量块，以保留多次间接 dispatch 的直接更新语义；没有可回退块仍超限时准备失败。局部 ray tracing 根签名不使用此全局预算策略。
 - 先 prepare 新候选，成功后移动赋给旧 Pipeline；失败不改变旧 Pipeline。新 Program 不隐式继承旧参数，消费者重新绑定。旧资源沿 gfx 的延迟退休机制处理，不建立第二套版本/引用账。
 - Program/Kernel 返回值都是借用，受 Pipeline 与执行域寿命约束，不是跨设备稳定身份。失败执行域不再返回可用的借用句柄，但 Pipeline 仍须释放后才能 close。
+
+## 异步准备与 DXIL 磁盘缓存
+
+`submit(PipelineDesc) -> Result<PipelineJob>` 与 `prepare` 是同一个准备作业：同一套编译、反射、root signature/PSO 和 GBV 预热代码，`prepare` 只是在 owner 线程内联执行它。
+
+- owner 线程在 `submit` 中按 `prepare` 的规则检查描述，复制源码、名称和 DrawState；文件模式在此读入阶段文件。返回后描述不再被借用。
+- 工作线程在第一次 `submit` 时启动，至多 min(8, 硬件线程数) 个，各自持有 DXC 实例。它们只做编译（或缓存命中）、反射、root signature 与 PSO 创建，只接触自己的作业和 device，不触碰 gfx context。
+- `Validation::gpu` 时，工作线程在一个从不执行的命令列表上为每条管线录制一次 `Set*RootSignature` + `SetPipelineState`。GBV 在任何命令列表第一次设置某个 PSO 时生成补丁版本，这一步把该成本移出 owner 线程的第一次录制；执行时仍由 GBV 校验，覆盖面不变。在创建 PSO 时就打补丁的做法会让当前 SDK Layers 崩溃，不采用。
+- `take(job)` 只在 owner 线程调用，从不等待：作业未完成时返回空；完成后恰好一次返回 Pipeline 或失败。Program/Kernel 只在 owner 线程登记进 gfx。工作线程上的失败以值返回，不跨线程抛异常。已取走的作业或属于其他 Context 的作业返回 invalid_argument。
+- 作业不是 Pipeline，不会让 `close` 返回 busy。丢弃 PipelineJob 即取消：排队的作业直接丢弃，正在运行的步骤做完后释放产物。
+- 没有 Pipeline 时，`close` 先取消所有排队作业，等正在运行的步骤结束，释放未取走的产物，然后销毁执行域；之后 `take` 返回 closed。运行中的单个步骤不能中断：普通情况下是一次编译或 PSO 创建；GBV 下的一次预热在 8 线程争用时最长实测约 128 s。
+
+`ContextOptions::shader_cache` 是可由多个进程共享的 DXIL 缓存目录，空路径表示禁用。它是持久格式：
+
+- 键为 SHA-256，覆盖缓存格式版本、dxcompiler 版本与提交号、全部 DXC 参数（主文件名、profile、入口、16 位类型等）和完整源码。取不到编译器版本时不使用缓存。
+- 条目 `<键>.bin` 由 56 字节头（魔数 `ASHC`、格式版本、两段长度、SHA-256 校验和）、DXIL 和反射数据组成。命中时跳过预处理与编译。
+- 读到不可读、截断、格式不符或校验失败的条目，一律按未命中处理：重新编译并覆盖，不报错。写入先写临时文件，再原子替换。
+- 编译期间读取过 `#include` 文件的阶段不写入缓存，因为被包含文件的内容不在键里。
+- 每个进程第一次写入时检查目录：超过 512 MiB 就按修改时间删除最旧的文件，直到不超过 256 MiB。
+- 缓存格式变化时提升格式版本，旧条目不再命中，随后被淘汰，不做迁移。缓存的任何失败都只让该阶段重新编译。
 
 ## 借用 gfx 的许可范围
 
@@ -86,7 +106,7 @@ DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-
 - 每个矩形是该 mip/slice 像素空间中的非空半开范围 `[left,right) × [top,bottom)`。坐标必须非负且完全位于 mip 尺寸内，允许矩形重叠。Context、texture、mip/slice 与整个列表在编码前检查；任一矩形非法，整批不创建 view、不转换状态、不编码 clear。
 - 在 Context/image 有效的前提下，`rect_count == 0` 是无操作，`rects` 可为空；非空列表不能传空指针。列表仅在调用期间借用。矩形外内容以及其他 mip/slice 保留；`gfxCommandClearImage` 和 `gfxCommandClearTexture` 仍分别清整个 image 和整个 texture。
 - `gfxDrawStateSetDepthBias(draw_state, constant, slope_scaled=0, clamp=0)` 设置固定光栅 depth bias。constant 使用 D3D12 的整数 bias 单位；slope/clamp 必须有限，可为负，非法输入不改变旧状态。默认三项均为零。它不等于接收端世界空间偏移。
-- bias 随 DrawState 快照进入 Vertex 与 Mesh 的 PSO，后续修改 DrawState 不改变已经准备好的管线。当前 gfx 没有引擎侧独立 PSO 缓存键；现有磁盘缓存保存 shader 字节码，光栅状态进入实际 PSO 描述，不新增缓存机制。
+- bias 随 DrawState 快照进入 Vertex 与 Mesh 的 PSO，后续修改 DrawState 不改变已经准备好的管线。引擎不设 PSO 缓存；光栅状态进入实际 PSO 描述。DXIL 缓存只保存编译产物，见上文“异步准备与 DXIL 磁盘缓存”。
 - atlas 仍按整纹理跟踪资源状态：先完成所有脏 tile 的 DSV 写入，再解除深度附件绑定并作为 SRV 采样。不同 tile/mip/slice 不能成为同一次绘制中同时写入与采样同一纹理的依据。页表版本、tile 淘汰及过滤保护边属于 Renderer；物理资源释放沿既有 gfx 退休机制。
 
 最小调用示例（bias 数值需由具体阴影投影确定）：
@@ -104,7 +124,7 @@ gfxDrawStateSetDepthBias(shadow_desc.draw_state, 256, 1.0f, 0.01f);
 - 检查 Close、Signal、SetEventOnCompletion、等待结果和 Reset。事件醒来后重新比较 fence；先识别 device removal/最大 fence 值，不把它们当作完成。
 - `wait_timeout_ms` 是每次原生 fence 等待的有限正预算，不接受 0 或 INFINITE；一次排空可能等待多个帧槽。超时返回 `ErrorCode::timeout`，不代表 GPU 完成。
 - 执行失败后不可再普通录制、frame、finish 或 Reset。改变 wait budget 不清除失败状态。只允许所有者释放 CPU 持有，并通过 close 尝试清理。
-- 已有 Pipeline 时 close 返回 busy。没有 Pipeline 时，正常 close 提交未提交的当前工作、排空并释放；重复 close 成功。
+- 已有 Pipeline 时 close 返回 busy。没有 Pipeline 时，正常 close 先取消并等待准备作业，再提交未提交的当前工作、排空并释放；重复 close 成功。
 - `finish` 只有在排空与命令列表 Reset 都成功后才复位当前帧槽的常量池游标；连续同步执行可复用已完成的空间，不要求调用 `frame`。
 - 失败后的 close 不再次 Execute，只在原 queue 追加新的完成标记并 drain；不能排空就返回错误并保留执行域。确认真实设备失效可以释放终态存储，但不代表提交成功或设备恢复。原生设备故障路径没有本轮动态验收。
 - 最终析构无法证明安全释放时 fail-fast，不无限等待、不提前释放、不交给全局孤儿池。宿主应在正常退出前显式 close 并处理错误。

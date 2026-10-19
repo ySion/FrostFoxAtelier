@@ -25,7 +25,7 @@ void cavity_cases(render::Renderer& renderer,Window& window,const std::filesyste
     render::Capture capture;
     const auto draw=[&] {
         for(unsigned attempt=0;attempt<3;++attempt) {
-            pump();++drawing.id;const auto result=take(renderer.render(frame,&capture));
+            pump();++drawing.id;const auto result=take(prepared_render(renderer,frame,&capture));
             if(result.status==render::FrameStatus::accepted&&result.next_extent==drawing.extent)return result;
             drawing.extent=result.next_extent;viewport();
         }
@@ -87,7 +87,7 @@ void cavity_cases(render::Renderer& renderer,Window& window,const std::filesyste
     frame.view.cavity.enabled=true;draw();const auto perspective_count=changes(perspective);
     check(perspective_count[0]>30&&perspective_count[1]>30,"perspective cavity preserves ridge/valley signs");
     scene_lit_e2e::png(capture,output/"cavity-perspective.png");
-    frame.view.cavity.radius=0;const auto rejected=renderer.render(frame);
+    frame.view.cavity.radius=0;const auto rejected=prepared_render(renderer,frame);
     check(!rejected&&!rejected.error().terminal,"invalid cavity settings reject before GPU encoding");
     frame.view.cavity={};
     // A compact real 3D scene complements the signed-fold measurements.

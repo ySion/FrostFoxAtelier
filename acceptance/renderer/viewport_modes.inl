@@ -16,7 +16,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     const unsigned cx=extent.width/2, cy=extent.height/2;
     const auto render_frame=[&] {
         ++drawing.id;
-        const auto result=take(renderer.render(frame,&capture));
+        const auto result=take(prepared_render(renderer,frame,&capture));
         check(result.status==render::FrameStatus::accepted && result.accepted_id==drawing.id,
               "display modes use the accepted frame contract");
         check(pixel(capture,8,8)[1]==255 && depth(capture,8,8)==0,
@@ -79,7 +79,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     frame.camera={}; meshes[0].world[14]=0;
     frame.view.wire_width=std::numeric_limits<float>::quiet_NaN();
     const auto previous=capture.frame_id;
-    const auto invalid=renderer.render(frame,&capture);
+    const auto invalid=prepared_render(renderer,frame,&capture);
     check(!invalid && !invalid.error().terminal && capture.frame_id==previous,
           "invalid display settings reject before encoding without replacing capture");
     frame.view.wire_width=1.25f;
@@ -87,7 +87,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
         frame.view.wireframe=static_cast<render::Wireframe>(i%3);
         frame.view.shading=static_cast<render::Shading>(i%3);
         ++drawing.id;
-        check(take(renderer.render(frame)).status==render::FrameStatus::accepted,
+        check(take(prepared_render(renderer,frame)).status==render::FrameStatus::accepted,
               "ordinary asynchronous frames switch modes through the same caches");
     }
     std::puts("Renderer viewport: PASS (MatCap, flat/smooth, polygon/triangle edges, hidden/all lines, selection, width, retirement)");

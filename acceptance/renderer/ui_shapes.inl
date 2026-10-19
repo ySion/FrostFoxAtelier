@@ -33,7 +33,7 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     auto& layered=box({410,130,80,60},{1,1,1,1},{20,20,20,20});
     layered.image=image; layered.uv={1.f/6,.25f,0,0}; layered.image_background={0,1,0,1};
     image.reset(); coverage.reset();
-    auto result=take(renderer.render(frame,&capture));
+    auto result=take(prepared_render(renderer,frame,&capture));
     check(result.status==render::FrameStatus::accepted && result.stats.ui_quads==11 &&
         result.stats.ui_draw_calls==7 && result.stats.ui_instance_upload_bytes==11*112 &&
         result.stats.image_upload_count==1 && result.stats.image_upload_bytes==24 &&
@@ -58,7 +58,7 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     check(pixel(capture,418,133)[0]>120 && pixel(capture,418,133)[0]<200 && pixel(capture,418,133)[1]==0,
         "image and base fill share one antialiased mask without a colored fringe");
     ++drawing.id;
-    result=take(renderer.render(frame));
+    result=take(prepared_render(renderer,frame));
     check(result.stats.image_upload_count==0 && result.stats.coverage_upload_count==0 && result.stats.ui_draw_calls==7,
         "unchanged image revision reuses GPU upload");
     const auto previous=capture.frame_id;
@@ -71,7 +71,7 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
         if (bad==2) { candidate.image=drawing.draws[3].image; candidate.coverage=drawing.draws[6].coverage; }
         if (bad==3) { auto malformed=std::make_shared<ui::ColorImage>(*drawing.draws[3].image);
             malformed->row_pitch=3; candidate.image=std::move(malformed); }
-        const auto rejected=renderer.render(frame,&capture);
+        const auto rejected=prepared_render(renderer,frame,&capture);
         check(!rejected && !rejected.error().terminal && capture.frame_id==previous,
             "invalid shape/image rejects before encoding and preserves accepted capture");
     }
@@ -82,12 +82,12 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
                          0,255,0,255, 0,0,0,0, 0,0,0,0, 77,77,77,77};
     for (auto& draw:drawing.draws) if (draw.image) draw.image=replacement;
     replacement.reset(); ++drawing.id;
-    result=take(renderer.render(frame,&capture));
+    result=take(prepared_render(renderer,frame,&capture));
     check(result.stats.image_upload_count==1 && result.stats.cached_image_count==1 && old.expired() &&
         pixel(capture,15,135)[0]==0 && pixel(capture,15,135)[1]>250,
         "immutable image revision replaces pixels and retires old CPU ownership");
     drawing.draws.clear(); ++drawing.id;
-    result=take(renderer.render(frame));
+    result=take(prepared_render(renderer,frame));
     check(result.stats.ui_draw_calls==0 && result.stats.ui_quads==0 && result.stats.ui_instance_upload_bytes==0 &&
         result.stats.cached_image_count==0 && result.stats.cached_image_texel_bytes==0 &&
         result.stats.cached_image_cpu_bytes==0 && result.stats.cached_coverage_count==0,

@@ -69,14 +69,14 @@ void probe_volume_cases(Fixture& f) {
     s.probe_feedback_visibility=true;f.capture("volumes-12-feedback-visible",48);
 
     auto invalid=f.frame;invalid.view.lit.probe_volumes[2].enabled=true;invalid.view.lit.probe_volumes[2].counts={32,32,32};
-    const auto rejected=f.renderer.render(invalid);
+    const auto rejected=prepared_render(f.renderer,invalid);
     check(!rejected && !rejected.error().terminal,"shared resident limit rejects atomically before encoding");
     invalid.view=f.frame.view;invalid.view.lit.probe_volumes[0].counts[1]=4;
-    check(!f.renderer.render(invalid),"following volume requires an interior beyond its transition border");
+    check(!prepared_render(f.renderer,invalid),"following volume requires an interior beyond its transition border");
     invalid.view=f.frame.view;invalid.view.lit.probe_volumes[0].minimum={-.004f,-.004f,-.004f};
     invalid.view.lit.probe_volumes[0].maximum={.004f,.004f,.004f};invalid.view.lit.probe_volumes[0].counts={5,5,5};
     invalid.lighting_focus={100000,0,0};
-    check(!f.renderer.render(invalid),"following grid cannot collapse below actual world float precision");
+    check(!prepared_render(f.renderer,invalid),"following grid cannot collapse below actual world float precision");
     f.step();
     s.probe_debug=true;s.probe_volume=true;s.probe_visualization=render::ProbeVisualization::state;
     s.probe_debug_volume=1;f.capture("volumes-13-selected-overlay",2);
@@ -201,7 +201,7 @@ void probe_debug_cases(Fixture& f) {
     f.frame.camera=camera({static_cast<unsigned>(f.frame.scene_viewport.width),static_cast<unsigned>(f.frame.scene_viewport.height)},true);
     f.capture("debug-21-resized-empty",1);
     auto invalid=f.frame;invalid.view.lit.probe_radius=0;
-    check(!f.renderer.render(invalid),"invalid diagnostic radius is rejected before GPU encoding");
+    check(!prepared_render(f.renderer,invalid),"invalid diagnostic radius is rejected before GPU encoding");
     f.step();
     std::puts("Renderer DDGI diagnostics: PASS (actual coverage, pending/dark/outside/inside states, spheres, X-Ray, ages, irradiance/distance, relocation, AA/orthographic, clean history, empty scene, unchanged FP32 picking depth)");
 }

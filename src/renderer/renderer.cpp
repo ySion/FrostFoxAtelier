@@ -998,7 +998,8 @@ Result<Renderer> Renderer::open(HWND window, const Options &options) {
         auto opened = rhi::Context::open({.window = window,
                                           .validation = options.validation,
                                           .wait_timeout_ms = options.wait_timeout_ms,
-                                          .rgba8_window = true});
+                                          .rgba8_window = true,
+                                          .shader_cache = options.shader_cache});
         if (!opened) return std::unexpected(Error{opened.error(), false});
         s.context = std::move(*opened);
         s.gfx = s.context.borrow();
@@ -1038,6 +1039,21 @@ Result<Target> Renderer::sync_window_target() {
     if(!target) return std::unexpected(Error{target.error(),true});
     return Target{{target->width,target->height},target->drawable};
 }
+Result<Preparation> Renderer::preparation(const ViewSettings &view) {
+    if (!state_) return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
+    if (const auto checked = state_->check(); !checked) return std::unexpected(checked.error());
+    if (view.shading != Shading::scene_lit || view.wireframe == Wireframe::only) return Preparation{.ready = true};
+    auto &s = *state_;
+    if (!s.context.info().inline_ray_query)
+        return std::unexpected(error(rhi::ErrorCode::unsupported, "Scene Lit requires hardware DXR 1.1 inline ray tracing"));
+    try {
+        if (!s.scene_lit) s.scene_lit = std::make_unique<detail::SceneLit>(s.context);
+        return s.scene_lit->preparation(view);
+    } catch (const std::bad_alloc &) {
+        return std::unexpected(error(rhi::ErrorCode::creation_failed, "Renderer allocation failed", false,
+                                     kGfxResult_OutOfMemory));
+    }
+}
 Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     timing::Scope rendering{phases::render};
     const auto destination = target();
@@ -1076,6 +1092,10 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&(!frame.meshes.empty()||frame.view.lit.probe_overlay())&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
             if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
             s.scene_lit->validate(frame);
+            const auto prepared=s.scene_lit->preparation(frame.view);
+            if(!prepared) return std::unexpected(prepared.error());
+            if(!prepared->ready)
+                return FrameResult{.status = FrameStatus::not_ready, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
         }
         s.grid_camera=prepare_grid_camera(frame);
         s.cavity_projection=prepare_cavity_projection(frame);

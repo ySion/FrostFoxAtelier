@@ -24,6 +24,14 @@ struct Options {
     rhi::Validation validation{rhi::Validation::disabled};
     std::uint32_t wait_timeout_ms{10000};
     bool vsync{true};
+    std::filesystem::path shader_cache{}; // rhi::ContextOptions::shader_cache.
+};
+// Pipelines a view needs, counted over the groups it enables. Lit groups are
+// prepared on Context workers from their first request; a view that enables a
+// new group raises total and is not ready again until that group completes.
+struct Preparation {
+    std::uint32_t done{}, total{};
+    bool ready{};
 };
 struct Target {
     ui::PixelExtent extent;
@@ -94,7 +102,9 @@ struct Frame {
     // Only presentation filtering consumes this [0, .1] interval, not sampling confidence.
     float render_delta_seconds{1.f/60.f};
 };
-enum class FrameStatus { accepted, skipped };
+// not_ready: the view's pipelines are still preparing; nothing was encoded or
+// presented and the frame may be retried, or drawn with another view.
+enum class FrameStatus { accepted, skipped, not_ready };
 // Activity from this successful render return (accepted or skipped). Counts
 // encoded commands, including an occluded Present; pre-encoding skips have zero
 // activity. Legacy counts are not GPU timings. Errors provide no complete statistics.
@@ -228,7 +238,12 @@ class Renderer {
     [[nodiscard]] Result<Target> target() const;
     // Match the native client before preparing its UI frame; no Present is needed.
     [[nodiscard]] Result<Target> sync_window_target();
+    // Never waits for compilation. Starts this view's missing pipeline groups and
+    // collects finished ones; views that draw no Lit pass are always ready. A
+    // preparation failure is non-terminal and returned again for later Lit views.
+    [[nodiscard]] Result<Preparation> preparation(const ViewSettings &view);
     // Minimized/zero client size, target mismatch or occluded Present is skipped.
+    // A drawn Lit view whose preparation is incomplete returns not_ready.
     // CPU validation failure retains usability. Upload/encoding/execution failure
     // is terminal. Switch the application's hit frame ONLY on accepted.
     [[nodiscard]] Result<FrameResult> render(const Frame &frame, Capture *capture = nullptr);

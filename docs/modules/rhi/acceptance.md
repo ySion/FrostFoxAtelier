@@ -1,6 +1,6 @@
 # RHI 验收与证据
 
-最近一次完整 RHI 验收于 2026-10-16 在 Dev、Release 两种配置通过，覆盖基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加本批矩形清除与固定 depth bias。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
+最近一次完整 RHI 验收于 2026-10-16 在 Dev、Release 两种配置通过，覆盖基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加本批矩形清除与固定 depth bias。2026-10-19 异步准备与 DXIL 缓存一批只在 Release 下运行了完整矩阵（基线 `80de8156`），Dev 由下一轮集成门禁覆盖，见[异步准备](#异步准备与-dxil-缓存2026-10-19)。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
 
 ## 命令与环境
 
@@ -45,10 +45,22 @@ cmake --build --preset release --target rhi_acceptance
 | 固定光栅 depth bias | Vertex/Mesh 各 7 种状态 × 2,048 像素；默认/显式零、正负 constant、slope-scaled、正负 clamp、非有限输入拒绝并保留旧值、prepare 后 DrawState 修改不影响已有 PSO 均通过 |
 | null-list / Mesh PS | 无 command list 的 interop 清理；Mesh PS 回归检查 2,048 个像素 |
 | 有限超时与严格一次执行 | 真实 queue 等待 CPU gate；失败后拒绝录制/推进/reset；放行后只排空，GPU 计数严格为 1 |
+| 异步准备（2026-10-19，仅 Release） | 工作线程准备的 compute 管线算出 41→42；编译失败以值返回（shader_failed）；非法描述在提交时拒绝；同一作业只能取一次 |
+| DXIL 缓存（2026-10-19，仅 Release） | 未命中写入 1 个条目；同步与异步命中都不改写条目；截断和翻转一字节的条目被重编并恢复为相同字节；读取过 include 的阶段不入缓存 |
+| 准备中关闭（2026-10-19，仅 Release） | 48 个作业未完成时：有 Pipeline 则 close 返回 busy；阳性对照能检出存活对象；丢弃一半作业后 close 0.013～0.035 s 完成；之后 take 返回 closed；命令分配器、命令列表、PSO、根签名存活数为 0 |
 
 生产调用经 `Context` 与许可的 gfx 借用范围执行。验收中的原生 fence gate、interop 和外部 readback 只用于验证对应原生边界，不是业务接口。
 
 本批独立工作树的构建与验收日志位于 `out/rhi-shadow-support-20261016/`；标准矩阵逐进程日志仍写入 `out/<配置>/rhi-acceptance.log` 和 `rhi-regression-*.log`。Dev 与 Release 的矩阵退出码均为 0，新增场景输出 `Shadow atlas RHI acceptance: PASS`。非法输入、错误 shader 与 timeout 拒绝场景会产生预期的 gfx 错误输出；通过条件是实际结果和 D3D12 InfoQueue 检查，不是 stderr 为空。
+
+## 异步准备与 DXIL 缓存（2026-10-19）
+
+状态：rendering 分支，基线 integration/ec-4 `80de8156`，本地提交，未推送。合同见[异步准备与 DXIL 磁盘缓存](contract.md#异步准备与-dxil-磁盘缓存)。
+
+- 运行：Release `rhi_acceptance`（主进程与三个回归），退出码均为 0，主进程输出 `RHI acceptance: PASS`，D3D12 InfoQueue 的 warning/error 为 0。新增场景在 [preparation_cases.cpp](../../../acceptance/rhi/preparation_cases.cpp)，全部在 GPU-based validation 下运行。
+- 日志中的一批 `Live ID3D12RootSignature/PipelineState` 警告来自阳性对照：故意在 Pipeline 仍存在时调用 `ReportLiveDeviceObjects`，证明泄漏检查能看到对象；关闭后的同一检查计数为 0。
+- Dev 未在本批运行：按分层门禁规则，改到 RHI 的集成轮次由门禁加跑 Dev 窗口层。
+- 准备期间 GBV 预热的成本与收益在 Renderer 层测量，见 [Renderer 验收](../renderer/acceptance.md#异步准备与-gbv-预热2026-10-19)。
 
 ## 绘制前窗口同步
 

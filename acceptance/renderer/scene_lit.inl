@@ -229,7 +229,7 @@ struct Fixture {
         render::FrameResult result;
         for (unsigned retry=0;retry<120;++retry) {
             pump(); ++drawing.id;
-            result = take(renderer.render(frame, capture));
+            result = take(prepared_render(renderer,frame, capture));
             if (result.status == render::FrameStatus::accepted) break;
             if (retry==0) std::fprintf(stderr,
                 "SceneLit transient skipped frame: visible=%d minimized=%d input=%ux%u next=%ux%u; waiting for accepted presentation.\n",

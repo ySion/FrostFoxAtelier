@@ -98,7 +98,7 @@ void quality_contracts(Fixture& f) {
     const auto valid_world=f.room.meshes.front().world;
     f.frame.view.shading=render::Shading::matcap;f.room.meshes.front().world[0]=0;
     ++f.drawing.id;const auto accepted_id=baseline.frame_id;
-    const auto rejected=f.renderer.render(f.frame,&baseline);
+    const auto rejected=prepared_render(f.renderer,f.frame,&baseline);
     check(!rejected && !rejected.error().terminal && baseline.frame_id==accepted_id,
           "invalid non-Lit candidate preserves the accepted capture and recoverable execution domain");
     f.frame.view.shading=render::Shading::scene_lit;f.room.meshes.front().world=valid_world;

@@ -4,12 +4,14 @@
 
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace atelier::rhi {
 
-namespace detail { struct ContextState; }
+namespace detail { struct ContextState; struct PreparationJob; class Preparer; }
 
 enum class Validation { disabled, debug_layer, gpu };
 enum class PipelineKind { vertex, mesh, compute };
@@ -33,6 +35,9 @@ struct ContextOptions {
     Validation validation = Validation::disabled;
     std::uint32_t wait_timeout_ms = 10000;
     bool rgba8_window = false; // Explicit SDR RGBA8 target instead of display auto-selection.
+    // Directory shared by processes for compiled shader stages; empty disables
+    // it. Cache failures only cost recompilation.
+    std::filesystem::path shader_cache{};
 };
 
 struct ContextInfo {
@@ -58,7 +63,7 @@ struct FrameInfo {
     FrameCpuTimings cpu; // This submission's CPU wall time; GPU samples may describe an older frame.
 };
 
-// Source strings are borrowed only during prepare. For file programs, optional
+// Source strings are borrowed only during prepare/submit. For file programs, optional
 // absent stages retain gfx's file convention; any existing stage must compile.
 struct PipelineDesc {
     PipelineKind kind = PipelineKind::compute;
@@ -94,6 +99,27 @@ private:
     GfxKernel kernel_;
 };
 
+// A pipeline being prepared on Context workers. Dropping it, or closing the
+// Context, cancels the work; it never holds the execution domain open.
+class PipelineJob {
+public:
+    PipelineJob() = default;
+    ~PipelineJob();
+    PipelineJob(PipelineJob&& other) noexcept = default;
+    PipelineJob& operator=(PipelineJob&& other) noexcept;
+    PipelineJob(const PipelineJob&) = delete;
+    PipelineJob& operator=(const PipelineJob&) = delete;
+
+    // False once taken or for a default-constructed job.
+    [[nodiscard]] explicit operator bool() const noexcept { return job_ != nullptr; }
+
+private:
+    friend class Context;
+    void cancel() noexcept;
+    std::shared_ptr<detail::Preparer> preparer_;
+    std::shared_ptr<detail::PreparationJob> job_;
+};
+
 // All operations and final destruction occur on the opening thread. Borrowed
 // gfx access is for ordinary resources, parameters and command encoding only;
 // frame/finish/destroy/reloadAll/native import/submission remain owner-only.
@@ -109,7 +135,16 @@ public:
     [[nodiscard]] static Result<Context> open(const ContextOptions& options = {});
     [[nodiscard]] GfxContext borrow() const noexcept;
     [[nodiscard]] const ContextInfo& info() const noexcept;
+    // Compiles, reflects and creates the root signature and PSO on this thread.
+    // Under Validation::gpu it also records the pipeline once so GPU-based
+    // validation patches it here instead of at its first real use.
     [[nodiscard]] Result<Pipeline> prepare(const PipelineDesc& desc);
+    // The same preparation as prepare, run on up to eight Context workers. The
+    // description is checked and copied before returning.
+    [[nodiscard]] Result<PipelineJob> submit(const PipelineDesc& desc);
+    // Empty while the job runs; then its Pipeline or its failure, exactly once.
+    // A job cancelled by close returns ErrorCode::closed.
+    [[nodiscard]] std::optional<Result<Pipeline>> take(PipelineJob& job);
     [[nodiscard]] Result<TargetInfo> target() const;
     // Owner-only, before recording the draw/execute callback. Synchronizes a
     // positive window client size even while hidden; returns the actual target.
@@ -120,12 +155,17 @@ public:
     // Requesting details also measures gfx frame stages; nullptr avoids clock reads.
     [[nodiscard]] Result<void> frame(bool vsync = false, FrameInfo* details = nullptr);
     [[nodiscard]] Result<void> finish();
-    // Busy while Pipeline owners remain. Failure retains the execution domain;
-    // close may drain submitted work but must never resubmit it.
+    // Busy while Pipeline owners remain. Otherwise cancels queued preparation,
+    // waits for running preparation steps, then releases the domain. Failure
+    // retains the execution domain; close may drain submitted work but must
+    // never resubmit it.
     [[nodiscard]] Result<void> close();
 
 private:
     explicit Context(std::shared_ptr<detail::ContextState> state) noexcept;
+    [[nodiscard]] Result<void> admit(const char* operation) const;
+    [[nodiscard]] Result<std::shared_ptr<detail::PreparationJob>> job(const PipelineDesc& desc) const;
+    [[nodiscard]] Result<Pipeline> adopt(detail::PreparationJob& job);
     std::shared_ptr<detail::ContextState> state_;
 };
 

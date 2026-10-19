@@ -23,6 +23,8 @@ public:
     SceneLit(const SceneLit&)=delete;
     SceneLit& operator=(const SceneLit&)=delete;
     void validate(const Frame& frame) const;
+    // See Renderer::preparation; only Lit views reach here.
+    Result<Preparation> preparation(const ViewSettings& view);
     void draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,
               std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats);
     // Called only after CPU preparation succeeds, inside the encoding phase.

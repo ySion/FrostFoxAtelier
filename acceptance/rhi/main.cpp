@@ -17,6 +17,7 @@ void resource_cases();
 void ray_query_cases();
 void scene_lit_cases();
 void shadow_cases();
+void preparation_cases();
 }
 namespace {
 template<class T> T take(Result<T> result) {
@@ -310,6 +311,7 @@ int main() {
         ray_query_cases();
         scene_lit_cases();
         shadow_cases();
+        preparation_cases();
         std::puts("invalid-context-inputs=4 PASS pipeline-retains-domain=PASS");
         std::puts("owner-thread=PASS close-busy=PASS close-idempotent=PASS debug-warnings=0 debug-errors=0");
         std::puts("RHI acceptance: PASS");
