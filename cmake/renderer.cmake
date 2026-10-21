@@ -53,8 +53,17 @@ function(atelier_add_renderer)
     atelier_deploy_rhi_runtime(atelier_renderer_acceptance)
     file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"
         INPUT "${PROJECT_SOURCE_DIR}/cmake/run-renderer-acceptance.cmake.in")
-    add_custom_target(renderer_acceptance
-        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"
-        DEPENDS atelier_renderer_acceptance
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" USES_TERMINAL VERBATIM)
+    # One window target per entry, so a targeted run (and its GPU validation level) can pick entries.
+    set(_entries)
+    foreach(_mode default scene-lit scene-lit-benchmark scene-lit-temporal scene-lit-quality scene-lit-stability
+            scene-lit-restir-suite scene-lit-clustered scene-lit-shadows scene-lit-cost)
+        string(REPLACE "-" "_" _entry "renderer_acceptance_${_mode}")
+        add_custom_target(${_entry}
+            COMMAND "${CMAKE_COMMAND}" -D "MODE=${_mode}" -P "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"
+            DEPENDS atelier_renderer_acceptance
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" USES_TERMINAL VERBATIM)
+        list(APPEND _entries ${_entry})
+    endforeach()
+    add_custom_target(renderer_acceptance DEPENDS ${_entries})
+    set_property(GLOBAL PROPERTY ATELIER_RENDERER_ACCEPTANCE ${_entries})
 endfunction()

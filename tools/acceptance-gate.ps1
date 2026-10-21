@@ -1,14 +1,12 @@
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [ValidateSet('integration', 'full')][string]$Tier = 'integration',
-    [switch]$DevWindow,
-    [switch]$SkipIfUnchanged,
+    # Both configurations always build. Each test target runs only where listed:
+    # 'target' or 'release:target' runs in release, 'dev:target' in dev. Commas may join items.
+    [string[]]$Targets = @(),
     [ValidateSet('dev', 'release')][string[]]$Configs = @('dev', 'release'),
     [ValidateRange(1, 256)][int]$Jobs = 4,
-    # Diagnostic only: a release integration-path subset, never a complete gate.
-    [ValidateNotNullOrEmpty()][string[]]$ValidationWindowTargets,
-    # Diagnostic only: deliberately time out one registered window target, not a gate.
+    # Diagnostic only: deliberately time out one registered window target, not a test run.
     [string]$ProbeWindowTarget,
     [ValidateRange(1, 3600)][int]$ProbeTimeoutSeconds = 30
 )
@@ -16,15 +14,20 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $Configs = @($Configs | Select-Object -Unique)
 if (-not $Configs.Count) { throw 'At least one configuration is required.' }
-if ($SkipIfUnchanged -and ($Tier -ne 'full' -or $Configs.Count -ne 2 -or $ProbeWindowTarget)) {
-    throw '-SkipIfUnchanged requires a full nightly run with both configurations, not a probe.'
-}
-if ($ValidationWindowTargets) {
-    if ($Tier -ne 'integration' -or $Configs.Count -ne 1 -or $Configs[0] -ne 'release' -or $DevWindow -or $ProbeWindowTarget) {
-        throw '-ValidationWindowTargets requires -Tier integration -Configs release, without -DevWindow or a probe.'
+$requested = @{ dev = [System.Collections.Generic.List[string]]::new(); release = [System.Collections.Generic.List[string]]::new() }
+foreach ($item in @($Targets | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+    $config, $target = if ($item -match '^(dev|release):(.+)$') { $Matches[1], $Matches[2] } else { 'release', $item }
+    if ($target -eq 'renderer_acceptance') {
+        throw 'renderer_acceptance runs every entry under one validation level; list renderer_acceptance_<entry> targets instead.'
     }
-    $ValidationWindowTargets = @($ValidationWindowTargets | Select-Object -Unique)
+    if ($config -notin $Configs) { throw "${item}: configuration $config is not part of this run." }
+    if ($target -notin $requested[$config]) { $requested[$config].Add($target) }
 }
+if ($ProbeWindowTarget -and $Targets.Count) { throw '-ProbeWindowTarget cannot be combined with -Targets.' }
+# Default GPU validation scope: GBV only for RHI and three Renderer entries; every other
+# window target runs with ATELIER_GPU_VALIDATION=debug (the D3D12 debug layer).
+$gbvTargets = @('rhi_acceptance', 'renderer_acceptance_default', 'renderer_acceptance_scene_lit',
+    'renderer_acceptance_scene_lit_restir_suite')
 $results = [System.Collections.Generic.List[object]]::new()
 $lockOwned = $false
 $activator = $null
@@ -36,18 +39,16 @@ New-Item -ItemType Directory -Force $runDirectory | Out-Null
 $gateLog = Join-Path $runDirectory 'gate.log'
 $activeLog = Join-Path $runDirectory 'active-window.txt'
 $history = Join-Path $logRoot 'history.csv'
-$lastFullMain = Join-Path $logRoot 'last-full-main.txt'
-$fullMainCandidate = $null
-$skipped = $false
+if ((Test-Path $history) -and (Get-Content -LiteralPath $history -TotalCount 1) -notmatch '"Validation"') {
+    # Export-Csv -Append cannot add a column, so give earlier rows an empty Validation once.
+    $earlier = @(Import-Csv -LiteralPath $history)
+    $earlier | Select-Object *, @{ n = 'Validation'; e = { '' } } |
+        Export-Csv -LiteralPath $history -NoTypeInformation -Encoding utf8
+}
 $plannedScope = @($Configs | ForEach-Object {
     if ($ProbeWindowTarget) { "$_=probe:$ProbeWindowTarget" }
-    else {
-        $layers = @('build', 'headless')
-        if ($ValidationWindowTargets) { $layers += "window-subset:$($ValidationWindowTargets -join ',')" }
-        elseif ($Tier -eq 'full' -or $_ -eq 'release') { $layers += 'window' }
-        elseif ($DevWindow) { $layers += 'dev-window' }
-        "$_=$($layers -join '+')"
-    }
+    elseif ($requested[$_].Count) { "$_=build+targets:$($requested[$_] -join ',')" }
+    else { "$_=build" }
 }) -join '; '
 $exitCode = 1
 $self = [Diagnostics.Process]::GetCurrentProcess()
@@ -58,13 +59,14 @@ function Write-Gate([string]$Message) {
     Add-Content -LiteralPath $gateLog -Value $line
     Write-Host $line
 }
-function Add-Result([string]$Config, [string]$Target, [string]$Layer, [string]$Result, [double]$Seconds, [string]$Log) {
-    $row = [pscustomobject]@{ Run = $run; Tier = $(if ($ProbeWindowTarget) { 'probe' } elseif ($ValidationWindowTargets) { 'validation' } else { $Tier })
+function Add-Result([string]$Config, [string]$Target, [string]$Layer, [string]$Result, [double]$Seconds, [string]$Log,
+    [string]$Validation = 'none') {
+    $row = [pscustomobject]@{ Run = $run; Tier = $(if ($ProbeWindowTarget) { 'probe' } else { 'targeted' })
         Config = $Config; Layer = $Layer; Target = $Target; Result = $Result
-        Seconds = [math]::Round($Seconds, 2); Log = $Log }
+        Seconds = [math]::Round($Seconds, 2); Log = $Log; Validation = $Validation }
     $results.Add($row)
     $row | Export-Csv -LiteralPath $history -Append -NoTypeInformation -Encoding utf8
-    Write-Gate "$Config $Target $Result seconds=$($row.Seconds)"
+    Write-Gate "$Config $Target $Result seconds=$($row.Seconds) validation=$Validation"
 }
 
 # The wrapper waits on an event until it belongs to this job. Descendants cannot
@@ -208,8 +210,8 @@ try {
 }
 
 function Invoke-Build([string]$Config, [string]$Target, [int]$TimeoutSeconds = 0,
-    [switch]$Window, [string]$Layer = 'build') {
-    $out = Join-Path $runDirectory "$Config-$Target.log"
+    [switch]$Window, [string]$Layer = 'build', [string]$Name = $Target, [string]$Validation = 'none') {
+    $out = Join-Path $runDirectory "$Config-$Name.log"
     $eventName = "Local\AtelierAcceptance-$([guid]::NewGuid())"
     $event = [System.Threading.EventWaitHandle]::new($false, 'ManualReset', $eventName)
     $job = [AcceptanceJob]::new([bool]$Window)
@@ -220,10 +222,14 @@ function Invoke-Build([string]$Config, [string]$Target, [int]$TimeoutSeconds = 0
     try {
         $quotedRoot = $root.Replace("'", "''")
         $quotedOut = $out.Replace("'", "''")
+        # Window targets get an explicit GPU validation switch; builds and headless targets create no device.
+        $validationLine = if ($Validation -in @('gbv', 'debug')) { "`$env:ATELIER_GPU_VALIDATION = '$Validation'" }
+            else { 'Remove-Item Env:ATELIER_GPU_VALIDATION -ErrorAction SilentlyContinue' }
         $command = @"
 `$e = [System.Threading.EventWaitHandle]::OpenExisting('$eventName')
 try { if (-not `$e.WaitOne(60000)) { exit 1 } } finally { `$e.Dispose() }
 Set-Location '$quotedRoot'
+$validationLine
 & cmake --build --preset $Config --target $Target --parallel $Jobs -- -k 0 *> '$quotedOut'
 exit `$LASTEXITCODE
 "@
@@ -266,18 +272,18 @@ exit `$LASTEXITCODE
         }
     }
     Add-Content -LiteralPath $out -Value "`n$result seconds=$($clock.Elapsed.TotalSeconds) process-tree=empty"
-    Add-Result $Config $Target $Layer $result $clock.Elapsed.TotalSeconds $out
+    Add-Result $Config $Name $Layer $result $clock.Elapsed.TotalSeconds $out $Validation
     return $result
 }
 
 # Cold-inclusive maxima from recent ec-3 Ninja logs, rounded up to 0.1 minute.
 # Release Control reserves its prior full run plus the observed 310s cold preparation.
 # Keep these floors until shader caching lands; warm-only history must not shrink them.
+# Renderer entries use the default floor: 30 minutes, the runner's own per-entry limit.
 $minutes = @{
     editor_examples_acceptance = @{ dev = 17.6; release = 9.4 }
     editor_control_acceptance = @{ dev = 12.9; release = 11.5 }
     editor_sponza_acceptance = @{ dev = 10.4; release = 7.5 }
-    renderer_acceptance = @{ dev = 80.8; release = 67.8 }
     editor_scene_lit_acceptance = @{ dev = 8.7; release = 7.6 }
     editor_dungeons_acceptance = @{ dev = 8.6; release = 2.1 }
 }
@@ -286,58 +292,38 @@ Push-Location $root
 try {
     $self.PriorityClass = 'Normal'
     Write-Gate "Requested scope: $plannedScope"
-    if ($Tier -eq 'full' -and -not $ProbeWindowTarget -and $Configs.Count -eq 2) {
-        # A feature branch or dirty checkout must never certify (or skip testing) main.
-        # Track local refs/heads/main, not origin/main; never fetch or change branches here.
-        $mainRevision = & git rev-parse --verify refs/heads/main
-        if ($LASTEXITCODE -ne 0) { throw 'A local main branch is required for the nightly baseline.' }
-        $headRevision = & git rev-parse --verify HEAD
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the tested revision.' }
-        $changes = & git status --porcelain
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the tested worktree.' }
-        if ($headRevision -eq $mainRevision -and -not $changes) {
-            $fullMainCandidate = $mainRevision
-            if ($SkipIfUnchanged -and (Test-Path $lastFullMain) -and
-                ([string](Get-Content $lastFullMain -Raw)).Trim() -eq $mainRevision) {
-                $skipped = $true; $exitCode = 0
-                Write-Gate "SKIP: local main $mainRevision already passed a complete nightly run. No layers executed."
-                exit 0
-            }
-            # A forced rerun that fails must not leave an older PASS eligible for skipping.
-            if (Test-Path $lastFullMain) { Remove-Item -LiteralPath $lastFullMain }
-        } else { Write-Gate 'Not a clean main snapshot: no unchanged skip or nightly baseline update.' }
-    }
     . (Join-Path $PSScriptRoot 'enter-dev.ps1')
     $common = & git rev-parse --path-format=absolute --git-common-dir
     if ($LASTEXITCODE -ne 0) { throw 'Cannot locate git common directory.' }
     $lock = Join-Path (Split-Path -Parent $common) '.amp\in\locks\gpu-window.lock'
     New-Item -ItemType Directory -Force (Split-Path -Parent $lock) | Out-Null
-    $windowLists = @{}
-    $devWindowLists = @{}
-    $headlessLists = @{}
-    if ($ProbeWindowTarget) { Write-Gate 'PROBE ONLY: this run is not an integration or full gate.' }
-    if ($ValidationWindowTargets) { Write-Gate 'VALIDATION ONLY: filtered window targets do not certify an integration gate.' }
+    $windowRuns = [System.Collections.Generic.List[object]]::new()
+    if ($ProbeWindowTarget) { Write-Gate 'PROBE ONLY: this run checks timeout cleanup and tests no change.' }
     # The physics-project fixture uses an absolute source-tree Cache. A Ninja
     # pool cannot coordinate two build trees, so configurations run in sequence.
-    # Within each configuration the headless leaf targets remain parallel.
+    # Within each configuration the requested headless targets remain parallel.
     foreach ($config in $Configs) {
         if (-not $ProbeWindowTarget -and (Invoke-Build $config all) -ne 'PASS') { throw "Prebuild failed: $config" }
         # Prebuild may regenerate CMake after a pull. Never use a stale target list.
-        $windowLists[$config] = @(Get-Content -LiteralPath "out\$config\acceptance-window-targets.txt" | Where-Object { $_ })
-        $devWindowLists[$config] = @(Get-Content -LiteralPath "out\$config\acceptance-dev-window-targets.txt" | Where-Object { $_ })
-        $headlessLists[$config] = @(Get-Content -LiteralPath "out\$config\acceptance-headless-targets.txt" | Where-Object { $_ })
+        $windowList = @(Get-Content -LiteralPath "out\$config\acceptance-window-targets.txt" | Where-Object { $_ })
+        $headlessList = @(Get-Content -LiteralPath "out\$config\acceptance-headless-targets.txt" | Where-Object { $_ })
         if ($ProbeWindowTarget) {
-            if ($ProbeWindowTarget -notin $windowLists[$config]) { throw "Not a registered window target: $ProbeWindowTarget" }
+            if ($ProbeWindowTarget -notin $windowList) { throw "Not a registered window target: $ProbeWindowTarget" }
+            $windowRuns.Add([pscustomobject]@{ Config = $config; Target = $ProbeWindowTarget })
             continue
         }
-        foreach ($target in $ValidationWindowTargets) {
-            if ($target -notin $windowLists[$config]) { throw "Not a registered window target: $target" }
+        $headless = @()
+        foreach ($target in $requested[$config]) {
+            if ($target -in $headlessList) { $headless += $target }
+            elseif ($target -in $windowList) { $windowRuns.Add([pscustomobject]@{ Config = $config; Target = $target }) }
+            else { throw "Not a registered acceptance target: ${config}:$target" }
         }
-        foreach ($target in $headlessLists[$config]) {
+        if (-not $headless.Count) { continue }
+        foreach ($target in $headless) {
             Remove-Item "out\$config\acceptance-headless\$target\result.csv" -ErrorAction SilentlyContinue
         }
-        $headlessResult = Invoke-Build $config acceptance_headless -Layer headless
-        foreach ($target in $headlessLists[$config]) {
+        $headlessResult = Invoke-Build $config ($headless -join ' ') -Layer headless -Name headless-targets
+        foreach ($target in $headless) {
             $directory = "out\$config\acceptance-headless\$target"
             $destination = Join-Path $runDirectory "$config-$target.log"
             if (Test-Path "$directory\result.csv") {
@@ -345,14 +331,13 @@ try {
                 Copy-Item "$directory\output.log" $destination
                 Add-Result $config $target headless $status.Result ([double]$status.Seconds) $destination
             } else {
-                Set-Content $destination 'FAIL: no result; target was blocked or interrupted. See acceptance_headless log.'
+                Set-Content $destination 'FAIL: no result; target was blocked or interrupted. See headless-targets log.'
                 Add-Result $config $target headless FAIL 0 $destination
             }
         }
         if ($headlessResult -ne 'PASS') { Write-Gate "$config headless failed; continuing to collect window results." }
     }
-    $windowConfigs = @($Configs | Where-Object { $ProbeWindowTarget -or $Tier -eq 'full' -or $_ -eq 'release' -or $DevWindow })
-    if ($windowConfigs.Count) {
+    if ($windowRuns.Count) {
         Write-Gate 'Waiting for GPU/window lock (existing owner is never evicted).'
         while (-not $lockOwned) {
             if (Test-Path -LiteralPath $lock) {
@@ -365,7 +350,7 @@ try {
                 $lockOwned = $true
             } catch [System.IO.IOException] { Start-Sleep -Seconds 2 }
         }
-        Set-Content -LiteralPath $lock -Value "pid=$PID caller=$env:USERNAME root=$root $(Get-Date -Format o) acceptance-gate tier=$Tier configs=$($windowConfigs -join ',') probe=$ProbeWindowTarget validation=$($ValidationWindowTargets -join ',')"
+        Set-Content -LiteralPath $lock -Value "pid=$PID caller=$env:USERNAME root=$root $(Get-Date -Format o) acceptance-gate windows=$(@($windowRuns | ForEach-Object { "$($_.Config):$($_.Target)" }) -join ',') probe=$ProbeWindowTarget"
         $self.PriorityClass = 'AboveNormal'
         Write-Gate 'Lock acquired.'
         # Timeout probes measure cleanup only; they must not request focus or inject input.
@@ -408,38 +393,21 @@ try {
         $pastWindows = if (Test-Path $history) {
             @(Import-Csv $history | Where-Object { $_.Layer -in @('window', 'dev-window', 'window-subset') -and $_.Result -eq 'PASS' })
         } else { @() }
-        foreach ($config in $windowConfigs) {
-            $layer = 'window'
-            $targets = if ($ProbeWindowTarget) {
-                $layer = 'probe'; @($ProbeWindowTarget)
-            } elseif ($ValidationWindowTargets) {
-                $layer = 'window-subset'; $ValidationWindowTargets
-            } elseif ($Tier -eq 'integration' -and $config -eq 'dev') {
-                $layer = 'dev-window'; $devWindowLists[$config]
-            } else { $windowLists[$config] }
-            foreach ($target in $targets) {
-                $longest = if ($minutes.ContainsKey($target)) { [double]$minutes[$target][$config] } else { 15.0 }
-                # Last three completed runs can raise the floor; probes/timeouts cannot inflate it.
-                $recent = @($pastWindows | Where-Object { $_.Config -eq $config -and $_.Target -eq $target } | Select-Object -Last 3)
-                foreach ($sample in $recent) { $longest = [math]::Max($longest, [double]$sample.Seconds / 60.0) }
-                $timeout = [int][math]::Ceiling([math]::Max(5.0, 2.0 * $longest) * 60)
-                if ($ProbeWindowTarget) { $timeout = $ProbeTimeoutSeconds }
-                Write-Gate "Starting $config $target timeout=${timeout}s"
-                [void](Invoke-Build $config $target $timeout -Window -Layer $layer)
-            }
+        foreach ($entry in $windowRuns) {
+            $config = $entry.Config; $target = $entry.Target
+            $layer = if ($ProbeWindowTarget) { 'probe' } else { 'window' }
+            $validation = if ($target -in $gbvTargets) { 'gbv' } else { 'debug' }
+            $longest = if ($minutes.ContainsKey($target)) { [double]$minutes[$target][$config] } else { 15.0 }
+            # Last three completed runs can raise the floor; probes/timeouts cannot inflate it.
+            $recent = @($pastWindows | Where-Object { $_.Config -eq $config -and $_.Target -eq $target } | Select-Object -Last 3)
+            foreach ($sample in $recent) { $longest = [math]::Max($longest, [double]$sample.Seconds / 60.0) }
+            $timeout = [int][math]::Ceiling([math]::Max(5.0, 2.0 * $longest) * 60)
+            if ($ProbeWindowTarget) { $timeout = $ProbeTimeoutSeconds }
+            Write-Gate "Starting $config $target timeout=${timeout}s validation=$validation"
+            [void](Invoke-Build $config $target $timeout -Window -Layer $layer -Validation $validation)
         }
     }
     $exitCode = if (@($results | Where-Object Result -ne 'PASS').Count) { 1 } else { 0 }
-    if ($exitCode -eq 0 -and $fullMainCandidate) {
-        $endRevision = & git rev-parse --verify HEAD
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot recheck the tested revision.' }
-        $changes = & git status --porcelain
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot recheck the tested worktree.' }
-        if ($endRevision -eq $fullMainCandidate -and -not $changes) {
-            Set-Content -LiteralPath $lastFullMain -Value $fullMainCandidate
-            Write-Gate "Nightly baseline updated: $fullMainCandidate"
-        }
-    }
 } catch {
     Write-Gate "FAIL: $_"
     $exitCode = 1
@@ -456,8 +424,8 @@ try {
         $results | Export-Csv (Join-Path $runDirectory 'summary.csv') -NoTypeInformation -Encoding utf8
         $executedScope = @($results | ForEach-Object { "$($_.Config)=$($_.Layer)" } | Select-Object -Unique) -join '; '
         if (-not $executedScope) { $executedScope = 'none' }
-        $summary = "Tier=$Tier DevWindow=$DevWindow SkipIfUnchanged=$SkipIfUnchanged Skipped=$skipped Exit=$exitCode`nRequested: $plannedScope`nExecuted: $executedScope`n"
-        $summary += $results | Format-Table Config, Layer, Target, Result, Seconds -AutoSize | Out-String -Width 200
+        $summary = "Run=$(if ($ProbeWindowTarget) { 'probe' } else { 'targeted' }) Exit=$exitCode`nRequested: $plannedScope`nExecuted: $executedScope`n"
+        $summary += $results | Format-Table Config, Layer, Target, Validation, Result, Seconds -AutoSize | Out-String -Width 200
         Set-Content (Join-Path $runDirectory 'summary.txt') $summary
         Write-Gate "DONE exit=$exitCode summary=$runDirectory"
         Pop-Location

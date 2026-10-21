@@ -1057,7 +1057,20 @@ void lit_tonemap_cs(uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= lit_size_frame.xy)) return;
     lit_tone_output[id.xy] = lit_post_tonemap(id.xy);
 }
+// IEC 61966-2-1 piecewise transfer, the same curve the sRGB RTV applies.
+float3 lit_srgb_encode(float3 c) {
+    return lerp(c * 12.92, 1.055 * pow(c, 1 / 2.4) - .055, step(.0031308, c));
+}
+float3 lit_srgb_decode(float3 s) {
+    return lerp(s / 12.92, pow((s + .055) / 1.055, 2.4), step(.04045, s));
+}
 float4 lit_display_ps(float4 position : SV_Position, float2 input_uv : TEXCOORD0) : SV_Target {
     // Viewport raster clips this pass; the sRGB RTV encodes exactly once.
-    return lit_display_source.Load(int3(uint2(position.xy), 0));
+    float4 color = lit_display_source.Load(int3(uint2(position.xy), 0));
+    // Static IGN dither picks an exact 8-bit code that the RTV re-encodes unchanged; the .99
+    // width keeps colors already on a code (including 0 and 255) on that code.
+    float2 pixel = floor(position.xy);
+    float u = (frac(52.9829189 * frac(dot(pixel, float2(.06711056, .00583715)))) - .5) * .99;
+    float3 code = floor(lit_srgb_encode(saturate(color.rgb)) * 255 + .5 + u);
+    return float4(lit_srgb_decode(code / 255), color.a);
 }

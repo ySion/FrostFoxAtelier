@@ -9,7 +9,7 @@
 - `Context`、`Pipeline` 不可复制，可移动。Pipeline 持有 Program/Kernel 和执行域；Context 外壳消失不提前销毁仍被 Pipeline 持有的执行域。最后一个所有者负责有限排空与释放。
 - 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
 - 验证设置涉及进程级 D3D12 debug 配置，应在创建图形设备的初始化阶段确定；不支持并发切换验证配置。
-- `Validation::gpu` 映射到上游明确的 `EnableGPUBasedValidation` 标志，保留宿主在设备创建前的能力检查。上游创建标志位值会随升级变化，调用方使用具名常量并随依赖一起重编译，不持久化裸位值。项目扩展的 `ForceRGBA8SwapChain` 使用不与上游标志冲突的位；DRED 保留上游实现，当前 Context 不默认开启额外设备移除诊断。
+- `Validation::gpu` 映射到上游明确的 `EnableGPUBasedValidation` 标志，保留宿主在设备创建前的能力检查。进程环境变量 `ATELIER_GPU_VALIDATION` 在 `Context::open` 读取：`debug` 把请求的 `gpu` 降为 `debug_layer`，并向 stderr 写一行说明；未设置或 `gbv` 保持请求；其他值使 `open` 返回 `invalid_argument`。它只降级，从不提高宿主请求的级别；验收门禁用它按目标选择 GBV 范围，见 [README](../../../README.md#构建与端到端验收)。上游创建标志位值会随升级变化，调用方使用具名常量并随依赖一起重编译，不持久化裸位值。项目扩展的 `ForceRGBA8SwapChain` 使用不与上游标志冲突的位；DRED 保留上游实现，当前 Context 不默认开启额外设备移除诊断。
 
 ## 管线准备与替换
 

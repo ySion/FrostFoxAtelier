@@ -305,15 +305,28 @@ Result<Context> Context::open(const ContextOptions& options) {
     if (options.validation != Validation::disabled && options.validation != Validation::debug_layer &&
         options.validation != Validation::gpu)
         return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "invalid validation mode"});
+    // Process-wide switch: debug lowers a GPU-based validation request to the debug layer; unset or gbv keeps it.
+    Validation validation = options.validation;
+    char switch_value[8]{};
+    if (const DWORD length = GetEnvironmentVariableA("ATELIER_GPU_VALIDATION", switch_value, sizeof(switch_value))) {
+        const std::string_view value(switch_value, length < sizeof(switch_value) ? length : 0);
+        if (value != "gbv" && value != "debug")
+            return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter,
+                                         "ATELIER_GPU_VALIDATION must be gbv or debug"});
+        if (value == "debug" && validation == Validation::gpu) {
+            validation = Validation::debug_layer;
+            std::fputs("RHI: ATELIER_GPU_VALIDATION=debug, GPU-based validation replaced by the D3D12 debug layer\n", stderr);
+        }
+    }
 
-    const bool debug = options.validation != Validation::disabled;
+    const bool debug = validation != Validation::disabled;
     if (debug) {
         ComPtr<ID3D12Debug> controller;
         if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&controller))))
             return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation,
                                          "requested D3D12 debug layer is unavailable"});
         controller->EnableDebugLayer();
-        if (options.validation == Validation::gpu) {
+        if (validation == Validation::gpu) {
             ComPtr<ID3D12Debug1> gpu;
             if (FAILED(controller.As(&gpu)))
                 return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation,
@@ -348,7 +361,7 @@ Result<Context> Context::open(const ContextOptions& options) {
                                      "no hardware adapter with FL12_1 and Mesh Shader support"});
     auto state = std::make_shared<detail::ContextState>();
     const GfxCreateContextFlags flags = (debug ? kGfxCreateContextFlag_EnableDebugLayer : 0) |
-        (options.validation == Validation::gpu ? kGfxCreateContextFlag_EnableGPUBasedValidation : 0) |
+        (validation == Validation::gpu ? kGfxCreateContextFlag_EnableGPUBasedValidation : 0) |
         (options.rgba8_window ? kGfxCreateContextFlag_ForceRGBA8SwapChain : 0);
     state->context = options.window ? gfxCreateContext(options.window, flags, adapter.Get())
         : gfxCreateContext(options.width, options.height, flags, adapter.Get());
@@ -373,7 +386,7 @@ Result<Context> Context::open(const ContextOptions& options) {
     state->info.debug_layer = SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue)));
     if (debug && !state->info.debug_layer)
         return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_DeviceError, "requested validation did not activate"});
-    state->info.gpu_validation = options.validation == Validation::gpu;
+    state->info.gpu_validation = validation == Validation::gpu;
     state->preparer = std::make_shared<detail::Preparer>(detail::Preparer::Config{
         device, state->info.gpu_validation, gfxIsRaytracingSupported(state->context), options.shader_cache});
     return Context(std::move(state));

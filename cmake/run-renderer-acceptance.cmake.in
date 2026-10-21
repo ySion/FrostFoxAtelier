@@ -1,22 +1,19 @@
-# Each renderer acceptance entry runs in its own process and window, in order.
-# The default entry includes first-use textured Lit pipeline compilation under GBV.
+# Runs one renderer acceptance entry (-D MODE=<entry>) in its own process and window.
+# The default entry includes first-use textured Lit pipeline compilation.
 set(_exe "$<TARGET_FILE:atelier_renderer_acceptance>")
 set(_directory "$<TARGET_FILE_DIR:atelier_renderer_acceptance>")
 set(_evidence "${_directory}/renderer-evidence")
-foreach(_mode default scene-lit scene-lit-benchmark scene-lit-temporal scene-lit-quality scene-lit-stability
-        scene-lit-restir-suite scene-lit-clustered scene-lit-shadows scene-lit-cost)
-    if(_mode STREQUAL "default")
-        set(_arguments)
-    else()
-        file(MAKE_DIRECTORY "${_evidence}/${_mode}")
-        set(_arguments "--${_mode}" --output "${_evidence}/${_mode}")
-    endif()
-    execute_process(COMMAND "${_exe}" ${_arguments}
-        WORKING_DIRECTORY "${_directory}" TIMEOUT 1800
-        RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
-    file(WRITE "${_directory}/renderer-acceptance-${_mode}.log" "${_out}\n${_err}\nexit=${_result}\n")
-    message("${_out}${_err}")
-    if(NOT "${_result}" STREQUAL "0" OR (_mode STREQUAL "default" AND NOT _out MATCHES "Renderer acceptance: PASS"))
-        message(FATAL_ERROR "Renderer acceptance ${_mode} failed: ${_result}")
-    endif()
-endforeach()
+if(MODE STREQUAL "default")
+    set(_arguments)
+else()
+    file(MAKE_DIRECTORY "${_evidence}/${MODE}")
+    set(_arguments "--${MODE}" --output "${_evidence}/${MODE}")
+endif()
+execute_process(COMMAND "${_exe}" ${_arguments}
+    WORKING_DIRECTORY "${_directory}" TIMEOUT 1800
+    RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+file(WRITE "${_directory}/renderer-acceptance-${MODE}.log" "${_out}\n${_err}\nexit=${_result}\n")
+message("${_out}${_err}")
+if(NOT "${_result}" STREQUAL "0" OR (MODE STREQUAL "default" AND NOT _out MATCHES "Renderer acceptance: PASS"))
+    message(FATAL_ERROR "Renderer acceptance ${MODE} failed: ${_result}")
+endif()
