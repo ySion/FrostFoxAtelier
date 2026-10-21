@@ -29,6 +29,66 @@ Result<void> detail::light_rules(const LightSettings& settings) {
 }
 Result<void> validate_material(Runtime& runtime,const Material& material) { return detail::check_value(runtime,material); }
 Result<void> validate_light(Runtime& runtime,const LightSettings& settings) { return detail::check_value(runtime,settings); }
+rendering::SceneLightingSettings environment_settings(const EnvironmentComponent& value) noexcept {
+    rendering::SceneLightingSettings result;
+    result.shadows=value.shadows;result.ddgi=value.ddgi;result.gtao=value.gtao;result.sssr=value.sssr;
+    result.bloom=value.bloom;result.ssil=value.ssil;
+    result.antialiasing=static_cast<rendering::Antialiasing>(value.antialiasing);
+    result.exposure_ev=value.exposure_ev;result.shadow_bias=value.shadow_bias;result.direct_candidates=value.direct_candidates;
+    result.ao_radius=value.ao_radius;result.reflection_distance=value.reflection_distance;
+    result.reflection_roughness=value.reflection_roughness;
+    const std::array volumes{&value.volume0,&value.volume1,&value.volume2,&value.volume3};
+    for(std::size_t slot=0;slot<volumes.size();++slot) {
+        const auto& from=*volumes[slot];auto& to=result.probe_volumes[slot];
+        to.enabled=from.enabled;to.placement=static_cast<rendering::ProbePlacement>(from.placement);
+        to.minimum={from.minimum.x,from.minimum.y,from.minimum.z};to.maximum={from.maximum.x,from.maximum.y,from.maximum.z};
+        to.counts={from.count_x,from.count_y,from.count_z};to.blend_cells=from.blend_cells;
+    }
+    result.probe_update_budget=value.probe_update_budget;result.probe_rays=value.probe_rays;
+    result.probe_bounce=value.probe_bounce;result.indirect_gain=value.indirect_gain;
+    result.sky_enabled=value.sky_enabled;result.sky_color={value.sky_color.x,value.sky_color.y,value.sky_color.z};
+    result.sky_intensity=value.sky_intensity;
+    return result;
+}
+// Single-field bounds are AFIELD hard bounds, checked before this runs.
+Result<void> detail::environment_rules(const EnvironmentComponent& value) {
+    if(const auto* message=rendering::scene_lighting_error(environment_settings(value)))
+        return error(ErrorCode::argument_mismatch,message);
+    return {};
+}
+World::Admission detail::unique_environment(CapabilityId environments) {
+    return [environments](const World& world,std::span<const ObjectId> candidates)->Result<void> {
+        auto members=world.members(environments);if(!members) return std::unexpected(members.error());
+        ObjectId first;
+        const auto visit=[&](ObjectId object)->Result<void> {
+            if(first!=ObjectId{} && first!=object)
+                return error(ErrorCode::invalid_member,"A World can contain only one EnvironmentComponent, including disabled components.");
+            first=object;return {};
+        };
+        for(const auto object:candidates) if(auto valid=visit(object);!valid) return valid;
+        for(const auto& member:*members) if(auto valid=visit(member.component);!valid) return valid;
+        return {};
+    };
+}
+Result<rendering::SceneLightingSettings> World::environment() const {
+    auto& state=*impl_;
+    auto environments=members(state.environments);
+    if(!environments) return std::unexpected(environments.error());
+    for(const auto& [owner,object,active]:*environments) {
+        if(!active) continue;
+        auto invalid=runtime().validate(object);
+        if(!invalid) return std::unexpected(invalid.error());
+        if(*invalid) {
+            const auto& failure=**invalid;
+            if(!state.contain(failure.error,validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner))) return std::unexpected(failure.error);
+            break;
+        }
+        return runtime().with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& value)->Result<rendering::SceneLightingSettings> {
+            return environment_settings(value);
+        });
+    }
+    return rendering::SceneLightingSettings{};
+}
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
     return runtime.with_native<const LightComponent>(object,[](const LightComponent& light)->Result<LightSettings> { return light.settings; });
 }

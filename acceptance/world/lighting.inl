@@ -247,3 +247,102 @@ void lit_materials_and_lights() {
         "Light snapshots retained business objects or depended on their later state.");
     std::puts("[pass] Lit data: reflected Material/LightSettings, HDR validation, Source inheritance, TRS extraction, position-cached validation, slot surfaces, identity/history and lifecycle");
 }
+void environment_and_group_writes() {
+    Runtime runtime; const auto types=take(w::register_types(runtime));
+    w::World world(runtime,types);
+    using Settings=atelier::rendering::SceneLightingSettings;
+    require(take(runtime.find_type("world.EnvironmentComponent"))==types.environment_component &&
+        take(runtime.is_a(types.environment_component,types.component)) && take(world.environment())==Settings{},
+        "EnvironmentComponent is not a registered Component, or a World without one did not use the defaults.");
+    const auto field=[&](TypeId type,std::string_view name){return take(runtime.find_field(type,name));};
+    const auto volume_type=take(runtime.native_type<w::ProbeVolume>());
+    const auto path=[&](std::string_view name){return w::FieldPath{field(types.environment_component,name)};};
+    const auto axis=[&](std::string_view volume,std::string_view bound,std::string_view component) {
+        return w::FieldPath{field(types.environment_component,volume),field(volume_type,bound),field(types.vector3,component)};
+    };
+    // A nonspatial owner: the environment needs no Transform.
+    auto owner=take(w::create_entity(runtime));auto environment=take(w::create_component(runtime,types.environment_component));
+    const std::array environment_group{w::Attachment{environment.id()}};
+    committed(world.attach_components(owner.id(),environment_group));committed(world.attach(owner.id()));
+    require(take(world.environment())==Settings{},"A default Environment did not reproduce the default World settings.");
+    // At most one per World, a disabled one included.
+    committed(world.set_enabled(environment.id(),false));
+    require(take(world.environment())==Settings{},"A disabled Environment changed the World settings.");
+    auto second_owner=take(w::create_entity(runtime));auto second=take(w::create_component(runtime,types.environment_component));
+    const std::array second_group{w::Attachment{second.id()}};
+    committed(world.attach_components(second_owner.id(),second_group));
+    reject(world.attach(second_owner.id()),"A second Environment entered a World holding a disabled one.");
+    auto extra=take(w::create_component(runtime,types.environment_component));const std::array extra_group{w::Attachment{extra.id()}};
+    reject(world.attach_components(owner.id(),extra_group),"A second Environment joined the first one's Entity.");
+    committed(world.set_enabled(environment.id(),true));
+
+    // Moving a volume past its old bounds: written one leaf at a time, min first,
+    // the first leaf already fails min < max; written as one group it succeeds.
+    const std::array names{"x","y","z"};
+    std::vector<w::FieldPath> paths;std::vector<Scalar> values;
+    for(std::size_t i=0;i<3;++i) {paths.push_back(axis("volume0","minimum",names[i]));values.push_back(20.f+float(i));}
+    for(std::size_t i=0;i<3;++i) {paths.push_back(axis("volume0","maximum",names[i]));values.push_back(32.f+float(i));}
+    reject(world.write(environment.id(),paths[0],values[0]),"A leaf write accepted a minimum above the maximum.");
+    take(world.write(environment.id(),paths,values));
+    auto moved=Settings{};moved.probe_volumes[0].minimum={20,21,22};moved.probe_volumes[0].maximum={32,33,34};
+    require(take(world.environment())==moved,"A group write did not move the volume as one edit.");
+    // gtao and ssil exclude each other; a swap is only valid as a whole.
+    reject(world.write(environment.id(),path("ssil"),true),"Local GI was enabled alongside GTAO.");
+    const std::array swap_paths{path("ssil"),path("gtao")};const std::array<Scalar,2> swap_values{true,false};
+    take(world.write(environment.id(),swap_paths,swap_values));
+    moved.ssil=true;moved.gtao=false;
+    require(take(world.environment())==moved,"A group write did not swap GTAO for Local GI.");
+    const std::array sky_paths{path("sky_enabled"),path("sky_intensity")};
+    const std::array<Scalar,2> too_bright{true,65504.5f},sky_values{true,2.f};
+    reject(world.write(environment.id(),sky_paths,too_bright),"Sky radiance above the HDR scene range was accepted.");
+    take(world.write(environment.id(),sky_paths,sky_values));
+    moved.sky_enabled=true;moved.sky_intensity=2;
+    require(take(world.environment())==moved && atelier::rendering::sky_radiance(moved)==std::array{2.f,2.f,2.f},
+        "The enabled sky did not reach the World settings.");
+    const std::array duplicate_paths{path("exposure_ev"),path("exposure_ev")};const std::array<Scalar,2> duplicate_values{1.f,2.f};
+    reject(world.write(environment.id(),duplicate_paths,duplicate_values),"A group write accepted the same field twice.");
+    auto spatial=take(w::create_entity(runtime));take(world.set_transform(spatial.id(),{}));committed(world.attach(spatial.id()));
+    const std::array transform_paths{w::FieldPath{types.position_fields[0].begin(),types.position_fields[0].end()}};
+    const std::array<Scalar,1> transform_values{1.f};
+    reject(world.write(spatial.id(),transform_paths,transform_values),"A group write bypassed Transform validation.");
+    require(take(world.environment())==moved && take(w::read_transform(runtime,spatial.id())).position.x==0,
+        "Rejected group writes changed a field.");
+
+    // An admission rejection restores every leaf to its exact bytes, including a
+    // NaN payload and -0 that no write can produce; the rejection is the admission's.
+    take(world.add_admission(types.environment_component,[&](const w::World& owner_world,std::span<const ObjectId> candidates)->Result<void> {
+        for(const auto object:candidates)
+            if(std::get<float>(take(owner_world.runtime().read(object,path("sky_intensity"))))>5)
+                return std::unexpected(Error{ErrorCode::invalid_member,"Test admission rejects bright skies."});
+        return {};
+    }));
+    const auto payload=std::bit_cast<float>(0x7fc00123u);
+    take(runtime.with_native<w::EnvironmentComponent>(environment.id(),[&](auto& value)->Result<void> {
+        value.sky_color.x=payload;value.exposure_ev=-0.f;return {};
+    }));
+    const std::array admitted_paths{w::FieldPath{field(types.environment_component,"sky_color"),field(types.vector3,"x")},
+        path("exposure_ev"),path("sky_intensity")};
+    const std::array<Scalar,3> admitted_values{1.f,2.f,10.f};
+    const auto rejected=world.write(environment.id(),admitted_paths,admitted_values);
+    require(!rejected && rejected.error().message=="Test admission rejects bright skies.",
+        "A rejected group write did not return the admission's own error.");
+    take(runtime.with_native<const w::EnvironmentComponent>(environment.id(),[&](const auto& value)->Result<void> {
+        require(std::bit_cast<std::uint32_t>(value.sky_color.x)==0x7fc00123u && std::bit_cast<std::uint32_t>(value.exposure_ev)==0x80000000u &&
+            value.sky_intensity==2.f,"A rejected group write did not restore every leaf's exact bytes.");
+        return {};
+    }));
+    // The NaN came from outside the write paths: extraction reports it and uses the defaults.
+    require(take(world.environment())==Settings{},"An invalid Environment did not fall back to the default settings.");
+    const auto report=world.take_diagnostics();
+    require(report.size()==1 && report[0].object==environment.id() && report[0].entity==owner.id() &&
+        report[0].kind==w::DiagnosticKind::invalid_value && report[0].phase==w::DiagnosticPhase::lighting &&
+        report[0].field==std::vector<std::string>{"sky_color","x"} && report[0].type=="world.EnvironmentComponent",
+        "An invalid Environment was not reported on its component.");
+    take(world.set_failure_policy(w::FailurePolicy::halt));
+    reject(world.environment(),"Halted extraction accepted an invalid Environment.");
+    take(world.set_failure_policy(w::FailurePolicy::isolate));
+    take(world.write(environment.id(),admitted_paths[0],1.f));
+    require(take(world.environment()).sky_color==std::array{1.f,1.f,1.f},"Repairing the Environment did not restore its settings.");
+    committed(world.close());
+    std::puts("[pass] Environment: defaults without one, uniqueness with disabled ones, invalid values fall back, atomic group writes with exact restore");
+}

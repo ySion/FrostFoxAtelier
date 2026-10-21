@@ -783,6 +783,7 @@ int main() {
         spatial_tree_and_mesh();
         static_mesh_entity_creation();
         lit_materials_and_lights();
+        environment_and_group_writes();
         hierarchical_lifecycle();
         hierarchical_reference_lifetime();
         hierarchical_space_boundaries();
@@ -790,7 +791,7 @@ int main() {
         attachment_space_and_authoring();
         mirrored_and_degenerate_space();
         frame_phases();
-        std::puts("World acceptance: PASS (19/19)");
+        std::puts("World acceptance: PASS (20/20)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

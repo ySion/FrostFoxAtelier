@@ -40,6 +40,11 @@ Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMi
 
 单字段规则是反射硬边界，跨字段规则（种类、局部灯 range、矩形尺寸、方向光角半径、天光与解析光乘积）是 LightSettings 登记的类型校验器，二者都由 Runtime 执行。`validate_light(Runtime&, LightSettings)`、`read_light(Runtime&, ObjectId)`、`World::set_light(ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 按完整值检查，失败即拒绝、不部分改写原值。World 标量属性编辑先经 Runtime 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再检查类型规则与准入，失败时恢复原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
 
+## 环境
+
+`world.EnvironmentComponent : Component` 保存整个 World 的 Scene Lit 作者设置：阴影、效果、曝光、DDGI 传播、天光（`sky_enabled`、`sky_color`、`sky_intensity`）以及 4 个具名探针体积 `volume0..volume3`（`world.ProbeVolume`，探针数拆为 `count_x/y/z`）。字段、默认值和单字段硬边界与 `rendering::SceneLightingSettings` 一一对应，`environment_settings(component)` 给出对应的设置；跨字段规则（GTAO 与 Local GI 互斥、体积 min < max、间距精度、Follow Focus 内部格子、4096 探针共享预算、天光每通道 `color × intensity ≤ 65504`）是组件登记的类型校验器，直接复用 `scene_lighting_error`。它不需要 owner Entity 的 Transform。
+
+每个 World 至多一个 EnvironmentComponent，停用的也计数；这是 world 库登记的准入。`World::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，World 不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](README.md#编辑呈现与资源)。
 ## 提取与坐标
 
 `World::light_items()` 返回 `LightRenderItem { entity, component, position, direction, right, up, settings }`。两个身份都是完整 ObjectId；它们只用于当前 Runtime 的关联，不落盘、不转换成裸地址，也不额外保活对象。Renderer 的 key 映射由应用适配，Renderer 无需依赖 World。

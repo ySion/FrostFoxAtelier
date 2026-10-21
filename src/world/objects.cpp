@@ -59,6 +59,11 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.back().validate = [](const void* value) { return detail::body_rules(*static_cast<const BodySettings*>(value)); };
     definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
     definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
+    definitions.push_back(reflection::Definition<Antialiasing>::build(runtime));
+    definitions.push_back(reflection::Definition<ProbePlacement>::build(runtime));
+    definitions.push_back(reflection::Definition<ProbeVolume>::build(runtime));
+    definitions.push_back(reflection::Definition<EnvironmentComponent>::build(runtime));
+    definitions.back().validate = [](const void* value) { return detail::environment_rules(*static_cast<const EnvironmentComponent*>(value)); };
     if (!runtime.find_type("core.String")) definitions.push_back(string_definition(runtime));
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
@@ -68,6 +73,7 @@ Result<Types> register_types(Runtime& runtime) {
     types.static_mesh_entity = (*ids)[4];
     types.light_kind = (*ids)[5]; types.light_settings = (*ids)[6]; types.light_component = (*ids)[7];
     types.primitive_component = (*ids)[13]; types.collision_component = (*ids)[14];
+    types.environment_component = (*ids)[18];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
         auto outer = runtime.find_field(types.entity, name);
         if (!outer) return std::unexpected(outer.error());
