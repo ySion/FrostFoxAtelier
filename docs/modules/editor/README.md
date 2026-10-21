@@ -168,7 +168,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 `atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。性能表、Control 快照的结构验收由上文的 `--acceptance-surfaces` 承担。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此测量模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
 
-在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 同时记录文件中的 `source_world` 和经过正常加载器解析的 `loaded_world`；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
+在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 同时记录文件中的 `source_world`（v6 的 `world` 段，v7 为 null）和经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null；报告 schema v4）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
 
 普通启动中的 `--scene-lit-camera` 会为未保存探针体积的场景自动拟合 DDGI，因此普通窗口与此测量的 World 配置可能不同。需要保留保存参数的交互诊断时，正常打开工程和 Scene 后通过 Control `camera.look_at` 设置相机，并检查实际 World 值。
 

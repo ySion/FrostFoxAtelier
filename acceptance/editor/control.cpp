@@ -367,8 +367,9 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
         auto manifest=old_manifest;manifest["selection_indices"]=Json::array({1});manifest.erase("inspection");
         publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
         const auto selected=d.inspect();const auto& entities=selected.at("entities");
-        // World settings (version 4 and later) add the Environment after the migrated Actors.
-        require(entities.size()==(version>=4?5u:4u) && selected.at("selection")==Json::array({entities[3].at("handle")}) &&
+        // The Environment follows the migrated Actors: versions 4 and 5 bring it from their world section, and for older
+        // versions repro.open applies the frozen view's non-default World settings, which those formats could not store.
+        require(entities.size()==5 && entities[4].at("components")[0].at("type")=="world.EnvironmentComponent" && selected.at("selection")==Json::array({entities[3].at("handle")}) &&
             entities[3].at("name")=="Legacy Other" && selected.at("inspected_object")==entities[3].at("handle"),
             "Legacy repro Actor selection used expanded Entity indices instead of migrated identities");
         if(version==5) for(unsigned component_index:{1u,2u}) {
